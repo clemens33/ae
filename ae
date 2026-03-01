@@ -94,8 +94,9 @@ tmux_paste_submit() {
     local pane="$1" text="$2"
     local buf="ae-ps-$$-${pane}"
     tmux set-buffer -b "$buf" -- "$text" \; \
-        paste-buffer -d -b "$buf" -t "$pane" \; \
-        send-keys -t "$pane" C-m
+        paste-buffer -d -b "$buf" -t "$pane"
+    sleep 0.1
+    tmux send-keys -t "$pane" Enter
 }
 
 # Map command prefix to human-readable tool name
@@ -1794,6 +1795,26 @@ ae_lock_target() {
 ae_unlock_target() {
     exec 9>&-
 }
+
+# Determine target tool type from pane metadata/process name.
+# Returns: codex | claude | other
+ae_target_tool() {
+    local pane="$1" row agent cmd alias
+    row="$(tmux list-panes -a -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null | awk -F'|' -v p="$pane" '$1==p {print; exit}')"
+    [[ -z "$row" ]] && {
+        echo "other"
+        return 0
+    }
+    IFS='|' read -r _ agent cmd <<<"$row"
+    alias="${agent%%:*}"
+    if [[ "$alias" == "codex" || "$cmd" == "codex" ]]; then
+        echo "codex"
+    elif [[ "$alias" == "claude" || "$cmd" == "claude" ]]; then
+        echo "claude"
+    else
+        echo "other"
+    fi
+}
 LIBEOF
 chmod 0700 "${AE_META}/_lib"
 
@@ -1818,9 +1839,18 @@ current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
 tmux select-pane -t "$target"
 tmux send-keys -t "$target" -X cancel 2>/dev/null || true
 
-tmux set-buffer -b "$buf" -- "$msg" \; \
-    paste-buffer -d -b "$buf" -t "$target" \; \
-    send-keys -t "$target" C-m
+tool="$(ae_target_tool "$target")"
+if [[ "$tool" == "codex" ]]; then
+    tmux set-buffer -b "$buf" -- "$msg" \; \
+        paste-buffer -d -p -b "$buf" -t "$target"
+    sleep 0.1
+    tmux send-keys -t "$target" Enter
+else
+    tmux set-buffer -b "$buf" -- "$msg" \; \
+        paste-buffer -d -b "$buf" -t "$target"
+    sleep 0.1
+    tmux send-keys -t "$target" Enter
+fi
 sleep 0.3 # let target TUI process input before focus restore
 
 [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
@@ -1943,9 +1973,18 @@ tmux send-keys -t "$target" Escape
 if [[ -n "$msg" ]]; then
     sleep 0.5
     buf="ae-interrupt-$$"
-    tmux set-buffer -b "$buf" -- "$msg" \; \
-        paste-buffer -d -b "$buf" -t "$target" \; \
-        send-keys -t "$target" C-m
+    tool="$(ae_target_tool "$target")"
+    if [[ "$tool" == "codex" ]]; then
+        tmux set-buffer -b "$buf" -- "$msg" \; \
+            paste-buffer -d -p -b "$buf" -t "$target"
+        sleep 0.1
+        tmux send-keys -t "$target" Enter
+    else
+        tmux set-buffer -b "$buf" -- "$msg" \; \
+            paste-buffer -d -b "$buf" -t "$target"
+        sleep 0.1
+        tmux send-keys -t "$target" Enter
+    fi
     sleep 0.3 # let target TUI process input before focus restore
 fi
 
@@ -2042,9 +2081,18 @@ hb_send() {
     current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
     tmux select-pane -t "$pane" 2>/dev/null || true
     tmux send-keys -t "$pane" -X cancel 2>/dev/null || true
-    tmux set-buffer -b "$buf" -- "$msg" \; \
-        paste-buffer -d -b "$buf" -t "$pane" \; \
-        send-keys -t "$pane" C-m 2>/dev/null || true
+    tool="$(ae_target_tool "$pane")"
+    if [[ "$tool" == "codex" ]]; then
+        tmux set-buffer -b "$buf" -- "$msg" \; \
+            paste-buffer -d -p -b "$buf" -t "$pane" 2>/dev/null || true
+        sleep 0.1
+        tmux send-keys -t "$pane" Enter 2>/dev/null || true
+    else
+        tmux set-buffer -b "$buf" -- "$msg" \; \
+            paste-buffer -d -b "$buf" -t "$pane" 2>/dev/null || true
+        sleep 0.1
+        tmux send-keys -t "$pane" Enter 2>/dev/null || true
+    fi
     sleep 0.3
     [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
     ae_unlock_target
@@ -2229,9 +2277,12 @@ if [[ "$RESUMING" != true ]]; then
     done
 fi
 
-# Start heartbeat monitor in background
-"${AE_META}/heartbeat" --watch &
-echo "heartbeat_pid=$!" >>"${AE_META}/meta"
+# Start heartbeat monitor in background (opt-in via workspace.heartbeat = true)
+HEARTBEAT_ENABLED="$(get_config workspace.heartbeat)"
+if [[ "${HEARTBEAT_ENABLED,,}" == "true" ]]; then
+    "${AE_META}/heartbeat" --watch &
+    echo "heartbeat_pid=$!" >>"${AE_META}/meta"
+fi
 
 # Focus main pane and attach
 tmux select-pane -t "${PANE_IDS[0]}"
