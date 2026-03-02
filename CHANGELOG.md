@@ -1,6 +1,48 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v0.2.0] - 2026-03-02
+
+### Bug Fixes
+
+- Fix release: make gh release creation best-effort
+
+Git tag push via SSH works regardless of gh auth. The GitHub release
+creation is now optional — logs a warning instead of failing the pipeline.
+- Fix agent launch: add delay between paste and C-m submit
+
+The default agent launch path (Claude Code) used paste-buffer
+followed immediately by send-keys C-m. On large commands (long
+--append-system-prompt payloads), the paste hasn't finished
+rendering before C-m fires, causing the agent to never start.
+Add 0.3s delay matching the send helper pattern.
+- Fix heartbeat: select-pane before paste for codex TUI compat
+
+Codex TUI requires pane focus to process Enter after paste-buffer.
+Add select-pane with focus restore to hb_send, matching the send
+helper pattern.
+- Fix send reliability across codex and claude
+
+### Other
+
+- Improve agent prompt: add concurrent collaboration awareness
+
+Agents now know other agents are editing files simultaneously.
+Unexpected modifications trigger verification (send) before
+reverting, not blind acceptance. Clarify peek is for inspecting
+work state, not polling for replies.
+- Add heartbeat: background daemon detects stale/dead agents
+
+Polls panes every 60s, checks alive via pane_current_command and
+output freshness via capture-pane checksum. Dead agents trigger
+tmux alerts; stale workers get nudged (max 2), then human alert.
+Background-safe send (no focus switch), self-terminates when
+session disappears. Configurable via AE_HEARTBEAT_INTERVAL_SEC
+and AE_HEARTBEAT_STALE_MIN env vars.
+
+### Refactoring
+
+- Atomic tmux paste-and-submit, eliminate race condition
 ## [v0.1.1] - 2026-02-25
 
 ### Bug Fixes
