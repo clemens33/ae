@@ -107,7 +107,7 @@ Agents use these automatically when you ask them to collaborate. You can also ca
 ```toml
 [agents]
 claude = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
-codex = "codex --yolo -m gpt-5.3-codex -c model_reasoning_effort=high"
+codex = "codex --yolo -m gpt-5.4 -c model_reasoning_effort=high"
 gemini = "gemini --yolo -m gemini-2.5-pro"
 opencode = "opencode -m google/gemini-3-pro-preview"
 

@@ -29,7 +29,7 @@ fi
 
 DEFAULT_CONFIG='[agents]
 claude = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
-codex = "codex --yolo -m gpt-5.3-codex -c model_reasoning_effort=high"
+codex = "codex --yolo -m gpt-5.4 -c model_reasoning_effort=high"
 opencode = "opencode"
 
 [workspace]
@@ -119,6 +119,16 @@ strip_session_flags() {
         -e 's/  */ /g; s/^ //; s/ $//'
 }
 
+# Strip opencode-specific session/resume flags (--session ID, -s ID, -c, --continue)
+strip_opencode_session_flags() {
+    echo "$1" | sed \
+        -e 's/\(^\|  *\)--session[= ][^ ]*/\1/g' \
+        -e 's/\(^\|  *\)-s[= ][^ ]*/\1/g' \
+        -e 's/\(^\|  *\)--continue\(  *\|$\)/\1\2/g' \
+        -e 's/\(^\|  *\)-c\(  *\|$\)/\1\2/g' \
+        -e 's/  */ /g; s/^ //; s/ $//'
+}
+
 # Strip gemini prompt injection flags (-i '...' / --prompt-interactive '...')
 # Only called for gemini commands. We control the format: always single-quoted via inject_ae_context.
 strip_gemini_prompt_flags() {
@@ -156,6 +166,14 @@ resume_cmd_from_cmd() {
                 fi
             else
                 echo "$clean" # fresh start (--last is unreliable for concurrent sessions)
+            fi
+            ;;
+        opencode*)
+            clean="$(strip_opencode_session_flags "$clean")"
+            if [[ -n "$session_id" ]]; then
+                echo "${clean} --session ${session_id}"
+            else
+                echo "${clean} --continue"
             fi
             ;;
         gemini*)
@@ -285,14 +303,60 @@ tool_kind_from_cmd() {
     esac
 }
 
-# Best-effort: capture Codex session ID post-launch (codex prints "session id: <uuid>" on startup)
-# Wait for codex to self-register its session ID via developer_instructions,
-# then update the meta file. Falls back to TUI scraping if self-registration doesn't happen.
+# Find a codex session ID by matching CWD in session_meta JSON.
+# Scans recent session files (today + yesterday to handle UTC midnight rollover).
+# Only considers files modified after $launch_time (epoch seconds) to avoid stale matches.
+# Returns the UUID of the newest matching session, or empty string.
+find_codex_session_by_cwd() {
+    local target_cwd="$1" launch_time="${2:-0}"
+    # Normalize target CWD (resolve symlinks/worktrees)
+    target_cwd="$(realpath "$target_cwd" 2>/dev/null || echo "$target_cwd")"
+    local best_id="" best_mtime=0
+    # Scan today and yesterday (handles UTC midnight rollover)
+    local day
+    for day in "$(date -u +%Y/%m/%d)" "$(date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d 2>/dev/null || true)"; do
+        [[ -z "$day" ]] && continue
+        local dir="$HOME/.codex/sessions/${day}"
+        [[ -d "$dir" ]] || continue
+        local f
+        for f in "$dir"/*.jsonl; do
+            [[ -f "$f" ]] || continue
+            # Skip files older than launch_time
+            local mtime
+            mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+            ((mtime < launch_time)) && continue
+            # Parse first line: extract payload.cwd and payload.id
+            local first_line file_cwd file_id
+            first_line="$(head -1 "$f" 2>/dev/null || true)"
+            [[ -z "$first_line" ]] && continue
+            file_cwd="$(echo "$first_line" | grep -oP '"cwd"\s*:\s*"\K[^"]*' 2>/dev/null || true)"
+            [[ -z "$file_cwd" ]] && continue
+            # Normalize file CWD
+            file_cwd="$(realpath "$file_cwd" 2>/dev/null || echo "$file_cwd")"
+            [[ "$file_cwd" != "$target_cwd" ]] && continue
+            # CWD matches — pick newest by mtime
+            if ((mtime > best_mtime)); then
+                file_id="$(echo "$first_line" | grep -oP '"id"\s*:\s*"\K[0-9a-f-]+' 2>/dev/null || true)"
+                if [[ -n "$file_id" ]]; then
+                    best_id="$file_id"
+                    best_mtime="$mtime"
+                fi
+            fi
+        done
+    done
+    echo "$best_id"
+}
+
+# Best-effort: capture Codex session ID post-launch.
+# Fallback chain: A) sid-file from register-sid, B) CWD-based file scan, C) pane scrape.
 capture_codex_session_id() {
     local pane="$1" slot="$2" meta_dir="$3"
     local sid_file="${meta_dir}/codex.${slot}.sid"
     local captured=""
-    # Poll for self-registered session ID (codex writes to codex.sid via developer_instructions)
+    local work_dir launch_time
+    work_dir="$(grep '^work_dir=' "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || true)"
+    launch_time="$(grep "^codex_launch_time\.${slot}=" "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || echo 0)"
+    # A) Poll for self-registered session ID (codex writes codex.SLOT.sid via developer_instructions)
     local _attempt
     for _attempt in 1 2 3 4 5 6; do
         sleep 5
@@ -303,10 +367,78 @@ capture_codex_session_id() {
             break
         fi
     done
-    # Fallback: scrape TUI output (legacy, less reliable)
+    # B) Direct CWD-based scan of codex session files
+    if [[ -z "$captured" && -n "$work_dir" ]]; then
+        captured="$(find_codex_session_by_cwd "$work_dir" "$launch_time")"
+    fi
+    # C) Fallback: scrape TUI output (legacy, least reliable)
     if [[ -z "$captured" ]]; then
         captured="$(tmux capture-pane -t "$pane" -p 2>/dev/null | grep -oP 'session id: \K[0-9a-f-]+' | head -1 || true)"
     fi
+    if [[ -n "$captured" ]]; then
+        (
+            flock -w 5 200 || exit 1
+            local escaped_slot="${slot//./\\.}"
+            sed -i "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
+        ) 200>"$meta_dir/meta.lock"
+    fi
+}
+
+# Find an opencode session ID by matching directory in `opencode session list --format json`.
+# Only considers sessions updated after $launch_time (epoch seconds).
+# Returns the session ID of the newest matching session, or empty string.
+find_opencode_session_by_cwd() {
+    local target_cwd="$1" launch_time="${2:-0}"
+    target_cwd="$(realpath "$target_cwd" 2>/dev/null || echo "$target_cwd")"
+    if ! command -v opencode &>/dev/null; then
+        return
+    fi
+    local json
+    json="$(opencode session list --format json -n 20 2>/dev/null || true)"
+    [[ -z "$json" ]] && return
+    # opencode timestamps are in milliseconds
+    local launch_time_ms=$((launch_time * 1000))
+    local best_id="" best_updated=0
+    # Compact JSON to single-line-per-object, then parse with grep
+    local compact
+    compact="$(echo "$json" | tr -d '\n' | sed 's/}\s*,\s*{/}\n{/g')"
+    local sid dir updated
+    while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        sid="$(echo "$entry" | grep -oP '"id"\s*:\s*"\K[^"]+' 2>/dev/null || true)"
+        [[ -z "$sid" ]] && continue
+        dir="$(echo "$entry" | grep -oP '"directory"\s*:\s*"\K[^"]+' 2>/dev/null || true)"
+        [[ -z "$dir" ]] && continue
+        updated="$(echo "$entry" | grep -oP '"updated"\s*:\s*\K[0-9]+' 2>/dev/null || true)"
+        [[ -z "$updated" ]] && continue
+        ((updated < launch_time_ms)) && continue
+        dir="$(realpath "$dir" 2>/dev/null || echo "$dir")"
+        [[ "$dir" != "$target_cwd" ]] && continue
+        if ((updated > best_updated)); then
+            best_id="$sid"
+            best_updated="$updated"
+        fi
+    done <<<"$compact"
+    echo "$best_id"
+}
+
+# Best-effort: capture OpenCode session ID post-launch.
+# Uses `opencode session list --format json` filtered by CWD.
+capture_opencode_session_id() {
+    local pane="$1" slot="$2" meta_dir="$3"
+    local captured=""
+    local work_dir launch_time
+    work_dir="$(grep '^work_dir=' "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || true)"
+    launch_time="$(grep "^opencode_launch_time\.${slot}=" "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || echo 0)"
+    # Poll: opencode needs time to create the session
+    local _attempt
+    for _attempt in 1 2 3 4 5 6; do
+        sleep 5
+        if [[ -n "$work_dir" ]]; then
+            captured="$(find_opencode_session_by_cwd "$work_dir" "$launch_time")"
+            [[ -n "$captured" ]] && break
+        fi
+    done
     if [[ -n "$captured" ]]; then
         (
             flock -w 5 200 || exit 1
@@ -954,9 +1086,19 @@ _cmd_spawn() {
     fi
     send_agent_cmd "$pane_id" "$scoped_cmd" "$initial_msg"
 
-    # Post-launch: capture codex session ID if needed
+    # Post-launch: capture agent session ID if needed
     if [[ "$tool_kind" == "codex" ]]; then
+        (
+            flock -w 5 200 || exit 1
+            echo "codex_launch_time.${slot}=$(date +%s)" >>"$meta_dir/meta"
+        ) 200>"$meta_dir/meta.lock"
         capture_codex_session_id "$pane_id" "$slot" "$meta_dir" &
+    elif [[ "$tool_kind" == "opencode" ]]; then
+        (
+            flock -w 5 200 || exit 1
+            echo "opencode_launch_time.${slot}=$(date +%s)" >>"$meta_dir/meta"
+        ) 200>"$meta_dir/meta.lock"
+        capture_opencode_session_id "$pane_id" "$slot" "$meta_dir" &
     fi
 
     # For agents with system prompt injection, send spawn prompt separately
@@ -1255,7 +1397,7 @@ send_agent_cmd() {
             local codex_fallback
             # shellcheck disable=SC2001
             codex_fallback="$(echo "$cmd" | sed 's/ *resume [^ ]*//')"
-            tmux send-keys -t "$pane" "$cmd || $codex_fallback" C-m
+            tmux_paste_submit "$pane" "$cmd || $codex_fallback"
             if [[ -n "$prompt" ]]; then
                 (
                     sleep 3 &&
@@ -1268,7 +1410,7 @@ send_agent_cmd() {
             ;;
         opencode*)
             # OpenCode has no system prompt flag — launch TUI, then paste context as first message
-            tmux send-keys -t "$pane" "$cmd" C-m
+            tmux_paste_submit "$pane" "$cmd"
             if [[ -n "$prompt" ]]; then
                 (
                     sleep 3 &&
@@ -2044,15 +2186,42 @@ chmod 0700 "${AE_META}/retire"
 # Helper: register-sid — codex agents run this to self-register their session ID
 cat >"${AE_META}/register-sid" <<'REGSIDEOF'
 #!/usr/bin/env bash
-# Find the most recent codex session file and write its UUID to codex.<slot>.sid
+# Find codex session matching current CWD and write its UUID to codex.<slot>.sid
 META_DIR="$(cd "$(dirname "$0")" && pwd)"
 SLOT="${1:-default}"
-sid=$(ls -t ~/.codex/sessions/$(date -u +%Y/%m/%d)/*.jsonl 2>/dev/null | head -1 | grep -oP '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}')
-if [ -n "$sid" ]; then
-    echo "$sid" > "$META_DIR/codex.${SLOT}.sid"
-    echo "registered session $sid for slot $SLOT"
+TARGET_CWD="$(realpath "$PWD" 2>/dev/null || echo "$PWD")"
+# Read launch_time from meta to filter stale sessions (default 0 = accept all)
+LAUNCH_TIME="$(grep "^codex_launch_time\.${SLOT}=" "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || echo 0)"
+best_id="" best_mtime=0
+# Scan today and yesterday (handles UTC midnight rollover)
+for day in "$(date -u +%Y/%m/%d)" "$(date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d 2>/dev/null || true)"; do
+    [ -z "$day" ] && continue
+    dir="$HOME/.codex/sessions/${day}"
+    [ -d "$dir" ] || continue
+    for f in "$dir"/*.jsonl; do
+        [ -f "$f" ] || continue
+        mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+        [ "$mtime" -lt "$LAUNCH_TIME" ] && continue
+        first_line="$(head -1 "$f" 2>/dev/null || true)"
+        [ -z "$first_line" ] && continue
+        file_cwd="$(echo "$first_line" | grep -oP '"cwd"\s*:\s*"\K[^"]*' 2>/dev/null || true)"
+        [ -z "$file_cwd" ] && continue
+        file_cwd="$(realpath "$file_cwd" 2>/dev/null || echo "$file_cwd")"
+        [ "$file_cwd" != "$TARGET_CWD" ] && continue
+        if [ "$mtime" -gt "$best_mtime" ]; then
+            file_id="$(echo "$first_line" | grep -oP '"id"\s*:\s*"\K[0-9a-f-]+' 2>/dev/null || true)"
+            if [ -n "$file_id" ]; then
+                best_id="$file_id"
+                best_mtime="$mtime"
+            fi
+        fi
+    done
+done
+if [ -n "$best_id" ]; then
+    echo "$best_id" > "$META_DIR/codex.${SLOT}.sid"
+    echo "registered session $best_id for slot $SLOT"
 else
-    echo "no codex session found for today" >&2
+    echo "no codex session found matching cwd $TARGET_CWD" >&2
     exit 1
 fi
 REGSIDEOF
@@ -2265,14 +2434,25 @@ else
     done
 fi
 
-# Capture Codex session IDs in background (runs after launch, doesn't delay attach)
+# Capture agent session IDs in background (runs after launch, doesn't delay attach)
 if [[ "$RESUMING" != true ]]; then
-    if [[ "$(tool_kind_from_cmd "$MAIN_CMD")" == "codex" ]]; then
+    AGENT_LAUNCH_TIME="$(date +%s)"
+    MAIN_TOOL="$(tool_kind_from_cmd "$MAIN_CMD")"
+    if [[ "$MAIN_TOOL" == "codex" ]]; then
+        echo "codex_launch_time.main=${AGENT_LAUNCH_TIME}" >>"${AE_META}/meta"
         capture_codex_session_id "${PANE_IDS[0]}" "main" "$AE_META" &
+    elif [[ "$MAIN_TOOL" == "opencode" ]]; then
+        echo "opencode_launch_time.main=${AGENT_LAUNCH_TIME}" >>"${AE_META}/meta"
+        capture_opencode_session_id "${PANE_IDS[0]}" "main" "$AE_META" &
     fi
     for i in "${!WORKER_CMDS[@]}"; do
-        if [[ "$(tool_kind_from_cmd "${WORKER_CMDS[$i]}")" == "codex" ]]; then
+        WORKER_TOOL="$(tool_kind_from_cmd "${WORKER_CMDS[$i]}")"
+        if [[ "$WORKER_TOOL" == "codex" ]]; then
+            echo "codex_launch_time.worker.${i}=${AGENT_LAUNCH_TIME}" >>"${AE_META}/meta"
             capture_codex_session_id "${PANE_IDS[$((i + 1))]}" "worker.${i}" "$AE_META" &
+        elif [[ "$WORKER_TOOL" == "opencode" ]]; then
+            echo "opencode_launch_time.worker.${i}=${AGENT_LAUNCH_TIME}" >>"${AE_META}/meta"
+            capture_opencode_session_id "${PANE_IDS[$((i + 1))]}" "worker.${i}" "$AE_META" &
         fi
     done
 fi

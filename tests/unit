@@ -25,7 +25,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|default_session_name|sanitize_branch_name)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|default_session_name|sanitize_branch_name)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -75,6 +75,42 @@ assert_eq "strip: no flags to strip" \
 assert_eq "strip: only --continue" \
     "claude" \
     "$(strip_session_flags "claude --continue")"
+
+assert_eq "strip: --session not stripped by generic strip (avoids collisions)" \
+    "opencode --session ses_abc123 -m model" \
+    "$(strip_session_flags "opencode --session ses_abc123 -m model")"
+
+assert_eq "strip: -s not stripped by generic strip (avoids collisions)" \
+    "codex -s something -m model" \
+    "$(strip_session_flags "codex -s something -m model")"
+
+assert_eq "strip: -c not stripped by generic strip (avoids collisions)" \
+    "codex -c model_reasoning_effort=high" \
+    "$(strip_session_flags "codex -c model_reasoning_effort=high")"
+
+assert_eq "strip-opencode: --session with space" \
+    "opencode -m model" \
+    "$(strip_opencode_session_flags "opencode --session ses_abc123 -m model")"
+
+assert_eq "strip-opencode: --session with =" \
+    "opencode -m model" \
+    "$(strip_opencode_session_flags "opencode --session=ses_abc123 -m model")"
+
+assert_eq "strip-opencode: -s short flag" \
+    "opencode -m model" \
+    "$(strip_opencode_session_flags "opencode -s ses_abc123 -m model")"
+
+assert_eq "strip-opencode: -c short flag" \
+    "opencode -m model" \
+    "$(strip_opencode_session_flags "opencode -c -m model")"
+
+assert_eq "strip-opencode: -c at end" \
+    "opencode -m model" \
+    "$(strip_opencode_session_flags "opencode -m model -c")"
+
+assert_eq "strip-opencode: --continue" \
+    "opencode -m model" \
+    "$(strip_opencode_session_flags "opencode --continue -m model")"
 
 # ── tool_kind_from_cmd ───────────────────────────────────────────────
 
@@ -158,9 +194,25 @@ assert_eq "strip: -i not stripped from non-gemini commands" \
     "codex --yolo -i input.txt" \
     "$(strip_session_flags "codex --yolo -i input.txt")"
 
-assert_eq "resume: unknown agent → fresh start (clean cmd)" \
-    "opencode" \
+assert_eq "resume: opencode no session → --continue fallback" \
+    "opencode --continue" \
     "$(resume_cmd_from_cmd "opencode")"
+
+assert_eq "resume: opencode with session ID → --session" \
+    "opencode --session ses_abc123" \
+    "$(resume_cmd_from_cmd "opencode" "ses_abc123")"
+
+assert_eq "resume: opencode with flags + session ID" \
+    "opencode -m model --session ses_xyz" \
+    "$(resume_cmd_from_cmd "opencode -m model" "ses_xyz")"
+
+assert_eq "resume: opencode pending session → --continue fallback" \
+    "opencode -m model --continue" \
+    "$(resume_cmd_from_cmd "opencode -m model" "pending")"
+
+assert_eq "resume: unknown agent → fresh start (clean cmd)" \
+    "sometool" \
+    "$(resume_cmd_from_cmd "sometool")"
 
 assert_eq "resume: strips old flags before building resume cmd" \
     "claude --model opus --resume new-uuid" \
