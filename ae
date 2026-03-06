@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.0"
+AE_VERSION="0.2.1"
 
 CONFIG_DIR="${HOME}/.ae"
 CONFIG_FILE="${CONFIG_DIR}/config"

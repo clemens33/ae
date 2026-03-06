@@ -1,6 +1,15 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [v0.2.1] - 2026-03-06
+
+### Bug Fixes
+
+- Fix integration assertions for agent identity
+
+### Other
+
+- Add opencode resume support
 ## [v0.2.0] - 2026-03-02
 
 ### Bug Fixes
