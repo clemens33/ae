@@ -267,9 +267,9 @@ EOF
 wait_for_session "test-projcfg"
 sleep 1
 
-# Pane title should be ae:dummy2:dummy2 (from project config, name defaults to alias)
-pane_title="$(tmux list-panes -t test-projcfg -F '#{pane_title}' 2>/dev/null | head -1)"
-assert_eq "projcfg: local config overrides main" "ae:dummy2:dummy2" "$pane_title"
+# @ae_agent is the stable agent identity; pane_title can be overwritten by the shell
+pane_agent="$(tmux list-panes -t test-projcfg -F '#{@ae_agent}' 2>/dev/null | head -1)"
+assert_eq "projcfg: local config overrides main" "dummy2:dummy2" "$pane_agent"
 
 # Clean up
 "$AE" end -f test-projcfg 2>/dev/null || true
@@ -282,9 +282,9 @@ REPO8="$(setup_repo)"
 wait_for_session "test-use"
 sleep 1
 
-# Pane title should reflect dummy2 as main agent (override from CLI)
-pane_title="$(tmux list-panes -t test-use -F '#{pane_title}' 2>/dev/null | head -1)"
-assert_eq "use: CLI override sets main agent" "ae:dummy2:dummy2" "$pane_title"
+# @ae_agent is the stable agent identity; pane_title can be overwritten by the shell
+pane_agent="$(tmux list-panes -t test-use -F '#{@ae_agent}' 2>/dev/null | head -1)"
+assert_eq "use: CLI override sets main agent" "dummy2:dummy2" "$pane_agent"
 
 # Meta should record dummy2 as agent.main
 meta_main="$(grep '^agent\.main=' "$HOME/.ae/sessions/test-use/meta" 2>/dev/null || echo "")"
