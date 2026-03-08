@@ -41,19 +41,20 @@ test-integration:
 version:
     @grep -m1 '^AE_VERSION=' ae | cut -d'"' -f2
 
-# Bump version: just bump patch|minor|major
-bump PART="patch":
+# Compute next release version using CalVer: YYYY.MM.BUILD
+bump:
     #!/usr/bin/env bash
     set -euo pipefail
     CURRENT=$(grep -m1 '^AE_VERSION=' ae | cut -d'"' -f2)
-    IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-    case "{{PART}}" in
-        major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-        minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-        patch) PATCH=$((PATCH + 1)) ;;
-        *) echo "Usage: just bump patch|minor|major" >&2; exit 1 ;;
-    esac
-    echo "${MAJOR}.${MINOR}.${PATCH}"
+    YEAR_MONTH="$(date +%Y.%m)"
+    BUILD=1
+    if [[ "$CURRENT" =~ ^([0-9]{4})\.([0-9]{2})\.([0-9]+)$ ]]; then
+        CURRENT_YEAR_MONTH="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+        if [[ "$CURRENT_YEAR_MONTH" == "$YEAR_MONTH" ]]; then
+            BUILD=$((BASH_REMATCH[3] + 1))
+        fi
+    fi
+    echo "${YEAR_MONTH}.${BUILD}"
 
 # ── Changelog ────────────────────────────────────────────────────────
 
@@ -63,9 +64,9 @@ changelog:
 
 # ── Release ──────────────────────────────────────────────────────────
 
-# Full release pipeline: check → test → version → changelog → tag → gh release
-# Usage: just release patch  (or minor, major)
-release PART="patch":
+# Full release pipeline: check → test → bump → changelog → tag → gh release
+# Usage: just release
+release:
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -83,14 +84,14 @@ release PART="patch":
     just test
 
     # Version
-    VERSION=$(just bump {{PART}})
+    VERSION=$(just bump)
     echo "Releasing v$VERSION"
 
     # Update version in script
     sed -i "s/^AE_VERSION=\".*\"/AE_VERSION=\"$VERSION\"/" ae
 
     # Update version badge in README
-    sed -i "s/release-[0-9]*\.[0-9]*\.[0-9]*/release-$VERSION/" README.md 2>/dev/null || true
+    sed -E -i "s/release-[0-9]+\\.[0-9]+\\.[0-9]+/release-$VERSION/" README.md 2>/dev/null || true
 
     # Generate changelog
     TAG="v$VERSION"

@@ -180,8 +180,10 @@ Requires [just](https://github.com/casey/just) as task runner.
 just check            # lint (shellcheck) + format check (shfmt)
 just test             # unit + integration tests
 just format           # auto-format with shfmt
-just release patch    # full release: check → test → bump → changelog → tag → gh release
+just release          # full release: check → test → CalVer bump → changelog → tag → gh release
 ```
+
+Releases use CalVer in `YYYY.MM.BUILD` format.
 
 Dev tooling:
 

@@ -33,7 +33,7 @@ Single bash script. No dependencies beyond bash and tmux. Keep it that way.
 ```
 ae                  — the script
 justfile            — dev/release pipeline (just check, just test, just release)
-cliff.toml          — git-cliff changelog config (SemVer)
+cliff.toml          — git-cliff changelog config (CalVer-compatible)
 tests/unit          — pure-function unit tests (bash, no deps)
 tests/integration   — integration tests (requires tmux, git)
 install             — symlink or curl|bash installer
