@@ -178,7 +178,11 @@ resume_cmd_from_cmd() {
             ;;
         gemini*)
             clean="$(strip_gemini_prompt_flags "$clean")"
-            echo "${clean} --resume latest" # index-based only, no UUID scoping
+            if [[ -n "$session_id" ]]; then
+                echo "${clean} --resume ${session_id}"
+            else
+                echo "${clean} --resume latest"
+            fi
             ;;
         *) echo "$clean" ;; # fresh start for unknown agents
     esac
@@ -200,18 +204,64 @@ inject_session_id() {
     fi
 }
 
+tool_kind_supports_launch_id() {
+    case "$1" in
+        codex | opencode | gemini) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+read_launch_id_for_slot() {
+    local meta_dir="$1" slot="$2"
+    local escaped_slot="${slot//./\\.}"
+    local launch_id=""
+    launch_id="$(grep "^launch_id\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
+    if [[ -z "$launch_id" ]]; then
+        # Backward compatibility for sessions created before generic launch_id keys.
+        launch_id="$(grep "^codex_launch_id\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
+    fi
+    if [[ -z "$launch_id" ]]; then
+        launch_id="$(grep "^opencode_launch_id\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
+    fi
+    if [[ -z "$launch_id" ]]; then
+        launch_id="$(grep "^gemini_launch_id\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
+    fi
+    printf '%s' "$launch_id"
+}
+
+read_launch_time_for_slot() {
+    local meta_dir="$1" slot="$2"
+    local escaped_slot="${slot//./\\.}"
+    local launch_time=""
+    launch_time="$(grep "^launch_time\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
+    if [[ -z "$launch_time" ]]; then
+        # Backward compatibility for sessions created before generic launch_time keys.
+        launch_time="$(grep "^codex_launch_time\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
+    fi
+    if [[ -z "$launch_time" ]]; then
+        launch_time="$(grep "^opencode_launch_time\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
+    fi
+    if [[ -z "$launch_time" ]]; then
+        launch_time="$(grep "^gemini_launch_time\.${escaped_slot}=" "${meta_dir}/meta" 2>/dev/null | cut -d= -f2- || true)"
+    fi
+    printf '%s' "${launch_time:-0}"
+}
+
 # Build ae workspace context string (shared by inject_ae_context and initial prompt fallback)
 build_ae_context() {
     local meta_dir="$1" session="${2:-}" work_dir="${3:-}"
     local ctx="You are in an ae multi-agent workspace. Session: ${session}. Directory: ${work_dir}."
-    ctx+=" Communication: send a message to another agent: ${meta_dir}/send \"<agent_name>\" \"<message>\". When another agent asks you something, always reply back via send to that agent when done. Do not poll or check panes for replies — answers arrive as incoming messages."
+    ctx+=" REQUIRED AE RULES: You MUST operate through ae helpers when communicating with other agents. Use ${meta_dir}/send \"<agent_name>\" \"<message>\" for direct messages. Use ${meta_dir}/ask <agent> <question> or ${meta_dir}/review <agent> <request> when you expect a reply. Use ${meta_dir}/reply <request-id> \"<your reply>\" when another agent gives you a request id. If another agent message includes an exact reply command, you MUST execute that command verbatim when done. Do NOT infer the recipient. Do NOT reply only in your own pane output. Do NOT poll or check panes for replies — answers arrive as incoming messages. Use ${meta_dir}/requests to inspect pending/replied requests. Use peek/peak only for inspection, never as a reply mechanism."
     ctx+=" Spawn a new agent: ${meta_dir}/spawn <alias>:<name> [prompt] — give a descriptive role name."
     ctx+=" See ${meta_dir}/workspace.md for agent names and details."
     ctx+=" IMPORTANT — CONCURRENT COLLABORATION: Other agents are editing files in this same workspace RIGHT NOW. Files you read may change at any time. If you notice unexpected modifications, they may be from another agent — verify intent via send before reverting or overwriting. Re-read files before editing if time has passed. Use peek to inspect an agent's current work state (not to wait for replies). Coordinate on shared files to avoid conflicts."
     ctx+=" Available helpers in ${meta_dir}/:"
     ctx+=" send <agent> <message> — send a message to another agent."
-    ctx+=" ask <agent> <question> — ask another agent a question (embeds reply-to so they know to respond back to you)."
-    ctx+=" peek <agent> [lines] — read recent output from another agent's pane (default 80 lines)."
+    ctx+=" ask <agent> <question> — send a request that REQUIRES a reply via an exact command with a request id."
+    ctx+=" review <agent> <request> — ask another agent for a critical review with findings-first output."
+    ctx+=" reply <request-id> <message> — reply to a logged ask/review request by request id."
+    ctx+=" requests [mine|inbox|all] — inspect logged request state without peeking panes."
+    ctx+=" peek|peak <agent> [lines] — inspect recent output from another agent's pane (default 80 lines); inspection only."
     ctx+=" agents — list all agents in this session."
     ctx+=" spawn <alias>:<name> [prompt] — add a new agent to the workspace."
     ctx+=" retire <agent> — remove a spawned agent."
@@ -237,13 +287,33 @@ inject_ae_context() {
         codex*)
             # Tell codex to self-register its session ID by running the slot-scoped helper script
             local slot_arg=""
+            local launch_marker=""
             [[ -n "$slot" ]] && slot_arg=" ${slot}"
-            local full_ctx="${ctx} --- CRITICAL FIRST TASK: Enable session resume by running: ${meta_dir}/register-sid${slot_arg} — do this NOW before anything else."
+            if [[ -n "$slot" && -f "${meta_dir}/meta" ]]; then
+                local launch_id
+                launch_id="$(read_launch_id_for_slot "$meta_dir" "$slot")"
+                if [[ -n "$launch_id" ]]; then
+                    # Meta keys are generic (launch_id.<slot>), but persisted markers stay tool-specific
+                    # because the matching logic searches different external storage backends per tool.
+                    launch_marker=$'\n'"AE_CODEX_LAUNCH_ID=${launch_id}"$'\n'"AE_CODEX_SLOT=${slot}"
+                fi
+            fi
+            local full_ctx="${ctx} --- CRITICAL FIRST TASK: Enable session resume by running: ${meta_dir}/register-sid${slot_arg} — do this NOW before anything else.${launch_marker}"
             local escaped="${full_ctx//\'/\'\\\'\'}"
             echo "${cmd} -c developer_instructions='${escaped}'"
             ;;
         gemini*)
-            local full_ctx="${ctx} --- IMPORTANT: This is context only. Do NOT act on it. Wait for the user to give you a task."
+            local launch_marker=""
+            if [[ -n "$slot" && -f "${meta_dir}/meta" ]]; then
+                local launch_id
+                launch_id="$(read_launch_id_for_slot "$meta_dir" "$slot")"
+                if [[ -n "$launch_id" ]]; then
+                    # Meta keys are generic (launch_id.<slot>), but persisted markers stay tool-specific
+                    # because the matching logic searches different external storage backends per tool.
+                    launch_marker=$'\n'"AE_GEMINI_LAUNCH_ID=${launch_id}"$'\n'"AE_GEMINI_SLOT=${slot}"
+                fi
+            fi
+            local full_ctx="${ctx}${launch_marker} --- IMPORTANT: This is context only. Do NOT act on it. Wait for the user to give you a task."
             local escaped="${full_ctx//\'/\'\\\'\'}"
             echo "${cmd} -i '${escaped}'"
             ;;
@@ -253,14 +323,24 @@ inject_ae_context() {
 
 # For agents without system prompt injection, return context as emphasized initial message
 initial_prompt_for_cmd() {
-    local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}"
+    local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}" slot="${5:-}"
     case "$cmd" in
         claude* | gemini*) echo "" ;; # context injected via CLI flag
         codex*) echo "Go" ;;          # codex needs a user message to act on developer_instructions
         opencode*)
             local ctx
+            local launch_marker=""
             ctx="$(build_ae_context "$meta_dir" "$session" "$work_dir")"
-            printf '%s' "IMPORTANT — read and internalize these workspace instructions before doing anything else. They apply for the ENTIRE session. ${ctx} Confirm you understood by briefly listing the other agents and available helpers."
+            if [[ -n "$slot" && -f "${meta_dir}/meta" ]]; then
+                local launch_id
+                launch_id="$(read_launch_id_for_slot "$meta_dir" "$slot")"
+                if [[ -n "$launch_id" ]]; then
+                    # Meta keys are generic (launch_id.<slot>), but persisted markers stay tool-specific
+                    # because the matching logic searches different external storage backends per tool.
+                    launch_marker=$'\n'"AE_OPENCODE_LAUNCH_ID=${launch_id}"$'\n'"AE_OPENCODE_SLOT=${slot}"
+                fi
+            fi
+            printf '%s' "IMPORTANT — read and internalize these workspace instructions before doing anything else. They apply for the ENTIRE session. ${ctx}${launch_marker} Confirm you understood by briefly listing the other agents and available helpers."
             ;;
         *) echo "" ;; # unknown agents: no injection (no reliable delivery method)
     esac
@@ -301,6 +381,40 @@ tool_kind_from_cmd() {
         opencode*) echo "opencode" ;;
         *) echo "unknown" ;;
     esac
+}
+
+# Find a codex session ID by matching an ae-injected launch marker in the session log.
+# Scans recent session files (today + yesterday to handle UTC midnight rollover).
+# Only considers files modified after $launch_time (epoch seconds) to avoid stale matches.
+# Returns the UUID of the newest matching session, or empty string.
+find_codex_session_by_launch_id() {
+    local launch_id="$1" launch_time="${2:-0}"
+    local best_id="" best_mtime=0
+    local day
+    for day in "$(date -u +%Y/%m/%d)" "$(date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d 2>/dev/null || true)"; do
+        [[ -z "$day" ]] && continue
+        local dir="$HOME/.codex/sessions/${day}"
+        [[ -d "$dir" ]] || continue
+        local f
+        for f in "$dir"/*.jsonl; do
+            [[ -f "$f" ]] || continue
+            local mtime
+            mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+            ((mtime < launch_time)) && continue
+            grep -Fq "AE_CODEX_LAUNCH_ID=${launch_id}" "$f" 2>/dev/null || continue
+            if ((mtime > best_mtime)); then
+                local first_line file_id
+                first_line="$(head -1 "$f" 2>/dev/null || true)"
+                [[ -z "$first_line" ]] && continue
+                file_id="$(echo "$first_line" | grep -oP '"id"\s*:\s*"\K[0-9a-f-]+' 2>/dev/null || true)"
+                if [[ -n "$file_id" ]]; then
+                    best_id="$file_id"
+                    best_mtime="$mtime"
+                fi
+            fi
+        done
+    done
+    echo "$best_id"
 }
 
 # Find a codex session ID by matching CWD in session_meta JSON.
@@ -348,14 +462,15 @@ find_codex_session_by_cwd() {
 }
 
 # Best-effort: capture Codex session ID post-launch.
-# Fallback chain: A) sid-file from register-sid, B) CWD-based file scan, C) pane scrape.
+# Fallback chain: A) sid-file from register-sid, B) launch-token scan, C) CWD scan, D) pane scrape.
 capture_codex_session_id() {
     local pane="$1" slot="$2" meta_dir="$3"
     local sid_file="${meta_dir}/codex.${slot}.sid"
     local captured=""
-    local work_dir launch_time
+    local work_dir launch_time launch_id
     work_dir="$(grep '^work_dir=' "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || true)"
-    launch_time="$(grep "^codex_launch_time\.${slot}=" "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || echo 0)"
+    launch_time="$(read_launch_time_for_slot "$meta_dir" "$slot")"
+    launch_id="$(read_launch_id_for_slot "$meta_dir" "$slot")"
     # A) Poll for self-registered session ID (codex writes codex.SLOT.sid via developer_instructions)
     local _attempt
     for _attempt in 1 2 3 4 5 6; do
@@ -367,11 +482,15 @@ capture_codex_session_id() {
             break
         fi
     done
-    # B) Direct CWD-based scan of codex session files
+    # B) Direct launch-token scan of codex session files
+    if [[ -z "$captured" && -n "$launch_id" ]]; then
+        captured="$(find_codex_session_by_launch_id "$launch_id" "$launch_time")"
+    fi
+    # C) Direct CWD-based scan of codex session files
     if [[ -z "$captured" && -n "$work_dir" ]]; then
         captured="$(find_codex_session_by_cwd "$work_dir" "$launch_time")"
     fi
-    # C) Fallback: scrape TUI output (legacy, least reliable)
+    # D) Fallback: scrape TUI output (legacy, least reliable)
     if [[ -z "$captured" ]]; then
         captured="$(tmux capture-pane -t "$pane" -p 2>/dev/null | grep -oP 'session id: \K[0-9a-f-]+' | head -1 || true)"
     fi
@@ -382,6 +501,93 @@ capture_codex_session_id() {
             sed -i "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
         ) 200>"$meta_dir/meta.lock"
     fi
+}
+
+# Find an opencode session ID by matching directory in `opencode session list --format json`.
+# Only considers sessions updated after $launch_time (epoch seconds).
+# Returns the session ID of the newest matching session, or empty string.
+find_opencode_session_by_launch_id() {
+    local launch_id="$1" launch_time="${2:-0}"
+    if ! command -v opencode &>/dev/null; then
+        return
+    fi
+    [[ "$launch_id" =~ ^[0-9a-fA-F-]+$ ]] || return
+    local launch_time_ms=$((launch_time * 1000))
+    local query
+    query="select s.id
+from session s
+join message m on m.session_id = s.id
+join part p on p.message_id = m.id and p.session_id = s.id
+where s.time_updated >= ${launch_time_ms}
+  and p.data like '%AE_OPENCODE_LAUNCH_ID=${launch_id}%'
+order by s.time_updated desc
+limit 1;"
+    opencode db "$query" --format tsv 2>/dev/null | awk 'NR > 1 && NF { print $1; exit }'
+}
+
+# Find a Gemini session ID by matching an ae-injected launch marker in local chat history.
+# Limits search to project temp dirs whose .project_root matches $target_cwd.
+find_gemini_session_by_launch_id() {
+    local target_cwd="$1" launch_id="$2" launch_time="${3:-0}"
+    target_cwd="$(realpath "$target_cwd" 2>/dev/null || echo "$target_cwd")"
+    [[ -d "$HOME/.gemini/tmp" ]] || return
+    local best_id="" best_mtime=0
+    local proj_dir root_file root chats_dir f mtime session_id
+    for proj_dir in "$HOME/.gemini/tmp"/*; do
+        [[ -d "$proj_dir" ]] || continue
+        root_file="${proj_dir}/.project_root"
+        [[ -f "$root_file" ]] || continue
+        root="$(cat "$root_file" 2>/dev/null || true)"
+        root="$(realpath "$root" 2>/dev/null || echo "$root")"
+        [[ "$root" == "$target_cwd" ]] || continue
+        chats_dir="${proj_dir}/chats"
+        [[ -d "$chats_dir" ]] || continue
+        for f in "$chats_dir"/session-*.json; do
+            [[ -f "$f" ]] || continue
+            mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+            ((mtime < launch_time)) && continue
+            grep -Fq "AE_GEMINI_LAUNCH_ID=${launch_id}" "$f" 2>/dev/null || continue
+            session_id="$(grep -oP '"sessionId"\s*:\s*"\K[^"]+' "$f" 2>/dev/null | head -1 || true)"
+            [[ -z "$session_id" ]] && continue
+            if ((mtime > best_mtime)); then
+                best_id="$session_id"
+                best_mtime="$mtime"
+            fi
+        done
+    done
+    echo "$best_id"
+}
+
+# Find a Gemini session ID by matching project directory and launch time.
+# Returns the newest session ID for the project after $launch_time, or empty string.
+find_gemini_session_by_cwd() {
+    local target_cwd="$1" launch_time="${2:-0}"
+    target_cwd="$(realpath "$target_cwd" 2>/dev/null || echo "$target_cwd")"
+    [[ -d "$HOME/.gemini/tmp" ]] || return
+    local best_id="" best_mtime=0
+    local proj_dir root_file root chats_dir f mtime session_id
+    for proj_dir in "$HOME/.gemini/tmp"/*; do
+        [[ -d "$proj_dir" ]] || continue
+        root_file="${proj_dir}/.project_root"
+        [[ -f "$root_file" ]] || continue
+        root="$(cat "$root_file" 2>/dev/null || true)"
+        root="$(realpath "$root" 2>/dev/null || echo "$root")"
+        [[ "$root" == "$target_cwd" ]] || continue
+        chats_dir="${proj_dir}/chats"
+        [[ -d "$chats_dir" ]] || continue
+        for f in "$chats_dir"/session-*.json; do
+            [[ -f "$f" ]] || continue
+            mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+            ((mtime < launch_time)) && continue
+            session_id="$(grep -oP '"sessionId"\s*:\s*"\K[^"]+' "$f" 2>/dev/null | head -1 || true)"
+            [[ -z "$session_id" ]] && continue
+            if ((mtime > best_mtime)); then
+                best_id="$session_id"
+                best_mtime="$mtime"
+            fi
+        done
+    done
+    echo "$best_id"
 }
 
 # Find an opencode session ID by matching directory in `opencode session list --format json`.
@@ -423,21 +629,25 @@ find_opencode_session_by_cwd() {
 }
 
 # Best-effort: capture OpenCode session ID post-launch.
-# Uses `opencode session list --format json` filtered by CWD.
+# Fallback chain: A) launch-token DB scan, B) CWD-based session list scan.
 capture_opencode_session_id() {
     local pane="$1" slot="$2" meta_dir="$3"
     local captured=""
-    local work_dir launch_time
+    local work_dir launch_time launch_id
     work_dir="$(grep '^work_dir=' "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || true)"
-    launch_time="$(grep "^opencode_launch_time\.${slot}=" "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || echo 0)"
+    launch_time="$(read_launch_time_for_slot "$meta_dir" "$slot")"
+    launch_id="$(read_launch_id_for_slot "$meta_dir" "$slot")"
     # Poll: opencode needs time to create the session
     local _attempt
     for _attempt in 1 2 3 4 5 6; do
         sleep 5
-        if [[ -n "$work_dir" ]]; then
-            captured="$(find_opencode_session_by_cwd "$work_dir" "$launch_time")"
-            [[ -n "$captured" ]] && break
+        if [[ -n "$launch_id" ]]; then
+            captured="$(find_opencode_session_by_launch_id "$launch_id" "$launch_time")"
         fi
+        if [[ -z "$captured" && -n "$work_dir" ]]; then
+            captured="$(find_opencode_session_by_cwd "$work_dir" "$launch_time")"
+        fi
+        [[ -n "$captured" ]] && break
     done
     if [[ -n "$captured" ]]; then
         (
@@ -446,6 +656,55 @@ capture_opencode_session_id() {
             sed -i "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
         ) 200>"$meta_dir/meta.lock"
     fi
+}
+
+# Best-effort: capture Gemini session ID post-launch.
+# Fallback chain: A) launch-token local chat scan, B) CWD-based local chat scan.
+capture_gemini_session_id() {
+    local pane="$1" slot="$2" meta_dir="$3"
+    local captured=""
+    local work_dir launch_time launch_id
+    work_dir="$(grep '^work_dir=' "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || true)"
+    launch_time="$(read_launch_time_for_slot "$meta_dir" "$slot")"
+    launch_id="$(read_launch_id_for_slot "$meta_dir" "$slot")"
+    local _attempt
+    for _attempt in 1 2 3 4 5 6; do
+        sleep 5
+        if [[ -n "$work_dir" && -n "$launch_id" ]]; then
+            captured="$(find_gemini_session_by_launch_id "$work_dir" "$launch_id" "$launch_time")"
+        fi
+        if [[ -z "$captured" && -n "$work_dir" ]]; then
+            captured="$(find_gemini_session_by_cwd "$work_dir" "$launch_time")"
+        fi
+        [[ -n "$captured" ]] && break
+    done
+    if [[ -n "$captured" ]]; then
+        (
+            flock -w 5 200 || exit 1
+            local escaped_slot="${slot//./\\.}"
+            sed -i "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
+        ) 200>"$meta_dir/meta.lock"
+    fi
+}
+
+capture_session_id() {
+    local tool_kind="$1" pane="$2" slot="$3" meta_dir="$4"
+    case "$tool_kind" in
+        codex) capture_codex_session_id "$pane" "$slot" "$meta_dir" ;;
+        opencode) capture_opencode_session_id "$pane" "$slot" "$meta_dir" ;;
+        gemini) capture_gemini_session_id "$pane" "$slot" "$meta_dir" ;;
+        *) return 0 ;;
+    esac
+}
+
+start_capture_session_id() {
+    local tool_kind="$1" pane="$2" slot="$3" meta_dir="$4"
+    tool_kind_supports_launch_id "$tool_kind" || return 0
+    (
+        flock -w 5 200 || exit 1
+        echo "launch_time.${slot}=$(date +%s)" >>"$meta_dir/meta"
+    ) 200>"$meta_dir/meta.lock"
+    capture_session_id "$tool_kind" "$pane" "$slot" "$meta_dir" &
 }
 
 # Generate or restore a session-scoped agent ID
@@ -1047,7 +1306,7 @@ _cmd_spawn() {
     fi
 
     # Register spawned agent in meta (flock-protected to prevent races)
-    local session_id tool_kind next_idx slot
+    local session_id tool_kind next_idx slot launch_id
     session_id="$(resolve_agent_session_id "$cmd" "spawned.0")"
     tool_kind="$(tool_kind_from_cmd "$cmd")"
     {
@@ -1063,6 +1322,10 @@ _cmd_spawn() {
         [[ -z "$spawn_name" ]] && spawn_name="helper-${next_idx}"
         session_id="$(resolve_agent_session_id "$cmd" "$slot")"
         echo "agent.${slot}=${alias_name}:${spawn_name}:${session_id}" >>"$meta_dir/meta"
+        if tool_kind_supports_launch_id "$tool_kind"; then
+            launch_id="$(gen_uuid)"
+            echo "launch_id.${slot}=${launch_id}" >>"$meta_dir/meta"
+        fi
     } 200>"$meta_dir/meta.lock"
 
     # Label pane (after flock so spawn_name is resolved)
@@ -1080,26 +1343,14 @@ _cmd_spawn() {
     scoped_cmd="$(inject_session_id "$cmd" "$session_id")"
     scoped_cmd="$(inject_ae_context "$scoped_cmd" "$meta_dir" "$session" "$work_dir" "$slot")"
     # For agents without system prompt injection, combine workspace context + spawn prompt
-    initial_msg="$(initial_prompt_for_cmd "$cmd" "$meta_dir" "$session" "$work_dir")"
+    initial_msg="$(initial_prompt_for_cmd "$cmd" "$meta_dir" "$session" "$work_dir" "$slot")"
     if [[ -n "$initial_msg" ]]; then
         initial_msg="${initial_msg} --- ${prompt}"
     fi
     send_agent_cmd "$pane_id" "$scoped_cmd" "$initial_msg"
 
     # Post-launch: capture agent session ID if needed
-    if [[ "$tool_kind" == "codex" ]]; then
-        (
-            flock -w 5 200 || exit 1
-            echo "codex_launch_time.${slot}=$(date +%s)" >>"$meta_dir/meta"
-        ) 200>"$meta_dir/meta.lock"
-        capture_codex_session_id "$pane_id" "$slot" "$meta_dir" &
-    elif [[ "$tool_kind" == "opencode" ]]; then
-        (
-            flock -w 5 200 || exit 1
-            echo "opencode_launch_time.${slot}=$(date +%s)" >>"$meta_dir/meta"
-        ) 200>"$meta_dir/meta.lock"
-        capture_opencode_session_id "$pane_id" "$slot" "$meta_dir" &
-    fi
+    start_capture_session_id "$tool_kind" "$pane_id" "$slot" "$meta_dir"
 
     # For agents with system prompt injection, send spawn prompt separately
     if [[ -z "$initial_msg" ]]; then
@@ -1306,12 +1557,33 @@ Send a message to another agent by name:
 ${sessions_dir}/send "<agent_name>" "your message"
 \`\`\`
 
-When another agent sends you a question or task, **reply back via send** when done:
+Ask another agent a question and require a reply:
+\`\`\`bash
+${sessions_dir}/ask <agent_name> "your question"
+\`\`\`
+
+Request a critical review:
+\`\`\`bash
+${sessions_dir}/review <agent_name> "review request"
+\`\`\`
+
+Reply to a logged request by request id:
+\`\`\`bash
+${sessions_dir}/reply <request_id> "your reply"
+\`\`\`
+
+Inspect request state without peeking panes:
+\`\`\`bash
+${sessions_dir}/requests
+${sessions_dir}/requests inbox
+\`\`\`
+
+When another agent sends you a question, task, or review request, reply via the exact \`reply\` or \`send\` command included in that message:
 \`\`\`bash
 ${sessions_dir}/send "<their_agent_name>" "your reply"
 \`\`\`
 
-Do not poll or capture panes to wait for replies — answers arrive as incoming messages.
+Do not infer the recipient. Do not reply only in your own pane output. Do not poll or capture panes to wait for replies — answers arrive as incoming messages.
 
 ## Peek
 
@@ -1319,8 +1591,11 @@ View recent output from another agent's pane:
 \`\`\`bash
 ${sessions_dir}/peek <agent_name> [lines]
 \`\`\`
+\`\`\`bash
+${sessions_dir}/peak <agent_name> [lines]
+\`\`\`
 
-Default: 80 lines. Max: 2000.
+Default: 80 lines. Max: 2000. Use peek/peak for inspection only, not as a reply mechanism.
 
 ## Agents
 
@@ -1778,10 +2053,24 @@ if [[ "$RESUMING" == true ]]; then
 fi
 
 MAIN_SESSION_ID="$(resolve_agent_session_id "$MAIN_CMD" "main")"
+MAIN_LAUNCH_ID=""
+if [[ "$RESUMING" != true ]]; then
+    MAIN_TOOL_KIND="$(tool_kind_from_cmd "$MAIN_CMD")"
+    if tool_kind_supports_launch_id "$MAIN_TOOL_KIND"; then
+        MAIN_LAUNCH_ID="$(gen_uuid)"
+    fi
+fi
 
 declare -a WORKER_SESSION_IDS=()
+declare -a WORKER_LAUNCH_IDS=()
 for i in "${!WORKER_CMDS[@]}"; do
     WORKER_SESSION_IDS+=("$(resolve_agent_session_id "${WORKER_CMDS[$i]}" "worker.${i}")")
+    WORKER_TOOL_KIND="$(tool_kind_from_cmd "${WORKER_CMDS[$i]}")"
+    if [[ "$RESUMING" != true ]] && tool_kind_supports_launch_id "$WORKER_TOOL_KIND"; then
+        WORKER_LAUNCH_IDS+=("$(gen_uuid)")
+    else
+        WORKER_LAUNCH_IDS+=("")
+    fi
 done
 
 # Load spawned agents from previous session (resume only)
@@ -1847,6 +2136,10 @@ done
 for i in "${!SPAWNED_ALIASES[@]}"; do
     echo "agent.spawned.${i}=${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}:${SPAWNED_SESSION_IDS[$i]}" >>"${AE_META}/meta"
 done
+[[ -n "$MAIN_LAUNCH_ID" ]] && echo "launch_id.main=${MAIN_LAUNCH_ID}" >>"${AE_META}/meta"
+for i in "${!WORKER_LAUNCH_IDS[@]}"; do
+    [[ -n "${WORKER_LAUNCH_IDS[$i]}" ]] && echo "launch_id.worker.${i}=${WORKER_LAUNCH_IDS[$i]}" >>"${AE_META}/meta"
+done
 
 # Shared library sourced by all helpers — tmux shim, name resolution, locking
 cat >"${AE_META}/_lib" <<'LIBEOF'
@@ -1859,14 +2152,25 @@ _AE_SESSIONS_DIR="$(dirname "$_AE_META_DIR")"
 
 # Resolve agent target to pane ID
 # Supports: %pane-id, @session:agent-ref, alias:name, bare-name
-# Sets: AE_RESOLVED_PANE (pane ID) or exits with error
+# Sets: AE_RESOLVED_PANE (pane ID), AE_RESOLVED_AGENT (canonical agent ref) or exits with error
 ae_resolve() {
     local target="$1"
     AE_RESOLVED_PANE=""
+    AE_RESOLVED_AGENT=""
 
     # 1. Raw pane ID — pass through
     if [[ "$target" == %* ]]; then
         AE_RESOLVED_PANE="$target"
+        local pane_agent pane_session
+        pane_agent="$(tmux display-message -p -t "$target" '#{@ae_agent}' 2>/dev/null || true)"
+        pane_session="$(tmux display-message -p -t "$target" '#S' 2>/dev/null || true)"
+        if [[ -n "$pane_agent" ]]; then
+            if [[ -n "$pane_session" && "$pane_session" != "$_AE_SESSION" ]]; then
+                AE_RESOLVED_AGENT="@${pane_session}:${pane_agent}"
+            else
+                AE_RESOLVED_AGENT="$pane_agent"
+            fi
+        fi
         return 0
     fi
 
@@ -1892,23 +2196,34 @@ ae_resolve() {
     fi
 
     # 3. Resolve within session
-    local resolved="" bare_match="" bare_count=0
+    local resolved="" resolved_agent="" bare_match="" bare_match_agent="" bare_count=0
     while IFS=$'\t' read -r pid aagent; do
         # Exact match on alias:name
         if [[ "$aagent" == "${target}" ]]; then
             resolved="$pid"
+            if [[ "$search_session" != "$_AE_SESSION" ]]; then
+                resolved_agent="@${search_session}:${aagent}"
+            else
+                resolved_agent="$aagent"
+            fi
             break
         fi
         # Bare name match (e.g. "lead" matches "claude:lead")
         local aname="${aagent#*:}"
         if [[ "$aname" == "${target}" ]]; then
             bare_match="$pid"
+            if [[ "$search_session" != "$_AE_SESSION" ]]; then
+                bare_match_agent="@${search_session}:${aagent}"
+            else
+                bare_match_agent="$aagent"
+            fi
             bare_count=$((bare_count + 1))
         fi
     done < <(tmux list-panes -t "$search_session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
 
     if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
         resolved="$bare_match"
+        resolved_agent="$bare_match_agent"
     fi
 
     if [[ -z "$resolved" ]]; then
@@ -1921,6 +2236,7 @@ ae_resolve() {
     fi
 
     AE_RESOLVED_PANE="$resolved"
+    AE_RESOLVED_AGENT="$resolved_agent"
     return 0
 }
 
@@ -1936,6 +2252,58 @@ ae_lock_target() {
 
 ae_unlock_target() {
     exec 9>&-
+}
+
+ae_now_utc() {
+    date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+ae_current_agent() {
+    tmux display-message -p '#{@ae_agent}' 2>/dev/null || true
+}
+
+ae_current_agent_ref() {
+    local agent session
+    agent="$(ae_current_agent)"
+    [[ -n "$agent" ]] || return 0
+    session="$(tmux display-message -p '#S' 2>/dev/null || true)"
+    if [[ -n "$session" && "$session" != "$_AE_SESSION" ]]; then
+        printf '@%s:%s' "$session" "$agent"
+    else
+        printf '%s' "$agent"
+    fi
+}
+
+ae_preview_text() {
+    local text="$*"
+    text="${text//$'\r'/}"
+    text="${text//$'\n'/\\n}"
+    text="${text//$'\t'/ }"
+    printf '%.200s' "$text"
+}
+
+ae_extract_req_id() {
+    local text="$1"
+    if [[ "$text" =~ \[((ae|review)-[A-Za-z0-9._:-]+)\] ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+    fi
+}
+
+ae_log_append() {
+    local file="$1" line="$2"
+    {
+        flock -w 5 8 || exit 1
+        printf '%s\n' "$line" >>"$file"
+    } 8>>"${file}.lock"
+}
+
+ae_log_read() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    {
+        flock -s 8 || exit 1
+        cat "$file"
+    } 8<>"${file}.lock"
 }
 
 # Determine target tool type from pane metadata/process name.
@@ -1964,16 +2332,22 @@ chmod 0700 "${AE_META}/_lib"
 cat >"${AE_META}/send" <<'SENDEOF'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
+META_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [[ $# -lt 2 ]]; then
     echo "Usage: send <agent-name|pane-id|@session:agent> <message>" >&2
     echo "  Examples: send claude:lead \"hello\"" >&2
     echo "           send @my-feature:claude:lead \"hello\"" >&2
     exit 1
 fi
-ae_resolve "$1" || exit 1; shift
+target_ref="$1"
+ae_resolve "$target_ref" || exit 1; shift
 target="$AE_RESOLVED_PANE"
+logged_target="${AE_RESOLVED_AGENT:-$target_ref}"
 msg="$*"
 buf="ae-send-$$"
+sender="$(ae_current_agent_ref)"
+[[ -n "$sender" ]] || sender="human"
+req_id="$(ae_extract_req_id "$msg")"
 
 ae_lock_target "$target"
 
@@ -1997,6 +2371,7 @@ sleep 0.3 # let target TUI process input before focus restore
 
 [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
 ae_unlock_target
+ae_log_append "${META_DIR}/messages.tsv" "$(printf '%s\t%s\t%s\t%s\t%s' "$(ae_now_utc)" "$sender" "$logged_target" "${req_id:-}" "$(ae_preview_text "$msg")")"
 SENDEOF
 chmod 0700 "${AE_META}/send"
 
@@ -2013,16 +2388,155 @@ fi
 target_name="$1"; shift
 question="$*"
 # Auto-detect caller identity from tmux pane (@ae_agent = alias:name)
-self="$(tmux display-message -p '#{@ae_agent}' 2>/dev/null || true)"
+self="$(ae_current_agent_ref)"
 if [[ -z "$self" ]]; then
     echo "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead." >&2
     exec "${META_DIR}/send" "$target_name" "$question"
 fi
-# Use alias:name for unambiguous reply-to (bare names can collide)
-msg="[from: ${self}] ${question} --- When done, reply with: ${META_DIR}/send '${self}' '<your findings>'"
+ae_resolve "$target_name" || exit 1
+target_name="${AE_RESOLVED_AGENT:-$target_name}"
+
+req_suffix="$(cat /proc/sys/kernel/random/uuid 2>/dev/null | cut -d- -f1 || true)"
+[[ -n "$req_suffix" ]] || req_suffix="$$-$RANDOM"
+req_id="ae-$(date -u +%Y%m%dT%H%M%SZ)-${req_suffix}"
+reply_cmd="${META_DIR}/reply \"${req_id}\" \"<your reply>\""
+ae_log_append "${META_DIR}/requests.tsv" "$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$(ae_now_utc)" "ask" "$req_id" "$self" "$target_name" "$(ae_preview_text "$question")")"
+
+msg="REQUEST ${req_id} from ${self}: ${question}
+
+REQUIRED: When you have finished, you MUST run this exact command to reply:
+${reply_cmd}
+Do not reply any other way. Do not skip this step.
+Do NOT use peek/peak as a reply mechanism."
 exec "${META_DIR}/send" "$target_name" "$msg"
 ASKEOF
 chmod 0700 "${AE_META}/ask"
+
+# Helper: review <target> <request> — ask for a critical review with structured findings
+cat >"${AE_META}/review" <<'REVIEWEOF'
+#!/usr/bin/env bash
+source "$(cd "$(dirname "$0")" && pwd)/_lib"
+META_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ $# -lt 2 ]]; then
+    echo "Usage: review <agent-name|pane-id|@session:agent> <request>" >&2
+    echo "  Ask another agent for a critical review and require a reply via send." >&2
+    exit 1
+fi
+target_name="$1"; shift
+request="$*"
+self="$(ae_current_agent_ref)"
+if [[ -z "$self" ]]; then
+    echo "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead." >&2
+    exec "${META_DIR}/send" "$target_name" "$request"
+fi
+ae_resolve "$target_name" || exit 1
+target_name="${AE_RESOLVED_AGENT:-$target_name}"
+
+req_suffix="$(cat /proc/sys/kernel/random/uuid 2>/dev/null | cut -d- -f1 || true)"
+[[ -n "$req_suffix" ]] || req_suffix="$$-$RANDOM"
+req_id="review-$(date -u +%Y%m%dT%H%M%SZ)-${req_suffix}"
+reply_cmd="${META_DIR}/reply \"${req_id}\" \"<your review>\""
+ae_log_append "${META_DIR}/requests.tsv" "$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$(ae_now_utc)" "review" "$req_id" "$self" "$target_name" "$(ae_preview_text "$request")")"
+
+msg="REVIEW REQUEST ${req_id} from ${self}: ${request}
+
+Review instructions:
+- Focus on correctness, regressions, edge cases, missing tests, and callers/docs needing updates.
+- Findings first. Keep summaries brief.
+- Use severity labels: BLOCKER, IMPORTANT, NIT.
+- If no issues are found, say \"No findings\" explicitly.
+
+REQUIRED: When you have finished, you MUST run this exact command to reply:
+${reply_cmd}
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism."
+exec "${META_DIR}/send" "$target_name" "$msg"
+REVIEWEOF
+chmod 0700 "${AE_META}/review"
+
+# Helper: reply <request-id> <message> — reply to a logged request by id
+cat >"${AE_META}/reply" <<'REPLYEOF'
+#!/usr/bin/env bash
+source "$(cd "$(dirname "$0")" && pwd)/_lib"
+META_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ $# -lt 2 ]]; then
+    echo "Usage: reply <request-id> <message>" >&2
+    echo "  Reply to a logged ask/review request using its request id." >&2
+    exit 1
+fi
+req_id="$1"; shift
+message="$*"
+self="$(ae_current_agent_ref)"
+sender=""
+target=""
+kind=""
+while IFS=$'\t' read -r ts req_kind req sender_agent target_agent preview; do
+    [[ "$req" == "$req_id" ]] || continue
+    kind="$req_kind"
+    sender="$sender_agent"
+    target="$target_agent"
+done < <(ae_log_read "${META_DIR}/requests.tsv")
+
+if [[ -z "$sender" || -z "$target" ]]; then
+    echo "Error: request id '${req_id}' not found in ${META_DIR}/requests.tsv" >&2
+    exit 1
+fi
+
+if [[ -n "$self" && "$self" != "$target" ]]; then
+    echo "Warning: request '${req_id}' is assigned to '${target}', current pane is '${self}'" >&2
+fi
+
+exec "${META_DIR}/send" "$sender" "[${req_id}] ${message}"
+REPLYEOF
+chmod 0700 "${AE_META}/reply"
+
+# Helper: requests [mine|inbox|all] — inspect request state from session logs
+cat >"${AE_META}/requests" <<'REQUESTSEOF'
+#!/usr/bin/env bash
+source "$(cd "$(dirname "$0")" && pwd)/_lib"
+META_DIR="$(cd "$(dirname "$0")" && pwd)"
+mode="${1:-mine}"
+self="$(ae_current_agent_ref)"
+
+if [[ "$mode" != "mine" && "$mode" != "inbox" && "$mode" != "all" ]]; then
+    echo "Usage: requests [mine|inbox|all]" >&2
+    exit 1
+fi
+
+if [[ "$mode" != "all" && -z "$self" ]]; then
+    echo "Error: could not detect current agent identity; use 'requests all' outside an ae pane" >&2
+    exit 1
+fi
+
+declare -A reply_sender reply_target reply_preview reply_time
+while IFS=$'\t' read -r ts sender target req_id preview; do
+    [[ -n "$req_id" ]] || continue
+    reply_sender["$req_id"]="$sender"
+    reply_target["$req_id"]="$target"
+    reply_preview["$req_id"]="$preview"
+    reply_time["$req_id"]="$ts"
+done < <(ae_log_read "${META_DIR}/messages.tsv")
+
+printf "%-8s %-8s %-28s %-20s %-20s %s\n" "STATUS" "TYPE" "ID" "FROM" "TO" "SUMMARY"
+while IFS=$'\t' read -r ts kind req_id sender target preview; do
+    [[ -n "$req_id" ]] || continue
+    case "$mode" in
+        mine) [[ "$sender" == "$self" ]] || continue ;;
+        inbox) [[ "$target" == "$self" ]] || continue ;;
+        all) ;;
+    esac
+
+    status="pending"
+    summary="$preview"
+    if [[ -n "${reply_sender[$req_id]:-}" ]]; then
+        if [[ "${reply_sender[$req_id]}" == "$target" && "${reply_target[$req_id]}" == "$sender" ]]; then
+            status="replied"
+            summary="${reply_preview[$req_id]}"
+        fi
+    fi
+    printf "%-8s %-8s %-28s %-20s %-20s %s\n" "$status" "$kind" "$req_id" "$sender" "$target" "$summary"
+done < <(ae_log_read "${META_DIR}/requests.tsv")
+REQUESTSEOF
+chmod 0700 "${AE_META}/requests"
 
 # Helper: peek <target> [lines] — capture recent output from another agent's pane
 cat >"${AE_META}/peek" <<'PEEKEOF'
@@ -2048,6 +2562,13 @@ fi
 tmux capture-pane -p -J -S "-${lines}" -E - -t "$target"
 PEEKEOF
 chmod 0700 "${AE_META}/peek"
+
+# Common typo alias: peak -> peek
+cat >"${AE_META}/peak" <<'PEAKOF'
+#!/usr/bin/env bash
+exec "$(cd "$(dirname "$0")" && pwd)/peek" "$@"
+PEAKOF
+chmod 0700 "${AE_META}/peak"
 
 # Helper: agents — list all agents in the session
 cat >"${AE_META}/agents" <<'AGENTSEOF'
@@ -2191,7 +2712,15 @@ META_DIR="$(cd "$(dirname "$0")" && pwd)"
 SLOT="${1:-default}"
 TARGET_CWD="$(realpath "$PWD" 2>/dev/null || echo "$PWD")"
 # Read launch_time from meta to filter stale sessions (default 0 = accept all)
-LAUNCH_TIME="$(grep "^codex_launch_time\.${SLOT}=" "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || echo 0)"
+LAUNCH_TIME="$(grep "^launch_time\.${SLOT}=" "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+if [ -z "$LAUNCH_TIME" ]; then
+    LAUNCH_TIME="$(grep "^codex_launch_time\.${SLOT}=" "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || echo 0)"
+fi
+case "$LAUNCH_TIME" in
+    '' | *[!0-9]*)
+        LAUNCH_TIME=0
+        ;;
+esac
 best_id="" best_mtime=0
 # Scan today and yesterday (handles UTC midnight rollover)
 for day in "$(date -u +%Y/%m/%d)" "$(date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d 2>/dev/null || true)"; do
@@ -2407,53 +2936,40 @@ if [[ "$RESUMING" == true ]]; then
     # Resume: use session-scoped resume commands (exact conversation, not CWD heuristic)
     MAIN_RESUME="$(resume_cmd_from_cmd "$MAIN_CMD" "$MAIN_SESSION_ID")"
     MAIN_RESUME="$(inject_ae_context "$MAIN_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "main")"
-    send_agent_cmd "${PANE_IDS[0]}" "$MAIN_RESUME" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR")"
+    send_agent_cmd "${PANE_IDS[0]}" "$MAIN_RESUME" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR" "main")"
     for i in "${!WORKER_CMDS[@]}"; do
         idx=$((i + 1))
         WORKER_RESUME="$(resume_cmd_from_cmd "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
         WORKER_RESUME="$(inject_ae_context "$WORKER_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")"
-        send_agent_cmd "${PANE_IDS[$idx]}" "$WORKER_RESUME" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR")"
+        send_agent_cmd "${PANE_IDS[$idx]}" "$WORKER_RESUME" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")"
     done
     # Resume spawned agents
     for i in "${!SPAWNED_CMDS[@]}"; do
         sidx=$((${#WORKER_CMDS[@]} + i + 1))
         SPAWNED_RESUME="$(resume_cmd_from_cmd "${SPAWNED_CMDS[$i]}" "${SPAWNED_SESSION_IDS[$i]:-}")"
         SPAWNED_RESUME="$(inject_ae_context "$SPAWNED_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "spawned.${i}")"
-        send_agent_cmd "${PANE_IDS[$sidx]}" "$SPAWNED_RESUME" "$(initial_prompt_for_cmd "${SPAWNED_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR")"
+        send_agent_cmd "${PANE_IDS[$sidx]}" "$SPAWNED_RESUME" "$(initial_prompt_for_cmd "${SPAWNED_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR" "spawned.${i}")"
     done
 else
     # Fresh start with session-scoped IDs (enables targeted resume later)
     SCOPED_MAIN="$(inject_session_id "$MAIN_CMD" "$MAIN_SESSION_ID")"
     SCOPED_MAIN="$(inject_ae_context "$SCOPED_MAIN" "$AE_META" "$SESSION" "$WORK_DIR" "main")"
-    send_agent_cmd "${PANE_IDS[0]}" "$SCOPED_MAIN" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR")"
+    send_agent_cmd "${PANE_IDS[0]}" "$SCOPED_MAIN" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR" "main")"
     for i in "${!WORKER_CMDS[@]}"; do
         idx=$((i + 1))
         SCOPED_WORKER="$(inject_session_id "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
         SCOPED_WORKER="$(inject_ae_context "$SCOPED_WORKER" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")"
-        send_agent_cmd "${PANE_IDS[$idx]}" "$SCOPED_WORKER" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR")"
+        send_agent_cmd "${PANE_IDS[$idx]}" "$SCOPED_WORKER" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")"
     done
 fi
 
 # Capture agent session IDs in background (runs after launch, doesn't delay attach)
 if [[ "$RESUMING" != true ]]; then
-    AGENT_LAUNCH_TIME="$(date +%s)"
     MAIN_TOOL="$(tool_kind_from_cmd "$MAIN_CMD")"
-    if [[ "$MAIN_TOOL" == "codex" ]]; then
-        echo "codex_launch_time.main=${AGENT_LAUNCH_TIME}" >>"${AE_META}/meta"
-        capture_codex_session_id "${PANE_IDS[0]}" "main" "$AE_META" &
-    elif [[ "$MAIN_TOOL" == "opencode" ]]; then
-        echo "opencode_launch_time.main=${AGENT_LAUNCH_TIME}" >>"${AE_META}/meta"
-        capture_opencode_session_id "${PANE_IDS[0]}" "main" "$AE_META" &
-    fi
+    start_capture_session_id "$MAIN_TOOL" "${PANE_IDS[0]}" "main" "$AE_META"
     for i in "${!WORKER_CMDS[@]}"; do
         WORKER_TOOL="$(tool_kind_from_cmd "${WORKER_CMDS[$i]}")"
-        if [[ "$WORKER_TOOL" == "codex" ]]; then
-            echo "codex_launch_time.worker.${i}=${AGENT_LAUNCH_TIME}" >>"${AE_META}/meta"
-            capture_codex_session_id "${PANE_IDS[$((i + 1))]}" "worker.${i}" "$AE_META" &
-        elif [[ "$WORKER_TOOL" == "opencode" ]]; then
-            echo "opencode_launch_time.worker.${i}=${AGENT_LAUNCH_TIME}" >>"${AE_META}/meta"
-            capture_opencode_session_id "${PANE_IDS[$((i + 1))]}" "worker.${i}" "$AE_META" &
-        fi
+        start_capture_session_id "$WORKER_TOOL" "${PANE_IDS[$((i + 1))]}" "worker.${i}" "$AE_META"
     done
 fi
 

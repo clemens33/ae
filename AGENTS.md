@@ -60,8 +60,12 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 | Helper | Purpose |
 |--------|---------|
 | `send <agent> <message>` | Send a message to another agent's pane (serialized with flock) |
-| `ask <agent> <question>` | Like send, but embeds caller identity and reply-to command in the message |
-| `peek <agent> [lines]` | Capture recent output from another agent's pane (default 80 lines) |
+| `ask <agent> <question>` | Send a tracked request with a request ID and exact reply command |
+| `review <agent> <request>` | Ask another agent for a critical review with findings-first output |
+| `reply <request-id> <message>` | Reply to a logged `ask`/`review` request by request ID |
+| `requests [mine\|inbox\|all]` | Inspect pending and replied requests without peeking panes |
+| `peek <agent> [lines]` | Capture recent output from another agent's pane (default 80 lines; inspection only) |
+| `peak <agent> [lines]` | Alias for `peek` (common typo) |
 | `agents` | List all agents in the session with pane IDs and processes |
 | `focus <agent>` | Switch tmux focus to another agent's pane |
 | `interrupt <agent> [message]` | Cancel current generation, optionally send new instructions |
@@ -79,16 +83,16 @@ ae supports multiple coding agent CLIs. They differ significantly in session han
 | Capability | Claude Code | Codex | Gemini CLI | OpenCode |
 |---|---|---|---|---|
 | **System prompt injection** | `--append-system-prompt 'text'` | `-c developer_instructions='text'` | `-i 'text'` | None — paste as first message via tmux buffer |
-| **Session ID at launch** | `--session-id UUID` (set by ae) | None (no flag exists) | None (index-based only) | None (no flag exists) |
-| **Session ID capture** | Immediate (ae generates UUID upfront) | Post-launch via `register-sid` helper (codex self-registers) | N/A — no UUID concept | Post-launch via `opencode session list --format json` (CWD matching) |
-| **Resume with exact session** | `--resume UUID` | `codex <flags> resume UUID` (`resume` is a subcommand) | `--resume latest` or `--resume <index>` — no UUID | `--session ID` (e.g. `ses_...`) |
-| **Resume fallback** | `--continue` (CWD heuristic) | Fresh start (drop `resume UUID`, keep flags) | `--resume latest` only | `--continue` (last session) |
-| **Concurrent session safety** | Full — UUID-scoped | Partial — `register-sid` picks latest session file globally, slot-scoped `.sid` files prevent cross-slot collisions | Weak — `--resume latest` picks globally | Partial — `--session ID` is UUID-scoped once captured; capture picks newest session matching CWD, so multiple opencode agents in the same directory may collide |
+| **Session ID at launch** | `--session-id UUID` (set by ae) | None (no flag exists) | None (launch token only; no launch-time UUID flag) | None (no flag exists) |
+| **Session ID capture** | Immediate (ae generates UUID upfront) | Post-launch via `register-sid` helper plus launch-token/file scan | Post-launch via local chat history scan (`~/.gemini/tmp/.../chats/session-*.json`) | Post-launch via launch-token DB scan or `opencode session list --format json` fallback |
+| **Resume with exact session** | `--resume UUID` | `codex <flags> resume UUID` (`resume` is a subcommand) | `--resume UUID` on current CLI; `ae` falls back to `--resume latest` when uncaptured | `--session ID` (e.g. `ses_...`) |
+| **Resume fallback** | `--continue` (CWD heuristic) | Fresh start (drop `resume UUID`, keep flags) | `--resume latest` | `--continue` (last session) |
+| **Concurrent session safety** | Full — UUID-scoped | Partial — `register-sid` + launch tokens reduce collisions, but fallback CWD matching is still heuristic | Partial — UUID-scoped once captured; fallback `--resume latest` remains heuristic when uncaptured | Partial — `--session ID` is UUID-scoped once captured; fallback CWD matching remains heuristic |
 | **Config flags preserved on resume** | Yes (flags stay, `--resume` appended) | Yes (flags before `resume` subcommand) | Yes (flags stay, `--resume` appended) | Yes (flags stay, `--session` appended) |
 
 **Key constraints to know:**
 - Codex has no `--session-name` or `--session-id` flag. The only way to get its UUID is post-launch (from `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filenames). ae works around this by instructing codex via `developer_instructions` to run a `register-sid` helper script.
-- Gemini has the weakest resume: index-based, no UUID scoping. With multiple concurrent gemini agents, `--resume latest` may resume the wrong session. Nothing ae can do about this.
+- Gemini persists a local `sessionId` in `~/.gemini/tmp/<project>/chats/session-*.json`, and current Gemini CLI accepts `--resume <UUID>` in addition to `latest`/index. ae now captures that UUID via launch-token scan and uses exact resume when available; fallback remains `--resume latest` if capture fails.
 - OpenCode is TUI-only with no system prompt flag. Context is injected by pasting text into the TUI as the first user message. Session IDs are captured post-launch via `opencode session list --format json` filtered by directory (CWD) matching. Resume uses `--session ID` for exact match or `--continue` as fallback.
 - Agent names in meta use `:` as delimiter (`alias:name:session_id`). Agent names must not contain `:`.
 

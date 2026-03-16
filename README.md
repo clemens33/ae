@@ -77,8 +77,12 @@ Inside a session, agents and humans have access to helper scripts in `~/.ae/sess
 
 ```bash
 send <agent> <message>         # send a message to another agent
-ask <agent> <question>         # ask another agent (embeds reply-to so they respond back)
-peek <agent> [lines]           # view recent output from an agent's pane
+ask <agent> <question>         # tracked request with request id and exact reply command
+review <agent> <request>       # critical review request with findings-first reply contract
+reply <request-id> <message>   # reply to a logged ask/review request
+requests [mine|inbox|all]      # inspect pending and replied requests
+peek <agent> [lines]           # view recent output from an agent's pane (inspection only)
+peak <agent> [lines]           # alias for peek
 agents                         # list all agents with pane IDs
 agents --all                   # list agents across all ae sessions
 focus <agent>                  # switch tmux focus to an agent's pane
@@ -86,6 +90,7 @@ interrupt <agent> [message]    # stop an agent's current work, optionally redire
 spawn <alias:name> [prompt]    # add a new agent to the workspace
 retire <agent>                 # remove a spawned agent cleanly
 heartbeat                      # one-shot status check (ok/STALE/DEAD)
+register-sid [slot]            # codex self-registration helper for session capture
 ```
 
 Agent names resolve flexibly: `codex:reviewer` (exact), `reviewer` (bare name), or `%42` (pane ID).
@@ -99,6 +104,7 @@ agents --all                   # discover agents across sessions
 ```
 
 Agents use these automatically when you ask them to collaborate. You can also call them directly from any pane.
+When a message includes an exact `reply` or `send` command, use that command verbatim instead of inferring the recipient.
 
 ## Config
 
