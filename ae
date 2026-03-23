@@ -80,7 +80,7 @@ parse_config() {
 # Last match wins — local config overrides global
 # Cached via deterministic temp file so subshells share the same parsed result.
 get_config() {
-    local cache="/tmp/.ae-config-cache-${UID:-0}"
+    local cache="${XDG_RUNTIME_DIR:-/tmp}/.ae-config-cache-${UID:-0}"
     local mtime_main mtime_local
     mtime_main="$(stat -c %Y "$CONFIG_FILE" 2>/dev/null || echo 0)"
     mtime_local="$(stat -c %Y "${AE_LOCAL_CONFIG:-/dev/null}" 2>/dev/null || echo 0)"
