@@ -64,6 +64,9 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 | `review <agent> <request>` | Ask another agent for a critical review with findings-first output |
 | `reply <request-id> <message>` | Reply to a logged `ask`/`review` request by request ID |
 | `requests [mine\|inbox\|all]` | Inspect pending and replied requests without peeking panes |
+| `memo add [--topic t] <text>` | Append durable shared session memory |
+| `memo read [--topic t]` | Read shared session memory |
+| `memo tail [n]` | Show latest memo entries |
 | `peek <agent> [lines]` | Capture recent output from another agent's pane (default 80 lines; inspection only) |
 | `peak <agent> [lines]` | Alias for `peek` (common typo) |
 | `agents` | List all agents in the session with pane IDs and processes |
@@ -74,7 +77,7 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 | `heartbeat` | One-shot status check for all panes; `heartbeat --watch` runs as background daemon |
 | `register-sid [slot]` | Codex-specific: self-register session ID post-launch |
 
-All helpers share a `_lib` library that provides name resolution, tmux server support, and flock serialization. Name resolution supports exact `alias:name`, bare name (e.g. `lead`), `%pane-id`, and cross-session `@session:agent` syntax. `agents --all` lists agents across all running ae sessions.
+All helpers share a `_lib` library that provides name resolution, tmux server support, and flock serialization. Name resolution supports exact `alias:name`, alias-only when unique (e.g. `codex`), bare name (e.g. `lead`), `%pane-id`, and cross-session `@session:agent` syntax. `agents --all` lists agents across all running ae sessions.
 
 ## Agent tool capabilities
 

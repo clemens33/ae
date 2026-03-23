@@ -81,6 +81,9 @@ ask <agent> <question>         # tracked request with request id and exact reply
 review <agent> <request>       # critical review request with findings-first reply contract
 reply <request-id> <message>   # reply to a logged ask/review request
 requests [mine|inbox|all]      # inspect pending and replied requests
+memo add [--topic t] <text>    # append durable shared session memory
+memo read [--topic t]          # read shared session memory
+memo tail [n]                  # show latest memo entries
 peek <agent> [lines]           # view recent output from an agent's pane (inspection only)
 peak <agent> [lines]           # alias for peek
 agents                         # list all agents with pane IDs
@@ -93,7 +96,7 @@ heartbeat                      # one-shot status check (ok/STALE/DEAD)
 register-sid [slot]            # codex self-registration helper for session capture
 ```
 
-Agent names resolve flexibly: `codex:reviewer` (exact), `reviewer` (bare name), or `%42` (pane ID).
+Agent names resolve flexibly: `codex:reviewer` (exact), `codex` (alias, if unique), `reviewer` (bare name), or `%42` (pane ID).
 
 **Cross-session communication:** Prefix with `@session:` to reach agents in other ae sessions:
 
@@ -105,6 +108,7 @@ agents --all                   # discover agents across sessions
 
 Agents use these automatically when you ask them to collaborate. You can also call them directly from any pane.
 When a message includes an exact `reply` or `send` command, use that command verbatim instead of inferring the recipient.
+Use `memo` for durable findings, decisions, and handoffs that should survive agent restarts or late joins. Keep it concise; it is shared memory, not a second chat transcript.
 
 ## Config
 
@@ -160,6 +164,9 @@ ae [name]              Start or reattach a session
 ae [name] use <alias>  Start session with a specific agent as main
 ae list                List all sessions with agent health
 ae status [name]       Show agent output without attaching
+ae doctor              Check local environment and ae config
+ae doctor --sync-sessions [name|all]
+                       Refresh helper scripts/workspace.md in existing sessions
 ae stop [name]         Pause session, keep state for later
 ae end|rm [name]       Commit, push to ae/<name> branch, clean up
 ```
@@ -177,6 +184,71 @@ No custom protocols, no frameworks. Just system prompts and bash scripts that ag
 - [tmux](https://github.com/tmux/tmux)
 - [git](https://git-scm.com/)
 - At least one AI coding agent ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool)
+
+After install, run:
+
+```bash
+ae doctor
+```
+
+It checks the local bash/tmux/git environment, your ae config, and whether configured agent executables are actually available on `PATH`.
+
+After upgrading `ae` itself, you can refresh already-created session helpers without recreating the sessions:
+
+```bash
+ae doctor --sync-sessions        # refresh every session in ~/.ae/sessions
+ae doctor --sync-sessions my-fix # refresh one session only
+```
+
+## Compatibility
+
+`ae` is intentionally thin. It supports a small, tested core and treats the rest as best-effort:
+
+| Area | Status |
+|------|--------|
+| Bash | Required: `>= 4.0` |
+| tmux | Required |
+| git | Required |
+| Ubuntu / WSL2 | Primary development target |
+| Other Linux / macOS setups | Best-effort, especially where GNU utilities differ |
+| Agent session resume/capture | Best-effort for tools without stable public session APIs |
+
+Practical meaning:
+
+- Starting sessions, helper generation, and tmux orchestration are first-class.
+- Resume/session capture for external agent CLIs depends on upstream tool behavior and local storage formats, which can change outside ae's control.
+- `ae doctor` should be your first step after installing ae or upgrading any agent CLI.
+
+## Troubleshooting
+
+**`tmux` not found**
+
+- Install tmux and rerun `ae doctor`.
+- `ae` now fails fast on startup if tmux is missing instead of dying later inside session creation.
+
+**Agent CLI not found**
+
+- Run `ae doctor` and inspect the `agent:<alias>` lines.
+- Fix the command in `~/.ae/config` or add the CLI to your `PATH`.
+
+**`ae` installed but command still not found**
+
+- Make sure `~/.local/bin` is on `PATH`.
+- `ae doctor` warns if `~/.local/bin` is missing from the current shell environment.
+
+**Session will not resume cleanly**
+
+- Retry with `ae stop <name>` followed by `ae <name>`.
+- Resume/session capture for external agent CLIs is best-effort and may fall back to a fresh start after upstream CLI changes.
+
+**Session feels stuck**
+
+- Use the generated `interrupt <agent>` helper for a soft cancel.
+- Use `ae end -f <name>` to tear the session down and clean up hard state.
+
+**Using fish or zsh**
+
+- That is fine. `ae` itself runs under bash; your interactive shell does not need to be bash as long as `ae` is launched correctly.
 
 ## Development
 

@@ -176,6 +176,42 @@ assert_contains "spawn: recorded in meta" "agent.spawned.0=dummy2:helper-0:" "$s
 pane_count="$(tmux list-panes -t test-spawn 2>/dev/null | wc -l)"
 assert_eq "spawn: 2 panes after spawn" "2" "$pane_count"
 
+# Alias-only helper resolution should target the unique spawned agent
+"$HOME/.ae/sessions/test-spawn/send" dummy2 "printf 'alias-hit\n'" 2>/dev/null || true
+sleep 0.5
+spawn_output="$("$HOME/.ae/sessions/test-spawn/peek" dummy2 20 2>/dev/null || true)"
+assert_contains "spawn: alias-only target resolves unique alias" "alias-hit" "$spawn_output"
+
+# Shared memo helper should persist append-only shared context
+"$HOME/.ae/sessions/test-spawn/memo" add --topic arch "use sqlite for the demo" 2>/dev/null || true
+memo_output="$("$HOME/.ae/sessions/test-spawn/memo" read --topic arch 2>/dev/null || true)"
+assert_contains "spawn: memo read shows topic entry" "use sqlite for the demo" "$memo_output"
+assert_contains "spawn: memo read renders topic" "[arch]" "$memo_output"
+memo_tail_output="$("$HOME/.ae/sessions/test-spawn/memo" tail 1 2>/dev/null || true)"
+assert_contains "spawn: memo tail shows latest entry" "use sqlite for the demo" "$memo_tail_output"
+assert_eq "spawn: memo file exists" "1" "$([[ -f "$HOME/.ae/sessions/test-spawn/memo.tsv" ]] && echo 1 || echo 0)"
+
+# Request/reply tracking should use the invoking pane identity, not the active pane
+main_pane="$(tmux list-panes -t test-spawn -F '#{pane_id} #{@ae_agent}' | awk '$2=="dummy:dummy"{print $1; exit}')"
+worker_pane="$(tmux list-panes -t test-spawn -F '#{pane_id} #{@ae_agent}' | awk '$2=="dummy2:helper-0"{print $1; exit}')"
+TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/ask" dummy2 "check memo flow" 2>/dev/null || true
+req_id="$(tail -n 1 "$HOME/.ae/sessions/test-spawn/requests.tsv" | cut -f3)"
+wrong_reply_status=0
+TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/reply" "$req_id" "wrong pane reply" >/dev/null 2>&1 || wrong_reply_status=$?
+assert_eq "spawn: reply rejects wrong agent identity" "1" "$wrong_reply_status"
+TMUX_PANE="$worker_pane" "$HOME/.ae/sessions/test-spawn/reply" "$req_id" "handled" >/dev/null 2>&1 || true
+requests_output="$("$HOME/.ae/sessions/test-spawn/requests" all 2>/dev/null || true)"
+assert_contains "spawn: requests show replied after correct reply" "replied" "$requests_output"
+
+TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/ask" dummy2 "check override reply flow" 2>/dev/null || true
+override_req_id="$(tail -n 1 "$HOME/.ae/sessions/test-spawn/requests.tsv" | cut -f3)"
+override_status=0
+TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/reply" --as "dummy2:helper-0" "$override_req_id" "override handled" >/dev/null 2>&1 || override_status=$?
+assert_eq "spawn: reply --as allows tracked reply when pane identity is unavailable" "0" "$override_status"
+requests_output="$("$HOME/.ae/sessions/test-spawn/requests" all 2>/dev/null || true)"
+assert_contains "spawn: override reply recorded as replied" "$override_req_id" "$requests_output"
+assert_contains "spawn: override reply summary updated" "override handled" "$requests_output"
+
 # Kill tmux session (simulate reboot), re-launch
 tmux kill-session -t test-spawn 2>/dev/null || true
 sleep 0.5
@@ -321,6 +357,45 @@ assert_eq "cwd-resume: pane CWD restored to original" "$REPO9" "$pane_cwd"
 
 # Clean up
 "$AE" end -f test-cwd 2>/dev/null || true
+sleep 0.5
+
+# ── Test 10: ae doctor ───────────────────────────────────────────────
+
+REPO10="$(setup_repo)"
+(cd "$REPO10" && "$AE" doctor > "$TMPDIR/doctor.out" 2>/dev/null)
+doctor_output="$(cat "$TMPDIR/doctor.out")"
+assert_contains "doctor: prints header" "ae doctor" "$doctor_output"
+assert_contains "doctor: checks bash" "OK    bash" "$doctor_output"
+assert_contains "doctor: checks tmux" "OK    tmux" "$doctor_output"
+assert_contains "doctor: checks git" "OK    git" "$doctor_output"
+assert_contains "doctor: checks dummy agent" "OK    agent:dummy" "$doctor_output"
+assert_contains "doctor: prints summary" "Summary: 0 failure(s)" "$doctor_output"
+
+# ── Test 11: ae doctor --sync-sessions ───────────────────────────────
+
+REPO11="$(setup_repo)"
+(cd "$REPO11" && "$AE" --local test-sync &) 2>/dev/null
+wait_for_session "test-sync"
+sleep 1
+
+printf '#!/usr/bin/env bash\necho stale-helper\n' > "$HOME/.ae/sessions/test-sync/reply"
+chmod 0700 "$HOME/.ae/sessions/test-sync/reply"
+printf 'stale manifest\n' > "$HOME/.ae/sessions/test-sync/workspace.md"
+
+(cd "$REPO11" && "$AE" doctor --sync-sessions test-sync > "$TMPDIR/doctor-sync.out" 2>/dev/null)
+doctor_sync_output="$(cat "$TMPDIR/doctor-sync.out")"
+reply_output="$("$HOME/.ae/sessions/test-sync/reply" 2>&1 || true)"
+workspace_output="$(cat "$HOME/.ae/sessions/test-sync/workspace.md")"
+meta_ae_path="$(grep '^ae_path=' "$HOME/.ae/sessions/test-sync/meta" | cut -d= -f2-)"
+
+assert_contains "doctor-sync: reports refreshed session" "OK    sync:test-sync" "$doctor_sync_output"
+assert_contains "doctor-sync: summary still succeeds" "Summary: 0 failure(s)" "$doctor_sync_output"
+assert_contains "doctor-sync: reply helper regenerated" "Usage: reply [--as <agent>] <request-id> <message>" "$reply_output"
+assert_contains "doctor-sync: workspace regenerated" "memo add" "$workspace_output"
+assert_eq "doctor-sync: meta ae_path refreshed" "$AE" "$meta_ae_path"
+
+# Clean up
+"$AE" end -f test-sync 2>/dev/null || true
 sleep 0.5
 
 # ── Results ──────────────────────────────────────────────────────────
