@@ -74,7 +74,6 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 | `interrupt <agent> [message]` | Cancel current generation, optionally send new instructions |
 | `spawn <alias:name> [prompt]` | Add a new agent to the workspace |
 | `retire <agent>` | Remove a spawned agent (kills pane, cleans meta, updates manifest) |
-| `heartbeat` | One-shot status check for all panes; `heartbeat --watch` runs as background daemon |
 | `register-sid [slot]` | Codex-specific: self-register session ID post-launch |
 
 All helpers share a `_lib` library that provides name resolution, tmux server support, and flock serialization. Name resolution supports exact `alias:name`, alias-only when unique (e.g. `codex`), bare name (e.g. `lead`), `%pane-id`, and cross-session `@session:agent` syntax. `agents --all` lists agents across all running ae sessions.

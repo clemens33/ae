@@ -104,10 +104,31 @@ get_config() {
 tmux_paste_submit() {
     local pane="$1" text="$2"
     local buf="ae-ps-$$-${pane}"
+    local cmd
+    cmd="$(pane_current_command "$pane")"
+
+    if [[ "$cmd" == "codex" ]]; then
+        # Codex expects bracketed-paste mode for injected input.
+        tmux set-buffer -b "$buf" -- "$text" \; \
+            paste-buffer -d -p -b "$buf" -t "$pane"
+        sleep 0.1
+        tmux send-keys -t "$pane" Enter
+        return 0
+    fi
+
     tmux set-buffer -b "$buf" -- "$text" \; \
         paste-buffer -d -b "$buf" -t "$pane"
     sleep 0.1
     tmux send-keys -t "$pane" Enter
+
+    # Claude sometimes stages large pastes as a "[Pasted text #…]" token
+    # that requires an extra submit keystroke.
+    if [[ "$cmd" == "claude" ]]; then
+        sleep 0.2
+        if tmux capture-pane -p -t "$pane" 2>/dev/null | tail -n 15 | grep -Eq '\[Pasted text #[0-9]+ \+[0-9]+ lines\]'; then
+            tmux send-keys -t "$pane" Enter
+        fi
+    fi
 }
 
 shell_quote() {
@@ -987,7 +1008,7 @@ cleanup_session() {
         origin="$(read_session_meta "$session_name" origin)"
     fi
 
-    # Kill heartbeat before removing meta (needs meta to find PID)
+    # Kill any legacy heartbeat before removing meta.
     kill_heartbeat "$session_name"
 
     # Always clean session state from SESSIONS_DIR
@@ -1251,7 +1272,7 @@ cmd_status() {
     fi
 }
 
-# Kill heartbeat process for a session (best-effort, never fails)
+# Kill a legacy heartbeat process for a session (best-effort, never fails).
 kill_heartbeat() {
     local session_name="$1"
     local meta="${SESSIONS_DIR}/${session_name}/meta"
@@ -2852,6 +2873,31 @@ ae_target_tool() {
         echo "other"
     fi
 }
+
+ae_submit_pasted_message() {
+    local pane="$1" tool="$2" buf="$3" msg="$4"
+    if [[ "$tool" == "codex" ]]; then
+        tmux set-buffer -b "$buf" -- "$msg" \; \
+            paste-buffer -d -p -b "$buf" -t "$pane"
+        sleep 0.1
+        tmux send-keys -t "$pane" Enter
+        return 0
+    fi
+
+    tmux set-buffer -b "$buf" -- "$msg" \; \
+        paste-buffer -d -b "$buf" -t "$pane"
+    sleep 0.1
+    tmux send-keys -t "$pane" Enter
+
+    # Claude sometimes stages large pastes as a "[Pasted text #…]" token
+    # that requires an extra submit keystroke.
+    if [[ "$tool" == "claude" ]]; then
+        sleep 0.2
+        if tmux capture-pane -p -t "$pane" 2>/dev/null | tail -n 8 | grep -Eq '\[Pasted text #[0-9]+ \+[0-9]+ lines\]'; then
+            tmux send-keys -t "$pane" Enter
+        fi
+    fi
+}
 LIBEOF
     chmod 0700 "${AE_META}/_lib"
 
@@ -2886,17 +2932,7 @@ tmux select-pane -t "$target"
 tmux send-keys -t "$target" -X cancel 2>/dev/null || true
 
 tool="$(ae_target_tool "$target")"
-if [[ "$tool" == "codex" ]]; then
-    tmux set-buffer -b "$buf" -- "$msg" \; \
-        paste-buffer -d -p -b "$buf" -t "$target"
-    sleep 0.1
-    tmux send-keys -t "$target" Enter
-else
-    tmux set-buffer -b "$buf" -- "$msg" \; \
-        paste-buffer -d -b "$buf" -t "$target"
-    sleep 0.1
-    tmux send-keys -t "$target" Enter
-fi
+ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"
 sleep 0.3 # let target TUI process input before focus restore
 
 [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
@@ -3252,17 +3288,7 @@ if [[ -n "$msg" ]]; then
     sleep 0.5
     buf="ae-interrupt-$$"
     tool="$(ae_target_tool "$target")"
-    if [[ "$tool" == "codex" ]]; then
-        tmux set-buffer -b "$buf" -- "$msg" \; \
-            paste-buffer -d -p -b "$buf" -t "$target"
-        sleep 0.1
-        tmux send-keys -t "$target" Enter
-    else
-        tmux set-buffer -b "$buf" -- "$msg" \; \
-            paste-buffer -d -b "$buf" -t "$target"
-        sleep 0.1
-        tmux send-keys -t "$target" Enter
-    fi
+    ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"
     sleep 0.3 # let target TUI process input before focus restore
 fi
 
@@ -3400,177 +3426,6 @@ fi
 REGSIDEOF
     chmod 0700 "${AE_META}/register-sid"
 
-    # Helper: heartbeat [--watch] — monitor agent panes, nudge stale ones, alert on dead
-    cat >"${AE_META}/heartbeat" <<'HEARTBEATEOF'
-#!/usr/bin/env bash
-set -uo pipefail
-source "$(cd "$(dirname "$0")" && pwd)/_lib"
-META_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-INTERVAL="${AE_HEARTBEAT_INTERVAL_SEC:-60}"
-STALE_MIN="${AE_HEARTBEAT_STALE_MIN:-10}"
-MAX_NUDGES=2
-
-HB_DIR="${META_DIR}/.heartbeat"
-mkdir -p "$HB_DIR"
-
-# Send nudge to pane (select-pane required for codex TUI to process Enter)
-hb_send() {
-    local pane="$1" msg="$2"
-    local buf="ae-hb-$$-${pane//[^a-zA-Z0-9]/_}"
-    ae_lock_target "$pane"
-    local current
-    current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
-    tmux select-pane -t "$pane" 2>/dev/null || true
-    tmux send-keys -t "$pane" -X cancel 2>/dev/null || true
-    tool="$(ae_target_tool "$pane")"
-    if [[ "$tool" == "codex" ]]; then
-        tmux set-buffer -b "$buf" -- "$msg" \; \
-            paste-buffer -d -p -b "$buf" -t "$pane" 2>/dev/null || true
-        sleep 0.1
-        tmux send-keys -t "$pane" Enter 2>/dev/null || true
-    else
-        tmux set-buffer -b "$buf" -- "$msg" \; \
-            paste-buffer -d -b "$buf" -t "$pane" 2>/dev/null || true
-        sleep 0.1
-        tmux send-keys -t "$pane" Enter 2>/dev/null || true
-    fi
-    sleep 0.3
-    [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
-    ae_unlock_target
-}
-
-hb_alert() {
-    local msg="$1"
-    tmux display-message -d 10000 "[ae heartbeat] $msg" 2>/dev/null || true
-}
-
-get_checksum() {
-    local pane="$1"
-    tmux capture-pane -p -J -S -40 -E - -t "$pane" 2>/dev/null | md5sum | cut -d' ' -f1
-}
-
-is_shell() {
-    local pane="$1"
-    local cmd
-    cmd="$(tmux list-panes -t "$_AE_SESSION" -F '#{pane_id}|#{pane_current_command}' 2>/dev/null | grep "^${pane}|" | cut -d'|' -f2)"
-    case "$cmd" in
-        bash | zsh | fish | sh | dash | "") return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-get_agent_name() {
-    local pane="$1"
-    tmux list-panes -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}' 2>/dev/null | grep "^${pane}|" | cut -d'|' -f2
-}
-
-# Single check: output status for all panes
-if [[ "${1:-}" != "--watch" ]]; then
-    main_pane="$(grep '^main_pane=' "$META_DIR/meta" | cut -d= -f2-)"
-    while IFS='|' read -r pane agent proc; do
-        [[ -z "$agent" ]] && continue
-        status="ok"
-        if is_shell "$pane"; then
-            status="DEAD"
-        else
-            cksum="$(get_checksum "$pane")"
-            prev_file="${HB_DIR}/${pane//[^a-zA-Z0-9]/_}.cksum"
-            if [[ -f "$prev_file" ]]; then
-                prev_cksum="$(cat "$prev_file")"
-                prev_time="$(stat -c %Y "$prev_file" 2>/dev/null || echo 0)"
-                now="$(date +%s)"
-                stale_secs=$((STALE_MIN * 60))
-                if [[ "$cksum" == "$prev_cksum" ]] && (( now - prev_time > stale_secs )); then
-                    status="STALE"
-                fi
-            fi
-        fi
-        printf "%-25s %-8s %-12s %s\n" "$agent" "$pane" "$proc" "$status"
-    done < <(tmux list-panes -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
-    exit 0
-fi
-
-# --- Watch mode (background daemon) ---
-
-main_pane="$(grep '^main_pane=' "$META_DIR/meta" | cut -d= -f2-)"
-
-while true; do
-    # Self-terminate if session or meta is gone
-    if ! tmux has-session -t "$_AE_SESSION" 2>/dev/null; then
-        exit 0
-    fi
-    [[ -f "$META_DIR/meta" ]] || exit 0
-
-    while IFS='|' read -r pane agent; do
-        [[ -z "$agent" ]] && continue
-        safe_pane="${pane//[^a-zA-Z0-9]/_}"
-        cksum_file="${HB_DIR}/${safe_pane}.cksum"
-        state_file="${HB_DIR}/${safe_pane}.state"
-        nudge_file="${HB_DIR}/${safe_pane}.nudges"
-        prev_state="$(cat "$state_file" 2>/dev/null || echo "ok")"
-
-        if is_shell "$pane"; then
-            # Agent process is dead (dropped to shell)
-            if [[ "$prev_state" != "dead" ]]; then
-                hb_alert "${agent} (${pane}) is DEAD — process dropped to shell"
-                echo "dead" > "$state_file"
-            fi
-            continue
-        fi
-
-        # Agent is alive — check output freshness
-        cksum="$(get_checksum "$pane")"
-
-        if [[ -f "$cksum_file" ]]; then
-            prev_cksum="$(cat "$cksum_file")"
-            if [[ "$cksum" != "$prev_cksum" ]]; then
-                # Output changed — reset state
-                echo "$cksum" > "$cksum_file"
-                echo "ok" > "$state_file"
-                rm -f "$nudge_file"
-                continue
-            fi
-
-            # Output unchanged — check staleness
-            prev_time="$(stat -c %Y "$cksum_file" 2>/dev/null || echo 0)"
-            now="$(date +%s)"
-            stale_secs=$((STALE_MIN * 60))
-
-            if (( now - prev_time > stale_secs )); then
-                nudges="$(cat "$nudge_file" 2>/dev/null || echo 0)"
-
-                if [[ "$pane" == "$main_pane" ]]; then
-                    # Main pane: alert human only, never nudge
-                    if [[ "$prev_state" != "stale" ]]; then
-                        hb_alert "${agent} (main) appears stale — no output change for ${STALE_MIN}m"
-                        echo "stale" > "$state_file"
-                    fi
-                elif (( nudges < MAX_NUDGES )); then
-                    # Worker: send nudge
-                    hb_send "$pane" "heartbeat: status check — what are you working on? (If waiting for input, state what you need.)"
-                    nudges=$((nudges + 1))
-                    echo "$nudges" > "$nudge_file"
-                    echo "stale" > "$state_file"
-                elif [[ "$prev_state" != "stale-alerted" ]]; then
-                    # Worker: max nudges reached, alert human
-                    hb_alert "${agent} (${pane}) still stale after ${MAX_NUDGES} nudges — may need attention"
-                    echo "stale-alerted" > "$state_file"
-                fi
-            fi
-        else
-            # First check — record baseline
-            echo "$cksum" > "$cksum_file"
-            echo "ok" > "$state_file"
-        fi
-
-    done < <(tmux list-panes -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}' 2>/dev/null)
-
-    sleep "$INTERVAL"
-done
-HEARTBEATEOF
-    chmod 0700 "${AE_META}/heartbeat"
-
     # Generate initial workspace.md from live pane state
     regenerate_manifest "$SESSION" "$WORK_DIR" "$ORIGIN_DIR" "$COPY_MODE" "$MAIN_PANE" "$AE_META"
     # SYNC_SESSION_ASSETS_BODY_END
@@ -3625,13 +3480,6 @@ if [[ "$RESUMING" != true ]]; then
         WORKER_TOOL="$(tool_kind_from_cmd "${WORKER_CMDS[$i]}")"
         start_capture_session_id "$WORKER_TOOL" "${PANE_IDS[$((i + 1))]}" "worker.${i}" "$AE_META"
     done
-fi
-
-# Start heartbeat monitor in background (opt-in via workspace.heartbeat = true)
-HEARTBEAT_ENABLED="$(get_config workspace.heartbeat)"
-if [[ "${HEARTBEAT_ENABLED,,}" == "true" ]]; then
-    "${AE_META}/heartbeat" --watch &
-    echo "heartbeat_pid=$!" >>"${AE_META}/meta"
 fi
 
 # Focus main pane and attach

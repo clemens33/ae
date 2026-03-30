@@ -19,6 +19,8 @@ assert_eq() {
     fi
 }
 
+AE_SOURCE="$(cat "$(dirname "$0")/../ae")"
+
 # Isolate config from user's real ~/.ae/config
 CONFIG_FILE="/dev/null"
 AE_LOCAL_CONFIG=""
@@ -411,6 +413,24 @@ assert_eq "initial_prompt: opencode slot includes launch marker" \
     "1" \
     "$([[ "$result_opencode_slot" == *"AE_OPENCODE_LAUNCH_ID=opencode-123"* ]] && echo 1 || echo 0)"
 rm -rf "$_meta_dir"
+
+# ── helper generation guards ────────────────────────────────────────
+
+assert_eq "helpers: shared submit helper exists" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *"ae_submit_pasted_message()"* ]] && echo 1 || echo 0)"
+
+assert_eq "helpers: claude staged paste detection exists" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'[Pasted text #'* ]] && echo 1 || echo 0)"
+
+assert_eq "helpers: send uses shared submit helper" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"'* ]] && echo 1 || echo 0)"
+
+assert_eq "helpers: launch paste helper handles staged Claude pastes" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ "$cmd" == "claude" ]]'* && "$AE_SOURCE" == *'tail -n 15'* ]] && echo 1 || echo 0)"
 
 # ── gen_uuid ─────────────────────────────────────────────────────────
 

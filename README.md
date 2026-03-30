@@ -92,7 +92,6 @@ focus <agent>                  # switch tmux focus to an agent's pane
 interrupt <agent> [message]    # stop an agent's current work, optionally redirect
 spawn <alias:name> [prompt]    # add a new agent to the workspace
 retire <agent>                 # remove a spawned agent cleanly
-heartbeat                      # one-shot status check (ok/STALE/DEAD)
 register-sid [slot]            # codex self-registration helper for session capture
 ```
 
