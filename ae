@@ -3489,10 +3489,7 @@ META_DIR="$(cd "$(dirname "$0")" && pwd)"
 INTERVAL="${AE_SENTRY_INTERVAL_SEC:-60}"
 STALE_MIN="${AE_SENTRY_STALE_MIN:-15}"
 MAX_NUDGES="${AE_SENTRY_MAX_NUDGES:-2}"
-GRACE_MIN="${AE_SENTRY_HUMAN_GRACE_MIN:-5}"
-
 STALE_SECS=$((STALE_MIN * 60))
-GRACE_SECS=$((GRACE_MIN * 60))
 
 PIDFILE="${META_DIR}/.sentry.pid"
 
@@ -3556,19 +3553,6 @@ _last_event_age() {
     echo $(( now_epoch - last_epoch ))
 }
 
-_last_human_action_age() {
-    local target="$1"
-    local events_file="${META_DIR}/events.jsonl"
-    [[ -f "$events_file" ]] || { echo 999999; return; }
-    local last_ts
-    last_ts="$(grep "\"actor\":\"human\"" "$events_file" | grep "\"target\":\"${target}\"" | tail -1 | sed -n 's/.*"ts":"\([^"]*\)".*/\1/p')"
-    if [[ -z "$last_ts" ]]; then echo 999999; return; fi
-    local last_epoch now_epoch
-    last_epoch="$(date -d "$last_ts" +%s 2>/dev/null || echo 0)"
-    now_epoch="$(date +%s)"
-    echo $(( now_epoch - last_epoch ))
-}
-
 cmd="${1:-start}"
 case "$cmd" in
     stop) _sentry_stop ;;
@@ -3583,7 +3567,7 @@ esac
 echo "$$" > "$PIDFILE"
 trap 'rm -f "$PIDFILE"' EXIT
 
-declare -A prev_hash nudge_count dead_agents
+declare -A prev_hash nudge_count dead_agents alerted_missing
 
 while true; do
     # Self-terminate if session or meta is gone
@@ -3592,10 +3576,13 @@ while true; do
     fi
     [[ -f "$META_DIR/meta" ]] || break
 
+    # Collect live panes into an associative array for missing-pane detection
+    declare -A live_agents=()
     while IFS='|' read -r pane agent proc; do
         [[ -n "$agent" ]] || continue
-        # Skip non-agent panes and the sentry pane itself
         [[ "$agent" != "(null)" && "$agent" != "" && "$agent" != "_sentry" ]] || continue
+        live_agents["$agent"]="$pane"
+
         # Skip already-dead agents
         [[ -z "${dead_agents[$pane]:-}" ]] || continue
 
@@ -3620,11 +3607,7 @@ while true; do
         event_age="$(_last_event_age "$agent")"
         if (( event_age < STALE_SECS )); then continue; fi
 
-        # 4. Human grace — recent human action targeting this agent
-        human_age="$(_last_human_action_age "$agent")"
-        if (( human_age < GRACE_SECS )); then continue; fi
-
-        # 5. Stale — nudge or escalate
+        # 4. Stale — nudge or escalate
         count="${nudge_count[$pane]:-0}"
         stale_min_num=$(( event_age / 60 ))
         if (( stale_min_num > 9999 )); then
@@ -3646,6 +3629,17 @@ while true; do
         fi
 
     done < <(tmux list-panes -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
+
+    # 5. Missing pane check — registered agents whose panes no longer exist
+    while IFS='=' read -r key val; do
+        [[ "$key" == agent.* ]] || continue
+        agent_ref="${val%%:*}:$(echo "${val#*:}" | cut -d: -f1)"
+        if [[ -z "${live_agents[$agent_ref]:-}" && -z "${alerted_missing[$agent_ref]:-}" ]]; then
+            alerted_missing["$agent_ref"]=1
+            ae_emit_event "alert" "$agent_ref" "" "pane missing — agent no longer visible in session"
+            tmux display-message -d 10000 "[ae sentry] $agent_ref pane is MISSING" 2>/dev/null || true
+        fi
+    done < "$META_DIR/meta"
 
     sleep "$INTERVAL"
 done

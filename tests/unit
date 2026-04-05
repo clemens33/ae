@@ -547,9 +547,9 @@ assert_eq "sentry: configurable thresholds via env vars" \
     "1" \
     "$([[ "$AE_SOURCE" == *'AE_SENTRY_INTERVAL_SEC'* && "$AE_SOURCE" == *'AE_SENTRY_STALE_MIN'* && "$AE_SOURCE" == *'AE_SENTRY_MAX_NUDGES'* ]] && echo 1 || echo 0)"
 
-assert_eq "sentry: human grace window suppresses nudges" \
+assert_eq "sentry: detects missing panes from meta" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'AE_SENTRY_HUMAN_GRACE_MIN'* && "$AE_SOURCE" == *'_last_human_action_age'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'pane missing'* && "$AE_SOURCE" == *'alerted_missing'* ]] && echo 1 || echo 0)"
 
 # ── gen_uuid ─────────────────────────────────────────────────────────
 
