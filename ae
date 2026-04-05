@@ -1848,6 +1848,17 @@ _cmd_spawn() {
     fi
 
     echo "Spawned ${alias_name}:${spawn_name} in pane $pane_id"
+    # Emit event (inline — _cmd_spawn runs outside _lib context)
+    local _esc _actor _target _summary _ts _json
+    _esc() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\t'/\\t}"; s="${s//$'\r'/\\r}"; printf '%s' "$s"; }
+    _actor="$(_esc "${caller_agent:-human}")"
+    _target="$(_esc "${alias_name}:${spawn_name}")"
+    _summary="$(_esc "$(printf '%.200s' "${user_prompt:-}" | tr '\n\t' '  ')")"
+    _ts="$(date -u +%FT%TZ)"
+    _json="$(printf '{"ts":"%s","actor":"%s","action":"spawn","target":"%s"' "$_ts" "$_actor" "$_target")"
+    [[ -n "$_summary" ]] && _json+="$(printf ',"summary":"%s"' "$_summary")"
+    _json+="}"
+    { flock -w 5 8 && printf '%s\n' "$_json" >>"$meta_dir/events.jsonl"; } 8>>"$meta_dir/events.jsonl.lock"
 }
 
 # Internal: retire a spawned agent (called via retire helper → ae _retire)
@@ -1977,6 +1988,16 @@ _cmd_retire() {
     regenerate_manifest "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$meta_dir"
 
     echo "Retired ${pane_agent} (pane ${resolved})"
+    # Emit event (inline — _cmd_retire runs outside _lib context)
+    local _esc _actor _target _ts _json
+    _esc() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\t'/\\t}"; s="${s//$'\r'/\\r}"; printf '%s' "$s"; }
+    _actor="$(tmux display-message -p '#{@ae_agent}' 2>/dev/null || true)"
+    [[ -n "$_actor" ]] || _actor="human"
+    _actor="$(_esc "$_actor")"
+    _target="$(_esc "$pane_agent")"
+    _ts="$(date -u +%FT%TZ)"
+    _json="$(printf '{"ts":"%s","actor":"%s","action":"retire","target":"%s"}' "$_ts" "$_actor" "$_target")"
+    { flock -w 5 8 && printf '%s\n' "$_json" >>"$meta_dir/events.jsonl"; } 8>>"$meta_dir/events.jsonl.lock"
 }
 
 # Regenerate workspace.md from live tmux pane state
@@ -2874,6 +2895,34 @@ ae_target_tool() {
     fi
 }
 
+ae_json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\t'/\\t}"
+    s="${s//$'\r'/\\r}"
+    printf '%s' "$s"
+}
+
+ae_emit_event() {
+    local action="$1" target="${2:-}" ref="${3:-}" summary="${4:-}"
+    local actor
+    actor="${AE_SENDER_OVERRIDE:-$(ae_current_agent_ref)}"
+    [[ -n "$actor" ]] || actor="human"
+    local ts
+    ts="$(date -u +%FT%TZ)"
+    summary="$(printf '%s' "$summary" | head -c 200 | tr '\n\t' '  ')"
+    local json
+    json="$(printf '{"ts":"%s","actor":"%s","action":"%s"' \
+        "$(ae_json_escape "$ts")" "$(ae_json_escape "$actor")" "$(ae_json_escape "$action")")"
+    [[ -n "$target" ]] && json+="$(printf ',"target":"%s"' "$(ae_json_escape "$target")")"
+    [[ -n "$ref" ]] && json+="$(printf ',"ref":"%s"' "$(ae_json_escape "$ref")")"
+    [[ -n "$summary" ]] && json+="$(printf ',"summary":"%s"' "$(ae_json_escape "$summary")")"
+    json+="}"
+    ae_log_append "${_AE_META_DIR}/events.jsonl" "$json"
+}
+
 ae_submit_pasted_message() {
     local pane="$1" tool="$2" buf="$3" msg="$4"
     if [[ "$tool" == "codex" ]]; then
@@ -2938,6 +2987,7 @@ sleep 0.3 # let target TUI process input before focus restore
 [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
 ae_unlock_target
 ae_log_append "${META_DIR}/messages.tsv" "$(printf '%s\t%s\t%s\t%s\t%s' "$(ae_now_utc)" "$sender" "$logged_target" "${req_id:-}" "$(ae_preview_text "$msg")")"
+ae_emit_event "${_AE_EVENT_ACTION:-send}" "$logged_target" "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_SUMMARY:-$msg}"
 SENDEOF
     chmod 0700 "${AE_META}/send"
 
@@ -2974,7 +3024,7 @@ REQUIRED: When you have finished, you MUST run this exact command to reply:
 ${reply_cmd}
 Do not reply any other way. Do not skip this step.
 Do NOT use peek/peak as a reply mechanism."
-exec "${META_DIR}/send" "$target_name" "$msg"
+exec env _AE_EVENT_ACTION="ask" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$question" "${META_DIR}/send" "$target_name" "$msg"
 ASKEOF
     chmod 0700 "${AE_META}/ask"
 
@@ -3015,7 +3065,7 @@ Review instructions:
 REQUIRED: When you have finished, you MUST run this exact command to reply:
 ${reply_cmd}
 Do not reply any other way. Do NOT use peek/peak as a reply mechanism."
-exec "${META_DIR}/send" "$target_name" "$msg"
+exec env _AE_EVENT_ACTION="review" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$request" "${META_DIR}/send" "$target_name" "$msg"
 REVIEWEOF
     chmod 0700 "${AE_META}/review"
 
@@ -3074,7 +3124,7 @@ if [[ -z "$reply_sender" ]]; then
     reply_sender="$self"
 fi
 
-exec env AE_SENDER_OVERRIDE="$reply_sender" "${META_DIR}/send" "$sender" "[${req_id}] ${message}"
+exec env AE_SENDER_OVERRIDE="$reply_sender" _AE_EVENT_ACTION="reply" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$message" "${META_DIR}/send" "$sender" "[${req_id}] ${message}"
 REPLYEOF
     chmod 0700 "${AE_META}/reply"
 
@@ -3162,6 +3212,7 @@ case "$cmd" in
         [[ -n "$self" ]] || self="human"
         [[ -n "$topic" ]] || topic="general"
         ae_log_append "$MEMO_FILE" "$(printf '%s\t%s\t%s\t%s' "$(ae_now_utc)" "$self" "$topic" "$text")"
+        ae_emit_event "memo" "" "$topic" "$text"
         ;;
     read)
         topic=""
@@ -3260,6 +3311,7 @@ if [[ $# -lt 1 ]]; then
 fi
 ae_resolve "$1" || exit 1
 tmux select-pane -t "$AE_RESOLVED_PANE"
+ae_emit_event "focus" "${AE_RESOLVED_AGENT:-$1}"
 FOCUSEOF
     chmod 0700 "${AE_META}/focus"
 
@@ -3292,6 +3344,7 @@ if [[ -n "$msg" ]]; then
     sleep 0.3 # let target TUI process input before focus restore
 fi
 
+ae_emit_event "interrupt" "${AE_RESOLVED_AGENT:-$target}" "" "$msg"
 [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
 ae_unlock_target
 INTERRUPTEOF

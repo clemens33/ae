@@ -432,6 +432,91 @@ assert_eq "helpers: launch paste helper handles staged Claude pastes" \
     "1" \
     "$([[ "$AE_SOURCE" == *'if [[ "$cmd" == "claude" ]]'* && "$AE_SOURCE" == *'tail -n 15'* ]] && echo 1 || echo 0)"
 
+# ── events.jsonl infrastructure ─────────────────────────────────────
+
+# Extract _lib functions from LIBEOF heredoc for direct testing
+eval "$(awk '/^ae_json_escape\(\) \{/,/^\}/' <<<"$AE_SOURCE")"
+
+assert_eq "events: ae_json_escape exists in _lib" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *"ae_json_escape()"* ]] && echo 1 || echo 0)"
+
+assert_eq "events: ae_emit_event exists in _lib" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *"ae_emit_event()"* ]] && echo 1 || echo 0)"
+
+# ae_json_escape: backslashes
+assert_eq "events: json_escape backslash" \
+    'hello\\world' \
+    "$(ae_json_escape 'hello\world')"
+
+# ae_json_escape: double quotes
+assert_eq "events: json_escape quotes" \
+    'say \"hello\"' \
+    "$(ae_json_escape 'say "hello"')"
+
+# ae_json_escape: newlines
+assert_eq "events: json_escape newline" \
+    'line1\nline2' \
+    "$(ae_json_escape $'line1\nline2')"
+
+# ae_json_escape: tabs
+assert_eq "events: json_escape tab" \
+    'col1\tcol2' \
+    "$(ae_json_escape $'col1\tcol2')"
+
+# ae_json_escape: carriage return
+assert_eq "events: json_escape carriage return" \
+    'text\r' \
+    "$(ae_json_escape $'text\r')"
+
+# ae_json_escape: combined special chars
+assert_eq "events: json_escape combined" \
+    'a\\b\"c\nd' \
+    "$(ae_json_escape $'a\\b"c\nd')"
+
+# ae_json_escape: clean string passes through
+assert_eq "events: json_escape clean string" \
+    'hello world 123' \
+    "$(ae_json_escape 'hello world 123')"
+
+# Structural: helpers emit events
+assert_eq "events: send emits event with action and summary override support" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'ae_emit_event "${_AE_EVENT_ACTION:-send}"'* && "$AE_SOURCE" == *'${_AE_EVENT_SUMMARY:-$msg}'* ]] && echo 1 || echo 0)"
+
+assert_eq "events: ask passes action override to send" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'_AE_EVENT_ACTION="ask"'* ]] && echo 1 || echo 0)"
+
+assert_eq "events: reply passes action override to send" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'_AE_EVENT_ACTION="reply"'* ]] && echo 1 || echo 0)"
+
+assert_eq "events: review passes action override to send" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'_AE_EVENT_ACTION="review"'* ]] && echo 1 || echo 0)"
+
+assert_eq "events: memo emits event" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'ae_emit_event "memo"'* ]] && echo 1 || echo 0)"
+
+assert_eq "events: interrupt emits event" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'ae_emit_event "interrupt"'* ]] && echo 1 || echo 0)"
+
+assert_eq "events: focus emits event" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'ae_emit_event "focus"'* ]] && echo 1 || echo 0)"
+
+assert_eq "events: spawn emits event" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'"action":"spawn"'* ]] && echo 1 || echo 0)"
+
+assert_eq "events: retire emits event" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'"action":"retire"'* ]] && echo 1 || echo 0)"
+
 # ── gen_uuid ─────────────────────────────────────────────────────────
 
 uuid="$(gen_uuid)"
