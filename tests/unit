@@ -517,39 +517,39 @@ assert_eq "events: retire emits event" \
     "1" \
     "$([[ "$AE_SOURCE" == *'"action":"retire"'* ]] && echo 1 || echo 0)"
 
-# ── loop watchdog ───────────────────────────────────────────────────
+# ── sentry (watchdog) ───────────────────────────────────────────────
 
-assert_eq "loop: helper script exists in generated source" \
+assert_eq "sentry: helper script exists in generated source" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'Helper: loop'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'Helper: sentry'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: uses send for nudges (not raw send-keys)" \
+assert_eq "sentry: uses send for nudges (not raw send-keys)" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'AE_SENDER_OVERRIDE=loop'* && "$AE_SOURCE" == *'_AE_EVENT_ACTION=nudge'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'AE_SENDER_OVERRIDE=sentry'* && "$AE_SOURCE" == *'_AE_EVENT_ACTION=nudge'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: detects dead agents via pane_current_command" \
+assert_eq "sentry: detects dead agents via pane_current_command" \
     "1" \
     "$([[ "$AE_SOURCE" == *'bash|zsh|fish|sh|dash'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: emits alert events" \
+assert_eq "sentry: emits alert events" \
     "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "alert"'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: supports start/stop/status subcommands" \
+assert_eq "sentry: supports start/stop/status subcommands" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'_loop_stop'* && "$AE_SOURCE" == *'_loop_status'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_sentry_stop'* && "$AE_SOURCE" == *'_sentry_status'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: auto-start via workspace.loop config" \
+assert_eq "sentry: auto-start via workspace.sentry config" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'workspace.loop'* && "$AE_SOURCE" == *'ae-loop'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'workspace.sentry'* && "$AE_SOURCE" == *'ae-sentry'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: configurable thresholds via env vars" \
+assert_eq "sentry: configurable thresholds via env vars" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'AE_LOOP_INTERVAL_SEC'* && "$AE_SOURCE" == *'AE_LOOP_STALE_MIN'* && "$AE_SOURCE" == *'AE_LOOP_MAX_NUDGES'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'AE_SENTRY_INTERVAL_SEC'* && "$AE_SOURCE" == *'AE_SENTRY_STALE_MIN'* && "$AE_SOURCE" == *'AE_SENTRY_MAX_NUDGES'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: human grace window suppresses nudges" \
+assert_eq "sentry: human grace window suppresses nudges" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'AE_LOOP_HUMAN_GRACE_MIN'* && "$AE_SOURCE" == *'_last_human_action_age'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'AE_SENTRY_HUMAN_GRACE_MIN'* && "$AE_SOURCE" == *'_last_human_action_age'* ]] && echo 1 || echo 0)"
 
 # ── gen_uuid ─────────────────────────────────────────────────────────
 

@@ -3479,67 +3479,67 @@ fi
 REGSIDEOF
     chmod 0700 "${AE_META}/register-sid"
 
-    # Helper: loop [start|stop|status] — watchdog that nudges stale agents
-    cat >"${AE_META}/loop" <<'LOOPEOF'
+    # Helper: sentry [start|stop|status] — watchdog that nudges stale agents
+    cat >"${AE_META}/sentry" <<'LOOPEOF'
 #!/usr/bin/env bash
 set -uo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 META_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-INTERVAL="${AE_LOOP_INTERVAL_SEC:-60}"
-STALE_MIN="${AE_LOOP_STALE_MIN:-15}"
-MAX_NUDGES="${AE_LOOP_MAX_NUDGES:-2}"
-GRACE_MIN="${AE_LOOP_HUMAN_GRACE_MIN:-5}"
+INTERVAL="${AE_SENTRY_INTERVAL_SEC:-60}"
+STALE_MIN="${AE_SENTRY_STALE_MIN:-15}"
+MAX_NUDGES="${AE_SENTRY_MAX_NUDGES:-2}"
+GRACE_MIN="${AE_SENTRY_HUMAN_GRACE_MIN:-5}"
 
 STALE_SECS=$((STALE_MIN * 60))
 GRACE_SECS=$((GRACE_MIN * 60))
 
-PIDFILE="${META_DIR}/.loop.pid"
+PIDFILE="${META_DIR}/.sentry.pid"
 
-_loop_is_running() {
+_sentry_is_running() {
     [[ -f "$PIDFILE" ]] || return 1
     local pid; pid="$(cat "$PIDFILE" 2>/dev/null)"
     [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
 }
 
-_loop_stop() {
-    if _loop_is_running; then
+_sentry_stop() {
+    if _sentry_is_running; then
         local pid; pid="$(cat "$PIDFILE")"
         kill "$pid" 2>/dev/null || true
         rm -f "$PIDFILE"
-        # Kill the loop window if it exists
-        tmux kill-window -t "${_AE_SESSION}:ae-loop" 2>/dev/null || true
-        echo "Loop stopped."
+        # Kill the sentry window if it exists
+        tmux kill-window -t "${_AE_SESSION}:ae-sentry" 2>/dev/null || true
+        echo "Sentry stopped."
     else
-        echo "Loop is not running."
+        echo "Sentry is not running."
     fi
     exit 0
 }
 
-_loop_status() {
-    if _loop_is_running; then
-        echo "Loop is running (pid $(cat "$PIDFILE"))."
+_sentry_status() {
+    if _sentry_is_running; then
+        echo "Sentry is running (pid $(cat "$PIDFILE"))."
     else
-        echo "Loop is not running."
+        echo "Sentry is not running."
     fi
     exit 0
 }
 
-_loop_start() {
-    if _loop_is_running; then
-        echo "Loop is already running (pid $(cat "$PIDFILE"))."
+_sentry_start() {
+    if _sentry_is_running; then
+        echo "Sentry is already running (pid $(cat "$PIDFILE"))."
         exit 0
     fi
-    # Create hidden tmux window and run the loop there
+    # Create hidden tmux window and run the watchdog there
     local loop_pane
-    loop_pane="$(tmux new-window -d -t "$_AE_SESSION" -n "ae-loop" -P -F '#{pane_id}' \
-        "${META_DIR}/loop _run" 2>/dev/null)" || {
-        echo "Error: could not create loop window" >&2
+    loop_pane="$(tmux new-window -d -t "$_AE_SESSION" -n "ae-sentry" -P -F '#{pane_id}' \
+        "${META_DIR}/sentry _run" 2>/dev/null)" || {
+        echo "Error: could not create sentry window" >&2
         exit 1
     }
-    # Tag the loop pane so peek can find it
-    tmux set-option -p -t "$loop_pane" @ae_agent "_loop" 2>/dev/null || true
-    echo "Loop started in hidden window (pane $loop_pane). Use 'peek _loop' to inspect."
+    # Tag the sentry pane so peek can find it
+    tmux set-option -p -t "$loop_pane" @ae_agent "_sentry" 2>/dev/null || true
+    echo "Sentry started in hidden window (pane $loop_pane). Use 'peek _sentry' to inspect."
     exit 0
 }
 
@@ -3571,14 +3571,14 @@ _last_human_action_age() {
 
 cmd="${1:-start}"
 case "$cmd" in
-    stop) _loop_stop ;;
-    status) _loop_status ;;
-    start) _loop_start ;;
-    _run) ;;  # internal: actual loop execution
-    *) echo "Usage: loop [start|stop|status]" >&2; exit 1 ;;
+    stop) _sentry_stop ;;
+    status) _sentry_status ;;
+    start) _sentry_start ;;
+    _run) ;;  # internal: actual watchdog execution
+    *) echo "Usage: sentry [start|stop|status]" >&2; exit 1 ;;
 esac
 
-# --- _run: the actual watchdog loop (runs inside hidden tmux window) ---
+# --- _run: the actual watchdog (runs inside hidden tmux window) ---
 
 echo "$$" > "$PIDFILE"
 trap 'rm -f "$PIDFILE"' EXIT
@@ -3598,8 +3598,8 @@ while true; do
 
     while IFS='|' read -r pane agent proc; do
         [[ -n "$agent" ]] || continue
-        # Skip non-agent panes and the loop pane itself
-        [[ "$agent" != "(null)" && "$agent" != "" && "$agent" != "_loop" ]] || continue
+        # Skip non-agent panes and the sentry pane itself
+        [[ "$agent" != "(null)" && "$agent" != "" && "$agent" != "_sentry" ]] || continue
         # Skip already-dead agents
         [[ -z "${dead_agents[$pane]:-}" ]] || continue
 
@@ -3608,7 +3608,7 @@ while true; do
             bash|zsh|fish|sh|dash|"")
                 dead_agents["$pane"]=1
                 ae_emit_event "alert" "$agent" "" "agent process dead — dropped to shell"
-                tmux display-message -d 10000 "[ae loop] $agent is DEAD — process dropped to shell" 2>/dev/null || true
+                tmux display-message -d 10000 "[ae sentry] $agent is DEAD — process dropped to shell" 2>/dev/null || true
                 continue ;;
         esac
 
@@ -3640,7 +3640,7 @@ while true; do
             stale_display="idle ${stale_min_num}m"
         fi
         if (( count < MAX_NUDGES )); then
-            env AE_SENDER_OVERRIDE=loop \
+            env AE_SENDER_OVERRIDE=sentry \
                 _AE_EVENT_ACTION=nudge \
                 _AE_EVENT_SUMMARY="${stale_display}, no recent ae activity" \
                 "${META_DIR}/send" "$agent" \
@@ -3648,7 +3648,7 @@ while true; do
             nudge_count["$pane"]=$((count + 1))
         elif (( count == MAX_NUDGES )); then
             ae_emit_event "alert" "$agent" "" "max nudges reached (${stale_display}), needs attention"
-            tmux display-message -d 10000 "[ae loop] $agent may need attention — stale after ${MAX_NUDGES} nudges" 2>/dev/null || true
+            tmux display-message -d 10000 "[ae sentry] $agent may need attention — stale after ${MAX_NUDGES} nudges" 2>/dev/null || true
             nudge_count["$pane"]=$((count + 1))
         fi
 
@@ -3659,7 +3659,7 @@ done
 
 rm -f "$PIDFILE"
 LOOPEOF
-    chmod 0700 "${AE_META}/loop"
+    chmod 0700 "${AE_META}/sentry"
 
     # Generate initial workspace.md from live pane state
     regenerate_manifest "$SESSION" "$WORK_DIR" "$ORIGIN_DIR" "$COPY_MODE" "$MAIN_PANE" "$AE_META"
@@ -3717,10 +3717,10 @@ if [[ "$RESUMING" != true ]]; then
     done
 fi
 
-# Start loop watchdog if configured
-LOOP_ENABLED="$(get_config workspace.loop)"
-if [[ "${LOOP_ENABLED,,}" == "true" ]]; then
-    "${AE_META}/loop" start
+# Start sentry if configured
+SENTRY_ENABLED="$(get_config workspace.sentry)"
+if [[ "${SENTRY_ENABLED,,}" == "true" ]]; then
+    "${AE_META}/sentry" start
 fi
 
 # Focus main pane and attach
