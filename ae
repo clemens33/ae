@@ -3592,10 +3592,6 @@ while true; do
     fi
     [[ -f "$META_DIR/meta" ]] || break
 
-    # Get the human's focused pane: active pane in the active window of the session
-    focused="$(tmux list-panes -t "$_AE_SESSION" -F '#{pane_id}|#{pane_active}|#{window_active}' 2>/dev/null \
-        | awk -F'|' '$2=="1" && $3=="1" {print $1}')"
-
     while IFS='|' read -r pane agent proc; do
         [[ -n "$agent" ]] || continue
         # Skip non-agent panes and the sentry pane itself
@@ -3628,10 +3624,7 @@ while true; do
         human_age="$(_last_human_action_age "$agent")"
         if (( human_age < GRACE_SECS )); then continue; fi
 
-        # 5. Focused pane — human may be looking at it
-        if [[ "$pane" == "$focused" ]]; then continue; fi
-
-        # 6. Stale — nudge or escalate
+        # 5. Stale — nudge or escalate
         count="${nudge_count[$pane]:-0}"
         stale_min_num=$(( event_age / 60 ))
         if (( stale_min_num > 9999 )); then
