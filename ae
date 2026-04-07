@@ -211,20 +211,20 @@ extract_binary_from_cmd() {
                 # env-var assignment (FOO=bar)
                 i=$((i + 1)); continue ;;
             env)
-                arg_flags=" -C -u "
+                arg_flags=" -C -u --chdir --unset --block-signal --default-signal --ignore-signal "
                 i=$((i + 1)); continue ;;
             sudo)
                 # Only flags that take an option argument; booleans like -E -i -s -n are NOT here.
-                arg_flags=" -C -D -U -g -h -p -r -t -u "
+                arg_flags=" -C -D -U -g -h -p -r -t -u --close-from --chroot --group --host --prompt --role --type --user --other-user "
                 i=$((i + 1)); continue ;;
             nice)
-                arg_flags=" -n "
+                arg_flags=" -n --adjustment "
                 i=$((i + 1)); continue ;;
             ionice)
-                arg_flags=" -c -n -p -P -u "
+                arg_flags=" -c -n -p -P -u --class --classdata --pid --pgid --uid "
                 i=$((i + 1)); continue ;;
             time)
-                arg_flags=" -o -f "
+                arg_flags=" -o -f --output --format --append "
                 i=$((i + 1)); continue ;;
             nohup | command | exec)
                 arg_flags=""
