@@ -1613,6 +1613,40 @@ cmd_doctor() {
     ((DOCTOR_FAILURES == 0))
 }
 
+cmd_sentry() {
+    local subcmd="${1:-}"
+    local target="${2:-}"
+    if [[ -z "$subcmd" ]]; then
+        echo "Usage: ae sentry <start|stop|status> [session-name]" >&2
+        echo "  (If run inside an ae session, session-name is optional.)" >&2
+        return 1
+    fi
+    case "$subcmd" in
+        start|stop|status) ;;
+        *)
+            echo "Usage: ae sentry <start|stop|status> [session-name]" >&2
+            return 1 ;;
+    esac
+    if [[ -z "$target" ]]; then
+        target="$(detect_current_session 2>/dev/null)" || {
+            echo "Error: no session name given and not inside an ae tmux session" >&2
+            return 1
+        }
+    fi
+    local meta_dir="${SESSIONS_DIR}/${target}"
+    if [[ ! -d "$meta_dir" ]]; then
+        echo "Error: session '${target}' not found" >&2
+        return 1
+    fi
+    local helper="${meta_dir}/sentry"
+    if [[ ! -x "$helper" ]]; then
+        echo "Error: sentry helper not found in session '${target}'" >&2
+        echo "       Run 'ae doctor --sync-sessions ${target}' to regenerate helpers." >&2
+        return 1
+    fi
+    "$helper" "$subcmd"
+}
+
 cmd_rename() {
     local old_name="" new_name=""
     if [[ $# -ge 2 ]]; then
@@ -1693,6 +1727,8 @@ cmd_help() {
     echo "  ae doctor [--sync-sessions [name|all]]"
     echo "                         Check local environment and optionally refresh existing session helpers"
     echo "  ae rename [old] <new>  Rename a running session"
+    echo "  ae sentry <start|stop|status> [name]"
+    echo "                         Toggle the stale-agent watchdog for a session"
     echo "  ae stop [name]         Stop session, keep state for resume (or 'ae stop all')"
     echo "  ae end|rm [-f] [name]  End session: commit, push, clean up (or 'ae end all')"
     echo "  ae version             Show version"
@@ -2245,6 +2281,10 @@ case "${1:-}" in
         cmd_rename "${2:-}" "${3:-}"
         exit $?
         ;;
+    sentry)
+        cmd_sentry "${2:-}" "${3:-}"
+        exit $?
+        ;;
     end | rm)
         cmd_end "${2:-}" "${3:-}"
         exit $?
@@ -2631,6 +2671,12 @@ fi
 
 AE_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
+# Preserve per-session sentry override across rewrite (if any)
+PRESERVED_SENTRY=""
+if [[ -f "${AE_META}/meta" ]]; then
+    PRESERVED_SENTRY="$(grep '^sentry=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2-)"
+fi
+
 cat >"${AE_META}/meta" <<EOF
 mode=${META_MODE}
 origin=${META_ORIGIN}
@@ -2643,6 +2689,7 @@ ae_path=${AE_PATH}
 tmux_server=${AE_TMUX_SERVER:-}
 agent.main=${MAIN_ALIAS}:${MAIN_NAME}:${MAIN_SESSION_ID}
 EOF
+[[ -n "$PRESERVED_SENTRY" ]] && echo "sentry=${PRESERVED_SENTRY}" >>"${AE_META}/meta"
 for i in "${!WORKER_CMDS[@]}"; do
     echo "agent.worker.${i}=${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]}:${WORKER_SESSION_IDS[$i]}" >>"${AE_META}/meta"
 done
@@ -3499,6 +3546,22 @@ _sentry_is_running() {
     [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
 }
 
+_set_meta_sentry() {
+    local value="$1"
+    local meta_file="${META_DIR}/meta"
+    [[ -f "$meta_file" ]] || return 0
+    {
+        flock -w 5 200 || return 1
+        local tmp="${META_DIR}/meta.tmp.$$"
+        awk -F= -v v="$value" '
+            BEGIN { updated = 0 }
+            $1 == "sentry" { print "sentry=" v; updated = 1; next }
+            { print }
+            END { if (!updated) print "sentry=" v }
+        ' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
+    } 200>"${META_DIR}/meta.lock"
+}
+
 _sentry_stop() {
     if _sentry_is_running; then
         local pid; pid="$(cat "$PIDFILE")"
@@ -3510,6 +3573,7 @@ _sentry_stop() {
     else
         echo "Sentry is not running."
     fi
+    _set_meta_sentry "false"
     exit 0
 }
 
@@ -3525,6 +3589,7 @@ _sentry_status() {
 _sentry_start() {
     if _sentry_is_running; then
         echo "Sentry is already running (pid $(cat "$PIDFILE"))."
+        _set_meta_sentry "true"
         exit 0
     fi
     # Create hidden tmux window and run the watchdog there
@@ -3536,6 +3601,7 @@ _sentry_start() {
     }
     # Tag the sentry pane so peek can find it
     tmux set-option -p -t "$loop_pane" @ae_agent "_sentry" 2>/dev/null || true
+    _set_meta_sentry "true"
     echo "Sentry started in hidden window (pane $loop_pane). Use 'peek _sentry' to inspect."
     exit 0
 }
@@ -3711,8 +3777,13 @@ if [[ "$RESUMING" != true ]]; then
     done
 fi
 
-# Start sentry if configured
-SENTRY_ENABLED="$(get_config workspace.sentry)"
+# Start sentry if enabled — meta (per-session override) wins over config default
+SENTRY_META="$(read_session_meta "$SESSION" sentry)"
+if [[ -n "$SENTRY_META" ]]; then
+    SENTRY_ENABLED="$SENTRY_META"
+else
+    SENTRY_ENABLED="$(get_config workspace.sentry)"
+fi
 if [[ "${SENTRY_ENABLED,,}" == "true" ]]; then
     "${AE_META}/sentry" start
 fi

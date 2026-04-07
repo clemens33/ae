@@ -551,6 +551,18 @@ assert_eq "sentry: detects missing panes from meta" \
     "1" \
     "$([[ "$AE_SOURCE" == *'pane missing'* && "$AE_SOURCE" == *'alerted_missing'* ]] && echo 1 || echo 0)"
 
+assert_eq "sentry: top-level ae sentry command exists" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'cmd_sentry()'* && "$AE_SOURCE" == *'sentry)'* ]] && echo 1 || echo 0)"
+
+assert_eq "sentry: persists state in meta via _set_meta_sentry" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'_set_meta_sentry'* ]] && echo 1 || echo 0)"
+
+assert_eq "sentry: meta override wins over config on start" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'read_session_meta "$SESSION" sentry'* ]] && echo 1 || echo 0)"
+
 # ── gen_uuid ─────────────────────────────────────────────────────────
 
 uuid="$(gen_uuid)"
