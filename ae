@@ -2674,7 +2674,7 @@ AE_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 # Preserve per-session loop override across rewrite (if any)
 PRESERVED_LOOP=""
 if [[ -f "${AE_META}/meta" ]]; then
-    PRESERVED_LOOP="$(grep '^loop=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2-)"
+    PRESERVED_LOOP="$(grep '^loop=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
 fi
 
 cat >"${AE_META}/meta" <<EOF
