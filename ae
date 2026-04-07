@@ -3864,6 +3864,29 @@ _loop_log() {
     printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"
 }
 
+# Check if any process named $2 is a descendant of pane PID $1.
+# Walks each candidate's ancestor chain via /proc/<pid>/stat.
+# Used to avoid false-positive "dead" alerts when the pane's foreground is
+# a shell wrapper (e.g. bash -lc) but the actual agent is running underneath.
+_pane_has_descendant_named() {
+    local pane_pid="$1" target="$2"
+    [[ -n "$pane_pid" && -n "$target" ]] || return 1
+    local pids
+    pids="$(pgrep -x "$target" 2>/dev/null || true)"
+    [[ -n "$pids" ]] || return 1
+    local pid cur
+    for pid in $pids; do
+        cur="$pid"
+        while [[ -n "$cur" && "$cur" != "1" && "$cur" != "0" ]]; do
+            if [[ "$cur" == "$pane_pid" ]]; then
+                return 0
+            fi
+            cur="$(awk '{print $4}' "/proc/${cur}/stat" 2>/dev/null || true)"
+        done
+    done
+    return 1
+}
+
 declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing
 cycle=0
 
@@ -3885,7 +3908,7 @@ while true; do
 
     # Collect live panes into an associative array for missing-pane detection
     declare -A live_agents=()
-    while IFS='|' read -r pane agent proc; do
+    while IFS='|' read -r pane agent proc pane_pid_val; do
         [[ -n "$agent" ]] || continue
         [[ "$agent" != "(null)" && "$agent" != "" && "$agent" != "_loop" ]] || continue
         live_agents["$agent"]="$pane"
@@ -3898,16 +3921,24 @@ while true; do
             continue
         fi
 
-        # 1. Dead check — process dropped to shell
+        # 1. Dead check — pane's foreground command is a shell.
+        # But the agent might still be running as a descendant (e.g. when launched
+        # via bash -lc wrapper). Walk the process tree before declaring death.
         case "$proc" in
             bash|zsh|fish|sh|dash|"")
-                dead_agents["$pane"]=1
-                cycle_dead=$((cycle_dead + 1))
-                cycle_alerts=$((cycle_alerts + 1))
-                ae_emit_event "alert" "$agent" "" "agent process dead — dropped to shell"
-                tmux display-message -d 10000 "[ae loop] $agent is DEAD — process dropped to shell" 2>/dev/null || true
-                _loop_log "  ${agent}  DEAD — process dropped to shell (alerted)"
-                continue ;;
+                agent_alias="${agent%%:*}"
+                if _pane_has_descendant_named "$pane_pid_val" "$agent_alias"; then
+                    : # alive — fall through to active check
+                else
+                    dead_agents["$pane"]=1
+                    cycle_dead=$((cycle_dead + 1))
+                    cycle_alerts=$((cycle_alerts + 1))
+                    ae_emit_event "alert" "$agent" "" "agent process dead — dropped to shell"
+                    tmux display-message -d 10000 "[ae loop] $agent is DEAD — process dropped to shell" 2>/dev/null || true
+                    _loop_log "  ${agent}  DEAD — process dropped to shell (alerted)"
+                    continue
+                fi
+                ;;
         esac
 
         # 2. Active check — pane content hash changed since last cycle
@@ -3966,7 +3997,7 @@ while true; do
             _loop_log "  ${agent}  STALE — already alerted, waiting for activity"
         fi
 
-    done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
+    done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}' 2>/dev/null)
 
     # 6. Missing pane check — registered agents whose panes no longer exist
     while IFS='=' read -r key val; do
