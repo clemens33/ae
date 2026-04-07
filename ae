@@ -3763,14 +3763,19 @@ _loop_stop() {
         rm -f "$PIDFILE" "${META_DIR}/.loop.status"
         # Kill the loop window if it exists
         tmux kill-window -t "${_AE_SESSION}:ae-loop" 2>/dev/null || true
-        # Restore previous status-right (if we saved one) or unset our override
-        local prev
+        # Restore the original status-right we saved on start.
+        # If the saved value matches the global setting (i.e. there was no
+        # session-level override before), unset our session override entirely
+        # so the session falls back to the global value.
+        local prev global_right
         prev="$(grep '^status_right_prev=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
-        if [[ -n "$prev" ]]; then
+        global_right="$(tmux show-options -gv status-right 2>/dev/null || true)"
+        if [[ -n "$prev" && "$prev" != "$global_right" ]]; then
             tmux set-option -t "$_AE_SESSION" status-right "$prev" 2>/dev/null || true
         else
             tmux set-option -u -t "$_AE_SESSION" status-right 2>/dev/null || true
         fi
+        tmux set-option -u -t "$_AE_SESSION" status-interval 2>/dev/null || true
         sed -i '/^status_right_prev=/d' "$META_DIR/meta" 2>/dev/null || true
         echo "Loop stopped."
     else
@@ -3807,16 +3812,19 @@ _loop_start() {
     tmux set-option -p -t "$loop_pane" @ae_agent "_loop" 2>/dev/null || true
     # Read-only: disable input to the pane so accidental keystrokes don't break the loop
     tmux select-pane -t "$loop_pane" -d 2>/dev/null || true
-    # Save the current session-level status-right (if any) so we can restore on stop
+    # Capture the current effective status-right (session-level if set, otherwise global)
+    # so we can prepend our loop indicator without losing the user's normal status bar.
     local prev_status_right
     prev_status_right="$(tmux show-options -v -t "$_AE_SESSION" status-right 2>/dev/null || true)"
-    if [[ -n "$prev_status_right" ]]; then
-        # Persist alongside meta so _loop_stop can find it
-        sed -i '/^status_right_prev=/d' "$META_DIR/meta" 2>/dev/null || true
-        echo "status_right_prev=${prev_status_right}" >> "$META_DIR/meta"
+    if [[ -z "$prev_status_right" ]]; then
+        prev_status_right="$(tmux show-options -gv status-right 2>/dev/null || true)"
     fi
-    # Set status-right to read the loop's status file (refreshed each tmux status-interval)
-    tmux set-option -t "$_AE_SESSION" status-right "#(cat ${META_DIR}/.loop.status 2>/dev/null) " 2>/dev/null || true
+    # Persist the original alongside meta so _loop_stop can restore it
+    sed -i '/^status_right_prev=/d' "$META_DIR/meta" 2>/dev/null || true
+    echo "status_right_prev=${prev_status_right}" >> "$META_DIR/meta"
+    # Prepend the loop indicator to the existing status-right (refreshed each status-interval)
+    local new_status_right="#(cat ${META_DIR}/.loop.status 2>/dev/null) ${prev_status_right}"
+    tmux set-option -t "$_AE_SESSION" status-right "$new_status_right" 2>/dev/null || true
     tmux set-option -t "$_AE_SESSION" status-interval 5 2>/dev/null || true
     _set_meta_loop "true"
     echo "Loop started in hidden window (pane $loop_pane). Use 'peek _loop' to inspect."
