@@ -371,7 +371,7 @@ assert_contains "doctor: checks git" "OK    git" "$doctor_output"
 assert_contains "doctor: checks dummy agent" "OK    agent:dummy" "$doctor_output"
 assert_contains "doctor: prints summary" "Summary: 0 failure(s)" "$doctor_output"
 
-# ── Test 11: ae doctor --sync-sessions ───────────────────────────────
+# ── Test 11: ae doctor --refresh ─────────────────────────────────────
 
 REPO11="$(setup_repo)"
 (cd "$REPO11" && "$AE" --local test-sync &) 2>/dev/null
@@ -382,16 +382,16 @@ printf '#!/usr/bin/env bash\necho stale-helper\n' > "$HOME/.ae/sessions/test-syn
 chmod 0700 "$HOME/.ae/sessions/test-sync/reply"
 printf 'stale manifest\n' > "$HOME/.ae/sessions/test-sync/workspace.md"
 
-(cd "$REPO11" && "$AE" doctor --sync-sessions test-sync > "$TMPDIR/doctor-sync.out" 2>/dev/null)
+(cd "$REPO11" && "$AE" doctor --refresh test-sync > "$TMPDIR/doctor-sync.out" 2>/dev/null)
 doctor_sync_output="$(cat "$TMPDIR/doctor-sync.out")"
 reply_output="$("$HOME/.ae/sessions/test-sync/reply" 2>&1 || true)"
 workspace_output="$(cat "$HOME/.ae/sessions/test-sync/workspace.md")"
 meta_ae_path="$(grep '^ae_path=' "$HOME/.ae/sessions/test-sync/meta" | cut -d= -f2-)"
 
-assert_contains "doctor-sync: reports refreshed session" "OK    sync:test-sync" "$doctor_sync_output"
-assert_contains "doctor-sync: summary still succeeds" "Summary: 0 failure(s)" "$doctor_sync_output"
-assert_contains "doctor-sync: reply helper regenerated" "Usage: reply [--as <agent>] <request-id> <message>" "$reply_output"
-assert_contains "doctor-sync: workspace regenerated" "memo add" "$workspace_output"
+assert_contains "doctor-refresh: reports refreshed session" "OK    refresh:test-sync" "$doctor_sync_output"
+assert_contains "doctor-refresh: summary still succeeds" "Summary: 0 failure(s)" "$doctor_sync_output"
+assert_contains "doctor-refresh: reply helper regenerated" "Usage: reply [--as <agent>] <request-id> <message>" "$reply_output"
+assert_contains "doctor-refresh: workspace regenerated" "memo add" "$workspace_output"
 assert_eq "doctor-sync: meta ae_path refreshed" "$AE" "$meta_ae_path"
 
 # Clean up

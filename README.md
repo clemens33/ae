@@ -164,7 +164,7 @@ ae [name] use <alias>  Start session with a specific agent as main
 ae list                List all sessions with agent health
 ae status [name]       Show agent output without attaching
 ae doctor              Check local environment and ae config
-ae doctor --sync-sessions [name|all]
+ae doctor --refresh [name|all]
                        Refresh helper scripts/workspace.md in existing sessions
 ae loop <start|stop|status> [name]
                        Toggle the stale-agent watchdog loop (per-session, persists across resume)
@@ -197,8 +197,8 @@ It checks the local bash/tmux/git environment, your ae config, and whether confi
 After upgrading `ae` itself, you can refresh already-created session helpers without recreating the sessions:
 
 ```bash
-ae doctor --sync-sessions        # refresh every session in ~/.ae/sessions
-ae doctor --sync-sessions my-fix # refresh one session only
+ae doctor --refresh        # refresh every session in ~/.ae/sessions
+ae doctor --refresh my-fix # refresh one session only
 ```
 
 ## Compatibility

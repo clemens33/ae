@@ -1452,9 +1452,9 @@ sync_existing_session_assets() {
     sync_session_assets "$session_name" "$meta_dir" "$work_dir" "$origin" "$mode" "$main_pane" "$config_file"
 }
 
-doctor_sync_sessions() {
+doctor_refresh_sessions() {
     local target="${1:-all}"
-    local synced=0
+    local refreshed=0
 
     if [[ "$target" == "all" ]]; then
         local meta session_name
@@ -1464,49 +1464,49 @@ doctor_sync_sessions() {
             session_name="$(basename "$(dirname "$meta")")"
             seen_sessions["$session_name"]=1
             if sync_existing_session_assets "$session_name"; then
-                doctor_report "OK" "sync:${session_name}" "refreshed session helpers and workspace"
+                doctor_report "OK" "refresh:${session_name}" "refreshed session helpers and workspace"
             else
-                doctor_report "FAIL" "sync:${session_name}" "failed to refresh session assets"
+                doctor_report "FAIL" "refresh:${session_name}" "failed to refresh session assets"
             fi
-            synced=1
+            refreshed=1
         done
         for meta in "${WORKTREES_DIR}"/*/.ae/*/meta; do
             [[ -f "$meta" ]] || continue
             session_name="$(basename "$(dirname "$meta")")"
             [[ -n "${seen_sessions[$session_name]:-}" ]] && continue
             if sync_existing_session_assets "$session_name"; then
-                doctor_report "OK" "sync:${session_name}" "refreshed session helpers and workspace"
+                doctor_report "OK" "refresh:${session_name}" "refreshed session helpers and workspace"
             else
-                doctor_report "FAIL" "sync:${session_name}" "failed to refresh session assets"
+                doctor_report "FAIL" "refresh:${session_name}" "failed to refresh session assets"
             fi
-            synced=1
+            refreshed=1
         done
-        if ((synced == 0)); then
-            doctor_report "WARN" "sync" "no existing sessions found in ${SESSIONS_DIR}"
+        if ((refreshed == 0)); then
+            doctor_report "WARN" "refresh" "no existing sessions found in ${SESSIONS_DIR}"
         fi
         return 0
     fi
 
     if sync_existing_session_assets "$target"; then
-        doctor_report "OK" "sync:${target}" "refreshed session helpers and workspace"
+        doctor_report "OK" "refresh:${target}" "refreshed session helpers and workspace"
     else
-        doctor_report "FAIL" "sync:${target}" "failed to refresh session assets"
+        doctor_report "FAIL" "refresh:${target}" "failed to refresh session assets"
     fi
 }
 
 cmd_doctor() {
-    local sync_target=""
+    local refresh_target=""
     case "${1:-}" in
         "") ;;
-        --sync-sessions)
-            sync_target="${2:-all}"
+        --refresh)
+            refresh_target="${2:-all}"
             if [[ $# -gt 2 ]]; then
-                echo "Usage: ae doctor [--sync-sessions [all|<session>]]" >&2
+                echo "Usage: ae doctor [--refresh [all|<session>]]" >&2
                 return 1
             fi
             ;;
         *)
-            echo "Usage: ae doctor [--sync-sessions [all|<session>]]" >&2
+            echo "Usage: ae doctor [--refresh [all|<session>]]" >&2
             return 1
             ;;
     esac
@@ -1603,9 +1603,9 @@ cmd_doctor() {
         done < <(printf '%s\n' "${!doctor_agents[@]}" | sort)
     fi
 
-    if [[ -n "$sync_target" ]]; then
+    if [[ -n "$refresh_target" ]]; then
         echo ""
-        doctor_sync_sessions "$sync_target"
+        doctor_refresh_sessions "$refresh_target"
     fi
 
     echo ""
@@ -1641,7 +1641,7 @@ cmd_loop() {
     local helper="${meta_dir}/loop"
     if [[ ! -x "$helper" ]]; then
         echo "Error: loop helper not found in session '${target}'" >&2
-        echo "       Run 'ae doctor --sync-sessions ${target}' to regenerate helpers." >&2
+        echo "       Run 'ae doctor --refresh ${target}' to regenerate helpers." >&2
         return 1
     fi
     "$helper" "$subcmd"
@@ -1724,7 +1724,7 @@ cmd_help() {
     echo "  ae --worktree [name]   Start session with git worktree (tracked files only)"
     echo "  ae list                List all ae sessions"
     echo "  ae status [name]       Show recent agent output without attaching"
-    echo "  ae doctor [--sync-sessions [name|all]]"
+    echo "  ae doctor [--refresh [name|all]]"
     echo "                         Check local environment and optionally refresh existing session helpers"
     echo "  ae rename [old] <new>  Rename a running session"
     echo "  ae loop <start|stop|status> [name]"
@@ -1741,7 +1741,7 @@ cmd_help() {
     echo "Config: ~/.ae/config (per-project override: .ae/config in project dir)"
     echo "Session helpers: send, ask, review, reply, requests, peek, spawn, retire, interrupt"
     echo "Run 'ae doctor' after install or agent CLI upgrades."
-    echo "Run 'ae doctor --sync-sessions' after updating ae to refresh existing session helpers."
+    echo "Run 'ae doctor --refresh' after updating ae to regenerate existing session helpers."
 }
 
 # Internal: spawn a new agent pane (called via spawn helper → ae _spawn)
