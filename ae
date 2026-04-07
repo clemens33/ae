@@ -186,18 +186,60 @@ build_launch_command() {
 
 # Extract the binary name from a command string, skipping leading env-var
 # assignments (FOO=bar) and well-known launcher prefixes (env, sudo, nice, ...).
-# Used by the loop's dead-check so it can find the actual agent process even
-# when the configured command is wrapped (e.g. "env CLAUDE_API_KEY=... claude").
+# Tracks per-launcher option-argument flags so e.g. "sudo -u alice codex"
+# correctly skips "alice" as the option arg of "-u" rather than treating
+# it as the binary. Used by the loop's dead-check so it can find the actual
+# agent process even when the configured command is wrapped.
 extract_binary_from_cmd() {
     local cmd="$1"
-    local word
-    for word in $cmd; do
-        case "$word" in
-            *=*) continue ;;
-            env|sudo|nice|ionice|time|nohup|command|exec) continue ;;
+    local words=()
+    local w
+    for w in $cmd; do
+        words+=("$w")
+    done
+    local n=${#words[@]} i=0
+    local arg_flags="" skip_next=0
+    while ((i < n)); do
+        w="${words[$i]}"
+        if ((skip_next)); then
+            skip_next=0
+            i=$((i + 1))
+            continue
+        fi
+        case "$w" in
+            *=*)
+                # env-var assignment (FOO=bar)
+                i=$((i + 1)); continue ;;
+            env)
+                arg_flags=" -C -u "
+                i=$((i + 1)); continue ;;
+            sudo)
+                # Only flags that take an option argument; booleans like -E -i -s -n are NOT here.
+                arg_flags=" -C -D -U -g -h -p -r -t -u "
+                i=$((i + 1)); continue ;;
+            nice)
+                arg_flags=" -n "
+                i=$((i + 1)); continue ;;
+            ionice)
+                arg_flags=" -c -n -p -P -u "
+                i=$((i + 1)); continue ;;
+            time)
+                arg_flags=" -o -f "
+                i=$((i + 1)); continue ;;
+            nohup | command | exec)
+                arg_flags=""
+                i=$((i + 1)); continue ;;
+            -*)
+                # Launcher option flag — skip its arg if it's in the known arg-flags list
+                if [[ -n "$arg_flags" && "$arg_flags" == *" $w "* ]]; then
+                    skip_next=1
+                fi
+                i=$((i + 1)); continue ;;
+            *)
+                # First non-flag, non-assignment, non-launcher word — that's the binary
+                printf '%s' "${w##*/}"
+                return 0 ;;
         esac
-        printf '%s' "${word##*/}"
-        return 0
     done
 }
 
@@ -3755,34 +3797,52 @@ set -uo pipefail
 META_DIR="$(cd "$(dirname "$0")" && pwd)"
 EVENTS_FILE="${META_DIR}/events.jsonl"
 
-_unescape() {
-    local s="$1"
-    s="${s//\\n/ }"
-    s="${s//\\t/ }"
-    s="${s//\\r/}"
-    s="${s//\\\"/\"}"
-    s="${s//\\\\/\\}"
-    printf '%s' "$s"
-}
-
-_extract() {
-    # $1=line, $2=key
-    sed -n 's/.*"'"$2"'":"\([^"]*\)".*/\1/p' <<<"$1"
+# Extract a JSON string value for a flat key from one of our own events.jsonl
+# lines. Walks character by character so escaped quotes (\") and backslashes
+# (\\) inside the value don't terminate the parse early. Handles the same
+# escape sequences ae_emit_event produces: \\, \", \n, \t, \r.
+_extract_json_str() {
+    local line="$1" key="$2"
+    local prefix="\"${key}\":\""
+    local rest="${line#*${prefix}}"
+    [[ "$rest" == "$line" ]] && return
+    local result="" i=0 n=${#rest}
+    local c next
+    while ((i < n)); do
+        c="${rest:$i:1}"
+        if [[ "$c" == "\\" ]]; then
+            next="${rest:$((i + 1)):1}"
+            case "$next" in
+                n) result+=" " ;;
+                t) result+=" " ;;
+                r) ;;
+                '"') result+='"' ;;
+                "\\") result+="\\" ;;
+                *) result+="$c$next" ;;
+            esac
+            i=$((i + 2))
+        elif [[ "$c" == '"' ]]; then
+            break
+        else
+            result+="$c"
+            i=$((i + 1))
+        fi
+    done
+    printf '%s' "$result"
 }
 
 _format_event() {
     local line="$1"
     [[ -n "$line" ]] || return
     [[ "$line" == \{* ]] || return
-    local ts actor action target ref summary short_ts
-    ts="$(_extract "$line" ts)"
-    actor="$(_extract "$line" actor)"
-    action="$(_extract "$line" action)"
-    target="$(_extract "$line" target)"
-    summary="$(_extract "$line" summary)"
+    local ts actor action target summary short_ts
+    ts="$(_extract_json_str "$line" ts)"
+    actor="$(_extract_json_str "$line" actor)"
+    action="$(_extract_json_str "$line" action)"
+    target="$(_extract_json_str "$line" target)"
+    summary="$(_extract_json_str "$line" summary)"
     short_ts="${ts##*T}"
     short_ts="${short_ts%Z}"
-    summary="$(_unescape "$summary")"
     if (( ${#summary} > 60 )); then
         summary="${summary:0:57}..."
     fi
