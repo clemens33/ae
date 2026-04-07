@@ -3760,9 +3760,18 @@ _loop_stop() {
     if _loop_is_running; then
         local pid; pid="$(cat "$PIDFILE")"
         kill "$pid" 2>/dev/null || true
-        rm -f "$PIDFILE"
+        rm -f "$PIDFILE" "${META_DIR}/.loop.status"
         # Kill the loop window if it exists
         tmux kill-window -t "${_AE_SESSION}:ae-loop" 2>/dev/null || true
+        # Restore previous status-right (if we saved one) or unset our override
+        local prev
+        prev="$(grep '^status_right_prev=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+        if [[ -n "$prev" ]]; then
+            tmux set-option -t "$_AE_SESSION" status-right "$prev" 2>/dev/null || true
+        else
+            tmux set-option -u -t "$_AE_SESSION" status-right 2>/dev/null || true
+        fi
+        sed -i '/^status_right_prev=/d' "$META_DIR/meta" 2>/dev/null || true
         echo "Loop stopped."
     else
         echo "Loop is not running."
@@ -3798,6 +3807,17 @@ _loop_start() {
     tmux set-option -p -t "$loop_pane" @ae_agent "_loop" 2>/dev/null || true
     # Read-only: disable input to the pane so accidental keystrokes don't break the loop
     tmux select-pane -t "$loop_pane" -d 2>/dev/null || true
+    # Save the current session-level status-right (if any) so we can restore on stop
+    local prev_status_right
+    prev_status_right="$(tmux show-options -v -t "$_AE_SESSION" status-right 2>/dev/null || true)"
+    if [[ -n "$prev_status_right" ]]; then
+        # Persist alongside meta so _loop_stop can find it
+        sed -i '/^status_right_prev=/d' "$META_DIR/meta" 2>/dev/null || true
+        echo "status_right_prev=${prev_status_right}" >> "$META_DIR/meta"
+    fi
+    # Set status-right to read the loop's status file (refreshed each tmux status-interval)
+    tmux set-option -t "$_AE_SESSION" status-right "#(cat ${META_DIR}/.loop.status 2>/dev/null) " 2>/dev/null || true
+    tmux set-option -t "$_AE_SESSION" status-interval 5 2>/dev/null || true
     _set_meta_loop "true"
     echo "Loop started in hidden window (pane $loop_pane). Use 'peek _loop' to inspect."
     exit 0
@@ -3828,7 +3848,9 @@ esac
 # --- _run: the actual watchdog (runs inside hidden tmux window) ---
 
 echo "$$" > "$PIDFILE"
-trap 'rm -f "$PIDFILE"' EXIT
+STATUSFILE="${META_DIR}/.loop.status"
+trap 'rm -f "$PIDFILE" "$STATUSFILE"' EXIT
+printf '[loop ◌ starting]' > "$STATUSFILE"
 
 # Pretty banner so the pane is informative when viewed
 printf '\033[1;36m'
@@ -3855,6 +3877,11 @@ while true; do
 
     cycle=$((cycle + 1))
     _loop_log "── cycle ${cycle} ──"
+    cycle_total=0
+    cycle_active=0
+    cycle_stale=0
+    cycle_dead=0
+    cycle_alerts=0
 
     # Collect live panes into an associative array for missing-pane detection
     declare -A live_agents=()
@@ -3862,9 +3889,11 @@ while true; do
         [[ -n "$agent" ]] || continue
         [[ "$agent" != "(null)" && "$agent" != "" && "$agent" != "_loop" ]] || continue
         live_agents["$agent"]="$pane"
+        cycle_total=$((cycle_total + 1))
 
         # Skip already-dead agents
         if [[ -n "${dead_agents[$pane]:-}" ]]; then
+            cycle_dead=$((cycle_dead + 1))
             _loop_log "  ${agent}  dead (no further checks)"
             continue
         fi
@@ -3873,6 +3902,8 @@ while true; do
         case "$proc" in
             bash|zsh|fish|sh|dash|"")
                 dead_agents["$pane"]=1
+                cycle_dead=$((cycle_dead + 1))
+                cycle_alerts=$((cycle_alerts + 1))
                 ae_emit_event "alert" "$agent" "" "agent process dead — dropped to shell"
                 tmux display-message -d 10000 "[ae loop] $agent is DEAD — process dropped to shell" 2>/dev/null || true
                 _loop_log "  ${agent}  DEAD — process dropped to shell (alerted)"
@@ -3886,6 +3917,7 @@ while true; do
             prev_hash["$pane"]="$hash"
             last_hash_change["$pane"]="$now_epoch"
             nudge_count["$pane"]=0
+            cycle_active=$((cycle_active + 1))
             _loop_log "  ${agent}  active (pane hash changed)"
             continue
         fi
@@ -3894,6 +3926,7 @@ while true; do
         #    interaction with quiet/static responses they are still reading)
         last_change="${last_hash_change[$pane]:-0}"
         if (( last_change > 0 && now_epoch - last_change < STALE_SECS )); then
+            cycle_active=$((cycle_active + 1))
             _loop_log "  ${agent}  recently visible ($((now_epoch - last_change))s ago) — skip"
             continue
         fi
@@ -3901,11 +3934,13 @@ while true; do
         # 4. Recently alive — recent event from this actor
         event_age="$(_last_event_age "$agent")"
         if (( event_age < STALE_SECS )); then
+            cycle_active=$((cycle_active + 1))
             _loop_log "  ${agent}  recent ae activity (${event_age}s) — skip"
             continue
         fi
 
         # 5. Stale — nudge or escalate
+        cycle_stale=$((cycle_stale + 1))
         count="${nudge_count[$pane]:-0}"
         stale_min_num=$(( event_age / 60 ))
         if (( stale_min_num > 9999 )); then
@@ -3925,6 +3960,7 @@ while true; do
             ae_emit_event "alert" "$agent" "" "max nudges reached (${stale_display}), needs attention"
             tmux display-message -d 10000 "[ae loop] $agent may need attention — stale after ${MAX_NUDGES} nudges" 2>/dev/null || true
             nudge_count["$pane"]=$((count + 1))
+            cycle_alerts=$((cycle_alerts + 1))
             _loop_log "  ${agent}  STALE — max nudges reached, alert raised"
         else
             _loop_log "  ${agent}  STALE — already alerted, waiting for activity"
@@ -3953,6 +3989,16 @@ while true; do
             _loop_log "  ${r_agent}  RECOVERED ${r_tool} session id ${r_captured:0:8}"
         done < <("$AE_PATH_BIN" _recover-pending "$_AE_SESSION" 2>/dev/null || true)
     fi
+
+    # Update tmux status bar via a tiny status file (read by status-right format)
+    if (( cycle_dead > 0 )); then
+        glyph="✖"
+    elif (( cycle_stale > 0 )); then
+        glyph="⚠"
+    else
+        glyph="●"
+    fi
+    printf '[loop %s %d/%d]' "$glyph" "$cycle_active" "$cycle_total" > "$STATUSFILE"
 
     sleep "$INTERVAL"
 done
