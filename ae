@@ -3012,7 +3012,7 @@ ae_resolve() {
             fi
             bare_count=$((bare_count + 1))
         fi
-    done < <(tmux list-panes -t "$search_session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
+    done < <(tmux list-panes -s -t "$search_session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
 
     if [[ -z "$resolved" && "$alias_count" -eq 1 ]]; then
         resolved="$alias_match"
@@ -3528,14 +3528,14 @@ if [[ "${1:-}" == "--all" ]]; then
         while IFS='|' read -r pid aagent cmd; do
             [[ -z "$aagent" ]] && continue
             printf "%-20s %-25s %-8s %s\n" "$sess" "$aagent" "$pid" "$cmd"
-        done < <(tmux list-panes -t "$sess" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
+        done < <(tmux list-panes -s -t "$sess" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
     done
 else
     printf "%-25s %-8s %s\n" "AGENT" "PANE" "PROCESS"
     while IFS='|' read -r pid aagent cmd; do
         [[ -z "$aagent" ]] && continue
         printf "%-25s %-8s %s\n" "$aagent" "$pid" "$cmd"
-    done < <(tmux list-panes -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
+    done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
 fi
 AGENTSEOF
     chmod 0700 "${AE_META}/agents"
@@ -3786,15 +3786,18 @@ _loop_start() {
         _set_meta_loop "true"
         exit 0
     fi
-    # Create hidden tmux window and run the watchdog there
+    # Create hidden tmux window and run the watchdog there.
+    # -a appends after the current window so it doesn't collide with index 0.
     local loop_pane
-    loop_pane="$(tmux new-window -d -t "$_AE_SESSION" -n "ae-loop" -P -F '#{pane_id}' \
+    loop_pane="$(tmux new-window -da -t "$_AE_SESSION" -n "ae-loop" -P -F '#{pane_id}' \
         "${META_DIR}/loop _run" 2>/dev/null)" || {
         echo "Error: could not create loop window" >&2
         exit 1
     }
     # Tag the loop pane so peek can find it
     tmux set-option -p -t "$loop_pane" @ae_agent "_loop" 2>/dev/null || true
+    # Read-only: disable input to the pane so accidental keystrokes don't break the loop
+    tmux select-pane -t "$loop_pane" -d 2>/dev/null || true
     _set_meta_loop "true"
     echo "Loop started in hidden window (pane $loop_pane). Use 'peek _loop' to inspect."
     exit 0
@@ -3827,14 +3830,31 @@ esac
 echo "$$" > "$PIDFILE"
 trap 'rm -f "$PIDFILE"' EXIT
 
+# Pretty banner so the pane is informative when viewed
+printf '\033[1;36m'
+printf '╭─ ae loop — session: %s ─────────────────────────╮\n' "$_AE_SESSION"
+printf '│ interval: %ss   stale: %sm   max nudges: %s\n' "$INTERVAL" "$STALE_MIN" "$MAX_NUDGES"
+printf '│ read-only pane (input disabled). use peek _loop or stop with `loop stop`.\n'
+printf '╰────────────────────────────────────────────────────────╯\n'
+printf '\033[0m\n'
+
+_loop_log() {
+    printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"
+}
+
 declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing
+cycle=0
 
 while true; do
     # Self-terminate if session or meta is gone
     if ! tmux has-session -t "$_AE_SESSION" 2>/dev/null; then
+        _loop_log "session gone — exiting"
         break
     fi
-    [[ -f "$META_DIR/meta" ]] || break
+    [[ -f "$META_DIR/meta" ]] || { _loop_log "meta gone — exiting"; break; }
+
+    cycle=$((cycle + 1))
+    _loop_log "── cycle ${cycle} ──"
 
     # Collect live panes into an associative array for missing-pane detection
     declare -A live_agents=()
@@ -3844,7 +3864,10 @@ while true; do
         live_agents["$agent"]="$pane"
 
         # Skip already-dead agents
-        [[ -z "${dead_agents[$pane]:-}" ]] || continue
+        if [[ -n "${dead_agents[$pane]:-}" ]]; then
+            _loop_log "  ${agent}  dead (no further checks)"
+            continue
+        fi
 
         # 1. Dead check — process dropped to shell
         case "$proc" in
@@ -3852,6 +3875,7 @@ while true; do
                 dead_agents["$pane"]=1
                 ae_emit_event "alert" "$agent" "" "agent process dead — dropped to shell"
                 tmux display-message -d 10000 "[ae loop] $agent is DEAD — process dropped to shell" 2>/dev/null || true
+                _loop_log "  ${agent}  DEAD — process dropped to shell (alerted)"
                 continue ;;
         esac
 
@@ -3862,17 +3886,24 @@ while true; do
             prev_hash["$pane"]="$hash"
             last_hash_change["$pane"]="$now_epoch"
             nudge_count["$pane"]=0
+            _loop_log "  ${agent}  active (pane hash changed)"
             continue
         fi
 
         # 3. Recently visible — pane changed within stale window (covers human
         #    interaction with quiet/static responses they are still reading)
         last_change="${last_hash_change[$pane]:-0}"
-        if (( last_change > 0 && now_epoch - last_change < STALE_SECS )); then continue; fi
+        if (( last_change > 0 && now_epoch - last_change < STALE_SECS )); then
+            _loop_log "  ${agent}  recently visible ($((now_epoch - last_change))s ago) — skip"
+            continue
+        fi
 
         # 4. Recently alive — recent event from this actor
         event_age="$(_last_event_age "$agent")"
-        if (( event_age < STALE_SECS )); then continue; fi
+        if (( event_age < STALE_SECS )); then
+            _loop_log "  ${agent}  recent ae activity (${event_age}s) — skip"
+            continue
+        fi
 
         # 5. Stale — nudge or escalate
         count="${nudge_count[$pane]:-0}"
@@ -3889,13 +3920,17 @@ while true; do
                 "${META_DIR}/send" "$agent" \
                 "Status check: if you have more work, continue. If blocked or done, say so briefly." 2>/dev/null || true
             nudge_count["$pane"]=$((count + 1))
+            _loop_log "  ${agent}  STALE (${stale_display}) — nudged ($((count + 1))/${MAX_NUDGES})"
         elif (( count == MAX_NUDGES )); then
             ae_emit_event "alert" "$agent" "" "max nudges reached (${stale_display}), needs attention"
             tmux display-message -d 10000 "[ae loop] $agent may need attention — stale after ${MAX_NUDGES} nudges" 2>/dev/null || true
             nudge_count["$pane"]=$((count + 1))
+            _loop_log "  ${agent}  STALE — max nudges reached, alert raised"
+        else
+            _loop_log "  ${agent}  STALE — already alerted, waiting for activity"
         fi
 
-    done < <(tmux list-panes -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
+    done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
 
     # 6. Missing pane check — registered agents whose panes no longer exist
     while IFS='=' read -r key val; do
@@ -3905,6 +3940,7 @@ while true; do
             alerted_missing["$agent_ref"]=1
             ae_emit_event "alert" "$agent_ref" "" "pane missing — agent no longer visible in session"
             tmux display-message -d 10000 "[ae loop] $agent_ref pane is MISSING" 2>/dev/null || true
+            _loop_log "  ${agent_ref}  MISSING — pane no longer in session"
         fi
     done < "$META_DIR/meta"
 
@@ -3914,6 +3950,7 @@ while true; do
         while IFS=$'\t' read -r r_kind r_slot r_agent r_tool r_captured; do
             [[ "$r_kind" == "ok" && -n "$r_captured" ]] || continue
             ae_emit_event "recover" "$r_agent" "$r_captured" "captured ${r_tool} session id (${r_captured:0:8})"
+            _loop_log "  ${r_agent}  RECOVERED ${r_tool} session id ${r_captured:0:8}"
         done < <("$AE_PATH_BIN" _recover-pending "$_AE_SESSION" 2>/dev/null || true)
     fi
 
