@@ -3567,7 +3567,7 @@ esac
 echo "$$" > "$PIDFILE"
 trap 'rm -f "$PIDFILE"' EXIT
 
-declare -A prev_hash nudge_count dead_agents alerted_missing
+declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing
 
 while true; do
     # Self-terminate if session or meta is gone
@@ -3595,19 +3595,26 @@ while true; do
                 continue ;;
         esac
 
-        # 2. Active check — pane content hash changed
+        # 2. Active check — pane content hash changed since last cycle
+        now_epoch="$(date +%s)"
         hash="$(tmux capture-pane -p -J -S -40 -E - -t "$pane" 2>/dev/null | md5sum | cut -d' ' -f1)"
         if [[ "$hash" != "${prev_hash[$pane]:-}" ]]; then
             prev_hash["$pane"]="$hash"
+            last_hash_change["$pane"]="$now_epoch"
             nudge_count["$pane"]=0
             continue
         fi
 
-        # 3. Recently alive — recent event from this actor
+        # 3. Recently visible — pane changed within stale window (covers human
+        #    interaction with quiet/static responses they are still reading)
+        last_change="${last_hash_change[$pane]:-0}"
+        if (( last_change > 0 && now_epoch - last_change < STALE_SECS )); then continue; fi
+
+        # 4. Recently alive — recent event from this actor
         event_age="$(_last_event_age "$agent")"
         if (( event_age < STALE_SECS )); then continue; fi
 
-        # 4. Stale — nudge or escalate
+        # 5. Stale — nudge or escalate
         count="${nudge_count[$pane]:-0}"
         stale_min_num=$(( event_age / 60 ))
         if (( stale_min_num > 9999 )); then
@@ -3630,7 +3637,7 @@ while true; do
 
     done < <(tmux list-panes -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
 
-    # 5. Missing pane check — registered agents whose panes no longer exist
+    # 6. Missing pane check — registered agents whose panes no longer exist
     while IFS='=' read -r key val; do
         [[ "$key" == agent.* ]] || continue
         agent_ref="${val%%:*}:$(echo "${val#*:}" | cut -d: -f1)"
