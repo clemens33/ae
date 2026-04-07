@@ -166,13 +166,13 @@ ae status [name]       Show agent output without attaching
 ae doctor              Check local environment and ae config
 ae doctor --sync-sessions [name|all]
                        Refresh helper scripts/workspace.md in existing sessions
-ae sentry <start|stop|status> [name]
-                       Toggle the stale-agent watchdog (per-session, persists across resume)
+ae loop <start|stop|status> [name]
+                       Toggle the stale-agent watchdog loop (per-session, persists across resume)
 ae stop [name]         Pause session, keep state for later
 ae end|rm [name]       Commit, push to ae/<name> branch, clean up
 ```
 
-When run inside an ae session, `stop`, `end`, `status`, and `sentry` detect the current session automatically.
+When run inside an ae session, `stop`, `end`, `status`, and `loop` detect the current session automatically.
 
 ## How it works
 

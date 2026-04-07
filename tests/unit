@@ -517,51 +517,51 @@ assert_eq "events: retire emits event" \
     "1" \
     "$([[ "$AE_SOURCE" == *'"action":"retire"'* ]] && echo 1 || echo 0)"
 
-# ── sentry (watchdog) ───────────────────────────────────────────────
+# ── loop (watchdog) ───────────────────────────────────────────────
 
-assert_eq "sentry: helper script exists in generated source" \
+assert_eq "loop: helper script exists in generated source" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'Helper: sentry'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'Helper: loop'* ]] && echo 1 || echo 0)"
 
-assert_eq "sentry: uses send for nudges (not raw send-keys)" \
+assert_eq "loop: uses send for nudges (not raw send-keys)" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'AE_SENDER_OVERRIDE=sentry'* && "$AE_SOURCE" == *'_AE_EVENT_ACTION=nudge'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'AE_SENDER_OVERRIDE=loop'* && "$AE_SOURCE" == *'_AE_EVENT_ACTION=nudge'* ]] && echo 1 || echo 0)"
 
-assert_eq "sentry: detects dead agents via pane_current_command" \
+assert_eq "loop: detects dead agents via pane_current_command" \
     "1" \
     "$([[ "$AE_SOURCE" == *'bash|zsh|fish|sh|dash'* ]] && echo 1 || echo 0)"
 
-assert_eq "sentry: emits alert events" \
+assert_eq "loop: emits alert events" \
     "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "alert"'* ]] && echo 1 || echo 0)"
 
-assert_eq "sentry: supports start/stop/status subcommands" \
+assert_eq "loop: supports start/stop/status subcommands" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'_sentry_stop'* && "$AE_SOURCE" == *'_sentry_status'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_loop_stop'* && "$AE_SOURCE" == *'_loop_status'* ]] && echo 1 || echo 0)"
 
-assert_eq "sentry: auto-start via workspace.sentry config" \
+assert_eq "loop: auto-start via workspace.loop config" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'workspace.sentry'* && "$AE_SOURCE" == *'ae-sentry'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'workspace.loop'* && "$AE_SOURCE" == *'ae-loop'* ]] && echo 1 || echo 0)"
 
-assert_eq "sentry: configurable thresholds via env vars" \
+assert_eq "loop: configurable thresholds via env vars" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'AE_SENTRY_INTERVAL_SEC'* && "$AE_SOURCE" == *'AE_SENTRY_STALE_MIN'* && "$AE_SOURCE" == *'AE_SENTRY_MAX_NUDGES'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'AE_LOOP_INTERVAL_SEC'* && "$AE_SOURCE" == *'AE_LOOP_STALE_MIN'* && "$AE_SOURCE" == *'AE_LOOP_MAX_NUDGES'* ]] && echo 1 || echo 0)"
 
-assert_eq "sentry: detects missing panes from meta" \
+assert_eq "loop: detects missing panes from meta" \
     "1" \
     "$([[ "$AE_SOURCE" == *'pane missing'* && "$AE_SOURCE" == *'alerted_missing'* ]] && echo 1 || echo 0)"
 
-assert_eq "sentry: top-level ae sentry command exists" \
+assert_eq "loop: top-level ae loop command exists" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'cmd_sentry()'* && "$AE_SOURCE" == *'sentry)'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'cmd_loop()'* && "$AE_SOURCE" == *'loop)'* ]] && echo 1 || echo 0)"
 
-assert_eq "sentry: persists state in meta via _set_meta_sentry" \
+assert_eq "loop: persists state in meta via _set_meta_loop" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'_set_meta_sentry'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_set_meta_loop'* ]] && echo 1 || echo 0)"
 
-assert_eq "sentry: meta override wins over config on start" \
+assert_eq "loop: meta override wins over config on start" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'read_session_meta "$SESSION" sentry'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'read_session_meta "$SESSION" loop'* ]] && echo 1 || echo 0)"
 
 # ── gen_uuid ─────────────────────────────────────────────────────────
 
