@@ -541,7 +541,7 @@ assert_eq "loop: supports start/stop/status subcommands" \
 
 assert_eq "loop: auto-start via workspace.loop config" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'workspace.loop'* && "$AE_SOURCE" == *'ae-loop'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'workspace.loop'* && "$AE_SOURCE" == *'ae-monitor'* ]] && echo 1 || echo 0)"
 
 assert_eq "loop: configurable thresholds via env vars" \
     "1" \
