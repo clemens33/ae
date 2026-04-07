@@ -27,7 +27,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -120,6 +120,68 @@ assert_eq "kind: claude" "claude" "$(tool_kind_from_cmd "claude --model opus")"
 assert_eq "kind: codex"  "codex"  "$(tool_kind_from_cmd "codex --yolo")"
 assert_eq "kind: opencode" "opencode" "$(tool_kind_from_cmd "opencode")"
 assert_eq "kind: unknown" "unknown" "$(tool_kind_from_cmd "sometool --flag")"
+
+# ── extract_binary_from_cmd ─────────────────────────────────────────
+
+assert_eq "binary: bare claude" \
+    "claude" \
+    "$(extract_binary_from_cmd "claude --model opus")"
+
+assert_eq "binary: absolute path stripped" \
+    "codex" \
+    "$(extract_binary_from_cmd "/usr/local/bin/codex --yolo")"
+
+assert_eq "binary: env-var assignment skipped" \
+    "claude" \
+    "$(extract_binary_from_cmd "FOO=bar claude --model opus")"
+
+assert_eq "binary: env launcher with -i" \
+    "claude" \
+    "$(extract_binary_from_cmd "env -i FOO=1 claude --model x")"
+
+assert_eq "binary: env launcher with --chdir" \
+    "codex" \
+    "$(extract_binary_from_cmd "env --chdir /tmp codex")"
+
+assert_eq "binary: env launcher with --chdir=" \
+    "codex" \
+    "$(extract_binary_from_cmd "env --chdir=/tmp codex")"
+
+assert_eq "binary: sudo with -u short" \
+    "codex" \
+    "$(extract_binary_from_cmd "sudo -u alice codex --yolo")"
+
+assert_eq "binary: sudo with --user long" \
+    "codex" \
+    "$(extract_binary_from_cmd "sudo --user alice codex")"
+
+assert_eq "binary: sudo with --user=alice" \
+    "codex" \
+    "$(extract_binary_from_cmd "sudo --user=alice codex")"
+
+assert_eq "binary: sudo with boolean -E plus -u" \
+    "codex" \
+    "$(extract_binary_from_cmd "sudo -E -u alice codex")"
+
+assert_eq "binary: nice with -n" \
+    "claude" \
+    "$(extract_binary_from_cmd "nice -n 5 claude")"
+
+assert_eq "binary: nice with --adjustment" \
+    "claude" \
+    "$(extract_binary_from_cmd "nice --adjustment 5 claude")"
+
+assert_eq "binary: time with --format" \
+    "claude" \
+    "$(extract_binary_from_cmd "time --format %E claude")"
+
+assert_eq "binary: ionice with --class" \
+    "codex" \
+    "$(extract_binary_from_cmd "ionice --class 2 codex")"
+
+assert_eq "binary: nested env then sudo" \
+    "codex" \
+    "$(extract_binary_from_cmd "env -i sudo -u bob codex")"
 
 # ── tool_name_from_cmd ──────────────────────────────────────────────
 
