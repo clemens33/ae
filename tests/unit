@@ -563,6 +563,18 @@ assert_eq "loop: meta override wins over config on start" \
     "1" \
     "$([[ "$AE_SOURCE" == *'read_session_meta "$SESSION" loop'* ]] && echo 1 || echo 0)"
 
+assert_eq "loop: recovers pending session IDs via _recover-pending" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'_recover-pending'* && "$AE_SOURCE" == *'cmd_recover_pending'* ]] && echo 1 || echo 0)"
+
+assert_eq "loop: walk_pending_session_ids shared between doctor and loop" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'walk_pending_session_ids'* && "$AE_SOURCE" == *'_doctor_recover_report'* && "$AE_SOURCE" == *'_loop_recover_report'* ]] && echo 1 || echo 0)"
+
+assert_eq "loop: emits recover events for newly captured session IDs" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'ae_emit_event "recover"'* ]] && echo 1 || echo 0)"
+
 # ── gen_uuid ─────────────────────────────────────────────────────────
 
 uuid="$(gen_uuid)"

@@ -1455,7 +1455,10 @@ sync_existing_session_assets() {
 # Try to capture a pending session ID from on-disk agent session files (no live pane needed).
 # Uses the same find_*_session_by_* helpers as start_capture_session_id, but skips the
 # pane-polling and TUI-scrape methods so it can run from doctor without an attached agent.
-# Returns 0 and prints the captured ID on success, or 1 on miss.
+# Exit codes:
+#   0 = won the race; captured ID printed to stdout
+#   2 = found a session file but lost the race to another recoverer
+#   1 = no matching session file found (real miss) or other error
 doctor_try_capture_session_id() {
     local tool_kind="$1" slot="$2" meta_dir="$3"
     local captured="" launch_time launch_id work_dir
@@ -1483,38 +1486,57 @@ doctor_try_capture_session_id() {
             ;;
     esac
     [[ -n "$captured" ]] || return 1
+    # Check-then-set under flock: only update + report success if the slot is
+    # still pending. Prevents duplicate "ok" reports if two recoverers race.
+    local rc
+    set +e
     (
         flock -w 5 200 || exit 1
         local escaped_slot="${slot//./\\.}"
+        local current_line current_id
+        current_line="$(grep "^agent\.${escaped_slot}=" "$meta_dir/meta" 2>/dev/null || true)"
+        current_id="${current_line##*:}"
+        if [[ "$current_id" != "pending" ]]; then
+            exit 2
+        fi
         sed -i "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
+        exit 0
     ) 200>"$meta_dir/meta.lock"
-    printf '%s' "$captured"
+    rc=$?
+    set -e
+    case "$rc" in
+        0) printf '%s' "$captured"; return 0 ;;
+        2) return 2 ;;
+        *) return 1 ;;
+    esac
 }
 
 # Walk a session's meta and try to recover any pending agent session IDs.
-doctor_recover_pending_sessions() {
-    local session_name="$1"
+# Iterate a session's meta and try to recover pending session IDs.
+# Calls report_fn for each entry: report_fn <kind> <slot> <agent_label> <tool_kind> <captured_or_empty>
+# kind is one of: ok | already | miss | skip
+# Used by both doctor (with reporting) and the loop (with quiet/event-based output).
+walk_pending_session_ids() {
+    local session_name="$1" report_fn="$2"
     local meta_dir="${SESSIONS_DIR}/${session_name}"
     [[ -f "${meta_dir}/meta" ]] || return 0
 
-    local key val slot stored_alias rest tool_kind agent_label captured
+    local key val slot stored_alias rest stored_id agent_label cmd tool_kind captured rc
     while IFS='=' read -r key val; do
         [[ "$key" == agent.* ]] || continue
         slot="${key#agent.}"
         # Format: alias:name:session_id (or alias:name for very old sessions)
         stored_alias="${val%%:*}"
         rest="${val#*:}"
-        local stored_id=""
+        stored_id=""
         if [[ "$rest" == *:* ]]; then
             stored_id="${rest##*:}"
         fi
         [[ "$stored_id" == "pending" ]] || continue
         agent_label="${val%:*}"
-        # Resolve tool_kind from configured agent command
-        local cmd
         cmd="$(get_config "agents.${stored_alias}")"
         if [[ -z "$cmd" ]]; then
-            doctor_report "WARN" "recover:${session_name}:${agent_label}" "no command configured for alias '${stored_alias}'"
+            "$report_fn" "skip" "$slot" "$agent_label" "" ""
             continue
         fi
         tool_kind="$(tool_kind_from_cmd "$cmd")"
@@ -1524,12 +1546,97 @@ doctor_recover_pending_sessions() {
                 # claude shouldn't be pending; nothing else to recover
                 continue ;;
         esac
-        if captured="$(doctor_try_capture_session_id "$tool_kind" "$slot" "$meta_dir")" && [[ -n "$captured" ]]; then
-            doctor_report "OK" "recover:${session_name}:${agent_label}" "captured ${tool_kind} session id ${captured:0:8}"
-        else
-            doctor_report "WARN" "recover:${session_name}:${agent_label}" "no matching ${tool_kind} session file found (will retry on next launch)"
-        fi
+        rc=0
+        captured="$(doctor_try_capture_session_id "$tool_kind" "$slot" "$meta_dir")" || rc=$?
+        case "$rc" in
+            0)
+                if [[ -n "$captured" ]]; then
+                    "$report_fn" "ok" "$slot" "$agent_label" "$tool_kind" "$captured"
+                else
+                    "$report_fn" "miss" "$slot" "$agent_label" "$tool_kind" ""
+                fi
+                ;;
+            2)
+                "$report_fn" "already" "$slot" "$agent_label" "$tool_kind" ""
+                ;;
+            *)
+                "$report_fn" "miss" "$slot" "$agent_label" "$tool_kind" ""
+                ;;
+        esac
     done <"${meta_dir}/meta"
+}
+
+# doctor reporter — emits doctor_report lines for each entry
+_doctor_recover_report() {
+    local kind="$1" slot="$2" agent_label="$3" tool_kind="$4" captured="$5"
+    case "$kind" in
+        ok)
+            doctor_report "OK" "recover:${RECOVER_SESSION_NAME}:${agent_label}" "captured ${tool_kind} session id ${captured:0:8}"
+            ;;
+        already)
+            doctor_report "OK" "recover:${RECOVER_SESSION_NAME}:${agent_label}" "already captured by another recoverer"
+            ;;
+        miss)
+            doctor_report "WARN" "recover:${RECOVER_SESSION_NAME}:${agent_label}" "no matching ${tool_kind} session file found (will retry on next launch)"
+            ;;
+        skip)
+            doctor_report "WARN" "recover:${RECOVER_SESSION_NAME}:${agent_label}" "no command configured for this agent alias"
+            ;;
+    esac
+}
+
+doctor_recover_pending_sessions() {
+    RECOVER_SESSION_NAME="$1"
+    # Hydrate config + origin from session meta (same reason as cmd_recover_pending)
+    local stored_config stored_origin
+    stored_config="$(read_session_meta "$1" config)"
+    stored_origin="$(read_session_meta "$1" origin)"
+    local prev_config="$CONFIG_FILE" prev_local="${AE_LOCAL_CONFIG:-}"
+    if [[ -n "$stored_config" && -f "$stored_config" ]]; then
+        CONFIG_FILE="$stored_config"
+    fi
+    AE_LOCAL_CONFIG=""
+    if [[ -n "$stored_origin" && -f "${stored_origin}/.ae/config" ]]; then
+        AE_LOCAL_CONFIG="${stored_origin}/.ae/config"
+    fi
+    walk_pending_session_ids "$1" _doctor_recover_report
+    CONFIG_FILE="$prev_config"
+    AE_LOCAL_CONFIG="$prev_local"
+}
+
+# loop reporter — TSV output: <kind>\t<slot>\t<agent_label>\t<tool_kind>\t<captured>
+# Called by the loop helper via 'ae _recover-pending <session>'.
+_loop_recover_report() {
+    local kind="$1" slot="$2" agent_label="$3" tool_kind="$4" captured="$5"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$slot" "$agent_label" "$tool_kind" "$captured"
+}
+
+# Internal: recover pending session IDs for a session and emit TSV results.
+# Used by the loop watchdog to keep meta up to date over time. Output format:
+#   ok\t<slot>\t<agent_label>\t<tool_kind>\t<captured_id>     # we won the race
+#   already\t<slot>\t<agent_label>\t<tool_kind>\t             # another recoverer claimed it
+#   miss\t<slot>\t<agent_label>\t<tool_kind>\t                # no matching session file found
+#   skip\t<slot>\t<agent_label>\t\t                            # alias not configured
+# The loop ignores non-ok rows; doctor reports each kind distinctly.
+cmd_recover_pending() {
+    local session_name="${1:-}"
+    if [[ -z "$session_name" ]]; then
+        echo "Usage: ae _recover-pending <session-name>" >&2
+        return 1
+    fi
+    # Hydrate config + origin from session meta so get_config resolves the
+    # same agent aliases that created the session, regardless of caller CWD.
+    local stored_config stored_origin
+    stored_config="$(read_session_meta "$session_name" config)"
+    stored_origin="$(read_session_meta "$session_name" origin)"
+    if [[ -n "$stored_config" && -f "$stored_config" ]]; then
+        CONFIG_FILE="$stored_config"
+    fi
+    AE_LOCAL_CONFIG=""
+    if [[ -n "$stored_origin" && -f "${stored_origin}/.ae/config" ]]; then
+        AE_LOCAL_CONFIG="${stored_origin}/.ae/config"
+    fi
+    walk_pending_session_ids "$session_name" _loop_recover_report
 }
 
 doctor_refresh_sessions() {
@@ -2378,6 +2485,10 @@ case "${1:-}" in
         ;;
     _retire)
         _cmd_retire "${@:2}"
+        exit $?
+        ;;
+    _recover-pending)
+        cmd_recover_pending "${@:2}"
         exit $?
         ;;
     help | -h | --help)
@@ -3796,6 +3907,15 @@ while true; do
             tmux display-message -d 10000 "[ae loop] $agent_ref pane is MISSING" 2>/dev/null || true
         fi
     done < "$META_DIR/meta"
+
+    # 7. Recover pending session IDs (codex/gemini/opencode post-launch capture retry)
+    AE_PATH_BIN="$(grep '^ae_path=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+    if [[ -n "$AE_PATH_BIN" && -x "$AE_PATH_BIN" ]]; then
+        while IFS=$'\t' read -r r_kind r_slot r_agent r_tool r_captured; do
+            [[ "$r_kind" == "ok" && -n "$r_captured" ]] || continue
+            ae_emit_event "recover" "$r_agent" "$r_captured" "captured ${r_tool} session id (${r_captured:0:8})"
+        done < <("$AE_PATH_BIN" _recover-pending "$_AE_SESSION" 2>/dev/null || true)
+    fi
 
     sleep "$INTERVAL"
 done
