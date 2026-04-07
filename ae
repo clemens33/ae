@@ -1452,6 +1452,86 @@ sync_existing_session_assets() {
     sync_session_assets "$session_name" "$meta_dir" "$work_dir" "$origin" "$mode" "$main_pane" "$config_file"
 }
 
+# Try to capture a pending session ID from on-disk agent session files (no live pane needed).
+# Uses the same find_*_session_by_* helpers as start_capture_session_id, but skips the
+# pane-polling and TUI-scrape methods so it can run from doctor without an attached agent.
+# Returns 0 and prints the captured ID on success, or 1 on miss.
+doctor_try_capture_session_id() {
+    local tool_kind="$1" slot="$2" meta_dir="$3"
+    local captured="" launch_time launch_id work_dir
+    work_dir="$(grep '^work_dir=' "$meta_dir/meta" 2>/dev/null | cut -d= -f2- || true)"
+    launch_time="$(read_launch_time_for_slot "$meta_dir" "$slot")"
+    launch_id="$(read_launch_id_for_slot "$meta_dir" "$slot")"
+    case "$tool_kind" in
+        codex)
+            if [[ -n "$launch_id" ]]; then
+                captured="$(find_codex_session_by_launch_id "$launch_id" "$launch_time" 2>/dev/null || true)"
+            fi
+            if [[ -z "$captured" && -n "$work_dir" ]]; then
+                captured="$(find_codex_session_by_cwd "$work_dir" "$launch_time" 2>/dev/null || true)"
+            fi
+            ;;
+        gemini)
+            if [[ -n "$work_dir" && -n "$launch_id" ]]; then
+                captured="$(find_gemini_session_by_launch_id "$work_dir" "$launch_id" "$launch_time" 2>/dev/null || true)"
+            fi
+            ;;
+        opencode)
+            if [[ -n "$launch_id" ]]; then
+                captured="$(find_opencode_session_by_launch_id "$launch_id" "$launch_time" 2>/dev/null || true)"
+            fi
+            ;;
+    esac
+    [[ -n "$captured" ]] || return 1
+    (
+        flock -w 5 200 || exit 1
+        local escaped_slot="${slot//./\\.}"
+        sed -i "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
+    ) 200>"$meta_dir/meta.lock"
+    printf '%s' "$captured"
+}
+
+# Walk a session's meta and try to recover any pending agent session IDs.
+doctor_recover_pending_sessions() {
+    local session_name="$1"
+    local meta_dir="${SESSIONS_DIR}/${session_name}"
+    [[ -f "${meta_dir}/meta" ]] || return 0
+
+    local key val slot stored_alias rest tool_kind agent_label captured
+    while IFS='=' read -r key val; do
+        [[ "$key" == agent.* ]] || continue
+        slot="${key#agent.}"
+        # Format: alias:name:session_id (or alias:name for very old sessions)
+        stored_alias="${val%%:*}"
+        rest="${val#*:}"
+        local stored_id=""
+        if [[ "$rest" == *:* ]]; then
+            stored_id="${rest##*:}"
+        fi
+        [[ "$stored_id" == "pending" ]] || continue
+        agent_label="${val%:*}"
+        # Resolve tool_kind from configured agent command
+        local cmd
+        cmd="$(get_config "agents.${stored_alias}")"
+        if [[ -z "$cmd" ]]; then
+            doctor_report "WARN" "recover:${session_name}:${agent_label}" "no command configured for alias '${stored_alias}'"
+            continue
+        fi
+        tool_kind="$(tool_kind_from_cmd "$cmd")"
+        case "$tool_kind" in
+            codex|gemini|opencode) ;;
+            *)
+                # claude shouldn't be pending; nothing else to recover
+                continue ;;
+        esac
+        if captured="$(doctor_try_capture_session_id "$tool_kind" "$slot" "$meta_dir")" && [[ -n "$captured" ]]; then
+            doctor_report "OK" "recover:${session_name}:${agent_label}" "captured ${tool_kind} session id ${captured:0:8}"
+        else
+            doctor_report "WARN" "recover:${session_name}:${agent_label}" "no matching ${tool_kind} session file found (will retry on next launch)"
+        fi
+    done <"${meta_dir}/meta"
+}
+
 doctor_refresh_sessions() {
     local target="${1:-all}"
     local refreshed=0
@@ -1465,6 +1545,7 @@ doctor_refresh_sessions() {
             seen_sessions["$session_name"]=1
             if sync_existing_session_assets "$session_name"; then
                 doctor_report "OK" "refresh:${session_name}" "refreshed session helpers and workspace"
+                doctor_recover_pending_sessions "$session_name"
             else
                 doctor_report "FAIL" "refresh:${session_name}" "failed to refresh session assets"
             fi
@@ -1476,6 +1557,7 @@ doctor_refresh_sessions() {
             [[ -n "${seen_sessions[$session_name]:-}" ]] && continue
             if sync_existing_session_assets "$session_name"; then
                 doctor_report "OK" "refresh:${session_name}" "refreshed session helpers and workspace"
+                doctor_recover_pending_sessions "$session_name"
             else
                 doctor_report "FAIL" "refresh:${session_name}" "failed to refresh session assets"
             fi
@@ -1489,6 +1571,7 @@ doctor_refresh_sessions() {
 
     if sync_existing_session_assets "$target"; then
         doctor_report "OK" "refresh:${target}" "refreshed session helpers and workspace"
+        doctor_recover_pending_sessions "$target"
     else
         doctor_report "FAIL" "refresh:${target}" "failed to refresh session assets"
     fi
@@ -3767,13 +3850,27 @@ else
     done
 fi
 
-# Capture agent session IDs in background (runs after launch, doesn't delay attach)
+# Capture agent session IDs in background (runs after launch, doesn't delay attach).
+# On fresh start: always capture. On resume: re-capture only for slots whose session ID
+# is still "pending" (codex/gemini/opencode capture is post-launch and may have failed
+# the previous attempt — without re-capture they would stay pending forever).
 if [[ "$RESUMING" != true ]]; then
     MAIN_TOOL="$(tool_kind_from_cmd "$MAIN_CMD")"
     start_capture_session_id "$MAIN_TOOL" "${PANE_IDS[0]}" "main" "$AE_META"
     for i in "${!WORKER_CMDS[@]}"; do
         WORKER_TOOL="$(tool_kind_from_cmd "${WORKER_CMDS[$i]}")"
         start_capture_session_id "$WORKER_TOOL" "${PANE_IDS[$((i + 1))]}" "worker.${i}" "$AE_META"
+    done
+else
+    if [[ "$MAIN_SESSION_ID" == "pending" ]]; then
+        MAIN_TOOL="$(tool_kind_from_cmd "$MAIN_CMD")"
+        start_capture_session_id "$MAIN_TOOL" "${PANE_IDS[0]}" "main" "$AE_META"
+    fi
+    for i in "${!WORKER_CMDS[@]}"; do
+        if [[ "${WORKER_SESSION_IDS[$i]:-}" == "pending" ]]; then
+            WORKER_TOOL="$(tool_kind_from_cmd "${WORKER_CMDS[$i]}")"
+            start_capture_session_id "$WORKER_TOOL" "${PANE_IDS[$((i + 1))]}" "worker.${i}" "$AE_META"
+        fi
     done
 fi
 
