@@ -3793,12 +3793,7 @@ _format_event() {
     fi
 }
 
-# Header
-printf '\033[1;36m'
-printf '╭─ ae events — %s ─────────────────────────────────────╮\n' "${META_DIR##*/}"
-printf '│ time      action   actor                  → target                 summary\n'
-printf '╰────────────────────────────────────────────────────────────────────────────╯\n'
-printf '\033[0m\n'
+# Header is shown in the tmux pane border (sticky). Skip in-pane banner.
 
 # Wait for events file (it is created lazily on first emit)
 while [[ ! -f "$EVENTS_FILE" ]]; do
@@ -3918,9 +3913,16 @@ _loop_start() {
     # Split horizontally and run events-tail in the bottom pane.
     events_pane="$(tmux split-window -v -t "$loop_pane" -P -F '#{pane_id}' \
         "${META_DIR}/events-tail" 2>/dev/null || true)"
-    # Tag panes for peek/discoverability
+    # Tag panes for peek/discoverability and label their borders
     tmux set-option -p -t "$loop_pane" @ae_agent "_loop" 2>/dev/null || true
-    [[ -n "$events_pane" ]] && tmux set-option -p -t "$events_pane" @ae_agent "_events" 2>/dev/null || true
+    tmux set-option -p -t "$loop_pane" @ae_pane_label " ae loop  │  watchdog cycle log " 2>/dev/null || true
+    if [[ -n "$events_pane" ]]; then
+        tmux set-option -p -t "$events_pane" @ae_agent "_events" 2>/dev/null || true
+        tmux set-option -p -t "$events_pane" @ae_pane_label " ae events  │  time      action   actor                  → target                 summary " 2>/dev/null || true
+    fi
+    # Sticky column headers via tmux pane borders (window-level option)
+    tmux set-window-option -t "${_AE_SESSION}:ae-monitor" pane-border-status top 2>/dev/null || true
+    tmux set-window-option -t "${_AE_SESSION}:ae-monitor" pane-border-format "#{@ae_pane_label}" 2>/dev/null || true
     # Read-only: disable input on both panes
     tmux select-pane -t "$loop_pane" -d 2>/dev/null || true
     [[ -n "$events_pane" ]] && tmux select-pane -t "$events_pane" -d 2>/dev/null || true
