@@ -146,6 +146,29 @@ command_is_shell() {
     esac
 }
 
+# Format an epoch timestamp as a relative time string (e.g. "2m ago", "3h ago").
+# Empty/zero/missing input returns "-".
+format_relative_time() {
+    local ts="${1:-}"
+    [[ -n "$ts" && "$ts" =~ ^[0-9]+$ && "$ts" -gt 0 ]] || { printf '%s' "-"; return; }
+    local now delta
+    now="$(date +%s 2>/dev/null || echo 0)"
+    delta=$((now - ts))
+    if ((delta < 0)); then
+        printf 'just now'
+    elif ((delta < 60)); then
+        printf '%ss ago' "$delta"
+    elif ((delta < 3600)); then
+        printf '%sm ago' $((delta / 60))
+    elif ((delta < 86400)); then
+        printf '%sh ago' $((delta / 3600))
+    elif ((delta < 604800)); then
+        printf '%sd ago' $((delta / 86400))
+    else
+        printf '>7d'
+    fi
+}
+
 build_launch_command() {
     local cmd="$1" prompt="$2"
     local launch_cmd="$cmd"
@@ -998,6 +1021,7 @@ sync_session_assets() {
 
     if [[ -f "${meta_dir}/meta" ]]; then
         set_session_meta_value "${meta_dir}/meta" "ae_path" "$ae_path"
+        set_session_meta_value "${meta_dir}/meta" "ae_version" "$AE_VERSION"
         if [[ -n "$config_file" ]]; then
             set_session_meta_value "${meta_dir}/meta" "config" "$config_file"
         fi
@@ -1228,6 +1252,26 @@ _parse_agent_entry() {
     printf '%s:%s\t%s\n' "$alias" "$name" "$short"
 }
 
+# Print the sub-line after a session row showing current ae version + last active.
+# $1 = meta_blob (full meta file contents), $2 = session directory
+_print_session_meta_line() {
+    local blob="$1" sess_dir="$2"
+    local ae_ver active_ts active_str
+    ae_ver="$(echo "$blob" | sed -n 's/^ae_version=//p')"
+    ae_ver="${ae_ver:-?}"
+    # Last active = mtime of events.jsonl, fallback to workspace.md, fallback to meta
+    active_ts=0
+    local f
+    for f in "${sess_dir}/events.jsonl" "${sess_dir}/workspace.md" "${sess_dir}/meta"; do
+        if [[ -f "$f" ]]; then
+            active_ts="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+            [[ "$active_ts" != "0" ]] && break
+        fi
+    done
+    active_str="$(format_relative_time "$active_ts")"
+    printf "  ae %s · active %s\n" "$ae_ver" "$active_str"
+}
+
 # shellcheck disable=SC2059 # format strings stored in variables intentionally
 cmd_list() {
     local sessions has_output=false
@@ -1254,6 +1298,7 @@ cmd_list() {
             [[ -z "$workdir" ]] && workdir="$(echo "$meta_blob" | sed -n 's/^work_dir=//p')"
             printf "$hdr" "$name" "running" "$mode" "$origin"
             [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
+            _print_session_meta_line "$meta_blob" "${SESSIONS_DIR}/${name}"
             # Build alive map from tmux panes (one tmux call)
             declare -A _alive=()
             while IFS=$'\t' read -r ae_agent pane_cmd; do
@@ -1289,6 +1334,7 @@ cmd_list() {
         workdir="$(echo "$meta_blob" | sed -n 's/^work_dir=//p')"
         printf "$hdr" "$name" "stopped" "$mode" "$origin"
         [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
+        _print_session_meta_line "$meta_blob" "${SESSIONS_DIR}/${name}"
         while IFS='=' read -r mk mv; do
             [[ "$mk" == agent.* ]] || continue
             local aname asid
@@ -2945,6 +2991,7 @@ layout=${LAYOUT:-vertical}
 config=${CONFIG_FILE}
 main_pane=${PANE_IDS[0]}
 ae_path=${AE_PATH}
+ae_version=${AE_VERSION}
 tmux_server=${AE_TMUX_SERVER:-}
 agent.main=${MAIN_ALIAS}:${MAIN_NAME}:${MAIN_SESSION_ID}
 agent_bin.main=$(extract_binary_from_cmd "$MAIN_CMD")
@@ -2978,6 +3025,7 @@ sync_session_assets() {
 
     if [[ -f "${meta_dir}/meta" ]]; then
         set_session_meta_value "${meta_dir}/meta" "ae_path" "$ae_path"
+        set_session_meta_value "${meta_dir}/meta" "ae_version" "$AE_VERSION"
         if [[ -n "$config_file" ]]; then
             set_session_meta_value "${meta_dir}/meta" "config" "$config_file"
         fi
