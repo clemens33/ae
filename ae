@@ -4048,9 +4048,16 @@ _loop_start() {
     # Split horizontally and run events-tail in the bottom pane.
     events_pane="$(tmux split-window -v -t "$loop_pane" -P -F '#{pane_id}' \
         "${META_DIR}/events-tail" 2>/dev/null || true)"
-    # Tag panes for peek/discoverability
+    # Tag panes for peek/discoverability and give each a title so the
+    # monitor's pane borders show a simple label ("ae loop" / "ae events").
     tmux set-option -p -t "$loop_pane" @ae_agent "_loop" 2>/dev/null || true
-    [[ -n "$events_pane" ]] && tmux set-option -p -t "$events_pane" @ae_agent "_events" 2>/dev/null || true
+    tmux select-pane -t "$loop_pane" -T "ae loop" 2>/dev/null || true
+    if [[ -n "$events_pane" ]]; then
+        tmux set-option -p -t "$events_pane" @ae_agent "_events" 2>/dev/null || true
+        tmux select-pane -t "$events_pane" -T "ae events" 2>/dev/null || true
+    fi
+    # Enable pane borders on the monitor window so the titles are visible
+    tmux set-window-option -t "${_AE_SESSION}:ae-monitor" pane-border-status top 2>/dev/null || true
     # Read-only: disable input on both panes
     tmux select-pane -t "$loop_pane" -d 2>/dev/null || true
     [[ -n "$events_pane" ]] && tmux select-pane -t "$events_pane" -d 2>/dev/null || true
