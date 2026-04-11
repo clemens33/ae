@@ -1252,6 +1252,23 @@ _parse_agent_entry() {
     printf '%s:%s\t%s\n' "$alias" "$name" "$short"
 }
 
+# Resolve the session's actual meta directory, checking the new path first and
+# falling back to the legacy worktree-nested path that read_session_meta() also
+# honors. Prints the resolved directory, or empty if none found.
+_resolve_session_dir() {
+    local name="$1"
+    local primary="${SESSIONS_DIR}/${name}"
+    if [[ -f "${primary}/meta" ]]; then
+        printf '%s' "$primary"
+        return
+    fi
+    local legacy="${WORKTREES_DIR}/${name}/.ae/${name}"
+    if [[ -f "${legacy}/meta" ]]; then
+        printf '%s' "$legacy"
+        return
+    fi
+}
+
 # Print the sub-line after a session row showing current ae version + last active.
 # $1 = meta_blob (full meta file contents), $2 = session directory
 _print_session_meta_line() {
@@ -1261,13 +1278,15 @@ _print_session_meta_line() {
     ae_ver="${ae_ver:-?}"
     # Last active = mtime of events.jsonl, fallback to workspace.md, fallback to meta
     active_ts=0
-    local f
-    for f in "${sess_dir}/events.jsonl" "${sess_dir}/workspace.md" "${sess_dir}/meta"; do
-        if [[ -f "$f" ]]; then
-            active_ts="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
-            [[ "$active_ts" != "0" ]] && break
-        fi
-    done
+    if [[ -n "$sess_dir" ]]; then
+        local f
+        for f in "${sess_dir}/events.jsonl" "${sess_dir}/workspace.md" "${sess_dir}/meta"; do
+            if [[ -f "$f" ]]; then
+                active_ts="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+                [[ "$active_ts" != "0" ]] && break
+            fi
+        done
+    fi
     active_str="$(format_relative_time "$active_ts")"
     printf "  ae %s · active %s\n" "$ae_ver" "$active_str"
 }
@@ -1284,9 +1303,10 @@ cmd_list() {
         printf "$hdr" "SESSION" "STATUS" "MODE" "ORIGIN"
         while IFS= read -r name; do
             [[ -z "$name" ]] && continue
-            local meta="${SESSIONS_DIR}/${name}/meta"
+            local sess_dir
+            sess_dir="$(_resolve_session_dir "$name")"
             local meta_blob=""
-            [[ -f "$meta" ]] && meta_blob="$(<"$meta")"
+            [[ -n "$sess_dir" && -f "${sess_dir}/meta" ]] && meta_blob="$(<"${sess_dir}/meta")"
             local origin mode workdir
             origin="$(tmux show-environment -t "$name" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || true)"
             [[ -z "$origin" ]] && origin="$(echo "$meta_blob" | sed -n 's/^origin=//p')"
@@ -1298,7 +1318,7 @@ cmd_list() {
             [[ -z "$workdir" ]] && workdir="$(echo "$meta_blob" | sed -n 's/^work_dir=//p')"
             printf "$hdr" "$name" "running" "$mode" "$origin"
             [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
-            _print_session_meta_line "$meta_blob" "${SESSIONS_DIR}/${name}"
+            _print_session_meta_line "$meta_blob" "$sess_dir"
             # Build alive map from tmux panes (one tmux call)
             declare -A _alive=()
             while IFS=$'\t' read -r ae_agent pane_cmd; do
@@ -1323,9 +1343,10 @@ cmd_list() {
             printf "$hdr" "SESSION" "STATUS" "MODE" "ORIGIN"
             has_output=true
         fi
-        local meta="${SESSIONS_DIR}/${name}/meta"
+        local sess_dir
+        sess_dir="$(_resolve_session_dir "$name")"
         local meta_blob=""
-        [[ -f "$meta" ]] && meta_blob="$(<"$meta")"
+        [[ -n "$sess_dir" && -f "${sess_dir}/meta" ]] && meta_blob="$(<"${sess_dir}/meta")"
         local mode origin workdir
         mode="$(echo "$meta_blob" | sed -n 's/^mode=//p')"
         mode="${mode:-?}"
@@ -1334,7 +1355,7 @@ cmd_list() {
         workdir="$(echo "$meta_blob" | sed -n 's/^work_dir=//p')"
         printf "$hdr" "$name" "stopped" "$mode" "$origin"
         [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
-        _print_session_meta_line "$meta_blob" "${SESSIONS_DIR}/${name}"
+        _print_session_meta_line "$meta_blob" "$sess_dir"
         while IFS='=' read -r mk mv; do
             [[ "$mk" == agent.* ]] || continue
             local aname asid
