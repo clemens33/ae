@@ -75,9 +75,10 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 | `interrupt <agent> [message]` | Cancel current generation, optionally send new instructions |
 | `spawn <alias:name> [prompt]` | Add a new agent to the workspace |
 | `retire <agent>` | Remove a spawned agent (kills pane, cleans meta, updates manifest) |
-| `register-sid [slot]` | Codex-specific: self-register session ID post-launch |
 
-All helpers share a `_lib` library that provides name resolution, tmux server support, and flock serialization. Name resolution supports exact `alias:name`, alias-only when unique (e.g. `codex`), bare name (e.g. `lead`), `%pane-id`, and cross-session `@session:agent` syntax. `agents --all` lists agents across all running ae sessions.
+All helpers share a `_lib` library that provides name resolution, tmux server support, flock serialization, request tracking (`ae_tracked_send`, `ae_find_request`), and event-log helpers (`ae_emit_event`, `_event_json_str`). Name resolution supports exact `alias:name`, alias-only when unique (e.g. `codex`), bare name (e.g. `lead`), `%pane-id`, and cross-session `@session:agent` syntax. `agents --all` lists agents across all running ae sessions.
+
+Internal helpers prefixed with `_` (e.g. `_register-sid`) are launched by ae itself and not part of the agent-facing surface.
 
 ## Agent tool capabilities
 
@@ -87,14 +88,14 @@ ae supports multiple coding agent CLIs. They differ significantly in session han
 |---|---|---|---|---|
 | **System prompt injection** | `--append-system-prompt 'text'` | `-c developer_instructions='text'` | `-i 'text'` | None — paste as first message via tmux buffer |
 | **Session ID at launch** | `--session-id UUID` (set by ae) | None (no flag exists) | None (launch token only; no launch-time UUID flag) | None (no flag exists) |
-| **Session ID capture** | Immediate (ae generates UUID upfront) | Post-launch via `register-sid` helper plus launch-token/file scan | Post-launch via local chat history scan (`~/.gemini/tmp/.../chats/session-*.json`) | Post-launch via launch-token DB scan or `opencode session list --format json` fallback |
+| **Session ID capture** | Immediate (ae generates UUID upfront) | Post-launch via `_register-sid` internal helper plus launch-token/file scan | Post-launch via local chat history scan (`~/.gemini/tmp/.../chats/session-*.json`) | Post-launch via launch-token DB scan or `opencode session list --format json` fallback |
 | **Resume with exact session** | `--resume UUID` | `codex <flags> resume UUID` (`resume` is a subcommand) | `--resume UUID` on current CLI; `ae` falls back to `--resume latest` when uncaptured | `--session ID` (e.g. `ses_...`) |
 | **Resume fallback** | `--continue` (CWD heuristic) | Fresh start (drop `resume UUID`, keep flags) | `--resume latest` | `--continue` (last session) |
-| **Concurrent session safety** | Full — UUID-scoped | Partial — `register-sid` + launch tokens reduce collisions, but fallback CWD matching is still heuristic | Partial — UUID-scoped once captured; fallback `--resume latest` remains heuristic when uncaptured | Partial — `--session ID` is UUID-scoped once captured; fallback CWD matching remains heuristic |
+| **Concurrent session safety** | Full — UUID-scoped | Partial — `_register-sid` + launch tokens reduce collisions, but fallback CWD matching is still heuristic | Partial — UUID-scoped once captured; fallback `--resume latest` remains heuristic when uncaptured | Partial — `--session ID` is UUID-scoped once captured; fallback CWD matching remains heuristic |
 | **Config flags preserved on resume** | Yes (flags stay, `--resume` appended) | Yes (flags before `resume` subcommand) | Yes (flags stay, `--resume` appended) | Yes (flags stay, `--session` appended) |
 
 **Key constraints to know:**
-- Codex has no `--session-name` or `--session-id` flag. The only way to get its UUID is post-launch (from `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filenames). ae works around this by instructing codex via `developer_instructions` to run a `register-sid` helper script.
+- Codex has no `--session-name` or `--session-id` flag. The only way to get its UUID is post-launch (from `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filenames). ae works around this by instructing codex via `developer_instructions` to run the internal `_register-sid` helper script as its first action.
 - Gemini persists a local `sessionId` in `~/.gemini/tmp/<project>/chats/session-*.json`, and current Gemini CLI accepts `--resume <UUID>` in addition to `latest`/index. ae now captures that UUID via launch-token scan and uses exact resume when available; fallback remains `--resume latest` if capture fails.
 - OpenCode is TUI-only with no system prompt flag. Context is injected by pasting text into the TUI as the first user message. Session IDs are captured post-launch via `opencode session list --format json` filtered by directory (CWD) matching. Resume uses `--session ID` for exact match or `--continue` as fallback.
 - Agent names in meta use `:` as delimiter (`alias:name:session_id`). Agent names must not contain `:`.

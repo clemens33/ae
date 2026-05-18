@@ -93,8 +93,9 @@ focus <agent>                  # switch tmux focus to an agent's pane
 interrupt <agent> [message]    # stop an agent's current work, optionally redirect
 spawn <alias:name> [prompt]    # add a new agent to the workspace
 retire <agent>                 # remove a spawned agent cleanly
-register-sid [slot]            # codex self-registration helper for session capture
 ```
+
+Internal helpers (prefixed `_`, e.g. `_register-sid`) are launched by ae itself and not part of the agent-facing surface.
 
 Agent names resolve flexibly: `codex:reviewer` (exact), `codex` (alias, if unique), `reviewer` (bare name), or `%42` (pane ID).
 

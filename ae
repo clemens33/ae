@@ -518,7 +518,7 @@ inject_ae_context() {
                     launch_marker=$'\n'"AE_CODEX_LAUNCH_ID=${launch_id}"$'\n'"AE_CODEX_SLOT=${slot}"
                 fi
             fi
-            local full_ctx="${ctx} --- CRITICAL FIRST TASK: Enable session resume by running: ${meta_dir}/register-sid${slot_arg} — do this NOW before anything else.${launch_marker}"
+            local full_ctx="${ctx} --- CRITICAL FIRST TASK: Enable session resume by running: ${meta_dir}/_register-sid${slot_arg} — do this NOW before anything else.${launch_marker}"
             local escaped="${full_ctx//\'/\'\\\'\'}"
             echo "${cmd} -c developer_instructions='${escaped}'"
             ;;
@@ -3309,6 +3309,101 @@ ae_emit_event() {
     ae_log_append "${_AE_META_DIR}/events.jsonl" "$json"
 }
 
+# Extract a flat-JSON string value (counterpart to ae_json_escape). Handles
+# \" \\ \n \t \r escapes; maps \n and \t to a space for line-oriented use.
+_event_json_str() {
+    local line="$1" key="$2"
+    local prefix="\"${key}\":\""
+    local rest="${line#*${prefix}}"
+    [[ "$rest" == "$line" ]] && return
+    local result="" i=0 n=${#rest}
+    local c next
+    while ((i < n)); do
+        c="${rest:$i:1}"
+        if [[ "$c" == "\\" ]]; then
+            next="${rest:$((i + 1)):1}"
+            case "$next" in
+                n) result+=" " ;;
+                t) result+=" " ;;
+                r) ;;
+                '"') result+='"' ;;
+                "\\") result+="\\" ;;
+                *) result+="$c$next" ;;
+            esac
+            i=$((i + 2))
+        elif [[ "$c" == '"' ]]; then
+            break
+        else
+            result+="$c"
+            i=$((i + 1))
+        fi
+    done
+    printf '%s' "$result"
+}
+
+# Generate a request id like "<prefix>-YYYYMMDDTHHMMSSZ-<rand>"
+ae_make_req_id() {
+    local prefix="${1:-ae}"
+    local req_suffix
+    req_suffix="$(cat /proc/sys/kernel/random/uuid 2>/dev/null | cut -d- -f1 || true)"
+    [[ -n "$req_suffix" ]] || req_suffix="$$-$RANDOM"
+    printf '%s-%s-%s' "$prefix" "$(date -u +%Y%m%dT%H%M%SZ)" "$req_suffix"
+}
+
+# Shared body for ask/review. Resolves target, generates req_id, builds the
+# message (with optional instructions block + uniform reply contract footer),
+# and execs into send with the appropriate _AE_EVENT_* env vars set.
+# Args: action req_prefix header instructions reply_label target body...
+ae_tracked_send() {
+    local action="$1" req_prefix="$2" header="$3" instructions="$4" reply_label="$5" target_name="$6"
+    shift 6
+    local body="$*"
+    local self
+    self="$(ae_current_agent_ref)"
+    if [[ -z "$self" ]]; then
+        echo "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead." >&2
+        exec "${_AE_META_DIR}/send" "$target_name" "$body"
+    fi
+    ae_resolve "$target_name" || exit 1
+    target_name="${AE_RESOLVED_AGENT:-$target_name}"
+
+    local req_id
+    req_id="$(ae_make_req_id "$req_prefix")"
+    local reply_cmd="${_AE_META_DIR}/reply --as \"${target_name}\" \"${req_id}\" \"${reply_label}\""
+
+    local msg="${header} ${req_id} from ${self}: ${body}"
+    [[ -n "$instructions" ]] && msg+=$'\n\n'"${instructions}"
+    msg+=$'\n\n'"REQUIRED: When you have finished, you MUST run this exact command to reply:
+${reply_cmd}
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism."
+
+    exec env _AE_EVENT_ACTION="$action" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$body" \
+        "${_AE_META_DIR}/send" "$target_name" "$msg"
+}
+
+# Look up the original ask/review event for a given req_id. Scans events.jsonl
+# newest-first; returns the first matching ask|review event.
+# Output: TAB-separated "<kind>\t<sender>\t<target>". Return 1 if not found.
+ae_find_request() {
+    local req_id="$1"
+    local events_file="${_AE_META_DIR}/events.jsonl"
+    [[ -f "$events_file" ]] || return 1
+    local line ref action actor target
+    while IFS= read -r line; do
+        [[ "$line" == \{* ]] || continue
+        ref="$(_event_json_str "$line" ref)"
+        [[ "$ref" == "$req_id" ]] || continue
+        action="$(_event_json_str "$line" action)"
+        if [[ "$action" == "ask" || "$action" == "review" ]]; then
+            actor="$(_event_json_str "$line" actor)"
+            target="$(_event_json_str "$line" target)"
+            printf '%s\t%s\t%s\n' "$action" "$actor" "$target"
+            return 0
+        fi
+    done < <(tac "$events_file" 2>/dev/null || true)
+    return 1
+}
+
 ae_submit_pasted_message() {
     local pane="$1" tool="$2" buf="$3" msg="$4"
     if [[ "$tool" == "codex" ]]; then
@@ -3372,7 +3467,6 @@ sleep 0.3 # let target TUI process input before focus restore
 
 [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
 ae_unlock_target
-ae_log_append "${META_DIR}/messages.tsv" "$(printf '%s\t%s\t%s\t%s\t%s' "$(ae_now_utc)" "$sender" "$logged_target" "${req_id:-}" "$(ae_preview_text "$msg")")"
 ae_emit_event "${_AE_EVENT_ACTION:-send}" "$logged_target" "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_SUMMARY:-$msg}"
 SENDEOF
     chmod 0700 "${AE_META}/send"
@@ -3381,36 +3475,13 @@ SENDEOF
     cat >"${AE_META}/ask" <<'ASKEOF'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
-META_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [[ $# -lt 2 ]]; then
     echo "Usage: ask <agent-name|pane-id|@session:agent> <question>" >&2
     echo "  Like send, but embeds your identity and reply command in the message." >&2
     exit 1
 fi
 target_name="$1"; shift
-question="$*"
-# Auto-detect caller identity from tmux pane (@ae_agent = alias:name)
-self="$(ae_current_agent_ref)"
-if [[ -z "$self" ]]; then
-    echo "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead." >&2
-    exec "${META_DIR}/send" "$target_name" "$question"
-fi
-ae_resolve "$target_name" || exit 1
-target_name="${AE_RESOLVED_AGENT:-$target_name}"
-
-req_suffix="$(cat /proc/sys/kernel/random/uuid 2>/dev/null | cut -d- -f1 || true)"
-[[ -n "$req_suffix" ]] || req_suffix="$$-$RANDOM"
-req_id="ae-$(date -u +%Y%m%dT%H%M%SZ)-${req_suffix}"
-reply_cmd="${META_DIR}/reply --as \"${target_name}\" \"${req_id}\" \"<your reply>\""
-ae_log_append "${META_DIR}/requests.tsv" "$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$(ae_now_utc)" "ask" "$req_id" "$self" "$target_name" "$(ae_preview_text "$question")")"
-
-msg="REQUEST ${req_id} from ${self}: ${question}
-
-REQUIRED: When you have finished, you MUST run this exact command to reply:
-${reply_cmd}
-Do not reply any other way. Do not skip this step.
-Do NOT use peek/peak as a reply mechanism."
-exec env _AE_EVENT_ACTION="ask" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$question" "${META_DIR}/send" "$target_name" "$msg"
+ae_tracked_send "ask" "ae" "REQUEST" "" "<your reply>" "$target_name" "$@"
 ASKEOF
     chmod 0700 "${AE_META}/ask"
 
@@ -3418,40 +3489,18 @@ ASKEOF
     cat >"${AE_META}/review" <<'REVIEWEOF'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
-META_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [[ $# -lt 2 ]]; then
     echo "Usage: review <agent-name|pane-id|@session:agent> <request>" >&2
     echo "  Ask another agent for a critical review and require a reply via send." >&2
     exit 1
 fi
 target_name="$1"; shift
-request="$*"
-self="$(ae_current_agent_ref)"
-if [[ -z "$self" ]]; then
-    echo "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead." >&2
-    exec "${META_DIR}/send" "$target_name" "$request"
-fi
-ae_resolve "$target_name" || exit 1
-target_name="${AE_RESOLVED_AGENT:-$target_name}"
-
-req_suffix="$(cat /proc/sys/kernel/random/uuid 2>/dev/null | cut -d- -f1 || true)"
-[[ -n "$req_suffix" ]] || req_suffix="$$-$RANDOM"
-req_id="review-$(date -u +%Y%m%dT%H%M%SZ)-${req_suffix}"
-reply_cmd="${META_DIR}/reply --as \"${target_name}\" \"${req_id}\" \"<your review>\""
-ae_log_append "${META_DIR}/requests.tsv" "$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$(ae_now_utc)" "review" "$req_id" "$self" "$target_name" "$(ae_preview_text "$request")")"
-
-msg="REVIEW REQUEST ${req_id} from ${self}: ${request}
-
-Review instructions:
+REVIEW_INSTRUCTIONS='Review instructions:
 - Focus on correctness, regressions, edge cases, missing tests, and callers/docs needing updates.
 - Findings first. Keep summaries brief.
 - Use severity labels: BLOCKER, IMPORTANT, NIT.
-- If no issues are found, say \"No findings\" explicitly.
-
-REQUIRED: When you have finished, you MUST run this exact command to reply:
-${reply_cmd}
-Do not reply any other way. Do NOT use peek/peak as a reply mechanism."
-exec env _AE_EVENT_ACTION="review" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$request" "${META_DIR}/send" "$target_name" "$msg"
+- If no issues are found, say "No findings" explicitly.'
+ae_tracked_send "review" "review" "REVIEW REQUEST" "$REVIEW_INSTRUCTIONS" "<your review>" "$target_name" "$@"
 REVIEWEOF
     chmod 0700 "${AE_META}/review"
 
@@ -3477,20 +3526,12 @@ fi
 req_id="$1"; shift
 message="$*"
 self="$(ae_current_agent_ref)"
-sender=""
-target=""
-kind=""
-while IFS=$'\t' read -r ts req_kind req sender_agent target_agent preview; do
-    [[ "$req" == "$req_id" ]] || continue
-    kind="$req_kind"
-    sender="$sender_agent"
-    target="$target_agent"
-done < <(ae_log_read "${META_DIR}/requests.tsv")
 
-if [[ -z "$sender" || -z "$target" ]]; then
-    echo "Error: request id '${req_id}' not found in ${META_DIR}/requests.tsv" >&2
+row="$(ae_find_request "$req_id")" || {
+    echo "Error: request id '${req_id}' not found in ${META_DIR}/events.jsonl" >&2
     exit 1
-fi
+}
+IFS=$'\t' read -r _ sender target <<<"$row"
 
 if [[ -n "$sender_override" && "$sender_override" != "$target" ]]; then
     echo "Error: override agent '${sender_override}' does not match assigned target '${target}'" >&2
@@ -3532,34 +3573,63 @@ if [[ "$mode" != "all" && -z "$self" ]]; then
     exit 1
 fi
 
-declare -A reply_sender reply_target reply_preview reply_time
-while IFS=$'\t' read -r ts sender target req_id preview; do
-    [[ -n "$req_id" ]] || continue
-    reply_sender["$req_id"]="$sender"
-    reply_target["$req_id"]="$target"
-    reply_preview["$req_id"]="$preview"
-    reply_time["$req_id"]="$ts"
-done < <(ae_log_read "${META_DIR}/messages.tsv")
+# Scan events.jsonl: collect latest ask/review per ref and latest reply per ref.
+# A reply only counts as "replied" if the reply's actor matches the request's
+# target AND the reply's target matches the request's sender. This preserves
+# the old TSV invariant: stray reply events with a matching ref but wrong
+# actor/target leave the request pending.
+declare -A req_kind req_sender req_target req_summary req_ts
+declare -A reply_summary reply_actor reply_target reply_ts
+order=()
+events_file="${META_DIR}/events.jsonl"
+if [[ -f "$events_file" ]]; then
+    while IFS= read -r line; do
+        [[ "$line" == \{* ]] || continue
+        ref="$(_event_json_str "$line" ref)"
+        [[ -n "$ref" ]] || continue
+        action="$(_event_json_str "$line" action)"
+        case "$action" in
+            ask | review)
+                [[ -n "${req_kind[$ref]:-}" ]] && continue
+                req_kind["$ref"]="$action"
+                req_sender["$ref"]="$(_event_json_str "$line" actor)"
+                req_target["$ref"]="$(_event_json_str "$line" target)"
+                req_summary["$ref"]="$(_event_json_str "$line" summary)"
+                req_ts["$ref"]="$(_event_json_str "$line" ts)"
+                order+=("$ref")
+                ;;
+            reply)
+                [[ -n "${reply_summary[$ref]:-}" ]] && continue
+                reply_summary["$ref"]="$(_event_json_str "$line" summary)"
+                reply_actor["$ref"]="$(_event_json_str "$line" actor)"
+                reply_target["$ref"]="$(_event_json_str "$line" target)"
+                reply_ts["$ref"]="$(_event_json_str "$line" ts)"
+                ;;
+        esac
+    done < <(tac "$events_file" 2>/dev/null || true)
+fi
 
 printf "%-8s %-8s %-28s %-20s %-20s %s\n" "STATUS" "TYPE" "ID" "FROM" "TO" "SUMMARY"
-while IFS=$'\t' read -r ts kind req_id sender target preview; do
-    [[ -n "$req_id" ]] || continue
+# 'order' is newest-first because we scanned backward; reverse for chronological output.
+for ((i = ${#order[@]} - 1; i >= 0; i--)); do
+    ref="${order[$i]}"
+    sender="${req_sender[$ref]}"
+    target="${req_target[$ref]}"
     case "$mode" in
         mine) [[ "$sender" == "$self" ]] || continue ;;
         inbox) [[ "$target" == "$self" ]] || continue ;;
         all) ;;
     esac
-
     status="pending"
-    summary="$preview"
-    if [[ -n "${reply_sender[$req_id]:-}" ]]; then
-        if [[ "${reply_sender[$req_id]}" == "$target" && "${reply_target[$req_id]}" == "$sender" ]]; then
-            status="replied"
-            summary="${reply_preview[$req_id]}"
-        fi
+    summary="${req_summary[$ref]}"
+    if [[ -n "${reply_summary[$ref]:-}" \
+        && "${reply_actor[$ref]:-}" == "$target" \
+        && "${reply_target[$ref]:-}" == "$sender" ]]; then
+        status="replied"
+        summary="${reply_summary[$ref]}"
     fi
-    printf "%-8s %-8s %-28s %-20s %-20s %s\n" "$status" "$kind" "$req_id" "$sender" "$target" "$summary"
-done < <(ae_log_read "${META_DIR}/requests.tsv")
+    printf "%-8s %-8s %-28s %-20s %-20s %s\n" "$status" "${req_kind[$ref]}" "$ref" "$sender" "$target" "$summary"
+done
 REQUESTSEOF
     chmod 0700 "${AE_META}/requests"
 
@@ -3574,13 +3644,6 @@ printf 'Marked %s done: %s\n' "$self" "$summary"
 ae_emit_event "done" "" "" "$summary"
 DONEEOF
     chmod 0700 "${AE_META}/mark-done"
-
-    # Compatibility for absolute invocations. Bare "done" is a shell reserved word.
-    cat >"${AE_META}/done" <<'DONEALIASEOF'
-#!/usr/bin/env bash
-exec "$(cd "$(dirname "$0")" && pwd)/mark-done" "$@"
-DONEALIASEOF
-    chmod 0700 "${AE_META}/done"
 
     # Helper: memo add/read/tail — shared append-only session memory
     cat >"${AE_META}/memo" <<'MEMOEOF'
@@ -3803,8 +3866,9 @@ exec "$AE_PATH" _retire "$META_DIR" "$@"
 RETIREEOF
     chmod 0700 "${AE_META}/retire"
 
-    # Helper: register-sid — codex agents run this to self-register their session ID
-    cat >"${AE_META}/register-sid" <<'REGSIDEOF'
+    # Helper: _register-sid — internal; codex agents run this once on launch to
+    # self-register their session ID so ae can resume the exact conversation later.
+    cat >"${AE_META}/_register-sid" <<'REGSIDEOF'
 #!/usr/bin/env bash
 # Find codex session matching current launch marker or CWD and write its UUID to codex.<slot>.sid
 META_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -3882,7 +3946,7 @@ else
     exit 1
 fi
 REGSIDEOF
-    chmod 0700 "${AE_META}/register-sid"
+    chmod 0700 "${AE_META}/_register-sid"
 
     # Helper: events-tail — read-only formatted tail of events.jsonl for the monitor pane
     cat >"${AE_META}/events-tail" <<'EVTAILEOF'
@@ -4107,36 +4171,6 @@ _loop_start() {
     _set_meta_loop "true"
     echo "Loop started in hidden ae-monitor window. Use 'peek _loop' or 'peek _events' to inspect."
     exit 0
-}
-
-_event_json_str() {
-    local line="$1" key="$2"
-    local prefix="\"${key}\":\""
-    local rest="${line#*${prefix}}"
-    [[ "$rest" == "$line" ]] && return
-    local result="" i=0 n=${#rest}
-    local c next
-    while ((i < n)); do
-        c="${rest:$i:1}"
-        if [[ "$c" == "\\" ]]; then
-            next="${rest:$((i + 1)):1}"
-            case "$next" in
-                n) result+=" " ;;
-                t) result+=" " ;;
-                r) ;;
-                '"') result+='"' ;;
-                "\\") result+="\\" ;;
-                *) result+="$c$next" ;;
-            esac
-            i=$((i + 2))
-        elif [[ "$c" == '"' ]]; then
-            break
-        else
-            result+="$c"
-            i=$((i + 1))
-        fi
-    done
-    printf '%s' "$result"
 }
 
 _last_event_age() {

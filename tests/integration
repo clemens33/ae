@@ -195,7 +195,7 @@ assert_eq "spawn: memo file exists" "1" "$([[ -f "$HOME/.ae/sessions/test-spawn/
 main_pane="$(tmux list-panes -t test-spawn -F '#{pane_id} #{@ae_agent}' | awk '$2=="dummy:dummy"{print $1; exit}')"
 worker_pane="$(tmux list-panes -t test-spawn -F '#{pane_id} #{@ae_agent}' | awk '$2=="dummy2:helper-0"{print $1; exit}')"
 TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/ask" dummy2 "check memo flow" 2>/dev/null || true
-req_id="$(tail -n 1 "$HOME/.ae/sessions/test-spawn/requests.tsv" | cut -f3)"
+req_id="$(tac "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | grep -m1 -E '"action":"(ask|review)"' | grep -oE '"ref":"[^"]+"' | cut -d'"' -f4)"
 wrong_reply_status=0
 TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/reply" "$req_id" "wrong pane reply" >/dev/null 2>&1 || wrong_reply_status=$?
 assert_eq "spawn: reply rejects wrong agent identity" "1" "$wrong_reply_status"
@@ -204,7 +204,7 @@ requests_output="$("$HOME/.ae/sessions/test-spawn/requests" all 2>/dev/null || t
 assert_contains "spawn: requests show replied after correct reply" "replied" "$requests_output"
 
 TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/ask" dummy2 "check override reply flow" 2>/dev/null || true
-override_req_id="$(tail -n 1 "$HOME/.ae/sessions/test-spawn/requests.tsv" | cut -f3)"
+override_req_id="$(tac "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | grep -m1 -E '"action":"(ask|review)"' | grep -oE '"ref":"[^"]+"' | cut -d'"' -f4)"
 override_status=0
 TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/reply" --as "dummy2:helper-0" "$override_req_id" "override handled" >/dev/null 2>&1 || override_status=$?
 assert_eq "spawn: reply --as allows tracked reply when pane identity is unavailable" "0" "$override_status"

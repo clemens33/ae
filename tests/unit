@@ -361,17 +361,17 @@ assert_eq "ae_context: codex contains meta dir" \
     "1" \
     "$([[ "$result_codex" == *"/tmp/ae-test/workspace.md"* ]] && echo 1 || echo 0)"
 
-assert_eq "ae_context: codex contains register-sid instruction" \
+assert_eq "ae_context: codex contains _register-sid instruction" \
     "1" \
-    "$([[ "$result_codex" == *"register-sid"* ]] && echo 1 || echo 0)"
+    "$([[ "$result_codex" == *"/_register-sid"* ]] && echo 1 || echo 0)"
 
 # Codex with slot arg
 _meta_dir="$(mktemp -d)"
 printf 'launch_id.worker.0=codex-123\n' > "$_meta_dir/meta"
 result_codex_slot="$(inject_ae_context "codex --yolo" "$_meta_dir" "my-session" "/home/user/project" "worker.0")"
-assert_eq "ae_context: codex slot passed to register-sid" \
+assert_eq "ae_context: codex slot passed to _register-sid" \
     "1" \
-    "$([[ "$result_codex_slot" == *"register-sid worker.0"* ]] && echo 1 || echo 0)"
+    "$([[ "$result_codex_slot" == *"_register-sid worker.0"* ]] && echo 1 || echo 0)"
 
 assert_eq "ae_context: codex slot includes launch marker" \
     "1" \
@@ -548,17 +548,21 @@ assert_eq "events: send emits event with action and summary override support" \
     "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "${_AE_EVENT_ACTION:-send}"'* && "$AE_SOURCE" == *'${_AE_EVENT_SUMMARY:-$msg}'* ]] && echo 1 || echo 0)"
 
-assert_eq "events: ask passes action override to send" \
+assert_eq "events: ask passes action override via ae_tracked_send" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'_AE_EVENT_ACTION="ask"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'ae_tracked_send "ask"'* ]] && echo 1 || echo 0)"
 
 assert_eq "events: reply passes action override to send" \
     "1" \
     "$([[ "$AE_SOURCE" == *'_AE_EVENT_ACTION="reply"'* ]] && echo 1 || echo 0)"
 
-assert_eq "events: review passes action override to send" \
+assert_eq "events: review passes action override via ae_tracked_send" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'_AE_EVENT_ACTION="review"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'ae_tracked_send "review"'* ]] && echo 1 || echo 0)"
+
+assert_eq "events: ae_tracked_send exec includes _AE_EVENT_ACTION from \$action" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'exec env _AE_EVENT_ACTION="$action"'* ]] && echo 1 || echo 0)"
 
 assert_eq "events: mark-done helper emits done event" \
     "1" \
@@ -805,6 +809,140 @@ assert_eq "agent_done_epoch: done preserved past prior tail bound (>1000 unrelat
 
 rm -rf "$_done_test_dir"
 unset _epoch META_DIR _AE_SESSION _done_test_dir
+
+# ── tracked-send helpers: ae_make_req_id / ae_find_request ──────────
+
+# Extract from the _lib LIBEOF heredoc (column 0).
+eval "$(awk '
+    /^(ae_make_req_id|ae_find_request)\(\) \{/ { printing=1 }
+    printing { print }
+    printing && /^\}$/ { printing=0 }
+' "$(dirname "$0")/../ae")"
+
+_req_test_dir="$(mktemp -d)"
+_AE_META_DIR="$_req_test_dir"
+
+# ae_make_req_id: default prefix "ae", expected shape <prefix>-<ts>-<rand>
+_id="$(ae_make_req_id)"
+assert_eq "ae_make_req_id: default 'ae' prefix shape" "1" \
+    "$([[ "$_id" =~ ^ae-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+$ ]] && echo 1 || echo 0)"
+
+_id="$(ae_make_req_id review)"
+assert_eq "ae_make_req_id: custom 'review' prefix" "1" \
+    "$([[ "$_id" =~ ^review-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+$ ]] && echo 1 || echo 0)"
+
+# Two consecutive ids are unique (same timestamp second, different random suffix).
+_id1="$(ae_make_req_id)"; _id2="$(ae_make_req_id)"
+assert_eq "ae_make_req_id: ids are unique" "1" \
+    "$([[ "$_id1" != "$_id2" ]] && echo 1 || echo 0)"
+
+# ae_find_request: finds an ask event by ref
+cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"ask","target":"codex:coworker","ref":"ae-2026-001","summary":"hello"}
+{"ts":"2026-01-01T00:01:00Z","actor":"codex:coworker","action":"reply","target":"claude:lead","ref":"ae-2026-001","summary":"world"}
+EVENTS
+assert_eq "ae_find_request: returns kind/sender/target for ask" \
+    $'ask\tclaude:lead\tcodex:coworker' \
+    "$(ae_find_request "ae-2026-001")"
+
+# ae_find_request: matches review action
+cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"review","target":"codex:coworker","ref":"review-2026-001","summary":"please review"}
+EVENTS
+assert_eq "ae_find_request: returns kind=review" \
+    $'review\tclaude:lead\tcodex:coworker' \
+    "$(ae_find_request "review-2026-001")"
+
+# ae_find_request: unknown ref returns nonzero, empty stdout
+_out="$(ae_find_request "missing-req" 2>/dev/null || true)"
+assert_eq "ae_find_request: missing ref returns empty stdout" "" "$_out"
+
+# ae_find_request: ignores non-ask/review events that happen to share a ref
+cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"loop","action":"nudge","target":"claude:lead","ref":"stray-ref","summary":""}
+EVENTS
+_out="$(ae_find_request "stray-ref" 2>/dev/null || true)"
+assert_eq "ae_find_request: ignores non-ask/review actions" "" "$_out"
+
+# ae_find_request: handles many unrelated events before the match (backward scan)
+{
+    for _i in $(seq 1 500); do
+        printf '%s\n' '{"ts":"2026-01-02T00:00:00Z","actor":"x","action":"send","target":"y","ref":"unrelated"}'
+    done
+    printf '%s\n' '{"ts":"2026-01-01T00:00:00Z","actor":"a:b","action":"ask","target":"c:d","ref":"deep-req","summary":"q"}'
+    for _i in $(seq 1 500); do
+        printf '%s\n' '{"ts":"2026-01-02T00:00:00Z","actor":"x","action":"send","target":"y","ref":"unrelated"}'
+    done
+} >"$_AE_META_DIR/events.jsonl"
+assert_eq "ae_find_request: finds ask deep in history via backward scan" \
+    $'ask\ta:b\tc:d' \
+    "$(ae_find_request "deep-req")"
+
+rm -rf "$_req_test_dir"
+unset _id _id1 _id2 _out _AE_META_DIR _req_test_dir
+
+# ── requests helper: pending/replied logic from events.jsonl ─────────
+
+# Run the generated 'requests' helper script against a synthetic events.jsonl.
+# This validates the actor/target-match invariant that distinguishes a real
+# reply from a stray reply event sharing the same ref.
+_req_helper_dir="$(mktemp -d)"
+cat >"$_req_helper_dir/meta" <<META
+session=req-test
+tmux_server=
+META
+
+# Extract a named heredoc body from ae into a target file (bash + awk only —
+# the project's "no deps" rule applies to the test suite too).
+_extract_heredoc() {
+    local src="$1" eof="$2" out="$3"
+    awk -v eof="$eof" -v outfile="$out" '
+        $0 ~ ("<<\047" eof "\047") { inside=1; next }
+        inside && $0 == eof { exit }
+        inside { print > outfile }
+    ' "$src"
+}
+_extract_heredoc "$(dirname "$0")/../ae" LIBEOF "$_req_helper_dir/_lib"
+_extract_heredoc "$(dirname "$0")/../ae" REQUESTSEOF "$_req_helper_dir/requests"
+chmod +x "$_req_helper_dir/_lib" "$_req_helper_dir/requests"
+
+# Replied case: reply actor=target, reply target=sender → status=replied
+cat >"$_req_helper_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"ask","target":"codex:helper","ref":"ae-001","summary":"do thing"}
+{"ts":"2026-01-01T00:01:00Z","actor":"codex:helper","action":"reply","target":"claude:lead","ref":"ae-001","summary":"done"}
+EVENTS
+_req_out="$(bash "$_req_helper_dir/requests" all 2>/dev/null || true)"
+assert_eq "requests: matching reply marks request replied" "1" \
+    "$([[ "$_req_out" == *"replied"*"ae-001"* ]] && echo 1 || echo 0)"
+
+# Stray reply (wrong actor) → status=pending
+cat >"$_req_helper_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"ask","target":"codex:helper","ref":"ae-002","summary":"do thing"}
+{"ts":"2026-01-01T00:01:00Z","actor":"impostor","action":"reply","target":"claude:lead","ref":"ae-002","summary":"fake"}
+EVENTS
+_req_out="$(bash "$_req_helper_dir/requests" all 2>/dev/null || true)"
+assert_eq "requests: stray reply with wrong actor leaves request pending" "1" \
+    "$([[ "$_req_out" == *"pending"*"ae-002"* && "$_req_out" != *"replied"*"ae-002"* ]] && echo 1 || echo 0)"
+
+# Stray reply (wrong target) → status=pending
+cat >"$_req_helper_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"ask","target":"codex:helper","ref":"ae-003","summary":"do thing"}
+{"ts":"2026-01-01T00:01:00Z","actor":"codex:helper","action":"reply","target":"someone-else","ref":"ae-003","summary":"misrouted"}
+EVENTS
+_req_out="$(bash "$_req_helper_dir/requests" all 2>/dev/null || true)"
+assert_eq "requests: reply with wrong target leaves request pending" "1" \
+    "$([[ "$_req_out" == *"pending"*"ae-003"* && "$_req_out" != *"replied"*"ae-003"* ]] && echo 1 || echo 0)"
+
+# No reply event at all → pending
+cat >"$_req_helper_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"review","target":"codex:helper","ref":"review-004","summary":"please review"}
+EVENTS
+_req_out="$(bash "$_req_helper_dir/requests" all 2>/dev/null || true)"
+assert_eq "requests: request with no reply is pending" "1" \
+    "$([[ "$_req_out" == *"pending"*"review-004"* ]] && echo 1 || echo 0)"
+
+rm -rf "$_req_helper_dir"
+unset _req_out _req_helper_dir
 
 # ── Results ──────────────────────────────────────────────────────────
 
