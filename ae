@@ -4082,13 +4082,44 @@ _unset_meta_kv() {
 
 _set_meta_loop() { _set_meta_kv "loop" "$1"; }
 
+_monitor_find_pane() {
+    # Stdout: pane_id of the pane in this session tagged with @ae_agent=$1, or empty.
+    tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id} #{@ae_agent}' 2>/dev/null \
+        | awk -v want="$1" '$2 == want { print $1; exit }'
+}
+
+# Idempotent. Creates the hidden ae-monitor window with the _events pane if
+# it doesn't already exist. Sets MONITOR_EVENTS_PANE to the pane id.
+# Called by session launch and by _loop_start.
+_monitor_ensure_events_pane() {
+    MONITOR_EVENTS_PANE="$(_monitor_find_pane _events)"
+    [[ -n "$MONITOR_EVENTS_PANE" ]] && return 0
+    MONITOR_EVENTS_PANE="$(tmux new-window -da -t "$_AE_SESSION" -n "ae-monitor" -P -F '#{pane_id}' \
+        "${META_DIR}/events-tail" 2>/dev/null)" || {
+        echo "Error: could not create monitor window" >&2
+        return 1
+    }
+    tmux set-option -p -t "$MONITOR_EVENTS_PANE" @ae_agent "_events" 2>/dev/null || true
+    tmux select-pane -t "$MONITOR_EVENTS_PANE" -T "ae events" 2>/dev/null || true
+    tmux set-window-option -t "${_AE_SESSION}:ae-monitor" pane-border-status top 2>/dev/null || true
+    tmux select-pane -t "$MONITOR_EVENTS_PANE" -d 2>/dev/null || true
+    return 0
+}
+
+_loop_ensure_monitor() {
+    _monitor_ensure_events_pane || exit 1
+    exit 0
+}
+
 _loop_stop() {
     if _loop_is_running; then
         local pid; pid="$(cat "$PIDFILE")"
         kill "$pid" 2>/dev/null || true
         rm -f "$PIDFILE" "${META_DIR}/.loop.status"
-        # Kill the loop window if it exists
-        tmux kill-window -t "${_AE_SESSION}:ae-monitor" 2>/dev/null || true
+        # Kill only the _loop pane; leave the _events pane and monitor window alive.
+        local loop_pane
+        loop_pane="$(_monitor_find_pane _loop)"
+        [[ -n "$loop_pane" ]] && tmux kill-pane -t "$loop_pane" 2>/dev/null || true
         # Restore status-right based on what we recorded at start time.
         # If was_session=true, the saved value was an explicit session override
         # and must be restored. If was_session=false, the session inherited the
@@ -4128,30 +4159,19 @@ _loop_start() {
         _set_meta_loop "true"
         exit 0
     fi
-    # Create hidden ae-monitor window with the loop watchdog in the top pane.
-    # -a appends after the current window so it doesn't collide with index 0.
-    local loop_pane events_pane
-    loop_pane="$(tmux new-window -da -t "$_AE_SESSION" -n "ae-monitor" -P -F '#{pane_id}' \
+    # Make sure the ae-monitor window with the _events pane exists; insert the
+    # _loop pane above it so the visual order stays loop-on-top / events-below.
+    _monitor_ensure_events_pane || exit 1
+    local loop_pane
+    loop_pane="$(tmux split-window -v -b -t "$MONITOR_EVENTS_PANE" -P -F '#{pane_id}' \
         "${META_DIR}/loop _run" 2>/dev/null)" || {
-        echo "Error: could not create monitor window" >&2
+        echo "Error: could not create loop pane" >&2
         exit 1
     }
-    # Split horizontally and run events-tail in the bottom pane.
-    events_pane="$(tmux split-window -v -t "$loop_pane" -P -F '#{pane_id}' \
-        "${META_DIR}/events-tail" 2>/dev/null || true)"
-    # Tag panes for peek/discoverability and give each a title so the
-    # monitor's pane borders show a simple label ("ae loop" / "ae events").
     tmux set-option -p -t "$loop_pane" @ae_agent "_loop" 2>/dev/null || true
     tmux select-pane -t "$loop_pane" -T "ae loop" 2>/dev/null || true
-    if [[ -n "$events_pane" ]]; then
-        tmux set-option -p -t "$events_pane" @ae_agent "_events" 2>/dev/null || true
-        tmux select-pane -t "$events_pane" -T "ae events" 2>/dev/null || true
-    fi
-    # Enable pane borders on the monitor window so the titles are visible
-    tmux set-window-option -t "${_AE_SESSION}:ae-monitor" pane-border-status top 2>/dev/null || true
-    # Read-only: disable input on both panes
+    # Read-only: disable input on the loop pane (events pane was already disabled).
     tmux select-pane -t "$loop_pane" -d 2>/dev/null || true
-    [[ -n "$events_pane" ]] && tmux select-pane -t "$events_pane" -d 2>/dev/null || true
     # Capture the current effective status-right and track whether it came from a
     # session-level override or the global default. We must distinguish those so
     # _loop_stop can restore correctly even if the global value changes mid-loop.
@@ -4226,6 +4246,7 @@ case "$cmd" in
     stop) _loop_stop ;;
     status) _loop_status ;;
     start) _loop_start ;;
+    _ensure-monitor) _loop_ensure_monitor ;;  # internal: spawn _events pane only
     _run) ;;  # internal: actual watchdog execution
     *) echo "Usage: loop [start|stop|status]" >&2; exit 1 ;;
 esac
@@ -4540,6 +4561,11 @@ else
         fi
     done
 fi
+
+# Ensure the ae-monitor window with the _events pane exists on every start
+# and resume — the event stream is always available via peek _events even
+# when the loop watchdog is off.
+"${AE_META}/loop" _ensure-monitor 2>/dev/null || true
 
 # Start loop if enabled — meta (per-session override) wins over config default
 LOOP_META="$(read_session_meta "$SESSION" loop)"

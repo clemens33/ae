@@ -622,6 +622,23 @@ assert_eq "loop: auto-start via workspace.loop config" \
     "1" \
     "$([[ "$AE_SOURCE" == *'workspace.loop'* && "$AE_SOURCE" == *'ae-monitor'* ]] && echo 1 || echo 0)"
 
+# Monitor window with _events pane is always created on session start/resume,
+# independent of loop on/off. Loop start splits the window to add the _loop pane.
+assert_eq "monitor: ae-monitor + events pane created independently of loop" "1" \
+    "$([[ "$AE_SOURCE" == *'_monitor_ensure_events_pane'* && "$AE_SOURCE" == *'_ensure-monitor'* ]] && echo 1 || echo 0)"
+
+assert_eq "monitor: launch flow calls loop _ensure-monitor unconditionally" "1" \
+    "$([[ "$AE_SOURCE" == *'"${AE_META}/loop" _ensure-monitor'* ]] && echo 1 || echo 0)"
+
+assert_eq "monitor: _events pane runs events-tail" "1" \
+    "$([[ "$AE_SOURCE" == *'new-window -da -t "$_AE_SESSION" -n "ae-monitor"'* && "$AE_SOURCE" == *'/events-tail'* ]] && echo 1 || echo 0)"
+
+assert_eq "monitor: loop start splits to add _loop pane, does not create the window" "1" \
+    "$([[ "$AE_SOURCE" == *'split-window -v -b -t "$MONITOR_EVENTS_PANE"'* ]] && echo 1 || echo 0)"
+
+assert_eq "monitor: loop stop kills only the _loop pane (window survives)" "1" \
+    "$([[ "$AE_SOURCE" == *'_monitor_find_pane _loop'* && "$AE_SOURCE" == *'tmux kill-pane -t "$loop_pane"'* ]] && echo 1 || echo 0)"
+
 assert_eq "loop: configurable thresholds via env vars" \
     "1" \
     "$([[ "$AE_SOURCE" == *'AE_LOOP_INTERVAL_SEC'* && "$AE_SOURCE" == *'AE_LOOP_STALE_MIN'* && "$AE_SOURCE" == *'AE_LOOP_MAX_NUDGES'* ]] && echo 1 || echo 0)"
