@@ -322,7 +322,7 @@ assert_eq "ae_context: contains meta dir" \
 
 assert_eq "ae_context: contains helpers path" \
     "1" \
-    "$([[ "$result" == *"helpers in /tmp/ae-test/"* ]] && echo 1 || echo 0)"
+    "$([[ "$result" == *"Helper scripts in /tmp/ae-test/"* ]] && echo 1 || echo 0)"
 
 assert_eq "ae_context: contains spawn helper" \
     "1" \
@@ -338,7 +338,11 @@ assert_eq "ae_context: contains memo helper" \
 
 assert_eq "ae_context: contains peek helper" \
     "1" \
-    "$([[ "$result" == *"peek|peak <agent>"* ]] && echo 1 || echo 0)"
+    "$([[ "$result" == *"peek <agent>"* && "$result" == *"peak"* ]] && echo 1 || echo 0)"
+
+assert_eq "ae_context: helpers are invoked by absolute path (\$meta_dir/<name>)" \
+    "1" \
+    "$([[ "$result" == *"/tmp/ae-test/send"* && "$result" == *"/tmp/ae-test/ask"* && "$result" == *"/tmp/ae-test/mark-done"* ]] && echo 1 || echo 0)"
 
 assert_eq "ae_context: contains concurrent collaboration warning" \
     "1" \
@@ -467,7 +471,7 @@ assert_eq "initial_prompt: opencode gets context" \
 
 assert_eq "initial_prompt: opencode gets helpers path" \
     "1" \
-    "$([[ "$result_opencode" == *"helpers in /tmp/ae/"* ]] && echo 1 || echo 0)"
+    "$([[ "$result_opencode" == *"Helper scripts in /tmp/ae/"* ]] && echo 1 || echo 0)"
 
 _meta_dir="$(mktemp -d)"
 printf 'launch_id.worker.0=opencode-123\n' > "$_meta_dir/meta"
