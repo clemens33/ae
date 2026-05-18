@@ -3058,6 +3058,16 @@ sync_session_assets() {
     local MAIN_PANE="$main_pane"
 
     # SYNC_SESSION_ASSETS_BODY_START
+    # Remove orphan files from previous ae versions before regenerating helpers.
+    # Helpers are unconditionally rewritten below; this list is only for things
+    # whose *name* has been removed (renamed/deleted) so their old artifact
+    # would otherwise sit forever in $AE_META alongside the new ones.
+    # When you rename or drop a helper, add the old name here.
+    for _ae_orphan in "done" register-sid messages.tsv messages.tsv.lock requests.tsv requests.tsv.lock; do
+        rm -f "${AE_META:?}/${_ae_orphan}"
+    done
+    unset _ae_orphan
+
     # Shared library sourced by all helpers — tmux shim, name resolution, locking
     cat >"${AE_META}/_lib" <<'LIBEOF'
 # tmux server shim

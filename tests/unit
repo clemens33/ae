@@ -814,6 +814,46 @@ assert_eq "agent_done_epoch: done preserved past prior tail bound (>1000 unrelat
 rm -rf "$_done_test_dir"
 unset _epoch META_DIR _AE_SESSION _done_test_dir
 
+# ── sync_session_assets: orphan cleanup ──────────────────────────────
+
+assert_eq "sync: removes 'done' alias orphan" "1" \
+    "$([[ "$AE_SOURCE" == *'for _ae_orphan in "done"'* ]] && echo 1 || echo 0)"
+
+assert_eq "sync: removes register-sid orphan (renamed to _register-sid)" "1" \
+    "$([[ "$AE_SOURCE" == *' register-sid '* ]] && echo 1 || echo 0)"
+
+assert_eq "sync: removes messages.tsv + lock orphans" "1" \
+    "$([[ "$AE_SOURCE" == *'messages.tsv messages.tsv.lock'* ]] && echo 1 || echo 0)"
+
+assert_eq "sync: removes requests.tsv + lock orphans" "1" \
+    "$([[ "$AE_SOURCE" == *'requests.tsv requests.tsv.lock'* ]] && echo 1 || echo 0)"
+
+# Behavioral check: extract the orphan-cleanup block, run it against a temp
+# AE_META populated with stale files, verify they're gone.
+_orphan_test_dir="$(mktemp -d)"
+AE_META="$_orphan_test_dir"
+# seed stale files
+touch "$AE_META/done" "$AE_META/register-sid" "$AE_META/messages.tsv" \
+    "$AE_META/messages.tsv.lock" "$AE_META/requests.tsv" "$AE_META/requests.tsv.lock"
+# seed a file that should NOT be removed (must survive cleanup)
+touch "$AE_META/keep-me.txt"
+# extract the rm loop (any line between the comment block and the for-done)
+eval "$(awk '/^[[:space:]]*for _ae_orphan in/,/^[[:space:]]*done$/' "$(dirname "$0")/../ae")"
+
+assert_eq "sync: orphan 'done' deleted by cleanup loop" "0" \
+    "$([[ -f "$AE_META/done" ]] && echo 1 || echo 0)"
+assert_eq "sync: orphan 'register-sid' deleted by cleanup loop" "0" \
+    "$([[ -f "$AE_META/register-sid" ]] && echo 1 || echo 0)"
+assert_eq "sync: orphan 'messages.tsv' deleted by cleanup loop" "0" \
+    "$([[ -f "$AE_META/messages.tsv" ]] && echo 1 || echo 0)"
+assert_eq "sync: orphan 'requests.tsv' deleted by cleanup loop" "0" \
+    "$([[ -f "$AE_META/requests.tsv" ]] && echo 1 || echo 0)"
+assert_eq "sync: unrelated files survive cleanup loop" "1" \
+    "$([[ -f "$AE_META/keep-me.txt" ]] && echo 1 || echo 0)"
+
+rm -rf "$_orphan_test_dir"
+unset AE_META _orphan_test_dir
+
 # ── tracked-send helpers: ae_make_req_id / ae_find_request ──────────
 
 # Extract from the _lib LIBEOF heredoc (column 0).
