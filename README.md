@@ -81,6 +81,7 @@ ask <agent> <question>         # tracked request with request id and exact reply
 review <agent> <request>       # critical review request with findings-first reply contract
 reply <request-id> <message>   # reply to a logged ask/review request
 requests [mine|inbox|all]      # inspect pending and replied requests
+mark-done [message]            # mark current work complete/paused for the loop watchdog
 memo add [--topic t] <text>    # append durable shared session memory
 memo read [--topic t]          # read shared session memory
 memo tail [n]                  # show latest memo entries
@@ -116,7 +117,7 @@ Use `memo` for durable findings, decisions, and handoffs that should survive age
 ```toml
 [agents]
 claude = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
-codex = "codex --yolo -m gpt-5.4 -c model_reasoning_effort=high"
+codex = "codex --yolo -m gpt-5.5 -c model_reasoning_effort=high"
 gemini = "gemini --yolo -m gemini-2.5-pro"
 opencode = "opencode -m google/gemini-3-pro-preview"
 

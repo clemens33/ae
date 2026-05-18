@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Test suite for ae pure functions
+# shellcheck disable=SC2016
 # Run: ./test (or: bash test)
 # No dependencies beyond bash.
 
@@ -559,6 +560,10 @@ assert_eq "events: review passes action override to send" \
     "1" \
     "$([[ "$AE_SOURCE" == *'_AE_EVENT_ACTION="review"'* ]] && echo 1 || echo 0)"
 
+assert_eq "events: mark-done helper emits done event" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'Helper: mark-done [message]'* && "$AE_SOURCE" == *'ae_emit_event "done"'* ]] && echo 1 || echo 0)"
+
 assert_eq "events: memo emits event" \
     "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "memo"'* ]] && echo 1 || echo 0)"
@@ -588,6 +593,10 @@ assert_eq "loop: helper script exists in generated source" \
 assert_eq "loop: uses send for nudges (not raw send-keys)" \
     "1" \
     "$([[ "$AE_SOURCE" == *'AE_SENDER_OVERRIDE=loop'* && "$AE_SOURCE" == *'_AE_EVENT_ACTION=nudge'* ]] && echo 1 || echo 0)"
+
+assert_eq "loop: skips agents with latest relevant done event" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'_agent_done_epoch'* && "$AE_SOURCE" == *'done (reported complete)'* ]] && echo 1 || echo 0)"
 
 assert_eq "loop: detects dead agents via pane_current_command" \
     "1" \
@@ -689,6 +698,113 @@ assert_eq "default_session_name: contains hash suffix" \
 assert_eq "default_session_name: deterministic (same PWD = same name)" \
     "$name" \
     "$(default_session_name)"
+
+# ── loop helpers: done-tracking (_event_json_str / _latest_relevant_event / _agent_done_epoch) ──
+
+# Extract loop helper function bodies from the generated loop heredoc.
+# They're emitted at column 0 inside a 'LOOPEOF' heredoc in ae.
+eval "$(awk '
+    /^(_event_json_str|_latest_relevant_event|_agent_done_epoch)\(\) \{/ { printing=1 }
+    printing { print }
+    printing && /^\}$/ { printing=0 }
+' "$(dirname "$0")/../ae")"
+
+_done_test_dir="$(mktemp -d)"
+META_DIR="$_done_test_dir"
+_AE_SESSION="testsess"
+
+# _event_json_str: extract simple string field
+assert_eq "event_json_str: extract action" "done" \
+    "$(_event_json_str '{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}' action)"
+
+assert_eq "event_json_str: extract actor" "claude:lead" \
+    "$(_event_json_str '{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}' actor)"
+
+assert_eq "event_json_str: missing field returns empty" "" \
+    "$(_event_json_str '{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done"}' summary)"
+
+assert_eq "event_json_str: escaped quote in summary" 'hello "world"' \
+    "$(_event_json_str '{"actor":"x","summary":"hello \"world\""}' summary)"
+
+assert_eq "event_json_str: escaped backslash in summary" 'a\b' \
+    "$(_event_json_str '{"actor":"x","summary":"a\\b"}' summary)"
+
+# _latest_relevant_event: actor match returns latest
+cat >"$META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"other","action":"send","target":"other2"}
+{"ts":"2026-01-01T00:01:00Z","actor":"claude:lead","action":"done","target":""}
+{"ts":"2026-01-01T00:02:00Z","actor":"other","action":"send","target":"other2"}
+EVENTS
+assert_eq "latest_relevant_event: actor match returns done row" \
+    $'done\t2026-01-01T00:01:00Z' \
+    "$(_latest_relevant_event "claude:lead")"
+
+assert_eq "latest_relevant_event: no match returns empty" "" \
+    "$(_latest_relevant_event "ghost:agent")"
+
+# _latest_relevant_event: target match
+cat >"$META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"loop","action":"nudge","target":"claude:lead"}
+EVENTS
+assert_eq "latest_relevant_event: target match (nudge)" \
+    $'nudge\t2026-01-01T00:00:00Z' \
+    "$(_latest_relevant_event "claude:lead")"
+
+# _latest_relevant_event: cross-session target match (@session:agent)
+cat >"$META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"x","action":"send","target":"@testsess:claude:lead"}
+EVENTS
+assert_eq "latest_relevant_event: cross-session target match" \
+    $'send\t2026-01-01T00:00:00Z' \
+    "$(_latest_relevant_event "claude:lead")"
+
+# _agent_done_epoch: latest relevant is done → nonempty positive epoch
+cat >"$META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}
+EVENTS
+_epoch="$(_agent_done_epoch "claude:lead")"
+assert_eq "agent_done_epoch: done event returns nonempty positive epoch" "1" \
+    "$([[ -n "$_epoch" && "$_epoch" -gt 0 ]] && echo 1 || echo 0)"
+
+# _agent_done_epoch: newer inbound send invalidates done
+cat >"$META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}
+{"ts":"2026-01-01T00:01:00Z","actor":"other","action":"send","target":"claude:lead"}
+EVENTS
+assert_eq "agent_done_epoch: newer inbound send clears done" "" \
+    "$(_agent_done_epoch "claude:lead")"
+
+# _agent_done_epoch: newer nudge (loop self-targeted) also invalidates
+cat >"$META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}
+{"ts":"2026-01-01T00:01:00Z","actor":"loop","action":"nudge","target":"claude:lead"}
+EVENTS
+assert_eq "agent_done_epoch: newer nudge clears done" "" \
+    "$(_agent_done_epoch "claude:lead")"
+
+# _agent_done_epoch: unrelated events do not clear done
+cat >"$META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}
+{"ts":"2026-01-01T00:01:00Z","actor":"other","action":"send","target":"other2"}
+{"ts":"2026-01-01T00:02:00Z","actor":"other2","action":"send","target":"third"}
+EVENTS
+_epoch="$(_agent_done_epoch "claude:lead")"
+assert_eq "agent_done_epoch: unrelated events do not clear done" "1" \
+    "$([[ -n "$_epoch" && "$_epoch" -gt 0 ]] && echo 1 || echo 0)"
+
+# Regression for codex finding: done holds even when buried under >1000 unrelated events
+{
+    printf '%s\n' '{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}'
+    for _i in $(seq 1 2000); do
+        printf '%s\n' '{"ts":"2026-01-02T00:00:00Z","actor":"other","action":"send","target":"other2"}'
+    done
+} >"$META_DIR/events.jsonl"
+_epoch="$(_agent_done_epoch "claude:lead")"
+assert_eq "agent_done_epoch: done preserved past prior tail bound (>1000 unrelated)" "1" \
+    "$([[ -n "$_epoch" && "$_epoch" -gt 0 ]] && echo 1 || echo 0)"
+
+rm -rf "$_done_test_dir"
+unset _epoch META_DIR _AE_SESSION _done_test_dir
 
 # ── Results ──────────────────────────────────────────────────────────
 
