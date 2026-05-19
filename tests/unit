@@ -1008,6 +1008,123 @@ assert_eq "requests: request with no reply is pending" "1" \
 rm -rf "$_req_helper_dir"
 unset _req_out _req_helper_dir
 
+# ── loop: throttle detection (_buf_shows_throttle) ───────────────────
+
+# Extract pure-function body from the LOOPEOF heredoc.
+eval "$(awk '
+    /^_buf_shows_throttle\(\) \{/ { printing=1 }
+    printing { print }
+    printing && /^\}$/ { printing=0 }
+' "$(dirname "$0")/../ae")"
+
+# Per-tool detection.
+assert_eq "throttle: claude detects 'Server is temporarily limiting requests'" "0" \
+    "$(_buf_shows_throttle 'API Error: Server is temporarily limiting requests · Rate limited' claude; echo $?)"
+
+assert_eq "throttle: claude detects 'API Error: Overloaded'" "0" \
+    "$(_buf_shows_throttle '... API Error: Overloaded ...' claude; echo $?)"
+
+assert_eq "throttle: codex detects 'Rate limit exceeded'" "0" \
+    "$(_buf_shows_throttle 'Error: Rate limit exceeded for gpt-5.5' codex; echo $?)"
+
+assert_eq "throttle: codex detects 'RateLimitError'" "0" \
+    "$(_buf_shows_throttle 'openai.RateLimitError: 429 client error' codex; echo $?)"
+
+assert_eq "throttle: gemini detects RESOURCE_EXHAUSTED" "0" \
+    "$(_buf_shows_throttle 'Error 429: RESOURCE_EXHAUSTED' gemini; echo $?)"
+
+assert_eq "throttle: gemini detects 'Quota exceeded'" "0" \
+    "$(_buf_shows_throttle 'Quota exceeded for project foo' gemini; echo $?)"
+
+assert_eq "throttle: opencode detects union of upstream patterns (claude path)" "0" \
+    "$(_buf_shows_throttle 'API Error: Overloaded' opencode; echo $?)"
+
+assert_eq "throttle: opencode detects union of upstream patterns (gemini path)" "0" \
+    "$(_buf_shows_throttle 'RESOURCE_EXHAUSTED' opencode; echo $?)"
+
+# Generic fallbacks fire regardless of agent_bin.
+assert_eq "throttle: generic '429 Too Many Requests' fires for any tool" "0" \
+    "$(_buf_shows_throttle 'HTTP 429 Too Many Requests' someothertool; echo $?)"
+
+# Negatives — must NOT match in normal prose (false positive guard).
+assert_eq "throttle: normal claude prose does not match" "1" \
+    "$(_buf_shows_throttle 'Working on the rate limit feature. Ready to ship.' claude; echo $?)"
+
+assert_eq "throttle: empty buffer returns 1 (no match)" "1" \
+    "$(_buf_shows_throttle '' claude; echo $?)"
+
+assert_eq "throttle: cross-tool patterns do not leak (claude buffer + codex bin)" "1" \
+    "$(_buf_shows_throttle 'Server is temporarily limiting requests' codex; echo $?)"
+
+# Structural: the new step is wired into the watchdog body and the pre-check
+# uses the unified pane_buf so detection + streak-clear share one capture.
+assert_eq "throttle: watchdog has dedicated step before stale nudge" "1" \
+    "$([[ "$AE_SOURCE" == *'# 3. Throttled'* && "$AE_SOURCE" == *'_buf_shows_throttle "$pane_buf" "$agent_bin"'* ]] && echo 1 || echo 0)"
+
+# Codex IMPORTANT: throttle reaction MUST appear before the active/recent
+# branches in the loop body source order; otherwise the documented
+# THROTTLE_ALERT_CYCLES cadence wouldn't actually start until after the
+# 15-min stale window expires.
+_throttle_line="$(printf '%s\n' "$AE_SOURCE" | grep -n '# 3\. Throttled' | head -n1 | cut -d: -f1)"
+_active_line="$(printf '%s\n' "$AE_SOURCE" | grep -n '# 4\. Active' | head -n1 | cut -d: -f1)"
+_done_line="$(printf '%s\n' "$AE_SOURCE" | grep -n '# 2\. Explicitly done' | head -n1 | cut -d: -f1)"
+assert_eq "throttle: reaction precedes active branch in source order" "1" \
+    "$([[ -n "$_throttle_line" && -n "$_active_line" && "$_throttle_line" -lt "$_active_line" ]] && echo 1 || echo 0)"
+assert_eq "throttle: done branch precedes throttle (done-is-stronger)" "1" \
+    "$([[ -n "$_done_line" && -n "$_throttle_line" && "$_done_line" -lt "$_throttle_line" ]] && echo 1 || echo 0)"
+unset _throttle_line _active_line _done_line
+
+# Codex IMPORTANT (review-20260519T055557Z-cc4f6e91): the done branch MUST
+# update prev_hash so a static-pane next cycle doesn't re-trigger the
+# hash<->done reconciliation against a stale baseline and falsely invalidate
+# the done. Assert the done block body contains the prev_hash update.
+_done_block="$(printf '%s\n' "$AE_SOURCE" | awk '/# 2\. Explicitly done/,/# 3\. Throttled/')"
+assert_eq "done: honored done updates prev_hash baseline (codex review-...-cc4f6e91)" "1" \
+    "$([[ "$_done_block" == *'prev_hash["$pane"]="$hash"'* ]] && echo 1 || echo 0)"
+unset _done_block
+
+assert_eq "throttle: throttle_streak state tracked in declare -A" "1" \
+    "$([[ "$AE_SOURCE" == *'declare -A'*'throttle_streak'* ]] && echo 1 || echo 0)"
+
+assert_eq "throttle: AE_LOOP_THROTTLE_ALERT_CYCLES env override" "1" \
+    "$([[ "$AE_SOURCE" == *'AE_LOOP_THROTTLE_ALERT_CYCLES:-5'* ]] && echo 1 || echo 0)"
+
+assert_eq "throttle: emits throttled / alert / throttle-cleared events" "1" \
+    "$([[ "$AE_SOURCE" == *'ae_emit_event "throttled"'* && "$AE_SOURCE" == *'ae_emit_event "throttle-cleared"'* ]] && echo 1 || echo 0)"
+
+# Structural: streak detection AND clear happen up front (before any of the
+# active/recent/done early-continue branches), so the streak can't persist
+# across non-throttled cycles and falsely look continuous to the alerter.
+assert_eq "throttle: streak clear runs before early-continue branches (recovery path correctness)" "1" \
+    "$([[ "$AE_SOURCE" == *'Throttle detection AND streak clear up front'* ]] && echo 1 || echo 0)"
+
+# Structural: opencode pattern set is the union of upstream tools (built from
+# the same arrays — cannot drift).
+assert_eq "throttle: opencode pattern set is union via shared arrays (no drift)" "1" \
+    "$([[ "$AE_SOURCE" == *'opencode) active_pats=("${claude_pats[@]}" "${codex_pats[@]}" "${gemini_pats[@]}")'* ]] && echo 1 || echo 0)"
+
+# Behavioral: simulate throttle -> clear -> throttle again. Confirm the
+# function-level signal flips correctly per call (the loop body uses these
+# signals to update throttle_streak with the up-front clear logic codex flagged).
+assert_eq "throttle: detection toggles correctly across throttle->clear->throttle" "1" \
+    "$(
+        r1="$(_buf_shows_throttle 'API Error: Server is temporarily limiting requests' claude; echo $?)"
+        r2="$(_buf_shows_throttle 'normal output, working on task' claude; echo $?)"
+        r3="$(_buf_shows_throttle 'API Error: Server is temporarily limiting requests' claude; echo $?)"
+        [[ "$r1" == "0" && "$r2" == "1" && "$r3" == "0" ]] && echo 1 || echo 0
+    )"
+
+# Behavioral: opencode union now picks up codex-style errors too (regression
+# guard for the IMPORTANT codex flagged: previously omitted RateLimitError etc).
+assert_eq "throttle: opencode union catches codex RateLimitError" "0" \
+    "$(_buf_shows_throttle 'openai.RateLimitError: 429 client error' opencode; echo $?)"
+
+assert_eq "throttle: opencode union catches Anthropic API error" "0" \
+    "$(_buf_shows_throttle 'Anthropic API error: connection reset' opencode; echo $?)"
+
+assert_eq "throttle: opencode union catches gemini Quota exceeded" "0" \
+    "$(_buf_shows_throttle 'Quota exceeded for project foo' opencode; echo $?)"
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

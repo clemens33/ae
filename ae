@@ -4045,6 +4045,8 @@ INTERVAL="${AE_LOOP_INTERVAL_SEC:-60}"
 STALE_MIN="${AE_LOOP_STALE_MIN:-15}"
 MAX_NUDGES="${AE_LOOP_MAX_NUDGES:-2}"
 STALE_SECS=$((STALE_MIN * 60))
+# Cycles of continuous throttle detection before escalating to alert (~5min default).
+THROTTLE_ALERT_CYCLES="${AE_LOOP_THROTTLE_ALERT_CYCLES:-5}"
 
 PIDFILE="${META_DIR}/.loop.pid"
 
@@ -4294,7 +4296,60 @@ _pane_has_descendant_named() {
     return 1
 }
 
-declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing done_observed_epoch ignored_done_epoch
+declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing done_observed_epoch ignored_done_epoch throttle_streak
+
+# Known transient upstream throttle / overload patterns per agent binary.
+# Pure function: takes a captured pane buffer + the agent binary name and
+# returns 0 if any pattern matches. Patterns are deliberately narrow phrases
+# unlikely to appear in normal agent prose, to keep false-positive rate low.
+# When tools change their error wording, edit this function.
+_buf_shows_throttle() {
+    local buf="$1" agent_bin="$2"
+    [[ -n "$buf" ]] || return 1
+    # Per-tool catalogs. opencode is a TUI wrapper over configurable providers,
+    # so it MUST be the full union — refactor here, never duplicate, to prevent
+    # drift between branches.
+    local claude_pats=(
+        'Server is temporarily limiting requests'
+        'API Error: Overloaded'
+        'Anthropic API error'
+    )
+    local codex_pats=(
+        'Rate limit exceeded'
+        'RateLimitError'
+        'ratelimit_exceeded'
+    )
+    local gemini_pats=(
+        'RESOURCE_EXHAUSTED'
+        'Quota exceeded'
+    )
+    local generic_pats=(
+        '429 Too Many Requests'
+        '503 Service Unavailable'
+    )
+    local -a active_pats
+    case "$agent_bin" in
+        claude)   active_pats=("${claude_pats[@]}") ;;
+        codex)    active_pats=("${codex_pats[@]}") ;;
+        gemini)   active_pats=("${gemini_pats[@]}") ;;
+        opencode) active_pats=("${claude_pats[@]}" "${codex_pats[@]}" "${gemini_pats[@]}") ;;
+        *)        active_pats=() ;;
+    esac
+    local pat
+    for pat in "${active_pats[@]}" "${generic_pats[@]}"; do
+        [[ "$buf" == *"$pat"* ]] && return 0
+    done
+    return 1
+}
+
+# tmux-capturing wrapper around _buf_shows_throttle. Looks at the last ~15
+# lines (errors appear at tail of the buffer, not mid-conversation).
+_pane_shows_throttle() {
+    local pane="$1" agent_bin="$2"
+    local buf
+    buf="$(tmux capture-pane -p -J -S -15 -E - -t "$pane" 2>/dev/null || true)"
+    _buf_shows_throttle "$buf" "$agent_bin"
+}
 declare -A agent_bins
 cycle=0
 
@@ -4358,14 +4413,16 @@ while true; do
             continue
         fi
 
+        # Resolve the actual binary name from agent_bin.<slot> in meta (not the
+        # alias label, which is arbitrary user text). Needed by both dead check
+        # and throttle pattern catalog.
+        agent_bin="${agent_bins[$agent]:-${agent%%:*}}"
+
         # 1. Dead check — pane's foreground command is a shell.
         # But the agent might still be running as a descendant (e.g. when launched
         # via bash -lc wrapper). Walk the process tree before declaring death.
-        # We resolve the actual binary name from agent_bin.<slot> in meta,
-        # not the alias label (which is arbitrary user text).
         case "$proc" in
             bash|zsh|fish|sh|dash|"")
-                agent_bin="${agent_bins[$agent]:-${agent%%:*}}"
                 if _pane_has_descendant_named "$pane_pid_val" "$agent_bin"; then
                     : # alive — fall through to active check
                 else
@@ -4380,15 +4437,80 @@ while true; do
                 ;;
         esac
 
-        # 2. Active check — pane content hash changed since last cycle
+        # Pre-check: one pane buffer capture per cycle, drives both hash check
+        # (step 4) and throttle detection (step 3). Compute done epoch + throttle
+        # state up front so the priority branches (done, throttled) can react
+        # before the pane-hash early-continues mask them visually.
         now_epoch="$(date +%s)"
-        hash="$(tmux capture-pane -p -J -S -40 -E - -t "$pane" 2>/dev/null | md5sum | cut -d' ' -f1)"
+        pane_buf="$(tmux capture-pane -p -J -S -40 -E - -t "$pane" 2>/dev/null || true)"
+        hash="$(printf '%s' "$pane_buf" | md5sum | cut -d' ' -f1)"
+        done_epoch="$(_agent_done_epoch "$agent")"
+        # Pane churn after a previously honored done epoch invalidates the done
+        # (agent kept working after self-declaring complete). Do the hash<->done
+        # reconciliation here so step 2 sees correct ignored_done_epoch state.
         if [[ "$hash" != "${prev_hash[$pane]:-}" ]]; then
-            done_epoch="$(_agent_done_epoch "$agent")"
             if [[ -n "$done_epoch" && "${done_observed_epoch[$pane]:-}" == "$done_epoch" ]]; then
                 ignored_done_epoch["$pane"]="$done_epoch"
                 unset 'done_observed_epoch[$pane]'
             fi
+        fi
+        # Throttle detection AND streak clear up front: streak resets on every
+        # non-throttled cycle regardless of which branch the agent exits on.
+        if _buf_shows_throttle "$pane_buf" "$agent_bin"; then
+            is_throttled=1
+        else
+            is_throttled=0
+            if [[ -n "${throttle_streak[$pane]:-}" ]]; then
+                ae_emit_event "throttle-cleared" "$agent" "" "throttling cleared after ${throttle_streak[$pane]} cycles"
+                _loop_log "  ${agent}  throttle cleared after ${throttle_streak[$pane]} cycles"
+                unset 'throttle_streak[$pane]'
+            fi
+        fi
+
+        # 2. Explicitly done — strongest "leave me alone" signal. Agent marked
+        #    itself complete and the done has not been invalidated by later pane
+        #    churn (reconciled above). Honor over throttle/active/stale.
+        #    prev_hash is updated to the *current* hash so a subsequent static
+        #    cycle does not re-trigger the hash<->done reconciliation against a
+        #    stale baseline (which would falsely invalidate the done).
+        if [[ -n "$done_epoch" && "${ignored_done_epoch[$pane]:-}" != "$done_epoch" ]]; then
+            cycle_active=$((cycle_active + 1))
+            nudge_count["$pane"]=0
+            done_observed_epoch["$pane"]="$done_epoch"
+            prev_hash["$pane"]="$hash"
+            _loop_log "  ${agent}  done (reported complete) — skip"
+            continue
+        fi
+
+        # 3. Throttled — upstream rate limit / overload visible in pane. React
+        #    BEFORE active/recent so the alert cadence (THROTTLE_ALERT_CYCLES *
+        #    INTERVAL) starts immediately. If we waited until after active/recent,
+        #    the alert would fire only after the full stale window expired —
+        #    breaking the documented threshold.
+        if (( is_throttled )); then
+            prev_streak="${throttle_streak[$pane]:-0}"
+            if (( prev_streak == 0 )); then
+                ae_emit_event "throttled" "$agent" "" "upstream throttling detected — pausing nudges"
+                _loop_log "  ${agent}  THROTTLED — pausing nudges"
+            fi
+            throttle_streak["$pane"]=$((prev_streak + 1))
+            if (( throttle_streak[$pane] == THROTTLE_ALERT_CYCLES )); then
+                ae_emit_event "alert" "$agent" "" "throttled for $((THROTTLE_ALERT_CYCLES * INTERVAL))s — may need attention"
+                tmux display-message -d 10000 "[ae loop] $agent throttled persistently" 2>/dev/null || true
+                cycle_alerts=$((cycle_alerts + 1))
+                _loop_log "  ${agent}  THROTTLED — persistent (${THROTTLE_ALERT_CYCLES} cycles), alert raised"
+            fi
+            # Update hash even when throttled so a later pane change (recovery)
+            # is detected as activity rather than a stale "first time" hash diff.
+            prev_hash["$pane"]="$hash"
+            last_hash_change["$pane"]="$now_epoch"
+            cycle_active=$((cycle_active + 1))
+            nudge_count["$pane"]=0
+            continue
+        fi
+
+        # 4. Active — pane content hash changed since last cycle
+        if [[ "$hash" != "${prev_hash[$pane]:-}" ]]; then
             prev_hash["$pane"]="$hash"
             last_hash_change["$pane"]="$now_epoch"
             nudge_count["$pane"]=0
@@ -4397,7 +4519,7 @@ while true; do
             continue
         fi
 
-        # 3. Recently visible — pane changed within stale window (covers human
+        # 5. Recently visible — pane changed within stale window (covers human
         #    interaction with quiet/static responses they are still reading)
         last_change="${last_hash_change[$pane]:-0}"
         if (( last_change > 0 && now_epoch - last_change < STALE_SECS )); then
@@ -4406,7 +4528,7 @@ while true; do
             continue
         fi
 
-        # 4. Recently alive — recent event from this actor
+        # 6. Recently alive — recent event from this actor
         event_age="$(_last_event_age "$agent")"
         if (( event_age < STALE_SECS )); then
             cycle_active=$((cycle_active + 1))
@@ -4414,18 +4536,7 @@ while true; do
             continue
         fi
 
-        # 5. Explicitly done — agent marked itself complete/paused and has not
-        #    received newer relevant work since then.
-        done_epoch="$(_agent_done_epoch "$agent")"
-        if [[ -n "$done_epoch" && "${ignored_done_epoch[$pane]:-}" != "$done_epoch" ]]; then
-            cycle_active=$((cycle_active + 1))
-            nudge_count["$pane"]=0
-            done_observed_epoch["$pane"]="$done_epoch"
-            _loop_log "  ${agent}  done (reported complete) — skip"
-            continue
-        fi
-
-        # 6. Stale — nudge or escalate
+        # 7. Stale — nudge or escalate
         cycle_stale=$((cycle_stale + 1))
         count="${nudge_count[$pane]:-0}"
         stale_min_num=$(( event_age / 60 ))
@@ -4454,7 +4565,7 @@ while true; do
 
     done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}' 2>/dev/null)
 
-    # 7. Missing pane check — registered agents whose panes no longer exist
+    # 8. Missing pane check — registered agents whose panes no longer exist
     while IFS='=' read -r key val; do
         [[ "$key" == agent.* ]] || continue
         agent_ref="${val%%:*}:$(echo "${val#*:}" | cut -d: -f1)"
@@ -4466,7 +4577,7 @@ while true; do
         fi
     done < "$META_DIR/meta"
 
-    # 8. Recover pending session IDs (codex/gemini/opencode post-launch capture retry)
+    # 9. Recover pending session IDs (codex/gemini/opencode post-launch capture retry)
     AE_PATH_BIN="$(grep '^ae_path=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
     if [[ -n "$AE_PATH_BIN" && -x "$AE_PATH_BIN" ]]; then
         while IFS=$'\t' read -r r_kind r_slot r_agent r_tool r_captured; do
