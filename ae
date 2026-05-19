@@ -34,7 +34,8 @@ opencode = "opencode"
 
 [workspace]
 main = claude:lead
-layout = vertical'
+layout = vertical
+loop = true'
 
 # Create default config if missing
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -4017,7 +4018,7 @@ _format_event() {
 # Banner printed once at the top of the pane's scrollback.
 printf '\033[1;36m'
 printf '╭─ ae events — session: %s ───────────────────────────────╮\n' "${META_DIR##*/}"
-printf '│ date+time       action   actor                  → target                 summary\n'
+printf '│ date+time (UTC)  action   actor                  → target                 summary\n'
 printf '╰──────────────────────────────────────────────────────────────────────────╯\n'
 printf '\033[0m\n'
 
@@ -4679,16 +4680,19 @@ fi
 # when the loop watchdog is off.
 "${AE_META}/loop" _ensure-monitor 2>/dev/null || true
 
-# Start loop if enabled — meta (per-session override) wins over config default
+# Start loop unless explicitly disabled. Precedence: per-session meta override
+# > workspace.loop config > default (on). Only explicit false/no/off/0 keeps
+# the watchdog off — unset/empty means default-on.
 LOOP_META="$(read_session_meta "$SESSION" loop)"
 if [[ -n "$LOOP_META" ]]; then
     LOOP_ENABLED="$LOOP_META"
 else
     LOOP_ENABLED="$(get_config workspace.loop)"
 fi
-if [[ "${LOOP_ENABLED,,}" == "true" ]]; then
-    "${AE_META}/loop" start
-fi
+case "${LOOP_ENABLED,,}" in
+    false | no | off | 0) ;;
+    *) "${AE_META}/loop" start ;;
+esac
 
 # Focus main pane and attach
 tmux select-pane -t "${PANE_IDS[0]}"

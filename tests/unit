@@ -622,6 +622,16 @@ assert_eq "loop: auto-start via workspace.loop config" \
     "1" \
     "$([[ "$AE_SOURCE" == *'workspace.loop'* && "$AE_SOURCE" == *'ae-monitor'* ]] && echo 1 || echo 0)"
 
+# Loop is now on-by-default; only explicit false/no/off/0 disables.
+assert_eq "loop: default-on resolution (unset/empty means start)" "1" \
+    "$([[ "$AE_SOURCE" == *'case "${LOOP_ENABLED,,}" in'* && "$AE_SOURCE" == *'false | no | off | 0)'* ]] && echo 1 || echo 0)"
+
+assert_eq "loop: DEFAULT_CONFIG advertises loop = true to new installs" "1" \
+    "$([[ "$AE_SOURCE" == *'loop = true'* ]] && echo 1 || echo 0)"
+
+assert_eq "events-tail: banner labels timestamps as UTC" "1" \
+    "$([[ "$AE_SOURCE" == *'date+time (UTC)'* ]] && echo 1 || echo 0)"
+
 # Monitor window with _events pane is always created on session start/resume,
 # independent of loop on/off. Loop start splits the window to add the _loop pane.
 assert_eq "monitor: ae-monitor + events pane created independently of loop" "1" \
