@@ -1,0 +1,90 @@
+site_name: ae — agentic engineering
+site_description: Run AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots.
+site_url: https://clemens33.github.io/ae/
+repo_url: https://github.com/clemens33/ae
+repo_name: clemens33/ae
+edit_uri: edit/main/docs/
+copyright: MIT
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: green
+      accent: light green
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: green
+      accent: light green
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install: getting-started/install.md
+      - Quick start: getting-started/quick-start.md
+      - Configuration: getting-started/config.md
+  - Commands: reference/commands.md
+  - Session helpers: reference/helpers.md
+  - Internals:
+      - Architecture: internals/architecture.md
+      - Loop watchdog: internals/loop.md
+      - Events: internals/events.md
+      - Monitor window: internals/monitor.md
+  - Troubleshooting: troubleshooting.md
+  - Development: development.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+plugins:
+  - search
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/clemens33/ae

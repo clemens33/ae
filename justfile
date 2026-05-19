@@ -134,6 +134,17 @@ release:
 install:
     ./install
 
+# ── Docs ─────────────────────────────────────────────────────────────
+# Optional. Requires `pip install mkdocs-material`.
+
+# Serve the docs site locally with live reload
+docs:
+    mkdocs serve
+
+# Build the static docs site into ./site (gitignored)
+docs-build:
+    mkdocs build --strict
+
 # ── Quick Reference ──────────────────────────────────────────────────
 
 # Show available recipes
