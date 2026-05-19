@@ -17,7 +17,8 @@ flowchart LR
     Monitor --> Events[_events pane<br/>events-tail]
     AgentPane1 -.send/ask/reply.-> SessDir
     AgentPane2 -.send/ask/reply.-> SessDir
-    Loop -.reads.-> Events
+    Loop -.reads events.jsonl.-> SessDir
+    Events -.tails events.jsonl.-> SessDir
 ```
 
 ## Single bash script
@@ -72,7 +73,7 @@ Resume uses the captured UUID for exact conversation restore; falls back to a CW
 
 ## Communication: events as source of truth
 
-Earlier versions wrote messages to `messages.tsv` and request state to `requests.tsv`. Today, `events.jsonl` is the only log. Every `send` / `ask` / `review` / `reply` / `mark-done` / `memo` / `spawn` / `retire` / `focus` / `interrupt` / `nudge` / `alert` / `throttled` / `recover` emits one JSON event:
+Earlier versions wrote messages to `messages.tsv` and request state to `requests.tsv`. Today, `events.jsonl` is the only log. Every `send` / `ask` / `review` / `reply` / `mark-done` / `memo` / `spawn` / `retire` / `focus` / `interrupt` / `nudge` / `alert` / `throttled` / `throttle-cleared` / `recover` emits one JSON event:
 
 ```json
 {"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"done","summary":"..."}

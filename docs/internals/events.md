@@ -1,6 +1,6 @@
 # Events
 
-`~/.ae/sessions/<name>/events.jsonl` is ae's single durable record of what happened. Every helper writes structured events; the loop watchdog reads them; `requests` derives its state from them. Append-only, one JSON object per line.
+`~/.ae/sessions/<name>/events.jsonl` is ae's single durable record of what happened. Mutating helpers and ae internals write structured events; inspection helpers (`peek`, `agents`, `requests`, `events-tail`, `loop status`) read but don't write. The loop watchdog reads events to enforce its done-invalidation contract; `requests` derives pending/replied state from them. Append-only, one JSON object per line.
 
 ## Schema
 
@@ -12,10 +12,17 @@ Every event has these keys; `target`, `ref`, and `summary` are optional and omit
   "actor":   "claude:lead",                 // alias:name of the emitter (or 'loop', 'human')
   "action":  "done",                        // event type — see below
   "target":  "codex:coworker",              // alias:name of the recipient when applicable
-  "ref":     "ae-20260519T072100Z-abc123",  // request id for ask/review/reply pairing
+  "ref":     "ae-20260519T072100Z-abc123",  // polysemous — see action table
   "summary": "first 200 chars of payload"   // optional preview, truncated
 }
 ```
+
+`ref` carries different correlation values depending on `action`:
+
+- `ask` / `review` / `reply` — the request id pairing the three.
+- `memo` — the topic the memo was filed under.
+- `recover` — the captured session id (Codex/Gemini/OpenCode UUID).
+- Other actions — usually absent.
 
 String values are JSON-escaped: `\"` `\\` `\n` `\t` `\r`. The flat schema is intentionally cheap to parse from bash (`_event_json_str` in `_lib` is a pure bash walker).
 
