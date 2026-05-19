@@ -4001,8 +4001,9 @@ _format_event() {
     action="$(_extract_json_str "$line" action)"
     target="$(_extract_json_str "$line" target)"
     summary="$(_extract_json_str "$line" summary)"
-    short_ts="${ts##*T}"
-    short_ts="${short_ts%Z}"
+    # Display 'MM-DDTHH:MM:SS' (14 chars) so day rollovers are visible in the
+    # monitor pane. Full ISO timestamp stays in events.jsonl for audit.
+    short_ts="${ts:5:14}"
     if (( ${#summary} > 60 )); then
         summary="${summary:0:57}..."
     fi
@@ -4016,7 +4017,7 @@ _format_event() {
 # Banner printed once at the top of the pane's scrollback.
 printf '\033[1;36m'
 printf '╭─ ae events — session: %s ───────────────────────────────╮\n' "${META_DIR##*/}"
-printf '│ time      action   actor                  → target                 summary\n'
+printf '│ date+time       action   actor                  → target                 summary\n'
 printf '╰──────────────────────────────────────────────────────────────────────────╯\n'
 printf '\033[0m\n'
 

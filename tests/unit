@@ -633,6 +633,9 @@ assert_eq "monitor: launch flow calls loop _ensure-monitor unconditionally" "1" 
 assert_eq "monitor: _events pane runs events-tail" "1" \
     "$([[ "$AE_SOURCE" == *'new-window -da -t "$_AE_SESSION" -n "ae-monitor"'* && "$AE_SOURCE" == *'/events-tail'* ]] && echo 1 || echo 0)"
 
+assert_eq "events-tail: short_ts shows date+time (MM-DDTHH:MM:SS) so day rollover is visible" "1" \
+    "$([[ "$AE_SOURCE" == *'short_ts="${ts:5:14}"'* ]] && echo 1 || echo 0)"
+
 assert_eq "monitor: loop start splits to add _loop pane, does not create the window" "1" \
     "$([[ "$AE_SOURCE" == *'split-window -v -b -t "$MONITOR_EVENTS_PANE"'* ]] && echo 1 || echo 0)"
 
