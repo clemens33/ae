@@ -2,6 +2,48 @@
 
 `~/.ae/sessions/<name>/events.jsonl` is ae's single durable record of what happened. Mutating helpers and ae internals write structured events; inspection helpers (`peek`, `agents`, `requests`, `events-tail`, `loop status`) read but don't write. The loop watchdog reads events to enforce its done-invalidation contract; `requests` derives pending/replied state from them. Append-only, one JSON object per line.
 
+## Producers and consumers
+
+Single writer (`ae_emit_event` in `_lib`), single file, multiple readers. The append-only structure plus flock-serialized writes mean readers can scan safely without coordination.
+
+```mermaid
+flowchart LR
+    subgraph Writers
+        direction TB
+        SH[send]
+        AKH[ask / review]
+        RPH[reply]
+        MDH[mark-done]
+        MEH[memo]
+        SPH[spawn / retire]
+        LP1["loop watchdog<br/>nudge / alert /<br/>throttled / throttle-cleared /<br/>recover"]
+        IH[interrupt / focus]
+    end
+    EE["_lib::ae_emit_event<br/>(JSON escape,<br/>flock + append)"]
+    FILE[(events.jsonl)]
+    subgraph Readers
+        direction TB
+        LP2["loop watchdog<br/>_agent_done_epoch<br/>_buf_shows_throttle"]
+        REQ["requests helper<br/>ae_find_request"]
+        ET["_events pane<br/>events-tail"]
+    end
+
+    SH --> EE
+    AKH --> EE
+    RPH --> EE
+    MDH --> EE
+    MEH --> EE
+    SPH --> EE
+    LP1 --> EE
+    IH --> EE
+    EE --> FILE
+    FILE -.tac scan.-> LP2
+    FILE -.tac scan.-> REQ
+    FILE -.tail -F.-> ET
+```
+
+Inspection helpers (`peek`, `agents`, `requests`, `events-tail`, `loop status`) read but don't write. Mutating helpers and the loop watchdog write through the single `ae_emit_event` choke point.
+
 ## Schema
 
 Every event has these keys; `target`, `ref`, and `summary` are optional and omitted when empty.

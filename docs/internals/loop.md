@@ -91,6 +91,21 @@ When detected:
 3. After `THROTTLE_ALERT_CYCLES` consecutive throttled cycles → emit `alert` event + tmux banner. Once.
 4. When the pattern no longer matches → emit `throttle-cleared` event, reset streak.
 
+The streak state per pane is a small machine:
+
+```mermaid
+stateDiagram-v2
+    [*] --> NotThrottled
+    NotThrottled --> Throttled : pattern matched<br/>emit "throttled"
+    Throttled --> Throttled : still matching<br/>streak++
+    Throttled --> Alerted : streak == THROTTLE_ALERT_CYCLES<br/>emit "alert" + tmux banner
+    Alerted --> Alerted : still matching
+    Throttled --> NotThrottled : pattern cleared<br/>emit "throttle-cleared"
+    Alerted --> NotThrottled : pattern cleared<br/>emit "throttle-cleared"
+```
+
+There is no repeat-alert. Once an agent has been alerted for a streak, it stays in `Alerted` silently until the pattern clears. This is deliberate — paging once per streak is informative; paging every minute would be spam.
+
 ## What the watchdog cannot do
 
 - **Restart a dead agent.** Marks it dead and stops checking.

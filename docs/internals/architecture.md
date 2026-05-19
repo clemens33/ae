@@ -21,6 +21,39 @@ flowchart LR
     Events -.tails events.jsonl.-> SessDir
 ```
 
+## Session lifecycle — start vs resume
+
+The same `ae <name>` command handles both first creation and reattach. The only branch is whether a session directory already exists on disk; everything downstream is shared.
+
+```mermaid
+flowchart TB
+    Cmd([ae &lt;name&gt;]) --> Check{Session dir<br/>on disk?}
+    Check -- no --> Fresh
+    Check -- yes --> Resume
+
+    subgraph Fresh ["Fresh start"]
+        direction TB
+        F1[Generate session UUIDs<br/>+ launch tokens]
+        F2[Create tmux session<br/>+ agent panes]
+        F1 --> F2
+    end
+
+    subgraph Resume ["Resume"]
+        direction TB
+        R1[Read meta<br/>recover ae_path, slots]
+        R2[Reattach tmux session<br/>+ relaunch agents w/ --resume]
+        R1 --> R2
+    end
+
+    Fresh --> Sync[sync_session_assets<br/>regenerate ALL helpers<br/>+ workspace.md<br/>+ sweep orphans]
+    Resume --> Sync
+    Sync --> Mon[_ensure-monitor<br/>creates ae-monitor + _events]
+    Mon --> Loop[Start loop watchdog<br/>unless explicitly disabled]
+    Loop --> Attach[tmux attach]
+```
+
+The regenerate step is unconditional on both paths — that's how upgrades propagate without any migration ceremony.
+
 ## Single bash script
 
 The `ae` script does everything: config parsing, tmux orchestration, helper generation, session state management. No build step, no runtime, no plugin framework. The file index near the top of the script groups functions by concern (Config, Helpers, Resume, Session, Launch, Manifest, Commands).

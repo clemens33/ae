@@ -14,6 +14,31 @@ Every ae session has a directory at `~/.ae/sessions/<name>/` filled with generat
 
 All four messaging helpers emit a structured event into `events.jsonl` so the morning-after view stays auditable.
 
+### How they compose
+
+`ask` and `review` are thin wrappers over the shared `ae_tracked_send` in `_lib`. Everything ultimately dispatches through `send`, which is the only helper that actually pastes into a pane. `reply` looks up the original request via `ae_find_request` (also in `_lib`) before delegating to `send`.
+
+```mermaid
+flowchart LR
+    A[Agent A pane] --send--> S[send helper]
+    A --ask--> AK[ask helper]
+    A --review--> RV[review helper]
+
+    AK --> TS["_lib::ae_tracked_send<br/>(resolve target,<br/>mint req_id,<br/>build message)"]
+    RV --> TS
+    TS -->|exec env<br/>_AE_EVENT_ACTION=ask/review| S
+
+    S -->|tmux paste| B[Agent B pane]
+    S -->|ae_emit_event| EJ[(events.jsonl)]
+
+    B --reply--> RP[reply helper]
+    RP -->|ae_find_request<br/>verify pairing| EJ
+    RP -->|exec env<br/>_AE_EVENT_ACTION=reply| S
+    S -->|tmux paste| A
+```
+
+Only one helper touches tmux (`send`). Only one path mints request ids (`ae_tracked_send`). Only one helper validates reply pairing (`ae_find_request`). That symmetry is why the surface is auditable in `events.jsonl` — every interaction passes through the same emit point.
+
 ## State
 
 | Helper | Purpose |
