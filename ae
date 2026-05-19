@@ -4297,7 +4297,7 @@ _pane_has_descendant_named() {
     return 1
 }
 
-declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing done_observed_epoch ignored_done_epoch throttle_streak
+declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing throttle_streak
 
 # Known transient upstream throttle / overload patterns per agent binary.
 # Pure function: takes a captured pane buffer + the agent binary name and
@@ -4446,15 +4446,6 @@ while true; do
         pane_buf="$(tmux capture-pane -p -J -S -40 -E - -t "$pane" 2>/dev/null || true)"
         hash="$(printf '%s' "$pane_buf" | md5sum | cut -d' ' -f1)"
         done_epoch="$(_agent_done_epoch "$agent")"
-        # Pane churn after a previously honored done epoch invalidates the done
-        # (agent kept working after self-declaring complete). Do the hash<->done
-        # reconciliation here so step 2 sees correct ignored_done_epoch state.
-        if [[ "$hash" != "${prev_hash[$pane]:-}" ]]; then
-            if [[ -n "$done_epoch" && "${done_observed_epoch[$pane]:-}" == "$done_epoch" ]]; then
-                ignored_done_epoch["$pane"]="$done_epoch"
-                unset 'done_observed_epoch[$pane]'
-            fi
-        fi
         # Throttle detection AND streak clear up front: streak resets on every
         # non-throttled cycle regardless of which branch the agent exits on.
         if _buf_shows_throttle "$pane_buf" "$agent_bin"; then
@@ -4468,17 +4459,16 @@ while true; do
             fi
         fi
 
-        # 2. Explicitly done — strongest "leave me alone" signal. Agent marked
-        #    itself complete and the done has not been invalidated by later pane
-        #    churn (reconciled above). Honor over throttle/active/stale.
-        #    prev_hash is updated to the *current* hash so a subsequent static
-        #    cycle does not re-trigger the hash<->done reconciliation against a
-        #    stale baseline (which would falsely invalidate the done).
-        if [[ -n "$done_epoch" && "${ignored_done_epoch[$pane]:-}" != "$done_epoch" ]]; then
+        # 2. Explicitly done — strongest "leave me alone" signal. Done is
+        #    invalidated ONLY by a newer ae event mentioning the agent
+        #    (already enforced by _agent_done_epoch returning empty in that
+        #    case). Pane hash churn — scrollback, resize, redraws, escape
+        #    sequences — is too noisy to use as an invalidation signal.
+        #    Silent work after done is the agent's discipline problem; if
+        #    they resume, they should emit an ae event.
+        if [[ -n "$done_epoch" ]]; then
             cycle_active=$((cycle_active + 1))
             nudge_count["$pane"]=0
-            done_observed_epoch["$pane"]="$done_epoch"
-            prev_hash["$pane"]="$hash"
             _loop_log "  ${agent}  done (reported complete) — skip"
             continue
         fi

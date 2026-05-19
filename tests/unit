@@ -1084,13 +1084,17 @@ assert_eq "throttle: done branch precedes throttle (done-is-stronger)" "1" \
     "$([[ -n "$_done_line" && -n "$_throttle_line" && "$_done_line" -lt "$_throttle_line" ]] && echo 1 || echo 0)"
 unset _throttle_line _active_line _done_line
 
-# Codex IMPORTANT (review-20260519T055557Z-cc4f6e91): the done branch MUST
-# update prev_hash so a static-pane next cycle doesn't re-trigger the
-# hash<->done reconciliation against a stale baseline and falsely invalidate
-# the done. Assert the done block body contains the prev_hash update.
+# Done is event-only invalidated. The earlier pane-change-invalidates rule
+# (done_observed_epoch / ignored_done_epoch reconciliation) was too sensitive
+# in practice — terminal noise like resize/scroll/escape sequences was wiping
+# legitimate dones. Done now stays valid until _agent_done_epoch returns empty
+# (i.e. a newer ae event mentions the agent).
+assert_eq "done: pane-change-invalidates state is fully removed" "1" \
+    "$([[ "$AE_SOURCE" != *'ignored_done_epoch'* && "$AE_SOURCE" != *'done_observed_epoch'* ]] && echo 1 || echo 0)"
+
 _done_block="$(printf '%s\n' "$AE_SOURCE" | awk '/# 2\. Explicitly done/,/# 3\. Throttled/')"
-assert_eq "done: honored done updates prev_hash baseline (codex review-...-cc4f6e91)" "1" \
-    "$([[ "$_done_block" == *'prev_hash["$pane"]="$hash"'* ]] && echo 1 || echo 0)"
+assert_eq "done: branch condition is event-only ([[ -n \$done_epoch ]])" "1" \
+    "$([[ "$_done_block" == *'if [[ -n "$done_epoch" ]]; then'* ]] && echo 1 || echo 0)"
 unset _done_block
 
 assert_eq "throttle: throttle_streak state tracked in declare -A" "1" \
