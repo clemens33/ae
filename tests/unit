@@ -28,7 +28,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -1498,7 +1498,171 @@ for entry in "${ORCH_CALL_LOG[@]}"; do
 done
 assert_eq "transfer-orch: self-stop guard prevents any destructive call" "0" "$_orch_destructive"
 
+# ── ae transfer — phase 2 (--pull direction) ─────────────────────────
+# Behavioral: orchestrate cmd_transfer in pull mode with the same mock
+# transport. Verifies the destination is local, source is remote, and
+# the rsync direction reverses correctly.
+
+# shellcheck disable=SC2034  # SESSIONS_DIR / AE_VERSION are read by cmd_transfer via eval'd extraction
+_pull_home="$(mktemp -d)"
+_pull_session="pull-test-session"
+_pull_claude_uuid="22222222-3333-4444-5555-666666666666"
+_pull_codex_uuid="bbbbcccc-dddd-eeee-ffff-000000000000"
+
+mkdir -p "$_pull_home/projects/foo"
+mkdir -p "$_pull_home/.ae/sessions"  # parent for local destination
+
+# Plant the LOCAL .claude/.codex dirs so the pulled per-agent rsync targets exist.
+mkdir -p "$_pull_home/.claude/projects/proj-pull"
+mkdir -p "$_pull_home/.codex/sessions/2026/05/26"
+
+declare -ag ORCH_CALL_LOG=()
+# shellcheck disable=SC2317  # mock fn bodies are reached via cmd_transfer (extracted via awk eval), not visible statically
+{
+    ssh() {
+        local script=""
+        [[ ! -t 0 ]] && script="$(cat)"
+        ORCH_CALL_LOG+=("ssh-argv: $*")
+        [[ -n "$script" ]] && ORCH_CALL_LOG+=("ssh-stdin: $script")
+        return 0
+    }
+    rsync() {
+        ORCH_CALL_LOG+=("rsync: $*")
+        return 0
+    }
+    _transfer_ssh_probe() { ORCH_CALL_LOG+=("ssh-probe: $1"); return 0; }
+    _transfer_local_rsync_supports_protect_args() { return 0; }
+    _transfer_remote_preflight() { ORCH_CALL_LOG+=("preflight: $1"); return 0; }
+    # Pull-specific: source session exists on REMOTE; collision check runs on LOCAL.
+    _transfer_remote_session_exists() { ORCH_CALL_LOG+=("remote-exists: $1 $2"); return 0; }  # source exists
+    _transfer_check_remote_path() { ORCH_CALL_LOG+=("check-path-remote: $1 $2"); return 0; }
+    # Mock remote-meta read to return a synthetic meta with the planted UUIDs.
+    _transfer_read_remote_meta_value() {
+        case "$3" in
+            work_dir) echo "$_pull_home/projects/foo" ;;
+        esac
+    }
+    # Mock the per-tool remote-side lookups. Both succeed and echo a synthetic path.
+    _transfer_find_remote_claude_session_file() {
+        echo "/home/ckriech/.claude/projects/proj-pull/$_pull_claude_uuid.jsonl"
+    }
+    _transfer_find_remote_codex_session_file() {
+        echo "/home/ckriech/.codex/sessions/2026/05/26/rollout-20260526T100000-$_pull_codex_uuid.jsonl"
+    }
+    _transfer_emit_local_event() { ORCH_CALL_LOG+=("emit-local: $1 $2"); return 0; }
+    _transfer_emit_destination_event() { ORCH_CALL_LOG+=("emit-remote: $1 $2 $3"); return 0; }
+    _transfer_ensure_stopped() { ORCH_CALL_LOG+=("local-stop: $1"); return 0; }
+    _transfer_ensure_stopped_remote() { ORCH_CALL_LOG+=("remote-stop: $1 $2"); return 0; }
+    cmd_stop() { return 0; }
+    detect_current_session() { return 1; }
+    tmux() { return 1; }
+
+    # In pull mode, meta comes from remote (ssh+cat). Our mock ssh swallows
+    # stdin, so we need a fake meta to feed back. Provide one via an override
+    # that returns a remote meta on SSH calls whose stdin starts with cat-meta.
+    # Simpler: cmd_transfer reads remote meta via ssh; our mocked ssh returns 0
+    # with no output. To make UUID discovery work, override the read by
+    # injecting it through a different path — for the orchestration test, we
+    # plant the meta on the LOCAL side (where pull will overwrite it later)
+    # and skip the remote-read by patching cat in this scope. Cleaner: plant
+    # a fake meta in a temp file and override our mock so the ssh-cat returns it.
+    ssh() {
+        local script=""
+        [[ ! -t 0 ]] && script="$(cat)"
+        ORCH_CALL_LOG+=("ssh-argv: $*")
+        [[ -n "$script" ]] && ORCH_CALL_LOG+=("ssh-stdin: $script")
+        # If the script asks for the remote meta, return a synthetic one.
+        if [[ "$script" == *'cat "$HOME/.ae/sessions/$session/meta"'* ]]; then
+            cat <<EOF
+session=$_pull_session
+work_dir=$_pull_home/projects/foo
+agent.main=claude:lead:$_pull_claude_uuid
+agent.worker.0=codex:helper:$_pull_codex_uuid
+EOF
+        fi
+        return 0
+    }
+
+    # shellcheck disable=SC2034
+    SESSIONS_DIR="$_pull_home/.ae/sessions"
+    # shellcheck disable=SC2034
+    AE_VERSION="0.2.1"
+}
+
+_pull_real_home="$HOME"
+HOME="$_pull_home"
+
+_pull_rc=0
+_pull_outfile="$(mktemp)"
+cmd_transfer "$_pull_session" fake-target --pull --yes >"$_pull_outfile" 2>&1 || _pull_rc=$?
+_pull_out="$(cat "$_pull_outfile")"
+rm -f "$_pull_outfile"
+HOME="$_pull_real_home"
+
+assert_eq "transfer-pull: cmd_transfer succeeds with --pull + mocked transport" "0" "$_pull_rc"
+assert_eq "transfer-pull: success hint points at local resume" "1" \
+    "$([[ "$_pull_out" == *"Done. Run 'ae $_pull_session' on this machine to resume."* ]] && echo 1 || echo 0)"
+
+# In pull mode, the ae-state rsync should be REMOTE → LOCAL: source is
+# "fake-target:.ae/sessions/<name>/" and destination is the local path.
+_pull_ae_rsync_correct=0
+for entry in "${ORCH_CALL_LOG[@]}"; do
+    if [[ "$entry" == "rsync: "*"fake-target:.ae/sessions/$_pull_session/"*".ae/sessions/$_pull_session/"* ]]; then
+        _pull_ae_rsync_correct=1
+    fi
+done
+assert_eq "transfer-pull: ae-state rsync reversed (remote → local)" "1" "$_pull_ae_rsync_correct"
+
+# Per-agent rsync: source is "fake-target:/home/ckriech/.claude/...", destination is local
+_pull_claude_rsync_seen=0 _pull_codex_rsync_seen=0
+for entry in "${ORCH_CALL_LOG[@]}"; do
+    [[ "$entry" == "rsync: "*"fake-target:/home/ckriech/.claude/projects/proj-pull/$_pull_claude_uuid.jsonl"*"$_pull_home/.claude/projects/proj-pull/"* ]] && _pull_claude_rsync_seen=1
+    [[ "$entry" == "rsync: "*"fake-target:/home/ckriech/.codex/sessions/"*"$_pull_codex_uuid"*"$_pull_home/.codex/sessions/"* ]] && _pull_codex_rsync_seen=1
+done
+assert_eq "transfer-pull: claude file rsync'd remote → local" "1" "$_pull_claude_rsync_seen"
+assert_eq "transfer-pull: codex file rsync'd remote → local" "1" "$_pull_codex_rsync_seen"
+
+# Every rsync still has --protect-args (regression).
+_pull_all_have_protect=1
+for entry in "${ORCH_CALL_LOG[@]}"; do
+    [[ "$entry" == "rsync: "* ]] || continue
+    [[ "$entry" == *"--protect-args"* ]] || { _pull_all_have_protect=0; break; }
+done
+assert_eq "transfer-pull: every rsync invocation includes --protect-args" "1" "$_pull_all_have_protect"
+
+# Event emit goes LOCAL on pull (destination = local).
+_pull_local_emit_seen=0 _pull_remote_emit_seen=0
+for entry in "${ORCH_CALL_LOG[@]}"; do
+    [[ "$entry" == "emit-local: "* ]] && _pull_local_emit_seen=1
+    [[ "$entry" == "emit-remote: "* ]] && _pull_remote_emit_seen=1
+done
+assert_eq "transfer-pull: event emitted on local destination" "1" "$_pull_local_emit_seen"
+assert_eq "transfer-pull: NO remote event emit (push-only helper)" "0" "$_pull_remote_emit_seen"
+
+# Structural: cmd_transfer body branches on $pull at the key decision points.
+assert_eq "transfer-pull: cmd_transfer branches on \$pull for path-equality direction" "1" \
+    "$([[ "$AE_SOURCE" == *'_transfer_read_remote_meta_value "$target" "$session" work_dir'* ]] && echo 1 || echo 0)"
+assert_eq "transfer-pull: cmd_transfer branches on \$pull for collision side" "1" \
+    "$([[ "$AE_SOURCE" == *'_transfer_local_session_exists "$session"'* ]] && echo 1 || echo 0)"
+assert_eq "transfer-pull: cmd_transfer uses remote lookup helpers when pulling" "1" \
+    "$([[ "$AE_SOURCE" == *'_transfer_find_remote_claude_session_file "$target"'* && "$AE_SOURCE" == *'_transfer_find_remote_codex_session_file "$target"'* ]] && echo 1 || echo 0)"
+assert_eq "transfer-pull: cmd_transfer rsync reversed for pull" "1" \
+    "$([[ "$AE_SOURCE" == *'"${target}:.ae/sessions/${session}/" "${local_session_dir}/"'* ]] && echo 1 || echo 0)"
+
 # Cleanup
+unset -f ssh rsync tmux cmd_stop detect_current_session \
+    _transfer_ssh_probe _transfer_local_rsync_supports_protect_args \
+    _transfer_remote_preflight _transfer_check_remote_path _transfer_remote_session_exists \
+    _transfer_emit_destination_event _transfer_emit_local_event \
+    _transfer_ensure_stopped _transfer_ensure_stopped_remote \
+    _transfer_read_remote_meta_value _transfer_find_remote_claude_session_file \
+    _transfer_find_remote_codex_session_file 2>/dev/null
+unset ORCH_CALL_LOG entry
+unset _pull_home _pull_session _pull_claude_uuid _pull_codex_uuid _pull_real_home \
+    _pull_rc _pull_out _pull_outfile _pull_ae_rsync_correct _pull_claude_rsync_seen \
+    _pull_codex_rsync_seen _pull_all_have_protect _pull_local_emit_seen _pull_remote_emit_seen
+
+# Cleanup (push orchestration test)
 unset -f ssh rsync tmux cmd_stop detect_current_session read_session_meta \
     _transfer_ssh_probe _transfer_local_rsync_supports_protect_args \
     _transfer_remote_preflight _transfer_check_remote_path _transfer_remote_session_exists \

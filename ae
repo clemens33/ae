@@ -2199,6 +2199,94 @@ mkdir -p "\$(dirname "\$events_file")"
 REMOTE
 }
 
+# Read a single key from the remote session's meta file.
+_transfer_read_remote_meta_value() {
+    local target="$1" session="$2" key="$3"
+    # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
+    ssh "$target" bash -s <<REMOTE
+session=$(_transfer_bash_quote "$session")
+key=$(_transfer_bash_quote "$key")
+meta="\$HOME/.ae/sessions/\$session/meta"
+[[ -f "\$meta" ]] || exit 1
+grep "^\${key}=" "\$meta" 2>/dev/null | cut -d= -f2- | head -1
+REMOTE
+}
+
+# Find the Claude conversation file on the remote for a given UUID. Same
+# semantics as _transfer_find_claude_session_file but executed on the remote.
+_transfer_find_remote_claude_session_file() {
+    local target="$1" uuid="$2"
+    _transfer_validate_uuid "$uuid" || {
+        echo "Error: invalid UUID format: $uuid" >&2
+        return 1
+    }
+    # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
+    ssh "$target" bash -s <<REMOTE
+uuid=$(_transfer_bash_quote "$uuid")
+matches=()
+for f in "\$HOME"/.claude/projects/*/"\${uuid}".jsonl; do
+    [[ -f "\$f" ]] && matches+=("\$f")
+done
+case "\${#matches[@]}" in
+    0) exit 1 ;;
+    1) printf '%s\n' "\${matches[0]}" ;;
+    *) exit 2 ;;
+esac
+REMOTE
+}
+
+# Find the Codex conversation file on the remote for a given UUID. Validates
+# session_meta.payload.id from the first JSONL line (same as the local version).
+_transfer_find_remote_codex_session_file() {
+    local target="$1" uuid="$2"
+    _transfer_validate_uuid "$uuid" || {
+        echo "Error: invalid UUID format: $uuid" >&2
+        return 1
+    }
+    # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
+    ssh "$target" bash -s <<REMOTE
+uuid=$(_transfer_bash_quote "$uuid")
+candidates=()
+for f in "\$HOME"/.codex/sessions/*/*/*/*"\${uuid}"*.jsonl; do
+    [[ -f "\$f" ]] || continue
+    first_line="\$(head -1 "\$f" 2>/dev/null || true)"
+    [[ -z "\$first_line" ]] && continue
+    file_id="\$(echo "\$first_line" | grep -oP '"id"\\s*:\\s*"\\K[0-9a-f-]+' 2>/dev/null || true)"
+    [[ "\$file_id" == "\$uuid" ]] && candidates+=("\$f")
+done
+case "\${#candidates[@]}" in
+    0) exit 1 ;;
+    1) printf '%s\n' "\${candidates[0]}" ;;
+    *) exit 2 ;;
+esac
+REMOTE
+}
+
+# Does the local machine already have this session?
+_transfer_local_session_exists() {
+    local name="$1"
+    [[ -f "${SESSIONS_DIR}/${name}/meta" ]]
+}
+
+# Local-side event emit (used by --pull direction where destination is local).
+_transfer_emit_local_event() {
+    local session="$1" summary="$2"
+    local ts actor esc_ts esc_actor esc_summary json
+    ts="$(date -u +%FT%TZ)"
+    actor="${USER:-human}"
+    esc_ts="$(_transfer_json_escape "$ts")"
+    esc_actor="$(_transfer_json_escape "$actor")"
+    esc_summary="$(_transfer_json_escape "$summary")"
+    json="$(printf '{"ts":"%s","actor":"%s","action":"transfer","summary":"%s"}' "$esc_ts" "$esc_actor" "$esc_summary")"
+    local events_file="${SESSIONS_DIR}/${session}/events.jsonl"
+    local lock_file="${events_file}.lock"
+    mkdir -p "$(dirname "$events_file")"
+    {
+        flock -w 5 9 || return 1
+        printf '%s\n' "$json" >>"$events_file"
+    } 9>>"$lock_file"
+}
+
 cmd_transfer() {
     # Parse positional args + flags.
     local session="" target=""
@@ -2250,11 +2338,7 @@ HELP
         echo "Usage: ae transfer <session> <ssh-target> [--pull] [--with-workdir] [--dry-run] [--yes]" >&2
         return 1
     fi
-    # 1b. MVP phase 1: push only. Reject deferred flags with friendly errors.
-    if $pull; then
-        echo "Error: --pull is not yet implemented (planned for phase 2)" >&2
-        return 1
-    fi
+    # 1b. Phase-deferred flags. --with-workdir and --dry-run land in phase 3.
     if $with_workdir; then
         echo "Error: --with-workdir is not yet implemented (planned for phase 3)" >&2
         return 1
@@ -2263,20 +2347,29 @@ HELP
         echo "Error: --dry-run is not yet implemented (planned for phase 3)" >&2
         return 1
     fi
-    # 2. Local session exists
+    # 2. Source session exists. Source is local for push, remote for pull.
     local local_session_dir="${SESSIONS_DIR}/${session}"
-    if [[ ! -f "${local_session_dir}/meta" ]]; then
-        echo "Error: no session '$session' on this machine (looked for ${local_session_dir}/meta)" >&2
-        return 1
+    if $pull; then
+        # For pull, the source meta lives on the remote; we'll discover its
+        # content after SSH probe + preflight pass.
+        :
+    else
+        if [[ ! -f "${local_session_dir}/meta" ]]; then
+            echo "Error: no session '$session' on this machine (looked for ${local_session_dir}/meta)" >&2
+            return 1
+        fi
     fi
-    # 3. Self-stop guard
+    # 3. Self-stop guard — applies in both directions. Pulling onto the local
+    # machine while the user is inside the local same-name session would also
+    # kill the running pane (the local session is the destination on pull, and
+    # gets stopped before rsync overwrite).
     local current_session
     current_session="$(detect_current_session 2>/dev/null || true)"
     if [[ "$current_session" == "$session" ]]; then
         echo "Error: cannot transfer the session you're inside; detach (Ctrl-b d) and retry" >&2
         return 2
     fi
-    # 4. SSH connectivity probe
+    # 4. SSH connectivity probe (needed regardless of direction)
     echo "Probing SSH connectivity to $target..."
     if ! _transfer_ssh_probe "$target"; then
         echo "Error: SSH probe to '$target' failed (check ssh config, keys, network)" >&2
@@ -2289,21 +2382,60 @@ HELP
     fi
     echo "Running remote preflight on $target..."
     _transfer_remote_preflight "$target" || return 1
-    # 6. Path-equality
-    local work_dir
-    work_dir="$(read_session_meta "$session" work_dir)"
-    [[ -n "$work_dir" ]] || { echo "Error: meta for session '$session' has no work_dir" >&2; return 1; }
-    echo "Verifying remote path '$work_dir' exists..."
-    if ! _transfer_check_remote_path "$target" "$work_dir"; then
-        echo "Error: remote path '$work_dir' does not exist on $target." >&2
-        echo "       Same project path is required on both machines. Create the directory" >&2
-        echo "       on $target (or transfer your project tree first) and retry." >&2
-        return 1
+    # Pull: now that SSH+preflight passed, confirm the source session exists on remote.
+    if $pull; then
+        if ! _transfer_remote_session_exists "$target" "$session"; then
+            echo "Error: no session '$session' on $target (looked for ~/.ae/sessions/$session/meta)" >&2
+            return 1
+        fi
     fi
-    # 7. Collision check (BEFORE any stop)
-    if _transfer_remote_session_exists "$target" "$session"; then
-        echo "Remote already has a session named '$session':"
-        echo "  Local:  $(_transfer_session_summary "${local_session_dir}/meta")"
+    # 6. Path-equality. The work_dir is read from the SOURCE meta; the
+    # destination machine must have it. Push: local meta → remote check.
+    # Pull: remote meta → local check.
+    local work_dir
+    if $pull; then
+        work_dir="$(_transfer_read_remote_meta_value "$target" "$session" work_dir)"
+        [[ -n "$work_dir" ]] || { echo "Error: remote meta for session '$session' has no work_dir" >&2; return 1; }
+        echo "Verifying local path '$work_dir' exists..."
+        if [[ ! -d "$work_dir" ]]; then
+            echo "Error: local path '$work_dir' does not exist." >&2
+            echo "       Same project path is required on both machines. Create the directory" >&2
+            echo "       locally (e.g. git clone the same repo at the same path) and retry." >&2
+            return 1
+        fi
+    else
+        work_dir="$(read_session_meta "$session" work_dir)"
+        [[ -n "$work_dir" ]] || { echo "Error: meta for session '$session' has no work_dir" >&2; return 1; }
+        echo "Verifying remote path '$work_dir' exists..."
+        if ! _transfer_check_remote_path "$target" "$work_dir"; then
+            echo "Error: remote path '$work_dir' does not exist on $target." >&2
+            echo "       Same project path is required on both machines. Create the directory" >&2
+            echo "       on $target (or transfer your project tree first) and retry." >&2
+            return 1
+        fi
+    fi
+    # 7. Collision check (BEFORE any stop). Push: does remote have the session?
+    # Pull: does LOCAL have the session?
+    local collision=false
+    if $pull; then
+        _transfer_local_session_exists "$session" && collision=true
+    else
+        _transfer_remote_session_exists "$target" "$session" && collision=true
+    fi
+    if $collision; then
+        # Side header — push: remote has it; pull: local has it.
+        if $pull; then
+            echo "Local already has a session named '$session':"
+        else
+            echo "Remote already has a session named '$session':"
+        fi
+        # Local summary (read from local meta if it exists).
+        if [[ -f "${local_session_dir}/meta" ]]; then
+            echo "  Local:  $(_transfer_session_summary "${local_session_dir}/meta")"
+        else
+            echo "  Local:  (no local session)"
+        fi
+        # Remote summary (read from remote meta if it exists).
         local remote_summary
         # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
         remote_summary="$(ssh "$target" bash -s <<REMOTE
@@ -2320,26 +2452,49 @@ printf 'session=%s last=%s agents=[%s]\n' "\$session_name" "\$last_active" "\${a
 REMOTE
 )"
         echo "  Remote: $remote_summary"
+        # Shared prompt logic — direction-aware messages.
+        local prompt_msg overwrite_target
+        if $pull; then
+            prompt_msg="Overwrite local state? [y/N] "
+            overwrite_target="local"
+        else
+            prompt_msg="Overwrite remote state? [y/N] "
+            overwrite_target="remote"
+        fi
         if ! $yes; then
             if [[ -t 0 ]]; then
                 local answer
-                read -r -p "Overwrite remote state? [y/N] " answer
+                read -r -p "$prompt_msg" answer
                 case "$answer" in
                     y | Y | yes | YES) ;;
                     *) echo "Aborted by user. No changes made."; return 0 ;;
                 esac
             else
-                echo "Error: remote already has session '$session' and no TTY for confirmation." >&2
+                echo "Error: $overwrite_target already has session '$session' and no TTY for confirmation." >&2
                 echo "       Re-run with --yes to confirm overwrite." >&2
                 return 3
             fi
         fi
     fi
-    # 8. UUID discovery (read-only, no side effects)
+    # 8. UUID discovery (read-only, no side effects). Read meta from the
+    # source side: push → local meta, pull → remote meta (via SSH+cat).
     echo "Discovering per-agent conversation files..."
     declare -A agent_files=() agent_tools=()
     local agent_summary_parts=()
-    local k v slot tool uuid src
+    local k v slot tool uuid src meta_content
+    if $pull; then
+        # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
+        meta_content="$(ssh "$target" bash -s <<REMOTE
+session=$(_transfer_bash_quote "$session")
+cat "\$HOME/.ae/sessions/\$session/meta" 2>/dev/null
+REMOTE
+)" || { echo "Error: failed to read remote meta for session '$session'" >&2; return 1; }
+    else
+        meta_content="$(cat "${local_session_dir}/meta")" || {
+            echo "Error: failed to read local meta for session '$session'" >&2
+            return 1
+        }
+    fi
     while IFS='=' read -r k v; do
         [[ "$k" =~ ^agent\. ]] || continue
         slot="${k#agent.}"
@@ -2353,13 +2508,27 @@ REMOTE
         fi
         case "$tool" in
             claude)
-                src="$(_transfer_find_claude_session_file "$uuid")" || return 1
+                if $pull; then
+                    src="$(_transfer_find_remote_claude_session_file "$target" "$uuid")" || {
+                        echo "Error: no remote Claude session file for slot $slot (uuid $uuid) on $target" >&2
+                        return 1
+                    }
+                else
+                    src="$(_transfer_find_claude_session_file "$uuid")" || return 1
+                fi
                 agent_files["$slot"]="$src"
                 agent_tools["$slot"]="$tool"
                 agent_summary_parts+=("$slot:$tool")
                 ;;
             codex)
-                src="$(_transfer_find_codex_session_file "$uuid")" || return 1
+                if $pull; then
+                    src="$(_transfer_find_remote_codex_session_file "$target" "$uuid")" || {
+                        echo "Error: no remote Codex session file for slot $slot (uuid $uuid) on $target" >&2
+                        return 1
+                    }
+                else
+                    src="$(_transfer_find_codex_session_file "$uuid")" || return 1
+                fi
                 agent_files["$slot"]="$src"
                 agent_tools["$slot"]="$tool"
                 agent_summary_parts+=("$slot:$tool")
@@ -2368,64 +2537,116 @@ REMOTE
                 echo "Warning: transfer not yet supported for tool '$tool' (slot $slot); agent will start fresh on destination" >&2
                 ;;
         esac
-    done <"${local_session_dir}/meta"
-    # 9. Stop helpers (local then remote)
+    done <<<"$meta_content"
+    # 9. Stop helpers — both sides, idempotent. Order doesn't matter for
+    # correctness because the stops are independent and idempotent.
     echo "Stopping local session if running..."
-    _transfer_ensure_stopped "$session" || return 1
+    if [[ -d "${local_session_dir}" ]]; then
+        _transfer_ensure_stopped "$session" || return 1
+    fi
     echo "Stopping remote session if running..."
     _transfer_ensure_stopped_remote "$target" "$session" || {
         echo "Error: failed to stop remote session" >&2
         return 1
     }
-    # 10. rsync ae state
-    # rsync does not create missing intermediate directories on the remote side,
-    # so a fresh destination (no ~/.ae/sessions yet) would fail mid-pipeline AFTER
-    # we've already stopped the local session. Pre-create the parent path safely
-    # using the %q-quoted-heredoc pattern (SSH argv is not preserved).
-    # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
-    ssh "$target" bash -s <<REMOTE || {
+    # 10. rsync ae state. rsync does not create missing intermediate
+    # directories — pre-create the destination parent (push: remote; pull: local)
+    # so a fresh destination doesn't fail mid-pipeline.
+    if $pull; then
+        mkdir -p "${local_session_dir}" || {
+            echo "Error: failed to create local ${local_session_dir}" >&2
+            return 1
+        }
+        echo "Transferring ae session state..."
+        rsync -aHA --protect-args --delete \
+            --exclude='*.lock' --exclude='*.pid' --exclude='.loop.status' \
+            "${target}:.ae/sessions/${session}/" "${local_session_dir}/" || {
+            echo "Error: rsync of ae state failed" >&2
+            return 1
+        }
+    else
+        # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
+        ssh "$target" bash -s <<REMOTE || {
 session=$(_transfer_bash_quote "$session")
 mkdir -p "\$HOME/.ae/sessions/\$session"
 REMOTE
-        echo "Error: failed to create remote ~/.ae/sessions/$session" >&2
-        return 1
-    }
-    echo "Transferring ae session state..."
-    rsync -aHA --protect-args --delete \
-        --exclude='*.lock' --exclude='*.pid' --exclude='.loop.status' \
-        "${local_session_dir}/" "${target}:.ae/sessions/${session}/" || {
-        echo "Error: rsync of ae state failed" >&2
-        return 1
-    }
-    # 11. rsync per-agent conversation files
+            echo "Error: failed to create remote ~/.ae/sessions/$session" >&2
+            return 1
+        }
+        echo "Transferring ae session state..."
+        rsync -aHA --protect-args --delete \
+            --exclude='*.lock' --exclude='*.pid' --exclude='.loop.status' \
+            "${local_session_dir}/" "${target}:.ae/sessions/${session}/" || {
+            echo "Error: rsync of ae state failed" >&2
+            return 1
+        }
+    fi
+    # 11. rsync per-agent conversation files. Direction-aware:
+    # push: local src_file → remote (preserving ~/.claude/projects/ or ~/.codex/sessions/ subtree).
+    # pull: remote src_file → local (same path on local side).
     local rel_path src_file
     for slot in "${!agent_files[@]}"; do
         src_file="${agent_files[$slot]}"
         tool="${agent_tools[$slot]}"
-        case "$tool" in
-            claude) rel_path=".claude/${src_file#"$HOME"/.claude/}" ;;
-            codex) rel_path=".codex/${src_file#"$HOME"/.codex/}" ;;
-        esac
-        # Ensure remote parent dir (per-agent rel_path may contain spaces if
-        # Claude's encoded-cwd does — %q-quoted heredoc handles it safely).
-        # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
-        ssh "$target" bash -s <<REMOTE
+        if $pull; then
+            # src_file is a remote absolute path under /home/<user>/. Compute
+            # the relative path under HOME and mirror on local.
+            case "$tool" in
+                claude) rel_path=".claude/${src_file#*/.claude/}" ;;
+                codex) rel_path=".codex/${src_file#*/.codex/}" ;;
+            esac
+            local local_dest="$HOME/$rel_path"
+            mkdir -p "$(dirname "$local_dest")" || {
+                echo "Error: failed to create local $(dirname "$local_dest")" >&2
+                return 1
+            }
+            rsync -aHA --protect-args "${target}:${src_file}" "$local_dest" || {
+                echo "Error: rsync of $tool session file (slot $slot) failed" >&2
+                return 1
+            }
+        else
+            case "$tool" in
+                claude) rel_path=".claude/${src_file#"$HOME"/.claude/}" ;;
+                codex) rel_path=".codex/${src_file#"$HOME"/.codex/}" ;;
+            esac
+            # Ensure remote parent dir (per-agent rel_path may contain spaces if
+            # Claude's encoded-cwd does — %q-quoted heredoc handles it safely).
+            # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
+            ssh "$target" bash -s <<REMOTE
 rel_path=$(_transfer_bash_quote "$rel_path")
 mkdir -p "\$HOME/\$(dirname "\$rel_path")"
 REMOTE
-        rsync -aHA --protect-args "$src_file" "${target}:${rel_path}" || {
-            echo "Error: rsync of $tool session file (slot $slot) failed" >&2
-            return 1
-        }
+            rsync -aHA --protect-args "$src_file" "${target}:${rel_path}" || {
+                echo "Error: rsync of $tool session file (slot $slot) failed" >&2
+                return 1
+            }
+        fi
     done
-    # 12. Emit transfer event on destination
-    local summary
-    summary="from=$(hostname) agents=$(IFS=,; echo "${agent_summary_parts[*]:-none}")"
-    _transfer_emit_destination_event "$target" "$session" "$summary" || {
-        echo "Warning: failed to emit transfer event on destination (transfer itself succeeded)" >&2
-    }
-    # 13. Success output
-    echo "Done. Run 'ae $session' on $target to resume."
+    # 12. Emit transfer event on the destination side. The `from=` field
+    # records the source — local hostname for push (where data originated),
+    # the SSH target for pull (the remote we pulled from).
+    local summary source_label
+    if $pull; then
+        source_label="$target"
+    else
+        source_label="$(hostname)"
+    fi
+    summary="from=$source_label agents=$(IFS=,; echo "${agent_summary_parts[*]:-none}")"
+    if $pull; then
+        _transfer_emit_local_event "$session" "$summary" || {
+            echo "Warning: failed to emit transfer event locally (transfer itself succeeded)" >&2
+        }
+    else
+        _transfer_emit_destination_event "$target" "$session" "$summary" || {
+            echo "Warning: failed to emit transfer event on destination (transfer itself succeeded)" >&2
+        }
+    fi
+    # 13. Success output. Resume hint points at the destination side.
+    if $pull; then
+        echo "Done. Run 'ae $session' on this machine to resume."
+    else
+        echo "Done. Run 'ae $session' on $target to resume."
+    fi
     return 0
 }
 

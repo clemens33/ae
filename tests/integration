@@ -441,10 +441,14 @@ run_capture transfer_unknown "$AE" transfer no-such-session-xyz vm.invalid
 assert_eq "transfer: unknown local session exits 1" "1" "$transfer_unknown_rc"
 assert_contains "transfer: unknown session prints actionable error" "no session 'no-such-session-xyz'" "$transfer_unknown_out"
 
-# Deferred flag rejection (--pull is phase 2)
+# --pull is accepted in phase 2; behavior tested via orchestration test in tests/unit
+# and via real SSH wire in manual smoke testing. Here we just confirm the flag
+# parses without producing a "not yet implemented" message — anything past the
+# SSH-probe failure is expected for an unreachable host.
 run_capture transfer_pull "$AE" transfer some-session vm.invalid --pull
-assert_eq "transfer: --pull flag rejected in phase 1" "1" "$transfer_pull_rc"
-assert_contains "transfer: --pull rejection mentions phase 2" "phase 2" "$transfer_pull_out"
+assert_eq "transfer: --pull rejected for unknown-host preflight (not future-phase rejection)" "1" "$transfer_pull_rc"
+assert_eq "transfer: --pull does NOT print future-phase message in phase 2" "1" \
+    "$([[ "$transfer_pull_out" != *'phase 2'* ]] && echo 1 || echo 0)"
 
 run_capture transfer_workdir "$AE" transfer some-session vm.invalid --with-workdir
 assert_eq "transfer: --with-workdir flag rejected in phase 1" "1" "$transfer_workdir_rc"
