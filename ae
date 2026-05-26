@@ -2041,19 +2041,31 @@ _transfer_ensure_stopped() {
     return 0
 }
 
-# Idempotent remote stop. Same contract as the local helper, run over SSH
-# with positional arg-passing (no shell interpolation into the remote string).
+# Idempotent remote stop. Values interpolated via %q into an unquoted heredoc
+# (see _transfer_bash_quote — SSH argv is not preserved across the wire).
 _transfer_ensure_stopped_remote() {
     local target="$1" name="$2"
-    ssh "$target" bash -s -- "$name" <<'REMOTE'
+    # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
+    ssh "$target" bash -s <<REMOTE
 set -uo pipefail
-name="$1"
-[[ -d "$HOME/.ae/sessions/$name" ]] || exit 0
-if tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -Fxq -- "$name"; then
-    ae stop "$name" >/dev/null 2>&1 || exit 1
+name=$(_transfer_bash_quote "$name")
+[[ -d "\$HOME/.ae/sessions/\$name" ]] || exit 0
+if tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -Fxq -- "\$name"; then
+    ae stop "\$name" >/dev/null 2>&1 || exit 1
 fi
 exit 0
 REMOTE
+}
+
+# Shell-quote a value for safe interpolation into a remote bash heredoc.
+# SSH treats argv as a single re-parsed string (it does NOT preserve quoting
+# boundaries), so we never use `ssh "$t" bash -s -- "$arg1" "$arg2"`. Instead
+# we interpolate %q-quoted values into an unquoted heredoc and stream the
+# script to the remote bash via stdin. The remote shell parses the assignment
+# once, recovering the original value. Required for any arg that may contain
+# spaces, quotes, braces, or other shell-special chars (work_dirs, JSON, etc.).
+_transfer_bash_quote() {
+    printf '%q' "$1"
 }
 
 # JSON-escape mirroring ae_json_escape's rules. Used to safely embed
@@ -2124,21 +2136,24 @@ REMOTE
     return 0
 }
 
-# Path-equality precheck via SSH.
+# Path-equality precheck via SSH. work_dir may contain spaces, so the value
+# is %q-quoted into an unquoted heredoc (SSH argv is not preserved verbatim).
 _transfer_check_remote_path() {
     local target="$1" work_dir="$2"
-    ssh "$target" bash -s -- "$work_dir" <<'REMOTE'
-work_dir="$1"
-[[ -d "$work_dir" ]]
+    # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
+    ssh "$target" bash -s <<REMOTE
+work_dir=$(_transfer_bash_quote "$work_dir")
+[[ -d "\$work_dir" ]]
 REMOTE
 }
 
 # Check whether the remote already has a session of the given name.
 _transfer_remote_session_exists() {
     local target="$1" name="$2"
-    ssh "$target" bash -s -- "$name" <<'REMOTE'
-name="$1"
-[[ -f "$HOME/.ae/sessions/$name/meta" ]]
+    # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
+    ssh "$target" bash -s <<REMOTE
+name=$(_transfer_bash_quote "$name")
+[[ -f "\$HOME/.ae/sessions/\$name/meta" ]]
 REMOTE
 }
 
@@ -2157,8 +2172,10 @@ _transfer_session_summary() {
 }
 
 # Emit a transfer event on the destination via SSH+flock+JSON-append.
-# Variables are JSON-escaped locally before being passed to the remote
-# snippet so the remote does no string mangling.
+# Variables are JSON-escaped locally, then the resulting JSON string is
+# %q-quoted as a single bash word into an unquoted heredoc. SSH argv would
+# mangle the braces and spaces; stdin-streamed heredoc + %q round-trips
+# cleanly through one bash reparse.
 _transfer_emit_destination_event() {
     local target="$1" session="$2" summary="$3"
     local ts actor esc_ts esc_actor esc_summary json
@@ -2168,16 +2185,17 @@ _transfer_emit_destination_event() {
     esc_actor="$(_transfer_json_escape "$actor")"
     esc_summary="$(_transfer_json_escape "$summary")"
     json="$(printf '{"ts":"%s","actor":"%s","action":"transfer","summary":"%s"}' "$esc_ts" "$esc_actor" "$esc_summary")"
-    ssh "$target" bash -s -- "$session" "$json" <<'REMOTE'
-session="$1"
-json="$2"
-events_file="$HOME/.ae/sessions/$session/events.jsonl"
-lock_file="${events_file}.lock"
-mkdir -p "$(dirname "$events_file")"
+    # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
+    ssh "$target" bash -s <<REMOTE
+session=$(_transfer_bash_quote "$session")
+json=$(_transfer_bash_quote "$json")
+events_file="\$HOME/.ae/sessions/\$session/events.jsonl"
+lock_file="\${events_file}.lock"
+mkdir -p "\$(dirname "\$events_file")"
 {
     flock -w 5 9 || exit 1
-    printf '%s\n' "$json" >>"$events_file"
-} 9>>"$lock_file"
+    printf '%s\n' "\$json" >>"\$events_file"
+} 9>>"\$lock_file"
 REMOTE
 }
 
@@ -2287,17 +2305,18 @@ HELP
         echo "Remote already has a session named '$session':"
         echo "  Local:  $(_transfer_session_summary "${local_session_dir}/meta")"
         local remote_summary
-        remote_summary="$(ssh "$target" bash -s -- "$session" <<'REMOTE'
-session="$1"
-meta="$HOME/.ae/sessions/$session/meta"
-[[ -f "$meta" ]] || { echo "(no meta)"; exit 0; }
-session_name="$(grep '^session=' "$meta" | cut -d= -f2-)"
-last_active="$(stat -c %y "$meta" 2>/dev/null | cut -d. -f1)"
+        # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
+        remote_summary="$(ssh "$target" bash -s <<REMOTE
+session=$(_transfer_bash_quote "$session")
+meta="\$HOME/.ae/sessions/\$session/meta"
+[[ -f "\$meta" ]] || { echo "(no meta)"; exit 0; }
+session_name="\$(grep '^session=' "\$meta" | cut -d= -f2-)"
+last_active="\$(stat -c %y "\$meta" 2>/dev/null | cut -d. -f1)"
 agents=()
 while IFS='=' read -r k v; do
-    [[ "$k" =~ ^agent\. ]] && agents+=("${v%:*}")
-done <"$meta"
-printf 'session=%s last=%s agents=[%s]\n' "$session_name" "$last_active" "${agents[*]:-(none)}"
+    [[ "\$k" =~ ^agent\\. ]] && agents+=("\${v%:*}")
+done <"\$meta"
+printf 'session=%s last=%s agents=[%s]\n' "\$session_name" "\$last_active" "\${agents[*]:-(none)}"
 REMOTE
 )"
         echo "  Remote: $remote_summary"
@@ -2361,10 +2380,12 @@ REMOTE
     # 10. rsync ae state
     # rsync does not create missing intermediate directories on the remote side,
     # so a fresh destination (no ~/.ae/sessions yet) would fail mid-pipeline AFTER
-    # we've already stopped the local session. Pre-create the parent path safely.
-    ssh "$target" bash -s -- "$session" <<'REMOTE' || {
-session="$1"
-mkdir -p "$HOME/.ae/sessions/$session"
+    # we've already stopped the local session. Pre-create the parent path safely
+    # using the %q-quoted-heredoc pattern (SSH argv is not preserved).
+    # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
+    ssh "$target" bash -s <<REMOTE || {
+session=$(_transfer_bash_quote "$session")
+mkdir -p "\$HOME/.ae/sessions/\$session"
 REMOTE
         echo "Error: failed to create remote ~/.ae/sessions/$session" >&2
         return 1
@@ -2385,10 +2406,12 @@ REMOTE
             claude) rel_path=".claude/${src_file#"$HOME"/.claude/}" ;;
             codex) rel_path=".codex/${src_file#"$HOME"/.codex/}" ;;
         esac
-        # Ensure remote parent dir
-        ssh "$target" bash -s -- "$rel_path" <<'REMOTE'
-rel_path="$1"
-mkdir -p "$HOME/$(dirname "$rel_path")"
+        # Ensure remote parent dir (per-agent rel_path may contain spaces if
+        # Claude's encoded-cwd does — %q-quoted heredoc handles it safely).
+        # shellcheck disable=SC2087  # unquoted heredoc is intentional — see _transfer_bash_quote
+        ssh "$target" bash -s <<REMOTE
+rel_path=$(_transfer_bash_quote "$rel_path")
+mkdir -p "\$HOME/\$(dirname "\$rel_path")"
 REMOTE
         rsync -aHA --protect-args "$src_file" "${target}:${rel_path}" || {
             echo "Error: rsync of $tool session file (slot $slot) failed" >&2
