@@ -28,7 +28,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -1138,6 +1138,328 @@ assert_eq "throttle: opencode union catches Anthropic API error" "0" \
 
 assert_eq "throttle: opencode union catches gemini Quota exceeded" "0" \
     "$(_buf_shows_throttle 'Quota exceeded for project foo' opencode; echo $?)"
+
+# ── ae transfer — phase 1 (walking skeleton) ─────────────────────────
+
+# Test 1 — dispatcher routes 'transfer' to cmd_transfer.
+assert_eq "transfer: dispatcher routes 'transfer' subcommand to cmd_transfer" "1" \
+    "$([[ "$AE_SOURCE" == *'    transfer)'*'cmd_transfer'* ]] && echo 1 || echo 0)"
+
+# Test 2 — cmd_transfer rejects missing args with usage + return 1 (structural;
+# the orchestrator pulls in cmd_stop / read_session_meta / detect_current_session
+# at runtime which the unit-test extraction doesn't reach, so behavioral checks
+# on the orchestrator itself happen in the integration suite).
+assert_eq "transfer: cmd_transfer rejects missing args with usage + return 1" "1" \
+    "$([[ "$AE_SOURCE" == *'cmd_transfer()'*'Usage: ae transfer <session> <ssh-target>'*'return 1'* ]] && echo 1 || echo 0)"
+
+# Test 4 — _transfer_session_running uses exact match (grep -Fxq), not tmux has-session -t.
+# (Regression for codex IMPORTANT 1: prefix-match bug 'mdk' matching 'mdk-app'.)
+assert_eq "transfer: session-running check uses exact match (grep -Fxq), not tmux has-session" "1" \
+    "$([[ "$AE_SOURCE" == *'_transfer_session_running()'*'tmux list-sessions'*'grep -Fxq'* ]] && echo 1 || echo 0)"
+
+# Test 6 — _transfer_validate_uuid rejects malformed UUIDs.
+_transfer_validate_uuid "" && _t_empty=ok || _t_empty=fail
+_transfer_validate_uuid "abc" && _t_short=ok || _t_short=fail
+_transfer_validate_uuid "ZZZZZZZZ-1234-1234-1234-123456789012" && _t_caps=ok || _t_caps=fail
+_transfer_validate_uuid "12345678-1234-1234-1234-123456789012" && _t_good=ok || _t_good=fail
+assert_eq "transfer: UUID validator rejects empty" "fail" "$_t_empty"
+assert_eq "transfer: UUID validator rejects too-short" "fail" "$_t_short"
+assert_eq "transfer: UUID validator rejects non-hex chars" "fail" "$_t_caps"
+assert_eq "transfer: UUID validator accepts well-formed UUID" "ok" "$_t_good"
+
+# Tests 7–8 — Claude lookup: single match success, zero-match failure, multi-match failure.
+_t_home="$(mktemp -d)"
+_t_uuid="11111111-2222-3333-4444-555555555555"
+mkdir -p "$_t_home/.claude/projects/proj-foo"
+echo '{}' >"$_t_home/.claude/projects/proj-foo/${_t_uuid}.jsonl"
+HOME="$_t_home" _t_path="$(_transfer_find_claude_session_file "$_t_uuid" 2>/dev/null)"
+assert_eq "transfer: Claude lookup returns single match path" \
+    "$_t_home/.claude/projects/proj-foo/${_t_uuid}.jsonl" \
+    "$_t_path"
+
+# zero-match: different uuid (|| true to keep set -e happy)
+_t_out="$(HOME="$_t_home" _transfer_find_claude_session_file "99999999-2222-3333-4444-555555555555" 2>&1 || true)"
+assert_eq "transfer: Claude lookup zero-match prints actionable error" "1" \
+    "$([[ "$_t_out" == *"no Claude Code session file"* ]] && echo 1 || echo 0)"
+_t_rc=0
+HOME="$_t_home" _transfer_find_claude_session_file "99999999-2222-3333-4444-555555555555" >/dev/null 2>&1 || _t_rc=$?
+assert_eq "transfer: Claude lookup fails on zero matches" "1" "$_t_rc"
+
+# multi-match: plant the same uuid file under a second project dir
+mkdir -p "$_t_home/.claude/projects/proj-bar"
+echo '{}' >"$_t_home/.claude/projects/proj-bar/${_t_uuid}.jsonl"
+_t_rc=0
+HOME="$_t_home" _transfer_find_claude_session_file "$_t_uuid" >/dev/null 2>&1 || _t_rc=$?
+assert_eq "transfer: Claude lookup fails on multiple matches" "1" "$_t_rc"
+rm -rf "$_t_home"
+
+# Tests 9–13 — Codex lookup: validates session_meta.payload.id, rejects mismatched embedded UUID.
+_t_home="$(mktemp -d)"
+_t_uuid="aaaabbbb-cccc-dddd-eeee-ffffffffffff"
+mkdir -p "$_t_home/.codex/sessions/2026/05/25"
+# Valid: filename contains uuid AND first line's "id" matches.
+echo "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$_t_uuid\",\"cwd\":\"/tmp\"}}" \
+    >"$_t_home/.codex/sessions/2026/05/25/rollout-20260525T123456-${_t_uuid}.jsonl"
+HOME="$_t_home" _t_path="$(_transfer_find_codex_session_file "$_t_uuid" 2>/dev/null)"
+assert_eq "transfer: Codex lookup returns match validated against session_meta.payload.id" \
+    "$_t_home/.codex/sessions/2026/05/25/rollout-20260525T123456-${_t_uuid}.jsonl" \
+    "$_t_path"
+
+# Plant a decoy file with the UUID in its name but a DIFFERENT id in the first line.
+_t_other_uuid="00000000-1111-2222-3333-444444444444"
+echo "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$_t_other_uuid\",\"cwd\":\"/tmp\"}}" \
+    >"$_t_home/.codex/sessions/2026/05/25/rollout-20260525T999999-${_t_uuid}-decoy.jsonl"
+# The valid file still wins; decoy is rejected by payload.id check.
+HOME="$_t_home" _t_path="$(_transfer_find_codex_session_file "$_t_uuid" 2>/dev/null)"
+assert_eq "transfer: Codex lookup rejects glob match where payload.id disagrees" \
+    "$_t_home/.codex/sessions/2026/05/25/rollout-20260525T123456-${_t_uuid}.jsonl" \
+    "$_t_path"
+
+# Test 13 — Codex lookup does NOT match .jsonl.zst (codex NIT 1: no implicit compressed-format support).
+mv "$_t_home/.codex/sessions/2026/05/25/rollout-20260525T123456-${_t_uuid}.jsonl" \
+    "$_t_home/.codex/sessions/2026/05/25/rollout-20260525T123456-${_t_uuid}.jsonl.zst"
+rm "$_t_home/.codex/sessions/2026/05/25/rollout-20260525T999999-${_t_uuid}-decoy.jsonl"
+HOME="$_t_home" _t_rc=0
+HOME="$_t_home" _transfer_find_codex_session_file "$_t_uuid" >/dev/null 2>&1 || _t_rc=$?
+assert_eq "transfer: Codex lookup ignores .jsonl.zst (no implicit compressed support)" "1" "$_t_rc"
+rm -rf "$_t_home"
+
+# Tests 16–17 — rsync invocations include --protect-args; preflight probes
+# the option directly (not by grepping --version text).
+assert_eq "transfer: rsync ae-state invocation includes --protect-args" "1" \
+    "$([[ "$AE_SOURCE" == *'rsync -aHA --protect-args --delete'* ]] && echo 1 || echo 0)"
+assert_eq "transfer: rsync per-agent invocation includes --protect-args" "1" \
+    "$([[ "$AE_SOURCE" == *'rsync -aHA --protect-args "$src_file"'* ]] && echo 1 || echo 0)"
+assert_eq "transfer: preflight probes --protect-args option directly (not via grep on --version text)" "1" \
+    "$([[ "$AE_SOURCE" == *'rsync --protect-args --version >/dev/null 2>&1'* && "$AE_SOURCE" != *'rsync --version | grep'*'protect-args'* ]] && echo 1 || echo 0)"
+
+# Test 18 — event-emit follows rsync invocations in source order.
+_t_rsync_line="$(awk '/rsync -aHA --protect-args --delete/{print NR; exit}' "$(dirname "$0")/../ae")"
+_t_emit_line="$(awk '/_transfer_emit_destination_event "\$target" "\$session"/{print NR; exit}' "$(dirname "$0")/../ae")"
+assert_eq "transfer: event-emit appears AFTER rsync in source order" "1" \
+    "$([[ -n "$_t_rsync_line" && -n "$_t_emit_line" && "$_t_rsync_line" -lt "$_t_emit_line" ]] && echo 1 || echo 0)"
+unset _t_rsync_line _t_emit_line
+
+# Test 19 — _transfer_json_escape replicates ae_json_escape rules.
+assert_eq "transfer: json_escape escapes backslash" 'hello\\world' "$(_transfer_json_escape 'hello\world')"
+assert_eq "transfer: json_escape escapes double-quote" 'say \"hi\"' "$(_transfer_json_escape 'say "hi"')"
+assert_eq "transfer: json_escape escapes newline" 'a\nb' "$(_transfer_json_escape $'a\nb')"
+assert_eq "transfer: json_escape escapes tab" 'a\tb' "$(_transfer_json_escape $'a\tb')"
+assert_eq "transfer: json_escape escapes CR" 'a\rb' "$(_transfer_json_escape $'a\rb')"
+
+# Tests 20–23 — collision check + ordering invariants. Source-order assertion:
+# the collision check (step 7) precedes both stop helpers (step 9), so a
+# refused collision cannot have stopped anything yet.
+_t_collision_line="$(awk '/# 7\. Collision check/{print NR; exit}' "$(dirname "$0")/../ae")"
+_t_stop_local_line="$(awk '/# 9\. Stop helpers/{print NR; exit}' "$(dirname "$0")/../ae")"
+assert_eq "transfer: collision check (step 7) precedes stop helpers (step 9) in source order" "1" \
+    "$([[ -n "$_t_collision_line" && -n "$_t_stop_local_line" && "$_t_collision_line" -lt "$_t_stop_local_line" ]] && echo 1 || echo 0)"
+unset _t_collision_line _t_stop_local_line
+
+# Structural: rsync exclude list contains the three required patterns.
+assert_eq "transfer: rsync exclude list contains *.lock, *.pid, .loop.status" "1" \
+    "$([[ "$AE_SOURCE" == *"--exclude='*.lock'"*"--exclude='*.pid'"*"--exclude='.loop.status'"* ]] && echo 1 || echo 0)"
+
+# Structural: collision-NON-TTY-without-yes path exits 3.
+assert_eq "transfer: non-TTY collision without --yes returns exit code 3" "1" \
+    "$([[ "$AE_SOURCE" == *'no TTY for confirmation'*'return 3'* ]] && echo 1 || echo 0)"
+
+# Structural: self-stop guard uses detect_current_session and returns 2.
+assert_eq "transfer: self-stop guard uses detect_current_session and returns exit code 2" "1" \
+    "$([[ "$AE_SOURCE" == *"detect_current_session"*'cannot transfer the session you'*"return 2"* ]] && echo 1 || echo 0)"
+
+# Structural: ae+rsync preflight is separated from claude+codex preflight (codex NIT).
+assert_eq "transfer: preflight checks ae/rsync fatal separately from claude/codex warn-only" "1" \
+    "$([[ "$AE_SOURCE" == *'command -v ae >/dev/null'*'fatal'*'command -v claude >/dev/null'*'warn'* ]] && echo 1 || echo 0)"
+
+# Tests 7-regression — _transfer_session_running does NOT match prefix.
+# We can't easily fake tmux output without overriding tmux as a function;
+# instead assert the implementation calls grep with -Fxq (fixed-string, anchor-X, quiet).
+assert_eq "transfer regression: session-running check uses grep -Fxq -- (not has-session)" "1" \
+    "$([[ "$AE_SOURCE" == *'grep -Fxq -- "$name"'* ]] && echo 1 || echo 0)"
+
+# Test 14 — unknown tool kind emits the 'transfer not yet supported' warning.
+assert_eq "transfer: unknown tool kind emits warn-and-skip message" "1" \
+    "$([[ "$AE_SOURCE" == *"transfer not yet supported for tool"*"agent will start fresh"* ]] && echo 1 || echo 0)"
+
+# Cleanup
+unset _t_out _t_rc _t_home _t_uuid _t_path _t_other_uuid _t_empty _t_short _t_caps _t_good
+
+# ── ae transfer — orchestration end-to-end (mocked transport) ────────
+# Drives cmd_transfer with all SSH/rsync helpers mocked at bash-function
+# level. Captures invocations + asserts the orchestration produces the
+# right call sequence — including remote mkdir BEFORE rsync (regression
+# guard for codex BLOCKER review-...-27a5ff1c).
+# shellcheck disable=SC2317,SC2034  # mock fn bodies + globals are reached via cmd_transfer (extracted via awk eval), not visible statically
+
+_orch_home="$(mktemp -d)"
+_orch_session="orch-test-session"
+_orch_claude_uuid="11111111-2222-3333-4444-555555555555"
+_orch_codex_uuid="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+# Plant local session state
+mkdir -p "$_orch_home/.ae/sessions/$_orch_session"
+mkdir -p "$_orch_home/projects/foo"
+cat >"$_orch_home/.ae/sessions/$_orch_session/meta" <<EOF
+session=$_orch_session
+work_dir=$_orch_home/projects/foo
+mode=local
+agent.main=claude:lead:$_orch_claude_uuid
+agent.worker.0=codex:helper:$_orch_codex_uuid
+EOF
+
+mkdir -p "$_orch_home/.claude/projects/proj-foo"
+echo '{}' >"$_orch_home/.claude/projects/proj-foo/$_orch_claude_uuid.jsonl"
+mkdir -p "$_orch_home/.codex/sessions/2026/05/25"
+echo "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$_orch_codex_uuid\",\"cwd\":\"/tmp\"}}" \
+    >"$_orch_home/.codex/sessions/2026/05/25/rollout-20260525T120000-$_orch_codex_uuid.jsonl"
+
+# Mock function bodies and globals below are reached at runtime via cmd_transfer
+# (eval'd through awk extraction), not statically reachable from shellcheck's view.
+# shellcheck disable=SC2317,SC2034
+{
+    # Single chronological call log — captures every ssh + rsync in order.
+    declare -ag ORCH_CALL_LOG=()
+    ssh() {
+        ORCH_CALL_LOG+=("ssh: $*")
+        # Drain heredoc stdin (real ssh does the same).
+        if [[ ! -t 0 ]]; then cat >/dev/null; fi
+        return 0
+    }
+    rsync() {
+        ORCH_CALL_LOG+=("rsync: $*")
+        return 0
+    }
+    # Helper-level mocks — skip the SSH-using preflight/path/collision/event helpers
+    # so the test focuses on the destructive-action orchestration that the BLOCKER
+    # was about. The preflight + collision logic is covered by structural tests.
+    _transfer_ssh_probe() { ORCH_CALL_LOG+=("ssh-probe: $1"); return 0; }
+    _transfer_local_rsync_supports_protect_args() { return 0; }
+    _transfer_remote_preflight() { ORCH_CALL_LOG+=("preflight: $1"); return 0; }
+    _transfer_check_remote_path() { ORCH_CALL_LOG+=("check-path: $1 $2"); return 0; }
+    _transfer_remote_session_exists() { return 1; }
+    _transfer_emit_destination_event() { ORCH_CALL_LOG+=("emit-event: $1 $2"); return 0; }
+    _transfer_ensure_stopped_remote() { ORCH_CALL_LOG+=("stop-remote: $1 $2"); return 0; }
+    cmd_stop() { ORCH_CALL_LOG+=("local-stop: $*"); return 0; }
+    detect_current_session() { return 1; }
+    read_session_meta() {
+        local session="$1" key="$2"
+        grep "^${key}=" "$_orch_home/.ae/sessions/$session/meta" 2>/dev/null | cut -d= -f2- | head -1
+    }
+    tmux() { return 1; }
+
+    SESSIONS_DIR="$_orch_home/.ae/sessions"
+    AE_VERSION="0.2.1"
+}
+_orch_real_home="$HOME"
+HOME="$_orch_home"
+
+_orch_rc=0
+_orch_outfile="$(mktemp)"
+cmd_transfer "$_orch_session" fake-target --yes >"$_orch_outfile" 2>&1 || _orch_rc=$?
+_orch_out="$(cat "$_orch_outfile")"
+rm -f "$_orch_outfile"
+HOME="$_orch_real_home"
+
+assert_eq "transfer-orch: cmd_transfer succeeds with mocked transport" "0" "$_orch_rc"
+assert_eq "transfer-orch: success message printed" "1" \
+    "$([[ "$_orch_out" == *"Done. Run 'ae $_orch_session' on fake-target to resume."* ]] && echo 1 || echo 0)"
+
+# BLOCKER regression: the first ssh call in cmd_transfer's destructive block
+# must be the remote-mkdir for ~/.ae/sessions/<name>, and it must come before
+# the ae-state rsync. We can identify the mkdir ssh call by its args structure
+# (it's the only direct `ssh "$target" bash -s -- "$session"` invocation in
+# the destructive segment), and the ae-state rsync by --exclude=*.lock.
+_orch_mkdir_idx=-1 _orch_rsync_ae_idx=-1
+for i in "${!ORCH_CALL_LOG[@]}"; do
+    entry="${ORCH_CALL_LOG[$i]}"
+    if [[ "$entry" == "ssh: fake-target bash -s -- $_orch_session" && "$_orch_mkdir_idx" -eq -1 ]]; then
+        _orch_mkdir_idx=$i
+    fi
+    if [[ "$entry" == *"--exclude=*.lock"* && "$_orch_rsync_ae_idx" -eq -1 ]]; then
+        _orch_rsync_ae_idx=$i
+    fi
+done
+assert_eq "transfer-orch: ae-state rsync was invoked" "1" \
+    "$([[ "$_orch_rsync_ae_idx" -ge 0 ]] && echo 1 || echo 0)"
+assert_eq "transfer-orch: BLOCKER regression — remote mkdir for ~/.ae/sessions/<name> precedes ae-state rsync" "1" \
+    "$([[ "$_orch_mkdir_idx" -ge 0 && "$_orch_rsync_ae_idx" -ge 0 && "$_orch_mkdir_idx" -lt "$_orch_rsync_ae_idx" ]] && echo 1 || echo 0)"
+
+# Per-agent rsync invocations — one for claude, one for codex.
+_orch_claude_rsync_seen=0 _orch_codex_rsync_seen=0
+for entry in "${ORCH_CALL_LOG[@]}"; do
+    [[ "$entry" == "rsync: "*".claude/projects"*"$_orch_claude_uuid.jsonl"* ]] && _orch_claude_rsync_seen=1
+    [[ "$entry" == "rsync: "*".codex/sessions"*"$_orch_codex_uuid"* ]] && _orch_codex_rsync_seen=1
+done
+assert_eq "transfer-orch: rsync invoked for claude conversation file" "1" "$_orch_claude_rsync_seen"
+assert_eq "transfer-orch: rsync invoked for codex conversation file" "1" "$_orch_codex_rsync_seen"
+
+# Every rsync call must include --protect-args (codex IMPORTANT 3 runtime check).
+_orch_all_have_protect=1
+for entry in "${ORCH_CALL_LOG[@]}"; do
+    [[ "$entry" == "rsync: "* ]] || continue
+    [[ "$entry" == *"--protect-args"* ]] || { _orch_all_have_protect=0; break; }
+done
+assert_eq "transfer-orch: every rsync invocation includes --protect-args at runtime" "1" "$_orch_all_have_protect"
+
+# Event-emit was called after the rsync invocations.
+_orch_event_idx=-1 _orch_last_rsync_idx=-1
+for i in "${!ORCH_CALL_LOG[@]}"; do
+    entry="${ORCH_CALL_LOG[$i]}"
+    [[ "$entry" == "emit-event: "* ]] && _orch_event_idx=$i
+    [[ "$entry" == "rsync: "* ]] && _orch_last_rsync_idx=$i
+done
+assert_eq "transfer-orch: event-emit on destination follows all rsync invocations at runtime" "1" \
+    "$([[ "$_orch_event_idx" -gt "$_orch_last_rsync_idx" ]] && echo 1 || echo 0)"
+
+# Path-with-spaces variant: work_dir contains a space → cmd_transfer must complete.
+mkdir -p "$_orch_home/projects/has space/bar"
+sed -i "s|work_dir=.*|work_dir=$_orch_home/projects/has space/bar|" "$_orch_home/.ae/sessions/$_orch_session/meta"
+ORCH_CALL_LOG=()
+_orch_rc=0
+HOME="$_orch_home"
+cmd_transfer "$_orch_session" fake-target --yes >/dev/null 2>&1 || _orch_rc=$?
+HOME="$_orch_real_home"
+assert_eq "transfer-orch: workdir with spaces does not crash the pipeline" "0" "$_orch_rc"
+# And the rsync calls in the spaces-variant run also include --protect-args.
+_orch_all_have_protect=1
+for entry in "${ORCH_CALL_LOG[@]}"; do
+    [[ "$entry" == "rsync: "* ]] || continue
+    [[ "$entry" == *"--protect-args"* ]] || { _orch_all_have_protect=0; break; }
+done
+assert_eq "transfer-orch: spaces-variant — rsync still uses --protect-args" "1" "$_orch_all_have_protect"
+
+# Self-stop guard regression: detect_current_session returns target → exit 2.
+# shellcheck disable=SC2317
+detect_current_session() { echo "$_orch_session"; return 0; }
+ORCH_CALL_LOG=()
+HOME="$_orch_home"
+_orch_rc=0
+_orch_outfile="$(mktemp)"
+cmd_transfer "$_orch_session" fake-target --yes >"$_orch_outfile" 2>&1 || _orch_rc=$?
+_orch_out="$(cat "$_orch_outfile")"
+rm -f "$_orch_outfile"
+HOME="$_orch_real_home"
+assert_eq "transfer-orch: self-stop guard exits with code 2" "2" "$_orch_rc"
+assert_eq "transfer-orch: self-stop guard message printed" "1" \
+    "$([[ "$_orch_out" == *"cannot transfer the session you're inside"* ]] && echo 1 || echo 0)"
+# AND no destructive operation was logged.
+_orch_destructive=0
+for entry in "${ORCH_CALL_LOG[@]}"; do
+    [[ "$entry" == "rsync: "* || "$entry" == "local-stop: "* || "$entry" == "stop-remote: "* ]] && _orch_destructive=1
+done
+assert_eq "transfer-orch: self-stop guard prevents any destructive call" "0" "$_orch_destructive"
+
+# Cleanup
+unset -f ssh rsync tmux cmd_stop detect_current_session read_session_meta \
+    _transfer_ssh_probe _transfer_local_rsync_supports_protect_args \
+    _transfer_remote_preflight _transfer_check_remote_path _transfer_remote_session_exists \
+    _transfer_emit_destination_event _transfer_ensure_stopped_remote 2>/dev/null
+unset ORCH_CALL_LOG entry i
+unset _orch_home _orch_session _orch_claude_uuid _orch_codex_uuid _orch_real_home \
+    _orch_rc _orch_out _orch_mkdir_idx _orch_rsync_ae_idx _orch_claude_rsync_seen \
+    _orch_codex_rsync_seen _orch_all_have_protect _orch_event_idx _orch_last_rsync_idx \
+    _orch_destructive
 
 # ── Results ──────────────────────────────────────────────────────────
 

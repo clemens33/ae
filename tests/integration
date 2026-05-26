@@ -398,6 +398,75 @@ assert_eq "doctor-sync: meta ae_path refreshed" "$AE" "$meta_ae_path"
 "$AE" end -f test-sync 2>/dev/null || true
 sleep 0.5
 
+# ── ae transfer — phase 1 failure paths ──────────────────────────────
+# Full end-to-end SSH-transfer testing requires a second machine. These
+# scenarios cover the failure paths cmd_transfer guards against, which
+# are exercise-able without a real remote.
+
+# Helper: capture both stdout and exit code from a command without losing rc
+# to subshell scope (the naïve `$(... || rc=$?)` pattern doesn't propagate rc back).
+run_capture() {
+    # Args: variable-prefix command...
+    # Sets <prefix>_out and <prefix>_rc as globals via eval.
+    local _prefix="$1"; shift
+    local _out _rc=0
+    if _out="$("$@" 2>&1)"; then :; else _rc=$?; fi
+    eval "${_prefix}_out=\"\$_out\""
+    eval "${_prefix}_rc=\$_rc"
+}
+
+# Pre-declare the run_capture target globals so shellcheck doesn't flag
+# eval-set assignments as references-without-assignment (SC2154).
+transfer_no_args_out="" transfer_no_args_rc=0
+transfer_one_arg_out="" transfer_one_arg_rc=0
+transfer_unknown_out="" transfer_unknown_rc=0
+transfer_pull_out="" transfer_pull_rc=0
+transfer_workdir_out="" transfer_workdir_rc=0
+transfer_dryrun_out="" transfer_dryrun_rc=0
+transfer_badflag_out="" transfer_badflag_rc=0
+transfer_help_out="" transfer_help_rc=0
+
+# Missing args → exit 1 + usage
+run_capture transfer_no_args "$AE" transfer
+assert_eq "transfer: no args exits 1" "1" "$transfer_no_args_rc"
+assert_contains "transfer: no args prints usage" "Usage: ae transfer" "$transfer_no_args_out"
+
+# Missing session arg only → exit 1
+run_capture transfer_one_arg "$AE" transfer some-session
+assert_eq "transfer: missing target exits 1" "1" "$transfer_one_arg_rc"
+assert_contains "transfer: missing target prints usage" "Usage: ae transfer" "$transfer_one_arg_out"
+
+# Unknown session → exit 1 with actionable error
+run_capture transfer_unknown "$AE" transfer no-such-session-xyz vm.invalid
+assert_eq "transfer: unknown local session exits 1" "1" "$transfer_unknown_rc"
+assert_contains "transfer: unknown session prints actionable error" "no session 'no-such-session-xyz'" "$transfer_unknown_out"
+
+# Deferred flag rejection (--pull is phase 2)
+run_capture transfer_pull "$AE" transfer some-session vm.invalid --pull
+assert_eq "transfer: --pull flag rejected in phase 1" "1" "$transfer_pull_rc"
+assert_contains "transfer: --pull rejection mentions phase 2" "phase 2" "$transfer_pull_out"
+
+run_capture transfer_workdir "$AE" transfer some-session vm.invalid --with-workdir
+assert_eq "transfer: --with-workdir flag rejected in phase 1" "1" "$transfer_workdir_rc"
+assert_contains "transfer: --with-workdir rejection mentions phase 3" "phase 3" "$transfer_workdir_out"
+
+run_capture transfer_dryrun "$AE" transfer some-session vm.invalid --dry-run
+assert_eq "transfer: --dry-run flag rejected in phase 1" "1" "$transfer_dryrun_rc"
+assert_contains "transfer: --dry-run rejection mentions phase 3" "phase 3" "$transfer_dryrun_out"
+
+# Unknown flag → exit 1
+run_capture transfer_badflag "$AE" transfer --no-such-flag
+assert_eq "transfer: unknown flag exits 1" "1" "$transfer_badflag_rc"
+assert_contains "transfer: unknown flag prints error" "unknown flag" "$transfer_badflag_out"
+
+# --help → exit 0 with full help
+run_capture transfer_help "$AE" transfer --help
+assert_eq "transfer: --help exits 0" "0" "$transfer_help_rc"
+assert_contains "transfer: --help mentions --pull" "--pull" "$transfer_help_out"
+assert_contains "transfer: --help mentions --with-workdir" "--with-workdir" "$transfer_help_out"
+assert_contains "transfer: --help mentions --dry-run" "--dry-run" "$transfer_help_out"
+assert_contains "transfer: --help mentions --yes" "--yes" "$transfer_help_out"
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""
