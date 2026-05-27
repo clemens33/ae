@@ -67,7 +67,9 @@ ae list                        # all sessions with per-agent status
 
 **Finish up:**
 ```bash
-ae end my-feature              # commit + push to ae/my-feature branch, clean up
+ae stop my-feature             # pause, keep state — resume later with 'ae my-feature'
+ae end my-feature              # destructive: commit + push to ae/my-feature, REMOVE ae state AND
+                               # the per-session claude/codex conversation files
 ae rm my-experiment            # same as ae end
 ```
 
@@ -170,8 +172,9 @@ ae doctor --refresh [name|all]
                        Refresh helper scripts/workspace.md in existing sessions
 ae loop <start|stop|status> [name]
                        Toggle the stale-agent watchdog loop (per-session, persists across resume)
-ae stop [name]         Pause session, keep state for later
-ae end|rm [name]       Commit, push to ae/<name> branch, clean up
+ae stop [name]         Pause session, keep ae + agent conversation state for resume
+ae end|rm [name]       End session: commit, push to ae/<name>, REMOVE ae state AND
+                       per-session claude/codex conversation files. Destructive.
 ```
 
 When run inside an ae session, `stop`, `end`, `status`, and `loop` detect the current session automatically.

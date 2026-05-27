@@ -11,8 +11,9 @@ ae doctor --refresh [name|all]
 ae rename [old] <new>  Rename a running session
 ae loop <start|stop|status> [name]
                        Toggle the stale-agent watchdog (per-session, persists across resume)
-ae stop [name]         Pause session, keep state for later
-ae end|rm [name]       Commit, push to ae/<name> branch, clean up
+ae stop [name]         Pause session, keep ae + agent conversation state for resume
+ae end|rm [name]       End session: commit, push to ae/<name>, REMOVE ae state AND
+                       per-session claude/codex conversation files. Destructive.
 ae version             Show version
 ae help                Show short help
 ```
@@ -66,16 +67,21 @@ Rename a session. Renames the tmux session, moves the session directory, updates
 
 ## `ae stop`
 
-Detach all agents, kill the tmux session, leave session state on disk. The next `ae <name>` resumes with the full conversation history (for agents that support session resume).
+Pause a session for later resume. Detaches all agents and kills the tmux session, but leaves everything on disk: ae state at `~/.ae/sessions/<name>/` plus the per-agent conversation files at `~/.claude/projects/.../<uuid>.jsonl` and `~/.codex/sessions/.../<uuid>.jsonl`. The next `ae <name>` resumes with the full conversation history.
+
+Use this when you're done for the day, switching contexts, or moving to another machine via `ae transfer`.
 
 ## `ae end` / `ae rm`
+
+End a session for good. **Destructive** — removes the conversation history. If you want to resume later, use `ae stop` instead.
 
 Wraps up:
 
 1. Commits any pending changes in the working tree (or worktree).
 2. Pushes to a branch named `ae/<session-name>` on the remote.
 3. Kills the tmux session.
-4. Removes session state from `~/.ae/sessions/`.
+4. Removes ae state at `~/.ae/sessions/<name>/`.
+5. **Removes the per-session Claude / Codex conversation files** (jsonl + rollout) for each agent slot in the session. Tool detection uses `agent_bin.<slot>` from meta. Gemini and OpenCode conversation files are left in place — their lookup helpers don't exist yet.
 
 Pass `-f` to force without confirmation. `ae end all` ends every session.
 

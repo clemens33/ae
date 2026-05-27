@@ -1070,6 +1070,57 @@ iter_stopped_sessions() {
 }
 
 # Clean up session resources (mode-aware)
+# Remove the underlying agent CLI conversation files for the named session.
+# Best-effort: missing files print no error (already gone is success).
+# Reuses _transfer_find_<tool>_session_file helpers for UUID-based lookup —
+# they're general-purpose despite the "transfer" prefix. Gemini and OpenCode
+# have no lookup helper yet, so those agents are skipped with a warning
+# (their files leak; same gap as ae transfer's MVP).
+#
+# Tool detection: read agent_bin.<slot> from meta (canonical, written by ae
+# at session creation via extract_binary_from_cmd). The agent.<slot> alias
+# field is arbitrary user config and unreliable for tool dispatch — e.g.
+# config `lead = "claude ..."` would write agent.main=lead:architect:<uuid>,
+# and treating "lead" as the tool kind silently leaks the Claude jsonl.
+# Fall back to the alias only when agent_bin.<slot> is missing (legacy meta).
+_cleanup_agent_session_files() {
+    local session_name="$1"
+    local meta="${SESSIONS_DIR}/${session_name}/meta"
+    [[ -f "$meta" ]] || return 0
+    # Pass 1: collect agent_bin.<slot> entries into a lookup map.
+    declare -A agent_bins=()
+    local k v slot
+    while IFS='=' read -r k v; do
+        case "$k" in
+            agent_bin.*) agent_bins["${k#agent_bin.}"]="$v" ;;
+        esac
+    done <"$meta"
+    # Pass 2: iterate agents, dispatch on agent_bin (fallback to alias).
+    local tool uuid file
+    while IFS='=' read -r k v; do
+        [[ "$k" =~ ^agent\. ]] || continue
+        slot="${k#agent.}"
+        tool="${agent_bins[$slot]:-${v%%:*}}"
+        uuid="${v##*:}"
+        [[ "$uuid" == "pending" ]] && continue
+        case "$tool" in
+            claude)
+                if file="$(_transfer_find_claude_session_file "$uuid" 2>/dev/null)"; then
+                    rm -f "$file" 2>/dev/null && echo "  removed claude conversation: $file"
+                fi
+                ;;
+            codex)
+                if file="$(_transfer_find_codex_session_file "$uuid" 2>/dev/null)"; then
+                    rm -f "$file" 2>/dev/null && echo "  removed codex rollout: $file"
+                fi
+                ;;
+            gemini | opencode)
+                echo "  note: $tool conversation file for slot $slot left in place (lookup not yet implemented)" >&2
+                ;;
+        esac
+    done <"$meta"
+}
+
 cleanup_session() {
     local session_name="$1"
     local wt="${WORKTREES_DIR}/${session_name}"
@@ -1084,6 +1135,14 @@ cleanup_session() {
     if [[ -z "$origin" ]]; then
         origin="$(read_session_meta "$session_name" origin)"
     fi
+
+    # Best-effort cleanup of the underlying agent CLI conversation files
+    # for this session. Tied to the natural ae-end lifecycle so per-session
+    # jsonls don't accumulate forever under ~/.claude/ and ~/.codex/. Claude
+    # has its own cleanupPeriodDays sweep; Codex and OpenCode don't, so this
+    # hook is the only place those get pruned. Read meta BEFORE we rm -rf
+    # the session dir below.
+    _cleanup_agent_session_files "$session_name"
 
     # Kill any legacy heartbeat before removing meta.
     kill_heartbeat "$session_name"
@@ -1465,7 +1524,12 @@ cmd_end() {
         }
     fi
     if [[ "$force" != true ]]; then
-        printf "End session '%s'? This will commit, push, and clean up. [y/N] " "$target"
+        printf "End session '%s'?\n" "$target"
+        printf "  - Commits + pushes to ae/%s branch.\n" "$target"
+        printf "  - Removes ae state at ~/.ae/sessions/%s/.\n" "$target"
+        printf "  - DELETES per-session claude/codex conversation files for this session.\n"
+        printf "  (Use 'ae stop' instead if you want to resume later — it preserves history.)\n"
+        printf "Continue? [y/N] "
         read -r -n 1 reply
         echo
         if [[ ! "$reply" =~ ^[Yy]$ ]]; then
@@ -2734,8 +2798,11 @@ cmd_help() {
     echo "                         Toggle the stale-agent watchdog for a session"
     echo "  ae transfer <session> <ssh-target> [--yes]"
     echo "                         Push a stopped session to a peer machine (--pull reverses)"
-    echo "  ae stop [name]         Stop session, keep state for resume (or 'ae stop all')"
-    echo "  ae end|rm [-f] [name]  End session: commit, push, clean up (or 'ae end all')"
+    echo "  ae stop [name]         Pause session, keep ae + agent conversation state for resume"
+    echo "                         (or 'ae stop all')"
+    echo "  ae end|rm [-f] [name]  End session: commit, push to ae/<name>, REMOVE ae state AND"
+    echo "                         the per-session claude/codex conversation files. Destructive —"
+    echo "                         use 'ae stop' if you want to resume later. (or 'ae end all')"
     echo "  ae version             Show version"
     echo "  ae help                Show this help"
     echo ""

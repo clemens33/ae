@@ -28,7 +28,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -1672,6 +1672,95 @@ unset _orch_home _orch_session _orch_claude_uuid _orch_codex_uuid _orch_real_hom
     _orch_rc _orch_out _orch_mkdir_idx _orch_rsync_ae_idx _orch_claude_rsync_seen \
     _orch_codex_rsync_seen _orch_all_have_protect _orch_event_idx _orch_last_rsync_idx \
     _orch_destructive
+
+# ── ae end — agent conversation file cleanup ─────────────────────────
+# _cleanup_agent_session_files is called by cleanup_session during `ae end`
+# to remove the underlying claude / codex jsonls for the session being ended.
+# Codex and OpenCode have no built-in retention; this hook is the only place
+# their per-session files get pruned.
+
+_endclean_home="$(mktemp -d)"
+_endclean_session="end-cleanup-test"
+_endclean_claude_uuid="aaaa1111-2222-3333-4444-555555555555"
+_endclean_codex_uuid="bbbb2222-3333-4444-5555-666666666666"
+
+# Plant the ae session meta + fake claude + codex conversation files.
+mkdir -p "$_endclean_home/.ae/sessions/$_endclean_session"
+cat >"$_endclean_home/.ae/sessions/$_endclean_session/meta" <<EOF
+session=$_endclean_session
+agent.main=claude:lead:$_endclean_claude_uuid
+agent.worker.0=codex:helper:$_endclean_codex_uuid
+EOF
+
+mkdir -p "$_endclean_home/.claude/projects/proj-end"
+echo '{}' >"$_endclean_home/.claude/projects/proj-end/$_endclean_claude_uuid.jsonl"
+mkdir -p "$_endclean_home/.codex/sessions/2026/05/26"
+echo "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$_endclean_codex_uuid\",\"cwd\":\"/tmp\"}}" \
+    >"$_endclean_home/.codex/sessions/2026/05/26/rollout-20260526T100000-$_endclean_codex_uuid.jsonl"
+
+# shellcheck disable=SC2034  # SESSIONS_DIR is read by _cleanup_agent_session_files via eval-extracted code
+SESSIONS_DIR="$_endclean_home/.ae/sessions"
+_endclean_real_home="$HOME"
+HOME="$_endclean_home"
+
+# Confirm files exist before cleanup
+assert_eq "end-cleanup: claude jsonl planted (precondition)" "1" \
+    "$([[ -f "$_endclean_home/.claude/projects/proj-end/$_endclean_claude_uuid.jsonl" ]] && echo 1 || echo 0)"
+assert_eq "end-cleanup: codex rollout planted (precondition)" "1" \
+    "$([[ -f "$_endclean_home/.codex/sessions/2026/05/26/rollout-20260526T100000-$_endclean_codex_uuid.jsonl" ]] && echo 1 || echo 0)"
+
+_cleanup_agent_session_files "$_endclean_session" >/dev/null
+
+# Files must be gone
+assert_eq "end-cleanup: claude jsonl removed by _cleanup_agent_session_files" "0" \
+    "$([[ -f "$_endclean_home/.claude/projects/proj-end/$_endclean_claude_uuid.jsonl" ]] && echo 1 || echo 0)"
+assert_eq "end-cleanup: codex rollout removed by _cleanup_agent_session_files" "0" \
+    "$([[ -f "$_endclean_home/.codex/sessions/2026/05/26/rollout-20260526T100000-$_endclean_codex_uuid.jsonl" ]] && echo 1 || echo 0)"
+
+# Regression for codex IMPORTANT (review-...-c967dd26): tool dispatch must
+# use agent_bin.<slot>, NOT the alias. With a config like `lead = "claude ..."`,
+# meta has `agent.main=lead:architect:<uuid>` plus `agent_bin.main=claude`.
+# The cleanup must still find and remove the Claude jsonl.
+mkdir -p "$_endclean_home/.ae/sessions/alias-test"
+_alias_uuid="cccc3333-4444-5555-6666-777777777777"
+cat >"$_endclean_home/.ae/sessions/alias-test/meta" <<EOF
+session=alias-test
+agent.main=lead:architect:$_alias_uuid
+agent_bin.main=claude
+EOF
+mkdir -p "$_endclean_home/.claude/projects/proj-alias"
+echo '{}' >"$_endclean_home/.claude/projects/proj-alias/$_alias_uuid.jsonl"
+_cleanup_agent_session_files "alias-test" >/dev/null
+assert_eq "end-cleanup: tool dispatch uses agent_bin (not alias) — Claude jsonl removed via alias-named agent" "0" \
+    "$([[ -f "$_endclean_home/.claude/projects/proj-alias/$_alias_uuid.jsonl" ]] && echo 1 || echo 0)"
+rm -rf "$_endclean_home/.ae/sessions/alias-test" "$_endclean_home/.claude/projects/proj-alias"
+unset _alias_uuid
+
+# Pending UUIDs are skipped (no error, no rm attempt against impossible glob)
+sed -i 's/'"$_endclean_codex_uuid"'/pending/' "$_endclean_home/.ae/sessions/$_endclean_session/meta"
+_cleanup_agent_session_files "$_endclean_session" >/dev/null 2>&1
+_endclean_pending_rc=$?
+assert_eq "end-cleanup: pending uuid is skipped without error" "0" "$_endclean_pending_rc"
+
+# Missing meta file is a no-op
+rm -rf "$_endclean_home/.ae/sessions/$_endclean_session"
+_cleanup_agent_session_files "$_endclean_session" >/dev/null 2>&1
+_endclean_missing_rc=$?
+assert_eq "end-cleanup: missing meta is a no-op (returns 0)" "0" "$_endclean_missing_rc"
+
+# Structural: cleanup_session calls _cleanup_agent_session_files BEFORE the rm -rf
+# of the session dir (otherwise the meta would be gone before we read it).
+_t_cleanup_call_line="$(awk '/_cleanup_agent_session_files "\$session_name"/{print NR; exit}' "$(dirname "$0")/../ae")"
+_t_rm_session_line="$(awk '/rm -rf "\${SESSIONS_DIR:\?}\/\${session_name:\?}"/{print NR; exit}' "$(dirname "$0")/../ae")"
+assert_eq "end-cleanup: agent-file cleanup precedes session-dir rm in source order" "1" \
+    "$([[ -n "$_t_cleanup_call_line" && -n "$_t_rm_session_line" && "$_t_cleanup_call_line" -lt "$_t_rm_session_line" ]] && echo 1 || echo 0)"
+unset _t_cleanup_call_line _t_rm_session_line
+
+# Cleanup
+HOME="$_endclean_real_home"
+rm -rf "$_endclean_home"
+unset _endclean_home _endclean_session _endclean_claude_uuid _endclean_codex_uuid \
+    _endclean_real_home _endclean_pending_rc _endclean_missing_rc
 
 # ── Results ──────────────────────────────────────────────────────────
 
