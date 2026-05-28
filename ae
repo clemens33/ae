@@ -3762,16 +3762,24 @@ AE_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 PRESERVED_LOOP=""
 PRESERVED_STATUS_RIGHT_PREV=""
 PRESERVED_STATUS_RIGHT_WAS_SESSION=""
+PRESERVED_SESSION_ID=""
 if [[ -f "${AE_META}/meta" ]]; then
     PRESERVED_LOOP="$(grep '^loop=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
     PRESERVED_STATUS_RIGHT_PREV="$(grep '^status_right_prev=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
     PRESERVED_STATUS_RIGHT_WAS_SESSION="$(grep '^status_right_was_session=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    PRESERVED_SESSION_ID="$(grep '^session_id=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
 fi
+# session_id is a stable UUID for the ae session, separate from the
+# human-readable name. Persists across rename + transfer. Used by external
+# bridges (chat, webhooks) to bind to a specific session unambiguously
+# regardless of name collisions across machines.
+SESSION_ID="${PRESERVED_SESSION_ID:-$(gen_uuid)}"
 
 cat >"${AE_META}/meta" <<EOF
 mode=${META_MODE}
 origin=${META_ORIGIN}
 session=${SESSION}
+session_id=${SESSION_ID}
 work_dir=${WORK_DIR}
 layout=${LAYOUT:-vertical}
 config=${CONFIG_FILE}
@@ -4127,14 +4135,22 @@ ae_tracked_send() {
     local action="$1" req_prefix="$2" header="$3" instructions="$4" reply_label="$5" target_name="$6"
     shift 6
     local body="$*"
+    # External actors (chat bridges, webhooks) identify themselves via
+    # AE_SENDER_OVERRIDE — they have no @ae_agent pane to detect. Respect
+    # the override before falling back to pane-based detection.
     local self
-    self="$(ae_current_agent_ref)"
+    self="${AE_SENDER_OVERRIDE:-$(ae_current_agent_ref)}"
     if [[ -z "$self" ]]; then
         echo "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead." >&2
         exec "${_AE_META_DIR}/send" "$target_name" "$body"
     fi
-    ae_resolve "$target_name" || exit 1
-    target_name="${AE_RESOLVED_AGENT:-$target_name}"
+    # External-actor targets (telegram:*, discord:*) are event-only sinks
+    # consumed by a bridge daemon; the send helper handles the no-pane case.
+    # Skip ae_resolve so the literal target name is preserved end-to-end.
+    if [[ "$target_name" != telegram:* && "$target_name" != discord:* ]]; then
+        ae_resolve "$target_name" || exit 1
+        target_name="${AE_RESOLVED_AGENT:-$target_name}"
+    fi
 
     local req_id
     req_id="$(ae_make_req_id "$req_prefix")"
@@ -4212,17 +4228,28 @@ if [[ $# -lt 2 ]]; then
     exit 1
 fi
 target_ref="$1"
-ae_resolve "$target_ref" || exit 1; shift
-target="$AE_RESOLVED_PANE"
-logged_target="${AE_RESOLVED_AGENT:-$target_ref}"
+shift
 msg="$*"
-buf="ae-send-$$"
 sender="${AE_SENDER_OVERRIDE:-}"
 if [[ -z "$sender" ]]; then
     sender="$(ae_current_agent_ref)"
 fi
 [[ -n "$sender" ]] || sender="human"
 req_id="$(ae_extract_req_id "$msg")"
+
+# External actor targets (telegram:*, discord:*) are NOT panes — they're
+# event-only sinks consumed by an out-of-band bridge daemon tailing
+# events.jsonl. For these targets, emit the event and exit; skip the tmux
+# paste path. Any other unresolved name still fails loudly so typos surface.
+if [[ "$target_ref" == telegram:* || "$target_ref" == discord:* ]]; then
+    ae_emit_event "${_AE_EVENT_ACTION:-send}" "$target_ref" "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_SUMMARY:-$msg}"
+    exit 0
+fi
+
+ae_resolve "$target_ref" || exit 1
+target="$AE_RESOLVED_PANE"
+logged_target="${AE_RESOLVED_AGENT:-$target_ref}"
+buf="ae-send-$$"
 
 ae_lock_target "$target"
 

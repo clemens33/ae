@@ -1762,6 +1762,75 @@ rm -rf "$_endclean_home"
 unset _endclean_home _endclean_session _endclean_claude_uuid _endclean_codex_uuid \
     _endclean_real_home _endclean_pending_rc _endclean_missing_rc
 
+# ── Stage 0 — external actor protocol + session UUID ─────────────────
+# Two infrastructure changes that prepare ae for out-of-band chat bridges:
+# (1) external actor prefixes (telegram:*, discord:*) flow through the send
+#     and ask/review helpers as event-only sinks — no tmux paste, no
+#     ae_resolve failure.
+# (2) every ae session gets a stable UUID (session_id=) in meta at creation,
+#     preserved across resume + rename + transfer.
+
+# Structural: ae_tracked_send respects AE_SENDER_OVERRIDE for self detection.
+# External actors (chat bridges) have no @ae_agent pane to detect; the
+# override is the canonical identity hook.
+assert_eq "external-actor: ae_tracked_send self= respects AE_SENDER_OVERRIDE" "1" \
+    "$([[ "$AE_SOURCE" == *'self="${AE_SENDER_OVERRIDE:-$(ae_current_agent_ref)}"'* ]] && echo 1 || echo 0)"
+
+# Structural: ae_tracked_send skips ae_resolve for external-actor targets so
+# an agent doing `ask telegram:user "approve?"` works without resolve failing.
+assert_eq "external-actor: ae_tracked_send skips ae_resolve for telegram:* / discord:* targets" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ "$target_name" != telegram:* && "$target_name" != discord:* ]]; then'*'ae_resolve "$target_name"'* ]] && echo 1 || echo 0)"
+
+# Structural: send helper emits event-only for external-actor targets,
+# skipping tmux paste path entirely.
+assert_eq "external-actor: send helper event-only path for telegram:*/discord:* targets" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ "$target_ref" == telegram:* || "$target_ref" == discord:* ]]; then'*'ae_emit_event'*'exit 0'* ]] && echo 1 || echo 0)"
+
+# Structural: external-actor branch runs BEFORE ae_resolve in send body
+# (otherwise resolve would fail on the unresolvable target name first).
+_t_external_branch_line="$(awk '/if \[\[ "\$target_ref" == telegram:\* \|\| "\$target_ref" == discord:\* \]\]; then/{print NR; exit}' "$(dirname "$0")/../ae")"
+_t_resolve_line="$(awk '/^ae_resolve "\$target_ref"/{print NR; exit}' "$(dirname "$0")/../ae")"
+assert_eq "external-actor: send helper's external-target branch precedes ae_resolve in source order" "1" \
+    "$([[ -n "$_t_external_branch_line" && -n "$_t_resolve_line" && "$_t_external_branch_line" -lt "$_t_resolve_line" ]] && echo 1 || echo 0)"
+unset _t_external_branch_line _t_resolve_line
+
+# Structural: typo targets that don't match an external prefix still fail
+# via ae_resolve — the new code path doesn't silently swallow unresolved names.
+assert_eq "external-actor: send still calls ae_resolve when target is not an external-actor prefix" "1" \
+    "$([[ "$AE_SOURCE" == *'fi
+
+ae_resolve "$target_ref" || exit 1'* ]] && echo 1 || echo 0)"
+
+# Session UUID: meta written at session creation includes session_id= line.
+assert_eq "session-uuid: meta template includes session_id field" "1" \
+    "$([[ "$AE_SOURCE" == *'session=${SESSION}'*'session_id=${SESSION_ID}'* ]] && echo 1 || echo 0)"
+
+# Session UUID: backfill — resume preserves any existing session_id, fresh
+# session generates a new UUID via gen_uuid.
+assert_eq "session-uuid: backfill via PRESERVED_SESSION_ID + gen_uuid fallback" "1" \
+    "$([[ "$AE_SOURCE" == *'PRESERVED_SESSION_ID="$(grep'*'^session_id='*'${PRESERVED_SESSION_ID:-$(gen_uuid)}'* ]] && echo 1 || echo 0)"
+
+# Session UUID: cmd_rename only edits session= line; session_id is preserved
+# implicitly because sed doesn't touch it.
+assert_eq "session-uuid: cmd_rename preserves session_id (sed only edits session= line)" "1" \
+    "$([[ "$AE_SOURCE" == *'sed -i "s/^session=.*/session=${new_name}/"'* && "$AE_SOURCE" != *'sed -i "s/^session_id='* ]] && echo 1 || echo 0)"
+
+# Behavioral: gen_uuid produces something matching UUID-shape (so the new
+# field's value passes downstream consumers' validation).
+_t_uuid_out="$(gen_uuid)"
+assert_eq "session-uuid: gen_uuid produces UUID-shaped output" "1" \
+    "$([[ "$_t_uuid_out" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] && echo 1 || echo 0)"
+unset _t_uuid_out
+
+# Behavioral: external-actor target accepted by ae_tracked_send via override.
+# We can't easily test the full exec (it would try to invoke send), but we
+# can verify the helper's target-skipping branch via simulation. Extract
+# the function body's logic by checking the patterns are present and the
+# exec line uses _AE_EVENT_ACTION env. The send helper's behavior is
+# covered structurally above.
+assert_eq "external-actor: ae_tracked_send exec passes _AE_EVENT_ACTION env to send (unchanged contract)" "1" \
+    "$([[ "$AE_SOURCE" == *'exec env _AE_EVENT_ACTION="$action" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$body"'*'/send" "$target_name" "$msg"'* ]] && echo 1 || echo 0)"
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""
