@@ -63,7 +63,7 @@ ae my-feature                  # all agents resume with their conversation histo
 ```bash
 ae status my-feature           # see recent output from all agents
 ae list                        # running sessions, per-agent state + attn marker
-ae list --needs-me             # only sessions waiting on you (waiting-user/blocked)
+ae list --needs-me             # only sessions needing you (waiting-user/blocked/dead/stale)
 ae list --attn                 # short alias for --needs-me
 ae list --all                  # include stopped sessions
 watch -n 10 'ae list'          # live dashboard

@@ -719,9 +719,11 @@ assert_eq "list: cmd_list builds per-agent state column" \
     "1" \
     "$([[ "$AE_SOURCE" == *'"${_state[$aname]:--}"'* ]] && echo 1 || echo 0)"
 
-assert_eq "list: cmd_list computes session attention suffix (waiting-user outranks blocked)" \
+# Slice 2 replaced the state-only attn loop with a severity-ranked rollup;
+# waiting-user-over-blocked is now encoded in _attn_rank (see attn_rank tests).
+assert_eq "list: attention reasons are severity-ranked via _attn_rank" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'waiting-user) attn="waiting-user"'* && "$AE_SOURCE" == *'blocked) [[ "$attn" != "waiting-user" ]] && attn="blocked"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_attn_rank() {'* && "$AE_SOURCE" == *'waiting-user) printf '"'"'3'"'"''* && "$AE_SOURCE" == *'blocked) printf '"'"'2'"'"''* ]] && echo 1 || echo 0)"
 
 assert_eq "list: meta line renders attn suffix when set" \
     "1" \
@@ -747,6 +749,20 @@ assert_eq "list: --needs-me filters to attention sessions" \
 assert_eq "list: unknown flag is rejected" \
     "1" \
     "$([[ "$AE_SOURCE" == *"unknown flag '\$1' (see: ae list --help)"* ]] && echo 1 || echo 0)"
+
+# Slice 2: cmd_list wires the derived rollup (dead via missing pane + alert
+# reason + state), picking the highest-severity reason via _attn_rank.
+assert_eq "list: rollup flags a missing pane as dead" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ -z "${_alive[$_a]+x}" ]]; then'*'_r="dead"'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: rollup consults _agent_alert_reason then falls back to state" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'_r="$(_agent_alert_reason "$_events" "$_a" "$name")"'* && "$AE_SOURCE" == *'[[ -n "$_r" ]] || _r="${_state[$_a]:-}"'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: rollup picks highest-severity reason via _attn_rank" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'if (( $(_attn_rank "$_r") > $(_attn_rank "$attn") )); then'* ]] && echo 1 || echo 0)"
 
 assert_eq "list: --needs-me implies running-only (no leaked stopped rows)" \
     "1" \
@@ -817,6 +833,92 @@ cat >"$_ss_dir/events.jsonl" <<'EVENTS'
 EVENTS
 assert_eq "session_states: state event with empty ref is skipped" "" \
     "$(_session_states "$_ss_dir")"
+
+# ── _agent_alert_reason + _attn_rank (slice 2: derived rollup) ──────
+eval "$(awk '/^_agent_alert_reason\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_attn_rank\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+
+# _attn_rank severity ordering: dead > stale > waiting-user > blocked > throttled > none.
+assert_eq "attn_rank: dead outranks stale" "1" \
+    "$([[ "$(_attn_rank dead)" -gt "$(_attn_rank stale)" ]] && echo 1 || echo 0)"
+assert_eq "attn_rank: stale outranks waiting-user" "1" \
+    "$([[ "$(_attn_rank stale)" -gt "$(_attn_rank waiting-user)" ]] && echo 1 || echo 0)"
+assert_eq "attn_rank: waiting-user outranks blocked" "1" \
+    "$([[ "$(_attn_rank waiting-user)" -gt "$(_attn_rank blocked)" ]] && echo 1 || echo 0)"
+assert_eq "attn_rank: blocked outranks throttled" "1" \
+    "$([[ "$(_attn_rank blocked)" -gt "$(_attn_rank throttled)" ]] && echo 1 || echo 0)"
+assert_eq "attn_rank: unknown/empty is zero" "0" "$(_attn_rank '')"
+
+# _agent_alert_reason: latest alert maps to a reason; cleared/superseded → empty.
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"claude:lead","summary":"max nudges reached (idle 30m), needs attention"}
+EVENTS
+assert_eq "alert_reason: max-nudges alert maps to stale" "stale" \
+    "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
+
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"claude:lead","summary":"pane missing — agent no longer visible in session"}
+EVENTS
+assert_eq "alert_reason: missing-pane alert maps to dead" "dead" \
+    "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
+
+# Real loop summary (ae_emit_event at the process-dead site): must map to dead,
+# not stale — codex IMPORTANT.
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"claude:lead","summary":"agent process dead — dropped to shell"}
+EVENTS
+assert_eq "alert_reason: process-dead alert maps to dead" "dead" \
+    "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
+
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"throttled","target":"claude:lead","summary":"upstream throttling detected"}
+EVENTS
+assert_eq "alert_reason: throttled event maps to throttled" "throttled" \
+    "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
+
+# throttle-cleared supersedes the throttle → no active alert.
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"throttled","target":"claude:lead","summary":"throttling"}
+{"ts":"2026-05-29T10:01:00Z","actor":"loop","action":"throttle-cleared","target":"claude:lead","summary":"cleared"}
+EVENTS
+assert_eq "alert_reason: throttle-cleared clears the alert" "" \
+    "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
+
+# The agent's OWN newer activity (actor==agent) supersedes the alert → recovered.
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"claude:lead","summary":"max nudges reached"}
+{"ts":"2026-05-29T10:05:00Z","actor":"claude:lead","action":"state","ref":"working","summary":"back"}
+EVENTS
+assert_eq "alert_reason: agent's own activity clears the alert" "" \
+    "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
+
+# A later loop NUDGE targeting the agent must NOT clear a max-nudges alert — the
+# agent hasn't recovered (codex IMPORTANT). Keep scanning back to the alert.
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"claude:lead","summary":"max nudges reached"}
+{"ts":"2026-05-29T10:05:00Z","actor":"loop","action":"nudge","target":"claude:lead","summary":"status check"}
+EVENTS
+assert_eq "alert_reason: a target-only nudge does not clear the alert" "stale" \
+    "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
+
+# An inbound send from another agent (target-only) also must NOT look like recovery.
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"claude:lead","summary":"max nudges reached"}
+{"ts":"2026-05-29T10:05:00Z","actor":"codex:coworker","action":"send","target":"claude:lead","summary":"ping"}
+EVENTS
+assert_eq "alert_reason: an inbound send does not clear the alert" "stale" \
+    "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
+
+# Matches by cross-session target form too.
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"@sess:claude:lead","summary":"max nudges reached"}
+EVENTS
+assert_eq "alert_reason: matches @session:agent target" "stale" \
+    "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
+
+# No events / no match → empty.
+assert_eq "alert_reason: no events file returns empty" "" \
+    "$(_agent_alert_reason "$_ss_dir/nope.jsonl" "claude:lead" "sess")"
 
 rm -rf "$_ss_dir"
 

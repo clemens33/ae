@@ -248,6 +248,34 @@ assert_eq "list: --stopped --needs-me does not show the stopped session" "0" \
 "$AE" end -f test-state 2>/dev/null || true
 sleep 0.5
 
+# ── Test 3c: derived rollup surfaces a loop alert (slice 2) ──────────
+# An agent with no declared state but a max-nudges alert from the watchdog must
+# raise attn:stale — the rollup reuses the loop's own alert events.
+
+REPO3C="$(setup_repo)"
+(cd "$REPO3C" && "$AE" --local test-alert &) 2>/dev/null
+wait_for_session "test-alert"
+sleep 1
+
+ALERT_EVENTS="$HOME/.ae/sessions/test-alert/events.jsonl"
+alert_agent="$(sed -n 's/^agent.main=//p' "$HOME/.ae/sessions/test-alert/meta" | cut -d: -f1,2)"
+
+# No declared state, but the loop raised a max-nudges alert → attn:stale.
+printf '{"ts":"2026-05-29T11:00:00Z","actor":"loop","action":"alert","target":"%s","summary":"max nudges reached (idle 30m), needs attention"}\n' "$alert_agent" >>"$ALERT_EVENTS"
+alert_output="$("$AE" list 2>/dev/null)"
+assert_contains "rollup: max-nudges alert raises attn:stale" "attn:stale" "$alert_output"
+assert_contains "rollup: --needs-me surfaces the stale (alerted) session" "test-alert" \
+    "$("$AE" list --needs-me 2>/dev/null)"
+
+# A newer activity event from the agent supersedes the alert → no longer attn.
+printf '{"ts":"2026-05-29T11:05:00Z","actor":"%s","action":"state","ref":"working","summary":"resumed"}\n' "$alert_agent" >>"$ALERT_EVENTS"
+assert_eq "rollup: newer activity clears the stale alert" "0" \
+    "$("$AE" list --needs-me 2>/dev/null | grep -c 'test-alert')"
+
+# Clean up
+"$AE" end -f test-alert 2>/dev/null || true
+sleep 0.5
+
 # NOTE: the loop watchdog's quiet-state behaviour (done/waiting-user/blocked
 # suppression + the waiting-user/blocked pane-activity escape hatch) is covered
 # by unit tests of the extracted decision functions (_agent_quiet_reason,

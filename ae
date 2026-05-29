@@ -478,7 +478,7 @@ build_ae_context() {
     ctx+=" (2) ${meta_dir}/ask <agent> <question> or ${meta_dir}/review <agent> <request> when you require a reply (returns a request id). ${meta_dir}/send <agent> <message> for one-way."
     ctx+=" (3) When another agent gives you an exact reply command, run it verbatim. Do not infer the recipient. Do not reply only in your own pane output."
     ctx+=" (4) Do not poll or capture panes waiting for replies — answers arrive as incoming messages. ${meta_dir}/peek <agent> [lines] (alias peak) is for inspection only, never as a reply mechanism."
-    ctx+=" (5) Declare your state with ${meta_dir}/state <working|waiting-user|blocked|done> <reason> whenever it changes: working when taking new work or resuming, waiting-user only after asking the human, blocked only after a concrete external blocker (reason required), done at completion or pause. ${meta_dir}/mark-done \"<summary>\" still works as shorthand for state done. Your declared state shows in 'ae list' (per agent, plus a session-level attn marker for waiting-user/blocked). The loop watchdog stops nudging you on any quiet state: done is honoured until a newer message arrives; waiting-user/blocked are honoured until the pane changes (e.g. the human replies), then normal nudging resumes."
+    ctx+=" (5) Declare your state with ${meta_dir}/state <working|waiting-user|blocked|done> <reason> whenever it changes: working when taking new work or resuming, waiting-user only after asking the human, blocked only after a concrete external blocker (reason required), done at completion or pause. ${meta_dir}/mark-done \"<summary>\" still works as shorthand for state done. Your declared state shows in 'ae list' (per agent). Your waiting-user/blocked contribute to the session attn marker; ae list may also show watchdog-derived reasons (dead/stale/throttled). The loop watchdog stops nudging you on any quiet state: done is honoured until a newer message arrives; waiting-user/blocked are honoured until the pane changes (e.g. the human replies), then normal nudging resumes."
     ctx+=" (6) ${meta_dir}/memo add [--topic <topic>] <text> for durable shared findings, decisions, and handoffs that survive restarts. Do not dump chat transcripts into memo."
     ctx+=" (7) IMPORTANT — CONCURRENT COLLABORATION: Other agents may be editing files in this same workspace RIGHT NOW. Files you read may change. Coordinate on shared files; verify intent via ${meta_dir}/send before reverting or overwriting unexpected modifications."
     ctx+=" Spawn a new agent: ${meta_dir}/spawn <alias>:<name> [prompt] — give a descriptive role name."
@@ -1421,6 +1421,64 @@ _session_states() {
     done < <(grep -aE '"action":"(state|done)"' "$events" 2>/dev/null | tac || true)
 }
 
+# Active alert/throttle reason for an agent, or empty. Reuses the loop
+# watchdog's own alert/throttled events as the attention signal (max-nudges,
+# missing pane, persistent throttle) instead of re-deriving them. An alert is
+# "active" only while it is the newest event mentioning the agent — any newer
+# activity (state/send/nudge) or a throttle-cleared supersedes it. Returns a
+# short reason: dead | stale | throttled | "".
+_agent_alert_reason() {
+    local events="$1" agent="$2" session="$3"
+    [[ -f "$events" ]] || return 0
+    local line actor target action summary
+    while IFS= read -r line; do
+        [[ "$line" == \{* ]] || continue
+        actor="$(_event_json_str "$line" actor)"
+        target="$(_event_json_str "$line" target)"
+        [[ "$actor" == "$agent" || "$target" == "$agent" || "$target" == "@${session}:${agent}" ]] || continue
+        action="$(_event_json_str "$line" action)"
+        case "$action" in
+            alert)
+                summary="$(_event_json_str "$line" summary)"
+                # Summaries come from the loop watchdog (see ae_emit_event
+                # "alert" sites): "agent process dead — dropped to shell",
+                # "pane missing …", "max nudges reached …", "throttled for …".
+                case "$summary" in
+                    *dead* | *dropped* | *missing* | *MISSING*) printf 'dead' ;;
+                    *throttl*) printf 'throttled' ;;
+                    *) printf 'stale' ;; # max-nudges and any other alert
+                esac
+                return 0
+                ;;
+            throttled)
+                printf 'throttled'
+                return 0
+                ;;
+            throttle-cleared) return 0 ;; # explicit clear
+            *)
+                # The agent's OWN activity (state/send/reply/…) means it
+                # recovered → clears any alert. A target-only event (a loop
+                # nudge or an inbound send/ask addressed TO the agent) is NOT
+                # recovery — skip it and keep scanning back for a live alert.
+                [[ "$actor" == "$agent" ]] && return 0
+                ;;
+        esac
+    done < <(tac "$events" 2>/dev/null || true)
+}
+
+# Severity rank for an attention reason (higher = more urgent). Used to pick the
+# single most-actionable reason across a session's agents.
+_attn_rank() {
+    case "$1" in
+        dead) printf '5' ;;
+        stale) printf '4' ;;
+        waiting-user) printf '3' ;;
+        blocked) printf '2' ;;
+        throttled) printf '1' ;;
+        *) printf '0' ;;
+    esac
+}
+
 # shellcheck disable=SC2059 # format strings stored in variables intentionally
 cmd_list() {
     # Default view = running only. Stopped sessions (often the bulk of the list)
@@ -1439,8 +1497,9 @@ Usage: ae list [--running | --all | --stopped | --needs-me]
   --running   running sessions only (explicit)
   --all       running sessions, then stopped ones
   --stopped   stopped sessions only
-  --needs-me  only running sessions needing your attention (waiting-user /
-              blocked); implies running-only (aliases: --needs, --attn)
+  --needs-me  only running sessions with an attn reason — declared
+              waiting-user/blocked, or watchdog-derived dead/stale/throttled;
+              implies running-only (aliases: --needs, --attn)
 LISTHELP
                 return 0
                 ;;
@@ -1495,18 +1554,38 @@ LISTHELP
                 IFS=$'\t' read -r _an _as < <(_parse_agent_entry "$mv")
                 [[ -n "$_an" ]] && _cur["$_an"]=1
             done <<<"$meta_blob"
-            # State-only attention: waiting-user (human is the next actor)
-            # outranks blocked; working/done never raise the marker.
-            local attn="" _a
-            for _a in "${!_cur[@]}"; do
-                case "${_state[$_a]:-}" in
-                    waiting-user) attn="waiting-user" ;;
-                    blocked) [[ "$attn" != "waiting-user" ]] && attn="blocked" ;;
+            # Build alive map from tmux panes (one tmux call). Needed before the
+            # attention rollup so a missing pane can raise the 'dead' reason.
+            declare -A _alive=()
+            while IFS=$'\t' read -r ae_agent pane_cmd; do
+                [[ -n "$ae_agent" ]] || continue
+                case "$pane_cmd" in
+                    bash | fish | zsh | sh | dash) _alive["$ae_agent"]="!" ;;
+                    *) _alive["$ae_agent"]="" ;;
                 esac
+            done < <(tmux list-panes -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
+            # Derived needs_attention rollup: the single most-actionable reason
+            # across current agents. Severity: dead > stale > waiting-user >
+            # blocked > throttled. 'dead' = pane vanished; stale/throttled come
+            # from the loop watchdog's alert events; waiting-user/blocked are
+            # self-declared. (Pending-review edges are a planned follow-up.)
+            local attn="" _a _r _events="${sess_dir}/events.jsonl"
+            for _a in "${!_cur[@]}"; do
+                if [[ -z "${_alive[$_a]+x}" ]]; then
+                    _r="dead" # registered agent, no pane in the session
+                else
+                    _r="$(_agent_alert_reason "$_events" "$_a" "$name")"
+                    [[ -n "$_r" ]] || _r="${_state[$_a]:-}"
+                fi
+                case "$_r" in waiting-user | blocked | dead | stale | throttled) ;; *) _r="" ;; esac
+                [[ -n "$_r" ]] || continue
+                if (( $(_attn_rank "$_r") > $(_attn_rank "$attn") )); then
+                    attn="$_r"
+                fi
             done
             # --needs-me: skip sessions with no attention signal.
             if $only_needs_me && [[ -z "$attn" ]]; then
-                unset _state _cur
+                unset _state _cur _alive
                 continue
             fi
             if ! $header_printed; then
@@ -1516,15 +1595,6 @@ LISTHELP
             printf "$hdr" "$name" "running" "$mode" "$origin"
             [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
             _print_session_meta_line "$meta_blob" "$sess_dir" "$attn"
-            # Build alive map from tmux panes (one tmux call)
-            declare -A _alive=()
-            while IFS=$'\t' read -r ae_agent pane_cmd; do
-                [[ -n "$ae_agent" ]] || continue
-                case "$pane_cmd" in
-                    bash | fish | zsh | sh | dash) _alive["$ae_agent"]="!" ;;
-                    *) _alive["$ae_agent"]="" ;;
-                esac
-            done < <(tmux list-panes -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
             while IFS='=' read -r mk mv; do
                 [[ "$mk" == agent.* ]] || continue
                 local aname asid
@@ -4089,7 +4159,7 @@ ${sessions_dir}/requests
 ${sessions_dir}/requests inbox
 \`\`\`
 
-Declare your current work state. It shows in \`ae list\` (per agent, plus a session-level \`attn:\` marker when an agent is waiting-user/blocked). The loop watchdog stops nudging on any quiet state: \`done\` until a newer message arrives; \`waiting-user\`/\`blocked\` until the pane changes (e.g. the human replies), then nudging resumes:
+Declare your current work state. It shows in \`ae list\` (per agent). Your \`waiting-user\`/\`blocked\` contribute to the session \`attn:\` marker; \`ae list\` may also show watchdog-derived reasons (\`dead\`/\`stale\`/\`throttled\`). The loop watchdog stops nudging on any quiet state: \`done\` until a newer message arrives; \`waiting-user\`/\`blocked\` until the pane changes (e.g. the human replies), then nudging resumes:
 \`\`\`bash
 ${sessions_dir}/state working "starting on X"
 ${sessions_dir}/state waiting-user "need clarification on Y"

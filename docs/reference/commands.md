@@ -39,7 +39,22 @@ See [Configuration → copy modes](../getting-started/config.md#copy-modes) for 
 ## `ae list`
 
 Tabular view of ae sessions with per-agent health, declared state, and a
-session-level `attn:` marker when an agent is `waiting-user`/`blocked`.
+session-level `attn:<reason>` marker when a session needs attention.
+
+The marker is a derived rollup — the single most-actionable reason across the
+session's agents, by severity:
+
+| Reason | Meaning |
+|--------|---------|
+| `attn:dead` | an agent's pane vanished (or the watchdog flagged it missing) |
+| `attn:stale` | the loop watchdog gave up nudging an idle agent (max nudges) |
+| `attn:waiting-user` | an agent declared it's waiting on you |
+| `attn:blocked` | an agent declared it's blocked on an external dep |
+| `attn:throttled` | an agent is being rate-limited upstream |
+
+(`dead`/`stale`/`throttled` reuse the loop watchdog's own alert events;
+`waiting-user`/`blocked` are self-declared. Pending unanswered `ask`/`review`
+requests are a planned future reason.)
 
 By default it shows **running sessions only** — stopped sessions are usually the
 bulk of the list and just noise for monitoring. Flags:
@@ -49,7 +64,7 @@ bulk of the list and just noise for monitoring. Flags:
 | *(none)* / `--running` | running sessions only |
 | `--all` | running sessions, then stopped ones |
 | `--stopped` | stopped sessions only |
-| `--needs-me` | only running sessions needing you (`waiting-user`/`blocked`); aliases: `--needs`, `--attn` |
+| `--needs-me` | only running sessions with an `attn:` reason; aliases: `--needs`, `--attn` |
 
 For a live dashboard, wrap it with `watch`:
 
