@@ -2182,6 +2182,23 @@ assert_eq "telegram: main dispatcher routes 'telegram' subcommand" "1" \
 assert_eq "telegram: cmd_help advertises 'ae telegram'" "1" \
     "$([[ "$AE_SOURCE" == *'ae telegram <setup|start|stop|status>'* ]] && echo 1 || echo 0)"
 
+# Behavioral regression: a "~/..."-style token_file in config must expand
+# against $HOME, NOT produce "$HOME/~/...". The bug was tilde-expansion of
+# the strip pattern in ${p#~/}; ${p#"~/"} keeps it literal. Drive it through
+# `ae telegram status` with a real ~/-relative token file.
+_t_tok_dir="$HOME/.ae-tg-test-$$"
+mkdir -p "$_t_tok_dir"
+printf 'x\n' >"$_t_tok_dir/tok"; chmod 600 "$_t_tok_dir/tok"
+_t_tilde_cfg="$(mktemp)"
+printf '[telegram]\nenabled = false\ntoken_file = "~/.ae-tg-test-%s/tok"\nchat_id = 1\n' "$$" >"$_t_tilde_cfg"
+_t_tilde_out="$(CONFIG_FILE="$_t_tilde_cfg" XDG_RUNTIME_DIR="$(mktemp -d)" /home/ckriech/projects/clemens33/ae/ae telegram status 2>&1)"
+assert_eq "telegram: ~/-relative token_file expands against \$HOME (no \$HOME/~ doubling)" "1" \
+    "$([[ "$_t_tilde_out" == *"token:   OK ($HOME/.ae-tg-test-$$/tok)"* ]] && echo 1 || echo 0)"
+assert_eq "telegram: token path never contains the literal \$HOME/~ artifact" "1" \
+    "$([[ "$_t_tilde_out" != *"$HOME/~"* ]] && echo 1 || echo 0)"
+rm -rf "$_t_tok_dir" "$_t_tilde_cfg"
+unset _t_tok_dir _t_tilde_cfg _t_tilde_out
+
 # BLOCKER guard (codex): jq + curl are NOT global ae deps.
 # Tolerate a small number of references inside the telegram functions; the
 # important assertion is that there is no top-level unconditional check.
