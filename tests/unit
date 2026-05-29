@@ -2593,6 +2593,82 @@ assert_eq "telegram: doctor warns about missing token_file" "1" \
 rm -f "$_t_tmp_cfg"; rm -rf "$_t_cache_b"
 unset _t_tmp_cfg _t_doc_out_cfg _t_cache_b
 
+# ── Telegram Stage 3 — bidirectional (chat → ae) ─────────────────────
+# Inbound command path. Structural assertions lock the codex-reviewed
+# security invariants; the behavioral block extracts the daemon body and
+# exercises the pure security functions directly.
+
+# Structural: inbound is gated on allowed_user_ids (secure default).
+assert_eq "tg3: inbound_enabled gates on allowed_user_ids" "1" \
+    "$([[ "$AE_SOURCE" == *'inbound_enabled() {'*'TG_ALLOWED_IDS//[, ]/'* ]] && echo 1 || echo 0)"
+
+# Structural (codex BLOCKER): auth requires from.id ∈ allow-list AND
+# chat.id == configured chat AND chat.type == private.
+assert_eq "tg3: update_authorized requires numeric from.id" "1" \
+    "$([[ "$AE_SOURCE" == *'[[ "$from_id" =~ ^[0-9]+$ ]] || return 1'* ]] && echo 1 || echo 0)"
+assert_eq "tg3: update_authorized pins chat.type == private" "1" \
+    "$([[ "$AE_SOURCE" == *'[[ "$chat_type" == "private" ]] || return 1'* ]] && echo 1 || echo 0)"
+assert_eq "tg3: update_authorized pins chat.id == configured chat" "1" \
+    "$([[ "$AE_SOURCE" == *'[[ "$chat_id" == "$TG_CHAT_ID" ]] || return 1'* ]] && echo 1 || echo 0)"
+
+# Structural (codex IMPORTANT): offset persisted BEFORE dispatch; abort the
+# cycle if persistence fails (at-most-once for side-effecting commands).
+assert_eq "tg3: offset saved before dispatch, cycle aborts on failure" "1" \
+    "$([[ "$AE_SOURCE" == *'if ! tg_save_offset "$uid"; then'*'return 0'* ]] && echo 1 || echo 0)"
+assert_eq "tg3: tg_save_offset writes atomically (tmp+mv)" "1" \
+    "$([[ "$AE_SOURCE" == *'tmp="$TG_OFFSET_FILE.tmp.$$"'* && "$AE_SOURCE" == *'mv "$tmp" "$TG_OFFSET_FILE"'* ]] && echo 1 || echo 0)"
+
+# Structural (codex IMPORTANT): session dir is DISCOVERED from meta scan,
+# never built from the chat-supplied ref (path-traversal guard).
+assert_eq "tg3: resolve_session_ref scans meta, does not build path from input" "1" \
+    "$([[ "$AE_SOURCE" == *'resolve_session_ref() {'*'for meta in "$SESSIONS_DIR"/*/meta; do'* ]] && echo 1 || echo 0)"
+
+# Structural: dispatch uses positional args + AE_SENDER_OVERRIDE, never eval.
+assert_eq "tg3: dispatch via AE_SENDER_OVERRIDE + positional args (no eval)" "1" \
+    "$([[ "$AE_SOURCE" == *'AE_SENDER_OVERRIDE="telegram:$from_id" "$helper" "$agent" "$msg"'* ]] && echo 1 || echo 0)"
+assert_eq "tg3: command handler never evals user text" "1" \
+    "$([[ "$AE_SOURCE" != *'eval "$text"'* && "$AE_SOURCE" != *'eval $text'* ]] && echo 1 || echo 0)"
+
+# Structural (codex NIT): bounded updates per cycle so backlog can't starve
+# the outbound pass.
+assert_eq "tg3: getUpdates is bounded by limit" "1" \
+    "$([[ "$AE_SOURCE" == *'data = limit=${TG_UPDATES_LIMIT}'* ]] && echo 1 || echo 0)"
+
+# Behavioral: extract the daemon body and exercise the security functions.
+_tg3_daemon="$(mktemp)"
+awk "/cat >\"\\\$dest\" <<'TELEGRAM_DAEMON_EOF'/{f=1;next} /^TELEGRAM_DAEMON_EOF\$/{f=0} f" \
+    "$(dirname "$0")/../ae" | sed '/^main "\$@"$/d' >"$_tg3_daemon"
+_tg3_home="$(mktemp -d)"
+_tg3_result="$(
+    AE_HOME="$_tg3_home" bash -c '
+        set -uo pipefail
+        SESSIONS_DIR="$AE_HOME/sessions"; STATE_DIR="$AE_HOME/telegram"
+        mkdir -p "$SESSIONS_DIR" "$STATE_DIR"
+        # shellcheck disable=SC1090
+        source "'"$_tg3_daemon"'" 2>/dev/null || true
+        TG_CHAT_ID="999"; TG_ALLOWED_IDS="999, 1000"; TG_OFFSET_FILE="$STATE_DIR/tg_offset"
+        p=0
+        update_authorized 999 999 private   && p=$((p+1))   # 1 allow
+        update_authorized 999 999 group     || p=$((p+1))   # 2 reject group
+        update_authorized 999 888 private   || p=$((p+1))   # 3 reject wrong chat
+        update_authorized 777 999 private   || p=$((p+1))   # 4 reject unlisted
+        update_authorized abc 999 private   || p=$((p+1))   # 5 reject non-numeric
+        inbound_enabled                     && p=$((p+1))   # 6 inbound on
+        ( TG_ALLOWED_IDS=""; inbound_enabled ) || p=$((p+1)) # 7 inbound off
+        tg_save_offset 12345 && [[ "$(tg_load_offset)" == 12345 ]] && p=$((p+1)) # 8 offset rt
+        mkdir -p "$SESSIONS_DIR/alpha"
+        printf "session=alpha\nsession_id=aaaa1111-2222-3333-4444-555566667777\n" >"$SESSIONS_DIR/alpha/meta"
+        [[ "$(resolve_session_ref alpha)" == "alpha	$SESSIONS_DIR/alpha" ]] && p=$((p+1)) # 9 exact
+        [[ "$(resolve_session_ref aaaa)" == "alpha	$SESSIONS_DIR/alpha" ]] && p=$((p+1)) # 10 prefix
+        resolve_session_ref nope >/dev/null || p=$((p+1))   # 11 none
+        resolve_session_ref "../../etc" >/dev/null || p=$((p+1)) # 12 traversal blocked
+        echo "$p"
+    ' 2>/dev/null
+)"
+assert_eq "tg3: security functions behavioral suite (12 checks)" "12" "$_tg3_result"
+rm -rf "$_tg3_home"; rm -f "$_tg3_daemon"
+unset _tg3_daemon _tg3_home _tg3_result
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""
