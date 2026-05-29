@@ -476,7 +476,7 @@ build_ae_context() {
     ctx+=" (2) ${meta_dir}/ask <agent> <question> or ${meta_dir}/review <agent> <request> when you require a reply (returns a request id). ${meta_dir}/send <agent> <message> for one-way."
     ctx+=" (3) When another agent gives you an exact reply command, run it verbatim. Do not infer the recipient. Do not reply only in your own pane output."
     ctx+=" (4) Do not poll or capture panes waiting for replies — answers arrive as incoming messages. ${meta_dir}/peek <agent> [lines] (alias peak) is for inspection only, never as a reply mechanism."
-    ctx+=" (5) Declare your state with ${meta_dir}/state <working|waiting-user|blocked|done> <reason> whenever it changes: working when taking new work or resuming, waiting-user only after asking the human, blocked only after a concrete external blocker (reason required), done at completion or pause. ${meta_dir}/mark-done \"<summary>\" still works as shorthand for state done. Today only the loop watchdog reads done (via mark-done) — the other state values are recorded for upcoming ae list / ae watch features."
+    ctx+=" (5) Declare your state with ${meta_dir}/state <working|waiting-user|blocked|done> <reason> whenever it changes: working when taking new work or resuming, waiting-user only after asking the human, blocked only after a concrete external blocker (reason required), done at completion or pause. ${meta_dir}/mark-done \"<summary>\" still works as shorthand for state done. Your declared state shows in 'ae list' (per agent, plus a session-level attn marker for waiting-user/blocked); the loop watchdog still acts on done."
     ctx+=" (6) ${meta_dir}/memo add [--topic <topic>] <text> for durable shared findings, decisions, and handoffs that survive restarts. Do not dump chat transcripts into memo."
     ctx+=" (7) IMPORTANT — CONCURRENT COLLABORATION: Other agents may be editing files in this same workspace RIGHT NOW. Files you read may change. Coordinate on shared files; verify intent via ${meta_dir}/send before reverting or overwriting unexpected modifications."
     ctx+=" Spawn a new agent: ${meta_dir}/spawn <alias>:<name> [prompt] — give a descriptive role name."
@@ -1323,9 +1323,10 @@ _resolve_session_dir() {
 }
 
 # Print the sub-line after a session row showing current ae version + last active.
-# $1 = meta_blob (full meta file contents), $2 = session directory
+# $1 = meta_blob (full meta file contents), $2 = session directory,
+# $3 = optional attention suffix (e.g. a declared state like "waiting-user").
 _print_session_meta_line() {
-    local blob="$1" sess_dir="$2"
+    local blob="$1" sess_dir="$2" attn="${3:-}"
     local ae_ver active_ts active_str
     ae_ver="$(echo "$blob" | sed -n 's/^ae_version=//p')"
     ae_ver="${ae_ver:-?}"
@@ -1341,7 +1342,81 @@ _print_session_meta_line() {
         done
     fi
     active_str="$(format_relative_time "$active_ts")"
-    printf "  ae %s · active %s\n" "$ae_ver" "$active_str"
+    if [[ -n "$attn" ]]; then
+        printf "  ae %s · active %s · attn:%s\n" "$ae_ver" "$active_str" "$attn"
+    else
+        printf "  ae %s · active %s\n" "$ae_ver" "$active_str"
+    fi
+}
+
+# Extract a flat-JSON string value. Intentionally mirrored from the _lib copy
+# (next to ae_emit_event) — that version is emitted as heredoc text into
+# per-session helpers and cannot be sourced by the main script, so the parser
+# is duplicated here for cmd_list. Keep the two copies byte-identical; the unit
+# suite asserts that and exercises this top-level copy.
+_event_json_str() {
+    local line="$1" key="$2"
+    local prefix="\"${key}\":\""
+    local rest="${line#*"${prefix}"}"
+    [[ "$rest" == "$line" ]] && return
+    local result="" i=0 n=${#rest}
+    local c next
+    while ((i < n)); do
+        c="${rest:$i:1}"
+        if [[ "$c" == "\\" ]]; then
+            next="${rest:$((i + 1)):1}"
+            case "$next" in
+                n) result+=" " ;;
+                t) result+=" " ;;
+                r) ;;
+                '"') result+='"' ;;
+                "\\") result+="\\" ;;
+                *) result+="$c$next" ;;
+            esac
+            i=$((i + 2))
+        elif [[ "$c" == '"' ]]; then
+            break
+        else
+            result+="$c"
+            i=$((i + 1))
+        fi
+    done
+    printf '%s' "$result"
+}
+
+# Print 'agent<TAB>state' for every actor that has declared a work state in this
+# session's events.jsonl. Single backward pass; the first (newest) state per
+# actor wins. Legacy action=done events report as state=done for back-compat.
+# Scope: state/done events only — this is NOT a full attention signal (pending
+# asks, dead agents, alerts are deliberately out of scope here; that belongs in
+# a future `ae watch`). Callers must treat the result as state display only.
+_session_states() {
+    local sess_dir="$1"
+    [[ -n "$sess_dir" ]] || return 0
+    local events="${sess_dir}/events.jsonl"
+    [[ -f "$events" ]] || return 0
+    declare -A _seen=()
+    local line actor action st
+    # grep-prefilter to relevant events before the per-char parser runs.
+    while IFS= read -r line; do
+        [[ "$line" == \{* ]] || continue
+        action="$(_event_json_str "$line" action)"
+        case "$action" in
+            state | done) ;;
+            *) continue ;;
+        esac
+        actor="$(_event_json_str "$line" actor)"
+        [[ -n "$actor" ]] || continue
+        [[ -n "${_seen[$actor]:-}" ]] && continue
+        if [[ "$action" == "done" ]]; then
+            st="done"
+        else
+            st="$(_event_json_str "$line" ref)"
+        fi
+        [[ -n "$st" ]] || continue
+        _seen["$actor"]="$st"
+        printf '%s\t%s\n' "$actor" "$st"
+    done < <(grep -aE '"action":"(state|done)"' "$events" 2>/dev/null | tac || true)
 }
 
 # shellcheck disable=SC2059 # format strings stored in variables intentionally
@@ -1369,9 +1444,34 @@ cmd_list() {
             mode="${mode:-?}"
             workdir="$(tmux show-environment -t "$name" AE_DIR 2>/dev/null | sed 's/^AE_DIR=//' || true)"
             [[ -z "$workdir" ]] && workdir="$(echo "$meta_blob" | sed -n 's/^work_dir=//p')"
+            # Per-agent declared states (single events.jsonl scan).
+            declare -A _state=()
+            while IFS=$'\t' read -r sa sv; do
+                [[ -n "$sa" ]] || continue
+                _state["$sa"]="$sv"
+            done < <(_session_states "$sess_dir")
+            # Only agents currently present in meta may raise the session
+            # attention suffix — a retired/renamed/stray historical actor with a
+            # stale state must not flag a session with no agent row to explain it.
+            declare -A _cur=()
+            local _an _as
+            while IFS='=' read -r mk mv; do
+                [[ "$mk" == agent.* ]] || continue
+                IFS=$'\t' read -r _an _as < <(_parse_agent_entry "$mv")
+                [[ -n "$_an" ]] && _cur["$_an"]=1
+            done <<<"$meta_blob"
+            # State-only attention: waiting-user (human is the next actor)
+            # outranks blocked; working/done never raise the marker.
+            local attn="" _a
+            for _a in "${!_cur[@]}"; do
+                case "${_state[$_a]:-}" in
+                    waiting-user) attn="waiting-user" ;;
+                    blocked) [[ "$attn" != "waiting-user" ]] && attn="blocked" ;;
+                esac
+            done
             printf "$hdr" "$name" "running" "$mode" "$origin"
             [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
-            _print_session_meta_line "$meta_blob" "$sess_dir"
+            _print_session_meta_line "$meta_blob" "$sess_dir" "$attn"
             # Build alive map from tmux panes (one tmux call)
             declare -A _alive=()
             while IFS=$'\t' read -r ae_agent pane_cmd; do
@@ -1386,9 +1486,9 @@ cmd_list() {
                 local aname asid
                 IFS=$'\t' read -r aname asid < <(_parse_agent_entry "$mv")
                 local marker="${_alive[$aname]:-}"
-                printf "  %-22s  %-8s  %s\n" "$aname" "$asid" "$marker"
+                printf "  %-22s  %-8s  %-12s  %s\n" "$aname" "$asid" "${_state[$aname]:--}" "$marker"
             done <<<"$meta_blob"
-            unset _alive
+            unset _alive _state _cur
         done <<<"$sessions"
     fi
     while IFS= read -r name; do
@@ -3197,7 +3297,7 @@ ${sessions_dir}/requests
 ${sessions_dir}/requests inbox
 \`\`\`
 
-Declare your current work state. Today the loop watchdog only acts on \`done\` (via \`mark-done\`); the other values are recorded in \`events.jsonl\` for upcoming \`ae list\` / \`ae watch\` work:
+Declare your current work state. It shows in \`ae list\` (per agent, plus a session-level \`attn:\` marker when an agent is waiting-user/blocked); the loop watchdog acts on \`done\`:
 \`\`\`bash
 ${sessions_dir}/state working "starting on X"
 ${sessions_dir}/state waiting-user "need clarification on Y"
@@ -4129,7 +4229,7 @@ ae_latest_state_for() {
 _event_json_str() {
     local line="$1" key="$2"
     local prefix="\"${key}\":\""
-    local rest="${line#*${prefix}}"
+    local rest="${line#*"${prefix}"}"
     [[ "$rest" == "$line" ]] && return
     local result="" i=0 n=${#rest}
     local c next
@@ -4854,7 +4954,7 @@ EVENTS_FILE="${META_DIR}/events.jsonl"
 _extract_json_str() {
     local line="$1" key="$2"
     local prefix="\"${key}\":\""
-    local rest="${line#*${prefix}}"
+    local rest="${line#*"${prefix}"}"
     [[ "$rest" == "$line" ]] && return
     local result="" i=0 n=${#rest}
     local c next

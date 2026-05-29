@@ -157,6 +157,37 @@ assert_contains "health: agent row shows name" "dummy" "$list_output"
 "$AE" end -f test-health 2>/dev/null || true
 sleep 0.5
 
+# ── Test 3b: state column + session attn marker in list ──────────────
+
+REPO3B="$(setup_repo)"
+(cd "$REPO3B" && "$AE" --local test-state &) 2>/dev/null
+wait_for_session "test-state"
+sleep 1
+
+STATE_EVENTS="$HOME/.ae/sessions/test-state/events.jsonl"
+# Discover the real main agent name (alias:name) from meta.
+main_agent="$(sed -n 's/^agent.main=//p' "$HOME/.ae/sessions/test-state/meta" | cut -d: -f1,2)"
+
+# Real agent declares working; a retired/stray actor declares waiting-user.
+printf '{"ts":"2026-05-29T10:00:00Z","actor":"%s","action":"state","ref":"working","summary":"on it"}\n' "$main_agent" >>"$STATE_EVENTS"
+printf '%s\n' '{"ts":"2026-05-29T10:01:00Z","actor":"dummy:ghost","action":"state","ref":"waiting-user","summary":"stale"}' >>"$STATE_EVENTS"
+
+list_output="$("$AE" list 2>/dev/null)"
+assert_contains "state: list shows agent working state" "working" "$list_output"
+# Regression (codex IMPORTANT): a stray/retired actor that is not a current
+# agent must NOT raise the session attn marker.
+assert_eq "state: stray actor does not raise attn marker" "0" \
+    "$(echo "$list_output" | grep -c 'attn:')"
+
+# When the real current agent goes waiting-user, attn must appear.
+printf '{"ts":"2026-05-29T10:02:00Z","actor":"%s","action":"state","ref":"waiting-user","summary":"need you"}\n' "$main_agent" >>"$STATE_EVENTS"
+list_output="$("$AE" list 2>/dev/null)"
+assert_contains "state: current agent waiting-user raises attn marker" "attn:waiting-user" "$list_output"
+
+# Clean up
+"$AE" end -f test-state 2>/dev/null || true
+sleep 0.5
+
 # ── Test 4: Spawn persistence ────────────────────────────────────────
 
 REPO4="$(setup_repo)"

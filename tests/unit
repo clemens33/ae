@@ -606,16 +606,30 @@ assert_eq "state: workspace manifest documents state helper" \
     "1" \
     "$([[ "$AE_SOURCE" == *'/state working "starting on X"'* && "$AE_SOURCE" == *'/state blocked'* ]] && echo 1 || echo 0)"
 
-# Behavioural: extract _event_json_str (from _lib) + ae_latest_state_for
-# bodies and exercise them against a synthetic events.jsonl. _event_json_str
-# appears twice in the source (once in _lib, once in the loop helper) — take
-# only the first occurrence so we get the _lib copy.
+# Behavioural: extract _event_json_str + ae_latest_state_for bodies and
+# exercise them against a synthetic events.jsonl. _event_json_str is defined
+# twice with identical bodies: once at top level (for cmd_list, which runs in
+# the main script and can't source a per-session _lib) and once in _lib (reused
+# by every generated helper, incl. the loop, via `source _lib`). Taking the
+# first occurrence yields the top-level copy, which is what _session_states
+# uses. ae_latest_state_for exists only inside _lib, so its first occurrence is
+# that copy.
 eval "$(awk '
     /^_event_json_str\(\) \{/ && !seen_e { printing=1; seen_e=1 }
     /^ae_latest_state_for\(\) \{/ && !seen_s { printing=1; seen_s=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' <<<"$AE_SOURCE")"
+
+# Guard: the two _event_json_str copies (top-level for cmd_list + _lib for all
+# generated helpers) must stay byte-identical. The behavioural tests above
+# exercise only the first copy, so without this a drift between them would go
+# unnoticed. (The loop helper has no copy of its own — it sources _lib.)
+assert_eq "parser: exactly two _event_json_str copies in source" "2" \
+    "$(grep -c '^_event_json_str() {' <<<"$AE_SOURCE")"
+_ejs_c1="$(awk '/^_event_json_str\(\) \{/{c++} c==1{print} c==1&&/^\}$/{exit}' <<<"$AE_SOURCE")"
+_ejs_c2="$(awk '/^_event_json_str\(\) \{/{c++} c==2{print} c==2&&/^\}$/{exit}' <<<"$AE_SOURCE")"
+assert_eq "parser: _lib copy byte-identical to top-level" "$_ejs_c1" "$_ejs_c2"
 
 _state_test_dir="$(mktemp -d)"
 _AE_META_DIR="$_state_test_dir"
@@ -689,6 +703,92 @@ assert_eq "ae_latest_state_for: tolerates non-JSON lines in events.jsonl" \
 
 rm -rf "$_state_test_dir"
 unset _AE_META_DIR
+
+# ── _session_states + cmd_list state column (phase 3) ──────────────
+
+# Structural: top-level parser + reader exist and cmd_list wires them in.
+assert_eq "list: top-level _event_json_str mirror exists" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'Intentionally mirrored from the _lib copy'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: _session_states function exists" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'_session_states() {'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: cmd_list builds per-agent state column" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'"${_state[$aname]:--}"'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: cmd_list computes session attention suffix (waiting-user outranks blocked)" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'waiting-user) attn="waiting-user"'* && "$AE_SOURCE" == *'blocked) [[ "$attn" != "waiting-user" ]] && attn="blocked"'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: meta line renders attn suffix when set" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'· active %s · attn:%s'* ]] && echo 1 || echo 0)"
+
+# Behavioural: extract _session_states body and exercise it. _event_json_str is
+# already eval'd above (first/top-level occurrence).
+eval "$(awk '/^_session_states\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+
+_ss_dir="$(mktemp -d)"
+
+# No events file → empty
+assert_eq "session_states: missing events.jsonl returns empty" "" \
+    "$(_session_states "$_ss_dir")"
+
+# Single agent, latest state wins over older
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"claude:lead","action":"state","ref":"working","summary":"a"}
+{"ts":"2026-05-29T10:05:00Z","actor":"claude:lead","action":"state","ref":"waiting-user","summary":"b"}
+EVENTS
+assert_eq "session_states: newest state per actor wins" \
+    $'claude:lead\twaiting-user' \
+    "$(_session_states "$_ss_dir")"
+
+# Legacy done event reads as state=done
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"codex:coworker","action":"done","summary":"legacy"}
+EVENTS
+assert_eq "session_states: legacy done reads as done" \
+    $'codex:coworker\tdone' \
+    "$(_session_states "$_ss_dir")"
+
+# Two agents → two rows (order follows newest-first scan)
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"claude:lead","action":"state","ref":"working","summary":"x"}
+{"ts":"2026-05-29T10:01:00Z","actor":"codex:coworker","action":"state","ref":"blocked","summary":"y"}
+EVENTS
+assert_eq "session_states: two agents each get their latest state" \
+    $'codex:coworker\tblocked\nclaude:lead\tworking' \
+    "$(_session_states "$_ss_dir")"
+
+# Non-state/done events are ignored entirely
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"claude:lead","action":"send","target":"codex:coworker","summary":"hi"}
+{"ts":"2026-05-29T10:01:00Z","actor":"claude:lead","action":"state","ref":"working","summary":"go"}
+EVENTS
+assert_eq "session_states: ignores non-state/done events" \
+    $'claude:lead\tworking' \
+    "$(_session_states "$_ss_dir")"
+
+# Malformed lines are skipped
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+not json at all
+{"ts":"2026-05-29T10:00:00Z","actor":"claude:lead","action":"state","ref":"done","summary":"ok"}
+EVENTS
+assert_eq "session_states: tolerates malformed lines" \
+    $'claude:lead\tdone' \
+    "$(_session_states "$_ss_dir")"
+
+# State event with empty ref is dropped (no phantom blank state)
+cat >"$_ss_dir/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-29T10:00:00Z","actor":"claude:lead","action":"state","summary":"no ref"}
+EVENTS
+assert_eq "session_states: state event with empty ref is skipped" "" \
+    "$(_session_states "$_ss_dir")"
+
+rm -rf "$_ss_dir"
 
 assert_eq "events: memo emits event" \
     "1" \
