@@ -568,9 +568,127 @@ assert_eq "events: ae_tracked_send exec includes _AE_EVENT_ACTION from \$action"
     "1" \
     "$([[ "$AE_SOURCE" == *'exec env _AE_EVENT_ACTION="$action"'* ]] && echo 1 || echo 0)"
 
-assert_eq "events: mark-done helper emits done event" \
+assert_eq "events: mark-done helper still emits legacy done event (via state shim)" \
     "1" \
     "$([[ "$AE_SOURCE" == *'Helper: mark-done [message]'* && "$AE_SOURCE" == *'ae_emit_event "done"'* ]] && echo 1 || echo 0)"
+
+# ── state helper (phase 1) ─────────────────────────────────────────
+
+assert_eq "state: helper script exists in generated source" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'Helper: state <working|waiting-user|blocked|done>'* && "$AE_SOURCE" == *'STATEEOF'* ]] && echo 1 || echo 0)"
+
+assert_eq "state: helper accepts all four enum values" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'working | waiting-user | done)'* && "$AE_SOURCE" == *'blocked)'* ]] && echo 1 || echo 0)"
+
+assert_eq "state: helper emits action=state with ref=value" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'ae_emit_event "state" "" "$value" "$reason"'* ]] && echo 1 || echo 0)"
+
+assert_eq "state: helper dual-emits legacy done event on value=done" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'Phase 1 compat: legacy '"'"'done'"'"' event'* && "$AE_SOURCE" == *'ae_emit_event "done" "" "" "$reason"'* ]] && echo 1 || echo 0)"
+
+assert_eq "state: helper rejects blocked without reason" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *"'blocked' requires a reason"* ]] && echo 1 || echo 0)"
+
+assert_eq "state: mark-done is shim over state done (preserves no-arg default summary)" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'exec "$(dirname "$0")/state" done "${@:-done}"'* ]] && echo 1 || echo 0)"
+
+assert_eq "state: workspace context rule 5 advertises the state helper" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'/state <working|waiting-user|blocked|done>'* ]] && echo 1 || echo 0)"
+
+assert_eq "state: workspace manifest documents state helper" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'/state working "starting on X"'* && "$AE_SOURCE" == *'/state blocked'* ]] && echo 1 || echo 0)"
+
+# Behavioural: extract _event_json_str (from _lib) + ae_latest_state_for
+# bodies and exercise them against a synthetic events.jsonl. _event_json_str
+# appears twice in the source (once in _lib, once in the loop helper) — take
+# only the first occurrence so we get the _lib copy.
+eval "$(awk '
+    /^_event_json_str\(\) \{/ && !seen_e { printing=1; seen_e=1 }
+    /^ae_latest_state_for\(\) \{/ && !seen_s { printing=1; seen_s=1 }
+    printing { print }
+    printing && /^\}$/ { printing=0 }
+' <<<"$AE_SOURCE")"
+
+_state_test_dir="$(mktemp -d)"
+_AE_META_DIR="$_state_test_dir"
+
+# No events file → empty
+assert_eq "ae_latest_state_for: missing events.jsonl returns empty" "" \
+    "$(ae_latest_state_for "claude:lead")"
+
+# Single state=working event → returns it
+cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-28T10:00:00Z","actor":"claude:lead","action":"state","ref":"working","summary":"starting feature"}
+EVENTS
+assert_eq "ae_latest_state_for: latest state event returns state<TAB>reason<TAB>ts" \
+    $'working\tstarting feature\t2026-05-28T10:00:00Z' \
+    "$(ae_latest_state_for "claude:lead")"
+
+# Legacy action=done event → treated as state=done
+cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-28T10:00:00Z","actor":"claude:lead","action":"done","summary":"legacy mark-done payload"}
+EVENTS
+assert_eq "ae_latest_state_for: legacy action=done reads as state=done (back-compat)" \
+    $'done\tlegacy mark-done payload\t2026-05-28T10:00:00Z' \
+    "$(ae_latest_state_for "claude:lead")"
+
+# Newer state=working supersedes older state=done
+cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-28T10:00:00Z","actor":"claude:lead","action":"state","ref":"done","summary":"finished feature A"}
+{"ts":"2026-05-28T10:05:00Z","actor":"claude:lead","action":"state","ref":"working","summary":"starting feature B"}
+EVENTS
+assert_eq "ae_latest_state_for: newer state event wins over older done" \
+    $'working\tstarting feature B\t2026-05-28T10:05:00Z' \
+    "$(ae_latest_state_for "claude:lead")"
+
+# Other agent's events are ignored
+cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-28T10:00:00Z","actor":"codex:coworker","action":"state","ref":"working","summary":"not mine"}
+{"ts":"2026-05-28T10:05:00Z","actor":"claude:lead","action":"state","ref":"blocked","summary":"waiting for codex"}
+EVENTS
+assert_eq "ae_latest_state_for: filters by actor (other agent events ignored)" \
+    $'blocked\twaiting for codex\t2026-05-28T10:05:00Z' \
+    "$(ae_latest_state_for "claude:lead")"
+
+# Inbound events targeted at the agent do NOT alter the actor's state.
+# Phase 1 only returns the actor's own latest state declaration. Done-vs-inbound
+# arbitration stays in the consumer (loop watchdog / ae list), see phase 2.
+cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-28T10:00:00Z","actor":"claude:lead","action":"state","ref":"done","summary":"shipped"}
+{"ts":"2026-05-28T10:05:00Z","actor":"codex:coworker","action":"send","target":"claude:lead","summary":"new question"}
+EVENTS
+assert_eq "ae_latest_state_for: inbound send leaves actor's declared state intact" \
+    $'done\tshipped\t2026-05-28T10:00:00Z' \
+    "$(ae_latest_state_for "claude:lead")"
+
+# Non-state events on the actor are skipped (e.g. an old `send` from claude:lead)
+cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-05-28T10:00:00Z","actor":"claude:lead","action":"state","ref":"working","summary":"task A"}
+{"ts":"2026-05-28T10:05:00Z","actor":"claude:lead","action":"send","target":"codex:coworker","summary":"please review"}
+EVENTS
+assert_eq "ae_latest_state_for: skips actor's non-state events, returns latest state" \
+    $'working\ttask A\t2026-05-28T10:00:00Z' \
+    "$(ae_latest_state_for "claude:lead")"
+
+# Non-JSON debris in the log is ignored
+cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
+some garbage line
+{"ts":"2026-05-28T10:00:00Z","actor":"claude:lead","action":"state","ref":"working","summary":"after garbage"}
+EVENTS
+assert_eq "ae_latest_state_for: tolerates non-JSON lines in events.jsonl" \
+    $'working\tafter garbage\t2026-05-28T10:00:00Z' \
+    "$(ae_latest_state_for "claude:lead")"
+
+rm -rf "$_state_test_dir"
+unset _AE_META_DIR
 
 assert_eq "events: memo emits event" \
     "1" \

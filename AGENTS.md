@@ -64,7 +64,8 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 | `review <agent> <request>` | Ask another agent for a critical review with findings-first output |
 | `reply <request-id> <message>` | Reply to a logged `ask`/`review` request by request ID |
 | `requests [mine\|inbox\|all]` | Inspect pending and replied requests without peeking panes |
-| `mark-done [message]` | Mark current work complete/paused so the loop watchdog stops nudging the agent |
+| `state <working\|waiting-user\|blocked\|done> [reason]` | Declare current work state (no args prints current); recorded for `ae list`/`ae watch`. Today only `done` affects loop watchdog behaviour |
+| `mark-done [message]` | Shim over `state done`; emits both the new state event and the legacy `done` event the watchdog reads |
 | `memo add [--topic t] <text>` | Append durable shared session memory |
 | `memo read [--topic t]` | Read shared session memory |
 | `memo tail [n]` | Show latest memo entries |

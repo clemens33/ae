@@ -476,7 +476,7 @@ build_ae_context() {
     ctx+=" (2) ${meta_dir}/ask <agent> <question> or ${meta_dir}/review <agent> <request> when you require a reply (returns a request id). ${meta_dir}/send <agent> <message> for one-way."
     ctx+=" (3) When another agent gives you an exact reply command, run it verbatim. Do not infer the recipient. Do not reply only in your own pane output."
     ctx+=" (4) Do not poll or capture panes waiting for replies — answers arrive as incoming messages. ${meta_dir}/peek <agent> [lines] (alias peak) is for inspection only, never as a reply mechanism."
-    ctx+=" (5) ${meta_dir}/mark-done \"<summary>\" when your assigned work is complete or intentionally paused so the loop watchdog stops nudging you."
+    ctx+=" (5) Declare your state with ${meta_dir}/state <working|waiting-user|blocked|done> <reason> whenever it changes: working when taking new work or resuming, waiting-user only after asking the human, blocked only after a concrete external blocker (reason required), done at completion or pause. ${meta_dir}/mark-done \"<summary>\" still works as shorthand for state done. Today only the loop watchdog reads done (via mark-done) — the other state values are recorded for upcoming ae list / ae watch features."
     ctx+=" (6) ${meta_dir}/memo add [--topic <topic>] <text> for durable shared findings, decisions, and handoffs that survive restarts. Do not dump chat transcripts into memo."
     ctx+=" (7) IMPORTANT — CONCURRENT COLLABORATION: Other agents may be editing files in this same workspace RIGHT NOW. Files you read may change. Coordinate on shared files; verify intent via ${meta_dir}/send before reverting or overwriting unexpected modifications."
     ctx+=" Spawn a new agent: ${meta_dir}/spawn <alias>:<name> [prompt] — give a descriptive role name."
@@ -3197,10 +3197,16 @@ ${sessions_dir}/requests
 ${sessions_dir}/requests inbox
 \`\`\`
 
-Mark your current work complete or intentionally paused so the loop watchdog stops nudging you:
+Declare your current work state. Today the loop watchdog only acts on \`done\` (via \`mark-done\`); the other values are recorded in \`events.jsonl\` for upcoming \`ae list\` / \`ae watch\` work:
 \`\`\`bash
-${sessions_dir}/mark-done "<short summary>"
+${sessions_dir}/state working "starting on X"
+${sessions_dir}/state waiting-user "need clarification on Y"
+${sessions_dir}/state blocked "waiting for codex review on req-Z"   # reason required
+${sessions_dir}/state done "shipped X"
+${sessions_dir}/state                                                # print current state
 \`\`\`
+
+\`mark-done "<summary>"\` is preserved as shorthand for \`state done\`. Declare \`working\` on every new task, \`waiting-user\` only after asking the human, \`blocked\` only with a concrete external blocker.
 
 Record durable findings, decisions, and handoffs in shared session memory:
 \`\`\`bash
@@ -4086,6 +4092,38 @@ ae_emit_event() {
     ae_log_append "${_AE_META_DIR}/events.jsonl" "$json"
 }
 
+# Latest state declaration for an agent. Output: state<TAB>reason<TAB>ts (or empty).
+# Scans events.jsonl backwards for newest event matching actor=<agent>; treats
+# action=state events as authoritative and legacy action=done events as state=done
+# so sessions that pre-date the state helper still read back consistently.
+ae_latest_state_for() {
+    local agent="$1"
+    local events="${_AE_META_DIR}/events.jsonl"
+    [[ -f "$events" ]] || return 0
+    local line actor action st reason ts
+    while IFS= read -r line; do
+        [[ "$line" == \{* ]] || continue
+        actor="$(_event_json_str "$line" actor)"
+        [[ "$actor" == "$agent" ]] || continue
+        action="$(_event_json_str "$line" action)"
+        case "$action" in
+            state)
+                st="$(_event_json_str "$line" ref)"
+                reason="$(_event_json_str "$line" summary)"
+                ts="$(_event_json_str "$line" ts)"
+                printf '%s\t%s\t%s\n' "$st" "$reason" "$ts"
+                return 0
+                ;;
+            done)
+                reason="$(_event_json_str "$line" summary)"
+                ts="$(_event_json_str "$line" ts)"
+                printf '%s\t%s\t%s\n' "done" "$reason" "$ts"
+                return 0
+                ;;
+        esac
+    done < <(tac "$events" 2>/dev/null || true)
+}
+
 # Extract a flat-JSON string value (counterpart to ae_json_escape). Handles
 # \" \\ \n \t \r escapes; maps \n and \t to a space for line-oriented use.
 _event_json_str() {
@@ -4429,15 +4467,73 @@ done
 REQUESTSEOF
     chmod 0700 "${AE_META}/requests"
 
-    # Helper: mark-done [message] — mark current agent as complete/paused for loop watchdog
-    cat >"${AE_META}/mark-done" <<'DONEEOF'
+    # Helper: state <working|waiting-user|blocked|done> [reason] — declare current work state.
+    # mark-done is a shim that calls 'state done' so older docs/agents keep working.
+    # The 'done' branch dual-emits a legacy 'done' event so the existing loop watchdog
+    # (which reads action=done) keeps recognising completions until phase 2 teaches it
+    # to read 'state' events directly.
+    cat >"${AE_META}/state" <<'STATEEOF'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 self="$(ae_current_agent_ref)"
 [[ -n "$self" ]] || self="human"
-summary="${*:-done}"
-printf 'Marked %s done: %s\n' "$self" "$summary"
-ae_emit_event "done" "" "" "$summary"
+
+usage() {
+    cat >&2 <<'USAGE'
+Usage: state <working|waiting-user|blocked|done> [reason]
+       state                              # print current state
+
+  working       actively making progress
+  waiting-user  needs human input
+  blocked       stuck on external dep — REASON REQUIRED
+  done          complete or paused
+USAGE
+    exit 2
+}
+
+if [[ $# -eq 0 ]]; then
+    line="$(ae_latest_state_for "$self")"
+    if [[ -z "$line" ]]; then
+        printf '%s state: (none declared)\n' "$self"
+    else
+        IFS=$'\t' read -r st reason ts <<<"$line"
+        printf '%s state: %s%s  (since %s)\n' "$self" "$st" "${reason:+ — $reason}" "$ts"
+    fi
+    exit 0
+fi
+
+value="$1"
+shift
+reason="${*:-}"
+
+case "$value" in
+    working | waiting-user | done) ;;
+    blocked)
+        if [[ -z "$reason" ]]; then
+            echo "Error: 'blocked' requires a reason" >&2
+            usage
+        fi
+        ;;
+    *) usage ;;
+esac
+
+printf 'Marked %s %s%s\n' "$self" "$value" "${reason:+: $reason}"
+ae_emit_event "state" "" "$value" "$reason"
+# Phase 1 compat: legacy 'done' event for the existing loop watchdog.
+# Remove in phase 2 once the watchdog reads 'state' events.
+if [[ "$value" == "done" ]]; then
+    ae_emit_event "done" "" "" "$reason"
+fi
+STATEEOF
+    chmod 0700 "${AE_META}/state"
+
+    # Helper: mark-done [message] — shim over `state done`. Preserved so existing
+    # agent muscle memory and workspace.md guidance keep working unchanged.
+    cat >"${AE_META}/mark-done" <<'DONEEOF'
+#!/usr/bin/env bash
+# Preserve the pre-state-helper default: `mark-done` with no args writes an
+# event whose summary is the literal string "done".
+exec "$(dirname "$0")/state" done "${@:-done}"
 DONEEOF
     chmod 0700 "${AE_META}/mark-done"
 
