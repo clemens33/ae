@@ -727,6 +727,36 @@ assert_eq "list: meta line renders attn suffix when set" \
     "1" \
     "$([[ "$AE_SOURCE" == *'· active %s · attn:%s'* ]] && echo 1 || echo 0)"
 
+# Layer 1 slice 1: list filters + default-to-running.
+assert_eq "list: default hides stopped (gated behind --all/--stopped)" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'local show_running=true show_stopped=false only_needs_me=false'* && "$AE_SOURCE" == *'if $show_stopped; then'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: --all opts stopped back in" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'--all) show_running=true; show_stopped=true'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: --stopped shows only stopped" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'--stopped) show_running=false; show_stopped=true'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: --needs-me filters to attention sessions" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'--needs-me | --needs | --attn) only_needs_me=true'* && "$AE_SOURCE" == *'if $only_needs_me && [[ -z "$attn" ]]; then'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: unknown flag is rejected" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *"unknown flag '\$1' (see: ae list --help)"* ]] && echo 1 || echo 0)"
+
+assert_eq "list: --needs-me implies running-only (no leaked stopped rows)" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'if $only_needs_me; then'*'show_running=true'*'show_stopped=false'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: empty --all says no ae sessions, not try --all again" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'elif $show_running && $show_stopped; then
+            echo "No ae sessions."'* ]] && echo 1 || echo 0)"
+
 # Behavioural: extract _session_states body and exercise it. _event_json_str is
 # already eval'd above (first/top-level occurrence).
 eval "$(awk '/^_session_states\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"

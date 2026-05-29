@@ -3,7 +3,9 @@
 ```text
 ae [name]              Start or reattach a session
 ae [name] use <alias>  Start session with a specific agent as main
-ae list                List all sessions with agent health
+ae list [--all|--stopped|--needs-me]
+                       List sessions (running by default; --all adds stopped
+                       history, --needs-me only those waiting on you)
 ae status [name]       Show agent output without attaching
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
@@ -36,7 +38,25 @@ See [Configuration → copy modes](../getting-started/config.md#copy-modes) for 
 
 ## `ae list`
 
-Tabular view of every session known to ae, with per-agent health. Marks running sessions, stopped-but-persisted sessions, and shows the last-active timestamp.
+Tabular view of ae sessions with per-agent health, declared state, and a
+session-level `attn:` marker when an agent is `waiting-user`/`blocked`.
+
+By default it shows **running sessions only** — stopped sessions are usually the
+bulk of the list and just noise for monitoring. Flags:
+
+| Flag | Shows |
+|------|-------|
+| *(none)* / `--running` | running sessions only |
+| `--all` | running sessions, then stopped ones |
+| `--stopped` | stopped sessions only |
+| `--needs-me` | only running sessions needing you (`waiting-user`/`blocked`); aliases: `--needs`, `--attn` |
+
+For a live dashboard, wrap it with `watch`:
+
+```bash
+watch -n 10 'ae list'            # live view of running sessions
+watch -n 10 'ae list --needs-me' # only what needs your attention
+```
 
 ## `ae status [name]`
 

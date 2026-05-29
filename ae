@@ -1423,14 +1423,47 @@ _session_states() {
 
 # shellcheck disable=SC2059 # format strings stored in variables intentionally
 cmd_list() {
-    local sessions has_output=false
+    # Default view = running only. Stopped sessions (often the bulk of the list)
+    # are noise for day-to-day monitoring; gate them behind --all/--stopped.
+    local show_running=true show_stopped=false only_needs_me=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --all) show_running=true; show_stopped=true ;;
+            --stopped) show_running=false; show_stopped=true ;;
+            --running) show_running=true; show_stopped=false ;;
+            --needs-me | --needs | --attn) only_needs_me=true ;;
+            -h | --help)
+                cat >&2 <<'LISTHELP'
+Usage: ae list [--running | --all | --stopped | --needs-me]
+  (default)   running sessions only
+  --running   running sessions only (explicit)
+  --all       running sessions, then stopped ones
+  --stopped   stopped sessions only
+  --needs-me  only running sessions needing your attention (waiting-user /
+              blocked); implies running-only (aliases: --needs, --attn)
+LISTHELP
+                return 0
+                ;;
+            *) echo "Error: unknown flag '$1' (see: ae list --help)" >&2; return 1 ;;
+        esac
+        shift
+    done
+    # --needs-me is about live attention; a stopped session can't need you. Force
+    # running-only so '--needs-me --all' / '--needs-me --stopped' don't leak
+    # unfiltered stopped rows.
+    if $only_needs_me; then
+        show_running=true
+        show_stopped=false
+    fi
+
     # Column widths: SESSION(24) STATUS(8) MODE(10) ORIGIN(rest)
     local hdr='%-24s  %-8s  %-10s  %s\n'
     local indent='%-24s  %-8s  %-10s  %s\n' # same widths for target indent
-    sessions="$(list_ae_sessions)"
-    if [[ -n "$sessions" ]]; then
-        has_output=true
-        printf "$hdr" "SESSION" "STATUS" "MODE" "ORIGIN"
+    local header_printed=false
+
+    if $show_running; then
+        local sessions
+        sessions="$(list_ae_sessions)"
         while IFS= read -r name; do
             [[ -z "$name" ]] && continue
             local sess_dir
@@ -1471,6 +1504,15 @@ cmd_list() {
                     blocked) [[ "$attn" != "waiting-user" ]] && attn="blocked" ;;
                 esac
             done
+            # --needs-me: skip sessions with no attention signal.
+            if $only_needs_me && [[ -z "$attn" ]]; then
+                unset _state _cur
+                continue
+            fi
+            if ! $header_printed; then
+                printf "$hdr" "SESSION" "STATUS" "MODE" "ORIGIN"
+                header_printed=true
+            fi
             printf "$hdr" "$name" "running" "$mode" "$origin"
             [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
             _print_session_meta_line "$meta_blob" "$sess_dir" "$attn"
@@ -1493,33 +1535,45 @@ cmd_list() {
             unset _alive _state _cur
         done <<<"$sessions"
     fi
-    while IFS= read -r name; do
-        if [[ "$has_output" == false ]]; then
-            printf "$hdr" "SESSION" "STATUS" "MODE" "ORIGIN"
-            has_output=true
+
+    if $show_stopped; then
+        while IFS= read -r name; do
+            if ! $header_printed; then
+                printf "$hdr" "SESSION" "STATUS" "MODE" "ORIGIN"
+                header_printed=true
+            fi
+            local sess_dir
+            sess_dir="$(_resolve_session_dir "$name")"
+            local meta_blob=""
+            [[ -n "$sess_dir" && -f "${sess_dir}/meta" ]] && meta_blob="$(<"${sess_dir}/meta")"
+            local mode origin workdir
+            mode="$(echo "$meta_blob" | sed -n 's/^mode=//p')"
+            mode="${mode:-?}"
+            origin="$(echo "$meta_blob" | sed -n 's/^origin=//p')"
+            origin="${origin:--}"
+            workdir="$(echo "$meta_blob" | sed -n 's/^work_dir=//p')"
+            printf "$hdr" "$name" "stopped" "$mode" "$origin"
+            [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
+            _print_session_meta_line "$meta_blob" "$sess_dir"
+            while IFS='=' read -r mk mv; do
+                [[ "$mk" == agent.* ]] || continue
+                local aname asid
+                IFS=$'\t' read -r aname asid < <(_parse_agent_entry "$mv")
+                printf "  %-22s  %s\n" "$aname" "$asid"
+            done <<<"$meta_blob"
+        done < <(iter_stopped_sessions)
+    fi
+
+    if ! $header_printed; then
+        if $only_needs_me; then
+            echo "No running sessions need your attention."
+        elif $show_running && $show_stopped; then
+            echo "No ae sessions."
+        elif $show_running; then
+            echo "No running ae sessions. (try: ae list --all)"
+        else
+            echo "No stopped ae sessions."
         fi
-        local sess_dir
-        sess_dir="$(_resolve_session_dir "$name")"
-        local meta_blob=""
-        [[ -n "$sess_dir" && -f "${sess_dir}/meta" ]] && meta_blob="$(<"${sess_dir}/meta")"
-        local mode origin workdir
-        mode="$(echo "$meta_blob" | sed -n 's/^mode=//p')"
-        mode="${mode:-?}"
-        origin="$(echo "$meta_blob" | sed -n 's/^origin=//p')"
-        origin="${origin:--}"
-        workdir="$(echo "$meta_blob" | sed -n 's/^work_dir=//p')"
-        printf "$hdr" "$name" "stopped" "$mode" "$origin"
-        [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
-        _print_session_meta_line "$meta_blob" "$sess_dir"
-        while IFS='=' read -r mk mv; do
-            [[ "$mk" == agent.* ]] || continue
-            local aname asid
-            IFS=$'\t' read -r aname asid < <(_parse_agent_entry "$mv")
-            printf "  %-22s  %s\n" "$aname" "$asid"
-        done <<<"$meta_blob"
-    done < <(iter_stopped_sessions)
-    if [[ "$has_output" == false ]]; then
-        echo "No ae sessions."
     fi
 }
 
@@ -3616,7 +3670,9 @@ cmd_help() {
     echo "  ae --local [name]      Start session in current directory (default)"
     echo "  ae --copy [name]       Start session with full copy (includes untracked files)"
     echo "  ae --worktree [name]   Start session with git worktree (tracked files only)"
-    echo "  ae list                List all ae sessions"
+    echo "  ae list [--all|--stopped|--needs-me]"
+    echo "                         List sessions (running by default; --all adds stopped,"
+    echo "                         --needs-me/--needs/--attn only those waiting on you)"
     echo "  ae status [name]       Show recent agent output without attaching"
     echo "  ae doctor [--refresh [name|all]]"
     echo "                         Check local environment and optionally refresh existing session helpers"
@@ -4176,8 +4232,8 @@ send_agent_cmd() {
 # --- Dispatcher ---
 case "${1:-}" in
     list | ls)
-        cmd_list
-        exit 0
+        cmd_list "${@:2}"
+        exit $?
         ;;
     status)
         cmd_status "${2:-}"

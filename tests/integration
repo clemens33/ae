@@ -127,9 +127,9 @@ sleep 0.5
 # Meta should still exist (stopped session)
 assert_eq "resume: meta survives tmux kill" "1" "$([[ -f "$HOME/.ae/sessions/test-resume/meta" ]] && echo 1 || echo 0)"
 
-# ae list should show it as stopped
-list_output="$("$AE" list 2>/dev/null)"
-assert_contains "resume: list shows stopped" "stopped" "$list_output"
+# ae list --all should show it as stopped (default view is running-only now)
+list_output="$("$AE" list --all 2>/dev/null)"
+assert_contains "resume: list --all shows stopped" "stopped" "$list_output"
 
 # Re-launch should resume (reuse meta)
 (cd "$REPO2" && "$AE" --local test-resume &) 2>/dev/null
@@ -183,6 +183,41 @@ assert_eq "state: stray actor does not raise attn marker" "0" \
 printf '{"ts":"2026-05-29T10:02:00Z","actor":"%s","action":"state","ref":"waiting-user","summary":"need you"}\n' "$main_agent" >>"$STATE_EVENTS"
 list_output="$("$AE" list 2>/dev/null)"
 assert_contains "state: current agent waiting-user raises attn marker" "attn:waiting-user" "$list_output"
+
+# --needs-me surfaces the waiting-user session.
+assert_contains "list: --needs-me shows the waiting-user session" "test-state" \
+    "$("$AE" list --needs-me 2>/dev/null)"
+
+# --needs-me implies running-only (codex IMPORTANT): combining with --all must
+# not leak stopped rows. (test-resume from Test 2 is a stopped session here.)
+allneeds_output="$("$AE" list --all --needs-me 2>/dev/null)"
+assert_contains "list: --all --needs-me still shows the needing session" "test-state" "$allneeds_output"
+assert_eq "list: --all --needs-me does not leak stopped rows" "0" \
+    "$(echo "$allneeds_output" | grep -c 'stopped')"
+
+# Once it goes back to working, --needs-me no longer lists it.
+printf '{"ts":"2026-05-29T10:03:00Z","actor":"%s","action":"state","ref":"working","summary":"resumed"}\n' "$main_agent" >>"$STATE_EVENTS"
+needs_output="$("$AE" list --needs-me 2>/dev/null)"
+assert_eq "list: --needs-me drops the session once it is working again" "0" \
+    "$(echo "$needs_output" | grep -c 'test-state')"
+
+# Default view shows the running session.
+assert_contains "list: default shows the running session" "test-state" \
+    "$("$AE" list 2>/dev/null)"
+
+# Stop it (kill tmux session, keep meta) → default omits it, --all/--stopped include it.
+tmux kill-session -t test-state 2>/dev/null || true
+sleep 0.5
+assert_eq "list: default hides the stopped session" "0" \
+    "$("$AE" list 2>/dev/null | grep -c 'test-state')"
+assert_contains "list: --all includes the stopped session" "test-state" \
+    "$("$AE" list --all 2>/dev/null)"
+assert_contains "list: --stopped includes the stopped session" "test-state" \
+    "$("$AE" list --stopped 2>/dev/null)"
+# --stopped --needs-me is running-only by implication → the now-stopped session
+# is not shown (stopped sessions can't need you).
+assert_eq "list: --stopped --needs-me does not show the stopped session" "0" \
+    "$("$AE" list --stopped --needs-me 2>/dev/null | grep -c 'test-state')"
 
 # Clean up
 "$AE" end -f test-state 2>/dev/null || true
