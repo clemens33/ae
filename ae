@@ -2600,9 +2600,16 @@ tg_save_offset() {
     return 0
 }
 
+# Exact-match check for a RUNNING tmux session (not prefix — same guard as
+# the main script). The daemon shares the tmux server, so it can query it.
+daemon_session_running() {
+    tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -Fxq -- "$1"
+}
+
 # Resolve a chat-supplied session reference to a real session dir WITHOUT
-# ever building a path from the input (codex IMPORTANT — path-traversal
-# guard). Matches, against discovered ~/.ae/sessions/*/meta only: exact
+# ever building a path from the input (codex — path-traversal guard). Only
+# RUNNING sessions are considered (codex — don't offer/dispatch into stopped
+# sessions, which would fail later with a misleading error). Matches exact
 # session name, else a unique session_id prefix. Echoes "name<TAB>dir" on a
 # unique match; returns 1 (none) or 2 (ambiguous).
 resolve_session_ref() {
@@ -2613,6 +2620,7 @@ resolve_session_ref() {
         [[ -f "$meta" ]] || continue
         dir="${meta%/meta}"
         name="${dir##*/}"
+        daemon_session_running "$name" || continue
         sid="$(grep '^session_id=' "$meta" 2>/dev/null | head -1 | cut -d= -f2-)"
         if [[ "$name" == "$ref" ]]; then
             exact_dir="$dir"; exact_name="$name"
@@ -2631,13 +2639,43 @@ resolve_session_ref() {
     esac
 }
 
-# /list reply body: running ae sessions with their short session_id + age.
+# Validate a chat-supplied agent ref against the RESOLVED session's actual
+# agents and return the canonical "alias:name" (codex BLOCKER). The session
+# helpers' grammar is broader than ours — it also accepts %pane-id,
+# @session:agent, and external prefixes — which would let a command escape
+# the resolved session into an arbitrary pane/session. We never pass the raw
+# input to the helper: we match it (exact alias:name OR unique bare name)
+# against meta's agent.* entries and pass only the canonical ref. Anything
+# with %, @, or a foreign prefix simply won't match.
+resolve_agent_in_session() {
+    local dir="$1" want="$2" line ref alias name
+    local match="" bare_hits=0 bare_match=""
+    while IFS= read -r line; do
+        ref="${line#*=}"            # alias:name:uuid
+        alias="${ref%%:*}"
+        name="${ref#*:}"; name="${name%%:*}"
+        [[ -n "$alias" && -n "$name" ]] || continue
+        if [[ "$want" == "${alias}:${name}" ]]; then
+            match="${alias}:${name}"; break
+        fi
+        if [[ "$want" == "$name" ]]; then
+            bare_hits=$((bare_hits + 1)); bare_match="${alias}:${name}"
+        fi
+    done < <(grep -E '^agent\.[a-z0-9.]+=' "$dir/meta" 2>/dev/null)
+    if [[ -n "$match" ]]; then printf '%s' "$match"; return 0; fi
+    if (( bare_hits == 1 )); then printf '%s' "$bare_match"; return 0; fi
+    (( bare_hits > 1 )) && return 2   # ambiguous bare name
+    return 1                          # no such agent in this session
+}
+
+# /list reply body: RUNNING ae sessions with their short session_id + age.
 tg_cmd_list() {
     local meta dir name sid ev age out=""
     local now; now=$(date +%s)
     for meta in "$SESSIONS_DIR"/*/meta; do
         [[ -f "$meta" ]] || continue
         dir="${meta%/meta}"; name="${dir##*/}"
+        daemon_session_running "$name" || continue
         sid="$(grep '^session_id=' "$meta" 2>/dev/null | head -1 | cut -d= -f2-)"
         ev="$dir/events.jsonl"
         if [[ -f "$ev" ]]; then
@@ -2652,8 +2690,8 @@ tg_cmd_list() {
         fi
         out+="• ${name}  [${sid:0:8}]  ${age}"$'\n'
     done
-    [[ -n "$out" ]] || out="(no sessions)"
-    printf 'Sessions:\n%s' "$out"
+    [[ -n "$out" ]] || out="(no running sessions)"
+    printf 'Running sessions:\n%s' "$out"
 }
 
 # Dispatch one authorized command. from_id is pre-validated numeric.
@@ -2701,25 +2739,42 @@ tg_cmd_session() {
         send|ask) ;;
         *) send_message "Unknown verb '$verb' (use send or ask)"; return ;;
     esac
-    local resolved name dir
-    if ! resolved="$(resolve_session_ref "$ref")"; then
-        case $? in
+    # Capture rc explicitly — `if ! cmd` would make $? the status of `!` (0),
+    # so the ambiguous (2) branch would be unreachable (codex NIT).
+    local resolved rc name dir
+    resolved="$(resolve_session_ref "$ref")"; rc=$?
+    if (( rc != 0 )); then
+        case $rc in
             2) send_message "Ambiguous session '$ref' — be more specific" ;;
-            *) send_message "No session matching '$ref'" ;;
+            *) send_message "No running session matching '$ref'" ;;
         esac
         return
     fi
     name="${resolved%%$'\t'*}"; dir="${resolved#*$'\t'}"
+    # Constrain the target to an agent that actually lives in THIS session,
+    # and canonicalize it (codex BLOCKER). This blocks %pane-id, @session:agent,
+    # and telegram:/discord: targets — they cannot match a real agent ref, so
+    # a Telegram command can never escape the resolved session.
+    local canon arc
+    canon="$(resolve_agent_in_session "$dir" "$agent")"; arc=$?
+    if (( arc != 0 )); then
+        case $arc in
+            2) send_message "Ambiguous agent '$agent' in ${name} — use alias:name" ;;
+            *) send_message "No agent '$agent' in session ${name}" ;;
+        esac
+        return
+    fi
     local helper="$dir/$verb"
     if [[ ! -x "$helper" ]]; then
         send_message "Session '$name' has no '$verb' helper"
         return
     fi
-    # Dispatch with the external-actor identity. No eval; args are positional.
-    if AE_SENDER_OVERRIDE="telegram:$from_id" "$helper" "$agent" "$msg" >/dev/null 2>&1; then
-        send_message "→ ${verb} delivered to ${agent} in ${name}"
+    # Dispatch with the external-actor identity. No eval; positional args;
+    # the agent is the canonical alias:name we validated above.
+    if AE_SENDER_OVERRIDE="telegram:$from_id" "$helper" "$canon" "$msg" >/dev/null 2>&1; then
+        send_message "→ ${verb} delivered to ${canon} in ${name}"
     else
-        send_message "Failed to ${verb} ${agent} in ${name} (unknown agent?)"
+        send_message "Failed to ${verb} ${canon} in ${name}"
     fi
 }
 

@@ -2623,11 +2623,31 @@ assert_eq "tg3: tg_save_offset writes atomically (tmp+mv)" "1" \
 assert_eq "tg3: resolve_session_ref scans meta, does not build path from input" "1" \
     "$([[ "$AE_SOURCE" == *'resolve_session_ref() {'*'for meta in "$SESSIONS_DIR"/*/meta; do'* ]] && echo 1 || echo 0)"
 
-# Structural: dispatch uses positional args + AE_SENDER_OVERRIDE, never eval.
-assert_eq "tg3: dispatch via AE_SENDER_OVERRIDE + positional args (no eval)" "1" \
-    "$([[ "$AE_SOURCE" == *'AE_SENDER_OVERRIDE="telegram:$from_id" "$helper" "$agent" "$msg"'* ]] && echo 1 || echo 0)"
+# Structural: dispatch passes the CANONICAL validated agent (not raw input)
+# with AE_SENDER_OVERRIDE; positional args, never eval.
+assert_eq "tg3: dispatch passes canonical agent + AE_SENDER_OVERRIDE (no raw input, no eval)" "1" \
+    "$([[ "$AE_SOURCE" == *'AE_SENDER_OVERRIDE="telegram:$from_id" "$helper" "$canon" "$msg"'* ]] && echo 1 || echo 0)"
 assert_eq "tg3: command handler never evals user text" "1" \
     "$([[ "$AE_SOURCE" != *'eval "$text"'* && "$AE_SOURCE" != *'eval $text'* ]] && echo 1 || echo 0)"
+
+# Structural (codex BLOCKER): chat-supplied agent is validated against the
+# resolved session's real agents and canonicalized — never passed raw to the
+# helper (which would accept %pane-id / @session:agent / external prefixes).
+assert_eq "tg3: agent validated against session meta before dispatch" "1" \
+    "$([[ "$AE_SOURCE" == *'resolve_agent_in_session() {'*"grep -E '^agent\\.[a-z0-9.]+='"* ]] && echo 1 || echo 0)"
+assert_eq "tg3: tg_cmd_session canonicalizes agent before dispatch" "1" \
+    "$([[ "$AE_SOURCE" == *'canon="$(resolve_agent_in_session "$dir" "$agent")"'* ]] && echo 1 || echo 0)"
+
+# Structural (codex IMPORTANT): /list + resolve restricted to RUNNING sessions.
+assert_eq "tg3: resolve_session_ref filters to running sessions" "1" \
+    "$([[ "$AE_SOURCE" == *'resolve_session_ref() {'*'daemon_session_running "$name" || continue'* ]] && echo 1 || echo 0)"
+assert_eq "tg3: tg_cmd_list filters to running sessions" "1" \
+    "$([[ "$AE_SOURCE" == *'tg_cmd_list() {'*'daemon_session_running "$name" || continue'* ]] && echo 1 || echo 0)"
+
+# Structural (codex NIT): rc captured explicitly so the ambiguous (2) branch
+# is reachable (not swallowed by `if ! cmd`).
+assert_eq "tg3: resolve rc captured explicitly (ambiguous branch reachable)" "1" \
+    "$([[ "$AE_SOURCE" == *'resolved="$(resolve_session_ref "$ref")"; rc=$?'* ]] && echo 1 || echo 0)"
 
 # Structural (codex NIT): bounded updates per cycle so backlog can't starve
 # the outbound pass.
@@ -2646,6 +2666,9 @@ _tg3_result="$(
         mkdir -p "$SESSIONS_DIR" "$STATE_DIR"
         # shellcheck disable=SC1090
         source "'"$_tg3_daemon"'" 2>/dev/null || true
+        # Stub the tmux running-check so resolve logic is tested without a
+        # live server (the running filter itself is asserted structurally).
+        daemon_session_running() { return 0; }
         TG_CHAT_ID="999"; TG_ALLOWED_IDS="999, 1000"; TG_OFFSET_FILE="$STATE_DIR/tg_offset"
         p=0
         update_authorized 999 999 private   && p=$((p+1))   # 1 allow
@@ -2657,15 +2680,24 @@ _tg3_result="$(
         ( TG_ALLOWED_IDS=""; inbound_enabled ) || p=$((p+1)) # 7 inbound off
         tg_save_offset 12345 && [[ "$(tg_load_offset)" == 12345 ]] && p=$((p+1)) # 8 offset rt
         mkdir -p "$SESSIONS_DIR/alpha"
-        printf "session=alpha\nsession_id=aaaa1111-2222-3333-4444-555566667777\n" >"$SESSIONS_DIR/alpha/meta"
+        printf "session=alpha\nsession_id=aaaa1111-2222-3333-4444-555566667777\nagent.main=claude:lead:u1\nagent.worker.0=codex:coworker:u2\n" >"$SESSIONS_DIR/alpha/meta"
         [[ "$(resolve_session_ref alpha)" == "alpha	$SESSIONS_DIR/alpha" ]] && p=$((p+1)) # 9 exact
         [[ "$(resolve_session_ref aaaa)" == "alpha	$SESSIONS_DIR/alpha" ]] && p=$((p+1)) # 10 prefix
         resolve_session_ref nope >/dev/null || p=$((p+1))   # 11 none
         resolve_session_ref "../../etc" >/dev/null || p=$((p+1)) # 12 traversal blocked
+        # Agent validation (codex BLOCKER): canonicalize, and reject anything
+        # that is not a real agent of this session.
+        d="$SESSIONS_DIR/alpha"
+        [[ "$(resolve_agent_in_session "$d" claude:lead)" == "claude:lead" ]] && p=$((p+1)) # 13 exact ref
+        [[ "$(resolve_agent_in_session "$d" coworker)" == "codex:coworker" ]] && p=$((p+1)) # 14 bare->canon
+        resolve_agent_in_session "$d" "%42"   >/dev/null || p=$((p+1)) # 15 reject pane-id
+        resolve_agent_in_session "$d" "@x:y"  >/dev/null || p=$((p+1)) # 16 reject cross-session
+        resolve_agent_in_session "$d" "telegram:9" >/dev/null || p=$((p+1)) # 17 reject external prefix
+        resolve_agent_in_session "$d" "ghost" >/dev/null || p=$((p+1)) # 18 reject unknown agent
         echo "$p"
     ' 2>/dev/null
 )"
-assert_eq "tg3: security functions behavioral suite (12 checks)" "12" "$_tg3_result"
+assert_eq "tg3: security functions behavioral suite (18 checks)" "18" "$_tg3_result"
 rm -rf "$_tg3_home"; rm -f "$_tg3_daemon"
 unset _tg3_daemon _tg3_home _tg3_result
 

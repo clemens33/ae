@@ -1,15 +1,19 @@
 # Telegram bridge
 
-> Machine-global daemon that forwards filtered events from every ae session on the host to one Telegram chat. Single bot, single user, low traffic. Bidirectional control (chat → ae) is tracked separately in [issue #1](https://github.com/clemens33/ae/issues/1).
+> Machine-global daemon that bridges every ae session on the host to one Telegram chat: it forwards filtered events out, and (when `allowed_user_ids` is set) accepts a small set of commands back in. Single bot, single user, low traffic.
 
 ## What it does
+
+**Outbound (ae → chat):**
 
 - Reads `events.jsonl` from every session under `~/.ae/sessions/<name>/`.
 - Forwards events matching the configured include set (default: `send`, `ask`, `review`, `reply`, `done`, `alert`, `throttled`) to your Telegram chat via the Bot API.
 - Persists per-session byte offsets so daemon restarts don't replay history.
 - Runs as a background tmux session named `ae-telegram`.
 
-Stage 2 is read-only — the bridge does not yet listen for incoming Telegram messages. See the [bridge protocol](../internals/bridge-protocol.md) for the substrate it builds on.
+**Inbound (chat → ae):** enabled only when `allowed_user_ids` is set (see [Inbound commands](#inbound-commands-chat--ae)). The daemon polls for messages and lets an authorized user drive sessions from their phone. With no `allowed_user_ids`, the bridge stays outbound-only.
+
+See the [bridge protocol](../internals/bridge-protocol.md) for the substrate it builds on.
 
 ## Dependencies
 
@@ -43,8 +47,36 @@ Optional keys:
 |---|---|---|
 | `include` | `send,ask,review,reply,done,alert,throttled` | Comma-separated action allow-list |
 | `exclude` | *(empty)* | Comma-separated action deny-list (applied after include) |
+| `allowed_user_ids` | *(from setup)* | Comma/space list of Telegram numeric user ids permitted to send **inbound commands**. Empty → inbound disabled (outbound-only). |
 
 Set `enabled = false` (or remove the block) to disable autostart without uninstalling.
+
+## Inbound commands (chat → ae)
+
+Inbound is active **only when `allowed_user_ids` is non-empty** (`ae telegram setup` seeds it with your own id). With no allow-list, the bridge is outbound-only.
+
+**Trust boundary.** Every incoming message must satisfy **all** of:
+
+- `from.id` is numeric and listed in `allowed_user_ids`,
+- `chat.id` equals the configured `chat_id` (the 1:1 control channel),
+- the chat is `private`.
+
+Anything else is silently dropped. Commands are never accepted from groups or any other chat, even from an allow-listed user.
+
+**Grammar:**
+
+```
+/help                                     show this list
+/list                                     running sessions: name, session_id[:8], last activity
+/session <name|id-prefix> send <agent> <msg…>   one-way message into an agent pane
+/session <name|id-prefix> ask  <agent> <msg…>   tracked request; the reply routes back to chat
+```
+
+- `<name|id-prefix>` resolves only against **running** sessions (exact name, or a unique `session_id` prefix). Stopped sessions are not offered or addressable.
+- `<agent>` is validated against the resolved session's real agents (exact `alias:name` or a unique bare name) and canonicalized before dispatch. `%pane-id`, `@other-session:agent`, and `telegram:`/`discord:` targets are rejected — a command can't escape the named session.
+- Commands run with the sender identity `telegram:<your-id>`; `ask` replies and any agent message targeting `telegram:<your-id>` flow back out via the outbound path.
+
+**Replay safety.** The daemon advances its `getUpdates` offset (persisted in `~/.ae/telegram/tg_offset`) before dispatching, so a crash can't re-run a side-effecting command on restart (at-most-once).
 
 ## Commands
 
@@ -107,11 +139,13 @@ Likely causes: wrong `chat_id`, bot was blocked from the user side, network outa
 Install `jq`. The session continues without the bridge.
 
 **Two ae machines run the same bot**
-Each one will fight over `getUpdates` once Stage 3 ships. For now (read-only Stage 2), both will duplicate outbound messages. Use one bot per machine, or stop the daemon on the inactive host.
+They'll fight over `getUpdates` (Telegram 409) and duplicate outbound messages. Use one bot per machine, or stop the daemon on the inactive host.
+
+**Inbound command silently ignored**
+Check `allowed_user_ids` includes your numeric id, that you're messaging the bot in a **private** chat, and that `chat_id` matches that chat. Any mismatch is dropped by design (logged in the daemon pane).
 
 ## What it does NOT do (yet)
 
-- **Bidirectional control.** Chat → ae (`/session <prefix> send ...`) is Stage 3.
 - **Multi-platform.** Discord, Slack, etc. would be parallel commands (`ae discord ...`), not a generic bridge abstraction.
 - **Rate-limit aggregation.** Each event becomes one Telegram message. A noisy session can hit Telegram's 1 msg/sec per-chat soft limit. Stage 5.
-- **Multi-user.** `allowed_user_ids` exists in the config schema for forward compatibility with Stage 3; today it's not consulted.
+- **Multi-user / group control.** `allowed_user_ids` may list several ids, but commands are only accepted in the single configured private `chat_id`. Group chats and `allowed_chat_ids` are out of scope.
