@@ -51,6 +51,7 @@ nav:
       - Architecture: internals/architecture.md
       - Loop watchdog: internals/loop.md
       - Events: internals/events.md
+      - Bridge protocol: internals/bridge-protocol.md
       - Monitor window: internals/monitor.md
   - Troubleshooting: troubleshooting.md
   - Development: development.md
