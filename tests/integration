@@ -188,6 +188,14 @@ assert_contains "state: current agent waiting-user raises attn marker" "attn:wai
 "$AE" end -f test-state 2>/dev/null || true
 sleep 0.5
 
+# NOTE: the loop watchdog's quiet-state behaviour (done/waiting-user/blocked
+# suppression + the waiting-user/blocked pane-activity escape hatch) is covered
+# by unit tests of the extracted decision functions (_agent_quiet_reason,
+# _quiet_pane_decision) in tests/unit. A live-loop integration test is not
+# practical here: the watchdog runs in a tmux split-window pane that inherits
+# tmux's environment, so AE_LOOP_* overrides set on the ae invocation do not
+# reach it, leaving no way to drive a fast, deterministic cycle.
+
 # ── Test 4: Spawn persistence ────────────────────────────────────────
 
 REPO4="$(setup_repo)"

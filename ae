@@ -476,7 +476,7 @@ build_ae_context() {
     ctx+=" (2) ${meta_dir}/ask <agent> <question> or ${meta_dir}/review <agent> <request> when you require a reply (returns a request id). ${meta_dir}/send <agent> <message> for one-way."
     ctx+=" (3) When another agent gives you an exact reply command, run it verbatim. Do not infer the recipient. Do not reply only in your own pane output."
     ctx+=" (4) Do not poll or capture panes waiting for replies — answers arrive as incoming messages. ${meta_dir}/peek <agent> [lines] (alias peak) is for inspection only, never as a reply mechanism."
-    ctx+=" (5) Declare your state with ${meta_dir}/state <working|waiting-user|blocked|done> <reason> whenever it changes: working when taking new work or resuming, waiting-user only after asking the human, blocked only after a concrete external blocker (reason required), done at completion or pause. ${meta_dir}/mark-done \"<summary>\" still works as shorthand for state done. Your declared state shows in 'ae list' (per agent, plus a session-level attn marker for waiting-user/blocked); the loop watchdog still acts on done."
+    ctx+=" (5) Declare your state with ${meta_dir}/state <working|waiting-user|blocked|done> <reason> whenever it changes: working when taking new work or resuming, waiting-user only after asking the human, blocked only after a concrete external blocker (reason required), done at completion or pause. ${meta_dir}/mark-done \"<summary>\" still works as shorthand for state done. Your declared state shows in 'ae list' (per agent, plus a session-level attn marker for waiting-user/blocked). The loop watchdog stops nudging you on any quiet state: done is honoured until a newer message arrives; waiting-user/blocked are honoured until the pane changes (e.g. the human replies), then normal nudging resumes."
     ctx+=" (6) ${meta_dir}/memo add [--topic <topic>] <text> for durable shared findings, decisions, and handoffs that survive restarts. Do not dump chat transcripts into memo."
     ctx+=" (7) IMPORTANT — CONCURRENT COLLABORATION: Other agents may be editing files in this same workspace RIGHT NOW. Files you read may change. Coordinate on shared files; verify intent via ${meta_dir}/send before reverting or overwriting unexpected modifications."
     ctx+=" Spawn a new agent: ${meta_dir}/spawn <alias>:<name> [prompt] — give a descriptive role name."
@@ -3297,7 +3297,7 @@ ${sessions_dir}/requests
 ${sessions_dir}/requests inbox
 \`\`\`
 
-Declare your current work state. It shows in \`ae list\` (per agent, plus a session-level \`attn:\` marker when an agent is waiting-user/blocked); the loop watchdog acts on \`done\`:
+Declare your current work state. It shows in \`ae list\` (per agent, plus a session-level \`attn:\` marker when an agent is waiting-user/blocked). The loop watchdog stops nudging on any quiet state: \`done\` until a newer message arrives; \`waiting-user\`/\`blocked\` until the pane changes (e.g. the human replies), then nudging resumes:
 \`\`\`bash
 ${sessions_dir}/state working "starting on X"
 ${sessions_dir}/state waiting-user "need clarification on Y"
@@ -4569,9 +4569,11 @@ REQUESTSEOF
 
     # Helper: state <working|waiting-user|blocked|done> [reason] — declare current work state.
     # mark-done is a shim that calls 'state done' so older docs/agents keep working.
-    # The 'done' branch dual-emits a legacy 'done' event so the existing loop watchdog
-    # (which reads action=done) keeps recognising completions until phase 2 teaches it
-    # to read 'state' events directly.
+    # The 'done' branch dual-emits a legacy 'done' event so that a loop watchdog
+    # process started before the state helper existed (and only understands
+    # action=done) keeps recognising completions after helpers are refreshed.
+    # The current watchdog reads 'state done' directly; the dual-emit is retained
+    # until 'ae doctor --refresh' can restart a running loop, then it can go.
     cat >"${AE_META}/state" <<'STATEEOF'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
@@ -4619,8 +4621,11 @@ esac
 
 printf 'Marked %s %s%s\n' "$self" "$value" "${reason:+: $reason}"
 ae_emit_event "state" "" "$value" "$reason"
-# Phase 1 compat: legacy 'done' event for the existing loop watchdog.
-# Remove in phase 2 once the watchdog reads 'state' events.
+# Transitional dual-emit: a loop watchdog process started before the state
+# helper existed only understands action=done. Emit the legacy event too so it
+# keeps recognising completions after helpers are refreshed. The current
+# watchdog reads 'state done' directly; retained until 'ae doctor --refresh'
+# can restart a running loop.
 if [[ "$value" == "done" ]]; then
     ae_emit_event "done" "" "" "$reason"
 fi
@@ -5205,10 +5210,15 @@ _latest_relevant_event() {
     local agent="$1"
     local events_file="${META_DIR}/events.jsonl"
     [[ -f "$events_file" ]] || return 0
-    local line actor target action ts
+    local line actor target action ts ref summary
     # Walk newest→oldest and stop at the first event mentioning the agent.
-    # Unbounded by design: a `done` must stay valid until a *newer* event for
-    # this agent invalidates it, no matter how many unrelated events follow.
+    # Unbounded by design: a quiet state must stay valid until a *newer* event
+    # for this agent invalidates it, no matter how many unrelated events follow.
+    # Emits 5 tab-separated fields: action, ts, ref, actor, summary (ref/summary
+    # may be empty). actor lets callers distinguish the agent's OWN declaration
+    # from an inbound event that merely targets it; summary lets them build a
+    # declaration-identity key that survives second-resolution timestamps.
+    # ae_emit_event strips tabs/newlines from summary, so it is safe last.
     while IFS= read -r line; do
         [[ "$line" == \{* ]] || continue
         actor="$(_event_json_str "$line" actor)"
@@ -5216,22 +5226,77 @@ _latest_relevant_event() {
         if [[ "$actor" == "$agent" || "$target" == "$agent" || "$target" == "@${_AE_SESSION}:${agent}" ]]; then
             action="$(_event_json_str "$line" action)"
             ts="$(_event_json_str "$line" ts)"
-            printf '%s\t%s\n' "$action" "$ts"
+            ref="$(_event_json_str "$line" ref)"
+            summary="$(_event_json_str "$line" summary)"
+            printf '%s\t%s\t%s\t%s\t%s\n' "$action" "$ts" "$ref" "$actor" "$summary"
             return 0
         fi
     done < <(tac "$events_file" 2>/dev/null || true)
 }
 
-_agent_done_epoch() {
+# The agent's current self-declared quiet state, or empty. Quiet states tell the
+# watchdog to stop nudging: done | waiting-user | blocked. Emits 'reason<TAB>key'
+# where key is the full declaration tuple (action|ts|ref|actor|summary) — used by
+# the pane-activity escape hatch to identify a declaration across cycles and
+# re-arm on a genuinely new one. Empty when the newest relevant event is working,
+# an inbound message (invalidates the prior quiet state), or anything else. Legacy
+# action=done events (pre-state-helper, and the retained dual-emit) map to done.
+_agent_quiet_reason() {
     local agent="$1"
-    local row action ts done_epoch
+    local row action ts ref actor summary rest
     row="$(_latest_relevant_event "$agent")"
     [[ -n "$row" ]] || return 0
-    IFS=$'\t' read -r action ts <<<"$row"
-    [[ "$action" == "done" ]] || return 0
-    done_epoch="$(date -d "$ts" +%s 2>/dev/null || echo 0)"
-    (( done_epoch > 0 )) || return 0
-    printf '%s' "$done_epoch"
+    # Manual tab split — `IFS=$'\t' read` collapses the empty ref field (tab is
+    # whitespace-IFS), which would shift fields left and corrupt actor.
+    action="${row%%$'\t'*}"
+    rest="${row#*$'\t'}"
+    ts="${rest%%$'\t'*}"
+    rest="${rest#*$'\t'}"
+    ref="${rest%%$'\t'*}"
+    rest="${rest#*$'\t'}"
+    actor="${rest%%$'\t'*}"
+    summary="${rest#*$'\t'}"
+    # Only the agent's OWN declaration is a quiet state. If the newest relevant
+    # event is inbound (actor != agent — a send/ask/nudge targeting it), the
+    # prior quiet state is invalidated and the agent is no longer quiet.
+    [[ "$actor" == "$agent" ]] || return 0
+    local reason=""
+    case "$action" in
+        done) reason="done" ;;
+        state)
+            case "$ref" in
+                done | waiting-user | blocked) reason="$ref" ;;
+            esac
+            ;;
+    esac
+    [[ -n "$reason" ]] || return 0
+    # Emit 'reason<TAB>key'. The key is the full declaration tuple so the
+    # watchdog's baseline re-arms on a genuinely new declaration even when two
+    # land in the same (second-resolution) timestamp — as long as any field
+    # (typically the summary/reason) differs. Byte-identical same-second
+    # re-declares remain indistinguishable, which is acceptable.
+    printf '%s\t%s' "$reason" "${action}|${ts}|${ref}|${actor}|${summary}"
+}
+
+# Escape hatch for waiting-user/blocked, using a per-pane baseline hash. The
+# declaration's own echo (the `state` helper prints to the pane) means the
+# global last_hash_change can't distinguish that echo from a later human reply.
+# So we ARM a baseline with the pane hash the first time a declaration is seen
+# (the echo is already part of it), then HOLD while the hash matches that
+# baseline and YIELD once it changes (human reply / agent output). The
+# declaration is identified by its full-tuple key (not just timestamp) so a
+# fresh declaration re-arms even within the same second.
+# Args: cur_hash armed_key armed_hash decl_key
+# Prints: arm | hold | yield
+_quiet_pane_decision() {
+    local cur="$1" armed_key="$2" armed_hash="$3" decl_key="$4"
+    if [[ "$armed_key" != "$decl_key" ]]; then
+        printf 'arm'
+    elif [[ "$cur" == "$armed_hash" ]]; then
+        printf 'hold'
+    else
+        printf 'yield'
+    fi
 }
 
 cmd="${1:-start}"
@@ -5287,6 +5352,11 @@ _pane_has_descendant_named() {
 }
 
 declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing throttle_streak
+# Per-pane quiet baseline for waiting-user/blocked: the pane hash captured when a
+# declaration is first observed (already includes the declaration's own echo), so
+# only a *later* pane change (human reply / agent output) yields the quiet state.
+# Keyed by the declaration's full-tuple identity so a fresh declaration re-arms.
+declare -A quiet_base_key quiet_base_hash
 
 # Known transient upstream throttle / overload patterns per agent binary.
 # Pure function: takes a captured pane buffer + the agent binary name and
@@ -5434,7 +5504,7 @@ while true; do
         now_epoch="$(date +%s)"
         pane_buf="$(tmux capture-pane -p -J -S -40 -E - -t "$pane" 2>/dev/null || true)"
         hash="$(printf '%s' "$pane_buf" | md5sum | cut -d' ' -f1)"
-        done_epoch="$(_agent_done_epoch "$agent")"
+        quiet_row="$(_agent_quiet_reason "$agent")"
         # Throttle detection AND streak clear up front: streak resets on every
         # non-throttled cycle regardless of which branch the agent exits on.
         if _buf_shows_throttle "$pane_buf" "$agent_bin"; then
@@ -5448,18 +5518,50 @@ while true; do
             fi
         fi
 
-        # 2. Explicitly done — strongest "leave me alone" signal. Done is
-        #    invalidated ONLY by a newer ae event mentioning the agent
-        #    (already enforced by _agent_done_epoch returning empty in that
-        #    case). Pane hash churn — scrollback, resize, redraws, escape
-        #    sequences — is too noisy to use as an invalidation signal.
-        #    Silent work after done is the agent's discipline problem; if
-        #    they resume, they should emit an ae event.
-        if [[ -n "$done_epoch" ]]; then
-            cycle_active=$((cycle_active + 1))
-            nudge_count["$pane"]=0
-            _loop_log "  ${agent}  done (reported complete) — skip"
-            continue
+        # 2. Declared quiet state — "leave me alone" signal from the agent.
+        #    Quiet states: done, waiting-user, blocked. A quiet state is
+        #    invalidated by a newer ae event mentioning the agent (enforced by
+        #    _agent_quiet_reason returning empty in that case).
+        #
+        #    done is EVENT-ONLY quiet: pane churn (scrollback, resize, redraws,
+        #    escape sequences) never invalidates it. Silent work after done is
+        #    the agent's discipline problem; if they resume they should emit an
+        #    ae event.
+        #
+        #    waiting-user / blocked yield to pane activity, because the human
+        #    usually replies directly in the pane (no events.jsonl entry — only
+        #    a pane-hash change). Honour the quiet state only while the pane is
+        #    untouched since the declaration; once it changes, fall through to
+        #    the normal active/recent/stale branches so a post-reply hang is
+        #    still caught.
+        if [[ -n "$quiet_row" ]]; then
+            IFS=$'\t' read -r quiet_reason quiet_key <<<"$quiet_row"
+            if [[ "$quiet_reason" == "done" ]]; then
+                cycle_active=$((cycle_active + 1))
+                nudge_count["$pane"]=0
+                _loop_log "  ${agent}  done (reported complete) — skip"
+                continue
+            fi
+            quiet_decision="$(_quiet_pane_decision "$hash" "${quiet_base_key[$pane]:-}" "${quiet_base_hash[$pane]:-}" "$quiet_key")"
+            case "$quiet_decision" in
+                arm)
+                    # First cycle observing this declaration — baseline the pane
+                    # (echo included) and honour the quiet state.
+                    quiet_base_key["$pane"]="$quiet_key"
+                    quiet_base_hash["$pane"]="$hash"
+                    cycle_active=$((cycle_active + 1))
+                    nudge_count["$pane"]=0
+                    _loop_log "  ${agent}  ${quiet_reason} (declared) — skip"
+                    continue
+                    ;;
+                hold)
+                    cycle_active=$((cycle_active + 1))
+                    nudge_count["$pane"]=0
+                    _loop_log "  ${agent}  ${quiet_reason} (declared) — skip"
+                    continue
+                    ;;
+                yield) : ;; # pane changed since baseline → no longer quiet, fall through
+            esac
         fi
 
         # 3. Throttled — upstream rate limit / overload visible in pane. React
@@ -5530,7 +5632,7 @@ while true; do
                 _AE_EVENT_ACTION=nudge \
                 _AE_EVENT_SUMMARY="${stale_display}, no recent ae activity" \
                 "${META_DIR}/send" "$agent" \
-                "Status check: if you have more work, continue. If blocked or done, say so briefly." 2>/dev/null || true
+                "Status check: if you have more work, continue. If waiting on the user, blocked, or done, say so briefly (and declare it with the state helper)." 2>/dev/null || true
             nudge_count["$pane"]=$((count + 1))
             _loop_log "  ${agent}  STALE (${stale_display}) — nudged ($((count + 1))/${MAX_NUDGES})"
         elif (( count == MAX_NUDGES )); then

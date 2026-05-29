@@ -30,9 +30,9 @@ For each agent pane, the watchdog walks a fixed branch order. First match wins; 
 flowchart TD
     Start([cycle start]) --> Dead{Dead?}
     Dead -- yes --> AlertDead[alert + skip forever]
-    Dead -- no --> PreCheck[Capture pane buf<br/>hash, done_epoch, is_throttled]
-    PreCheck --> Done{Done event<br/>latest?}
-    Done -- yes --> SkipDone[skip — honor done]
+    Dead -- no --> PreCheck[Capture pane buf<br/>hash, quiet_reason, is_throttled]
+    PreCheck --> Done{Quiet state<br/>latest?}
+    Done -- yes --> SkipDone[skip — honor quiet<br/>done: event-only<br/>waiting/blocked: until pane touched]
     Done -- no --> Throttled{Throttle phrase<br/>in pane?}
     Throttled -- yes --> SkipThrottle[skip + emit throttled<br/>escalate after N cycles]
     Throttled -- no --> Active{Hash<br/>changed?}
@@ -47,7 +47,7 @@ flowchart TD
 In source order:
 
 1. **Dead** — pane's foreground command is a shell AND no agent binary is in the descendant process tree. Alert once, mark dead, ignore in future cycles.
-2. **Done** *(strongest)* — agent ran `mark-done` AND no newer ae event mentions them as actor or target. Skip silently.
+2. **Declared quiet state** *(strongest)* — agent's latest relevant event is its own `state` declaration of `done`, `waiting-user`, or `blocked` (legacy `mark-done`/`done` events count as `done`), AND no newer ae event mentions them as actor or target. `done` is skipped silently and is event-only (pane churn never revives it). `waiting-user`/`blocked` are also skipped, but yield to pane activity: if the pane changed since the declaration (e.g. the human replied directly in it, leaving no event), the quiet state no longer holds and the normal branches resume — so a post-reply hang is still caught.
 3. **Throttled** — pane buffer contains a known upstream rate-limit / overload phrase for the agent's binary. Skip nudge, emit `throttled` event first time per streak, escalate to `alert` after `THROTTLE_ALERT_CYCLES` continuous cycles.
 4. **Active** — pane content hash differs from last cycle. Update hash, reset nudge counter.
 5. **Recently visible** — pane changed within the stale window. Skip.
@@ -59,18 +59,24 @@ After the per-pane loop:
 8. **Missing pane check** — agents registered in `meta` whose tmux panes have vanished. Alert once each.
 9. **Recover pending session ids** — retry codex/gemini/opencode post-launch session capture for slots still marked `pending`.
 
-## Done is event-only
+## Quiet states and how they're invalidated
 
-Once an agent runs `mark-done`, the loop honors that until `_agent_done_epoch` returns empty — which happens only when a newer ae event mentions the agent. Pane hash changes, terminal resizes, scrollback churn — none of these invalidate done. The historical "pane churn after done = agent kept working" heuristic was too noisy in practice and was removed.
+`_agent_quiet_reason` returns an agent's current quiet state (`done` / `waiting-user` / `blocked`) plus its declaration timestamp, or empty. It reads the *latest relevant event* for the agent: a `state` declaration (or a legacy `mark-done`/`done` event, mapped to `done`) wins only if no newer event mentions the agent as actor or target. An inbound `send`/`ask`/`review`/`nudge` is newer → quiet state invalidated.
+
+**`done` is event-only.** Pane hash changes, terminal resizes, scrollback churn — none of these revive a done agent. The historical "pane churn after done = agent kept working" heuristic was too noisy and was removed. Trade-off: silent work after `done` (output without ae helpers) is invisible to the watchdog. Acceptable — ae already requires helper discipline; a resuming agent should emit an ae event.
+
+**`waiting-user` / `blocked` yield to pane activity.** These states mean the agent is parked, but the unblocking input often arrives as the human typing *directly in the pane* — which produces no `events.jsonl` entry, only a pane-hash change. The watchdog keeps a per-pane **quiet baseline** (`_quiet_pane_decision`): the first cycle that observes a declaration *arms* the baseline with the current pane hash — already including the declaration's own echo, since the `state` helper prints to the pane — and honors the quiet state. Subsequent cycles *hold* (suppress nudges) while the hash equals that baseline, and *yield* once it changes (human reply / agent output), at which point the normal active/recent/stale branches resume. Baselining on the echoed hash is essential: a naive "no pane change since the declaration timestamp" check would be tripped by the echo itself and never suppress a single nudge.
 
 Concretely:
 
-- Agent emits `mark-done` → done event in `events.jsonl`.
-- Loop sees it on every subsequent cycle. Step 2 fires, skip.
-- Someone sends the agent a message (`send` / `ask` / `review` / `nudge`) → newer event → `_agent_done_epoch` returns empty → done invalidated → normal state machine resumes.
-- Agent emits a new event themselves → same effect.
+- Agent emits `state blocked "waiting on X"` → state event in `events.jsonl`.
+- Loop skips it each cycle while the pane is quiet (step 2 fires).
+- Human types unblock info in the pane → pane hash diverges from the armed baseline → `_quiet_pane_decision` yields → normal state machine resumes; if the agent then hangs, it gets nudged.
+- Or another agent sends it a message → newer event → quiet invalidated the same way.
 
-Trade-off: silent work after `mark-done` (output without using ae helpers) is invisible to the watchdog. Acceptable because ae already requires helper discipline; if an agent resumes work, it should emit an ae event.
+### Legacy `done` dual-emit (transitional)
+
+`state done` (and the `mark-done` shim) emit *both* a `state ref=done` event and a legacy `action=done` event. The watchdog reads either. The dual-emit exists so a still-running pre-state-helper loop process (which only understands `action=done`) keeps recognizing completions after helpers are refreshed. It will be removed once `ae doctor --refresh` restarts a running loop.
 
 ## Throttle detection
 

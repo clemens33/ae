@@ -588,7 +588,7 @@ assert_eq "state: helper emits action=state with ref=value" \
 
 assert_eq "state: helper dual-emits legacy done event on value=done" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'Phase 1 compat: legacy '"'"'done'"'"' event'* && "$AE_SOURCE" == *'ae_emit_event "done" "" "" "$reason"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'Transitional dual-emit'* && "$AE_SOURCE" == *'ae_emit_event "done" "" "" "$reason"'* ]] && echo 1 || echo 0)"
 
 assert_eq "state: helper rejects blocked without reason" \
     "1" \
@@ -820,9 +820,13 @@ assert_eq "loop: uses send for nudges (not raw send-keys)" \
     "1" \
     "$([[ "$AE_SOURCE" == *'AE_SENDER_OVERRIDE=loop'* && "$AE_SOURCE" == *'_AE_EVENT_ACTION=nudge'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: skips agents with latest relevant done event" \
+assert_eq "loop: skips agents with a declared quiet state" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'_agent_done_epoch'* && "$AE_SOURCE" == *'done (reported complete)'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_agent_quiet_reason'* && "$AE_SOURCE" == *'done (reported complete)'* ]] && echo 1 || echo 0)"
+
+assert_eq "loop: waiting-user/blocked yield to pane activity (escape hatch)" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'waiting-user / blocked yield to pane activity'* && "$AE_SOURCE" == *'_quiet_pane_decision "$hash"'* ]] && echo 1 || echo 0)"
 
 assert_eq "loop: detects dead agents via pane_current_command" \
     "1" \
@@ -955,12 +959,12 @@ assert_eq "default_session_name: deterministic (same PWD = same name)" \
     "$name" \
     "$(default_session_name)"
 
-# ── loop helpers: done-tracking (_event_json_str / _latest_relevant_event / _agent_done_epoch) ──
+# ── loop helpers: quiet-state tracking (_event_json_str / _latest_relevant_event / _agent_quiet_reason) ──
 
 # Extract loop helper function bodies from the generated loop heredoc.
 # They're emitted at column 0 inside a 'LOOPEOF' heredoc in ae.
 eval "$(awk '
-    /^(_event_json_str|_latest_relevant_event|_agent_done_epoch)\(\) \{/ { printing=1 }
+    /^(_event_json_str|_latest_relevant_event|_agent_quiet_reason|_quiet_pane_decision)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -985,82 +989,170 @@ assert_eq "event_json_str: escaped quote in summary" 'hello "world"' \
 assert_eq "event_json_str: escaped backslash in summary" 'a\b' \
     "$(_event_json_str '{"actor":"x","summary":"a\\b"}' summary)"
 
-# _latest_relevant_event: actor match returns latest
+# _latest_relevant_event emits 5 fields: action<TAB>ts<TAB>ref<TAB>actor<TAB>summary
+# (ref/summary may be empty).
 cat >"$META_DIR/events.jsonl" <<'EVENTS'
 {"ts":"2026-01-01T00:00:00Z","actor":"other","action":"send","target":"other2"}
 {"ts":"2026-01-01T00:01:00Z","actor":"claude:lead","action":"done","target":""}
 {"ts":"2026-01-01T00:02:00Z","actor":"other","action":"send","target":"other2"}
 EVENTS
-assert_eq "latest_relevant_event: actor match returns done row" \
-    $'done\t2026-01-01T00:01:00Z' \
+assert_eq "latest_relevant_event: actor match returns done row (5 fields)" \
+    $'done\t2026-01-01T00:01:00Z\t\tclaude:lead\t' \
     "$(_latest_relevant_event "claude:lead")"
 
 assert_eq "latest_relevant_event: no match returns empty" "" \
     "$(_latest_relevant_event "ghost:agent")"
 
-# _latest_relevant_event: target match
+# _latest_relevant_event: ref + actor + summary populated for state events
+cat >"$META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:05:00Z","actor":"claude:lead","action":"state","ref":"blocked","summary":"waiting on api"}
+EVENTS
+assert_eq "latest_relevant_event: state event carries ref, actor, summary" \
+    $'state\t2026-01-01T00:05:00Z\tblocked\tclaude:lead\twaiting on api' \
+    "$(_latest_relevant_event "claude:lead")"
+
+# _latest_relevant_event: target match carries the (other) actor
 cat >"$META_DIR/events.jsonl" <<'EVENTS'
 {"ts":"2026-01-01T00:00:00Z","actor":"loop","action":"nudge","target":"claude:lead"}
 EVENTS
-assert_eq "latest_relevant_event: target match (nudge)" \
-    $'nudge\t2026-01-01T00:00:00Z' \
+assert_eq "latest_relevant_event: target match (nudge) carries actor=loop" \
+    $'nudge\t2026-01-01T00:00:00Z\t\tloop\t' \
     "$(_latest_relevant_event "claude:lead")"
 
 # _latest_relevant_event: cross-session target match (@session:agent)
 cat >"$META_DIR/events.jsonl" <<'EVENTS'
 {"ts":"2026-01-01T00:00:00Z","actor":"x","action":"send","target":"@testsess:claude:lead"}
 EVENTS
-assert_eq "latest_relevant_event: cross-session target match" \
-    $'send\t2026-01-01T00:00:00Z' \
+assert_eq "latest_relevant_event: cross-session target match carries actor=x" \
+    $'send\t2026-01-01T00:00:00Z\t\tx\t' \
     "$(_latest_relevant_event "claude:lead")"
 
-# _agent_done_epoch: latest relevant is done → nonempty positive epoch
+# _agent_quiet_reason returns 'reason<TAB>key'. These assertions check the reason
+# (first field); the key format gets dedicated coverage further down.
+_qr() { _agent_quiet_reason "$1" | cut -f1; }
+
+# legacy action=done → done (back-compat)
 cat >"$META_DIR/events.jsonl" <<'EVENTS'
 {"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}
 EVENTS
-_epoch="$(_agent_done_epoch "claude:lead")"
-assert_eq "agent_done_epoch: done event returns nonempty positive epoch" "1" \
-    "$([[ -n "$_epoch" && "$_epoch" -gt 0 ]] && echo 1 || echo 0)"
+assert_eq "agent_quiet_reason: legacy done event maps to done" "done" "$(_qr claude:lead)"
 
-# _agent_done_epoch: newer inbound send invalidates done
+# state done / waiting-user / blocked
 cat >"$META_DIR/events.jsonl" <<'EVENTS'
-{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"state","ref":"done","summary":"shipped"}
+EVENTS
+assert_eq "agent_quiet_reason: state done" "done" "$(_qr claude:lead)"
+
+cat >"$META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"state","ref":"waiting-user","summary":"need input"}
+EVENTS
+assert_eq "agent_quiet_reason: state waiting-user" "waiting-user" "$(_qr claude:lead)"
+
+cat >"$META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"state","ref":"blocked","summary":"api down"}
+EVENTS
+assert_eq "agent_quiet_reason: state blocked" "blocked" "$(_qr claude:lead)"
+
+# The key is the full declaration tuple action|ts|ref|actor|summary.
+assert_eq "agent_quiet_reason: key is the full declaration tuple" \
+    $'blocked\tstate|2026-01-01T00:00:00Z|blocked|claude:lead|api down' \
+    "$(_agent_quiet_reason "claude:lead")"
+
+# working is NOT a quiet state
+cat >"$META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"state","ref":"working","summary":"on it"}
+EVENTS
+assert_eq "agent_quiet_reason: working returns empty (not quiet)" "" \
+    "$(_agent_quiet_reason "claude:lead")"
+
+# a state event by ANOTHER actor targeting the agent must NOT quiet it (only the
+# agent's own declaration counts — codex IMPORTANT).
+cat >"$META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"other","action":"state","ref":"blocked","target":"claude:lead","summary":"not mine"}
+EVENTS
+assert_eq "agent_quiet_reason: foreign-actor state does not quiet the agent" "" \
+    "$(_agent_quiet_reason "claude:lead")"
+
+# newer inbound send invalidates a quiet state
+cat >"$META_DIR/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"state","ref":"waiting-user","summary":"need input"}
 {"ts":"2026-01-01T00:01:00Z","actor":"other","action":"send","target":"claude:lead"}
 EVENTS
-assert_eq "agent_done_epoch: newer inbound send clears done" "" \
-    "$(_agent_done_epoch "claude:lead")"
+assert_eq "agent_quiet_reason: newer inbound send clears waiting-user" "" \
+    "$(_agent_quiet_reason "claude:lead")"
 
-# _agent_done_epoch: newer nudge (loop self-targeted) also invalidates
+# newer nudge also invalidates
 cat >"$META_DIR/events.jsonl" <<'EVENTS'
-{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"state","ref":"done","summary":"shipped"}
 {"ts":"2026-01-01T00:01:00Z","actor":"loop","action":"nudge","target":"claude:lead"}
 EVENTS
-assert_eq "agent_done_epoch: newer nudge clears done" "" \
-    "$(_agent_done_epoch "claude:lead")"
+assert_eq "agent_quiet_reason: newer nudge clears done" "" \
+    "$(_agent_quiet_reason "claude:lead")"
 
-# _agent_done_epoch: unrelated events do not clear done
+# unrelated events do not clear the quiet state
 cat >"$META_DIR/events.jsonl" <<'EVENTS'
-{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}
+{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"state","ref":"done","summary":"shipped"}
 {"ts":"2026-01-01T00:01:00Z","actor":"other","action":"send","target":"other2"}
 {"ts":"2026-01-01T00:02:00Z","actor":"other2","action":"send","target":"third"}
 EVENTS
-_epoch="$(_agent_done_epoch "claude:lead")"
-assert_eq "agent_done_epoch: unrelated events do not clear done" "1" \
-    "$([[ -n "$_epoch" && "$_epoch" -gt 0 ]] && echo 1 || echo 0)"
+assert_eq "agent_quiet_reason: unrelated events do not clear done" "done" "$(_qr claude:lead)"
 
-# Regression for codex finding: done holds even when buried under >1000 unrelated events
+# Regression: quiet state holds even when buried under >1000 unrelated events
 {
-    printf '%s\n' '{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}'
+    printf '%s\n' '{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"state","ref":"done","summary":"shipped"}'
     for _i in $(seq 1 2000); do
         printf '%s\n' '{"ts":"2026-01-02T00:00:00Z","actor":"other","action":"send","target":"other2"}'
     done
 } >"$META_DIR/events.jsonl"
-_epoch="$(_agent_done_epoch "claude:lead")"
-assert_eq "agent_done_epoch: done preserved past prior tail bound (>1000 unrelated)" "1" \
-    "$([[ -n "$_epoch" && "$_epoch" -gt 0 ]] && echo 1 || echo 0)"
+assert_eq "agent_quiet_reason: done preserved past prior tail bound (>1000 unrelated)" \
+    "done" "$(_qr claude:lead)"
+unset -f _qr
+
+# _quiet_pane_decision: baseline escape hatch (arm | hold | yield), keyed on the
+# declaration-identity tuple (not just timestamp).
+KEY1="state|2026-01-01T00:00:00Z|waiting-user|claude:lead|need input"
+KEY2="state|2026-01-01T00:00:00Z|waiting-user|claude:lead|different reason"
+# First sighting of a declaration → arm (caller baselines the pane).
+assert_eq "quiet_decision: first sighting arms (no baseline yet)" "arm" \
+    "$(_quiet_pane_decision "hashB" "" "" "$KEY1")"
+# Different key than the armed one → re-arm (new declaration).
+assert_eq "quiet_decision: different declaration key re-arms" "arm" \
+    "$(_quiet_pane_decision "hashB" "$KEY1" "hashA" "$KEY2")"
+# Armed for this declaration AND pane matches baseline → hold (suppress nudge).
+assert_eq "quiet_decision: pane unchanged since baseline holds" "hold" \
+    "$(_quiet_pane_decision "hashB" "$KEY1" "hashB" "$KEY1")"
+# Armed for this declaration BUT pane changed → yield (human reply / agent work).
+assert_eq "quiet_decision: pane changed since baseline yields" "yield" \
+    "$(_quiet_pane_decision "hashC" "$KEY1" "hashB" "$KEY1")"
+
+# Same-second re-declare (codex IMPORTANT): a fresh declaration that differs only
+# in summary must re-arm even though the timestamp is identical — otherwise it
+# would inherit the prior (yielded) baseline and never suppress.
+assert_eq "quiet_decision: same-second re-declare (diff summary) re-arms" "arm" \
+    "$(_quiet_pane_decision "hashD" "$KEY1" "hashB" "$KEY2")"
+unset KEY1 KEY2
+
+# Branch-sequence model (codex IMPORTANT): the real watchdog flow. Walks the
+# arm→hold→yield transitions a pane goes through, proving the declaration's own
+# echo does NOT defeat the quiet state (the bug the baseline design fixes).
+_qbkey=""  # armed declaration key (per-pane state the watchdog keeps)
+_qbhash="" # armed baseline hash
+_key="state|2026-01-01T00:00:00Z|waiting-user|claude:lead|need input"
+# prior hash A → agent runs `state waiting-user`, echo changes pane to B.
+# Cycle 1: first sighting of the declaration, current hash B → arm + baseline B.
+_d="$(_quiet_pane_decision "hashB" "$_qbkey" "$_qbhash" "$_key")"
+assert_eq "quiet_seq: cycle1 arms on first declaration sighting" "arm" "$_d"
+[[ "$_d" == "arm" ]] && { _qbkey="$_key"; _qbhash="hashB"; }
+# Cycle 2: pane still B (agent idle, waiting) → hold (suppress) despite the echo.
+assert_eq "quiet_seq: cycle2 holds while pane stays at the echoed baseline" "hold" \
+    "$(_quiet_pane_decision "hashB" "$_qbkey" "$_qbhash" "$_key")"
+# Cycle 3: human replies in-pane → hash C → yield → watchdog falls through.
+assert_eq "quiet_seq: cycle3 yields once the human changes the pane" "yield" \
+    "$(_quiet_pane_decision "hashC" "$_qbkey" "$_qbhash" "$_key")"
+unset _qbkey _qbhash _key _d
 
 rm -rf "$_done_test_dir"
-unset _epoch META_DIR _AE_SESSION _done_test_dir
+unset META_DIR _AE_SESSION _done_test_dir
 
 # ── sync_session_assets: orphan cleanup ──────────────────────────────
 
@@ -1295,24 +1387,31 @@ assert_eq "throttle: watchdog has dedicated step before stale nudge" "1" \
 # 15-min stale window expires.
 _throttle_line="$(printf '%s\n' "$AE_SOURCE" | grep -n '# 3\. Throttled' | head -n1 | cut -d: -f1)"
 _active_line="$(printf '%s\n' "$AE_SOURCE" | grep -n '# 4\. Active' | head -n1 | cut -d: -f1)"
-_done_line="$(printf '%s\n' "$AE_SOURCE" | grep -n '# 2\. Explicitly done' | head -n1 | cut -d: -f1)"
+_done_line="$(printf '%s\n' "$AE_SOURCE" | grep -n '# 2\. Declared quiet state' | head -n1 | cut -d: -f1)"
 assert_eq "throttle: reaction precedes active branch in source order" "1" \
     "$([[ -n "$_throttle_line" && -n "$_active_line" && "$_throttle_line" -lt "$_active_line" ]] && echo 1 || echo 0)"
-assert_eq "throttle: done branch precedes throttle (done-is-stronger)" "1" \
+assert_eq "throttle: quiet-state branch precedes throttle (quiet-is-stronger)" "1" \
     "$([[ -n "$_done_line" && -n "$_throttle_line" && "$_done_line" -lt "$_throttle_line" ]] && echo 1 || echo 0)"
 unset _throttle_line _active_line _done_line
 
 # Done is event-only invalidated. The earlier pane-change-invalidates rule
 # (done_observed_epoch / ignored_done_epoch reconciliation) was too sensitive
 # in practice — terminal noise like resize/scroll/escape sequences was wiping
-# legitimate dones. Done now stays valid until _agent_done_epoch returns empty
-# (i.e. a newer ae event mentions the agent).
+# legitimate dones. Done now stays valid until _agent_quiet_reason returns empty
+# (i.e. a newer ae event mentions the agent). NOTE: waiting-user/blocked DO yield
+# to pane activity (the escape hatch) — only done is purely event-invalidated.
 assert_eq "done: pane-change-invalidates state is fully removed" "1" \
     "$([[ "$AE_SOURCE" != *'ignored_done_epoch'* && "$AE_SOURCE" != *'done_observed_epoch'* ]] && echo 1 || echo 0)"
 
-_done_block="$(printf '%s\n' "$AE_SOURCE" | awk '/# 2\. Explicitly done/,/# 3\. Throttled/')"
-assert_eq "done: branch condition is event-only ([[ -n \$done_epoch ]])" "1" \
-    "$([[ "$_done_block" == *'if [[ -n "$done_epoch" ]]; then'* ]] && echo 1 || echo 0)"
+_done_block="$(printf '%s\n' "$AE_SOURCE" | awk '/# 2\. Declared quiet state/,/# 3\. Throttled/')"
+assert_eq "quiet: branch entered on any declared quiet state ([[ -n \$quiet_row ]])" "1" \
+    "$([[ "$_done_block" == *'if [[ -n "$quiet_row" ]]; then'* ]] && echo 1 || echo 0)"
+# done stays event-only quiet: its sub-branch skips with no pane-hash guard.
+assert_eq "quiet: done sub-branch is event-only (no pane-hash check)" "1" \
+    "$([[ "$_done_block" == *'if [[ "$quiet_reason" == "done" ]]; then'* ]] && echo 1 || echo 0)"
+# waiting-user/blocked yield to pane activity via the _quiet_pane_decision baseline.
+assert_eq "quiet: waiting-user/blocked use baseline arm/hold/yield decision" "1" \
+    "$([[ "$_done_block" == *'_quiet_pane_decision "$hash"'* && "$_done_block" == *'quiet_base_hash["$pane"]="$hash"'* ]] && echo 1 || echo 0)"
 unset _done_block
 
 assert_eq "throttle: throttle_streak state tracked in declare -A" "1" \
