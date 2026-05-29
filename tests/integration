@@ -140,6 +140,31 @@ assert_eq "resume: session re-created" "0" "$(tmux has-session -t test-resume 2>
 "$AE" end -f test-resume 2>/dev/null || true
 sleep 0.5
 
+# ── Test 2b: Rename moves session, window, and meta ──────────────────
+
+REPO2B="$(setup_repo)"
+(cd "$REPO2B" && "$AE" --local test-rename-old &) 2>/dev/null
+wait_for_session "test-rename-old"
+
+# Window 0 is named after the session at creation.
+assert_eq "rename: window 0 starts named after the session" "test-rename-old" \
+    "$(tmux list-windows -t test-rename-old -F '#{window_index}:#{window_name}' 2>/dev/null | sed -n 's/^0://p')"
+
+"$AE" rename test-rename-old test-rename-new 2>/dev/null
+sleep 0.5
+
+assert_eq "rename: tmux session renamed" "0" "$(tmux has-session -t test-rename-new 2>/dev/null; echo $?)"
+assert_eq "rename: old tmux session gone" "1" "$(tmux has-session -t test-rename-old 2>/dev/null && echo 0 || echo 1)"
+# The regression: the main window must follow the rename, not keep the old name.
+assert_eq "rename: window 0 follows the session rename" "test-rename-new" \
+    "$(tmux list-windows -t test-rename-new -F '#{window_index}:#{window_name}' 2>/dev/null | sed -n 's/^0://p')"
+assert_eq "rename: meta session= updated" "1" \
+    "$(grep -qx 'session=test-rename-new' "$HOME/.ae/sessions/test-rename-new/meta" && echo 1 || echo 0)"
+assert_not_exists "rename: old session dir moved" "$HOME/.ae/sessions/test-rename-old"
+
+"$AE" end -f test-rename-new 2>/dev/null || true
+sleep 0.5
+
 # ── Test 3: Health check in list ─────────────────────────────────────
 
 REPO3="$(setup_repo)"

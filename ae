@@ -3637,6 +3637,13 @@ cmd_rename() {
     # 1. Rename tmux session
     tmux rename-session -t "$old_name" "$new_name"
 
+    # 1b. Rename the main window to match. Session creation names window 0
+    # after the session (with automatic-rename off so it sticks), so a rename
+    # that only touches the session leaves the old name in the status bar.
+    # The monitor window keeps its own name; only the agent window 0 tracks
+    # the session name.
+    tmux rename-window -t "${new_name}:0" "$new_name" 2>/dev/null || true
+
     # 2. Move session directory
     if [[ -d "$old_meta" ]]; then
         mv "$old_meta" "$new_meta"
