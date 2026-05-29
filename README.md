@@ -173,6 +173,10 @@ ae doctor --refresh [name|all]
                        Refresh helper scripts/workspace.md in existing sessions
 ae loop <start|stop|status> [name]
                        Toggle the stale-agent watchdog loop (per-session, persists across resume)
+ae telegram <setup|start|stop|status>
+                       Machine-global Telegram bridge: forwards filtered events from every
+                       ae session to one Telegram chat. Requires jq + curl (optional feature
+                       dep — core ae works without them).
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
 ae end|rm [name]       End session: commit, push to ae/<name>, REMOVE ae state AND
                        per-session claude/codex conversation files. Destructive.

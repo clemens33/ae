@@ -4,7 +4,9 @@ set -euo pipefail
 AE_VERSION="0.2.1"
 
 CONFIG_DIR="${HOME}/.ae"
-CONFIG_FILE="${CONFIG_DIR}/config"
+# CONFIG_FILE honors a pre-set env var so tests + the generated daemon
+# can point at a non-default config without rewriting the user's real one.
+CONFIG_FILE="${CONFIG_FILE:-${CONFIG_DIR}/config}"
 WORKTREES_DIR="${CONFIG_DIR}/worktrees"
 SESSIONS_DIR="${CONFIG_DIR}/sessions"
 
@@ -2077,6 +2079,51 @@ cmd_doctor() {
         done < <(printf '%s\n' "${!doctor_agents[@]}" | sort)
     fi
 
+    # Telegram bridge — feature-aware. Reports OK/WARN only; FAILs are
+    # surfaced when the user actually runs `ae telegram start`. If the user
+    # never configured the feature, we skip silently.
+    local _tg_enabled _tg_token _tg_chat _tg_present
+    _tg_enabled="$(get_config telegram.enabled 2>/dev/null || true)"
+    _tg_token="$(get_config telegram.token_file 2>/dev/null || true)"
+    _tg_chat="$(get_config telegram.chat_id 2>/dev/null || true)"
+    _tg_present="false"
+    if [[ -n "$_tg_enabled$_tg_token$_tg_chat" ]]; then
+        _tg_present="true"
+    fi
+    if [[ "$_tg_present" == "true" ]]; then
+        local _tg_missing
+        _tg_missing="$(_telegram_missing_deps)"
+        if [[ -n "$_tg_missing" ]]; then
+            doctor_report "WARN" "telegram.deps" "missing:$_tg_missing (needed for ae telegram)"
+        else
+            doctor_report "OK" "telegram.deps" "jq + curl present"
+        fi
+        if [[ -n "$_tg_token" ]]; then
+            local _tg_err
+            if _tg_err="$(_telegram_validate_token_file "$_tg_token" 2>&1)"; then
+                doctor_report "OK" "telegram.token" "$(_telegram_expand_path "$_tg_token")"
+            else
+                doctor_report "WARN" "telegram.token" "$_tg_err"
+            fi
+        else
+            doctor_report "WARN" "telegram.token" "telegram.token_file not set"
+        fi
+        if [[ -n "$_tg_chat" ]]; then
+            doctor_report "OK" "telegram.chat_id" "$_tg_chat"
+        else
+            doctor_report "WARN" "telegram.chat_id" "telegram.chat_id not set"
+        fi
+        if [[ "$(_telegram_intent_enabled)" == "true" ]]; then
+            if _telegram_daemon_running; then
+                doctor_report "OK" "telegram.daemon" "running"
+            else
+                doctor_report "WARN" "telegram.daemon" "enabled but not running (will autostart on 'ae <name>')"
+            fi
+        else
+            doctor_report "OK" "telegram.intent" "enabled=false (feature off)"
+        fi
+    fi
+
     if [[ -n "$refresh_target" ]]; then
         echo ""
         doctor_refresh_sessions "$refresh_target"
@@ -2119,6 +2166,686 @@ cmd_loop() {
         return 1
     fi
     "$helper" "$subcmd"
+}
+
+# ── Telegram bridge (machine-global chat daemon) ─────────────────────
+#
+# Forwards filtered events from every ae session on this machine to a
+# Telegram chat, via a single bash daemon running in a background tmux
+# session named `ae-telegram`. Hard deps (jq, curl) are required ONLY
+# when this feature is in use; core ae commands work without them.
+#
+# Per-session offset state lives at ~/.ae/telegram/state.tsv with
+# (session_id, inode, byte_offset) so restarts don't replay events.
+# Token never appears in argv — curl reads its config from stdin.
+
+_TELEGRAM_TMUX_SESSION="ae-telegram"
+
+# Resolve a possibly-tilde-prefixed path against $HOME. Patterns are
+# literal-tilde matches, not shell tilde-expansion (which would happen
+# at quote-time and miss config-file values like "~/.config/...").
+# shellcheck disable=SC2088
+_telegram_expand_path() {
+    local p="$1"
+    case "$p" in
+        '~') printf '%s' "$HOME" ;;
+        '~/'*) printf '%s/%s' "$HOME" "${p#~/}" ;;
+        *) printf '%s' "$p" ;;
+    esac
+}
+
+# True if a value looks like a config-affirmative.
+_telegram_truthy() {
+    case "${1,,}" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Print the configured intent: "true" if [telegram] enabled is truthy.
+_telegram_intent_enabled() {
+    local v
+    v="$(get_config telegram.enabled 2>/dev/null || true)"
+    if _telegram_truthy "$v"; then echo "true"; else echo "false"; fi
+}
+
+# Idempotent check for daemon presence — uses exact tmux session match
+# (list-sessions + grep -Fxq), not has-session which prefix-matches.
+_telegram_daemon_running() {
+    tmux list-sessions -F '#{session_name}' 2>/dev/null \
+        | grep -Fxq -- "$_TELEGRAM_TMUX_SESSION"
+}
+
+# Check feature deps. Echoes missing names space-separated. Empty == OK.
+_telegram_missing_deps() {
+    local missing=""
+    command -v jq >/dev/null 2>&1 || missing+=" jq"
+    command -v curl >/dev/null 2>&1 || missing+=" curl"
+    printf '%s' "${missing# }"
+}
+
+# Validate token file (path, exists, readable, mode 600, owned by user).
+# Echoes error message on failure, returns non-zero. Echoes nothing on success.
+_telegram_validate_token_file() {
+    local path="$1"
+    [[ -n "$path" ]] || { echo "no telegram.token_file in config"; return 1; }
+    local resolved
+    resolved="$(_telegram_expand_path "$path")"
+    [[ -f "$resolved" ]] || { echo "token file not found: $resolved"; return 1; }
+    [[ -r "$resolved" ]] || { echo "token file not readable: $resolved"; return 1; }
+    local owner mode
+    owner="$(stat -c %u "$resolved" 2>/dev/null || echo -1)"
+    [[ "$owner" == "${UID:-$(id -u)}" ]] || { echo "token file not owned by you: $resolved"; return 1; }
+    mode="$(stat -c %a "$resolved" 2>/dev/null || echo 000)"
+    case "$mode" in
+        400|600) ;;
+        *) echo "token file must be chmod 600 (currently $mode): $resolved"; return 1 ;;
+    esac
+    return 0
+}
+
+# Write the daemon helper to ~/.ae/telegram-daemon, idempotent.
+# Called by cmd_telegram_start and ae doctor --refresh.
+_telegram_write_daemon() {
+    local dest="$CONFIG_DIR/telegram-daemon"
+    mkdir -p "$CONFIG_DIR/telegram"
+    cat >"$dest" <<'TELEGRAM_DAEMON_EOF'
+#!/usr/bin/env bash
+# ae-telegram daemon — auto-generated by `ae telegram start`.
+# Tails events.jsonl across every ae session on this machine and
+# forwards filtered events to one Telegram chat. Single instance per
+# host (lock-guarded). Token is read from a file and passed to curl
+# via stdin config so it never appears in process argv.
+
+set -uo pipefail
+
+AE_HOME="${AE_HOME:-$HOME/.ae}"
+SESSIONS_DIR="$AE_HOME/sessions"
+STATE_DIR="$AE_HOME/telegram"
+STATE_FILE="$STATE_DIR/state.tsv"
+LOCK_FILE="$STATE_DIR/daemon.lock"
+CONFIG_FILE="${CONFIG_FILE:-$AE_HOME/config}"
+
+DISCOVERY_INTERVAL="${AE_TELEGRAM_DISCOVERY_INTERVAL:-2}"
+POLL_INTERVAL="${AE_TELEGRAM_POLL_INTERVAL:-1}"
+
+mkdir -p "$STATE_DIR"
+
+declare -A TG_CFG=()
+declare -A STATE_INODE=()
+declare -A STATE_OFFSET=()
+declare -A SESSION_NAME=()
+declare -A SESSION_PATH=()
+TG_TOKEN=""
+TG_CHAT_ID=""
+TG_INCLUDE_DEFAULT="send,ask,review,reply,done,alert,throttled"
+TG_INCLUDE=""
+TG_EXCLUDE=""
+
+_log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" >&2; }
+
+_redact() { sed -E 's|bot[0-9]+:[A-Za-z0-9_-]+|bot<redacted>|g'; }
+
+# Literal tilde-prefix expansion; case patterns are literal '~' matches,
+# not shell tilde-expansion (silenced for shellcheck — same suppression
+# as the corresponding helper in ae itself).
+# shellcheck disable=SC2088
+_expand_path() {
+    local p="$1"
+    case "$p" in
+        '~') printf '%s' "$HOME" ;;
+        '~/'*) printf '%s/%s' "$HOME" "${p#~/}" ;;
+        *) printf '%s' "$p" ;;
+    esac
+}
+
+# Parse [telegram] block from CONFIG_FILE. Same shape as ae's parse_config
+# but scoped to one section to keep this daemon dependency-free of ae.
+read_config() {
+    TG_CFG=()
+    [[ -f "$CONFIG_FILE" ]] || return 0
+    local section="" line val
+    while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" ]] && continue
+        [[ "$line" == \#* ]] && continue
+        if [[ "$line" =~ ^\[([a-zA-Z_-]+)\]$ ]]; then
+            section="${BASH_REMATCH[1]}"
+            continue
+        fi
+        [[ "$section" == "telegram" ]] || continue
+        if [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_-]*)[[:space:]]*=[[:space:]]*\"(.*)\"$ ]]; then
+            TG_CFG["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+        elif [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_-]*)[[:space:]]*=[[:space:]]*(.+)$ ]]; then
+            val="${BASH_REMATCH[2]}"
+            val="${val%%#*}"
+            val="${val%"${val##*[![:space:]]}"}"
+            TG_CFG["${BASH_REMATCH[1]}"]="$val"
+        fi
+    done <"$CONFIG_FILE"
+}
+
+# Load token + chat + filter set. Exits non-zero on missing required config.
+load_runtime_config() {
+    local token_file
+    token_file="${TG_CFG[token_file]:-}"
+    [[ -n "$token_file" ]] || { _log "missing telegram.token_file"; return 1; }
+    token_file="$(_expand_path "$token_file")"
+    [[ -r "$token_file" ]] || { _log "token file not readable: $token_file"; return 1; }
+    TG_TOKEN="$(< "$token_file")"
+    TG_TOKEN="${TG_TOKEN%$'\n'}"
+    TG_TOKEN="${TG_TOKEN//$'\r'/}"
+    [[ -n "$TG_TOKEN" ]] || { _log "token file is empty"; return 1; }
+    TG_CHAT_ID="${TG_CFG[chat_id]:-}"
+    [[ -n "$TG_CHAT_ID" ]] || { _log "missing telegram.chat_id"; return 1; }
+    TG_INCLUDE="${TG_CFG[include]:-$TG_INCLUDE_DEFAULT}"
+    TG_EXCLUDE="${TG_CFG[exclude]:-}"
+    return 0
+}
+
+# True if action is in TG_INCLUDE and not in TG_EXCLUDE. Both are
+# comma-separated; whitespace tolerated.
+event_action_allowed() {
+    local action="$1" item
+    local -a items
+    IFS=', ' read -ra items <<<"$TG_INCLUDE"
+    local found=0
+    for item in "${items[@]}"; do
+        [[ "$item" == "$action" ]] && { found=1; break; }
+    done
+    (( found )) || return 1
+    [[ -n "$TG_EXCLUDE" ]] || return 0
+    IFS=', ' read -ra items <<<"$TG_EXCLUDE"
+    for item in "${items[@]}"; do
+        [[ "$item" == "$action" ]] && return 1
+    done
+    return 0
+}
+
+# Truncate text to N chars, preserving full UTF-8 best-effort.
+truncate_text() {
+    local text="$1" limit="$2"
+    if (( ${#text} > limit )); then
+        printf '%s…(truncated)' "${text:0:limit}"
+    else
+        printf '%s' "$text"
+    fi
+}
+
+# Format one event into a Telegram-bound message body.
+# Input: session_name, JSON event line.
+format_event() {
+    local name="$1" line="$2"
+    local action actor target summary
+    action=$(jq -r '.action // ""' <<<"$line" 2>/dev/null) || return 1
+    actor=$(jq -r '.actor // ""' <<<"$line" 2>/dev/null) || return 1
+    target=$(jq -r '.target // ""' <<<"$line" 2>/dev/null) || return 1
+    summary=$(jq -r '.summary // ""' <<<"$line" 2>/dev/null) || return 1
+    local hdr="[$name] $action  $actor"
+    [[ -n "$target" ]] && hdr+=" → $target"
+    if [[ -n "$summary" ]]; then
+        printf '%s\n%s' "$hdr" "$(truncate_text "$summary" 3500)"
+    else
+        printf '%s' "$hdr"
+    fi
+}
+
+# Send a Telegram sendMessage. URL + token are interpolated into a
+# heredoc piped to curl's -K config-on-stdin, so neither token nor
+# message body appear in argv.
+send_message() {
+    local text="$1" resp rc tmp_text
+    # curl's -K config is line-oriented. An inline `data-urlencode = text=...`
+    # with embedded newlines splits into multiple directives (the second line
+    # becomes "world" → curl warning "unknown option"). Pass the payload via
+    # data-urlencode's @file form so multi-line text is data, not config.
+    tmp_text=$(mktemp "${TMPDIR:-/tmp}/ae-telegram-msg.XXXXXX") || {
+        _log "send_message: mktemp failed"
+        return 1
+    }
+    (umask 077; printf '%s' "$text" >"$tmp_text") || {
+        rm -f "$tmp_text"
+        _log "send_message: writing payload temp failed"
+        return 1
+    }
+    resp=$(curl -sS -K - 2>&1 <<EOF
+silent
+fail-with-body
+url = https://api.telegram.org/bot${TG_TOKEN}/sendMessage
+data-urlencode = chat_id=${TG_CHAT_ID}
+data-urlencode = text@${tmp_text}
+EOF
+)
+    rc=$?
+    rm -f "$tmp_text"
+    if (( rc != 0 )); then
+        _log "send_message failed (rc=$rc): $(printf '%s' "$resp" | _redact | head -c 400)"
+        return 1
+    fi
+    return 0
+}
+
+# Discover ae sessions: scan SESSIONS_DIR/*/meta. Populates
+# SESSION_NAME and SESSION_PATH keyed by session_id.
+discover_sessions() {
+    local meta dir session_id name
+    declare -A seen=()
+    for meta in "$SESSIONS_DIR"/*/meta; do
+        [[ -f "$meta" ]] || continue
+        dir="${meta%/meta}"
+        name="${dir##*/}"
+        session_id=$(grep '^session_id=' "$meta" 2>/dev/null | head -1 | cut -d= -f2-)
+        [[ -n "$session_id" ]] || continue
+        SESSION_NAME[$session_id]="$name"
+        SESSION_PATH[$session_id]="$dir"
+        seen[$session_id]=1
+    done
+    # Drop missing sessions from state
+    local sid
+    for sid in "${!SESSION_NAME[@]}"; do
+        if [[ -z "${seen[$sid]:-}" ]]; then
+            unset 'SESSION_NAME[$sid]' 'SESSION_PATH[$sid]'
+            unset 'STATE_INODE[$sid]' 'STATE_OFFSET[$sid]'
+        fi
+    done
+}
+
+# Read offset state from disk into STATE_*.
+load_state() {
+    STATE_INODE=()
+    STATE_OFFSET=()
+    [[ -f "$STATE_FILE" ]] || return 0
+    local sid inode offset _rest
+    while IFS=$'\t' read -r sid inode offset _rest; do
+        [[ -z "$sid" || "$sid" == \#* ]] && continue
+        STATE_INODE[$sid]="$inode"
+        STATE_OFFSET[$sid]="$offset"
+    done <"$STATE_FILE"
+}
+
+# Persist offset state atomically (tmp + rename, flock-guarded).
+save_state() {
+    local tmp="$STATE_FILE.tmp.$$"
+    {
+        printf '# session_id\tinode\tbyte_offset\tlast_ts\n'
+        local sid
+        for sid in "${!STATE_OFFSET[@]}"; do
+            printf '%s\t%s\t%s\t%s\n' \
+                "$sid" "${STATE_INODE[$sid]:-0}" "${STATE_OFFSET[$sid]:-0}" \
+                "$(date -u +%FT%TZ)"
+        done
+    } >"$tmp"
+    mv "$tmp" "$STATE_FILE"
+}
+
+# Stream new newline-terminated records from a session's events.jsonl,
+# starting from the saved byte offset, and forward each accepted event
+# to Telegram.
+#
+# Subtle correctness invariants codex flagged in review:
+# (1) Use process substitution, NOT command substitution. `chunk=$(tail ...)`
+#     strips trailing newlines — a single complete record `{...}\n` then looks
+#     like a partial line and never advances the offset.
+# (2) Advance the byte offset by the actual byte count of each consumed line
+#     (line + '\n'), NOT by ${#var} which counts characters and drifts on UTF-8.
+# (3) For an unseen session_id OR an inode change (transfer / recreate),
+#     initialize at EOF instead of byte 0. Otherwise enabling the bridge
+#     replays every historical event in every session.
+# (4) Plain `while IFS= read -r line` naturally drops an unterminated trailing
+#     partial line — `read` returns non-zero AND leaves no body for the loop.
+process_session() {
+    local sid="$1"
+    local name="${SESSION_NAME[$sid]}"
+    local path="${SESSION_PATH[$sid]}"
+    local events_file="$path/events.jsonl"
+    [[ -f "$events_file" ]] || return 0
+
+    local cur_inode="${STATE_INODE[$sid]:-}"
+    local cur_offset="${STATE_OFFSET[$sid]:-0}"
+    local file_inode file_size
+    file_inode=$(stat -c %i "$events_file" 2>/dev/null) || return 0
+    file_size=$(stat -c %s "$events_file" 2>/dev/null) || return 0
+
+    # Unknown session_id OR inode change: jump to EOF, persist, and skip
+    # this iteration. This is the codex-flagged "don't replay history"
+    # invariant — without it, every existing session's full event log
+    # would flood the chat the first time the daemon comes up.
+    if [[ -z "$cur_inode" || "$file_inode" != "$cur_inode" ]]; then
+        STATE_INODE[$sid]="$file_inode"
+        STATE_OFFSET[$sid]="$file_size"
+        return 0
+    fi
+
+    if (( file_size <= cur_offset )); then
+        STATE_INODE[$sid]="$file_inode"
+        STATE_OFFSET[$sid]="$cur_offset"
+        return 0
+    fi
+
+    # At-least-once delivery. The offset is only advanced PAST a deliverable
+    # event after send_message succeeds; on send failure we break without
+    # committing, so the same event (and everything after it) is retried on
+    # the next poll instead of being silently dropped on a transient 429/5xx
+    # or network blip. Filtered / empty / unparseable records carry no
+    # delivery obligation and advance the offset freely.
+    local line action body line_bytes
+    local new_offset="$cur_offset"
+    while IFS= read -r line; do
+        # Byte-accurate width: wc -c counts the trailing '\n' that we'd
+        # otherwise lose to printf, so the file position stays in sync even
+        # when summaries contain multi-byte UTF-8 codepoints.
+        line_bytes=$(printf '%s\n' "$line" | wc -c)
+        if [[ -n "$line" ]]; then
+            action=$(jq -r '.action // ""' <<<"$line" 2>/dev/null) || action=""
+            if [[ -n "$action" ]] && event_action_allowed "$action"; then
+                body=$(format_event "$name" "$line") || body=""
+                if [[ -n "$body" ]]; then
+                    if ! send_message "$body"; then
+                        _log "send failed for $sid — will retry from offset $new_offset"
+                        break
+                    fi
+                fi
+            fi
+        fi
+        new_offset=$((new_offset + line_bytes))
+    done < <(tail -c "+$((cur_offset + 1))" "$events_file" 2>/dev/null)
+
+    STATE_INODE[$sid]="$file_inode"
+    STATE_OFFSET[$sid]="$new_offset"
+}
+
+# Acquire exclusive daemon lock — refuses to run if another daemon
+# holds the lock (would otherwise create duplicate Telegram messages).
+acquire_lock() {
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        _log "another ae telegram daemon is already running (lock: $LOCK_FILE)"
+        return 1
+    fi
+    return 0
+}
+
+# The EXIT trap must only persist state when THIS process owns the lock AND
+# has loaded existing state — otherwise a daemon that lost the flock race, or
+# bailed during config validation, would rewrite state.tsv down to just the
+# header and wipe a healthy daemon's offsets.
+LOCK_HELD=0
+STATE_LOADED=0
+trap '[[ "$LOCK_HELD" == 1 && "$STATE_LOADED" == 1 ]] && { save_state 2>/dev/null || true; }; _log "daemon exiting"' EXIT
+
+main() {
+    mkdir -p "$STATE_DIR"
+    acquire_lock || exit 1
+    LOCK_HELD=1
+    read_config
+    load_runtime_config || exit 1
+    load_state
+    STATE_LOADED=1
+    _log "daemon started — include=$TG_INCLUDE exclude=${TG_EXCLUDE:-<none>}"
+
+    local last_discovery=0
+    local now sid
+    while :; do
+        now=$(date +%s)
+        if (( now - last_discovery >= DISCOVERY_INTERVAL )); then
+            discover_sessions
+            last_discovery=$now
+        fi
+        for sid in "${!SESSION_NAME[@]}"; do
+            process_session "$sid"
+        done
+        save_state
+        sleep "$POLL_INTERVAL"
+    done
+}
+
+main "$@"
+TELEGRAM_DAEMON_EOF
+    chmod +x "$dest"
+}
+
+# Persist the enabled flag in ~/.ae/config without disturbing other content.
+# Adds the [telegram] section if it doesn't yet exist.
+#
+# A single section-scoped awk pass handles every case: replace `enabled`
+# INSIDE [telegram], or insert it just before the next section / at EOF if
+# the section exists without it. We must NOT decide replace-vs-insert from a
+# global `grep enabled` — another section's `enabled =` would mislead that
+# check and leave [telegram] untouched (codex-flagged).
+_telegram_persist_intent() {
+    local value="$1"
+    local cfg="$CONFIG_FILE"
+    local tmp="$cfg.tmp.$$"
+    if [[ ! -f "$cfg" ]]; then
+        printf '[telegram]\nenabled = %s\n' "$value" >"$cfg"
+        return 0
+    fi
+    if ! grep -q '^\[telegram\]' "$cfg"; then
+        printf '\n[telegram]\nenabled = %s\n' "$value" >>"$cfg"
+        return 0
+    fi
+    awk -v val="$value" '
+        BEGIN { in_tg = 0; done = 0 }
+        /^\[telegram\][[:space:]]*$/ { in_tg = 1; print; next }
+        /^\[/ {
+            if (in_tg && !done) { print "enabled = " val; done = 1 }
+            in_tg = 0; print; next
+        }
+        in_tg && !done && /^[[:space:]]*enabled[[:space:]]*=/ {
+            print "enabled = " val; done = 1; next
+        }
+        { print }
+        END { if (in_tg && !done) print "enabled = " val }
+    ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
+}
+
+# Spawn the daemon in its dedicated tmux session. Caller must have
+# checked deps and validated config — this just orchestrates tmux.
+# The daemon inherits the EXACT config file ae validated (CONFIG_FILE),
+# not its own $HOME/.ae/config default — otherwise a CONFIG_FILE override
+# (tests, or a non-default config) would validate one file and the daemon
+# would read another. Both the env value and the script path are %q-quoted.
+_telegram_spawn_daemon() {
+    _telegram_write_daemon
+    local q_cfg q_daemon
+    q_cfg="$(printf '%q' "$CONFIG_FILE")"
+    q_daemon="$(printf '%q' "$CONFIG_DIR/telegram-daemon")"
+    tmux new-session -d -s "$_TELEGRAM_TMUX_SESSION" -c "$HOME" \
+        "CONFIG_FILE=${q_cfg} exec bash ${q_daemon}" 2>/dev/null
+    tmux set-option -t "$_TELEGRAM_TMUX_SESSION" status off 2>/dev/null || true
+    tmux rename-window -t "$_TELEGRAM_TMUX_SESSION" "ae-telegram" 2>/dev/null || true
+}
+
+# Best-effort idempotent autostart — called from the `ae <name>` start path.
+# Strictly non-fatal: any error path is a one-line stderr warn, returns 0.
+# Caller's session start path MUST NOT be affected by anything here.
+_telegram_autostart_if_enabled() {
+    [[ "$(_telegram_intent_enabled)" == "true" ]] || return 0
+    _telegram_daemon_running && return 0
+    local missing
+    missing="$(_telegram_missing_deps)"
+    if [[ -n "$missing" ]]; then
+        echo "ae telegram: skipped autostart — missing deps:$missing" >&2
+        return 0
+    fi
+    local token_file err
+    token_file="$(get_config telegram.token_file 2>/dev/null || true)"
+    if err="$(_telegram_validate_token_file "$token_file" 2>&1)"; then
+        : # ok
+    else
+        echo "ae telegram: skipped autostart — $err" >&2
+        return 0
+    fi
+    if ! _telegram_spawn_daemon 2>/dev/null; then
+        echo "ae telegram: autostart failed (continuing without bridge)" >&2
+    fi
+    return 0
+}
+
+cmd_telegram_help() {
+    cat <<'EOF'
+Usage:
+  ae telegram setup      Interactive: writes [telegram] config + token file
+  ae telegram start      Persist enabled=true and start the daemon now
+  ae telegram stop       Persist enabled=false and stop the daemon now
+  ae telegram status     Report runtime + intent state
+
+Config block in ~/.ae/config:
+  [telegram]
+  enabled = true
+  token_file = "~/.config/ae/telegram-bot.token"
+  chat_id = 123456789
+  allowed_user_ids = "123456789"
+  include = "send,ask,review,reply,done,alert,throttled"   # default
+  exclude = "memo"                                         # default empty
+
+Requires: jq, curl. The bridge runs in tmux session `ae-telegram` and
+forwards filtered events from every ae session on this machine.
+See docs/internals/bridge-protocol.md for the underlying contract.
+EOF
+}
+
+cmd_telegram_setup() {
+    local token_path_default="$HOME/.config/ae/telegram-bot.token"
+    mkdir -p "$(dirname "$token_path_default")"
+    echo "ae telegram setup — interactive."
+    echo
+    local token chat_id
+    # -s keeps the token off the screen/scrollback. It is not a shell-history
+    # risk here (read runs inside the script, not the user's interactive shell),
+    # but visible-on-screen is its own leak vector (over-the-shoulder, recording).
+    read -r -s -p "Bot token (from @BotFather): " token
+    echo
+    [[ -n "$token" ]] || { echo "Error: token required" >&2; return 1; }
+    read -r -p "Chat ID (your Telegram numeric id): " chat_id
+    [[ -n "$chat_id" ]] || { echo "Error: chat_id required" >&2; return 1; }
+    if ! [[ "$chat_id" =~ ^-?[0-9]+$ ]]; then
+        echo "Error: chat_id must be numeric" >&2
+        return 1
+    fi
+
+    local tok_target="$token_path_default"
+    read -r -p "Token file path [$tok_target]: " _tok_input
+    [[ -n "$_tok_input" ]] && tok_target="$(_telegram_expand_path "$_tok_input")"
+    mkdir -p "$(dirname "$tok_target")"
+    (umask 077; printf '%s\n' "$token" >"$tok_target")
+    chmod 600 "$tok_target"
+
+    # Write config block (preserve user's existing content).
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        mkdir -p "$(dirname "$CONFIG_FILE")"
+        : >"$CONFIG_FILE"
+    fi
+    if grep -q '^\[telegram\]' "$CONFIG_FILE"; then
+        echo "Warning: [telegram] section already exists in $CONFIG_FILE — leaving as-is."
+        echo "Edit it manually if values changed."
+    else
+        cat >>"$CONFIG_FILE" <<EOF
+
+[telegram]
+enabled = true
+token_file = "${tok_target/#$HOME/~}"
+chat_id = $chat_id
+allowed_user_ids = "$chat_id"
+EOF
+    fi
+    echo
+    echo "Saved token to $tok_target (chmod 600)."
+    echo "Wrote [telegram] block to $CONFIG_FILE."
+    echo "Run 'ae telegram start' to spawn the daemon."
+}
+
+cmd_telegram_start() {
+    local missing err
+    missing="$(_telegram_missing_deps)"
+    if [[ -n "$missing" ]]; then
+        echo "Error: ae telegram needs:$missing" >&2
+        return 1
+    fi
+    local token_file
+    token_file="$(get_config telegram.token_file 2>/dev/null || true)"
+    if ! err="$(_telegram_validate_token_file "$token_file" 2>&1)"; then
+        echo "Error: $err" >&2
+        return 1
+    fi
+    local chat_id
+    chat_id="$(get_config telegram.chat_id 2>/dev/null || true)"
+    [[ -n "$chat_id" ]] || { echo "Error: telegram.chat_id missing in config" >&2; return 1; }
+    _telegram_persist_intent "true"
+    if _telegram_daemon_running; then
+        echo "ae telegram: already running (tmux session $_TELEGRAM_TMUX_SESSION)"
+        return 0
+    fi
+    _telegram_spawn_daemon
+    if _telegram_daemon_running; then
+        echo "ae telegram: started (tmux session $_TELEGRAM_TMUX_SESSION)"
+        return 0
+    fi
+    echo "Error: failed to spawn daemon" >&2
+    return 1
+}
+
+cmd_telegram_stop() {
+    _telegram_persist_intent "false"
+    if _telegram_daemon_running; then
+        tmux kill-session -t "$_TELEGRAM_TMUX_SESSION" 2>/dev/null
+        echo "ae telegram: stopped"
+    else
+        echo "ae telegram: was not running"
+    fi
+}
+
+cmd_telegram_status() {
+    local intent runtime
+    intent="$(_telegram_intent_enabled)"
+    if _telegram_daemon_running; then runtime="running"; else runtime="stopped"; fi
+    echo "ae telegram:"
+    echo "  intent:  enabled=$intent (in $CONFIG_FILE)"
+    echo "  runtime: $runtime (tmux session $_TELEGRAM_TMUX_SESSION)"
+    local missing
+    missing="$(_telegram_missing_deps)"
+    if [[ -n "$missing" ]]; then
+        echo "  deps:    MISSING:$missing"
+    else
+        echo "  deps:    jq=$(command -v jq) curl=$(command -v curl)"
+    fi
+    local token_file err
+    token_file="$(get_config telegram.token_file 2>/dev/null || true)"
+    if [[ -n "$token_file" ]]; then
+        if err="$(_telegram_validate_token_file "$token_file" 2>&1)"; then
+            echo "  token:   OK ($(_telegram_expand_path "$token_file"))"
+        else
+            echo "  token:   ERROR — $err"
+        fi
+    else
+        echo "  token:   not configured"
+    fi
+    local state_file="$CONFIG_DIR/telegram/state.tsv"
+    if [[ -f "$state_file" ]]; then
+        local tracked
+        # awk avoids `grep -c`'s "0 + exit 1" footgun (which `|| echo 0`
+        # turned into a two-line "0\n0" count).
+        tracked=$(awk '!/^#/ && NF {n++} END {print n + 0}' "$state_file")
+        echo "  state:   $tracked sessions tracked ($state_file)"
+    fi
+}
+
+cmd_telegram() {
+    local sub="${1:-status}"
+    shift 2>/dev/null || true
+    case "$sub" in
+        setup) cmd_telegram_setup "$@" ;;
+        start) cmd_telegram_start "$@" ;;
+        stop) cmd_telegram_stop "$@" ;;
+        status) cmd_telegram_status "$@" ;;
+        help | -h | --help) cmd_telegram_help ;;
+        *)
+            echo "Error: unknown subcommand 'telegram $sub'" >&2
+            cmd_telegram_help >&2
+            return 2
+            ;;
+    esac
 }
 
 # ── Transfer helpers (cross-machine session sync) ────────────────────
@@ -2896,6 +3623,8 @@ cmd_help() {
     echo "  ae rename [old] <new>  Rename a running session"
     echo "  ae loop <start|stop|status> [name]"
     echo "                         Toggle the stale-agent watchdog for a session"
+    echo "  ae telegram <setup|start|stop|status>"
+    echo "                         Machine-global Telegram bridge (forwards events to a chat)"
     echo "  ae transfer <session> <ssh-target> [--yes]"
     echo "                         Push a stopped session to a peer machine (--pull reverses)"
     echo "  ae stop [name]         Pause session, keep ae + agent conversation state for resume"
@@ -3470,6 +4199,10 @@ case "${1:-}" in
         cmd_loop "${2:-}" "${3:-}"
         exit $?
         ;;
+    telegram)
+        cmd_telegram "${@:2}"
+        exit $?
+        ;;
     transfer)
         cmd_transfer "${@:2}"
         exit $?
@@ -3548,6 +4281,7 @@ fi
 # Existing session? Just reattach (but only if it's an ae session).
 if tmux has-session -t "$SESSION" 2>/dev/null; then
     if tmux show-environment -t "$SESSION" AE_SESSION 2>/dev/null | grep -q '^AE_SESSION='; then
+        _telegram_autostart_if_enabled 2>/dev/null || true
         tmux_attach "$SESSION"
     else
         echo "Error: tmux session '$SESSION' exists but is not an ae session." >&2
@@ -5774,6 +6508,10 @@ case "${LOOP_ENABLED,,}" in
     false | no | off | 0) ;;
     *) "${AE_META}/loop" start ;;
 esac
+
+# Optional: auto-start the Telegram bridge if [telegram] enabled = true.
+# Strictly non-fatal: any error here must not affect session attach.
+_telegram_autostart_if_enabled 2>/dev/null || true
 
 # Focus main pane and attach
 tmux select-pane -t "${PANE_IDS[0]}"

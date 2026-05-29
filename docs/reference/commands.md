@@ -11,6 +11,8 @@ ae doctor --refresh [name|all]
 ae rename [old] <new>  Rename a running session
 ae loop <start|stop|status> [name]
                        Toggle the stale-agent watchdog (per-session, persists across resume)
+ae telegram <setup|start|stop|status>
+                       Machine-global Telegram bridge — see Telegram bridge reference
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
 ae end|rm [name]       End session: commit, push to ae/<name>, REMOVE ae state AND
                        per-session claude/codex conversation files. Destructive.
@@ -60,6 +62,19 @@ ae loop status my-feature
 ```
 
 The [loop watchdog](../internals/loop.md) is on by default — only an explicit `false` / `no` / `off` / `0` in config or session meta keeps it off. `loop start` is idempotent; running it again just confirms the meta flag.
+
+## `ae telegram`
+
+```bash
+ae telegram setup       # interactive: writes [telegram] config + token file
+ae telegram start       # spawn daemon now, persist enabled=true
+ae telegram stop        # kill daemon, persist enabled=false
+ae telegram status      # report intent + runtime + deps + token validation
+```
+
+Machine-global daemon that forwards filtered events from every ae session on this host to one Telegram chat. Single instance per machine (lock-guarded). Read-only in Stage 2 — chat → ae routing is Stage 3.
+
+`jq` + `curl` are feature-only dependencies; ae's core commands work without them. See the [Telegram bridge](telegram.md) page for setup, config schema, and lifecycle.
 
 ## `ae rename old-name new-name`
 

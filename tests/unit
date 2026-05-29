@@ -2154,6 +2154,296 @@ unset _t_uuid_out
 assert_eq "external-actor: ae_tracked_send exec passes _AE_EVENT_ACTION env to send (unchanged contract)" "1" \
     "$([[ "$AE_SOURCE" == *'exec env _AE_EVENT_ACTION="$action" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$body"'*'/send" "$target_name" "$msg"'* ]] && echo 1 || echo 0)"
 
+# ── Telegram bridge (Stage 2) ────────────────────────────────────────
+# Stage 2 ships the machine-global Telegram bridge as a new `ae telegram`
+# subcommand + a generated daemon helper at ~/.ae/telegram-daemon. The
+# tests below assert (a) the orchestration surface in ae itself and (b)
+# the daemon body's structural invariants that codex's scope review made
+# load-bearing (offset persistence, token-safe curl, non-fatal autostart,
+# session discovery, filter set).
+
+# Structural: cmd_telegram + four subcommand functions exist.
+assert_eq "telegram: cmd_telegram dispatcher defined" "1" \
+    "$([[ "$AE_SOURCE" == *'cmd_telegram() {'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: cmd_telegram_setup defined"   "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_setup() {'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: cmd_telegram_start defined"   "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_start() {'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: cmd_telegram_stop defined"    "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_stop() {'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: cmd_telegram_status defined"  "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_status() {'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: cmd_telegram_help defined"    "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_help() {'* ]] && echo 1 || echo 0)"
+
+# Structural: top-level dispatcher routes 'ae telegram <sub>'.
+assert_eq "telegram: main dispatcher routes 'telegram' subcommand" "1" \
+    "$([[ "$AE_SOURCE" == *'telegram)
+        cmd_telegram "${@:2}"
+        exit $?
+        ;;'* ]] && echo 1 || echo 0)"
+
+# Structural: ae help mentions the new subcommand surface.
+assert_eq "telegram: cmd_help advertises 'ae telegram'" "1" \
+    "$([[ "$AE_SOURCE" == *'ae telegram <setup|start|stop|status>'* ]] && echo 1 || echo 0)"
+
+# BLOCKER guard (codex): jq + curl are NOT global ae deps.
+# Tolerate a small number of references inside the telegram functions; the
+# important assertion is that there is no top-level unconditional check.
+_t_jq_occ=$(grep -c "command -v jq" /home/ckriech/projects/clemens33/ae/ae || true)
+_t_curl_occ=$(grep -c "command -v curl" /home/ckriech/projects/clemens33/ae/ae || true)
+assert_eq "telegram: jq presence checks confined to feature code" "1" \
+    "$([[ "$_t_jq_occ" -ge 1 && "$_t_jq_occ" -le 3 ]] && echo 1 || echo 0)"
+assert_eq "telegram: curl presence checks confined to feature code" "1" \
+    "$([[ "$_t_curl_occ" -ge 1 && "$_t_curl_occ" -le 3 ]] && echo 1 || echo 0)"
+unset _t_jq_occ _t_curl_occ
+
+# IMPORTANT guard (codex): offset persistence keyed by (session_id, inode, byte_offset).
+assert_eq "telegram: daemon persists state at ~/.ae/telegram/state.tsv" "1" \
+    "$([[ "$AE_SOURCE" == *'STATE_FILE="$STATE_DIR/state.tsv"'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: state schema is session_id + inode + byte_offset" "1" \
+    "$([[ "$AE_SOURCE" == *'# session_id\tinode\tbyte_offset\tlast_ts'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: state file written atomically via tmp+mv" "1" \
+    "$([[ "$AE_SOURCE" == *'local tmp="$STATE_FILE.tmp.$$"'* && "$AE_SOURCE" == *'mv "$tmp" "$STATE_FILE"'* ]] && echo 1 || echo 0)"
+# Codex review IMPORTANT 1: an unseen session_id OR an inode change must
+# jump to EOF (file_size), NOT to byte 0. Otherwise enabling the bridge
+# replays every historical event in every existing session.
+assert_eq "telegram: unseen session / inode change initializes at EOF (no historical replay)" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ -z "$cur_inode" || "$file_inode" != "$cur_inode" ]]; then
+        STATE_INODE[$sid]="$file_inode"
+        STATE_OFFSET[$sid]="$file_size"
+        return 0
+    fi'* ]] && echo 1 || echo 0)"
+
+# IMPORTANT guard (codex): token NEVER in argv. Daemon uses curl -K -
+# with a heredoc-piped config; URL containing the token lives only on
+# curl's stdin, not in the spawned process's argv.
+assert_eq "telegram: daemon uses curl -K - for token-safe outbound" "1" \
+    "$([[ "$AE_SOURCE" == *'curl -sS -K - 2>&1 <<EOF'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: daemon URL containing token is interpolated into heredoc, not argv" "1" \
+    "$([[ "$AE_SOURCE" == *'url = https://api.telegram.org/bot${TG_TOKEN}/sendMessage'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: daemon redacts token from any logged URL" "1" \
+    "$([[ "$AE_SOURCE" == *'_redact() { sed -E '"'"'s|bot[0-9]+:[A-Za-z0-9_-]+|bot<redacted>|g'"'"'; }'* ]] && echo 1 || echo 0)"
+
+# Codex review BLOCKER 2: curl's -K config is line-oriented. Passing
+# the message body inline as `data-urlencode = text=...` makes a
+# multi-line message split into two curl directives (the second becomes
+# an unknown option). Use data-urlencode's @file form so the payload is
+# data, not config syntax.
+assert_eq "telegram: send_message passes multi-line text via @file, not inline" "1" \
+    "$([[ "$AE_SOURCE" == *'data-urlencode = text@${tmp_text}'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: send_message does NOT pass message body as inline curl config" "1" \
+    "$([[ "$AE_SOURCE" != *'data-urlencode = text=${text}'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: send_message temp file gets 0600 perms via umask 077" "1" \
+    "$([[ "$AE_SOURCE" == *'(umask 077; printf '"'"'%s'"'"' "$text" >"$tmp_text")'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: send_message cleans up temp file after curl" "1" \
+    "$([[ "$AE_SOURCE" == *'rm -f "$tmp_text"
+    if (( rc != 0 )); then'* ]] && echo 1 || echo 0)"
+
+# Codex review BLOCKER 1: process_session must STREAM via process
+# substitution, NOT capture into a variable. `chunk=$(tail -c ...)`
+# strips trailing newlines (command-sub does this unconditionally), so
+# a single newly-arrived complete record `{...}\n` looks like a partial
+# line and never advances the offset.
+assert_eq "telegram: process_session streams events via < <(tail -c ...)" "1" \
+    "$([[ "$AE_SOURCE" == *'done < <(tail -c "+$((cur_offset + 1))" "$events_file" 2>/dev/null)'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: process_session does NOT capture chunk via command substitution" "1" \
+    "$([[ "$AE_SOURCE" != *'chunk=$(tail -c "+$((cur_offset + 1))"'* ]] && echo 1 || echo 0)"
+
+# Codex review BLOCKER 1 (continued): byte offset advances by the
+# actual byte count of each consumed line (printf | wc -c), NOT by
+# bash's character-counting ${#var}. UTF-8 summaries would otherwise
+# drift the file position.
+assert_eq "telegram: process_session advances offset by byte count, not char count" "1" \
+    "$([[ "$AE_SOURCE" == *"line_bytes=\$(printf '%s\\n' \"\$line\" | wc -c)"* ]] && echo 1 || echo 0)"
+assert_eq "telegram: process_session does NOT use \${#var} to advance the file offset" "1" \
+    "$([[ "$AE_SOURCE" != *'new_offset=$((cur_offset + ${#complete}))'* ]] && echo 1 || echo 0)"
+
+# Codex review IMPORTANT #1 (round 2): at-least-once delivery. The offset is
+# only advanced PAST a deliverable event after send_message succeeds; a send
+# failure breaks the loop WITHOUT committing, so the event is retried next
+# poll instead of being silently dropped.
+assert_eq "telegram: send failure breaks before advancing the offset" "1" \
+    "$([[ "$AE_SOURCE" == *'if ! send_message "$body"; then
+                        _log "send failed for $sid — will retry from offset $new_offset"
+                        break'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: offset only advances after the send decision (commit-after)" "1" \
+    "$([[ "$AE_SOURCE" == *'fi
+        new_offset=$((new_offset + line_bytes))
+    done < <(tail -c'* ]] && echo 1 || echo 0)"
+
+# Codex review IMPORTANT #2 (round 2): EXIT trap must not clobber state.tsv
+# unless this process actually holds the lock AND loaded state.
+assert_eq "telegram: EXIT trap guarded by LOCK_HELD + STATE_LOADED" "1" \
+    "$([[ "$AE_SOURCE" == *'trap '"'"'[[ "$LOCK_HELD" == 1 && "$STATE_LOADED" == 1 ]] && { save_state 2>/dev/null || true; }'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: LOCK_HELD set only after flock acquired" "1" \
+    "$([[ "$AE_SOURCE" == *'acquire_lock || exit 1
+    LOCK_HELD=1'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: STATE_LOADED set only after load_state" "1" \
+    "$([[ "$AE_SOURCE" == *'load_state
+    STATE_LOADED=1'* ]] && echo 1 || echo 0)"
+
+# Codex review IMPORTANT #3 (round 2): the spawned daemon inherits the EXACT
+# CONFIG_FILE ae validated, %q-quoted, not its own $HOME/.ae/config default.
+assert_eq "telegram: spawn passes resolved CONFIG_FILE into the daemon env" "1" \
+    "$([[ "$AE_SOURCE" == *'"CONFIG_FILE=${q_cfg} exec bash ${q_daemon}"'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: spawn %q-quotes both config + daemon path" "1" \
+    "$([[ "$AE_SOURCE" == *'q_cfg="$(printf '"'"'%q'"'"' "$CONFIG_FILE")"'* && "$AE_SOURCE" == *'q_daemon="$(printf '"'"'%q'"'"' "$CONFIG_DIR/telegram-daemon")"'* ]] && echo 1 || echo 0)"
+
+# IMPORTANT guard (codex): auto-start hook strictly non-fatal.
+_t_attach_calls=$(grep -c '_telegram_autostart_if_enabled 2>/dev/null || true' /home/ckriech/projects/clemens33/ae/ae)
+assert_eq "telegram: auto-start hook called twice (resume + full-launch) with non-fatal guard" "2" "$_t_attach_calls"
+unset _t_attach_calls
+assert_eq "telegram: autostart returns 0 when deps are missing" "1" \
+    "$([[ "$AE_SOURCE" == *'echo "ae telegram: skipped autostart — missing deps:$missing" >&2
+        return 0'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: autostart returns 0 on spawn failure" "1" \
+    "$([[ "$AE_SOURCE" == *'echo "ae telegram: autostart failed (continuing without bridge)" >&2'* ]] && echo 1 || echo 0)"
+
+# IMPORTANT guard (codex): session fan-in is NOT a naive `tail -F` glob.
+assert_eq "telegram: daemon discovers sessions by scanning meta files" "1" \
+    "$([[ "$AE_SOURCE" == *'for meta in "$SESSIONS_DIR"/*/meta; do'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: daemon binds by session_id, not session name" "1" \
+    "$([[ "$AE_SOURCE" == *"session_id=\$(grep '^session_id=' \"\$meta\""* ]] && echo 1 || echo 0)"
+assert_eq "telegram: daemon does NOT use glob-based tail -F" "1" \
+    "$([[ "$AE_SOURCE" != *'tail -F '*'sessions/*/events.jsonl'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: daemon drops missing sessions from in-memory state" "1" \
+    "$([[ "$AE_SOURCE" == *"unset 'SESSION_NAME[\$sid]' 'SESSION_PATH[\$sid]'"* ]] && echo 1 || echo 0)"
+
+# NIT applied (codex): default include set adds 'throttled'; 'memo' off.
+assert_eq "telegram: default include set covers throttled" "1" \
+    "$([[ "$AE_SOURCE" == *'TG_INCLUDE_DEFAULT="send,ask,review,reply,done,alert,throttled"'* ]] && echo 1 || echo 0)"
+# The literal default-include string must not contain 'memo'. We extract
+# the exact default-line and grep — the loose glob was matching memo
+# elsewhere in the script (help text, comments).
+_t_default_line=$(grep -E 'TG_INCLUDE_DEFAULT="[^"]+"' /home/ckriech/projects/clemens33/ae/ae | head -1 || true)
+assert_eq "telegram: memo NOT in default include set" "1" \
+    "$([[ -n "$_t_default_line" && "$_t_default_line" != *memo* ]] && echo 1 || echo 0)"
+unset _t_default_line
+
+# Permission validation (codex answer 7): owner check + 600 mode required.
+assert_eq "telegram: token file ownership validated" "1" \
+    "$([[ "$AE_SOURCE" == *'owner="$(stat -c %u "$resolved" 2>/dev/null || echo -1)"'* && "$AE_SOURCE" == *'[[ "$owner" == "${UID:-$(id -u)}" ]]'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: token file mode 600 or 400 required" "1" \
+    "$([[ "$AE_SOURCE" == *'400|600) ;;
+        *) echo "token file must be chmod 600'* ]] && echo 1 || echo 0)"
+
+# Single-instance lock: daemon refuses to start if another holds the lock,
+# preventing two daemons from competing over getUpdates / dupe-messaging.
+assert_eq "telegram: daemon acquires exclusive flock before running" "1" \
+    "$([[ "$AE_SOURCE" == *'exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then'* ]] && echo 1 || echo 0)"
+
+# Idempotent start: existing tmux session detected via exact match (NOT
+# tmux has-session, which prefix-matches — same class of bug as 'mdk' vs
+# 'mdk-app' caught in the transfer feature). Verify the function body
+# contains both the list-sessions call AND the grep -Fxq exact match.
+assert_eq "telegram: daemon presence check uses list-sessions, not has-session" "1" \
+    "$([[ "$AE_SOURCE" == *'_telegram_daemon_running()'*"tmux list-sessions -F '#{session_name}'"* ]] && echo 1 || echo 0)"
+assert_eq "telegram: daemon presence check uses grep -Fxq for exact match" "1" \
+    "$([[ "$AE_SOURCE" == *'_telegram_daemon_running()'*'grep -Fxq -- "$_TELEGRAM_TMUX_SESSION"'* ]] && echo 1 || echo 0)"
+
+# Persisted intent (codex IMPORTANT #4): persist must be SECTION-SCOPED.
+# `ae telegram stop` writes enabled=false via _telegram_persist_intent and
+# does not require a token, so it's the cleanest behavioral driver. We run
+# it against crafted configs covering the edge cases codex flagged.
+_t_persist_run() {  # <config-content> -> prints resulting config
+    local _cfg; _cfg="$(mktemp)"
+    printf '%s' "$1" >"$_cfg"
+    CONFIG_FILE="$_cfg" XDG_RUNTIME_DIR="$(mktemp -d)" \
+        /home/ckriech/projects/clemens33/ae/ae telegram stop >/dev/null 2>&1 || true
+    cat "$_cfg"
+    rm -f "$_cfg"
+}
+
+# Case A: [telegram] with enabled=true → flipped to false IN the section.
+_t_pA="$(_t_persist_run '[telegram]
+enabled = true
+chat_id = 5
+')"
+assert_eq "telegram: persist flips enabled true→false in [telegram]" "1" \
+    "$([[ "$_t_pA" == *'[telegram]'*'enabled = false'* && "$_t_pA" != *'enabled = true'* ]] && echo 1 || echo 0)"
+unset _t_pA
+
+# Case B (the codex bug): another section has enabled=, [telegram] lacks it.
+# Must INSERT enabled into [telegram], leave the other section alone.
+_t_pB="$(_t_persist_run '[foo]
+enabled = true
+
+[telegram]
+chat_id = 5
+')"
+assert_eq "telegram: persist inserts enabled into [telegram] despite foreign enabled=" "1" \
+    "$(awk '/^\[telegram\]/{t=1} t&&/^enabled = false/{ok=1} END{print (ok?1:0)}' <<<"$_t_pB")"
+assert_eq "telegram: persist leaves the foreign [foo] enabled=true untouched" "1" \
+    "$(awk '/^\[foo\]/{f=1;next} /^\[/{f=0} f&&/^enabled = true/{ok=1} END{print (ok?1:0)}' <<<"$_t_pB")"
+unset _t_pB
+
+# Case C: [telegram] is the LAST section with no enabled → append within it (EOF).
+_t_pC="$(_t_persist_run '[agents]
+claude = "claude"
+
+[telegram]
+chat_id = 5
+')"
+assert_eq "telegram: persist appends enabled at EOF when [telegram] is last + lacks it" "1" \
+    "$([[ "$_t_pC" == *'[telegram]'*'enabled = false'* ]] && echo 1 || echo 0)"
+unset _t_pC
+
+# Case D: no [telegram] section at all → whole block appended.
+_t_pD="$(_t_persist_run '[agents]
+claude = "claude"
+')"
+assert_eq "telegram: persist appends a fresh [telegram] block when absent" "1" \
+    "$([[ "$_t_pD" == *'[telegram]'*'enabled = false'* ]] && echo 1 || echo 0)"
+unset _t_pD
+
+# Setup refuses to clobber an existing [telegram] block.
+assert_eq "telegram: setup refuses to clobber existing [telegram] block" "1" \
+    "$([[ "$AE_SOURCE" == *'echo "Warning: [telegram] section already exists in $CONFIG_FILE — leaving as-is."'* ]] && echo 1 || echo 0)"
+
+# Behavioral: status reports intent + runtime + deps + token, even with
+# an empty config (no [telegram] block).
+_t_status_out="$(CONFIG_FILE=/dev/null /home/ckriech/projects/clemens33/ae/ae telegram status 2>&1)"
+assert_eq "telegram: status shows intent line"  "1" "$([[ "$_t_status_out" == *'intent:'*'enabled='* ]] && echo 1 || echo 0)"
+assert_eq "telegram: status shows runtime line" "1" "$([[ "$_t_status_out" == *'runtime:'*'tmux session ae-telegram'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: status shows deps line"    "1" "$([[ "$_t_status_out" == *'deps:'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: status shows token line"   "1" "$([[ "$_t_status_out" == *'token:'* ]] && echo 1 || echo 0)"
+unset _t_status_out
+
+# Behavioral: ae telegram help is self-contained.
+_t_help_out="$(/home/ckriech/projects/clemens33/ae/ae telegram help 2>&1)"
+assert_eq "telegram: help lists all four subcommands" "1" \
+    "$([[ "$_t_help_out" == *'ae telegram setup'* && "$_t_help_out" == *'ae telegram start'* && "$_t_help_out" == *'ae telegram stop'* && "$_t_help_out" == *'ae telegram status'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: help links to bridge-protocol.md" "1" \
+    "$([[ "$_t_help_out" == *'docs/internals/bridge-protocol.md'* ]] && echo 1 || echo 0)"
+unset _t_help_out
+
+# Behavioral: unknown subcommand exits non-zero and prints usage.
+_t_bogus_rc=0
+_t_bogus_out="$(CONFIG_FILE=/dev/null /home/ckriech/projects/clemens33/ae/ae telegram bogus 2>&1)" || _t_bogus_rc=$?
+assert_eq "telegram: unknown subcommand exits non-zero" "2" "$_t_bogus_rc"
+assert_eq "telegram: unknown subcommand prints help"    "1" "$([[ "$_t_bogus_out" == *'ae telegram setup'* ]] && echo 1 || echo 0)"
+unset _t_bogus_rc _t_bogus_out
+
+# Behavioral: ae doctor stays silent about telegram when feature is unused.
+# Each invocation gets an isolated XDG_RUNTIME_DIR so get_config's shared
+# config cache (~/.ae-config-cache-<uid>) can't bleed between cases.
+_t_cache_a="$(mktemp -d)"
+_t_doc_out_empty="$(XDG_RUNTIME_DIR="$_t_cache_a" CONFIG_FILE=/dev/null /home/ckriech/projects/clemens33/ae/ae doctor 2>&1 || true)"
+assert_eq "telegram: doctor stays silent when feature is not configured" "1" \
+    "$([[ "$_t_doc_out_empty" != *'telegram.'* ]] && echo 1 || echo 0)"
+rm -rf "$_t_cache_a"
+unset _t_doc_out_empty _t_cache_a
+
+# Behavioral: ae doctor reports telegram lines when [telegram] is present,
+# even minimal (just enabled=true with no token).
+_t_cache_b="$(mktemp -d)"
+_t_tmp_cfg="$(mktemp)"
+printf '[agents]\nclaude = "claude"\n\n[workspace]\nmain = claude:lead\n\n[telegram]\nenabled = true\n' >"$_t_tmp_cfg"
+_t_doc_out_cfg="$(XDG_RUNTIME_DIR="$_t_cache_b" CONFIG_FILE="$_t_tmp_cfg" /home/ckriech/projects/clemens33/ae/ae doctor 2>&1 || true)"
+assert_eq "telegram: doctor reports deps line when [telegram] is configured" "1" \
+    "$([[ "$_t_doc_out_cfg" == *'telegram.deps'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: doctor warns about missing token_file" "1" \
+    "$([[ "$_t_doc_out_cfg" == *'telegram.token'* ]] && echo 1 || echo 0)"
+rm -f "$_t_tmp_cfg"; rm -rf "$_t_cache_b"
+unset _t_tmp_cfg _t_doc_out_cfg _t_cache_b
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

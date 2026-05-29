@@ -15,7 +15,7 @@ Single bash script. No dependencies beyond bash and tmux. Keep it that way.
 
 - `ae` must remain a single bash script. No compiled languages, no runtimes.
 - Config is INI-style with a simple regex parser. Don't add TOML/YAML/JSON parsing.
-- No dependencies beyond bash >= 4.0, tmux, and git.
+- Core ae requires only `bash >= 4.0`, `tmux`, and `git`. Optional features may declare their own hard dependencies (e.g. `ae telegram` needs `jq` + `curl`), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them.
 - Session state lives in `~/.ae/sessions/`. Working directories stay clean.
 - No AI tool attribution in commits.
 - Keep the script lean. If it's getting bloated, cut, don't add.
