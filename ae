@@ -5632,7 +5632,7 @@ while true; do
                 _AE_EVENT_ACTION=nudge \
                 _AE_EVENT_SUMMARY="${stale_display}, no recent ae activity" \
                 "${META_DIR}/send" "$agent" \
-                "Status check: if you have more work, continue. If waiting on the user, blocked, or done, say so briefly (and declare it with the state helper)." 2>/dev/null || true
+                "Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: ${META_DIR}/state <waiting-user|blocked|done> \"<reason>\"" 2>/dev/null || true
             nudge_count["$pane"]=$((count + 1))
             _loop_log "  ${agent}  STALE (${stale_display}) — nudged ($((count + 1))/${MAX_NUDGES})"
         elif (( count == MAX_NUDGES )); then

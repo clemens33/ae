@@ -820,6 +820,12 @@ assert_eq "loop: uses send for nudges (not raw send-keys)" \
     "1" \
     "$([[ "$AE_SOURCE" == *'AE_SENDER_OVERRIDE=loop'* && "$AE_SOURCE" == *'_AE_EVENT_ACTION=nudge'* ]] && echo 1 || echo 0)"
 
+# The nudge is actionable: it hands the agent the exact state command so it can
+# silence further nudges by declaring waiting-user/blocked/done.
+assert_eq "loop: nudge message points to the state helper command" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'declare your state so I stop nudging: ${META_DIR}/state <waiting-user|blocked|done>'* ]] && echo 1 || echo 0)"
+
 assert_eq "loop: skips agents with a declared quiet state" \
     "1" \
     "$([[ "$AE_SOURCE" == *'_agent_quiet_reason'* && "$AE_SOURCE" == *'done (reported complete)'* ]] && echo 1 || echo 0)"
