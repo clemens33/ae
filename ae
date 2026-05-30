@@ -2482,12 +2482,28 @@ SESSIONS_DIR="$AE_HOME/sessions"
 STATE_DIR="$AE_HOME/telegram"
 STATE_FILE="$STATE_DIR/state.tsv"
 LOCK_FILE="$STATE_DIR/daemon.lock"
+LOG_FILE="$STATE_DIR/daemon.log"
+LOG_MAX_BYTES="${AE_TELEGRAM_LOG_MAX_BYTES:-1048576}" # rotate at ~1 MiB
 CONFIG_FILE="${CONFIG_FILE:-$AE_HOME/config}"
 
 DISCOVERY_INTERVAL="${AE_TELEGRAM_DISCOVERY_INTERVAL:-2}"
 POLL_INTERVAL="${AE_TELEGRAM_POLL_INTERVAL:-1}"
 
 mkdir -p "$STATE_DIR"
+
+# Persist ALL daemon output to a log file. This is stderr+stdout, not just the
+# _log lines, so an uncaught crash (e.g. the bash "unbound variable" message
+# under set -u that closes the tmux session) lands in the log and the death is
+# diagnosable after the session is gone — the pane-only output we had before
+# vanished with the session. Rotate once at startup if the log grew large.
+if [[ -f "$LOG_FILE" ]] && (($(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0) > LOG_MAX_BYTES)); then
+    mv -f "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null && chmod 600 "$LOG_FILE.1" 2>/dev/null || true
+fi
+# Owner-only: the log captures chat ids, session names, sender ids and raw
+# operational detail. Create it 600 BEFORE redirecting (shell redirection would
+# otherwise honour the ambient umask, typically 0644).
+: >>"$LOG_FILE" && chmod 600 "$LOG_FILE" 2>/dev/null || true
+exec >>"$LOG_FILE" 2>&1
 
 declare -A TG_CFG=()
 declare -A STATE_INODE=()
@@ -3064,7 +3080,16 @@ acquire_lock() {
 # header and wipe a healthy daemon's offsets.
 LOCK_HELD=0
 STATE_LOADED=0
-trap '[[ "$LOCK_HELD" == 1 && "$STATE_LOADED" == 1 ]] && { save_state 2>/dev/null || true; }; _log "daemon exiting"' EXIT
+# Single EXIT handler (bash keeps only one): capture the exit status FIRST, then
+# persist offsets if we held the lock, then record WHY the daemon stopped — the
+# rc makes a crash (e.g. set -u abort) distinguishable from a clean stop in the
+# log file.
+daemon_on_exit() {
+    local rc=$?
+    [[ "$LOCK_HELD" == 1 && "$STATE_LOADED" == 1 ]] && { save_state 2>/dev/null || true; }
+    _log "daemon exiting (rc=$rc)"
+}
+trap daemon_on_exit EXIT
 
 main() {
     mkdir -p "$STATE_DIR"

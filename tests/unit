@@ -2462,10 +2462,11 @@ assert_eq "telegram: offset only advances after the send decision (commit-after)
         new_offset=$((new_offset + line_bytes))
     done < <(tail -c'* ]] && echo 1 || echo 0)"
 
-# Codex review IMPORTANT #2 (round 2): EXIT trap must not clobber state.tsv
-# unless this process actually holds the lock AND loaded state.
-assert_eq "telegram: EXIT trap guarded by LOCK_HELD + STATE_LOADED" "1" \
-    "$([[ "$AE_SOURCE" == *'trap '"'"'[[ "$LOCK_HELD" == 1 && "$STATE_LOADED" == 1 ]] && { save_state 2>/dev/null || true; }'* ]] && echo 1 || echo 0)"
+# Codex review IMPORTANT #2 (round 2): EXIT handler must not clobber state.tsv
+# unless this process actually holds the lock AND loaded state. (Now lives in
+# the merged daemon_on_exit function, which also records the exit rc.)
+assert_eq "telegram: EXIT handler guarded by LOCK_HELD + STATE_LOADED" "1" \
+    "$([[ "$AE_SOURCE" == *'[[ "$LOCK_HELD" == 1 && "$STATE_LOADED" == 1 ]] && { save_state 2>/dev/null || true; }'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: LOCK_HELD set only after flock acquired" "1" \
     "$([[ "$AE_SOURCE" == *'acquire_lock || exit 1
     LOCK_HELD=1'* ]] && echo 1 || echo 0)"
@@ -2639,6 +2640,30 @@ assert_eq "telegram: doctor warns about missing token_file" "1" \
 rm -f "$_t_tmp_cfg"; rm -rf "$_t_cache_b"
 unset _t_tmp_cfg _t_doc_out_cfg _t_cache_b
 
+# ── Telegram daemon log file ─────────────────────────────────────────
+# The daemon lives in a detached tmux session; before this its only output
+# was the pane, which vanished when the session died (so a crash was
+# undiagnosable). Capture stderr+stdout to a persistent log instead.
+
+assert_eq "tg-log: daemon defines a LOG_FILE under the telegram state dir" "1" \
+    "$([[ "$AE_SOURCE" == *'LOG_FILE="$STATE_DIR/daemon.log"'* ]] && echo 1 || echo 0)"
+
+assert_eq "tg-log: daemon redirects all output (stderr+stdout) to the log" "1" \
+    "$([[ "$AE_SOURCE" == *'exec >>"$LOG_FILE" 2>&1'* ]] && echo 1 || echo 0)"
+
+# The single EXIT handler captures rc FIRST (bash keeps one EXIT trap, so this
+# is merged with the lock/state-save handler — a separate trap would be clobbered).
+assert_eq "tg-log: single EXIT handler records exit rc (merged, not clobbered)" "1" \
+    "$([[ "$AE_SOURCE" == *'daemon_on_exit() {'* && "$AE_SOURCE" == *'local rc=$?'* && "$AE_SOURCE" == *'_log "daemon exiting (rc=$rc)"'* && "$AE_SOURCE" == *'trap daemon_on_exit EXIT'* ]] && echo 1 || echo 0)"
+
+# Log file is created owner-only (600) before the redirect — it holds chat ids,
+# session names, sender ids.
+assert_eq "tg-log: daemon log is created chmod 600 before redirect" "1" \
+    "$([[ "$AE_SOURCE" == *': >>"$LOG_FILE" && chmod 600 "$LOG_FILE"'* ]] && echo 1 || echo 0)"
+
+assert_eq "tg-log: daemon rotates the log at startup past the size cap" "1" \
+    "$([[ "$AE_SOURCE" == *'mv -f "$LOG_FILE" "$LOG_FILE.1"'* && "$AE_SOURCE" == *'AE_TELEGRAM_LOG_MAX_BYTES'* ]] && echo 1 || echo 0)"
+
 # ── Telegram Stage 3 — bidirectional (chat → ae) ─────────────────────
 # Inbound command path. Structural assertions lock the codex-reviewed
 # security invariants; the behavioral block extracts the daemon body and
@@ -2702,8 +2727,11 @@ assert_eq "tg3: getUpdates is bounded by limit" "1" \
 
 # Behavioral: extract the daemon body and exercise the security functions.
 _tg3_daemon="$(mktemp)"
+# Strip the top-level lines that have side effects when SOURCED (vs run as the
+# real daemon): `main "$@"` and the `exec >>"$LOG_FILE" 2>&1` log redirect —
+# the latter would hijack this test's own stdout into a log file.
 awk "/cat >\"\\\$dest\" <<'TELEGRAM_DAEMON_EOF'/{f=1;next} /^TELEGRAM_DAEMON_EOF\$/{f=0} f" \
-    "$(dirname "$0")/../ae" | sed '/^main "\$@"$/d' >"$_tg3_daemon"
+    "$(dirname "$0")/../ae" | sed -e '/^main "\$@"$/d' -e '/^exec >>"\$LOG_FILE" 2>&1$/d' >"$_tg3_daemon"
 _tg3_home="$(mktemp -d)"
 _tg3_result="$(
     AE_HOME="$_tg3_home" bash -c '

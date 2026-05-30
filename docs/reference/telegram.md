@@ -113,6 +113,7 @@ In the meantime, run `ae telegram start` from your shell login (e.g. `~/.bashrc`
 | `~/.ae/telegram-daemon` | The generated daemon script (regenerated on every `ae telegram start`) |
 | `~/.ae/telegram/state.tsv` | Per-session `(session_id, inode, byte_offset, last_ts)` so restarts don't replay events |
 | `~/.ae/telegram/daemon.lock` | `flock` guard preventing two daemons from running at once |
+| `~/.ae/telegram/daemon.log` | All daemon output (stderr+stdout), so a crash is diagnosable after the tmux session is gone. Rotated to `daemon.log.1` once at startup past ~1 MiB (`AE_TELEGRAM_LOG_MAX_BYTES`) |
 | `~/.config/ae/telegram-bot.token` | The Bot API token (chmod 600, owner-only) |
 
 The bot token never appears in process argv: the daemon passes the URL to `curl` via `-K -` (config on stdin), and logs are passed through a `bot<TOKEN>` → `bot<redacted>` redactor.
@@ -126,14 +127,22 @@ Reset ownership: `chown $USER ~/.config/ae/telegram-bot.token`. Or check the pat
 Fix perms: `chmod 600 ~/.config/ae/telegram-bot.token`.
 
 **Daemon is running but no messages arrive**
-The bridge runs in its own tmux session (`ae-telegram`), not as an ae agent — the `peek` helper won't find it. Inspect its log directly:
+The bridge runs in its own tmux session (`ae-telegram`), not as an ae agent — the `peek` helper won't find it. Read its log file (persists across restarts and across the session dying):
 
 ```bash
-tmux capture-pane -p -t ae-telegram:0 | tail -50    # snapshot
-tmux attach -t ae-telegram                          # interactive (Ctrl+b d to detach)
+tail -n 50 ~/.ae/telegram/daemon.log     # recent output
+tail -f  ~/.ae/telegram/daemon.log        # follow live
 ```
 
-Likely causes: wrong `chat_id`, bot was blocked from the user side, network outage, or Telegram returned a 4xx (visible in the daemon log with the token redacted).
+Likely causes: wrong `chat_id`, bot was blocked from the user side, network outage, or Telegram returned a 4xx (visible in the log with the token redacted).
+
+**Daemon died and you want to know why**
+Because all output (including the bash error that killed it) is captured to the log, the cause survives the session. Check the tail and the rotated copy:
+
+```bash
+tail -n 30 ~/.ae/telegram/daemon.log      # the "daemon exiting (rc=…)" line + any error above it
+tail -n 30 ~/.ae/telegram/daemon.log.1    # previous run, if it rotated
+```
 
 **`ae <name>` prints `ae telegram: skipped autostart — missing deps:jq`**
 Install `jq`. The session continues without the bridge.
