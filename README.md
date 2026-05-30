@@ -63,8 +63,8 @@ ae my-feature                  # all agents resume with their conversation histo
 ```bash
 ae status my-feature           # see recent output from all agents
 ae list                        # running sessions, per-agent state + attn marker
-ae list --needs-me             # only sessions needing you (waiting-user/blocked/dead/stale)
-ae list --attn                 # short alias for --needs-me
+ae list --needs-attn           # only sessions needing attention (waiting-user/blocked/dead/stale)
+ae list --attn                 # short alias for --needs-attn
 ae list --all                  # include stopped sessions
 ae list --json                 # machine-readable digest (for scripts/agents)
 watch -n 10 'ae list'          # live dashboard
@@ -171,7 +171,7 @@ workers = codex:reviewer, opencode:tester
 ```
 ae [name]              Start or reattach a session
 ae [name] use <alias>  Start session with a specific agent as main
-ae list [--all|--stopped|--needs-me]
+ae list [--all|--stopped|--needs-attn]
                        List sessions (running by default) with state + attn
 ae status [name]       Show agent output without attaching
 ae doctor              Check local environment and ae config

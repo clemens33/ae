@@ -756,9 +756,9 @@ assert_eq "list: --stopped shows only stopped" \
     "1" \
     "$([[ "$AE_SOURCE" == *'--stopped) show_running=false; show_stopped=true'* ]] && echo 1 || echo 0)"
 
-assert_eq "list: --needs-me filters to attention sessions" \
+assert_eq "list: --needs-attn (and aliases) filter to attention sessions" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'--needs-me | --needs | --attn) only_needs_me=true'* && "$AE_SOURCE" == *'if $only_needs_me && [[ -z "$attn" ]]; then'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'--needs-attn | --needs-me | --needs | --attn) only_needs_me=true'* && "$AE_SOURCE" == *'if $only_needs_me && [[ -z "$attn" ]]; then'* ]] && echo 1 || echo 0)"
 
 assert_eq "list: unknown flag is rejected" \
     "1" \

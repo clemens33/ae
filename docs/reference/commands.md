@@ -3,9 +3,9 @@
 ```text
 ae [name]              Start or reattach a session
 ae [name] use <alias>  Start session with a specific agent as main
-ae list [--all|--stopped|--needs-me]
+ae list [--all|--stopped|--needs-attn]
                        List sessions (running by default; --all adds stopped
-                       history, --needs-me only those waiting on you)
+                       history, --needs-attn only those needing attention)
 ae status [name]       Show agent output without attaching
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
@@ -64,21 +64,21 @@ bulk of the list and just noise for monitoring. Flags:
 | *(none)* / `--running` | running sessions only |
 | `--all` | running sessions, then stopped ones |
 | `--stopped` | stopped sessions only |
-| `--needs-me` | only running sessions with an `attn:` reason; aliases: `--needs`, `--attn` |
+| `--needs-attn` | only running sessions with an `attn:` reason; aliases: `--needs-me`, `--needs`, `--attn` |
 | `--json` | machine-readable digest (honours the filters above) |
 
 For a live dashboard, wrap it with `watch`:
 
 ```bash
 watch -n 10 'ae list'            # live view of running sessions
-watch -n 10 'ae list --needs-me' # only what needs your attention
+watch -n 10 'ae list --needs-attn' # only what needs your attention
 ```
 
 ### `--json` digest
 
 `ae list --json` emits a single JSON object — a snapshot for a monitoring
 script or agent. Pure bash output; no `jq` required to produce it. The filters
-(`--running`/`--all`/`--stopped`/`--needs-me`) decide which sessions appear.
+(`--running`/`--all`/`--stopped`/`--needs-attn`) decide which sessions appear.
 
 ```json
 {

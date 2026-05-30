@@ -1548,18 +1548,18 @@ cmd_list() {
             --all) show_running=true; show_stopped=true ;;
             --stopped) show_running=false; show_stopped=true ;;
             --running) show_running=true; show_stopped=false ;;
-            --needs-me | --needs | --attn) only_needs_me=true ;;
+            --needs-attn | --needs-me | --needs | --attn) only_needs_me=true ;;
             --json) as_json=true ;;
             -h | --help)
                 cat >&2 <<'LISTHELP'
-Usage: ae list [--running | --all | --stopped | --needs-me] [--json]
-  (default)   running sessions only
-  --running   running sessions only (explicit)
-  --all       running sessions, then stopped ones
-  --stopped   stopped sessions only
-  --needs-me  only running sessions with an attn reason — declared
-              waiting-user/blocked, or watchdog-derived dead/stale/throttled;
-              implies running-only (aliases: --needs, --attn)
+Usage: ae list [--running | --all | --stopped | --needs-attn] [--json]
+  (default)    running sessions only
+  --running    running sessions only (explicit)
+  --all        running sessions, then stopped ones
+  --stopped    stopped sessions only
+  --needs-attn only running sessions with an attn reason — declared
+               waiting-user/blocked, or watchdog-derived dead/stale/throttled;
+               implies running-only (aliases: --needs-me, --needs, --attn)
   --json      machine-readable digest (schema_version, per-session
               needs_attention + attention reason, per-agent state); honours
               the filters above. Pure bash output — no jq required.
@@ -4121,9 +4121,9 @@ cmd_help() {
     echo "  ae --local [name]      Start session in current directory (default)"
     echo "  ae --copy [name]       Start session with full copy (includes untracked files)"
     echo "  ae --worktree [name]   Start session with git worktree (tracked files only)"
-    echo "  ae list [--all|--stopped|--needs-me]"
+    echo "  ae list [--all|--stopped|--needs-attn]"
     echo "                         List sessions (running by default; --all adds stopped,"
-    echo "                         --needs-me/--needs/--attn only those waiting on you)"
+    echo "                         --needs-attn only those needing attention)"
     echo "  ae status [name]       Show recent agent output without attaching"
     echo "  ae doctor [--refresh [name|all]]"
     echo "                         Check local environment and optionally refresh existing session helpers"
