@@ -2420,6 +2420,14 @@ cmd_loop() {
 # Token never appears in argv — curl reads its config from stdin.
 
 _TELEGRAM_TMUX_SESSION="ae-telegram"
+# Serializes start / stop / autostart(supervise) so an "is it enabled + running?"
+# check and the spawn/kill that follows are one atomic critical section. Without
+# it, a loop supervise tick can re-spawn a daemon the user just `stop`ped.
+_TELEGRAM_CONTROL_LOCK="${CONFIG_DIR}/telegram/control.lock"
+_telegram_control_lock_file() {
+    mkdir -p "${CONFIG_DIR}/telegram" 2>/dev/null || true
+    printf '%s' "$_TELEGRAM_CONTROL_LOCK"
+}
 
 # Resolve a possibly-tilde-prefixed path against $HOME. Patterns are
 # literal-tilde matches, not shell tilde-expansion (which would happen
@@ -2447,6 +2455,20 @@ _telegram_intent_enabled() {
     local v
     v="$(get_config telegram.enabled 2>/dev/null || true)"
     if _telegram_truthy "$v"; then echo "true"; else echo "false"; fi
+}
+
+# Same as above but bypasses the get_config CACHE: get_config caches per
+# XDG_RUNTIME_DIR, so a loop process with a different runtime dir could hold a
+# stale enabled=true even after `stop` wrote false. Reuses parse_config so the
+# value semantics (inline-comment stripping, quotes, local-override last-wins)
+# match get_config exactly — just without the cache. Authoritative for the
+# under-lock re-check.
+_telegram_intent_enabled_uncached() {
+    local entry result=""
+    while IFS= read -r entry; do
+        [[ "$entry" == "telegram.enabled="* ]] && result="${entry#*=}"
+    done < <(parse_config)
+    if _telegram_truthy "$result"; then echo "true"; else echo "false"; fi
 }
 
 # Idempotent check for daemon presence — uses exact tmux session match
@@ -3164,25 +3186,28 @@ _telegram_persist_intent() {
     local tmp="$cfg.tmp.$$"
     if [[ ! -f "$cfg" ]]; then
         printf '[telegram]\nenabled = %s\n' "$value" >"$cfg"
-        return 0
-    fi
-    if ! grep -q '^\[telegram\]' "$cfg"; then
+    elif ! grep -q '^\[telegram\]' "$cfg"; then
         printf '\n[telegram]\nenabled = %s\n' "$value" >>"$cfg"
-        return 0
+    else
+        awk -v val="$value" '
+            BEGIN { in_tg = 0; done = 0 }
+            /^\[telegram\][[:space:]]*$/ { in_tg = 1; print; next }
+            /^\[/ {
+                if (in_tg && !done) { print "enabled = " val; done = 1 }
+                in_tg = 0; print; next
+            }
+            in_tg && !done && /^[[:space:]]*enabled[[:space:]]*=/ {
+                print "enabled = " val; done = 1; next
+            }
+            { print }
+            END { if (in_tg && !done) print "enabled = " val }
+        ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
     fi
-    awk -v val="$value" '
-        BEGIN { in_tg = 0; done = 0 }
-        /^\[telegram\][[:space:]]*$/ { in_tg = 1; print; next }
-        /^\[/ {
-            if (in_tg && !done) { print "enabled = " val; done = 1 }
-            in_tg = 0; print; next
-        }
-        in_tg && !done && /^[[:space:]]*enabled[[:space:]]*=/ {
-            print "enabled = " val; done = 1; next
-        }
-        { print }
-        END { if (in_tg && !done) print "enabled = " val }
-    ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
+    # Bust the get_config cache. Its key is the config mtime (1s granularity), so
+    # a same-second write would otherwise serve a stale `enabled` — which the
+    # loop supervisor could act on, reviving a just-stopped bridge. Dropping the
+    # cache forces the next read (incl. the under-lock re-check) to re-parse.
+    rm -f "${XDG_RUNTIME_DIR:-/tmp}/.ae-config-cache-${UID:-0}" 2>/dev/null || true
 }
 
 # Spawn the daemon in its dedicated tmux session. Caller must have
@@ -3214,7 +3239,7 @@ _telegram_autostart_if_enabled() {
         echo "ae telegram: skipped autostart — missing deps:$missing" >&2
         return 0
     fi
-    local token_file err
+    local token_file err lock
     token_file="$(get_config telegram.token_file 2>/dev/null || true)"
     if err="$(_telegram_validate_token_file "$token_file" 2>&1)"; then
         : # ok
@@ -3222,9 +3247,22 @@ _telegram_autostart_if_enabled() {
         echo "ae telegram: skipped autostart — $err" >&2
         return 0
     fi
-    if ! _telegram_spawn_daemon 2>/dev/null; then
-        echo "ae telegram: autostart failed (continuing without bridge)" >&2
-    fi
+    lock="$(_telegram_control_lock_file)"
+    {
+        # Non-blocking: if a start/stop/supervise is mid-flight, skip this tick —
+        # autostart must never delay session launch. Re-check intent + running
+        # UNDER the lock so a concurrent `ae telegram stop` can't be undone (the
+        # stop-vs-supervise TOCTOU race).
+        flock -n 9 || return 0
+        # Authoritative (uncached) re-check: a same-second `stop` must win even
+        # if this process's get_config cache (possibly a different
+        # XDG_RUNTIME_DIR) still has enabled=true.
+        [[ "$(_telegram_intent_enabled_uncached)" == "true" ]] || return 0
+        _telegram_daemon_running && return 0
+        if ! _telegram_spawn_daemon 2>/dev/null; then
+            echo "ae telegram: autostart failed (continuing without bridge)" >&2
+        fi
+    } 9>"$lock"
     return 0
 }
 
@@ -3314,31 +3352,49 @@ cmd_telegram_start() {
         echo "Error: $err" >&2
         return 1
     fi
-    local chat_id
+    local chat_id lock
     chat_id="$(get_config telegram.chat_id 2>/dev/null || true)"
     [[ -n "$chat_id" ]] || { echo "Error: telegram.chat_id missing in config" >&2; return 1; }
-    _telegram_persist_intent "true"
-    if _telegram_daemon_running; then
-        echo "ae telegram: already running (tmux session $_TELEGRAM_TMUX_SESSION)"
-        return 0
-    fi
-    _telegram_spawn_daemon
-    if _telegram_daemon_running; then
-        echo "ae telegram: started (tmux session $_TELEGRAM_TMUX_SESSION)"
-        return 0
-    fi
-    echo "Error: failed to spawn daemon" >&2
-    return 1
+    lock="$(_telegram_control_lock_file)"
+    # Under the control lock so start serializes with stop/supervise (the whole
+    # start/stop/supervise trio shares it): enable + spawn happen atomically.
+    {
+        # Must hold the lock (serializes with stop/supervise). Busy → report,
+        # don't run the critical section unlocked.
+        flock -w 5 9 || { echo "ae telegram: busy (start/stop/supervise in progress) — try again" >&2; return 1; }
+        _telegram_persist_intent "true"
+        if _telegram_daemon_running; then
+            echo "ae telegram: already running (tmux session $_TELEGRAM_TMUX_SESSION)"
+            return 0
+        fi
+        _telegram_spawn_daemon
+        if _telegram_daemon_running; then
+            echo "ae telegram: started (tmux session $_TELEGRAM_TMUX_SESSION)"
+            return 0
+        fi
+        echo "Error: failed to spawn daemon" >&2
+        return 1
+    } 9>"$lock"
 }
 
 cmd_telegram_stop() {
-    _telegram_persist_intent "false"
-    if _telegram_daemon_running; then
-        tmux kill-session -t "$_TELEGRAM_TMUX_SESSION" 2>/dev/null
-        echo "ae telegram: stopped"
-    else
-        echo "ae telegram: was not running"
-    fi
+    local lock
+    lock="$(_telegram_control_lock_file)"
+    # Hold the control lock across disable + kill so an in-flight autostart/
+    # supervise tick can't re-spawn after we've disabled (it re-checks intent
+    # under the same lock). Wait briefly, but proceed best-effort if contended.
+    {
+        # Must hold the lock to be correct — proceeding unlocked would re-open
+        # the stop-vs-supervise race. If we can't get it in 5s, report busy.
+        flock -w 5 9 || { echo "ae telegram: busy (start/stop/supervise in progress) — try again" >&2; return 1; }
+        _telegram_persist_intent "false"
+        if _telegram_daemon_running; then
+            tmux kill-session -t "$_TELEGRAM_TMUX_SESSION" 2>/dev/null
+            echo "ae telegram: stopped"
+        else
+            echo "ae telegram: was not running"
+        fi
+    } 9>"$lock"
 }
 
 cmd_telegram_status() {
@@ -3384,6 +3440,10 @@ cmd_telegram() {
         start) cmd_telegram_start "$@" ;;
         stop) cmd_telegram_stop "$@" ;;
         status) cmd_telegram_status "$@" ;;
+        # Internal: best-effort revive used by the loop watchdog (step 10). Runs
+        # the same autostart path as `ae <name>` — respects [telegram] enabled,
+        # never flips the persisted flag, idempotent. Not for direct use.
+        _supervise) _telegram_autostart_if_enabled 2>/dev/null || true ;;
         help | -h | --help) cmd_telegram_help ;;
         *)
             echo "Error: unknown subcommand 'telegram $sub'" >&2
@@ -6330,6 +6390,9 @@ MAX_NUDGES="${AE_LOOP_MAX_NUDGES:-2}"
 STALE_SECS=$((STALE_MIN * 60))
 # Cycles of continuous throttle detection before escalating to alert (~5min default).
 THROTTLE_ALERT_CYCLES="${AE_LOOP_THROTTLE_ALERT_CYCLES:-5}"
+# How often (seconds) the watchdog best-effort revives the telegram bridge if it
+# died. 0 disables. Idempotent + respects [telegram] enabled — see step 10.
+TG_SUPERVISE_SECS="${AE_LOOP_TG_SUPERVISE_SEC:-120}"
 
 PIDFILE="${META_DIR}/.loop.pid"
 
@@ -6726,6 +6789,7 @@ _load_agent_bins() {
     done <"$META_DIR/meta"
 }
 
+last_tg_supervise=0
 while true; do
     # Self-terminate if session or meta is gone
     if ! tmux has-session -t "$_AE_SESSION" 2>/dev/null; then
@@ -6955,6 +7019,28 @@ while true; do
             ae_emit_event "recover" "$r_agent" "$r_captured" "captured ${r_tool} session id (${r_captured:0:8})"
             _loop_log "  ${r_agent}  RECOVERED ${r_tool} session id ${r_captured:0:8}"
         done < <("$AE_PATH_BIN" _recover-pending "$_AE_SESSION" 2>/dev/null || true)
+    fi
+
+    # 10. Telegram bridge supervision — best-effort revive of the machine-global
+    #     daemon if it died while this session's loop is alive. Throttled to
+    #     TG_SUPERVISE_SECS. The revive runs the autostart path (respects
+    #     [telegram] enabled, never flips it) and is idempotent/flock-guarded, so
+    #     concurrent loops across sessions are safe. Fully silent + non-fatal.
+    if (( TG_SUPERVISE_SECS > 0 )) && [[ -n "${AE_PATH_BIN:-}" && -x "${AE_PATH_BIN:-}" ]]; then
+        now_epoch="$(date +%s)"
+        if (( now_epoch - last_tg_supervise >= TG_SUPERVISE_SECS )); then
+            last_tg_supervise=$now_epoch
+            # Propagate this session's tmux server (mirrors spawn/retire) so the
+            # bridge is checked/spawned on the SAME server the session uses —
+            # otherwise it'd hit the default server and `ae telegram stop` under
+            # the intended server would miss it.
+            tg_srv="$(grep '^tmux_server=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+            if [[ -n "$tg_srv" ]]; then
+                AE_TMUX_SERVER="$tg_srv" "$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true
+            else
+                "$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true
+            fi
+        fi
     fi
 
     # Update tmux status bar via a tiny status file (read by status-right format)

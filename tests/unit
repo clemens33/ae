@@ -2634,6 +2634,17 @@ assert_eq "telegram: unknown subcommand exits non-zero" "2" "$_t_bogus_rc"
 assert_eq "telegram: unknown subcommand prints help"    "1" "$([[ "$_t_bogus_out" == *'ae telegram setup'* ]] && echo 1 || echo 0)"
 unset _t_bogus_rc _t_bogus_out
 
+# Behavioral: 'telegram _supervise' (the loop's revive hook) must be a silent
+# no-op when the feature is disabled — it runs on a timer across sessions, so it
+# must never act, spawn, or chatter when enabled=false. (Uses the ae under test.)
+_t_sup_cfg="$(mktemp)"; printf '[telegram]\nenabled = false\n' >"$_t_sup_cfg"
+_t_sup_rc=0
+_t_sup_out="$(CONFIG_FILE="$_t_sup_cfg" XDG_RUNTIME_DIR="$(mktemp -d)" "$(dirname "$0")/../ae" telegram _supervise 2>&1)" || _t_sup_rc=$?
+assert_eq "tg-sup: _supervise exits 0 when telegram disabled" "0" "$_t_sup_rc"
+assert_eq "tg-sup: _supervise is silent when telegram disabled" "1" \
+    "$([[ -z "$_t_sup_out" ]] && echo 1 || echo 0)"
+rm -f "$_t_sup_cfg"; unset _t_sup_cfg _t_sup_rc _t_sup_out
+
 # Behavioral: ae doctor stays silent about telegram when feature is unused.
 # Each invocation gets an isolated XDG_RUNTIME_DIR so get_config's shared
 # config cache (~/.ae-config-cache-<uid>) can't bleed between cases.
@@ -2680,6 +2691,78 @@ assert_eq "tg-log: daemon log is created chmod 600 before redirect" "1" \
 
 assert_eq "tg-log: daemon rotates the log at startup past the size cap" "1" \
     "$([[ "$AE_SOURCE" == *'mv -f "$LOG_FILE" "$LOG_FILE.1"'* && "$AE_SOURCE" == *'AE_TELEGRAM_LOG_MAX_BYTES'* ]] && echo 1 || echo 0)"
+
+# ── Loop-supervised telegram bridge ──────────────────────────────────
+# The per-session loop watchdog best-effort revives the machine-global daemon
+# if it died (closes the gap where a crash lingers until the next `ae <name>`).
+
+# Internal _supervise subcommand routes to the autostart path (respects
+# [telegram] enabled, idempotent, never flips the flag).
+assert_eq "tg-sup: 'telegram _supervise' calls the autostart path" "1" \
+    "$([[ "$AE_SOURCE" == *'_supervise) _telegram_autostart_if_enabled'* ]] && echo 1 || echo 0)"
+
+# Loop defines a throttle interval with an env override and a disable (0) path.
+assert_eq "tg-sup: loop defines TG_SUPERVISE_SECS (env override)" "1" \
+    "$([[ "$AE_SOURCE" == *'TG_SUPERVISE_SECS="${AE_LOOP_TG_SUPERVISE_SEC:-120}"'* ]] && echo 1 || echo 0)"
+
+# Step 10 runs in the cycle TAIL (after recover-pending), throttled, calling the
+# internal supervise via the ae binary — silent + non-fatal.
+assert_eq "tg-sup: loop step 10 revives via throttled 'telegram _supervise'" "1" \
+    "$([[ "$AE_SOURCE" == *'(( TG_SUPERVISE_SECS > 0 ))'* && "$AE_SOURCE" == *'now_epoch - last_tg_supervise >= TG_SUPERVISE_SECS'* && "$AE_SOURCE" == *'"$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true'* ]] && echo 1 || echo 0)"
+
+# Step 10 propagates the session's tmux server (codex IMPORTANT) so revive hits
+# the right server, mirroring spawn/retire.
+assert_eq "tg-sup: step 10 propagates AE_TMUX_SERVER from meta" "1" \
+    "$([[ "$AE_SOURCE" == *"grep '^tmux_server=' \"\$META_DIR/meta\""* && "$AE_SOURCE" == *'AE_TMUX_SERVER="$tg_srv" "$AE_PATH_BIN" telegram _supervise'* ]] && echo 1 || echo 0)"
+
+# Control lock (codex IMPORTANT): start/stop/supervise serialize so a stop can't
+# be undone by an in-flight supervise. autostart re-checks enabled UNDER the lock.
+assert_eq "tg-sup: control lock file defined" "1" \
+    "$([[ "$AE_SOURCE" == *'_TELEGRAM_CONTROL_LOCK="${CONFIG_DIR}/telegram/control.lock"'* ]] && echo 1 || echo 0)"
+# autostart's under-lock re-check is AUTHORITATIVE (uncached) — closes the
+# cross-XDG_RUNTIME_DIR cache-staleness race codex flagged.
+assert_eq "tg-sup: autostart re-checks enabled under lock via uncached read" "1" \
+    "$([[ "$AE_SOURCE" == *'flock -n 9 || return 0'* && "$AE_SOURCE" == *'[[ "$(_telegram_intent_enabled_uncached)" == "true" ]] || return 0'* ]] && echo 1 || echo 0)"
+# Uncached reader reuses parse_config (not a hand-rolled parser) so comment/
+# quote/override semantics match get_config exactly (codex IMPORTANT).
+assert_eq "tg-sup: uncached intent reader reuses parse_config (no cache)" "1" \
+    "$([[ "$AE_SOURCE" == *'_telegram_intent_enabled_uncached() {'* && "$AE_SOURCE" == *'telegram.enabled='* && "$AE_SOURCE" == *'done < <(parse_config)'* ]] && echo 1 || echo 0)"
+# Lock-acquisition failure → busy/return, NOT proceed unlocked (codex IMPORTANT:
+# a timed-out holder would otherwise re-open the race).
+assert_eq "tg-sup: stop returns busy if it can't get the lock" "1" \
+    "$([[ "$AE_SOURCE" == *'flock -w 5 9 || { echo "ae telegram: busy'* && "$AE_SOURCE" == *'_telegram_persist_intent "false"'* ]] && echo 1 || echo 0)"
+assert_eq "tg-sup: start runs under the lock + returns busy on contention" "1" \
+    "$([[ "$AE_SOURCE" == *'flock -w 5 9 || { echo "ae telegram: busy'* && "$AE_SOURCE" == *'_telegram_persist_intent "true"'* ]] && echo 1 || echo 0)"
+
+# persist_intent also busts the get_config cache so `ae telegram status` is
+# accurate immediately after a stop (the uncached re-check above is what closes
+# the race; this keeps status coherent too).
+assert_eq "tg-sup: persist_intent busts the config cache after writing" "1" \
+    "$([[ "$AE_SOURCE" == *'rm -f "${XDG_RUNTIME_DIR:-/tmp}/.ae-config-cache-${UID:-0}"'* ]] && echo 1 || echo 0)"
+
+# Behavioral regression (codex IMPORTANT): the uncached reader must strip inline
+# comments exactly like parse_config — `enabled = true # comment` is valid config
+# today, and a literal "true # comment" would make _telegram_truthy reject it and
+# supervision silently never revive.
+eval "$(awk '/^_telegram_truthy\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^parse_config\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_telegram_intent_enabled_uncached\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_tgc_cfg="$(mktemp)"
+printf '[telegram]\nenabled = true # turned on\n' >"$_tgc_cfg"
+assert_eq "tg-sup: uncached reader strips inline comment (true # ...)" "true" \
+    "$(CONFIG_FILE="$_tgc_cfg" AE_LOCAL_CONFIG="" _telegram_intent_enabled_uncached)"
+printf '[telegram]\nenabled = false\n' >"$_tgc_cfg"
+assert_eq "tg-sup: uncached reader reads a plain false" "false" \
+    "$(CONFIG_FILE="$_tgc_cfg" AE_LOCAL_CONFIG="" _telegram_intent_enabled_uncached)"
+printf '[other]\nx = 1\n' >"$_tgc_cfg"
+assert_eq "tg-sup: uncached reader defaults to false when key absent" "false" \
+    "$(CONFIG_FILE="$_tgc_cfg" AE_LOCAL_CONFIG="" _telegram_intent_enabled_uncached)"
+rm -f "$_tgc_cfg"; unset _tgc_cfg
+
+# Throttle accumulator is initialized once before the watchdog loop.
+assert_eq "tg-sup: last_tg_supervise initialized before the loop" "1" \
+    "$([[ "$AE_SOURCE" == *'last_tg_supervise=0
+while true; do'* ]] && echo 1 || echo 0)"
 
 # ── Telegram Stage 3 — bidirectional (chat → ae) ─────────────────────
 # Inbound command path. Structural assertions lock the codex-reviewed

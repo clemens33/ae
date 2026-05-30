@@ -98,13 +98,18 @@ The daemon is **per-machine**, not per-session. A single instance serves every a
 | `ae telegram start` | Spawn daemon now, persist `enabled = true`. |
 | `ae <name>` (start or resume) | If `enabled = true` and daemon not running and deps present, spawn it. **Never blocks session start** — any failure is a one-line stderr warning, agent launch continues. |
 | `ae telegram stop` | Kill daemon, persist `enabled = false`. |
-| Reboot | Daemon dies with tmux. Next `ae <name>` triggers the autostart hook. For sessions the daemon already tracked, the events written while it was down stay in `events.jsonl` and are forwarded from the saved offset when it restarts. A session first seen *after* the restart is initialized at end-of-file — its pre-restart events are not backfilled. |
+| Loop watchdog | While any session's [loop watchdog](../internals/loop.md) is running, it best-effort revives the daemon every ~`AE_LOOP_TG_SUPERVISE_SEC` seconds (default 120) if `enabled = true` and it died. Idempotent + respects the `enabled` flag, so a deliberate `ae telegram stop` is **not** undone. This is the closest thing to supervision without systemd — see below. |
+| Reboot | Daemon dies with tmux. Next `ae <name>` (or a running loop's supervision tick) triggers the autostart hook. For sessions the daemon already tracked, the events written while it was down stay in `events.jsonl` and are forwarded from the saved offset when it restarts. A session first seen *after* the restart is initialized at end-of-file — its pre-restart events are not backfilled. |
 
 **Recovery is bounded, not magic.** For the **outbound** path, Telegram queues nothing — what buffers missed events is the local `events.jsonl` plus the per-session offset in `state.tsv`: a tracked session resumes exactly where it left off, while a brand-new session starts from EOF (no history flood, by design). For the **inbound** path, Telegram *does* hold undelivered `getUpdates` for ~24h, so commands sent while the daemon is down are processed when it next polls (and the offset in `tg_offset` prevents re-running already-handled ones).
 
-**systemd supervision is deferred.** A user unit cannot reliably supervise the current daemon because `ae telegram start` spawns the tmux background session and exits — systemd would see the service as `inactive` immediately, and `Restart=on-failure` would not catch a crashed daemon. A foreground daemon mode for systemd is Stage 5 (see [issue #1](https://github.com/clemens33/ae/issues/1)).
+**Loop-watchdog supervision (best-effort).** The per-session loop watchdog re-runs the autostart check every ~120s (`AE_LOOP_TG_SUPERVISE_SEC`, set `0` to disable), so a crashed daemon is revived within a couple of minutes **as long as at least one session's loop is alive**. start / stop / supervise serialize on a control lock (`~/.ae/telegram/control.lock`) and the revive re-checks `enabled` under that lock, so a deliberate `ae telegram stop` is never undone by an in-flight tick, and concurrent loops across sessions don't fight. The supervise call inherits the session's tmux server, so multi-server setups revive on the right server. This is not a hard supervisor: if every session is stopped (or `ae loop` is off everywhere), nothing watches the bridge.
 
-In the meantime, run `ae telegram start` from your shell login (e.g. `~/.bashrc`, `~/.config/fish/conf.d/`) if you want the bridge alive before the first `ae <name>` invocation.
+> **No crash-loop backoff (yet).** If the daemon exits immediately while `enabled = true` (e.g. a bad token slips past validation), each running loop will keep re-spawning it on its ~120s cadence — visible as repeated `daemon started` / `daemon exiting` pairs in `daemon.log`. It won't duplicate daemons (lock-guarded), just churn. Watch the log; `ae telegram stop` halts it.
+
+**systemd supervision is deferred.** For a *hard* guarantee independent of running sessions, a user unit would need a foreground daemon mode (`ae telegram start` currently spawns the tmux session and exits, so `Restart=on-failure` can't catch a crash). That's Stage 5 (see [issue #1](https://github.com/clemens33/ae/issues/1)).
+
+To have the bridge alive before the first `ae <name>` of a session, run `ae telegram start` from your shell login (e.g. `~/.bashrc`, `~/.config/fish/conf.d/`).
 
 ## State files
 
