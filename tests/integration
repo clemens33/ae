@@ -182,6 +182,34 @@ assert_contains "health: agent row shows name" "dummy" "$list_output"
 "$AE" end -f test-health 2>/dev/null || true
 sleep 0.5
 
+# ── Test 3a: --active (recently-active filter) ───────────────────────
+
+REPO3A="$(setup_repo)"
+(cd "$REPO3A" && "$AE" --local test-active &) 2>/dev/null
+wait_for_session "test-active"
+sleep 1
+
+# A freshly-created session is recently active → --active includes it.
+assert_contains "active: fresh session shows in --active" "test-active" \
+    "$("$AE" list --active 2>/dev/null)"
+assert_contains "active: --busy alias works" "test-active" \
+    "$("$AE" list --busy 2>/dev/null)"
+
+# Backdate its activity well past the window → --active drops it, but the
+# unfiltered list still shows it (it's still running).
+ACTIVE_EVENTS="$HOME/.ae/sessions/test-active/events.jsonl"
+touch "$ACTIVE_EVENTS" 2>/dev/null || true
+touch -d "1 hour ago" "$ACTIVE_EVENTS" "$HOME/.ae/sessions/test-active/workspace.md" \
+    "$HOME/.ae/sessions/test-active/meta" 2>/dev/null || true
+assert_eq "active: stale session dropped from --active" "0" \
+    "$("$AE" list --active 2>/dev/null | grep -c 'test-active')"
+assert_contains "active: stale session still shown in plain list" "test-active" \
+    "$("$AE" list 2>/dev/null)"
+
+# Clean up
+"$AE" end -f test-active 2>/dev/null || true
+sleep 0.5
+
 # ── Test 3b: state column + session attn marker in list ──────────────
 
 REPO3B="$(setup_repo)"

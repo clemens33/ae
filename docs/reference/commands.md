@@ -65,6 +65,7 @@ bulk of the list and just noise for monitoring. Flags:
 | `--all` | running sessions, then stopped ones |
 | `--stopped` | stopped sessions only |
 | `--needs-attn` | only running sessions with an `attn:` reason; aliases: `--needs-me`, `--needs`, `--attn` |
+| `--active` | only running sessions with recent activity (an ae event within ~5 min; `AE_LIST_ACTIVE_SECS` to tune); alias: `--busy` |
 | `--json` | machine-readable digest (honours the filters above) |
 
 For a live dashboard, wrap it with `watch`:

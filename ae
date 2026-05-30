@@ -1542,17 +1542,20 @@ _list_session_json() {
 cmd_list() {
     # Default view = running only. Stopped sessions (often the bulk of the list)
     # are noise for day-to-day monitoring; gate them behind --all/--stopped.
-    local show_running=true show_stopped=false only_needs_me=false as_json=false
+    local show_running=true show_stopped=false only_needs_me=false only_active=false as_json=false
+    # "Recently active" window for --active (seconds). Override with the env var.
+    local active_window="${AE_LIST_ACTIVE_SECS:-300}"
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --all) show_running=true; show_stopped=true ;;
             --stopped) show_running=false; show_stopped=true ;;
             --running) show_running=true; show_stopped=false ;;
             --needs-attn | --needs-me | --needs | --attn) only_needs_me=true ;;
+            --active | --busy) only_active=true ;;
             --json) as_json=true ;;
             -h | --help)
                 cat >&2 <<'LISTHELP'
-Usage: ae list [--running | --all | --stopped | --needs-attn] [--json]
+Usage: ae list [--running | --all | --stopped | --needs-attn | --active] [--json]
   (default)    running sessions only
   --running    running sessions only (explicit)
   --all        running sessions, then stopped ones
@@ -1560,9 +1563,12 @@ Usage: ae list [--running | --all | --stopped | --needs-attn] [--json]
   --needs-attn only running sessions with an attn reason — declared
                waiting-user/blocked, or watchdog-derived dead/stale/throttled;
                implies running-only (aliases: --needs-me, --needs, --attn)
-  --json      machine-readable digest (schema_version, per-session
-              needs_attention + attention reason, per-agent state); honours
-              the filters above. Pure bash output — no jq required.
+  --active     only running sessions with recent activity (an ae event in the
+               last 5 min; set AE_LIST_ACTIVE_SECS to change). Implies
+               running-only (alias: --busy)
+  --json       machine-readable digest (schema_version, per-session
+               needs_attention + attention reason, per-agent state); honours
+               the filters above. Pure bash output — no jq required.
 LISTHELP
                 return 0
                 ;;
@@ -1570,13 +1576,15 @@ LISTHELP
         esac
         shift
     done
-    # --needs-me is about live attention; a stopped session can't need you. Force
-    # running-only so '--needs-me --all' / '--needs-me --stopped' don't leak
-    # unfiltered stopped rows.
-    if $only_needs_me; then
+    # --needs-me / --active are about live sessions; a stopped session can't
+    # need attention or be active. Force running-only so combining them with
+    # --all / --stopped doesn't leak unfiltered stopped rows.
+    if $only_needs_me || $only_active; then
         show_running=true
         show_stopped=false
     fi
+    local _now
+    _now="$(date +%s 2>/dev/null || echo 0)"
 
     # Column widths: SESSION(24) STATUS(8) MODE(10) ORIGIN(rest)
     local hdr='%-24s  %-8s  %-10s  %s\n'
@@ -1660,6 +1668,18 @@ LISTHELP
                 unset _state _cur _alive _areason
                 continue
             fi
+            # --active: skip sessions with no recent activity. "Recent" = an ae
+            # event (message/state/nudge/spawn/…) within active_window. Note this
+            # tracks ae-event recency, not raw pane churn — a silently-working
+            # agent that emits no events won't count until it uses a helper.
+            if $only_active; then
+                local _sae
+                _sae="$(_session_active_epoch "$sess_dir")"
+                if (( _now <= 0 || _sae <= 0 || _now - _sae >= active_window )); then
+                    unset _state _cur _alive _areason
+                    continue
+                fi
+            fi
             if $as_json; then
                 _list_session_json "running" "$name" "$mode" "$origin" "$workdir" \
                     "$sess_dir" "$attn" "$meta_blob"
@@ -1731,6 +1751,8 @@ LISTHELP
     if ! $header_printed; then
         if $only_needs_me; then
             echo "No running sessions need your attention."
+        elif $only_active; then
+            echo "No recently active sessions."
         elif $show_running && $show_stopped; then
             echo "No ae sessions."
         elif $show_running; then

@@ -810,9 +810,26 @@ assert_eq "list: stopped --json declares empty maps (set -u safety)" \
     "1" \
     "$([[ "$AE_SOURCE" == *'declare -A _alive=() _state=() _areason=()'* ]] && echo 1 || echo 0)"
 
-assert_eq "list: --needs-me implies running-only (no leaked stopped rows)" \
+assert_eq "list: --needs-me/--active imply running-only (no leaked stopped rows)" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'if $only_needs_me; then'*'show_running=true'*'show_stopped=false'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'if $only_needs_me || $only_active; then'*'show_running=true'*'show_stopped=false'* ]] && echo 1 || echo 0)"
+
+# --active: recently-active filter.
+assert_eq "list: --active/--busy flag parsed" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'--active | --busy) only_active=true'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: --active window defaults to 300s, overridable via env" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'active_window="${AE_LIST_ACTIVE_SECS:-300}"'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: --active skips sessions outside the activity window" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'if $only_active; then'* && "$AE_SOURCE" == *'_now - _sae >= active_window'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: --active empty result has its own message" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'No recently active sessions.'* ]] && echo 1 || echo 0)"
 
 assert_eq "list: empty --all says no ae sessions, not try --all again" \
     "1" \
