@@ -631,6 +631,20 @@ _ejs_c1="$(awk '/^_event_json_str\(\) \{/{c++} c==1{print} c==1&&/^\}$/{exit}' <
 _ejs_c2="$(awk '/^_event_json_str\(\) \{/{c++} c==2{print} c==2&&/^\}$/{exit}' <<<"$AE_SOURCE")"
 assert_eq "parser: _lib copy byte-identical to top-level" "$_ejs_c1" "$_ejs_c2"
 
+# Same guard for the JSON escaper: top-level _json_escape (for ae list --json)
+# must keep the same body as the _lib ae_json_escape. Compare bodies (the
+# function-name lines differ; the bodies must not).
+_je1="$(awk '/^_json_escape\(\) \{/{p=1;next} p&&/^\}$/{exit} p{print}' <<<"$AE_SOURCE")"
+_je2="$(awk '/^ae_json_escape\(\) \{/{p=1;next} p&&/^\}$/{exit} p{print}' <<<"$AE_SOURCE")"
+assert_eq "json_escape: top-level mirror body identical to _lib ae_json_escape" "$_je1" "$_je2"
+
+# Behavioural: _json_escape handles the JSON-significant characters.
+eval "$(awk '/^_json_escape\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "json_escape: escapes double quotes" 'say \"hi\"' "$(_json_escape 'say "hi"')"
+assert_eq "json_escape: escapes backslash" 'a\\b' "$(_json_escape 'a\b')"
+assert_eq "json_escape: escapes newline" 'l1\nl2' "$(_json_escape $'l1\nl2')"
+assert_eq "json_escape: clean string passes through" 'plain text 1' "$(_json_escape 'plain text 1')"
+
 _state_test_dir="$(mktemp -d)"
 _AE_META_DIR="$_state_test_dir"
 
@@ -763,6 +777,38 @@ assert_eq "list: rollup consults _agent_alert_reason then falls back to state" \
 assert_eq "list: rollup picks highest-severity reason via _attn_rank" \
     "1" \
     "$([[ "$AE_SOURCE" == *'if (( $(_attn_rank "$_r") > $(_attn_rank "$attn") )); then'* ]] && echo 1 || echo 0)"
+
+# Slice 3: --json digest.
+assert_eq "list: --json flag parsed" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'--json) as_json=true'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: --json emits a versioned digest wrapper" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'{"schema_version":1,"generated_at":"%s","sessions":['* ]] && echo 1 || echo 0)"
+
+assert_eq "list: --json renders sessions via _list_session_json" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'_list_session_json() {'* && "$AE_SOURCE" == *'_list_session_json "running"'* && "$AE_SOURCE" == *'_list_session_json "stopped"'* ]] && echo 1 || echo 0)"
+
+assert_eq "list: --json session object carries needs_attention + attention + agents" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'"needs_attention":%s,"attention":%s,"attention_rank":%s,"agents":['* ]] && echo 1 || echo 0)"
+
+assert_eq "list: --json honours --needs-me filter (skip before emit)" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'if $only_needs_me && [[ -z "$attn" ]]; then'* ]] && echo 1 || echo 0)"
+
+# --json alive means agent-process-alive: pane present AND non-shell (empty
+# marker), not merely pane-present (codex IMPORTANT).
+assert_eq "list: --json alive is process-alive (present and non-shell marker)" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'[[ -n "${_alive[$ref]+x}" && -z "${_alive[$ref]}" ]] && alive="true"'* ]] && echo 1 || echo 0)"
+
+# Stopped --json path declares empty maps so set -u subscript lookups are safe.
+assert_eq "list: stopped --json declares empty maps (set -u safety)" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'declare -A _alive=() _state=() _areason=()'* ]] && echo 1 || echo 0)"
 
 assert_eq "list: --needs-me implies running-only (no leaked stopped rows)" \
     "1" \

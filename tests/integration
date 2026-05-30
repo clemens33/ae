@@ -213,6 +213,22 @@ assert_contains "state: current agent waiting-user raises attn marker" "attn:wai
 assert_contains "list: --needs-me shows the waiting-user session" "test-state" \
     "$("$AE" list --needs-me 2>/dev/null)"
 
+# --json digest: versioned wrapper + the running session with its agents.
+json_out="$("$AE" list --json 2>/dev/null)"
+assert_contains "json: versioned wrapper" '"schema_version":1' "$json_out"
+assert_contains "json: includes the running session" '"name":"test-state"' "$json_out"
+assert_contains "json: marks it running" '"status":"running"' "$json_out"
+assert_contains "json: has an agents array" '"agents":[' "$json_out"
+# Strict parse when a JSON parser is available (no hard dependency).
+if command -v python3 >/dev/null 2>&1; then
+    assert_eq "json: output is valid JSON" "ok" \
+        "$(printf '%s' "$json_out" | python3 -c 'import json,sys; json.load(sys.stdin); print("ok")' 2>/dev/null || echo "invalid")"
+fi
+# --needs-me --json: the waiting-user session appears with its attention reason.
+needs_json="$("$AE" list --needs-me --json 2>/dev/null)"
+assert_contains "json: --needs-me digest flags attention" '"attention":"waiting-user"' "$needs_json"
+assert_contains "json: --needs-me digest marks needs_attention" '"needs_attention":true' "$needs_json"
+
 # --needs-me implies running-only (codex IMPORTANT): combining with --all must
 # not leak stopped rows. (test-resume from Test 2 is a stopped session here.)
 allneeds_output="$("$AE" list --all --needs-me 2>/dev/null)"
@@ -243,6 +259,19 @@ assert_contains "list: --stopped includes the stopped session" "test-state" \
 # is not shown (stopped sessions can't need you).
 assert_eq "list: --stopped --needs-me does not show the stopped session" "0" \
     "$("$AE" list --stopped --needs-me 2>/dev/null | grep -c 'test-state')"
+
+# --json over stopped/all sessions must stay valid JSON (regression for the
+# set -u undeclared-map crash codex caught). A stopped session has agent rows.
+assert_contains "json: --stopped digest includes the stopped session" '"name":"test-state"' \
+    "$("$AE" list --stopped --json 2>/dev/null)"
+assert_contains "json: stopped agents render alive false" '"alive":false' \
+    "$("$AE" list --stopped --json 2>/dev/null)"
+if command -v python3 >/dev/null 2>&1; then
+    assert_eq "json: --stopped output is valid JSON" "ok" \
+        "$("$AE" list --stopped --json 2>/dev/null | python3 -c 'import json,sys; json.load(sys.stdin); print("ok")' 2>/dev/null || echo "invalid")"
+    assert_eq "json: --all output is valid JSON" "ok" \
+        "$("$AE" list --all --json 2>/dev/null | python3 -c 'import json,sys; json.load(sys.stdin); print("ok")' 2>/dev/null || echo "invalid")"
+fi
 
 # Clean up
 "$AE" end -f test-state 2>/dev/null || true

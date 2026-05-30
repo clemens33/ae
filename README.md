@@ -66,6 +66,7 @@ ae list                        # running sessions, per-agent state + attn marker
 ae list --needs-me             # only sessions needing you (waiting-user/blocked/dead/stale)
 ae list --attn                 # short alias for --needs-me
 ae list --all                  # include stopped sessions
+ae list --json                 # machine-readable digest (for scripts/agents)
 watch -n 10 'ae list'          # live dashboard
 ```
 

@@ -65,6 +65,7 @@ bulk of the list and just noise for monitoring. Flags:
 | `--all` | running sessions, then stopped ones |
 | `--stopped` | stopped sessions only |
 | `--needs-me` | only running sessions with an `attn:` reason; aliases: `--needs`, `--attn` |
+| `--json` | machine-readable digest (honours the filters above) |
 
 For a live dashboard, wrap it with `watch`:
 
@@ -72,6 +73,37 @@ For a live dashboard, wrap it with `watch`:
 watch -n 10 'ae list'            # live view of running sessions
 watch -n 10 'ae list --needs-me' # only what needs your attention
 ```
+
+### `--json` digest
+
+`ae list --json` emits a single JSON object — a snapshot for a monitoring
+script or agent. Pure bash output; no `jq` required to produce it. The filters
+(`--running`/`--all`/`--stopped`/`--needs-me`) decide which sessions appear.
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-29T14:00:00Z",
+  "sessions": [
+    {
+      "name": "my-feature", "status": "running",
+      "mode": "local", "origin": "/…", "work_dir": "/…",
+      "last_active_epoch": 1780000000,
+      "needs_attention": true, "attention": "blocked", "attention_rank": 2,
+      "agents": [
+        {"ref": "claude:lead", "alias": "claude", "name": "lead",
+         "session_id": "e795c9e9", "alive": true, "state": "blocked",
+         "reason": "blocked"}
+      ]
+    }
+  ]
+}
+```
+
+`attention` is the session's single most-actionable reason (see the reason
+table above); each agent's `reason` is its own contribution. `schema_version`
+lets consumers gate on shape. Unanswered `ask`/`review` request edges and
+richer per-agent timing fields are planned additions.
 
 ## `ae status [name]`
 

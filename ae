@@ -1332,17 +1332,7 @@ _print_session_meta_line() {
     local ae_ver active_ts active_str
     ae_ver="$(echo "$blob" | sed -n 's/^ae_version=//p')"
     ae_ver="${ae_ver:-?}"
-    # Last active = mtime of events.jsonl, fallback to workspace.md, fallback to meta
-    active_ts=0
-    if [[ -n "$sess_dir" ]]; then
-        local f
-        for f in "${sess_dir}/events.jsonl" "${sess_dir}/workspace.md" "${sess_dir}/meta"; do
-            if [[ -f "$f" ]]; then
-                active_ts="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
-                [[ "$active_ts" != "0" ]] && break
-            fi
-        done
-    fi
+    active_ts="$(_session_active_epoch "$sess_dir")"
     active_str="$(format_relative_time "$active_ts")"
     if [[ -n "$attn" ]]; then
         printf "  ae %s · active %s · attn:%s\n" "$ae_ver" "$active_str" "$attn"
@@ -1479,20 +1469,90 @@ _attn_rank() {
     esac
 }
 
+# Escape a string for embedding in JSON. Intentionally mirrored from the _lib
+# ae_json_escape (which is heredoc text, unsourceable by the main script) so
+# `ae list --json` needs no jq. Keep the two byte-identical; the unit suite
+# asserts it.
+_json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\t'/\\t}"
+    s="${s//$'\r'/\\r}"
+    printf '%s' "$s"
+}
+
+# Last-active epoch for a session: mtime of the first existing of events.jsonl,
+# then workspace.md, then meta (events.jsonl is the activity log, so in practice
+# it is the most recently touched), or 0. NOT a max() across the three — this
+# preserves the long-standing list meta-line behaviour, now shared with --json.
+_session_active_epoch() {
+    local sess_dir="$1" f ts=0
+    [[ -n "$sess_dir" ]] || { printf '0'; return; }
+    for f in "${sess_dir}/events.jsonl" "${sess_dir}/workspace.md" "${sess_dir}/meta"; do
+        if [[ -f "$f" ]]; then
+            ts="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+            [[ "$ts" != "0" ]] && break
+        fi
+    done
+    printf '%s' "$ts"
+}
+
+# Emit one session as a JSON object for `ae list --json`. A cmd_list helper:
+# it reads the per-iteration maps (_state/_alive/_areason) and the comma tracker
+# (json_first) from cmd_list's scope via bash dynamic scoping. For stopped
+# sessions those maps are unset, so agents render alive=false / state=null /
+# reason=null. Args: status name mode origin workdir sess_dir attn meta_blob.
+# shellcheck disable=SC2154 # _alive/_state/_areason/json_first come from cmd_list scope
+_list_session_json() {
+    local status="$1" name="$2" mode="$3" origin="$4" workdir="$5" sess_dir="$6" attn="$7" blob="$8"
+    $json_first || printf ','
+    json_first=false
+    local na="false" at="null"
+    if [[ -n "$attn" ]]; then na="true"; at="\"$(_json_escape "$attn")\""; fi
+    printf '{"name":"%s","status":"%s","mode":"%s","origin":"%s","work_dir":"%s","last_active_epoch":%s,"needs_attention":%s,"attention":%s,"attention_rank":%s,"agents":[' \
+        "$(_json_escape "$name")" "$status" "$(_json_escape "$mode")" "$(_json_escape "$origin")" \
+        "$(_json_escape "$workdir")" "$(_session_active_epoch "$sess_dir")" "$na" "$at" "$(_attn_rank "$attn")"
+    local _afirst=true mk mv ref sid alive st rs
+    while IFS='=' read -r mk mv; do
+        [[ "$mk" == agent.* ]] || continue
+        IFS=$'\t' read -r ref sid < <(_parse_agent_entry "$mv")
+        [[ -n "$ref" ]] || continue
+        $_afirst || printf ','
+        _afirst=false
+        # alive = the agent process is actually running. A pane that dropped to
+        # a bare shell (marker '!') is present but the agent is dead, so it is
+        # NOT alive; a missing pane (unset) is not alive either. Only a pane
+        # running a non-shell foreground command (empty marker) counts.
+        alive="false"
+        [[ -n "${_alive[$ref]+x}" && -z "${_alive[$ref]}" ]] && alive="true"
+        st="null"
+        [[ -n "${_state[$ref]:-}" ]] && st="\"$(_json_escape "${_state[$ref]}")\""
+        rs="null"
+        [[ -n "${_areason[$ref]:-}" ]] && rs="\"$(_json_escape "${_areason[$ref]}")\""
+        printf '{"ref":"%s","alias":"%s","name":"%s","session_id":"%s","alive":%s,"state":%s,"reason":%s}' \
+            "$(_json_escape "$ref")" "$(_json_escape "${ref%%:*}")" "$(_json_escape "${ref#*:}")" \
+            "$(_json_escape "$sid")" "$alive" "$st" "$rs"
+    done <<<"$blob"
+    printf ']}'
+}
+
 # shellcheck disable=SC2059 # format strings stored in variables intentionally
 cmd_list() {
     # Default view = running only. Stopped sessions (often the bulk of the list)
     # are noise for day-to-day monitoring; gate them behind --all/--stopped.
-    local show_running=true show_stopped=false only_needs_me=false
+    local show_running=true show_stopped=false only_needs_me=false as_json=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --all) show_running=true; show_stopped=true ;;
             --stopped) show_running=false; show_stopped=true ;;
             --running) show_running=true; show_stopped=false ;;
             --needs-me | --needs | --attn) only_needs_me=true ;;
+            --json) as_json=true ;;
             -h | --help)
                 cat >&2 <<'LISTHELP'
-Usage: ae list [--running | --all | --stopped | --needs-me]
+Usage: ae list [--running | --all | --stopped | --needs-me] [--json]
   (default)   running sessions only
   --running   running sessions only (explicit)
   --all       running sessions, then stopped ones
@@ -1500,6 +1560,9 @@ Usage: ae list [--running | --all | --stopped | --needs-me]
   --needs-me  only running sessions with an attn reason — declared
               waiting-user/blocked, or watchdog-derived dead/stale/throttled;
               implies running-only (aliases: --needs, --attn)
+  --json      machine-readable digest (schema_version, per-session
+              needs_attention + attention reason, per-agent state); honours
+              the filters above. Pure bash output — no jq required.
 LISTHELP
                 return 0
                 ;;
@@ -1519,6 +1582,13 @@ LISTHELP
     local hdr='%-24s  %-8s  %-10s  %s\n'
     local indent='%-24s  %-8s  %-10s  %s\n' # same widths for target indent
     local header_printed=false
+
+    # --json: a single digest object. schema_version lets consumers (a future
+    # monitoring agent) gate on shape; generated_at stamps the snapshot.
+    local json_first=true
+    if $as_json; then
+        printf '{"schema_version":1,"generated_at":"%s","sessions":[' "$(date -u +%FT%TZ)"
+    fi
 
     if $show_running; then
         local sessions
@@ -1569,6 +1639,7 @@ LISTHELP
             # blocked > throttled. 'dead' = pane vanished; stale/throttled come
             # from the loop watchdog's alert events; waiting-user/blocked are
             # self-declared. (Pending-review edges are a planned follow-up.)
+            declare -A _areason=()
             local attn="" _a _r _events="${sess_dir}/events.jsonl"
             for _a in "${!_cur[@]}"; do
                 if [[ -z "${_alive[$_a]+x}" ]]; then
@@ -1578,6 +1649,7 @@ LISTHELP
                     [[ -n "$_r" ]] || _r="${_state[$_a]:-}"
                 fi
                 case "$_r" in waiting-user | blocked | dead | stale | throttled) ;; *) _r="" ;; esac
+                _areason["$_a"]="$_r"
                 [[ -n "$_r" ]] || continue
                 if (( $(_attn_rank "$_r") > $(_attn_rank "$attn") )); then
                     attn="$_r"
@@ -1585,7 +1657,13 @@ LISTHELP
             done
             # --needs-me: skip sessions with no attention signal.
             if $only_needs_me && [[ -z "$attn" ]]; then
-                unset _state _cur _alive
+                unset _state _cur _alive _areason
+                continue
+            fi
+            if $as_json; then
+                _list_session_json "running" "$name" "$mode" "$origin" "$workdir" \
+                    "$sess_dir" "$attn" "$meta_blob"
+                unset _alive _state _cur _areason
                 continue
             fi
             if ! $header_printed; then
@@ -1602,16 +1680,12 @@ LISTHELP
                 local marker="${_alive[$aname]:-}"
                 printf "  %-22s  %-8s  %-12s  %s\n" "$aname" "$asid" "${_state[$aname]:--}" "$marker"
             done <<<"$meta_blob"
-            unset _alive _state _cur
+            unset _alive _state _cur _areason
         done <<<"$sessions"
     fi
 
     if $show_stopped; then
         while IFS= read -r name; do
-            if ! $header_printed; then
-                printf "$hdr" "SESSION" "STATUS" "MODE" "ORIGIN"
-                header_printed=true
-            fi
             local sess_dir
             sess_dir="$(_resolve_session_dir "$name")"
             local meta_blob=""
@@ -1622,6 +1696,21 @@ LISTHELP
             origin="$(echo "$meta_blob" | sed -n 's/^origin=//p')"
             origin="${origin:--}"
             workdir="$(echo "$meta_blob" | sed -n 's/^work_dir=//p')"
+            if $as_json; then
+                # Stopped: no live state/attn. Declare EMPTY maps so the agent
+                # lookups in _list_session_json resolve associatively — under
+                # `set -u` a subscript on an UNDECLARED array is treated as an
+                # arithmetic index and aborts on a non-numeric agent ref.
+                declare -A _alive=() _state=() _areason=()
+                _list_session_json "stopped" "$name" "$mode" "$origin" "$workdir" \
+                    "$sess_dir" "" "$meta_blob"
+                unset _alive _state _areason
+                continue
+            fi
+            if ! $header_printed; then
+                printf "$hdr" "SESSION" "STATUS" "MODE" "ORIGIN"
+                header_printed=true
+            fi
             printf "$hdr" "$name" "stopped" "$mode" "$origin"
             [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
             _print_session_meta_line "$meta_blob" "$sess_dir"
@@ -1632,6 +1721,11 @@ LISTHELP
                 printf "  %-22s  %s\n" "$aname" "$asid"
             done <<<"$meta_blob"
         done < <(iter_stopped_sessions)
+    fi
+
+    if $as_json; then
+        printf ']}\n'
+        return 0
     fi
 
     if ! $header_printed; then
