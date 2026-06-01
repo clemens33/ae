@@ -63,7 +63,9 @@ Inbound is active **only when `allowed_user_ids` is non-empty** (`ae telegram se
 
 Anything else is silently dropped. Commands are never accepted from groups or any other chat, even from an allow-listed user.
 
-**Grammar:**
+**Reply-to-routing (the easy path).** Just **reply** (Telegram swipe-reply) to any event the bridge forwarded, and your message is delivered straight to that event's agent — no `/session …` typing. The bridge reads the replied-to message's header (`[session] action  actor …`) to find the target, then revalidates it exactly like a `/session … send` (running session + real agent), so a reply can only ever reach a real agent you could already address. Precedence: a message that (after trimming) **starts with `/` is always a command**, even when sent as a reply; any other reply is routed; a non-reply non-slash message is treated as a command (so it gets `/help`).
+
+**Grammar (explicit commands):**
 
 ```
 /help                                     show this list

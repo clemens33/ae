@@ -2863,7 +2863,7 @@ tg_handle_command() {
 
     case "$cmd" in
         /help|"")
-            send_message "$(printf 'ae telegram commands:\n/list\n/session <name|id-prefix> send <agent> <msg>\n/session <name|id-prefix> ask <agent> <msg>')"
+            send_message "$(printf 'ae telegram:\n• Reply to any forwarded message to answer that agent directly (no command needed).\n/list\n/session <name|id-prefix> send <agent> <msg>\n/session <name|id-prefix> ask <agent> <msg>')"
             ;;
         /list)
             send_message "$(tg_cmd_list)"
@@ -2893,6 +2893,17 @@ tg_cmd_session() {
         send|ask) ;;
         *) send_message "Unknown verb '$verb' (use send or ask)"; return ;;
     esac
+    tg_dispatch "$from_id" "$ref" "$verb" "$agent" "$msg"
+}
+
+# Resolve <ref>+<agent> against RUNNING sessions and deliver <msg> via the
+# session's send/ask helper under the external-actor identity. Shared by the
+# explicit /session command and by reply-routing — all the security lives here:
+# resolve_session_ref (running-only) + resolve_agent_in_session (canonicalize +
+# reject %pane / @session / telegram: targets, so a chat command can't escape
+# the named session). Reports each failure back to chat; returns nonzero on any.
+tg_dispatch() {
+    local from_id="$1" ref="$2" verb="$3" agent="$4" msg="$5"
     # Capture rc explicitly — `if ! cmd` would make $? the status of `!` (0),
     # so the ambiguous (2) branch would be unreachable (codex NIT).
     local resolved rc name dir
@@ -2902,7 +2913,7 @@ tg_cmd_session() {
             2) send_message "Ambiguous session '$ref' — be more specific" ;;
             *) send_message "No running session matching '$ref'" ;;
         esac
-        return
+        return 1
     fi
     name="${resolved%%$'\t'*}"; dir="${resolved#*$'\t'}"
     # Constrain the target to an agent that actually lives in THIS session,
@@ -2916,12 +2927,12 @@ tg_cmd_session() {
             2) send_message "Ambiguous agent '$agent' in ${name} — use alias:name" ;;
             *) send_message "No agent '$agent' in session ${name}" ;;
         esac
-        return
+        return 1
     fi
     local helper="$dir/$verb"
     if [[ ! -x "$helper" ]]; then
         send_message "Session '$name' has no '$verb' helper"
-        return
+        return 1
     fi
     # Dispatch with the external-actor identity. No eval; positional args;
     # the agent is the canonical alias:name we validated above.
@@ -2930,6 +2941,35 @@ tg_cmd_session() {
     else
         send_message "Failed to ${verb} ${canon} in ${name}"
     fi
+}
+
+# Parse the header line of a message THIS bridge forwarded — format_event emits
+# "[<session>] <action>  <actor> [→ <target>]" as line 1. Echoes
+# "<session>\t<actor>" or returns nonzero if it doesn't look like ours. Values
+# are validated downstream (resolve_session_ref / resolve_agent_in_session), so
+# a misparse fails safe rather than dispatching somewhere unexpected.
+tg_parse_reply_target() {
+    local rtext="$1" first sess rest action actor
+    first="${rtext%%$'\n'*}"
+    [[ "$first" == "["*"] "* ]] || return 1
+    sess="${first#\[}"; sess="${sess%%]*}"
+    rest="${first#*] }"
+    read -r action actor _ <<<"$rest"
+    [[ -n "$sess" && -n "$actor" ]] || return 1
+    printf '%s\t%s' "$sess" "$actor"
+}
+
+# A plain (non-command) message sent as a Telegram REPLY to a forwarded event:
+# route it to that event's agent — no `/session …` typing. reply = send (deliver
+# the answer straight into the agent's pane).
+tg_handle_reply() {
+    local from_id="$1" rtext="$2" msg="$3" tgt sess actor
+    if ! tgt="$(tg_parse_reply_target "$rtext")"; then
+        send_message "Couldn't tell which agent that was a reply to — use /session <name> send <agent> <msg>"
+        return
+    fi
+    sess="${tgt%%$'\t'*}"; actor="${tgt#*$'\t'}"
+    tg_dispatch "$from_id" "$sess" "send" "$actor" "$msg"
 }
 
 # Poll getUpdates once (short-poll, bounded). For each update: persist the
@@ -2974,7 +3014,19 @@ EOF
             _log "dropped unauthorized update (from=$fid chat=$cid type=$ctype)"
             continue
         fi
-        tg_handle_command "$fid" "$mtext"
+        # Reply-to-routing: a plain (non-slash) message sent as a reply to a
+        # forwarded event routes straight to that event's agent. Slash commands
+        # are always handled as commands, even when sent as a reply. Trim leading
+        # whitespace before the slash check so " /list" / a leading-newline are
+        # still recognised as commands (matches tg_handle_command's own trim).
+        local rtext mt_lead
+        rtext=$(printf '%s' "$upd" | jq -r '.message.reply_to_message.text // empty' 2>/dev/null)
+        mt_lead="${mtext#"${mtext%%[![:space:]]*}"}"
+        if [[ "$mt_lead" != /* && -n "$rtext" ]]; then
+            tg_handle_reply "$fid" "$rtext" "$mtext"
+        else
+            tg_handle_command "$fid" "$mtext"
+        fi
     done
 }
 

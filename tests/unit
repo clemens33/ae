@@ -2871,12 +2871,42 @@ _tg3_result="$(
         resolve_agent_in_session "$d" "@x:y"  >/dev/null || p=$((p+1)) # 16 reject cross-session
         resolve_agent_in_session "$d" "telegram:9" >/dev/null || p=$((p+1)) # 17 reject external prefix
         resolve_agent_in_session "$d" "ghost" >/dev/null || p=$((p+1)) # 18 reject unknown agent
+        # Reply-routing: parse the forwarded-message header → session\tactor.
+        [[ "$(tg_parse_reply_target "[alpha] waiting-user  claude:lead")" == "alpha	claude:lead" ]] && p=$((p+1)) # 19 parse plain header
+        [[ "$(tg_parse_reply_target "[alpha] ask  claude:lead → codex:coworker
+the question text")" == "alpha	claude:lead" ]] && p=$((p+1)) # 20 header w/ target+summary → actor, line 1 only
+        tg_parse_reply_target "just a normal message" >/dev/null || p=$((p+1)) # 21 reject non-header
+        tg_parse_reply_target "" >/dev/null || p=$((p+1)) # 22 reject empty
         echo "$p"
     ' 2>/dev/null
 )"
-assert_eq "tg3: security functions behavioral suite (18 checks)" "18" "$_tg3_result"
+assert_eq "tg3: security + reply-parse behavioral suite (22 checks)" "22" "$_tg3_result"
 rm -rf "$_tg3_home"; rm -f "$_tg3_daemon"
 unset _tg3_daemon _tg3_home _tg3_result
+
+# ── Telegram reply-to-routing (inbound UX, slice 1) ──────────────────
+# Reply to a forwarded event → routes to that agent, no /session typing.
+
+# Shared dispatch factored out of /session and reused by reply-routing (all the
+# resolve/canonicalize security lives in one place).
+assert_eq "tg-reply: tg_dispatch shared by /session and reply paths" "1" \
+    "$([[ "$AE_SOURCE" == *'tg_dispatch() {'* && "$AE_SOURCE" == *'tg_dispatch "$from_id" "$ref" "$verb" "$agent" "$msg"'* ]] && echo 1 || echo 0)"
+# Reply path parses the forwarded header then dispatches a send to that actor.
+assert_eq "tg-reply: tg_handle_reply parses target then sends to the actor" "1" \
+    "$([[ "$AE_SOURCE" == *'tg_handle_reply() {'* && "$AE_SOURCE" == *'tg_parse_reply_target "$rtext"'* && "$AE_SOURCE" == *'tg_dispatch "$from_id" "$sess" "send" "$actor" "$msg"'* ]] && echo 1 || echo 0)"
+# poll_updates routes a non-slash reply via tg_handle_reply; slash always = command.
+assert_eq "tg-reply: poll_updates routes non-slash replies to tg_handle_reply" "1" \
+    "$([[ "$AE_SOURCE" == *'reply_to_message.text // empty'* && "$AE_SOURCE" == *'if [[ "$mt_lead" != /* && -n "$rtext" ]]; then'* && "$AE_SOURCE" == *'tg_handle_reply "$fid" "$rtext" "$mtext"'* ]] && echo 1 || echo 0)"
+# Slash detection trims leading whitespace first (codex NIT) so " /list" or a
+# leading-newline reply is still a command, matching tg_handle_command's trim.
+assert_eq "tg-reply: slash-vs-reply check trims leading whitespace" "1" \
+    "$([[ "$AE_SOURCE" == *'mt_lead="${mtext#"${mtext%%[![:space:]]*}"}"'* ]] && echo 1 || echo 0)"
+# Misparse fails safe (reuses the downstream validators; no eval).
+assert_eq "tg-reply: unparseable reply target is reported, not dispatched" "1" \
+    "$([[ "$AE_SOURCE" == *"Couldn't tell which agent that was a reply to"* ]] && echo 1 || echo 0)"
+# /help advertises reply-routing.
+assert_eq "tg-reply: /help mentions replying to a forwarded message" "1" \
+    "$([[ "$AE_SOURCE" == *'Reply to any forwarded message to answer that agent directly'* ]] && echo 1 || echo 0)"
 
 # ── Results ──────────────────────────────────────────────────────────
 
