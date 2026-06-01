@@ -2963,6 +2963,16 @@ assert_eq "tg-menu: menu advertises list/use/session/help" "1" \
 # Best-effort: a failed registration is logged, not fatal.
 assert_eq "tg-menu: setMyCommands failure is non-fatal (logged, returns 0)" "1" \
     "$([[ "$AE_SOURCE" == *'setMyCommands failed:'* && "$AE_SOURCE" == *'setMyCommands not ok:'* ]] && echo 1 || echo 0)"
+# REGRESSION GUARD: the commands JSON MUST go through data-urlencode's @file form,
+# never inline. curl's -K config parser truncates an unquoted value at the first
+# space, and the descriptions contain spaces — an inline `commands=${cmds_json}`
+# ships chopped JSON and Telegram answers 400 "can't parse commands JSON object".
+# The live API call isn't exercised in tests, so this structural check is the only
+# guard against the space-truncation trap recurring (same fix as send_message).
+assert_eq "tg-menu: commands JSON passed via @file form, not inline" "1" \
+    "$([[ "$AE_SOURCE" == *'data-urlencode = commands@${tmp_cmds}'* ]] && echo 1 || echo 0)"
+assert_eq "tg-menu: commands JSON NOT passed inline (would truncate at first space)" "1" \
+    "$([[ "$AE_SOURCE" != *'data-urlencode = commands=${cmds_json}'* ]] && echo 1 || echo 0)"
 
 # Names are lowercase per Telegram's ^[a-z0-9_]+$ rule (they appear as literal
 # lowercase tokens in the menu asserts above); JSON validity verified manually

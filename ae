@@ -2738,24 +2738,40 @@ EOF
 # at startup only when inbound is enabled (no point advertising commands that
 # would be rejected). Token via -K stdin, never argv (same as send_message).
 tg_set_commands() {
-    local cmds_json resp ok
+    local cmds_json resp ok tmp_cmds
     cmds_json=$(jq -cn '[
         {command:"list",    description:"Running sessions (name, id, last activity)"},
         {command:"use",     description:"Set default agent for plain messages: /use <session> <agent>"},
         {command:"session", description:"Message an agent: /session <name> send|ask <agent> <msg>"},
         {command:"help",    description:"Show help"}
     ]' 2>/dev/null) || return 0
+    # Pass the JSON via data-urlencode's @file form, not inline. curl's -K config
+    # parser truncates an unquoted value at the first space, and the descriptions
+    # contain spaces — an inline `commands=${cmds_json}` ships chopped JSON and
+    # Telegram rejects it with 400 "can't parse commands JSON object". @file keeps
+    # the payload out of the config grammar (same fix as send_message).
+    tmp_cmds=$(mktemp "${TMPDIR:-/tmp}/ae-telegram-cmds.XXXXXX") || {
+        _log "setMyCommands: mktemp failed"
+        return 0
+    }
+    (umask 077; printf '%s' "$cmds_json" >"$tmp_cmds") || {
+        rm -f "$tmp_cmds"
+        _log "setMyCommands: writing payload temp failed"
+        return 0
+    }
     resp=$(curl -sS -K - 2>&1 <<EOF
 silent
 fail-with-body
 url = https://api.telegram.org/bot${TG_TOKEN}/setMyCommands
-data-urlencode = commands=${cmds_json}
+data-urlencode = commands@${tmp_cmds}
 EOF
 )
     if (( $? != 0 )); then
+        rm -f "$tmp_cmds"
         _log "setMyCommands failed: $(printf '%s' "$resp" | _redact | head -c 200)"
         return 0
     fi
+    rm -f "$tmp_cmds"
     ok=$(printf '%s' "$resp" | jq -r '.ok // false' 2>/dev/null)
     if [[ "$ok" == "true" ]]; then
         _log "registered bot command menu (setMyCommands)"
