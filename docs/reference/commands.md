@@ -140,7 +140,7 @@ ae telegram stop        # kill daemon, persist enabled=false
 ae telegram status      # report intent + runtime + deps + token validation
 ```
 
-Machine-global daemon that bridges every ae session on this host to one Telegram chat. Single instance per machine (lock-guarded). Outbound forwards filtered events to chat; inbound (when `allowed_user_ids` is set) accepts `/list` and `/session <name|id-prefix> send|ask <agent> <msg>`, plus **reply-to-routing** — reply to a forwarded event and the message routes (as a `send`) to that event's agent after the same session/agent revalidation. Inbound is from the configured private chat only — auth requires matching `from.id` + `chat.id` + a private chat.
+Machine-global daemon that bridges every ae session on this host to one Telegram chat. Single instance per machine (lock-guarded). Outbound forwards filtered events to chat. Inbound (when `allowed_user_ids` is set) offers three ways to reach an agent: **reply** to a forwarded event (routes to that agent), the compact **`@session:agent <msg>`** prefix, and a sticky **`/use <session> <agent>`** default for plain messages — plus the explicit `/list` and `/session <name|id-prefix> send|ask <agent> <msg>`. All paths share the same session/agent revalidation. Inbound is from the configured private chat only — auth requires matching `from.id` + `chat.id` + a private chat.
 
 `jq` + `curl` are feature-only dependencies; ae's core commands work without them. See the [Telegram bridge](telegram.md) page for setup, config schema, inbound trust boundary, and lifecycle.
 

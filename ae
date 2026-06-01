@@ -2854,6 +2854,15 @@ tg_handle_command() {
     # Strip leading/trailing whitespace.
     text="${text#"${text%%[![:space:]]*}"}"
     text="${text%"${text##*[![:space:]]}"}"
+
+    # Compact prefix: "@session:agent msg" sends straight to that agent (mirrors
+    # ae's @session:agent addressing). Handled BEFORE command parsing because the
+    # /cmd@botname stripping below would otherwise eat a leading @.
+    if [[ "$text" == @* ]]; then
+        tg_cmd_at "$from_id" "$text"
+        return
+    fi
+
     local cmd rest
     cmd="${text%%[[:space:]]*}"
     rest="${text#"$cmd"}"
@@ -2863,16 +2872,23 @@ tg_handle_command() {
 
     case "$cmd" in
         /help|"")
-            send_message "$(printf 'ae telegram:\n• Reply to any forwarded message to answer that agent directly (no command needed).\n/list\n/session <name|id-prefix> send <agent> <msg>\n/session <name|id-prefix> ask <agent> <msg>')"
+            send_message "$(printf 'ae telegram:\n• Reply to any forwarded message → answers that agent (no command).\n• @session:agent <msg> → send to an agent directly.\n• /use <session> <agent> → set a default; then plain messages go there.\n/list\n/session <name|id-prefix> send|ask <agent> <msg>')"
             ;;
         /list)
             send_message "$(tg_cmd_list)"
             ;;
+        /use)
+            tg_cmd_use "$from_id" "$rest"
+            ;;
         /session)
             tg_cmd_session "$from_id" "$rest"
             ;;
-        *)
+        /*)
             send_message "Unknown command: $cmd — try /help"
+            ;;
+        *)
+            # Bare text (no slash, no @): route to the sticky /use target if set.
+            tg_route_sticky "$from_id" "$text"
             ;;
     esac
 }
@@ -2970,6 +2986,99 @@ tg_handle_reply() {
     fi
     sess="${tgt%%$'\t'*}"; actor="${tgt#*$'\t'}"
     tg_dispatch "$from_id" "$sess" "send" "$actor" "$msg"
+}
+
+# Sticky default target ("/use") — a single machine-global current target for the
+# one control chat, stored as "<session>\t<agent>". Re-validated on every send,
+# so a stopped session just reports an error rather than misrouting.
+TG_TARGET_FILE="$STATE_DIR/current_target"
+
+# Compact prefix: "@session:agent <msg>" → send <msg> to that agent. agent keeps
+# its alias:name colon (session is up to the FIRST colon, agent is the rest of
+# the token). Reuses tg_dispatch, so the same session/agent revalidation applies.
+tg_cmd_at() {
+    local from_id="$1" text="$2" token spec sess agent msg
+    token="${text%%[[:space:]]*}"
+    msg="${text#"$token"}"; msg="${msg#"${msg%%[![:space:]]*}"}"
+    spec="${token#@}"
+    if [[ "$spec" != *:* ]]; then
+        send_message "Usage: @session:agent <msg>  (e.g. @mdk:claude:lead do X)"
+        return
+    fi
+    sess="${spec%%:*}"; agent="${spec#*:}"
+    if [[ -z "$msg" ]]; then
+        send_message "Nothing to send — @session:agent <msg>"
+        return
+    fi
+    tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"
+}
+
+# /use            → show the current sticky target
+# /use clear|off  → clear it
+# /use <ref> <agent> → set it (validated against running sessions, canonicalized)
+tg_cmd_use() {
+    local from_id="$1" args="$2" ref agent resolved rc name dir canon arc
+    if [[ -z "$args" ]]; then
+        if [[ -f "$TG_TARGET_FILE" ]]; then
+            local cur; cur="$(cat "$TG_TARGET_FILE" 2>/dev/null)"
+            send_message "Current target: ${cur%%$'\t'*} → ${cur#*$'\t'}  (plain messages go here; /use clear to unset)"
+        else
+            send_message "No current target. Set one: /use <session> <agent>"
+        fi
+        return
+    fi
+    ref="${args%%[[:space:]]*}"
+    case "$ref" in
+        clear|off|none)
+            rm -f "$TG_TARGET_FILE" 2>/dev/null || true
+            send_message "Current target cleared."
+            return
+            ;;
+    esac
+    agent="${args#"$ref"}"; agent="${agent#"${agent%%[![:space:]]*}"}"
+    agent="${agent%%[[:space:]]*}"
+    if [[ -z "$ref" || -z "$agent" ]]; then
+        send_message "Usage: /use <session> <agent>   (or /use clear)"
+        return
+    fi
+    resolved="$(resolve_session_ref "$ref")"; rc=$?
+    if (( rc != 0 )); then
+        case $rc in
+            2) send_message "Ambiguous session '$ref' — be more specific" ;;
+            *) send_message "No running session matching '$ref'" ;;
+        esac
+        return
+    fi
+    name="${resolved%%$'\t'*}"; dir="${resolved#*$'\t'}"
+    canon="$(resolve_agent_in_session "$dir" "$agent")"; arc=$?
+    if (( arc != 0 )); then
+        case $arc in
+            2) send_message "Ambiguous agent '$agent' in ${name} — use alias:name" ;;
+            *) send_message "No agent '$agent' in session ${name}" ;;
+        esac
+        return
+    fi
+    (umask 077; printf '%s\t%s\n' "$name" "$canon" >"$TG_TARGET_FILE") || {
+        send_message "Failed to save current target"
+        return
+    }
+    send_message "Current target: ${name} → ${canon}. Plain messages now go here (/use clear to unset)."
+}
+
+# Bare (non-slash, non-@, non-reply) message → send to the sticky target if set.
+tg_route_sticky() {
+    local from_id="$1" msg="$2" cur sess agent
+    if [[ ! -f "$TG_TARGET_FILE" ]]; then
+        send_message "No current target. Reply to a message, use @session:agent <msg>, or /use <session> <agent>. (/help)"
+        return
+    fi
+    cur="$(cat "$TG_TARGET_FILE" 2>/dev/null)"
+    sess="${cur%%$'\t'*}"; agent="${cur#*$'\t'}"
+    if [[ -z "$sess" || -z "$agent" ]]; then
+        send_message "Current target is unset/corrupt — /use <session> <agent>"
+        return
+    fi
+    tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"
 }
 
 # Poll getUpdates once (short-poll, bounded). For each update: persist the

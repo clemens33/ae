@@ -63,15 +63,26 @@ Inbound is active **only when `allowed_user_ids` is non-empty** (`ae telegram se
 
 Anything else is silently dropped. Commands are never accepted from groups or any other chat, even from an allow-listed user.
 
-**Reply-to-routing (the easy path).** Just **reply** (Telegram swipe-reply) to any event the bridge forwarded, and your message is delivered straight to that event's agent — no `/session …` typing. The bridge reads the replied-to message's header (`[session] action  actor …`) to find the target, then revalidates it exactly like a `/session … send` (running session + real agent), so a reply can only ever reach a real agent you could already address. Precedence: a message that (after trimming) **starts with `/` is always a command**, even when sent as a reply; any other reply is routed; a non-reply non-slash message is treated as a command (so it gets `/help`).
+Three ways to reach an agent, easiest first:
+
+**1. Reply-to-routing (the easy path).** **Reply** (Telegram swipe-reply) to any event the bridge forwarded and your message goes straight to that event's agent — no session/agent typing. The bridge reads the replied-to message's header (`[session] action  actor …`) and revalidates it exactly like `/session … send`, so a reply can only ever reach a real agent you could already address.
+
+**2. Compact prefix — `@session:agent <msg>`.** Start a new thread without `/session`: `@mdk:claude:lead deploy now`. `session` is up to the first `:`; `agent` is the rest (keeps its `alias:name` colon). Sent as a `send`.
+
+**3. Sticky target — `/use`.** `/use <session> <agent>` sets a default; then **plain messages** (no slash, no `@`) go there as `send`. `/use` shows the current target; `/use clear` unsets it.
+
+**Precedence** (per message, after trimming): starts with `/` → **always a command** (even sent as a reply); else a reply → routes to that event's agent; else `@…` → compact send; else a plain message → the sticky target if set (otherwise a hint). Every path funnels through the same session/agent revalidation — none can escape a real running session.
 
 **Grammar (explicit commands):**
 
 ```
 /help                                     show this list
 /list                                     running sessions: name, session_id[:8], last activity
+/use <name|id-prefix> <agent>             set the sticky target for plain messages
+/use clear                                unset the sticky target
 /session <name|id-prefix> send <agent> <msg…>   one-way message into an agent pane
 /session <name|id-prefix> ask  <agent> <msg…>   tracked request; the reply routes back to chat
+@session:agent <msg…>                     compact one-off send (no /session)
 ```
 
 - `<name|id-prefix>` resolves only against **running** sessions (exact name, or a unique `session_id` prefix). Stopped sessions are not offered or addressable.

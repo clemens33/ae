@@ -2877,10 +2877,30 @@ _tg3_result="$(
 the question text")" == "alpha	claude:lead" ]] && p=$((p+1)) # 20 header w/ target+summary → actor, line 1 only
         tg_parse_reply_target "just a normal message" >/dev/null || p=$((p+1)) # 21 reject non-header
         tg_parse_reply_target "" >/dev/null || p=$((p+1)) # 22 reject empty
+        # Compact grammar + sticky target (slice 2). Stub the side-effecting
+        # boundary so we observe routing without curl/helpers.
+        send_message() { :; }
+        tg_dispatch() { printf "%s|%s|%s|%s" "$2" "$3" "$4" "$5" >"$STATE_DIR/disp"; }
+        rm -f "$STATE_DIR/disp"
+        tg_cmd_at 999 "@alpha:claude:lead do the thing"
+        [[ "$(cat "$STATE_DIR/disp" 2>/dev/null)" == "alpha|send|claude:lead|do the thing" ]] && p=$((p+1)) # 23 @session:agent → send (agent keeps alias:name colon)
+        rm -f "$STATE_DIR/disp"
+        tg_cmd_at 999 "@noagent hello"  # missing :agent → usage, no dispatch
+        [[ ! -f "$STATE_DIR/disp" ]] && p=$((p+1)) # 24 @ without agent does not dispatch
+        tg_cmd_use 999 "alpha claude:lead"   # validated against running alpha
+        [[ "$(cat "$TG_TARGET_FILE" 2>/dev/null)" == "alpha	claude:lead" ]] && p=$((p+1)) # 25 /use persists a validated canon target
+        rm -f "$STATE_DIR/disp"
+        tg_route_sticky 999 "bare message"
+        [[ "$(cat "$STATE_DIR/disp" 2>/dev/null)" == "alpha|send|claude:lead|bare message" ]] && p=$((p+1)) # 26 bare msg routes to sticky target
+        tg_cmd_use 999 clear
+        [[ ! -f "$TG_TARGET_FILE" ]] && p=$((p+1)) # 27 /use clear removes target
+        rm -f "$STATE_DIR/disp"
+        tg_route_sticky 999 "no target now"
+        [[ ! -f "$STATE_DIR/disp" ]] && p=$((p+1)) # 28 sticky with no target does not dispatch
         echo "$p"
     ' 2>/dev/null
 )"
-assert_eq "tg3: security + reply-parse behavioral suite (22 checks)" "22" "$_tg3_result"
+assert_eq "tg3: inbound behavioral suite — security + reply + compact grammar (28 checks)" "28" "$_tg3_result"
 rm -rf "$_tg3_home"; rm -f "$_tg3_daemon"
 unset _tg3_daemon _tg3_home _tg3_result
 
@@ -2906,7 +2926,27 @@ assert_eq "tg-reply: unparseable reply target is reported, not dispatched" "1" \
     "$([[ "$AE_SOURCE" == *"Couldn't tell which agent that was a reply to"* ]] && echo 1 || echo 0)"
 # /help advertises reply-routing.
 assert_eq "tg-reply: /help mentions replying to a forwarded message" "1" \
-    "$([[ "$AE_SOURCE" == *'Reply to any forwarded message to answer that agent directly'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'Reply to any forwarded message → answers that agent'* ]] && echo 1 || echo 0)"
+
+# ── Telegram compact grammar + sticky target (inbound UX, slice 2) ────
+
+# @session:agent is handled BEFORE the /cmd@botname strip would eat the leading @.
+assert_eq "tg-cg: @-prefix handled before command parsing" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ "$text" == @* ]]; then'*'tg_cmd_at "$from_id" "$text"'* ]] && echo 1 || echo 0)"
+# @session:agent splits session at the FIRST colon, agent keeps its alias:name.
+assert_eq "tg-cg: tg_cmd_at parses @session:agent (agent keeps colon)" "1" \
+    "$([[ "$AE_SOURCE" == *'tg_cmd_at() {'* && "$AE_SOURCE" == *'sess="${spec%%:*}"; agent="${spec#*:}"'* && "$AE_SOURCE" == *'tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"'* ]] && echo 1 || echo 0)"
+# /use validates + persists; sticky route + clear.
+assert_eq "tg-cg: /use sets a validated sticky target" "1" \
+    "$([[ "$AE_SOURCE" == *'tg_cmd_use() {'* && "$AE_SOURCE" == *'TG_TARGET_FILE="$STATE_DIR/current_target"'* && "$AE_SOURCE" == *'resolve_agent_in_session "$dir" "$agent"'* ]] && echo 1 || echo 0)"
+assert_eq "tg-cg: bare message routes to the sticky target via tg_route_sticky" "1" \
+    "$([[ "$AE_SOURCE" == *'tg_route_sticky() {'* && "$AE_SOURCE" == *'tg_route_sticky "$from_id" "$text"'* ]] && echo 1 || echo 0)"
+# /use clear unsets; sticky/at reuse tg_dispatch (so same revalidation as /session).
+assert_eq "tg-cg: /use clear removes the target" "1" \
+    "$([[ "$AE_SOURCE" == *'clear|off|none)'* && "$AE_SOURCE" == *'rm -f "$TG_TARGET_FILE"'* ]] && echo 1 || echo 0)"
+# /help advertises the compact grammar + /use.
+assert_eq "tg-cg: /help mentions @session:agent and /use" "1" \
+    "$([[ "$AE_SOURCE" == *'@session:agent <msg> → send to an agent directly'* && "$AE_SOURCE" == *'/use <session> <agent> → set a default'* ]] && echo 1 || echo 0)"
 
 # ── Results ──────────────────────────────────────────────────────────
 
