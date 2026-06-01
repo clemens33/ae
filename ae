@@ -481,6 +481,7 @@ build_ae_context() {
     ctx+=" (5) Declare your state with ${meta_dir}/state <working|waiting-user|blocked|done> <reason> whenever it changes: working when taking new work or resuming, waiting-user only after asking the human, blocked only after a concrete external blocker (reason required), done at completion or pause. ${meta_dir}/mark-done \"<summary>\" still works as shorthand for state done. Your declared state shows in 'ae list' (per agent). Your waiting-user/blocked contribute to the session attn marker; ae list may also show watchdog-derived reasons (dead/stale/throttled). The loop watchdog stops nudging you on any quiet state: done is honoured until a newer message arrives; waiting-user/blocked are honoured until the pane changes (e.g. the human replies), then normal nudging resumes."
     ctx+=" (6) ${meta_dir}/memo add [--topic <topic>] <text> for durable shared findings, decisions, and handoffs that survive restarts. Do not dump chat transcripts into memo."
     ctx+=" (7) IMPORTANT — CONCURRENT COLLABORATION: Other agents may be editing files in this same workspace RIGHT NOW. Files you read may change. Coordinate on shared files; verify intent via ${meta_dir}/send before reverting or overwriting unexpected modifications."
+    ctx+=" (8) ${meta_dir}/say <text> pushes a free-text line to the human's Telegram chat (if the bridge is running). Use it to answer the human when they message you from Telegram — your normal pane replies do NOT reach them. Replies to your message on Telegram route back to you."
     ctx+=" Spawn a new agent: ${meta_dir}/spawn <alias>:<name> [prompt] — give a descriptive role name."
     local user_instr
     user_instr="$(get_config prompt.instructions)"
@@ -2556,7 +2557,7 @@ declare -A SESSION_NAME=()
 declare -A SESSION_PATH=()
 TG_TOKEN=""
 TG_CHAT_ID=""
-TG_INCLUDE_DEFAULT="send,ask,review,reply,done,alert,throttled"
+TG_INCLUDE_DEFAULT="send,ask,review,reply,done,alert,throttled,chat"
 TG_INCLUDE=""
 TG_EXCLUDE=""
 TG_ALLOWED_IDS=""          # comma/space list; non-empty enables inbound commands
@@ -3491,8 +3492,8 @@ Config block in ~/.ae/config:
   token_file = "~/.config/ae/telegram-bot.token"
   chat_id = 123456789
   allowed_user_ids = "123456789"
-  include = "send,ask,review,reply,done,alert,throttled"   # default
-  exclude = "memo"                                         # default empty
+  include = "send,ask,review,reply,done,alert,throttled,chat"   # default
+  exclude = "memo"                                             # default empty
 
 Requires: jq, curl. The bridge runs in tmux session `ae-telegram` and
 forwards filtered events from every ae session on this machine.
@@ -3640,6 +3641,20 @@ cmd_telegram_status() {
         # turned into a two-line "0\n0" count).
         tracked=$(awk '!/^#/ && NF {n++} END {print n + 0}' "$state_file")
         echo "  state:   $tracked sessions tracked ($state_file)"
+    fi
+    # An explicit include= that omits `chat` silently drops agents' `say`
+    # replies (outbound chat). When include is unset the default carries `chat`,
+    # so only warn when the user pinned an include without it.
+    local include_cfg
+    include_cfg="$(get_config telegram.include 2>/dev/null || true)"
+    if [[ -n "$include_cfg" ]]; then
+        local inc_words=" ${include_cfg//,/ } "
+        if [[ "$inc_words" == *" chat "* ]]; then
+            echo "  include: $include_cfg"
+        else
+            echo "  include: $include_cfg"
+            echo "           WARN: 'chat' not in include — agent 'say' replies will NOT forward to Telegram. Add 'chat' to [telegram] include."
+        fi
     fi
 }
 
@@ -4465,7 +4480,7 @@ cmd_help() {
     echo "When inside an ae session, stop/end/status work without specifying the name."
     echo ""
     echo "Config: ~/.ae/config (per-project override: .ae/config in project dir)"
-    echo "Session helpers: send, ask, review, reply, requests, peek, spawn, retire, interrupt"
+    echo "Session helpers: send, ask, review, reply, requests, peek, say, spawn, retire, interrupt"
     echo "Run 'ae doctor' after install or agent CLI upgrades."
     echo "Run 'ae doctor --refresh' after updating ae to regenerate existing session helpers."
 }
@@ -4879,6 +4894,18 @@ ${sessions_dir}/send "<their_agent_name>" "your reply"
 \`\`\`
 
 Do not infer the recipient. Do not reply only in your own pane output. Do not poll or capture panes to wait for replies — answers arrive as incoming messages.
+
+## Talking to the human on Telegram
+
+If the human messages you from Telegram, answer with \`say\` — your normal pane
+output does NOT reach their phone:
+\`\`\`bash
+${sessions_dir}/say "done — the menu is live, tested end to end"
+echo "a longer, multi-line reply" | ${sessions_dir}/say   # stdin for long text
+\`\`\`
+\`say\` emits a \`chat\` event the Telegram bridge forwards (when running with
+\`chat\` in its include filter). The human can reply to your message on Telegram
+and it routes straight back to you.
 
 ## Peek
 
@@ -5740,7 +5767,18 @@ ae_emit_event() {
     [[ -n "$actor" ]] || actor="human"
     local ts
     ts="$(date -u +%FT%TZ)"
-    summary="$(printf '%s' "$summary" | head -c 200 | tr '\n\t' '  ')"
+    # Summary is capped and (for most events) flattened to one line. `chat`
+    # events carry a human reply destined for Telegram, so they keep newlines
+    # and get a larger cap (3500 — matches format_event's truncation, stays
+    # under Telegram's 4096 limit). Either way ae_json_escape below turns any
+    # newline into a literal \n, so events.jsonl stays one JSON object per line
+    # — the invariant every line-oriented consumer (cmd_list, the loop
+    # watchdog, the telegram tail) depends on.
+    if [[ "$action" == "chat" ]]; then
+        summary="$(printf '%s' "$summary" | head -c 3500)"
+    else
+        summary="$(printf '%s' "$summary" | head -c 200 | tr '\n\t' '  ')"
+    fi
     local json
     json="$(printf '{"ts":"%s","actor":"%s","action":"%s"' \
         "$(ae_json_escape "$ts")" "$(ae_json_escape "$actor")" "$(ae_json_escape "$action")")"
@@ -6200,6 +6238,46 @@ STATEEOF
 exec "$(dirname "$0")/state" done "${@:-done}"
 DONEEOF
     chmod 0700 "${AE_META}/mark-done"
+
+    # Helper: say <text> — push a free-text line to the Telegram bridge (if the
+    # machine-global daemon is running and its include filter contains `chat`).
+    # Emits a `chat` event; the daemon forwards it with the standard
+    # "[session] chat  actor" header, so a phone reply routes straight back to
+    # this agent. Text comes from args or piped stdin (for multi-line / long
+    # replies). This is the agent's deliberate way to answer the human on
+    # Telegram — there is no automatic forwarding of pane output.
+    cat >"${AE_META}/say" <<'SAYEOF'
+#!/usr/bin/env bash
+source "$(cd "$(dirname "$0")" && pwd)/_lib"
+
+usage() {
+    cat >&2 <<'USAGE'
+Usage: say <text>          # push a free-text line to the Telegram chat
+       echo "text" | say   # multi-line / long replies via stdin
+
+Emits a `chat` event the telegram bridge forwards. Requires the bridge running
+with `chat` in its [telegram] include filter (see `ae telegram status`).
+USAGE
+    exit 2
+}
+
+if [[ $# -gt 0 ]]; then
+    text="$*"
+elif [[ ! -t 0 ]]; then
+    text="$(cat)"
+else
+    usage
+fi
+
+# Reject empty / whitespace-only payloads — nothing to forward.
+if [[ -z "${text//[$' \t\n\r']/}" ]]; then
+    usage
+fi
+
+ae_emit_event "chat" "" "" "$text"
+printf 'Sent to Telegram bridge (chat): %.60s%s\n' "$text" "$([[ ${#text} -gt 60 ]] && printf '…')"
+SAYEOF
+    chmod 0700 "${AE_META}/say"
 
     # Helper: memo add/read/tail — shared append-only session memory
     cat >"${AE_META}/memo" <<'MEMOEOF'

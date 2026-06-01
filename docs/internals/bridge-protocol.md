@@ -94,7 +94,7 @@ ae writes through a single `flock`-serialized writer per session, with each reco
 - ae does not rotate `events.jsonl`. The file grows for the lifetime of the session. Bridges should not load it whole; tail or back-scan only.
 - A session directory can disappear (`ae end` / `ae rm`), be renamed (`ae rename`), or move between machines (`ae transfer`). Treat the session as the durable identity (`session_id`), not the path.
 
-For schema and per-action semantics, see [events.md](events.md). The actions a bridge typically cares about as of the Stage 0 substrate are `send`, `ask`, `review`, `reply`, `done`, `alert`, `nudge`, and possibly `memo`. Internal actions like `focus`, `spawn`, `retire`, `recover`, `throttled` are usually noise for a chat surface.
+For schema and per-action semantics, see [events.md](events.md). The actions a bridge typically cares about as of the Stage 0 substrate are `send`, `ask`, `review`, `reply`, `done`, `alert`, `nudge`, `chat`, and possibly `memo`. `chat` is a first-class bridge action: an agent's free-text reply to the human (via the `say` helper), carrying its text in `summary`. Internal actions like `focus`, `spawn`, `retire`, `recover`, `throttled` are usually noise for a chat surface.
 
 ## Binding by session identity
 

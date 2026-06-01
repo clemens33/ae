@@ -11,8 +11,9 @@ Every ae session has a directory at `~/.ae/sessions/<name>/` filled with generat
 | `review <agent> <request>` | Like `ask`, but with the critical-review prompt template (findings-first, BLOCKER/IMPORTANT/NIT). |
 | `reply <request-id> <message>` | Reply to a logged `ask` / `review` by request id. Pass `--as <agent>` to override identity when needed. |
 | `requests [mine\|inbox\|all]` | Inspect pending / replied state from `events.jsonl` without peeking panes. |
+| `say <text>` | Push a free-text line to the human's Telegram chat (args or piped stdin). Emits a `chat` event the [Telegram bridge](telegram.md) forwards; a Telegram reply routes back to you. Pane output is not forwarded — this is how you answer the human on Telegram. |
 
-All four messaging helpers emit a structured event into `events.jsonl` so the morning-after view stays auditable.
+All messaging helpers emit a structured event into `events.jsonl` so the morning-after view stays auditable.
 
 ### How they compose
 

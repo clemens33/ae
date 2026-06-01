@@ -274,6 +274,17 @@ assert_eq "list: --needs-me drops the session once it is working again" "0" \
 assert_contains "list: default shows the running session" "test-state" \
     "$("$AE" list 2>/dev/null)"
 
+# say helper: emits a chat event, preserving an embedded newline as escaped \n
+# on a single JSON line (the events.jsonl one-object-per-line invariant).
+state_main_pane="$(tmux list-panes -t test-state -F '#{pane_id} #{@ae_agent}' | awk -v a="$main_agent" '$2==a {print $1; exit}')"
+TMUX_PANE="$state_main_pane" "$HOME/.ae/sessions/test-state/say" "$(printf 'hello from say\nsecond line')" >/dev/null 2>&1
+say_line="$(tac "$STATE_EVENTS" 2>/dev/null | grep -m1 '"action":"chat"')"
+assert_contains "say: emits a chat event" '"action":"chat"' "$say_line"
+assert_contains "say: chat event carries the message" 'hello from say' "$say_line"
+assert_contains "say: embedded newline kept as escaped \\n on one line" 'say\nsecond' "$say_line"
+assert_eq "say: chat event is exactly one JSON line" "1" \
+    "$(tac "$STATE_EVENTS" 2>/dev/null | grep -c '"action":"chat"')"
+
 # Stop it (kill tmux session, keep meta) → default omits it, --all/--stopped include it.
 tmux kill-session -t test-state 2>/dev/null || true
 sleep 0.5

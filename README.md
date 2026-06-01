@@ -91,6 +91,7 @@ reply <request-id> <message>   # reply to a logged ask/review request
 requests [mine|inbox|all]      # inspect pending and replied requests
 state <value> [reason]         # declare work state: working|waiting-user|blocked|done
 mark-done [message]            # shim over `state done` (emits the legacy event the loop watchdog reads)
+say <text>                     # push a free-text line to the human's Telegram chat (reply routes back)
 memo add [--topic t] <text>    # append durable shared session memory
 memo read [--topic t]          # read shared session memory
 memo tail [n]                  # show latest memo entries

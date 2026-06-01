@@ -2522,8 +2522,9 @@ assert_eq "telegram: daemon drops missing sessions from in-memory state" "1" \
     "$([[ "$AE_SOURCE" == *"unset 'SESSION_NAME[\$sid]' 'SESSION_PATH[\$sid]'"* ]] && echo 1 || echo 0)"
 
 # NIT applied (codex): default include set adds 'throttled'; 'memo' off.
-assert_eq "telegram: default include set covers throttled" "1" \
-    "$([[ "$AE_SOURCE" == *'TG_INCLUDE_DEFAULT="send,ask,review,reply,done,alert,throttled"'* ]] && echo 1 || echo 0)"
+# 'chat' added for the say helper (agent → Telegram free-text, Option 1).
+assert_eq "telegram: default include set covers throttled + chat" "1" \
+    "$([[ "$AE_SOURCE" == *'TG_INCLUDE_DEFAULT="send,ask,review,reply,done,alert,throttled,chat"'* ]] && echo 1 || echo 0)"
 # The literal default-include string must not contain 'memo'. We extract
 # the exact default-line and grep — the loose glob was matching memo
 # elsewhere in the script (help text, comments).
@@ -2903,6 +2904,91 @@ the question text")" == "alpha	claude:lead" ]] && p=$((p+1)) # 20 header w/ targ
 assert_eq "tg3: inbound behavioral suite — security + reply + compact grammar (28 checks)" "28" "$_tg3_result"
 rm -rf "$_tg3_home"; rm -f "$_tg3_daemon"
 unset _tg3_daemon _tg3_home _tg3_result
+
+# ── say helper + chat event (agent → Telegram free-text, Option 1) ───
+
+# The helper is generated, executable, sources _lib, and emits a `chat` event.
+assert_eq "say: helper generated, chmod 0700, sources _lib" "1" \
+    "$([[ "$AE_SOURCE" == *'cat >"${AE_META}/say" <<'"'"'SAYEOF'"'"''* \
+        && "$AE_SOURCE" == *'chmod 0700 "${AE_META}/say"'* \
+        && "$AE_SOURCE" == *'source "$(cd "$(dirname "$0")" && pwd)/_lib"'* ]] && echo 1 || echo 0)"
+assert_eq "say: helper emits a chat event" "1" \
+    "$([[ "$AE_SOURCE" == *'ae_emit_event "chat" "" "" "$text"'* ]] && echo 1 || echo 0)"
+# Accepts args OR piped stdin, rejects empty/whitespace.
+assert_eq "say: reads args or stdin, rejects empty" "1" \
+    "$([[ "$AE_SOURCE" == *'elif [[ ! -t 0 ]]; then'* && "$AE_SOURCE" == *'text="$(cat)"'* \
+        && "$AE_SOURCE" == *'if [[ -z "${text//['* ]] && echo 1 || echo 0)"
+
+# ae_emit_event keeps chat rich (newlines + larger cap) but flattens/caps others.
+assert_eq "say: ae_emit_event special-cases chat (3500, no flatten)" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ "$action" == "chat" ]]; then'* \
+        && "$AE_SOURCE" == *'head -c 3500'* ]] && echo 1 || echo 0)"
+
+# chat in the default include so fresh setups forward agent replies.
+assert_eq "say: chat in TG_INCLUDE_DEFAULT" "1" \
+    "$([[ "$AE_SOURCE" == *'TG_INCLUDE_DEFAULT="send,ask,review,reply,done,alert,throttled,chat"'* ]] && echo 1 || echo 0)"
+
+# Discoverability surfaces (a helper agents don't know about is dead weight).
+assert_eq "say: advertised in cmd_help, agent ctx, workspace.md" "1" \
+    "$([[ "$AE_SOURCE" == *'requests, peek, say, spawn'* \
+        && "$AE_SOURCE" == *'(8) ${meta_dir}/say <text>'* \
+        && "$AE_SOURCE" == *'Talking to the human on Telegram'* ]] && echo 1 || echo 0)"
+
+# status warns when an explicit include omits chat (silent drop otherwise).
+assert_eq "say: telegram status warns when include omits chat" "1" \
+    "$([[ "$AE_SOURCE" == *"'chat' not in include"* ]] && echo 1 || echo 0)"
+
+# Behavioral: ae_emit_event newline/cap behaviour, exercised from the real _lib body.
+# _lib resets _AE_META_DIR to its own dir on source, so override it afterward.
+_say_lib="$(mktemp)"
+awk "/<<'LIBEOF'/{f=1;next} /^LIBEOF\$/{f=0} f" "$(dirname "$0")/../ae" >"$_say_lib"
+_say_home="$(mktemp -d)"
+_say_result="$(
+    AE_SENDER_OVERRIDE="claude:lead" NL='\n' SAYHOME="$_say_home" bash -c '
+        set -uo pipefail
+        # shellcheck disable=SC1090
+        source "'"$_say_lib"'" 2>/dev/null || true
+        _AE_META_DIR="$SAYHOME"
+        p=0
+        long="$(printf "L%.0s" {1..400})"
+        ae_emit_event "chat" "" "" "$(printf "line1\nline2 %s" "$long")"
+        (( $(wc -l < "$_AE_META_DIR/events.jsonl") == 1 )) && p=$((p+1))   # 1 one physical line
+        cl="$(cat "$_AE_META_DIR/events.jsonl")"
+        [[ "$cl" == *"$NL"* ]] && p=$((p+1))                              # 2 newline escaped to \n, not raw
+        [[ "${#cl}" -gt 400 ]] && p=$((p+1))                             # 3 chat not capped at 200
+        : > "$_AE_META_DIR/events.jsonl"
+        ae_emit_event "send" "" "" "$(printf "a\nb %s" "$long")"
+        (( $(wc -l < "$_AE_META_DIR/events.jsonl") == 1 )) && p=$((p+1))   # 4 one physical line
+        sl="$(cat "$_AE_META_DIR/events.jsonl")"
+        [[ "$sl" != *"$NL"* ]] && p=$((p+1))                             # 5 non-chat flattened (no \n)
+        [[ "${#sl}" -lt 350 ]] && p=$((p+1))                             # 6 non-chat capped near 200
+        echo "$p"
+    ' 2>/dev/null
+)"
+assert_eq "say: ae_emit_event — chat keeps newlines+>200, others cap/flatten (6 checks)" "6" "$_say_result"
+rm -rf "$_say_home"; rm -f "$_say_lib"
+unset _say_lib _say_home _say_result
+
+# Behavioral: the daemon's include/exclude filter accepts chat by default,
+# is blockable, and exclude still wins. Pure-bash (no jq) so it stays dep-free.
+_sayd_daemon="$(mktemp)"
+awk "/cat >\"\\\$dest\" <<'TELEGRAM_DAEMON_EOF'/{f=1;next} /^TELEGRAM_DAEMON_EOF\$/{f=0} f" \
+    "$(dirname "$0")/../ae" | sed -e '/^main "\$@"$/d' -e '/^exec >>"\$LOG_FILE" 2>&1$/d' >"$_sayd_daemon"
+_sayd_result="$(
+    bash -c '
+        set -uo pipefail
+        # shellcheck disable=SC1090
+        source "'"$_sayd_daemon"'" 2>/dev/null || true
+        p=0
+        ( TG_INCLUDE="$TG_INCLUDE_DEFAULT"; TG_EXCLUDE=""; event_action_allowed chat ) && p=$((p+1))  # 1 default allows
+        ( TG_INCLUDE="send,ask"; TG_EXCLUDE=""; event_action_allowed chat ) || p=$((p+1))             # 2 blockable
+        ( TG_INCLUDE="send,chat"; TG_EXCLUDE="chat"; event_action_allowed chat ) || p=$((p+1))        # 3 exclude wins
+        echo "$p"
+    ' 2>/dev/null
+)"
+assert_eq "say: daemon event_action_allowed — chat default/blockable/exclude (3 checks)" "3" "$_sayd_result"
+rm -f "$_sayd_daemon"
+unset _sayd_daemon _sayd_result
 
 # ── Telegram reply-to-routing (inbound UX, slice 1) ──────────────────
 # Reply to a forwarded event → routes to that agent, no /session typing.

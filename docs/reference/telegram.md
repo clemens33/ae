@@ -7,9 +7,10 @@
 **Outbound (ae → chat):**
 
 - Reads `events.jsonl` from every session under `~/.ae/sessions/<name>/`.
-- Forwards events matching the configured include set (default: `send`, `ask`, `review`, `reply`, `done`, `alert`, `throttled`) to your Telegram chat via the Bot API.
+- Forwards events matching the configured include set (default: `send`, `ask`, `review`, `reply`, `done`, `alert`, `throttled`, `chat`) to your Telegram chat via the Bot API.
 - Persists per-session byte offsets so daemon restarts don't replay history.
 - Runs as a background tmux session named `ae-telegram`.
+- `chat` events are agents' free-text replies, sent with the [`say`](helpers.md) helper. They forward like any other event, and because they carry the standard `[session] chat  actor` header you can **reply to them in Telegram to answer that agent** — the two-way conversation loop. An explicit `include` that omits `chat` silently disables this; `ae telegram status` warns when that's the case.
 
 **Inbound (chat → ae):** enabled only when `allowed_user_ids` is set (see [Inbound commands](#inbound-commands-chat--ae)). The daemon polls for messages and lets an authorized user drive sessions from their phone. With no `allowed_user_ids`, the bridge stays outbound-only.
 
@@ -45,7 +46,7 @@ Optional keys:
 
 | Key | Default | Purpose |
 |---|---|---|
-| `include` | `send,ask,review,reply,done,alert,throttled` | Comma-separated action allow-list |
+| `include` | `send,ask,review,reply,done,alert,throttled,chat` | Comma-separated action allow-list (`chat` carries agents' `say` replies — drop it and the two-way loop goes silent) |
 | `exclude` | *(empty)* | Comma-separated action deny-list (applied after include) |
 | `allowed_user_ids` | *(from setup)* | Comma/space list of Telegram numeric user ids permitted to send **inbound commands**. Empty → inbound disabled (outbound-only). |
 
