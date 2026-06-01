@@ -2733,6 +2733,38 @@ EOF
     return 0
 }
 
+# Register the bot's slash-command menu with Telegram (setMyCommands) so the
+# inbound commands surface in the "/" UI. Best-effort + non-fatal; called once
+# at startup only when inbound is enabled (no point advertising commands that
+# would be rejected). Token via -K stdin, never argv (same as send_message).
+tg_set_commands() {
+    local cmds_json resp ok
+    cmds_json=$(jq -cn '[
+        {command:"list",    description:"Running sessions (name, id, last activity)"},
+        {command:"use",     description:"Set default agent for plain messages: /use <session> <agent>"},
+        {command:"session", description:"Message an agent: /session <name> send|ask <agent> <msg>"},
+        {command:"help",    description:"Show help"}
+    ]' 2>/dev/null) || return 0
+    resp=$(curl -sS -K - 2>&1 <<EOF
+silent
+fail-with-body
+url = https://api.telegram.org/bot${TG_TOKEN}/setMyCommands
+data-urlencode = commands=${cmds_json}
+EOF
+)
+    if (( $? != 0 )); then
+        _log "setMyCommands failed: $(printf '%s' "$resp" | _redact | head -c 200)"
+        return 0
+    fi
+    ok=$(printf '%s' "$resp" | jq -r '.ok // false' 2>/dev/null)
+    if [[ "$ok" == "true" ]]; then
+        _log "registered bot command menu (setMyCommands)"
+    else
+        _log "setMyCommands not ok: $(printf '%s' "$resp" | _redact | head -c 200)"
+    fi
+    return 0
+}
+
 # ── Inbound (chat -> ae) ─────────────────────────────────────────────
 
 # Read the persisted getUpdates offset (last acked update_id). Empty => 0.
@@ -3306,6 +3338,8 @@ main() {
     STATE_LOADED=1
     if inbound_enabled; then
         _log "daemon started — include=$TG_INCLUDE exclude=${TG_EXCLUDE:-<none>} inbound=on (allow-listed users)"
+        # Advertise the inbound commands in Telegram's "/" menu (best-effort).
+        tg_set_commands
     else
         _log "daemon started — include=$TG_INCLUDE exclude=${TG_EXCLUDE:-<none>} inbound=off (no allowed_user_ids)"
     fi

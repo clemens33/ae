@@ -2948,6 +2948,27 @@ assert_eq "tg-cg: /use clear removes the target" "1" \
 assert_eq "tg-cg: /help mentions @session:agent and /use" "1" \
     "$([[ "$AE_SOURCE" == *'@session:agent <msg> → send to an agent directly'* && "$AE_SOURCE" == *'/use <session> <agent> → set a default'* ]] && echo 1 || echo 0)"
 
+# ── Telegram setMyCommands menu (inbound UX, slice 3) ────────────────
+
+# Registers the slash-command menu via the Bot API; token via -K stdin (argv-safe).
+assert_eq "tg-menu: tg_set_commands posts to setMyCommands (token off argv)" "1" \
+    "$([[ "$AE_SOURCE" == *'tg_set_commands() {'* && "$AE_SOURCE" == *'/setMyCommands'* && "$AE_SOURCE" == *'curl -sS -K -'* ]] && echo 1 || echo 0)"
+# Called once at startup ONLY when inbound is enabled (don't advertise commands
+# that would be rejected).
+assert_eq "tg-menu: command menu registered at startup only when inbound enabled" "1" \
+    "$([[ "$AE_SOURCE" == *'inbound=on (allow-listed users)"'*'tg_set_commands'* ]] && echo 1 || echo 0)"
+# Menu lists the real inbound commands.
+assert_eq "tg-menu: menu advertises list/use/session/help" "1" \
+    "$([[ "$AE_SOURCE" == *'{command:"list"'* && "$AE_SOURCE" == *'{command:"use"'* && "$AE_SOURCE" == *'{command:"session"'* && "$AE_SOURCE" == *'{command:"help"'* ]] && echo 1 || echo 0)"
+# Best-effort: a failed registration is logged, not fatal.
+assert_eq "tg-menu: setMyCommands failure is non-fatal (logged, returns 0)" "1" \
+    "$([[ "$AE_SOURCE" == *'setMyCommands failed:'* && "$AE_SOURCE" == *'setMyCommands not ok:'* ]] && echo 1 || echo 0)"
+
+# Names are lowercase per Telegram's ^[a-z0-9_]+$ rule (they appear as literal
+# lowercase tokens in the menu asserts above); JSON validity verified manually
+# (jq -cn '[…]' → valid). A source-extraction round-trip here proved too fragile
+# to be worth it.
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""
