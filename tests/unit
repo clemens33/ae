@@ -2498,9 +2498,12 @@ assert_eq "telegram: spawn passes resolved CONFIG_FILE into the daemon env" "1" 
 assert_eq "telegram: spawn %q-quotes both config + daemon path" "1" \
     "$([[ "$AE_SOURCE" == *'q_cfg="$(printf '"'"'%q'"'"' "$CONFIG_FILE")"'* && "$AE_SOURCE" == *'q_daemon="$(printf '"'"'%q'"'"' "$CONFIG_DIR/telegram-daemon")"'* ]] && echo 1 || echo 0)"
 
-# IMPORTANT guard (codex): auto-start hook strictly non-fatal.
-_t_attach_calls=$(grep -c '_telegram_autostart_if_enabled 2>/dev/null || true' /home/ckriech/projects/clemens33/ae/ae)
-assert_eq "telegram: auto-start hook called twice (resume + full-launch) with non-fatal guard" "2" "$_t_attach_calls"
+# IMPORTANT guard (codex): every auto-start hook invocation is strictly
+# non-fatal (`2>/dev/null || true`). Three call sites: the two launch paths
+# (resume + full-launch) and the loop watchdog's `_supervise` dispatch. Greps
+# the ae UNDER TEST (not a hardcoded path) so worktree runs are accurate.
+_t_attach_calls=$(grep -c '_telegram_autostart_if_enabled 2>/dev/null || true' "$(dirname "$0")/../ae")
+assert_eq "telegram: every auto-start hook call uses the non-fatal guard (2 launch + supervise)" "3" "$_t_attach_calls"
 unset _t_attach_calls
 assert_eq "telegram: autostart returns 0 when deps are missing" "1" \
     "$([[ "$AE_SOURCE" == *'echo "ae telegram: skipped autostart — missing deps:$missing" >&2
