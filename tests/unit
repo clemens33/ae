@@ -2686,7 +2686,17 @@ assert_eq "tg-log: daemon redirects all output (stderr+stdout) to the log" "1" \
 # The single EXIT handler captures rc FIRST (bash keeps one EXIT trap, so this
 # is merged with the lock/state-save handler — a separate trap would be clobbered).
 assert_eq "tg-log: single EXIT handler records exit rc (merged, not clobbered)" "1" \
-    "$([[ "$AE_SOURCE" == *'daemon_on_exit() {'* && "$AE_SOURCE" == *'local rc=$?'* && "$AE_SOURCE" == *'_log "daemon exiting (rc=$rc)"'* && "$AE_SOURCE" == *'trap daemon_on_exit EXIT'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'daemon_on_exit() {'* && "$AE_SOURCE" == *'local rc=$?'* && "$AE_SOURCE" == *'daemon exiting (rc=$rc, signal=$_DAEMON_EXIT_SIGNAL)'* && "$AE_SOURCE" == *'trap daemon_on_exit EXIT'* ]] && echo 1 || echo 0)"
+
+# Death-cause instrumentation: main() is an infinite loop, so any exit is
+# external. Signal traps (HUP/INT/TERM) record which signal terminated the
+# daemon so "exiting (rc=0)" no longer hides the cause. Each re-exits 128+signum.
+assert_eq "tg-diag: daemon traps HUP/INT/TERM and records the signal" "1" \
+    "$([[ "$AE_SOURCE" == *"trap '_daemon_on_signal SIGHUP 129' HUP"* \
+        && "$AE_SOURCE" == *"trap '_daemon_on_signal SIGINT 130' INT"* \
+        && "$AE_SOURCE" == *"trap '_daemon_on_signal SIGTERM 143' TERM"* ]] && echo 1 || echo 0)"
+assert_eq "tg-diag: exit log distinguishes signal vs internal/clean exit" "1" \
+    "$([[ "$AE_SOURCE" == *'no signal — internal/clean exit'* ]] && echo 1 || echo 0)"
 
 # Log file is created owner-only (600) before the redirect — it holds chat ids,
 # session names, sender ids.

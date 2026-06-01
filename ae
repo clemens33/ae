@@ -3334,14 +3334,34 @@ acquire_lock() {
 # header and wipe a healthy daemon's offsets.
 LOCK_HELD=0
 STATE_LOADED=0
+# main() is an infinite loop with no internal exit path, so the daemon only ever
+# stops because something OUTSIDE it intervenes. "exiting (rc=0)" alone hides
+# whether that was SIGTERM (`ae telegram stop` / a stray `tmux kill-session`),
+# SIGHUP (the tmux session or server torn down — e.g. a client/terminal closing),
+# SIGINT, or a genuinely internal exit (which would mean a code path we don't know
+# about). Record the terminating signal so the next death is diagnosable. Each
+# handler re-exits with 128+signum, so death behaviour is unchanged — only the log
+# gains the cause.
+_DAEMON_EXIT_SIGNAL=""
+_daemon_on_signal() {
+    _DAEMON_EXIT_SIGNAL="$1"
+    exit "$2"
+}
+trap '_daemon_on_signal SIGHUP 129' HUP
+trap '_daemon_on_signal SIGINT 130' INT
+trap '_daemon_on_signal SIGTERM 143' TERM
 # Single EXIT handler (bash keeps only one): capture the exit status FIRST, then
 # persist offsets if we held the lock, then record WHY the daemon stopped — the
-# rc makes a crash (e.g. set -u abort) distinguishable from a clean stop in the
-# log file.
+# rc plus the signal makes a crash (e.g. set -u abort), an external kill, and a
+# clean stop distinguishable in the log file.
 daemon_on_exit() {
     local rc=$?
     [[ "$LOCK_HELD" == 1 && "$STATE_LOADED" == 1 ]] && { save_state 2>/dev/null || true; }
-    _log "daemon exiting (rc=$rc)"
+    if [[ -n "$_DAEMON_EXIT_SIGNAL" ]]; then
+        _log "daemon exiting (rc=$rc, signal=$_DAEMON_EXIT_SIGNAL)"
+    else
+        _log "daemon exiting (rc=$rc, no signal — internal/clean exit)"
+    fi
 }
 trap daemon_on_exit EXIT
 
