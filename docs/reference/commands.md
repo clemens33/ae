@@ -7,6 +7,8 @@ ae list [--all|--stopped|--needs-attn]
                        List sessions (running by default; --all adds stopped
                        history, --needs-attn only those needing attention)
 ae status [name]       Show agent output without attaching
+ae next                Name the top running session needing attention (read-only;
+                       alias: ae jump). Non-zero exit when nothing needs you.
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
                        Regenerate helper scripts and workspace.md in existing sessions
@@ -109,6 +111,26 @@ richer per-agent timing fields are planned additions.
 ## `ae status [name]`
 
 Prints the last ~80 lines from each agent's pane without attaching. Useful for a quick "what is everyone doing" snapshot. Marks each agent's binary name and pane id.
+
+## `ae next` (alias `ae jump`)
+
+The attention navigator — the action half of `ae list`. Names the single
+**top-ranked running session needing attention**, using the *same* rollup and
+severity ranking as `ae list` (`dead > stale > waiting-user > blocked >
+throttled`):
+
+```text
+$ ae next
+my-feature  attn:blocked  rank:2  codex:coworker
+```
+
+Read-only (it does not change tmux focus). Exits **non-zero** with a message
+when nothing needs attention, so it composes in scripts and is a clean primitive
+for a future monitoring agent. Tie-break across equally-severe sessions:
+most-recent activity, then session name ascending (deterministic).
+
+`-h`/`--help` prints usage; an unknown argument exits non-zero. (`--attach`, to
+jump straight to the session, is a planned follow-up.)
 
 ## `ae doctor`
 

@@ -1470,6 +1470,136 @@ _attn_rank() {
     esac
 }
 
+# Session needs_attention rollup — the SINGLE source of attention semantics,
+# shared by cmd_list and cmd_next so they can never diverge. Computes the single
+# most-actionable reason across the session's CURRENT agents (severity via
+# _attn_rank: dead > stale > waiting-user > blocked > throttled), and the agent
+# that raised it. 'dead' = a registered agent whose pane vanished; stale/throttled
+# come from the loop watchdog's alert events; waiting-user/blocked are self-declared.
+# Only agents present in meta may raise attention (a stray/retired actor must not).
+#
+# Outputs via globals (NOT stdout) so the call runs in the caller's shell — that
+# lets it populate the caller's _areason map (per-agent reason, for --json) via
+# dynamic scope; a process-substitution subshell would silently drop those writes.
+#   sets: _AE_ATTN_REASON (reason or empty), _AE_ATTN_AGENT (contributing agent)
+#   fills: _areason["<agent>"]=<reason>  — only if the caller has _areason in scope
+# shellcheck disable=SC2154 # _areason is an optional caller-scope map (dynamic scope)
+_session_attn_rollup() {
+    local name="$1" sess_dir="$2" meta_blob="$3"
+    local events="${sess_dir}/events.jsonl"
+    _AE_ATTN_REASON=""
+    _AE_ATTN_AGENT=""
+    declare -A _s=() _c=() _al=()
+    local sa sv mk mv _an _as ag pc
+    while IFS=$'\t' read -r sa sv; do
+        [[ -n "$sa" ]] && _s["$sa"]="$sv"
+    done < <(_session_states "$sess_dir")
+    while IFS='=' read -r mk mv; do
+        [[ "$mk" == agent.* ]] || continue
+        IFS=$'\t' read -r _an _as < <(_parse_agent_entry "$mv")
+        [[ -n "$_an" ]] && _c["$_an"]=1
+    done <<<"$meta_blob"
+    while IFS=$'\t' read -r ag pc; do
+        [[ -n "$ag" ]] || continue
+        case "$pc" in
+            bash | fish | zsh | sh | dash) _al["$ag"]="!" ;;
+            *) _al["$ag"]="" ;;
+        esac
+    done < <(tmux list-panes -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
+    local a r
+    for a in "${!_c[@]}"; do
+        if [[ -z "${_al[$a]+x}" ]]; then
+            r="dead"
+        else
+            r="$(_agent_alert_reason "$events" "$a" "$name")"
+            [[ -n "$r" ]] || r="${_s[$a]:-}"
+        fi
+        case "$r" in waiting-user | blocked | dead | stale | throttled) ;; *) r="" ;; esac
+        [[ -n "${_areason+x}" ]] && _areason["$a"]="$r"
+        [[ -n "$r" ]] || continue
+        if (($(_attn_rank "$r") > $(_attn_rank "$_AE_ATTN_REASON"))); then
+            _AE_ATTN_REASON="$r"
+            _AE_ATTN_AGENT="$a"
+        fi
+    done
+}
+
+# Ranking comparison for `ae next`: should the candidate (rank,epoch,name) replace
+# the current best? Deterministic order: higher severity rank, then more-recent
+# activity, then name ascending — so equal-rank/equal-mtime ties are stable and
+# scriptable, not tmux-list order. Pure → unit-tested directly.
+_next_better() {
+    local rank="$1" epoch="$2" name="$3" brank="$4" bepoch="$5" bname="$6"
+    ((rank > brank)) && return 0
+    ((rank < brank)) && return 1
+    ((epoch > bepoch)) && return 0
+    ((epoch < bepoch)) && return 1
+    [[ -z "$bname" || "$name" < "$bname" ]] && return 0
+    return 1
+}
+
+# `ae next` — attention navigator (Layer 2). Names the top-ranked RUNNING session
+# needing attention, reusing _session_attn_rollup (the same semantics as
+# `ae list`). Read-only by default (prints; no tmux focus change). Exits non-zero
+# when nothing needs attention so it composes in scripts and Layer 3.
+# Tie-break across equally-severe sessions: most-recent activity, then name asc.
+cmd_next() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            -h | --help)
+                cat >&2 <<'USAGE'
+Usage: ae next      Name the top running session needing attention (read-only)
+       ae jump      Alias for ae next
+
+Prints "<session>  attn:<reason>  rank:<n>  <agent>" and exits 0, or a message
+on stderr and non-zero when nothing needs attention.
+USAGE
+                return 0
+                ;;
+            --attach | --switch)
+                echo "ae next: --attach is not implemented yet (planned for the next slice)." >&2
+                return 2
+                ;;
+            *)
+                echo "ae next: unknown argument '$arg' (see: ae next --help)" >&2
+                return 2
+                ;;
+        esac
+    done
+
+    local sessions name
+    sessions="$(list_ae_sessions)"
+    local best_name="" best_reason="" best_agent="" best_rank=0 best_epoch=0
+    while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        local sess_dir
+        sess_dir="$(_resolve_session_dir "$name")"
+        [[ -n "$sess_dir" ]] || continue
+        local meta_blob=""
+        [[ -f "${sess_dir}/meta" ]] && meta_blob="$(<"${sess_dir}/meta")"
+        _session_attn_rollup "$name" "$sess_dir" "$meta_blob"
+        [[ -n "$_AE_ATTN_REASON" ]] || continue
+        local rank epoch
+        rank="$(_attn_rank "$_AE_ATTN_REASON")"
+        epoch="$(_session_active_epoch "$sess_dir")"
+        if _next_better "$rank" "$epoch" "$name" "$best_rank" "$best_epoch" "$best_name"; then
+            best_name="$name"
+            best_reason="$_AE_ATTN_REASON"
+            best_agent="$_AE_ATTN_AGENT"
+            best_rank="$rank"
+            best_epoch="$epoch"
+        fi
+    done <<<"$sessions"
+
+    if [[ -z "$best_name" ]]; then
+        echo "ae next: no running session needs attention." >&2
+        return 1
+    fi
+    printf '%s  attn:%s  rank:%s  %s\n' "$best_name" "$best_reason" "$best_rank" "$best_agent"
+    return 0
+}
+
 # Escape a string for embedding in JSON. Intentionally mirrored from the _lib
 # ae_json_escape (which is heredoc text, unsourceable by the main script) so
 # `ae list --json` needs no jq. Keep the two byte-identical; the unit suite
@@ -1623,18 +1753,8 @@ LISTHELP
                 [[ -n "$sa" ]] || continue
                 _state["$sa"]="$sv"
             done < <(_session_states "$sess_dir")
-            # Only agents currently present in meta may raise the session
-            # attention suffix — a retired/renamed/stray historical actor with a
-            # stale state must not flag a session with no agent row to explain it.
-            declare -A _cur=()
-            local _an _as
-            while IFS='=' read -r mk mv; do
-                [[ "$mk" == agent.* ]] || continue
-                IFS=$'\t' read -r _an _as < <(_parse_agent_entry "$mv")
-                [[ -n "$_an" ]] && _cur["$_an"]=1
-            done <<<"$meta_blob"
-            # Build alive map from tmux panes (one tmux call). Needed before the
-            # attention rollup so a missing pane can raise the 'dead' reason.
+            # Build alive map from tmux panes (one tmux call) for the agent-row
+            # display markers below. (The attention rollup builds its own maps.)
             declare -A _alive=()
             while IFS=$'\t' read -r ae_agent pane_cmd; do
                 [[ -n "$ae_agent" ]] || continue
@@ -1643,30 +1763,16 @@ LISTHELP
                     *) _alive["$ae_agent"]="" ;;
                 esac
             done < <(tmux list-panes -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
-            # Derived needs_attention rollup: the single most-actionable reason
-            # across current agents. Severity: dead > stale > waiting-user >
-            # blocked > throttled. 'dead' = pane vanished; stale/throttled come
-            # from the loop watchdog's alert events; waiting-user/blocked are
-            # self-declared. (Pending-review edges are a planned follow-up.)
+            # Derived needs_attention rollup via the shared single-source
+            # _session_attn_rollup (also used by `ae next` — same semantics, no
+            # divergence). Called in THIS shell (not a subshell) so it fills the
+            # _areason map --json reads from this scope via dynamic scope.
             declare -A _areason=()
-            local attn="" _a _r _events="${sess_dir}/events.jsonl"
-            for _a in "${!_cur[@]}"; do
-                if [[ -z "${_alive[$_a]+x}" ]]; then
-                    _r="dead" # registered agent, no pane in the session
-                else
-                    _r="$(_agent_alert_reason "$_events" "$_a" "$name")"
-                    [[ -n "$_r" ]] || _r="${_state[$_a]:-}"
-                fi
-                case "$_r" in waiting-user | blocked | dead | stale | throttled) ;; *) _r="" ;; esac
-                _areason["$_a"]="$_r"
-                [[ -n "$_r" ]] || continue
-                if (( $(_attn_rank "$_r") > $(_attn_rank "$attn") )); then
-                    attn="$_r"
-                fi
-            done
+            _session_attn_rollup "$name" "$sess_dir" "$meta_blob"
+            local attn="$_AE_ATTN_REASON"
             # --needs-me: skip sessions with no attention signal.
             if $only_needs_me && [[ -z "$attn" ]]; then
-                unset _state _cur _alive _areason
+                unset _state _alive _areason
                 continue
             fi
             # --active: skip sessions with no recent activity. "Recent" = an ae
@@ -1677,14 +1783,14 @@ LISTHELP
                 local _sae
                 _sae="$(_session_active_epoch "$sess_dir")"
                 if (( _now <= 0 || _sae <= 0 || _now - _sae >= active_window )); then
-                    unset _state _cur _alive _areason
+                    unset _state _alive _areason
                     continue
                 fi
             fi
             if $as_json; then
                 _list_session_json "running" "$name" "$mode" "$origin" "$workdir" \
                     "$sess_dir" "$attn" "$meta_blob"
-                unset _alive _state _cur _areason
+                unset _alive _state _areason
                 continue
             fi
             if ! $header_printed; then
@@ -1701,7 +1807,7 @@ LISTHELP
                 local marker="${_alive[$aname]:-}"
                 printf "  %-22s  %-8s  %-12s  %s\n" "$aname" "$asid" "${_state[$aname]:--}" "$marker"
             done <<<"$meta_blob"
-            unset _alive _state _cur _areason
+            unset _alive _state _areason
         done <<<"$sessions"
     fi
 
@@ -4478,6 +4584,7 @@ cmd_help() {
     echo "                         List sessions (running by default; --all adds stopped,"
     echo "                         --needs-attn only those needing attention)"
     echo "  ae status [name]       Show recent agent output without attaching"
+    echo "  ae next                Name the top running session needing attention (read-only)"
     echo "  ae doctor [--refresh [name|all]]"
     echo "                         Check local environment and optionally refresh existing session helpers"
     echo "  ae rename [old] <new>  Rename a running session"
@@ -5053,6 +5160,10 @@ case "${1:-}" in
         ;;
     status)
         cmd_status "${2:-}"
+        exit $?
+        ;;
+    next | jump)
+        cmd_next "${@:2}"
         exit $?
         ;;
     doctor)

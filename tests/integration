@@ -344,6 +344,53 @@ assert_eq "rollup: newer activity clears the stale alert" "0" \
 "$AE" end -f test-alert 2>/dev/null || true
 sleep 0.5
 
+# ── Test 3d: ae next — attention navigator (Layer 2, slice A) ────────
+# `ae next` names the top-ranked running session needing attention, reusing the
+# same rollup/ranking as `ae list`. Read-only (no tmux focus change).
+
+REPO3D="$(setup_repo)"
+(cd "$REPO3D" && "$AE" --local test-next &) 2>/dev/null
+wait_for_session "test-next"
+sleep 1
+NEXT_EVENTS="$HOME/.ae/sessions/test-next/events.jsonl"
+next_agent="$(sed -n 's/^agent.main=//p' "$HOME/.ae/sessions/test-next/meta" | cut -d: -f1,2)"
+
+# No session needs attention yet → ae next exits non-zero with a clear message.
+next_none_rc=0
+next_none_out="$("$AE" next 2>&1)" || next_none_rc=$?
+assert_eq "next: exits non-zero when nothing needs attention" "1" \
+    "$([[ "$next_none_rc" -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "next: says nothing needs attention" "attention" "$next_none_out"
+
+# Declare waiting-user → ae next names that session + reason, exit 0.
+printf '{"ts":"2026-06-15T12:00:00Z","actor":"%s","action":"state","ref":"waiting-user","summary":"need input"}\n' "$next_agent" >>"$NEXT_EVENTS"
+next_rc=0
+next_out="$("$AE" next 2>&1)" || next_rc=$?
+assert_eq "next: exit 0 when an attention session exists" "0" "$next_rc"
+assert_contains "next: names the attention session" "test-next" "$next_out"
+assert_contains "next: shows the attention reason" "waiting-user" "$next_out"
+
+# Read-only: ae next output must not advertise an attach/switch action.
+assert_eq "next: output does not advertise attach (read-only)" "0" \
+    "$(echo "$next_out" | grep -ci 'switch-client\|attach-session')"
+
+# Arg handling (codex IMPORTANT): --help exits 0; unknown/unimplemented flags
+# exit non-zero rather than silently behaving like plain `ae next`.
+help_rc=0; help_out="$("$AE" next --help 2>&1)" || help_rc=$?
+assert_eq "next: --help exits 0" "0" "$help_rc"
+assert_contains "next: --help prints usage" "Usage: ae next" "$help_out"
+bogus_rc=0; "$AE" next --bogus >/dev/null 2>&1 || bogus_rc=$?
+assert_eq "next: unknown flag exits non-zero" "1" \
+    "$([[ "$bogus_rc" -ne 0 ]] && echo 1 || echo 0)"
+attach_rc=0; attach_out="$("$AE" next --attach 2>&1)" || attach_rc=$?
+assert_eq "next: --attach (not yet implemented) exits non-zero" "1" \
+    "$([[ "$attach_rc" -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "next: --attach explains it is not implemented yet" "not implemented" "$attach_out"
+
+# Clean up
+"$AE" end -f test-next 2>/dev/null || true
+sleep 0.5
+
 # NOTE: the loop watchdog's quiet-state behaviour (done/waiting-user/blocked
 # suppression + the waiting-user/blocked pane-activity escape hatch) is covered
 # by unit tests of the extracted decision functions (_agent_quiet_reason,

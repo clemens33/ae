@@ -764,19 +764,68 @@ assert_eq "list: unknown flag is rejected" \
     "1" \
     "$([[ "$AE_SOURCE" == *"unknown flag '\$1' (see: ae list --help)"* ]] && echo 1 || echo 0)"
 
-# Slice 2: cmd_list wires the derived rollup (dead via missing pane + alert
-# reason + state), picking the highest-severity reason via _attn_rank.
-assert_eq "list: rollup flags a missing pane as dead" \
+# Slice 2 / Layer-2: the derived rollup (dead via missing pane + alert reason +
+# state, highest-severity via _attn_rank) lives in the shared _session_attn_rollup
+# — the SINGLE source of attention semantics used by both cmd_list and `ae next`.
+assert_eq "rollup: flags a missing pane as dead" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ -z "${_alive[$_a]+x}" ]]; then'*'_r="dead"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'if [[ -z "${_al[$a]+x}" ]]; then'*'r="dead"'* ]] && echo 1 || echo 0)"
 
-assert_eq "list: rollup consults _agent_alert_reason then falls back to state" \
+assert_eq "rollup: consults _agent_alert_reason then falls back to state" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'_r="$(_agent_alert_reason "$_events" "$_a" "$name")"'* && "$AE_SOURCE" == *'[[ -n "$_r" ]] || _r="${_state[$_a]:-}"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'r="$(_agent_alert_reason "$events" "$a" "$name")"'* && "$AE_SOURCE" == *'[[ -n "$r" ]] || r="${_s[$a]:-}"'* ]] && echo 1 || echo 0)"
 
-assert_eq "list: rollup picks highest-severity reason via _attn_rank" \
+assert_eq "rollup: picks highest-severity reason via _attn_rank" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'if (( $(_attn_rank "$_r") > $(_attn_rank "$attn") )); then'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'if (($(_attn_rank "$r") > $(_attn_rank "$_AE_ATTN_REASON"))); then'* ]] && echo 1 || echo 0)"
+
+# _session_attn_rollup is the shared single source, and cmd_list + cmd_next both call it.
+assert_eq "rollup: cmd_list and cmd_next share _session_attn_rollup" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'_session_attn_rollup() {'* && "$AE_SOURCE" == *'cmd_next() {'* ]] && echo 1 || echo 0)"
+# Rollup returns via globals (NOT stdout) so the call runs in-shell and can fill
+# the caller's _areason map — a process-substitution subshell would drop it.
+assert_eq "rollup: returns via globals so _areason (--json) survives" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'_AE_ATTN_REASON='* && "$AE_SOURCE" == *'[[ -n "${_areason+x}" ]] && _areason["$a"]="$r"'* ]] && echo 1 || echo 0)"
+
+# Layer-2 ae next (slice A): dispatcher wiring + read-only + non-zero on empty.
+assert_eq "next: dispatcher wires next|jump to cmd_next" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'next | jump)'* && "$AE_SOURCE" == *'cmd_next "${@:2}"'* ]] && echo 1 || echo 0)"
+assert_eq "next: exits non-zero with a message when nothing needs attention" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'no running session needs attention'* && "$AE_SOURCE" == *'return 1'* ]] && echo 1 || echo 0)"
+# Slice A is read-only: cmd_next must NOT contain attach/switch (that is slice B).
+_cmdnext_body="$(awk '/^cmd_next\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$(dirname "$0")/../ae")"
+assert_eq "next: slice A is read-only (no attach/switch in cmd_next)" \
+    "1" \
+    "$([[ -n "$_cmdnext_body" && "$_cmdnext_body" != *switch-client* && "$_cmdnext_body" != *attach-session* && "$_cmdnext_body" != *'attach -t'* ]] && echo 1 || echo 0)"
+unset _cmdnext_body
+
+# Arg handling (codex IMPORTANT): cmd_next parses -h/--help, rejects unknown
+# args, and explicitly defers --attach instead of silently ignoring it.
+assert_eq "next: cmd_next handles --help / --attach / unknown args" "1" \
+    "$([[ "$AE_SOURCE" == *'-h | --help)'* && "$AE_SOURCE" == *'--attach | --switch)'* \
+        && "$AE_SOURCE" == *"unknown argument '\$arg'"* ]] && echo 1 || echo 0)"
+
+# _next_better: the deterministic ranking comparison (rank desc, epoch desc,
+# name asc). Behavioural — sourced directly (codex IMPORTANT 2: name tie-break).
+eval "$(awk '/^_next_better\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "next-cmp: higher rank wins" "0" \
+    "$(_next_better 5 100 zeta 3 999 alpha; echo $?)"
+assert_eq "next-cmp: lower rank loses" "1" \
+    "$(_next_better 2 999 alpha 3 100 zeta; echo $?)"
+assert_eq "next-cmp: equal rank, newer activity wins" "0" \
+    "$(_next_better 3 200 zeta 3 100 alpha; echo $?)"
+assert_eq "next-cmp: equal rank, older activity loses" "1" \
+    "$(_next_better 3 100 alpha 3 200 zeta; echo $?)"
+assert_eq "next-cmp: equal rank+epoch, name asc wins the tie" "0" \
+    "$(_next_better 3 100 alpha 3 100 beta; echo $?)"
+assert_eq "next-cmp: equal rank+epoch, later name loses the tie" "1" \
+    "$(_next_better 3 100 beta 3 100 alpha; echo $?)"
+assert_eq "next-cmp: empty best (first candidate) always wins" "0" \
+    "$(_next_better 1 0 anything 0 0 ''; echo $?)"
 
 # Slice 3: --json digest.
 assert_eq "list: --json flag parsed" \
