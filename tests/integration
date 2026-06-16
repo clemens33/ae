@@ -362,6 +362,17 @@ assert_eq "next: exits non-zero when nothing needs attention" "1" \
     "$([[ "$next_none_rc" -ne 0 ]] && echo 1 || echo 0)"
 assert_contains "next: says nothing needs attention" "attention" "$next_none_out"
 
+# --attach is accepted (not 'unknown arg') and guards on no-attention BEFORE any
+# real tmux focus — so it exits non-zero with the no-attention message here, with
+# nothing to attach to. (The happy-path switch/attach needs a live tmux client,
+# so the inside/outside-tmux DECISION is unit-tested via _next_focus_argv; the
+# thin exec is covered by manual QA — see the Layer-2 plan's test strategy.)
+attach_none_rc=0
+attach_none_out="$("$AE" next --attach 2>&1)" || attach_none_rc=$?
+assert_eq "next: --attach with nothing-to-attend exits non-zero (no focus change)" "1" \
+    "$([[ "$attach_none_rc" -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "next: --attach is parsed (no-attention message, not 'unknown arg')" "attention" "$attach_none_out"
+
 # Declare waiting-user → ae next names that session + reason, exit 0.
 printf '{"ts":"2026-06-15T12:00:00Z","actor":"%s","action":"state","ref":"waiting-user","summary":"need input"}\n' "$next_agent" >>"$NEXT_EVENTS"
 next_rc=0
@@ -382,10 +393,6 @@ assert_contains "next: --help prints usage" "Usage: ae next" "$help_out"
 bogus_rc=0; "$AE" next --bogus >/dev/null 2>&1 || bogus_rc=$?
 assert_eq "next: unknown flag exits non-zero" "1" \
     "$([[ "$bogus_rc" -ne 0 ]] && echo 1 || echo 0)"
-attach_rc=0; attach_out="$("$AE" next --attach 2>&1)" || attach_rc=$?
-assert_eq "next: --attach (not yet implemented) exits non-zero" "1" \
-    "$([[ "$attach_rc" -ne 0 ]] && echo 1 || echo 0)"
-assert_contains "next: --attach explains it is not implemented yet" "not implemented" "$attach_out"
 
 # Clean up
 "$AE" end -f test-next 2>/dev/null || true

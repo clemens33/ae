@@ -1538,28 +1538,43 @@ _next_better() {
     return 1
 }
 
+# Which tmux verb focuses a session, by whether we're already inside tmux:
+# switch-client (inside — attach-session errors with "sessions should be nested
+# with care") vs attach-session (outside). Returns ONLY the verb so the caller
+# passes the target as a separate quoted argv element — a session name with
+# spaces must not be word-split. Pure → unit-tested.
+_next_focus_verb() {
+    if [[ -n "${TMUX:-}" ]]; then
+        printf 'switch-client'
+    else
+        printf 'attach-session'
+    fi
+}
+
 # `ae next` — attention navigator (Layer 2). Names the top-ranked RUNNING session
 # needing attention, reusing _session_attn_rollup (the same semantics as
-# `ae list`). Read-only by default (prints; no tmux focus change). Exits non-zero
-# when nothing needs attention so it composes in scripts and Layer 3.
+# `ae list`). Read-only by default (prints); `--attach` jumps to it (switch-client
+# inside tmux / attach-session outside). Exits non-zero when nothing needs
+# attention so it composes in scripts and Layer 3.
 # Tie-break across equally-severe sessions: most-recent activity, then name asc.
 cmd_next() {
-    local arg
+    local do_attach=false arg
     for arg in "$@"; do
         case "$arg" in
             -h | --help)
                 cat >&2 <<'USAGE'
-Usage: ae next      Name the top running session needing attention (read-only)
-       ae jump      Alias for ae next
+Usage: ae next [--attach]   Name the top running session needing attention.
+       ae jump [--attach]   Alias for ae next.
 
-Prints "<session>  attn:<reason>  rank:<n>  <agent>" and exits 0, or a message
-on stderr and non-zero when nothing needs attention.
+Read-only by default: prints "<session>  attn:<reason>  rank:<n>  <agent>" and
+exits 0, or a message on stderr and non-zero when nothing needs attention.
+--attach (alias --switch) jumps to that session: switch-client inside tmux,
+attach-session outside.
 USAGE
                 return 0
                 ;;
             --attach | --switch)
-                echo "ae next: --attach is not implemented yet (planned for the next slice)." >&2
-                return 2
+                do_attach=true
                 ;;
             *)
                 echo "ae next: unknown argument '$arg' (see: ae next --help)" >&2
@@ -1596,8 +1611,33 @@ USAGE
         echo "ae next: no running session needs attention." >&2
         return 1
     fi
-    printf '%s  attn:%s  rank:%s  %s\n' "$best_name" "$best_reason" "$best_rank" "$best_agent"
-    return 0
+
+    if ! $do_attach; then
+        printf '%s  attn:%s  rank:%s  %s\n' "$best_name" "$best_reason" "$best_rank" "$best_agent"
+        return 0
+    fi
+
+    # --attach: jump to the chosen session. Re-validate it still EXACTLY exists
+    # (it may have ended between the scan and the jump). Use an exact
+    # list-sessions match, NOT `has-session -t` — that prefix-matches, so a
+    # vanished session with a surviving prefix-sibling would false-positive and
+    # land the focus on the wrong session. Cannot make the final switch atomic,
+    # but this removes the known false-positive.
+    if ! tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -Fxq -- "$best_name"; then
+        echo "ae next: '$best_name' disappeared before attach." >&2
+        return 1
+    fi
+    if [[ -n "${TMUX:-}" ]]; then
+        local cur
+        cur="$(tmux display-message -p '#S' 2>/dev/null || true)"
+        if [[ "$cur" == "$best_name" ]]; then
+            echo "ae next: already in '$best_name' (attn:$best_reason)."
+            return 0
+        fi
+    fi
+    # Target passed as its own quoted argv element — never word-split (a session
+    # name may contain spaces); the verb is a single fixed word.
+    tmux "$(_next_focus_verb)" -t "$best_name"
 }
 
 # Escape a string for embedding in JSON. Intentionally mirrored from the _lib
@@ -4584,7 +4624,7 @@ cmd_help() {
     echo "                         List sessions (running by default; --all adds stopped,"
     echo "                         --needs-attn only those needing attention)"
     echo "  ae status [name]       Show recent agent output without attaching"
-    echo "  ae next                Name the top running session needing attention (read-only)"
+    echo "  ae next [--attach]     Name the top session needing attention (--attach jumps to it)"
     echo "  ae doctor [--refresh [name|all]]"
     echo "                         Check local environment and optionally refresh existing session helpers"
     echo "  ae rename [old] <new>  Rename a running session"

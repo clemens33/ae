@@ -796,18 +796,43 @@ assert_eq "next: dispatcher wires next|jump to cmd_next" \
 assert_eq "next: exits non-zero with a message when nothing needs attention" \
     "1" \
     "$([[ "$AE_SOURCE" == *'no running session needs attention'* && "$AE_SOURCE" == *'return 1'* ]] && echo 1 || echo 0)"
-# Slice A is read-only: cmd_next must NOT contain attach/switch (that is slice B).
+# Read-only is the DEFAULT: the print path returns before any tmux focus, gated
+# by `if ! $do_attach`. --attach (slice B) flips it on.
 _cmdnext_body="$(awk '/^cmd_next\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$(dirname "$0")/../ae")"
-assert_eq "next: slice A is read-only (no attach/switch in cmd_next)" \
+assert_eq "next: read-only default gates the attach behind --attach" \
     "1" \
-    "$([[ -n "$_cmdnext_body" && "$_cmdnext_body" != *switch-client* && "$_cmdnext_body" != *attach-session* && "$_cmdnext_body" != *'attach -t'* ]] && echo 1 || echo 0)"
+    "$([[ "$_cmdnext_body" == *'if ! $do_attach; then'*'return 0'* ]] && echo 1 || echo 0)"
+# --attach (slice B): re-validates EXACT existence (not prefix-matching
+# has-session), no-ops if already in it, then focuses with the target as its own
+# quoted argv element (a session name may contain spaces — never word-split).
+assert_eq "next: --attach revalidates exactly + no-ops in-place + focuses argv-safe" \
+    "1" \
+    "$([[ "$_cmdnext_body" == *'tmux list-sessions -F '*'grep -Fxq -- "$best_name"'* \
+        && "$_cmdnext_body" != *'has-session -t "$best_name"'* \
+        && "$_cmdnext_body" == *'disappeared before attach'* \
+        && "$_cmdnext_body" == *'already in'* \
+        && "$_cmdnext_body" == *'tmux "$(_next_focus_verb)" -t "$best_name"'* ]] && echo 1 || echo 0)"
 unset _cmdnext_body
 
-# Arg handling (codex IMPORTANT): cmd_next parses -h/--help, rejects unknown
-# args, and explicitly defers --attach instead of silently ignoring it.
+# Arg handling (codex IMPORTANT): cmd_next parses -h/--help, accepts
+# --attach/--switch, rejects unknown args.
 assert_eq "next: cmd_next handles --help / --attach / unknown args" "1" \
     "$([[ "$AE_SOURCE" == *'-h | --help)'* && "$AE_SOURCE" == *'--attach | --switch)'* \
+        && "$AE_SOURCE" == *'do_attach=true'* \
         && "$AE_SOURCE" == *"unknown argument '\$arg'"* ]] && echo 1 || echo 0)"
+
+# _next_focus_verb: inside tmux → switch-client; outside → attach-session. Returns
+# ONLY the verb (the target is a separate quoted arg, so spaces can't word-split).
+# Behavioural — sourced directly (codex IMPORTANT 1: argv-safe in/out decision).
+eval "$(awk '/^_next_focus_verb\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "next-focus: inside tmux uses switch-client" "switch-client" \
+    "$(TMUX=/tmp/fake,1,0 _next_focus_verb)"
+assert_eq "next-focus: outside tmux uses attach-session" "attach-session" \
+    "$(unset TMUX; _next_focus_verb)"
+# Argv-safety: the verb is a single bare word (no spaces), so `tmux "$verb" -t
+# "$name"` keeps a space-containing session name as ONE argv element.
+assert_eq "next-focus: verb is a single word (argv-safe with spacey targets)" "1" \
+    "$(v="$(TMUX=x _next_focus_verb)"; [[ "$v" != *' '* ]] && echo 1 || echo 0)"
 
 # _next_better: the deterministic ranking comparison (rank desc, epoch desc,
 # name asc). Behavioural — sourced directly (codex IMPORTANT 2: name tie-break).

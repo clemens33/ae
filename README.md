@@ -69,6 +69,7 @@ ae list --attn                 # short alias for --needs-attn
 ae list --all                  # include stopped sessions
 ae list --json                 # machine-readable digest (for scripts/agents)
 ae next                        # name the top session needing attention (alias: ae jump)
+ae next --attach               # …and jump straight to it (switch-client / attach)
 watch -n 10 'ae list'          # live dashboard
 ```
 
