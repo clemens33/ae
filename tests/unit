@@ -750,11 +750,11 @@ assert_eq "list: default hides stopped (gated behind --all/--stopped)" \
 
 assert_eq "list: --all opts stopped back in" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'--all) show_running=true; show_stopped=true'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'--all)'*'show_running=true'*'show_stopped=true'* ]] && echo 1 || echo 0)"
 
 assert_eq "list: --stopped shows only stopped" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'--stopped) show_running=false; show_stopped=true'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'--stopped)'*'show_running=false'*'show_stopped=true'* ]] && echo 1 || echo 0)"
 
 assert_eq "list: --needs-attn (and aliases) filter to attention sessions" \
     "1" \
@@ -2611,8 +2611,7 @@ unset _t_default_line
 assert_eq "telegram: token file ownership validated" "1" \
     "$([[ "$AE_SOURCE" == *'owner="$(stat -c %u "$resolved" 2>/dev/null || echo -1)"'* && "$AE_SOURCE" == *'[[ "$owner" == "${UID:-$(id -u)}" ]]'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: token file mode 600 or 400 required" "1" \
-    "$([[ "$AE_SOURCE" == *'400|600) ;;
-        *) echo "token file must be chmod 600'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'400 | 600) ;;'*'token file must be chmod 600'* ]] && echo 1 || echo 0)"
 
 # Single-instance lock: daemon refuses to start if another holds the lock,
 # preventing two daemons from competing over getUpdates / dupe-messaging.
@@ -2818,9 +2817,9 @@ assert_eq "tg-sup: uncached intent reader reuses parse_config (no cache)" "1" \
 # Lock-acquisition failure → busy/return, NOT proceed unlocked (codex IMPORTANT:
 # a timed-out holder would otherwise re-open the race).
 assert_eq "tg-sup: stop returns busy if it can't get the lock" "1" \
-    "$([[ "$AE_SOURCE" == *'flock -w 5 9 || { echo "ae telegram: busy'* && "$AE_SOURCE" == *'_telegram_persist_intent "false"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'flock -w 5 9 || {'*'ae telegram: busy'* && "$AE_SOURCE" == *'_telegram_persist_intent "false"'* ]] && echo 1 || echo 0)"
 assert_eq "tg-sup: start runs under the lock + returns busy on contention" "1" \
-    "$([[ "$AE_SOURCE" == *'flock -w 5 9 || { echo "ae telegram: busy'* && "$AE_SOURCE" == *'_telegram_persist_intent "true"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'flock -w 5 9 || {'*'ae telegram: busy'* && "$AE_SOURCE" == *'_telegram_persist_intent "true"'* ]] && echo 1 || echo 0)"
 
 # persist_intent also busts the get_config cache so `ae telegram status` is
 # accurate immediately after a stop (the uncached re-check above is what closes
