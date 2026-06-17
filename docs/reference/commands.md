@@ -161,6 +161,23 @@ ae loop status my-feature
 
 The [loop watchdog](../internals/loop.md) is on by default — only an explicit `false` / `no` / `off` / `0` in config or session meta keeps it off. `loop start` is idempotent; running it again just confirms the meta flag.
 
+### Meta-agent (hub) sweep cadence
+
+A session marked as a monitoring hub with `[workspace] meta = true` (persisted to
+its meta as `meta_agent=true`) gets a different loop behaviour for its **main
+agent**: instead of the stale-nudge watchdog, the loop sends a *"run your sweep
+now"* nudge every `AE_LOOP_SWEEP_SEC` seconds (default 300) and never escalates
+the hub to a stale `attn:` alert (idle between sweeps is normal for a monitor).
+Workers/spawned agents in the same session keep the normal watchdog.
+
+Liveness is still guarded two ways: the dead/missing-pane checks catch a crashed
+hub, and a **heartbeat** check catches a *live-but-not-sweeping* hub (model
+stall, upstream throttle, wedge) — the hub rewrites `meta-state.json` on each real
+sweep, and if that stops advancing past ~`2×AE_LOOP_SWEEP_SEC` the loop raises one
+alert (cleared on recovery). The sweep nudges use `action=nudge`, which is **not
+in the default telegram include set**, so routine sweeps don't reach your phone
+(a custom `include` containing `nudge` would forward them).
+
 ## `ae telegram`
 
 ```bash

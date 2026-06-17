@@ -2802,6 +2802,66 @@ assert_eq "tg-sup: loop step 10 revives via throttled 'telegram _supervise'" "1"
 assert_eq "tg-sup: step 10 propagates AE_TMUX_SERVER from meta" "1" \
     "$([[ "$AE_SOURCE" == *"grep '^tmux_server=' \"\$META_DIR/meta\""* && "$AE_SOURCE" == *'AE_TMUX_SERVER="$tg_srv" "$AE_PATH_BIN" telegram _supervise'* ]] && echo 1 || echo 0)"
 
+# ── Layer-3 Slice 3: meta-agent (hub) sweep cadence ──────────────────
+# Config [workspace] meta=true is read and, when truthy, persisted to session
+# meta as meta_agent=true (config-driven, re-read every start/resume).
+assert_eq "meta: [workspace] meta is read into META_AGENT_CFG" "1" \
+    "$([[ "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.meta)"'* ]] && echo 1 || echo 0)"
+assert_eq "meta: truthy config writes meta_agent=true to session meta" "1" \
+    "$([[ "$AE_SOURCE" == *'case "$META_AGENT_CFG" in'*'true | 1 | yes | on)'*'echo "meta_agent=true" >>"${AE_META}/meta"'* ]] && echo 1 || echo 0)"
+# The loop defines the sweep-cadence knob and reads meta_agent from meta.
+assert_eq "meta: loop defines SWEEP_SECS (AE_LOOP_SWEEP_SEC, default 300)" "1" \
+    "$([[ "$AE_SOURCE" == *'SWEEP_SECS="${AE_LOOP_SWEEP_SEC:-300}"'* ]] && echo 1 || echo 0)"
+assert_eq "meta: loop reads meta_agent from meta" "1" \
+    "$([[ "$AE_SOURCE" == *"META_AGENT=\"\$(grep '^meta_agent=' \"\$META_DIR/meta\""* ]] && echo 1 || echo 0)"
+# The cadence branch: gated on META_AGENT==true + SWEEP_SECS>0, sends a sweep
+# nudge every SWEEP_SECS, and continues BEFORE the stale/max-nudges machinery
+# (so the hub is never flagged stale). It sits AFTER the dead-check (a dead hub
+# still alerts).
+assert_eq "meta: sweep-cadence branch is gated + interval-throttled" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && (( SWEEP_SECS > 0 )); then'* \
+        && "$AE_SOURCE" == *'now_epoch - last_sweep >= SWEEP_SECS'* \
+        && "$AE_SOURCE" == *'last_sweep_nudge["$pane"]="$now_epoch"'* ]] && echo 1 || echo 0)"
+assert_eq "meta: sweep nudge says 'run your sweep now', not the stale state-check" "1" \
+    "$([[ "$AE_SOURCE" == *'Run your sweep now: ae list --json'* ]] && echo 1 || echo 0)"
+# IMPORTANT 2 (codex): the cadence targets only the MAIN/hub agent; workers/spawned
+# panes in a meta session keep the normal watchdog. META_MAIN_AGENT is alias:name.
+assert_eq "meta: cadence targets only the main agent (workers keep watchdog)" "1" \
+    "$([[ "$AE_SOURCE" == *"META_MAIN_AGENT=\"\$(grep '^agent.main=' \"\$META_DIR/meta\""* \
+        && "$AE_SOURCE" == *'"$agent" == "$META_MAIN_AGENT"'* ]] && echo 1 || echo 0)"
+# IMPORTANT 1 (codex): live-but-wedged detection — the hub rewrites its state file
+# each real sweep; if that heartbeat stays stale OR ABSENT past the grace window
+# after the first sweep prompt, raise ONE alert. (Absent-file case is the codex
+# BLOCKER fix: a hub wedged before its first write must still be caught.)
+assert_eq "meta: heartbeat-wedge alert covers stale AND absent heartbeat" "1" \
+    "$([[ "$AE_SOURCE" == *'hb_file="${META_DIR}/meta-state.json"'* \
+        && "$AE_SOURCE" == *'first_nudge > 0 && now_epoch - first_nudge > wedge_secs'* \
+        && "$AE_SOURCE" == *'never wrote a heartbeat'* \
+        && "$AE_SOURCE" == *'first_sweep_nudge["$pane"]="$now_epoch"'* ]] && echo 1 || echo 0)"
+# IMPORTANT (codex): recovery is LOOP-owned — emit alert-cleared so ae list
+# un-sticks even on a silent sweep; _agent_alert_reason honors it as a clear.
+# And it reconciles the DURABLE event log once per loop lifetime, so a restart
+# that lost the in-memory latch still clears the old alert.
+assert_eq "meta: recovery clears via latch AND durable reconcile (survives restart)" "1" \
+    "$([[ "$AE_SOURCE" == *'ae_emit_event "alert-cleared" "$agent"'* \
+        && "$AE_SOURCE" == *'throttle-cleared | alert-cleared) return 0'* \
+        && "$AE_SOURCE" == *'-z "${meta_reconciled[$pane]:-}"'* \
+        && "$AE_SOURCE" == *'_agent_alert_reason "$META_DIR/events.jsonl" "$agent" "$_AE_SESSION"'* ]] && echo 1 || echo 0)"
+# IMPORTANT (codex): the wedge alert must rank HIGH (stale), not be downgraded to
+# throttled by a stray substring — explicit 'not sweeping' case ranks it before
+# *throttl*, and the summary itself avoids the throttl/dead substrings.
+assert_eq "meta: wedge alert classifies as stale (not throttled)" "1" \
+    "$([[ "$AE_SOURCE" == *'*"not sweeping"*) printf '"'"'stale'"'"''* \
+        && "$AE_SOURCE" == *'(hub may be stuck)'* \
+        && "$AE_SOURCE" != *'may be wedged/throttled'* ]] && echo 1 || echo 0)"
+# NIT (codex): the sweep interval override is numeric-guarded before arithmetic.
+assert_eq "meta: AE_LOOP_SWEEP_SEC is numeric-guarded" "1" \
+    "$([[ "$AE_SOURCE" == *'[[ "$SWEEP_SECS" =~ ^[0-9]+$ ]] || SWEEP_SECS=300'* ]] && echo 1 || echo 0)"
+# Cadence branch comes BEFORE the stale nudge (dead-check first, then meta branch,
+# then the normal stale logic) — proves the hub bypasses max-nudges/stale-alert.
+assert_eq "meta: cadence branch precedes the stale-nudge logic" "1" \
+    "$([[ "$AE_SOURCE" == *'agent process dead — dropped to shell'*'if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && (( SWEEP_SECS > 0 )); then'*'Status check: if you have more work'* ]] && echo 1 || echo 0)"
+
 # Control lock (codex IMPORTANT): start/stop/supervise serialize so a stop can't
 # be undone by an in-flight supervise. autostart re-checks enabled UNDER the lock.
 assert_eq "tg-sup: control lock file defined" "1" \

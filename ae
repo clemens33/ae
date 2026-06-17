@@ -1436,8 +1436,8 @@ _session_states() {
 # watchdog's own alert/throttled events as the attention signal (max-nudges,
 # missing pane, persistent throttle) instead of re-deriving them. An alert is
 # "active" only while it is the newest event mentioning the agent — any newer
-# activity (state/send/nudge) or a throttle-cleared supersedes it. Returns a
-# short reason: dead | stale | throttled | "".
+# activity (state/send/nudge) or an explicit clear (throttle-cleared /
+# alert-cleared) supersedes it. Returns a short reason: dead | stale | throttled | "".
 _agent_alert_reason() {
     local events="$1" agent="$2" session="$3"
     [[ -f "$events" ]] || return 0
@@ -1453,8 +1453,12 @@ _agent_alert_reason() {
                 summary="$(_event_json_str "$line" summary)"
                 # Summaries come from the loop watchdog (see ae_emit_event
                 # "alert" sites): "agent process dead — dropped to shell",
-                # "pane missing …", "max nudges reached …", "throttled for …".
+                # "pane missing …", "max nudges reached …", "throttled for …",
+                # "meta-agent not sweeping …". The meta-agent (hub) wedge alert is
+                # matched FIRST and mapped to high-severity stale — its summary text
+                # must not be downgraded to throttled by a stray substring match.
                 case "$summary" in
+                    *"not sweeping"*) printf 'stale' ;;
                     *dead* | *dropped* | *missing* | *MISSING*) printf 'dead' ;;
                     *throttl*) printf 'throttled' ;;
                     *) printf 'stale' ;; # max-nudges and any other alert
@@ -1465,7 +1469,7 @@ _agent_alert_reason() {
                 printf 'throttled'
                 return 0
                 ;;
-            throttle-cleared) return 0 ;; # explicit clear
+            throttle-cleared | alert-cleared) return 0 ;; # explicit loop-owned clears
             *)
                 # The agent's OWN activity (state/send/reply/…) means it
                 # recovered → clears any alert. A target-only event (a loop
@@ -5481,6 +5485,10 @@ if [[ "$MAIN_NAME" == *:* ]]; then
 fi
 LAYOUT="$(get_config workspace.layout)"
 WORKERS_RAW="$(get_config workspace.workers)"
+# meta-agent (hub) mode: [workspace] meta = true marks this session as the
+# monitoring hub. The loop then runs a sweep-cadence (periodic "run your sweep
+# now") instead of the stale-nudge watchdog. Persisted to meta as meta_agent.
+META_AGENT_CFG="$(get_config workspace.meta)"
 
 # Determine copy mode: CLI flag > config > default (local)
 if [[ -n "$COPY_MODE_OVERRIDE" ]]; then
@@ -5778,6 +5786,11 @@ agent.main=${MAIN_ALIAS}:${MAIN_NAME}:${MAIN_SESSION_ID}
 agent_bin.main=$(extract_binary_from_cmd "$MAIN_CMD")
 EOF
 [[ -n "$PRESERVED_LOOP" ]] && echo "loop=${PRESERVED_LOOP}" >>"${AE_META}/meta"
+# Config-driven (re-read every start/resume): mark the monitoring hub so its loop
+# runs the sweep-cadence instead of the stale-nudge watchdog.
+case "$META_AGENT_CFG" in
+    true | 1 | yes | on) echo "meta_agent=true" >>"${AE_META}/meta" ;;
+esac
 [[ -n "$PRESERVED_STATUS_RIGHT_PREV" ]] && echo "status_right_prev=${PRESERVED_STATUS_RIGHT_PREV}" >>"${AE_META}/meta"
 [[ -n "$PRESERVED_STATUS_RIGHT_WAS_SESSION" ]] && echo "status_right_was_session=${PRESERVED_STATUS_RIGHT_WAS_SESSION}" >>"${AE_META}/meta"
 for i in "${!WORKER_CMDS[@]}"; do
@@ -6977,6 +6990,15 @@ THROTTLE_ALERT_CYCLES="${AE_LOOP_THROTTLE_ALERT_CYCLES:-5}"
 # How often (seconds) the watchdog best-effort revives the telegram bridge if it
 # died. 0 disables. Idempotent + respects [telegram] enabled — see step 10.
 TG_SUPERVISE_SECS="${AE_LOOP_TG_SUPERVISE_SEC:-120}"
+# Meta-agent (hub) sweep cadence: if this session is the monitoring hub
+# (meta_agent=true in meta), the loop prompts a sweep every SWEEP_SECS instead of
+# treating idle as stale. 0 falls back to normal watchdog behaviour.
+SWEEP_SECS="${AE_LOOP_SWEEP_SEC:-300}"
+[[ "$SWEEP_SECS" =~ ^[0-9]+$ ]] || SWEEP_SECS=300 # guard non-numeric overrides
+META_AGENT="$(grep '^meta_agent=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+# Only the MAIN/hub agent runs the sweep cadence; any workers/spawned agents in a
+# meta session keep the normal watchdog. (alias:name, dropping the session-id.)
+META_MAIN_AGENT="$(grep '^agent.main=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- | cut -d: -f1,2 || true)"
 
 PIDFILE="${META_DIR}/.loop.pid"
 
@@ -7287,6 +7309,8 @@ _pane_has_descendant_named() {
 }
 
 declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing throttle_streak
+# Per-pane last sweep-nudge time, for meta-agent (hub) sweep cadence.
+declare -A last_sweep_nudge first_sweep_nudge meta_wedge_alerted meta_reconciled
 # Per-pane quiet baseline for waiting-user/blocked: the pane hash captured when a
 # declaration is first observed (already includes the declaration's own echo), so
 # only a *later* pane change (human reply / agent output) yields the quiet state.
@@ -7432,6 +7456,84 @@ while true; do
                 fi
                 ;;
         esac
+
+        # 1b. Meta-agent (hub) sweep cadence — applies ONLY to the main/hub agent
+        #     (workers/spawned agents in a meta session keep the normal watchdog).
+        #     The hub is a long-running SERVICE, so "idle between sweeps" is NORMAL,
+        #     not stale — don't nudge it to declare a quiet state or escalate it to a
+        #     stale alert. Instead: (a) prompt a sweep every SWEEP_SECS, and (b) guard
+        #     liveness via the hub's OWN heartbeat — it rewrites its state file on each
+        #     real sweep, so if that stops advancing while we keep nudging (model
+        #     stall / API throttle / wedged), raise ONE alert (cleared on recovery).
+        #     The dead-check above + missing-pane check (step 8) still catch a
+        #     dead/vanished hub. This is the explicit cadence, not the stale-watchdog.
+        if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && (( SWEEP_SECS > 0 )); then
+            now_epoch="$(date +%s)"
+            # Heartbeat liveness (live-but-not-sweeping detection). The hub rewrites
+            # its state file on each real sweep; we judge it only AFTER we've prompted
+            # at least one sweep and given it a grace window — so an ABSENT file
+            # (never wrote a heartbeat) is caught too, not just a stale one.
+            hb_file="${META_DIR}/meta-state.json"
+            hb=0
+            [[ -f "$hb_file" ]] && hb="$(stat -c %Y "$hb_file" 2>/dev/null || echo 0)"
+            wedge_secs=$((SWEEP_SECS * 2 + 60))
+            first_nudge="${first_sweep_nudge[$pane]:-0}"
+            if (( hb > 0 && now_epoch - hb <= wedge_secs )); then
+                # Fresh heartbeat → recovery. The LOOP raised the alert, so the loop
+                # clears it (emit alert-cleared so _agent_alert_reason / ae list stops
+                # showing it even on a silent sweep). Clear via the in-memory latch
+                # (fast path) OR, once per loop lifetime, reconcile the DURABLE event
+                # log — so a loop restart that lost the latch after alerting still
+                # emits a clear. Idempotent: once cleared it's the newest event, so a
+                # re-scan finds no active alert.
+                if [[ -n "${meta_wedge_alerted[$pane]:-}" ]]; then
+                    unset 'meta_wedge_alerted[$pane]'
+                    meta_reconciled["$pane"]=1
+                    ae_emit_event "alert-cleared" "$agent" "" "meta-agent sweeping again (heartbeat resumed)"
+                    _loop_log "  ${agent}  meta-agent — wedge cleared (heartbeat fresh)"
+                elif [[ -z "${meta_reconciled[$pane]:-}" ]]; then
+                    meta_reconciled["$pane"]=1
+                    if [[ -n "$(_agent_alert_reason "$META_DIR/events.jsonl" "$agent" "$_AE_SESSION")" ]]; then
+                        ae_emit_event "alert-cleared" "$agent" "" "meta-agent sweeping again (heartbeat resumed)"
+                        _loop_log "  ${agent}  meta-agent — stale wedge alert reconciled + cleared (post-restart)"
+                    fi
+                fi
+            elif (( first_nudge > 0 && now_epoch - first_nudge > wedge_secs )); then
+                # We've prompted long enough to expect a heartbeat, but it is stale
+                # OR absent → live-but-not-sweeping. (Summary deliberately avoids the
+                # 'throttl'/'dead'/'missing' substrings so _agent_alert_reason ranks
+                # it high — it also has an explicit 'not sweeping' case.)
+                if [[ -z "${meta_wedge_alerted[$pane]:-}" ]]; then
+                    meta_wedge_alerted["$pane"]=1
+                    cycle_alerts=$((cycle_alerts + 1))
+                    if (( hb > 0 )); then
+                        wedge_detail="no heartbeat for $(((now_epoch - hb) / 60))m"
+                    else
+                        wedge_detail="never wrote a heartbeat in $(((now_epoch - first_nudge) / 60))m of sweep prompts"
+                    fi
+                    ae_emit_event "alert" "$agent" "" "meta-agent not sweeping — ${wedge_detail} (hub may be stuck)"
+                    tmux display-message -d 10000 "[ae loop] $agent (hub) not sweeping — may be stuck" 2>/dev/null || true
+                    _loop_log "  ${agent}  meta-agent — WEDGE alert (${wedge_detail})"
+                fi
+            fi
+            # Sweep cadence. Record the FIRST nudge time so the heartbeat guard above
+            # has a reference point even before any state file exists.
+            last_sweep="${last_sweep_nudge[$pane]:-0}"
+            if (( now_epoch - last_sweep >= SWEEP_SECS )); then
+                [[ "${first_sweep_nudge[$pane]:-0}" -eq 0 ]] && first_sweep_nudge["$pane"]="$now_epoch"
+                env AE_SENDER_OVERRIDE=loop \
+                    _AE_EVENT_ACTION=nudge \
+                    _AE_EVENT_SUMMARY="sweep cadence" \
+                    "${META_DIR}/send" "$agent" \
+                    "Run your sweep now: ae list --json, diff your state file, and report ONLY new/changed attention to Clemens via say (stay silent if nothing changed). Stay in 'working'." 2>/dev/null || true
+                last_sweep_nudge["$pane"]="$now_epoch"
+                _loop_log "  ${agent}  meta-agent — sweep nudge sent (every ${SWEEP_SECS}s)"
+            else
+                _loop_log "  ${agent}  meta-agent — next sweep in $((SWEEP_SECS - (now_epoch - last_sweep)))s"
+            fi
+            cycle_active=$((cycle_active + 1))
+            continue
+        fi
 
         # Pre-check: one pane buffer capture per cycle, drives both hash check
         # (step 4) and throttle detection (step 3). Compute done epoch + throttle
