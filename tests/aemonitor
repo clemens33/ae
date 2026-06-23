@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# Tests for the contrib aemonitor helper (deterministic; no live sessions/LLM).
+# Drives the helper with JSON fixtures + fixed --now + --state, asserts the exact
+# report lines and resulting state. Run: bash tests/aemonitor
+set -uo pipefail
+
+AM="$(cd "$(dirname "$0")/.." && pwd)/contrib/aemonitor/aemonitor"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+pass=0
+fail=0
+
+assert_eq() { # label expected actual
+    if [[ "$2" == "$3" ]]; then
+        pass=$((pass + 1))
+    else
+        fail=$((fail + 1))
+        printf 'FAIL: %s\n  expected: [%s]\n  actual:   [%s]\n' "$1" "$2" "$3"
+    fi
+}
+assert_contains() { # label needle haystack
+    if [[ "$3" == *"$2"* ]]; then pass=$((pass + 1)); else
+        fail=$((fail + 1)); printf 'FAIL: %s\n  missing: [%s]\n  in: [%s]\n' "$1" "$2" "$3"; fi
+}
+assert_not_contains() { # label needle haystack
+    if [[ "$3" != *"$2"* ]]; then pass=$((pass + 1)); else
+        fail=$((fail + 1)); printf 'FAIL: %s\n  unexpected: [%s]\n  in: [%s]\n' "$1" "$2" "$3"; fi
+}
+
+# ── prerequisites ────────────────────────────────────────────────────
+python3 -c "import py_compile,sys; py_compile.compile('$AM', doraise=True)" 2>/dev/null
+assert_eq "helper: python compiles" "0" "$?"
+
+j() { printf '%s' "$1" >"$WORK/$2"; }   # write a fixture
+sweep() { "$AM" sweep --state "$WORK/st.json" --input "$WORK/$1" "${@:2}"; }
+
+# fixtures
+j '{"schema_version":1,"sessions":[
+ {"name":"mdk","status":"running","last_active_epoch":1000,"attention":"blocked","attention_rank":2,"agents":[{"alive":true,"state":"blocked"}]},
+ {"name":"azure","status":"running","last_active_epoch":1900,"attention":null,"attention_rank":0,"agents":[{"alive":true,"state":"working"}]}
+]}' f_mdkblocked.json
+j '{"schema_version":1,"sessions":[
+ {"name":"mdk","status":"running","last_active_epoch":1000,"attention":"dead","attention_rank":5,"agents":[{"alive":true,"state":"blocked"}]},
+ {"name":"azure","status":"running","last_active_epoch":1900,"attention":null,"attention_rank":0,"agents":[{"alive":true,"state":"working"}]}
+]}' f_mdkdead.json
+j '{"schema_version":1,"sessions":[
+ {"name":"azure","status":"running","last_active_epoch":1900,"attention":null,"attention_rank":0,"agents":[{"alive":true,"state":"working"}]}
+]}' f_onlyazure.json
+
+# ── first run: report attention, SUPPRESS fleet inventory ────────────
+rm -f "$WORK/st.json" "$WORK/st.json.lock"
+out="$(sweep f_mdkblocked.json --now 2000 --notify-cmd true)"
+assert_contains "first-run reports attention" "mdk needs you: blocked" "$out"
+assert_not_contains "first-run suppresses 'started' inventory" "started" "$out"
+assert_not_contains "first-run silent on no-attention session" "azure" "$out"
+
+# ── dedup: same input again → SILENT (delivered) ─────────────────────
+out="$(sweep f_mdkblocked.json --now 2100 --notify-cmd true)"
+assert_eq "delivered attention is not re-reported" "" "$out"
+
+# ── escalation: blocked(2) → dead(5) re-reports ──────────────────────
+out="$(sweep f_mdkdead.json --now 2200 --notify-cmd true)"
+assert_contains "escalation re-reported" "mdk" "$out"
+
+# ── clear (still-running): attention gone but session present → '✓ cleared' ──
+j '{"schema_version":1,"sessions":[
+ {"name":"mdk","status":"running","last_active_epoch":1000,"attention":null,"attention_rank":0,"agents":[{"alive":true,"state":"working"}]},
+ {"name":"azure","status":"running","last_active_epoch":1900,"attention":null,"attention_rank":0,"agents":[{"alive":true,"state":"working"}]}
+]}' f_mdkcleared.json
+out="$(sweep f_mdkcleared.json --now 2300 --notify-cmd true)"
+assert_contains "clear reported when session still runs" "mdk cleared" "$out"
+assert_not_contains "still-running clear is not an 'ended'" "ended" "$out"
+out="$(sweep f_mdkcleared.json --now 2400 --notify-cmd true)"
+assert_eq "delivered clear not repeated" "" "$out"
+
+# ── DELIVERY-AWARE dedup: failed send must RE-report ─────────────────
+rm -f "$WORK/st.json" "$WORK/st.json.lock"
+sweep f_mdkblocked.json --now 10 --init >/dev/null            # seed silently
+out="$(sweep f_mdkdead.json --now 20 --notify-cmd false 2>/dev/null)"
+assert_contains "undelivered change is reported" "mdk" "$out"
+out2="$(sweep f_mdkdead.json --now 30 --notify-cmd false 2>/dev/null)"
+assert_contains "undelivered change RE-reported next sweep" "mdk" "$out2"
+out3="$(sweep f_mdkdead.json --now 40 --notify-cmd true)"
+assert_contains "delivers on success" "mdk" "$out3"
+out4="$(sweep f_mdkdead.json --now 50 --notify-cmd true)"
+assert_eq "silent once delivered" "" "$out4"
+
+# ── --init seeds silently ────────────────────────────────────────────
+rm -f "$WORK/st.json" "$WORK/st.json.lock"
+out="$(sweep f_mdkblocked.json --now 1 --init)"
+assert_eq "--init prints nothing" "" "$out"
+assert_eq "--init seeds attention as notified" "true" \
+    "$(python3 -c "import json;print(str(json.load(open('$WORK/st.json'))['attention']['mdk']['notified']).lower())")"
+
+# ── reordered JSON is stable (order of sessions must not matter) ─────
+rm -f "$WORK/st.json" "$WORK/st.json.lock"
+sweep f_mdkblocked.json --now 1 --init >/dev/null
+j '{"schema_version":1,"sessions":[
+ {"name":"azure","status":"running","last_active_epoch":1900,"attention":null,"attention_rank":0,"agents":[{"alive":true,"state":"working"}]},
+ {"name":"mdk","status":"running","last_active_epoch":1000,"attention":"blocked","attention_rank":2,"agents":[{"alive":true,"state":"blocked"}]}
+]}' f_reordered.json
+out="$(sweep f_reordered.json --now 2 --notify-cmd true)"
+assert_eq "reordered identical input → silent (stable)" "" "$out"
+
+# ── liveness ping after N silent sweeps ──────────────────────────────
+rm -f "$WORK/st.json" "$WORK/st.json.lock"
+sweep f_onlyazure.json --now 1 --init >/dev/null
+assert_eq "silent below threshold" "" "$(sweep f_onlyazure.json --now 2 --notify-cmd true --liveness-sweeps 2)"
+assert_contains "liveness ping at threshold" "still watching" \
+    "$(sweep f_onlyazure.json --now 3 --notify-cmd true --liveness-sweeps 2)"
+
+# ── malformed / unknown-schema input fails closed ───────────────────
+echo 'not json' >"$WORK/bad.json"
+"$AM" sweep --state "$WORK/st.json" --input "$WORK/bad.json" >/dev/null 2>&1
+assert_eq "malformed json → exit 2" "2" "$?"
+j '{"schema_version":99,"sessions":[]}' f_badschema.json
+"$AM" sweep --state "$WORK/st.json" --input "$WORK/f_badschema.json" >/dev/null 2>&1
+assert_eq "unknown schema → exit 2 (fail closed)" "2" "$?"
+
+# ── corrupt state file → start clean (no crash) ─────────────────────
+echo '{ broken' >"$WORK/st.json"
+out="$(sweep f_mdkblocked.json --now 1 --notify-cmd true 2>/dev/null)"
+assert_contains "corrupt state → recovers + reports" "mdk" "$out"
+assert_eq "state rewritten as valid JSON" "1" \
+    "$(python3 -c "import json;print(json.load(open('$WORK/st.json'))['schema_version'])")"
+
+# ── sanitize: control chars in a session name are stripped ──────────
+j '{"schema_version":1,"sessions":[
+ {"name":"ev\nil","status":"running","last_active_epoch":0,"attention":"blocked","attention_rank":2,"agents":[{"alive":true,"state":"blocked"}]}
+]}' f_evil.json
+rm -f "$WORK/st.json" "$WORK/st.json.lock"
+out="$(sweep f_evil.json --now 1 --notify-cmd true)"
+assert_not_contains "newline stripped from untrusted name" $'ev\nil' "$out"
+assert_contains "name still present (sanitized, newline→space)" "ev il" "$out"
+
+# ── dry-run does not mutate state ────────────────────────────────────
+rm -f "$WORK/st.json" "$WORK/st.json.lock"
+sweep f_mdkblocked.json --now 1 --init >/dev/null
+before="$(cat "$WORK/st.json")"
+sweep f_mdkdead.json --now 2 --dry-run >/dev/null
+assert_eq "--dry-run leaves state unchanged" "$before" "$(cat "$WORK/st.json")"
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[[ "$fail" -eq 0 ]]

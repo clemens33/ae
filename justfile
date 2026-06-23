@@ -10,9 +10,9 @@ default_branch := "main"
 # Run all quality checks
 check: lint format-check
 
-# Lint with shellcheck
+# Lint with shellcheck (the contrib aemonitor helper is Python, not shell)
 lint:
-    shellcheck -x ae tests/unit tests/integration install
+    shellcheck -x ae tests/unit tests/integration tests/aemonitor install
 
 # Check formatting (shfmt, diff mode)
 format-check:
@@ -25,7 +25,7 @@ format:
 # ── Testing ──────────────────────────────────────────────────────────
 
 # Run all tests
-test: test-unit test-integration
+test: test-unit test-integration test-aemonitor
 
 # Unit tests (pure functions, no deps)
 test-unit:
@@ -34,6 +34,10 @@ test-unit:
 # Integration tests (requires tmux, git)
 test-integration:
     bash tests/integration
+
+# contrib aemonitor helper tests (requires python3; deterministic fixtures)
+test-aemonitor:
+    bash tests/aemonitor
 
 # ── Version ──────────────────────────────────────────────────────────
 

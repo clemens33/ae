@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""aemonitor — deterministic state/dedup helper for the ae meta-agent (hub).
+
+The hub agent phrases + orchestrates well but is bad at durable bookkeeping (it
+drifts: freeform notes, hand-written wrong clocks). This helper owns the
+deterministic part: given `ae list --json` + a locked state file it computes what
+CHANGED since the last sweep, dedups it, and — crucially — only marks a change
+"notified" once DELIVERY actually succeeds, so a failed/forgotten send never
+permanently swallows an alert. It maintains a quiet-sweep liveness counter and
+prints exact, ready-to-send report lines (empty = nothing to report).
+
+NOT part of core ae (which stays a single jq-free bash script). Optional contrib
+consumer of `ae list --json`. Pure stdlib Python 3 — no jq, no third-party deps.
+See README.md.
+
+Usage:
+  aemonitor sweep [--state PATH] [--input PATH|-] [--now EPOCH]
+                  [--notify-cmd CMD] [--init] [--dry-run] [--format text|json]
+                  [--quiet-secs N] [--liveness-sweeps N]
+
+Delivery contract (the BLOCKER): pass --notify-cmd "<say-helper>". When there is
+something to report the helper runs `CMD <report-text>` and advances `notified`
+ONLY if CMD exits 0. last_seen advances every sweep regardless, so a
+seen-but-undelivered change is re-reported next sweep until it lands. Without
+--notify-cmd it just prints (notified NOT advanced — delivery unconfirmed).
+--dry-run previews without mutating state. --init seeds state to the current
+snapshot silently (no first-install spam).
+"""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+
+SCHEMA = 1
+
+
+def die(msg):
+    sys.stderr.write(f"aemonitor: {msg}\n")
+    sys.exit(2)
+
+
+def sanitize(s):
+    """A value from another agent is untrusted: strip control chars, cap length."""
+    s = re.sub(r"[\x00-\x1f\x7f]+", " ", str(s)).strip()
+    return s[:117] + "..." if len(s) > 120 else s
+
+
+def load_input(src):
+    if src is None:
+        try:
+            out = subprocess.run(
+                ["ae", "list", "--json", "--running"],
+                capture_output=True, text=True, check=True,
+            ).stdout
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            die("ae list --json --running failed")
+    elif src == "-":
+        out = sys.stdin.read()
+    else:
+        if not os.path.isfile(src):
+            die(f"input file not found: {src}")
+        with open(src) as fh:
+            out = fh.read()
+    try:
+        data = json.loads(out)
+    except (json.JSONDecodeError, ValueError):
+        die("invalid json input")
+    if str(data.get("schema_version")) != "1":
+        die(f"unsupported ae list --json schema_version={data.get('schema_version')} "
+            f"(expected 1) — refusing to run")
+    return data
+
+
+def derive_state_path():
+    if not os.environ.get("TMUX"):
+        die("no --state and not inside tmux — cannot derive the hub's state path")
+    try:
+        sess = subprocess.run(
+            ["tmux", "display-message", "-p", "#S"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        sess = ""
+    if not sess:
+        die("could not resolve the current tmux session for the state path")
+    ae_home = os.environ.get("AE_HOME", os.path.expanduser("~/.ae"))
+    return os.path.join(ae_home, "sessions", sess, "meta-agent-state.json")
+
+
+def normalize(data, now, quiet_secs):
+    """Per running session: {name, reason, rank, quiet(bool), agents(int)}.
+    quiet is SESSION-level (uses session last_active_epoch, not per-agent): a
+    live, non-done session with no ae activity for quiet_secs. Phrased honestly
+    downstream as 'quiet … (non-done agents)', never a definite 'waiting'.
+    """
+    out = []
+    for s in data.get("sessions", []):
+        if s.get("status") != "running":
+            continue
+        agents = s.get("agents") or []
+        la = s.get("last_active_epoch") or 0
+        live_not_done = any(a.get("alive") and (a.get("state") or "") != "done" for a in agents)
+        out.append({
+            "name": s.get("name", ""),
+            "reason": s.get("attention") or "",
+            "rank": int(s.get("attention_rank") or 0),
+            "quiet": bool(live_not_done and (now - la) > quiet_secs),
+            "agents": len(agents),
+        })
+    return [s for s in out if s["name"]]
+
+
+def load_state(path):
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return {}
+    try:
+        with open(path) as fh:
+            st = json.load(fh)
+    except (json.JSONDecodeError, ValueError, OSError):
+        return {}  # corrupt → start clean rather than misread
+    if st.get("schema_version") not in (SCHEMA, None):
+        return {}  # unknown future schema → start clean
+    return st
+
+
+def write_state(path, state):
+    state["schema_version"] = SCHEMA
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".meta-state.")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(state, fh, indent=2, sort_keys=True)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)  # atomic
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="aemonitor", add_help=True)
+    sub = ap.add_subparsers(dest="cmd")
+    sw = sub.add_parser("sweep")
+    sw.add_argument("--state")
+    sw.add_argument("--input")
+    sw.add_argument("--now", type=int, default=int(time.time()))
+    sw.add_argument("--notify-cmd")
+    sw.add_argument("--init", action="store_true")
+    sw.add_argument("--dry-run", action="store_true")
+    sw.add_argument("--format", choices=["text", "json"], default="text")
+    sw.add_argument("--quiet-secs", type=int, default=1200)
+    sw.add_argument("--liveness-sweeps", type=int, default=36)
+    args = ap.parse_args()
+    if args.cmd != "sweep":
+        die("usage: aemonitor sweep [--state PATH] [--input PATH|-] [--now EPOCH] "
+            "[--notify-cmd CMD] [--init] [--dry-run] [--format text|json] "
+            "[--quiet-secs N] [--liveness-sweeps N]")
+
+    now = args.now
+    data = load_input(args.input)
+    cur = normalize(data, now, args.quiet_secs)
+    cur_names = {s["name"] for s in cur}
+
+    state_path = args.state or derive_state_path()
+    os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
+    os.umask(0o077)
+
+    lock_fd = os.open(state_path + ".lock", os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    except OSError:
+        die(f"could not lock state ({state_path})")
+
+    try:
+        prior = load_state(state_path)
+        p_attn = prior.get("attention", {})
+        p_quiet = prior.get("quiet", {})
+        p_sess = prior.get("sessions", {})
+        prior_quiet_sweeps = int(prior.get("quiet_sweeps", 0) or 0)
+        first_run = not p_attn and not p_sess
+
+        lines = []
+        new_attn, new_quiet, new_sess = {}, {}, {}
+        reported_attn, reported_quiet = set(), set()
+
+        for s in cur:
+            name, reason, rank = s["name"], s["reason"], s["rank"]
+            new_sess[name] = {"agents": s["agents"]}
+            prev = p_attn.get(name)
+
+            # (a) ATTENTION — delivery-aware dedup
+            if reason:
+                report = False
+                first = now
+                notified = False
+                if prev is None or prev.get("cleared"):
+                    report = True  # NEW
+                elif prev.get("reason") != reason or prev.get("rank") != rank:
+                    report = True  # CHANGED
+                    first = prev.get("first_seen", now)
+                elif not prev.get("notified"):
+                    report = True  # seen but not delivered → resend
+                    first = prev.get("first_seen", now)
+                    notified = False
+                else:
+                    first = prev.get("first_seen", now)
+                    notified = True  # already delivered → silent
+                if report:
+                    if prev and not prev.get("cleared") and prev.get("reason") != reason:
+                        lines.append(f"⚠ {sanitize(name)} now: {sanitize(reason)} "
+                                     f"(was {sanitize(prev.get('reason'))})")
+                    else:
+                        lines.append(f"⚠ {sanitize(name)} needs you: {sanitize(reason)}")
+                    reported_attn.add(name)
+                    notified = False
+                new_attn[name] = {"reason": reason, "rank": rank,
+                                  "first_seen": first, "notified": notified, "cleared": False}
+            elif prev is not None and not (prev.get("cleared") and prev.get("notified")):
+                # attention CLEARED while the session is still running → report the
+                # all-clear once (retry until delivered). (Sessions that ENDED are
+                # covered by the fleet 'ended' line below, so their key just drops.)
+                lines.append(f"✓ {sanitize(name)} cleared")
+                reported_attn.add(name)
+                new_attn[name] = {"reason": "(cleared)", "rank": 0,
+                                  "first_seen": prev.get("first_seen", now),
+                                  "notified": False, "cleared": True}
+
+            # (c) QUIET (session-level, non-done agents) — deduped. Skip if the
+            # session already has active attention (that signal supersedes it).
+            if s["quiet"] and not reason:
+                pq = p_quiet.get(name)
+                qfirst = pq.get("first_seen", now) if pq else now
+                qnotified = bool(pq and pq.get("notified"))
+                if (pq is None or not qnotified) and not first_run:
+                    lines.append(f"{sanitize(name)} quiet {args.quiet_secs // 60}m+ "
+                                 f"(non-done agents) — may need you")
+                    reported_quiet.add(name)
+                    qnotified = False
+                new_quiet[name] = {"first_seen": qfirst, "notified": qnotified}
+
+            # (b) FLEET — started (conservative; suppressed on first run)
+            if name not in p_sess and not first_run:
+                lines.append(f"▶ {sanitize(name)} started ({s['agents']} agents)")
+
+        # (b) FLEET — ended (in prior, gone now). Its attention key drops silently
+        # (the 'ended' line is the signal — no separate 'cleared').
+        for name in p_sess:
+            if name not in cur_names and not first_run:
+                lines.append(f"■ {sanitize(name)} ended")
+
+        # liveness counter (only when otherwise silent)
+        new_quiet_sweeps = 0
+        if not lines:
+            new_quiet_sweeps = prior_quiet_sweeps + 1
+            if new_quiet_sweeps >= args.liveness_sweeps:
+                lines.append(f"🛰️ still watching {len(cur_names)} sessions · all healthy")
+                new_quiet_sweeps = 0
+
+        # --init: seed state to current, mark everything notified, stay silent
+        if args.init:
+            new_attn = {s["name"]: {"reason": s["reason"], "rank": s["rank"],
+                                    "first_seen": now, "notified": True, "cleared": False}
+                        for s in cur if s["reason"]}
+            new_quiet = {s["name"]: {"first_seen": now, "notified": True}
+                         for s in cur if s["quiet"]}
+            lines, reported_attn, reported_quiet, new_quiet_sweeps = [], set(), set(), 0
+
+        report_text = "\n".join(lines)
+
+        # deliver (commit notified ONLY on success)
+        delivered = False
+        if report_text and args.notify_cmd and not args.dry_run:
+            try:
+                rc = subprocess.run([args.notify_cmd, report_text]).returncode
+                delivered = rc == 0
+            except (OSError, subprocess.SubprocessError):
+                delivered = False
+            if not delivered:
+                sys.stderr.write("aemonitor: notify-cmd failed — will retry next sweep\n")
+
+        if delivered:
+            for name in reported_attn:
+                if name in new_attn:
+                    new_attn[name]["notified"] = True
+            for name in reported_quiet:
+                if name in new_quiet:
+                    new_quiet[name]["notified"] = True
+            # a delivered "cleared" key can now be dropped
+            new_attn = {n: v for n, v in new_attn.items()
+                        if not (v.get("cleared") and v.get("notified"))}
+        elif report_text and args.notify_cmd:
+            # Report produced but delivery FAILED: don't advance the fleet baseline
+            # either, so started/ended re-fire next sweep (delivery-aware, like
+            # attention/quiet above which were already gated on `delivered`).
+            new_sess = dict(p_sess)
+
+        if not args.dry_run:
+            write_state(state_path, {
+                "last_sweep_at": now,
+                "quiet_sweeps": new_quiet_sweeps,
+                "attention": new_attn,
+                "quiet": new_quiet,
+                "sessions": new_sess,
+                "last_report_hash": hashlib.md5(report_text.encode()).hexdigest(),
+            })
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+    if args.format == "json":
+        print(json.dumps({"report": lines, "delivered": delivered}))
+    elif report_text:
+        print(report_text)
+
+
+if __name__ == "__main__":
+    main()

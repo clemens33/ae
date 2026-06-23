@@ -1,3 +1,5 @@
 .ae/
 .local/
 site/
+__pycache__/
+*.pyc
