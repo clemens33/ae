@@ -18,11 +18,12 @@ Usage:
                   [--notify-cmd CMD] [--init] [--dry-run] [--format text|json]
                   [--quiet-secs N] [--liveness-sweeps N]
 
-Delivery contract (the BLOCKER): pass --notify-cmd "<say-helper>". When there is
-something to report the helper runs `CMD <report-text>` and advances `notified`
-ONLY if CMD exits 0. last_seen advances every sweep regardless, so a
-seen-but-undelivered change is re-reported next sweep until it lands. Without
---notify-cmd it just prints (notified NOT advanced — delivery unconfirmed).
+Delivery contract (the BLOCKER): pass --notify-cmd PATH (a single executable,
+e.g. the hub's `say` helper — invoked as `PATH "<report>"`, NOT via a shell, so
+no arg-splitting/injection). When there is something to report the helper runs it
+and advances `notified` ONLY if it exits 0. last_seen advances every sweep
+regardless, so a seen-but-undelivered change is re-reported next sweep until it
+lands. Without --notify-cmd it just prints (notified NOT advanced — unconfirmed).
 --dry-run previews without mutating state. --init seeds state to the current
 snapshot silently (no first-install spam).
 """
@@ -38,6 +39,9 @@ import tempfile
 import time
 
 SCHEMA = 1
+# attention reason → severity rank (mirrors ae's _attn_rank); also the accepted
+# per-agent reason set.
+RANK = {"dead": 5, "stale": 4, "waiting-user": 3, "blocked": 2, "throttled": 1}
 
 
 def die(msg):
@@ -103,30 +107,43 @@ def normalize(data, now, quiet_secs):
     for s in data.get("sessions", []):
         if s.get("status") != "running":
             continue
+        name = s.get("name", "")
+        if not name:
+            continue
         agents = s.get("agents") or []
         la = s.get("last_active_epoch") or 0
         live_not_done = any(a.get("alive") and (a.get("state") or "") != "done" for a in agents)
+        # Attention is keyed PER AGENT (session|ref|reason) so a same-session
+        # handoff (one blocked agent → another) and agent-change are not silent.
+        # Each agent's contribution is agents[].reason (set by ae's rollup).
+        attn = []
+        for a in agents:
+            r = a.get("reason") or ""
+            if r in RANK:
+                attn.append({"ref": a.get("ref", "?"), "reason": r, "rank": RANK[r]})
         out.append({
-            "name": s.get("name", ""),
-            "reason": s.get("attention") or "",
-            "rank": int(s.get("attention_rank") or 0),
+            "name": name,
+            "attn": attn,
             "quiet": bool(live_not_done and (now - la) > quiet_secs),
             "agents": len(agents),
         })
-    return [s for s in out if s["name"]]
+    return out
 
 
 def load_state(path):
+    """Return (state, existed). existed=True only when a valid v1 state file was
+    read — used for first-run suppression (NOT map emptiness, which would re-arm
+    suppression for an initialised-but-empty fleet)."""
     if not os.path.exists(path) or os.path.getsize(path) == 0:
-        return {}
+        return {}, False
     try:
         with open(path) as fh:
             st = json.load(fh)
     except (json.JSONDecodeError, ValueError, OSError):
-        return {}  # corrupt → start clean rather than misread
+        return {}, False  # corrupt → start clean rather than misread
     if st.get("schema_version") not in (SCHEMA, None):
-        return {}  # unknown future schema → start clean
-    return st
+        return {}, False  # unknown future schema → start clean
+    return st, True
 
 
 def write_state(path, state):
@@ -181,78 +198,93 @@ def main():
         die(f"could not lock state ({state_path})")
 
     try:
-        prior = load_state(state_path)
-        p_attn = prior.get("attention", {})
-        p_quiet = prior.get("quiet", {})
+        prior, existed = load_state(state_path)
+        p_attn = prior.get("attention", {})        # key "session\x1fref" → entry
+        p_quiet = prior.get("quiet", {})           # key session
         p_sess = prior.get("sessions", {})
         prior_quiet_sweeps = int(prior.get("quiet_sweeps", 0) or 0)
-        first_run = not p_attn and not p_sess
+        first_run = not existed                    # by file existence, NOT map emptiness
 
+        SEP = "\x1f"
         lines = []
         new_attn, new_quiet, new_sess = {}, {}, {}
         reported_attn, reported_quiet = set(), set()
+        cur_attn_keys = set()
 
         for s in cur:
-            name, reason, rank = s["name"], s["reason"], s["rank"]
+            name = s["name"]
             new_sess[name] = {"agents": s["agents"]}
-            prev = p_attn.get(name)
 
-            # (a) ATTENTION — delivery-aware dedup
-            if reason:
+            # (a) ATTENTION — PER AGENT (key session|ref), delivery-aware dedup.
+            for e in s["attn"]:
+                ref, reason, rank = e["ref"], e["reason"], e["rank"]
+                key = f"{name}{SEP}{ref}"
+                cur_attn_keys.add(key)
+                prev = p_attn.get(key)
                 report = False
                 first = now
                 notified = False
                 if prev is None or prev.get("cleared"):
-                    report = True  # NEW
+                    report = True  # NEW agent/attention
                 elif prev.get("reason") != reason or prev.get("rank") != rank:
-                    report = True  # CHANGED
+                    report = True  # CHANGED reason/rank
                     first = prev.get("first_seen", now)
                 elif not prev.get("notified"):
                     report = True  # seen but not delivered → resend
                     first = prev.get("first_seen", now)
-                    notified = False
                 else:
                     first = prev.get("first_seen", now)
                     notified = True  # already delivered → silent
                 if report:
                     if prev and not prev.get("cleared") and prev.get("reason") != reason:
-                        lines.append(f"⚠ {sanitize(name)} now: {sanitize(reason)} "
-                                     f"(was {sanitize(prev.get('reason'))})")
+                        lines.append(f"⚠ {sanitize(name)} · {sanitize(ref)} now: "
+                                     f"{sanitize(reason)} (was {sanitize(prev.get('reason'))})")
                     else:
-                        lines.append(f"⚠ {sanitize(name)} needs you: {sanitize(reason)}")
-                    reported_attn.add(name)
+                        lines.append(f"⚠ {sanitize(name)} · {sanitize(ref)} needs you: {sanitize(reason)}")
+                    reported_attn.add(key)
                     notified = False
-                new_attn[name] = {"reason": reason, "rank": rank,
-                                  "first_seen": first, "notified": notified, "cleared": False}
-            elif prev is not None and not (prev.get("cleared") and prev.get("notified")):
-                # attention CLEARED while the session is still running → report the
-                # all-clear once (retry until delivered). (Sessions that ENDED are
-                # covered by the fleet 'ended' line below, so their key just drops.)
-                lines.append(f"✓ {sanitize(name)} cleared")
-                reported_attn.add(name)
-                new_attn[name] = {"reason": "(cleared)", "rank": 0,
-                                  "first_seen": prev.get("first_seen", now),
-                                  "notified": False, "cleared": True}
+                new_attn[key] = {"reason": reason, "rank": rank, "first_seen": first,
+                                 "last_seen": now, "notified": notified, "cleared": False}
 
-            # (c) QUIET (session-level, non-done agents) — deduped. Skip if the
-            # session already has active attention (that signal supersedes it).
-            if s["quiet"] and not reason:
+            # (c) QUIET (session-level, non-done agents). Skip if the session has
+            # any active attention (that signal supersedes it).
+            if s["quiet"] and not s["attn"]:
                 pq = p_quiet.get(name)
                 qfirst = pq.get("first_seen", now) if pq else now
                 qnotified = bool(pq and pq.get("notified"))
-                if (pq is None or not qnotified) and not first_run:
+                if first_run:
+                    qnotified = True  # suppressed on first run → SEED as known so a
+                    # failed first-attention delivery's retry doesn't surface it
+                elif pq is None or not qnotified:
                     lines.append(f"{sanitize(name)} quiet {args.quiet_secs // 60}m+ "
                                  f"(non-done agents) — may need you")
                     reported_quiet.add(name)
                     qnotified = False
-                new_quiet[name] = {"first_seen": qfirst, "notified": qnotified}
+                new_quiet[name] = {"first_seen": qfirst, "last_seen": now, "notified": qnotified}
 
             # (b) FLEET — started (conservative; suppressed on first run)
             if name not in p_sess and not first_run:
                 lines.append(f"▶ {sanitize(name)} started ({s['agents']} agents)")
 
-        # (b) FLEET — ended (in prior, gone now). Its attention key drops silently
-        # (the 'ended' line is the signal — no separate 'cleared').
+        # (a-cleared) prior attention keys no longer present → all-clear per agent.
+        # A key whose SESSION ended is covered by the fleet 'ended' line, so it
+        # just drops; a key whose session still runs is reported (retry until
+        # delivered).
+        for key, prev in p_attn.items():
+            if key in cur_attn_keys:
+                continue
+            ksess, _, kref = key.partition(SEP)
+            if ksess not in cur_names:
+                continue  # session ended → drop key, 'ended' covers it
+            if prev.get("cleared") and prev.get("notified"):
+                continue  # clear already delivered → drop
+            lines.append(f"✓ {sanitize(ksess)} · {sanitize(kref)} cleared")
+            reported_attn.add(key)
+            new_attn[key] = {"reason": "(cleared)", "rank": 0,
+                             "first_seen": prev.get("first_seen", now), "last_seen": now,
+                             "notified": False, "cleared": True}
+
+        # (b) FLEET — ended (in prior, gone now).
         for name in p_sess:
             if name not in cur_names and not first_run:
                 lines.append(f"■ {sanitize(name)} ended")
@@ -265,13 +297,16 @@ def main():
                 lines.append(f"🛰️ still watching {len(cur_names)} sessions · all healthy")
                 new_quiet_sweeps = 0
 
-        # --init: seed state to current, mark everything notified, stay silent
+        # --init: seed state to current (per-agent), mark everything notified, silent
         if args.init:
-            new_attn = {s["name"]: {"reason": s["reason"], "rank": s["rank"],
-                                    "first_seen": now, "notified": True, "cleared": False}
-                        for s in cur if s["reason"]}
-            new_quiet = {s["name"]: {"first_seen": now, "notified": True}
-                         for s in cur if s["quiet"]}
+            new_attn = {}
+            for s in cur:
+                for e in s["attn"]:
+                    new_attn[f"{s['name']}{SEP}{e['ref']}"] = {
+                        "reason": e["reason"], "rank": e["rank"], "first_seen": now,
+                        "last_seen": now, "notified": True, "cleared": False}
+            new_quiet = {s["name"]: {"first_seen": now, "last_seen": now, "notified": True}
+                         for s in cur if s["quiet"] and not s["attn"]}
             lines, reported_attn, reported_quiet, new_quiet_sweeps = [], set(), set(), 0
 
         report_text = "\n".join(lines)
@@ -297,10 +332,15 @@ def main():
             # a delivered "cleared" key can now be dropped
             new_attn = {n: v for n, v in new_attn.items()
                         if not (v.get("cleared") and v.get("notified"))}
-        elif report_text and args.notify_cmd:
+        elif report_text and args.notify_cmd and not first_run:
             # Report produced but delivery FAILED: don't advance the fleet baseline
             # either, so started/ended re-fire next sweep (delivery-aware, like
             # attention/quiet above which were already gated on `delivered`).
+            # EXCEPT on first run — there the fleet inventory is intentionally
+            # suppressed, so we SEED the current snapshot regardless of delivery;
+            # otherwise the failed-attention retry would announce every existing
+            # session as 'started'. (Attention itself still re-reports, being the
+            # only un-notified class.)
             new_sess = dict(p_sess)
 
         if not args.dry_run:

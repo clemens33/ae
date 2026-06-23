@@ -35,22 +35,24 @@ j() { printf '%s' "$1" >"$WORK/$2"; }   # write a fixture
 sweep() { "$AM" sweep --state "$WORK/st.json" --input "$WORK/$1" "${@:2}"; }
 
 # fixtures
+# attention is keyed per agent via agents[].reason (set by ae's rollup).
 j '{"schema_version":1,"sessions":[
- {"name":"mdk","status":"running","last_active_epoch":1000,"attention":"blocked","attention_rank":2,"agents":[{"alive":true,"state":"blocked"}]},
- {"name":"azure","status":"running","last_active_epoch":1900,"attention":null,"attention_rank":0,"agents":[{"alive":true,"state":"working"}]}
+ {"name":"mdk","status":"running","last_active_epoch":1000,"agents":[{"ref":"claude:lead","alive":true,"state":"blocked","reason":"blocked"}]},
+ {"name":"azure","status":"running","last_active_epoch":1900,"agents":[{"ref":"claude:lead","alive":true,"state":"working","reason":""}]}
 ]}' f_mdkblocked.json
 j '{"schema_version":1,"sessions":[
- {"name":"mdk","status":"running","last_active_epoch":1000,"attention":"dead","attention_rank":5,"agents":[{"alive":true,"state":"blocked"}]},
- {"name":"azure","status":"running","last_active_epoch":1900,"attention":null,"attention_rank":0,"agents":[{"alive":true,"state":"working"}]}
+ {"name":"mdk","status":"running","last_active_epoch":1000,"agents":[{"ref":"claude:lead","alive":true,"state":"blocked","reason":"dead"}]},
+ {"name":"azure","status":"running","last_active_epoch":1900,"agents":[{"ref":"claude:lead","alive":true,"state":"working","reason":""}]}
 ]}' f_mdkdead.json
 j '{"schema_version":1,"sessions":[
- {"name":"azure","status":"running","last_active_epoch":1900,"attention":null,"attention_rank":0,"agents":[{"alive":true,"state":"working"}]}
+ {"name":"azure","status":"running","last_active_epoch":1900,"agents":[{"ref":"claude:lead","alive":true,"state":"working","reason":""}]}
 ]}' f_onlyazure.json
 
 # ── first run: report attention, SUPPRESS fleet inventory ────────────
 rm -f "$WORK/st.json" "$WORK/st.json.lock"
 out="$(sweep f_mdkblocked.json --now 2000 --notify-cmd true)"
-assert_contains "first-run reports attention" "mdk needs you: blocked" "$out"
+assert_contains "first-run reports attention (per agent)" "needs you: blocked" "$out"
+assert_contains "attention line names the agent" "mdk · claude:lead" "$out"
 assert_not_contains "first-run suppresses 'started' inventory" "started" "$out"
 assert_not_contains "first-run silent on no-attention session" "azure" "$out"
 
@@ -64,11 +66,11 @@ assert_contains "escalation re-reported" "mdk" "$out"
 
 # ── clear (still-running): attention gone but session present → '✓ cleared' ──
 j '{"schema_version":1,"sessions":[
- {"name":"mdk","status":"running","last_active_epoch":1000,"attention":null,"attention_rank":0,"agents":[{"alive":true,"state":"working"}]},
- {"name":"azure","status":"running","last_active_epoch":1900,"attention":null,"attention_rank":0,"agents":[{"alive":true,"state":"working"}]}
+ {"name":"mdk","status":"running","last_active_epoch":1000,"agents":[{"ref":"claude:lead","alive":true,"state":"working","reason":""}]},
+ {"name":"azure","status":"running","last_active_epoch":1900,"agents":[{"ref":"claude:lead","alive":true,"state":"working","reason":""}]}
 ]}' f_mdkcleared.json
 out="$(sweep f_mdkcleared.json --now 2300 --notify-cmd true)"
-assert_contains "clear reported when session still runs" "mdk cleared" "$out"
+assert_contains "clear reported when session still runs" "mdk · claude:lead cleared" "$out"
 assert_not_contains "still-running clear is not an 'ended'" "ended" "$out"
 out="$(sweep f_mdkcleared.json --now 2400 --notify-cmd true)"
 assert_eq "delivered clear not repeated" "" "$out"
@@ -89,15 +91,50 @@ assert_eq "silent once delivered" "" "$out4"
 rm -f "$WORK/st.json" "$WORK/st.json.lock"
 out="$(sweep f_mdkblocked.json --now 1 --init)"
 assert_eq "--init prints nothing" "" "$out"
-assert_eq "--init seeds attention as notified" "true" \
-    "$(python3 -c "import json;print(str(json.load(open('$WORK/st.json'))['attention']['mdk']['notified']).lower())")"
+assert_eq "--init seeds attention as notified (per-agent key)" "true" \
+    "$(python3 -c "import json;d=json.load(open('$WORK/st.json'));print(str(list(d['attention'].values())[0]['notified']).lower())")"
+
+# ── per-agent identity: same-session HANDOFF re-reports (codex IMPORTANT 1) ──
+rm -f "$WORK/st.json" "$WORK/st.json.lock"
+sweep f_mdkblocked.json --now 1 --init >/dev/null      # mdk·claude:lead blocked, seeded
+j '{"schema_version":1,"sessions":[
+ {"name":"mdk","status":"running","last_active_epoch":1000,"agents":[
+   {"ref":"claude:lead","alive":true,"state":"working","reason":""},
+   {"ref":"codex:coworker","alive":true,"state":"blocked","reason":"blocked"}]}
+]}' f_handoff.json
+out="$(sweep f_handoff.json --now 2 --notify-cmd true)"
+assert_contains "handoff: NEW agent's attention re-reported" "codex:coworker needs you: blocked" "$out"
+assert_contains "handoff: old agent's attention cleared" "claude:lead cleared" "$out"
+
+# ── first-run via file existence: --init on EMPTY fleet, then a start fires ──
+rm -f "$WORK/st.json" "$WORK/st.json.lock"
+j '{"schema_version":1,"sessions":[]}' f_empty.json
+sweep f_empty.json --now 1 --init >/dev/null           # initialise against empty fleet
+out="$(sweep f_mdkblocked.json --now 2 --notify-cmd true)"
+assert_contains "empty-init then start → 'started' fires (not suppressed)" "mdk started" "$out"
+
+# ── first-run + FAILED attention delivery → retry is attention-ONLY ──────────
+# (no 'started', no quiet — the suppressed classes are seeded despite the failure)
+rm -f "$WORK/st.json" "$WORK/st.json.lock"
+j '{"schema_version":1,"sessions":[
+ {"name":"mdk","status":"running","last_active_epoch":1000,"agents":[{"ref":"claude:lead","alive":true,"state":"blocked","reason":"blocked"}]},
+ {"name":"idleS","status":"running","last_active_epoch":0,"agents":[{"ref":"claude:lead","alive":true,"state":"working","reason":""}]}
+]}' f_attnquiet.json
+out="$(sweep f_attnquiet.json --now 2000 --notify-cmd false 2>/dev/null)"        # FIRST run, delivery fails
+assert_contains "first-run reports attention" "mdk · claude:lead needs you: blocked" "$out"
+assert_not_contains "first-run suppresses started" "started" "$out"
+assert_not_contains "first-run suppresses quiet" "quiet" "$out"
+out2="$(sweep f_attnquiet.json --now 2100 --notify-cmd false 2>/dev/null)"       # retry
+assert_contains "retry re-reports the undelivered attention" "mdk · claude:lead needs you: blocked" "$out2"
+assert_not_contains "retry does NOT spam 'started' for existing sessions" "started" "$out2"
+assert_not_contains "retry does NOT surface initial quiet" "quiet" "$out2"
 
 # ── reordered JSON is stable (order of sessions must not matter) ─────
 rm -f "$WORK/st.json" "$WORK/st.json.lock"
 sweep f_mdkblocked.json --now 1 --init >/dev/null
 j '{"schema_version":1,"sessions":[
- {"name":"azure","status":"running","last_active_epoch":1900,"attention":null,"attention_rank":0,"agents":[{"alive":true,"state":"working"}]},
- {"name":"mdk","status":"running","last_active_epoch":1000,"attention":"blocked","attention_rank":2,"agents":[{"alive":true,"state":"blocked"}]}
+ {"name":"azure","status":"running","last_active_epoch":1900,"agents":[{"ref":"claude:lead","alive":true,"state":"working","reason":""}]},
+ {"name":"mdk","status":"running","last_active_epoch":1000,"agents":[{"ref":"claude:lead","alive":true,"state":"blocked","reason":"blocked"}]}
 ]}' f_reordered.json
 out="$(sweep f_reordered.json --now 2 --notify-cmd true)"
 assert_eq "reordered identical input → silent (stable)" "" "$out"
@@ -126,7 +163,7 @@ assert_eq "state rewritten as valid JSON" "1" \
 
 # ── sanitize: control chars in a session name are stripped ──────────
 j '{"schema_version":1,"sessions":[
- {"name":"ev\nil","status":"running","last_active_epoch":0,"attention":"blocked","attention_rank":2,"agents":[{"alive":true,"state":"blocked"}]}
+ {"name":"ev\nil","status":"running","last_active_epoch":0,"agents":[{"ref":"claude:lead","alive":true,"state":"blocked","reason":"blocked"}]}
 ]}' f_evil.json
 rm -f "$WORK/st.json" "$WORK/st.json.lock"
 out="$(sweep f_evil.json --now 1 --notify-cmd true)"

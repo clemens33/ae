@@ -56,7 +56,7 @@ aemonitor sweep [--state PATH] [--input PATH|-] [--now EPOCH]
 | `--state PATH` | state file. Default: derived from the current tmux session → `~/.ae/sessions/<session>/meta-agent-state.json`. Always pass it explicitly in tests. |
 | `--input PATH\|-` | `ae list --json` input (file or stdin). Omit to run `ae list --json --running`. Files/stdin make it deterministically testable. |
 | `--now EPOCH` | "now" in epoch seconds (default: real time). For deterministic tests. |
-| `--notify-cmd CMD` | delivery command (e.g. the hub's `say`). Commits `notified` only on exit 0. |
+| `--notify-cmd PATH` | path to a single executable (e.g. the hub's `say` helper) — invoked as `PATH "<report>"`, not via a shell (no arg-splitting/injection). Commits `notified` only on exit 0. |
 | `--init` | seed the state file to the current snapshot **silently** (no first-install spam), then exit. |
 | `--dry-run` | preview report lines without mutating state. |
 | `--format text\|json` | `text` (default, one line each) or `json` (`{report:[…], delivered:bool}`) for tests/inspection. |
@@ -74,20 +74,32 @@ fleet inventory** so a fresh install doesn't announce every existing session; us
   is phrased as a possibility ("may need you"), never a definite "waiting".
 - Fleet narration is intentionally conservative (started / ended only; no
   agent-count or active/idle churn) to keep noise down.
+- The attention-reason vocabulary (`dead`/`stale`/`waiting-user`/`blocked`/
+  `throttled`) is **duplicated** here from core ae's `_attn_rank`. If ae ever
+  adds a new attention reason, `aemonitor`'s `RANK` map must be updated too —
+  otherwise the helper silently ignores the new reason. (A `ae list --json`
+  `schema_version` bump would also force a deliberate update, since unknown
+  schema fails closed.)
 
 ## State file schema (v1)
+
+Attention is keyed **per agent** (`"<session><agent-ref>"`) so a same-session
+handoff (one blocked agent → another) and agent-change are not silently deduped.
 
 ```json
 {
   "schema_version": 1,
   "last_sweep_at": 1750000000,
   "quiet_sweeps": 0,
-  "attention": {"<session>": {"reason": "blocked", "rank": 2, "first_seen": 0, "notified": true, "cleared": false}},
-  "quiet":     {"<session>": {"first_seen": 0, "notified": true}},
+  "attention": {"<session><ref>": {"reason": "blocked", "rank": 2, "first_seen": 0, "last_seen": 0, "notified": true, "cleared": false}},
+  "quiet":     {"<session>": {"first_seen": 0, "last_seen": 0, "notified": true}},
   "sessions":  {"<session>": {"agents": 2}},
   "last_report_hash": "…"
 }
 ```
+
+`first_seen`/`last_seen` are epoch seconds; `last_seen` advances every sweep,
+`notified` only after a successful delivery.
 
 Written atomically (temp + `os.replace`), mode `0600`, under a `.lock` (flock).
 An unknown/corrupt/future-schema state file is treated as empty (start clean).
