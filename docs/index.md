@@ -13,6 +13,7 @@
 - **One command.** `ae` starts a session, `ae` reattaches. That's the whole workflow.
 - **Agents talk to each other.** Each agent gets workspace context injected into its system prompt. They send messages by name, spawn new agents, and coordinate without manual wiring.
 - **Everything survives reboots.** Sessions, spawned agents, conversation history. Pick up exactly where you left off.
+- **One window to your whole fleet.** The optional [`ae hub`](reference/commands.md#ae-hub) meta-agent watches every session and relays to them — talk to *it* from your phone over [Telegram](reference/telegram.md#hub-centric-routing-talk-to-the-meta-agent-not-ten-sessions) instead of juggling ten panes.
 - **Nothing touches your repo.** Session state lives in `~/.ae/sessions/`. Your working directory stays clean.
 - **Single bash script.** No frameworks, no runtimes, no abstractions. Just bash, tmux, and git.
 
@@ -43,3 +44,4 @@ Two agents in adjacent panes, talking to each other through generated shell help
 - [Quick start](getting-started/quick-start.md)
 - [Configure agents and layouts](getting-started/config.md)
 - [Browse the command reference](reference/commands.md)
+- [Telegram bridge + hub-centric routing](reference/telegram.md)
