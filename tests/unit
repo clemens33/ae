@@ -1640,6 +1640,11 @@ assert_eq "throttle: opencode detects union of upstream patterns (gemini path)" 
 # Generic fallbacks fire regardless of agent_bin.
 assert_eq "throttle: generic '429 Too Many Requests' fires for any tool" "0" \
     "$(_buf_shows_throttle 'HTTP 429 Too Many Requests' someothertool; echo $?)"
+# Clemens's Claude rate-limit banner is covered by the claude catalog's
+# 'Server is temporarily limiting requests' (the positive above) — a broad bare
+# 'Rate limited' generic is deliberately NOT added: it false-matches prose.
+assert_eq "throttle: bare 'Rate limited' prose does NOT match (no over-broad generic)" "1" \
+    "$(_buf_shows_throttle 'Documenting the Rate limited banner in the test plan.' claude; echo $?)"
 
 # Negatives — must NOT match in normal prose (false positive guard).
 assert_eq "throttle: normal claude prose does not match" "1" \
@@ -2833,9 +2838,14 @@ assert_eq "meta: cadence targets only the main agent (workers keep watchdog)" "1
 # each real sweep; if that heartbeat stays stale OR ABSENT past the grace window
 # after the first sweep prompt, raise ONE alert. (Absent-file case is the codex
 # BLOCKER fix: a hub wedged before its first write must still be caught.)
+# The heartbeat file MUST be the one the contrib aemonitor helper writes
+# (meta-agent-state.json), not the old hand-managed meta-state.json — otherwise
+# wiring the hub to aemonitor makes the wedge check watch a file nobody writes.
+assert_eq "meta: heartbeat watches aemonitor's meta-agent-state.json" "1" \
+    "$([[ "$AE_SOURCE" == *'hb_file="${META_DIR}/meta-agent-state.json"'* \
+        && "$AE_SOURCE" != *'hb_file="${META_DIR}/meta-state.json"'* ]] && echo 1 || echo 0)"
 assert_eq "meta: heartbeat-wedge alert covers stale AND absent heartbeat" "1" \
-    "$([[ "$AE_SOURCE" == *'hb_file="${META_DIR}/meta-state.json"'* \
-        && "$AE_SOURCE" == *'first_nudge > 0 && now_epoch - first_nudge > wedge_secs'* \
+    "$([[ "$AE_SOURCE" == *'first_nudge > 0 && now_epoch - first_nudge > wedge_secs'* \
         && "$AE_SOURCE" == *'never wrote a heartbeat'* \
         && "$AE_SOURCE" == *'first_sweep_nudge["$pane"]="$now_epoch"'* ]] && echo 1 || echo 0)"
 # IMPORTANT (codex): recovery is LOOP-owned — emit alert-cleared so ae list

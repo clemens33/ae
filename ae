@@ -7473,7 +7473,10 @@ while true; do
             # its state file on each real sweep; we judge it only AFTER we've prompted
             # at least one sweep and given it a grace window — so an ABSENT file
             # (never wrote a heartbeat) is caught too, not just a stale one.
-            hb_file="${META_DIR}/meta-state.json"
+            # This is the file the contrib aemonitor helper writes atomically each
+            # sweep (~/.ae/sessions/<hub>/meta-agent-state.json); they MUST match or
+            # the wedge check watches a file nobody writes and false-alarms.
+            hb_file="${META_DIR}/meta-agent-state.json"
             hb=0
             [[ -f "$hb_file" ]] && hb="$(stat -c %Y "$hb_file" 2>/dev/null || echo 0)"
             wedge_secs=$((SWEEP_SECS * 2 + 60))

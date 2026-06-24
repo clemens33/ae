@@ -172,11 +172,14 @@ Workers/spawned agents in the same session keep the normal watchdog.
 
 Liveness is still guarded two ways: the dead/missing-pane checks catch a crashed
 hub, and a **heartbeat** check catches a *live-but-not-sweeping* hub (model
-stall, upstream throttle, wedge) — the hub rewrites `meta-state.json` on each real
-sweep, and if that stops advancing past ~`2×AE_LOOP_SWEEP_SEC` the loop raises one
-alert (cleared on recovery). The sweep nudges use `action=nudge`, which is **not
-in the default telegram include set**, so routine sweeps don't reach your phone
-(a custom `include` containing `nudge` would forward them).
+stall, upstream throttle, wedge) — the hub's sweep helper rewrites
+`~/.ae/sessions/<hub>/meta-agent-state.json` on each real sweep, and if that mtime
+stops advancing past ~`2×AE_LOOP_SWEEP_SEC` the loop raises one alert (cleared on
+recovery). This is the file [`contrib/aemonitor`](../../contrib/aemonitor/) writes
+by default; if you override its `--state` path for the hub, point it at this same
+file or the loop heartbeat will false-alarm. The sweep nudges use `action=nudge`,
+which is **not in the default telegram include set**, so routine sweeps don't
+reach your phone (a custom `include` containing `nudge` would forward them).
 
 ## `ae telegram`
 
