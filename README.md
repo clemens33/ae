@@ -187,6 +187,9 @@ ae telegram <setup|start|stop|status>
                        Machine-global Telegram bridge: forwards filtered events from every
                        ae session to one Telegram chat. Requires jq + curl (optional feature
                        dep — core ae works without them).
+ae hub [--init]        Launch the meta-agent hub: one ae session that monitors all your
+                       other sessions and is your single point of contact to them. --init
+                       scaffolds its config + charter (see contrib/aehub). Optional feature.
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
 ae end|rm [name]       End session: commit, push to ae/<name>, REMOVE ae state AND
                        per-session claude/codex conversation files. Destructive.

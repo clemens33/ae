@@ -17,6 +17,8 @@ ae loop <start|stop|status> [name]
                        Toggle the stale-agent watchdog (per-session, persists across resume)
 ae telegram <setup|start|stop|status>
                        Machine-global Telegram bridge — see Telegram bridge reference
+ae hub [--init]        Launch the meta-agent hub — one session that monitors all
+                       your other sessions (--init scaffolds its config + charter)
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
 ae end|rm [name]       End session: commit, push to ae/<name>, REMOVE ae state AND
                        per-session claude/codex conversation files. Destructive.
@@ -163,7 +165,8 @@ The [loop watchdog](../internals/loop.md) is on by default — only an explicit 
 
 ### Meta-agent (hub) sweep cadence
 
-A session marked as a monitoring hub with `[workspace] meta = true` (persisted to
+A session marked as a monitoring hub with `[workspace] hub = true` (or its legacy
+alias `meta = true`; persisted to
 its meta as `meta_agent=true`) gets a different loop behaviour for its **main
 agent**: instead of the stale-nudge watchdog, the loop sends a *"run your sweep
 now"* nudge every `AE_LOOP_SWEEP_SEC` seconds (default 300) and never escalates
@@ -180,6 +183,36 @@ by default; if you override its `--state` path for the hub, point it at this sam
 file or the loop heartbeat will false-alarm. The sweep nudges use `action=nudge`,
 which is **not in the default telegram include set**, so routine sweeps don't
 reach your phone (a custom `include` containing `nudge` would forward them).
+
+## `ae hub`
+
+The **meta-agent hub** — a single ae session that monitors all your *other* ae
+sessions and is your one point of contact to them (it relays your instructions to
+the other sessions and reports what needs you, via the Telegram `say` channel). It
+is a read-only monitor + relay: per its charter it never ends/stops/edits another
+session on its own.
+
+```text
+ae hub          Start (or resume) the `hub` session
+ae hub --init   Scaffold ~/.ae/meta-hub/{hub.config,CHARTER.md} (never overwrites)
+ae hub --help   Usage
+```
+
+`ae hub` launches the `hub` session with **full config isolation**: it uses
+`~/.ae/meta-hub/hub.config` as the config and neutralizes any project-local
+`./.ae/config`, so the global config's `workers` never leak into the single-agent
+hub regardless of the directory you run it from. The config dir defaults to
+`~/.ae/meta-hub` and is overridable with `AE_HUB_DIR`.
+
+First time: run `ae hub --init` to scaffold the config + charter from
+[`contrib/aehub`](../../contrib/aehub/) (placeholders for the charter and
+[`aemonitor`](../../contrib/aemonitor/) paths are substituted), edit them to taste,
+then `ae hub`. The charter wires the deterministic sweep to `aemonitor` and tells
+the agent its only channel to you is `say`.
+
+`hub` is a reserved subcommand. If you ever need a normal (non-meta) session
+literally named `hub`, `ae --local hub` reaches the generic start path (the first
+argument is then no longer `hub`).
 
 ## `ae telegram`
 

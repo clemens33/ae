@@ -3218,6 +3218,49 @@ assert_eq "tg-menu: commands JSON NOT passed inline (would truncate at first spa
 # (jq -cn '[…]' → valid). A source-extraction round-trip here proved too fragile
 # to be worth it.
 
+# ── ae hub: launcher scaffold + dispatcher trampoline + flag alias ──
+
+# Extract the pure scaffold helpers from the script.
+eval "$(awk '
+    /^_hub_scaffold_file\(\) \{/ { printing=1 }
+    /^cmd_hub_init\(\) \{/ { printing=1 }
+    printing { print }
+    printing && /^\}$/ { printing=0 }
+' "$(dirname "$0")/../ae")"
+
+_hub_t="$(mktemp -d)"
+printf 'read the charter at __X__ now\n' >"$_hub_t/tpl"
+_hub_scaffold_file "$_hub_t/tpl" "$_hub_t/out" "__X__" "/a/b/CHARTER.md" >/dev/null
+assert_eq "hub scaffold: placeholder substituted via bash (no sed, '/'-safe)" \
+    "read the charter at /a/b/CHARTER.md now" "$(cat "$_hub_t/out")"
+printf 'ORIGINAL\n' >"$_hub_t/keep"
+_hub_scaffold_file "$_hub_t/tpl" "$_hub_t/keep" "__X__" "/a/b/c" >/dev/null
+assert_eq "hub scaffold: never overwrites an existing file" "ORIGINAL" "$(cat "$_hub_t/keep")"
+assert_eq "hub scaffold: created vs skipped reported per file" "skipped (exists): $_hub_t/keep" \
+    "$(_hub_scaffold_file "$_hub_t/tpl" "$_hub_t/keep" "__X__" "v" | tr -d '\n' | sed 's/^ *//')"
+assert_eq "hub scaffold: missing template errors (non-zero)" "1" \
+    "$(_hub_scaffold_file "$_hub_t/nope" "$_hub_t/out2" "__X__" "v" >/dev/null 2>&1; echo $?)"
+assert_eq "hub init: rejects HUB_DIR containing a quote (INI safety)" "1" \
+    "$(AE_HUB_DIR='/bad"dir' cmd_hub_init >/dev/null 2>&1; echo $?)"
+rm -rf "$_hub_t"
+unset _hub_t
+
+# Structural — the dispatcher trampoline must preserve FULL config isolation
+# (codex BLOCKER) and fall through WITHOUT re-exec (no recursion).
+assert_eq "hub dispatcher: trampoline pins the standalone config (absolute)" "1" \
+    "$([[ "$AE_SOURCE" == *'CONFIG_FILE="$PWD/hub.config"'* ]] && echo 1 || echo 0)"
+assert_eq "hub dispatcher: clears caller-PWD AE_LOCAL_CONFIG + cd hub dir" "1" \
+    "$([[ "$AE_SOURCE" == *'hub)'*'AE_LOCAL_CONFIG=""'*'cd "$_hub_dir"'* ]] && echo 1 || echo 0)"
+assert_eq "hub dispatcher: falls through (set -- hub) with NO recursive exec" "1" \
+    "$([[ "$AE_SOURCE" == *'set -- hub'* && "$AE_SOURCE" != *'exec ae hub'* ]] && echo 1 || echo 0)"
+assert_eq "hub dispatcher: rejects extra args (reserved-name leak guard)" "1" \
+    "$([[ "$AE_SOURCE" == *"'ae hub' takes no arguments"* ]] && echo 1 || echo 0)"
+assert_eq "hub dispatcher: routes --init and --help" "1" \
+    "$([[ "$AE_SOURCE" == *'--init)'* && "$AE_SOURCE" == *'cmd_hub_init'* && "$AE_SOURCE" == *'cmd_hub_help'* ]] && echo 1 || echo 0)"
+assert_eq "hub flag: workspace.hub preferred, workspace.meta legacy alias" "1" \
+    "$([[ "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.hub)"'* \
+        && "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.meta)"'* ]] && echo 1 || echo 0)"
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

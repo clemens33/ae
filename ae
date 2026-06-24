@@ -4744,6 +4744,8 @@ cmd_help() {
     echo "                         Toggle the stale-agent watchdog for a session"
     echo "  ae telegram <setup|start|stop|status>"
     echo "                         Machine-global Telegram bridge (forwards events to a chat)"
+    echo "  ae hub [--init]        Launch the meta-agent hub (monitors all your sessions;"
+    echo "                         --init scaffolds its config + charter)"
     echo "  ae transfer <session> <ssh-target> [--yes]"
     echo "                         Push a stopped session to a peer machine (--pull reverses)"
     echo "  ae stop [name]         Pause session, keep ae + agent conversation state for resume"
@@ -5320,6 +5322,79 @@ send_agent_cmd() {
     esac
 }
 
+# --- ae hub: meta-agent launcher ---
+# Copy one template file to its destination, NO overwrite, substituting a single
+# __PLACEHOLDER__ via bash param expansion (no sed → safe with '/' in the value).
+# Reports created vs skipped per file so partial dirs are handled explicitly.
+_hub_scaffold_file() {
+    local src="$1" dst="$2" placeholder="$3" value="$4" content
+    if [[ -e "$dst" ]]; then
+        echo "  skipped (exists): $dst"
+        return 0
+    fi
+    content="$(cat "$src" 2>/dev/null)" || {
+        echo "  ERROR reading template $src" >&2
+        return 1
+    }
+    content="${content//$placeholder/$value}"
+    printf '%s\n' "$content" >"$dst" || {
+        echo "  ERROR writing $dst" >&2
+        return 1
+    }
+    echo "  created: $dst"
+}
+
+# Scaffold ~/.ae/meta-hub/{hub.config,CHARTER.md} from contrib/aehub templates.
+cmd_hub_init() {
+    local hub_dir="${AE_HUB_DIR:-$HOME/.ae/meta-hub}"
+    # Reject a HUB_DIR that would break the INI double-quoted instructions value.
+    case "$hub_dir" in
+        *'"'* | *$'\n'*)
+            echo "Error: AE_HUB_DIR contains an unsupported character (quote/newline): $hub_dir" >&2
+            return 1
+            ;;
+    esac
+    # Resolve template dir relative to THIS script (symlink-aware) with a
+    # realpath/echo fallback — never hard-depend on readlink being present.
+    local self tdir aemon_path charter_path
+    self="$(readlink -f "${BASH_SOURCE[0]:-$0}" 2>/dev/null ||
+        realpath "${BASH_SOURCE[0]:-$0}" 2>/dev/null ||
+        echo "${BASH_SOURCE[0]:-$0}")"
+    tdir="$(dirname "$self")/contrib/aehub"
+    if [[ ! -d "$tdir" ]]; then
+        echo "Error: hub templates not found at $tdir." >&2
+        echo "(single-file install?) Create $hub_dir/hub.config + CHARTER.md by hand." >&2
+        return 1
+    fi
+    mkdir -p "$hub_dir" || return 1
+    # Canonicalize to an ABSOLUTE dir so a relative AE_HUB_DIR doesn't bake a
+    # relative charter path into hub.config — `ae hub` later cd's into the dir, so
+    # `rel/CHARTER.md` would wrongly resolve to `rel/rel/CHARTER.md`.
+    hub_dir="$(cd "$hub_dir" && pwd -P)" || return 1
+    charter_path="$hub_dir/CHARTER.md"
+    aemon_path="$(dirname "$self")/contrib/aemonitor/aemonitor"
+    echo "Scaffolding hub into $hub_dir:"
+    # CHARTER.md first (the config points at it).
+    _hub_scaffold_file "$tdir/CHARTER.md" "$charter_path" "__AEMONITOR_PATH__" "$aemon_path" || return 1
+    _hub_scaffold_file "$tdir/hub.config" "$hub_dir/hub.config" "__CHARTER_PATH__" "$charter_path" || return 1
+    echo
+    echo "Done. Review/edit those files, then run: ae hub"
+}
+
+cmd_hub_help() {
+    cat <<'EOF'
+ae hub — launch the meta-agent hub: one ae session that monitors all your other
+ae sessions and is your single point of contact to them.
+
+  ae hub           start or resume the `hub` session (standalone, isolated config)
+  ae hub --init    scaffold ~/.ae/meta-hub/{hub.config,CHARTER.md} (never overwrites)
+  ae hub --help    this help
+
+Config dir defaults to ~/.ae/meta-hub (override with AE_HUB_DIR).
+See contrib/aehub/README.md for details.
+EOF
+}
+
 # --- Dispatcher ---
 case "${1:-}" in
     list | ls)
@@ -5353,6 +5428,63 @@ case "${1:-}" in
     telegram)
         cmd_telegram "${@:2}"
         exit $?
+        ;;
+    hub)
+        # Meta-agent launcher. Trampoline: handle --init/help (exit), else set up
+        # FULL config isolation (the start-hub wrapper's job) and FALL THROUGH to
+        # the generic start/resume path below as if `ae hub` named the session.
+        # We must NOT re-dispatch the subcommand here (that would re-enter this
+        # branch and recurse) — falling through reuses the generic parser instead.
+        shift
+        case "${1:-}" in
+            --init)
+                if [[ $# -gt 1 ]]; then
+                    echo "Error: 'ae hub --init' takes no further arguments (got: ${*:2})" >&2
+                    exit 1
+                fi
+                cmd_hub_init
+                exit $?
+                ;;
+            -h | --help | help)
+                cmd_hub_help
+                exit 0
+                ;;
+            "") : ;; # bare `ae hub` — the only launch form
+            *)
+                # The hub session is ALWAYS named `hub` with the standalone config;
+                # accepting extra args would let `ae hub foo` become session `foo`
+                # via the generic parser (last positional wins), leaking the
+                # reserved name + hub config onto another session. Reject them.
+                echo "Error: 'ae hub' takes no arguments (except --init / --help). Got: $*" >&2
+                echo "The hub session is always named 'hub' (config: \${AE_HUB_DIR:-~/.ae/meta-hub}/hub.config)." >&2
+                echo "To run a normal session literally named 'hub', use: ae --local hub" >&2
+                exit 1
+                ;;
+        esac
+        _hub_dir="${AE_HUB_DIR:-$HOME/.ae/meta-hub}"
+        _hub_config="$_hub_dir/hub.config"
+        if [[ ! -f "$_hub_config" ]]; then
+            echo "Error: no hub config at $_hub_config." >&2
+            echo "Run 'ae hub --init' to scaffold the meta-agent config + charter." >&2
+            exit 1
+        fi
+        # BLOCKER fix (codex): CONFIG_FILE alone does NOT isolate. AE_LOCAL_CONFIG
+        # was captured from the CALLER's PWD near script top (before any cd), so a
+        # project-local ./.ae/config could still override workspace.*/prompt.* and
+        # reintroduce the worker-leak. Replicate the wrapper's full isolation:
+        AE_LOCAL_CONFIG="" # drop the caller-PWD local config
+        cd "$_hub_dir" || {
+            echo "Error: cannot cd to $_hub_dir" >&2
+            exit 1
+        }
+        # Set CONFIG_FILE from $PWD *after* cd so it's absolute even when AE_HUB_DIR
+        # is relative (a relative path stored in meta would break resume elsewhere).
+        CONFIG_FILE="$PWD/hub.config" # standalone hub config wins (absolute, isolated)
+        # copy=local ⇒ work_dir/origin become $_hub_dir; on resume the restore path
+        # below rebuilds AE_LOCAL_CONFIG from stored_origin=$_hub_dir (no .ae/config
+        # there), so the isolation persists across resume too.
+        set -- hub # session name = hub (extra args already rejected above)
+        # fall through (NO exit) to flag-parse + generic start/resume
         ;;
     transfer)
         cmd_transfer "${@:2}"
@@ -5485,10 +5617,12 @@ if [[ "$MAIN_NAME" == *:* ]]; then
 fi
 LAYOUT="$(get_config workspace.layout)"
 WORKERS_RAW="$(get_config workspace.workers)"
-# meta-agent (hub) mode: [workspace] meta = true marks this session as the
-# monitoring hub. The loop then runs a sweep-cadence (periodic "run your sweep
-# now") instead of the stale-nudge watchdog. Persisted to meta as meta_agent.
-META_AGENT_CFG="$(get_config workspace.meta)"
+# meta-agent (hub) mode: [workspace] hub = true (preferred) — or its legacy alias
+# meta = true — marks this session as the monitoring hub. The loop then runs a
+# sweep-cadence (periodic "run your sweep now") instead of the stale-nudge
+# watchdog. Persisted to meta as meta_agent (internal name unchanged).
+META_AGENT_CFG="$(get_config workspace.hub)"
+[[ -z "$META_AGENT_CFG" ]] && META_AGENT_CFG="$(get_config workspace.meta)"
 
 # Determine copy mode: CLI flag > config > default (local)
 if [[ -n "$COPY_MODE_OVERRIDE" ]]; then

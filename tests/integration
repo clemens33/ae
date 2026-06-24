@@ -720,6 +720,69 @@ assert_contains "transfer: --help mentions --with-workdir" "--with-workdir" "$tr
 assert_contains "transfer: --help mentions --dry-run" "--dry-run" "$transfer_help_out"
 assert_contains "transfer: --help mentions --yes" "--yes" "$transfer_help_out"
 
+# ── Test: ae hub — config isolation from a hostile project-local .ae/config ──
+# The launcher must reproduce the start-hub wrapper's FULL isolation: a project's
+# ./.ae/config must NOT override the standalone hub config (the worker-leak class
+# codex flagged as a BLOCKER). We run `ae hub` from a hostile repo and assert the
+# hub config wins and work_dir/config are pinned to the hub dir.
+HUB_DIR="$TMPDIR/meta-hub"
+mkdir -p "$HUB_DIR"
+cat >"$HUB_DIR/hub.config" <<'EOF'
+[agents]
+dummy = "bash"
+
+[workspace]
+main = dummy:meta
+copy = local
+layout = vertical
+hub = true
+EOF
+HOSTILE="$(setup_repo)"
+mkdir -p "$HOSTILE/.ae"
+cat >"$HOSTILE/.ae/config" <<'EOF'
+[agents]
+dummy2 = "bash"
+
+[workspace]
+main = dummy2:evil
+workers = dummy2:leaked
+layout = vertical
+EOF
+(cd "$HOSTILE" && AE_HUB_DIR="$HUB_DIR" "$AE" hub &) 2>/dev/null
+wait_for_session "hub"
+sleep 1
+_hub_meta="$HOME/.ae/sessions/hub/meta"
+assert_contains "hub: hub-config main wins over hostile local main" "agent.main=dummy:meta:" \
+    "$(cat "$_hub_meta" 2>/dev/null)"
+assert_eq "hub: hostile local 'workers' does NOT leak in" "0" \
+    "$(grep -c '^agent.worker' "$_hub_meta" 2>/dev/null || true)"
+assert_contains "hub: config pinned to the standalone hub.config" "config=$HUB_DIR/hub.config" \
+    "$(cat "$_hub_meta" 2>/dev/null)"
+assert_contains "hub: work_dir pinned to the hub dir (cd isolation)" "work_dir=$HUB_DIR" \
+    "$(cat "$_hub_meta" 2>/dev/null)"
+assert_contains "hub: meta_agent mode on via 'hub = true' alias" "meta_agent=true" \
+    "$(cat "$_hub_meta" 2>/dev/null)"
+tmux kill-session -t hub 2>/dev/null || true
+
+# Reserved-name contract: `ae hub <extra>` must be rejected, NOT turned into a
+# session named <extra> using the hub config (the generic parser's last-positional
+# -wins leak codex flagged).
+assert_eq "hub: rejects an extra positional (reserved-name leak guard)" "1" \
+    "$(AE_HUB_DIR="$HUB_DIR" "$AE" hub other 2>/dev/null; echo $?)"
+assert_eq "hub: the extra-arg name was NOT created as a session" "1" \
+    "$(tmux has-session -t other 2>/dev/null && echo 0 || echo 1)"
+
+# `ae hub --init` with a RELATIVE AE_HUB_DIR must still bake an ABSOLUTE charter
+# path into hub.config (else `ae hub` cd's in and rel/CHARTER.md → rel/rel/...).
+REL_BASE="$TMPDIR/relbase"
+mkdir -p "$REL_BASE"
+(cd "$REL_BASE" && AE_HUB_DIR="relhub" "$AE" hub --init >/dev/null 2>&1)
+assert_contains "hub --init: relative AE_HUB_DIR yields an absolute CHARTER path" \
+    "$REL_BASE/relhub/CHARTER.md" "$(cat "$REL_BASE/relhub/hub.config" 2>/dev/null)"
+
+# `ae help` (the in-tool discovery surface) lists the new first-class command.
+assert_contains "help: lists 'ae hub'" "ae hub" "$("$AE" help 2>/dev/null)"
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""
