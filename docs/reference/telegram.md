@@ -94,6 +94,49 @@ Three ways to reach an agent, easiest first:
 
 **Replay safety.** The daemon advances its `getUpdates` offset (persisted in `~/.ae/telegram/tg_offset`) before dispatching, so a crash can't re-run a side-effecting command on restart (at-most-once).
 
+## Hub-centric routing — talk to the meta-agent, not ten sessions
+
+The [`ae hub`](commands.md#ae-hub) meta-agent turns the bridge from a *broadcast*
+(every session shouting events at you) into a *conversation* (you talk to one
+agent that watches the rest and relays for you). This is **not a new mechanism** —
+it's a setup on top of the routing above:
+
+1. **Run the bridge and the hub together.** The hub reports to you only through its
+   [`say`](helpers.md) helper, which emits `chat` events the bridge forwards like
+   any other — so the hub appears in your chat as `[hub] chat  claude:meta …`.
+2. **Make the hub your default correspondent.** In Telegram, send
+   `/use hub claude:meta` once. Now every plain message you type (no slash, no
+   `@`) goes to the hub as a `send` — you just talk to it. The sticky target
+   persists across daemon restarts (`~/.ae/telegram/current_target`).
+3. **The loop closes both ways:**
+   - **you → hub** — plain text (the sticky target) *or* a swipe-reply to any of
+     the hub's messages (reply-to-routing) reaches `hub:claude:meta`.
+   - **hub → you** — the hub's `say` reports land in the chat.
+   - **hub → other sessions** — the hub relays your instruction with `send`/`ask`
+     to `@othersession:agent` and reports back what it sent (and the request id).
+   - **other sessions → you** — their events still forward directly (the bridge is
+     machine-global), so you also see raw activity, not only the hub's summary.
+
+### Tuning the signal
+
+Because the bridge forwards **every** session's events, with the hub running you
+receive both the hub's curated reports *and* the raw event stream. To lean on the
+hub as your primary signal and quiet the rest, narrow the outbound filter — e.g.
+keep the conversational + alerting actions and drop routine relays:
+
+```toml
+[telegram]
+include = "chat,alert,throttled,ask,reply,done"   # hub 'say' = chat; keep alerts
+```
+
+`nudge` is already outside the default include, so the hub's own sweep prompts
+never reach your phone. **Keep `chat` in the include** or the hub cannot talk to
+you at all.
+
+> The hub does not replace the bridge — it sits on top of it. You can still
+> address any session directly (`@session:agent …`, `/session …`) while the hub is
+> your sticky default; the hub is a convenience, not a gatekeeper.
+
 ## Commands
 
 ```bash
