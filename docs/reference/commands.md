@@ -210,6 +210,10 @@ First time: run `ae hub --init` to scaffold the config + charter from
 then `ae hub`. The charter wires the deterministic sweep to `aemonitor` and tells
 the agent its only channel to you is `say`.
 
+To talk to the hub from your phone, run the [Telegram bridge](telegram.md) and
+make the hub your default correspondent with `/use hub claude:meta` — see
+[Hub-centric routing](telegram.md#hub-centric-routing-talk-to-the-meta-agent-not-ten-sessions).
+
 `hub` is a reserved subcommand. If you ever need a normal (non-meta) session
 literally named `hub`, `ae --local hub` reaches the generic start path (the first
 argument is then no longer `hub`).

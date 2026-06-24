@@ -94,7 +94,7 @@ Three ways to reach an agent, easiest first:
 
 **Replay safety.** The daemon advances its `getUpdates` offset (persisted in `~/.ae/telegram/tg_offset`) before dispatching, so a crash can't re-run a side-effecting command on restart (at-most-once).
 
-## Hub-centric routing — talk to the meta-agent, not ten sessions
+## Hub-centric routing: talk to the meta-agent, not ten sessions
 
 The [`ae hub`](commands.md#ae-hub) meta-agent turns the bridge from a *broadcast*
 (every session shouting events at you) into a *conversation* (you talk to one
