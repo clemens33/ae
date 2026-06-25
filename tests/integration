@@ -802,6 +802,12 @@ HUB_AEH="$TMPDIR/hub-aehome"
 (cd "$TMPDIR" && AE_HOME="$HUB_AEH" "$AE" hub --init >/dev/null 2>&1)
 assert_eq "AE_HOME: hub --init scaffolds under AE_HOME, not \$HOME/.ae" "1" \
     "$([[ -f "$HUB_AEH/meta-hub/hub.config" && ! -e "$HOME/.ae/meta-hub" ]] && echo 1 || echo 0)"
+# The charter's helper paths must point at the ISOLATED hub session dir, never the
+# live ~/.ae (the charter-path fix that unblocks hub e2e scenarios).
+assert_eq "AE_HOME: scaffolded charter helper paths point under AE_HOME, not ~/.ae" "1" \
+    "$([[ -f "$HUB_AEH/meta-hub/CHARTER.md" ]] &&
+        grep -q "$HUB_AEH/sessions/hub/say" "$HUB_AEH/meta-hub/CHARTER.md" &&
+        ! grep -q '[~]/.ae/sessions/hub' "$HUB_AEH/meta-hub/CHARTER.md" && echo 1 || echo 0)"
 
 # ── Results ──────────────────────────────────────────────────────────
 

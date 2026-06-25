@@ -37,6 +37,10 @@ start path (the first arg is no longer `hub`).
   `CHARTER.md`.
 - `__AEMONITOR_PATH__` (in `CHARTER.md`) → the absolute path of the bundled
   [`aemonitor`](../aemonitor/) sweep helper.
+- `__HELPERS_DIR__` (in `CHARTER.md`) → the hub session's helper directory,
+  `${AE_HOME:-~/.ae}/sessions/hub`. Baked in so the charter's example commands are
+  correct under any `AE_HOME` (default `~/.ae/sessions/hub`; an isolated e2e run
+  gets `$AE_HOME/sessions/hub`) instead of a hardcoded path to the live `~/.ae`.
 
 `--init` **never overwrites** an existing file — it scaffolds only what's missing
 and reports `created` / `skipped (exists)` per file, so it's safe to re-run and

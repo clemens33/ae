@@ -3235,6 +3235,11 @@ printf 'read the charter at __X__ now\n' >"$_hub_t/tpl"
 _hub_scaffold_file "$_hub_t/tpl" "$_hub_t/out" "__X__" "/a/b/CHARTER.md" >/dev/null
 assert_eq "hub scaffold: placeholder substituted via bash (no sed, '/'-safe)" \
     "read the charter at /a/b/CHARTER.md now" "$(cat "$_hub_t/out")"
+# Multiple placeholder/value pairs in one call (CHARTER.md needs aemonitor + helpers).
+printf 'run __A__ and helpers in __H__\n' >"$_hub_t/tpl2"
+_hub_scaffold_file "$_hub_t/tpl2" "$_hub_t/multi" "__A__" "/bin/mon" "__H__" "/iso/sessions/hub" >/dev/null
+assert_eq "hub scaffold: substitutes multiple placeholder pairs in one call" \
+    "run /bin/mon and helpers in /iso/sessions/hub" "$(cat "$_hub_t/multi")"
 printf 'ORIGINAL\n' >"$_hub_t/keep"
 _hub_scaffold_file "$_hub_t/tpl" "$_hub_t/keep" "__X__" "/a/b/c" >/dev/null
 assert_eq "hub scaffold: never overwrites an existing file" "ORIGINAL" "$(cat "$_hub_t/keep")"
@@ -3246,6 +3251,17 @@ assert_eq "hub init: rejects HUB_DIR containing a quote (INI safety)" "1" \
     "$(AE_HUB_DIR='/bad"dir' cmd_hub_init >/dev/null 2>&1; echo $?)"
 rm -rf "$_hub_t"
 unset _hub_t
+
+# Charter helper paths are a placeholder (substituted to the session helper dir),
+# NOT a literal ~/.ae — so an isolated AE_HOME hub can't point at the live ~/.ae.
+_aehub_charter="$(dirname "$0")/../contrib/aehub/CHARTER.md"
+assert_eq "aehub charter: helper paths use __HELPERS_DIR__, not literal ~/.ae/sessions/hub" "1" \
+    "$([[ -f "$_aehub_charter" ]] && grep -q '__HELPERS_DIR__' "$_aehub_charter" &&
+        ! grep -q '[~]/.ae/sessions/hub' "$_aehub_charter" && echo 1 || echo 0)"
+unset _aehub_charter
+assert_eq "hub init: substitutes __HELPERS_DIR__ with the hub session helper dir" "1" \
+    "$([[ "$AE_SOURCE" == *'helpers_dir="$CONFIG_DIR/sessions/hub"'* \
+        && "$AE_SOURCE" == *'"__HELPERS_DIR__" "$helpers_dir"'* ]] && echo 1 || echo 0)"
 
 # Structural — the dispatcher trampoline must preserve FULL config isolation
 # (codex BLOCKER) and fall through WITHOUT re-exec (no recursion).

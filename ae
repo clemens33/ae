@@ -5336,7 +5336,8 @@ send_agent_cmd() {
 # __PLACEHOLDER__ via bash param expansion (no sed → safe with '/' in the value).
 # Reports created vs skipped per file so partial dirs are handled explicitly.
 _hub_scaffold_file() {
-    local src="$1" dst="$2" placeholder="$3" value="$4" content
+    local src="$1" dst="$2" content
+    shift 2 # remaining args are placeholder/value pairs
     if [[ -e "$dst" ]]; then
         echo "  skipped (exists): $dst"
         return 0
@@ -5345,7 +5346,26 @@ _hub_scaffold_file() {
         echo "  ERROR reading template $src" >&2
         return 1
     }
-    content="${content//$placeholder/$value}"
+    # Two-phase substitution so an inserted VALUE is never rescanned by a later
+    # placeholder (codex: sequential ${//} reprocesses inserted text). Phase 1
+    # maps every placeholder to a unique SOH-delimited sentinel (no values yet);
+    # phase 2 maps sentinels to values. A real path value can't contain a \x01, so
+    # phase-2 insertions can never collide — making it order-independent.
+    local -a _ph _val
+    local _n=0 soh=$'\x01'
+    while (($# >= 2)); do
+        _ph[_n]="$1"
+        _val[_n]="$2"
+        _n=$((_n + 1))
+        shift 2
+    done
+    local _i
+    for ((_i = 0; _i < _n; _i++)); do
+        content="${content//${_ph[_i]}/${soh}${_i}${soh}}"
+    done
+    for ((_i = 0; _i < _n; _i++)); do
+        content="${content//${soh}${_i}${soh}/${_val[_i]}}"
+    done
     printf '%s\n' "$content" >"$dst" || {
         echo "  ERROR writing $dst" >&2
         return 1
@@ -5365,7 +5385,7 @@ cmd_hub_init() {
     esac
     # Resolve template dir relative to THIS script (symlink-aware) with a
     # realpath/echo fallback — never hard-depend on readlink being present.
-    local self tdir aemon_path charter_path
+    local self tdir aemon_path charter_path helpers_dir
     self="$(readlink -f "${BASH_SOURCE[0]:-$0}" 2>/dev/null ||
         realpath "${BASH_SOURCE[0]:-$0}" 2>/dev/null ||
         echo "${BASH_SOURCE[0]:-$0}")"
@@ -5382,9 +5402,14 @@ cmd_hub_init() {
     hub_dir="$(cd "$hub_dir" && pwd -P)" || return 1
     charter_path="$hub_dir/CHARTER.md"
     aemon_path="$(dirname "$self")/contrib/aemonitor/aemonitor"
+    # The hub session is always named `hub`; its helper scripts live here. Baked
+    # into the charter so it's correct under any AE_HOME (default ~/.ae/sessions/hub,
+    # isolated e2e runs $AE_HOME/sessions/hub) — never the wrong (live) ~/.ae.
+    helpers_dir="$CONFIG_DIR/sessions/hub"
     echo "Scaffolding hub into $hub_dir:"
     # CHARTER.md first (the config points at it).
-    _hub_scaffold_file "$tdir/CHARTER.md" "$charter_path" "__AEMONITOR_PATH__" "$aemon_path" || return 1
+    _hub_scaffold_file "$tdir/CHARTER.md" "$charter_path" \
+        "__AEMONITOR_PATH__" "$aemon_path" "__HELPERS_DIR__" "$helpers_dir" || return 1
     _hub_scaffold_file "$tdir/hub.config" "$hub_dir/hub.config" "__CHARTER_PATH__" "$charter_path" || return 1
     echo
     echo "Done. Review/edit those files, then run: ae hub"
@@ -5399,8 +5424,8 @@ ae sessions and is your single point of contact to them.
   ae hub --init    scaffold ~/.ae/meta-hub/{hub.config,CHARTER.md} (never overwrites)
   ae hub --help    this help
 
-Config dir defaults to ${AE_HOME:-~/.ae}/meta-hub (override with AE_HUB_DIR).
-See contrib/aehub/README.md for details.
+Config dir: ~/.ae/meta-hub (or $AE_HOME/meta-hub when AE_HOME is set; override
+with AE_HUB_DIR). See contrib/aehub/README.md for details.
 EOF
 }
 
