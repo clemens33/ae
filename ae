@@ -3,7 +3,13 @@
 set -euo pipefail
 AE_VERSION="0.2.1"
 
-CONFIG_DIR="${HOME}/.ae"
+# AE_HOME relocates ALL ae state (config, sessions, worktrees) without swapping
+# $HOME — so an isolated run (tests, e2e) can keep the real $HOME (and real
+# agent-CLI auth under ~/.claude, ~/.codex) while writing ae state elsewhere.
+# Unset → the normal ~/.ae. CONFIG_DIR derives from it; everything below derives
+# from CONFIG_DIR, so this single knob is authoritative for the whole tool.
+AE_HOME="${AE_HOME:-${HOME}/.ae}"
+CONFIG_DIR="$AE_HOME"
 # CONFIG_FILE honors a pre-set env var so tests + the generated daemon
 # can point at a non-default config without rewriting the user's real one.
 CONFIG_FILE="${CONFIG_FILE:-${CONFIG_DIR}/config}"
@@ -3658,11 +3664,14 @@ _telegram_persist_intent() {
 # would read another. Both the env value and the script path are %q-quoted.
 _telegram_spawn_daemon() {
     _telegram_write_daemon
-    local q_cfg q_daemon
+    local q_cfg q_daemon q_aehome
     q_cfg="$(printf '%q' "$CONFIG_FILE")"
     q_daemon="$(printf '%q' "$CONFIG_DIR/telegram-daemon")"
+    # Pass AE_HOME too: the daemon defaults AE_HOME to $HOME/.ae, so without this
+    # an isolated (AE_HOME=...) run would spawn a daemon tailing the LIVE ~/.ae.
+    q_aehome="$(printf '%q' "$CONFIG_DIR")"
     tmux new-session -d -s "$_TELEGRAM_TMUX_SESSION" -c "$HOME" \
-        "CONFIG_FILE=${q_cfg} exec bash ${q_daemon}" 2>/dev/null
+        "AE_HOME=${q_aehome} CONFIG_FILE=${q_cfg} exec bash ${q_daemon}" 2>/dev/null
     tmux set-option -t "$_TELEGRAM_TMUX_SESSION" status off 2>/dev/null || true
     tmux rename-window -t "$_TELEGRAM_TMUX_SESSION" "ae-telegram" 2>/dev/null || true
 }
@@ -5346,7 +5355,7 @@ _hub_scaffold_file() {
 
 # Scaffold ~/.ae/meta-hub/{hub.config,CHARTER.md} from contrib/aehub templates.
 cmd_hub_init() {
-    local hub_dir="${AE_HUB_DIR:-$HOME/.ae/meta-hub}"
+    local hub_dir="${AE_HUB_DIR:-$CONFIG_DIR/meta-hub}"
     # Reject a HUB_DIR that would break the INI double-quoted instructions value.
     case "$hub_dir" in
         *'"'* | *$'\n'*)
@@ -5390,7 +5399,7 @@ ae sessions and is your single point of contact to them.
   ae hub --init    scaffold ~/.ae/meta-hub/{hub.config,CHARTER.md} (never overwrites)
   ae hub --help    this help
 
-Config dir defaults to ~/.ae/meta-hub (override with AE_HUB_DIR).
+Config dir defaults to ${AE_HOME:-~/.ae}/meta-hub (override with AE_HUB_DIR).
 See contrib/aehub/README.md for details.
 EOF
 }
@@ -5461,7 +5470,7 @@ case "${1:-}" in
                 exit 1
                 ;;
         esac
-        _hub_dir="${AE_HUB_DIR:-$HOME/.ae/meta-hub}"
+        _hub_dir="${AE_HUB_DIR:-$CONFIG_DIR/meta-hub}"
         _hub_config="$_hub_dir/hub.config"
         if [[ ! -f "$_hub_config" ]]; then
             echo "Error: no hub config at $_hub_config." >&2
@@ -5764,6 +5773,10 @@ tmux set-environment -t "$SESSION" AE_SESSION 1
 tmux set-environment -t "$SESSION" AE_ORIGIN "$ORIGIN_DIR"
 tmux set-environment -t "$SESSION" AE_DIR "$WORK_DIR"
 tmux set-environment -t "$SESSION" AE_MODE "$COPY_MODE"
+# Pin AE_HOME into the session so hidden helpers run from the pane (spawn/retire →
+# `ae _spawn`/`_retire`) resolve the SAME ae state, not the real ~/.ae — without
+# relying on tmux-server env inheritance. Only meaningful when AE_HOME is overridden.
+tmux set-environment -t "$SESSION" AE_HOME "$CONFIG_DIR"
 
 # ae-specific tmux options (session-scoped, doesn't affect other tmux usage)
 tmux set-option -t "$SESSION" mouse on

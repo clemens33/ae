@@ -2572,8 +2572,10 @@ assert_eq "telegram: STATE_LOADED set only after load_state" "1" \
 
 # Codex review IMPORTANT #3 (round 2): the spawned daemon inherits the EXACT
 # CONFIG_FILE ae validated, %q-quoted, not its own $HOME/.ae/config default.
-assert_eq "telegram: spawn passes resolved CONFIG_FILE into the daemon env" "1" \
-    "$([[ "$AE_SOURCE" == *'"CONFIG_FILE=${q_cfg} exec bash ${q_daemon}"'* ]] && echo 1 || echo 0)"
+# Plus AE_HOME (later BLOCKER): the daemon must inherit the isolated AE_HOME too,
+# else an AE_HOME run spawns a daemon tailing the live ~/.ae.
+assert_eq "telegram: spawn passes resolved AE_HOME + CONFIG_FILE into the daemon env" "1" \
+    "$([[ "$AE_SOURCE" == *'"AE_HOME=${q_aehome} CONFIG_FILE=${q_cfg} exec bash ${q_daemon}"'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: spawn %q-quotes both config + daemon path" "1" \
     "$([[ "$AE_SOURCE" == *'q_cfg="$(printf '"'"'%q'"'"' "$CONFIG_FILE")"'* && "$AE_SOURCE" == *'q_daemon="$(printf '"'"'%q'"'"' "$CONFIG_DIR/telegram-daemon")"'* ]] && echo 1 || echo 0)"
 
@@ -3260,6 +3262,22 @@ assert_eq "hub dispatcher: routes --init and --help" "1" \
 assert_eq "hub flag: workspace.hub preferred, workspace.meta legacy alias" "1" \
     "$([[ "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.hub)"'* \
         && "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.meta)"'* ]] && echo 1 || echo 0)"
+
+# ── AE_HOME authoritative for ALL ae state (config/sessions/worktrees) ──
+# Lets an isolated run keep the real $HOME (so real agent-CLI auth works) while
+# writing ae state elsewhere — without swapping $HOME.
+assert_eq "AE_HOME: CONFIG_DIR derives from AE_HOME, not hardcoded \$HOME/.ae" "1" \
+    "$([[ "$AE_SOURCE" == *'AE_HOME="${AE_HOME:-${HOME}/.ae}"'* \
+        && "$AE_SOURCE" == *'CONFIG_DIR="$AE_HOME"'* \
+        && "$AE_SOURCE" != *'CONFIG_DIR="${HOME}/.ae"'* ]] && echo 1 || echo 0)"
+# Daemon/hub/session must not escape AE_HOME back to live ~/.ae (codex BLOCKERs):
+assert_eq "AE_HOME: telegram daemon is spawned WITH AE_HOME (no live-~/.ae leak)" "1" \
+    "$([[ "$AE_SOURCE" == *'AE_HOME=${q_aehome} CONFIG_FILE='* ]] && echo 1 || echo 0)"
+assert_eq "AE_HOME: hub dir defaults under CONFIG_DIR, not hardcoded \$HOME/.ae" "1" \
+    "$([[ "$AE_SOURCE" == *'AE_HUB_DIR:-$CONFIG_DIR/meta-hub'* \
+        && "$AE_SOURCE" != *'AE_HUB_DIR:-$HOME/.ae/meta-hub'* ]] && echo 1 || echo 0)"
+assert_eq "AE_HOME: pinned into the session env for hidden helpers" "1" \
+    "$([[ "$AE_SOURCE" == *'set-environment -t "$SESSION" AE_HOME "$CONFIG_DIR"'* ]] && echo 1 || echo 0)"
 
 # ── Results ──────────────────────────────────────────────────────────
 

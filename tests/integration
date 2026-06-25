@@ -783,6 +783,26 @@ assert_contains "hub --init: relative AE_HUB_DIR yields an absolute CHARTER path
 # `ae help` (the in-tool discovery surface) lists the new first-class command.
 assert_contains "help: lists 'ae hub'" "ae hub" "$("$AE" help 2>/dev/null)"
 
+# AE_HOME relocates ALL ae state away from $HOME/.ae WITHOUT swapping $HOME — the
+# isolation primitive for real-agent e2e (keep real $HOME for CLI auth, isolate ae
+# state elsewhere). CONFIG_FILE stays on the dummy-agent config so the session can
+# launch; only AE_HOME moves. Regression for the e2e-AI isolation fix.
+ALT_AE_HOME="$TMPDIR/alt-aehome"
+REPO_AEH="$(setup_repo)"
+(cd "$REPO_AEH" && AE_HOME="$ALT_AE_HOME" CONFIG_FILE="$HOME/.ae/config" "$AE" --local aehome-test &) 2>/dev/null
+wait_for_session "aehome-test"
+sleep 1
+assert_eq "AE_HOME: session state lands under AE_HOME, not \$HOME/.ae" "1" \
+    "$([[ -f "$ALT_AE_HOME/sessions/aehome-test/meta" && ! -e "$HOME/.ae/sessions/aehome-test" ]] && echo 1 || echo 0)"
+tmux kill-session -t aehome-test 2>/dev/null || true
+
+# `ae hub --init` under AE_HOME must scaffold into $AE_HOME/meta-hub, not live ~/.ae
+# (codex BLOCKER: the hub dir previously defaulted to $HOME/.ae/meta-hub).
+HUB_AEH="$TMPDIR/hub-aehome"
+(cd "$TMPDIR" && AE_HOME="$HUB_AEH" "$AE" hub --init >/dev/null 2>&1)
+assert_eq "AE_HOME: hub --init scaffolds under AE_HOME, not \$HOME/.ae" "1" \
+    "$([[ -f "$HUB_AEH/meta-hub/hub.config" && ! -e "$HOME/.ae/meta-hub" ]] && echo 1 || echo 0)"
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

@@ -202,7 +202,8 @@ ae hub --help   Usage
 `~/.ae/meta-hub/hub.config` as the config and neutralizes any project-local
 `./.ae/config`, so the global config's `workers` never leak into the single-agent
 hub regardless of the directory you run it from. The config dir defaults to
-`~/.ae/meta-hub` and is overridable with `AE_HUB_DIR`.
+`${AE_HOME:-~/.ae}/meta-hub` and is overridable with `AE_HUB_DIR` (so an isolated
+`AE_HOME` run keeps its hub state out of your live `~/.ae`).
 
 First time: run `ae hub --init` to scaffold the config + charter from
 [`contrib/aehub`](../../contrib/aehub/) (placeholders for the charter and
