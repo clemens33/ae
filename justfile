@@ -11,8 +11,11 @@ default_branch := "main"
 check: lint format-check
 
 # Lint with shellcheck (the contrib aemonitor helper is Python, not shell)
+# The e2e-ai harness + scenario drivers are linted here but NEVER run by `check`.
 lint:
-    shellcheck -x ae tests/unit tests/integration tests/aemonitor install
+    shellcheck -x ae tests/unit tests/integration tests/aemonitor install \
+        tests/e2e/ai/lib.sh tests/e2e/ai/run_scenario.sh \
+        $(find tests/e2e/ai/scenarios -name steps.sh)
 
 # Check formatting (shfmt, diff mode)
 format-check:
@@ -38,6 +41,11 @@ test-integration:
 # contrib aemonitor helper tests (requires python3; deterministic fixtures)
 test-aemonitor:
     bash tests/aemonitor
+
+# AI-driven e2e (OPT-IN: needs AE_E2E_AI=1, runs REAL agents against your real
+# subscription — real tokens, your live rate budget). NOT part of `check`/`test`.
+test-ai *args="tests/e2e/ai/scenarios":
+    AE_E2E_AI={{ env_var_or_default("AE_E2E_AI", "") }} tests/e2e/ai/run_scenario.sh {{ args }}
 
 # ── Version ──────────────────────────────────────────────────────────
 
