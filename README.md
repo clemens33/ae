@@ -76,8 +76,8 @@ watch -n 10 'ae list'          # live dashboard
 **Finish up:**
 ```bash
 ae stop my-feature             # pause, keep state — resume later with 'ae my-feature'
-ae end my-feature              # destructive: commit + push to ae/my-feature, REMOVE ae state AND
-                               # the per-session claude/codex conversation files
+ae end my-feature              # commit + push to ae/my-feature, remove ae state (KEEPS the
+                               # claude/codex conversation files; --purge-history to delete them)
 ae rm my-experiment            # same as ae end
 ```
 
@@ -191,8 +191,10 @@ ae hub [--init]        Launch the meta-agent hub: one ae session that monitors a
                        other sessions and is your single point of contact to them. --init
                        scaffolds its config + charter (see contrib/aehub). Optional feature.
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
-ae end|rm [name]       End session: commit, push to ae/<name>, REMOVE ae state AND
-                       per-session claude/codex conversation files. Destructive.
+ae end|rm [-f] [--purge-history|--keep-history] [name]
+                       End session: commit, push to ae/<name>, remove ae state. KEEPS the
+                       per-session claude/codex conversation files by default (token history);
+                       --purge-history deletes them ([workspace] purge_agent_history sets default).
 ```
 
 When run inside an ae session, `stop`, `end`, `status`, and `loop` detect the current session automatically.

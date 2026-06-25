@@ -1165,13 +1165,45 @@ cleanup_session() {
         origin="$(read_session_meta "$session_name" origin)"
     fi
 
-    # Best-effort cleanup of the underlying agent CLI conversation files
-    # for this session. Tied to the natural ae-end lifecycle so per-session
-    # jsonls don't accumulate forever under ~/.claude/ and ~/.codex/. Claude
-    # has its own cleanupPeriodDays sweep; Codex and OpenCode don't, so this
-    # hook is the only place those get pruned. Read meta BEFORE we rm -rf
-    # the session dir below.
-    _cleanup_agent_session_files "$session_name"
+    # The underlying agent CLI conversation files (claude/codex jsonl) are KEPT by
+    # default — they're the only local per-session record of token usage, retained
+    # for later usage/cost reporting. Purge only when asked. Decision: a CLI flag
+    # (_AE_PURGE_HISTORY_CLI from cmd_end) overrides; otherwise the default comes
+    # from THIS session's OWN config — hydrated from its meta `config` + origin (the
+    # resume pattern) — so a cross-repo end or `ae end all` honors each session's
+    # policy, not the caller's cwd. (Claude self-sweeps via cleanupPeriodDays;
+    # Codex/OpenCode don't, so this is the only prune hook — hence opt-in.) Read
+    # meta BEFORE we rm -rf the dir below.
+    local _purge="${_AE_PURGE_HISTORY_CLI:-}"
+    if [[ -z "$_purge" ]]; then
+        local _scfg _prev_cfg="$CONFIG_FILE" _prev_local="${AE_LOCAL_CONFIG:-}"
+        _scfg="$(read_session_meta "$session_name" config)"
+        if [[ -n "$_scfg" && -f "$_scfg" ]]; then
+            CONFIG_FILE="$_scfg"
+        else
+            # No usable stored config (old/transferred/broken session): do NOT fall
+            # back to the caller's cwd/global (that would let an unrelated purge=true
+            # bleed in). /dev/null is an empty source parse_config skips, so only the
+            # session's OWN origin local config (layered below) can opt into purge.
+            CONFIG_FILE=/dev/null
+        fi
+        if [[ -n "$origin" && -f "${origin}/.ae/config" ]]; then
+            AE_LOCAL_CONFIG="${origin}/.ae/config"
+        else
+            AE_LOCAL_CONFIG=""
+        fi
+        case "$(get_config workspace.purge_agent_history)" in
+            true | 1 | yes | on) _purge=true ;;
+            *) _purge=false ;;
+        esac
+        CONFIG_FILE="$_prev_cfg"
+        AE_LOCAL_CONFIG="$_prev_local"
+    fi
+    if [[ "$_purge" == "true" ]]; then
+        _cleanup_agent_session_files "$session_name"
+    else
+        echo "  kept agent conversation files (claude/codex token history; purge: ae end --purge-history)"
+    fi
 
     # Kill any legacy heartbeat before removing meta.
     kill_heartbeat "$session_name"
@@ -2045,27 +2077,52 @@ cmd_stop() {
 }
 
 cmd_end() {
-    local target="${1:-}" force=false
-    if [[ "$target" == "-f" || "$target" == "--force" ]]; then
-        force=true
-        target="${2:-}"
-    elif [[ "${2:-}" == "-f" || "${2:-}" == "--force" ]]; then
-        force=true
-    fi
+    local target="" force=false purge_cli="" a
+    for a in "$@"; do
+        case "$a" in
+            -f | --force) force=true ;;
+            --purge-history) purge_cli=true ;;
+            --keep-history) purge_cli=false ;;
+            --*)
+                echo "Error: unknown flag '$a'. Use -f, --purge-history, --keep-history." >&2
+                return 1
+                ;;
+            *)
+                if [[ -z "$target" ]]; then
+                    target="$a"
+                else
+                    # Destructive command — never silently drop a stray arg.
+                    echo "Error: unexpected extra argument '$a' — ae end takes one session name (or 'all')." >&2
+                    return 1
+                fi
+                ;;
+        esac
+    done
     if [[ -z "$target" ]]; then
         target="$(detect_current_session 2>/dev/null)" || {
-            echo "Usage: ae end [-f] [session-name]" >&2
-            echo "       ae end [-f] all" >&2
+            echo "Usage: ae end [-f] [--purge-history|--keep-history] [session-name|all]" >&2
             echo "(Run inside an ae tmux session to end it without specifying the name.)" >&2
             return 1
         }
     fi
+    # A CLI flag overrides globally; otherwise the purge default is resolved
+    # PER-SESSION (from each session's OWN config) in cleanup_session — so ending a
+    # session from an unrelated cwd, or `ae end all`, honors each session's policy,
+    # not the caller's. Empty = no CLI override.
+    _AE_PURGE_HISTORY_CLI="$purge_cli"
     if [[ "$force" != true ]]; then
         printf "End session '%s'?\n" "$target"
         printf "  - Commits + pushes to ae/%s branch.\n" "$target"
         printf "  - Removes ae state at ~/.ae/sessions/%s/.\n" "$target"
-        printf "  - DELETES per-session claude/codex conversation files for this session.\n"
-        printf "  (Use 'ae stop' instead if you want to resume later — it preserves history.)\n"
+        if [[ "$purge_cli" == true ]]; then
+            printf "  - DELETES this session's claude/codex conversation files (--purge-history).\n"
+        elif [[ "$purge_cli" == false ]]; then
+            printf "  - KEEPS this session's claude/codex conversation files (--keep-history).\n"
+        else
+            printf "  - KEEPS the claude/codex conversation files unless the session's own\n"
+            printf "    [workspace] purge_agent_history is set (kept = token/usage history).\n"
+        fi
+        printf "  (Use 'ae stop' to resume later; it also preserves history.)\n"
         printf "Continue? [y/N] "
         read -r -n 1 reply
         echo
@@ -4759,9 +4816,11 @@ cmd_help() {
     echo "                         Push a stopped session to a peer machine (--pull reverses)"
     echo "  ae stop [name]         Pause session, keep ae + agent conversation state for resume"
     echo "                         (or 'ae stop all')"
-    echo "  ae end|rm [-f] [name]  End session: commit, push to ae/<name>, REMOVE ae state AND"
-    echo "                         the per-session claude/codex conversation files. Destructive —"
-    echo "                         use 'ae stop' if you want to resume later. (or 'ae end all')"
+    echo "  ae end|rm [-f] [--purge-history|--keep-history] [name]"
+    echo "                         End session: commit, push to ae/<name>, remove ae state."
+    echo "                         KEEPS the claude/codex conversation files by default (token"
+    echo "                         history); --purge-history deletes them ([workspace]"
+    echo "                         purge_agent_history sets the default). (or 'ae end all')"
     echo "  ae version             Show version"
     echo "  ae help                Show this help"
     echo ""
@@ -5525,7 +5584,7 @@ case "${1:-}" in
         exit $?
         ;;
     end | rm)
-        cmd_end "${2:-}" "${3:-}"
+        cmd_end "${@:2}"
         exit $?
         ;;
     _spawn)

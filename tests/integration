@@ -809,6 +809,68 @@ assert_eq "AE_HOME: scaffolded charter helper paths point under AE_HOME, not ~/.
         grep -q "$HUB_AEH/sessions/hub/say" "$HUB_AEH/meta-hub/CHARTER.md" &&
         ! grep -q '[~]/.ae/sessions/hub' "$HUB_AEH/meta-hub/CHARTER.md" && echo 1 || echo 0)"
 
+# ae end conversation-file cleanup flag: KEEP by default, --purge-history opts in.
+REPO_KEEP="$(setup_repo)"
+(cd "$REPO_KEEP" && "$AE" --local end-keep &) 2>/dev/null
+wait_for_session "end-keep"
+sleep 1
+end_keep_out="$("$AE" end -f end-keep 2>&1)"
+assert_contains "ae end (default) KEEPS agent conversation files" \
+    "kept agent conversation files" "$end_keep_out"
+REPO_PURGE="$(setup_repo)"
+(cd "$REPO_PURGE" && "$AE" --local end-purge &) 2>/dev/null
+wait_for_session "end-purge"
+sleep 1
+end_purge_out="$("$AE" end -f --purge-history end-purge 2>&1)"
+assert_eq "ae end --purge-history takes the purge path (no keep-note)" "1" \
+    "$([[ "$end_purge_out" != *'kept agent conversation files'* ]] && echo 1 || echo 0)"
+
+# Per-session config decides the default (codex IMPORTANT) — NOT the caller's cwd.
+# (A) a session whose OWN config sets purge_agent_history=true purges even when
+# ended from a cwd with no such flag.
+PURGE_CFG="$TMPDIR/purge-on.config"
+cat >"$PURGE_CFG" <<'EOF'
+[agents]
+dummy = "bash"
+
+[workspace]
+main = dummy:main
+purge_agent_history = true
+EOF
+REPO_A="$(setup_repo)"
+(cd "$REPO_A" && CONFIG_FILE="$PURGE_CFG" "$AE" --local end-persess-purge &) 2>/dev/null
+wait_for_session "end-persess-purge"
+sleep 1
+persess_purge_out="$("$AE" end -f end-persess-purge 2>&1)" # ended from default cwd (no flag)
+assert_eq "ae end: a session's own purge_agent_history=true purges from a no-flag cwd" "1" \
+    "$([[ "$persess_purge_out" != *'kept agent conversation files'* ]] && echo 1 || echo 0)"
+# (B) a default (keep) session ended from a cwd whose .ae/config sets purge=true
+# must still KEEP — the cwd's policy must not bleed onto an unrelated session.
+REPO_B="$(setup_repo)"
+(cd "$REPO_B" && "$AE" --local end-persess-keep &) 2>/dev/null
+wait_for_session "end-persess-keep"
+sleep 1
+PURGE_CWD="$TMPDIR/purge-cwd"
+mkdir -p "$PURGE_CWD/.ae"
+printf '[workspace]\npurge_agent_history = true\n' >"$PURGE_CWD/.ae/config"
+persess_keep_out="$(cd "$PURGE_CWD" && "$AE" end -f end-persess-keep 2>&1)"
+assert_contains "ae end: a purge=true cwd does NOT override the target's keep default" \
+    "kept agent conversation files" "$persess_keep_out"
+# (C) a session whose stored config is missing/unusable (transferred/old) must
+# still KEEP — never fall back to the caller's purge=true cwd.
+REPO_C="$(setup_repo)"
+(cd "$REPO_C" && "$AE" --local end-noconfig &) 2>/dev/null
+wait_for_session "end-noconfig"
+sleep 1
+sed -i 's|^config=.*|config=/nonexistent/ae/config|' "$HOME/.ae/sessions/end-noconfig/meta"
+noconfig_out="$(cd "$PURGE_CWD" && "$AE" end -f end-noconfig 2>&1)"
+assert_contains "ae end: session with no usable stored config KEEPS (no cwd fallback)" \
+    "kept agent conversation files" "$noconfig_out"
+
+# Destructive command rejects a stray second positional rather than dropping it.
+assert_eq "ae end: rejects a second positional argument" "1" \
+    "$("$AE" end -f foo bar 2>/dev/null; echo $?)"
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

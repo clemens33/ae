@@ -20,8 +20,10 @@ ae telegram <setup|start|stop|status>
 ae hub [--init]        Launch the meta-agent hub — one session that monitors all
                        your other sessions (--init scaffolds its config + charter)
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
-ae end|rm [name]       End session: commit, push to ae/<name>, REMOVE ae state AND
-                       per-session claude/codex conversation files. Destructive.
+ae end|rm [-f] [--purge-history|--keep-history] [name]
+                       End session: commit, push to ae/<name>, remove ae state. KEEPS the
+                       per-session claude/codex conversation files by default (token history);
+                       --purge-history deletes them.
 ae version             Show version
 ae help                Show short help
 ```
@@ -244,7 +246,8 @@ Use this when you're done for the day, switching contexts, or moving to another 
 
 ## `ae end` / `ae rm`
 
-End a session for good. **Destructive** — removes the conversation history. If you want to resume later, use `ae stop` instead.
+End a session for good. Removes ae's own state; **keeps the agent conversation
+history by default**. If you want to resume later, use `ae stop` instead.
 
 Wraps up:
 
@@ -252,7 +255,19 @@ Wraps up:
 2. Pushes to a branch named `ae/<session-name>` on the remote.
 3. Kills the tmux session.
 4. Removes ae state at `~/.ae/sessions/<name>/`.
-5. **Removes the per-session Claude / Codex conversation files** (jsonl + rollout) for each agent slot in the session. Tool detection uses `agent_bin.<slot>` from meta. Gemini and OpenCode conversation files are left in place — their lookup helpers don't exist yet.
+5. **Keeps the per-session Claude / Codex conversation files** (jsonl + rollout) by
+   default — they are the only local record of that session's token usage, retained
+   for later usage/cost reporting. Purge them with `ae end --purge-history` (or set
+   `[workspace] purge_agent_history = true` as the default). Tool detection uses
+   `agent_bin.<slot>` from meta; Gemini and OpenCode files are always left in place.
+
+### Controlling conversation-file cleanup
+
+| Precedence | Source | Effect |
+|---|---|---|
+| 1 (highest) | `ae end --purge-history` / `--keep-history` | Force purge / keep for this run |
+| 2 | `[workspace] purge_agent_history = true\|false` | Default policy |
+| 3 (default) | *(unset)* | **Keep** |
 
 Pass `-f` to force without confirmation. `ae end all` ends every session.
 

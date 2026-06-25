@@ -3295,6 +3295,23 @@ assert_eq "AE_HOME: hub dir defaults under CONFIG_DIR, not hardcoded \$HOME/.ae"
 assert_eq "AE_HOME: pinned into the session env for hidden helpers" "1" \
     "$([[ "$AE_SOURCE" == *'set-environment -t "$SESSION" AE_HOME "$CONFIG_DIR"'* ]] && echo 1 || echo 0)"
 
+# ── ae end: agent conversation-history is KEPT by default (token tracking) ──
+assert_eq "ae end: parses --purge-history / --keep-history" "1" \
+    "$([[ "$AE_SOURCE" == *'--purge-history) purge_cli=true'* \
+        && "$AE_SOURCE" == *'--keep-history) purge_cli=false'* ]] && echo 1 || echo 0)"
+assert_eq "ae end: CLI flag is the only global override (config resolved elsewhere)" "1" \
+    "$([[ "$AE_SOURCE" == *'_AE_PURGE_HISTORY_CLI="$purge_cli"'* ]] && echo 1 || echo 0)"
+assert_eq "ae end: rejects a second positional (destructive — no silent drop)" "1" \
+    "$([[ "$AE_SOURCE" == *'unexpected extra argument'* ]] && echo 1 || echo 0)"
+# The default must be resolved PER-SESSION from that session's own config (codex
+# IMPORTANT) — not the caller's cwd — so cross-repo ends + `ae end all` are correct.
+assert_eq "ae end: default purge resolved per-session from its meta config" "1" \
+    "$([[ "$AE_SOURCE" == *'_purge="${_AE_PURGE_HISTORY_CLI:-}"'* \
+        && "$AE_SOURCE" == *'_scfg="$(read_session_meta "$session_name" config)"'* \
+        && "$AE_SOURCE" == *'get_config workspace.purge_agent_history'* ]] && echo 1 || echo 0)"
+assert_eq "ae end: purge gated on the resolved decision (kept unless true)" "1" \
+    "$([[ "$AE_SOURCE" == *'"$_purge" == "true"'*'_cleanup_agent_session_files'* ]] && echo 1 || echo 0)"
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""
