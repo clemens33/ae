@@ -494,6 +494,74 @@ read_launch_time_for_slot() {
     printf '%s' "$launch_time"
 }
 
+# --- status-left location rendering (mode-aware session path) ---------
+# Abbreviate $HOME -> ~ for compactness. The `~` here is a literal display glyph,
+# not a path to expand — hence SC2088 is intentionally disabled.
+# shellcheck disable=SC2088
+_ae_abbrev_home() {
+    local p="$1"
+    if [[ "$p" == "$HOME" ]]; then
+        printf '~'
+    elif [[ "$p" == "$HOME/"* ]]; then
+        printf '~/%s' "${p#"$HOME"/}"
+    else
+        printf '%s' "$p"
+    fi
+}
+
+# Truncate from the LEFT (keep the meaningful tail), prefixing … when cut.
+_ae_trunc_left() {
+    local s="$1" max="${2:-40}"
+    if ((${#s} > max)); then
+        printf '…%s' "${s: -$((max - 1))}"
+    else
+        printf '%s' "$s"
+    fi
+}
+
+# Build the status-left location string from mode/origin/work_dir:
+#   local -> <work_dir>             (origin == work_dir; one path)
+#   full  -> <origin> → <work_dir>  (copy: where it was opened → the copy)
+#   git   -> <origin> ⌁ <work_dir>  (worktree: origin repo ⌁ the worktree)
+_ae_status_left_paths() {
+    local mode="$1" origin="$2" work_dir="$3"
+    local o w
+    o="$(_ae_trunc_left "$(_ae_abbrev_home "$origin")")"
+    w="$(_ae_trunc_left "$(_ae_abbrev_home "$work_dir")")"
+    case "$mode" in
+        full) printf '%s → %s' "$o" "$w" ;;
+        git) printf '%s ⌁ %s' "$o" "$w" ;;
+        *) printf '%s' "$w" ;;
+    esac
+}
+
+# Escape a string for literal use inside a tmux format/option value. `#` is tmux's
+# format introducer, so a literal `#` must be doubled — otherwise a path or branch
+# containing `#S`, `#H`, … expands to a tmux variable, and `#(cmd)` RUNS as a
+# status job (shell execution) on every status redraw. Applied to user-controlled
+# path text before it lands in status-left.
+_ae_tmux_format_literal() {
+    printf '%s' "${1//\#/##}"
+}
+
+# Render and apply the mode-aware session location to a session's status-left,
+# escaped for tmux format context, with status-left-length raised so it isn't
+# clipped (tmux default is 10). No-op if the target session isn't running. Shared
+# by session creation and `ae doctor --refresh` so a refreshed live session keeps
+# both halves of the bar in sync. server="" uses the ambient tmux (the wrapped
+# server at launch); a non-empty server (refresh path, read from meta) targets it
+# explicitly via -L.
+_ae_apply_status_left() {
+    local session="$1" mode="$2" origin="$3" work_dir="$4" server="${5:-}"
+    local _t=(tmux)
+    [[ -n "$server" ]] && _t=(command tmux -L "$server")
+    "${_t[@]}" has-session -t "$session" 2>/dev/null || return 0
+    local paths
+    paths="$(_ae_tmux_format_literal "$(_ae_status_left_paths "$mode" "$origin" "$work_dir")")"
+    "${_t[@]}" set-option -t "$session" status-left "[ae ${paths}] " 2>/dev/null || true
+    "${_t[@]}" set-option -t "$session" status-left-length 90 2>/dev/null || true
+}
+
 # Build ae workspace context string (shared by inject_ae_context and initial prompt fallback)
 build_ae_context() {
     local meta_dir="$1" session="${2:-}" work_dir="${3:-}"
@@ -2228,6 +2296,14 @@ sync_existing_session_assets() {
     [[ -n "$mode" ]] || mode="local"
 
     sync_session_assets "$session_name" "$meta_dir" "$work_dir" "$origin" "$mode" "$main_pane" "$config_file"
+
+    # Keep the status-left location in sync for an already-running session — refresh
+    # only regenerates on-disk assets, but a watchdog restart drops session/mode/
+    # location from status-right, so the left half must carry it. No-op if the
+    # session isn't running. Targets the session's own tmux server (from meta).
+    local server
+    server="$(read_session_meta "$session_name" tmux_server)"
+    _ae_apply_status_left "$session_name" "$mode" "$origin" "$work_dir" "$server"
 }
 
 # Try to capture a pending session ID from on-disk agent session files (no live pane needed).
@@ -5893,7 +5969,7 @@ tmux set-option -t "$SESSION" focus-events on 2>/dev/null || true
 tmux set-option -t "$SESSION" history-limit 50000
 tmux set-option -t "$SESSION" pane-border-status top
 tmux set-option -t "$SESSION" pane-border-format " #{@ae_agent} "
-tmux set-option -t "$SESSION" status-left "[ae] "
+_ae_apply_status_left "$SESSION" "$COPY_MODE" "$ORIGIN_DIR" "$WORK_DIR"
 tmux set-option -t "$SESSION" automatic-rename off
 tmux rename-window -t "$SESSION" "$SESSION"
 
@@ -7615,33 +7691,24 @@ _watchdog_git() {
     fi
 }
 
-_watchdog_footer_session_segment() {
-    local session mode mode_label work_dir branch dirty=""
-    session="$(_watchdog_meta_value session)"
-    mode="$(_watchdog_meta_value mode)"
+# Dynamic git segment for status-right: '[<branch>*] ' when work_dir is a git
+# repo, else empty. The session name, mode, and location now live in status-left
+# (set once at launch — they never change); only the branch and tracked-dirty
+# marker change per cycle, so only those belong in the per-cycle footer. Trailing
+# space so the health segment reads cleanly when a branch is present.
+_watchdog_footer_git_segment() {
+    local work_dir branch dirty=""
     work_dir="$(_watchdog_meta_value work_dir)"
-    case "$mode" in
-        local) mode_label="local" ;;
-        full) mode_label="copy" ;;
-        git) mode_label="git" ;;
-        "") mode_label="?" ;;
-        *) mode_label="$mode" ;;
-    esac
-    session="$(_watchdog_trim "${session:-$_AE_SESSION}" 18)"
-    mode_label="$(_watchdog_trim "$mode_label" 8)"
-
-    if [[ -n "$work_dir" ]] && _watchdog_git "$work_dir" rev-parse --is-inside-work-tree >/dev/null; then
-        branch="$(_watchdog_git "$work_dir" symbolic-ref --quiet --short HEAD || _watchdog_git "$work_dir" rev-parse --short HEAD || true)"
-        branch="$(_watchdog_trim "$branch" 24)"
-        if [[ -n "$(_watchdog_git "$work_dir" status --porcelain --untracked-files=no | head -1)" ]]; then
-            dirty="*"
-        fi
-        if [[ -n "$branch" ]]; then
-            printf '[ae %s %s %s%s]' "$session" "$mode_label" "$branch" "$dirty"
-            return
-        fi
+    if [[ -z "$work_dir" ]] || ! _watchdog_git "$work_dir" rev-parse --is-inside-work-tree >/dev/null; then
+        return 0
     fi
-    printf '[ae %s %s]' "$session" "$mode_label"
+    branch="$(_watchdog_git "$work_dir" symbolic-ref --quiet --short HEAD || _watchdog_git "$work_dir" rev-parse --short HEAD || true)"
+    branch="$(_watchdog_trim "$branch" 24)"
+    [[ -n "$branch" ]] || return 0
+    if [[ -n "$(_watchdog_git "$work_dir" status --porcelain --untracked-files=no | head -1)" ]]; then
+        dirty="*"
+    fi
+    printf '[%s%s] ' "$branch" "$dirty"
 }
 
 cmd="${1:-start}"
@@ -7659,7 +7726,7 @@ esac
 echo "$$" > "$PIDFILE"
 STATUSFILE="${META_DIR}/.watchdog.status"
 trap 'rm -f "$PIDFILE" "$STATUSFILE"' EXIT
-printf '%s [watch ◌ starting]' "$(_watchdog_footer_session_segment)" > "$STATUSFILE"
+printf '%s[watch ◌ starting]' "$(_watchdog_footer_git_segment)" > "$STATUSFILE"
 
 # Pretty banner so the pane is informative when viewed
 printf '\033[1;36m'
@@ -8128,7 +8195,7 @@ while true; do
     else
         glyph="●"
     fi
-    printf '%s [watch %s %d/%d]' "$(_watchdog_footer_session_segment)" "$glyph" "$cycle_active" "$cycle_total" > "$STATUSFILE"
+    printf '%s[watch %s %d/%d]' "$(_watchdog_footer_git_segment)" "$glyph" "$cycle_active" "$cycle_total" > "$STATUSFILE"
 
     sleep "$INTERVAL"
 done

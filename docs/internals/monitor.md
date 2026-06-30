@@ -56,24 +56,38 @@ From any pane via helpers:
 
 The session's `agents` helper also lists `_events` and `_watchdog` as agents (with `_`-prefixed names) so they show up alongside the real agents.
 
-## Status indicator
+## Status bar
 
-When the watchdog is running it overlays compact ae session facts plus a watchdog
-health summary into tmux's `status-right`, refreshed from a cached status file:
+ae splits its tmux status bar by what changes:
 
-```text
-[ae aedev local main*] [watch ● 2/2]  ckriech@host  10:42
-```
+- **`status-left`** (static; set at launch and re-applied by `ae doctor --refresh`)
+  carries the session **location** — the path(s) the session works in, by mode. The
+  session *name* is omitted here because it is already the window label
+  (`0:<session>`). Path text is escaped for tmux's format syntax (`#` → `##`) so a
+  directory or branch containing `#S`/`#(…)` can't expand or run a status job.
 
-The first bracket is session context:
+  ```text
+  [ae ~/projects/clemens33/ae]                         # local: one path
+  [ae ~/projects/clemens33/ae → ~/.ae/copies/aedev]    # copy (full): origin → copy
+  [ae ~/projects/clemens33/ae ⌁ ~/.ae/worktrees/aedev] # git: origin repo ⌁ worktree
+  ```
+
+  `$HOME` is abbreviated to `~`; long paths are truncated from the left (keeping the
+  tail) with a leading `…`. `status-left-length` is raised to fit.
+
+- **`status-right`** carries the watchdog's per-cycle **health**, refreshed from a
+  cached status file. When the work dir is a git repo it is prefixed with the live
+  branch + tracked-dirty marker (the only session facts that change during a run):
+
+  ```text
+  [main*] [watch ● 2/2]  ckriech@host  10:42
+  ```
 
 | Field | Meaning |
 |---|---|
-| `aedev` | ae session name |
-| `local` | workspace mode: `local`, `copy` (`full` mode), or `git` (`--worktree`) |
-| `main*` | git branch or detached commit, when the work dir is a git repo; `*` means tracked changes |
+| `main*` | git branch (or detached short commit) of the work dir; `*` = tracked changes (`git status --porcelain --untracked-files=no`). Omitted for non-git work dirs. |
 
-The second bracket is watchdog health:
+The `[watch …]` bracket is watchdog health:
 
 | Glyph | Meaning |
 |---|---|
