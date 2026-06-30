@@ -45,7 +45,7 @@ just docs-build       # build the static site into ./site
 
 ## Tests
 
-`tests/unit` extracts pure functions from `ae` via `awk`, sources them, and asserts behavior with a tiny `assert_eq` harness. No external dependencies. Heredoc bodies (loop, send, ask, requests, etc.) are extracted by their EOF marker for behavioral tests.
+`tests/unit` extracts pure functions from `ae` via `awk`, sources them, and asserts behavior with a tiny `assert_eq` harness. No external dependencies. Heredoc bodies (watchdog, send, ask, requests, etc.) are extracted by their EOF marker for behavioral tests.
 
 `tests/integration` spins up real tmux sessions, exercises the full lifecycle (create, send, ask, reply, stop, resume, end), and tears down. Requires tmux and git.
 

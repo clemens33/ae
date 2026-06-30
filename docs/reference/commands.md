@@ -13,12 +13,13 @@ ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
                        Regenerate helper scripts and workspace.md in existing sessions
 ae rename [old] <new>  Rename a running session
-ae loop <start|stop|status> [name]
+ae watchdog <start|stop|status> [name]
                        Toggle the stale-agent watchdog (per-session, persists across resume)
 ae telegram <setup|start|stop|status>
                        Machine-global Telegram bridge — see Telegram bridge reference
-ae hub [--init]        Launch the meta-agent hub — one session that monitors all
-                       your other sessions (--init scaffolds its config + charter)
+ae hub [--attach|--init]
+                       Ensure the detached meta-agent hub is running; --attach
+                       switches to it (--init scaffolds config + charter)
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
 ae end|rm [-f] [--purge-history|--keep-history] [name]
                        End session: commit, push to ae/<name>, remove ae state. KEEPS the
@@ -28,7 +29,7 @@ ae version             Show version
 ae help                Show short help
 ```
 
-When run inside an ae session, `stop`, `end`, `status`, `loop`, and `doctor --refresh` detect the current session automatically.
+When run inside an ae session, `stop`, `end`, `status`, `watchdog`, and `doctor --refresh` detect the current session automatically.
 
 ## Modes
 
@@ -53,12 +54,12 @@ session's agents, by severity:
 | Reason | Meaning |
 |--------|---------|
 | `attn:dead` | an agent's pane vanished (or the watchdog flagged it missing) |
-| `attn:stale` | the loop watchdog gave up nudging an idle agent (max nudges) |
+| `attn:stale` | the watchdog gave up nudging an idle agent (max nudges) |
 | `attn:waiting-user` | an agent declared it's waiting on you |
 | `attn:blocked` | an agent declared it's blocked on an external dep |
 | `attn:throttled` | an agent is being rate-limited upstream |
 
-(`dead`/`stale`/`throttled` reuse the loop watchdog's own alert events;
+(`dead`/`stale`/`throttled` reuse the watchdog's own alert events;
 `waiting-user`/`blocked` are self-declared. Pending unanswered `ask`/`review`
 requests are a planned future reason.)
 
@@ -155,23 +156,23 @@ ae doctor --refresh         # all sessions
 ae doctor --refresh my-fix  # one session
 ```
 
-## `ae loop`
+## `ae watchdog`
 
 ```bash
-ae loop start my-feature
-ae loop stop my-feature
-ae loop status my-feature
+ae watchdog start my-feature
+ae watchdog stop my-feature
+ae watchdog status my-feature
 ```
 
-The [loop watchdog](../internals/loop.md) is on by default — only an explicit `false` / `no` / `off` / `0` in config or session meta keeps it off. `loop start` is idempotent; running it again just confirms the meta flag.
+The [watchdog](../internals/watchdog.md) is on by default — only an explicit `false` / `no` / `off` / `0` in config or session meta keeps it off. `watchdog start` is idempotent; running it again just confirms the meta flag.
 
 ### Meta-agent (hub) sweep cadence
 
 A session marked as a monitoring hub with `[workspace] hub = true` (or its legacy
 alias `meta = true`; persisted to
-its meta as `meta_agent=true`) gets a different loop behaviour for its **main
-agent**: instead of the stale-nudge watchdog, the loop sends a *"run your sweep
-now"* nudge every `AE_LOOP_SWEEP_SEC` seconds (default 300) and never escalates
+its meta as `meta_agent=true`) gets a different watchdog behaviour for its **main
+agent**: instead of the stale-nudge watchdog, the watchdog sends a *"run your sweep
+now"* nudge every `AE_WATCHDOG_SWEEP_SEC` seconds (default 300) and never escalates
 the hub to a stale `attn:` alert (idle between sweeps is normal for a monitor).
 Workers/spawned agents in the same session keep the normal watchdog.
 
@@ -179,10 +180,10 @@ Liveness is still guarded two ways: the dead/missing-pane checks catch a crashed
 hub, and a **heartbeat** check catches a *live-but-not-sweeping* hub (model
 stall, upstream throttle, wedge) — the hub's sweep helper rewrites
 `~/.ae/sessions/<hub>/meta-agent-state.json` on each real sweep, and if that mtime
-stops advancing past ~`2×AE_LOOP_SWEEP_SEC` the loop raises one alert (cleared on
+stops advancing past ~`2×AE_WATCHDOG_SWEEP_SEC` the watchdog raises one alert (cleared on
 recovery). This is the file [`contrib/aemonitor`](../../contrib/aemonitor/) writes
 by default; if you override its `--state` path for the hub, point it at this same
-file or the loop heartbeat will false-alarm. The sweep nudges use `action=nudge`,
+file or the watchdog heartbeat will false-alarm. The sweep nudges use `action=nudge`,
 which is **not in the default telegram include set**, so routine sweeps don't
 reach your phone (a custom `include` containing `nudge` would forward them).
 
@@ -195,7 +196,8 @@ is a read-only monitor + relay: per its charter it never ends/stops/edits anothe
 session on its own.
 
 ```text
-ae hub          Start (or resume) the `hub` session
+ae hub          Ensure the detached `hub` session is running
+ae hub --attach Switch/attach to the `hub` session
 ae hub --init   Scaffold ~/.ae/meta-hub/{hub.config,CHARTER.md} (never overwrites)
 ae hub --help   Usage
 ```
@@ -206,6 +208,9 @@ ae hub --help   Usage
 hub regardless of the directory you run it from. The config dir defaults to
 `${AE_HOME:-~/.ae}/meta-hub` and is overridable with `AE_HUB_DIR` (so an isolated
 `AE_HOME` run keeps its hub state out of your live `~/.ae`).
+Unlike normal `ae <name>` session starts, bare `ae hub` does **not** attach or
+switch the current tmux client; use `ae hub --attach` when you want to inspect the
+hub pane directly.
 
 First time: run `ae hub --init` to scaffold the config + charter from
 [`contrib/aehub`](../../contrib/aehub/) (placeholders for the charter and
@@ -276,7 +281,7 @@ Pass `-f` to force without confirmation. `ae end all` ends every session.
 The following are internal helpers ae invokes itself, prefixed with `_`. Don't call them directly:
 
 - `_spawn`, `_retire` — pane lifecycle (called via `spawn` / `retire` session helpers).
-- `_recover-pending` — re-attempt post-launch session ID capture (called by the loop watchdog).
+- `_recover-pending` — re-attempt post-launch session ID capture (called by the watchdog).
 - `_register-sid` — Codex first-task to self-register its session UUID (injected via `developer_instructions`).
 
 They're listed only for transparency — your interface is the public commands above.

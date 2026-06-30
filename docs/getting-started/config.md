@@ -15,7 +15,7 @@ opencode = "opencode -m google/gemini-3-pro-preview"
 main = claude:lead
 workers = codex:reviewer
 layout = vertical
-loop = true
+watchdog = true
 
 [prompt]
 instructions = "Always write tests. Prefer TypeScript."
@@ -33,7 +33,7 @@ Register any CLI tool as an agent alias. The value is the shell command to launc
 | `workers` | Comma-separated agents launched at startup           | *(empty)*     |
 | `layout`  | `vertical` (side-by-side) or `horizontal` (stacked)  | `vertical`    |
 | `copy`    | Working directory mode (see below)                   | `local`       |
-| `loop`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
+| `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
 
 Names show in pane borders and are how agents address each other.
 
@@ -56,18 +56,20 @@ Custom instructions injected into every agent's system prompt alongside the ae w
 instructions = "Always cite the source file you used."
 ```
 
-## Loop watchdog defaults
+## Watchdog defaults
 
 The watchdog reads its tunables from environment variables (set them in the session shell before `ae <name>`, or via your shell rc):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AE_LOOP_INTERVAL_SEC` | 60 | Cycle length in seconds |
-| `AE_LOOP_STALE_MIN` | 15 | Idle minutes before a nudge |
-| `AE_LOOP_MAX_NUDGES` | 2 | Nudges before escalating to alert |
-| `AE_LOOP_THROTTLE_ALERT_CYCLES` | 5 | Cycles of continuous upstream throttle before alert |
+| `AE_WATCHDOG_INTERVAL_SEC` | 60 | Cycle length in seconds |
+| `AE_WATCHDOG_STALE_MIN` | 15 | Idle minutes before a nudge |
+| `AE_WATCHDOG_MAX_NUDGES` | 2 | Nudges before escalating to alert |
+| `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` | 5 | Cycles of continuous upstream throttle before alert |
+| `AE_WATCHDOG_TG_SUPERVISE_SEC` | 120 | Telegram-bridge revive cadence in seconds (`0` disables) |
+| `AE_WATCHDOG_SWEEP_SEC` | 300 | Hub/meta-agent sweep cadence in seconds (`0` falls back to the normal watchdog) |
 
-To turn the watchdog off for a single session, run `~/.ae/sessions/<name>/loop stop` once. The setting persists across resume.
+The legacy `AE_LOOP_*` names are still honoured as fallbacks for each tunable. To turn the watchdog off for a single session, run `~/.ae/sessions/<name>/watchdog stop` once. The setting persists across resume.
 
 ## Where state lives
 

@@ -92,7 +92,7 @@ review <agent> <request>       # critical review request with findings-first rep
 reply <request-id> <message>   # reply to a logged ask/review request
 requests [mine|inbox|all]      # inspect pending and replied requests
 state <value> [reason]         # declare work state: working|waiting-user|blocked|done
-mark-done [message]            # shim over `state done` (emits the legacy event the loop watchdog reads)
+mark-done [message]            # shim over `state done` (emits the legacy event the watchdog reads)
 say <text>                     # push a free-text line to the human's Telegram chat (reply routes back)
 memo add [--topic t] <text>    # append durable shared session memory
 memo read [--topic t]          # read shared session memory
@@ -181,15 +181,17 @@ ae status [name]       Show agent output without attaching
 ae doctor              Check local environment and ae config
 ae doctor --refresh [name|all]
                        Refresh helper scripts/workspace.md in existing sessions
-ae loop <start|stop|status> [name]
-                       Toggle the stale-agent watchdog loop (per-session, persists across resume)
+ae watchdog <start|stop|status> [name]
+                       Toggle the stale-agent watchdog (per-session, persists across resume).
+                       `ae loop …` still works as a deprecated alias.
 ae telegram <setup|start|stop|status>
                        Machine-global Telegram bridge: forwards filtered events from every
                        ae session to one Telegram chat. Requires jq + curl (optional feature
                        dep — core ae works without them).
-ae hub [--init]        Launch the meta-agent hub: one ae session that monitors all your
-                       other sessions and is your single point of contact to them. --init
-                       scaffolds its config + charter (see contrib/aehub). Optional feature.
+ae hub [--attach|--init]
+                       Ensure the detached meta-agent hub is running; --attach switches
+                       to it. --init scaffolds its config + charter (see contrib/aehub).
+                       Optional feature.
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
 ae end|rm [-f] [--purge-history|--keep-history] [name]
                        End session: commit, push to ae/<name>, remove ae state. KEEPS the
@@ -197,7 +199,7 @@ ae end|rm [-f] [--purge-history|--keep-history] [name]
                        --purge-history deletes them ([workspace] purge_agent_history sets default).
 ```
 
-When run inside an ae session, `stop`, `end`, `status`, and `loop` detect the current session automatically.
+When run inside an ae session, `stop`, `end`, `status`, and `watchdog` detect the current session automatically.
 
 ## How it works
 

@@ -53,7 +53,7 @@ Every ae session has a hidden `ae-monitor` tmux window with an `_events` pane st
 - `Ctrl+b w` → pick `ae-monitor`
 - `~/.ae/sessions/<name>/peek _events 80` → snapshot view from any pane
 
-The optional [loop watchdog](../internals/loop.md) shares that window — when enabled it adds a `_loop` pane with per-cycle decisions.
+The optional [watchdog](../internals/watchdog.md) shares that window — when enabled it adds a `_watchdog` pane with per-cycle decisions.
 
 ## Multi-agent at start
 

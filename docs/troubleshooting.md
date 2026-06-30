@@ -42,9 +42,9 @@ ae doctor --refresh my-fix  # single session
 ae end -f <name>                                    # nuclear option
 ```
 
-## Loop watchdog keeps nudging an agent that's done
+## Watchdog keeps nudging an agent that's done
 
-The agent must call `mark-done` *after* the most recent loop nudge:
+The agent must call `mark-done` *after* the most recent watchdog nudge:
 
 ```bash
 ~/.ae/sessions/<name>/mark-done "finished my work"
@@ -52,20 +52,20 @@ The agent must call `mark-done` *after* the most recent loop nudge:
 
 `mark-done` emits a `done` event. The watchdog honors it until a newer ae event mentions the agent. If you nudge the agent again afterwards (via `send` / `ask` / etc.), that newer event invalidates the done. To re-mark, run `mark-done` again.
 
-## Loop nudges right after I marked done
+## Watchdog nudges right after I marked done
 
 Bug fixed in `de2575e`. If you're seeing it on a session with a long-running watchdog, the running process loaded the old code. Stop and restart:
 
 ```bash
-~/.ae/sessions/<name>/loop stop
-~/.ae/sessions/<name>/loop start
+~/.ae/sessions/<name>/watchdog stop
+~/.ae/sessions/<name>/watchdog start
 ```
 
 `ae doctor --refresh` alone does not restart the running watchdog.
 
-## Loop alerts but I'm not at the terminal
+## Watchdog alerts but I'm not at the terminal
 
-Loop alerts go to tmux `display-message` (10 seconds) and `events.jsonl`. There's no external notifier. For overnight runs, tail the event log to your pager:
+Watchdog alerts go to tmux `display-message` (10 seconds) and `events.jsonl`. There's no external notifier. For overnight runs, tail the event log to your pager:
 
 ```bash
 tail -F ~/.ae/sessions/<name>/events.jsonl \
@@ -75,7 +75,7 @@ tail -F ~/.ae/sessions/<name>/events.jsonl \
 
 ## Codex session id capture failed
 
-Codex has no launch-time UUID flag. ae captures it post-launch by scanning `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filtered by launch token and CWD. If the capture failed (network blip, codex crashed before writing its file, etc.), the loop watchdog retries the capture every cycle as step 9. To force a manual retry:
+Codex has no launch-time UUID flag. ae captures it post-launch by scanning `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filtered by launch token and CWD. If the capture failed (network blip, codex crashed before writing its file, etc.), the watchdog retries the capture every cycle as step 9. To force a manual retry:
 
 ```bash
 ~/.ae/sessions/<name>/_register-sid worker.0   # adjust slot as needed
@@ -103,7 +103,7 @@ In priority order:
 
 1. **`events.jsonl`** — the durable audit trail.
 2. **`peek <agent>`** — see what the agent itself thinks happened.
-3. **`peek _loop`** — watchdog's decision log.
+3. **`peek _watchdog`** — watchdog's decision log.
 4. **`meta`** — session metadata.
 5. **`workspace.md`** — manifest agents are pointed at.
 

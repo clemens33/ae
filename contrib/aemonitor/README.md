@@ -4,7 +4,7 @@
 stays a single jq-free bash script; this is a separate consumer of
 `ae list --json` for the [meta-agent hub](../../docs/) (Layer 3).
 
-`ae` itself never depends on this. `ae list`, `ae next`, session start, the loop,
+`ae` itself never depends on this. `ae list`, `ae next`, session start, the watchdog,
 and the telegram bridge all work whether or not `aemonitor` exists.
 
 ## What it does

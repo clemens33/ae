@@ -50,7 +50,7 @@ nav:
   - Telegram bridge: reference/telegram.md
   - Internals:
       - Architecture: internals/architecture.md
-      - Loop watchdog: internals/loop.md
+      - Watchdog: internals/watchdog.md
       - Events: internals/events.md
       - Bridge protocol: internals/bridge-protocol.md
       - Monitor window: internals/monitor.md

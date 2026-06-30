@@ -1,26 +1,48 @@
-# Loop watchdog
+# Watchdog
 
-The loop is a per-session watchdog that lives inside the hidden `ae-monitor` tmux window. It walks every registered agent pane on a fixed cycle, classifies each agent's state, and reacts: nudges idle agents, alerts on dead ones, pauses nudging when upstream rate limits are visible, and respects explicit completion signals.
+The watchdog is a per-session monitor that lives inside the hidden `ae-monitor` tmux window. It walks every registered agent pane on a fixed cycle, classifies each agent's state, and reacts: nudges idle agents, alerts on dead ones, pauses nudging when upstream rate limits are visible, and respects explicit completion signals.
 
 ## Lifecycle
 
-- **On by default.** Created with the session, unless `workspace.loop = false` in config or the session meta says otherwise (`loop = false`). Explicit `false`/`no`/`off`/`0` disables it.
-- **Manual control:** `~/.ae/sessions/<name>/loop start|stop|status`.
+- **On by default.** Created with the session, unless `workspace.watchdog = false` in config or the session meta says otherwise (`watchdog = false`). Explicit `false`/`no`/`off`/`0` disables it.
+- **Manual control:** `~/.ae/sessions/<name>/watchdog start|stop|status`.
 - **Persists across resume.** The state is recorded in session meta.
 - **Self-terminates** if the tmux session or `meta` file disappears.
 
-The watchdog runs as a `bash` subprocess pinned to a single tmux pane named `_loop`.
+The watchdog runs as a `bash` subprocess pinned to a single tmux pane named `_watchdog`.
 
 ## Tunables
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AE_LOOP_INTERVAL_SEC` | 60 | Cycle length in seconds |
-| `AE_LOOP_STALE_MIN` | 15 | Idle minutes before a nudge fires |
-| `AE_LOOP_MAX_NUDGES` | 2 | Nudges before escalating to alert |
-| `AE_LOOP_THROTTLE_ALERT_CYCLES` | 5 | Continuous throttle cycles before throttle-alert |
+| `AE_WATCHDOG_INTERVAL_SEC` | 60 | Cycle length in seconds |
+| `AE_WATCHDOG_STALE_MIN` | 15 | Idle minutes before a nudge fires |
+| `AE_WATCHDOG_MAX_NUDGES` | 2 | Nudges before escalating to alert |
+| `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` | 5 | Continuous throttle cycles before throttle-alert |
+| `AE_WATCHDOG_TG_SUPERVISE_SEC` | 120 | Telegram-bridge revive cadence in seconds (`0` disables) |
+| `AE_WATCHDOG_SWEEP_SEC` | 300 | Hub/meta-agent sweep cadence in seconds (`0` falls back to the normal watchdog) |
 
 Set them in the shell before `ae <name>`, or via your shell rc.
+
+## Compatibility (renamed from `loop`)
+
+This feature was called **`loop`** before. The old names still work as deprecated
+aliases so existing config, shell rc, scripts, and running sessions don't break:
+
+| Surface | Canonical | Deprecated alias (still honoured) |
+|---|---|---|
+| Command | `ae watchdog start\|stop\|status` | `ae loop …` |
+| Helper path | `~/.ae/sessions/<name>/watchdog` | `loop` wrapper |
+| Env tunables | `AE_WATCHDOG_*` | `AE_LOOP_*` |
+| Config key | `workspace.watchdog` | `workspace.loop` |
+| Meta key | `watchdog=` | `loop=` (read on resume, then converged) |
+
+Precedence is canonical-wins: if both `watchdog` and `loop` forms are present, the
+`watchdog` form is used. A session created before the rename is migrated on its next
+start/resume. A pre-rename watchdog still running under the old `_loop` pane and pid
+file is reaped automatically when the watchdog next starts or stops, so two watchdogs
+never run at once. The aliases will be removed once no pre-rename sessions remain in
+the wild.
 
 ## Per-cycle state machine
 
@@ -54,7 +76,7 @@ In source order:
 6. **Recently alive** — agent's latest event in `events.jsonl` is younger than the stale window. Skip.
 7. **Stale** — none of the above. Send "Status check" message via `send`. Up to `MAX_NUDGES` nudges. At `MAX_NUDGES` exactly, emit `alert` + tmux display banner. After that, silent waiting.
 
-After the per-pane loop:
+After the per-pane pass:
 
 8. **Missing pane check** — agents registered in `meta` whose tmux panes have vanished. Alert once each.
 9. **Recover pending session ids** — retry codex/gemini/opencode post-launch session capture for slots still marked `pending`.
@@ -70,17 +92,17 @@ After the per-pane loop:
 Concretely:
 
 - Agent emits `state blocked "waiting on X"` → state event in `events.jsonl`.
-- Loop skips it each cycle while the pane is quiet (step 2 fires).
+- The watchdog skips it each cycle while the pane is quiet (step 2 fires).
 - Human types unblock info in the pane → pane hash diverges from the armed baseline → `_quiet_pane_decision` yields → normal state machine resumes; if the agent then hangs, it gets nudged.
 - Or another agent sends it a message → newer event → quiet invalidated the same way.
 
 ### Legacy `done` dual-emit (transitional)
 
-`state done` (and the `mark-done` shim) emit *both* a `state ref=done` event and a legacy `action=done` event. The watchdog reads either. The dual-emit exists so a still-running pre-state-helper loop process (which only understands `action=done`) keeps recognizing completions after helpers are refreshed. It will be removed once `ae doctor --refresh` restarts a running loop.
+`state done` (and the `mark-done` shim) emit *both* a `state ref=done` event and a legacy `action=done` event. The watchdog reads either. The dual-emit exists so a still-running pre-state-helper watchdog process (which only understands `action=done`) keeps recognizing completions after helpers are refreshed. It will be removed once `ae doctor --refresh` restarts a running watchdog.
 
 ## Throttle detection
 
-Tool-specific patterns inside the loop body. Narrow phrases only — false positives compound badly.
+Tool-specific patterns inside the watchdog body. Narrow phrases only — false positives compound badly.
 
 | Tool | Patterns |
 |---|---|
@@ -130,8 +152,8 @@ tail -F ~/.ae/sessions/<name>/events.jsonl \
 ## Inspection
 
 ```bash
-~/.ae/sessions/<name>/loop status         # is the watchdog running?
-~/.ae/sessions/<name>/peek _loop 60       # last 60 lines of decisions
+~/.ae/sessions/<name>/watchdog status         # is the watchdog running?
+~/.ae/sessions/<name>/peek _watchdog 60       # last 60 lines of decisions
 ~/.ae/sessions/<name>/peek _events 60     # event stream
 ```
 

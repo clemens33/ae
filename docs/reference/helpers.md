@@ -44,7 +44,7 @@ Only one helper touches tmux (`send`). Only one path mints request ids (`ae_trac
 
 | Helper | Purpose |
 |---|---|
-| `mark-done [message]` | Signal completion / pause. The loop watchdog stops nudging until a newer ae event mentions the agent. |
+| `mark-done [message]` | Signal completion / pause. The watchdog stops nudging until a newer ae event mentions the agent. |
 | `memo add [--topic t] <text>` | Append to durable shared session memory. |
 | `memo read [--topic t]` | Read shared memory. |
 | `memo tail [n]` | Show latest entries. |
@@ -74,7 +74,7 @@ Only one helper touches tmux (`send`). Only one path mints request ids (`ae_trac
 Helpers prefixed `_` are launched by ae itself, not by you or by other agents.
 
 - `_register-sid` — Codex self-registers its session UUID on launch (so ae can resume the exact conversation later).
-- `_loop` / `_events` (pane tags, not scripts) — the panes inside the `ae-monitor` window.
+- `_watchdog` / `_events` (pane tags, not scripts) — the panes inside the `ae-monitor` window.
 
 ## Name resolution
 

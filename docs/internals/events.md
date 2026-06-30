@@ -1,6 +1,6 @@
 # Events
 
-`~/.ae/sessions/<name>/events.jsonl` is ae's single durable record of what happened. Mutating helpers and ae internals write structured events; inspection helpers (`peek`, `agents`, `requests`, `events-tail`, `loop status`) read but don't write. The loop watchdog reads events to enforce its done-invalidation contract; `requests` derives pending/replied state from them. Append-only, one JSON object per line.
+`~/.ae/sessions/<name>/events.jsonl` is ae's single durable record of what happened. Mutating helpers and ae internals write structured events; inspection helpers (`peek`, `agents`, `requests`, `events-tail`, `watchdog status`) read but don't write. The watchdog reads events to enforce its done-invalidation contract; `requests` derives pending/replied state from them. Append-only, one JSON object per line.
 
 ## Producers and consumers
 
@@ -16,14 +16,14 @@ flowchart LR
         MDH[mark-done]
         MEH[memo]
         SPH[spawn / retire]
-        LP1["loop watchdog<br/>nudge / alert /<br/>throttled / throttle-cleared /<br/>recover"]
+        LP1["watchdog<br/>nudge / alert /<br/>throttled / throttle-cleared /<br/>recover"]
         IH[interrupt / focus]
     end
     EE["_lib::ae_emit_event<br/>(JSON escape,<br/>flock + append)"]
     FILE[(events.jsonl)]
     subgraph Readers
         direction TB
-        LP2["loop watchdog<br/>_agent_done_epoch<br/>_buf_shows_throttle"]
+        LP2["watchdog<br/>_agent_done_epoch<br/>_buf_shows_throttle"]
         REQ["requests helper<br/>ae_find_request"]
         ET["_events pane<br/>events-tail"]
     end
@@ -42,7 +42,7 @@ flowchart LR
     FILE -.tail -F.-> ET
 ```
 
-Inspection helpers (`peek`, `agents`, `requests`, `events-tail`, `loop status`) read but don't write. Mutating helpers and the loop watchdog write through the single `ae_emit_event` choke point.
+Inspection helpers (`peek`, `agents`, `requests`, `events-tail`, `watchdog status`) read but don't write. Mutating helpers and the watchdog write through the single `ae_emit_event` choke point.
 
 ## Schema
 
@@ -51,7 +51,7 @@ Every event has these keys; `target`, `ref`, and `summary` are optional and omit
 ```json
 {
   "ts":      "2026-05-19T07:29:45Z",        // ISO 8601 UTC, second precision
-  "actor":   "claude:lead",                 // alias:name of the emitter (or 'loop', 'human')
+  "actor":   "claude:lead",                 // alias:name of the emitter (or 'watchdog', 'human')
   "action":  "done",                        // event type — see below
   "target":  "codex:coworker",              // alias:name of the recipient when applicable
   "ref":     "ae-20260519T072100Z-abc123",  // polysemous — see action table
@@ -72,7 +72,7 @@ String values are JSON-escaped: `\"` `\\` `\n` `\t` `\r`. The flat schema is int
 
 | Action | Emitted by | Meaning |
 |---|---|---|
-| `send` | `send` helper | One-way message between agents (or from human / loop). |
+| `send` | `send` helper | One-way message between agents (or from human / watchdog). |
 | `ask` | `ask` helper | Tracked request expecting a reply. Carries `ref`. |
 | `review` | `review` helper | Like `ask`, with the critical-review prompt template. Carries `ref`. |
 | `reply` | `reply` helper | Reply to an `ask` / `review`. Same `ref`. |
@@ -82,11 +82,11 @@ String values are JSON-escaped: `\"` `\\` `\n` `\t` `\r`. The flat schema is int
 | `retire` | ae internal | A spawned agent was removed. |
 | `focus` | `focus` helper | tmux focus switch (informational). |
 | `interrupt` | `interrupt` helper | Cancel signal sent. |
-| `nudge` | loop watchdog | Stale-agent status check. |
-| `alert` | loop watchdog / ae internal | Attention required (dead, max-nudges, persistent throttle, missing pane). |
-| `throttled` | loop watchdog | First cycle of an upstream throttle streak. |
-| `throttle-cleared` | loop watchdog | Throttle pattern no longer present. |
-| `recover` | loop watchdog | Post-launch session id captured for a previously-pending slot. |
+| `nudge` | watchdog | Stale-agent status check. |
+| `alert` | watchdog / ae internal | Attention required (dead, max-nudges, persistent throttle, missing pane). |
+| `throttled` | watchdog | First cycle of an upstream throttle streak. |
+| `throttle-cleared` | watchdog | Throttle pattern no longer present. |
+| `recover` | watchdog | Post-launch session id captured for a previously-pending slot. |
 
 ## How `requests` reads events
 
@@ -113,9 +113,9 @@ _agent_done_epoch <agent>
 The hidden `ae-monitor` window has an `_events` pane running the `events-tail` helper. It prints a formatted column view with `MM-DDTHH:MM:SS` UTC timestamps:
 
 ```text
-05-19T07:29:14  nudge    loop                   → claude:lead          idle 90m, no recent ae activity
+05-19T07:29:14  nudge    watchdog               → claude:lead          idle 90m, no recent ae activity
 05-19T07:29:45  done     claude:lead                                   All ae streamline + throttle detection...
-05-19T09:05:14  nudge    loop                   → claude:lead          idle 95m, no recent ae activity
+05-19T09:05:14  nudge    watchdog               → claude:lead          idle 95m, no recent ae activity
 ```
 
 `peek _events [n]` for a snapshot from any pane.

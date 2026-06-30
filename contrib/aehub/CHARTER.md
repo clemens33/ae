@@ -65,7 +65,7 @@ That's the whole sweep. `aemonitor`:
 
 **Do NOT re-send aemonitor's output** — it already delivered via `say`. Just run
 it and let it work. If it prints nothing, nothing needed reporting (correct).
-Stay in `working`; never declare done/waiting-user (the loop watches you).
+Stay in `working`; never declare done/waiting-user (the watchdog watches you).
 
 If the command ever errors (non-zero exit, e.g. it can't find `ae`), `say` your
 operator one line that your monitoring helper failed — that's the one case you
@@ -168,7 +168,7 @@ agents, anything that edits files or commits.
 
 You do not manage any monitoring state file. `aemonitor` (see §3) owns
 `__HELPERS_DIR__/meta-agent-state.json` — it writes it atomically under a lock,
-does all the dedup, and its mtime is the loop's heartbeat. **Do not read, write,
+does all the dedup, and its mtime is the watchdog's heartbeat. **Do not read, write,
 or invent that file**, and do not keep attention/fleet state in your own memory
 (it drifts). Your only job each sweep is to *run* `aemonitor` (§3). You may `cat`
 the file to inspect, but never edit it.
@@ -183,7 +183,7 @@ the file to inspect, but never edit it.
   long-running service; declaring a quiet state would stop the watchdog from
   nudging you (and from noticing if you stall). Stay in `working`.
 - `aemonitor` updates the state-file heartbeat each sweep — that's how a human (and
-  the loop) sees how fresh you are. You don't touch it yourself (§6).
+  the watchdog) sees how fresh you are. You don't touch it yourself (§6).
 
 ---
 

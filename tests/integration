@@ -13,6 +13,7 @@ AE="$(cd "$(dirname "$0")/.." && pwd)/ae"
 TMPDIR="$(mktemp -d)"
 export AE_TMUX_SERVER="ae-test-$$"
 export HOME="$TMPDIR/home"
+export AE_HOME="$HOME/.ae"
 mkdir -p "$HOME/.ae"
 
 cleanup() {
@@ -316,9 +317,9 @@ fi
 "$AE" end -f test-state 2>/dev/null || true
 sleep 0.5
 
-# ── Test 3c: derived rollup surfaces a loop alert (slice 2) ──────────
+# ── Test 3c: derived rollup surfaces a watchdog alert (slice 2) ──────
 # An agent with no declared state but a max-nudges alert from the watchdog must
-# raise attn:stale — the rollup reuses the loop's own alert events.
+# raise attn:stale — the rollup reuses the watchdog's own alert events.
 
 REPO3C="$(setup_repo)"
 (cd "$REPO3C" && "$AE" --local test-alert &) 2>/dev/null
@@ -328,8 +329,8 @@ sleep 1
 ALERT_EVENTS="$HOME/.ae/sessions/test-alert/events.jsonl"
 alert_agent="$(sed -n 's/^agent.main=//p' "$HOME/.ae/sessions/test-alert/meta" | cut -d: -f1,2)"
 
-# No declared state, but the loop raised a max-nudges alert → attn:stale.
-printf '{"ts":"2026-05-29T11:00:00Z","actor":"loop","action":"alert","target":"%s","summary":"max nudges reached (idle 30m), needs attention"}\n' "$alert_agent" >>"$ALERT_EVENTS"
+# No declared state, but the watchdog raised a max-nudges alert → attn:stale.
+printf '{"ts":"2026-05-29T11:00:00Z","actor":"watchdog","action":"alert","target":"%s","summary":"max nudges reached (idle 30m), needs attention"}\n' "$alert_agent" >>"$ALERT_EVENTS"
 alert_output="$("$AE" list 2>/dev/null)"
 assert_contains "rollup: max-nudges alert raises attn:stale" "attn:stale" "$alert_output"
 assert_contains "rollup: --needs-me surfaces the stale (alerted) session" "test-alert" \
@@ -398,13 +399,13 @@ assert_eq "next: unknown flag exits non-zero" "1" \
 "$AE" end -f test-next 2>/dev/null || true
 sleep 0.5
 
-# NOTE: the loop watchdog's quiet-state behaviour (done/waiting-user/blocked
+# NOTE: the watchdog's quiet-state behaviour (done/waiting-user/blocked
 # suppression + the waiting-user/blocked pane-activity escape hatch) is covered
 # by unit tests of the extracted decision functions (_agent_quiet_reason,
-# _quiet_pane_decision) in tests/unit. A live-loop integration test is not
+# _quiet_pane_decision) in tests/unit. A live-watchdog integration test is not
 # practical here: the watchdog runs in a tmux split-window pane that inherits
-# tmux's environment, so AE_LOOP_* overrides set on the ae invocation do not
-# reach it, leaving no way to drive a fast, deterministic cycle.
+# tmux's environment, so AE_WATCHDOG_* overrides set on the ae invocation do
+# not reach it, leaving no way to drive a fast, deterministic cycle.
 
 # ── Test 4: Spawn persistence ────────────────────────────────────────
 
@@ -748,9 +749,10 @@ main = dummy2:evil
 workers = dummy2:leaked
 layout = vertical
 EOF
-(cd "$HOSTILE" && AE_HUB_DIR="$HUB_DIR" "$AE" hub &) 2>/dev/null
+hub_launch_out="$(cd "$HOSTILE" && AE_HUB_DIR="$HUB_DIR" "$AE" hub 2>&1)"
 wait_for_session "hub"
 sleep 1
+assert_contains "hub: bare launch starts detached (no attach/switch needed)" "Session 'hub' started." "$hub_launch_out"
 _hub_meta="$HOME/.ae/sessions/hub/meta"
 assert_contains "hub: hub-config main wins over hostile local main" "agent.main=dummy:meta:" \
     "$(cat "$_hub_meta" 2>/dev/null)"

@@ -610,7 +610,7 @@ assert_eq "state: workspace manifest documents state helper" \
 # exercise them against a synthetic events.jsonl. _event_json_str is defined
 # twice with identical bodies: once at top level (for cmd_list, which runs in
 # the main script and can't source a per-session _lib) and once in _lib (reused
-# by every generated helper, incl. the loop, via `source _lib`). Taking the
+# by every generated helper, incl. watchdog, via `source _lib`). Taking the
 # first occurrence yields the top-level copy, which is what _session_states
 # uses. ae_latest_state_for exists only inside _lib, so its first occurrence is
 # that copy.
@@ -624,7 +624,7 @@ eval "$(awk '
 # Guard: the two _event_json_str copies (top-level for cmd_list + _lib for all
 # generated helpers) must stay byte-identical. The behavioural tests above
 # exercise only the first copy, so without this a drift between them would go
-# unnoticed. (The loop helper has no copy of its own — it sources _lib.)
+# unnoticed. (The watchdog helper has no copy of its own — it sources _lib.)
 assert_eq "parser: exactly two _event_json_str copies in source" "2" \
     "$(grep -c '^_event_json_str() {' <<<"$AE_SOURCE")"
 _ejs_c1="$(awk '/^_event_json_str\(\) \{/{c++} c==1{print} c==1&&/^\}$/{exit}' <<<"$AE_SOURCE")"
@@ -688,7 +688,7 @@ assert_eq "ae_latest_state_for: filters by actor (other agent events ignored)" \
 
 # Inbound events targeted at the agent do NOT alter the actor's state.
 # Phase 1 only returns the actor's own latest state declaration. Done-vs-inbound
-# arbitration stays in the consumer (loop watchdog / ae list), see phase 2.
+# arbitration stays in the consumer (watchdog / ae list), see phase 2.
 cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
 {"ts":"2026-05-28T10:00:00Z","actor":"claude:lead","action":"state","ref":"done","summary":"shipped"}
 {"ts":"2026-05-28T10:05:00Z","actor":"codex:coworker","action":"send","target":"claude:lead","summary":"new question"}
@@ -988,59 +988,59 @@ assert_eq "attn_rank: unknown/empty is zero" "0" "$(_attn_rank '')"
 
 # _agent_alert_reason: latest alert maps to a reason; cleared/superseded → empty.
 cat >"$_ss_dir/events.jsonl" <<'EVENTS'
-{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"claude:lead","summary":"max nudges reached (idle 30m), needs attention"}
+{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"alert","target":"claude:lead","summary":"max nudges reached (idle 30m), needs attention"}
 EVENTS
 assert_eq "alert_reason: max-nudges alert maps to stale" "stale" \
     "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
 
 cat >"$_ss_dir/events.jsonl" <<'EVENTS'
-{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"claude:lead","summary":"pane missing — agent no longer visible in session"}
+{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"alert","target":"claude:lead","summary":"pane missing — agent no longer visible in session"}
 EVENTS
 assert_eq "alert_reason: missing-pane alert maps to dead" "dead" \
     "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
 
-# Real loop summary (ae_emit_event at the process-dead site): must map to dead,
+# Real watchdog summary (ae_emit_event at the process-dead site): must map to dead,
 # not stale — codex IMPORTANT.
 cat >"$_ss_dir/events.jsonl" <<'EVENTS'
-{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"claude:lead","summary":"agent process dead — dropped to shell"}
+{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"alert","target":"claude:lead","summary":"agent process dead — dropped to shell"}
 EVENTS
 assert_eq "alert_reason: process-dead alert maps to dead" "dead" \
     "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
 
 cat >"$_ss_dir/events.jsonl" <<'EVENTS'
-{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"throttled","target":"claude:lead","summary":"upstream throttling detected"}
+{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"throttled","target":"claude:lead","summary":"upstream throttling detected"}
 EVENTS
 assert_eq "alert_reason: throttled event maps to throttled" "throttled" \
     "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
 
 # throttle-cleared supersedes the throttle → no active alert.
 cat >"$_ss_dir/events.jsonl" <<'EVENTS'
-{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"throttled","target":"claude:lead","summary":"throttling"}
-{"ts":"2026-05-29T10:01:00Z","actor":"loop","action":"throttle-cleared","target":"claude:lead","summary":"cleared"}
+{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"throttled","target":"claude:lead","summary":"throttling"}
+{"ts":"2026-05-29T10:01:00Z","actor":"watchdog","action":"throttle-cleared","target":"claude:lead","summary":"cleared"}
 EVENTS
 assert_eq "alert_reason: throttle-cleared clears the alert" "" \
     "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
 
 # The agent's OWN newer activity (actor==agent) supersedes the alert → recovered.
 cat >"$_ss_dir/events.jsonl" <<'EVENTS'
-{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"claude:lead","summary":"max nudges reached"}
+{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"alert","target":"claude:lead","summary":"max nudges reached"}
 {"ts":"2026-05-29T10:05:00Z","actor":"claude:lead","action":"state","ref":"working","summary":"back"}
 EVENTS
 assert_eq "alert_reason: agent's own activity clears the alert" "" \
     "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
 
-# A later loop NUDGE targeting the agent must NOT clear a max-nudges alert — the
+# A later watchdog NUDGE targeting the agent must NOT clear a max-nudges alert — the
 # agent hasn't recovered (codex IMPORTANT). Keep scanning back to the alert.
 cat >"$_ss_dir/events.jsonl" <<'EVENTS'
-{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"claude:lead","summary":"max nudges reached"}
-{"ts":"2026-05-29T10:05:00Z","actor":"loop","action":"nudge","target":"claude:lead","summary":"status check"}
+{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"alert","target":"claude:lead","summary":"max nudges reached"}
+{"ts":"2026-05-29T10:05:00Z","actor":"watchdog","action":"nudge","target":"claude:lead","summary":"status check"}
 EVENTS
 assert_eq "alert_reason: a target-only nudge does not clear the alert" "stale" \
     "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
 
 # An inbound send from another agent (target-only) also must NOT look like recovery.
 cat >"$_ss_dir/events.jsonl" <<'EVENTS'
-{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"claude:lead","summary":"max nudges reached"}
+{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"alert","target":"claude:lead","summary":"max nudges reached"}
 {"ts":"2026-05-29T10:05:00Z","actor":"codex:coworker","action":"send","target":"claude:lead","summary":"ping"}
 EVENTS
 assert_eq "alert_reason: an inbound send does not clear the alert" "stale" \
@@ -1048,7 +1048,7 @@ assert_eq "alert_reason: an inbound send does not clear the alert" "stale" \
 
 # Matches by cross-session target form too.
 cat >"$_ss_dir/events.jsonl" <<'EVENTS'
-{"ts":"2026-05-29T10:00:00Z","actor":"loop","action":"alert","target":"@sess:claude:lead","summary":"max nudges reached"}
+{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"alert","target":"@sess:claude:lead","summary":"max nudges reached"}
 EVENTS
 assert_eq "alert_reason: matches @session:agent target" "stale" \
     "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:lead" "sess")"
@@ -1079,63 +1079,63 @@ assert_eq "events: retire emits event" \
     "1" \
     "$([[ "$AE_SOURCE" == *'"action":"retire"'* ]] && echo 1 || echo 0)"
 
-# ── loop (watchdog) ───────────────────────────────────────────────
+# ── watchdog (watchdog) ───────────────────────────────────────────
 
-assert_eq "loop: helper script exists in generated source" \
+assert_eq "watchdog: helper script exists in generated source" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'Helper: loop'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'Helper: watchdog'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: uses send for nudges (not raw send-keys)" \
+assert_eq "watchdog: uses send for nudges (not raw send-keys)" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'AE_SENDER_OVERRIDE=loop'* && "$AE_SOURCE" == *'_AE_EVENT_ACTION=nudge'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'AE_SENDER_OVERRIDE=watchdog'* && "$AE_SOURCE" == *'_AE_EVENT_ACTION=nudge'* ]] && echo 1 || echo 0)"
 
 # The nudge is actionable: it hands the agent the exact state command so it can
 # silence further nudges by declaring waiting-user/blocked/done.
-assert_eq "loop: nudge message points to the state helper command" \
+assert_eq "watchdog: nudge message points to the state helper command" \
     "1" \
     "$([[ "$AE_SOURCE" == *'declare your state so I stop nudging: ${META_DIR}/state <waiting-user|blocked|done>'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: skips agents with a declared quiet state" \
+assert_eq "watchdog: skips agents with a declared quiet state" \
     "1" \
     "$([[ "$AE_SOURCE" == *'_agent_quiet_reason'* && "$AE_SOURCE" == *'done (reported complete)'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: waiting-user/blocked yield to pane activity (escape hatch)" \
+assert_eq "watchdog: waiting-user/blocked yield to pane activity (escape hatch)" \
     "1" \
     "$([[ "$AE_SOURCE" == *'waiting-user / blocked yield to pane activity'* && "$AE_SOURCE" == *'_quiet_pane_decision "$hash"'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: detects dead agents via pane_current_command" \
+assert_eq "watchdog: detects dead agents via pane_current_command" \
     "1" \
     "$([[ "$AE_SOURCE" == *'bash|zsh|fish|sh|dash'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: emits alert events" \
+assert_eq "watchdog: emits alert events" \
     "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "alert"'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: supports start/stop/status subcommands" \
+assert_eq "watchdog: supports start/stop/status subcommands" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'_loop_stop'* && "$AE_SOURCE" == *'_loop_status'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_watchdog_start'* && "$AE_SOURCE" == *'_watchdog_stop'* && "$AE_SOURCE" == *'_watchdog_status'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: auto-start via workspace.loop config" \
+assert_eq "watchdog: auto-start via workspace.watchdog config" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'workspace.loop'* && "$AE_SOURCE" == *'ae-monitor'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'workspace.watchdog'* && "$AE_SOURCE" == *'ae-monitor'* ]] && echo 1 || echo 0)"
 
-# Loop is now on-by-default; only explicit false/no/off/0 disables.
-assert_eq "loop: default-on resolution (unset/empty means start)" "1" \
-    "$([[ "$AE_SOURCE" == *'case "${LOOP_ENABLED,,}" in'* && "$AE_SOURCE" == *'false | no | off | 0)'* ]] && echo 1 || echo 0)"
+# Watchdog is on-by-default; only explicit false/no/off/0 disables.
+assert_eq "watchdog: default-on resolution (unset/empty means start)" "1" \
+    "$([[ "$AE_SOURCE" == *'case "${WATCHDOG_ENABLED,,}" in'* && "$AE_SOURCE" == *'false | no | off | 0)'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: DEFAULT_CONFIG advertises loop = true to new installs" "1" \
-    "$([[ "$AE_SOURCE" == *'loop = true'* ]] && echo 1 || echo 0)"
+assert_eq "watchdog: DEFAULT_CONFIG advertises watchdog = true to new installs" "1" \
+    "$([[ "$AE_SOURCE" == *'watchdog = true'* ]] && echo 1 || echo 0)"
 
 assert_eq "events-tail: banner labels timestamps as UTC" "1" \
     "$([[ "$AE_SOURCE" == *'date+time (UTC)'* ]] && echo 1 || echo 0)"
 
 # Monitor window with _events pane is always created on session start/resume,
-# independent of loop on/off. Loop start splits the window to add the _loop pane.
-assert_eq "monitor: ae-monitor + events pane created independently of loop" "1" \
+# independent of watchdog on/off. Watchdog start splits the window to add the _watchdog pane.
+assert_eq "monitor: ae-monitor + events pane created independently of watchdog" "1" \
     "$([[ "$AE_SOURCE" == *'_monitor_ensure_events_pane'* && "$AE_SOURCE" == *'_ensure-monitor'* ]] && echo 1 || echo 0)"
 
-assert_eq "monitor: launch flow calls loop _ensure-monitor unconditionally" "1" \
-    "$([[ "$AE_SOURCE" == *'"${AE_META}/loop" _ensure-monitor'* ]] && echo 1 || echo 0)"
+assert_eq "monitor: launch flow calls watchdog _ensure-monitor unconditionally" "1" \
+    "$([[ "$AE_SOURCE" == *'"${AE_META}/watchdog" _ensure-monitor'* ]] && echo 1 || echo 0)"
 
 assert_eq "monitor: _events pane runs events-tail" "1" \
     "$([[ "$AE_SOURCE" == *'new-window -da -t "$_AE_SESSION" -n "ae-monitor"'* && "$AE_SOURCE" == *'/events-tail'* ]] && echo 1 || echo 0)"
@@ -1143,41 +1143,86 @@ assert_eq "monitor: _events pane runs events-tail" "1" \
 assert_eq "events-tail: short_ts shows date+time (MM-DDTHH:MM:SS) so day rollover is visible" "1" \
     "$([[ "$AE_SOURCE" == *'short_ts="${ts:5:14}"'* ]] && echo 1 || echo 0)"
 
-assert_eq "monitor: loop start splits to add _loop pane, does not create the window" "1" \
-    "$([[ "$AE_SOURCE" == *'split-window -v -b -t "$MONITOR_EVENTS_PANE"'* ]] && echo 1 || echo 0)"
+assert_eq "monitor: watchdog start splits to add _watchdog pane, does not create the window" "1" \
+    "$([[ "$AE_SOURCE" == *'split-window -v -b -t "$MONITOR_EVENTS_PANE"'* && "$AE_SOURCE" == *'"${META_DIR}/watchdog _run"'* ]] && echo 1 || echo 0)"
 
-assert_eq "monitor: loop stop kills only the _loop pane (window survives)" "1" \
-    "$([[ "$AE_SOURCE" == *'_monitor_find_pane _loop'* && "$AE_SOURCE" == *'tmux kill-pane -t "$loop_pane"'* ]] && echo 1 || echo 0)"
+assert_eq "monitor: watchdog stop kills only the _watchdog pane (window survives)" "1" \
+    "$([[ "$AE_SOURCE" == *'_monitor_find_pane _watchdog'* && "$AE_SOURCE" == *'tmux kill-pane -t "$watchdog_pane"'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: configurable thresholds via env vars" \
+assert_eq "footer: watchdog status combines ae session facts and health segment" "1" \
+    "$([[ "$AE_SOURCE" == *'_watchdog_footer_session_segment()'* && "$AE_SOURCE" == *"printf '%s [watch %s %d/%d]'"* ]] && echo 1 || echo 0)"
+
+assert_eq "footer: mode labels map local/full/git to local/copy/git" "1" \
+    "$([[ "$AE_SOURCE" == *'local) mode_label="local"'* && "$AE_SOURCE" == *'full) mode_label="copy"'* && "$AE_SOURCE" == *'git) mode_label="git"'* ]] && echo 1 || echo 0)"
+
+assert_eq "footer: git branch is trimmed and tracked dirty state marks with star" "1" \
+    "$([[ "$AE_SOURCE" == *'symbolic-ref --quiet --short HEAD'* && "$AE_SOURCE" == *'status --porcelain --untracked-files=no'* && "$AE_SOURCE" == *'dirty="*"'* ]] && echo 1 || echo 0)"
+
+assert_eq "footer: git probes are timeout-bounded when coreutils timeout exists" "1" \
+    "$([[ "$AE_SOURCE" == *'_watchdog_git()'* && "$AE_SOURCE" == *'command -v timeout'* && "$AE_SOURCE" == *'timeout 2 git -C "$work_dir"'* ]] && echo 1 || echo 0)"
+
+assert_eq "watchdog: configurable thresholds via canonical env vars" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'AE_LOOP_INTERVAL_SEC'* && "$AE_SOURCE" == *'AE_LOOP_STALE_MIN'* && "$AE_SOURCE" == *'AE_LOOP_MAX_NUDGES'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'AE_WATCHDOG_INTERVAL_SEC'* && "$AE_SOURCE" == *'AE_WATCHDOG_STALE_MIN'* && "$AE_SOURCE" == *'AE_WATCHDOG_MAX_NUDGES'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: detects missing panes from meta" \
+assert_eq "compat: legacy AE_LOOP env vars are fallback tunables" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'AE_WATCHDOG_INTERVAL_SEC:-${AE_LOOP_INTERVAL_SEC:-60}'* && "$AE_SOURCE" == *'AE_WATCHDOG_STALE_MIN:-${AE_LOOP_STALE_MIN:-15}'* && "$AE_SOURCE" == *'AE_WATCHDOG_MAX_NUDGES:-${AE_LOOP_MAX_NUDGES:-2}'* ]] && echo 1 || echo 0)"
+
+assert_eq "watchdog: detects missing panes from meta" \
     "1" \
     "$([[ "$AE_SOURCE" == *'pane missing'* && "$AE_SOURCE" == *'alerted_missing'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: top-level ae loop command exists" \
+assert_eq "watchdog: top-level ae watchdog command exists" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'cmd_loop()'* && "$AE_SOURCE" == *'loop)'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'cmd_watchdog()'* && "$AE_SOURCE" == *'watchdog | loop)'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: persists state in meta via _set_meta_loop" \
+assert_eq "compat: top-level ae loop alias routes to cmd_watchdog" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'_set_meta_loop'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'watchdog | loop)'* && "$AE_SOURCE" == *'cmd_watchdog "${2:-}" "${3:-}"'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: meta override wins over config on start" \
+assert_eq "watchdog: persists state in canonical meta key" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'read_session_meta "$SESSION" loop'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_set_meta_watchdog()'* && "$AE_SOURCE" == *'_set_meta_kv "watchdog" "$1"'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: recovers pending session IDs via _recover-pending" \
+assert_eq "compat: legacy loop meta key is read as fallback" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'read_session_meta "$SESSION" watchdog'* && "$AE_SOURCE" == *'read_session_meta "$SESSION" loop'* ]] && echo 1 || echo 0)"
+
+assert_eq "compat: legacy workspace.loop config is read as fallback" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'get_config workspace.watchdog'* && "$AE_SOURCE" == *'get_config workspace.loop'* ]] && echo 1 || echo 0)"
+
+assert_eq "compat: rewrite preserves watchdog or legacy loop meta override (canonical-wins)" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *"grep '^watchdog='"* && "$AE_SOURCE" == *'[[ -n "$PRESERVED_WATCHDOG" ]] ||'* && "$AE_SOURCE" == *"grep '^loop='"* && "$AE_SOURCE" == *'echo "watchdog=${PRESERVED_WATCHDOG}"'* ]] && echo 1 || echo 0)"
+
+assert_eq "compat: generated loop helper forwards to watchdog" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'LOOPSHIMEOF'* && "$AE_SOURCE" == *'exec "$(cd "$(dirname "$0")" && pwd)/watchdog" "$@"'* ]] && echo 1 || echo 0)"
+
+assert_eq "compat: transitional shepherd and legacy loop artifacts are reaped" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'_watchdog_reap_legacy_one()'* && "$AE_SOURCE" == *'_watchdog_reap_legacy_one "shepherd"'* && "$AE_SOURCE" == *'_watchdog_reap_legacy_one "loop"'* && "$AE_SOURCE" == *'legacy_pid_file="${META_DIR}/.${legacy_name}.pid"'* && "$AE_SOURCE" == *'legacy_status_file="${META_DIR}/.${legacy_name}.status"'* ]] && echo 1 || echo 0)"
+
+_reap_wires="$(printf '%s\n' "$AE_SOURCE" | grep -c '^[[:space:]]*_watchdog_reap_legacy$')"
+assert_eq "compat: legacy reaper is wired into watchdog start and stop" "1" \
+    "$([[ "$_reap_wires" -ge 2 ]] && echo 1 || echo 0)"
+unset _reap_wires
+
+assert_eq "compat: watchdog skip filter still ignores legacy _shepherd/_loop panes" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'""|"(null)"|_watchdog|_shepherd|_loop|_events)'* ]] && echo 1 || echo 0)"
+
+assert_eq "watchdog: recovers pending session IDs via _recover-pending" \
     "1" \
     "$([[ "$AE_SOURCE" == *'_recover-pending'* && "$AE_SOURCE" == *'cmd_recover_pending'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: walk_pending_session_ids shared between doctor and loop" \
+assert_eq "watchdog: walk_pending_session_ids shared between doctor and watchdog" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'walk_pending_session_ids'* && "$AE_SOURCE" == *'_doctor_recover_report'* && "$AE_SOURCE" == *'_loop_recover_report'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'walk_pending_session_ids'* && "$AE_SOURCE" == *'_doctor_recover_report'* && "$AE_SOURCE" == *'_watchdog_recover_report'* ]] && echo 1 || echo 0)"
 
-assert_eq "loop: emits recover events for newly captured session IDs" \
+assert_eq "watchdog: emits recover events for newly captured session IDs" \
     "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "recover"'* ]] && echo 1 || echo 0)"
 
@@ -1234,9 +1279,9 @@ assert_eq "default_session_name: deterministic (same PWD = same name)" \
     "$name" \
     "$(default_session_name)"
 
-# ── loop helpers: quiet-state tracking (_event_json_str / _latest_relevant_event / _agent_quiet_reason) ──
+# ── watchdog helpers: quiet-state tracking (_event_json_str / _latest_relevant_event / _agent_quiet_reason) ──
 
-# Extract loop helper function bodies from the generated loop heredoc.
+# Extract watchdog helper function bodies from the generated watchdog heredoc.
 # They're emitted at column 0 inside a 'LOOPEOF' heredoc in ae.
 eval "$(awk '
     /^(_event_json_str|_latest_relevant_event|_agent_quiet_reason|_quiet_pane_decision)\(\) \{/ { printing=1 }
@@ -1288,10 +1333,10 @@ assert_eq "latest_relevant_event: state event carries ref, actor, summary" \
 
 # _latest_relevant_event: target match carries the (other) actor
 cat >"$META_DIR/events.jsonl" <<'EVENTS'
-{"ts":"2026-01-01T00:00:00Z","actor":"loop","action":"nudge","target":"claude:lead"}
+{"ts":"2026-01-01T00:00:00Z","actor":"watchdog","action":"nudge","target":"claude:lead"}
 EVENTS
-assert_eq "latest_relevant_event: target match (nudge) carries actor=loop" \
-    $'nudge\t2026-01-01T00:00:00Z\t\tloop\t' \
+assert_eq "latest_relevant_event: target match (nudge) carries actor=watchdog" \
+    $'nudge\t2026-01-01T00:00:00Z\t\twatchdog\t' \
     "$(_latest_relevant_event "claude:lead")"
 
 # _latest_relevant_event: cross-session target match (@session:agent)
@@ -1359,7 +1404,7 @@ assert_eq "agent_quiet_reason: newer inbound send clears waiting-user" "" \
 # newer nudge also invalidates
 cat >"$META_DIR/events.jsonl" <<'EVENTS'
 {"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"state","ref":"done","summary":"shipped"}
-{"ts":"2026-01-01T00:01:00Z","actor":"loop","action":"nudge","target":"claude:lead"}
+{"ts":"2026-01-01T00:01:00Z","actor":"watchdog","action":"nudge","target":"claude:lead"}
 EVENTS
 assert_eq "agent_quiet_reason: newer nudge clears done" "" \
     "$(_agent_quiet_reason "claude:lead")"
@@ -1437,6 +1482,9 @@ assert_eq "sync: removes 'done' alias orphan" "1" \
 assert_eq "sync: removes register-sid orphan (renamed to _register-sid)" "1" \
     "$([[ "$AE_SOURCE" == *' register-sid '* ]] && echo 1 || echo 0)"
 
+assert_eq "sync: removes shepherd helper orphan (unreleased intermediate rename)" "1" \
+    "$([[ "$AE_SOURCE" == *' register-sid shepherd '* ]] && echo 1 || echo 0)"
+
 assert_eq "sync: removes messages.tsv + lock orphans" "1" \
     "$([[ "$AE_SOURCE" == *'messages.tsv messages.tsv.lock'* ]] && echo 1 || echo 0)"
 
@@ -1449,7 +1497,7 @@ _orphan_test_dir="$(mktemp -d)"
 AE_META="$_orphan_test_dir"
 # seed stale files
 touch "$AE_META/done" "$AE_META/register-sid" "$AE_META/messages.tsv" \
-    "$AE_META/messages.tsv.lock" "$AE_META/requests.tsv" "$AE_META/requests.tsv.lock"
+    "$AE_META/shepherd" "$AE_META/messages.tsv.lock" "$AE_META/requests.tsv" "$AE_META/requests.tsv.lock"
 # seed a file that should NOT be removed (must survive cleanup)
 touch "$AE_META/keep-me.txt"
 # extract the rm loop (any line between the comment block and the for-done)
@@ -1459,6 +1507,8 @@ assert_eq "sync: orphan 'done' deleted by cleanup loop" "0" \
     "$([[ -f "$AE_META/done" ]] && echo 1 || echo 0)"
 assert_eq "sync: orphan 'register-sid' deleted by cleanup loop" "0" \
     "$([[ -f "$AE_META/register-sid" ]] && echo 1 || echo 0)"
+assert_eq "sync: orphan 'shepherd' deleted by cleanup loop" "0" \
+    "$([[ -f "$AE_META/shepherd" ]] && echo 1 || echo 0)"
 assert_eq "sync: orphan 'messages.tsv' deleted by cleanup loop" "0" \
     "$([[ -f "$AE_META/messages.tsv" ]] && echo 1 || echo 0)"
 assert_eq "sync: orphan 'requests.tsv' deleted by cleanup loop" "0" \
@@ -1518,7 +1568,7 @@ assert_eq "ae_find_request: missing ref returns empty stdout" "" "$_out"
 
 # ae_find_request: ignores non-ask/review events that happen to share a ref
 cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
-{"ts":"2026-01-01T00:00:00Z","actor":"loop","action":"nudge","target":"claude:lead","ref":"stray-ref","summary":""}
+{"ts":"2026-01-01T00:00:00Z","actor":"watchdog","action":"nudge","target":"claude:lead","ref":"stray-ref","summary":""}
 EVENTS
 _out="$(ae_find_request "stray-ref" 2>/dev/null || true)"
 assert_eq "ae_find_request: ignores non-ask/review actions" "" "$_out"
@@ -1603,7 +1653,7 @@ assert_eq "requests: request with no reply is pending" "1" \
 rm -rf "$_req_helper_dir"
 unset _req_out _req_helper_dir
 
-# ── loop: throttle detection (_buf_shows_throttle) ───────────────────
+# ── watchdog: throttle detection (_buf_shows_throttle) ───────────────
 
 # Extract pure-function body from the LOOPEOF heredoc.
 eval "$(awk '
@@ -1662,7 +1712,7 @@ assert_eq "throttle: watchdog has dedicated step before stale nudge" "1" \
     "$([[ "$AE_SOURCE" == *'# 3. Throttled'* && "$AE_SOURCE" == *'_buf_shows_throttle "$pane_buf" "$agent_bin"'* ]] && echo 1 || echo 0)"
 
 # Codex IMPORTANT: throttle reaction MUST appear before the active/recent
-# branches in the loop body source order; otherwise the documented
+# branches in the watchdog body source order; otherwise the documented
 # THROTTLE_ALERT_CYCLES cadence wouldn't actually start until after the
 # 15-min stale window expires.
 _throttle_line="$(printf '%s\n' "$AE_SOURCE" | grep -n '# 3\. Throttled' | head -n1 | cut -d: -f1)"
@@ -1697,8 +1747,8 @@ unset _done_block
 assert_eq "throttle: throttle_streak state tracked in declare -A" "1" \
     "$([[ "$AE_SOURCE" == *'declare -A'*'throttle_streak'* ]] && echo 1 || echo 0)"
 
-assert_eq "throttle: AE_LOOP_THROTTLE_ALERT_CYCLES env override" "1" \
-    "$([[ "$AE_SOURCE" == *'AE_LOOP_THROTTLE_ALERT_CYCLES:-5'* ]] && echo 1 || echo 0)"
+assert_eq "throttle: AE_WATCHDOG_THROTTLE_ALERT_CYCLES env override with legacy fallback" "1" \
+    "$([[ "$AE_SOURCE" == *'AE_WATCHDOG_THROTTLE_ALERT_CYCLES:-${AE_LOOP_THROTTLE_ALERT_CYCLES:-5}'* ]] && echo 1 || echo 0)"
 
 assert_eq "throttle: emits throttled / alert / throttle-cleared events" "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "throttled"'* && "$AE_SOURCE" == *'ae_emit_event "throttle-cleared"'* ]] && echo 1 || echo 0)"
@@ -1715,7 +1765,7 @@ assert_eq "throttle: opencode pattern set is union via shared arrays (no drift)"
     "$([[ "$AE_SOURCE" == *'opencode) active_pats=("${claude_pats[@]}" "${codex_pats[@]}" "${gemini_pats[@]}")'* ]] && echo 1 || echo 0)"
 
 # Behavioral: simulate throttle -> clear -> throttle again. Confirm the
-# function-level signal flips correctly per call (the loop body uses these
+# function-level signal flips correctly per call (the watchdog body uses these
 # signals to update throttle_streak with the up-front clear logic codex flagged).
 assert_eq "throttle: detection toggles correctly across throttle->clear->throttle" "1" \
     "$(
@@ -1867,9 +1917,10 @@ assert_eq "transfer: collision check (step 7) precedes stop helpers (step 9) in 
     "$([[ -n "$_t_collision_line" && -n "$_t_stop_local_line" && "$_t_collision_line" -lt "$_t_stop_local_line" ]] && echo 1 || echo 0)"
 unset _t_collision_line _t_stop_local_line
 
-# Structural: rsync exclude list contains the three required patterns.
-assert_eq "transfer: rsync exclude list contains *.lock, *.pid, .loop.status" "1" \
-    "$([[ "$AE_SOURCE" == *"--exclude='*.lock'"*"--exclude='*.pid'"*"--exclude='.loop.status'"* ]] && echo 1 || echo 0)"
+# Structural: rsync exclude list contains runtime-only state files, including
+# deprecated/legacy status files while old sessions may still have them.
+assert_eq "transfer: rsync exclude list contains *.lock, *.pid, .watchdog.status, .shepherd.status, .loop.status" "1" \
+    "$([[ "$AE_SOURCE" == *"--exclude='*.lock'"*"--exclude='*.pid'"*"--exclude='.watchdog.status'"*"--exclude='.shepherd.status'"*"--exclude='.loop.status'"* ]] && echo 1 || echo 0)"
 
 # Structural: collision-NON-TTY-without-yes path exits 3.
 assert_eq "transfer: non-TTY collision without --yes returns exit code 3" "1" \
@@ -2547,7 +2598,7 @@ assert_eq "telegram: process_session does NOT use \${#var} to advance the file o
 
 # Codex review IMPORTANT #1 (round 2): at-least-once delivery. The offset is
 # only advanced PAST a deliverable event after send_message succeeds; a send
-# failure breaks the loop WITHOUT committing, so the event is retried next
+# failure breaks the read loop WITHOUT committing, so the event is retried next
 # poll instead of being silently dropped.
 assert_eq "telegram: send failure breaks before advancing the offset" "1" \
     "$([[ "$AE_SOURCE" == *'if ! send_message "$body"; then
@@ -2581,7 +2632,7 @@ assert_eq "telegram: spawn %q-quotes both config + daemon path" "1" \
 
 # IMPORTANT guard (codex): every auto-start hook invocation is strictly
 # non-fatal (`2>/dev/null || true`). Three call sites: the two launch paths
-# (resume + full-launch) and the loop watchdog's `_supervise` dispatch. Greps
+# (resume + full-launch) and the watchdog's `_supervise` dispatch. Greps
 # the ae UNDER TEST (not a hardcoded path) so worktree runs are accurate.
 _t_attach_calls=$(grep -c '_telegram_autostart_if_enabled 2>/dev/null || true' "$(dirname "$0")/../ae")
 assert_eq "telegram: every auto-start hook call uses the non-fatal guard (2 launch + supervise)" "3" "$_t_attach_calls"
@@ -2718,7 +2769,7 @@ assert_eq "telegram: unknown subcommand exits non-zero" "2" "$_t_bogus_rc"
 assert_eq "telegram: unknown subcommand prints help"    "1" "$([[ "$_t_bogus_out" == *'ae telegram setup'* ]] && echo 1 || echo 0)"
 unset _t_bogus_rc _t_bogus_out
 
-# Behavioral: 'telegram _supervise' (the loop's revive hook) must be a silent
+# Behavioral: 'telegram _supervise' (the watchdog's revive hook) must be a silent
 # no-op when the feature is disabled — it runs on a timer across sessions, so it
 # must never act, spawn, or chatter when enabled=false. (Uses the ae under test.)
 _t_sup_cfg="$(mktemp)"; printf '[telegram]\nenabled = false\n' >"$_t_sup_cfg"
@@ -2786,8 +2837,8 @@ assert_eq "tg-log: daemon log is created chmod 600 before redirect" "1" \
 assert_eq "tg-log: daemon rotates the log at startup past the size cap" "1" \
     "$([[ "$AE_SOURCE" == *'mv -f "$LOG_FILE" "$LOG_FILE.1"'* && "$AE_SOURCE" == *'AE_TELEGRAM_LOG_MAX_BYTES'* ]] && echo 1 || echo 0)"
 
-# ── Loop-supervised telegram bridge ──────────────────────────────────
-# The per-session loop watchdog best-effort revives the machine-global daemon
+# ── Watchdog-supervised telegram bridge ──────────────────────────────
+# The per-session watchdog best-effort revives the machine-global daemon
 # if it died (closes the gap where a crash lingers until the next `ae <name>`).
 
 # Internal _supervise subcommand routes to the autostart path (respects
@@ -2795,13 +2846,14 @@ assert_eq "tg-log: daemon rotates the log at startup past the size cap" "1" \
 assert_eq "tg-sup: 'telegram _supervise' calls the autostart path" "1" \
     "$([[ "$AE_SOURCE" == *'_supervise) _telegram_autostart_if_enabled'* ]] && echo 1 || echo 0)"
 
-# Loop defines a throttle interval with an env override and a disable (0) path.
-assert_eq "tg-sup: loop defines TG_SUPERVISE_SECS (env override)" "1" \
-    "$([[ "$AE_SOURCE" == *'TG_SUPERVISE_SECS="${AE_LOOP_TG_SUPERVISE_SEC:-120}"'* ]] && echo 1 || echo 0)"
+# Watchdog defines a throttle interval with a canonical env override, legacy
+# fallback, and a disable (0) path.
+assert_eq "tg-sup: watchdog defines TG_SUPERVISE_SECS (env override with legacy fallback)" "1" \
+    "$([[ "$AE_SOURCE" == *'TG_SUPERVISE_SECS="${AE_WATCHDOG_TG_SUPERVISE_SEC:-${AE_LOOP_TG_SUPERVISE_SEC:-120}}"'* ]] && echo 1 || echo 0)"
 
 # Step 10 runs in the cycle TAIL (after recover-pending), throttled, calling the
 # internal supervise via the ae binary — silent + non-fatal.
-assert_eq "tg-sup: loop step 10 revives via throttled 'telegram _supervise'" "1" \
+assert_eq "tg-sup: watchdog step 10 revives via throttled 'telegram _supervise'" "1" \
     "$([[ "$AE_SOURCE" == *'(( TG_SUPERVISE_SECS > 0 ))'* && "$AE_SOURCE" == *'now_epoch - last_tg_supervise >= TG_SUPERVISE_SECS'* && "$AE_SOURCE" == *'"$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true'* ]] && echo 1 || echo 0)"
 
 # Step 10 propagates the session's tmux server (codex IMPORTANT) so revive hits
@@ -2816,10 +2868,10 @@ assert_eq "meta: [workspace] meta is read into META_AGENT_CFG" "1" \
     "$([[ "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.meta)"'* ]] && echo 1 || echo 0)"
 assert_eq "meta: truthy config writes meta_agent=true to session meta" "1" \
     "$([[ "$AE_SOURCE" == *'case "$META_AGENT_CFG" in'*'true | 1 | yes | on)'*'echo "meta_agent=true" >>"${AE_META}/meta"'* ]] && echo 1 || echo 0)"
-# The loop defines the sweep-cadence knob and reads meta_agent from meta.
-assert_eq "meta: loop defines SWEEP_SECS (AE_LOOP_SWEEP_SEC, default 300)" "1" \
-    "$([[ "$AE_SOURCE" == *'SWEEP_SECS="${AE_LOOP_SWEEP_SEC:-300}"'* ]] && echo 1 || echo 0)"
-assert_eq "meta: loop reads meta_agent from meta" "1" \
+# The watchdog defines the sweep-cadence knob and reads meta_agent from meta.
+assert_eq "meta: watchdog defines SWEEP_SECS (AE_WATCHDOG_SWEEP_SEC with legacy fallback)" "1" \
+    "$([[ "$AE_SOURCE" == *'SWEEP_SECS="${AE_WATCHDOG_SWEEP_SEC:-${AE_LOOP_SWEEP_SEC:-300}}"'* ]] && echo 1 || echo 0)"
+assert_eq "meta: watchdog reads meta_agent from meta" "1" \
     "$([[ "$AE_SOURCE" == *"META_AGENT=\"\$(grep '^meta_agent=' \"\$META_DIR/meta\""* ]] && echo 1 || echo 0)"
 # The cadence branch: gated on META_AGENT==true + SWEEP_SECS>0, sends a sweep
 # nudge every SWEEP_SECS, and continues BEFORE the stale/max-nudges machinery
@@ -2850,9 +2902,9 @@ assert_eq "meta: heartbeat-wedge alert covers stale AND absent heartbeat" "1" \
     "$([[ "$AE_SOURCE" == *'first_nudge > 0 && now_epoch - first_nudge > wedge_secs'* \
         && "$AE_SOURCE" == *'never wrote a heartbeat'* \
         && "$AE_SOURCE" == *'first_sweep_nudge["$pane"]="$now_epoch"'* ]] && echo 1 || echo 0)"
-# IMPORTANT (codex): recovery is LOOP-owned — emit alert-cleared so ae list
+# IMPORTANT (codex): recovery is watchdog-owned — emit alert-cleared so ae list
 # un-sticks even on a silent sweep; _agent_alert_reason honors it as a clear.
-# And it reconciles the DURABLE event log once per loop lifetime, so a restart
+# And it reconciles the DURABLE event log once per watchdog lifetime, so a restart
 # that lost the in-memory latch still clears the old alert.
 assert_eq "meta: recovery clears via latch AND durable reconcile (survives restart)" "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "alert-cleared" "$agent"'* \
@@ -2867,7 +2919,7 @@ assert_eq "meta: wedge alert classifies as stale (not throttled)" "1" \
         && "$AE_SOURCE" == *'(hub may be stuck)'* \
         && "$AE_SOURCE" != *'may be wedged/throttled'* ]] && echo 1 || echo 0)"
 # NIT (codex): the sweep interval override is numeric-guarded before arithmetic.
-assert_eq "meta: AE_LOOP_SWEEP_SEC is numeric-guarded" "1" \
+assert_eq "meta: AE_WATCHDOG_SWEEP_SEC/AE_LOOP_SWEEP_SEC value is numeric-guarded" "1" \
     "$([[ "$AE_SOURCE" == *'[[ "$SWEEP_SECS" =~ ^[0-9]+$ ]] || SWEEP_SECS=300'* ]] && echo 1 || echo 0)"
 # Cadence branch comes BEFORE the stale nudge (dead-check first, then meta branch,
 # then the normal stale logic) — proves the hub bypasses max-nudges/stale-alert.
@@ -2919,7 +2971,7 @@ assert_eq "tg-sup: uncached reader defaults to false when key absent" "false" \
 rm -f "$_tgc_cfg"; unset _tgc_cfg
 
 # Throttle accumulator is initialized once before the watchdog loop.
-assert_eq "tg-sup: last_tg_supervise initialized before the loop" "1" \
+assert_eq "tg-sup: last_tg_supervise initialized before the watchdog loop" "1" \
     "$([[ "$AE_SOURCE" == *'last_tg_supervise=0
 while true; do'* ]] && echo 1 || echo 0)"
 
@@ -3272,9 +3324,13 @@ assert_eq "hub dispatcher: clears caller-PWD AE_LOCAL_CONFIG + cd hub dir" "1" \
 assert_eq "hub dispatcher: falls through (set -- hub) with NO recursive exec" "1" \
     "$([[ "$AE_SOURCE" == *'set -- hub'* && "$AE_SOURCE" != *'exec ae hub'* ]] && echo 1 || echo 0)"
 assert_eq "hub dispatcher: rejects extra args (reserved-name leak guard)" "1" \
-    "$([[ "$AE_SOURCE" == *"'ae hub' takes no arguments"* ]] && echo 1 || echo 0)"
-assert_eq "hub dispatcher: routes --init and --help" "1" \
-    "$([[ "$AE_SOURCE" == *'--init)'* && "$AE_SOURCE" == *'cmd_hub_init'* && "$AE_SOURCE" == *'cmd_hub_help'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *"'ae hub' takes no positional arguments"* ]] && echo 1 || echo 0)"
+assert_eq "hub dispatcher: routes --init, --help, and explicit attach flags" "1" \
+    "$([[ "$AE_SOURCE" == *'--init)'* && "$AE_SOURCE" == *'cmd_hub_init'* && "$AE_SOURCE" == *'cmd_hub_help'* && "$AE_SOURCE" == *'--attach | --switch)'* ]] && echo 1 || echo 0)"
+assert_eq "hub dispatcher: bare hub is detached by default, --attach opts into focus switch" "1" \
+    "$([[ "$AE_SOURCE" == *'_hub_attach=false'* && "$AE_SOURCE" == *'ATTACH_ON_READY=false'* && "$AE_SOURCE" == *'ATTACH_ON_READY=true'* ]] && echo 1 || echo 0)"
+assert_eq "hub dispatcher: no-attach path exits without tmux_attach" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ "$ATTACH_ON_READY" != "true" ]]; then'* && "$AE_SOURCE" == *"Session '\$SESSION' is running."* && "$AE_SOURCE" == *"Session '\$SESSION' started."* ]] && echo 1 || echo 0)"
 assert_eq "hub flag: workspace.hub preferred, workspace.meta legacy alias" "1" \
     "$([[ "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.hub)"'* \
         && "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.meta)"'* ]] && echo 1 || echo 0)"

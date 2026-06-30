@@ -13,11 +13,11 @@ flowchart LR
     Tmux --> AgentPane1[claude:lead pane]
     Tmux --> AgentPane2[codex:coworker pane]
     Tmux --> Monitor[ae-monitor window]
-    Monitor --> Loop[_loop pane<br/>watchdog]
+    Monitor --> Watchdog[_watchdog pane<br/>watchdog]
     Monitor --> Events[_events pane<br/>events-tail]
     AgentPane1 -.send/ask/reply.-> SessDir
     AgentPane2 -.send/ask/reply.-> SessDir
-    Loop -.reads events.jsonl.-> SessDir
+    Watchdog -.reads events.jsonl.-> SessDir
     Events -.tails events.jsonl.-> SessDir
 ```
 
@@ -48,8 +48,8 @@ flowchart TB
     Fresh --> Sync[sync_session_assets<br/>regenerate ALL helpers<br/>+ workspace.md<br/>+ sweep orphans]
     Resume --> Sync
     Sync --> Mon[_ensure-monitor<br/>creates ae-monitor + _events]
-    Mon --> Loop[Start loop watchdog<br/>unless explicitly disabled]
-    Loop --> Attach[tmux attach]
+    Mon --> Watchdog[Start watchdog<br/>unless explicitly disabled]
+    Watchdog --> Attach[tmux attach]
 ```
 
 The regenerate step is unconditional on both paths — that's how upgrades propagate without any migration ceremony.
@@ -67,7 +67,7 @@ When you start a session, ae creates `~/.ae/sessions/<name>/` and fills it with:
 - **`memo.tsv`** — shared session memory (durable findings, decisions, handoffs).
 - **`workspace.md`** — human/agent-readable manifest of the session (regenerated on every resume).
 - **`_lib`** — shared bash library sourced by every helper. Hosts: name resolution, flock serialization, request tracking (`ae_tracked_send`, `ae_find_request`), event log writers (`ae_emit_event`, `_event_json_str`).
-- **`send`, `ask`, `review`, `reply`, `requests`, `mark-done`, `memo`, `peek`/`peak`, `agents`, `focus`, `interrupt`, `spawn`, `retire`, `loop`, `events-tail`, `_register-sid`** — session helpers, all generated bash scripts.
+- **`send`, `ask`, `review`, `reply`, `requests`, `mark-done`, `memo`, `peek`/`peak`, `agents`, `focus`, `interrupt`, `spawn`, `retire`, `watchdog`, `events-tail`, `_register-sid`** — session helpers, all generated bash scripts.
 - **`launch.*.sh`** — pre-built launch commands per agent slot (for resume).
 
 Nothing in the project working directory changes.
@@ -110,16 +110,16 @@ Earlier versions wrote messages to `messages.tsv` and request state to `requests
 
 ```json
 {"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"done","summary":"..."}
-{"ts":"2026-05-19T08:00:13Z","actor":"loop","action":"nudge","target":"claude:lead","summary":"idle 30m, no recent ae activity"}
+{"ts":"2026-05-19T08:00:13Z","actor":"watchdog","action":"nudge","target":"claude:lead","summary":"idle 30m, no recent ae activity"}
 ```
 
-`requests` derives pending/replied state by walking events backward and matching `reply` events against their original `ask` / `review` by `ref`. The loop watchdog reads `events.jsonl` to enforce its "done is invalidated by newer ae event" contract.
+`requests` derives pending/replied state by walking events backward and matching `reply` events against their original `ask` / `review` by `ref`. The watchdog reads `events.jsonl` to enforce its "done is invalidated by newer ae event" contract.
 
-## Loop watchdog and monitor window
+## Watchdog and monitor window
 
-A hidden `ae-monitor` tmux window exists for every session. It always contains an `_events` pane streaming `events.jsonl` through the `events-tail` helper. When the loop watchdog is enabled (default-on), it adds a `_loop` pane above with per-cycle decisions.
+A hidden `ae-monitor` tmux window exists for every session. It always contains an `_events` pane streaming `events.jsonl` through the `events-tail` helper. When the watchdog is enabled (default-on), it adds a `_watchdog` pane above with per-cycle decisions.
 
-See [Loop watchdog](loop.md) and [Monitor window](monitor.md) for the deep dives.
+See [Watchdog](watchdog.md) and [Monitor window](monitor.md) for the deep dives.
 
 ## Non-goals
 

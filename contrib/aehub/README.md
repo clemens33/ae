@@ -12,13 +12,15 @@ touch it if you run `ae hub`.
 
 ```bash
 ae hub --init     # scaffold ~/.ae/meta-hub/{hub.config,CHARTER.md} from these templates
-ae hub            # start (or resume) the `hub` session with that standalone config
+ae hub            # ensure the detached `hub` session is running with that config
+ae hub --attach   # switch/attach to the `hub` session when you want to inspect it
 ```
 
 `ae hub` launches the `hub` session with **full config isolation**: it uses
 `~/.ae/meta-hub/hub.config` as the config and neutralizes any project-local
 `./.ae/config`, so the global config's `workers` never leak into the single-agent
-hub regardless of which directory you run it from.
+hub regardless of which directory you run it from. Bare `ae hub` does not attach
+or switch the current tmux client; use `--attach` explicitly for that.
 
 Escape hatch: `ae hub` is a reserved subcommand. If you ever need a normal
 (non-meta) session literally named `hub`, `ae --local hub` reaches the generic
@@ -28,7 +30,7 @@ start path (the first arg is no longer `hub`).
 
 | File | Role |
 |---|---|
-| `hub.config` | Standalone single-agent config (`hub = true` marks the meta-agent; the loop then runs a sweep cadence instead of the stale-nudge watchdog). |
+| `hub.config` | Standalone single-agent config (`hub = true` marks the meta-agent; the watchdog then runs a sweep cadence instead of the stale-nudge watchdog). |
 | `CHARTER.md` | The meta-agent's operating manual — its two jobs, the `say` channel, the `aemonitor` sweep routine, the ae toolbox, and hard guardrails (injection boundary, never-end-a-session, human-directed relay only). |
 
 ### Placeholders substituted on `--init`
