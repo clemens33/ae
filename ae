@@ -535,13 +535,15 @@ _ae_status_left_paths() {
     esac
 }
 
-# Escape a string for literal use inside a tmux format/option value. `#` is tmux's
-# format introducer, so a literal `#` must be doubled — otherwise a path or branch
-# containing `#S`, `#H`, … expands to a tmux variable, and `#(cmd)` RUNS as a
-# status job (shell execution) on every status redraw. Applied to user-controlled
-# path text before it lands in status-left.
+# Escape a string for literal use inside tmux status FORMAT TEXT (e.g. status-left).
+# Two metacharacters expand there: `#` (format introducer — `#S`/`#(cmd)`/`#{…}`) and
+# `%` (strftime — `%Y`/`%H`…). Both must be doubled (`##`, `%%`) or a path containing
+# them silently renders wrong or runs a shell job on every status redraw. Applied to
+# the static path text. (Live branch/health are tmux user-OPTION values, which are
+# interpolated literally — neither `#` nor `%` expands there — so they need no escape.)
 _ae_tmux_format_literal() {
-    printf '%s' "${1//\#/##}"
+    local s="${1//\#/##}"
+    printf '%s' "${s//%/%%}"
 }
 
 # Render and apply the mode-aware session location to a session's status-left,
@@ -558,7 +560,13 @@ _ae_apply_status_left() {
     "${_t[@]}" has-session -t "$session" 2>/dev/null || return 0
     local paths
     paths="$(_ae_tmux_format_literal "$(_ae_status_left_paths "$mode" "$origin" "$work_dir")")"
-    "${_t[@]}" set-option -t "$session" status-left "[ae ${paths}] " 2>/dev/null || true
+    # The path is static; the live git branch + tracked-dirty marker is appended via
+    # the @ae_branch_status tmux user option, which the watchdog sets each cycle. A
+    # user-option value is interpolated literally — NOT re-expanded and not parsed for
+    # directives — so a branch/path with `)`, `#`, spaces, or shell metacharacters is
+    # harmless (no #() command, no shell). Empty (watchdog off / non-git) falls back to
+    # just the path. The static path text is #-escaped above (it sits in format text).
+    "${_t[@]}" set-option -t "$session" status-left "[ae ${paths}#{@ae_branch_status}] " 2>/dev/null || true
     "${_t[@]}" set-option -t "$session" status-left-length 90 2>/dev/null || true
 }
 
@@ -7477,7 +7485,10 @@ _watchdog_stop() {
     if _watchdog_is_running; then
         local pid; pid="$(cat "$PIDFILE")"
         kill "$pid" 2>/dev/null || true
-        rm -f "$PIDFILE" "${META_DIR}/.watchdog.status"
+        rm -f "$PIDFILE"
+        # Clear the live status user options so the bars fall back (left → just path).
+        tmux set-option -t "$_AE_SESSION" -u @ae_branch_status 2>/dev/null || true
+        tmux set-option -t "$_AE_SESSION" -u @ae_watchdog_status 2>/dev/null || true
         # Kill only the _watchdog pane; leave the _events pane and monitor window alive.
         local watchdog_pane
         watchdog_pane="$(_monitor_find_pane _watchdog)"
@@ -7550,8 +7561,10 @@ _watchdog_start() {
     # Persist alongside meta via the locked helper to avoid clobbering concurrent writers
     _set_meta_kv "status_right_prev" "$prev_status_right"
     _set_meta_kv "status_right_was_session" "$was_session"
-    # Prepend the watchdog indicator to the existing status-right (refreshed each status-interval)
-    local new_status_right="#(cat ${META_DIR}/.watchdog.status 2>/dev/null) ${prev_status_right}"
+    # Prepend the watchdog health indicator to the existing status-right. It reads the
+    # @ae_watchdog_status tmux user option (set by the loop each cycle) — no #() shell
+    # job, no path embedded in the format, so nothing to quote or escape.
+    local new_status_right="#{@ae_watchdog_status} ${prev_status_right}"
     tmux set-option -t "$_AE_SESSION" status-right "$new_status_right" 2>/dev/null || true
     tmux set-option -t "$_AE_SESSION" status-interval 5 2>/dev/null || true
     _set_meta_watchdog "true"
@@ -7691,12 +7704,13 @@ _watchdog_git() {
     fi
 }
 
-# Dynamic git segment for status-right: '[<branch>*] ' when work_dir is a git
-# repo, else empty. The session name, mode, and location now live in status-left
-# (set once at launch — they never change); only the branch and tracked-dirty
-# marker change per cycle, so only those belong in the per-cycle footer. Trailing
-# space so the health segment reads cleanly when a branch is present.
-_watchdog_footer_git_segment() {
+# Live git branch segment, pushed each cycle into the @ae_branch_status tmux user
+# option and rendered in status-LEFT after the (static) path — so repo context (path
+# + branch) sits together on the left and watchdog health stands alone on the right.
+# Emits ' <branch>*' (leading space, no brackets — it sits inside the [ae …] bracket)
+# when work_dir is a git repo, else empty. Branch+dirty are the only session facts
+# that change during a run, so they're the only thing recomputed per cycle.
+_watchdog_branch_segment() {
     local work_dir branch dirty=""
     work_dir="$(_watchdog_meta_value work_dir)"
     if [[ -z "$work_dir" ]] || ! _watchdog_git "$work_dir" rev-parse --is-inside-work-tree >/dev/null; then
@@ -7708,7 +7722,7 @@ _watchdog_footer_git_segment() {
     if [[ -n "$(_watchdog_git "$work_dir" status --porcelain --untracked-files=no | head -1)" ]]; then
         dirty="*"
     fi
-    printf '[%s%s] ' "$branch" "$dirty"
+    printf ' %s%s' "$branch" "$dirty"
 }
 
 cmd="${1:-start}"
@@ -7724,9 +7738,15 @@ esac
 # --- _run: the actual watchdog (runs inside hidden tmux window) ---
 
 echo "$$" > "$PIDFILE"
-STATUSFILE="${META_DIR}/.watchdog.status"
-trap 'rm -f "$PIDFILE" "$STATUSFILE"' EXIT
-printf '%s[watch ◌ starting]' "$(_watchdog_footer_git_segment)" > "$STATUSFILE"
+# Live status is pushed into tmux user options, read by the bars as
+# #{@ae_branch_status} (status-LEFT, after the static path) and #{@ae_watchdog_status}
+# (status-RIGHT health). User-option values are interpolated literally — no shell, no
+# #() parsing — so a branch/path with spaces, ), #, etc. is safe with no escaping.
+# Cleared on exit so the bars fall back cleanly (left → just the path).
+_watchdog_set_status() { tmux set-option -t "$_AE_SESSION" "$1" "$2" 2>/dev/null || true; }
+trap 'rm -f "$PIDFILE"; tmux set-option -t "$_AE_SESSION" -u @ae_branch_status 2>/dev/null; tmux set-option -t "$_AE_SESSION" -u @ae_watchdog_status 2>/dev/null' EXIT
+_watchdog_set_status @ae_watchdog_status "[watch ◌ starting]"
+_watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"
 
 # Pretty banner so the pane is informative when viewed
 printf '\033[1;36m'
@@ -8187,7 +8207,8 @@ while true; do
         fi
     fi
 
-    # Update tmux status bar via a tiny status file (read by status-right format)
+    # Push live status into the tmux user options: health → status-right,
+    # branch+dirty → status-left (after the static path).
     if (( cycle_dead > 0 )); then
         glyph="✖"
     elif (( cycle_stale > 0 )); then
@@ -8195,7 +8216,8 @@ while true; do
     else
         glyph="●"
     fi
-    printf '%s[watch %s %d/%d]' "$(_watchdog_footer_git_segment)" "$glyph" "$cycle_active" "$cycle_total" > "$STATUSFILE"
+    _watchdog_set_status @ae_watchdog_status "[watch ${glyph} ${cycle_active}/${cycle_total}]"
+    _watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"
 
     sleep "$INTERVAL"
 done

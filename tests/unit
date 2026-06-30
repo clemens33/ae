@@ -1149,8 +1149,11 @@ assert_eq "monitor: watchdog start splits to add _watchdog pane, does not create
 assert_eq "monitor: watchdog stop kills only the _watchdog pane (window survives)" "1" \
     "$([[ "$AE_SOURCE" == *'_monitor_find_pane _watchdog'* && "$AE_SOURCE" == *'tmux kill-pane -t "$watchdog_pane"'* ]] && echo 1 || echo 0)"
 
-assert_eq "footer: status-right prefixes the dynamic git segment before health" "1" \
-    "$([[ "$AE_SOURCE" == *'_watchdog_footer_git_segment()'* && "$AE_SOURCE" == *"printf '%s[watch %s %d/%d]'"* ]] && echo 1 || echo 0)"
+assert_eq "watchdog: branch → @ae_branch_status (left), health → @ae_watchdog_status (right)" "1" \
+    "$([[ "$AE_SOURCE" == *'_watchdog_branch_segment()'* && "$AE_SOURCE" == *'_watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"'* && "$AE_SOURCE" == *'_watchdog_set_status @ae_watchdog_status "[watch ${glyph} ${cycle_active}/${cycle_total}]"'* ]] && echo 1 || echo 0)"
+
+assert_eq "watchdog: branch segment is bracket-less ' branch*' (sits inside the [ae …] left bracket)" "1" \
+    "$([[ "$AE_SOURCE" == *"printf ' %s%s' \"\$branch\" \"\$dirty\""* ]] && echo 1 || echo 0)"
 
 assert_eq "status-left: location built mode-aware (local one path, copy/worktree two paths)" "1" \
     "$([[ "$AE_SOURCE" == *'_ae_status_left_paths()'* && "$AE_SOURCE" == *'full) printf'* && "$AE_SOURCE" == *'git) printf'* ]] && echo 1 || echo 0)"
@@ -1158,8 +1161,8 @@ assert_eq "status-left: location built mode-aware (local one path, copy/worktree
 assert_eq "status-left: \$HOME abbreviated and long paths left-truncated" "1" \
     "$([[ "$AE_SOURCE" == *'_ae_abbrev_home()'* && "$AE_SOURCE" == *'_ae_trunc_left()'* ]] && echo 1 || echo 0)"
 
-assert_eq "status-left: applied via _ae_apply_status_left ([ae ...] + raised length)" "1" \
-    "$([[ "$AE_SOURCE" == *'_ae_apply_status_left()'* && "$AE_SOURCE" == *'status-left "[ae ${paths}] "'* && "$AE_SOURCE" == *'status-left-length 90'* ]] && echo 1 || echo 0)"
+assert_eq "status-left: applied via _ae_apply_status_left ([ae path + #{@ae_branch_status}] + raised length)" "1" \
+    "$([[ "$AE_SOURCE" == *'_ae_apply_status_left()'* && "$AE_SOURCE" == *'status-left "[ae ${paths}#{@ae_branch_status}] "'* && "$AE_SOURCE" == *'status-left-length 90'* ]] && echo 1 || echo 0)"
 
 assert_eq "status-left: applied on BOTH session creation and doctor --refresh" "1" \
     "$([[ "$AE_SOURCE" == *'_ae_apply_status_left "$SESSION"'* && "$AE_SOURCE" == *'_ae_apply_status_left "$session_name"'* ]] && echo 1 || echo 0)"
@@ -1171,10 +1174,29 @@ assert_eq "status-left: tmux #S metachar doubled (cannot expand to session name)
     "$(_ae_tmux_format_literal 'a#Sb')"
 assert_eq "status-left: tmux #(cmd) neutralized (no status-job shell execution)" 'x##(id)' \
     "$(_ae_tmux_format_literal 'x#(id)')"
+assert_eq "status-left: strftime %Y/%s in a path doubled (renders verbatim, not a date)" '/tmp/%%Y/%%s' \
+    "$(_ae_tmux_format_literal '/tmp/%Y/%s')"
+assert_eq "status-left: combined # and % both escaped" '/a##%%Y/b' \
+    "$(_ae_tmux_format_literal '/a#%Y/b')"
 assert_eq "status-left: plain path text unchanged by escape" 'feature/x' \
     "$(_ae_tmux_format_literal 'feature/x')"
 assert_eq "status-left: escaping is wired before the tmux set-option" "1" \
     "$([[ "$AE_SOURCE" == *'_ae_tmux_format_literal "$(_ae_status_left_paths'* ]] && echo 1 || echo 0)"
+
+# Codex BLOCKER/IMPORTANT (#, ), spaces, $() in AE_HOME/session paths): the live
+# branch + health are now tmux USER OPTIONS, not a `#(cat <path>)` directive that
+# embeds an uncontrolled path. A user-option value is interpolated literally — no
+# shell job, no `#()` directive parsing — so a branch/path containing `)`, `#`, a
+# space, or `$(…)` is safe with zero escaping. Assert the safe wiring + that the
+# fragile cat-directive helpers are gone.
+assert_eq "status-left: live branch via #{@ae_branch_status} user option" "1" \
+    "$([[ "$AE_SOURCE" == *'status-left "[ae ${paths}#{@ae_branch_status}] "'* ]] && echo 1 || echo 0)"
+assert_eq "watchdog: health via #{@ae_watchdog_status} user option in status-right" "1" \
+    "$([[ "$AE_SOURCE" == *'new_status_right="#{@ae_watchdog_status} '* ]] && echo 1 || echo 0)"
+assert_eq "watchdog: status user options cleared on stop AND exit trap (clean fallback)" "1" \
+    "$([[ "$AE_SOURCE" == *'-u @ae_branch_status'* && "$AE_SOURCE" == *'-u @ae_watchdog_status'* ]] && echo 1 || echo 0)"
+assert_eq "status bar: fragile #(cat <path>) directive helpers removed" "1" \
+    "$([[ "$AE_SOURCE" != *'_ae_tmux_cat_directive'* && "$AE_SOURCE" != *'_watchdog_cat_directive'* ]] && echo 1 || echo 0)"
 
 assert_eq "footer: git branch is trimmed and tracked dirty state marks with star" "1" \
     "$([[ "$AE_SOURCE" == *'symbolic-ref --quiet --short HEAD'* && "$AE_SOURCE" == *'status --porcelain --untracked-files=no'* && "$AE_SOURCE" == *'dirty="*"'* ]] && echo 1 || echo 0)"

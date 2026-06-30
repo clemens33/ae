@@ -58,34 +58,39 @@ The session's `agents` helper also lists `_events` and `_watchdog` as agents (wi
 
 ## Status bar
 
-ae splits its tmux status bar by what changes:
+ae splits its tmux status bar by **side**: repo context (where you are) on the left,
+watchdog health (monitoring state) on the right.
 
-- **`status-left`** (static; set at launch and re-applied by `ae doctor --refresh`)
-  carries the session **location** — the path(s) the session works in, by mode. The
-  session *name* is omitted here because it is already the window label
-  (`0:<session>`). Path text is escaped for tmux's format syntax (`#` → `##`) so a
-  directory or branch containing `#S`/`#(…)` can't expand or run a status job.
+- **`status-left`** carries the session **location + git branch** — the repo context.
+  The path(s) the session works in (by mode) are static, set at launch and re-applied
+  by `ae doctor --refresh`; the branch + tracked-dirty marker is appended live by the
+  watchdog, which writes it to the `@ae_branch_status` tmux **user option** each cycle
+  (status-left renders it as `#{@ae_branch_status}`). A user-option value is
+  interpolated literally — no shell job, no `#()` parsing — so a branch with a `#`,
+  `)`, space, or any character is safe with zero escaping; it's empty (left falls back
+  to just the path) when the watchdog is off or the work dir isn't a repo. The session
+  *name* is omitted (it's already the window label `0:<session>`). The static path text
+  is escaped for tmux's format syntax — both `#` → `##` (format vars) and `%` → `%%`
+  (strftime) — so a directory like `/tmp/%Y` or `/repo#1` renders verbatim.
 
   ```text
-  [ae ~/projects/clemens33/ae]                         # local: one path
-  [ae ~/projects/clemens33/ae → ~/.ae/copies/aedev]    # copy (full): origin → copy
-  [ae ~/projects/clemens33/ae ⌁ ~/.ae/worktrees/aedev] # git: origin repo ⌁ worktree
+  [ae ~/projects/clemens33/ae main*]                         # local: path + branch
+  [ae ~/projects/clemens33/ae → ~/.ae/copies/aedev main*]    # copy (full): origin → copy
+  [ae ~/projects/clemens33/ae ⌁ ~/.ae/worktrees/aedev feat*] # git: origin repo ⌁ worktree
   ```
 
   `$HOME` is abbreviated to `~`; long paths are truncated from the left (keeping the
-  tail) with a leading `…`. `status-left-length` is raised to fit.
+  tail) with a leading `…`. `status-left-length` is raised to fit. `main*` is the git
+  branch (or detached short commit); `*` = tracked changes
+  (`git status --porcelain --untracked-files=no`); omitted for non-git work dirs.
 
-- **`status-right`** carries the watchdog's per-cycle **health**, refreshed from a
-  cached status file. When the work dir is a git repo it is prefixed with the live
-  branch + tracked-dirty marker (the only session facts that change during a run):
+- **`status-right`** carries only the watchdog's per-cycle **health**, rendered from
+  the `@ae_watchdog_status` user option (set by the watchdog each cycle, same
+  literal-interpolation safety as the branch):
 
   ```text
-  [main*] [watch ● 2/2]  ckriech@host  10:42
+  [watch ● 2/2]  ckriech@host  10:42
   ```
-
-| Field | Meaning |
-|---|---|
-| `main*` | git branch (or detached short commit) of the work dir; `*` = tracked changes (`git status --porcelain --untracked-files=no`). Omitted for non-git work dirs. |
 
 The `[watch …]` bracket is watchdog health:
 
