@@ -501,10 +501,10 @@ assert_eq "helpers: launch paste helper handles staged Claude pastes" \
 
 # ── events.jsonl infrastructure ─────────────────────────────────────
 
-# Extract _lib functions from LIBEOF heredoc for direct testing
+# _lib functions are top-level since the declare-f migration — extract directly.
 eval "$(awk '/^ae_json_escape\(\) \{/,/^\}/' <<<"$AE_SOURCE")"
 
-assert_eq "events: ae_json_escape exists in _lib" \
+assert_eq "events: ae_json_escape exists (single source, emitted into _lib)" \
     "1" \
     "$([[ "$AE_SOURCE" == *"ae_json_escape()"* ]] && echo 1 || echo 0)"
 
@@ -579,9 +579,23 @@ assert_eq "events: mark-done helper still emits legacy done event (via state shi
 # extracting the real functions, not by grepping heredoc text. Structural
 # asserts below only pin the emission wiring + the marker-region placement
 # (doctor --refresh awk-sources that region; a def outside it breaks refresh).
-assert_eq "state: template fns defined inside SYNC_SESSION_ASSETS_BODY markers" \
+# Template fns live in the top-level template library BEFORE the dispatcher
+# (loaded on every execution path, incl. doctor --refresh which exits from the
+# dispatcher after awk-sourcing only the marker region); the emission sites
+# inside the marker region reference them via declare -f.
+assert_eq "state: template fns defined in the template library before the dispatcher" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'SYNC_SESSION_ASSETS_BODY_START'*'helper_state_main() {'*'declare -f helper_state_usage helper_state_main'*'SYNC_SESSION_ASSETS_BODY_END'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'Session-helper template library'*'helper_state_main() {'*'ATTACH_ON_READY=true'* ]] && echo 1 || echo 0)"
+
+assert_eq "state: emission via declare -f inside the marker region (atomic mv)" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'SYNC_SESSION_ASSETS_BODY_START'*'declare -f helper_state_usage helper_state_main'*'mv "${AE_META}/state.tmp.$$" "${AE_META}/state"'*'SYNC_SESSION_ASSETS_BODY_END'* ]] && echo 1 || echo 0)"
+
+# Same wiring guard for _lib: prologue heredoc + declare -f function set +
+# atomic mv, all inside the marker region.
+assert_eq "_lib: emission = LIBPROLOGUE + declare -f set + atomic mv, in-region" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'SYNC_SESSION_ASSETS_BODY_START'*"cat <<'LIBPROLOGUE'"*'declare -f ae_resolve ae_lock_target'*'mv "${AE_META}/_lib.tmp.$$" "${AE_META}/_lib"'*'SYNC_SESSION_ASSETS_BODY_END'* ]] && echo 1 || echo 0)"
 
 assert_eq "state: generated file calls helper_state_main with script args" \
     "1" \
@@ -590,8 +604,8 @@ assert_eq "state: generated file calls helper_state_main with script args" \
 # Behavioural: extract the real template functions (indented — they live inside
 # the generation body) and exercise them with stubbed _lib deps, under the
 # helper's own runtime options (plain bash, no errexit/nounset).
-eval "$(awk '/^    helper_state_usage\(\) \{/,/^    \}$/' <<<"$AE_SOURCE")"
-eval "$(awk '/^    helper_state_main\(\) \{/,/^    \}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^helper_state_usage\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^helper_state_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 
 _state_evlog="$(mktemp)"
 # Stubs are invoked indirectly through the eval'd helper functions.
@@ -658,13 +672,10 @@ assert_eq "state: workspace manifest documents state helper" \
     "$([[ "$AE_SOURCE" == *'/state working "starting on X"'* && "$AE_SOURCE" == *'/state blocked'* ]] && echo 1 || echo 0)"
 
 # Behavioural: extract _event_json_str + ae_latest_state_for bodies and
-# exercise them against a synthetic events.jsonl. _event_json_str is defined
-# twice with identical bodies: once at top level (for cmd_list, which runs in
-# the main script and can't source a per-session _lib) and once in _lib (reused
-# by every generated helper, incl. watchdog, via `source _lib`). Taking the
-# first occurrence yields the top-level copy, which is what _session_states
-# uses. ae_latest_state_for exists only inside _lib, so its first occurrence is
-# that copy.
+# exercise them against a synthetic events.jsonl. Both are single top-level
+# definitions since the declare-f migration: _event_json_str at its
+# long-standing top-level site (used by cmd_list AND emitted into _lib),
+# ae_latest_state_for in the template library section.
 eval "$(awk '
     /^_event_json_str\(\) \{/ && !seen_e { printing=1; seen_e=1 }
     /^ae_latest_state_for\(\) \{/ && !seen_s { printing=1; seen_s=1 }
@@ -672,25 +683,19 @@ eval "$(awk '
     printing && /^\}$/ { printing=0 }
 ' <<<"$AE_SOURCE")"
 
-# Guard: the two _event_json_str copies (top-level for cmd_list + _lib for all
-# generated helpers) must stay byte-identical. The behavioural tests above
-# exercise only the first copy, so without this a drift between them would go
-# unnoticed. (The watchdog helper has no copy of its own — it sources _lib.)
-assert_eq "parser: exactly two _event_json_str copies in source" "2" \
+# Dedupe guards: the old byte-identical mirror copies are GONE — assert they
+# stay gone (a reintroduced second copy would silently drift again). The
+# generated _lib gets these bodies via declare -f from the single source.
+assert_eq "parser: exactly one _event_json_str copy in source" "1" \
     "$(grep -c '^_event_json_str() {' <<<"$AE_SOURCE")"
-_ejs_c1="$(awk '/^_event_json_str\(\) \{/{c++} c==1{print} c==1&&/^\}$/{exit}' <<<"$AE_SOURCE")"
-_ejs_c2="$(awk '/^_event_json_str\(\) \{/{c++} c==2{print} c==2&&/^\}$/{exit}' <<<"$AE_SOURCE")"
-assert_eq "parser: _lib copy byte-identical to top-level" "$_ejs_c1" "$_ejs_c2"
+assert_eq "json_escape: exactly one ae_json_escape body; _json_escape is a thin alias" \
+    "1|1" \
+    "$(printf '%s|%s' "$(grep -c '^ae_json_escape() {' <<<"$AE_SOURCE")" \
+        "$(grep -c '^_json_escape() { ae_json_escape "$@"; }' <<<"$AE_SOURCE")")"
 
-# Same guard for the JSON escaper: top-level _json_escape (for ae list --json)
-# must keep the same body as the _lib ae_json_escape. Compare bodies (the
-# function-name lines differ; the bodies must not).
-_je1="$(awk '/^_json_escape\(\) \{/{p=1;next} p&&/^\}$/{exit} p{print}' <<<"$AE_SOURCE")"
-_je2="$(awk '/^ae_json_escape\(\) \{/{p=1;next} p&&/^\}$/{exit} p{print}' <<<"$AE_SOURCE")"
-assert_eq "json_escape: top-level mirror body identical to _lib ae_json_escape" "$_je1" "$_je2"
-
-# Behavioural: _json_escape handles the JSON-significant characters.
-eval "$(awk '/^_json_escape\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# Behavioural: _json_escape (the alias) handles the JSON-significant
+# characters — proves delegation to ae_json_escape (eval'd above) works.
+eval "$(grep '^_json_escape() {' <<<"$AE_SOURCE")"
 assert_eq "json_escape: escapes double quotes" 'say \"hi\"' "$(_json_escape 'say "hi"')"
 assert_eq "json_escape: escapes backslash" 'a\\b' "$(_json_escape 'a\b')"
 assert_eq "json_escape: escapes newline" 'l1\nl2' "$(_json_escape $'l1\nl2')"
@@ -772,9 +777,9 @@ unset _AE_META_DIR
 # ── _session_states + cmd_list state column (phase 3) ──────────────
 
 # Structural: top-level parser + reader exist and cmd_list wires them in.
-assert_eq "list: top-level _event_json_str mirror exists" \
+assert_eq "list: top-level _event_json_str single source exists" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'Intentionally mirrored from the _lib copy'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'emitted by name into every generated'* && "$AE_SOURCE" == *'_event_json_str() {'* ]] && echo 1 || echo 0)"
 
 assert_eq "list: _session_states function exists" \
     "1" \
@@ -1763,7 +1768,27 @@ _extract_heredoc() {
         inside { print > outfile }
     ' "$src"
 }
-_extract_heredoc "$(dirname "$0")/../ae" LIBEOF "$_req_helper_dir/_lib"
+# Build a functional _lib from the declare-f source layout: the emitted
+# prologue (LIBPROLOGUE heredoc) + EXACTLY the fn set named by the real
+# emission's declare -f list, parsed from the emission block itself. The
+# synthetic _lib must never be BROADER than the runtime one — a superset
+# (e.g. including helper_* template fns) could mask an accidental _lib
+# dependency that generated sessions would only hit at runtime.
+_build_lib_from_source() {
+    local src="$1" out="$2" fn
+    {
+        awk "/<<'LIBPROLOGUE'/{f=1;next} /^LIBPROLOGUE\$/{f=0} f" "$src"
+        while IFS= read -r fn; do
+            [[ -n "$fn" ]] || continue
+            awk "/^${fn}\\(\\) \\{/,/^\\}\$/" "$src"
+        done < <(awk '/^ *declare -f ae_resolve /{f=1} f{l=$0; stop=(l !~ /\\ *$/); gsub(/\\ *$/,"",l); sub(/^ *declare -f /,"",l); print l; if (stop) exit}' "$src" | tr ' ' '\n')
+    } >"$out"
+}
+_build_lib_from_source "$(dirname "$0")/../ae" "$_req_helper_dir/_lib"
+assert_eq "_lib builder: mirrors the emission list (no helper_* leakage, non-empty)" \
+    "0|1" \
+    "$(printf '%s|%s' "$(grep -c '^helper_' "$_req_helper_dir/_lib")" \
+        "$(grep -q '^ae_meta_unset() {' "$_req_helper_dir/_lib" && echo 1 || echo 0)")"
 _extract_heredoc "$(dirname "$0")/../ae" REQUESTSEOF "$_req_helper_dir/requests"
 chmod +x "$_req_helper_dir/_lib" "$_req_helper_dir/requests"
 
@@ -3333,7 +3358,7 @@ assert_eq "say: telegram status warns when include omits chat" "1" \
 # Behavioral: ae_emit_event newline/cap behaviour, exercised from the real _lib body.
 # _lib resets _AE_META_DIR to its own dir on source, so override it afterward.
 _say_lib="$(mktemp)"
-awk "/<<'LIBEOF'/{f=1;next} /^LIBEOF\$/{f=0} f" "$(dirname "$0")/../ae" >"$_say_lib"
+_build_lib_from_source "$(dirname "$0")/../ae" "$_say_lib"
 _say_home="$(mktemp -d)"
 _say_result="$(
     AE_SENDER_OVERRIDE="claude:lead" NL='\n' SAYHOME="$_say_home" bash -c '

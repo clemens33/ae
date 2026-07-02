@@ -117,6 +117,7 @@ assert_not_exists "lifecycle: session dir cleaned" "$HOME/.ae/sessions/test-life
 REPO2="$(setup_repo)"
 (cd "$REPO2" && "$AE" --local test-resume &) 2>/dev/null
 wait_for_session "test-resume"
+sleep 1 # session setup writes meta shortly after tmux visibility (~200ms under load)
 
 # Verify meta has session info
 assert_eq "resume: meta created" "1" "$([[ -f "$HOME/.ae/sessions/test-resume/meta" ]] && echo 1 || echo 0)"
@@ -632,6 +633,7 @@ printf '#!/usr/bin/env bash\necho stale-helper\n' > "$HOME/.ae/sessions/test-syn
 chmod 0700 "$HOME/.ae/sessions/test-sync/reply"
 printf '#!/usr/bin/env bash\necho stale-helper\n' > "$HOME/.ae/sessions/test-sync/state"
 chmod 0700 "$HOME/.ae/sessions/test-sync/state"
+printf '# stale lib\n' > "$HOME/.ae/sessions/test-sync/_lib"
 printf 'stale manifest\n' > "$HOME/.ae/sessions/test-sync/workspace.md"
 
 (cd "$REPO11" && "$AE" doctor --refresh test-sync > "$TMPDIR/doctor-sync.out" 2>/dev/null)
@@ -654,6 +656,13 @@ assert_eq "doctor-sync: meta ae_path refreshed" "$AE" "$meta_ae_path"
 STATE_HELPER="$HOME/.ae/sessions/test-sync/state"
 assert_contains "doctor-refresh: state helper carries emitted template fn" \
     "helper_state_main" "$(cat "$STATE_HELPER")"
+# _lib is regenerated the same way: verbatim prologue + declare-f'd functions
+# (declare -f prints signatures as "name () ").
+LIB_FILE="$HOME/.ae/sessions/test-sync/_lib"
+assert_contains "doctor-refresh: _lib carries the verbatim prologue" \
+    '_AE_SESSIONS_DIR=' "$(cat "$LIB_FILE")"
+assert_contains "doctor-refresh: _lib carries declare-f emitted functions" \
+    'ae_resolve ()' "$(cat "$LIB_FILE")"
 assert_contains "doctor-refresh: regenerated state runs standalone (no args)" \
     "state:" "$("$STATE_HELPER" 2>&1 || true)"
 # (self resolves context-dependently: main agent when a pane matches, else

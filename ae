@@ -1488,11 +1488,10 @@ _print_session_meta_line() {
     fi
 }
 
-# Extract a flat-JSON string value. Intentionally mirrored from the _lib copy
-# (next to ae_emit_event) — that version is emitted as heredoc text into
-# per-session helpers and cannot be sourced by the main script, so the parser
-# is duplicated here for cmd_list. Keep the two copies byte-identical; the unit
-# suite asserts that and exercises this top-level copy.
+# Extract a flat-JSON string value. Single source: used directly by ae's own
+# code (cmd_list/_session_states) AND emitted by name into every generated
+# _lib via declare -f. The old byte-identical _lib mirror is gone; the unit
+# suite asserts exactly one copy exists.
 _event_json_str() {
     local line="$1" key="$2"
     local prefix="\"${key}\":\""
@@ -1796,11 +1795,11 @@ USAGE
     tmux "$(_next_focus_verb)" -t "$best_name"
 }
 
-# Escape a string for embedding in JSON. Intentionally mirrored from the _lib
-# ae_json_escape (which is heredoc text, unsourceable by the main script) so
-# `ae list --json` needs no jq. Keep the two byte-identical; the unit suite
-# asserts it.
-_json_escape() {
+# Escape a string for embedding in JSON. Single source: this body is emitted
+# into every generated _lib via declare -f AND used directly by ae's own code
+# (`ae list --json` needs no jq). The old byte-identical _lib mirror is gone —
+# _json_escape below is a thin alias for ae's historical internal call sites.
+ae_json_escape() {
     local s="$1"
     s="${s//\\/\\\\}"
     s="${s//\"/\\\"}"
@@ -1809,6 +1808,7 @@ _json_escape() {
     s="${s//$'\r'/\\r}"
     printf '%s' "$s"
 }
+_json_escape() { ae_json_escape "$@"; }
 
 # Last-active epoch for a session: mtime of the first existing of events.jsonl,
 # then workspace.md, then meta (events.jsonl is the activity log, so in practice
@@ -5664,6 +5664,478 @@ EOF
 }
 
 # --- Dispatcher ---
+# ── Session-helper template library ──────────────────────────────────
+# Functions below are EMITTED into generated session helpers (_lib and
+# the declare-f migrated helpers) via `declare -f` at the emission sites
+# inside the SYNC_SESSION_ASSETS_BODY region. They are defined at top
+# level BEFORE the dispatcher so every execution path — launch, and
+# dispatcher subcommands like doctor --refresh (which awk-sources that
+# region) — has them loaded prior to any emission. They execute inside a
+# generated helper's runtime (after `source _lib`, which provides
+# _AE_META_DIR/_AE_SESSION/_AE_SESSIONS_DIR): ae's own code paths must
+# not call them. Shared bodies ae itself also uses (ae_json_escape,
+# _event_json_str) live at their long-standing top-level sites instead.
+
+helper_state_usage() {
+    cat >&2 <<'USAGE'
+Usage: state <working|waiting-user|blocked|done> [reason]
+       state                              # print current state
+
+  working       actively making progress
+  waiting-user  needs human input
+  blocked       stuck on external dep — REASON REQUIRED
+  done          complete or paused
+USAGE
+    exit 2
+}
+
+helper_state_main() {
+    local self
+    self="$(ae_current_agent_ref)"
+    [[ -n "$self" ]] || self="human"
+
+    if [[ $# -eq 0 ]]; then
+        local line st reason ts
+        line="$(ae_latest_state_for "$self")"
+        if [[ -z "$line" ]]; then
+            printf '%s state: (none declared)\n' "$self"
+        else
+            IFS=$'\t' read -r st reason ts <<<"$line"
+            printf '%s state: %s%s  (since %s)\n' "$self" "$st" "${reason:+ — $reason}" "$ts"
+        fi
+        exit 0
+    fi
+
+    local value="$1"
+    shift
+    local reason="${*:-}"
+
+    case "$value" in
+        working | waiting-user | done) ;;
+        blocked)
+            if [[ -z "$reason" ]]; then
+                echo "Error: 'blocked' requires a reason" >&2
+                helper_state_usage
+            fi
+            ;;
+        *) helper_state_usage ;;
+    esac
+
+    printf 'Marked %s %s%s\n' "$self" "$value" "${reason:+: $reason}"
+    ae_emit_event "state" "" "$value" "$reason"
+    # Transitional dual-emit: a watchdog process started before the state
+    # helper existed only understands action=done. Emit the legacy event too
+    # so it keeps recognising completions after helpers are refreshed. The
+    # current watchdog reads 'state done' directly; retained until
+    # 'ae doctor --refresh' can restart a running watchdog.
+    if [[ "$value" == "done" ]]; then
+        ae_emit_event "done" "" "" "$reason"
+    fi
+}
+
+# Resolve agent target to pane ID
+# Supports: %pane-id, @session:agent-ref, alias:name, alias-only, bare-name
+# Sets: AE_RESOLVED_PANE (pane ID), AE_RESOLVED_AGENT (canonical agent ref) or exits with error
+ae_resolve() {
+    local target="$1"
+    AE_RESOLVED_PANE=""
+    AE_RESOLVED_AGENT=""
+
+    # 1. Raw pane ID — pass through
+    if [[ "$target" == %* ]]; then
+        AE_RESOLVED_PANE="$target"
+        local pane_agent pane_session
+        pane_agent="$(tmux display-message -p -t "$target" '#{@ae_agent}' 2>/dev/null || true)"
+        pane_session="$(tmux display-message -p -t "$target" '#S' 2>/dev/null || true)"
+        if [[ -n "$pane_agent" ]]; then
+            if [[ -n "$pane_session" && "$pane_session" != "$_AE_SESSION" ]]; then
+                AE_RESOLVED_AGENT="@${pane_session}:${pane_agent}"
+            else
+                AE_RESOLVED_AGENT="$pane_agent"
+            fi
+        fi
+        return 0
+    fi
+
+    # 2. Cross-session: @session:agent-ref
+    local search_session="$_AE_SESSION"
+    if [[ "$target" == @* ]]; then
+        if [[ "$target" != @*:* ]]; then
+            echo "Error: cross-session target must be @session:agent, got '${target}'" >&2
+            return 1
+        fi
+        target="${target#@}"
+        search_session="${target%%:*}"
+        target="${target#*:}"
+        if [[ -z "$search_session" || -z "$target" ]]; then
+            echo "Error: cross-session target must be @session:agent" >&2
+            return 1
+        fi
+        # Verify session exists in tmux
+        if ! tmux has-session -t "$search_session" 2>/dev/null; then
+            echo "Error: session '${search_session}' not found" >&2
+            return 1
+        fi
+    fi
+
+    # 3. Resolve within session
+    local resolved="" resolved_agent=""
+    local alias_match="" alias_match_agent="" alias_count=0
+    local bare_match="" bare_match_agent="" bare_count=0
+    while IFS=$'\t' read -r pid aagent; do
+        # Exact match on alias:name
+        if [[ "$aagent" == "${target}" ]]; then
+            resolved="$pid"
+            if [[ "$search_session" != "$_AE_SESSION" ]]; then
+                resolved_agent="@${search_session}:${aagent}"
+            else
+                resolved_agent="$aagent"
+            fi
+            break
+        fi
+        # Alias-only match (e.g. "codex" matches "codex:coworker")
+        local aalias="${aagent%%:*}"
+        if [[ "$aalias" == "${target}" ]]; then
+            alias_match="$pid"
+            if [[ "$search_session" != "$_AE_SESSION" ]]; then
+                alias_match_agent="@${search_session}:${aagent}"
+            else
+                alias_match_agent="$aagent"
+            fi
+            alias_count=$((alias_count + 1))
+        fi
+        # Bare name match (e.g. "lead" matches "claude:lead")
+        local aname="${aagent#*:}"
+        if [[ "$aname" == "${target}" ]]; then
+            bare_match="$pid"
+            if [[ "$search_session" != "$_AE_SESSION" ]]; then
+                bare_match_agent="@${search_session}:${aagent}"
+            else
+                bare_match_agent="$aagent"
+            fi
+            bare_count=$((bare_count + 1))
+        fi
+    done < <(tmux list-panes -s -t "$search_session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
+
+    if [[ -z "$resolved" && "$alias_count" -eq 1 ]]; then
+        resolved="$alias_match"
+        resolved_agent="$alias_match_agent"
+    fi
+
+    if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
+        resolved="$bare_match"
+        resolved_agent="$bare_match_agent"
+    fi
+
+    if [[ -z "$resolved" ]]; then
+        if [[ "$alias_count" -gt 1 || "$bare_count" -gt 1 ]]; then
+            echo "Error: ambiguous name '${target}' in session '${search_session}' — use alias:name format" >&2
+        else
+            echo "Error: agent '${target}' not found in session '${search_session}'" >&2
+        fi
+        return 1
+    fi
+
+    # Output contract: consumers read these after calling ae_resolve.
+    # shellcheck disable=SC2034
+    AE_RESOLVED_PANE="$resolved"
+    AE_RESOLVED_AGENT="$resolved_agent"
+    return 0
+}
+
+# Acquire per-target flock (shared between send and interrupt, globally across sessions)
+ae_lock_target() {
+    local pane="$1"
+    local lockdir="${_AE_SESSIONS_DIR}/.locks"
+    mkdir -p "$lockdir"
+    local lockfile="${lockdir}/send-lock-${pane//[^a-zA-Z0-9]/_}"
+    exec 9>"$lockfile"
+    flock 9
+}
+
+ae_unlock_target() {
+    exec 9>&-
+}
+
+ae_now_utc() {
+    date -u +%Y-%m-%dT%H:%M:%SZ
+}
+
+ae_current_pane() {
+    if [[ -n "${TMUX_PANE:-}" ]]; then
+        printf '%s' "$TMUX_PANE"
+    else
+        tmux display-message -p '#{pane_id}' 2>/dev/null || true
+    fi
+}
+
+ae_current_agent() {
+    local pane
+    pane="$(ae_current_pane)"
+    [[ -n "$pane" ]] || return 0
+    tmux display-message -p -t "$pane" '#{@ae_agent}' 2>/dev/null || true
+}
+
+ae_current_agent_ref() {
+    local agent session pane
+    agent="$(ae_current_agent)"
+    [[ -n "$agent" ]] || return 0
+    pane="$(ae_current_pane)"
+    session="$(tmux display-message -p -t "${pane:-$_AE_SESSION}" '#S' 2>/dev/null || true)"
+    if [[ -n "$session" && "$session" != "$_AE_SESSION" ]]; then
+        printf '@%s:%s' "$session" "$agent"
+    else
+        printf '%s' "$agent"
+    fi
+}
+
+ae_preview_text() {
+    local text="$*"
+    text="${text//$'\r'/}"
+    text="${text//$'\n'/\\n}"
+    text="${text//$'\t'/ }"
+    printf '%.200s' "$text"
+}
+
+ae_extract_req_id() {
+    local text="$1"
+    if [[ "$text" =~ \[((ae|review)-[A-Za-z0-9._:-]+)\] ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+    fi
+}
+
+ae_log_append() {
+    local file="$1" line="$2"
+    {
+        flock -w 5 8 || exit 1
+        printf '%s\n' "$line" >>"$file"
+    } 8>>"${file}.lock"
+}
+
+ae_log_read() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    {
+        flock -s 8 || exit 1
+        cat "$file"
+    } 8<>"${file}.lock"
+}
+
+# Determine target tool type from pane metadata/process name.
+# Returns: codex | claude | other
+ae_target_tool() {
+    local pane="$1" row agent cmd alias
+    row="$(tmux list-panes -a -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null | awk -F'|' -v p="$pane" '$1==p {print; exit}')"
+    [[ -z "$row" ]] && {
+        echo "other"
+        return 0
+    }
+    IFS='|' read -r _ agent cmd <<<"$row"
+    alias="${agent%%:*}"
+    if [[ "$alias" == "codex" || "$cmd" == "codex" ]]; then
+        echo "codex"
+    elif [[ "$alias" == "claude" || "$cmd" == "claude" ]]; then
+        echo "claude"
+    else
+        echo "other"
+    fi
+}
+
+ae_emit_event() {
+    local action="$1" target="${2:-}" ref="${3:-}" summary="${4:-}"
+    local actor
+    actor="${AE_SENDER_OVERRIDE:-$(ae_current_agent_ref)}"
+    [[ -n "$actor" ]] || actor="human"
+    local ts
+    ts="$(date -u +%FT%TZ)"
+    # Summary is capped and (for most events) flattened to one line. `chat`
+    # events carry a human reply destined for Telegram, so they keep newlines
+    # and get a larger cap (3500 — matches format_event's truncation, stays
+    # under Telegram's 4096 limit). Either way ae_json_escape below turns any
+    # newline into a literal \n, so events.jsonl stays one JSON object per line
+    # — the invariant every line-oriented consumer (cmd_list, the watchdog
+    # watchdog, the telegram tail) depends on.
+    if [[ "$action" == "chat" ]]; then
+        summary="$(printf '%s' "$summary" | head -c 3500)"
+    else
+        summary="$(printf '%s' "$summary" | head -c 200 | tr '\n\t' '  ')"
+    fi
+    local json
+    json="$(printf '{"ts":"%s","actor":"%s","action":"%s"' \
+        "$(ae_json_escape "$ts")" "$(ae_json_escape "$actor")" "$(ae_json_escape "$action")")"
+    [[ -n "$target" ]] && json+="$(printf ',"target":"%s"' "$(ae_json_escape "$target")")"
+    [[ -n "$ref" ]] && json+="$(printf ',"ref":"%s"' "$(ae_json_escape "$ref")")"
+    [[ -n "$summary" ]] && json+="$(printf ',"summary":"%s"' "$(ae_json_escape "$summary")")"
+    json+="}"
+    ae_log_append "${_AE_META_DIR}/events.jsonl" "$json"
+}
+
+# Latest state declaration for an agent. Output: state<TAB>reason<TAB>ts (or empty).
+# Scans events.jsonl backwards for newest event matching actor=<agent>; treats
+# action=state events as authoritative and legacy action=done events as state=done
+# so sessions that pre-date the state helper still read back consistently.
+ae_latest_state_for() {
+    local agent="$1"
+    local events="${_AE_META_DIR}/events.jsonl"
+    [[ -f "$events" ]] || return 0
+    local line actor action st reason ts
+    while IFS= read -r line; do
+        [[ "$line" == \{* ]] || continue
+        actor="$(_event_json_str "$line" actor)"
+        [[ "$actor" == "$agent" ]] || continue
+        action="$(_event_json_str "$line" action)"
+        case "$action" in
+            state)
+                st="$(_event_json_str "$line" ref)"
+                reason="$(_event_json_str "$line" summary)"
+                ts="$(_event_json_str "$line" ts)"
+                printf '%s\t%s\t%s\n' "$st" "$reason" "$ts"
+                return 0
+                ;;
+            done)
+                reason="$(_event_json_str "$line" summary)"
+                ts="$(_event_json_str "$line" ts)"
+                printf '%s\t%s\t%s\n' "done" "$reason" "$ts"
+                return 0
+                ;;
+        esac
+    done < <(tac "$events" 2>/dev/null || true)
+}
+
+# Generate a request id like "<prefix>-YYYYMMDDTHHMMSSZ-<rand>"
+ae_make_req_id() {
+    local prefix="${1:-ae}"
+    local req_suffix
+    req_suffix="$(cut -d- -f1 /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+    [[ -n "$req_suffix" ]] || req_suffix="$$-$RANDOM"
+    printf '%s-%s-%s' "$prefix" "$(date -u +%Y%m%dT%H%M%SZ)" "$req_suffix"
+}
+
+# Shared body for ask/review. Resolves target, generates req_id, builds the
+# message (with optional instructions block + uniform reply contract footer),
+# and execs into send with the appropriate _AE_EVENT_* env vars set.
+# Args: action req_prefix header instructions reply_label target body...
+ae_tracked_send() {
+    local action="$1" req_prefix="$2" header="$3" instructions="$4" reply_label="$5" target_name="$6"
+    shift 6
+    local body="$*"
+    # External actors (chat bridges, webhooks) identify themselves via
+    # AE_SENDER_OVERRIDE — they have no @ae_agent pane to detect. Respect
+    # the override before falling back to pane-based detection.
+    local self
+    self="${AE_SENDER_OVERRIDE:-$(ae_current_agent_ref)}"
+    if [[ -z "$self" ]]; then
+        echo "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead." >&2
+        exec "${_AE_META_DIR}/send" "$target_name" "$body"
+    fi
+    # External-actor targets (telegram:*, discord:*) are event-only sinks
+    # consumed by a bridge daemon; the send helper handles the no-pane case.
+    # Skip ae_resolve so the literal target name is preserved end-to-end.
+    if [[ "$target_name" != telegram:* && "$target_name" != discord:* ]]; then
+        ae_resolve "$target_name" || exit 1
+        target_name="${AE_RESOLVED_AGENT:-$target_name}"
+    fi
+
+    local req_id
+    req_id="$(ae_make_req_id "$req_prefix")"
+    local reply_cmd="${_AE_META_DIR}/reply --as \"${target_name}\" \"${req_id}\" \"${reply_label}\""
+
+    local msg="${header} ${req_id} from ${self}: ${body}"
+    [[ -n "$instructions" ]] && msg+=$'\n\n'"${instructions}"
+    msg+=$'\n\n'"REQUIRED: When you have finished, you MUST run this exact command to reply:
+${reply_cmd}
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism."
+
+    exec env _AE_EVENT_ACTION="$action" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$body" \
+        "${_AE_META_DIR}/send" "$target_name" "$msg"
+}
+
+# Look up the original ask/review event for a given req_id. Scans events.jsonl
+# newest-first; returns the first matching ask|review event.
+# Output: TAB-separated "<kind>\t<sender>\t<target>". Return 1 if not found.
+ae_find_request() {
+    local req_id="$1"
+    local events_file="${_AE_META_DIR}/events.jsonl"
+    [[ -f "$events_file" ]] || return 1
+    local line ref action actor target
+    while IFS= read -r line; do
+        [[ "$line" == \{* ]] || continue
+        ref="$(_event_json_str "$line" ref)"
+        [[ "$ref" == "$req_id" ]] || continue
+        action="$(_event_json_str "$line" action)"
+        if [[ "$action" == "ask" || "$action" == "review" ]]; then
+            actor="$(_event_json_str "$line" actor)"
+            target="$(_event_json_str "$line" target)"
+            printf '%s\t%s\t%s\n' "$action" "$actor" "$target"
+            return 0
+        fi
+    done < <(tac "$events_file" 2>/dev/null || true)
+    return 1
+}
+
+ae_submit_pasted_message() {
+    local pane="$1" tool="$2" buf="$3" msg="$4"
+    if [[ "$tool" == "codex" ]]; then
+        tmux set-buffer -b "$buf" -- "$msg" \; \
+            paste-buffer -d -p -b "$buf" -t "$pane"
+        sleep 0.1
+        tmux send-keys -t "$pane" Enter
+        return 0
+    fi
+
+    tmux set-buffer -b "$buf" -- "$msg" \; \
+        paste-buffer -d -b "$buf" -t "$pane"
+    sleep 0.1
+    tmux send-keys -t "$pane" Enter
+
+    # Claude sometimes stages large pastes as a "[Pasted text #…]" token
+    # that requires an extra submit keystroke.
+    if [[ "$tool" == "claude" ]]; then
+        sleep 0.2
+        if tmux capture-pane -p -t "$pane" 2>/dev/null | tail -n 8 | grep -Eq '\[Pasted text #[0-9]+ \+[0-9]+ lines\]'; then
+            tmux send-keys -t "$pane" Enter
+        fi
+    fi
+}
+
+# --- session meta key/value (locked) -------------------------------------
+# Shared read/write for keys in this session's meta file. Writes serialize on
+# meta.lock (same lock the watchdog's meta writer uses) so concurrent helpers
+# can't clobber each other; last-write-wins per key. Values are single-line.
+
+ae_meta_get() {
+    grep "^${1}=" "${_AE_META_DIR}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true
+}
+
+ae_meta_set() {
+    local key="$1" value="$2"
+    local meta_file="${_AE_META_DIR}/meta"
+    [[ -f "$meta_file" ]] || return 1
+    value="${value//$'\r'/}"
+    value="${value//$'\n'/ }"
+    {
+        flock -w 5 200 || exit 1
+        local tmp="${meta_file}.tmp.$$"
+        awk -F= -v k="$key" -v v="$value" '
+            BEGIN { updated = 0 }
+            $1 == k { print k "=" v; updated = 1; next }
+            { print }
+            END { if (!updated) print k "=" v }
+        ' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
+    } 200>"${meta_file}.lock"
+}
+
+ae_meta_unset() {
+    local key="$1"
+    local meta_file="${_AE_META_DIR}/meta"
+    [[ -f "$meta_file" ]] || return 0
+    {
+        flock -w 5 200 || exit 1
+        local tmp="${meta_file}.tmp.$$"
+        awk -F= -v k="$key" '$1 != k { print }' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
+    } 200>"${meta_file}.lock"
+}
+
 ATTACH_ON_READY=true
 case "${1:-}" in
     list | ls)
@@ -6310,459 +6782,29 @@ sync_session_assets() {
     done
     unset _ae_orphan
 
-    # Shared library sourced by all helpers — tmux shim, name resolution, locking
-    cat >"${AE_META}/_lib" <<'LIBEOF'
+    # _lib — the shared library sourced by all helpers. Runtime prologue (meta
+    # dir, tmux-server shim, session identity) emitted verbatim; the function
+    # set emitted from the top-level template library via declare -f — single
+    # source, no drifting copies. Atomic: temp + chmod + mv (a mid-write abort
+    # must never truncate a live _lib).
+    {
+        cat <<'LIBPROLOGUE'
 # tmux server shim
 _AE_META_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _ts="$(grep '^tmux_server=' "$_AE_META_DIR/meta" | cut -d= -f2-)"
 [[ -n "$_ts" ]] && tmux() { command tmux -L "$_ts" "$@"; }
 _AE_SESSION="$(grep '^session=' "$_AE_META_DIR/meta" | cut -d= -f2-)"
 _AE_SESSIONS_DIR="$(dirname "$_AE_META_DIR")"
-
-# Resolve agent target to pane ID
-# Supports: %pane-id, @session:agent-ref, alias:name, alias-only, bare-name
-# Sets: AE_RESOLVED_PANE (pane ID), AE_RESOLVED_AGENT (canonical agent ref) or exits with error
-ae_resolve() {
-    local target="$1"
-    AE_RESOLVED_PANE=""
-    AE_RESOLVED_AGENT=""
-
-    # 1. Raw pane ID — pass through
-    if [[ "$target" == %* ]]; then
-        AE_RESOLVED_PANE="$target"
-        local pane_agent pane_session
-        pane_agent="$(tmux display-message -p -t "$target" '#{@ae_agent}' 2>/dev/null || true)"
-        pane_session="$(tmux display-message -p -t "$target" '#S' 2>/dev/null || true)"
-        if [[ -n "$pane_agent" ]]; then
-            if [[ -n "$pane_session" && "$pane_session" != "$_AE_SESSION" ]]; then
-                AE_RESOLVED_AGENT="@${pane_session}:${pane_agent}"
-            else
-                AE_RESOLVED_AGENT="$pane_agent"
-            fi
-        fi
-        return 0
-    fi
-
-    # 2. Cross-session: @session:agent-ref
-    local search_session="$_AE_SESSION"
-    if [[ "$target" == @* ]]; then
-        if [[ "$target" != @*:* ]]; then
-            echo "Error: cross-session target must be @session:agent, got '${target}'" >&2
-            return 1
-        fi
-        target="${target#@}"
-        search_session="${target%%:*}"
-        target="${target#*:}"
-        if [[ -z "$search_session" || -z "$target" ]]; then
-            echo "Error: cross-session target must be @session:agent" >&2
-            return 1
-        fi
-        # Verify session exists in tmux
-        if ! tmux has-session -t "$search_session" 2>/dev/null; then
-            echo "Error: session '${search_session}' not found" >&2
-            return 1
-        fi
-    fi
-
-    # 3. Resolve within session
-    local resolved="" resolved_agent=""
-    local alias_match="" alias_match_agent="" alias_count=0
-    local bare_match="" bare_match_agent="" bare_count=0
-    while IFS=$'\t' read -r pid aagent; do
-        # Exact match on alias:name
-        if [[ "$aagent" == "${target}" ]]; then
-            resolved="$pid"
-            if [[ "$search_session" != "$_AE_SESSION" ]]; then
-                resolved_agent="@${search_session}:${aagent}"
-            else
-                resolved_agent="$aagent"
-            fi
-            break
-        fi
-        # Alias-only match (e.g. "codex" matches "codex:coworker")
-        local aalias="${aagent%%:*}"
-        if [[ "$aalias" == "${target}" ]]; then
-            alias_match="$pid"
-            if [[ "$search_session" != "$_AE_SESSION" ]]; then
-                alias_match_agent="@${search_session}:${aagent}"
-            else
-                alias_match_agent="$aagent"
-            fi
-            alias_count=$((alias_count + 1))
-        fi
-        # Bare name match (e.g. "lead" matches "claude:lead")
-        local aname="${aagent#*:}"
-        if [[ "$aname" == "${target}" ]]; then
-            bare_match="$pid"
-            if [[ "$search_session" != "$_AE_SESSION" ]]; then
-                bare_match_agent="@${search_session}:${aagent}"
-            else
-                bare_match_agent="$aagent"
-            fi
-            bare_count=$((bare_count + 1))
-        fi
-    done < <(tmux list-panes -s -t "$search_session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
-
-    if [[ -z "$resolved" && "$alias_count" -eq 1 ]]; then
-        resolved="$alias_match"
-        resolved_agent="$alias_match_agent"
-    fi
-
-    if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
-        resolved="$bare_match"
-        resolved_agent="$bare_match_agent"
-    fi
-
-    if [[ -z "$resolved" ]]; then
-        if [[ "$alias_count" -gt 1 || "$bare_count" -gt 1 ]]; then
-            echo "Error: ambiguous name '${target}' in session '${search_session}' — use alias:name format" >&2
-        else
-            echo "Error: agent '${target}' not found in session '${search_session}'" >&2
-        fi
-        return 1
-    fi
-
-    AE_RESOLVED_PANE="$resolved"
-    AE_RESOLVED_AGENT="$resolved_agent"
-    return 0
-}
-
-# Acquire per-target flock (shared between send and interrupt, globally across sessions)
-ae_lock_target() {
-    local pane="$1"
-    local lockdir="${_AE_SESSIONS_DIR}/.locks"
-    mkdir -p "$lockdir"
-    local lockfile="${lockdir}/send-lock-${pane//[^a-zA-Z0-9]/_}"
-    exec 9>"$lockfile"
-    flock 9
-}
-
-ae_unlock_target() {
-    exec 9>&-
-}
-
-ae_now_utc() {
-    date -u +%Y-%m-%dT%H:%M:%SZ
-}
-
-ae_current_pane() {
-    if [[ -n "${TMUX_PANE:-}" ]]; then
-        printf '%s' "$TMUX_PANE"
-    else
-        tmux display-message -p '#{pane_id}' 2>/dev/null || true
-    fi
-}
-
-ae_current_agent() {
-    local pane
-    pane="$(ae_current_pane)"
-    [[ -n "$pane" ]] || return 0
-    tmux display-message -p -t "$pane" '#{@ae_agent}' 2>/dev/null || true
-}
-
-ae_current_agent_ref() {
-    local agent session pane
-    agent="$(ae_current_agent)"
-    [[ -n "$agent" ]] || return 0
-    pane="$(ae_current_pane)"
-    session="$(tmux display-message -p -t "${pane:-$_AE_SESSION}" '#S' 2>/dev/null || true)"
-    if [[ -n "$session" && "$session" != "$_AE_SESSION" ]]; then
-        printf '@%s:%s' "$session" "$agent"
-    else
-        printf '%s' "$agent"
-    fi
-}
-
-ae_preview_text() {
-    local text="$*"
-    text="${text//$'\r'/}"
-    text="${text//$'\n'/\\n}"
-    text="${text//$'\t'/ }"
-    printf '%.200s' "$text"
-}
-
-ae_extract_req_id() {
-    local text="$1"
-    if [[ "$text" =~ \[((ae|review)-[A-Za-z0-9._:-]+)\] ]]; then
-        printf '%s' "${BASH_REMATCH[1]}"
-    fi
-}
-
-ae_log_append() {
-    local file="$1" line="$2"
-    {
-        flock -w 5 8 || exit 1
-        printf '%s\n' "$line" >>"$file"
-    } 8>>"${file}.lock"
-}
-
-ae_log_read() {
-    local file="$1"
-    [[ -f "$file" ]] || return 0
-    {
-        flock -s 8 || exit 1
-        cat "$file"
-    } 8<>"${file}.lock"
-}
-
-# Determine target tool type from pane metadata/process name.
-# Returns: codex | claude | other
-ae_target_tool() {
-    local pane="$1" row agent cmd alias
-    row="$(tmux list-panes -a -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null | awk -F'|' -v p="$pane" '$1==p {print; exit}')"
-    [[ -z "$row" ]] && {
-        echo "other"
-        return 0
-    }
-    IFS='|' read -r _ agent cmd <<<"$row"
-    alias="${agent%%:*}"
-    if [[ "$alias" == "codex" || "$cmd" == "codex" ]]; then
-        echo "codex"
-    elif [[ "$alias" == "claude" || "$cmd" == "claude" ]]; then
-        echo "claude"
-    else
-        echo "other"
-    fi
-}
-
-ae_json_escape() {
-    local s="$1"
-    s="${s//\\/\\\\}"
-    s="${s//\"/\\\"}"
-    s="${s//$'\n'/\\n}"
-    s="${s//$'\t'/\\t}"
-    s="${s//$'\r'/\\r}"
-    printf '%s' "$s"
-}
-
-ae_emit_event() {
-    local action="$1" target="${2:-}" ref="${3:-}" summary="${4:-}"
-    local actor
-    actor="${AE_SENDER_OVERRIDE:-$(ae_current_agent_ref)}"
-    [[ -n "$actor" ]] || actor="human"
-    local ts
-    ts="$(date -u +%FT%TZ)"
-    # Summary is capped and (for most events) flattened to one line. `chat`
-    # events carry a human reply destined for Telegram, so they keep newlines
-    # and get a larger cap (3500 — matches format_event's truncation, stays
-    # under Telegram's 4096 limit). Either way ae_json_escape below turns any
-    # newline into a literal \n, so events.jsonl stays one JSON object per line
-    # — the invariant every line-oriented consumer (cmd_list, the watchdog
-    # watchdog, the telegram tail) depends on.
-    if [[ "$action" == "chat" ]]; then
-        summary="$(printf '%s' "$summary" | head -c 3500)"
-    else
-        summary="$(printf '%s' "$summary" | head -c 200 | tr '\n\t' '  ')"
-    fi
-    local json
-    json="$(printf '{"ts":"%s","actor":"%s","action":"%s"' \
-        "$(ae_json_escape "$ts")" "$(ae_json_escape "$actor")" "$(ae_json_escape "$action")")"
-    [[ -n "$target" ]] && json+="$(printf ',"target":"%s"' "$(ae_json_escape "$target")")"
-    [[ -n "$ref" ]] && json+="$(printf ',"ref":"%s"' "$(ae_json_escape "$ref")")"
-    [[ -n "$summary" ]] && json+="$(printf ',"summary":"%s"' "$(ae_json_escape "$summary")")"
-    json+="}"
-    ae_log_append "${_AE_META_DIR}/events.jsonl" "$json"
-}
-
-# Latest state declaration for an agent. Output: state<TAB>reason<TAB>ts (or empty).
-# Scans events.jsonl backwards for newest event matching actor=<agent>; treats
-# action=state events as authoritative and legacy action=done events as state=done
-# so sessions that pre-date the state helper still read back consistently.
-ae_latest_state_for() {
-    local agent="$1"
-    local events="${_AE_META_DIR}/events.jsonl"
-    [[ -f "$events" ]] || return 0
-    local line actor action st reason ts
-    while IFS= read -r line; do
-        [[ "$line" == \{* ]] || continue
-        actor="$(_event_json_str "$line" actor)"
-        [[ "$actor" == "$agent" ]] || continue
-        action="$(_event_json_str "$line" action)"
-        case "$action" in
-            state)
-                st="$(_event_json_str "$line" ref)"
-                reason="$(_event_json_str "$line" summary)"
-                ts="$(_event_json_str "$line" ts)"
-                printf '%s\t%s\t%s\n' "$st" "$reason" "$ts"
-                return 0
-                ;;
-            done)
-                reason="$(_event_json_str "$line" summary)"
-                ts="$(_event_json_str "$line" ts)"
-                printf '%s\t%s\t%s\n' "done" "$reason" "$ts"
-                return 0
-                ;;
-        esac
-    done < <(tac "$events" 2>/dev/null || true)
-}
-
-# Extract a flat-JSON string value (counterpart to ae_json_escape). Handles
-# \" \\ \n \t \r escapes; maps \n and \t to a space for line-oriented use.
-_event_json_str() {
-    local line="$1" key="$2"
-    local prefix="\"${key}\":\""
-    local rest="${line#*"${prefix}"}"
-    [[ "$rest" == "$line" ]] && return
-    local result="" i=0 n=${#rest}
-    local c next
-    while ((i < n)); do
-        c="${rest:$i:1}"
-        if [[ "$c" == "\\" ]]; then
-            next="${rest:$((i + 1)):1}"
-            case "$next" in
-                n) result+=" " ;;
-                t) result+=" " ;;
-                r) ;;
-                '"') result+='"' ;;
-                "\\") result+="\\" ;;
-                *) result+="$c$next" ;;
-            esac
-            i=$((i + 2))
-        elif [[ "$c" == '"' ]]; then
-            break
-        else
-            result+="$c"
-            i=$((i + 1))
-        fi
-    done
-    printf '%s' "$result"
-}
-
-# Generate a request id like "<prefix>-YYYYMMDDTHHMMSSZ-<rand>"
-ae_make_req_id() {
-    local prefix="${1:-ae}"
-    local req_suffix
-    req_suffix="$(cat /proc/sys/kernel/random/uuid 2>/dev/null | cut -d- -f1 || true)"
-    [[ -n "$req_suffix" ]] || req_suffix="$$-$RANDOM"
-    printf '%s-%s-%s' "$prefix" "$(date -u +%Y%m%dT%H%M%SZ)" "$req_suffix"
-}
-
-# Shared body for ask/review. Resolves target, generates req_id, builds the
-# message (with optional instructions block + uniform reply contract footer),
-# and execs into send with the appropriate _AE_EVENT_* env vars set.
-# Args: action req_prefix header instructions reply_label target body...
-ae_tracked_send() {
-    local action="$1" req_prefix="$2" header="$3" instructions="$4" reply_label="$5" target_name="$6"
-    shift 6
-    local body="$*"
-    # External actors (chat bridges, webhooks) identify themselves via
-    # AE_SENDER_OVERRIDE — they have no @ae_agent pane to detect. Respect
-    # the override before falling back to pane-based detection.
-    local self
-    self="${AE_SENDER_OVERRIDE:-$(ae_current_agent_ref)}"
-    if [[ -z "$self" ]]; then
-        echo "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead." >&2
-        exec "${_AE_META_DIR}/send" "$target_name" "$body"
-    fi
-    # External-actor targets (telegram:*, discord:*) are event-only sinks
-    # consumed by a bridge daemon; the send helper handles the no-pane case.
-    # Skip ae_resolve so the literal target name is preserved end-to-end.
-    if [[ "$target_name" != telegram:* && "$target_name" != discord:* ]]; then
-        ae_resolve "$target_name" || exit 1
-        target_name="${AE_RESOLVED_AGENT:-$target_name}"
-    fi
-
-    local req_id
-    req_id="$(ae_make_req_id "$req_prefix")"
-    local reply_cmd="${_AE_META_DIR}/reply --as \"${target_name}\" \"${req_id}\" \"${reply_label}\""
-
-    local msg="${header} ${req_id} from ${self}: ${body}"
-    [[ -n "$instructions" ]] && msg+=$'\n\n'"${instructions}"
-    msg+=$'\n\n'"REQUIRED: When you have finished, you MUST run this exact command to reply:
-${reply_cmd}
-Do not reply any other way. Do NOT use peek/peak as a reply mechanism."
-
-    exec env _AE_EVENT_ACTION="$action" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$body" \
-        "${_AE_META_DIR}/send" "$target_name" "$msg"
-}
-
-# Look up the original ask/review event for a given req_id. Scans events.jsonl
-# newest-first; returns the first matching ask|review event.
-# Output: TAB-separated "<kind>\t<sender>\t<target>". Return 1 if not found.
-ae_find_request() {
-    local req_id="$1"
-    local events_file="${_AE_META_DIR}/events.jsonl"
-    [[ -f "$events_file" ]] || return 1
-    local line ref action actor target
-    while IFS= read -r line; do
-        [[ "$line" == \{* ]] || continue
-        ref="$(_event_json_str "$line" ref)"
-        [[ "$ref" == "$req_id" ]] || continue
-        action="$(_event_json_str "$line" action)"
-        if [[ "$action" == "ask" || "$action" == "review" ]]; then
-            actor="$(_event_json_str "$line" actor)"
-            target="$(_event_json_str "$line" target)"
-            printf '%s\t%s\t%s\n' "$action" "$actor" "$target"
-            return 0
-        fi
-    done < <(tac "$events_file" 2>/dev/null || true)
-    return 1
-}
-
-ae_submit_pasted_message() {
-    local pane="$1" tool="$2" buf="$3" msg="$4"
-    if [[ "$tool" == "codex" ]]; then
-        tmux set-buffer -b "$buf" -- "$msg" \; \
-            paste-buffer -d -p -b "$buf" -t "$pane"
-        sleep 0.1
-        tmux send-keys -t "$pane" Enter
-        return 0
-    fi
-
-    tmux set-buffer -b "$buf" -- "$msg" \; \
-        paste-buffer -d -b "$buf" -t "$pane"
-    sleep 0.1
-    tmux send-keys -t "$pane" Enter
-
-    # Claude sometimes stages large pastes as a "[Pasted text #…]" token
-    # that requires an extra submit keystroke.
-    if [[ "$tool" == "claude" ]]; then
-        sleep 0.2
-        if tmux capture-pane -p -t "$pane" 2>/dev/null | tail -n 8 | grep -Eq '\[Pasted text #[0-9]+ \+[0-9]+ lines\]'; then
-            tmux send-keys -t "$pane" Enter
-        fi
-    fi
-}
-
-# --- session meta key/value (locked) -------------------------------------
-# Shared read/write for keys in this session's meta file. Writes serialize on
-# meta.lock (same lock the watchdog's meta writer uses) so concurrent helpers
-# can't clobber each other; last-write-wins per key. Values are single-line.
-
-ae_meta_get() {
-    grep "^${1}=" "${_AE_META_DIR}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true
-}
-
-ae_meta_set() {
-    local key="$1" value="$2"
-    local meta_file="${_AE_META_DIR}/meta"
-    [[ -f "$meta_file" ]] || return 1
-    value="${value//$'\r'/}"
-    value="${value//$'\n'/ }"
-    {
-        flock -w 5 200 || exit 1
-        local tmp="${meta_file}.tmp.$$"
-        awk -F= -v k="$key" -v v="$value" '
-            BEGIN { updated = 0 }
-            $1 == k { print k "=" v; updated = 1; next }
-            { print }
-            END { if (!updated) print k "=" v }
-        ' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
-    } 200>"${meta_file}.lock"
-}
-
-ae_meta_unset() {
-    local key="$1"
-    local meta_file="${_AE_META_DIR}/meta"
-    [[ -f "$meta_file" ]] || return 0
-    {
-        flock -w 5 200 || exit 1
-        local tmp="${meta_file}.tmp.$$"
-        awk -F= -v k="$key" '$1 != k { print }' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
-    } 200>"${meta_file}.lock"
-}
-LIBEOF
-    chmod 0700 "${AE_META}/_lib"
+LIBPROLOGUE
+        declare -f ae_resolve ae_lock_target ae_unlock_target ae_now_utc \
+            ae_current_pane ae_current_agent ae_current_agent_ref \
+            ae_preview_text ae_extract_req_id ae_log_append ae_log_read \
+            ae_target_tool ae_json_escape ae_emit_event ae_latest_state_for \
+            _event_json_str ae_make_req_id ae_tracked_send ae_find_request \
+            ae_submit_pasted_message ae_meta_get ae_meta_set ae_meta_unset
+    } >"${AE_META}/_lib.tmp.$$"
+    chmod 0700 "${AE_META}/_lib.tmp.$$"
+    mv "${AE_META}/_lib.tmp.$$" "${AE_META}/_lib"
 
     # Helper: send <target> <message> — focuses pane, pastes text, submits
     cat >"${AE_META}/send" <<'SENDEOF'
@@ -6985,67 +7027,8 @@ REQUESTSEOF
     # The current watchdog reads 'state done' directly; the dual-emit is retained
     # until 'ae doctor --refresh' can restart a running watchdog, then it can go.
     #
-    # Template functions: defined here (inside the SYNC_SESSION_ASSETS_BODY
-    # marker region, so BOTH the launch path and doctor --refresh's awk-sourced
-    # path load them before emission) and emitted into the generated file via
-    # `declare -f`. They execute inside the helper's own environment after
-    # `source _lib` — ae's own code paths must never call helper_* functions.
-    helper_state_usage() {
-        cat >&2 <<'USAGE'
-Usage: state <working|waiting-user|blocked|done> [reason]
-       state                              # print current state
-
-  working       actively making progress
-  waiting-user  needs human input
-  blocked       stuck on external dep — REASON REQUIRED
-  done          complete or paused
-USAGE
-        exit 2
-    }
-
-    helper_state_main() {
-        local self
-        self="$(ae_current_agent_ref)"
-        [[ -n "$self" ]] || self="human"
-
-        if [[ $# -eq 0 ]]; then
-            local line st reason ts
-            line="$(ae_latest_state_for "$self")"
-            if [[ -z "$line" ]]; then
-                printf '%s state: (none declared)\n' "$self"
-            else
-                IFS=$'\t' read -r st reason ts <<<"$line"
-                printf '%s state: %s%s  (since %s)\n' "$self" "$st" "${reason:+ — $reason}" "$ts"
-            fi
-            exit 0
-        fi
-
-        local value="$1"
-        shift
-        local reason="${*:-}"
-
-        case "$value" in
-            working | waiting-user | done) ;;
-            blocked)
-                if [[ -z "$reason" ]]; then
-                    echo "Error: 'blocked' requires a reason" >&2
-                    helper_state_usage
-                fi
-                ;;
-            *) helper_state_usage ;;
-        esac
-
-        printf 'Marked %s %s%s\n' "$self" "$value" "${reason:+: $reason}"
-        ae_emit_event "state" "" "$value" "$reason"
-        # Transitional dual-emit: a watchdog process started before the state
-        # helper existed only understands action=done. Emit the legacy event too
-        # so it keeps recognising completions after helpers are refreshed. The
-        # current watchdog reads 'state done' directly; retained until
-        # 'ae doctor --refresh' can restart a running watchdog.
-        if [[ "$value" == "done" ]]; then
-            ae_emit_event "done" "" "" "$reason"
-        fi
-    }
+    # Template functions live in the top-level template library (defined
+    # before the dispatcher); this site only emits them via `declare -f`.
 
     # Atomic emission: write to a temp file and mv into place only after every
     # printf/declare -f succeeded. doctor --refresh maintains LIVE sessions — a
