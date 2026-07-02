@@ -1605,6 +1605,12 @@ _agent_alert_reason() {
                 ;;
         esac
     done < <(tac "$events" 2>/dev/null || true)
+    # No decisive alert/recovery found → no active alert. Return success
+    # explicitly: the result is the emitted string, not the exit status. Without
+    # this the function inherits the loop's status (non-zero when the last
+    # scanned line hit the target-only `*)` path), and a caller doing
+    # `r="$(_agent_alert_reason …)"` under `set -e` would abort mid-command.
+    return 0
 }
 
 # Severity rank for an attention reason (higher = more urgent). Used to pick the
@@ -1941,6 +1947,15 @@ LISTHELP
         printf '{"schema_version":1,"generated_at":"%s","sessions":[' "$(date -u +%FT%TZ)"
     fi
 
+    # A listing must never abort mid-output. Per-session helpers below can
+    # return non-zero on a session's transient state (e.g. `_agent_alert_reason`
+    # when the newest scanned event only targets the agent) — and under `set -e`
+    # a bare call or a `x="$(helper)"` assignment then kills the WHOLE command.
+    # For `--json` that emits INVALID JSON (no closing `]}`, exit 1) and breaks
+    # consumers (aemonitor); for the human table it silently drops rows. Degrade
+    # a single session's fields instead. Restored before the JSON close below.
+    set +e
+
     if $show_running; then
         local sessions
         sessions="$(list_ae_sessions)"
@@ -2061,6 +2076,8 @@ LISTHELP
             done <<<"$meta_blob"
         done < <(iter_stopped_sessions)
     fi
+
+    set -e # restore errexit for the JSON close / human fallback below
 
     if $as_json; then
         printf ']}\n'

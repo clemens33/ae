@@ -945,6 +945,34 @@ assert_contains "ae end: session with no usable stored config KEEPS (no cwd fall
 assert_eq "ae end: rejects a second positional argument" "1" \
     "$("$AE" end -f foo bar 2>/dev/null; echo $?)"
 
+# ── ae list robustness: a per-session helper returning non-zero must NOT abort
+#    the listing. Regression: cmd_list ran under `set -e`, so when
+#    `_agent_alert_reason` returned non-zero (a scanned event targets an agent
+#    whose actor is someone else — e.g. an inbound send/nudge), the assignment
+#    `r="$(_agent_alert_reason …)"` killed the whole command mid-output —
+#    truncating `--json` to INVALID (no closing `]}`, exit 1) and dropping rows
+#    from the human table.
+REPO_JR="$(setup_repo)"
+(cd "$REPO_JR" && "$AE" --local jsonrobust &) 2>/dev/null
+wait_for_session "jsonrobust"
+sleep 1
+jr_agent="$(sed -n 's/^agent.main=//p' "$HOME/.ae/sessions/jsonrobust/meta" | cut -d: -f1,2)"
+# A lone target-only event (actor != agent) drives _agent_alert_reason to a
+# non-zero return for this session's live agent.
+printf '{"actor":"other:sender","target":"%s","action":"send","summary":"hi"}\n' \
+    "$jr_agent" >"$HOME/.ae/sessions/jsonrobust/events.jsonl"
+json_rc="$("$AE" list --json >/dev/null 2>&1; echo $?)"
+assert_eq "list --json: exits 0 when a per-session helper returns non-zero" "0" "$json_rc"
+json_out="$("$AE" list --json 2>/dev/null || true)"
+assert_contains "list --json: emits the top-level open" '"schema_version":1' "$json_out"
+if command -v python3 >/dev/null 2>&1; then
+    json_valid="$(printf '%s' "$json_out" | python3 -c 'import sys,json; json.load(sys.stdin)' 2>/dev/null && echo ok || echo invalid)"
+    assert_eq "list --json: stays valid JSON when a per-session helper returns non-zero" "ok" "$json_valid"
+fi
+human_rc="$("$AE" list >/dev/null 2>&1; echo $?)"
+assert_eq "list (human): exits 0 when a per-session helper returns non-zero" "0" "$human_rc"
+"$AE" end -f jsonrobust 2>/dev/null || true
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

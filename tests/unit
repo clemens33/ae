@@ -884,6 +884,16 @@ assert_eq "list: stopped --json declares empty maps (set -u safety)" \
     "1" \
     "$([[ "$AE_SOURCE" == *'declare -A _alive=() _state=() _areason=()'* ]] && echo 1 || echo 0)"
 
+# A per-session helper returning non-zero must never abort the listing mid-output
+# (truncated/invalid --json, dropped human rows). cmd_list disables errexit
+# across the session loops and restores it before the JSON close. This invariant
+# has NO behavioral signature once the known trigger (_agent_alert_reason) ends
+# in `return 0`, so it's guarded structurally against accidental removal; the
+# behavioral repro of the original abort lives in tests/integration.
+assert_eq "list: cmd_list brackets session loops with errexit off (set -e abort safety)" \
+    "1" \
+    "$([[ "$AE_SOURCE" == *'Degrade'*'set +e'*'set -e # restore errexit for the JSON close'* ]] && echo 1 || echo 0)"
+
 assert_eq "list: --needs-me/--active imply running-only (no leaked stopped rows)" \
     "1" \
     "$([[ "$AE_SOURCE" == *'if $only_needs_me || $only_active; then'*'show_running=true'*'show_stopped=false'* ]] && echo 1 || echo 0)"
