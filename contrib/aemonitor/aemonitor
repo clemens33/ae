@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""aemonitor — deterministic state/dedup helper for the ae meta-agent (hub).
+"""aemonitor — deterministic state/dedup helper for the ae steward (meta-agent).
 
-The hub agent phrases + orchestrates well but is bad at durable bookkeeping (it
+The steward agent phrases + orchestrates well but is bad at durable bookkeeping (it
 drifts: freeform notes, hand-written wrong clocks). This helper owns the
 deterministic part: given `ae list --json` + a locked state file it computes what
 CHANGED since the last sweep, dedups it, and — crucially — only marks a change
@@ -19,7 +19,7 @@ Usage:
                   [--quiet-secs N] [--liveness-sweeps N]
 
 Delivery contract (the BLOCKER): pass --notify-cmd PATH (a single executable,
-e.g. the hub's `say` helper — invoked as `PATH "<report>"`, NOT via a shell, so
+e.g. the steward's `say` helper — invoked as `PATH "<report>"`, NOT via a shell, so
 no arg-splitting/injection). When there is something to report the helper runs it
 and advances `notified` ONLY if it exits 0. last_seen advances every sweep
 regardless, so a seen-but-undelivered change is re-reported next sweep until it
@@ -83,7 +83,7 @@ def load_input(src):
 
 def derive_state_path():
     if not os.environ.get("TMUX"):
-        die("no --state and not inside tmux — cannot derive the hub's state path")
+        die("no --state and not inside tmux — cannot derive the steward's state path")
     try:
         sess = subprocess.run(
             ["tmux", "display-message", "-p", "#S"],

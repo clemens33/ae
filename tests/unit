@@ -2952,7 +2952,7 @@ assert_eq "tg-sup: watchdog step 10 revives via throttled 'telegram _supervise'"
 assert_eq "tg-sup: step 10 propagates AE_TMUX_SERVER from meta" "1" \
     "$([[ "$AE_SOURCE" == *"grep '^tmux_server=' \"\$META_DIR/meta\""* && "$AE_SOURCE" == *'AE_TMUX_SERVER="$tg_srv" "$AE_PATH_BIN" telegram _supervise'* ]] && echo 1 || echo 0)"
 
-# ── Layer-3 Slice 3: meta-agent (hub) sweep cadence ──────────────────
+# ── Layer-3 Slice 3: meta-agent (steward) sweep cadence ──────────────
 # Config [workspace] meta=true is read and, when truthy, persisted to session
 # meta as meta_agent=true (config-driven, re-read every start/resume).
 assert_eq "meta: [workspace] meta is read into META_AGENT_CFG" "1" \
@@ -2966,7 +2966,7 @@ assert_eq "meta: watchdog reads meta_agent from meta" "1" \
     "$([[ "$AE_SOURCE" == *"META_AGENT=\"\$(grep '^meta_agent=' \"\$META_DIR/meta\""* ]] && echo 1 || echo 0)"
 # The cadence branch: gated on META_AGENT==true + SWEEP_SECS>0, sends a sweep
 # nudge every SWEEP_SECS, and continues BEFORE the stale/max-nudges machinery
-# (so the hub is never flagged stale). It sits AFTER the dead-check (a dead hub
+# (so the meta-agent is never flagged stale). It sits AFTER the dead-check (a dead one
 # still alerts).
 assert_eq "meta: sweep-cadence branch is gated + interval-throttled" "1" \
     "$([[ "$AE_SOURCE" == *'if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && (( SWEEP_SECS > 0 )); then'* \
@@ -2974,18 +2974,18 @@ assert_eq "meta: sweep-cadence branch is gated + interval-throttled" "1" \
         && "$AE_SOURCE" == *'last_sweep_nudge["$pane"]="$now_epoch"'* ]] && echo 1 || echo 0)"
 assert_eq "meta: sweep nudge says 'run your sweep now', not the stale state-check" "1" \
     "$([[ "$AE_SOURCE" == *'Run your sweep now: ae list --json'* ]] && echo 1 || echo 0)"
-# IMPORTANT 2 (codex): the cadence targets only the MAIN/hub agent; workers/spawned
+# IMPORTANT 2 (codex): the cadence targets only the MAIN meta-agent; workers/spawned
 # panes in a meta session keep the normal watchdog. META_MAIN_AGENT is alias:name.
 assert_eq "meta: cadence targets only the main agent (workers keep watchdog)" "1" \
     "$([[ "$AE_SOURCE" == *"META_MAIN_AGENT=\"\$(grep '^agent.main=' \"\$META_DIR/meta\""* \
         && "$AE_SOURCE" == *'"$agent" == "$META_MAIN_AGENT"'* ]] && echo 1 || echo 0)"
-# IMPORTANT 1 (codex): live-but-wedged detection — the hub rewrites its state file
+# IMPORTANT 1 (codex): live-but-wedged detection — the meta-agent rewrites its state file
 # each real sweep; if that heartbeat stays stale OR ABSENT past the grace window
 # after the first sweep prompt, raise ONE alert. (Absent-file case is the codex
-# BLOCKER fix: a hub wedged before its first write must still be caught.)
+# BLOCKER fix: a meta-agent wedged before its first write must still be caught.)
 # The heartbeat file MUST be the one the contrib aemonitor helper writes
 # (meta-agent-state.json), not the old hand-managed meta-state.json — otherwise
-# wiring the hub to aemonitor makes the wedge check watch a file nobody writes.
+# wiring the meta-agent to aemonitor makes the wedge check watch a file nobody writes.
 assert_eq "meta: heartbeat watches aemonitor's meta-agent-state.json" "1" \
     "$([[ "$AE_SOURCE" == *'hb_file="${META_DIR}/meta-agent-state.json"'* \
         && "$AE_SOURCE" != *'hb_file="${META_DIR}/meta-state.json"'* ]] && echo 1 || echo 0)"
@@ -3007,13 +3007,13 @@ assert_eq "meta: recovery clears via latch AND durable reconcile (survives resta
 # *throttl*, and the summary itself avoids the throttl/dead substrings.
 assert_eq "meta: wedge alert classifies as stale (not throttled)" "1" \
     "$([[ "$AE_SOURCE" == *'*"not sweeping"*) printf '"'"'stale'"'"''* \
-        && "$AE_SOURCE" == *'(hub may be stuck)'* \
+        && "$AE_SOURCE" == *'(may be stuck)'* \
         && "$AE_SOURCE" != *'may be wedged/throttled'* ]] && echo 1 || echo 0)"
 # NIT (codex): the sweep interval override is numeric-guarded before arithmetic.
 assert_eq "meta: AE_WATCHDOG_SWEEP_SEC/AE_LOOP_SWEEP_SEC value is numeric-guarded" "1" \
     "$([[ "$AE_SOURCE" == *'[[ "$SWEEP_SECS" =~ ^[0-9]+$ ]] || SWEEP_SECS=300'* ]] && echo 1 || echo 0)"
 # Cadence branch comes BEFORE the stale nudge (dead-check first, then meta branch,
-# then the normal stale logic) — proves the hub bypasses max-nudges/stale-alert.
+# then the normal stale logic) — proves the meta-agent bypasses max-nudges/stale-alert.
 assert_eq "meta: cadence branch precedes the stale-nudge logic" "1" \
     "$([[ "$AE_SOURCE" == *'agent process dead — dropped to shell'*'if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && (( SWEEP_SECS > 0 )); then'*'Status check: if you have more work'* ]] && echo 1 || echo 0)"
 
@@ -3363,68 +3363,109 @@ assert_eq "tg-menu: commands JSON NOT passed inline (would truncate at first spa
 # (jq -cn '[…]' → valid). A source-extraction round-trip here proved too fragile
 # to be worth it.
 
-# ── ae hub: launcher scaffold + dispatcher trampoline + flag alias ──
+# ── ae steward: launcher scaffold + dispatcher trampoline + hub compat ──
 
 # Extract the pure scaffold helpers from the script.
 eval "$(awk '
-    /^_hub_scaffold_file\(\) \{/ { printing=1 }
-    /^cmd_hub_init\(\) \{/ { printing=1 }
+    /^_steward_scaffold_file\(\) \{/ { printing=1 }
+    /^cmd_steward_init\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
 
-_hub_t="$(mktemp -d)"
-printf 'read the charter at __X__ now\n' >"$_hub_t/tpl"
-_hub_scaffold_file "$_hub_t/tpl" "$_hub_t/out" "__X__" "/a/b/CHARTER.md" >/dev/null
-assert_eq "hub scaffold: placeholder substituted via bash (no sed, '/'-safe)" \
-    "read the charter at /a/b/CHARTER.md now" "$(cat "$_hub_t/out")"
+_stw_t="$(mktemp -d)"
+printf 'read the charter at __X__ now\n' >"$_stw_t/tpl"
+_steward_scaffold_file "$_stw_t/tpl" "$_stw_t/out" "__X__" "/a/b/CHARTER.md" >/dev/null
+assert_eq "steward scaffold: placeholder substituted via bash (no sed, '/'-safe)" \
+    "read the charter at /a/b/CHARTER.md now" "$(cat "$_stw_t/out")"
 # Multiple placeholder/value pairs in one call (CHARTER.md needs aemonitor + helpers).
-printf 'run __A__ and helpers in __H__\n' >"$_hub_t/tpl2"
-_hub_scaffold_file "$_hub_t/tpl2" "$_hub_t/multi" "__A__" "/bin/mon" "__H__" "/iso/sessions/hub" >/dev/null
-assert_eq "hub scaffold: substitutes multiple placeholder pairs in one call" \
-    "run /bin/mon and helpers in /iso/sessions/hub" "$(cat "$_hub_t/multi")"
-printf 'ORIGINAL\n' >"$_hub_t/keep"
-_hub_scaffold_file "$_hub_t/tpl" "$_hub_t/keep" "__X__" "/a/b/c" >/dev/null
-assert_eq "hub scaffold: never overwrites an existing file" "ORIGINAL" "$(cat "$_hub_t/keep")"
-assert_eq "hub scaffold: created vs skipped reported per file" "skipped (exists): $_hub_t/keep" \
-    "$(_hub_scaffold_file "$_hub_t/tpl" "$_hub_t/keep" "__X__" "v" | tr -d '\n' | sed 's/^ *//')"
-assert_eq "hub scaffold: missing template errors (non-zero)" "1" \
-    "$(_hub_scaffold_file "$_hub_t/nope" "$_hub_t/out2" "__X__" "v" >/dev/null 2>&1; echo $?)"
-assert_eq "hub init: rejects HUB_DIR containing a quote (INI safety)" "1" \
-    "$(AE_HUB_DIR='/bad"dir' cmd_hub_init >/dev/null 2>&1; echo $?)"
-rm -rf "$_hub_t"
-unset _hub_t
+printf 'run __A__ and helpers in __H__\n' >"$_stw_t/tpl2"
+_steward_scaffold_file "$_stw_t/tpl2" "$_stw_t/multi" "__A__" "/bin/mon" "__H__" "/iso/sessions/steward" >/dev/null
+assert_eq "steward scaffold: substitutes multiple placeholder pairs in one call" \
+    "run /bin/mon and helpers in /iso/sessions/steward" "$(cat "$_stw_t/multi")"
+printf 'ORIGINAL\n' >"$_stw_t/keep"
+_steward_scaffold_file "$_stw_t/tpl" "$_stw_t/keep" "__X__" "/a/b/c" >/dev/null
+assert_eq "steward scaffold: never overwrites an existing file" "ORIGINAL" "$(cat "$_stw_t/keep")"
+assert_eq "steward scaffold: created vs skipped reported per file" "skipped (exists): $_stw_t/keep" \
+    "$(_steward_scaffold_file "$_stw_t/tpl" "$_stw_t/keep" "__X__" "v" | tr -d '\n' | sed 's/^ *//')"
+assert_eq "steward scaffold: missing template errors (non-zero)" "1" \
+    "$(_steward_scaffold_file "$_stw_t/nope" "$_stw_t/out2" "__X__" "v" >/dev/null 2>&1; echo $?)"
+assert_eq "steward init: rejects STEWARD_DIR containing a quote (INI safety)" "1" \
+    "$(AE_STEWARD_DIR='/bad"dir' cmd_steward_init >/dev/null 2>&1; echo $?)"
+rm -rf "$_stw_t"
+unset _stw_t
 
 # Charter helper paths are a placeholder (substituted to the session helper dir),
-# NOT a literal ~/.ae — so an isolated AE_HOME hub can't point at the live ~/.ae.
-_aehub_charter="$(dirname "$0")/../contrib/aehub/CHARTER.md"
-assert_eq "aehub charter: helper paths use __HELPERS_DIR__, not literal ~/.ae/sessions/hub" "1" \
-    "$([[ -f "$_aehub_charter" ]] && grep -q '__HELPERS_DIR__' "$_aehub_charter" &&
-        ! grep -q '[~]/.ae/sessions/hub' "$_aehub_charter" && echo 1 || echo 0)"
-unset _aehub_charter
-assert_eq "hub init: substitutes __HELPERS_DIR__ with the hub session helper dir" "1" \
-    "$([[ "$AE_SOURCE" == *'helpers_dir="$CONFIG_DIR/sessions/hub"'* \
+# NOT a literal ~/.ae — so an isolated AE_HOME steward can't point at the live ~/.ae.
+_aestw_charter="$(dirname "$0")/../contrib/aesteward/CHARTER.md"
+assert_eq "aesteward charter: helper paths use __HELPERS_DIR__, not literal ~/.ae/sessions/steward" "1" \
+    "$([[ -f "$_aestw_charter" ]] && grep -q '__HELPERS_DIR__' "$_aestw_charter" &&
+        ! grep -q '[~]/.ae/sessions/steward' "$_aestw_charter" && echo 1 || echo 0)"
+# Codex IMPORTANT 1: state-changing messages must be authenticated against the
+# event log (agent-relayed 'objective:' text is visually identical to the
+# operator's) — the charter must require the actor check before any mutation.
+assert_eq "aesteward charter: operator-semantic changes need positive telegram-auth, refuse otherwise" "1" \
+    "$(grep -q 'Authenticating an operator-semantic change' "$_aestw_charter" &&
+        grep -q '"actor":"telegram:<id>"' "$_aestw_charter" &&
+        grep -q 'do NOT mutate' "$_aestw_charter" &&
+        grep -q 'Ignored an unauthenticated state change' "$_aestw_charter" && echo 1 || echo 0)"
+# Codex IMPORTANT: the steward's OWN ask-once latches (asked_objective_at,
+# transition_offered_for) are autonomous bookkeeping — the auth rule must NOT
+# block them, or the rituals can never persist and would repeat.
+assert_eq "aesteward charter: steward-owned latch fields are auth-exempt (own bookkeeping)" "1" \
+    "$(grep -q 'Steward-owned latches' "$_aestw_charter" &&
+        grep -q 'need NO authentication' "$_aestw_charter" && echo 1 || echo 0)"
+# Codex IMPORTANT: match must be EXACT — never a prefix. ae truncates event
+# summaries at ~200 bytes, so a prefix check would let a paste sharing the first
+# 200 bytes + a malicious tail pass; therefore over-cap semantic commands can't be
+# authenticated and are refused (objectives/ideas are one-liners).
+assert_eq "aesteward charter: EXACT-match only (never prefix); over-cap commands refused" "1" \
+    "$(grep -q 'EXACTLY equals' "$_aestw_charter" &&
+        grep -q 'Exact only — never a prefix' "$_aestw_charter" &&
+        grep -q "longer than ~200 bytes can't be authenticated" "$_aestw_charter" && echo 1 || echo 0)"
+# Codex IMPORTANT 2: the transition review is ask-once via a DURABLE latch —
+# without it, 'objective done + unstruck ideas' stays true across sweeps/restarts
+# and the offer would repeat (violating the no-nag contract).
+assert_eq "aesteward charter: transition review has a durable ask-once latch" "1" \
+    "$(grep -q 'transition_offered_for' "$_aestw_charter" &&
+        grep -q 'transition_offered_for=<objective_set_at>' "$_aestw_charter" && echo 1 || echo 0)"
+unset _aestw_charter
+assert_eq "steward init: substitutes __HELPERS_DIR__ with the steward session helper dir" "1" \
+    "$([[ "$AE_SOURCE" == *'helpers_dir="$CONFIG_DIR/sessions/steward"'* \
         && "$AE_SOURCE" == *'"__HELPERS_DIR__" "$helpers_dir"'* ]] && echo 1 || echo 0)"
 
 # Structural — the dispatcher trampoline must preserve FULL config isolation
 # (codex BLOCKER) and fall through WITHOUT re-exec (no recursion).
-assert_eq "hub dispatcher: trampoline pins the standalone config (absolute)" "1" \
-    "$([[ "$AE_SOURCE" == *'CONFIG_FILE="$PWD/hub.config"'* ]] && echo 1 || echo 0)"
-assert_eq "hub dispatcher: clears caller-PWD AE_LOCAL_CONFIG + cd hub dir" "1" \
-    "$([[ "$AE_SOURCE" == *'hub)'*'AE_LOCAL_CONFIG=""'*'cd "$_hub_dir"'* ]] && echo 1 || echo 0)"
-assert_eq "hub dispatcher: falls through (set -- hub) with NO recursive exec" "1" \
-    "$([[ "$AE_SOURCE" == *'set -- hub'* && "$AE_SOURCE" != *'exec ae hub'* ]] && echo 1 || echo 0)"
-assert_eq "hub dispatcher: rejects extra args (reserved-name leak guard)" "1" \
-    "$([[ "$AE_SOURCE" == *"'ae hub' takes no positional arguments"* ]] && echo 1 || echo 0)"
-assert_eq "hub dispatcher: routes --init, --help, and explicit attach flags" "1" \
-    "$([[ "$AE_SOURCE" == *'--init)'* && "$AE_SOURCE" == *'cmd_hub_init'* && "$AE_SOURCE" == *'cmd_hub_help'* && "$AE_SOURCE" == *'--attach | --switch)'* ]] && echo 1 || echo 0)"
-assert_eq "hub dispatcher: bare hub is detached by default, --attach opts into focus switch" "1" \
-    "$([[ "$AE_SOURCE" == *'_hub_attach=false'* && "$AE_SOURCE" == *'ATTACH_ON_READY=false'* && "$AE_SOURCE" == *'ATTACH_ON_READY=true'* ]] && echo 1 || echo 0)"
-assert_eq "hub dispatcher: no-attach path exits without tmux_attach" "1" \
+assert_eq "steward dispatcher: trampoline pins the standalone config (absolute)" "1" \
+    "$([[ "$AE_SOURCE" == *'CONFIG_FILE="$PWD/$(basename "$_steward_config")"'* ]] && echo 1 || echo 0)"
+assert_eq "steward dispatcher: clears caller-PWD AE_LOCAL_CONFIG + cd steward dir" "1" \
+    "$([[ "$AE_SOURCE" == *'steward | hub)'*'AE_LOCAL_CONFIG=""'*'cd "$_steward_dir"'* ]] && echo 1 || echo 0)"
+assert_eq "steward dispatcher: falls through (set -- session) with NO recursive exec" "1" \
+    "$([[ "$AE_SOURCE" == *'set -- "$_steward_session"'* && "$AE_SOURCE" != *'exec ae steward'* ]] && echo 1 || echo 0)"
+assert_eq "steward dispatcher: rejects extra args (reserved-name leak guard)" "1" \
+    "$([[ "$AE_SOURCE" == *"'ae steward' takes no positional arguments"* ]] && echo 1 || echo 0)"
+assert_eq "steward dispatcher: routes --init, --help, and explicit attach flags" "1" \
+    "$([[ "$AE_SOURCE" == *'--init)'* && "$AE_SOURCE" == *'cmd_steward_init'* && "$AE_SOURCE" == *'cmd_steward_help'* && "$AE_SOURCE" == *'--attach | --switch)'* ]] && echo 1 || echo 0)"
+assert_eq "steward dispatcher: bare steward is detached by default, --attach opts into focus switch" "1" \
+    "$([[ "$AE_SOURCE" == *'_steward_attach=false'* && "$AE_SOURCE" == *'ATTACH_ON_READY=false'* && "$AE_SOURCE" == *'ATTACH_ON_READY=true'* ]] && echo 1 || echo 0)"
+assert_eq "steward dispatcher: no-attach path exits without tmux_attach" "1" \
     "$([[ "$AE_SOURCE" == *'if [[ "$ATTACH_ON_READY" != "true" ]]; then'* && "$AE_SOURCE" == *"Session '\$SESSION' is running."* && "$AE_SOURCE" == *"Session '\$SESSION' started."* ]] && echo 1 || echo 0)"
-assert_eq "hub flag: workspace.hub preferred, workspace.meta legacy alias" "1" \
-    "$([[ "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.hub)"'* \
+assert_eq "steward flag: workspace.steward canonical, hub/meta legacy aliases" "1" \
+    "$([[ "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.steward)"'* \
+        && "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.hub)"'* \
         && "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.meta)"'* ]] && echo 1 || echo 0)"
+
+# Hub back-compat (released name): 'ae hub' dispatches into the steward branch;
+# a legacy hub scaffold resolves to hub.config AND keeps the 'hub' session name
+# (so its baked charter paths + resume state stay consistent).
+assert_eq "steward compat: 'hub' is a dispatch alias of steward" "1" \
+    "$([[ "$AE_SOURCE" == *'steward | hub)'* ]] && echo 1 || echo 0)"
+assert_eq "steward compat: legacy scaffold resolution (AE_HUB_DIR + meta-hub/hub.config → session hub)" "1" \
+    "$([[ "$AE_SOURCE" == *'_steward_config="$_steward_dir/hub.config"'* \
+        && "$AE_SOURCE" == *'$CONFIG_DIR/meta-hub/hub.config'* \
+        && "$AE_SOURCE" == *'_steward_session=hub'* ]] && echo 1 || echo 0)"
+assert_eq "steward compat: legacy path prints a migration hint" "1" \
+    "$([[ "$AE_SOURCE" == *'ae end hub && ae steward --init && ae steward'* ]] && echo 1 || echo 0)"
 
 # ── AE_HOME authoritative for ALL ae state (config/sessions/worktrees) ──
 # Lets an isolated run keep the real $HOME (so real agent-CLI auth works) while
@@ -3433,11 +3474,12 @@ assert_eq "AE_HOME: CONFIG_DIR derives from AE_HOME, not hardcoded \$HOME/.ae" "
     "$([[ "$AE_SOURCE" == *'AE_HOME="${AE_HOME:-${HOME}/.ae}"'* \
         && "$AE_SOURCE" == *'CONFIG_DIR="$AE_HOME"'* \
         && "$AE_SOURCE" != *'CONFIG_DIR="${HOME}/.ae"'* ]] && echo 1 || echo 0)"
-# Daemon/hub/session must not escape AE_HOME back to live ~/.ae (codex BLOCKERs):
+# Daemon/steward/session must not escape AE_HOME back to live ~/.ae (codex BLOCKERs):
 assert_eq "AE_HOME: telegram daemon is spawned WITH AE_HOME (no live-~/.ae leak)" "1" \
     "$([[ "$AE_SOURCE" == *'AE_HOME=${q_aehome} CONFIG_FILE='* ]] && echo 1 || echo 0)"
-assert_eq "AE_HOME: hub dir defaults under CONFIG_DIR, not hardcoded \$HOME/.ae" "1" \
-    "$([[ "$AE_SOURCE" == *'AE_HUB_DIR:-$CONFIG_DIR/meta-hub'* \
+assert_eq "AE_HOME: steward dir defaults under CONFIG_DIR, not hardcoded \$HOME/.ae" "1" \
+    "$([[ "$AE_SOURCE" == *'AE_STEWARD_DIR:-$CONFIG_DIR/steward'* \
+        && "$AE_SOURCE" != *'AE_STEWARD_DIR:-$HOME/.ae/steward'* \
         && "$AE_SOURCE" != *'AE_HUB_DIR:-$HOME/.ae/meta-hub'* ]] && echo 1 || echo 0)"
 assert_eq "AE_HOME: pinned into the session env for hidden helpers" "1" \
     "$([[ "$AE_SOURCE" == *'set-environment -t "$SESSION" AE_HOME "$CONFIG_DIR"'* ]] && echo 1 || echo 0)"

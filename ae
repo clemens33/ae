@@ -1580,7 +1580,7 @@ _agent_alert_reason() {
                 # Summaries come from the watchdog (see ae_emit_event
                 # "alert" sites): "agent process dead — dropped to shell",
                 # "pane missing …", "max nudges reached …", "throttled for …",
-                # "meta-agent not sweeping …". The meta-agent (hub) wedge alert is
+                # "meta-agent not sweeping …". The meta-agent wedge alert is
                 # matched FIRST and mapped to high-severity stale — its summary text
                 # must not be downgraded to throttled by a stray substring match.
                 case "$summary" in
@@ -4914,8 +4914,8 @@ cmd_help() {
     echo "                         Toggle the stale-agent watchdog for a session"
     echo "  ae telegram <setup|start|stop|status>"
     echo "                         Machine-global Telegram bridge (forwards events to a chat)"
-    echo "  ae hub [--attach|--init]"
-    echo "                         Ensure the detached meta-agent hub is running"
+    echo "  ae steward [--attach|--init]"
+    echo "                         Ensure the detached fleet steward (meta-agent) is running"
     echo "  ae transfer <session> <ssh-target> [--yes]"
     echo "                         Push a stopped session to a peer machine (--pull reverses)"
     echo "  ae stop [name]         Pause session, keep ae + agent conversation state for resume"
@@ -5501,11 +5501,11 @@ send_agent_cmd() {
     esac
 }
 
-# --- ae hub: meta-agent launcher ---
+# --- ae steward: meta-agent launcher (deprecated alias: ae hub) ---
 # Copy one template file to its destination, NO overwrite, substituting a single
 # __PLACEHOLDER__ via bash param expansion (no sed → safe with '/' in the value).
 # Reports created vs skipped per file so partial dirs are handled explicitly.
-_hub_scaffold_file() {
+_steward_scaffold_file() {
     local src="$1" dst="$2" content
     shift 2 # remaining args are placeholder/value pairs
     if [[ -e "$dst" ]]; then
@@ -5543,13 +5543,15 @@ _hub_scaffold_file() {
     echo "  created: $dst"
 }
 
-# Scaffold ~/.ae/meta-hub/{hub.config,CHARTER.md} from contrib/aehub templates.
-cmd_hub_init() {
-    local hub_dir="${AE_HUB_DIR:-$CONFIG_DIR/meta-hub}"
-    # Reject a HUB_DIR that would break the INI double-quoted instructions value.
-    case "$hub_dir" in
+# Scaffold ~/.ae/steward/{steward.config,CHARTER.md} from contrib/aesteward
+# templates. Always scaffolds the NEW steward layout; an existing legacy
+# ~/.ae/meta-hub scaffold keeps working via the launch-time fallback below.
+cmd_steward_init() {
+    local steward_dir="${AE_STEWARD_DIR:-$CONFIG_DIR/steward}"
+    # Reject a dir that would break the INI double-quoted instructions value.
+    case "$steward_dir" in
         *'"'* | *$'\n'*)
-            echo "Error: AE_HUB_DIR contains an unsupported character (quote/newline): $hub_dir" >&2
+            echo "Error: AE_STEWARD_DIR contains an unsupported character (quote/newline): $steward_dir" >&2
             return 1
             ;;
     esac
@@ -5559,44 +5561,47 @@ cmd_hub_init() {
     self="$(readlink -f "${BASH_SOURCE[0]:-$0}" 2>/dev/null ||
         realpath "${BASH_SOURCE[0]:-$0}" 2>/dev/null ||
         echo "${BASH_SOURCE[0]:-$0}")"
-    tdir="$(dirname "$self")/contrib/aehub"
+    tdir="$(dirname "$self")/contrib/aesteward"
     if [[ ! -d "$tdir" ]]; then
-        echo "Error: hub templates not found at $tdir." >&2
-        echo "(single-file install?) Create $hub_dir/hub.config + CHARTER.md by hand." >&2
+        echo "Error: steward templates not found at $tdir." >&2
+        echo "(single-file install?) Create $steward_dir/steward.config + CHARTER.md by hand." >&2
         return 1
     fi
-    mkdir -p "$hub_dir" || return 1
-    # Canonicalize to an ABSOLUTE dir so a relative AE_HUB_DIR doesn't bake a
-    # relative charter path into hub.config — `ae hub` later cd's into the dir, so
-    # `rel/CHARTER.md` would wrongly resolve to `rel/rel/CHARTER.md`.
-    hub_dir="$(cd "$hub_dir" && pwd -P)" || return 1
-    charter_path="$hub_dir/CHARTER.md"
+    mkdir -p "$steward_dir" || return 1
+    # Canonicalize to an ABSOLUTE dir so a relative AE_STEWARD_DIR doesn't bake a
+    # relative charter path into steward.config — `ae steward` later cd's into the
+    # dir, so `rel/CHARTER.md` would wrongly resolve to `rel/rel/CHARTER.md`.
+    steward_dir="$(cd "$steward_dir" && pwd -P)" || return 1
+    charter_path="$steward_dir/CHARTER.md"
     aemon_path="$(dirname "$self")/contrib/aemonitor/aemonitor"
-    # The hub session is always named `hub`; its helper scripts live here. Baked
-    # into the charter so it's correct under any AE_HOME (default ~/.ae/sessions/hub,
-    # isolated e2e runs $AE_HOME/sessions/hub) — never the wrong (live) ~/.ae.
-    helpers_dir="$CONFIG_DIR/sessions/hub"
-    echo "Scaffolding hub into $hub_dir:"
+    # The steward session is always named `steward`; its helper scripts live here.
+    # Baked into the charter so it's correct under any AE_HOME (default
+    # ~/.ae/sessions/steward, isolated e2e runs $AE_HOME/sessions/steward) — never
+    # the wrong (live) ~/.ae.
+    helpers_dir="$CONFIG_DIR/sessions/steward"
+    echo "Scaffolding steward into $steward_dir:"
     # CHARTER.md first (the config points at it).
-    _hub_scaffold_file "$tdir/CHARTER.md" "$charter_path" \
+    _steward_scaffold_file "$tdir/CHARTER.md" "$charter_path" \
         "__AEMONITOR_PATH__" "$aemon_path" "__HELPERS_DIR__" "$helpers_dir" || return 1
-    _hub_scaffold_file "$tdir/hub.config" "$hub_dir/hub.config" "__CHARTER_PATH__" "$charter_path" || return 1
+    _steward_scaffold_file "$tdir/steward.config" "$steward_dir/steward.config" "__CHARTER_PATH__" "$charter_path" || return 1
     echo
-    echo "Done. Review/edit those files, then run: ae hub"
+    echo "Done. Review/edit those files, then run: ae steward"
 }
 
-cmd_hub_help() {
+cmd_steward_help() {
     cat <<'EOF'
-ae hub — launch the meta-agent hub: one ae session that monitors all your other
-ae sessions and is your single point of contact to them.
+ae steward — launch the steward: your fleet's chief of staff. One ae session that
+monitors all your other ae sessions, briefs you, relays your instructions to them,
+and (in focus mode) helps you hold an objective. `ae hub` is the deprecated alias.
 
-  ae hub           ensure the `hub` session is running (detached, isolated config)
-  ae hub --attach  switch/attach to the `hub` session
-  ae hub --init    scaffold ~/.ae/meta-hub/{hub.config,CHARTER.md} (never overwrites)
-  ae hub --help    this help
+  ae steward           ensure the session is running (detached, isolated config)
+  ae steward --attach  switch/attach to it
+  ae steward --init    scaffold ~/.ae/steward/{steward.config,CHARTER.md} (never overwrites)
+  ae steward --help    this help
 
-Config dir: ~/.ae/meta-hub (or $AE_HOME/meta-hub when AE_HOME is set; override
-with AE_HUB_DIR). See contrib/aehub/README.md for details.
+Config dir: ~/.ae/steward (or $AE_HOME/steward when AE_HOME is set; override with
+AE_STEWARD_DIR). A legacy ~/.ae/meta-hub scaffold (from 'ae hub --init') is still
+honoured at launch and keeps its `hub` session name. See contrib/aesteward/README.md.
 EOF
 }
 
@@ -5635,76 +5640,103 @@ case "${1:-}" in
         cmd_telegram "${@:2}"
         exit $?
         ;;
-    hub)
-        # Meta-agent launcher. Trampoline: handle --init/help (exit), else set up
-        # FULL config isolation (the start-hub wrapper's job) and FALL THROUGH to
-        # the generic start/resume path below as if `ae hub` named the session.
-        # We must NOT re-dispatch the subcommand here (that would re-enter this
-        # branch and recurse) — falling through reuses the generic parser instead.
+    steward | hub) # 'hub' kept as the deprecated alias for the renamed meta-agent
+        # Steward (meta-agent) launcher. Trampoline: handle --init/help (exit),
+        # else set up FULL config isolation (the start-steward wrapper's job) and
+        # FALL THROUGH to the generic start/resume path below. We must NOT
+        # re-dispatch the subcommand here (that would re-enter this branch and
+        # recurse) — falling through reuses the generic parser instead.
         shift
-        _hub_attach=false
+        _steward_attach=false
         while [[ $# -gt 0 ]]; do
             case "$1" in
                 --init)
                     if [[ $# -gt 1 ]]; then
-                        echo "Error: 'ae hub --init' takes no further arguments (got: ${*:2})" >&2
+                        echo "Error: 'ae steward --init' takes no further arguments (got: ${*:2})" >&2
                         exit 1
                     fi
-                    cmd_hub_init
+                    cmd_steward_init
                     exit $?
                     ;;
                 -h | --help | help)
-                    cmd_hub_help
+                    cmd_steward_help
                     exit 0
                     ;;
                 --attach | --switch)
-                    _hub_attach=true
+                    _steward_attach=true
                     shift
                     ;;
                 --detach | --no-attach)
-                    _hub_attach=false
+                    _steward_attach=false
                     shift
                     ;;
                 *)
-                    # The hub session is ALWAYS named `hub` with the standalone config;
-                    # accepting extra args would let `ae hub foo` become session `foo`
-                    # via the generic parser (last positional wins), leaking the
-                    # reserved name + hub config onto another session. Reject them.
-                    echo "Error: 'ae hub' takes no positional arguments (flags: --init / --help / --attach / --detach). Got: $*" >&2
-                    echo "The hub session is always named 'hub' (config: \${AE_HUB_DIR:-~/.ae/meta-hub}/hub.config)." >&2
-                    echo "To run a normal session literally named 'hub', use: ae --local hub" >&2
+                    # The steward session is ALWAYS named `steward` (legacy scaffold:
+                    # `hub`) with the standalone config; accepting extra args would
+                    # let `ae steward foo` become session `foo` via the generic
+                    # parser (last positional wins), leaking the reserved name +
+                    # steward config onto another session. Reject them.
+                    echo "Error: 'ae steward' takes no positional arguments (flags: --init / --help / --attach / --detach). Got: $*" >&2
+                    echo "The steward session is always named 'steward' (config: \${AE_STEWARD_DIR:-~/.ae/steward}/steward.config)." >&2
+                    echo "To run a normal session literally named 'steward', use: ae --local steward" >&2
                     exit 1
                     ;;
             esac
         done
-        if $_hub_attach; then
+        if $_steward_attach; then
             ATTACH_ON_READY=true
         else
             ATTACH_ON_READY=false
         fi
-        _hub_dir="${AE_HUB_DIR:-$CONFIG_DIR/meta-hub}"
-        _hub_config="$_hub_dir/hub.config"
-        if [[ ! -f "$_hub_config" ]]; then
-            echo "Error: no hub config at $_hub_config." >&2
-            echo "Run 'ae hub --init' to scaffold the meta-agent config + charter." >&2
+        # Resolve the scaffold: canonical steward layout first, then the legacy
+        # hub layout (from 'ae hub --init' before the rename). The config file
+        # found decides the SESSION NAME too — a legacy hub.config keeps running
+        # as session `hub` so its baked charter paths (~/.ae/sessions/hub) and
+        # resume state stay consistent; a steward.config runs as `steward`.
+        _steward_session=steward
+        if [[ -n "${AE_STEWARD_DIR:-}" ]]; then
+            _steward_dir="$AE_STEWARD_DIR"
+            _steward_config="$_steward_dir/steward.config"
+        elif [[ -f "$CONFIG_DIR/steward/steward.config" ]]; then
+            _steward_dir="$CONFIG_DIR/steward"
+            _steward_config="$_steward_dir/steward.config"
+        elif [[ -n "${AE_HUB_DIR:-}" ]]; then
+            _steward_dir="$AE_HUB_DIR"
+            _steward_config="$_steward_dir/hub.config"
+            _steward_session=hub
+        elif [[ -f "$CONFIG_DIR/meta-hub/hub.config" ]]; then
+            _steward_dir="$CONFIG_DIR/meta-hub"
+            _steward_config="$_steward_dir/hub.config"
+            _steward_session=hub
+        else
+            _steward_dir="$CONFIG_DIR/steward"
+            _steward_config="$_steward_dir/steward.config"
+        fi
+        if [[ ! -f "$_steward_config" ]]; then
+            echo "Error: no steward config at $_steward_config." >&2
+            echo "Run 'ae steward --init' to scaffold the steward config + charter." >&2
             exit 1
+        fi
+        if [[ "$_steward_session" == "hub" ]]; then
+            echo "note: using legacy hub scaffold ($_steward_config) — session stays 'hub'."
+            echo "      To migrate: ae end hub && ae steward --init && ae steward"
         fi
         # BLOCKER fix (codex): CONFIG_FILE alone does NOT isolate. AE_LOCAL_CONFIG
         # was captured from the CALLER's PWD near script top (before any cd), so a
         # project-local ./.ae/config could still override workspace.*/prompt.* and
         # reintroduce the worker-leak. Replicate the wrapper's full isolation:
         AE_LOCAL_CONFIG="" # drop the caller-PWD local config
-        cd "$_hub_dir" || {
-            echo "Error: cannot cd to $_hub_dir" >&2
+        cd "$_steward_dir" || {
+            echo "Error: cannot cd to $_steward_dir" >&2
             exit 1
         }
-        # Set CONFIG_FILE from $PWD *after* cd so it's absolute even when AE_HUB_DIR
-        # is relative (a relative path stored in meta would break resume elsewhere).
-        CONFIG_FILE="$PWD/hub.config" # standalone hub config wins (absolute, isolated)
-        # copy=local ⇒ work_dir/origin become $_hub_dir; on resume the restore path
-        # below rebuilds AE_LOCAL_CONFIG from stored_origin=$_hub_dir (no .ae/config
+        # Set CONFIG_FILE from $PWD *after* cd so it's absolute even when the dir
+        # override is relative (a relative path stored in meta would break resume).
+        CONFIG_FILE="$PWD/$(basename "$_steward_config")" # standalone config wins (absolute, isolated)
+        # copy=local ⇒ work_dir/origin become $_steward_dir; on resume the restore
+        # path below rebuilds AE_LOCAL_CONFIG from stored_origin (no .ae/config
         # there), so the isolation persists across resume too.
-        set -- hub # session name = hub (extra args already rejected above)
+        set -- "$_steward_session" # session name (extra args already rejected above)
         # fall through (NO exit) to flag-parse + generic start/resume
         ;;
     transfer)
@@ -5787,7 +5819,7 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
     if tmux show-environment -t "$SESSION" AE_SESSION 2>/dev/null | grep -q '^AE_SESSION='; then
         _telegram_autostart_if_enabled 2>/dev/null || true
         if [[ "$ATTACH_ON_READY" != "true" ]]; then
-            echo "Session '$SESSION' is running. Use 'ae hub --attach' to view."
+            echo "Session '$SESSION' is running. Use 'ae steward --attach' to view."
             exit 0
         fi
         tmux_attach "$SESSION"
@@ -5842,11 +5874,13 @@ if [[ "$MAIN_NAME" == *:* ]]; then
 fi
 LAYOUT="$(get_config workspace.layout)"
 WORKERS_RAW="$(get_config workspace.workers)"
-# meta-agent (hub) mode: [workspace] hub = true (preferred) — or its legacy alias
-# meta = true — marks this session as the monitoring hub. The watchdog then runs a
-# sweep-cadence (periodic "run your sweep now") instead of the stale-nudge
-# watchdog. Persisted to meta as meta_agent (internal name unchanged).
-META_AGENT_CFG="$(get_config workspace.hub)"
+# meta-agent (steward) mode: [workspace] steward = true (canonical) — or its
+# legacy aliases hub = true / meta = true — marks this session as the fleet
+# steward. The watchdog then runs a sweep-cadence (periodic "run your sweep now")
+# instead of the stale-nudge watchdog. Persisted to meta as meta_agent (internal
+# name unchanged).
+META_AGENT_CFG="$(get_config workspace.steward)"
+[[ -z "$META_AGENT_CFG" ]] && META_AGENT_CFG="$(get_config workspace.hub)"
 [[ -z "$META_AGENT_CFG" ]] && META_AGENT_CFG="$(get_config workspace.meta)"
 
 # Determine copy mode: CLI flag > config > default (local)
@@ -6161,7 +6195,7 @@ EOF
 [[ -n "$PRESERVED_WATCHDOG" ]] && echo "watchdog=${PRESERVED_WATCHDOG}" >>"${AE_META}/meta"
 # Preserve the session goal (set via the 'goal' helper) across resume.
 [[ -n "$PRESERVED_GOAL" ]] && echo "goal=${PRESERVED_GOAL}" >>"${AE_META}/meta"
-# Config-driven (re-read every start/resume): mark the monitoring hub so its watchdog
+# Config-driven (re-read every start/resume): mark the meta-agent (steward) so its watchdog
 # runs the sweep-cadence instead of the stale-nudge watchdog.
 case "$META_AGENT_CFG" in
     true | 1 | yes | on) echo "meta_agent=true" >>"${AE_META}/meta" ;;
@@ -7454,13 +7488,13 @@ THROTTLE_ALERT_CYCLES="${AE_WATCHDOG_THROTTLE_ALERT_CYCLES:-${AE_LOOP_THROTTLE_A
 # How often (seconds) the watchdog best-effort revives the telegram bridge if it
 # died. 0 disables. Idempotent + respects [telegram] enabled — see step 10.
 TG_SUPERVISE_SECS="${AE_WATCHDOG_TG_SUPERVISE_SEC:-${AE_LOOP_TG_SUPERVISE_SEC:-120}}"
-# Meta-agent (hub) sweep cadence: if this session is the monitoring hub
+# Meta-agent (steward) sweep cadence: if this session is the meta-agent
 # (meta_agent=true in meta), the watchdog prompts a sweep every SWEEP_SECS instead of
 # treating idle as stale. 0 falls back to normal watchdog behaviour.
 SWEEP_SECS="${AE_WATCHDOG_SWEEP_SEC:-${AE_LOOP_SWEEP_SEC:-300}}"
 [[ "$SWEEP_SECS" =~ ^[0-9]+$ ]] || SWEEP_SECS=300 # guard non-numeric overrides
 META_AGENT="$(grep '^meta_agent=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
-# Only the MAIN/hub agent runs the sweep cadence; any workers/spawned agents in a
+# Only the MAIN meta-agent runs the sweep cadence; any workers/spawned agents in a
 # meta session keep the normal watchdog. (alias:name, dropping the session-id.)
 META_MAIN_AGENT="$(grep '^agent.main=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- | cut -d: -f1,2 || true)"
 
@@ -7898,7 +7932,7 @@ _pane_has_descendant_named() {
 }
 
 declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing throttle_streak
-# Per-pane last sweep-nudge time, for meta-agent (hub) sweep cadence.
+# Per-pane last sweep-nudge time, for meta-agent (steward) sweep cadence.
 declare -A last_sweep_nudge first_sweep_nudge meta_wedge_alerted meta_reconciled
 # Per-pane quiet baseline for waiting-user/blocked: the pane hash captured when a
 # declaration is first observed (already includes the declaration's own echo), so
@@ -8046,24 +8080,24 @@ while true; do
                 ;;
         esac
 
-        # 1b. Meta-agent (hub) sweep cadence — applies ONLY to the main/hub agent
+        # 1b. Meta-agent (steward) sweep cadence — applies ONLY to the main agent
         #     (workers/spawned agents in a meta session keep the normal watchdog).
-        #     The hub is a long-running SERVICE, so "idle between sweeps" is NORMAL,
+        #     The steward is a long-running SERVICE, so "idle between sweeps" is NORMAL,
         #     not stale — don't nudge it to declare a quiet state or escalate it to a
         #     stale alert. Instead: (a) prompt a sweep every SWEEP_SECS, and (b) guard
-        #     liveness via the hub's OWN heartbeat — it rewrites its state file on each
-        #     real sweep, so if that stops advancing while we keep nudging (model
+        #     liveness via the steward's OWN heartbeat — it rewrites its state file on
+        #     each real sweep, so if that stops advancing while we keep nudging (model
         #     stall / API throttle / wedged), raise ONE alert (cleared on recovery).
         #     The dead-check above + missing-pane check (step 8) still catch a
-        #     dead/vanished hub. This is the explicit cadence, not the stale-watchdog.
+        #     dead/vanished steward. This is the explicit cadence, not the stale-watchdog.
         if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && (( SWEEP_SECS > 0 )); then
             now_epoch="$(date +%s)"
-            # Heartbeat liveness (live-but-not-sweeping detection). The hub rewrites
+            # Heartbeat liveness (live-but-not-sweeping detection). The steward rewrites
             # its state file on each real sweep; we judge it only AFTER we've prompted
             # at least one sweep and given it a grace window — so an ABSENT file
             # (never wrote a heartbeat) is caught too, not just a stale one.
             # This is the file the contrib aemonitor helper writes atomically each
-            # sweep (~/.ae/sessions/<hub>/meta-agent-state.json); they MUST match or
+            # sweep (~/.ae/sessions/<meta-agent>/meta-agent-state.json); they MUST match or
             # the wedge check watches a file nobody writes and false-alarms.
             hb_file="${META_DIR}/meta-agent-state.json"
             hb=0
@@ -8103,8 +8137,8 @@ while true; do
                     else
                         wedge_detail="never wrote a heartbeat in $(((now_epoch - first_nudge) / 60))m of sweep prompts"
                     fi
-                    ae_emit_event "alert" "$agent" "" "meta-agent not sweeping — ${wedge_detail} (hub may be stuck)"
-                    tmux display-message -d 10000 "[ae watchdog] $agent (hub) not sweeping — may be stuck" 2>/dev/null || true
+                    ae_emit_event "alert" "$agent" "" "meta-agent not sweeping — ${wedge_detail} (may be stuck)"
+                    tmux display-message -d 10000 "[ae watchdog] $agent (meta-agent) not sweeping — may be stuck" 2>/dev/null || true
                     _watchdog_log "  ${agent}  meta-agent — WEDGE alert (${wedge_detail})"
                 fi
             fi
@@ -8454,7 +8488,7 @@ _telegram_autostart_if_enabled 2>/dev/null || true
 # Focus main pane and attach
 tmux select-pane -t "${PANE_IDS[0]}"
 if [[ "$ATTACH_ON_READY" != "true" ]]; then
-    echo "Session '$SESSION' started. Use 'ae hub --attach' to view."
+    echo "Session '$SESSION' started. Use 'ae steward --attach' to view."
     exit 0
 fi
 tmux_attach "$SESSION"

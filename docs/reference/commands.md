@@ -17,8 +17,8 @@ ae watchdog <start|stop|status> [name]
                        Toggle the stale-agent watchdog (per-session, persists across resume)
 ae telegram <setup|start|stop|status>
                        Machine-global Telegram bridge — see Telegram bridge reference
-ae hub [--attach|--init]
-                       Ensure the detached meta-agent hub is running; --attach
+ae steward [--attach|--init]
+                       Ensure the detached steward (meta-agent) is running; --attach
                        switches to it (--init scaffolds config + charter)
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
 ae end|rm [-f] [--purge-history|--keep-history] [name]
@@ -166,65 +166,77 @@ ae watchdog status my-feature
 
 The [watchdog](../internals/watchdog.md) is on by default — only an explicit `false` / `no` / `off` / `0` in config or session meta keeps it off. `watchdog start` is idempotent; running it again just confirms the meta flag.
 
-### Meta-agent (hub) sweep cadence
+### Meta-agent (steward) sweep cadence
 
-A session marked as a monitoring hub with `[workspace] hub = true` (or its legacy
-alias `meta = true`; persisted to
+A session marked as the fleet steward with `[workspace] steward = true` (or its
+legacy aliases `hub = true` / `meta = true`; persisted to
 its meta as `meta_agent=true`) gets a different watchdog behaviour for its **main
 agent**: instead of the stale-nudge watchdog, the watchdog sends a *"run your sweep
 now"* nudge every `AE_WATCHDOG_SWEEP_SEC` seconds (default 300) and never escalates
-the hub to a stale `attn:` alert (idle between sweeps is normal for a monitor).
+the steward to a stale `attn:` alert (idle between sweeps is normal for a monitor).
 Workers/spawned agents in the same session keep the normal watchdog.
 
 Liveness is still guarded two ways: the dead/missing-pane checks catch a crashed
-hub, and a **heartbeat** check catches a *live-but-not-sweeping* hub (model
-stall, upstream throttle, wedge) — the hub's sweep helper rewrites
-`~/.ae/sessions/<hub>/meta-agent-state.json` on each real sweep, and if that mtime
+steward, and a **heartbeat** check catches a *live-but-not-sweeping* steward (model
+stall, upstream throttle, wedge) — the steward's sweep helper rewrites
+`~/.ae/sessions/<steward>/meta-agent-state.json` on each real sweep, and if that mtime
 stops advancing past ~`2×AE_WATCHDOG_SWEEP_SEC` the watchdog raises one alert (cleared on
 recovery). This is the file [`contrib/aemonitor`](../../contrib/aemonitor/) writes
-by default; if you override its `--state` path for the hub, point it at this same
+by default; if you override its `--state` path for the steward, point it at this same
 file or the watchdog heartbeat will false-alarm. The sweep nudges use `action=nudge`,
 which is **not in the default telegram include set**, so routine sweeps don't
 reach your phone (a custom `include` containing `nudge` would forward them).
 
-## `ae hub`
+## `ae steward`
 
-The **meta-agent hub** — a single ae session that monitors all your *other* ae
-sessions and is your one point of contact to them (it relays your instructions to
-the other sessions and reports what needs you, via the Telegram `say` channel). It
-is a read-only monitor + relay: per its charter it never ends/stops/edits another
-session on its own.
+The **steward** — your fleet's chief of staff: a single ae session that monitors
+all your *other* ae sessions and is your one point of contact to them (it relays
+your instructions to the other sessions and reports what needs you, via the
+Telegram `say` channel). In **focus mode** it also holds your objective, parks
+your ideas, and answers `what next` — via two ask-once rituals, never unsolicited
+mid-flow interruptions (see [`contrib/aesteward`](../../contrib/aesteward/)). It
+is a monitor + relay + focus aide: per its charter it never ends/stops/edits
+another session on its own, and only suggests — it dispatches nothing without
+your say-so.
 
 ```text
-ae hub          Ensure the detached `hub` session is running
-ae hub --attach Switch/attach to the `hub` session
-ae hub --init   Scaffold ~/.ae/meta-hub/{hub.config,CHARTER.md} (never overwrites)
-ae hub --help   Usage
+ae steward          Ensure the detached `steward` session is running
+ae steward --attach Switch/attach to the `steward` session
+ae steward --init   Scaffold ~/.ae/steward/{steward.config,CHARTER.md} (never overwrites)
+ae steward --help   Usage
 ```
 
-`ae hub` launches the `hub` session with **full config isolation**: it uses
-`~/.ae/meta-hub/hub.config` as the config and neutralizes any project-local
-`./.ae/config`, so the global config's `workers` never leak into the single-agent
-hub regardless of the directory you run it from. The config dir defaults to
-`${AE_HOME:-~/.ae}/meta-hub` and is overridable with `AE_HUB_DIR` (so an isolated
-`AE_HOME` run keeps its hub state out of your live `~/.ae`).
-Unlike normal `ae <name>` session starts, bare `ae hub` does **not** attach or
-switch the current tmux client; use `ae hub --attach` when you want to inspect the
-hub pane directly.
+`ae steward` launches the `steward` session with **full config isolation**: it
+uses `~/.ae/steward/steward.config` as the config and neutralizes any
+project-local `./.ae/config`, so the global config's `workers` never leak into
+the single-agent steward regardless of the directory you run it from. The config
+dir defaults to `${AE_HOME:-~/.ae}/steward` and is overridable with
+`AE_STEWARD_DIR` (so an isolated `AE_HOME` run keeps its steward state out of
+your live `~/.ae`).
+Unlike normal `ae <name>` session starts, bare `ae steward` does **not** attach
+or switch the current tmux client; use `ae steward --attach` when you want to
+inspect the steward pane directly.
 
-First time: run `ae hub --init` to scaffold the config + charter from
-[`contrib/aehub`](../../contrib/aehub/) (placeholders for the charter and
-[`aemonitor`](../../contrib/aemonitor/) paths are substituted), edit them to taste,
-then `ae hub`. The charter wires the deterministic sweep to `aemonitor` and tells
-the agent its only channel to you is `say`.
+First time: run `ae steward --init` to scaffold the config + charter from
+[`contrib/aesteward`](../../contrib/aesteward/) (placeholders for the charter and
+[`aemonitor`](../../contrib/aemonitor/) paths are substituted), edit them to
+taste, then `ae steward`. The charter wires the deterministic sweep to
+`aemonitor`, defines focus mode, and tells the agent its only channel to you is
+`say`.
 
-To talk to the hub from your phone, run the [Telegram bridge](telegram.md) and
-make the hub your default correspondent with `/use hub claude:meta` — see
-[Hub-centric routing](telegram.md#hub-centric-routing-talk-to-the-meta-agent-not-ten-sessions).
+To talk to the steward from your phone, run the [Telegram bridge](telegram.md)
+and make it your default correspondent with `/use steward claude:steward` — see
+[Steward-centric routing](telegram.md#steward-centric-routing-talk-to-the-meta-agent-not-ten-sessions).
 
-`hub` is a reserved subcommand. If you ever need a normal (non-meta) session
-literally named `hub`, `ae --local hub` reaches the generic start path (the first
-argument is then no longer `hub`).
+**Deprecated alias + legacy scaffolds:** `ae hub` still works and maps to the
+same launcher. A pre-rename `~/.ae/meta-hub/hub.config` scaffold (from
+`ae hub --init`) is still honoured — it keeps its `hub` session name so its baked
+charter paths and resume state stay consistent (`AE_HUB_DIR` is honoured too).
+Migrate with `ae end hub && ae steward --init && ae steward`.
+
+`steward` is a reserved subcommand (as is `hub`). If you ever need a normal
+session literally named `steward`, `ae --local steward` reaches the generic start
+path (the first argument is then no longer `steward`).
 
 ## `ae telegram`
 

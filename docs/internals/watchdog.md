@@ -20,7 +20,7 @@ The watchdog runs as a `bash` subprocess pinned to a single tmux pane named `_wa
 | `AE_WATCHDOG_MAX_NUDGES` | 2 | Nudges before escalating to alert |
 | `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` | 5 | Continuous throttle cycles before throttle-alert |
 | `AE_WATCHDOG_TG_SUPERVISE_SEC` | 120 | Telegram-bridge revive cadence in seconds (`0` disables) |
-| `AE_WATCHDOG_SWEEP_SEC` | 300 | Hub/meta-agent sweep cadence in seconds (`0` falls back to the normal watchdog) |
+| `AE_WATCHDOG_SWEEP_SEC` | 300 | Steward/meta-agent sweep cadence in seconds (`0` falls back to the normal watchdog) |
 
 Set them in the shell before `ae <name>`, or via your shell rc.
 

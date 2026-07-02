@@ -771,11 +771,12 @@ assert_contains "transfer: --help mentions --with-workdir" "--with-workdir" "$tr
 assert_contains "transfer: --help mentions --dry-run" "--dry-run" "$transfer_help_out"
 assert_contains "transfer: --help mentions --yes" "--yes" "$transfer_help_out"
 
-# ── Test: ae hub — config isolation from a hostile project-local .ae/config ──
-# The launcher must reproduce the start-hub wrapper's FULL isolation: a project's
-# ./.ae/config must NOT override the standalone hub config (the worker-leak class
-# codex flagged as a BLOCKER). We run `ae hub` from a hostile repo and assert the
-# hub config wins and work_dir/config are pinned to the hub dir.
+# ── Test: ae steward (legacy hub scaffold) — config isolation + hub compat ──
+# The launcher must reproduce the start-steward wrapper's FULL isolation: a
+# project's ./.ae/config must NOT override the standalone config (the worker-leak
+# class codex flagged as a BLOCKER). We run the DEPRECATED `ae hub` alias with a
+# legacy AE_HUB_DIR scaffold and assert (a) isolation holds and (b) the legacy
+# scaffold keeps its `hub` session name (back-compat contract).
 HUB_DIR="$TMPDIR/meta-hub"
 mkdir -p "$HUB_DIR"
 cat >"$HUB_DIR/hub.config" <<'EOF'
@@ -802,7 +803,8 @@ EOF
 hub_launch_out="$(cd "$HOSTILE" && AE_HUB_DIR="$HUB_DIR" "$AE" hub 2>&1)"
 wait_for_session "hub"
 sleep 1
-assert_contains "hub: bare launch starts detached (no attach/switch needed)" "Session 'hub' started." "$hub_launch_out"
+assert_contains "hub-compat: bare launch starts detached (no attach/switch needed)" "Session 'hub' started." "$hub_launch_out"
+assert_contains "hub-compat: legacy scaffold prints the migration hint" "legacy hub scaffold" "$hub_launch_out"
 _hub_meta="$HOME/.ae/sessions/hub/meta"
 assert_contains "hub: hub-config main wins over hostile local main" "agent.main=dummy:meta:" \
     "$(cat "$_hub_meta" 2>/dev/null)"
@@ -824,16 +826,36 @@ assert_eq "hub: rejects an extra positional (reserved-name leak guard)" "1" \
 assert_eq "hub: the extra-arg name was NOT created as a session" "1" \
     "$(tmux has-session -t other 2>/dev/null && echo 0 || echo 1)"
 
-# `ae hub --init` with a RELATIVE AE_HUB_DIR must still bake an ABSOLUTE charter
-# path into hub.config (else `ae hub` cd's in and rel/CHARTER.md → rel/rel/...).
+# `ae steward --init` with a RELATIVE AE_STEWARD_DIR must still bake an ABSOLUTE
+# charter path into steward.config (else `ae steward` cd's in and rel/CHARTER.md
+# → rel/rel/...).
 REL_BASE="$TMPDIR/relbase"
 mkdir -p "$REL_BASE"
-(cd "$REL_BASE" && AE_HUB_DIR="relhub" "$AE" hub --init >/dev/null 2>&1)
-assert_contains "hub --init: relative AE_HUB_DIR yields an absolute CHARTER path" \
-    "$REL_BASE/relhub/CHARTER.md" "$(cat "$REL_BASE/relhub/hub.config" 2>/dev/null)"
+(cd "$REL_BASE" && AE_STEWARD_DIR="relstw" "$AE" steward --init >/dev/null 2>&1)
+assert_contains "steward --init: relative AE_STEWARD_DIR yields an absolute CHARTER path" \
+    "$REL_BASE/relstw/CHARTER.md" "$(cat "$REL_BASE/relstw/steward.config" 2>/dev/null)"
 
 # `ae help` (the in-tool discovery surface) lists the new first-class command.
-assert_contains "help: lists 'ae hub'" "ae hub" "$("$AE" help 2>/dev/null)"
+assert_contains "help: lists 'ae steward'" "ae steward" "$("$AE" help 2>/dev/null)"
+
+# Canonical steward path: AE_STEWARD_DIR scaffold → session named 'steward'.
+STW_DIR="$TMPDIR/steward-canon"
+(AE_STEWARD_DIR="$STW_DIR" "$AE" steward --init >/dev/null 2>&1)
+assert_eq "steward --init: scaffolds steward.config + CHARTER.md" "1" \
+    "$([[ -f "$STW_DIR/steward.config" && -f "$STW_DIR/CHARTER.md" ]] && echo 1 || echo 0)"
+assert_contains "steward --init: config marks steward = true" "steward = true" \
+    "$(cat "$STW_DIR/steward.config" 2>/dev/null)"
+# Swap in the dummy agent so the session can actually launch in the harness.
+sed -i 's|^claude = .*|claude = "bash"|' "$STW_DIR/steward.config"
+stw_launch_out="$(AE_STEWARD_DIR="$STW_DIR" "$AE" steward 2>&1)"
+wait_for_session "steward"
+sleep 1
+assert_contains "steward: bare launch starts detached as session 'steward'" "Session 'steward' started." "$stw_launch_out"
+assert_contains "steward: meta_agent mode on via 'steward = true'" "meta_agent=true" \
+    "$(cat "$HOME/.ae/sessions/steward/meta" 2>/dev/null)"
+assert_eq "steward: rejects an extra positional (reserved-name leak guard)" "1" \
+    "$(AE_STEWARD_DIR="$STW_DIR" "$AE" steward other2 2>/dev/null; echo $?)"
+tmux kill-session -t steward 2>/dev/null || true
 
 # AE_HOME relocates ALL ae state away from $HOME/.ae WITHOUT swapping $HOME — the
 # isolation primitive for real-agent e2e (keep real $HOME for CLI auth, isolate ae
@@ -848,18 +870,18 @@ assert_eq "AE_HOME: session state lands under AE_HOME, not \$HOME/.ae" "1" \
     "$([[ -f "$ALT_AE_HOME/sessions/aehome-test/meta" && ! -e "$HOME/.ae/sessions/aehome-test" ]] && echo 1 || echo 0)"
 tmux kill-session -t aehome-test 2>/dev/null || true
 
-# `ae hub --init` under AE_HOME must scaffold into $AE_HOME/meta-hub, not live ~/.ae
-# (codex BLOCKER: the hub dir previously defaulted to $HOME/.ae/meta-hub).
-HUB_AEH="$TMPDIR/hub-aehome"
-(cd "$TMPDIR" && AE_HOME="$HUB_AEH" "$AE" hub --init >/dev/null 2>&1)
-assert_eq "AE_HOME: hub --init scaffolds under AE_HOME, not \$HOME/.ae" "1" \
-    "$([[ -f "$HUB_AEH/meta-hub/hub.config" && ! -e "$HOME/.ae/meta-hub" ]] && echo 1 || echo 0)"
+# `ae steward --init` under AE_HOME must scaffold into $AE_HOME/steward, not live
+# ~/.ae (codex BLOCKER class: the dir previously defaulted to $HOME/.ae).
+HUB_AEH="$TMPDIR/stw-aehome"
+(cd "$TMPDIR" && AE_HOME="$HUB_AEH" "$AE" steward --init >/dev/null 2>&1)
+assert_eq "AE_HOME: steward --init scaffolds under AE_HOME, not \$HOME/.ae" "1" \
+    "$([[ -f "$HUB_AEH/steward/steward.config" && ! -e "$HOME/.ae/steward" ]] && echo 1 || echo 0)"
 # The charter's helper paths must point at the ISOLATED hub session dir, never the
 # live ~/.ae (the charter-path fix that unblocks hub e2e scenarios).
 assert_eq "AE_HOME: scaffolded charter helper paths point under AE_HOME, not ~/.ae" "1" \
-    "$([[ -f "$HUB_AEH/meta-hub/CHARTER.md" ]] &&
-        grep -q "$HUB_AEH/sessions/hub/say" "$HUB_AEH/meta-hub/CHARTER.md" &&
-        ! grep -q '[~]/.ae/sessions/hub' "$HUB_AEH/meta-hub/CHARTER.md" && echo 1 || echo 0)"
+    "$([[ -f "$HUB_AEH/steward/CHARTER.md" ]] &&
+        grep -q "$HUB_AEH/sessions/steward/say" "$HUB_AEH/steward/CHARTER.md" &&
+        ! grep -q '[~]/.ae/sessions/steward' "$HUB_AEH/steward/CHARTER.md" && echo 1 || echo 0)"
 
 # ae end conversation-file cleanup flag: KEEP by default, --purge-history opts in.
 REPO_KEEP="$(setup_repo)"

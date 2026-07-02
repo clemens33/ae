@@ -67,7 +67,7 @@ The watchdog reads its tunables from environment variables (set them in the sess
 | `AE_WATCHDOG_MAX_NUDGES` | 2 | Nudges before escalating to alert |
 | `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` | 5 | Cycles of continuous upstream throttle before alert |
 | `AE_WATCHDOG_TG_SUPERVISE_SEC` | 120 | Telegram-bridge revive cadence in seconds (`0` disables) |
-| `AE_WATCHDOG_SWEEP_SEC` | 300 | Hub/meta-agent sweep cadence in seconds (`0` falls back to the normal watchdog) |
+| `AE_WATCHDOG_SWEEP_SEC` | 300 | Steward/meta-agent sweep cadence in seconds (`0` falls back to the normal watchdog) |
 
 The legacy `AE_LOOP_*` names are still honoured as fallbacks for each tunable. To turn the watchdog off for a single session, run `~/.ae/sessions/<name>/watchdog stop` once. The setting persists across resume.
 
