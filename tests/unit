@@ -3429,6 +3429,53 @@ assert_eq "aesteward charter: EXACT-match only (never prefix); over-cap commands
 assert_eq "aesteward charter: transition review has a durable ask-once latch" "1" \
     "$(grep -q 'transition_offered_for' "$_aestw_charter" &&
         grep -q 'transition_offered_for=<objective_set_at>' "$_aestw_charter" && echo 1 || echo 0)"
+# Slice #3 — proactive interrupts (§8b): the gated exception to the trust contract.
+assert_eq "aesteward charter: proactive interrupts require ALL FOUR gates" "1" \
+    "$(grep -q 'Proactive interrupts' "$_aestw_charter" &&
+        grep -qi 'ALL FOUR gates' "$_aestw_charter" &&
+        grep -q '1. \*\*Eligibility' "$_aestw_charter" &&
+        grep -q '2. \*\*Signal' "$_aestw_charter" &&
+        grep -q '3. \*\*Not-already-fired' "$_aestw_charter" &&
+        grep -q '4. \*\*Actionability' "$_aestw_charter" && echo 1 || echo 0)"
+# Codex IMPORTANT: a persistent condition must nudge ONCE — a fired latch that
+# re-arms only on signal-clear / objective-change / operator-reply, not on the
+# budget/floor. T3 must be tone-at-first-fire, not a repeat of an unanswered nudge.
+assert_eq "aesteward charter: never-repeat fired latch (gate 3) + T3 is not a repeat" "1" \
+    "$(grep -q 'proactive_fired_signal' "$_aestw_charter" &&
+        grep -q 'not every 60 min' "$_aestw_charter" &&
+        grep -q 'never repetition' "$_aestw_charter" && echo 1 || echo 0)"
+# Codex IMPORTANT: an ignored proactive is counted at most ONCE (pending-reply
+# marker cleared on count), not re-counted every later sweep.
+assert_eq "aesteward charter: ignored proactive counted once via pending-reply marker" "1" \
+    "$(grep -q 'proactive_pending_reply_for' "$_aestw_charter" &&
+        grep -q 'counted \*\*once\*\*' "$_aestw_charter" && echo 1 || echo 0)"
+# Codex NIT: quiet-hours wraparound is defined deterministically (+ reject malformed).
+assert_eq "aesteward charter: quiet-hours wraparound rule defined" "1" \
+    "$(grep -q 'crosses' "$_aestw_charter" &&
+        grep -q 'now >= START. OR .now < END' "$_aestw_charter" &&
+        grep -q 'malformed window is ignored' "$_aestw_charter" && echo 1 || echo 0)"
+assert_eq "aesteward charter: interrupt budget + two-consecutive-sweeps signal" "1" \
+    "$(grep -q 'proactive_sent_count' "$_aestw_charter" &&
+        grep -q 'now - proactive_last_at >= 60min' "$_aestw_charter" &&
+        grep -q 'holds THIS sweep AND held' "$_aestw_charter" &&
+        grep -q 'armed_signal' "$_aestw_charter" && echo 1 || echo 0)"
+assert_eq "aesteward charter: feedback loop self-mutes to passive after ignores" "1" \
+    "$(grep -q 'proactive_ignored_streak' "$_aestw_charter" &&
+        grep -q 'proactive_ignored_streak >= 2' "$_aestw_charter" &&
+        grep -q 'switch yourself to .passive' "$_aestw_charter" && echo 1 || echo 0)"
+assert_eq "aesteward charter: conservative starter triggers, no clock-only nag, never auto-acts" "1" \
+    "$(grep -q 'Checkpoint overdue' "$_aestw_charter" &&
+        grep -q 'Off-objective drift' "$_aestw_charter" &&
+        grep -q 'NOT triggers' "$_aestw_charter" &&
+        grep -q 'T4 does not exist' "$_aestw_charter" && echo 1 || echo 0)"
+assert_eq "aesteward charter: snooze + quiet-hours escape hatches in the protocol" "1" \
+    "$(grep -q '`snooze \[<min>\]`' "$_aestw_charter" &&
+        grep -q 'quiet_hours' "$_aestw_charter" &&
+        grep -q 'snooze_until' "$_aestw_charter" && echo 1 || echo 0)"
+# The trust contract must now ROUTE unsolicited messages through §8b, not forbid
+# them outright (slice #2 said "never"; slice #3 makes it "only via the gates").
+assert_eq "aesteward charter: trust contract routes proactive talk through §8b gates" "1" \
+    "$(grep -q 'ONLY through the §8b gates' "$_aestw_charter" && echo 1 || echo 0)"
 unset _aestw_charter
 assert_eq "steward init: substitutes __HELPERS_DIR__ with the steward session helper dir" "1" \
     "$([[ "$AE_SOURCE" == *'helpers_dir="$CONFIG_DIR/sessions/steward"'* \

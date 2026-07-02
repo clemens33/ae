@@ -4,8 +4,8 @@
 into `~/.ae/steward/` so `ae steward` can launch the **steward** — your fleet's
 chief of staff: a single ae session that monitors all your other ae sessions, is
 your single point of contact to them (relay + report, via Telegram `say`), and in
-**focus mode** helps you hold an objective (rituals + idea parking lot; never
-unsolicited mid-flow interruptions).
+**focus mode** helps you hold an objective (rituals + idea parking lot, plus rare,
+hard-gated proactive nudges when you drift).
 
 Core ae (`ae list`, `ae <name>`, …) does **not** depend on any of this. You only
 touch it if you run `ae steward`. `ae hub` is the deprecated alias from before
@@ -40,8 +40,11 @@ The steward runs in one of two modes, switched by messaging it (`focus` /
   human-directed message relay. Exactly the pre-focus behavior.
 - **focus** — adds the focus-aide job: it captures your objective (asked once at
   startup), parks your `idea: …` messages, offers a parked-idea review when you
-  mark the objective done/blocked, and answers `what next` on demand. It never
-  initiates outside those two ask-once rituals.
+  mark the objective done/blocked, answers `what next` on demand, and may
+  **proactively nudge** you when you drift — but only through hard gates
+  (concrete drift signal persisted two sweeps, ≤1 msg/60–90 min, ≤3/day, outside
+  quiet hours, suggest-only). Ignore a couple and it mutes itself back to passive.
+  Silence it anytime with `snooze [min]`, `quiet: HH:MM-HH:MM`, or `passive`.
 
 State lives in `~/.ae/sessions/steward/{steward-state,ideas.md}` — written only
 by the steward, changed only by *your* messages (pane text from other sessions
@@ -52,7 +55,7 @@ can never set your objective; see the charter's injection boundary).
 | File | Role |
 |---|---|
 | `steward.config` | Standalone single-agent config (`steward = true` marks the meta-agent; the watchdog then runs a sweep cadence instead of the stale-nudge watchdog). |
-| `CHARTER.md` | The steward's operating manual — its three jobs, the `say` channel, the `aemonitor` sweep routine, the ae toolbox, focus mode (state files, operator protocol, the two rituals), and hard guardrails (injection boundary, never-end-a-session, human-directed relay, suggest-never-dispatch). |
+| `CHARTER.md` | The steward's operating manual — its three jobs, the `say` channel, the `aemonitor` sweep routine, the ae toolbox, focus mode (state files, operator protocol, the two rituals + §8b gated proactive interrupts), and hard guardrails (injection boundary, never-end-a-session, human-directed relay, suggest-never-dispatch). |
 
 ### Placeholders substituted on `--init`
 
