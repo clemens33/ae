@@ -47,6 +47,7 @@ nav:
       - Configuration: getting-started/config.md
   - Commands: reference/commands.md
   - Session helpers: reference/helpers.md
+  - Delegation: reference/delegation.md
   - Telegram bridge: reference/telegram.md
   - Internals:
       - Architecture: internals/architecture.md

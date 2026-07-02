@@ -671,6 +671,14 @@ assert_eq "state: workspace manifest documents state helper" \
     "1" \
     "$([[ "$AE_SOURCE" == *'/state working "starting on X"'* && "$AE_SOURCE" == *'/state blocked'* ]] && echo 1 || echo 0)"
 
+# ── delegation protocol (tiers + spawned workers) ───────────────────
+
+assert_eq "delegation: injected context rule 9 promotes tiered spawning" "1" \
+    "$([[ "$AE_SOURCE" == *'(9) DELEGATION: for bounded subtasks'* && "$AE_SOURCE" == *'workers never self-retire'* && "$AE_SOURCE" == *'Outcome/Changed/Verified/Risks'* ]] && echo 1 || echo 0)"
+
+assert_eq "delegation: workspace manifest carries the Delegation section" "1" \
+    "$([[ "$AE_SOURCE" == *'## Delegation'* && "$AE_SOURCE" == *'One writer per file'* && "$AE_SOURCE" == *'the pane must survive until'* ]] && echo 1 || echo 0)"
+
 # Behavioural: extract _event_json_str + ae_latest_state_for bodies and
 # exercise them against a synthetic events.jsonl. Both are single top-level
 # definitions since the declare-f migration: _event_json_str at its
@@ -3679,6 +3687,17 @@ assert_eq "aesteward charter: EXACT-match only (never prefix); over-cap commands
 assert_eq "aesteward charter: transition review has a durable ask-once latch" "1" \
     "$(grep -q 'transition_offered_for' "$_aestw_charter" &&
         grep -q 'transition_offered_for=<objective_set_at>' "$_aestw_charter" && echo 1 || echo 0)"
+
+assert_eq "aesteward charter: orphaned-worker watch (suggest-only retire)" "1" \
+    "$(grep -q 'orphaned workers' "$_aestw_charter" &&
+        grep -q 'never retire anything yourself' "$_aestw_charter" && echo 1 || echo 0)"
+
+assert_eq "aesteward charter: config watch (lkg copy, report-once, never edit)" "1" \
+    "$(grep -q 'config.lkg' "$_aestw_charter" &&
+        grep -q 'report each change exactly once' "$_aestw_charter" &&
+        grep -q 'ONLY AFTER' "$_aestw_charter" &&
+        grep -q 'NEVER paste values of secret-looking keys' "$_aestw_charter" &&
+        grep -qi 'Never edit the' "$_aestw_charter" && echo 1 || echo 0)"
 # Slice #3 — proactive interrupts (§8b): the gated exception to the trust contract.
 assert_eq "aesteward charter: proactive interrupts require ALL FOUR gates" "1" \
     "$(grep -q 'Proactive interrupts' "$_aestw_charter" &&
