@@ -3,6 +3,16 @@
 set -euo pipefail
 AE_VERSION="0.2.1"
 
+# Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
+# zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
+# function bodies at definition time, so a later guard never runs; 3.2 would
+# die with a cryptic parse error instead.
+if ((BASH_VERSINFO[0] < 4)); then
+    echo "Error: ae requires bash >= 4.0 (found ${BASH_VERSION})." >&2
+    echo "macOS: brew install bash, and make sure brew's bin dir precedes /bin on PATH (eval \"\$(brew shellenv)\")." >&2
+    exit 1
+fi
+
 # AE_HOME relocates ALL ae state (config, sessions, worktrees) without swapping
 # $HOME — so an isolated run (tests, e2e) can keep the real $HOME (and real
 # agent-CLI auth under ~/.claude, ~/.codex) while writing ae state elsewhere.
@@ -2306,6 +2316,7 @@ doctor_report() {
 check_deps() {
     if [[ -z "${BASH_VERSINFO[0]:-}" ]] || ((BASH_VERSINFO[0] < 4)); then
         echo "Error: ae requires bash >= 4.0 (found ${BASH_VERSION:-unknown})." >&2
+        echo "macOS: brew install bash" >&2
         return 1
     fi
     if ! command -v tmux >/dev/null 2>&1; then

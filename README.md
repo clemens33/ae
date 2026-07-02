@@ -212,6 +212,7 @@ No custom protocols, no frameworks. Just system prompts and bash scripts that ag
 
 ## Requirements
 
+- bash >= 4.0 (macOS ships 3.2 — `brew install bash` and put brew's bin dir before `/bin` on PATH, e.g. `eval "$(brew shellenv)"`)
 - [tmux](https://github.com/tmux/tmux)
 - [git](https://git-scm.com/)
 - At least one AI coding agent ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool)

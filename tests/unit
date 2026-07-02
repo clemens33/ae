@@ -1222,6 +1222,12 @@ assert_eq "template library: sources silently under set -u (no executable leaks)
     "1" "$_tpl_ok"
 rm -f "$_tpl_src"
 
+# The bash>=4 fail-fast must sit at the very top of ae, BEFORE any function
+# definition — bash parses fn bodies at definition time, so on 3.2 a later
+# guard never runs (the parser dies on bash-4 syntax first). Head = 1200 chars.
+assert_eq "bash guard: fails fast with brew hint in the file head" "1" \
+    "$([[ "${AE_SOURCE:0:1200}" == *'requires bash >= 4.0'* && "${AE_SOURCE:0:1200}" == *'brew install bash'* ]] && echo 1 || echo 0)"
+
 # Generalized emission-completeness guards — ALL declare-f emissions, not just
 # the watchdog (same failure class: a name silently dropped from a declare -f
 # list degrades that helper only on the branches that call the missing fn).
