@@ -3661,10 +3661,11 @@ assert_eq "aesteward charter: interrupt budget + two-consecutive-sweeps signal" 
         grep -q 'now - proactive_last_at >= 60min' "$_aestw_charter" &&
         grep -q 'holds THIS sweep AND held' "$_aestw_charter" &&
         grep -q 'armed_signal' "$_aestw_charter" && echo 1 || echo 0)"
-assert_eq "aesteward charter: feedback loop self-mutes to passive after ignores" "1" \
+assert_eq "aesteward charter: feedback loop self-mutes via own latch after ignores" "1" \
     "$(grep -q 'proactive_ignored_streak' "$_aestw_charter" &&
         grep -q 'proactive_ignored_streak >= 2' "$_aestw_charter" &&
-        grep -q 'switch yourself to .passive' "$_aestw_charter" && echo 1 || echo 0)"
+        grep -q 'self-mute — set .self_mute_until' "$_aestw_charter" &&
+        grep -q 'never touch the operator' "$_aestw_charter" && echo 1 || echo 0)"
 assert_eq "aesteward charter: conservative starter triggers, no clock-only nag, never auto-acts" "1" \
     "$(grep -q 'Checkpoint overdue' "$_aestw_charter" &&
         grep -q 'Off-objective drift' "$_aestw_charter" &&

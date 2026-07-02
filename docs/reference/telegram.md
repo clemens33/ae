@@ -111,8 +111,9 @@ mechanism** — it's a setup on top of the routing above:
    message you type (no slash, no `@`) goes to the running steward as a `send`;
    no `/use` needed. So you just talk to it. (`/use <session> <agent>` still
    redirects to a specific session when you want that; `/use clear` returns to
-   the steward.) This is also how the focus-mode protocol travels: `objective: …`,
-   `idea: …`, `focus`, `status`, `what next`, `snooze` are just plain messages.
+   the steward.) This is also how the steward's operator protocol travels:
+   `objective: …`, `idea: …`, `status`, `what next`, `snooze`, `drop objective`
+   are just plain messages.
 3. **The loop closes both ways:**
    - **you → steward** — plain text (auto-default) *or* a swipe-reply to any
      of its messages (reply-to-routing) reaches `steward:claude:steward`.

@@ -192,10 +192,10 @@ reach your phone (a custom `include` containing `nudge` would forward them).
 The **steward** — your fleet's chief of staff: a single ae session that monitors
 all your *other* ae sessions and is your one point of contact to them (it relays
 your instructions to the other sessions and reports what needs you, via the
-Telegram `say` channel). In **focus mode** it also holds your objective, parks
+Telegram `say` channel). Once you set an objective (`objective: …` over Telegram) it also holds it, parks
 your ideas, and answers `what next` — and may proactively nudge you when you drift,
 but only through hard gates (concrete signal held two sweeps, a rate budget, quiet
-hours, suggest-only; ignore a couple and it self-mutes to passive). See
+hours, suggest-only; ignore a couple and it self-mutes for the day). See
 [`contrib/aesteward`](../../contrib/aesteward/). It
 is a monitor + relay + focus aide: per its charter it never ends/stops/edits
 another session on its own, and only suggests — it dispatches nothing without
@@ -223,7 +223,7 @@ First time: run `ae steward --init` to scaffold the config + charter from
 [`contrib/aesteward`](../../contrib/aesteward/) (placeholders for the charter and
 [`aemonitor`](../../contrib/aemonitor/) paths are substituted), edit them to
 taste, then `ae steward`. The charter wires the deterministic sweep to
-`aemonitor`, defines focus mode, and tells the agent its only channel to you is
+`aemonitor`, defines the objective-armed focus aide, and tells the agent its only channel to you is
 `say`.
 
 To talk to the steward from your phone, run the [Telegram bridge](telegram.md):

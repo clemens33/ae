@@ -5662,7 +5662,7 @@ cmd_steward_help() {
     cat <<'EOF'
 ae steward — launch the steward: your fleet's chief of staff. One ae session that
 monitors all your other ae sessions, briefs you, relays your instructions to them,
-and (in focus mode) helps you hold an objective. `ae hub` is the deprecated alias.
+and helps you hold an objective once you set one. `ae hub` is the deprecated alias.
 
   ae steward           ensure the session is running (detached, isolated config)
   ae steward --attach  switch/attach to it

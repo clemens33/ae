@@ -3,9 +3,9 @@
 **Optional. NOT core ae.** These are the templates `ae steward --init` scaffolds
 into `~/.ae/steward/` so `ae steward` can launch the **steward** — your fleet's
 chief of staff: a single ae session that monitors all your other ae sessions, is
-your single point of contact to them (relay + report, via Telegram `say`), and in
-**focus mode** helps you hold an objective (rituals + idea parking lot, plus rare,
-hard-gated proactive nudges when you drift).
+your single point of contact to them (relay + report, via Telegram `say`), and —
+whenever you've told it your objective — helps you hold it (rituals + idea
+parking lot, plus rare, hard-gated proactive nudges when you drift).
 
 Core ae (`ae list`, `ae <name>`, …) does **not** depend on any of this. You only
 touch it if you run `ae steward`. `ae hub` is the deprecated alias from before
@@ -31,20 +31,22 @@ Escape hatch: `ae steward` is a reserved subcommand. If you ever need a normal
 session literally named `steward`, `ae --local steward` reaches the generic
 start path (the first arg is no longer `steward`).
 
-## Modes
+## The objective is the switch (no modes)
 
-The steward runs in one of two modes, switched by messaging it (`focus` /
-`passive` over Telegram):
+There is no mode to configure or remember. The steward always monitors and
+relays; the focus-aide side arms itself the moment you set an objective:
 
-- **passive** (default) — monitor + relay only: fleet attention reports and
-  human-directed message relay. Exactly the pre-focus behavior.
-- **focus** — adds the focus-aide job: it captures your objective (asked once at
-  startup), parks your `idea: …` messages, offers a parked-idea review when you
-  mark the objective done/blocked, answers `what next` on demand, and may
-  **proactively nudge** you when you drift — but only through hard gates
-  (concrete drift signal persisted two sweeps, ≤1 msg/60–90 min, ≤3/day, outside
-  quiet hours, suggest-only). Ignore a couple and it mutes itself back to passive.
-  Silence it anytime with `snooze [min]`, `quiet: HH:MM-HH:MM`, or `passive`.
+- **No objective set** — monitor + relay only: fleet attention reports and
+  human-directed message relay. It asks "what's today about?" once at startup
+  (once per day, ignorable — no re-nag).
+- **Objective active** (`objective: <text>` over Telegram) — it holds it, parks
+  your `idea: …` messages, offers a parked-idea review when you mark the
+  objective done/blocked, answers `what next` on demand, and may **proactively
+  nudge** you when you drift — but only through hard gates (concrete drift
+  signal persisted two sweeps, ≤1 msg/60–90 min, ≤3/day, outside quiet hours,
+  suggest-only). Ignore a couple and it self-mutes for the day.
+  Silence it anytime with `snooze [min]`, `quiet: HH:MM-HH:MM`, or
+  `drop objective`. (Legacy `focus`/`passive` messages still map sensibly.)
 
 State lives in `~/.ae/sessions/steward/{steward-state,ideas.md}` — written only
 by the steward, changed only by *your* messages (pane text from other sessions
@@ -55,7 +57,7 @@ can never set your objective; see the charter's injection boundary).
 | File | Role |
 |---|---|
 | `steward.config` | Standalone single-agent config (`steward = true` marks the meta-agent; the watchdog then runs a sweep cadence instead of the stale-nudge watchdog). |
-| `CHARTER.md` | The steward's operating manual — its three jobs, the `say` channel, the `aemonitor` sweep routine, the ae toolbox, focus mode (state files, operator protocol, the two rituals + §8b gated proactive interrupts), and hard guardrails (injection boundary, never-end-a-session, human-directed relay, suggest-never-dispatch). |
+| `CHARTER.md` | The steward's operating manual — its three jobs, the `say` channel, the `aemonitor` sweep routine, the ae toolbox, the objective-armed focus aide (state files, operator protocol, the two rituals + §8b gated proactive interrupts), and hard guardrails (injection boundary, never-end-a-session, human-directed relay, suggest-never-dispatch). |
 
 ### Placeholders substituted on `--init`
 
