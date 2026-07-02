@@ -1480,22 +1480,73 @@ _resolve_session_dir() {
 # Print the sub-line after a session row showing goal + current ae version +
 # last active. $1 = meta_blob (full meta file contents), $2 = session directory,
 # $3 = optional attention suffix (e.g. a declared state like "waiting-user").
+# Session git branch for the list context. Running sessions: read the live
+# @ae_branch_name tmux user option (watchdog-pushed each cycle — zero git
+# calls; full name, no display trim). Fallback (option empty, watchdog off,
+# or stopped session): one git call against the work_dir.
+_session_branch() {
+    local name="$1" workdir="$2" running="${3:-}" b=""
+    if [[ "$running" == "running" ]]; then
+        # @ae_branch_name is the watchdog's machine-value side channel: the
+        # FULL branch, untrimmed, no dirty marker (@ae_branch_status is the
+        # display segment — 24-char trim — and must never be echoed as data).
+        b="$(tmux show-options -t "$name" -qv @ae_branch_name 2>/dev/null || true)"
+    fi
+    if [[ -z "$b" && -n "$workdir" && -d "$workdir" ]]; then
+        b="$(git -C "$workdir" symbolic-ref --quiet --short HEAD 2>/dev/null ||
+            git -C "$workdir" rev-parse --short HEAD 2>/dev/null || true)"
+    fi
+    printf '%s' "$b"
+    return 0
+}
+
+# Epoch when the session's goal was last set — the newest action=goal event in
+# the session's events.jsonl. Prints 0 when unknown (no events file, no goal
+# event, or unparseable timestamp). Result via stdout; exit status incidental.
+_goal_set_epoch() {
+    local sess_dir="$1" line ts=""
+    local events="${sess_dir}/events.jsonl"
+    [[ -f "$events" ]] || {
+        printf '0'
+        return 0
+    }
+    while IFS= read -r line; do
+        [[ "$line" == \{* ]] || continue
+        [[ "$(_event_json_str "$line" action)" == "goal" ]] || continue
+        ts="$(_event_json_str "$line" ts)"
+        break
+    done < <(tac "$events" 2>/dev/null || true)
+    [[ -n "$ts" ]] || {
+        printf '0'
+        return 0
+    }
+    date -d "$ts" +%s 2>/dev/null || printf '0'
+    return 0
+}
+
 _print_session_meta_line() {
-    local blob="$1" sess_dir="$2" attn="${3:-}"
-    local ae_ver active_ts active_str goal goal_prefix=""
+    local blob="$1" sess_dir="$2" attn="${3:-}" branch="${4:-}"
+    local ae_ver active_ts active_str goal goal_prefix="" branch_seg=""
     ae_ver="$(echo "$blob" | sed -n 's/^ae_version=//p')"
     ae_ver="${ae_ver:-?}"
     goal="$(echo "$blob" | sed -n 's/^goal=//p' | head -1)"
     if [[ -n "$goal" ]]; then
         ((${#goal} > 60)) && goal="${goal:0:59}…"
-        goal_prefix="goal: ${goal} · "
+        # Age makes a stale goal visibly stale instead of silently lying.
+        local goal_epoch goal_age=""
+        goal_epoch="$(_goal_set_epoch "$sess_dir")"
+        if [[ "$goal_epoch" =~ ^[0-9]+$ ]] && ((goal_epoch > 0)); then
+            goal_age=" ($(format_relative_time "$goal_epoch"))"
+        fi
+        goal_prefix="goal${goal_age}: ${goal} · "
     fi
+    [[ -n "$branch" ]] && branch_seg="git:${branch} · "
     active_ts="$(_session_active_epoch "$sess_dir")"
     active_str="$(format_relative_time "$active_ts")"
     if [[ -n "$attn" ]]; then
-        printf "  %sae %s · active %s · attn:%s\n" "$goal_prefix" "$ae_ver" "$active_str" "$attn"
+        printf "  %s%sae %s · active %s · attn:%s\n" "$goal_prefix" "$branch_seg" "$ae_ver" "$active_str" "$attn"
     else
-        printf "  %sae %s · active %s\n" "$goal_prefix" "$ae_ver" "$active_str"
+        printf "  %s%sae %s · active %s\n" "$goal_prefix" "$branch_seg" "$ae_ver" "$active_str"
     fi
 }
 
@@ -1847,7 +1898,7 @@ _session_active_epoch() {
 # reason=null. Args: status name mode origin workdir sess_dir attn meta_blob.
 # shellcheck disable=SC2154 # _alive/_state/_areason/json_first come from cmd_list scope
 _list_session_json() {
-    local status="$1" name="$2" mode="$3" origin="$4" workdir="$5" sess_dir="$6" attn="$7" blob="$8"
+    local status="$1" name="$2" mode="$3" origin="$4" workdir="$5" sess_dir="$6" attn="$7" blob="$8" branch="${9:-}"
     $json_first || printf ','
     json_first=false
     local na="false" at="null"
@@ -1859,9 +1910,18 @@ _list_session_json() {
     local goal gj="null"
     goal="$(echo "$blob" | sed -n 's/^goal=//p' | head -1)"
     [[ -n "$goal" ]] && gj="\"$(_json_escape "$goal")\""
-    printf '{"name":"%s","status":"%s","mode":"%s","origin":"%s","work_dir":"%s","goal":%s,"last_active_epoch":%s,"needs_attention":%s,"attention":%s,"attention_rank":%s,"agents":[' \
+    # Context fields: when the goal was set (age for staleness) + git branch.
+    local gse="null"
+    if [[ "$gj" != "null" ]]; then
+        local _ge
+        _ge="$(_goal_set_epoch "$sess_dir")"
+        if [[ "$_ge" =~ ^[0-9]+$ ]] && ((_ge > 0)); then gse="$_ge"; fi
+    fi
+    local bj="null"
+    [[ -n "$branch" ]] && bj="\"$(_json_escape "$branch")\""
+    printf '{"name":"%s","status":"%s","mode":"%s","origin":"%s","work_dir":"%s","goal":%s,"goal_set_epoch":%s,"branch":%s,"last_active_epoch":%s,"needs_attention":%s,"attention":%s,"attention_rank":%s,"agents":[' \
         "$(_json_escape "$name")" "$status" "$(_json_escape "$mode")" "$(_json_escape "$origin")" \
-        "$(_json_escape "$workdir")" "$gj" "$(_session_active_epoch "$sess_dir")" "$na" "$at" "$(_attn_rank "$attn")"
+        "$(_json_escape "$workdir")" "$gj" "$gse" "$bj" "$(_session_active_epoch "$sess_dir")" "$na" "$at" "$(_attn_rank "$attn")"
     local _afirst=true mk mv ref sid alive st rs
     while IFS='=' read -r mk mv; do
         [[ "$mk" == agent.* ]] || continue
@@ -2025,9 +2085,11 @@ LISTHELP
                     continue
                 fi
             fi
+            local sess_branch
+            sess_branch="$(_session_branch "$name" "$workdir" running)"
             if $as_json; then
                 _list_session_json "running" "$name" "$mode" "$origin" "$workdir" \
-                    "$sess_dir" "$attn" "$meta_blob"
+                    "$sess_dir" "$attn" "$meta_blob" "$sess_branch"
                 unset _alive _state _areason
                 continue
             fi
@@ -2037,7 +2099,7 @@ LISTHELP
             fi
             printf "$hdr" "$name" "running" "$mode" "$origin"
             [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
-            _print_session_meta_line "$meta_blob" "$sess_dir" "$attn"
+            _print_session_meta_line "$meta_blob" "$sess_dir" "$attn" "$sess_branch"
             while IFS='=' read -r mk mv; do
                 [[ "$mk" == agent.* ]] || continue
                 local aname asid
@@ -2068,7 +2130,7 @@ LISTHELP
                 # arithmetic index and aborts on a non-numeric agent ref.
                 declare -A _alive=() _state=() _areason=()
                 _list_session_json "stopped" "$name" "$mode" "$origin" "$workdir" \
-                    "$sess_dir" "" "$meta_blob"
+                    "$sess_dir" "" "$meta_blob" "$(_session_branch "$name" "$workdir" stopped)"
                 unset _alive _state _areason
                 continue
             fi
@@ -2078,7 +2140,7 @@ LISTHELP
             fi
             printf "$hdr" "$name" "stopped" "$mode" "$origin"
             [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
-            _print_session_meta_line "$meta_blob" "$sess_dir"
+            _print_session_meta_line "$meta_blob" "$sess_dir" "" "$(_session_branch "$name" "$workdir" stopped)"
             while IFS='=' read -r mk mv; do
                 [[ "$mk" == agent.* ]] || continue
                 local aname asid
@@ -6924,6 +6986,7 @@ _watchdog_stop() {
         rm -f "$PIDFILE"
         # Clear the live status user options so the bars fall back (left → just path).
         tmux set-option -t "$_AE_SESSION" -u @ae_branch_status 2>/dev/null || true
+        tmux set-option -t "$_AE_SESSION" -u @ae_branch_name 2>/dev/null || true
         tmux set-option -t "$_AE_SESSION" -u @ae_watchdog_status 2>/dev/null || true
         # Kill only the _watchdog pane; leave the _events pane and monitor window alive.
         local watchdog_pane
@@ -7153,14 +7216,23 @@ _watchdog_git() {
 # when work_dir is a git repo, else empty. Branch+dirty are the only session facts
 # that change during a run, so they're the only thing recomputed per cycle.
 _watchdog_branch_segment() {
-    local work_dir branch dirty=""
+    local work_dir branch full dirty=""
     work_dir="$(_watchdog_meta_value work_dir)"
     if [[ -z "$work_dir" ]] || ! _watchdog_git "$work_dir" rev-parse --is-inside-work-tree >/dev/null; then
+        tmux set-option -t "$_AE_SESSION" -u @ae_branch_name 2>/dev/null || true
         return 0
     fi
-    branch="$(_watchdog_git "$work_dir" symbolic-ref --quiet --short HEAD || _watchdog_git "$work_dir" rev-parse --short HEAD || true)"
-    branch="$(_watchdog_trim "$branch" 24)"
-    [[ -n "$branch" ]] || return 0
+    full="$(_watchdog_git "$work_dir" symbolic-ref --quiet --short HEAD || _watchdog_git "$work_dir" rev-parse --short HEAD || true)"
+    branch="$(_watchdog_trim "$full" 24)"
+    if [[ -z "$branch" ]]; then
+        tmux set-option -t "$_AE_SESSION" -u @ae_branch_name 2>/dev/null || true
+        return 0
+    fi
+    # Side channel for machine consumers: @ae_branch_name carries the FULL,
+    # untrimmed branch (no dirty marker). @ae_branch_status stays display-only
+    # (24-char trim + '*') — `ae list --json` must never echo a display trim
+    # as the canonical branch.
+    _watchdog_set_status @ae_branch_name "$full"
     if [[ -n "$(_watchdog_git "$work_dir" status --porcelain --untracked-files=no | head -1)" ]]; then
         dirty="*"
     fi
@@ -7321,7 +7393,7 @@ helper_watchdog_main() {
     # --- _run: the actual watchdog (runs inside hidden tmux window) ---
 
     echo "$$" >"$PIDFILE"
-    trap 'rm -f "$PIDFILE"; tmux set-option -t "$_AE_SESSION" -u @ae_branch_status 2>/dev/null; tmux set-option -t "$_AE_SESSION" -u @ae_watchdog_status 2>/dev/null' EXIT
+    trap 'rm -f "$PIDFILE"; tmux set-option -t "$_AE_SESSION" -u @ae_branch_status 2>/dev/null; tmux set-option -t "$_AE_SESSION" -u @ae_branch_name 2>/dev/null; tmux set-option -t "$_AE_SESSION" -u @ae_watchdog_status 2>/dev/null' EXIT
     _watchdog_set_status @ae_watchdog_status "[watch ◌ starting]"
     _watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"
 

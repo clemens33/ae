@@ -721,9 +721,21 @@ assert_contains "goal: stored in session meta" "goal=ship the goal slice" \
 assert_contains "goal: emits a goal event" '"action":"goal"' \
     "$(cat "$HOME/.ae/sessions/goaltest/events.jsonl")"
 goal_list_out="$("$AE" list 2>/dev/null)"
-assert_contains "goal: shown in ae list sub-line" "goal: ship the goal slice" "$goal_list_out"
+assert_contains "goal: shown in ae list sub-line" "ship the goal slice" "$goal_list_out"
+assert_contains "goal: sub-line shows the goal age" "goal (" "$goal_list_out"
+assert_contains "goal: sub-line shows the git branch" "git:" "$goal_list_out"
 goal_json_out="$("$AE" list --json 2>/dev/null)"
 assert_contains "goal: shown in ae list --json" '"goal":"ship the goal slice"' "$goal_json_out"
+# Context fields ride along: goal_set_epoch is a real epoch (not null) and
+# branch resolves for a live git-repo session.
+if command -v python3 >/dev/null 2>&1; then
+    goal_ctx_ok="$(printf '%s' "$goal_json_out" | python3 -c '
+import sys, json
+s = [x for x in json.load(sys.stdin)["sessions"] if x["name"] == "goaltest"][0]
+print("ok" if isinstance(s["goal_set_epoch"], int) and s["goal_set_epoch"] > 0 and s["branch"] else "bad")
+' 2>/dev/null || echo "bad")"
+    assert_contains "goal: --json carries goal_set_epoch + branch" "ok" "$goal_ctx_ok"
+fi
 
 # Survives resume: stop the session, start it again (meta gets rewritten).
 "$AE" stop goaltest 2>/dev/null || true

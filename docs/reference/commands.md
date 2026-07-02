@@ -96,7 +96,8 @@ script or agent. Pure bash output; no `jq` required to produce it. The filters
     {
       "name": "my-feature", "status": "running",
       "mode": "local", "origin": "/…", "work_dir": "/…",
-      "last_active_epoch": 1780000000,
+      "goal": "ship the login flow", "goal_set_epoch": 1779990000,
+      "branch": "feature/login", "last_active_epoch": 1780000000,
       "needs_attention": true, "attention": "blocked", "attention_rank": 2,
       "agents": [
         {"ref": "claude:lead", "alias": "claude", "name": "lead",
@@ -109,8 +110,12 @@ script or agent. Pure bash output; no `jq` required to produce it. The filters
 ```
 
 `attention` is the session's single most-actionable reason (see the reason
-table above); each agent's `reason` is its own contribution. `schema_version`
-lets consumers gate on shape. Unanswered `ask`/`review` request edges and
+table above); each agent's `reason` is its own contribution. `goal_set_epoch`
+is when the goal was last set (age it for staleness); `branch` is the
+session's live git branch (from the watchdog's status segment, with a git
+fallback) — together with `name`, `origin` and `mode` they give a consumer
+(e.g. the steward) the session's context without any manual bookkeeping.
+`schema_version` lets consumers gate on shape. Unanswered `ask`/`review` request edges and
 richer per-agent timing fields are planned additions.
 
 ## `ae status [name]`

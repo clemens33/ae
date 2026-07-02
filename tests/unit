@@ -1160,8 +1160,56 @@ assert_eq "goal: preserved across meta rewrite (resume)" "1" \
     "$([[ "$AE_SOURCE" == *"PRESERVED_GOAL=\"\$(grep '^goal='"* && "$AE_SOURCE" == *'echo "goal=${PRESERVED_GOAL}"'* ]] && echo 1 || echo 0)"
 assert_eq "goal: ae list JSON carries a goal field (null when unset)" "1" \
     "$([[ "$AE_SOURCE" == *'"goal":%s'* && "$AE_SOURCE" == *'[[ -n "$goal" ]] && gj="\"$(_json_escape "$goal")\""'* ]] && echo 1 || echo 0)"
-assert_eq "goal: ae list table sub-line prefixes the goal" "1" \
-    "$([[ "$AE_SOURCE" == *'goal_prefix="goal: ${goal} · "'* ]] && echo 1 || echo 0)"
+assert_eq "goal: ae list table sub-line prefixes the goal with its age" "1" \
+    "$([[ "$AE_SOURCE" == *'goal_prefix="goal${goal_age}: ${goal} · "'* ]] && echo 1 || echo 0)"
+
+# ── list context: _session_branch + _goal_set_epoch ─────────────────
+
+assert_eq "list: --json carries goal_set_epoch + branch context fields" "1" \
+    "$([[ "$AE_SOURCE" == *'"goal":%s,"goal_set_epoch":%s,"branch":%s,'* ]] && echo 1 || echo 0)"
+
+# Behavioural: _session_branch — running path reads the watchdog's untrimmed
+# @ae_branch_name side channel VERBATIM (never the 24-char display segment);
+# fallback path asks git.
+eval "$(awk '/^_session_branch\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# shellcheck disable=SC2317
+tmux() { printf 'feature/x\n'; }
+assert_eq "branch: running session reads @ae_branch_name" \
+    "feature/x" "$(_session_branch any /nonexistent running)"
+# Regression (codex IMPORTANT): a long branch must come through FULL — the
+# display option is trimmed to 24 chars and must never be echoed as data.
+# shellcheck disable=SC2317
+tmux() { printf 'feature/session-context-list-slice-long\n'; }
+assert_eq "branch: long branch is NOT display-trimmed in list context" \
+    "feature/session-context-list-slice-long" "$(_session_branch any /nonexistent running)"
+
+# Structural: the watchdog publishes the untrimmed name side channel and
+# clears it with the display option (stop path + EXIT trap).
+assert_eq "branch: watchdog publishes untrimmed @ae_branch_name" "1" \
+    "$([[ "$AE_SOURCE" == *'_watchdog_set_status @ae_branch_name "$full"'* && "$AE_SOURCE" == *'-u @ae_branch_name 2>/dev/null; tmux set-option'* ]] && echo 1 || echo 0)"
+# shellcheck disable=SC2317
+tmux() { printf '\n'; }
+# shellcheck disable=SC2317
+git() { [[ "$3" == "symbolic-ref" ]] && printf 'main-from-git\n'; }
+_sb_dir="$(mktemp -d)"
+assert_eq "branch: empty option falls back to git on the work_dir" \
+    "main-from-git" "$(_session_branch any "$_sb_dir" running)"
+assert_eq "branch: stopped session goes straight to git" \
+    "main-from-git" "$(_session_branch any "$_sb_dir" stopped)"
+unset -f tmux git
+
+# Behavioural: _goal_set_epoch — newest action=goal event wins; 0 when absent.
+eval "$(awk '/^_goal_set_epoch\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_gse_dir="$(mktemp -d)"
+assert_eq "goal epoch: no events file -> 0" "0" "$(_goal_set_epoch "$_gse_dir")"
+cat >"$_gse_dir/events.jsonl" <<'GSEEV'
+{"ts":"2026-07-01T08:00:00Z","actor":"h","action":"goal","summary":"old goal"}
+{"ts":"2026-07-02T09:00:00Z","actor":"h","action":"send","summary":"noise"}
+{"ts":"2026-07-02T10:00:00Z","actor":"h","action":"goal","summary":"new goal"}
+GSEEV
+assert_eq "goal epoch: newest goal event wins (noise skipped)" \
+    "$(date -d '2026-07-02T10:00:00Z' +%s)" "$(_goal_set_epoch "$_gse_dir")"
+
 assert_eq "goal: watchdog stale nudge quotes the session goal" "1" \
     "$([[ "$AE_SOURCE" == *'goal_line="$(_watchdog_meta_value goal)"'* && "$AE_SOURCE" == *'${goal_line}Status check:'* ]] && echo 1 || echo 0)"
 
