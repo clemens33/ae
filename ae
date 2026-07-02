@@ -6137,6 +6137,641 @@ ae_meta_unset() {
     } 200>"${meta_file}.lock"
 }
 
+# — session-helper template functions (send/ask/review/reply/requests/say/
+#   memo/goal/peek/agents/focus/interrupt/spawn/retire/_register-sid/
+#   events-tail; each emitted into its generated helper, main fn last) —
+
+# send:
+helper_send_main() {
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    if [[ $# -lt 2 ]]; then
+        echo "Usage: send <agent-name|pane-id|@session:agent> <message>" >&2
+        echo "  Examples: send claude:lead \"hello\"" >&2
+        echo "           send @my-feature:claude:lead \"hello\"" >&2
+        exit 1
+    fi
+    target_ref="$1"
+    shift
+    msg="$*"
+    sender="${AE_SENDER_OVERRIDE:-}"
+    if [[ -z "$sender" ]]; then
+        sender="$(ae_current_agent_ref)"
+    fi
+    [[ -n "$sender" ]] || sender="human"
+    req_id="$(ae_extract_req_id "$msg")"
+
+    # External actor targets (telegram:*, discord:*) are NOT panes — they're
+    # event-only sinks consumed by an out-of-band bridge daemon tailing
+    # events.jsonl. For these targets, emit the event and exit; skip the tmux
+    # paste path. Any other unresolved name still fails loudly so typos surface.
+    if [[ "$target_ref" == telegram:* || "$target_ref" == discord:* ]]; then
+        ae_emit_event "${_AE_EVENT_ACTION:-send}" "$target_ref" "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_SUMMARY:-$msg}"
+        exit 0
+    fi
+
+    ae_resolve "$target_ref" || exit 1
+    target="$AE_RESOLVED_PANE"
+    logged_target="${AE_RESOLVED_AGENT:-$target_ref}"
+    buf="ae-send-$$"
+
+    ae_lock_target "$target"
+
+    current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+    tmux select-pane -t "$target"
+    tmux send-keys -t "$target" -X cancel 2>/dev/null || true
+
+    tool="$(ae_target_tool "$target")"
+    ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"
+    sleep 0.3 # let target TUI process input before focus restore
+
+    if [[ -n "$current" ]]; then tmux select-pane -t "$current" 2>/dev/null || true; fi
+    ae_unlock_target
+    ae_emit_event "${_AE_EVENT_ACTION:-send}" "$logged_target" "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_SUMMARY:-$msg}"
+}
+
+# ask:
+helper_ask_main() {
+    if [[ $# -lt 2 ]]; then
+        echo "Usage: ask <agent-name|pane-id|@session:agent> <question>" >&2
+        echo "  Like send, but embeds your identity and reply command in the message." >&2
+        exit 1
+    fi
+    target_name="$1"
+    shift
+    ae_tracked_send "ask" "ae" "REQUEST" "" "<your reply>" "$target_name" "$@"
+}
+
+# review:
+helper_review_main() {
+    if [[ $# -lt 2 ]]; then
+        echo "Usage: review <agent-name|pane-id|@session:agent> <request>" >&2
+        echo "  Ask another agent for a critical review and require a reply via send." >&2
+        exit 1
+    fi
+    target_name="$1"
+    shift
+    REVIEW_INSTRUCTIONS='Review instructions:
+    - Focus on correctness, regressions, edge cases, missing tests, and callers/docs needing updates.
+    - Findings first. Keep summaries brief.
+    - Use severity labels: BLOCKER, IMPORTANT, NIT.
+    - If no issues are found, say "No findings" explicitly.'
+    ae_tracked_send "review" "review" "REVIEW REQUEST" "$REVIEW_INSTRUCTIONS" "<your review>" "$target_name" "$@"
+}
+
+# reply:
+helper_reply_main() {
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    if [[ $# -lt 2 ]]; then
+        echo "Usage: reply [--as <agent>] <request-id> <message>" >&2
+        echo "  Reply to a logged ask/review request using its request id." >&2
+        exit 1
+    fi
+    sender_override=""
+    if [[ "${1:-}" == "--as" ]]; then
+        [[ $# -ge 4 ]] || {
+            echo "Usage: reply [--as <agent>] <request-id> <message>" >&2
+            exit 1
+        }
+        sender_override="$2"
+        shift 2
+    fi
+    req_id="$1"
+    shift
+    message="$*"
+    self="$(ae_current_agent_ref)"
+
+    row="$(ae_find_request "$req_id")" || {
+        echo "Error: request id '${req_id}' not found in ${META_DIR}/events.jsonl" >&2
+        exit 1
+    }
+    IFS=$'\t' read -r _ sender target <<<"$row"
+
+    if [[ -n "$sender_override" && "$sender_override" != "$target" ]]; then
+        echo "Error: override agent '${sender_override}' does not match assigned target '${target}'" >&2
+        exit 1
+    fi
+
+    reply_sender="$sender_override"
+    if [[ -z "$reply_sender" ]]; then
+        if [[ -z "$self" ]]; then
+            echo "Error: could not detect current agent identity; rerun with --as '${target}' from the assigned agent context" >&2
+            exit 1
+        fi
+        if [[ "$self" != "$target" ]]; then
+            echo "Error: request '${req_id}' is assigned to '${target}', current pane is '${self}'" >&2
+            exit 1
+        fi
+        reply_sender="$self"
+    fi
+
+    exec env AE_SENDER_OVERRIDE="$reply_sender" _AE_EVENT_ACTION="reply" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$message" "${META_DIR}/send" "$sender" "[${req_id}] ${message}"
+}
+
+# requests:
+helper_requests_main() {
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    mode="${1:-mine}"
+    self="$(ae_current_agent_ref)"
+
+    if [[ "$mode" != "mine" && "$mode" != "inbox" && "$mode" != "all" ]]; then
+        echo "Usage: requests [mine|inbox|all]" >&2
+        exit 1
+    fi
+
+    if [[ "$mode" != "all" && -z "$self" ]]; then
+        echo "Error: could not detect current agent identity; use 'requests all' outside an ae pane" >&2
+        exit 1
+    fi
+
+    # Scan events.jsonl: collect latest ask/review per ref and latest reply per ref.
+    # A reply only counts as "replied" if the reply's actor matches the request's
+    # target AND the reply's target matches the request's sender. This preserves
+    # the old TSV invariant: stray reply events with a matching ref but wrong
+    # actor/target leave the request pending.
+    declare -A req_kind req_sender req_target req_summary req_ts
+    declare -A reply_summary reply_actor reply_target reply_ts
+    order=()
+    events_file="${META_DIR}/events.jsonl"
+    if [[ -f "$events_file" ]]; then
+        while IFS= read -r line; do
+            [[ "$line" == \{* ]] || continue
+            ref="$(_event_json_str "$line" ref)"
+            [[ -n "$ref" ]] || continue
+            action="$(_event_json_str "$line" action)"
+            case "$action" in
+                ask | review)
+                    [[ -n "${req_kind[$ref]:-}" ]] && continue
+                    req_kind["$ref"]="$action"
+                    req_sender["$ref"]="$(_event_json_str "$line" actor)"
+                    req_target["$ref"]="$(_event_json_str "$line" target)"
+                    req_summary["$ref"]="$(_event_json_str "$line" summary)"
+                    # shellcheck disable=SC2034  # populated for symmetry; not read yet
+                    req_ts["$ref"]="$(_event_json_str "$line" ts)"
+                    order+=("$ref")
+                    ;;
+                reply)
+                    [[ -n "${reply_summary[$ref]:-}" ]] && continue
+                    reply_summary["$ref"]="$(_event_json_str "$line" summary)"
+                    reply_actor["$ref"]="$(_event_json_str "$line" actor)"
+                    reply_target["$ref"]="$(_event_json_str "$line" target)"
+                    # shellcheck disable=SC2034  # populated for symmetry; not read yet
+                    reply_ts["$ref"]="$(_event_json_str "$line" ts)"
+                    ;;
+            esac
+        done < <(tac "$events_file" 2>/dev/null || true)
+    fi
+
+    printf "%-8s %-8s %-28s %-20s %-20s %s\n" "STATUS" "TYPE" "ID" "FROM" "TO" "SUMMARY"
+    # 'order' is newest-first because we scanned backward; reverse for chronological output.
+    for ((i = ${#order[@]} - 1; i >= 0; i--)); do
+        ref="${order[$i]}"
+        sender="${req_sender[$ref]}"
+        target="${req_target[$ref]}"
+        case "$mode" in
+            mine) [[ "$sender" == "$self" ]] || continue ;;
+            inbox) [[ "$target" == "$self" ]] || continue ;;
+            all) ;;
+        esac
+        status="pending"
+        summary="${req_summary[$ref]}"
+        if [[ -n "${reply_summary[$ref]:-}" &&
+            "${reply_actor[$ref]:-}" == "$target" &&
+            "${reply_target[$ref]:-}" == "$sender" ]]; then
+            status="replied"
+            summary="${reply_summary[$ref]}"
+        fi
+        printf "%-8s %-8s %-28s %-20s %-20s %s\n" "$status" "${req_kind[$ref]}" "$ref" "$sender" "$target" "$summary"
+    done
+}
+
+# say:
+helper_say_usage() {
+    cat >&2 <<'USAGE'
+Usage: say <text>          # push a free-text line to the Telegram chat
+       echo "text" | say   # multi-line / long replies via stdin
+
+Emits a `chat` event the telegram bridge forwards. Requires the bridge running
+with `chat` in its [telegram] include filter (see `ae telegram status`).
+USAGE
+    exit 2
+}
+
+helper_say_main() {
+    if [[ $# -gt 0 ]]; then
+        text="$*"
+    elif [[ ! -t 0 ]]; then
+        text="$(cat)"
+    else
+        helper_say_usage
+    fi
+
+    # Reject empty / whitespace-only payloads — nothing to forward.
+    if [[ -z "${text//[$' \t\n\r']/}" ]]; then
+        helper_say_usage
+    fi
+
+    ae_emit_event "chat" "" "" "$text"
+    printf 'Sent to Telegram bridge (chat): %.60s%s\n' "$text" "$([[ ${#text} -gt 60 ]] && printf '…')"
+}
+
+# memo:
+helper_memo_usage() {
+    echo "Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]" >&2
+    exit 1
+}
+
+helper_memo_render() {
+    awk -F '\t' -v topic_filter="${1:-}" 'NF >= 4 && (topic_filter == "" || $3 == topic_filter) { printf "%s — %s", $1, $2; if ($3 != "general") printf " [%s]", $3; printf "\n%s\n\n", $4 }' "${2:-$MEMO_FILE}"
+}
+
+helper_memo_main() {
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    MEMO_FILE="${META_DIR}/memo.tsv"
+    cmd="${1:-read}"
+    shift || true
+    case "$cmd" in
+        add)
+            topic="general"
+            if [[ "${1:-}" == "--topic" ]]; then
+                [[ $# -ge 3 ]] || helper_memo_usage
+                topic="$2"
+                shift 2
+            fi
+            [[ $# -ge 1 ]] || helper_memo_usage
+            text="$*"
+            topic="${topic//$'\r'/}"
+            topic="${topic//$'\t'/ }"
+            topic="${topic//$'\n'/ }"
+            text="${text//$'\r'/}"
+            text="${text//$'\t'/ }"
+            text="${text//$'\n'/ }"
+            self="$(ae_current_agent_ref)"
+            [[ -n "$self" ]] || self="human"
+            [[ -n "$topic" ]] || topic="general"
+            ae_log_append "$MEMO_FILE" "$(printf '%s\t%s\t%s\t%s' "$(ae_now_utc)" "$self" "$topic" "$text")"
+            ae_emit_event "memo" "" "$topic" "$text"
+            ;;
+        read)
+            topic=""
+            if [[ "${1:-}" == "--topic" ]]; then
+                [[ $# -eq 2 ]] || helper_memo_usage
+                topic="$2"
+            elif [[ $# -gt 0 ]]; then
+                helper_memo_usage
+            fi
+            [[ -f "$MEMO_FILE" ]] || exit 0
+            helper_memo_render "$topic"
+            ;;
+        tail)
+            [[ $# -le 1 ]] || helper_memo_usage
+            count="${1:-10}"
+            [[ "$count" =~ ^[0-9]+$ ]] || helper_memo_usage
+            [[ -f "$MEMO_FILE" ]] || exit 0
+            tmp_file="$(mktemp)"
+            tail -n "$count" "$MEMO_FILE" >"$tmp_file"
+            helper_memo_render "" "$tmp_file"
+            rm -f "$tmp_file"
+            ;;
+        *) helper_memo_usage ;;
+    esac
+}
+
+# goal:
+helper_goal_usage() {
+    echo "Usage: goal            # show the session goal" >&2
+    echo "       goal <text>     # set it (one line)" >&2
+    echo "       goal --clear    # remove it" >&2
+    exit 1
+}
+
+helper_goal_main() {
+    case "${1:-}" in
+        "")
+            current="$(ae_meta_get goal)"
+            if [[ -n "$current" ]]; then
+                printf '%s\n' "$current"
+            else
+                echo "(no goal set)"
+            fi
+            ;;
+        --clear)
+            [[ $# -eq 1 ]] || helper_goal_usage
+            ae_meta_unset goal
+            ae_emit_event "goal" "" "" "goal cleared"
+            echo "Goal cleared."
+            ;;
+        --help | -h)
+            helper_goal_usage
+            ;;
+        *)
+            text="$*"
+            # One printable line only: newlines/tabs become spaces, every other control
+            # byte (ESC, BEL, …) is dropped. The value fans out to meta (line-oriented),
+            # events.jsonl + list --json (escapers don't cover C0 controls), the list
+            # table, and the watchdog nudge — none of which may carry raw controls.
+            text="$(printf '%s' "$text" | tr '\n\t' '  ' | tr -d '[:cntrl:]')"
+            [[ -n "$text" ]] || helper_goal_usage
+            ae_meta_set goal "$text" || {
+                echo "Error: could not write session meta" >&2
+                exit 1
+            }
+            ae_emit_event "goal" "" "" "$text"
+            echo "Goal set: $text"
+            ;;
+    esac
+}
+
+# peek:
+helper_peek_main() {
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: peek <agent-name|pane-id|@session:agent> [lines]" >&2
+        echo "  Examples: peek codex:reviewer" >&2
+        echo "           peek @my-feature:claude:lead 50" >&2
+        exit 1
+    fi
+    ae_resolve "$1" || exit 1
+    target="$AE_RESOLVED_PANE"
+    lines="${2:-80}"
+
+    if ! [[ "$lines" =~ ^[0-9]+$ ]]; then
+        echo "Error: lines must be a number, got '$lines'" >&2
+        exit 1
+    fi
+    ((lines > 2000)) && lines=2000
+    ((lines < 1)) && lines=1
+
+    tmux capture-pane -p -J -S "-${lines}" -E - -t "$target"
+}
+
+# agents:
+helper_agents_main() {
+    if [[ "${1:-}" == "--all" ]]; then
+        printf "%-20s %-25s %-8s %s\n" "SESSION" "AGENT" "PANE" "PROCESS"
+        for meta_file in "$_AE_SESSIONS_DIR"/*/meta; do
+            [[ -f "$meta_file" ]] || continue
+            sess="$(grep '^session=' "$meta_file" | cut -d= -f2-)"
+            [[ -z "$sess" ]] && continue
+            tmux has-session -t "$sess" 2>/dev/null || continue
+            while IFS='|' read -r pid aagent cmd; do
+                [[ -z "$aagent" ]] && continue
+                printf "%-20s %-25s %-8s %s\n" "$sess" "$aagent" "$pid" "$cmd"
+            done < <(tmux list-panes -s -t "$sess" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
+        done
+    else
+        printf "%-25s %-8s %s\n" "AGENT" "PANE" "PROCESS"
+        while IFS='|' read -r pid aagent cmd; do
+            [[ -z "$aagent" ]] && continue
+            printf "%-25s %-8s %s\n" "$aagent" "$pid" "$cmd"
+        done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
+    fi
+}
+
+# focus:
+helper_focus_main() {
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: focus <agent-name|pane-id|@session:agent>" >&2
+        echo "  Examples: focus codex:reviewer" >&2
+        echo "           focus @my-feature:claude:lead" >&2
+        exit 1
+    fi
+    ae_resolve "$1" || exit 1
+    tmux select-pane -t "$AE_RESOLVED_PANE"
+    ae_emit_event "focus" "${AE_RESOLVED_AGENT:-$1}"
+}
+
+# interrupt:
+helper_interrupt_main() {
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: interrupt <agent-name|pane-id|@session:agent> [message]" >&2
+        echo "  Examples: interrupt codex:reviewer" >&2
+        echo "           interrupt @my-feature:claude:lead \"Stop — try a different approach\"" >&2
+        exit 1
+    fi
+    ae_resolve "$1" || exit 1
+    shift
+    target="$AE_RESOLVED_PANE"
+    msg="${*:-}"
+
+    ae_lock_target "$target"
+
+    current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+    tmux select-pane -t "$target"
+    tmux send-keys -t "$target" -X cancel 2>/dev/null || true
+    tmux send-keys -t "$target" Escape
+
+    if [[ -n "$msg" ]]; then
+        sleep 0.5
+        buf="ae-interrupt-$$"
+        tool="$(ae_target_tool "$target")"
+        ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"
+        sleep 0.3 # let target TUI process input before focus restore
+    fi
+
+    ae_emit_event "interrupt" "${AE_RESOLVED_AGENT:-$target}" "" "$msg"
+    if [[ -n "$current" ]]; then tmux select-pane -t "$current" 2>/dev/null || true; fi
+    ae_unlock_target
+}
+
+# spawn:
+helper_spawn_main() {
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    _ts="$(grep '^tmux_server=' "$META_DIR/meta" | cut -d= -f2-)"
+    [[ -n "$_ts" ]] && export AE_TMUX_SERVER="$_ts"
+    AE_PATH="$(grep '^ae_path=' "$META_DIR/meta" | cut -d= -f2-)"
+    if [[ ! -x "$AE_PATH" ]]; then
+        AE_PATH="$(command -v ae 2>/dev/null || true)"
+    fi
+    if [[ -z "${AE_PATH:-}" ]] || [[ ! -x "$AE_PATH" ]]; then
+        echo "Error: ae not found (expected at $(grep '^ae_path=' "$META_DIR/meta" | cut -d= -f2-))" >&2
+        exit 1
+    fi
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: spawn <alias>[:<name>] [prompt]" >&2
+        exit 1
+    fi
+    exec "$AE_PATH" _spawn "$META_DIR" "$@"
+}
+
+# retire:
+helper_retire_main() {
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    _ts="$(grep '^tmux_server=' "$META_DIR/meta" | cut -d= -f2-)"
+    [[ -n "$_ts" ]] && export AE_TMUX_SERVER="$_ts"
+    AE_PATH="$(grep '^ae_path=' "$META_DIR/meta" | cut -d= -f2-)"
+    if [[ ! -x "$AE_PATH" ]]; then
+        AE_PATH="$(command -v ae 2>/dev/null || true)"
+    fi
+    if [[ -z "${AE_PATH:-}" ]] || [[ ! -x "$AE_PATH" ]]; then
+        echo "Error: ae not found (expected at $(grep '^ae_path=' "$META_DIR/meta" | cut -d= -f2-))" >&2
+        exit 1
+    fi
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: retire <agent-name|pane-id>" >&2
+        echo "  Examples: retire codex:researcher" >&2
+        echo "           retire %5" >&2
+        exit 1
+    fi
+    exec "$AE_PATH" _retire "$META_DIR" "$@"
+}
+
+# _register-sid:
+helper_register_sid_main() {
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    SLOT="${1:-default}"
+    TARGET_CWD="$(realpath "$PWD" 2>/dev/null || echo "$PWD")"
+    ESCAPED_SLOT="${SLOT//./\\.}"
+    # Read launch_time from meta to filter stale sessions (default 0 = accept all)
+    LAUNCH_TIME="$(grep "^launch_time\.${ESCAPED_SLOT}=" "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+    if [ -z "$LAUNCH_TIME" ]; then
+        LAUNCH_TIME="$(grep "^codex_launch_time\.${ESCAPED_SLOT}=" "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || echo 0)"
+    fi
+    case "$LAUNCH_TIME" in
+        '' | *[!0-9]*)
+            LAUNCH_TIME=0
+            ;;
+    esac
+    LAUNCH_ID="$(grep "^launch_id\.${ESCAPED_SLOT}=" "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+    if [ -z "$LAUNCH_ID" ]; then
+        LAUNCH_ID="$(grep "^codex_launch_id\.${ESCAPED_SLOT}=" "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+    fi
+    best_id="" best_mtime=0
+    # Scan today and yesterday (handles UTC midnight rollover)
+    for day in "$(date -u +%Y/%m/%d)" "$(date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d 2>/dev/null || true)"; do
+        [ -z "$day" ] && continue
+        dir="$HOME/.codex/sessions/${day}"
+        [ -d "$dir" ] || continue
+        for f in "$dir"/*.jsonl; do
+            [ -f "$f" ] || continue
+            mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+            [ "$mtime" -lt "$LAUNCH_TIME" ] && continue
+            if [ -n "$LAUNCH_ID" ]; then
+                grep -Fq "AE_CODEX_LAUNCH_ID=${LAUNCH_ID}" "$f" 2>/dev/null || continue
+            fi
+            first_line="$(head -1 "$f" 2>/dev/null || true)"
+            [ -z "$first_line" ] && continue
+            if [ "$mtime" -gt "$best_mtime" ]; then
+                file_id="$(echo "$first_line" | grep -oP '"id"\s*:\s*"\K[0-9a-f-]+' 2>/dev/null || true)"
+                if [ -n "$file_id" ]; then
+                    best_id="$file_id"
+                    best_mtime="$mtime"
+                fi
+            fi
+        done
+    done
+    if [ -z "$best_id" ]; then
+        for day in "$(date -u +%Y/%m/%d)" "$(date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d 2>/dev/null || true)"; do
+            [ -z "$day" ] && continue
+            dir="$HOME/.codex/sessions/${day}"
+            [ -d "$dir" ] || continue
+            for f in "$dir"/*.jsonl; do
+                [ -f "$f" ] || continue
+                mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+                [ "$mtime" -lt "$LAUNCH_TIME" ] && continue
+                first_line="$(head -1 "$f" 2>/dev/null || true)"
+                [ -z "$first_line" ] && continue
+                file_cwd="$(echo "$first_line" | grep -oP '"cwd"\s*:\s*"\K[^"]*' 2>/dev/null || true)"
+                [ -z "$file_cwd" ] && continue
+                file_cwd="$(realpath "$file_cwd" 2>/dev/null || echo "$file_cwd")"
+                [ "$file_cwd" != "$TARGET_CWD" ] && continue
+                if [ "$mtime" -gt "$best_mtime" ]; then
+                    file_id="$(echo "$first_line" | grep -oP '"id"\s*:\s*"\K[0-9a-f-]+' 2>/dev/null || true)"
+                    if [ -n "$file_id" ]; then
+                        best_id="$file_id"
+                        best_mtime="$mtime"
+                    fi
+                fi
+            done
+        done
+    fi
+    if [ -n "$best_id" ]; then
+        echo "$best_id" >"$META_DIR/codex.${SLOT}.sid"
+        echo "registered session $best_id for slot $SLOT"
+    else
+        echo "no codex session found matching cwd $TARGET_CWD" >&2
+        exit 1
+    fi
+}
+
+# events-tail:
+# Extract a JSON string value for a flat key from one of our own events.jsonl
+# lines. Walks character by character so escaped quotes (\") and backslashes
+# (\\) inside the value don't terminate the parse early. Handles the same
+# escape sequences ae_emit_event produces: \\, \", \n, \t, \r.
+helper_events_tail_extract_json_str() {
+    local line="$1" key="$2"
+    local prefix="\"${key}\":\""
+    local rest="${line#*"${prefix}"}"
+    [[ "$rest" == "$line" ]] && return
+    local result="" i=0 n=${#rest}
+    local c next
+    while ((i < n)); do
+        c="${rest:$i:1}"
+        if [[ "$c" == "\\" ]]; then
+            next="${rest:$((i + 1)):1}"
+            case "$next" in
+                n) result+=" " ;;
+                t) result+=" " ;;
+                r) ;;
+                '"') result+='"' ;;
+                "\\") result+="\\" ;;
+                *) result+="$c$next" ;;
+            esac
+            i=$((i + 2))
+        elif [[ "$c" == '"' ]]; then
+            break
+        else
+            result+="$c"
+            i=$((i + 1))
+        fi
+    done
+    printf '%s' "$result"
+}
+
+helper_events_tail_format_event() {
+    local line="$1"
+    [[ -n "$line" ]] || return
+    [[ "$line" == \{* ]] || return
+    local ts actor action target summary short_ts
+    ts="$(helper_events_tail_extract_json_str "$line" ts)"
+    actor="$(helper_events_tail_extract_json_str "$line" actor)"
+    action="$(helper_events_tail_extract_json_str "$line" action)"
+    target="$(helper_events_tail_extract_json_str "$line" target)"
+    summary="$(helper_events_tail_extract_json_str "$line" summary)"
+    # Display 'MM-DDTHH:MM:SS' (14 chars) so day rollovers are visible in the
+    # monitor pane. Full ISO timestamp stays in events.jsonl for audit.
+    short_ts="${ts:5:14}"
+    if ((${#summary} > 60)); then
+        summary="${summary:0:57}..."
+    fi
+    if [[ -n "$target" ]]; then
+        printf '%s  %-8s %-22s → %-22s %s\n' "$short_ts" "$action" "$actor" "$target" "$summary"
+    else
+        printf '%s  %-8s %-22s   %-22s %s\n' "$short_ts" "$action" "$actor" "" "$summary"
+    fi
+}
+
+helper_events_tail_main() {
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    EVENTS_FILE="${META_DIR}/events.jsonl"
+
+    # Banner printed once at the top of the pane's scrollback.
+    printf '\033[1;36m'
+    printf '╭─ ae events — session: %s ───────────────────────────────╮\n' "${META_DIR##*/}"
+    printf '│ date+time (UTC)  action   actor                  → target                 summary\n'
+    printf '╰──────────────────────────────────────────────────────────────────────────╯\n'
+    printf '\033[0m\n'
+
+    # Wait for events file (it is created lazily on first emit)
+    while [[ ! -f "$EVENTS_FILE" ]]; do
+        sleep 1
+    done
+
+    # Replay last 30 events, then follow new ones
+    tail -n 30 -f "$EVENTS_FILE" 2>/dev/null | while IFS= read -r line; do
+        helper_events_tail_format_event "$line"
+    done
+}
+
 # — watchdog template functions (emitted into the watchdog helper; the
 #   runtime flow lives in helper_watchdog_main, emitted last) —
 
@@ -7731,217 +8366,64 @@ LIBPROLOGUE
     mv "${AE_META}/_lib.tmp.$$" "${AE_META}/_lib"
 
     # Helper: send <target> <message> — focuses pane, pastes text, submits
-    cat >"${AE_META}/send" <<'SENDEOF'
+    {
+        cat <<'SENDPROLOGUE'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
-META_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [[ $# -lt 2 ]]; then
-    echo "Usage: send <agent-name|pane-id|@session:agent> <message>" >&2
-    echo "  Examples: send claude:lead \"hello\"" >&2
-    echo "           send @my-feature:claude:lead \"hello\"" >&2
-    exit 1
-fi
-target_ref="$1"
-shift
-msg="$*"
-sender="${AE_SENDER_OVERRIDE:-}"
-if [[ -z "$sender" ]]; then
-    sender="$(ae_current_agent_ref)"
-fi
-[[ -n "$sender" ]] || sender="human"
-req_id="$(ae_extract_req_id "$msg")"
-
-# External actor targets (telegram:*, discord:*) are NOT panes — they're
-# event-only sinks consumed by an out-of-band bridge daemon tailing
-# events.jsonl. For these targets, emit the event and exit; skip the tmux
-# paste path. Any other unresolved name still fails loudly so typos surface.
-if [[ "$target_ref" == telegram:* || "$target_ref" == discord:* ]]; then
-    ae_emit_event "${_AE_EVENT_ACTION:-send}" "$target_ref" "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_SUMMARY:-$msg}"
-    exit 0
-fi
-
-ae_resolve "$target_ref" || exit 1
-target="$AE_RESOLVED_PANE"
-logged_target="${AE_RESOLVED_AGENT:-$target_ref}"
-buf="ae-send-$$"
-
-ae_lock_target "$target"
-
-current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
-tmux select-pane -t "$target"
-tmux send-keys -t "$target" -X cancel 2>/dev/null || true
-
-tool="$(ae_target_tool "$target")"
-ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"
-sleep 0.3 # let target TUI process input before focus restore
-
-[[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
-ae_unlock_target
-ae_emit_event "${_AE_EVENT_ACTION:-send}" "$logged_target" "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_SUMMARY:-$msg}"
-SENDEOF
-    chmod 0700 "${AE_META}/send"
+SENDPROLOGUE
+        declare -f helper_send_main
+        printf 'helper_send_main "$@"\n'
+    } >"${AE_META}/send.tmp.$$"
+    chmod 0700 "${AE_META}/send.tmp.$$"
+    mv "${AE_META}/send.tmp.$$" "${AE_META}/send"
 
     # Helper: ask <target> <question> — structured send with reply-to metadata
-    cat >"${AE_META}/ask" <<'ASKEOF'
+    {
+        cat <<'ASKPROLOGUE'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
-if [[ $# -lt 2 ]]; then
-    echo "Usage: ask <agent-name|pane-id|@session:agent> <question>" >&2
-    echo "  Like send, but embeds your identity and reply command in the message." >&2
-    exit 1
-fi
-target_name="$1"; shift
-ae_tracked_send "ask" "ae" "REQUEST" "" "<your reply>" "$target_name" "$@"
-ASKEOF
-    chmod 0700 "${AE_META}/ask"
+ASKPROLOGUE
+        declare -f helper_ask_main
+        printf 'helper_ask_main "$@"\n'
+    } >"${AE_META}/ask.tmp.$$"
+    chmod 0700 "${AE_META}/ask.tmp.$$"
+    mv "${AE_META}/ask.tmp.$$" "${AE_META}/ask"
 
     # Helper: review <target> <request> — ask for a critical review with structured findings
-    cat >"${AE_META}/review" <<'REVIEWEOF'
+    {
+        cat <<'REVIEWPROLOGUE'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
-if [[ $# -lt 2 ]]; then
-    echo "Usage: review <agent-name|pane-id|@session:agent> <request>" >&2
-    echo "  Ask another agent for a critical review and require a reply via send." >&2
-    exit 1
-fi
-target_name="$1"; shift
-REVIEW_INSTRUCTIONS='Review instructions:
-- Focus on correctness, regressions, edge cases, missing tests, and callers/docs needing updates.
-- Findings first. Keep summaries brief.
-- Use severity labels: BLOCKER, IMPORTANT, NIT.
-- If no issues are found, say "No findings" explicitly.'
-ae_tracked_send "review" "review" "REVIEW REQUEST" "$REVIEW_INSTRUCTIONS" "<your review>" "$target_name" "$@"
-REVIEWEOF
-    chmod 0700 "${AE_META}/review"
+REVIEWPROLOGUE
+        declare -f helper_review_main
+        printf 'helper_review_main "$@"\n'
+    } >"${AE_META}/review.tmp.$$"
+    chmod 0700 "${AE_META}/review.tmp.$$"
+    mv "${AE_META}/review.tmp.$$" "${AE_META}/review"
 
     # Helper: reply <request-id> <message> — reply to a logged request by id
-    cat >"${AE_META}/reply" <<'REPLYEOF'
+    {
+        cat <<'REPLYPROLOGUE'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
-META_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [[ $# -lt 2 ]]; then
-    echo "Usage: reply [--as <agent>] <request-id> <message>" >&2
-    echo "  Reply to a logged ask/review request using its request id." >&2
-    exit 1
-fi
-sender_override=""
-if [[ "${1:-}" == "--as" ]]; then
-    [[ $# -ge 4 ]] || {
-        echo "Usage: reply [--as <agent>] <request-id> <message>" >&2
-        exit 1
-    }
-    sender_override="$2"
-    shift 2
-fi
-req_id="$1"; shift
-message="$*"
-self="$(ae_current_agent_ref)"
-
-row="$(ae_find_request "$req_id")" || {
-    echo "Error: request id '${req_id}' not found in ${META_DIR}/events.jsonl" >&2
-    exit 1
-}
-IFS=$'\t' read -r _ sender target <<<"$row"
-
-if [[ -n "$sender_override" && "$sender_override" != "$target" ]]; then
-    echo "Error: override agent '${sender_override}' does not match assigned target '${target}'" >&2
-    exit 1
-fi
-
-reply_sender="$sender_override"
-if [[ -z "$reply_sender" ]]; then
-    if [[ -z "$self" ]]; then
-        echo "Error: could not detect current agent identity; rerun with --as '${target}' from the assigned agent context" >&2
-        exit 1
-    fi
-    if [[ "$self" != "$target" ]]; then
-        echo "Error: request '${req_id}' is assigned to '${target}', current pane is '${self}'" >&2
-        exit 1
-    fi
-    reply_sender="$self"
-fi
-
-exec env AE_SENDER_OVERRIDE="$reply_sender" _AE_EVENT_ACTION="reply" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$message" "${META_DIR}/send" "$sender" "[${req_id}] ${message}"
-REPLYEOF
-    chmod 0700 "${AE_META}/reply"
+REPLYPROLOGUE
+        declare -f helper_reply_main
+        printf 'helper_reply_main "$@"\n'
+    } >"${AE_META}/reply.tmp.$$"
+    chmod 0700 "${AE_META}/reply.tmp.$$"
+    mv "${AE_META}/reply.tmp.$$" "${AE_META}/reply"
 
     # Helper: requests [mine|inbox|all] — inspect request state from session logs
-    cat >"${AE_META}/requests" <<'REQUESTSEOF'
+    {
+        cat <<'REQUESTSPROLOGUE'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
-META_DIR="$(cd "$(dirname "$0")" && pwd)"
-mode="${1:-mine}"
-self="$(ae_current_agent_ref)"
-
-if [[ "$mode" != "mine" && "$mode" != "inbox" && "$mode" != "all" ]]; then
-    echo "Usage: requests [mine|inbox|all]" >&2
-    exit 1
-fi
-
-if [[ "$mode" != "all" && -z "$self" ]]; then
-    echo "Error: could not detect current agent identity; use 'requests all' outside an ae pane" >&2
-    exit 1
-fi
-
-# Scan events.jsonl: collect latest ask/review per ref and latest reply per ref.
-# A reply only counts as "replied" if the reply's actor matches the request's
-# target AND the reply's target matches the request's sender. This preserves
-# the old TSV invariant: stray reply events with a matching ref but wrong
-# actor/target leave the request pending.
-declare -A req_kind req_sender req_target req_summary req_ts
-declare -A reply_summary reply_actor reply_target reply_ts
-order=()
-events_file="${META_DIR}/events.jsonl"
-if [[ -f "$events_file" ]]; then
-    while IFS= read -r line; do
-        [[ "$line" == \{* ]] || continue
-        ref="$(_event_json_str "$line" ref)"
-        [[ -n "$ref" ]] || continue
-        action="$(_event_json_str "$line" action)"
-        case "$action" in
-            ask | review)
-                [[ -n "${req_kind[$ref]:-}" ]] && continue
-                req_kind["$ref"]="$action"
-                req_sender["$ref"]="$(_event_json_str "$line" actor)"
-                req_target["$ref"]="$(_event_json_str "$line" target)"
-                req_summary["$ref"]="$(_event_json_str "$line" summary)"
-                req_ts["$ref"]="$(_event_json_str "$line" ts)"
-                order+=("$ref")
-                ;;
-            reply)
-                [[ -n "${reply_summary[$ref]:-}" ]] && continue
-                reply_summary["$ref"]="$(_event_json_str "$line" summary)"
-                reply_actor["$ref"]="$(_event_json_str "$line" actor)"
-                reply_target["$ref"]="$(_event_json_str "$line" target)"
-                reply_ts["$ref"]="$(_event_json_str "$line" ts)"
-                ;;
-        esac
-    done < <(tac "$events_file" 2>/dev/null || true)
-fi
-
-printf "%-8s %-8s %-28s %-20s %-20s %s\n" "STATUS" "TYPE" "ID" "FROM" "TO" "SUMMARY"
-# 'order' is newest-first because we scanned backward; reverse for chronological output.
-for ((i = ${#order[@]} - 1; i >= 0; i--)); do
-    ref="${order[$i]}"
-    sender="${req_sender[$ref]}"
-    target="${req_target[$ref]}"
-    case "$mode" in
-        mine) [[ "$sender" == "$self" ]] || continue ;;
-        inbox) [[ "$target" == "$self" ]] || continue ;;
-        all) ;;
-    esac
-    status="pending"
-    summary="${req_summary[$ref]}"
-    if [[ -n "${reply_summary[$ref]:-}" \
-        && "${reply_actor[$ref]:-}" == "$target" \
-        && "${reply_target[$ref]:-}" == "$sender" ]]; then
-        status="replied"
-        summary="${reply_summary[$ref]}"
-    fi
-    printf "%-8s %-8s %-28s %-20s %-20s %s\n" "$status" "${req_kind[$ref]}" "$ref" "$sender" "$target" "$summary"
-done
-REQUESTSEOF
-    chmod 0700 "${AE_META}/requests"
+REQUESTSPROLOGUE
+        declare -f helper_requests_main
+        printf 'helper_requests_main "$@"\n'
+    } >"${AE_META}/requests.tmp.$$"
+    chmod 0700 "${AE_META}/requests.tmp.$$"
+    mv "${AE_META}/requests.tmp.$$" "${AE_META}/requests"
 
     # Helper: state <working|waiting-user|blocked|done> [reason] — declare current work state.
     # mark-done is a shim that calls 'state done' so older docs/agents keep working.
@@ -7985,175 +8467,57 @@ DONEEOF
     # this agent. Text comes from args or piped stdin (for multi-line / long
     # replies). This is the agent's deliberate way to answer the human on
     # Telegram — there is no automatic forwarding of pane output.
-    cat >"${AE_META}/say" <<'SAYEOF'
+    {
+        cat <<'SAYPROLOGUE'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 
-usage() {
-    cat >&2 <<'USAGE'
-Usage: say <text>          # push a free-text line to the Telegram chat
-       echo "text" | say   # multi-line / long replies via stdin
-
-Emits a `chat` event the telegram bridge forwards. Requires the bridge running
-with `chat` in its [telegram] include filter (see `ae telegram status`).
-USAGE
-    exit 2
-}
-
-if [[ $# -gt 0 ]]; then
-    text="$*"
-elif [[ ! -t 0 ]]; then
-    text="$(cat)"
-else
-    usage
-fi
-
-# Reject empty / whitespace-only payloads — nothing to forward.
-if [[ -z "${text//[$' \t\n\r']/}" ]]; then
-    usage
-fi
-
-ae_emit_event "chat" "" "" "$text"
-printf 'Sent to Telegram bridge (chat): %.60s%s\n' "$text" "$([[ ${#text} -gt 60 ]] && printf '…')"
-SAYEOF
-    chmod 0700 "${AE_META}/say"
+SAYPROLOGUE
+        declare -f helper_say_usage helper_say_main
+        printf 'helper_say_main "$@"\n'
+    } >"${AE_META}/say.tmp.$$"
+    chmod 0700 "${AE_META}/say.tmp.$$"
+    mv "${AE_META}/say.tmp.$$" "${AE_META}/say"
 
     # Helper: memo add/read/tail — shared append-only session memory
-    cat >"${AE_META}/memo" <<'MEMOEOF'
+    {
+        cat <<'MEMOPROLOGUE'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
-META_DIR="$(cd "$(dirname "$0")" && pwd)"
-MEMO_FILE="${META_DIR}/memo.tsv"
-usage() {
-    echo "Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]" >&2
-    exit 1
-}
-render() {
-    awk -F '\t' -v topic_filter="${1:-}" 'NF >= 4 && (topic_filter == "" || $3 == topic_filter) { printf "%s — %s", $1, $2; if ($3 != "general") printf " [%s]", $3; printf "\n%s\n\n", $4 }' "${2:-$MEMO_FILE}"
-}
-cmd="${1:-read}"
-shift || true
-case "$cmd" in
-    add)
-        topic="general"
-        if [[ "${1:-}" == "--topic" ]]; then
-            [[ $# -ge 3 ]] || usage
-            topic="$2"
-            shift 2
-        fi
-        [[ $# -ge 1 ]] || usage
-        text="$*"
-        topic="${topic//$'\r'/}"
-        topic="${topic//$'\t'/ }"
-        topic="${topic//$'\n'/ }"
-        text="${text//$'\r'/}"
-        text="${text//$'\t'/ }"
-        text="${text//$'\n'/ }"
-        self="$(ae_current_agent_ref)"
-        [[ -n "$self" ]] || self="human"
-        [[ -n "$topic" ]] || topic="general"
-        ae_log_append "$MEMO_FILE" "$(printf '%s\t%s\t%s\t%s' "$(ae_now_utc)" "$self" "$topic" "$text")"
-        ae_emit_event "memo" "" "$topic" "$text"
-        ;;
-    read)
-        topic=""
-        if [[ "${1:-}" == "--topic" ]]; then
-            [[ $# -eq 2 ]] || usage
-            topic="$2"
-        elif [[ $# -gt 0 ]]; then
-            usage
-        fi
-        [[ -f "$MEMO_FILE" ]] || exit 0
-        render "$topic"
-        ;;
-    tail)
-        [[ $# -le 1 ]] || usage
-        count="${1:-10}"
-        [[ "$count" =~ ^[0-9]+$ ]] || usage
-        [[ -f "$MEMO_FILE" ]] || exit 0
-        tmp_file="$(mktemp)"
-        tail -n "$count" "$MEMO_FILE" >"$tmp_file"
-        render "" "$tmp_file"
-        rm -f "$tmp_file"
-        ;;
-    *) usage ;;
-esac
-MEMOEOF
-    chmod 0700 "${AE_META}/memo"
+MEMOPROLOGUE
+        declare -f helper_memo_usage helper_memo_render helper_memo_main
+        printf 'helper_memo_main "$@"\n'
+    } >"${AE_META}/memo.tmp.$$"
+    chmod 0700 "${AE_META}/memo.tmp.$$"
+    mv "${AE_META}/memo.tmp.$$" "${AE_META}/memo"
 
     # Helper: goal [text|--clear] — the session's one-line objective. Stored as
     # 'goal=' in session meta (locked write, survives resume via the preserve
     # block), shown in 'ae list' (table sub-line + JSON), and quoted by the
     # watchdog's stale nudge so idle agents are reminded what the session is FOR.
-    cat >"${AE_META}/goal" <<'GOALEOF'
+    {
+        cat <<'GOALPROLOGUE'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 
-usage() {
-    echo "Usage: goal            # show the session goal" >&2
-    echo "       goal <text>     # set it (one line)" >&2
-    echo "       goal --clear    # remove it" >&2
-    exit 1
-}
-
-case "${1:-}" in
-    "")
-        current="$(ae_meta_get goal)"
-        if [[ -n "$current" ]]; then
-            printf '%s\n' "$current"
-        else
-            echo "(no goal set)"
-        fi
-        ;;
-    --clear)
-        [[ $# -eq 1 ]] || usage
-        ae_meta_unset goal
-        ae_emit_event "goal" "" "" "goal cleared"
-        echo "Goal cleared."
-        ;;
-    --help | -h)
-        usage
-        ;;
-    *)
-        text="$*"
-        # One printable line only: newlines/tabs become spaces, every other control
-        # byte (ESC, BEL, …) is dropped. The value fans out to meta (line-oriented),
-        # events.jsonl + list --json (escapers don't cover C0 controls), the list
-        # table, and the watchdog nudge — none of which may carry raw controls.
-        text="$(printf '%s' "$text" | tr '\n\t' '  ' | tr -d '[:cntrl:]')"
-        [[ -n "$text" ]] || usage
-        ae_meta_set goal "$text" || { echo "Error: could not write session meta" >&2; exit 1; }
-        ae_emit_event "goal" "" "" "$text"
-        echo "Goal set: $text"
-        ;;
-esac
-GOALEOF
-    chmod 0700 "${AE_META}/goal"
+GOALPROLOGUE
+        declare -f helper_goal_usage helper_goal_main
+        printf 'helper_goal_main "$@"\n'
+    } >"${AE_META}/goal.tmp.$$"
+    chmod 0700 "${AE_META}/goal.tmp.$$"
+    mv "${AE_META}/goal.tmp.$$" "${AE_META}/goal"
 
     # Helper: peek <target> [lines] — capture recent output from another agent's pane
-    cat >"${AE_META}/peek" <<'PEEKEOF'
+    {
+        cat <<'PEEKPROLOGUE'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
-if [[ $# -lt 1 ]]; then
-    echo "Usage: peek <agent-name|pane-id|@session:agent> [lines]" >&2
-    echo "  Examples: peek codex:reviewer" >&2
-    echo "           peek @my-feature:claude:lead 50" >&2
-    exit 1
-fi
-ae_resolve "$1" || exit 1
-target="$AE_RESOLVED_PANE"
-lines="${2:-80}"
-
-if ! [[ "$lines" =~ ^[0-9]+$ ]]; then
-    echo "Error: lines must be a number, got '$lines'" >&2
-    exit 1
-fi
-(( lines > 2000 )) && lines=2000
-(( lines < 1 )) && lines=1
-
-tmux capture-pane -p -J -S "-${lines}" -E - -t "$target"
-PEEKEOF
-    chmod 0700 "${AE_META}/peek"
+PEEKPROLOGUE
+        declare -f helper_peek_main
+        printf 'helper_peek_main "$@"\n'
+    } >"${AE_META}/peek.tmp.$$"
+    chmod 0700 "${AE_META}/peek.tmp.$$"
+    mv "${AE_META}/peek.tmp.$$" "${AE_META}/peek"
 
     # Common typo alias: peak -> peek
     cat >"${AE_META}/peak" <<'PEAKOF'
@@ -8163,296 +8527,90 @@ PEAKOF
     chmod 0700 "${AE_META}/peak"
 
     # Helper: agents — list all agents in the session
-    cat >"${AE_META}/agents" <<'AGENTSEOF'
+    {
+        cat <<'AGENTSPROLOGUE'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 
-if [[ "${1:-}" == "--all" ]]; then
-    printf "%-20s %-25s %-8s %s\n" "SESSION" "AGENT" "PANE" "PROCESS"
-    for meta_file in "$_AE_SESSIONS_DIR"/*/meta; do
-        [[ -f "$meta_file" ]] || continue
-        sess="$(grep '^session=' "$meta_file" | cut -d= -f2-)"
-        [[ -z "$sess" ]] && continue
-        tmux has-session -t "$sess" 2>/dev/null || continue
-        while IFS='|' read -r pid aagent cmd; do
-            [[ -z "$aagent" ]] && continue
-            printf "%-20s %-25s %-8s %s\n" "$sess" "$aagent" "$pid" "$cmd"
-        done < <(tmux list-panes -s -t "$sess" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
-    done
-else
-    printf "%-25s %-8s %s\n" "AGENT" "PANE" "PROCESS"
-    while IFS='|' read -r pid aagent cmd; do
-        [[ -z "$aagent" ]] && continue
-        printf "%-25s %-8s %s\n" "$aagent" "$pid" "$cmd"
-    done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
-fi
-AGENTSEOF
-    chmod 0700 "${AE_META}/agents"
+AGENTSPROLOGUE
+        declare -f helper_agents_main
+        printf 'helper_agents_main "$@"\n'
+    } >"${AE_META}/agents.tmp.$$"
+    chmod 0700 "${AE_META}/agents.tmp.$$"
+    mv "${AE_META}/agents.tmp.$$" "${AE_META}/agents"
 
     # Helper: focus <target> — switch to another agent's pane by name
-    cat >"${AE_META}/focus" <<'FOCUSEOF'
+    {
+        cat <<'FOCUSPROLOGUE'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
-if [[ $# -lt 1 ]]; then
-    echo "Usage: focus <agent-name|pane-id|@session:agent>" >&2
-    echo "  Examples: focus codex:reviewer" >&2
-    echo "           focus @my-feature:claude:lead" >&2
-    exit 1
-fi
-ae_resolve "$1" || exit 1
-tmux select-pane -t "$AE_RESOLVED_PANE"
-ae_emit_event "focus" "${AE_RESOLVED_AGENT:-$1}"
-FOCUSEOF
-    chmod 0700 "${AE_META}/focus"
+FOCUSPROLOGUE
+        declare -f helper_focus_main
+        printf 'helper_focus_main "$@"\n'
+    } >"${AE_META}/focus.tmp.$$"
+    chmod 0700 "${AE_META}/focus.tmp.$$"
+    mv "${AE_META}/focus.tmp.$$" "${AE_META}/focus"
 
     # Helper: interrupt <target> [message] — cancel current generation, optionally redirect
-    cat >"${AE_META}/interrupt" <<'INTERRUPTEOF'
+    {
+        cat <<'INTERRUPTPROLOGUE'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
-if [[ $# -lt 1 ]]; then
-    echo "Usage: interrupt <agent-name|pane-id|@session:agent> [message]" >&2
-    echo "  Examples: interrupt codex:reviewer" >&2
-    echo "           interrupt @my-feature:claude:lead \"Stop — try a different approach\"" >&2
-    exit 1
-fi
-ae_resolve "$1" || exit 1; shift
-target="$AE_RESOLVED_PANE"
-msg="${*:-}"
-
-ae_lock_target "$target"
-
-current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
-tmux select-pane -t "$target"
-tmux send-keys -t "$target" -X cancel 2>/dev/null || true
-tmux send-keys -t "$target" Escape
-
-if [[ -n "$msg" ]]; then
-    sleep 0.5
-    buf="ae-interrupt-$$"
-    tool="$(ae_target_tool "$target")"
-    ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"
-    sleep 0.3 # let target TUI process input before focus restore
-fi
-
-ae_emit_event "interrupt" "${AE_RESOLVED_AGENT:-$target}" "" "$msg"
-[[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
-ae_unlock_target
-INTERRUPTEOF
-    chmod 0700 "${AE_META}/interrupt"
+INTERRUPTPROLOGUE
+        declare -f helper_interrupt_main
+        printf 'helper_interrupt_main "$@"\n'
+    } >"${AE_META}/interrupt.tmp.$$"
+    chmod 0700 "${AE_META}/interrupt.tmp.$$"
+    mv "${AE_META}/interrupt.tmp.$$" "${AE_META}/interrupt"
 
     # Helper: spawn <alias> [prompt] — thin wrapper that calls ae _spawn
-    cat >"${AE_META}/spawn" <<'SPAWNEOF'
+    {
+        cat <<'SPAWNPROLOGUE'
 #!/usr/bin/env bash
 set -euo pipefail
-META_DIR="$(cd "$(dirname "$0")" && pwd)"
-_ts="$(grep '^tmux_server=' "$META_DIR/meta" | cut -d= -f2-)"
-[[ -n "$_ts" ]] && export AE_TMUX_SERVER="$_ts"
-AE_PATH="$(grep '^ae_path=' "$META_DIR/meta" | cut -d= -f2-)"
-if [[ ! -x "$AE_PATH" ]]; then
-    AE_PATH="$(command -v ae 2>/dev/null || true)"
-fi
-if [[ -z "${AE_PATH:-}" ]] || [[ ! -x "$AE_PATH" ]]; then
-    echo "Error: ae not found (expected at $(grep '^ae_path=' "$META_DIR/meta" | cut -d= -f2-))" >&2
-    exit 1
-fi
-if [[ $# -lt 1 ]]; then
-    echo "Usage: spawn <alias>[:<name>] [prompt]" >&2
-    exit 1
-fi
-exec "$AE_PATH" _spawn "$META_DIR" "$@"
-SPAWNEOF
-    chmod 0700 "${AE_META}/spawn"
+SPAWNPROLOGUE
+        declare -f helper_spawn_main
+        printf 'helper_spawn_main "$@"\n'
+    } >"${AE_META}/spawn.tmp.$$"
+    chmod 0700 "${AE_META}/spawn.tmp.$$"
+    mv "${AE_META}/spawn.tmp.$$" "${AE_META}/spawn"
 
     # Helper: retire <agent> — remove a spawned agent from the session
-    cat >"${AE_META}/retire" <<'RETIREEOF'
+    {
+        cat <<'RETIREPROLOGUE'
 #!/usr/bin/env bash
 set -euo pipefail
-META_DIR="$(cd "$(dirname "$0")" && pwd)"
-_ts="$(grep '^tmux_server=' "$META_DIR/meta" | cut -d= -f2-)"
-[[ -n "$_ts" ]] && export AE_TMUX_SERVER="$_ts"
-AE_PATH="$(grep '^ae_path=' "$META_DIR/meta" | cut -d= -f2-)"
-if [[ ! -x "$AE_PATH" ]]; then
-    AE_PATH="$(command -v ae 2>/dev/null || true)"
-fi
-if [[ -z "${AE_PATH:-}" ]] || [[ ! -x "$AE_PATH" ]]; then
-    echo "Error: ae not found (expected at $(grep '^ae_path=' "$META_DIR/meta" | cut -d= -f2-))" >&2
-    exit 1
-fi
-if [[ $# -lt 1 ]]; then
-    echo "Usage: retire <agent-name|pane-id>" >&2
-    echo "  Examples: retire codex:researcher" >&2
-    echo "           retire %5" >&2
-    exit 1
-fi
-exec "$AE_PATH" _retire "$META_DIR" "$@"
-RETIREEOF
-    chmod 0700 "${AE_META}/retire"
+RETIREPROLOGUE
+        declare -f helper_retire_main
+        printf 'helper_retire_main "$@"\n'
+    } >"${AE_META}/retire.tmp.$$"
+    chmod 0700 "${AE_META}/retire.tmp.$$"
+    mv "${AE_META}/retire.tmp.$$" "${AE_META}/retire"
 
     # Helper: _register-sid — internal; codex agents run this once on launch to
     # self-register their session ID so ae can resume the exact conversation later.
-    cat >"${AE_META}/_register-sid" <<'REGSIDEOF'
+    {
+        cat <<'REGISTER_SIDPROLOGUE'
 #!/usr/bin/env bash
 # Find codex session matching current launch marker or CWD and write its UUID to codex.<slot>.sid
-META_DIR="$(cd "$(dirname "$0")" && pwd)"
-SLOT="${1:-default}"
-TARGET_CWD="$(realpath "$PWD" 2>/dev/null || echo "$PWD")"
-ESCAPED_SLOT="${SLOT//./\\.}"
-# Read launch_time from meta to filter stale sessions (default 0 = accept all)
-LAUNCH_TIME="$(grep "^launch_time\.${ESCAPED_SLOT}=" "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
-if [ -z "$LAUNCH_TIME" ]; then
-    LAUNCH_TIME="$(grep "^codex_launch_time\.${ESCAPED_SLOT}=" "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || echo 0)"
-fi
-case "$LAUNCH_TIME" in
-    '' | *[!0-9]*)
-        LAUNCH_TIME=0
-        ;;
-esac
-LAUNCH_ID="$(grep "^launch_id\.${ESCAPED_SLOT}=" "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
-if [ -z "$LAUNCH_ID" ]; then
-    LAUNCH_ID="$(grep "^codex_launch_id\.${ESCAPED_SLOT}=" "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
-fi
-best_id="" best_mtime=0
-# Scan today and yesterday (handles UTC midnight rollover)
-for day in "$(date -u +%Y/%m/%d)" "$(date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d 2>/dev/null || true)"; do
-    [ -z "$day" ] && continue
-    dir="$HOME/.codex/sessions/${day}"
-    [ -d "$dir" ] || continue
-    for f in "$dir"/*.jsonl; do
-        [ -f "$f" ] || continue
-        mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
-        [ "$mtime" -lt "$LAUNCH_TIME" ] && continue
-        if [ -n "$LAUNCH_ID" ]; then
-            grep -Fq "AE_CODEX_LAUNCH_ID=${LAUNCH_ID}" "$f" 2>/dev/null || continue
-        fi
-        first_line="$(head -1 "$f" 2>/dev/null || true)"
-        [ -z "$first_line" ] && continue
-        if [ "$mtime" -gt "$best_mtime" ]; then
-            file_id="$(echo "$first_line" | grep -oP '"id"\s*:\s*"\K[0-9a-f-]+' 2>/dev/null || true)"
-            if [ -n "$file_id" ]; then
-                best_id="$file_id"
-                best_mtime="$mtime"
-            fi
-        fi
-    done
-done
-if [ -z "$best_id" ]; then
-    for day in "$(date -u +%Y/%m/%d)" "$(date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d 2>/dev/null || true)"; do
-        [ -z "$day" ] && continue
-        dir="$HOME/.codex/sessions/${day}"
-        [ -d "$dir" ] || continue
-        for f in "$dir"/*.jsonl; do
-            [ -f "$f" ] || continue
-            mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
-            [ "$mtime" -lt "$LAUNCH_TIME" ] && continue
-            first_line="$(head -1 "$f" 2>/dev/null || true)"
-            [ -z "$first_line" ] && continue
-            file_cwd="$(echo "$first_line" | grep -oP '"cwd"\s*:\s*"\K[^"]*' 2>/dev/null || true)"
-            [ -z "$file_cwd" ] && continue
-            file_cwd="$(realpath "$file_cwd" 2>/dev/null || echo "$file_cwd")"
-            [ "$file_cwd" != "$TARGET_CWD" ] && continue
-            if [ "$mtime" -gt "$best_mtime" ]; then
-                file_id="$(echo "$first_line" | grep -oP '"id"\s*:\s*"\K[0-9a-f-]+' 2>/dev/null || true)"
-                if [ -n "$file_id" ]; then
-                    best_id="$file_id"
-                    best_mtime="$mtime"
-                fi
-            fi
-        done
-    done
-fi
-if [ -n "$best_id" ]; then
-    echo "$best_id" > "$META_DIR/codex.${SLOT}.sid"
-    echo "registered session $best_id for slot $SLOT"
-else
-    echo "no codex session found matching cwd $TARGET_CWD" >&2
-    exit 1
-fi
-REGSIDEOF
-    chmod 0700 "${AE_META}/_register-sid"
+REGISTER_SIDPROLOGUE
+        declare -f helper_register_sid_main
+        printf 'helper_register_sid_main "$@"\n'
+    } >"${AE_META}/_register-sid.tmp.$$"
+    chmod 0700 "${AE_META}/_register-sid.tmp.$$"
+    mv "${AE_META}/_register-sid.tmp.$$" "${AE_META}/_register-sid"
 
     # Helper: events-tail — read-only formatted tail of events.jsonl for the monitor pane
-    cat >"${AE_META}/events-tail" <<'EVTAILEOF'
+    {
+        cat <<'EVENTS_TAILPROLOGUE'
 #!/usr/bin/env bash
 set -uo pipefail
-META_DIR="$(cd "$(dirname "$0")" && pwd)"
-EVENTS_FILE="${META_DIR}/events.jsonl"
-
-# Extract a JSON string value for a flat key from one of our own events.jsonl
-# lines. Walks character by character so escaped quotes (\") and backslashes
-# (\\) inside the value don't terminate the parse early. Handles the same
-# escape sequences ae_emit_event produces: \\, \", \n, \t, \r.
-_extract_json_str() {
-    local line="$1" key="$2"
-    local prefix="\"${key}\":\""
-    local rest="${line#*"${prefix}"}"
-    [[ "$rest" == "$line" ]] && return
-    local result="" i=0 n=${#rest}
-    local c next
-    while ((i < n)); do
-        c="${rest:$i:1}"
-        if [[ "$c" == "\\" ]]; then
-            next="${rest:$((i + 1)):1}"
-            case "$next" in
-                n) result+=" " ;;
-                t) result+=" " ;;
-                r) ;;
-                '"') result+='"' ;;
-                "\\") result+="\\" ;;
-                *) result+="$c$next" ;;
-            esac
-            i=$((i + 2))
-        elif [[ "$c" == '"' ]]; then
-            break
-        else
-            result+="$c"
-            i=$((i + 1))
-        fi
-    done
-    printf '%s' "$result"
-}
-
-_format_event() {
-    local line="$1"
-    [[ -n "$line" ]] || return
-    [[ "$line" == \{* ]] || return
-    local ts actor action target summary short_ts
-    ts="$(_extract_json_str "$line" ts)"
-    actor="$(_extract_json_str "$line" actor)"
-    action="$(_extract_json_str "$line" action)"
-    target="$(_extract_json_str "$line" target)"
-    summary="$(_extract_json_str "$line" summary)"
-    # Display 'MM-DDTHH:MM:SS' (14 chars) so day rollovers are visible in the
-    # monitor pane. Full ISO timestamp stays in events.jsonl for audit.
-    short_ts="${ts:5:14}"
-    if (( ${#summary} > 60 )); then
-        summary="${summary:0:57}..."
-    fi
-    if [[ -n "$target" ]]; then
-        printf '%s  %-8s %-22s → %-22s %s\n' "$short_ts" "$action" "$actor" "$target" "$summary"
-    else
-        printf '%s  %-8s %-22s   %-22s %s\n' "$short_ts" "$action" "$actor" "" "$summary"
-    fi
-}
-
-# Banner printed once at the top of the pane's scrollback.
-printf '\033[1;36m'
-printf '╭─ ae events — session: %s ───────────────────────────────╮\n' "${META_DIR##*/}"
-printf '│ date+time (UTC)  action   actor                  → target                 summary\n'
-printf '╰──────────────────────────────────────────────────────────────────────────╯\n'
-printf '\033[0m\n'
-
-
-# Wait for events file (it is created lazily on first emit)
-while [[ ! -f "$EVENTS_FILE" ]]; do
-    sleep 1
-done
-
-# Replay last 30 events, then follow new ones
-tail -n 30 -f "$EVENTS_FILE" 2>/dev/null | while IFS= read -r line; do
-    _format_event "$line"
-done
-EVTAILEOF
-    chmod 0700 "${AE_META}/events-tail"
+EVENTS_TAILPROLOGUE
+        declare -f helper_events_tail_extract_json_str helper_events_tail_format_event helper_events_tail_main
+        printf 'helper_events_tail_main "$@"\n'
+    } >"${AE_META}/events-tail.tmp.$$"
+    chmod 0700 "${AE_META}/events-tail.tmp.$$"
+    mv "${AE_META}/events-tail.tmp.$$" "${AE_META}/events-tail"
 
     # Helper: watchdog [start|stop|status] — watchdog that nudges stale agents
     # watchdog — emitted from the template library (fns + the whole runtime

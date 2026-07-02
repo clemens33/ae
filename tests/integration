@@ -675,16 +675,31 @@ assert_contains "doctor-refresh: regenerated state emitted a real event" \
 # watchdog is declare-f generated too. A RUNNING watchdog keeps its loaded body
 # until restarted — so smoke the regenerated artifact through a full
 # stop → status → start → status cycle (real _lib, real panes).
+# Bounded polling, not fixed sleeps: launch AUTOSTARTS a watchdog in the
+# background, so (a) settle until it is actually up before stopping (else the
+# stop no-ops mid-autostart and the later status still shows running), and
+# (b) poll each transition instead of racing it.
+wd_poll() { # wd_poll <helper> <needle> [tries] — bounded status poll
+    local h="$1" needle="$2" tries="${3:-20}" i=0
+    while ((i < tries)); do
+        [[ "$("$h" status 2>&1 || true)" == *"$needle"* ]] && return 0
+        sleep 0.5
+        i=$((i + 1))
+    done
+    return 1
+}
 WD_HELPER="$HOME/.ae/sessions/test-sync/watchdog"
 assert_contains "doctor-refresh: watchdog carries emitted main fn" \
     "helper_watchdog_main" "$(cat "$WD_HELPER")"
+wd_poll "$WD_HELPER" "is running" 20 || true # settle the launch autostart
 "$WD_HELPER" stop >/dev/null 2>&1 || true
-sleep 0.5
+wd_poll "$WD_HELPER" "not running" 20 || true
 assert_contains "doctor-refresh: regenerated watchdog status reports stopped" \
     "not running" "$("$WD_HELPER" status 2>&1 || true)"
-wd_start_out="$("$WD_HELPER" start 2>&1 & sleep 2; "$WD_HELPER" status 2>&1 || true)"
+"$WD_HELPER" start >/dev/null 2>&1 &
+wd_poll "$WD_HELPER" "is running" 20 || true
 assert_contains "doctor-refresh: regenerated watchdog starts and reports running" \
-    "running" "$wd_start_out"
+    "is running" "$("$WD_HELPER" status 2>&1 || true)"
 
 # Clean up
 "$AE" end -f test-sync 2>/dev/null || true

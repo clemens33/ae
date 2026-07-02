@@ -1153,7 +1153,7 @@ unset _AE_META_DIR
 
 # Wiring: helper generated, event emitted, preserve-across-resume, list + nudge.
 assert_eq "goal: helper script generated + chmod" "1" \
-    "$([[ "$AE_SOURCE" == *'cat >"${AE_META}/goal"'* && "$AE_SOURCE" == *'chmod 0700 "${AE_META}/goal"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'declare -f helper_goal_usage helper_goal_main'* && "$AE_SOURCE" == *'mv "${AE_META}/goal.tmp.$$" "${AE_META}/goal"'* ]] && echo 1 || echo 0)"
 assert_eq "goal: helper emits a goal event on set and clear" "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "goal" "" "" "$text"'* && "$AE_SOURCE" == *'ae_emit_event "goal" "" "" "goal cleared"'* ]] && echo 1 || echo 0)"
 assert_eq "goal: preserved across meta rewrite (resume)" "1" \
@@ -1221,6 +1221,37 @@ if [[ "$_tpl_out" =~ ^[0-9]+$ ]] && ((_tpl_out >= 50)); then _tpl_ok=1; else _tp
 assert_eq "template library: sources silently under set -u (no executable leaks)" \
     "1" "$_tpl_ok"
 rm -f "$_tpl_src"
+
+# Generalized emission-completeness guards — ALL declare-f emissions, not just
+# the watchdog (same failure class: a name silently dropped from a declare -f
+# list degrades that helper only on the branches that call the missing fn).
+# Collect every declare -f list in ae, continuation lines joined.
+_emit_lists="$(awk '/^ *declare -f /{l=$0; while (l ~ /\\ *$/) {getline nl; gsub(/\\ *$/,"",l); l=l " " nl}; sub(/^ *declare -f /,"",l); gsub(/  +/," ",l); print l}' <<<"$AE_SOURCE")"
+# 1. Every helper-script list ends with its helper_*_main (the call tail's fn
+#    must be emitted last, after its support fns). The _lib list carries no
+#    helper_* names and is exempt.
+_bad_tail=""
+while IFS= read -r _el; do
+    [[ "$_el" == *helper_* ]] || continue
+    [[ "${_el##* }" == helper_*_main ]] || _bad_tail+="${_el##* } "
+done <<<"$_emit_lists"
+assert_eq "emissions: every helper declare -f list ends with its main fn" "" "$_bad_tail"
+# 2. Every emitted name (any list, _lib included) has exactly one top-level
+#    definition — emitted-but-undefined would emit nothing at generation time.
+_bad_def=""
+while IFS= read -r _en; do
+    [[ -n "$_en" ]] || continue
+    _c="$(grep -c "^${_en}() {" <<<"$AE_SOURCE")"
+    [[ "$_c" == "1" ]] || _bad_def+="${_en}=${_c} "
+done < <(tr ' ' '\n' <<<"$_emit_lists" | sort -u)
+assert_eq "emissions: every emitted fn has exactly one top-level definition" "" "$_bad_def"
+# 3. Parity: the set of helper_* fns DEFINED in the template library must
+#    equal the union of helper_* names EMITTED — nothing defined-but-orphaned,
+#    nothing emitted-but-missing.
+_sec_helpers="$(grep -oE '^helper_[a-z0-9_]+\(\) \{' <<<"$AE_SOURCE" | sed 's/() {//' | sort -u)"
+_emit_helpers="$(tr ' ' '\n' <<<"$_emit_lists" | grep '^helper_' | sort -u)"
+assert_eq "emissions: template helper_* set == emitted helper_* set" \
+    "$_sec_helpers" "$_emit_helpers"
 
 
 assert_eq "watchdog: helper script exists in generated source" \
@@ -1818,7 +1849,23 @@ assert_eq "_lib builder: mirrors the emission list (no helper_* leakage, non-emp
     "0|1" \
     "$(printf '%s|%s' "$(grep -c '^helper_' "$_req_helper_dir/_lib")" \
         "$(grep -q '^ae_meta_unset() {' "$_req_helper_dir/_lib" && echo 1 || echo 0)")"
-_extract_heredoc "$(dirname "$0")/../ae" REQUESTSEOF "$_req_helper_dir/requests"
+# Build a runnable generated helper from the declare-f layout: the helper's
+# emitted <TAG>PROLOGUE heredoc + the fn bodies named by its declare -f line +
+# the main-call tail — mirroring the real emission exactly.
+_build_helper_from_source() {
+    local src="$1" tag="$2" out="$3" fn names
+    names="$(awk "/^${tag}PROLOGUE\$/{f=1;next} f && /^ *declare -f /{sub(/^ *declare -f /,\"\"); print; exit}" "$src")"
+    {
+        awk "/<<'${tag}PROLOGUE'/{f=1;next} /^${tag}PROLOGUE\$/{f=0} f" "$src"
+        local -a _fns
+        read -ra _fns <<<"$names"
+        for fn in "${_fns[@]}"; do
+            awk "/^${fn}\\(\\) \\{/,/^\\}\$/" "$src"
+        done
+        printf '%s "$@"\n' "${names##* }"
+    } >"$out"
+}
+_build_helper_from_source "$(dirname "$0")/../ae" REQUESTS "$_req_helper_dir/requests"
 chmod +x "$_req_helper_dir/_lib" "$_req_helper_dir/requests"
 
 # Replied case: reply actor=target, reply target=sender → status=replied
@@ -2643,7 +2690,7 @@ assert_eq "external-actor: send helper event-only path for telegram:*/discord:* 
 # Structural: external-actor branch runs BEFORE ae_resolve in send body
 # (otherwise resolve would fail on the unresolvable target name first).
 _t_external_branch_line="$(awk '/if \[\[ "\$target_ref" == telegram:\* \|\| "\$target_ref" == discord:\* \]\]; then/{print NR; exit}' "$(dirname "$0")/../ae")"
-_t_resolve_line="$(awk '/^ae_resolve "\$target_ref"/{print NR; exit}' "$(dirname "$0")/../ae")"
+_t_resolve_line="$(awk '/^    ae_resolve "\$target_ref"/{print NR; exit}' "$(dirname "$0")/../ae")"
 assert_eq "external-actor: send helper's external-target branch precedes ae_resolve in source order" "1" \
     "$([[ -n "$_t_external_branch_line" && -n "$_t_resolve_line" && "$_t_external_branch_line" -lt "$_t_resolve_line" ]] && echo 1 || echo 0)"
 unset _t_external_branch_line _t_resolve_line
@@ -2653,7 +2700,7 @@ unset _t_external_branch_line _t_resolve_line
 assert_eq "external-actor: send still calls ae_resolve when target is not an external-actor prefix" "1" \
     "$([[ "$AE_SOURCE" == *'fi
 
-ae_resolve "$target_ref" || exit 1'* ]] && echo 1 || echo 0)"
+    ae_resolve "$target_ref" || exit 1'* ]] && echo 1 || echo 0)"
 
 # Session UUID: meta written at session creation includes session_id= line.
 assert_eq "session-uuid: meta template includes session_id field" "1" \
@@ -3356,8 +3403,8 @@ unset _tg3_daemon _tg3_home _tg3_result
 
 # The helper is generated, executable, sources _lib, and emits a `chat` event.
 assert_eq "say: helper generated, chmod 0700, sources _lib" "1" \
-    "$([[ "$AE_SOURCE" == *'cat >"${AE_META}/say" <<'"'"'SAYEOF'"'"''* \
-        && "$AE_SOURCE" == *'chmod 0700 "${AE_META}/say"'* \
+    "$([[ "$AE_SOURCE" == *'declare -f helper_say_usage helper_say_main'* \
+        && "$AE_SOURCE" == *'mv "${AE_META}/say.tmp.$$" "${AE_META}/say"'* \
         && "$AE_SOURCE" == *'source "$(cd "$(dirname "$0")" && pwd)/_lib"'* ]] && echo 1 || echo 0)"
 assert_eq "say: helper emits a chat event" "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "chat" "" "" "$text"'* ]] && echo 1 || echo 0)"
