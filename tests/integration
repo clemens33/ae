@@ -12,6 +12,12 @@ AE="$(cd "$(dirname "$0")/.." && pwd)/ae"
 # Isolated environment
 TMPDIR="$(mktemp -d)"
 export AE_TMUX_SERVER="ae-test-$$"
+# Tripwire (2026-07-02 incident: the REAL ~/.ae/config was clobbered with a
+# test fixture during a test window): fingerprint the real user's config
+# BEFORE overriding HOME; cleanup screams and exits non-zero if it changed.
+REAL_HOME="$(getent passwd "$(id -u)" | cut -d: -f6)"
+REAL_AE_CONFIG="${REAL_HOME}/.ae/config"
+if [[ -f "$REAL_AE_CONFIG" ]]; then REAL_CONFIG_FPR="$(md5sum <"$REAL_AE_CONFIG")"; else REAL_CONFIG_FPR="absent"; fi
 export HOME="$TMPDIR/home"
 export AE_HOME="$HOME/.ae"
 mkdir -p "$HOME/.ae"
@@ -19,6 +25,14 @@ mkdir -p "$HOME/.ae"
 cleanup() {
     command tmux -L "$AE_TMUX_SERVER" kill-server 2>/dev/null || true
     rm -rf "$TMPDIR"
+    local now_fpr
+    if [[ -f "$REAL_AE_CONFIG" ]]; then now_fpr="$(md5sum <"$REAL_AE_CONFIG")"; else now_fpr="absent"; fi
+    if [[ "$now_fpr" != "$REAL_CONFIG_FPR" ]]; then
+        echo "" >&2
+        echo "FATAL: the REAL user config ($REAL_AE_CONFIG) CHANGED during this test run." >&2
+        echo "A test escaped isolation. Investigate before trusting any results." >&2
+        exit 97
+    fi
 }
 trap cleanup EXIT
 
