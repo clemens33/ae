@@ -574,25 +574,76 @@ assert_eq "events: mark-done helper still emits legacy done event (via state shi
 
 # ── state helper (phase 1) ─────────────────────────────────────────
 
-assert_eq "state: helper script exists in generated source" \
+# The state helper is generated from top-level template functions emitted via
+# `declare -f` (the #4B pattern) — so its logic is tested BEHAVIORALLY here by
+# extracting the real functions, not by grepping heredoc text. Structural
+# asserts below only pin the emission wiring + the marker-region placement
+# (doctor --refresh awk-sources that region; a def outside it breaks refresh).
+assert_eq "state: template fns defined inside SYNC_SESSION_ASSETS_BODY markers" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'Helper: state <working|waiting-user|blocked|done>'* && "$AE_SOURCE" == *'STATEEOF'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'SYNC_SESSION_ASSETS_BODY_START'*'helper_state_main() {'*'declare -f helper_state_usage helper_state_main'*'SYNC_SESSION_ASSETS_BODY_END'* ]] && echo 1 || echo 0)"
 
-assert_eq "state: helper accepts all four enum values" \
+assert_eq "state: generated file calls helper_state_main with script args" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'working | waiting-user | done)'* && "$AE_SOURCE" == *'blocked)'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'printf '\''helper_state_main "$@"\n'\'''* ]] && echo 1 || echo 0)"
 
-assert_eq "state: helper emits action=state with ref=value" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'ae_emit_event "state" "" "$value" "$reason"'* ]] && echo 1 || echo 0)"
+# Behavioural: extract the real template functions (indented — they live inside
+# the generation body) and exercise them with stubbed _lib deps, under the
+# helper's own runtime options (plain bash, no errexit/nounset).
+eval "$(awk '/^    helper_state_usage\(\) \{/,/^    \}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^    helper_state_main\(\) \{/,/^    \}$/' <<<"$AE_SOURCE")"
 
-assert_eq "state: helper dual-emits legacy done event on value=done" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *'Transitional dual-emit'* && "$AE_SOURCE" == *'ae_emit_event "done" "" "" "$reason"'* ]] && echo 1 || echo 0)"
+_state_evlog="$(mktemp)"
+# Stubs are invoked indirectly through the eval'd helper functions.
+# shellcheck disable=SC2317
+ae_current_agent_ref() { printf 'claude:tester'; }
+# shellcheck disable=SC2317
+ae_latest_state_for() { printf '%s' "${STUB_LATEST:-}"; }
+# shellcheck disable=SC2317
+ae_emit_event() { printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" >>"$_state_evlog"; }
 
-assert_eq "state: helper rejects blocked without reason" \
-    "1" \
-    "$([[ "$AE_SOURCE" == *"'blocked' requires a reason"* ]] && echo 1 || echo 0)"
+# Match the helper's real runtime options exactly: plain bash — clear errexit,
+# nounset AND the harness's inherited pipefail (set +eu alone leaves it on).
+_run_state() { (
+    set +e +u
+    set +o pipefail
+    helper_state_main "$@"
+); }
+
+: >"$_state_evlog"
+assert_eq "state: no args + no declared state prints (none declared)" \
+    "claude:tester state: (none declared)" \
+    "$(_run_state 2>/dev/null || true)"
+
+assert_eq "state: no args + latest state prints formatted line" \
+    "claude:tester state: working — fixing bug  (since 2026-07-02T08:00:00Z)" \
+    "$(STUB_LATEST=$'working\tfixing bug\t2026-07-02T08:00:00Z' _run_state 2>/dev/null || true)"
+
+: >"$_state_evlog"
+assert_eq "state: working emits action=state with ref=value" \
+    "state||working|on it" \
+    "$(_run_state working "on it" >/dev/null 2>&1; cat "$_state_evlog")"
+
+: >"$_state_evlog"
+_run_state "done" "all wrapped" >/dev/null 2>&1
+assert_eq "state: done dual-emits state + legacy done events" \
+    "state||done|all wrapped
+done|||all wrapped" \
+    "$(cat "$_state_evlog")"
+
+: >"$_state_evlog"
+assert_eq "state: blocked without reason is rejected (rc=2, no event)" \
+    "2|" \
+    "$(_run_state blocked >/dev/null 2>&1; printf '%s|%s' "$?" "$(cat "$_state_evlog")")"
+
+assert_eq "state: blocked with reason accepted" \
+    "state||blocked|waiting on CI" \
+    "$(: >"$_state_evlog"; _run_state blocked "waiting on CI" >/dev/null 2>&1; cat "$_state_evlog")"
+
+assert_eq "state: unknown value rejected with usage (rc=2)" \
+    "2" \
+    "$(_run_state bogus >/dev/null 2>&1; echo $?)"
+unset -f ae_current_agent_ref ae_latest_state_for ae_emit_event
 
 assert_eq "state: mark-done is shim over state done (preserves no-arg default summary)" \
     "1" \

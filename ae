@@ -6984,14 +6984,14 @@ REQUESTSEOF
     # action=done) keeps recognising completions after helpers are refreshed.
     # The current watchdog reads 'state done' directly; the dual-emit is retained
     # until 'ae doctor --refresh' can restart a running watchdog, then it can go.
-    cat >"${AE_META}/state" <<'STATEEOF'
-#!/usr/bin/env bash
-source "$(cd "$(dirname "$0")" && pwd)/_lib"
-self="$(ae_current_agent_ref)"
-[[ -n "$self" ]] || self="human"
-
-usage() {
-    cat >&2 <<'USAGE'
+    #
+    # Template functions: defined here (inside the SYNC_SESSION_ASSETS_BODY
+    # marker region, so BOTH the launch path and doctor --refresh's awk-sourced
+    # path load them before emission) and emitted into the generated file via
+    # `declare -f`. They execute inside the helper's own environment after
+    # `source _lib` — ae's own code paths must never call helper_* functions.
+    helper_state_usage() {
+        cat >&2 <<'USAGE'
 Usage: state <working|waiting-user|blocked|done> [reason]
        state                              # print current state
 
@@ -7000,47 +7000,66 @@ Usage: state <working|waiting-user|blocked|done> [reason]
   blocked       stuck on external dep — REASON REQUIRED
   done          complete or paused
 USAGE
-    exit 2
-}
+        exit 2
+    }
 
-if [[ $# -eq 0 ]]; then
-    line="$(ae_latest_state_for "$self")"
-    if [[ -z "$line" ]]; then
-        printf '%s state: (none declared)\n' "$self"
-    else
-        IFS=$'\t' read -r st reason ts <<<"$line"
-        printf '%s state: %s%s  (since %s)\n' "$self" "$st" "${reason:+ — $reason}" "$ts"
-    fi
-    exit 0
-fi
+    helper_state_main() {
+        local self
+        self="$(ae_current_agent_ref)"
+        [[ -n "$self" ]] || self="human"
 
-value="$1"
-shift
-reason="${*:-}"
-
-case "$value" in
-    working | waiting-user | done) ;;
-    blocked)
-        if [[ -z "$reason" ]]; then
-            echo "Error: 'blocked' requires a reason" >&2
-            usage
+        if [[ $# -eq 0 ]]; then
+            local line st reason ts
+            line="$(ae_latest_state_for "$self")"
+            if [[ -z "$line" ]]; then
+                printf '%s state: (none declared)\n' "$self"
+            else
+                IFS=$'\t' read -r st reason ts <<<"$line"
+                printf '%s state: %s%s  (since %s)\n' "$self" "$st" "${reason:+ — $reason}" "$ts"
+            fi
+            exit 0
         fi
-        ;;
-    *) usage ;;
-esac
 
-printf 'Marked %s %s%s\n' "$self" "$value" "${reason:+: $reason}"
-ae_emit_event "state" "" "$value" "$reason"
-# Transitional dual-emit: a watchdog process started before the state
-# helper existed only understands action=done. Emit the legacy event too so it
-# keeps recognising completions after helpers are refreshed. The current
-# watchdog reads 'state done' directly; retained until 'ae doctor --refresh'
-# can restart a running watchdog.
-if [[ "$value" == "done" ]]; then
-    ae_emit_event "done" "" "" "$reason"
-fi
-STATEEOF
-    chmod 0700 "${AE_META}/state"
+        local value="$1"
+        shift
+        local reason="${*:-}"
+
+        case "$value" in
+            working | waiting-user | done) ;;
+            blocked)
+                if [[ -z "$reason" ]]; then
+                    echo "Error: 'blocked' requires a reason" >&2
+                    helper_state_usage
+                fi
+                ;;
+            *) helper_state_usage ;;
+        esac
+
+        printf 'Marked %s %s%s\n' "$self" "$value" "${reason:+: $reason}"
+        ae_emit_event "state" "" "$value" "$reason"
+        # Transitional dual-emit: a watchdog process started before the state
+        # helper existed only understands action=done. Emit the legacy event too
+        # so it keeps recognising completions after helpers are refreshed. The
+        # current watchdog reads 'state done' directly; retained until
+        # 'ae doctor --refresh' can restart a running watchdog.
+        if [[ "$value" == "done" ]]; then
+            ae_emit_event "done" "" "" "$reason"
+        fi
+    }
+
+    # Atomic emission: write to a temp file and mv into place only after every
+    # printf/declare -f succeeded. doctor --refresh maintains LIVE sessions — a
+    # generator bug (missing/renamed template fn) aborting mid-write under
+    # set -e must never leave a truncated helper behind.
+    {
+        printf '#!/usr/bin/env bash\n'
+        # shellcheck disable=SC2016  # literal $(...) belongs to the generated file
+        printf 'source "$(cd "$(dirname "$0")" && pwd)/_lib"\n'
+        declare -f helper_state_usage helper_state_main
+        printf 'helper_state_main "$@"\n'
+    } >"${AE_META}/state.tmp.$$"
+    chmod 0700 "${AE_META}/state.tmp.$$"
+    mv "${AE_META}/state.tmp.$$" "${AE_META}/state"
 
     # Helper: mark-done [message] — shim over `state done`. Preserved so existing
     # agent muscle memory and workspace.md guidance keep working unchanged.
