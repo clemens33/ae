@@ -13,12 +13,23 @@ Single bash script. No dependencies beyond bash and tmux. Keep it that way.
 
 ## Rules
 
-- `ae` must remain a single bash script. No compiled languages, no runtimes.
+- `ae` must remain a single bash script. No compiled languages, no runtimes. *(A decision, not dogma — see "Revisit triggers" below.)*
 - Config is INI-style with a simple regex parser. Don't add TOML/YAML/JSON parsing.
 - Core ae requires only `bash >= 4.0`, `tmux`, and `git`. Optional features may declare their own hard dependencies (e.g. `ae telegram` needs `jq` + `curl`), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them.
 - Session state lives in `~/.ae/sessions/`. Working directories stay clean.
 - No AI tool attribution in commits.
 - Keep the script lean. If it's getting bloated, cut, don't add.
+
+## Revisit triggers
+
+The single-file / pure-bash / tmux-runtime contract is a *decision with reasons*, not dogma. Re-evaluate it when a trigger fires — and only then:
+
+1. **The bash bug tax recurs.** Two or more shipped bugs of the `set -e`/escaping class *after* the hazards checklist and the declare-f testability refactor landed → doctrine failed; move the affected component to a typed language.
+2. **State outgrows bash.** Core ae needs real data structures (nested, typed, or concurrent state), or a sidecar needs to *write* ae's state rather than read it → extract that component (the aemonitor precedent: Python sidecar in `contrib/`, optional dep).
+3. **The product changes shape.** The long-lived daemon side (watchdog, steward, telegram) outgrows the tmux-wrapper side → that half becomes a proper sidecar/daemon (uv/PEP 723 single-file Python or a small Go/Rust binary), integrated via the install script and `ae doctor` checks, with bash kept for the tmux glue where it is best-in-class. (Direction already agreed for watchdog + telegram.)
+4. **Someone besides the author uses it.** Contributor onboarding and packaging change the whole calculus — revisit everything above.
+
+tmux as the runtime is currently unchallenged in the ecosystem (every credible orchestrator sits on it); re-evaluate zellij's programmatic CLI once it has a year of maturity.
 
 ## What ae is NOT
 
@@ -82,6 +93,12 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 All helpers share a `_lib` library that provides name resolution, tmux server support, flock serialization, request tracking (`ae_tracked_send`, `ae_find_request`), and event-log helpers (`ae_emit_event`, `_event_json_str`). Name resolution supports exact `alias:name`, alias-only when unique (e.g. `codex`), bare name (e.g. `lead`), `%pane-id`, and cross-session `@session:agent` syntax. `agents --all` lists agents across all running ae sessions.
 
 Internal helpers prefixed with `_` (e.g. `_register-sid`) are launched by ae itself and not part of the agent-facing surface.
+
+### How helpers are generated (declare-f pattern)
+
+Helper logic lives in the top-level **"Session-helper template library"** section of `ae` — real column-0 functions defined before the dispatcher, so every execution path (launch, and `ae doctor --refresh`, which awk-sources only the `SYNC_SESSION_ASSETS_BODY` marker region) has them loaded before any emission. Each generated helper is emitted as: a verbatim `<TAG>PROLOGUE` heredoc (shebang, the helper's exact `set` options, its `source _lib` line) + `declare -f` of its template functions (support fns first, `helper_<name>_main` last) + the call tail — written atomically (temp + chmod + mv) so a generator failure can never truncate a live session's helper. Only three trivial exec shims (`mark-done`, `peak`, `loop`) remain heredocs.
+
+This makes helper logic unit-testable, shellcheck/shfmt-covered, and greppable. Unit guards enforce the invariants (emission-list completeness, one definition per emitted name, template-vs-emitted parity, and the whole section must source silently under `set -u`); a `doctor --refresh` integration canary runs regenerated artifacts end-to-end. A **running** watchdog keeps its loaded body until `watchdog stop`/`start` — refresh only replaces the on-disk script. See docs/development.md for the test-side details.
 
 ## Agent tool capabilities
 

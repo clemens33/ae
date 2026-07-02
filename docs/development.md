@@ -45,13 +45,15 @@ just docs-build       # build the static site into ./site
 
 ## Tests
 
-`tests/unit` extracts pure functions from `ae` via `awk`, sources them, and asserts behavior with a tiny `assert_eq` harness. No external dependencies. Heredoc bodies (watchdog, send, ask, requests, etc.) are extracted by their EOF marker for behavioral tests.
+`tests/unit` extracts pure functions from `ae` via `awk`, sources them, and asserts behavior with a tiny `assert_eq` harness. No external dependencies. Session-helper logic (watchdog, send, ask, requests, …) lives in the top-level **template library** section of `ae` — real column-0 functions emitted into the generated helpers via `declare -f` — so tests extract and exercise those functions directly; there are no helper heredocs to parse anymore (only three trivial exec shims remain heredocs). Two builder helpers (`_build_lib_from_source`, `_build_helper_from_source`) reconstruct a runnable `_lib`/helper from the emission's own prologue + `declare -f` list when a test needs the full artifact.
 
-`tests/integration` spins up real tmux sessions, exercises the full lifecycle (create, send, ask, reply, stop, resume, end), and tears down. Requires tmux and git.
+When adding or changing a helper, the guard suite enforces the emission invariants: every `declare -f` list ends with its `helper_<name>_main`, every emitted name has exactly one top-level definition, the template `helper_*` set equals the emitted union, and the whole template library must source silently under `set -u` (an executable leak would run on every ordinary `ae` invocation).
+
+`tests/integration` spins up real tmux sessions, exercises the full lifecycle (create, send, ask, reply, stop, resume, end), and tears down. Requires tmux and git. The `doctor --refresh` scenario doubles as the declare-f canary: it clobbers generated helpers, refreshes, and runs the regenerated artifacts end-to-end (including a watchdog stop → start cycle, since a running watchdog keeps its loaded body until restarted).
 
 ```bash
-bash tests/unit          # ~220+ assertions, < 1s
-bash tests/integration   # ~45 scenarios, ~30s
+bash tests/unit          # ~650+ assertions, pure bash (no tmux needed)
+bash tests/integration   # ~60 scenarios, real tmux sessions
 ```
 
 ## Releases
@@ -77,7 +79,7 @@ Or from Codex, call Claude. The point is that any meaningful diff gets a second 
 
 ## Philosophy reminders
 
-- ae must remain a single bash script. No compiled languages, no runtimes.
+- ae must remain a single bash script. No compiled languages, no runtimes. (A decision with reasons, not dogma — see "Revisit triggers" in `AGENTS.md`.)
 - Config is INI-style with a simple regex parser. Don't add TOML/YAML/JSON parsing.
 - No dependencies beyond bash ≥ 4.0, tmux, and git. (Docs toolchain is *optional* and never required at runtime.)
 - Session state lives in `~/.ae/sessions/`. Working directories stay clean.
