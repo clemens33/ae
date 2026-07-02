@@ -226,8 +226,10 @@ taste, then `ae steward`. The charter wires the deterministic sweep to
 `aemonitor`, defines focus mode, and tells the agent its only channel to you is
 `say`.
 
-To talk to the steward from your phone, run the [Telegram bridge](telegram.md)
-and make it your default correspondent with `/use steward claude:steward` — see
+To talk to the steward from your phone, run the [Telegram bridge](telegram.md):
+plain messages route to the running steward automatically (no `/use` setup), and
+`/use <session> <agent>` redirects to another session when you want (`/use clear`
+returns to the steward) — see
 [Steward-centric routing](telegram.md#steward-centric-routing-talk-to-the-meta-agent-not-ten-sessions).
 
 **Deprecated alias + legacy scaffolds:** `ae hub` still works and maps to the

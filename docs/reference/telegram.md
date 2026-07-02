@@ -70,17 +70,19 @@ Three ways to reach an agent, easiest first:
 
 **2. Compact prefix — `@session:agent <msg>`.** Start a new thread without `/session`: `@mdk:claude:lead deploy now`. `session` is up to the first `:`; `agent` is the rest (keeps its `alias:name` colon). Sent as a `send`.
 
-**3. Sticky target — `/use`.** `/use <session> <agent>` sets a default; then **plain messages** (no slash, no `@`) go there as `send`. `/use` shows the current target; `/use clear` unsets it.
+**3. Plain messages → the steward (auto-default).** With no override set, a **plain message** (no slash, no `@`) goes to your running **steward** (the `meta_agent` session — canonical `steward`, else legacy `hub`) as a `send`. So once `ae steward` is up you just talk to it — no setup. If no steward is running you're guided to start one (or use a target form above).
 
-**Precedence** (per message, after trimming): starts with `/` → **always a command** (even sent as a reply); else a reply → routes to that event's agent; else `@…` → compact send; else a plain message → the sticky target if set (otherwise a hint). Every path funnels through the same session/agent revalidation — none can escape a real running session.
+**4. Sticky override — `/use`.** `/use <session> <agent>` redirects plain messages to another session; `/use` shows the current routing; `/use clear` drops the override and plain messages go back to the steward. Use this to hold a conversation with one specific session for a while.
+
+**Precedence** (per message, after trimming): starts with `/` → **always a command** (even sent as a reply); else a reply → routes to that event's agent; else `@…` → compact send; else a plain message → the `/use` override if set, else the running steward (auto-default), else a hint to start one. Every path funnels through the same session/agent revalidation — none can escape a real running session.
 
 **Grammar (explicit commands):**
 
 ```
 /help                                     show this list
 /list                                     running sessions: name, session_id[:8], last activity
-/use <name|id-prefix> <agent>             set the sticky target for plain messages
-/use clear                                unset the sticky target
+/use <name|id-prefix> <agent>             redirect plain messages to this session (override the steward default)
+/use clear                                drop the override; plain messages go to the steward again
 /session <name|id-prefix> send <agent> <msg…>   one-way message into an agent pane
 /session <name|id-prefix> ask  <agent> <msg…>   tracked request; the reply routes back to chat
 @session:agent <msg…>                     compact one-off send (no /session)
@@ -105,14 +107,14 @@ mechanism** — it's a setup on top of the routing above:
    through its [`say`](helpers.md) helper, which emits `chat` events the bridge
    forwards like any other — so it appears in your chat as
    `[steward] chat  claude:steward …`.
-2. **Make the steward your default correspondent.** In Telegram, send
-   `/use steward claude:steward` once. Now every plain message you type (no slash,
-   no `@`) goes to the steward as a `send` — you just talk to it. The sticky
-   target persists across daemon restarts (`~/.ae/telegram/current_target`).
-   This is also how the focus-mode protocol travels: `objective: …`, `idea: …`,
-   `focus`, `status`, `what next` are just plain messages to the steward.
+2. **The steward is your default correspondent — automatically.** Every plain
+   message you type (no slash, no `@`) goes to the running steward as a `send`;
+   no `/use` needed. So you just talk to it. (`/use <session> <agent>` still
+   redirects to a specific session when you want that; `/use clear` returns to
+   the steward.) This is also how the focus-mode protocol travels: `objective: …`,
+   `idea: …`, `focus`, `status`, `what next`, `snooze` are just plain messages.
 3. **The loop closes both ways:**
-   - **you → steward** — plain text (the sticky target) *or* a swipe-reply to any
+   - **you → steward** — plain text (auto-default) *or* a swipe-reply to any
      of its messages (reply-to-routing) reaches `steward:claude:steward`.
    - **steward → you** — its `say` reports land in the chat.
    - **steward → other sessions** — it relays your instruction with `send`/`ask`

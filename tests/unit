@@ -2587,6 +2587,39 @@ assert_eq "telegram: cmd_telegram_stop defined"    "1" "$([[ "$AE_SOURCE" == *'c
 assert_eq "telegram: cmd_telegram_status defined"  "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_status() {'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: cmd_telegram_help defined"    "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_help() {'* ]] && echo 1 || echo 0)"
 
+# ── telegram: steward is the auto-default target for plain messages ──
+# Behavioral: tg_find_steward picks the running meta_agent session, preferring
+# 'steward' > 'hub' > any. Extract it + stub daemon_session_running.
+eval "$(awk '/^tg_find_steward\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# stub: all mock sessions "running" (called indirectly by the eval'd fn → SC2317)
+# shellcheck disable=SC2317
+daemon_session_running() { return 0; }
+_tgs_dir="$(mktemp -d)"
+# SESSIONS_DIR is read by the eval'd tg_find_steward (shellcheck can't see through eval)
+# shellcheck disable=SC2034
+SESSIONS_DIR="$_tgs_dir"
+mkdir -p "$_tgs_dir/work" "$_tgs_dir/hub" "$_tgs_dir/steward"
+printf 'agent.main=claude:lead:sid1\n' >"$_tgs_dir/work/meta"                       # not a meta-agent
+printf 'meta_agent=true\nagent.main=claude:meta:sid2\n' >"$_tgs_dir/hub/meta"        # legacy meta-agent
+printf 'meta_agent=true\nagent.main=claude:steward:sid3\n' >"$_tgs_dir/steward/meta" # canonical
+assert_eq "tg_find_steward: prefers canonical 'steward' session + its main agent" \
+    $'steward\tclaude:steward' "$(tg_find_steward)"
+rm -rf "$_tgs_dir/steward"
+assert_eq "tg_find_steward: falls back to legacy 'hub' meta-agent when no steward" \
+    $'hub\tclaude:meta' "$(tg_find_steward)"
+rm -rf "$_tgs_dir/hub"
+assert_eq "tg_find_steward: no meta_agent session → empty (non-meta sessions ignored)" \
+    "" "$(tg_find_steward)"
+rm -rf "$_tgs_dir"
+unset -f daemon_session_running
+
+# Structural: a plain message with no /use override routes to the steward.
+assert_eq "telegram: tg_route_sticky auto-defaults to the steward (no /use needed)" "1" \
+    "$([[ "$AE_SOURCE" == *'No explicit /use override → default to the steward.'* \
+        && "$AE_SOURCE" == *'steward="$(tg_find_steward)"'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: /use override still wins over the steward default" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ -f "$TG_TARGET_FILE" ]]; then'*'tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"'*'steward="$(tg_find_steward)"'* ]] && echo 1 || echo 0)"
+
 # Structural: top-level dispatcher routes 'ae telegram <sub>'.
 assert_eq "telegram: main dispatcher routes 'telegram' subcommand" "1" \
     "$([[ "$AE_SOURCE" == *'telegram)
@@ -3329,8 +3362,8 @@ assert_eq "tg-cg: bare message routes to the sticky target via tg_route_sticky" 
 assert_eq "tg-cg: /use clear removes the target" "1" \
     "$([[ "$AE_SOURCE" == *'clear|off|none)'* && "$AE_SOURCE" == *'rm -f "$TG_TARGET_FILE"'* ]] && echo 1 || echo 0)"
 # /help advertises the compact grammar + /use.
-assert_eq "tg-cg: /help mentions @session:agent and /use" "1" \
-    "$([[ "$AE_SOURCE" == *'@session:agent <msg> → send to an agent directly'* && "$AE_SOURCE" == *'/use <session> <agent> → set a default'* ]] && echo 1 || echo 0)"
+assert_eq "tg-cg: /help mentions steward-default, @session:agent, and /use redirect" "1" \
+    "$([[ "$AE_SOURCE" == *'Plain text → your steward (auto-default'* && "$AE_SOURCE" == *'@session:agent <msg> → send to an agent directly'* && "$AE_SOURCE" == *'/use <session> <agent> → redirect plain messages elsewhere'* ]] && echo 1 || echo 0)"
 
 # ── Telegram setMyCommands menu (inbound UX, slice 3) ────────────────
 

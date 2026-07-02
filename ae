@@ -3117,7 +3117,7 @@ tg_set_commands() {
     local cmds_json resp ok tmp_cmds
     cmds_json=$(jq -cn '[
         {command:"list",    description:"Running sessions (name, id, last activity)"},
-        {command:"use",     description:"Set default agent for plain messages: /use <session> <agent>"},
+        {command:"use",     description:"Redirect plain messages to a session (default is the steward): /use <session> <agent>"},
         {command:"session", description:"Message an agent: /session <name> send|ask <agent> <msg>"},
         {command:"help",    description:"Show help"}
     ]' 2>/dev/null) || return 0
@@ -3296,7 +3296,7 @@ tg_handle_command() {
 
     case "$cmd" in
         /help|"")
-            send_message "$(printf 'ae telegram:\n• Reply to any forwarded message → answers that agent (no command).\n• @session:agent <msg> → send to an agent directly.\n• /use <session> <agent> → set a default; then plain messages go there.\n/list\n/session <name|id-prefix> send|ask <agent> <msg>')"
+            send_message "$(printf 'ae telegram:\n• Plain text → your steward (auto-default; just talk to it).\n• Reply to any forwarded message → answers that agent (no command).\n• @session:agent <msg> → send to an agent directly.\n• /use <session> <agent> → redirect plain messages elsewhere; /use clear → back to the steward.\n/list\n/session <name|id-prefix> send|ask <agent> <msg>')"
             ;;
         /list)
             send_message "$(tg_cmd_list)"
@@ -3445,9 +3445,14 @@ tg_cmd_use() {
     if [[ -z "$args" ]]; then
         if [[ -f "$TG_TARGET_FILE" ]]; then
             local cur; cur="$(cat "$TG_TARGET_FILE" 2>/dev/null)"
-            send_message "Current target: ${cur%%$'\t'*} → ${cur#*$'\t'}  (plain messages go here; /use clear to unset)"
+            send_message "Current target: ${cur%%$'\t'*} → ${cur#*$'\t'}  (plain messages go here; /use clear to fall back to the steward)"
         else
-            send_message "No current target. Set one: /use <session> <agent>"
+            local st; st="$(tg_find_steward)"
+            if [[ -n "$st" ]]; then
+                send_message "No override set — plain messages go to the steward (${st%%$'\t'*} → ${st#*$'\t'}). /use <session> <agent> to redirect."
+            else
+                send_message "No override set and no steward running. Start one with 'ae steward', or /use <session> <agent>."
+            fi
         fi
         return
     fi
@@ -3455,7 +3460,7 @@ tg_cmd_use() {
     case "$ref" in
         clear|off|none)
             rm -f "$TG_TARGET_FILE" 2>/dev/null || true
-            send_message "Current target cleared."
+            send_message "Override cleared — plain messages go to the steward again."
             return
             ;;
     esac
@@ -3486,23 +3491,59 @@ tg_cmd_use() {
         send_message "Failed to save current target"
         return
     }
-    send_message "Current target: ${name} → ${canon}. Plain messages now go here (/use clear to unset)."
+    send_message "Override set: ${name} → ${canon}. Plain messages go here until /use clear (then back to the steward)."
 }
 
-# Bare (non-slash, non-@, non-reply) message → send to the sticky target if set.
+# Find the running steward (meta-agent) for auto-default routing: a running
+# session with meta_agent=true in its meta. Prefer the canonical `steward` name,
+# then legacy `hub`, then any other running meta-agent. Echoes
+# "<session>\t<alias:name>" (its main agent) or nothing.
+tg_find_steward() {
+    local meta dir name main
+    local hub_name="" hub_main="" any_name="" any_main=""
+    for meta in "$SESSIONS_DIR"/*/meta; do
+        [[ -f "$meta" ]] || continue
+        grep -q '^meta_agent=true$' "$meta" 2>/dev/null || continue
+        dir="${meta%/meta}"; name="${dir##*/}"
+        daemon_session_running "$name" || continue
+        main="$(grep '^agent.main=' "$meta" 2>/dev/null | head -1 | cut -d= -f2- | cut -d: -f1,2)"
+        [[ -n "$main" ]] || continue
+        case "$name" in
+            steward) printf '%s\t%s\n' "$name" "$main"; return 0 ;; # canonical wins
+            hub) hub_name="$name"; hub_main="$main" ;;
+            *) [[ -z "$any_name" ]] && { any_name="$name"; any_main="$main"; } ;;
+        esac
+    done
+    if [[ -n "$hub_name" ]]; then
+        printf '%s\t%s\n' "$hub_name" "$hub_main"
+    elif [[ -n "$any_name" ]]; then
+        printf '%s\t%s\n' "$any_name" "$any_main"
+    fi
+}
+
+# Bare (non-slash, non-@, non-reply) message → an explicit `/use` sticky target if
+# set, else auto-default to the running steward (so you just talk to it — no
+# `/use` needed), else guide the user.
 tg_route_sticky() {
-    local from_id="$1" msg="$2" cur sess agent
-    if [[ ! -f "$TG_TARGET_FILE" ]]; then
-        send_message "No current target. Reply to a message, use @session:agent <msg>, or /use <session> <agent>. (/help)"
+    local from_id="$1" msg="$2" cur sess agent steward
+    if [[ -f "$TG_TARGET_FILE" ]]; then
+        cur="$(cat "$TG_TARGET_FILE" 2>/dev/null)"
+        sess="${cur%%$'\t'*}"; agent="${cur#*$'\t'}"
+        if [[ -z "$sess" || -z "$agent" ]]; then
+            send_message "Current target is unset/corrupt — /use <session> <agent>"
+            return
+        fi
+        tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"
         return
     fi
-    cur="$(cat "$TG_TARGET_FILE" 2>/dev/null)"
-    sess="${cur%%$'\t'*}"; agent="${cur#*$'\t'}"
-    if [[ -z "$sess" || -z "$agent" ]]; then
-        send_message "Current target is unset/corrupt — /use <session> <agent>"
+    # No explicit /use override → default to the steward.
+    steward="$(tg_find_steward)"
+    if [[ -n "$steward" ]]; then
+        sess="${steward%%$'\t'*}"; agent="${steward#*$'\t'}"
+        tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"
         return
     fi
-    tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"
+    send_message "No steward running and no /use target set. Start one with 'ae steward' (then just talk to it), reply to a message, use @session:agent <msg>, or /use <session> <agent>. (/help)"
 }
 
 # Poll getUpdates once (short-poll, bounded). For each update: persist the
