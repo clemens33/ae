@@ -672,6 +672,19 @@ assert_contains "doctor-refresh: regenerated state declares state" \
     "working: declare-f smoke" "$state_smoke_out"
 assert_contains "doctor-refresh: regenerated state emitted a real event" \
     '"action":"state"' "$(tail -1 "$HOME/.ae/sessions/test-sync/events.jsonl")"
+# watchdog is declare-f generated too. A RUNNING watchdog keeps its loaded body
+# until restarted — so smoke the regenerated artifact through a full
+# stop → status → start → status cycle (real _lib, real panes).
+WD_HELPER="$HOME/.ae/sessions/test-sync/watchdog"
+assert_contains "doctor-refresh: watchdog carries emitted main fn" \
+    "helper_watchdog_main" "$(cat "$WD_HELPER")"
+"$WD_HELPER" stop >/dev/null 2>&1 || true
+sleep 0.5
+assert_contains "doctor-refresh: regenerated watchdog status reports stopped" \
+    "not running" "$("$WD_HELPER" status 2>&1 || true)"
+wd_start_out="$("$WD_HELPER" start 2>&1 & sleep 2; "$WD_HELPER" status 2>&1 || true)"
+assert_contains "doctor-refresh: regenerated watchdog starts and reports running" \
+    "running" "$wd_start_out"
 
 # Clean up
 "$AE" end -f test-sync 2>/dev/null || true

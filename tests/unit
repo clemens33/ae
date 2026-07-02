@@ -1195,6 +1195,34 @@ assert_eq "events: retire emits event" \
 
 # ── watchdog (watchdog) ───────────────────────────────────────────
 
+# Emission-completeness guards (regression: a surgery-script bug once silently
+# dropped fn names from the declare -f list and leaked executable flow into
+# top-level ae — the watchdog runs under set -uo pipefail with NO errexit, so
+# a missing emitted fn degrades silently at runtime, not loudly).
+# 1. The watchdog template-section fn set must EQUAL the emission's declare -f
+#    list exactly (helper_watchdog_main included).
+_wd_sec="$(awk '/^# — watchdog template functions/{f=1} /^ATTACH_ON_READY=true$/{f=0} f && /^[a-z_]+\(\) \{/{sub(/\(\).*/,""); print}' <<<"$AE_SOURCE" | sort)"
+_wd_list="$(awk '/^ *declare -f _watchdog_is_running/{f=1} f{l=$0; stop=(l !~ /\\ *$/); gsub(/\\ *$/,"",l); sub(/^ *declare -f /,"",l); print l; if (stop) exit}' <<<"$AE_SOURCE" | tr ' ' '\n' | grep -v '^$')"
+assert_eq "watchdog emission: declare -f list == template-section fn set" \
+    "$_wd_sec" "$(sort <<<"$_wd_list")"
+# 2. helper_watchdog_main is emitted LAST (all fns defined before the call tail).
+assert_eq "watchdog emission: helper_watchdog_main last in the declare -f list" \
+    "helper_watchdog_main" "$(tail -1 <<<"$_wd_list")"
+# 3. The whole section must SOURCE silently under set -u in a clean bash:
+#    function defs execute without output; any leaked top-level executable
+#    (trap/printf/status call — which would run on every ordinary ae
+#    invocation) errors on unset vars or prints. Pattern-scanning col-0 can't
+#    do this (heredoc/string content inside fn bodies legitimately sits at
+#    col-0); bash itself is the oracle.
+_tpl_src="$(mktemp)"
+awk '/^# ── Session-helper template library/{f=1} /^ATTACH_ON_READY=true$/{f=0} f' <<<"$AE_SOURCE" >"$_tpl_src"
+_tpl_out="$(bash -c 'set -u; source "$1" && declare -F | wc -l' _ "$_tpl_src" 2>&1)"
+if [[ "$_tpl_out" =~ ^[0-9]+$ ]] && ((_tpl_out >= 50)); then _tpl_ok=1; else _tpl_ok="0 (out: $_tpl_out)"; fi
+assert_eq "template library: sources silently under set -u (no executable leaks)" \
+    "1" "$_tpl_ok"
+rm -f "$_tpl_src"
+
+
 assert_eq "watchdog: helper script exists in generated source" \
     "1" \
     "$([[ "$AE_SOURCE" == *'Helper: watchdog'* ]] && echo 1 || echo 0)"
@@ -1219,7 +1247,7 @@ assert_eq "watchdog: waiting-user/blocked yield to pane activity (escape hatch)"
 
 assert_eq "watchdog: detects dead agents via pane_current_command" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'bash|zsh|fish|sh|dash'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'bash | zsh | fish | sh | dash | "")'* ]] && echo 1 || echo 0)"
 
 assert_eq "watchdog: emits alert events" \
     "1" \
@@ -1369,7 +1397,7 @@ unset _reap_wires
 
 assert_eq "compat: watchdog skip filter still ignores legacy _shepherd/_loop panes" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'""|"(null)"|_watchdog|_shepherd|_loop|_events)'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'"" | "(null)" | _watchdog | _shepherd | _loop | _events)'* ]] && echo 1 || echo 0)"
 
 assert_eq "watchdog: recovers pending session IDs via _recover-pending" \
     "1" \
@@ -1438,8 +1466,9 @@ assert_eq "default_session_name: deterministic (same PWD = same name)" \
 
 # ── watchdog helpers: quiet-state tracking (_event_json_str / _latest_relevant_event / _agent_quiet_reason) ──
 
-# Extract watchdog helper function bodies from the generated watchdog heredoc.
-# They're emitted at column 0 inside a 'LOOPEOF' heredoc in ae.
+# Extract watchdog helper function bodies — top-level template-library
+# functions since the declare-f migration (emitted into the generated
+# watchdog via declare -f).
 eval "$(awk '
     /^(_event_json_str|_latest_relevant_event|_agent_quiet_reason|_quiet_pane_decision)\(\) \{/ { printing=1 }
     printing { print }
@@ -1832,7 +1861,7 @@ unset _req_out _req_helper_dir
 
 # ── watchdog: throttle detection (_buf_shows_throttle) ───────────────
 
-# Extract pure-function body from the LOOPEOF heredoc.
+# Extract pure-function body from the top-level template library.
 eval "$(awk '
     /^_buf_shows_throttle\(\) \{/ { printing=1 }
     printing { print }
@@ -3064,7 +3093,7 @@ assert_eq "tg-sup: watchdog defines TG_SUPERVISE_SECS (env override with legacy 
 # Step 10 runs in the cycle TAIL (after recover-pending), throttled, calling the
 # internal supervise via the ae binary — silent + non-fatal.
 assert_eq "tg-sup: watchdog step 10 revives via throttled 'telegram _supervise'" "1" \
-    "$([[ "$AE_SOURCE" == *'(( TG_SUPERVISE_SECS > 0 ))'* && "$AE_SOURCE" == *'now_epoch - last_tg_supervise >= TG_SUPERVISE_SECS'* && "$AE_SOURCE" == *'"$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'((TG_SUPERVISE_SECS > 0))'* && "$AE_SOURCE" == *'now_epoch - last_tg_supervise >= TG_SUPERVISE_SECS'* && "$AE_SOURCE" == *'"$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true'* ]] && echo 1 || echo 0)"
 
 # Step 10 propagates the session's tmux server (codex IMPORTANT) so revive hits
 # the right server, mirroring spawn/retire.
@@ -3088,7 +3117,7 @@ assert_eq "meta: watchdog reads meta_agent from meta" "1" \
 # (so the meta-agent is never flagged stale). It sits AFTER the dead-check (a dead one
 # still alerts).
 assert_eq "meta: sweep-cadence branch is gated + interval-throttled" "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && (( SWEEP_SECS > 0 )); then'* \
+    "$([[ "$AE_SOURCE" == *'if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && ((SWEEP_SECS > 0)); then'* \
         && "$AE_SOURCE" == *'now_epoch - last_sweep >= SWEEP_SECS'* \
         && "$AE_SOURCE" == *'last_sweep_nudge["$pane"]="$now_epoch"'* ]] && echo 1 || echo 0)"
 assert_eq "meta: sweep nudge says 'run your sweep now', not the stale state-check" "1" \
@@ -3134,7 +3163,7 @@ assert_eq "meta: AE_WATCHDOG_SWEEP_SEC/AE_LOOP_SWEEP_SEC value is numeric-guarde
 # Cadence branch comes BEFORE the stale nudge (dead-check first, then meta branch,
 # then the normal stale logic) — proves the meta-agent bypasses max-nudges/stale-alert.
 assert_eq "meta: cadence branch precedes the stale-nudge logic" "1" \
-    "$([[ "$AE_SOURCE" == *'agent process dead — dropped to shell'*'if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && (( SWEEP_SECS > 0 )); then'*'Status check: if you have more work'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'agent process dead — dropped to shell'*'if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && ((SWEEP_SECS > 0)); then'*'Status check: if you have more work'* ]] && echo 1 || echo 0)"
 
 # Control lock (codex IMPORTANT): start/stop/supervise serialize so a stop can't
 # be undone by an in-flight supervise. autostart re-checks enabled UNDER the lock.
@@ -3180,10 +3209,11 @@ assert_eq "tg-sup: uncached reader defaults to false when key absent" "false" \
     "$(CONFIG_FILE="$_tgc_cfg" AE_LOCAL_CONFIG="" _telegram_intent_enabled_uncached)"
 rm -f "$_tgc_cfg"; unset _tgc_cfg
 
-# Throttle accumulator is initialized once before the watchdog loop.
+# Throttle accumulator is initialized once before the watchdog loop (inside
+# helper_watchdog_main since the declare-f migration, hence the indent).
 assert_eq "tg-sup: last_tg_supervise initialized before the watchdog loop" "1" \
     "$([[ "$AE_SOURCE" == *'last_tg_supervise=0
-while true; do'* ]] && echo 1 || echo 0)"
+    while true; do'* ]] && echo 1 || echo 0)"
 
 # ── Telegram Stage 3 — bidirectional (chat → ae) ─────────────────────
 # Inbound command path. Structural assertions lock the codex-reviewed

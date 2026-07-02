@@ -1142,6 +1142,7 @@ sync_session_assets() {
 
     # Reuse the canonical helper-render body later in this file so doctor and session
     # creation always generate the same helper scripts.
+    # shellcheck disable=SC1091  # dynamic source of our own marker region — unfollowable
     source /dev/stdin <<<"$(awk '
         /^[[:space:]]*# SYNC_SESSION_ASSETS_BODY_START$/ { printing = 1; next }
         /^[[:space:]]*# SYNC_SESSION_ASSETS_BODY_END$/ { printing = 0 }
@@ -6136,6 +6137,929 @@ ae_meta_unset() {
     } 200>"${meta_file}.lock"
 }
 
+# — watchdog template functions (emitted into the watchdog helper; the
+#   runtime flow lives in helper_watchdog_main, emitted last) —
+
+_watchdog_is_running() {
+    [[ -f "$PIDFILE" ]] || return 1
+    local pid
+    pid="$(cat "$PIDFILE" 2>/dev/null)"
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+_set_meta_kv() {
+    local key="$1" value="$2"
+    local meta_file="${META_DIR}/meta"
+    [[ -f "$meta_file" ]] || return 0
+    {
+        flock -w 5 200 || return 1
+        local tmp="${META_DIR}/meta.tmp.$$"
+        awk -F= -v k="$key" -v v="$value" '
+            BEGIN { updated = 0 }
+            $1 == k { print k "=" v; updated = 1; next }
+            { print }
+            END { if (!updated) print k "=" v }
+        ' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
+    } 200>"${META_DIR}/meta.lock"
+}
+
+_unset_meta_kv() {
+    local key="$1"
+    local meta_file="${META_DIR}/meta"
+    [[ -f "$meta_file" ]] || return 0
+    {
+        flock -w 5 200 || return 1
+        local tmp="${META_DIR}/meta.tmp.$$"
+        awk -F= -v k="$key" '$1 != k { print }' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
+    } 200>"${META_DIR}/meta.lock"
+}
+
+_set_meta_watchdog() { _set_meta_kv "watchdog" "$1"; }
+
+_monitor_find_pane() {
+    # Stdout: pane_id of the pane in this session tagged with @ae_agent=$1, or empty.
+    tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id} #{@ae_agent}' 2>/dev/null |
+        awk -v want="$1" '$2 == want { print $1; exit }'
+}
+
+# Idempotent. Creates the hidden ae-monitor window with the _events pane if
+# it doesn't already exist. Sets MONITOR_EVENTS_PANE to the pane id.
+# Called by session launch and by _watchdog_start.
+_monitor_ensure_events_pane() {
+    MONITOR_EVENTS_PANE="$(_monitor_find_pane _events)"
+    [[ -n "$MONITOR_EVENTS_PANE" ]] && return 0
+    MONITOR_EVENTS_PANE="$(tmux new-window -da -t "$_AE_SESSION" -n "ae-monitor" -P -F '#{pane_id}' \
+        "${META_DIR}/events-tail" 2>/dev/null)" || {
+        echo "Error: could not create monitor window" >&2
+        return 1
+    }
+    tmux set-option -p -t "$MONITOR_EVENTS_PANE" @ae_agent "_events" 2>/dev/null || true
+    tmux select-pane -t "$MONITOR_EVENTS_PANE" -T "ae events" 2>/dev/null || true
+    tmux set-window-option -t "${_AE_SESSION}:ae-monitor" pane-border-status top 2>/dev/null || true
+    tmux select-pane -t "$MONITOR_EVENTS_PANE" -d 2>/dev/null || true
+    return 0
+}
+
+_watchdog_ensure_monitor() {
+    _monitor_ensure_events_pane || exit 1
+    exit 0
+}
+
+# Transition shim (loop → watchdog rename). The short-lived local shepherd branch
+# and released loop versions can leave OLD artifacts: .shepherd.pid / _shepherd /
+# .shepherd.status or .loop.pid / _loop / .loop.status. A 'doctor --refresh'
+# rewrites helpers but does NOT restart a running watchdog, so that legacy process
+# can outlive the rename. Reap it before we start or stop, so we never run two
+# watchdogs at once, never leave a stray legacy pane the new watchdog would
+# mis-classify as an agent, and so deprecated commands actually stop a legacy one.
+# Idempotent + silent. Keep the _shepherd reap only as a local transition aid; it
+# is not a public compatibility surface.
+_watchdog_reap_legacy_one() {
+    local legacy_name="$1"
+    local legacy_pid_file="${META_DIR}/.${legacy_name}.pid" legacy_status_file="${META_DIR}/.${legacy_name}.status"
+    local legacy_pid legacy_pane
+    legacy_pane="$(_monitor_find_pane "_${legacy_name}")"
+    # A *live* legacy watchdog is pinned to its legacy monitor pane. Only when
+    # that pane exists do we kill the recorded pid — otherwise the pid file is a
+    # stale artifact from a crashed watchdog whose pid may have been reused by an
+    # unrelated process, and killing it blindly would be wrong. With no pane, just
+    # clean up.
+    if [[ -n "$legacy_pane" ]]; then
+        if [[ -f "$legacy_pid_file" ]]; then
+            legacy_pid="$(cat "$legacy_pid_file" 2>/dev/null || true)"
+            if [[ -n "$legacy_pid" ]]; then kill "$legacy_pid" 2>/dev/null || true; fi
+        fi
+        tmux kill-pane -t "$legacy_pane" 2>/dev/null || true
+    fi
+    rm -f "$legacy_pid_file" "$legacy_status_file"
+}
+
+_watchdog_reap_legacy() {
+    _watchdog_reap_legacy_one "shepherd"
+    _watchdog_reap_legacy_one "loop"
+}
+
+# Restore status-right to the value saved before a watchdog (legacy or current)
+# modified it, then clear the saved keys. Shared by stop (final restore) and start
+# (to undo a stale/legacy '#(cat .*.status)' hook BEFORE capturing a fresh
+# baseline — otherwise start would re-save the polluted value). No-op when nothing
+# was saved. If was_session=true the saved value was an explicit session override
+# and is restored verbatim; otherwise we unset our override so the session falls
+# back to whatever the global value is *now*.
+_watchdog_restore_status_right() {
+    grep -q '^status_right_prev=' "$META_DIR/meta" 2>/dev/null || return 0
+    local prev was_session
+    prev="$(grep '^status_right_prev=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+    was_session="$(grep '^status_right_was_session=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+    if [[ "$was_session" == "true" ]]; then
+        tmux set-option -t "$_AE_SESSION" status-right "$prev" 2>/dev/null || true
+    else
+        tmux set-option -u -t "$_AE_SESSION" status-right 2>/dev/null || true
+    fi
+    tmux set-option -u -t "$_AE_SESSION" status-interval 2>/dev/null || true
+    _unset_meta_kv "status_right_prev"
+    _unset_meta_kv "status_right_was_session"
+}
+
+_watchdog_stop() {
+    # Reap a pre-rename watchdog first (see _watchdog_reap_legacy). Note whether one
+    # was present so we still report "stopped" even if no current watchdog ran.
+    local had_legacy="no"
+    if [[ -f "${META_DIR}/.shepherd.pid" || -n "$(_monitor_find_pane _shepherd)" || -f "${META_DIR}/.loop.pid" || -n "$(_monitor_find_pane _loop)" ]]; then
+        had_legacy="yes"
+    fi
+    _watchdog_reap_legacy
+
+    local stopped="no"
+    if _watchdog_is_running; then
+        local pid
+        pid="$(cat "$PIDFILE")"
+        kill "$pid" 2>/dev/null || true
+        rm -f "$PIDFILE"
+        # Clear the live status user options so the bars fall back (left → just path).
+        tmux set-option -t "$_AE_SESSION" -u @ae_branch_status 2>/dev/null || true
+        tmux set-option -t "$_AE_SESSION" -u @ae_watchdog_status 2>/dev/null || true
+        # Kill only the _watchdog pane; leave the _events pane and monitor window alive.
+        local watchdog_pane
+        watchdog_pane="$(_monitor_find_pane _watchdog)"
+        if [[ -n "$watchdog_pane" ]]; then tmux kill-pane -t "$watchdog_pane" 2>/dev/null || true; fi
+        stopped="yes"
+    fi
+
+    # Restore status-right (no-op if nothing was saved). The saved meta keys are
+    # shared between the legacy and current watchdog, so this covers both.
+    _watchdog_restore_status_right
+    if [[ "$stopped" == "yes" || "$had_legacy" == "yes" ]]; then
+        echo "Watchdog stopped."
+    else
+        echo "Watchdog is not running."
+    fi
+    _set_meta_watchdog "false"
+    exit 0
+}
+
+_watchdog_status() {
+    if _watchdog_is_running; then
+        echo "Watchdog is running (pid $(cat "$PIDFILE"))."
+    else
+        echo "Watchdog is not running."
+    fi
+    exit 0
+}
+
+_watchdog_start() {
+    # A pre-rename watchdog may still be running under legacy artifacts after an
+    # upgrade + refresh (helpers are rewritten but the running watchdog is not
+    # restarted). Reap it first so we never run two watchdogs side by side.
+    _watchdog_reap_legacy
+    # Idempotent: if a current watchdog is already running, just confirm the meta
+    # flag and exit — do NOT touch status-right (its indicator must stay live).
+    if _watchdog_is_running; then
+        echo "Watchdog is already running (pid $(cat "$PIDFILE"))."
+        _set_meta_watchdog "true"
+        exit 0
+    fi
+    # No current watchdog is running. Undo any stale '#(cat .*.status)' status-right
+    # hook left by a reaped legacy watchdog or an unclean prior start — restoring the
+    # saved original BEFORE we capture the fresh baseline below, so we never re-save
+    # a polluted value.
+    _watchdog_restore_status_right
+    # Make sure the ae-monitor window with the _events pane exists; insert the
+    # _watchdog pane above it so the visual order stays watchdog-on-top / events-below.
+    _monitor_ensure_events_pane || exit 1
+    local watchdog_pane
+    watchdog_pane="$(tmux split-window -v -b -t "$MONITOR_EVENTS_PANE" -P -F '#{pane_id}' \
+        "${META_DIR}/watchdog _run" 2>/dev/null)" || {
+        echo "Error: could not create watchdog pane" >&2
+        exit 1
+    }
+    tmux set-option -p -t "$watchdog_pane" @ae_agent "_watchdog" 2>/dev/null || true
+    tmux select-pane -t "$watchdog_pane" -T "ae watchdog" 2>/dev/null || true
+    # Read-only: disable input on the watchdog pane (events pane was already disabled).
+    tmux select-pane -t "$watchdog_pane" -d 2>/dev/null || true
+    # Capture the current effective status-right and track whether it came from a
+    # session-level override or the global default. We must distinguish those so
+    # _watchdog_stop can restore correctly even if the global value changes mid-run.
+    local prev_status_right was_session
+    prev_status_right="$(tmux show-options -v -t "$_AE_SESSION" status-right 2>/dev/null || true)"
+    if [[ -n "$prev_status_right" ]]; then
+        was_session="true"
+    else
+        prev_status_right="$(tmux show-options -gv status-right 2>/dev/null || true)"
+        was_session="false"
+    fi
+    # Persist alongside meta via the locked helper to avoid clobbering concurrent writers
+    _set_meta_kv "status_right_prev" "$prev_status_right"
+    _set_meta_kv "status_right_was_session" "$was_session"
+    # Prepend the watchdog health indicator to the existing status-right. It reads the
+    # @ae_watchdog_status tmux user option (set by the loop each cycle) — no #() shell
+    # job, no path embedded in the format, so nothing to quote or escape.
+    local new_status_right="#{@ae_watchdog_status} ${prev_status_right}"
+    tmux set-option -t "$_AE_SESSION" status-right "$new_status_right" 2>/dev/null || true
+    tmux set-option -t "$_AE_SESSION" status-interval 5 2>/dev/null || true
+    _set_meta_watchdog "true"
+    echo "Watchdog started in hidden ae-monitor window. Use 'peek _watchdog' or 'peek _events' to inspect."
+    exit 0
+}
+
+_last_event_age() {
+    local actor="$1"
+    local events_file="${META_DIR}/events.jsonl"
+    [[ -f "$events_file" ]] || {
+        echo 999999
+        return
+    }
+    local last_ts
+    last_ts="$(grep "\"actor\":\"${actor}\"" "$events_file" | tail -1 | sed -n 's/.*"ts":"\([^"]*\)".*/\1/p')"
+    if [[ -z "$last_ts" ]]; then
+        echo 999999
+        return
+    fi
+    local last_epoch now_epoch
+    last_epoch="$(date -d "$last_ts" +%s 2>/dev/null || echo 0)"
+    now_epoch="$(date +%s)"
+    echo $((now_epoch - last_epoch))
+}
+
+_latest_relevant_event() {
+    local agent="$1"
+    local events_file="${META_DIR}/events.jsonl"
+    [[ -f "$events_file" ]] || return 0
+    local line actor target action ts ref summary
+    # Walk newest→oldest and stop at the first event mentioning the agent.
+    # Unbounded by design: a quiet state must stay valid until a *newer* event
+    # for this agent invalidates it, no matter how many unrelated events follow.
+    # Emits 5 tab-separated fields: action, ts, ref, actor, summary (ref/summary
+    # may be empty). actor lets callers distinguish the agent's OWN declaration
+    # from an inbound event that merely targets it; summary lets them build a
+    # declaration-identity key that survives second-resolution timestamps.
+    # ae_emit_event strips tabs/newlines from summary, so it is safe last.
+    while IFS= read -r line; do
+        [[ "$line" == \{* ]] || continue
+        actor="$(_event_json_str "$line" actor)"
+        target="$(_event_json_str "$line" target)"
+        if [[ "$actor" == "$agent" || "$target" == "$agent" || "$target" == "@${_AE_SESSION}:${agent}" ]]; then
+            action="$(_event_json_str "$line" action)"
+            ts="$(_event_json_str "$line" ts)"
+            ref="$(_event_json_str "$line" ref)"
+            summary="$(_event_json_str "$line" summary)"
+            printf '%s\t%s\t%s\t%s\t%s\n' "$action" "$ts" "$ref" "$actor" "$summary"
+            return 0
+        fi
+    done < <(tac "$events_file" 2>/dev/null || true)
+}
+
+# The agent's current self-declared quiet state, or empty. Quiet states tell the
+# watchdog to stop nudging: done | waiting-user | blocked. Emits 'reason<TAB>key'
+# where key is the full declaration tuple (action|ts|ref|actor|summary) — used by
+# the pane-activity escape hatch to identify a declaration across cycles and
+# re-arm on a genuinely new one. Empty when the newest relevant event is working,
+# an inbound message (invalidates the prior quiet state), or anything else. Legacy
+# action=done events (pre-state-helper, and the retained dual-emit) map to done.
+_agent_quiet_reason() {
+    local agent="$1"
+    local row action ts ref actor summary rest
+    row="$(_latest_relevant_event "$agent")"
+    [[ -n "$row" ]] || return 0
+    # Manual tab split — `IFS=$'\t' read` collapses the empty ref field (tab is
+    # whitespace-IFS), which would shift fields left and corrupt actor.
+    action="${row%%$'\t'*}"
+    rest="${row#*$'\t'}"
+    ts="${rest%%$'\t'*}"
+    rest="${rest#*$'\t'}"
+    ref="${rest%%$'\t'*}"
+    rest="${rest#*$'\t'}"
+    actor="${rest%%$'\t'*}"
+    summary="${rest#*$'\t'}"
+    # Only the agent's OWN declaration is a quiet state. If the newest relevant
+    # event is inbound (actor != agent — a send/ask/nudge targeting it), the
+    # prior quiet state is invalidated and the agent is no longer quiet.
+    [[ "$actor" == "$agent" ]] || return 0
+    local reason=""
+    case "$action" in
+        done) reason="done" ;;
+        state)
+            case "$ref" in
+                done | waiting-user | blocked) reason="$ref" ;;
+            esac
+            ;;
+    esac
+    [[ -n "$reason" ]] || return 0
+    # Emit 'reason<TAB>key'. The key is the full declaration tuple so the
+    # watchdog's baseline re-arms on a genuinely new declaration even when two
+    # land in the same (second-resolution) timestamp — as long as any field
+    # (typically the summary/reason) differs. Byte-identical same-second
+    # re-declares remain indistinguishable, which is acceptable.
+    printf '%s\t%s' "$reason" "${action}|${ts}|${ref}|${actor}|${summary}"
+}
+
+# Escape hatch for waiting-user/blocked, using a per-pane baseline hash. The
+# declaration's own echo (the `state` helper prints to the pane) means the
+# global last_hash_change can't distinguish that echo from a later human reply.
+# So we ARM a baseline with the pane hash the first time a declaration is seen
+# (the echo is already part of it), then HOLD while the hash matches that
+# baseline and YIELD once it changes (human reply / agent output). The
+# declaration is identified by its full-tuple key (not just timestamp) so a
+# fresh declaration re-arms even within the same second.
+# Args: cur_hash armed_key armed_hash decl_key
+# Prints: arm | hold | yield
+_quiet_pane_decision() {
+    local cur="$1" armed_key="$2" armed_hash="$3" decl_key="$4"
+    if [[ "$armed_key" != "$decl_key" ]]; then
+        printf 'arm'
+    elif [[ "$cur" == "$armed_hash" ]]; then
+        printf 'hold'
+    else
+        printf 'yield'
+    fi
+}
+
+_watchdog_meta_value() {
+    local key="$1"
+    grep "^${key}=" "$META_DIR/meta" 2>/dev/null | head -1 | cut -d= -f2- || true
+}
+
+_watchdog_trim() {
+    local text="$1" max="${2:-24}"
+    text="${text//$'\n'/ }"
+    text="${text//$'\r'/ }"
+    if ((${#text} > max)); then
+        printf '%s~' "${text:0:max-1}"
+    else
+        printf '%s' "$text"
+    fi
+}
+
+_watchdog_git() {
+    local work_dir="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 2 git -C "$work_dir" "$@" 2>/dev/null
+    else
+        git -C "$work_dir" "$@" 2>/dev/null
+    fi
+}
+
+# Live git branch segment, pushed each cycle into the @ae_branch_status tmux user
+# option and rendered in status-LEFT after the (static) path — so repo context (path
+# + branch) sits together on the left and watchdog health stands alone on the right.
+# Emits ' <branch>*' (leading space, no brackets — it sits inside the [ae …] bracket)
+# when work_dir is a git repo, else empty. Branch+dirty are the only session facts
+# that change during a run, so they're the only thing recomputed per cycle.
+_watchdog_branch_segment() {
+    local work_dir branch dirty=""
+    work_dir="$(_watchdog_meta_value work_dir)"
+    if [[ -z "$work_dir" ]] || ! _watchdog_git "$work_dir" rev-parse --is-inside-work-tree >/dev/null; then
+        return 0
+    fi
+    branch="$(_watchdog_git "$work_dir" symbolic-ref --quiet --short HEAD || _watchdog_git "$work_dir" rev-parse --short HEAD || true)"
+    branch="$(_watchdog_trim "$branch" 24)"
+    [[ -n "$branch" ]] || return 0
+    if [[ -n "$(_watchdog_git "$work_dir" status --porcelain --untracked-files=no | head -1)" ]]; then
+        dirty="*"
+    fi
+    printf ' %s%s' "$branch" "$dirty"
+}
+
+# Live status is pushed into tmux user options, read by the bars as
+# #{@ae_branch_status} (status-LEFT, after the static path) and #{@ae_watchdog_status}
+# (status-RIGHT health). User-option values are interpolated literally — no shell, no
+# #() parsing — so a branch/path with spaces, ), #, etc. is safe with no escaping.
+# Cleared on exit so the bars fall back cleanly (left → just the path).
+_watchdog_set_status() { tmux set-option -t "$_AE_SESSION" "$1" "$2" 2>/dev/null || true; }
+
+_watchdog_log() {
+    printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"
+}
+
+# Check if any process named $2 is a descendant of pane PID $1.
+# Walks each candidate's ancestor chain via /proc/<pid>/stat.
+# Used to avoid false-positive "dead" alerts when the pane's foreground is
+# a shell wrapper (e.g. bash -lc) but the actual agent is running underneath.
+_pane_has_descendant_named() {
+    local pane_pid="$1" target="$2"
+    [[ -n "$pane_pid" && -n "$target" ]] || return 1
+    local pids
+    pids="$(pgrep -x "$target" 2>/dev/null || true)"
+    [[ -n "$pids" ]] || return 1
+    local pid cur
+    for pid in $pids; do
+        cur="$pid"
+        while [[ -n "$cur" && "$cur" != "1" && "$cur" != "0" ]]; do
+            if [[ "$cur" == "$pane_pid" ]]; then
+                return 0
+            fi
+            cur="$(awk '{print $4}' "/proc/${cur}/stat" 2>/dev/null || true)"
+        done
+    done
+    return 1
+}
+
+# Known transient upstream throttle / overload patterns per agent binary.
+# Pure function: takes a captured pane buffer + the agent binary name and
+# returns 0 if any pattern matches. Patterns are deliberately narrow phrases
+# unlikely to appear in normal agent prose, to keep false-positive rate low.
+# When tools change their error wording, edit this function.
+_buf_shows_throttle() {
+    local buf="$1" agent_bin="$2"
+    [[ -n "$buf" ]] || return 1
+    # Per-tool catalogs. opencode is a TUI wrapper over configurable providers,
+    # so it MUST be the full union — refactor here, never duplicate, to prevent
+    # drift between branches.
+    local claude_pats=(
+        'Server is temporarily limiting requests'
+        'API Error: Overloaded'
+        'Anthropic API error'
+    )
+    local codex_pats=(
+        'Rate limit exceeded'
+        'RateLimitError'
+        'ratelimit_exceeded'
+    )
+    local gemini_pats=(
+        'RESOURCE_EXHAUSTED'
+        'Quota exceeded'
+    )
+    local generic_pats=(
+        '429 Too Many Requests'
+        '503 Service Unavailable'
+    )
+    local -a active_pats
+    case "$agent_bin" in
+        claude) active_pats=("${claude_pats[@]}") ;;
+        codex) active_pats=("${codex_pats[@]}") ;;
+        gemini) active_pats=("${gemini_pats[@]}") ;;
+        opencode) active_pats=("${claude_pats[@]}" "${codex_pats[@]}" "${gemini_pats[@]}") ;;
+        *) active_pats=() ;;
+    esac
+    local pat
+    for pat in "${active_pats[@]}" "${generic_pats[@]}"; do
+        [[ "$buf" == *"$pat"* ]] && return 0
+    done
+    return 1
+}
+
+# tmux-capturing wrapper around _buf_shows_throttle. Looks at the last ~15
+# lines (errors appear at tail of the buffer, not mid-conversation).
+_pane_shows_throttle() {
+    local pane="$1" agent_bin="$2"
+    local buf
+    buf="$(tmux capture-pane -p -J -S -15 -E - -t "$pane" 2>/dev/null || true)"
+    _buf_shows_throttle "$buf" "$agent_bin"
+}
+
+# Build agent_label -> binary name map from meta. Used by the dead-check
+# instead of trusting the alias label, which is arbitrary user-chosen text.
+# Bash 4.0 compatible: agent_bins is declared at top level (no declare -g).
+_load_agent_bins() {
+    agent_bins=()
+    [[ -f "$META_DIR/meta" ]] || return 0
+    local key val slot bin label
+    declare -A slot_to_bin=()
+    while IFS='=' read -r key val; do
+        case "$key" in
+            agent_bin.*) slot_to_bin["${key#agent_bin.}"]="$val" ;;
+        esac
+    done <"$META_DIR/meta"
+    while IFS='=' read -r key val; do
+        case "$key" in
+            agent.*)
+                slot="${key#agent.}"
+                label="${val%:*}" # alias:name
+                bin="${slot_to_bin[$slot]:-${val%%:*}}"
+                agent_bins["$label"]="$bin"
+                ;;
+        esac
+    done <"$META_DIR/meta"
+}
+
+helper_watchdog_main() {
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+    # Tunables. AE_WATCHDOG_* is canonical; legacy AE_LOOP_* names are still
+    # honoured as fallbacks so existing shell rc / env exports keep working.
+    INTERVAL="${AE_WATCHDOG_INTERVAL_SEC:-${AE_LOOP_INTERVAL_SEC:-60}}"
+    STALE_MIN="${AE_WATCHDOG_STALE_MIN:-${AE_LOOP_STALE_MIN:-15}}"
+    MAX_NUDGES="${AE_WATCHDOG_MAX_NUDGES:-${AE_LOOP_MAX_NUDGES:-2}}"
+    STALE_SECS=$((STALE_MIN * 60))
+    # Cycles of continuous throttle detection before escalating to alert (~5min default).
+    THROTTLE_ALERT_CYCLES="${AE_WATCHDOG_THROTTLE_ALERT_CYCLES:-${AE_LOOP_THROTTLE_ALERT_CYCLES:-5}}"
+    # How often (seconds) the watchdog best-effort revives the telegram bridge if it
+    # died. 0 disables. Idempotent + respects [telegram] enabled — see step 10.
+    TG_SUPERVISE_SECS="${AE_WATCHDOG_TG_SUPERVISE_SEC:-${AE_LOOP_TG_SUPERVISE_SEC:-120}}"
+    # Meta-agent (steward) sweep cadence: if this session is the meta-agent
+    # (meta_agent=true in meta), the watchdog prompts a sweep every SWEEP_SECS instead of
+    # treating idle as stale. 0 falls back to normal watchdog behaviour.
+    SWEEP_SECS="${AE_WATCHDOG_SWEEP_SEC:-${AE_LOOP_SWEEP_SEC:-300}}"
+    [[ "$SWEEP_SECS" =~ ^[0-9]+$ ]] || SWEEP_SECS=300 # guard non-numeric overrides
+    META_AGENT="$(grep '^meta_agent=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+    # Only the MAIN meta-agent runs the sweep cadence; any workers/spawned agents in a
+    # meta session keep the normal watchdog. (alias:name, dropping the session-id.)
+    META_MAIN_AGENT="$(grep '^agent.main=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- | cut -d: -f1,2 || true)"
+
+    PIDFILE="${META_DIR}/.watchdog.pid"
+
+    cmd="${1:-start}"
+    case "$cmd" in
+        stop) _watchdog_stop ;;
+        status) _watchdog_status ;;
+        start) _watchdog_start ;;
+        _ensure-monitor) _watchdog_ensure_monitor ;; # internal: spawn _events pane only
+        _run) ;;                                     # internal: actual watchdog execution
+        *)
+            echo "Usage: watchdog [start|stop|status]" >&2
+            exit 1
+            ;;
+    esac
+
+    # --- _run: the actual watchdog (runs inside hidden tmux window) ---
+
+    echo "$$" >"$PIDFILE"
+    trap 'rm -f "$PIDFILE"; tmux set-option -t "$_AE_SESSION" -u @ae_branch_status 2>/dev/null; tmux set-option -t "$_AE_SESSION" -u @ae_watchdog_status 2>/dev/null' EXIT
+    _watchdog_set_status @ae_watchdog_status "[watch ◌ starting]"
+    _watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"
+
+    # Pretty banner so the pane is informative when viewed
+    printf '\033[1;36m'
+    printf '╭─ ae watchdog — session: %s ─────────────────────────╮\n' "$_AE_SESSION"
+    printf '│ interval: %ss   stale: %sm   max nudges: %s\n' "$INTERVAL" "$STALE_MIN" "$MAX_NUDGES"
+    # shellcheck disable=SC2016  # literal backticks in the banner text
+    printf '│ read-only pane (input disabled). use peek _watchdog or stop with `watchdog stop`.\n'
+    printf '╰────────────────────────────────────────────────────────╯\n'
+    printf '\033[0m\n'
+
+    declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing throttle_streak
+    # Per-pane last sweep-nudge time, for meta-agent (steward) sweep cadence.
+    declare -A last_sweep_nudge first_sweep_nudge meta_wedge_alerted meta_reconciled
+    # Per-pane quiet baseline for waiting-user/blocked: the pane hash captured when a
+    # declaration is first observed (already includes the declaration's own echo), so
+    # only a *later* pane change (human reply / agent output) yields the quiet state.
+    # Keyed by the declaration's full-tuple identity so a fresh declaration re-arms.
+    declare -A quiet_base_key quiet_base_hash
+    declare -A agent_bins
+    cycle=0
+
+    last_tg_supervise=0
+    while true; do
+        # Self-terminate if session or meta is gone
+        if ! tmux has-session -t "$_AE_SESSION" 2>/dev/null; then
+            _watchdog_log "session gone — exiting"
+            break
+        fi
+        [[ -f "$META_DIR/meta" ]] || {
+            _watchdog_log "meta gone — exiting"
+            break
+        }
+
+        cycle=$((cycle + 1))
+        _watchdog_log "── cycle ${cycle} ──"
+        cycle_total=0
+        cycle_active=0
+        cycle_stale=0
+        cycle_dead=0
+        cycle_alerts=0
+        _load_agent_bins
+
+        # Collect live panes into an associative array for missing-pane detection
+        declare -A live_agents=()
+        while IFS='|' read -r pane agent proc pane_pid_val; do
+            [[ -n "$agent" ]] || continue
+            # Skip non-agent panes (no @ae_agent), the watchdog (and legacy monitor panes), and the events pane
+            case "$agent" in
+                "" | "(null)" | _watchdog | _shepherd | _loop | _events) continue ;; # legacy pre-rename watchdog panes (transition)
+            esac
+            live_agents["$agent"]="$pane"
+            cycle_total=$((cycle_total + 1))
+
+            # Skip already-dead agents
+            if [[ -n "${dead_agents[$pane]:-}" ]]; then
+                cycle_dead=$((cycle_dead + 1))
+                _watchdog_log "  ${agent}  dead (no further checks)"
+                continue
+            fi
+
+            # Resolve the actual binary name from agent_bin.<slot> in meta (not the
+            # alias label, which is arbitrary user text). Needed by both dead check
+            # and throttle pattern catalog.
+            agent_bin="${agent_bins[$agent]:-${agent%%:*}}"
+
+            # 1. Dead check — pane's foreground command is a shell.
+            # But the agent might still be running as a descendant (e.g. when launched
+            # via bash -lc wrapper). Walk the process tree before declaring death.
+            case "$proc" in
+                bash | zsh | fish | sh | dash | "")
+                    if _pane_has_descendant_named "$pane_pid_val" "$agent_bin"; then
+                        : # alive — fall through to active check
+                    else
+                        dead_agents["$pane"]=1
+                        cycle_dead=$((cycle_dead + 1))
+                        cycle_alerts=$((cycle_alerts + 1))
+                        ae_emit_event "alert" "$agent" "" "agent process dead — dropped to shell"
+                        tmux display-message -d 10000 "[ae watchdog] $agent is DEAD — process dropped to shell" 2>/dev/null || true
+                        _watchdog_log "  ${agent}  DEAD — process dropped to shell (alerted)"
+                        continue
+                    fi
+                    ;;
+            esac
+
+            # 1b. Meta-agent (steward) sweep cadence — applies ONLY to the main agent
+            #     (workers/spawned agents in a meta session keep the normal watchdog).
+            #     The steward is a long-running SERVICE, so "idle between sweeps" is NORMAL,
+            #     not stale — don't nudge it to declare a quiet state or escalate it to a
+            #     stale alert. Instead: (a) prompt a sweep every SWEEP_SECS, and (b) guard
+            #     liveness via the steward's OWN heartbeat — it rewrites its state file on
+            #     each real sweep, so if that stops advancing while we keep nudging (model
+            #     stall / API throttle / wedged), raise ONE alert (cleared on recovery).
+            #     The dead-check above + missing-pane check (step 8) still catch a
+            #     dead/vanished steward. This is the explicit cadence, not the stale-watchdog.
+            if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && ((SWEEP_SECS > 0)); then
+                now_epoch="$(date +%s)"
+                # Heartbeat liveness (live-but-not-sweeping detection). The steward rewrites
+                # its state file on each real sweep; we judge it only AFTER we've prompted
+                # at least one sweep and given it a grace window — so an ABSENT file
+                # (never wrote a heartbeat) is caught too, not just a stale one.
+                # This is the file the contrib aemonitor helper writes atomically each
+                # sweep (~/.ae/sessions/<meta-agent>/meta-agent-state.json); they MUST match or
+                # the wedge check watches a file nobody writes and false-alarms.
+                hb_file="${META_DIR}/meta-agent-state.json"
+                hb=0
+                [[ -f "$hb_file" ]] && hb="$(stat -c %Y "$hb_file" 2>/dev/null || echo 0)"
+                wedge_secs=$((SWEEP_SECS * 2 + 60))
+                first_nudge="${first_sweep_nudge[$pane]:-0}"
+                if ((hb > 0 && now_epoch - hb <= wedge_secs)); then
+                    # Fresh heartbeat → recovery. The WATCHDOG raised the alert, so the watchdog
+                    # clears it (emit alert-cleared so _agent_alert_reason / ae list stops
+                    # showing it even on a silent sweep). Clear via the in-memory latch
+                    # (fast path) OR, once per watchdog lifetime, reconcile the DURABLE event
+                    # log — so a watchdog restart that lost the latch after alerting still
+                    # emits a clear. Idempotent: once cleared it's the newest event, so a
+                    # re-scan finds no active alert.
+                    if [[ -n "${meta_wedge_alerted[$pane]:-}" ]]; then
+                        unset 'meta_wedge_alerted[$pane]'
+                        meta_reconciled["$pane"]=1
+                        ae_emit_event "alert-cleared" "$agent" "" "meta-agent sweeping again (heartbeat resumed)"
+                        _watchdog_log "  ${agent}  meta-agent — wedge cleared (heartbeat fresh)"
+                    elif [[ -z "${meta_reconciled[$pane]:-}" ]]; then
+                        meta_reconciled["$pane"]=1
+                        if [[ -n "$(_agent_alert_reason "$META_DIR/events.jsonl" "$agent" "$_AE_SESSION")" ]]; then
+                            ae_emit_event "alert-cleared" "$agent" "" "meta-agent sweeping again (heartbeat resumed)"
+                            _watchdog_log "  ${agent}  meta-agent — stale wedge alert reconciled + cleared (post-restart)"
+                        fi
+                    fi
+                elif ((first_nudge > 0 && now_epoch - first_nudge > wedge_secs)); then
+                    # We've prompted long enough to expect a heartbeat, but it is stale
+                    # OR absent → live-but-not-sweeping. (Summary deliberately avoids the
+                    # 'throttl'/'dead'/'missing' substrings so _agent_alert_reason ranks
+                    # it high — it also has an explicit 'not sweeping' case.)
+                    if [[ -z "${meta_wedge_alerted[$pane]:-}" ]]; then
+                        meta_wedge_alerted["$pane"]=1
+                        cycle_alerts=$((cycle_alerts + 1))
+                        if ((hb > 0)); then
+                            wedge_detail="no heartbeat for $(((now_epoch - hb) / 60))m"
+                        else
+                            wedge_detail="never wrote a heartbeat in $(((now_epoch - first_nudge) / 60))m of sweep prompts"
+                        fi
+                        ae_emit_event "alert" "$agent" "" "meta-agent not sweeping — ${wedge_detail} (may be stuck)"
+                        tmux display-message -d 10000 "[ae watchdog] $agent (meta-agent) not sweeping — may be stuck" 2>/dev/null || true
+                        _watchdog_log "  ${agent}  meta-agent — WEDGE alert (${wedge_detail})"
+                    fi
+                fi
+                # Sweep cadence. Record the FIRST nudge time so the heartbeat guard above
+                # has a reference point even before any state file exists.
+                last_sweep="${last_sweep_nudge[$pane]:-0}"
+                if ((now_epoch - last_sweep >= SWEEP_SECS)); then
+                    [[ "${first_sweep_nudge[$pane]:-0}" -eq 0 ]] && first_sweep_nudge["$pane"]="$now_epoch"
+                    env AE_SENDER_OVERRIDE=watchdog \
+                        _AE_EVENT_ACTION=nudge \
+                        _AE_EVENT_SUMMARY="sweep cadence" \
+                        "${META_DIR}/send" "$agent" \
+                        "Run your sweep now: ae list --json, diff your state file, and report ONLY new/changed attention to Clemens via say (stay silent if nothing changed). Stay in 'working'." 2>/dev/null || true
+                    last_sweep_nudge["$pane"]="$now_epoch"
+                    _watchdog_log "  ${agent}  meta-agent — sweep nudge sent (every ${SWEEP_SECS}s)"
+                else
+                    _watchdog_log "  ${agent}  meta-agent — next sweep in $((SWEEP_SECS - (now_epoch - last_sweep)))s"
+                fi
+                cycle_active=$((cycle_active + 1))
+                continue
+            fi
+
+            # Pre-check: one pane buffer capture per cycle, drives both hash check
+            # (step 4) and throttle detection (step 3). Compute done epoch + throttle
+            # state up front so the priority branches (done, throttled) can react
+            # before the pane-hash early-continues mask them visually.
+            now_epoch="$(date +%s)"
+            pane_buf="$(tmux capture-pane -p -J -S -40 -E - -t "$pane" 2>/dev/null || true)"
+            hash="$(printf '%s' "$pane_buf" | md5sum | cut -d' ' -f1)"
+            quiet_row="$(_agent_quiet_reason "$agent")"
+            # Throttle detection AND streak clear up front: streak resets on every
+            # non-throttled cycle regardless of which branch the agent exits on.
+            if _buf_shows_throttle "$pane_buf" "$agent_bin"; then
+                is_throttled=1
+            else
+                is_throttled=0
+                if [[ -n "${throttle_streak[$pane]:-}" ]]; then
+                    ae_emit_event "throttle-cleared" "$agent" "" "throttling cleared after ${throttle_streak[$pane]} cycles"
+                    _watchdog_log "  ${agent}  throttle cleared after ${throttle_streak[$pane]} cycles"
+                    unset 'throttle_streak[$pane]'
+                fi
+            fi
+
+            # 2. Declared quiet state — "leave me alone" signal from the agent.
+            #    Quiet states: done, waiting-user, blocked. A quiet state is
+            #    invalidated by a newer ae event mentioning the agent (enforced by
+            #    _agent_quiet_reason returning empty in that case).
+            #
+            #    done is EVENT-ONLY quiet: pane churn (scrollback, resize, redraws,
+            #    escape sequences) never invalidates it. Silent work after done is
+            #    the agent's discipline problem; if they resume they should emit an
+            #    ae event.
+            #
+            #    waiting-user / blocked yield to pane activity, because the human
+            #    usually replies directly in the pane (no events.jsonl entry — only
+            #    a pane-hash change). Honour the quiet state only while the pane is
+            #    untouched since the declaration; once it changes, fall through to
+            #    the normal active/recent/stale branches so a post-reply hang is
+            #    still caught.
+            if [[ -n "$quiet_row" ]]; then
+                IFS=$'\t' read -r quiet_reason quiet_key <<<"$quiet_row"
+                if [[ "$quiet_reason" == "done" ]]; then
+                    cycle_active=$((cycle_active + 1))
+                    nudge_count["$pane"]=0
+                    _watchdog_log "  ${agent}  done (reported complete) — skip"
+                    continue
+                fi
+                quiet_decision="$(_quiet_pane_decision "$hash" "${quiet_base_key[$pane]:-}" "${quiet_base_hash[$pane]:-}" "$quiet_key")"
+                case "$quiet_decision" in
+                    arm)
+                        # First cycle observing this declaration — baseline the pane
+                        # (echo included) and honour the quiet state.
+                        quiet_base_key["$pane"]="$quiet_key"
+                        quiet_base_hash["$pane"]="$hash"
+                        cycle_active=$((cycle_active + 1))
+                        nudge_count["$pane"]=0
+                        _watchdog_log "  ${agent}  ${quiet_reason} (declared) — skip"
+                        continue
+                        ;;
+                    hold)
+                        cycle_active=$((cycle_active + 1))
+                        nudge_count["$pane"]=0
+                        _watchdog_log "  ${agent}  ${quiet_reason} (declared) — skip"
+                        continue
+                        ;;
+                    yield) : ;; # pane changed since baseline → no longer quiet, fall through
+                esac
+            fi
+
+            # 3. Throttled — upstream rate limit / overload visible in pane. React
+            #    BEFORE active/recent so the alert cadence (THROTTLE_ALERT_CYCLES *
+            #    INTERVAL) starts immediately. If we waited until after active/recent,
+            #    the alert would fire only after the full stale window expired —
+            #    breaking the documented threshold.
+            if ((is_throttled)); then
+                prev_streak="${throttle_streak[$pane]:-0}"
+                if ((prev_streak == 0)); then
+                    ae_emit_event "throttled" "$agent" "" "upstream throttling detected — pausing nudges"
+                    _watchdog_log "  ${agent}  THROTTLED — pausing nudges"
+                fi
+                throttle_streak["$pane"]=$((prev_streak + 1))
+                if ((throttle_streak[$pane] == THROTTLE_ALERT_CYCLES)); then
+                    ae_emit_event "alert" "$agent" "" "throttled for $((THROTTLE_ALERT_CYCLES * INTERVAL))s — may need attention"
+                    tmux display-message -d 10000 "[ae watchdog] $agent throttled persistently" 2>/dev/null || true
+                    cycle_alerts=$((cycle_alerts + 1))
+                    _watchdog_log "  ${agent}  THROTTLED — persistent (${THROTTLE_ALERT_CYCLES} cycles), alert raised"
+                fi
+                # Update hash even when throttled so a later pane change (recovery)
+                # is detected as activity rather than a stale "first time" hash diff.
+                prev_hash["$pane"]="$hash"
+                last_hash_change["$pane"]="$now_epoch"
+                cycle_active=$((cycle_active + 1))
+                nudge_count["$pane"]=0
+                continue
+            fi
+
+            # 4. Active — pane content hash changed since last cycle
+            if [[ "$hash" != "${prev_hash[$pane]:-}" ]]; then
+                prev_hash["$pane"]="$hash"
+                last_hash_change["$pane"]="$now_epoch"
+                nudge_count["$pane"]=0
+                cycle_active=$((cycle_active + 1))
+                _watchdog_log "  ${agent}  active (pane hash changed)"
+                continue
+            fi
+
+            # 5. Recently visible — pane changed within stale window (covers human
+            #    interaction with quiet/static responses they are still reading)
+            last_change="${last_hash_change[$pane]:-0}"
+            if ((last_change > 0 && now_epoch - last_change < STALE_SECS)); then
+                cycle_active=$((cycle_active + 1))
+                _watchdog_log "  ${agent}  recently visible ($((now_epoch - last_change))s ago) — skip"
+                continue
+            fi
+
+            # 6. Recently alive — recent event from this actor
+            event_age="$(_last_event_age "$agent")"
+            if ((event_age < STALE_SECS)); then
+                cycle_active=$((cycle_active + 1))
+                _watchdog_log "  ${agent}  recent ae activity (${event_age}s) — skip"
+                continue
+            fi
+
+            # 7. Stale — nudge or escalate
+            cycle_stale=$((cycle_stale + 1))
+            count="${nudge_count[$pane]:-0}"
+            stale_min_num=$((event_age / 60))
+            if ((stale_min_num > 9999)); then
+                stale_display="no recent events"
+            else
+                stale_display="idle ${stale_min_num}m"
+            fi
+            if ((count < MAX_NUDGES)); then
+                # Quote the session goal (if set) so an idle agent is reminded what
+                # the session is FOR, not just that it went quiet.
+                goal_line="$(_watchdog_meta_value goal)"
+                [[ -n "$goal_line" ]] && goal_line="Session goal: ${goal_line}. "
+                env AE_SENDER_OVERRIDE=watchdog \
+                    _AE_EVENT_ACTION=nudge \
+                    _AE_EVENT_SUMMARY="${stale_display}, no recent ae activity" \
+                    "${META_DIR}/send" "$agent" \
+                    "${goal_line}Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: ${META_DIR}/state <waiting-user|blocked|done> \"<reason>\"" 2>/dev/null || true
+                nudge_count["$pane"]=$((count + 1))
+                _watchdog_log "  ${agent}  STALE (${stale_display}) — nudged ($((count + 1))/${MAX_NUDGES})"
+            elif ((count == MAX_NUDGES)); then
+                ae_emit_event "alert" "$agent" "" "max nudges reached (${stale_display}), needs attention"
+                tmux display-message -d 10000 "[ae watchdog] $agent may need attention — stale after ${MAX_NUDGES} nudges" 2>/dev/null || true
+                nudge_count["$pane"]=$((count + 1))
+                cycle_alerts=$((cycle_alerts + 1))
+                _watchdog_log "  ${agent}  STALE — max nudges reached, alert raised"
+            else
+                _watchdog_log "  ${agent}  STALE — already alerted, waiting for activity"
+            fi
+
+        done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}' 2>/dev/null)
+
+        # 8. Missing pane check — registered agents whose panes no longer exist
+        while IFS='=' read -r key val; do
+            [[ "$key" == agent.* ]] || continue
+            agent_ref="${val%%:*}:$(echo "${val#*:}" | cut -d: -f1)"
+            if [[ -z "${live_agents[$agent_ref]:-}" && -z "${alerted_missing[$agent_ref]:-}" ]]; then
+                alerted_missing["$agent_ref"]=1
+                ae_emit_event "alert" "$agent_ref" "" "pane missing — agent no longer visible in session"
+                tmux display-message -d 10000 "[ae watchdog] $agent_ref pane is MISSING" 2>/dev/null || true
+                _watchdog_log "  ${agent_ref}  MISSING — pane no longer in session"
+            fi
+        done <"$META_DIR/meta"
+
+        # 9. Recover pending session IDs (codex/gemini/opencode post-launch capture retry)
+        AE_PATH_BIN="$(grep '^ae_path=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+        if [[ -n "$AE_PATH_BIN" && -x "$AE_PATH_BIN" ]]; then
+            # shellcheck disable=SC2034  # r_slot consumed positionally, unused
+            while IFS=$'\t' read -r r_kind r_slot r_agent r_tool r_captured; do
+                [[ "$r_kind" == "ok" && -n "$r_captured" ]] || continue
+                ae_emit_event "recover" "$r_agent" "$r_captured" "captured ${r_tool} session id (${r_captured:0:8})"
+                _watchdog_log "  ${r_agent}  RECOVERED ${r_tool} session id ${r_captured:0:8}"
+            done < <("$AE_PATH_BIN" _recover-pending "$_AE_SESSION" 2>/dev/null || true)
+        fi
+
+        # 10. Telegram bridge supervision — best-effort revive of the machine-global
+        #     daemon if it died while this session's watchdog is alive. Throttled to
+        #     TG_SUPERVISE_SECS. The revive runs the autostart path (respects
+        #     [telegram] enabled, never flips it) and is idempotent/flock-guarded, so
+        #     concurrent watchdogs across sessions are safe. Fully silent + non-fatal.
+        if ((TG_SUPERVISE_SECS > 0)) && [[ -n "${AE_PATH_BIN:-}" && -x "${AE_PATH_BIN:-}" ]]; then
+            now_epoch="$(date +%s)"
+            if ((now_epoch - last_tg_supervise >= TG_SUPERVISE_SECS)); then
+                last_tg_supervise=$now_epoch
+                # Propagate this session's tmux server (mirrors spawn/retire) so the
+                # bridge is checked/spawned on the SAME server the session uses —
+                # otherwise it'd hit the default server and `ae telegram stop` under
+                # the intended server would miss it.
+                tg_srv="$(grep '^tmux_server=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+                if [[ -n "$tg_srv" ]]; then
+                    AE_TMUX_SERVER="$tg_srv" "$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true
+                else
+                    "$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true
+                fi
+            fi
+        fi
+
+        # Push live status into the tmux user options: health → status-right,
+        # branch+dirty → status-left (after the static path).
+        if ((cycle_dead > 0)); then
+            glyph="✖"
+        elif ((cycle_stale > 0)); then
+            glyph="⚠"
+        else
+            glyph="●"
+        fi
+        _watchdog_set_status @ae_watchdog_status "[watch ${glyph} ${cycle_active}/${cycle_total}]"
+        _watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"
+
+        sleep "$INTERVAL"
+    done
+
+    rm -f "$PIDFILE"
+}
+
 ATTACH_ON_READY=true
 case "${1:-}" in
     list | ls)
@@ -7531,912 +8455,27 @@ EVTAILEOF
     chmod 0700 "${AE_META}/events-tail"
 
     # Helper: watchdog [start|stop|status] — watchdog that nudges stale agents
-    cat >"${AE_META}/watchdog" <<'LOOPEOF'
+    # watchdog — emitted from the template library (fns + the whole runtime
+    # flow wrapped as helper_watchdog_main). Atomic: temp + chmod + mv. NOTE:
+    # a RUNNING watchdog keeps its loaded body until stop/start — refresh
+    # only replaces the on-disk script.
+    {
+        cat <<'WDPROLOGUE'
 #!/usr/bin/env bash
 set -uo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
-META_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-# Tunables. AE_WATCHDOG_* is canonical; legacy AE_LOOP_* names are still
-# honoured as fallbacks so existing shell rc / env exports keep working.
-INTERVAL="${AE_WATCHDOG_INTERVAL_SEC:-${AE_LOOP_INTERVAL_SEC:-60}}"
-STALE_MIN="${AE_WATCHDOG_STALE_MIN:-${AE_LOOP_STALE_MIN:-15}}"
-MAX_NUDGES="${AE_WATCHDOG_MAX_NUDGES:-${AE_LOOP_MAX_NUDGES:-2}}"
-STALE_SECS=$((STALE_MIN * 60))
-# Cycles of continuous throttle detection before escalating to alert (~5min default).
-THROTTLE_ALERT_CYCLES="${AE_WATCHDOG_THROTTLE_ALERT_CYCLES:-${AE_LOOP_THROTTLE_ALERT_CYCLES:-5}}"
-# How often (seconds) the watchdog best-effort revives the telegram bridge if it
-# died. 0 disables. Idempotent + respects [telegram] enabled — see step 10.
-TG_SUPERVISE_SECS="${AE_WATCHDOG_TG_SUPERVISE_SEC:-${AE_LOOP_TG_SUPERVISE_SEC:-120}}"
-# Meta-agent (steward) sweep cadence: if this session is the meta-agent
-# (meta_agent=true in meta), the watchdog prompts a sweep every SWEEP_SECS instead of
-# treating idle as stale. 0 falls back to normal watchdog behaviour.
-SWEEP_SECS="${AE_WATCHDOG_SWEEP_SEC:-${AE_LOOP_SWEEP_SEC:-300}}"
-[[ "$SWEEP_SECS" =~ ^[0-9]+$ ]] || SWEEP_SECS=300 # guard non-numeric overrides
-META_AGENT="$(grep '^meta_agent=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
-# Only the MAIN meta-agent runs the sweep cadence; any workers/spawned agents in a
-# meta session keep the normal watchdog. (alias:name, dropping the session-id.)
-META_MAIN_AGENT="$(grep '^agent.main=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- | cut -d: -f1,2 || true)"
-
-PIDFILE="${META_DIR}/.watchdog.pid"
-
-_watchdog_is_running() {
-    [[ -f "$PIDFILE" ]] || return 1
-    local pid; pid="$(cat "$PIDFILE" 2>/dev/null)"
-    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
-}
-
-_set_meta_kv() {
-    local key="$1" value="$2"
-    local meta_file="${META_DIR}/meta"
-    [[ -f "$meta_file" ]] || return 0
-    {
-        flock -w 5 200 || return 1
-        local tmp="${META_DIR}/meta.tmp.$$"
-        awk -F= -v k="$key" -v v="$value" '
-            BEGIN { updated = 0 }
-            $1 == k { print k "=" v; updated = 1; next }
-            { print }
-            END { if (!updated) print k "=" v }
-        ' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
-    } 200>"${META_DIR}/meta.lock"
-}
-
-_unset_meta_kv() {
-    local key="$1"
-    local meta_file="${META_DIR}/meta"
-    [[ -f "$meta_file" ]] || return 0
-    {
-        flock -w 5 200 || return 1
-        local tmp="${META_DIR}/meta.tmp.$$"
-        awk -F= -v k="$key" '$1 != k { print }' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
-    } 200>"${META_DIR}/meta.lock"
-}
-
-_set_meta_watchdog() { _set_meta_kv "watchdog" "$1"; }
-
-_monitor_find_pane() {
-    # Stdout: pane_id of the pane in this session tagged with @ae_agent=$1, or empty.
-    tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id} #{@ae_agent}' 2>/dev/null \
-        | awk -v want="$1" '$2 == want { print $1; exit }'
-}
-
-# Idempotent. Creates the hidden ae-monitor window with the _events pane if
-# it doesn't already exist. Sets MONITOR_EVENTS_PANE to the pane id.
-# Called by session launch and by _watchdog_start.
-_monitor_ensure_events_pane() {
-    MONITOR_EVENTS_PANE="$(_monitor_find_pane _events)"
-    [[ -n "$MONITOR_EVENTS_PANE" ]] && return 0
-    MONITOR_EVENTS_PANE="$(tmux new-window -da -t "$_AE_SESSION" -n "ae-monitor" -P -F '#{pane_id}' \
-        "${META_DIR}/events-tail" 2>/dev/null)" || {
-        echo "Error: could not create monitor window" >&2
-        return 1
-    }
-    tmux set-option -p -t "$MONITOR_EVENTS_PANE" @ae_agent "_events" 2>/dev/null || true
-    tmux select-pane -t "$MONITOR_EVENTS_PANE" -T "ae events" 2>/dev/null || true
-    tmux set-window-option -t "${_AE_SESSION}:ae-monitor" pane-border-status top 2>/dev/null || true
-    tmux select-pane -t "$MONITOR_EVENTS_PANE" -d 2>/dev/null || true
-    return 0
-}
-
-_watchdog_ensure_monitor() {
-    _monitor_ensure_events_pane || exit 1
-    exit 0
-}
-
-# Transition shim (loop → watchdog rename). The short-lived local shepherd branch
-# and released loop versions can leave OLD artifacts: .shepherd.pid / _shepherd /
-# .shepherd.status or .loop.pid / _loop / .loop.status. A 'doctor --refresh'
-# rewrites helpers but does NOT restart a running watchdog, so that legacy process
-# can outlive the rename. Reap it before we start or stop, so we never run two
-# watchdogs at once, never leave a stray legacy pane the new watchdog would
-# mis-classify as an agent, and so deprecated commands actually stop a legacy one.
-# Idempotent + silent. Keep the _shepherd reap only as a local transition aid; it
-# is not a public compatibility surface.
-_watchdog_reap_legacy_one() {
-    local legacy_name="$1"
-    local legacy_pid_file="${META_DIR}/.${legacy_name}.pid" legacy_status_file="${META_DIR}/.${legacy_name}.status"
-    local legacy_pid legacy_pane
-    legacy_pane="$(_monitor_find_pane "_${legacy_name}")"
-    # A *live* legacy watchdog is pinned to its legacy monitor pane. Only when
-    # that pane exists do we kill the recorded pid — otherwise the pid file is a
-    # stale artifact from a crashed watchdog whose pid may have been reused by an
-    # unrelated process, and killing it blindly would be wrong. With no pane, just
-    # clean up.
-    if [[ -n "$legacy_pane" ]]; then
-        if [[ -f "$legacy_pid_file" ]]; then
-            legacy_pid="$(cat "$legacy_pid_file" 2>/dev/null || true)"
-            [[ -n "$legacy_pid" ]] && kill "$legacy_pid" 2>/dev/null || true
-        fi
-        tmux kill-pane -t "$legacy_pane" 2>/dev/null || true
-    fi
-    rm -f "$legacy_pid_file" "$legacy_status_file"
-}
-
-_watchdog_reap_legacy() {
-    _watchdog_reap_legacy_one "shepherd"
-    _watchdog_reap_legacy_one "loop"
-}
-
-# Restore status-right to the value saved before a watchdog (legacy or current)
-# modified it, then clear the saved keys. Shared by stop (final restore) and start
-# (to undo a stale/legacy '#(cat .*.status)' hook BEFORE capturing a fresh
-# baseline — otherwise start would re-save the polluted value). No-op when nothing
-# was saved. If was_session=true the saved value was an explicit session override
-# and is restored verbatim; otherwise we unset our override so the session falls
-# back to whatever the global value is *now*.
-_watchdog_restore_status_right() {
-    grep -q '^status_right_prev=' "$META_DIR/meta" 2>/dev/null || return 0
-    local prev was_session
-    prev="$(grep '^status_right_prev=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
-    was_session="$(grep '^status_right_was_session=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
-    if [[ "$was_session" == "true" ]]; then
-        tmux set-option -t "$_AE_SESSION" status-right "$prev" 2>/dev/null || true
-    else
-        tmux set-option -u -t "$_AE_SESSION" status-right 2>/dev/null || true
-    fi
-    tmux set-option -u -t "$_AE_SESSION" status-interval 2>/dev/null || true
-    _unset_meta_kv "status_right_prev"
-    _unset_meta_kv "status_right_was_session"
-}
-
-_watchdog_stop() {
-    # Reap a pre-rename watchdog first (see _watchdog_reap_legacy). Note whether one
-    # was present so we still report "stopped" even if no current watchdog ran.
-    local had_legacy="no"
-    if [[ -f "${META_DIR}/.shepherd.pid" || -n "$(_monitor_find_pane _shepherd)" || -f "${META_DIR}/.loop.pid" || -n "$(_monitor_find_pane _loop)" ]]; then
-        had_legacy="yes"
-    fi
-    _watchdog_reap_legacy
-
-    local stopped="no"
-    if _watchdog_is_running; then
-        local pid; pid="$(cat "$PIDFILE")"
-        kill "$pid" 2>/dev/null || true
-        rm -f "$PIDFILE"
-        # Clear the live status user options so the bars fall back (left → just path).
-        tmux set-option -t "$_AE_SESSION" -u @ae_branch_status 2>/dev/null || true
-        tmux set-option -t "$_AE_SESSION" -u @ae_watchdog_status 2>/dev/null || true
-        # Kill only the _watchdog pane; leave the _events pane and monitor window alive.
-        local watchdog_pane
-        watchdog_pane="$(_monitor_find_pane _watchdog)"
-        [[ -n "$watchdog_pane" ]] && tmux kill-pane -t "$watchdog_pane" 2>/dev/null || true
-        stopped="yes"
-    fi
-
-    # Restore status-right (no-op if nothing was saved). The saved meta keys are
-    # shared between the legacy and current watchdog, so this covers both.
-    _watchdog_restore_status_right
-    if [[ "$stopped" == "yes" || "$had_legacy" == "yes" ]]; then
-        echo "Watchdog stopped."
-    else
-        echo "Watchdog is not running."
-    fi
-    _set_meta_watchdog "false"
-    exit 0
-}
-
-_watchdog_status() {
-    if _watchdog_is_running; then
-        echo "Watchdog is running (pid $(cat "$PIDFILE"))."
-    else
-        echo "Watchdog is not running."
-    fi
-    exit 0
-}
-
-_watchdog_start() {
-    # A pre-rename watchdog may still be running under legacy artifacts after an
-    # upgrade + refresh (helpers are rewritten but the running watchdog is not
-    # restarted). Reap it first so we never run two watchdogs side by side.
-    _watchdog_reap_legacy
-    # Idempotent: if a current watchdog is already running, just confirm the meta
-    # flag and exit — do NOT touch status-right (its indicator must stay live).
-    if _watchdog_is_running; then
-        echo "Watchdog is already running (pid $(cat "$PIDFILE"))."
-        _set_meta_watchdog "true"
-        exit 0
-    fi
-    # No current watchdog is running. Undo any stale '#(cat .*.status)' status-right
-    # hook left by a reaped legacy watchdog or an unclean prior start — restoring the
-    # saved original BEFORE we capture the fresh baseline below, so we never re-save
-    # a polluted value.
-    _watchdog_restore_status_right
-    # Make sure the ae-monitor window with the _events pane exists; insert the
-    # _watchdog pane above it so the visual order stays watchdog-on-top / events-below.
-    _monitor_ensure_events_pane || exit 1
-    local watchdog_pane
-    watchdog_pane="$(tmux split-window -v -b -t "$MONITOR_EVENTS_PANE" -P -F '#{pane_id}' \
-        "${META_DIR}/watchdog _run" 2>/dev/null)" || {
-        echo "Error: could not create watchdog pane" >&2
-        exit 1
-    }
-    tmux set-option -p -t "$watchdog_pane" @ae_agent "_watchdog" 2>/dev/null || true
-    tmux select-pane -t "$watchdog_pane" -T "ae watchdog" 2>/dev/null || true
-    # Read-only: disable input on the watchdog pane (events pane was already disabled).
-    tmux select-pane -t "$watchdog_pane" -d 2>/dev/null || true
-    # Capture the current effective status-right and track whether it came from a
-    # session-level override or the global default. We must distinguish those so
-    # _watchdog_stop can restore correctly even if the global value changes mid-run.
-    local prev_status_right was_session
-    prev_status_right="$(tmux show-options -v -t "$_AE_SESSION" status-right 2>/dev/null || true)"
-    if [[ -n "$prev_status_right" ]]; then
-        was_session="true"
-    else
-        prev_status_right="$(tmux show-options -gv status-right 2>/dev/null || true)"
-        was_session="false"
-    fi
-    # Persist alongside meta via the locked helper to avoid clobbering concurrent writers
-    _set_meta_kv "status_right_prev" "$prev_status_right"
-    _set_meta_kv "status_right_was_session" "$was_session"
-    # Prepend the watchdog health indicator to the existing status-right. It reads the
-    # @ae_watchdog_status tmux user option (set by the loop each cycle) — no #() shell
-    # job, no path embedded in the format, so nothing to quote or escape.
-    local new_status_right="#{@ae_watchdog_status} ${prev_status_right}"
-    tmux set-option -t "$_AE_SESSION" status-right "$new_status_right" 2>/dev/null || true
-    tmux set-option -t "$_AE_SESSION" status-interval 5 2>/dev/null || true
-    _set_meta_watchdog "true"
-    echo "Watchdog started in hidden ae-monitor window. Use 'peek _watchdog' or 'peek _events' to inspect."
-    exit 0
-}
-
-_last_event_age() {
-    local actor="$1"
-    local events_file="${META_DIR}/events.jsonl"
-    [[ -f "$events_file" ]] || { echo 999999; return; }
-    local last_ts
-    last_ts="$(grep "\"actor\":\"${actor}\"" "$events_file" | tail -1 | sed -n 's/.*"ts":"\([^"]*\)".*/\1/p')"
-    if [[ -z "$last_ts" ]]; then echo 999999; return; fi
-    local last_epoch now_epoch
-    last_epoch="$(date -d "$last_ts" +%s 2>/dev/null || echo 0)"
-    now_epoch="$(date +%s)"
-    echo $(( now_epoch - last_epoch ))
-}
-
-_latest_relevant_event() {
-    local agent="$1"
-    local events_file="${META_DIR}/events.jsonl"
-    [[ -f "$events_file" ]] || return 0
-    local line actor target action ts ref summary
-    # Walk newest→oldest and stop at the first event mentioning the agent.
-    # Unbounded by design: a quiet state must stay valid until a *newer* event
-    # for this agent invalidates it, no matter how many unrelated events follow.
-    # Emits 5 tab-separated fields: action, ts, ref, actor, summary (ref/summary
-    # may be empty). actor lets callers distinguish the agent's OWN declaration
-    # from an inbound event that merely targets it; summary lets them build a
-    # declaration-identity key that survives second-resolution timestamps.
-    # ae_emit_event strips tabs/newlines from summary, so it is safe last.
-    while IFS= read -r line; do
-        [[ "$line" == \{* ]] || continue
-        actor="$(_event_json_str "$line" actor)"
-        target="$(_event_json_str "$line" target)"
-        if [[ "$actor" == "$agent" || "$target" == "$agent" || "$target" == "@${_AE_SESSION}:${agent}" ]]; then
-            action="$(_event_json_str "$line" action)"
-            ts="$(_event_json_str "$line" ts)"
-            ref="$(_event_json_str "$line" ref)"
-            summary="$(_event_json_str "$line" summary)"
-            printf '%s\t%s\t%s\t%s\t%s\n' "$action" "$ts" "$ref" "$actor" "$summary"
-            return 0
-        fi
-    done < <(tac "$events_file" 2>/dev/null || true)
-}
-
-# The agent's current self-declared quiet state, or empty. Quiet states tell the
-# watchdog to stop nudging: done | waiting-user | blocked. Emits 'reason<TAB>key'
-# where key is the full declaration tuple (action|ts|ref|actor|summary) — used by
-# the pane-activity escape hatch to identify a declaration across cycles and
-# re-arm on a genuinely new one. Empty when the newest relevant event is working,
-# an inbound message (invalidates the prior quiet state), or anything else. Legacy
-# action=done events (pre-state-helper, and the retained dual-emit) map to done.
-_agent_quiet_reason() {
-    local agent="$1"
-    local row action ts ref actor summary rest
-    row="$(_latest_relevant_event "$agent")"
-    [[ -n "$row" ]] || return 0
-    # Manual tab split — `IFS=$'\t' read` collapses the empty ref field (tab is
-    # whitespace-IFS), which would shift fields left and corrupt actor.
-    action="${row%%$'\t'*}"
-    rest="${row#*$'\t'}"
-    ts="${rest%%$'\t'*}"
-    rest="${rest#*$'\t'}"
-    ref="${rest%%$'\t'*}"
-    rest="${rest#*$'\t'}"
-    actor="${rest%%$'\t'*}"
-    summary="${rest#*$'\t'}"
-    # Only the agent's OWN declaration is a quiet state. If the newest relevant
-    # event is inbound (actor != agent — a send/ask/nudge targeting it), the
-    # prior quiet state is invalidated and the agent is no longer quiet.
-    [[ "$actor" == "$agent" ]] || return 0
-    local reason=""
-    case "$action" in
-        done) reason="done" ;;
-        state)
-            case "$ref" in
-                done | waiting-user | blocked) reason="$ref" ;;
-            esac
-            ;;
-    esac
-    [[ -n "$reason" ]] || return 0
-    # Emit 'reason<TAB>key'. The key is the full declaration tuple so the
-    # watchdog's baseline re-arms on a genuinely new declaration even when two
-    # land in the same (second-resolution) timestamp — as long as any field
-    # (typically the summary/reason) differs. Byte-identical same-second
-    # re-declares remain indistinguishable, which is acceptable.
-    printf '%s\t%s' "$reason" "${action}|${ts}|${ref}|${actor}|${summary}"
-}
-
-# Escape hatch for waiting-user/blocked, using a per-pane baseline hash. The
-# declaration's own echo (the `state` helper prints to the pane) means the
-# global last_hash_change can't distinguish that echo from a later human reply.
-# So we ARM a baseline with the pane hash the first time a declaration is seen
-# (the echo is already part of it), then HOLD while the hash matches that
-# baseline and YIELD once it changes (human reply / agent output). The
-# declaration is identified by its full-tuple key (not just timestamp) so a
-# fresh declaration re-arms even within the same second.
-# Args: cur_hash armed_key armed_hash decl_key
-# Prints: arm | hold | yield
-_quiet_pane_decision() {
-    local cur="$1" armed_key="$2" armed_hash="$3" decl_key="$4"
-    if [[ "$armed_key" != "$decl_key" ]]; then
-        printf 'arm'
-    elif [[ "$cur" == "$armed_hash" ]]; then
-        printf 'hold'
-    else
-        printf 'yield'
-    fi
-}
-
-_watchdog_meta_value() {
-    local key="$1"
-    grep "^${key}=" "$META_DIR/meta" 2>/dev/null | head -1 | cut -d= -f2- || true
-}
-
-_watchdog_trim() {
-    local text="$1" max="${2:-24}"
-    text="${text//$'\n'/ }"
-    text="${text//$'\r'/ }"
-    if ((${#text} > max)); then
-        printf '%s~' "${text:0:max-1}"
-    else
-        printf '%s' "$text"
-    fi
-}
-
-_watchdog_git() {
-    local work_dir="$1"
-    shift
-    if command -v timeout >/dev/null 2>&1; then
-        timeout 2 git -C "$work_dir" "$@" 2>/dev/null
-    else
-        git -C "$work_dir" "$@" 2>/dev/null
-    fi
-}
-
-# Live git branch segment, pushed each cycle into the @ae_branch_status tmux user
-# option and rendered in status-LEFT after the (static) path — so repo context (path
-# + branch) sits together on the left and watchdog health stands alone on the right.
-# Emits ' <branch>*' (leading space, no brackets — it sits inside the [ae …] bracket)
-# when work_dir is a git repo, else empty. Branch+dirty are the only session facts
-# that change during a run, so they're the only thing recomputed per cycle.
-_watchdog_branch_segment() {
-    local work_dir branch dirty=""
-    work_dir="$(_watchdog_meta_value work_dir)"
-    if [[ -z "$work_dir" ]] || ! _watchdog_git "$work_dir" rev-parse --is-inside-work-tree >/dev/null; then
-        return 0
-    fi
-    branch="$(_watchdog_git "$work_dir" symbolic-ref --quiet --short HEAD || _watchdog_git "$work_dir" rev-parse --short HEAD || true)"
-    branch="$(_watchdog_trim "$branch" 24)"
-    [[ -n "$branch" ]] || return 0
-    if [[ -n "$(_watchdog_git "$work_dir" status --porcelain --untracked-files=no | head -1)" ]]; then
-        dirty="*"
-    fi
-    printf ' %s%s' "$branch" "$dirty"
-}
-
-cmd="${1:-start}"
-case "$cmd" in
-    stop) _watchdog_stop ;;
-    status) _watchdog_status ;;
-    start) _watchdog_start ;;
-    _ensure-monitor) _watchdog_ensure_monitor ;;  # internal: spawn _events pane only
-    _run) ;;  # internal: actual watchdog execution
-    *) echo "Usage: watchdog [start|stop|status]" >&2; exit 1 ;;
-esac
-
-# --- _run: the actual watchdog (runs inside hidden tmux window) ---
-
-echo "$$" > "$PIDFILE"
-# Live status is pushed into tmux user options, read by the bars as
-# #{@ae_branch_status} (status-LEFT, after the static path) and #{@ae_watchdog_status}
-# (status-RIGHT health). User-option values are interpolated literally — no shell, no
-# #() parsing — so a branch/path with spaces, ), #, etc. is safe with no escaping.
-# Cleared on exit so the bars fall back cleanly (left → just the path).
-_watchdog_set_status() { tmux set-option -t "$_AE_SESSION" "$1" "$2" 2>/dev/null || true; }
-trap 'rm -f "$PIDFILE"; tmux set-option -t "$_AE_SESSION" -u @ae_branch_status 2>/dev/null; tmux set-option -t "$_AE_SESSION" -u @ae_watchdog_status 2>/dev/null' EXIT
-_watchdog_set_status @ae_watchdog_status "[watch ◌ starting]"
-_watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"
-
-# Pretty banner so the pane is informative when viewed
-printf '\033[1;36m'
-printf '╭─ ae watchdog — session: %s ─────────────────────────╮\n' "$_AE_SESSION"
-printf '│ interval: %ss   stale: %sm   max nudges: %s\n' "$INTERVAL" "$STALE_MIN" "$MAX_NUDGES"
-printf '│ read-only pane (input disabled). use peek _watchdog or stop with `watchdog stop`.\n'
-printf '╰────────────────────────────────────────────────────────╯\n'
-printf '\033[0m\n'
-
-_watchdog_log() {
-    printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"
-}
-
-# Check if any process named $2 is a descendant of pane PID $1.
-# Walks each candidate's ancestor chain via /proc/<pid>/stat.
-# Used to avoid false-positive "dead" alerts when the pane's foreground is
-# a shell wrapper (e.g. bash -lc) but the actual agent is running underneath.
-_pane_has_descendant_named() {
-    local pane_pid="$1" target="$2"
-    [[ -n "$pane_pid" && -n "$target" ]] || return 1
-    local pids
-    pids="$(pgrep -x "$target" 2>/dev/null || true)"
-    [[ -n "$pids" ]] || return 1
-    local pid cur
-    for pid in $pids; do
-        cur="$pid"
-        while [[ -n "$cur" && "$cur" != "1" && "$cur" != "0" ]]; do
-            if [[ "$cur" == "$pane_pid" ]]; then
-                return 0
-            fi
-            cur="$(awk '{print $4}' "/proc/${cur}/stat" 2>/dev/null || true)"
-        done
-    done
-    return 1
-}
-
-declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing throttle_streak
-# Per-pane last sweep-nudge time, for meta-agent (steward) sweep cadence.
-declare -A last_sweep_nudge first_sweep_nudge meta_wedge_alerted meta_reconciled
-# Per-pane quiet baseline for waiting-user/blocked: the pane hash captured when a
-# declaration is first observed (already includes the declaration's own echo), so
-# only a *later* pane change (human reply / agent output) yields the quiet state.
-# Keyed by the declaration's full-tuple identity so a fresh declaration re-arms.
-declare -A quiet_base_key quiet_base_hash
-
-# Known transient upstream throttle / overload patterns per agent binary.
-# Pure function: takes a captured pane buffer + the agent binary name and
-# returns 0 if any pattern matches. Patterns are deliberately narrow phrases
-# unlikely to appear in normal agent prose, to keep false-positive rate low.
-# When tools change their error wording, edit this function.
-_buf_shows_throttle() {
-    local buf="$1" agent_bin="$2"
-    [[ -n "$buf" ]] || return 1
-    # Per-tool catalogs. opencode is a TUI wrapper over configurable providers,
-    # so it MUST be the full union — refactor here, never duplicate, to prevent
-    # drift between branches.
-    local claude_pats=(
-        'Server is temporarily limiting requests'
-        'API Error: Overloaded'
-        'Anthropic API error'
-    )
-    local codex_pats=(
-        'Rate limit exceeded'
-        'RateLimitError'
-        'ratelimit_exceeded'
-    )
-    local gemini_pats=(
-        'RESOURCE_EXHAUSTED'
-        'Quota exceeded'
-    )
-    local generic_pats=(
-        '429 Too Many Requests'
-        '503 Service Unavailable'
-    )
-    local -a active_pats
-    case "$agent_bin" in
-        claude)   active_pats=("${claude_pats[@]}") ;;
-        codex)    active_pats=("${codex_pats[@]}") ;;
-        gemini)   active_pats=("${gemini_pats[@]}") ;;
-        opencode) active_pats=("${claude_pats[@]}" "${codex_pats[@]}" "${gemini_pats[@]}") ;;
-        *)        active_pats=() ;;
-    esac
-    local pat
-    for pat in "${active_pats[@]}" "${generic_pats[@]}"; do
-        [[ "$buf" == *"$pat"* ]] && return 0
-    done
-    return 1
-}
-
-# tmux-capturing wrapper around _buf_shows_throttle. Looks at the last ~15
-# lines (errors appear at tail of the buffer, not mid-conversation).
-_pane_shows_throttle() {
-    local pane="$1" agent_bin="$2"
-    local buf
-    buf="$(tmux capture-pane -p -J -S -15 -E - -t "$pane" 2>/dev/null || true)"
-    _buf_shows_throttle "$buf" "$agent_bin"
-}
-declare -A agent_bins
-cycle=0
-
-# Build agent_label -> binary name map from meta. Used by the dead-check
-# instead of trusting the alias label, which is arbitrary user-chosen text.
-# Bash 4.0 compatible: agent_bins is declared at top level (no declare -g).
-_load_agent_bins() {
-    agent_bins=()
-    [[ -f "$META_DIR/meta" ]] || return 0
-    local key val slot bin label
-    declare -A slot_to_bin=()
-    while IFS='=' read -r key val; do
-        case "$key" in
-            agent_bin.*) slot_to_bin["${key#agent_bin.}"]="$val" ;;
-        esac
-    done <"$META_DIR/meta"
-    while IFS='=' read -r key val; do
-        case "$key" in
-            agent.*)
-                slot="${key#agent.}"
-                label="${val%:*}"  # alias:name
-                bin="${slot_to_bin[$slot]:-${val%%:*}}"
-                agent_bins["$label"]="$bin"
-                ;;
-        esac
-    done <"$META_DIR/meta"
-}
-
-last_tg_supervise=0
-while true; do
-    # Self-terminate if session or meta is gone
-    if ! tmux has-session -t "$_AE_SESSION" 2>/dev/null; then
-        _watchdog_log "session gone — exiting"
-        break
-    fi
-    [[ -f "$META_DIR/meta" ]] || { _watchdog_log "meta gone — exiting"; break; }
-
-    cycle=$((cycle + 1))
-    _watchdog_log "── cycle ${cycle} ──"
-    cycle_total=0
-    cycle_active=0
-    cycle_stale=0
-    cycle_dead=0
-    cycle_alerts=0
-    _load_agent_bins
-
-    # Collect live panes into an associative array for missing-pane detection
-    declare -A live_agents=()
-    while IFS='|' read -r pane agent proc pane_pid_val; do
-        [[ -n "$agent" ]] || continue
-        # Skip non-agent panes (no @ae_agent), the watchdog (and legacy monitor panes), and the events pane
-        case "$agent" in
-            ""|"(null)"|_watchdog|_shepherd|_loop|_events) continue ;;  # legacy pre-rename watchdog panes (transition)
-        esac
-        live_agents["$agent"]="$pane"
-        cycle_total=$((cycle_total + 1))
-
-        # Skip already-dead agents
-        if [[ -n "${dead_agents[$pane]:-}" ]]; then
-            cycle_dead=$((cycle_dead + 1))
-            _watchdog_log "  ${agent}  dead (no further checks)"
-            continue
-        fi
-
-        # Resolve the actual binary name from agent_bin.<slot> in meta (not the
-        # alias label, which is arbitrary user text). Needed by both dead check
-        # and throttle pattern catalog.
-        agent_bin="${agent_bins[$agent]:-${agent%%:*}}"
-
-        # 1. Dead check — pane's foreground command is a shell.
-        # But the agent might still be running as a descendant (e.g. when launched
-        # via bash -lc wrapper). Walk the process tree before declaring death.
-        case "$proc" in
-            bash|zsh|fish|sh|dash|"")
-                if _pane_has_descendant_named "$pane_pid_val" "$agent_bin"; then
-                    : # alive — fall through to active check
-                else
-                    dead_agents["$pane"]=1
-                    cycle_dead=$((cycle_dead + 1))
-                    cycle_alerts=$((cycle_alerts + 1))
-                    ae_emit_event "alert" "$agent" "" "agent process dead — dropped to shell"
-                    tmux display-message -d 10000 "[ae watchdog] $agent is DEAD — process dropped to shell" 2>/dev/null || true
-                    _watchdog_log "  ${agent}  DEAD — process dropped to shell (alerted)"
-                    continue
-                fi
-                ;;
-        esac
-
-        # 1b. Meta-agent (steward) sweep cadence — applies ONLY to the main agent
-        #     (workers/spawned agents in a meta session keep the normal watchdog).
-        #     The steward is a long-running SERVICE, so "idle between sweeps" is NORMAL,
-        #     not stale — don't nudge it to declare a quiet state or escalate it to a
-        #     stale alert. Instead: (a) prompt a sweep every SWEEP_SECS, and (b) guard
-        #     liveness via the steward's OWN heartbeat — it rewrites its state file on
-        #     each real sweep, so if that stops advancing while we keep nudging (model
-        #     stall / API throttle / wedged), raise ONE alert (cleared on recovery).
-        #     The dead-check above + missing-pane check (step 8) still catch a
-        #     dead/vanished steward. This is the explicit cadence, not the stale-watchdog.
-        if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && (( SWEEP_SECS > 0 )); then
-            now_epoch="$(date +%s)"
-            # Heartbeat liveness (live-but-not-sweeping detection). The steward rewrites
-            # its state file on each real sweep; we judge it only AFTER we've prompted
-            # at least one sweep and given it a grace window — so an ABSENT file
-            # (never wrote a heartbeat) is caught too, not just a stale one.
-            # This is the file the contrib aemonitor helper writes atomically each
-            # sweep (~/.ae/sessions/<meta-agent>/meta-agent-state.json); they MUST match or
-            # the wedge check watches a file nobody writes and false-alarms.
-            hb_file="${META_DIR}/meta-agent-state.json"
-            hb=0
-            [[ -f "$hb_file" ]] && hb="$(stat -c %Y "$hb_file" 2>/dev/null || echo 0)"
-            wedge_secs=$((SWEEP_SECS * 2 + 60))
-            first_nudge="${first_sweep_nudge[$pane]:-0}"
-            if (( hb > 0 && now_epoch - hb <= wedge_secs )); then
-                # Fresh heartbeat → recovery. The WATCHDOG raised the alert, so the watchdog
-                # clears it (emit alert-cleared so _agent_alert_reason / ae list stops
-                # showing it even on a silent sweep). Clear via the in-memory latch
-                # (fast path) OR, once per watchdog lifetime, reconcile the DURABLE event
-                # log — so a watchdog restart that lost the latch after alerting still
-                # emits a clear. Idempotent: once cleared it's the newest event, so a
-                # re-scan finds no active alert.
-                if [[ -n "${meta_wedge_alerted[$pane]:-}" ]]; then
-                    unset 'meta_wedge_alerted[$pane]'
-                    meta_reconciled["$pane"]=1
-                    ae_emit_event "alert-cleared" "$agent" "" "meta-agent sweeping again (heartbeat resumed)"
-                    _watchdog_log "  ${agent}  meta-agent — wedge cleared (heartbeat fresh)"
-                elif [[ -z "${meta_reconciled[$pane]:-}" ]]; then
-                    meta_reconciled["$pane"]=1
-                    if [[ -n "$(_agent_alert_reason "$META_DIR/events.jsonl" "$agent" "$_AE_SESSION")" ]]; then
-                        ae_emit_event "alert-cleared" "$agent" "" "meta-agent sweeping again (heartbeat resumed)"
-                        _watchdog_log "  ${agent}  meta-agent — stale wedge alert reconciled + cleared (post-restart)"
-                    fi
-                fi
-            elif (( first_nudge > 0 && now_epoch - first_nudge > wedge_secs )); then
-                # We've prompted long enough to expect a heartbeat, but it is stale
-                # OR absent → live-but-not-sweeping. (Summary deliberately avoids the
-                # 'throttl'/'dead'/'missing' substrings so _agent_alert_reason ranks
-                # it high — it also has an explicit 'not sweeping' case.)
-                if [[ -z "${meta_wedge_alerted[$pane]:-}" ]]; then
-                    meta_wedge_alerted["$pane"]=1
-                    cycle_alerts=$((cycle_alerts + 1))
-                    if (( hb > 0 )); then
-                        wedge_detail="no heartbeat for $(((now_epoch - hb) / 60))m"
-                    else
-                        wedge_detail="never wrote a heartbeat in $(((now_epoch - first_nudge) / 60))m of sweep prompts"
-                    fi
-                    ae_emit_event "alert" "$agent" "" "meta-agent not sweeping — ${wedge_detail} (may be stuck)"
-                    tmux display-message -d 10000 "[ae watchdog] $agent (meta-agent) not sweeping — may be stuck" 2>/dev/null || true
-                    _watchdog_log "  ${agent}  meta-agent — WEDGE alert (${wedge_detail})"
-                fi
-            fi
-            # Sweep cadence. Record the FIRST nudge time so the heartbeat guard above
-            # has a reference point even before any state file exists.
-            last_sweep="${last_sweep_nudge[$pane]:-0}"
-            if (( now_epoch - last_sweep >= SWEEP_SECS )); then
-                [[ "${first_sweep_nudge[$pane]:-0}" -eq 0 ]] && first_sweep_nudge["$pane"]="$now_epoch"
-                env AE_SENDER_OVERRIDE=watchdog \
-                    _AE_EVENT_ACTION=nudge \
-                    _AE_EVENT_SUMMARY="sweep cadence" \
-                    "${META_DIR}/send" "$agent" \
-                    "Run your sweep now: ae list --json, diff your state file, and report ONLY new/changed attention to Clemens via say (stay silent if nothing changed). Stay in 'working'." 2>/dev/null || true
-                last_sweep_nudge["$pane"]="$now_epoch"
-                _watchdog_log "  ${agent}  meta-agent — sweep nudge sent (every ${SWEEP_SECS}s)"
-            else
-                _watchdog_log "  ${agent}  meta-agent — next sweep in $((SWEEP_SECS - (now_epoch - last_sweep)))s"
-            fi
-            cycle_active=$((cycle_active + 1))
-            continue
-        fi
-
-        # Pre-check: one pane buffer capture per cycle, drives both hash check
-        # (step 4) and throttle detection (step 3). Compute done epoch + throttle
-        # state up front so the priority branches (done, throttled) can react
-        # before the pane-hash early-continues mask them visually.
-        now_epoch="$(date +%s)"
-        pane_buf="$(tmux capture-pane -p -J -S -40 -E - -t "$pane" 2>/dev/null || true)"
-        hash="$(printf '%s' "$pane_buf" | md5sum | cut -d' ' -f1)"
-        quiet_row="$(_agent_quiet_reason "$agent")"
-        # Throttle detection AND streak clear up front: streak resets on every
-        # non-throttled cycle regardless of which branch the agent exits on.
-        if _buf_shows_throttle "$pane_buf" "$agent_bin"; then
-            is_throttled=1
-        else
-            is_throttled=0
-            if [[ -n "${throttle_streak[$pane]:-}" ]]; then
-                ae_emit_event "throttle-cleared" "$agent" "" "throttling cleared after ${throttle_streak[$pane]} cycles"
-                _watchdog_log "  ${agent}  throttle cleared after ${throttle_streak[$pane]} cycles"
-                unset 'throttle_streak[$pane]'
-            fi
-        fi
-
-        # 2. Declared quiet state — "leave me alone" signal from the agent.
-        #    Quiet states: done, waiting-user, blocked. A quiet state is
-        #    invalidated by a newer ae event mentioning the agent (enforced by
-        #    _agent_quiet_reason returning empty in that case).
-        #
-        #    done is EVENT-ONLY quiet: pane churn (scrollback, resize, redraws,
-        #    escape sequences) never invalidates it. Silent work after done is
-        #    the agent's discipline problem; if they resume they should emit an
-        #    ae event.
-        #
-        #    waiting-user / blocked yield to pane activity, because the human
-        #    usually replies directly in the pane (no events.jsonl entry — only
-        #    a pane-hash change). Honour the quiet state only while the pane is
-        #    untouched since the declaration; once it changes, fall through to
-        #    the normal active/recent/stale branches so a post-reply hang is
-        #    still caught.
-        if [[ -n "$quiet_row" ]]; then
-            IFS=$'\t' read -r quiet_reason quiet_key <<<"$quiet_row"
-            if [[ "$quiet_reason" == "done" ]]; then
-                cycle_active=$((cycle_active + 1))
-                nudge_count["$pane"]=0
-                _watchdog_log "  ${agent}  done (reported complete) — skip"
-                continue
-            fi
-            quiet_decision="$(_quiet_pane_decision "$hash" "${quiet_base_key[$pane]:-}" "${quiet_base_hash[$pane]:-}" "$quiet_key")"
-            case "$quiet_decision" in
-                arm)
-                    # First cycle observing this declaration — baseline the pane
-                    # (echo included) and honour the quiet state.
-                    quiet_base_key["$pane"]="$quiet_key"
-                    quiet_base_hash["$pane"]="$hash"
-                    cycle_active=$((cycle_active + 1))
-                    nudge_count["$pane"]=0
-                    _watchdog_log "  ${agent}  ${quiet_reason} (declared) — skip"
-                    continue
-                    ;;
-                hold)
-                    cycle_active=$((cycle_active + 1))
-                    nudge_count["$pane"]=0
-                    _watchdog_log "  ${agent}  ${quiet_reason} (declared) — skip"
-                    continue
-                    ;;
-                yield) : ;; # pane changed since baseline → no longer quiet, fall through
-            esac
-        fi
-
-        # 3. Throttled — upstream rate limit / overload visible in pane. React
-        #    BEFORE active/recent so the alert cadence (THROTTLE_ALERT_CYCLES *
-        #    INTERVAL) starts immediately. If we waited until after active/recent,
-        #    the alert would fire only after the full stale window expired —
-        #    breaking the documented threshold.
-        if (( is_throttled )); then
-            prev_streak="${throttle_streak[$pane]:-0}"
-            if (( prev_streak == 0 )); then
-                ae_emit_event "throttled" "$agent" "" "upstream throttling detected — pausing nudges"
-                _watchdog_log "  ${agent}  THROTTLED — pausing nudges"
-            fi
-            throttle_streak["$pane"]=$((prev_streak + 1))
-            if (( throttle_streak[$pane] == THROTTLE_ALERT_CYCLES )); then
-                ae_emit_event "alert" "$agent" "" "throttled for $((THROTTLE_ALERT_CYCLES * INTERVAL))s — may need attention"
-                tmux display-message -d 10000 "[ae watchdog] $agent throttled persistently" 2>/dev/null || true
-                cycle_alerts=$((cycle_alerts + 1))
-                _watchdog_log "  ${agent}  THROTTLED — persistent (${THROTTLE_ALERT_CYCLES} cycles), alert raised"
-            fi
-            # Update hash even when throttled so a later pane change (recovery)
-            # is detected as activity rather than a stale "first time" hash diff.
-            prev_hash["$pane"]="$hash"
-            last_hash_change["$pane"]="$now_epoch"
-            cycle_active=$((cycle_active + 1))
-            nudge_count["$pane"]=0
-            continue
-        fi
-
-        # 4. Active — pane content hash changed since last cycle
-        if [[ "$hash" != "${prev_hash[$pane]:-}" ]]; then
-            prev_hash["$pane"]="$hash"
-            last_hash_change["$pane"]="$now_epoch"
-            nudge_count["$pane"]=0
-            cycle_active=$((cycle_active + 1))
-            _watchdog_log "  ${agent}  active (pane hash changed)"
-            continue
-        fi
-
-        # 5. Recently visible — pane changed within stale window (covers human
-        #    interaction with quiet/static responses they are still reading)
-        last_change="${last_hash_change[$pane]:-0}"
-        if (( last_change > 0 && now_epoch - last_change < STALE_SECS )); then
-            cycle_active=$((cycle_active + 1))
-            _watchdog_log "  ${agent}  recently visible ($((now_epoch - last_change))s ago) — skip"
-            continue
-        fi
-
-        # 6. Recently alive — recent event from this actor
-        event_age="$(_last_event_age "$agent")"
-        if (( event_age < STALE_SECS )); then
-            cycle_active=$((cycle_active + 1))
-            _watchdog_log "  ${agent}  recent ae activity (${event_age}s) — skip"
-            continue
-        fi
-
-        # 7. Stale — nudge or escalate
-        cycle_stale=$((cycle_stale + 1))
-        count="${nudge_count[$pane]:-0}"
-        stale_min_num=$(( event_age / 60 ))
-        if (( stale_min_num > 9999 )); then
-            stale_display="no recent events"
-        else
-            stale_display="idle ${stale_min_num}m"
-        fi
-        if (( count < MAX_NUDGES )); then
-            # Quote the session goal (if set) so an idle agent is reminded what
-            # the session is FOR, not just that it went quiet.
-            goal_line="$(_watchdog_meta_value goal)"
-            [[ -n "$goal_line" ]] && goal_line="Session goal: ${goal_line}. "
-            env AE_SENDER_OVERRIDE=watchdog \
-                _AE_EVENT_ACTION=nudge \
-                _AE_EVENT_SUMMARY="${stale_display}, no recent ae activity" \
-                "${META_DIR}/send" "$agent" \
-                "${goal_line}Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: ${META_DIR}/state <waiting-user|blocked|done> \"<reason>\"" 2>/dev/null || true
-            nudge_count["$pane"]=$((count + 1))
-            _watchdog_log "  ${agent}  STALE (${stale_display}) — nudged ($((count + 1))/${MAX_NUDGES})"
-        elif (( count == MAX_NUDGES )); then
-            ae_emit_event "alert" "$agent" "" "max nudges reached (${stale_display}), needs attention"
-            tmux display-message -d 10000 "[ae watchdog] $agent may need attention — stale after ${MAX_NUDGES} nudges" 2>/dev/null || true
-            nudge_count["$pane"]=$((count + 1))
-            cycle_alerts=$((cycle_alerts + 1))
-            _watchdog_log "  ${agent}  STALE — max nudges reached, alert raised"
-        else
-            _watchdog_log "  ${agent}  STALE — already alerted, waiting for activity"
-        fi
-
-    done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}' 2>/dev/null)
-
-    # 8. Missing pane check — registered agents whose panes no longer exist
-    while IFS='=' read -r key val; do
-        [[ "$key" == agent.* ]] || continue
-        agent_ref="${val%%:*}:$(echo "${val#*:}" | cut -d: -f1)"
-        if [[ -z "${live_agents[$agent_ref]:-}" && -z "${alerted_missing[$agent_ref]:-}" ]]; then
-            alerted_missing["$agent_ref"]=1
-            ae_emit_event "alert" "$agent_ref" "" "pane missing — agent no longer visible in session"
-            tmux display-message -d 10000 "[ae watchdog] $agent_ref pane is MISSING" 2>/dev/null || true
-            _watchdog_log "  ${agent_ref}  MISSING — pane no longer in session"
-        fi
-    done < "$META_DIR/meta"
-
-    # 9. Recover pending session IDs (codex/gemini/opencode post-launch capture retry)
-    AE_PATH_BIN="$(grep '^ae_path=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
-    if [[ -n "$AE_PATH_BIN" && -x "$AE_PATH_BIN" ]]; then
-        while IFS=$'\t' read -r r_kind r_slot r_agent r_tool r_captured; do
-            [[ "$r_kind" == "ok" && -n "$r_captured" ]] || continue
-            ae_emit_event "recover" "$r_agent" "$r_captured" "captured ${r_tool} session id (${r_captured:0:8})"
-            _watchdog_log "  ${r_agent}  RECOVERED ${r_tool} session id ${r_captured:0:8}"
-        done < <("$AE_PATH_BIN" _recover-pending "$_AE_SESSION" 2>/dev/null || true)
-    fi
-
-    # 10. Telegram bridge supervision — best-effort revive of the machine-global
-    #     daemon if it died while this session's watchdog is alive. Throttled to
-    #     TG_SUPERVISE_SECS. The revive runs the autostart path (respects
-    #     [telegram] enabled, never flips it) and is idempotent/flock-guarded, so
-    #     concurrent watchdogs across sessions are safe. Fully silent + non-fatal.
-    if (( TG_SUPERVISE_SECS > 0 )) && [[ -n "${AE_PATH_BIN:-}" && -x "${AE_PATH_BIN:-}" ]]; then
-        now_epoch="$(date +%s)"
-        if (( now_epoch - last_tg_supervise >= TG_SUPERVISE_SECS )); then
-            last_tg_supervise=$now_epoch
-            # Propagate this session's tmux server (mirrors spawn/retire) so the
-            # bridge is checked/spawned on the SAME server the session uses —
-            # otherwise it'd hit the default server and `ae telegram stop` under
-            # the intended server would miss it.
-            tg_srv="$(grep '^tmux_server=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
-            if [[ -n "$tg_srv" ]]; then
-                AE_TMUX_SERVER="$tg_srv" "$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true
-            else
-                "$AE_PATH_BIN" telegram _supervise >/dev/null 2>&1 || true
-            fi
-        fi
-    fi
-
-    # Push live status into the tmux user options: health → status-right,
-    # branch+dirty → status-left (after the static path).
-    if (( cycle_dead > 0 )); then
-        glyph="✖"
-    elif (( cycle_stale > 0 )); then
-        glyph="⚠"
-    else
-        glyph="●"
-    fi
-    _watchdog_set_status @ae_watchdog_status "[watch ${glyph} ${cycle_active}/${cycle_total}]"
-    _watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"
-
-    sleep "$INTERVAL"
-done
-
-rm -f "$PIDFILE"
-LOOPEOF
-    chmod 0700 "${AE_META}/watchdog"
+WDPROLOGUE
+        declare -f _watchdog_is_running _set_meta_kv _unset_meta_kv _set_meta_watchdog \
+            _monitor_find_pane _monitor_ensure_events_pane _watchdog_ensure_monitor _watchdog_reap_legacy_one \
+            _watchdog_reap_legacy _watchdog_restore_status_right _watchdog_stop _watchdog_status \
+            _watchdog_start _last_event_age _latest_relevant_event _agent_quiet_reason \
+            _quiet_pane_decision _watchdog_meta_value _watchdog_trim _watchdog_git \
+            _watchdog_branch_segment _watchdog_set_status _watchdog_log _pane_has_descendant_named \
+            _buf_shows_throttle _pane_shows_throttle _load_agent_bins helper_watchdog_main
+        printf 'helper_watchdog_main "$@"\n'
+    } >"${AE_META}/watchdog.tmp.$$"
+    chmod 0700 "${AE_META}/watchdog.tmp.$$"
+    mv "${AE_META}/watchdog.tmp.$$" "${AE_META}/watchdog"
 
     # Deprecated 'loop' helper: thin wrapper that forwards to 'watchdog'. Keeps the
     # old direct path (~/.ae/sessions/<name>/loop start|stop|status) working for
