@@ -1089,21 +1089,28 @@ read_session_meta() {
     fi
 }
 
+# Locked single-key meta write. Serializes on the same ${meta_file}.lock that the
+# generated helpers' ae_meta_set and the watchdog's meta writer use — without it, a
+# refresh could read old meta and mv it back OVER a concurrent helper write (e.g. an
+# agent setting the session goal mid-refresh), silently dropping that update. The
+# temp lives next to the meta file (same filesystem → atomic mv) and the read-modify-
+# write happens entirely inside the lock.
 set_session_meta_value() {
     local meta_file="$1" key="$2" value="$3"
-    local tmp
-    tmp="$(mktemp)"
-    awk -F= -v key="$key" -v value="$value" '
-        BEGIN { updated = 0 }
-        $1 == key { print key "=" value; updated = 1; next }
-        { print }
-        END {
-            if (!updated) {
-                print key "=" value
+    {
+        flock -w 5 200 || return 1
+        local tmp="${meta_file}.tmp.$$"
+        awk -F= -v key="$key" -v value="$value" '
+            BEGIN { updated = 0 }
+            $1 == key { print key "=" value; updated = 1; next }
+            { print }
+            END {
+                if (!updated) {
+                    print key "=" value
+                }
             }
-        }
-    ' "$meta_file" >"$tmp"
-    mv "$tmp" "$meta_file"
+        ' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
+    } 200>"${meta_file}.lock"
 }
 
 sync_session_assets() {
@@ -1459,20 +1466,25 @@ _resolve_session_dir() {
     fi
 }
 
-# Print the sub-line after a session row showing current ae version + last active.
-# $1 = meta_blob (full meta file contents), $2 = session directory,
+# Print the sub-line after a session row showing goal + current ae version +
+# last active. $1 = meta_blob (full meta file contents), $2 = session directory,
 # $3 = optional attention suffix (e.g. a declared state like "waiting-user").
 _print_session_meta_line() {
     local blob="$1" sess_dir="$2" attn="${3:-}"
-    local ae_ver active_ts active_str
+    local ae_ver active_ts active_str goal goal_prefix=""
     ae_ver="$(echo "$blob" | sed -n 's/^ae_version=//p')"
     ae_ver="${ae_ver:-?}"
+    goal="$(echo "$blob" | sed -n 's/^goal=//p' | head -1)"
+    if [[ -n "$goal" ]]; then
+        ((${#goal} > 60)) && goal="${goal:0:59}…"
+        goal_prefix="goal: ${goal} · "
+    fi
     active_ts="$(_session_active_epoch "$sess_dir")"
     active_str="$(format_relative_time "$active_ts")"
     if [[ -n "$attn" ]]; then
-        printf "  ae %s · active %s · attn:%s\n" "$ae_ver" "$active_str" "$attn"
+        printf "  %sae %s · active %s · attn:%s\n" "$goal_prefix" "$ae_ver" "$active_str" "$attn"
     else
-        printf "  ae %s · active %s\n" "$ae_ver" "$active_str"
+        printf "  %sae %s · active %s\n" "$goal_prefix" "$ae_ver" "$active_str"
     fi
 }
 
@@ -1826,9 +1838,13 @@ _list_session_json() {
         na="true"
         at="\"$(_json_escape "$attn")\""
     fi
-    printf '{"name":"%s","status":"%s","mode":"%s","origin":"%s","work_dir":"%s","last_active_epoch":%s,"needs_attention":%s,"attention":%s,"attention_rank":%s,"agents":[' \
+    # Session goal (set via the 'goal' helper) — additive field; null when unset.
+    local goal gj="null"
+    goal="$(echo "$blob" | sed -n 's/^goal=//p' | head -1)"
+    [[ -n "$goal" ]] && gj="\"$(_json_escape "$goal")\""
+    printf '{"name":"%s","status":"%s","mode":"%s","origin":"%s","work_dir":"%s","goal":%s,"last_active_epoch":%s,"needs_attention":%s,"attention":%s,"attention_rank":%s,"agents":[' \
         "$(_json_escape "$name")" "$status" "$(_json_escape "$mode")" "$(_json_escape "$origin")" \
-        "$(_json_escape "$workdir")" "$(_session_active_epoch "$sess_dir")" "$na" "$at" "$(_attn_rank "$attn")"
+        "$(_json_escape "$workdir")" "$gj" "$(_session_active_epoch "$sess_dir")" "$na" "$at" "$(_attn_rank "$attn")"
     local _afirst=true mk mv ref sid alive st rs
     while IFS='=' read -r mk mv; do
         [[ "$mk" == agent.* ]] || continue
@@ -5341,6 +5357,13 @@ ${sessions_dir}/memo tail 5
 
 Memo entries are append-only and stored in \`${sessions_dir}/memo.tsv\`. Use memo for durable shared context, not full chat transcripts.
 
+The session can carry a one-line goal — what this session is FOR. It shows in \`ae list\` and the watchdog quotes it when nudging idle agents:
+\`\`\`bash
+${sessions_dir}/goal                       # show the current session goal
+${sessions_dir}/goal "ship the PR for X"   # set it
+${sessions_dir}/goal --clear               # remove it
+\`\`\`
+
 When another agent sends you a question, task, or review request, reply via the exact \`reply\` or \`send\` command included in that message:
 \`\`\`bash
 ${sessions_dir}/send "<their_agent_name>" "your reply"
@@ -6100,6 +6123,7 @@ PRESERVED_WATCHDOG=""
 PRESERVED_STATUS_RIGHT_PREV=""
 PRESERVED_STATUS_RIGHT_WAS_SESSION=""
 PRESERVED_SESSION_ID=""
+PRESERVED_GOAL=""
 if [[ -f "${AE_META}/meta" ]]; then
     PRESERVED_WATCHDOG="$(grep '^watchdog=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
     # Canonical-wins: only fall back to the legacy 'loop=' key when 'watchdog=' is
@@ -6109,6 +6133,7 @@ if [[ -f "${AE_META}/meta" ]]; then
     PRESERVED_STATUS_RIGHT_PREV="$(grep '^status_right_prev=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
     PRESERVED_STATUS_RIGHT_WAS_SESSION="$(grep '^status_right_was_session=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
     PRESERVED_SESSION_ID="$(grep '^session_id=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    PRESERVED_GOAL="$(grep '^goal=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
 fi
 # session_id is a stable UUID for the ae session, separate from the
 # human-readable name. Persists across rename + transfer. Used by external
@@ -6134,6 +6159,8 @@ EOF
 # Converge on the canonical 'watchdog' key (value preserved from 'watchdog=' or
 # legacy 'loop=' key — see PRESERVED_WATCHDOG above).
 [[ -n "$PRESERVED_WATCHDOG" ]] && echo "watchdog=${PRESERVED_WATCHDOG}" >>"${AE_META}/meta"
+# Preserve the session goal (set via the 'goal' helper) across resume.
+[[ -n "$PRESERVED_GOAL" ]] && echo "goal=${PRESERVED_GOAL}" >>"${AE_META}/meta"
 # Config-driven (re-read every start/resume): mark the monitoring hub so its watchdog
 # runs the sweep-cadence instead of the stale-nudge watchdog.
 case "$META_AGENT_CFG" in
@@ -6604,6 +6631,44 @@ ae_submit_pasted_message() {
         fi
     fi
 }
+
+# --- session meta key/value (locked) -------------------------------------
+# Shared read/write for keys in this session's meta file. Writes serialize on
+# meta.lock (same lock the watchdog's meta writer uses) so concurrent helpers
+# can't clobber each other; last-write-wins per key. Values are single-line.
+
+ae_meta_get() {
+    grep "^${1}=" "${_AE_META_DIR}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true
+}
+
+ae_meta_set() {
+    local key="$1" value="$2"
+    local meta_file="${_AE_META_DIR}/meta"
+    [[ -f "$meta_file" ]] || return 1
+    value="${value//$'\r'/}"
+    value="${value//$'\n'/ }"
+    {
+        flock -w 5 200 || exit 1
+        local tmp="${meta_file}.tmp.$$"
+        awk -F= -v k="$key" -v v="$value" '
+            BEGIN { updated = 0 }
+            $1 == k { print k "=" v; updated = 1; next }
+            { print }
+            END { if (!updated) print k "=" v }
+        ' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
+    } 200>"${meta_file}.lock"
+}
+
+ae_meta_unset() {
+    local key="$1"
+    local meta_file="${_AE_META_DIR}/meta"
+    [[ -f "$meta_file" ]] || return 0
+    {
+        flock -w 5 200 || exit 1
+        local tmp="${meta_file}.tmp.$$"
+        awk -F= -v k="$key" '$1 != k { print }' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
+    } 200>"${meta_file}.lock"
+}
 LIBEOF
     chmod 0700 "${AE_META}/_lib"
 
@@ -6997,6 +7062,55 @@ case "$cmd" in
 esac
 MEMOEOF
     chmod 0700 "${AE_META}/memo"
+
+    # Helper: goal [text|--clear] — the session's one-line objective. Stored as
+    # 'goal=' in session meta (locked write, survives resume via the preserve
+    # block), shown in 'ae list' (table sub-line + JSON), and quoted by the
+    # watchdog's stale nudge so idle agents are reminded what the session is FOR.
+    cat >"${AE_META}/goal" <<'GOALEOF'
+#!/usr/bin/env bash
+source "$(cd "$(dirname "$0")" && pwd)/_lib"
+
+usage() {
+    echo "Usage: goal            # show the session goal" >&2
+    echo "       goal <text>     # set it (one line)" >&2
+    echo "       goal --clear    # remove it" >&2
+    exit 1
+}
+
+case "${1:-}" in
+    "")
+        current="$(ae_meta_get goal)"
+        if [[ -n "$current" ]]; then
+            printf '%s\n' "$current"
+        else
+            echo "(no goal set)"
+        fi
+        ;;
+    --clear)
+        [[ $# -eq 1 ]] || usage
+        ae_meta_unset goal
+        ae_emit_event "goal" "" "" "goal cleared"
+        echo "Goal cleared."
+        ;;
+    --help | -h)
+        usage
+        ;;
+    *)
+        text="$*"
+        # One printable line only: newlines/tabs become spaces, every other control
+        # byte (ESC, BEL, …) is dropped. The value fans out to meta (line-oriented),
+        # events.jsonl + list --json (escapers don't cover C0 controls), the list
+        # table, and the watchdog nudge — none of which may carry raw controls.
+        text="$(printf '%s' "$text" | tr '\n\t' '  ' | tr -d '[:cntrl:]')"
+        [[ -n "$text" ]] || usage
+        ae_meta_set goal "$text" || { echo "Error: could not write session meta" >&2; exit 1; }
+        ae_emit_event "goal" "" "" "$text"
+        echo "Goal set: $text"
+        ;;
+esac
+GOALEOF
+    chmod 0700 "${AE_META}/goal"
 
     # Helper: peek <target> [lines] — capture recent output from another agent's pane
     cat >"${AE_META}/peek" <<'PEEKEOF'
@@ -8144,11 +8258,15 @@ while true; do
             stale_display="idle ${stale_min_num}m"
         fi
         if (( count < MAX_NUDGES )); then
+            # Quote the session goal (if set) so an idle agent is reminded what
+            # the session is FOR, not just that it went quiet.
+            goal_line="$(_watchdog_meta_value goal)"
+            [[ -n "$goal_line" ]] && goal_line="Session goal: ${goal_line}. "
             env AE_SENDER_OVERRIDE=watchdog \
                 _AE_EVENT_ACTION=nudge \
                 _AE_EVENT_SUMMARY="${stale_display}, no recent ae activity" \
                 "${META_DIR}/send" "$agent" \
-                "Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: ${META_DIR}/state <waiting-user|blocked|done> \"<reason>\"" 2>/dev/null || true
+                "${goal_line}Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: ${META_DIR}/state <waiting-user|blocked|done> \"<reason>\"" 2>/dev/null || true
             nudge_count["$pane"]=$((count + 1))
             _watchdog_log "  ${agent}  STALE (${stale_display}) — nudged ($((count + 1))/${MAX_NUDGES})"
         elif (( count == MAX_NUDGES )); then

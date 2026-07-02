@@ -97,6 +97,8 @@ say <text>                     # push a free-text line to the human's Telegram c
 memo add [--topic t] <text>    # append durable shared session memory
 memo read [--topic t]          # read shared session memory
 memo tail [n]                  # show latest memo entries
+goal [text|--clear]            # the session's one-line objective (shows in `ae list`;
+                               # the watchdog quotes it when nudging idle agents)
 peek <agent> [lines]           # view recent output from an agent's pane (inspection only)
 peak <agent> [lines]           # alias for peek
 agents                         # list all agents with pane IDs

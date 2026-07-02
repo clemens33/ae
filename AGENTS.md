@@ -70,6 +70,7 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 | `memo add [--topic t] <text>` | Append durable shared session memory |
 | `memo read [--topic t]` | Read shared session memory |
 | `memo tail [n]` | Show latest memo entries |
+| `goal [text\|--clear]` | The session's one-line objective. Stored as `goal=` in session meta (locked write, survives resume), shown in `ae list` (sub-line + JSON `goal` field), quoted by the watchdog's stale nudge. Emits a `goal` event on change |
 | `peek <agent> [lines]` | Capture recent output from another agent's pane (default 80 lines; inspection only) |
 | `peak <agent> [lines]` | Alias for `peek` (common typo) |
 | `agents` | List all agents in the session with pane IDs and processes |

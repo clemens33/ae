@@ -1063,6 +1063,54 @@ assert_eq "events: memo emits event" \
     "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "memo"'* ]] && echo 1 || echo 0)"
 
+# ── goal: session objective (helper + meta + list + nudge) ───────────
+
+# Behavioral: locked meta key/value helpers from _lib (used by the goal helper).
+eval "$(awk '/^(ae_meta_get|ae_meta_set|ae_meta_unset)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_goal_dir="$(mktemp -d)"
+_AE_META_DIR="$_goal_dir"
+printf 'session=t\nmode=local\n' >"$_goal_dir/meta"
+ae_meta_set goal "ship the goal helper"
+assert_eq "meta_set: sets a new key" "ship the goal helper" "$(ae_meta_get goal)"
+ae_meta_set goal "revised objective"
+assert_eq "meta_set: overwrites in place (no duplicate key)" "1" \
+    "$(grep -c '^goal=' "$_goal_dir/meta")"
+assert_eq "meta_get: reads the updated value" "revised objective" "$(ae_meta_get goal)"
+ae_meta_set goal "$(printf 'multi\nline\tvalue')"
+assert_eq "meta_set: newlines flattened, meta stays line-oriented" "3" \
+    "$(wc -l <"$_goal_dir/meta")"
+assert_eq "meta_set: other keys untouched" "local" "$(ae_meta_get mode)"
+ae_meta_unset goal
+assert_eq "meta_unset: removes the key" "" "$(ae_meta_get goal)"
+rm -rf "$_goal_dir"
+unset _AE_META_DIR
+
+# Wiring: helper generated, event emitted, preserve-across-resume, list + nudge.
+assert_eq "goal: helper script generated + chmod" "1" \
+    "$([[ "$AE_SOURCE" == *'cat >"${AE_META}/goal"'* && "$AE_SOURCE" == *'chmod 0700 "${AE_META}/goal"'* ]] && echo 1 || echo 0)"
+assert_eq "goal: helper emits a goal event on set and clear" "1" \
+    "$([[ "$AE_SOURCE" == *'ae_emit_event "goal" "" "" "$text"'* && "$AE_SOURCE" == *'ae_emit_event "goal" "" "" "goal cleared"'* ]] && echo 1 || echo 0)"
+assert_eq "goal: preserved across meta rewrite (resume)" "1" \
+    "$([[ "$AE_SOURCE" == *"PRESERVED_GOAL=\"\$(grep '^goal='"* && "$AE_SOURCE" == *'echo "goal=${PRESERVED_GOAL}"'* ]] && echo 1 || echo 0)"
+assert_eq "goal: ae list JSON carries a goal field (null when unset)" "1" \
+    "$([[ "$AE_SOURCE" == *'"goal":%s'* && "$AE_SOURCE" == *'[[ -n "$goal" ]] && gj="\"$(_json_escape "$goal")\""'* ]] && echo 1 || echo 0)"
+assert_eq "goal: ae list table sub-line prefixes the goal" "1" \
+    "$([[ "$AE_SOURCE" == *'goal_prefix="goal: ${goal} · "'* ]] && echo 1 || echo 0)"
+assert_eq "goal: watchdog stale nudge quotes the session goal" "1" \
+    "$([[ "$AE_SOURCE" == *'goal_line="$(_watchdog_meta_value goal)"'* && "$AE_SOURCE" == *'${goal_line}Status check:'* ]] && echo 1 || echo 0)"
+
+# Codex IMPORTANT: goal text is stripped of ALL control bytes (ESC/BEL/…), not just
+# CR/LF/TAB — raw C0 controls would break list --json (escapers don't cover them)
+# and leak terminal controls into the table.
+assert_eq "goal: helper strips control bytes before storing" "1" \
+    "$([[ "$AE_SOURCE" == *"tr '\\n\\t' '  ' | tr -d '[:cntrl:]'"* ]] && echo 1 || echo 0)"
+
+# Codex IMPORTANT: the refresh-path meta writer must hold the same meta.lock as the
+# helpers' ae_meta_set — an unlocked read-modify-write could clobber a concurrent
+# goal write with stale contents.
+assert_eq "meta: set_session_meta_value serializes on meta.lock (refresh vs helper writes)" "1" \
+    "$([[ "$AE_SOURCE" == *'set_session_meta_value() {'* && "$AE_SOURCE" == *'} 200>"${meta_file}.lock"'* ]] && echo 1 || echo 0)"
+
 assert_eq "events: interrupt emits event" \
     "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "interrupt"'* ]] && echo 1 || echo 0)"

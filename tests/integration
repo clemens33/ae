@@ -648,6 +648,56 @@ assert_eq "doctor-sync: meta ae_path refreshed" "$AE" "$meta_ae_path"
 "$AE" end -f test-sync 2>/dev/null || true
 sleep 0.5
 
+# ── goal helper: set → list → survives resume ────────────────────────
+REPO_GOAL="$(setup_repo)"
+(cd "$REPO_GOAL" && "$AE" --local goaltest &) 2>/dev/null
+wait_for_session "goaltest"
+sleep 1
+
+GOAL_HELPER="$HOME/.ae/sessions/goaltest/goal"
+assert_eq "goal: helper exists and is executable" "1" "$([[ -x "$GOAL_HELPER" ]] && echo 1 || echo 0)"
+assert_contains "goal: unset prints placeholder" "(no goal set)" "$("$GOAL_HELPER")"
+"$GOAL_HELPER" "ship the goal slice" >/dev/null
+assert_eq "goal: set then show round-trips" "ship the goal slice" "$("$GOAL_HELPER")"
+assert_contains "goal: stored in session meta" "goal=ship the goal slice" \
+    "$(cat "$HOME/.ae/sessions/goaltest/meta")"
+assert_contains "goal: emits a goal event" '"action":"goal"' \
+    "$(cat "$HOME/.ae/sessions/goaltest/events.jsonl")"
+goal_list_out="$("$AE" list 2>/dev/null)"
+assert_contains "goal: shown in ae list sub-line" "goal: ship the goal slice" "$goal_list_out"
+goal_json_out="$("$AE" list --json 2>/dev/null)"
+assert_contains "goal: shown in ae list --json" '"goal":"ship the goal slice"' "$goal_json_out"
+
+# Survives resume: stop the session, start it again (meta gets rewritten).
+"$AE" stop goaltest 2>/dev/null || true
+sleep 1
+(cd "$REPO_GOAL" && "$AE" --local goaltest &) 2>/dev/null
+wait_for_session "goaltest"
+sleep 1
+assert_eq "goal: survives stop + resume (meta rewrite preserve)" "ship the goal slice" \
+    "$("$GOAL_HELPER")"
+"$GOAL_HELPER" --clear >/dev/null
+assert_contains "goal: --clear removes it" "(no goal set)" "$("$GOAL_HELPER")"
+goal_json_out2="$("$AE" list --json 2>/dev/null)"
+assert_contains "goal: JSON goal is null after clear" '"goal":null' "$goal_json_out2"
+
+# Control bytes (ESC, BEL) must be stripped at set time — raw C0 controls would
+# produce invalid list --json and leak terminal controls into the table.
+"$GOAL_HELPER" "$(printf 'bad\033[31mred\007bell')" >/dev/null
+goal_ctrl_shown="$("$GOAL_HELPER")"
+assert_eq "goal: control bytes stripped on set" "bad[31mredbell" "$goal_ctrl_shown"
+goal_ctrl_json="$("$AE" list --json 2>/dev/null)"
+assert_eq "goal: list --json carries no raw ESC/BEL bytes" "0" \
+    "$(printf '%s' "$goal_ctrl_json" | grep -c $'[\033\007]' || true)"
+if command -v python3 >/dev/null 2>&1; then
+    assert_eq "goal: list --json still parses as JSON (python3 json.tool)" "0" \
+        "$(printf '%s' "$goal_ctrl_json" | python3 -m json.tool >/dev/null 2>&1; echo $?)"
+fi
+
+# Clean up
+"$AE" end -f goaltest 2>/dev/null || true
+sleep 0.5
+
 # ── ae transfer — phase 1 failure paths ──────────────────────────────
 # Full end-to-end SSH-transfer testing requires a second machine. These
 # scenarios cover the failure paths cmd_transfer guards against, which

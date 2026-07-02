@@ -48,6 +48,7 @@ Only one helper touches tmux (`send`). Only one path mints request ids (`ae_trac
 | `memo add [--topic t] <text>` | Append to durable shared session memory. |
 | `memo read [--topic t]` | Read shared memory. |
 | `memo tail [n]` | Show latest entries. |
+| `goal [text\|--clear]` | The session's one-line objective — what this session is *for*. No args prints it. Shows in `ae list` (table sub-line and JSON `goal` field), survives resume, and the watchdog quotes it when nudging idle agents. Emits a `goal` event on set/clear. |
 
 `memo` is the right place for findings, decisions, and handoffs that should survive agent restarts. Don't dump chat transcripts.
 
