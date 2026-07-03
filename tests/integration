@@ -437,9 +437,14 @@ sleep 1
 spawned="$(grep '^agent\.spawned\.0=' "$HOME/.ae/sessions/test-spawn/meta" 2>/dev/null || echo "")"
 assert_contains "spawn: recorded in meta" "agent.spawned.0=dummy2:helper-0:" "$spawned"
 
-# Should now have 2 panes
-pane_count="$(tmux list-panes -t test-spawn 2>/dev/null | wc -l)"
-assert_eq "spawn: 2 panes after spawn" "2" "$pane_count"
+# Spawned worker lives in its OWN window (main window layout untouched):
+# session-wide 2 agent panes, main window still 1, new window named after role.
+pane_count="$(tmux list-panes -s -t test-spawn -F '#{@ae_agent}' 2>/dev/null | grep -c ':' || true)"
+assert_eq "spawn: 2 agent panes session-wide after spawn" "2" "$pane_count"
+main_win_panes="$(tmux list-windows -t test-spawn -F '#{window_name} #{window_panes}' 2>/dev/null | awk '$1=="test-spawn"{print $2; exit}' || true)"
+assert_eq "spawn: main window keeps its single pane" "1" "$main_win_panes"
+assert_contains "spawn: worker window named after its role" "helper-0" \
+    "$(tmux list-windows -t test-spawn -F '#{window_name}' 2>/dev/null)"
 
 # Alias-only helper resolution should target the unique spawned agent
 "$HOME/.ae/sessions/test-spawn/send" dummy2 "printf 'alias-hit\n'" 2>/dev/null || true
@@ -457,8 +462,8 @@ assert_contains "spawn: memo tail shows latest entry" "use sqlite for the demo" 
 assert_eq "spawn: memo file exists" "1" "$([[ -f "$HOME/.ae/sessions/test-spawn/memo.tsv" ]] && echo 1 || echo 0)"
 
 # Request/reply tracking should use the invoking pane identity, not the active pane
-main_pane="$(tmux list-panes -t test-spawn -F '#{pane_id} #{@ae_agent}' | awk '$2=="dummy:dummy"{print $1; exit}')"
-worker_pane="$(tmux list-panes -t test-spawn -F '#{pane_id} #{@ae_agent}' | awk '$2=="dummy2:helper-0"{print $1; exit}')"
+main_pane="$(tmux list-panes -s -t test-spawn -F '#{pane_id} #{@ae_agent}' | awk '$2=="dummy:dummy"{print $1; exit}')"
+worker_pane="$(tmux list-panes -s -t test-spawn -F '#{pane_id} #{@ae_agent}' | awk '$2=="dummy2:helper-0"{print $1; exit}')"
 TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/ask" dummy2 "check memo flow" 2>/dev/null || true
 req_id="$(tac "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | grep -m1 -E '"action":"(ask|review)"' | grep -oE '"ref":"[^"]+"' | cut -d'"' -f4)"
 wrong_reply_status=0
@@ -484,9 +489,25 @@ sleep 0.5
 wait_for_session "test-spawn"
 sleep 1
 
-# Should have 2 panes again (spawned agent restored)
-pane_count="$(tmux list-panes -t test-spawn 2>/dev/null | wc -l)"
-assert_eq "spawn: 2 panes after resume" "2" "$pane_count"
+# Spawned agent restored — again in its own window
+pane_count="$(tmux list-panes -s -t test-spawn -F '#{@ae_agent}' 2>/dev/null | grep -c ':' || true)"
+assert_eq "spawn: 2 agent panes after resume (worker in own window)" "2" "$pane_count"
+assert_contains "spawn: worker window restored on resume" "helper-0" \
+    "$(tmux list-windows -t test-spawn -F '#{window_name}' 2>/dev/null)"
+
+# Seed stale launch bookkeeping for the slot — retire must purge it, or a
+# reused spawned.0 accumulates duplicate launch_time lines and
+# read_launch_time_for_slot degrades to 0 (codex IMPORTANT).
+printf 'launch_time.spawned.0=1111\nlaunch_id.spawned.0=stale-uuid\n' >> "$HOME/.ae/sessions/test-spawn/meta"
+# Cross-window retire: kills the worker, its window, and the meta entry.
+"$HOME/.ae/sessions/test-spawn/retire" helper-0 2>/dev/null || true
+sleep 0.5
+assert_eq "retire: spawned meta entry removed" "0" \
+    "$(grep -c '^agent\.spawned\.0=' "$HOME/.ae/sessions/test-spawn/meta" 2>/dev/null || true)"
+assert_eq "retire: worker window gone" "0" \
+    "$(tmux list-windows -t test-spawn -F '#{window_name}' 2>/dev/null | grep -c 'helper-0' || true)"
+assert_eq "retire: purges stale launch_time/launch_id for the slot" "0" \
+    "$(grep -cE '^(launch_time|launch_id)\.spawned\.0=' "$HOME/.ae/sessions/test-spawn/meta" 2>/dev/null || true)"
 
 # Clean up
 "$AE" end -f test-spawn 2>/dev/null || true

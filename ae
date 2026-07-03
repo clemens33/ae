@@ -1722,7 +1722,7 @@ _session_attn_rollup() {
             bash | fish | zsh | sh | dash) _al["$ag"]="!" ;;
             *) _al["$ag"]="" ;;
         esac
-    done < <(tmux list-panes -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
+    done < <(tmux list-panes -s -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
     local a r
     for a in "${!_c[@]}"; do
         if [[ -z "${_al[$a]+x}" ]]; then
@@ -2060,7 +2060,7 @@ LISTHELP
                     bash | fish | zsh | sh | dash) _alive["$ae_agent"]="!" ;;
                     *) _alive["$ae_agent"]="" ;;
                 esac
-            done < <(tmux list-panes -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
+            done < <(tmux list-panes -s -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
             # Derived needs_attention rollup via the shared single-source
             # _session_attn_rollup (also used by `ae next` — same semantics, no
             # divergence). Called in THIS shell (not a subshell) so it fills the
@@ -2196,7 +2196,7 @@ cmd_status() {
         echo "── ${ae_agent} (${pane_id}) ──"
         tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -v '^$' | tail -15
         echo ""
-    done < <(tmux list-panes -t "$target" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
+    done < <(tmux list-panes -s -t "$target" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
     if [[ "$found" == false ]]; then
         echo "No agent panes in session '$target'."
     fi
@@ -5140,20 +5140,12 @@ _cmd_spawn() {
         return 1
     fi
 
-    # Split pane
+    # New window per worker: spawned agents get their own tmux window so the
+    # main window keeps the lead layout untouched and N parallel workers stay
+    # usable. -d: don't steal the caller's focus. (The window is renamed to
+    # the worker's role name after the meta flock resolves it.)
     local pane_id
-    if [[ "$layout" == "vertical" ]]; then
-        pane_id="$(tmux split-window -h -t "$session" -c "$work_dir" -P -F '#{pane_id}')"
-    else
-        pane_id="$(tmux split-window -v -t "$session" -c "$work_dir" -P -F '#{pane_id}')"
-    fi
-
-    # Rebalance layout
-    if [[ "$layout" == "vertical" ]]; then
-        tmux select-layout -t "$session" even-horizontal
-    else
-        tmux select-layout -t "$session" even-vertical
-    fi
+    pane_id="$(tmux new-window -d -t "${session}:" -c "$work_dir" -P -F '#{pane_id}')"
 
     # Register spawned agent in meta (flock-protected to prevent races)
     local session_id tool_kind next_idx slot launch_id
@@ -5179,9 +5171,11 @@ _cmd_spawn() {
         fi
     } 200>"$meta_dir/meta.lock"
 
-    # Label pane (after flock so spawn_name is resolved)
+    # Label pane + name the worker's window (after flock so spawn_name is
+    # resolved; explicit rename-window also disables tmux automatic-rename).
     tmux select-pane -t "$pane_id" -T "ae:${alias_name}:${spawn_name}"
     tmux set-option -p -t "$pane_id" @ae_agent "${alias_name}:${spawn_name}"
+    tmux rename-window -t "$pane_id" "$spawn_name" 2>/dev/null || true
 
     # Regenerate workspace.md from live panes
     regenerate_manifest "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$meta_dir"
@@ -5208,6 +5202,16 @@ _cmd_spawn() {
         sleep 1
         tmux select-pane -t "$pane_id"
         tmux_paste_submit "$pane_id" "$prompt"
+        # A booting TUI can swallow the quick post-paste Enter, leaving the
+        # prompt staged in the input box (live-dogfood find). Verify the text
+        # actually left the input; nudge Enter again while it lingers.
+        local _try
+        for _try in 1; do
+            sleep 1.5
+            tmux capture-pane -p -t "$pane_id" 2>/dev/null | tail -n 6 |
+                grep -qF "${prompt:0:40}" || break
+            tmux send-keys -t "$pane_id" Enter
+        done
     fi
 
     echo "Spawned ${alias_name}:${spawn_name} in pane $pane_id"
@@ -5266,7 +5270,7 @@ _cmd_retire() {
                 pane_in_session=true
                 break
             fi
-        done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
+        done < <(tmux list-panes -s -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
         if [[ "$pane_in_session" == false ]]; then
             echo "Error: pane '${target}' not found in session '${session}'" >&2
             return 1
@@ -5285,7 +5289,7 @@ _cmd_retire() {
                 pane_agent="$aagent"
                 bare_count=$((bare_count + 1))
             fi
-        done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
+        done < <(tmux list-panes -s -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
         if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
             resolved="$bare_match"
         elif [[ -z "$resolved" ]]; then
@@ -5339,17 +5343,16 @@ _cmd_retire() {
             return 1
         }
         local tmpfile="${meta_dir}/meta.tmp.$$"
-        grep -v -e "^${spawned_key}=" -e "^agent_bin\\.${spawned_slot}=" "$meta_dir/meta" >"$tmpfile"
+        grep -v -e "^${spawned_key}=" -e "^agent_bin\\.${spawned_slot}=" \
+            -e "^launch_id\\.${spawned_slot}=" -e "^launch_time\\.${spawned_slot}=" \
+            -e "^[a-z]*_launch_id\\.${spawned_slot}=" -e "^[a-z]*_launch_time\\.${spawned_slot}=" \
+            "$meta_dir/meta" >"$tmpfile"
         mv "$tmpfile" "$meta_dir/meta"
     } 200>"$meta_dir/meta.lock"
-
-    # Rebalance layout
-    local layout="${meta[layout]:-vertical}"
-    if [[ "$layout" == "vertical" ]]; then
-        tmux select-layout -t "$session" even-horizontal 2>/dev/null || true
-    else
-        tmux select-layout -t "$session" even-vertical 2>/dev/null || true
-    fi
+    # The worker's launch script is dead weight once the pane is gone.
+    rm -f "${meta_dir}/launch.${spawned_slot}.sh"
+    # (No layout rebalance: the worker lived in its own window — killing the
+    # pane closed that window; the main window's layout was never touched.)
 
     # Regenerate manifest
     CONFIG_FILE="${meta[config]:-}"
@@ -5396,6 +5399,10 @@ regenerate_manifest() {
 
     # Build agent rows from live panes (using @ae_agent option, immune to title overrides)
     local agent_rows=""
+    # local! — bash dynamic scoping: without it this read-loop CLOBBERS the
+    # CALLER's pane_id (_cmd_spawn's freshly created worker pane went empty →
+    # every later paste hit -t '' = the active pane; found via live dogfood).
+    local pane_id ae_agent
     while IFS=$'\t' read -r pane_id ae_agent; do
         [[ -n "$ae_agent" ]] || continue
         local alias_name="${ae_agent%%:*}"
@@ -5408,7 +5415,7 @@ regenerate_manifest() {
         tool_label="$(tool_name_from_cmd "${cmd:-$alias_name}")"
         agent_rows="${agent_rows}| ${alias_name}:${agent_name} | ${tool_label} | ${role} | ${pane_id} |
 "
-    done < <(tmux list-panes -t "$sess" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
+    done < <(tmux list-panes -s -t "$sess" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
 
     # Collect available aliases from config for spawn section
     local available_aliases=""
@@ -5552,7 +5559,8 @@ Without a message, just cancels current work. With a message, cancels then sends
 
 ## Spawn
 
-Add another agent to this workspace:
+Add another agent to this workspace (it gets its own tmux window, named
+after its role — the main window's layout is untouched):
 \`\`\`bash
 ${sessions_dir}/spawn <alias>:<name> [prompt]
 \`\`\`
@@ -5643,7 +5651,7 @@ send_agent_cmd() {
             if [[ -n "$prompt" ]]; then
                 (
                     sleep 3 &&
-                        if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} codex$"; then
+                        if [[ "$(pane_current_command "$pane")" == "codex" ]]; then
                             tmux select-pane -t "$pane"
                             tmux_paste_submit "$pane" "$prompt"
                         fi
@@ -5655,7 +5663,7 @@ send_agent_cmd() {
             if [[ -n "$prompt" ]]; then
                 (
                     sleep 3 &&
-                        if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} opencode$"; then
+                        if [[ "$(pane_current_command "$pane")" == "opencode" ]]; then
                             tmux select-pane -t "$pane"
                             tmux_paste_submit "$pane" "$prompt"
                         fi
@@ -6640,6 +6648,9 @@ helper_focus_main() {
         exit 1
     fi
     ae_resolve "$1" || exit 1
+    # Worker windows: switch to the pane's window first (select-pane alone
+    # does not change the viewed window).
+    tmux select-window -t "$AE_RESOLVED_PANE" 2>/dev/null || true
     tmux select-pane -t "$AE_RESOLVED_PANE"
     ae_emit_event "focus" "${AE_RESOLVED_AGENT:-$1}"
 }
@@ -6928,8 +6939,13 @@ _monitor_find_pane() {
 _monitor_ensure_events_pane() {
     MONITOR_EVENTS_PANE="$(_monitor_find_pane _events)"
     [[ -n "$MONITOR_EVENTS_PANE" ]] && return 0
-    MONITOR_EVENTS_PANE="$(tmux new-window -da -t "$_AE_SESSION" -n "ae-monitor" -P -F '#{pane_id}' \
-        "${META_DIR}/events-tail" 2>/dev/null)" || {
+    # Pin the monitor window at a high fixed index so it stays RIGHTMOST in
+    # the tmux footer — spawned worker windows slot in between it and the main
+    # window. Fallback: append-after-current if 99 is somehow taken.
+    MONITOR_EVENTS_PANE="$(tmux new-window -d -t "${_AE_SESSION}:99" -n "ae-monitor" -P -F '#{pane_id}' \
+        "${META_DIR}/events-tail" 2>/dev/null ||
+        tmux new-window -da -t "$_AE_SESSION" -n "ae-monitor" -P -F '#{pane_id}' \
+            "${META_DIR}/events-tail" 2>/dev/null)" || {
         echo "Error: could not create monitor window" >&2
         return 1
     }
@@ -8332,12 +8348,10 @@ if [[ "$RESUMING" == true ]]; then
 
     # Create panes for spawned agents
     for i in "${!SPAWNED_ALIASES[@]}"; do
-        local_id=""
-        if [[ "$LAYOUT" == "vertical" ]]; then
-            local_id="$(tmux split-window -h -t "$SESSION" -c "$WORK_DIR" -P -F '#{pane_id}')"
-        else
-            local_id="$(tmux split-window -v -t "$SESSION" -c "$WORK_DIR" -P -F '#{pane_id}')"
-        fi
+        # Spawned agents live in their own windows (matches _cmd_spawn — the
+        # main window keeps the lead/worker layout).
+        local_id="$(tmux new-window -d -t "${SESSION}:" -c "$WORK_DIR" -P -F '#{pane_id}')"
+        tmux rename-window -t "$local_id" "${SPAWNED_NAMES[$i]}" 2>/dev/null || true
         PANE_IDS+=("$local_id")
         tmux select-pane -t "$local_id" -T "ae:${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}"
         tmux set-option -p -t "$local_id" @ae_agent "${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}"

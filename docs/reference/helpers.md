@@ -67,8 +67,8 @@ Only one helper touches tmux (`send`). Only one path mints request ids (`ae_trac
 |---|---|
 | `focus <agent>` | Switch tmux focus to another pane. |
 | `interrupt <agent> [message]` | Cancel current generation, optionally send a replacement instruction. |
-| `spawn <alias:name> [prompt]` | Add a new agent to the workspace. Always pass a descriptive role name. |
-| `retire <agent>` | Remove a spawned agent — kills the pane, cleans meta, updates `workspace.md`. |
+| `spawn <alias:name> [prompt]` | Add a new agent to the workspace, in its own tmux window named after its role. Always pass a descriptive role name. |
+| `retire <agent>` | Remove a spawned agent — kills its pane (and window), cleans meta incl. launch bookkeeping, updates `workspace.md`. |
 
 ## Internal
 

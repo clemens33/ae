@@ -28,7 +28,7 @@ Just talk to your main agent. It already knows how to spawn others and coordinat
 - *"Spin up a pair programmer to help refactor auth."*
 - *"Ask codex to verify my test plan."*
 
-Agents pick descriptive names, show up in adjacent panes, and talk to each other through generated shell helpers — no manual wiring.
+Agents pick descriptive names, show up in own tmux windows, and talk to each other through generated shell helpers — no manual wiring.
 
 ## Check on agents without attaching
 

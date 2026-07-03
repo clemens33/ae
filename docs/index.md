@@ -36,7 +36,7 @@
 └──────────────────────────────┴──ae-mysession/send "claude...─┘
 ```
 
-Two agents in adjacent panes, talking to each other through generated shell helpers. A hidden monitor window streams the event log and runs the optional watchdog that keeps everything healthy.
+Two agents in own tmux windows, talking to each other through generated shell helpers. A hidden monitor window streams the event log and runs the optional watchdog that keeps everything healthy.
 
 ## Next
 

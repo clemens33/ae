@@ -52,7 +52,7 @@ ae                             # default session (named after directory)
 
 **Ask your agent to collaborate:**
 
-Just tell your agent what you need -- it knows how to spawn others and coordinate. For example: *"Get a second agent to review the changes in src/"* or *"Spin up a pair programmer to help refactor auth."* Agents pick descriptive names, show up in adjacent panes, and talk to each other directly.
+Just tell your agent what you need -- it knows how to spawn others and coordinate. For example: *"Get a second agent to review the changes in src/"* or *"Spin up a pair programmer to help refactor auth."* Agents pick descriptive names, show up in own tmux windows, and talk to each other directly.
 
 **Come back after a reboot:**
 ```bash
