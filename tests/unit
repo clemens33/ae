@@ -2216,6 +2216,13 @@ line' 'tab	separated' "with 'singlequotes'" "with \\backslash" ""; do
 done
 unset _t_val _t_quoted _t_roundtrip
 
+# Steward guard + spawned-drop visibility (transfer audit findings).
+assert_eq "transfer: refuses steward/meta-agent sessions with re-init guidance" "1" \
+    "$([[ "$AE_SOURCE" == *'meta_agent=true$'*'transfer is refused'* && "$AE_SOURCE" == *"'ae steward --init && ae steward' on the target machine"* ]] && echo 1 || echo 0)"
+
+assert_eq "resume: spawned agent with missing alias warns loudly instead of silent drop" "1" \
+    "$([[ "$AE_SOURCE" == *'NOT restored — alias'* && "$AE_SOURCE" == *'Entry preserved; add the alias and resume again.'* && "$AE_SOURCE" == *'UNRESOLVED_SPAWNED[$i]'* ]] && echo 1 || echo 0)"
+
 # Test 19 — _transfer_json_escape replicates ae_json_escape rules.
 assert_eq "transfer: json_escape escapes backslash" 'hello\\world' "$(_transfer_json_escape 'hello\world')"
 assert_eq "transfer: json_escape escapes double-quote" 'say \"hi\"' "$(_transfer_json_escape 'say "hi"')"

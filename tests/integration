@@ -489,11 +489,17 @@ sleep 0.5
 wait_for_session "test-spawn"
 sleep 1
 
+# Missing-alias preservation (review BLOCKER): seed a spawned entry whose
+# alias is NOT in the test config — resume must warn AND keep the entry.
+printf 'agent.spawned.7=missingalias:ghostworker:pending\n' >> "$HOME/.ae/sessions/test-spawn/meta"
+
 # Spawned agent restored — again in its own window
 pane_count="$(tmux list-panes -s -t test-spawn -F '#{@ae_agent}' 2>/dev/null | grep -c ':' || true)"
 assert_eq "spawn: 2 agent panes after resume (worker in own window)" "2" "$pane_count"
 assert_contains "spawn: worker window restored on resume" "helper-0" \
     "$(tmux list-windows -t test-spawn -F '#{window_name}' 2>/dev/null)"
+assert_eq "resume: missing-alias spawned entry preserved in rewritten meta" "1" \
+    "$(grep -c '=missingalias:ghostworker:' "$HOME/.ae/sessions/test-spawn/meta" 2>/dev/null || true)"
 
 # Seed stale launch bookkeeping for the slot — retire must purge it, or a
 # reused spawned.0 accumulates duplicate launch_time lines and

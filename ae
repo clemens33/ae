@@ -4644,6 +4644,17 @@ HELP
             return 1
         fi
     fi
+    # Steward guard (audit finding): a meta-agent session is machine-local by
+    # nature — transferring it silently breaks the source's Telegram routing
+    # (tg_find_steward) and spawns a rogue steward watching the WRONG fleet on
+    # the destination. Refuse in both directions; re-init on the target
+    # machine instead (ae steward --init && ae steward).
+    if grep -q '^meta_agent=true$' "${local_session_dir}/meta" 2>/dev/null; then
+        echo "Error: '$session' is a steward/meta-agent session — transfer is refused." >&2
+        echo "Stewards are machine-local (fleet routing + monitoring state). Run" >&2
+        echo "'ae steward --init && ae steward' on the target machine instead." >&2
+        return 1
+    fi
     # 3. Self-stop guard — applies in both directions. Pulling onto the local
     # machine while the user is inside the local same-name session would also
     # kill the running pane (the local session is the destination on pull, and
@@ -4671,6 +4682,15 @@ HELP
     if $pull; then
         if ! _transfer_remote_session_exists "$target" "$session"; then
             echo "Error: no session '$session' on $target (looked for ~/.ae/sessions/$session/meta)" >&2
+            return 1
+        fi
+        # Steward guard, pull side (review BLOCKER-adjacent): the source meta is
+        # REMOTE here — the local grep above cannot see it. Same refusal, same
+        # reason: pulling a steward creates a rogue local one and breaks the
+        # remote machine's fleet routing.
+        if [[ "$(_transfer_read_remote_meta_value "$target" "$session" meta_agent)" == "true" ]]; then
+            echo "Error: '$session' on $target is a steward/meta-agent session — transfer is refused." >&2
+            echo "Stewards are machine-local. Run 'ae steward --init && ae steward' locally instead." >&2
             return 1
         fi
     fi
@@ -8329,7 +8349,7 @@ for i in "${!WORKER_CMDS[@]}"; do
 done
 
 # Load spawned agents from previous session (resume only)
-declare -a SPAWNED_ALIASES=() SPAWNED_NAMES=() SPAWNED_CMDS=() SPAWNED_SESSION_IDS=()
+declare -a SPAWNED_ALIASES=() SPAWNED_NAMES=() SPAWNED_CMDS=() SPAWNED_SESSION_IDS=() UNRESOLVED_SPAWNED=()
 if [[ "$RESUMING" == true ]]; then
     sidx=0
     while true; do
@@ -8345,6 +8365,14 @@ if [[ "$RESUMING" == true ]]; then
             SPAWNED_NAMES+=("$sname")
             SPAWNED_CMDS+=("$scmd")
             SPAWNED_SESSION_IDS+=("$(resolve_agent_session_id "$scmd" "spawned.${sidx}")")
+        else
+            # Loud, not silent (audit finding): after a transfer the destination
+            # config may lack the alias — dropping the worker quietly loses the
+            # operator's intent. Preserve the raw entry so the meta rewrite
+            # below re-emits it and a later resume (with the alias added) can
+            # still restore the worker.
+            UNRESOLVED_SPAWNED+=("$spawned_entry")
+            echo "Warning: spawned agent '${salias}:${sname}' NOT restored — alias '${salias}' missing from this machine's ae config. Entry preserved; add the alias and resume again." >&2
         fi
         sidx=$((sidx + 1))
     done
@@ -8430,6 +8458,14 @@ done
 for i in "${!SPAWNED_ALIASES[@]}"; do
     echo "agent.spawned.${i}=${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}:${SPAWNED_SESSION_IDS[$i]}" >>"${AE_META}/meta"
     echo "agent_bin.spawned.${i}=$(extract_binary_from_cmd "${SPAWNED_CMDS[$i]}")" >>"${AE_META}/meta"
+done
+# Unresolved spawned entries (alias missing on this machine) survive the
+# rewrite verbatim, re-indexed after the resolved ones — a later resume with
+# the alias configured restores the worker (review BLOCKER: they were being
+# warned about and then silently deleted right here).
+_unres_base=${#SPAWNED_ALIASES[@]}
+for i in "${!UNRESOLVED_SPAWNED[@]}"; do
+    echo "agent.spawned.$((_unres_base + i))=${UNRESOLVED_SPAWNED[$i]}" >>"${AE_META}/meta"
 done
 [[ -n "$MAIN_LAUNCH_ID" ]] && echo "launch_id.main=${MAIN_LAUNCH_ID}" >>"${AE_META}/meta"
 for i in "${!WORKER_LAUNCH_IDS[@]}"; do

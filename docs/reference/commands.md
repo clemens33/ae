@@ -21,6 +21,7 @@ ae steward [--attach|--init]
                        Ensure the detached steward (meta-agent) is running; --attach
                        switches to it (--init scaffolds config + charter)
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
+ae transfer <name> <ssh-target> [--pull]  Move a stopped session (incl. Claude/Codex conversation files) to/from another machine
 ae end|rm [-f] [--purge-history|--keep-history] [name]
                        End session: commit, push to ae/<name>, remove ae state. KEEPS the
                        per-session claude/codex conversation files by default (token history);

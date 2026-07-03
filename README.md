@@ -79,6 +79,7 @@ ae stop my-feature             # pause, keep state — resume later with 'ae my-
 ae end my-feature              # commit + push to ae/my-feature, remove ae state (KEEPS the
                                # claude/codex conversation files; --purge-history to delete them)
 ae rm my-experiment            # same as ae end
+ae transfer my-feature vm.host # move a stopped session + agent conversations to another machine (--pull to fetch)
 ```
 
 ## Session helpers

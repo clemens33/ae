@@ -83,9 +83,44 @@ failures only, format: Outcome/Verified/Risks. Read-only — no edits."
 ~/.ae/sessions/myfeat/retire tests
 ```
 
+## Loop maturity levels (vocabulary)
+
+Borrowed from [loop-engineering](https://github.com/cobusgreyling/loop-engineering)
+to name what ae already does — useful when judging how much autonomy a loop
+(watchdog, steward, delegation round-trip) actually has:
+
+- **L0 — intent only**: a documented loop nobody runs.
+- **L1 — report**: the loop observes and reports; humans act. (Watchdog
+  alerts; steward passive monitoring.)
+- **L2 — assisted, gated**: the loop proposes concrete actions and a human
+  (or a *different* agent) verifies before anything changes. (Steward
+  suggestions; the lead→worker round-trip — the lead is the checker.)
+- **L3 — unattended**: the loop acts without a gate. **ae ships nothing at
+  L3 by design** — the steward suggests-never-dispatches, workers never
+  self-retire, nothing auto-merges.
+
+Two hard rules from the same playbook, already implicit in the contracts
+above, now explicit:
+
+- **Verifier ≠ implementer.** The agent that did the work never accepts it —
+  the lead reviews the worker's diff/output before `retire`; cross-model
+  review gates commits.
+- **Attempt cap.** A worker stuck after **3 fix attempts** on the same
+  failure stops and reports (`Need from lead: …`) instead of looping. The
+  lead escalates or re-scopes; nobody grinds silently.
+
+Named smells when reviewing a loop/charter/config change: *"same agent
+implements and verifies"*, *"no kill switch"* (every ae loop has one:
+`watchdog stop`, `snooze`/`drop objective`, `retire`), *"notifies
+regardless of findings"* (the steward's budgets/self-mute exist precisely
+against this).
+
 ## What ae deliberately does NOT do
 
 No model router or auto-selection (judgment call), no per-spawn model flags
 (aliases already encode tiers), no cost tracking, no auto-retire (destroys
 inspectability), no task queue (`events.jsonl`/`requests`/`memo` are enough),
 and the steward never dispatches workers on its own — it suggests, you decide.
+Auto-merge allowlists, attempt-count bookkeeping, and cost tracking are
+**deliberate non-goals** (see AGENTS.md "What ae is NOT"), not gaps — agents
+and humans own those judgments.
