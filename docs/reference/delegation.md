@@ -43,10 +43,15 @@ Keep it yourself when the hard part is judgment: architecture, ambiguous
 debugging, final integration, user-facing decisions — or when briefing the
 worker would require half your conversation (the hygiene gain is gone).
 
-Use your harness's **in-process subagents** (e.g. Claude Code's Task tool)
-for ephemeral same-harness read/research; use ae `spawn` when you want a
-different model/harness, a visible pane the human can peek and message, an
-independent lifetime, or durable events.
+**Prefer ae `spawn` over your harness's in-process subagents** (e.g. Claude
+Code's Task tool) for anything beyond a quick — or
+bursty read-only — lookup/fan-out consumed immediately (a ten-window
+parallel scan is noise; harness-native fan-out is the right tool there):
+ae workers are visible to the human (own window), steward-monitored,
+messageable, and
+survive the lead's context compaction — in-process subagents are invisible
+to everyone but the lead. They remain fine for fast same-harness reads whose
+result the lead consumes immediately.
 
 ## The contracts
 

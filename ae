@@ -594,7 +594,7 @@ build_ae_context() {
     ctx+=" (6) ${meta_dir}/memo add [--topic <topic>] <text> for durable shared findings, decisions, and handoffs that survive restarts. Do not dump chat transcripts into memo."
     ctx+=" (7) IMPORTANT — CONCURRENT COLLABORATION: Other agents may be editing files in this same workspace RIGHT NOW. Files you read may change. Coordinate on shared files; verify intent via ${meta_dir}/send before reverting or overwriting unexpected modifications."
     ctx+=" (8) ${meta_dir}/say <text> pushes a free-text line to the human's Telegram chat (if the bridge is running). Use it to answer the human when they message you from Telegram — your normal pane replies do NOT reach them. Replies to your message on Telegram route back to you."
-    ctx+=" (9) DELEGATION: for bounded subtasks (spec fits ~10 lines, clear stop condition, result verifiable by tests/grep/review), spawn the cheapest capable alias with a role name instead of polluting your own context: ${meta_dir}/spawn <alias>:<name> [prompt] — pick an alias from workspace.md (e.g. if a fast tier exists: spawn fast:tests 'run just test-unit; report failures only'). Brief workers with objective, scope, verification command, and expected reply shape; expect a distilled summary (Outcome/Changed/Verified/Risks), never raw logs. One writer per file. YOU own review and ${meta_dir}/retire <name> — workers never self-retire; keep judgment-heavy work yourself. See workspace.md 'Delegation'."
+    ctx+=" (9) DELEGATION: for bounded subtasks (spec fits ~10 lines, clear stop condition, result verifiable by tests/grep/review), spawn the cheapest capable alias with a role name instead of polluting your own context: ${meta_dir}/spawn <alias>:<name> [prompt] — pick an alias from workspace.md (e.g. if a fast tier exists: spawn fast:tests 'run just test-unit; report failures only'). PREFER ae spawn over your harness's internal subagents for anything beyond a quick or bursty read-only lookup/fan-out consumed immediately: ae workers are visible to the human (own window), steward-monitored, and messageable — internal subagents are invisible to everyone but you. Brief workers with objective, scope, verification command, and expected reply shape; expect a distilled summary (Outcome/Changed/Verified/Risks), never raw logs. One writer per file. YOU own review and ${meta_dir}/retire <name> — workers never self-retire; keep judgment-heavy work yourself. See workspace.md 'Delegation'."
     local user_instr
     user_instr="$(get_config prompt.instructions)"
     [[ -n "$user_instr" ]] && ctx="${ctx} --- Workspace instructions: ${user_instr}"
@@ -5204,14 +5204,12 @@ _cmd_spawn() {
         tmux_paste_submit "$pane_id" "$prompt"
         # A booting TUI can swallow the quick post-paste Enter, leaving the
         # prompt staged in the input box (live-dogfood find). Verify the text
-        # actually left the input; nudge Enter again while it lingers.
-        local _try
-        for _try in 1; do
-            sleep 1.5
-            tmux capture-pane -p -t "$pane_id" 2>/dev/null | tail -n 6 |
-                grep -qF "${prompt:0:40}" || break
+        # actually left the input; nudge Enter once more if it lingers.
+        sleep 1.5
+        if tmux capture-pane -p -t "$pane_id" 2>/dev/null | tail -n 6 |
+            grep -qF "${prompt:0:40}"; then
             tmux send-keys -t "$pane_id" Enter
-        done
+        fi
     fi
 
     echo "Spawned ${alias_name}:${spawn_name} in pane $pane_id"
@@ -5581,10 +5579,15 @@ condition, and the result is verifiable (tests, grep, focused review):
 test/CI runs, scoped mechanical edits, callers/usage scans, log triage,
 doc syncs, independent review lanes. **Do it yourself when** the hard part
 is judgment: architecture, ambiguous debugging, final integration, anything
-needing your accumulated context. **Use your harness's own subagents** (e.g.
-Claude Code's Task tool) for ephemeral same-harness read/research; use ae
-\`spawn\` when you want a different model/harness tier, a visible pane the
-human can peek, inter-agent messaging, or an independent lifetime.
+needing your accumulated context. **Prefer ae \`spawn\` over your harness's own
+subagents** (e.g. Claude Code's Task tool) for anything beyond a quick or
+bursty read-only lookup/fan-out consumed immediately (a ten-window parallel
+scan is noise — harness-native fan-out is right there): ae workers are
+visible to the human (own window),
+steward-monitored, messageable, and survive your context compaction —
+internal subagents are invisible to everyone but you. Internal subagents
+remain fine for fast same-harness reads whose result you consume
+immediately.
 
 Conventions:
 - Alias = capability tier (\`fast\`/\`standard\`/\`optimal\`/\`best\`, \`codexfast\`…
