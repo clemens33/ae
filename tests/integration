@@ -161,6 +161,7 @@ sleep 0.5
 REPO2B="$(setup_repo)"
 (cd "$REPO2B" && "$AE" --local test-rename-old &) 2>/dev/null
 wait_for_session "test-rename-old"
+sleep 1 # session setup (window rename, meta write) completes shortly after visibility
 
 # Window 0 is named after the session at creation.
 assert_eq "rename: window 0 starts named after the session" "test-rename-old" \
@@ -1082,6 +1083,53 @@ fi
 human_rc="$("$AE" list >/dev/null 2>&1; echo $?)"
 assert_eq "list (human): exits 0 when a per-session helper returns non-zero" "0" "$human_rc"
 "$AE" end -f jsonrobust 2>/dev/null || true
+
+# ── steward companion autostart: scaffold → any launch brings it up ──
+mkdir -p "$HOME/.ae/steward"
+cat > "$HOME/.ae/steward/steward.config" <<'EOF'
+[agents]
+dummy = "bash"
+
+[workspace]
+main = dummy:steward
+steward = true
+watchdog = false
+EOF
+REPO_AS="$(setup_repo)"
+(cd "$REPO_AS" && "$AE" --local autostart-host &) 2>/dev/null
+wait_for_session "autostart-host"
+as_i=0
+while ! tmux has-session -t steward 2>/dev/null && ((as_i < 20)); do
+    sleep 0.5
+    as_i=$((as_i + 1))
+done
+assert_eq "autostart: steward companion comes up with a fleet launch" "0" \
+    "$(tmux has-session -t steward 2>/dev/null; echo $?)"
+# Existing-session fast path (codex IMPORTANT): steward down + re-running
+# 'ae <existing>' must bring it back (previously only the bridge was ensured).
+"$AE" stop steward 2>/dev/null || true
+sleep 0.5
+(cd "$REPO_AS" && "$AE" --local autostart-host &) 2>/dev/null
+as_i=0
+while ! tmux has-session -t steward 2>/dev/null && ((as_i < 20)); do
+    sleep 0.5
+    as_i=$((as_i + 1))
+done
+assert_eq "autostart: existing-session relaunch revives the steward" "0" \
+    "$(tmux has-session -t steward 2>/dev/null; echo $?)"
+"$AE" stop steward 2>/dev/null || true
+"$AE" end -f autostart-host 2>/dev/null || true
+sleep 0.5
+# Opt-out honoured: AE_NO_AUTOSTART=1 must not bring the steward back.
+REPO_AS2="$(setup_repo)"
+(cd "$REPO_AS2" && AE_NO_AUTOSTART=1 "$AE" --local autostart-off &) 2>/dev/null
+wait_for_session "autostart-off"
+sleep 2
+assert_eq "autostart: AE_NO_AUTOSTART=1 keeps the steward down" "1" \
+    "$(tmux has-session -t steward 2>/dev/null && echo 0 || echo 1)"
+"$AE" end -f autostart-off 2>/dev/null || true
+rm -rf "$HOME/.ae/steward"
+sleep 0.5
 
 # ── Results ──────────────────────────────────────────────────────────
 

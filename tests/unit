@@ -1281,6 +1281,36 @@ rm -f "$_tpl_src"
 # The bash>=4 fail-fast must sit at the very top of ae, BEFORE any function
 # definition — bash parses fn bodies at definition time, so on 3.2 a later
 # guard never runs (the parser dies on bash-4 syntax first). Head = 1200 chars.
+# ── steward companion autostart ─────────────────────────────────────
+
+assert_eq "autostart: steward companion fn exists with all four guards" "1" \
+    "$([[ "$AE_SOURCE" == *'_steward_autostart_if_scaffolded() {'* && "$AE_SOURCE" == *'AE_NO_AUTOSTART'* && "$AE_SOURCE" == *'steward | hub) return 0'* && "$AE_SOURCE" == *'daemon_session_running steward || daemon_session_running hub'* ]] && echo 1 || echo 0)"
+
+assert_eq "autostart: launch flow calls companion beside the bridge autostart" "1" \
+    "$([[ "$AE_SOURCE" == *'_telegram_autostart_if_enabled 2>/dev/null || true'*'_steward_autostart_if_scaffolded 2>/dev/null || true'* ]] && echo 1 || echo 0)"
+
+# Behavioural: guards short-circuit without touching tmux/config state.
+eval "$(awk '/^_steward_autostart_if_scaffolded\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "autostart: AE_NO_AUTOSTART=1 skips" "0" \
+    "$(AE_NO_AUTOSTART=1 _steward_autostart_if_scaffolded; echo $?)"
+assert_eq "autostart: steward's own launch skips (no output)" "" \
+    "$(SESSION=steward _steward_autostart_if_scaffolded 2>/dev/null)"
+assert_eq "autostart: no scaffold -> silent no-op" "" \
+    "$(SESSION=x CONFIG_DIR="$(mktemp -d)" AE_STEWARD_DIR="" _steward_autostart_if_scaffolded 2>/dev/null)"
+# Era-detection parity (codex IMPORTANT): AE_STEWARD_DIR set-but-missing is
+# authoritative → no autostart even when a legacy scaffold exists.
+_as_tmp="$(mktemp -d)"
+mkdir -p "$_as_tmp/meta-hub"; : > "$_as_tmp/meta-hub/hub.config"
+assert_eq "autostart: set-but-missing AE_STEWARD_DIR is authoritative (no legacy fallback)" "" \
+    "$(SESSION=x CONFIG_DIR="$_as_tmp" AE_STEWARD_DIR="$_as_tmp/nonexistent" _steward_autostart_if_scaffolded 2>/dev/null)"
+# AE_HUB_DIR-only legacy scaffold IS honoured (mirrors the trampoline) — the
+# probe passes; the fn then reaches daemon_session_running (stub it running).
+# shellcheck disable=SC2317
+daemon_session_running() { return 0; }
+assert_eq "autostart: AE_HUB_DIR legacy scaffold honoured (reaches running-check)" "0" \
+    "$(SESSION=x CONFIG_DIR="$(mktemp -d)" AE_STEWARD_DIR="" AE_HUB_DIR="$_as_tmp/meta-hub" _steward_autostart_if_scaffolded 2>/dev/null; echo $?)"
+unset -f daemon_session_running
+
 assert_eq "bash guard: fails fast with brew hint in the file head" "1" \
     "$([[ "${AE_SOURCE:0:1200}" == *'requires bash >= 4.0'* && "${AE_SOURCE:0:1200}" == *'brew install bash'* ]] && echo 1 || echo 0)"
 
