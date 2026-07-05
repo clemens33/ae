@@ -43,9 +43,17 @@ test-integration:
 test-aemonitor:
     bash tests/aemonitor
 
-# contrib aewatch sidecar tests (stdlib unittest; skips if Python < 3.11)
+# contrib aewatch sidecar tests (stdlib unittest; skips if Python < 3.11).
+# This is the FULL PHASE GATE — it runs the slow bash-vs-python dual-run oracle.
 test-aewatch:
     bash tests/aewatch
+
+# FAST commit inner loop: AEWATCH_FAST=1 skips the subprocess-backed bash-oracle
+# dual-runs, leaving the pure-Python surface (seconds, not minutes). NOT the phase
+# gate — run `just test-aewatch` (+ contracts validate + check + git diff -- ae)
+# for that.
+test-aewatch-fast:
+    AEWATCH_FAST=1 bash tests/aewatch
 
 # AI-driven e2e (OPT-IN: needs AE_E2E_AI=1, runs REAL agents against your real
 # subscription — real tokens, your live rate budget). NOT part of `check`/`test`.

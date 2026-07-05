@@ -23,6 +23,7 @@ import json
 import os
 import re
 import subprocess
+import unittest
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -90,6 +91,13 @@ def _effects_before_final_boundary(effects_path):
 
 
 def run_bash_watchdog_fixture(fixture, root):
+    # Fast-subset lane: AEWATCH_FAST=1 skips every subprocess-backed dual-run at this
+    # single choke point, so the commit inner loop keeps the pure-Python surface fast.
+    # The FULL suite (no marker) stays the phase/nightly gate that runs the oracle.
+    # EXACTLY "1" — any other value (incl. "0") must NOT skip, or a stray CI/user
+    # env of AEWATCH_FAST=0 would silently downgrade the phase gate to the fast lane.
+    if os.environ.get("AEWATCH_FAST") == "1":
+        raise unittest.SkipTest("AEWATCH_FAST=1 skips bash watchdog oracle")
     root = Path(root)
     ae_home = root / "ae"
     sessions = ae_home / "sessions"

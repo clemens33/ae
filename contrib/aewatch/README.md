@@ -35,8 +35,29 @@ uv run contrib/aewatch/aewatch --version     # or: python3 contrib/aewatch/aewat
 ## Tests
 
 ```bash
-just test-aewatch      # bash tests/aewatch → stdlib unittest suite (tests/aewatch_tests/)
+just test-aewatch-fast   # FAST commit inner loop — skips the bash-oracle dual-runs (seconds)
+just test-aewatch        # FULL phase gate — bash-vs-python dual-run oracle (minutes)
 ```
 
 The runner skips cleanly when `python3` is absent or older than 3.11. Tests build
 isolated temp `AE_HOME` roots and never read or write the real `~/.ae`.
+
+The watchdog port is validated by a **dual-run oracle**: each fixture drives the
+REAL generated bash watchdog (via `ae doctor --refresh` under fakebin tmux/ae/date/
+sleep shims) AND the Python `run_watchdog_cycle`, then diffs the ordered effect
+streams. Those subprocess-backed runs are the slow part, so `AEWATCH_FAST=1`
+(`just test-aewatch-fast`) skips them at one choke point — use it for the commit
+inner loop. It is **not** the phase gate.
+
+**Phase gate** (all must pass, and the dual-run must actually run):
+
+```bash
+just test-aewatch                                    # full dual-run oracle
+python3 contrib/aewatch/aewatch contracts validate   # fixture matrix
+just check                                            # shellcheck + shfmt
+git diff --exit-code -- ae                            # zero-ae-edit invariant
+```
+
+A guard suite (`tests/aewatch_tests/test_22_phase_gate.py`) enforces the fast-lane
+skip, that every bash-side effect kind is in `EFFECT_KINDS`, and that `ae` is
+untouched.
