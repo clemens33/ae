@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""Fake ae executable for the aewatch bash oracle (the watchdog's ae_path=).
+Phase-2 boundaries only — no network, no real behavior. `_recover-pending` and
+`telegram _supervise` are deterministic no-ops for the status skeleton; later
+slices give them fixture-driven output."""
+import sys
+
+sub = sys.argv[1] if len(sys.argv) > 1 else ""
+# telegram is only a boundary as `telegram _supervise`; anything else is unmodeled.
+if sub == "_recover-pending" or (sub == "telegram" and sys.argv[2:3] == ["_supervise"]):
+    sys.exit(0)
+sys.stderr.write(f"fake-ae: unmodeled command: {' '.join(sys.argv[1:])}\n")
+sys.exit(2)

@@ -265,3 +265,7 @@ class MultiTickEnv:
 
     def read_events(self, session: str) -> list:
         return self.home.read_jsonl(session)
+
+
+# Bash side of the phase-2 dual-run oracle (re-exported for the test suite).
+from bash_oracle import run_bash_watchdog_fixture  # noqa: E402

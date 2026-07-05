@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Fake date for the aewatch bash oracle: deterministic time from the current
+fixture tick. Implements the forms the watchdog + ae_emit_event use: `+%s`,
+`-u +%FT%TZ` (event timestamps), `+%H:%M:%S`, and `-d <ts> +%s` (delegated)."""
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+D = Path(os.environ["AEWATCH_ORACLE_DIR"])
+
+
+def cur_epoch():
+    idx = int((D / "tick.idx").read_text().strip()) if (D / "tick.idx").exists() else 0
+    ticks = json.loads((D / "ticks.json").read_text())
+    t = ticks[idx] if idx < len(ticks) else ticks[-1]
+    return int(t["epoch"])
+
+
+args = sys.argv[1:]
+# `date -d <ts> +%s` — delegate to real date for parity (the watchdog uses it to
+# convert stored event timestamps back to epochs).
+if args and args[0] == "-d":
+    r = subprocess.run(["/usr/bin/date", *args], capture_output=True, text=True)
+    sys.stdout.write(r.stdout)
+    sys.stderr.write(r.stderr)
+    sys.exit(r.returncode)
+
+if args and args[0] == "-u":
+    args = args[1:]  # our epoch is already UTC
+fmt = args[0] if args else "+%s"
+dt = datetime.fromtimestamp(cur_epoch(), tz=timezone.utc)
+if fmt == "+%s":
+    print(dt.strftime("%s") if False else int(dt.timestamp()))
+elif fmt == "+%FT%TZ":
+    print(dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
+else:
+    strf = fmt.lstrip("+").replace("%F", "%Y-%m-%d").replace("%T", "%H:%M:%S")
+    print(dt.strftime(strf))

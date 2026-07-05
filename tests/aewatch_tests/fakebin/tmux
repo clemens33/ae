@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Fake tmux for the aewatch bash oracle.
+
+Serves the bash watchdog's READ subset (has-session, list-sessions, list-panes,
+capture-pane, show-options, display-message -p) from fixture tick state, and
+records the WRITE subset (set-option, display-message -d, and later paste) as
+normalized EFFECT_KINDS records — byte-identical in field names to what FakeTmux
+emits. Reads record nothing. Writes record only when AEWATCH_ORACLE_RECORD=1 (so
+`ae doctor --refresh` setup writes are not counted as watchdog-cycle effects).
+
+FAILS LOUDLY (exit 2 + stderr) on any subcommand/flag it does not model — a silent
+drop would forge parity. No real tmux is ever invoked.
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+D = Path(os.environ["AEWATCH_ORACLE_DIR"])
+RECORD = os.environ.get("AEWATCH_ORACLE_RECORD", "0") == "1"
+
+
+def die(msg):
+    sys.stderr.write(f"fake-tmux: {msg}\n")
+    sys.exit(2)
+
+
+def _load(name, default):
+    p = D / name
+    return json.loads(p.read_text()) if p.exists() else default
+
+
+def _save(name, obj):
+    (D / name).write_text(json.dumps(obj))
+
+
+def _record(effect):
+    if RECORD:
+        with (D / "effects.jsonl").open("a") as fh:
+            fh.write(json.dumps(effect) + "\n")
+
+
+def _cur_tick():
+    idx = int((D / "tick.idx").read_text().strip()) if (D / "tick.idx").exists() else 0
+    ticks = _load("ticks.json", [])
+    if not ticks:
+        return {}
+    return ticks[idx] if idx < len(ticks) else ticks[-1]
+
+
+def _strip_global_opts(argv):
+    """Drop tmux's global options that can precede the subcommand. The generated
+    `_lib` prefixes `command tmux -L "$server" ...` whenever meta has a non-empty
+    tmux_server (and `sync_existing_session_assets` does the same on refresh). We
+    model a single fake server, so -L/-S/-f and their args are ignored — matching
+    FakeTmux's server normalization (None == '' == any). Flag-only globals are
+    dropped too. Anything unknown ends the global run and is the subcommand."""
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-L", "-S", "-f"):
+            if i + 1 >= len(argv):
+                die(f"global option {a} needs an argument")
+            i += 2
+        elif a in ("-2", "-u", "-C", "-N", "-v", "-q", "-l"):
+            i += 1
+        else:
+            break
+    return argv[i:]
+
+
+def main():
+    argv = _strip_global_opts(sys.argv[1:])
+    if not argv:
+        die("no subcommand")
+    sub, args = argv[0], argv[1:]
+
+    if sub == "has-session":
+        gone = (D / "control").exists() and (D / "control").read_text().strip() == "gone"
+        sys.exit(1 if gone else 0)
+
+    if sub == "list-sessions":
+        # -F '#{session_name}' (exact-match liveness check)
+        fmt = None
+        i = 0
+        while i < len(args):
+            if args[i] == "-F":
+                fmt = args[i + 1]
+                i += 2
+            else:
+                die(f"list-sessions: unsupported arg {args[i]}")
+        for name in _load("sessions.json", []):
+            if fmt:
+                print(fmt.replace("#{session_name}", name))
+            else:
+                print(name)
+        sys.exit(0)
+
+    if sub == "list-panes":
+        session = fmt = None
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "-s":
+                i += 1
+            elif a == "-t":
+                session, i = args[i + 1], i + 2
+            elif a == "-F":
+                fmt, i = args[i + 1], i + 2
+            else:
+                die(f"list-panes: unsupported arg {a}")
+        for p in _load("panes.json", {}).get(session, []):
+            line = fmt
+            line = line.replace("#{pane_id}", p.get("pane_id", ""))
+            line = line.replace("#{@ae_agent}", p.get("agent", ""))
+            line = line.replace("#{pane_current_command}", p.get("current_command", ""))
+            line = line.replace("#{pane_pid}", str(p.get("pane_pid", "")))
+            print(line)
+        sys.exit(0)
+
+    if sub == "capture-pane":
+        pane = None
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a in ("-p", "-J"):
+                i += 1
+            elif a in ("-S", "-E"):
+                i += 2  # -S -40 ; -E -
+            elif a == "-t":
+                pane, i = args[i + 1], i + 2
+            else:
+                die(f"capture-pane: unsupported arg {a}")
+        print(_cur_tick().get("captures", {}).get(pane, ""))
+        sys.exit(0)
+
+    if sub == "set-option":
+        target = None
+        unset = False
+        positional = []
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "-t":
+                target, i = args[i + 1], i + 2
+            elif a == "-u":
+                unset, i = True, i + 1
+            elif a in ("-p", "-g", "-a"):
+                i += 1  # pane/global/append scope flags — modelled as session-scoped
+            else:
+                positional.append(a)
+                i += 1
+        options = _load("options.json", {})
+        option = positional[0] if positional else die("set-option: no option")
+        if unset:
+            options.get(target, {}).pop(option, None)
+            _save("options.json", options)
+            _record({"kind": "tmux.unset_option", "target": target, "option": option})
+        else:
+            value = positional[1] if len(positional) > 1 else ""
+            options.setdefault(target, {})[option] = value
+            _save("options.json", options)
+            _record({"kind": "tmux.set_option", "target": target, "option": option, "value": value})
+        sys.exit(0)
+
+    if sub == "show-options":
+        target = want = None
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "-t":
+                target, i = args[i + 1], i + 2
+            elif a.startswith("-"):
+                i += 1  # -q, -v, -g flags
+            else:
+                want, i = a, i + 1
+        print(_load("options.json", {}).get(target, {}).get(want, ""))
+        sys.exit(0)
+
+    if sub == "display-message":
+        if "-p" in args:
+            # READ form: display-message -p [-t T] '#{format}'. Not exercised by the
+            # status-only fixture; serve empty. (Later slices extend if needed.)
+            print("")
+            sys.exit(0)
+        duration = text = None
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a == "-d":
+                duration, i = int(args[i + 1]), i + 2
+            elif a.startswith("-"):
+                die(f"display-message: unsupported flag {a}")
+            else:
+                text, i = a, i + 1
+        _record({"kind": "tmux.display_message", "text": text, "duration_ms": duration})
+        sys.exit(0)
+
+    die(f"unsupported subcommand: {sub}")
+
+
+if __name__ == "__main__":
+    main()
