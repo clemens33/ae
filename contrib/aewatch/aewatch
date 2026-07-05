@@ -538,6 +538,89 @@ class AewatchRuntime:
         return self.heartbeat_path
 
 
+# ── daemon.log: size-capped rotation + secret redaction ──────────────────
+# Security-critical: the daemon log must NEVER contain a raw Telegram bot token,
+# a bot<TOKEN> API URL, or configured token-file contents — in the live file OR
+# any rotated backup. Redaction runs on EVERY line BEFORE the byte-size / write
+# decision, so a secret can never be split across a rotation boundary. Rotation
+# params are constants with a per-instance test override, not config keys.
+_LOG_MAX_BYTES = 1_000_000
+_LOG_BACKUPS = 3
+# A Telegram bot token is <id>:<secret> (secret ~35 chars of [A-Za-z0-9_-]). The
+# secret run is matched to the next '/' or whitespace, NOT restricted to the
+# standard charset — otherwise a non-standard secret (e.g. one containing '.')
+# would be only PARTIALLY redacted, dropping the 'digits:' anchor and slipping the
+# tail past the fail-closed residual detector (codex). Bias to over-redact.
+_LOG_TOKEN_RE = re.compile(r"\d{4,}:[^\s/]{15,}")
+_LOG_BOT_URL_TOKEN_RE = re.compile(r"(bot)\d{4,}:[^\s/]+")
+# Broader fail-closed detector: anything that still LOOKS like <id>:<secret>.
+_LOG_RESIDUAL_TOKEN_RE = re.compile(r"\d{4,}:\S{15,}")
+
+
+class AewatchLogger:
+    """Append lines to $AE_HOME/aewatch/daemon.log with redaction + rotation."""
+
+    def __init__(
+        self,
+        path,
+        *,
+        max_bytes: int = _LOG_MAX_BYTES,
+        backups: int = _LOG_BACKUPS,
+        secrets=None,
+        stderr_on_error: bool = False,
+    ) -> None:
+        self.path = Path(path)
+        self.max_bytes = max_bytes
+        self.backups = backups
+        self._stderr_on_error = stderr_on_error
+        # Redaction literals: each configured secret AND its CR/LF-stripped form,
+        # empties dropped (str.replace("") would corrupt every line), longest first
+        # so a longer secret wins over any of its substrings.
+        literals: set[str] = set()
+        for secret in secrets or []:
+            for variant in (secret, secret.strip()):
+                if variant:
+                    literals.add(variant)
+        self._literals = sorted(literals, key=len, reverse=True)
+
+    def _redact(self, text: str) -> str:
+        for literal in self._literals:
+            text = text.replace(literal, "<REDACTED>")
+        text = _LOG_BOT_URL_TOKEN_RE.sub(r"\1<REDACTED-TOKEN>", text)
+        text = _LOG_TOKEN_RE.sub("<REDACTED-TOKEN>", text)
+        # Fail-closed: if anything STILL resembles a token, drop the whole line
+        # rather than risk writing a partially-redacted secret.
+        if _LOG_RESIDUAL_TOKEN_RE.search(text):
+            return "<REDACTED-LINE: residual token pattern>"
+        return text
+
+    def _rotate(self) -> None:
+        oldest = Path(f"{self.path}.{self.backups}")
+        if oldest.exists():
+            oldest.unlink()
+        for i in range(self.backups - 1, 0, -1):
+            src = Path(f"{self.path}.{i}")
+            if src.exists():
+                src.replace(Path(f"{self.path}.{i + 1}"))
+        if self.path.exists():
+            self.path.replace(Path(f"{self.path}.1"))
+
+    def log(self, level: str, message: str) -> None:
+        line = self._redact(f"{level} {message}") + "\n"
+        data = line.encode("utf-8")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if self.path.exists() and self.path.stat().st_size + len(data) > self.max_bytes:
+                self._rotate()
+            with self.path.open("ab") as handle:
+                handle.write(data)
+        except OSError as exc:
+            # Best-effort: never crash the caller. In CLI mode warn with the path +
+            # error ONLY — never echo the (possibly secret-bearing) log line.
+            if self._stderr_on_error:
+                print(f"aewatch: daemon.log write failed ({self.path}): {exc}", file=sys.stderr)
+
+
 def cmd_daemon(args: argparse.Namespace) -> int:
     if not args.once:
         print(
@@ -551,9 +634,12 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         print(f"aewatch: already running (lock held): {runtime.lock_path}", file=sys.stderr)
         return 3
     try:
-        # Phase-1 skeleton tick: acquire singleton + touch heartbeat, nothing else.
-        # Discovery/log/backoff compose in later slices; no session-state mutation.
+        # Phase-1 skeleton tick: acquire singleton + touch heartbeat + one log line.
+        # Discovery/backoff/effect-recording compose in later slices; no session-
+        # state mutation. A logging failure is best-effort and must not fail the tick.
         runtime.write_heartbeat()
+        logger = AewatchLogger(runtime.daemon_log_path, stderr_on_error=True)
+        logger.log("INFO", "daemon --once: tick complete (heartbeat refreshed)")
     finally:
         lock.release()
     return 0
