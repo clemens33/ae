@@ -808,6 +808,50 @@ kill "$dummy_pid" 2>/dev/null || true
 rm -rf "$HOME/.ae/sessions/test-stale-wd" 2>/dev/null || true
 sleep 0.5
 
+# ── Test 11c: resume trims events.jsonl to the newest AE_EVENTS_KEEP lines ──
+# The event log is append-only; a long-lived session accumulates it across every
+# resume. Seed a stopped session with 1200 events, resume, and assert the log was
+# capped to the newest 1000 (default) — oldest dropped, newest kept. Watchdog off
+# so nothing appends after the trim and the count is deterministic.
+REPO_EVR="$(setup_repo)"
+(cd "$REPO_EVR" && "$AE" --local test-evretain &) 2>/dev/null
+wait_for_session "test-evretain"
+sleep 1
+tmux kill-session -t test-evretain 2>/dev/null || true
+sleep 0.5
+
+EVR_EVENTS="$HOME/.ae/sessions/test-evretain/events.jsonl"
+for n in $(seq 1 1200); do
+    printf '{"ts":"2026-01-01T00:00:00Z","actor":"seed","action":"noop","summary":"seedmarker-%s"}\n' "$n"
+done > "$EVR_EVENTS"
+printf 'watchdog=false\n' >> "$HOME/.ae/sessions/test-evretain/meta"
+assert_eq "events-retention: seeded 1200 events pre-resume" \
+    "1200" "$(wc -l < "$EVR_EVENTS" | tr -d ' ')"
+
+(cd "$REPO_EVR" && "$AE" --local test-evretain &) 2>/dev/null
+wait_for_session "test-evretain"
+# Trim runs during launch (before the events pane starts); poll until it lands.
+for i in $(seq 1 20); do
+    [[ "$(wc -l < "$EVR_EVENTS" 2>/dev/null || echo 0)" -le 1000 ]] && break
+    sleep 0.5
+done
+evr_lines="$(wc -l < "$EVR_EVENTS" 2>/dev/null | tr -d ' ')"
+
+assert_eq "events-retention: resume trimmed log to exactly 1000 lines" \
+    "1000" "$evr_lines"
+assert_eq "events-retention: newest event kept (seedmarker-1200)" \
+    "1" "$(grep -q 'seedmarker-1200"' "$EVR_EVENTS" && echo 1 || echo 0)"
+assert_eq "events-retention: oldest event trimmed away (seedmarker-1)" \
+    "1" "$(grep -q 'seedmarker-1"' "$EVR_EVENTS" && echo 0 || echo 1)"
+assert_eq "events-retention: newest-kept boundary present (seedmarker-201)" \
+    "1" "$(grep -q 'seedmarker-201"' "$EVR_EVENTS" && echo 1 || echo 0)"
+assert_eq "events-retention: oldest-dropped boundary gone (seedmarker-200)" \
+    "1" "$(grep -q 'seedmarker-200"' "$EVR_EVENTS" && echo 0 || echo 1)"
+
+"$AE" end -f test-evretain 2>/dev/null || true
+rm -rf "$HOME/.ae/sessions/test-evretain" 2>/dev/null || true
+sleep 0.5
+
 # ── goal helper: set → list → survives resume ────────────────────────
 REPO_GOAL="$(setup_repo)"
 (cd "$REPO_GOAL" && "$AE" --local goaltest &) 2>/dev/null

@@ -59,10 +59,12 @@ session's agents, by severity:
 | `attn:waiting-user` | an agent declared it's waiting on you |
 | `attn:blocked` | an agent declared it's blocked on an external dep |
 | `attn:throttled` | an agent is being rate-limited upstream |
+| `attn:unanswered` | an inter-agent `ask`/`review` went unanswered past the threshold (`AE_ATTN_REQUEST_SECS`, default 30 min) |
 
 (`dead`/`stale`/`throttled` reuse the watchdog's own alert events;
-`waiting-user`/`blocked` are self-declared. Pending unanswered `ask`/`review`
-requests are a planned future reason.)
+`waiting-user`/`blocked` are self-declared; `unanswered` flags an `ask`/`review`
+whose target never replied within `AE_ATTN_REQUEST_SECS` (default 30 min) — the
+lowest-severity reason.)
 
 By default it shows **running sessions only** — stopped sessions are usually the
 bulk of the list and just noise for monitoring. Flags:
@@ -99,7 +101,7 @@ script or agent. Pure bash output; no `jq` required to produce it. The filters
       "mode": "local", "origin": "/…", "work_dir": "/…",
       "goal": "ship the login flow", "goal_set_epoch": 1779990000,
       "branch": "feature/login", "last_active_epoch": 1780000000,
-      "needs_attention": true, "attention": "blocked", "attention_rank": 2,
+      "needs_attention": true, "attention": "blocked", "attention_rank": 3,
       "agents": [
         {"ref": "claude:lead", "alias": "claude", "name": "lead",
          "session_id": "e795c9e9", "alive": true, "state": "blocked",
@@ -116,8 +118,9 @@ is when the goal was last set (age it for staleness); `branch` is the
 session's live git branch (from the watchdog's status segment, with a git
 fallback) — together with `name`, `origin` and `mode` they give a consumer
 (e.g. the steward) the session's context without any manual bookkeeping.
-`schema_version` lets consumers gate on shape. Unanswered `ask`/`review` request edges and
-richer per-agent timing fields are planned additions.
+`schema_version` lets consumers gate on shape. `attention_rank` is the numeric
+severity (`dead` 6 → `unanswered` 1); richer per-agent timing fields are a
+planned addition.
 
 ## `ae status [name]`
 
@@ -128,11 +131,11 @@ Prints the last ~80 lines from each agent's pane without attaching. Useful for a
 The attention navigator — the action half of `ae list`. Names the single
 **top-ranked running session needing attention**, using the *same* rollup and
 severity ranking as `ae list` (`dead > stale > waiting-user > blocked >
-throttled`):
+throttled > unanswered`):
 
 ```text
 $ ae next
-my-feature  attn:blocked  rank:2  codex:coworker
+my-feature  attn:blocked  rank:3  codex:coworker
 ```
 
 Read-only by default (it does not change tmux focus). Exits **non-zero** with a

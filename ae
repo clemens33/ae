@@ -2026,8 +2026,10 @@ Usage: ae list [--running | --all | --stopped | --needs-attn | --active] [--json
   --all        running sessions, then stopped ones
   --stopped    stopped sessions only
   --needs-attn only running sessions with an attn reason — declared
-               waiting-user/blocked, or watchdog-derived dead/stale/throttled;
-               implies running-only (aliases: --needs-me, --needs, --attn)
+               waiting-user/blocked, watchdog-derived dead/stale/throttled, or an
+               unanswered inter-agent ask/review (older than AE_ATTN_REQUEST_SECS,
+               default 30m); implies running-only
+               (aliases: --needs-me, --needs, --attn)
   --active     only running sessions with recent activity (an ae event in the
                last 5 min; set AE_LIST_ACTIVE_SECS to change). Implies
                running-only (alias: --busy)
@@ -8975,6 +8977,36 @@ sync_session_assets "$SESSION" "$AE_META" "$WORK_DIR" "$META_ORIGIN" "$META_MODE
 # Freshly created panes can still be inside shell init when tmux returns.
 # Give them the same settle time as spawn before injecting launch commands.
 sleep 0.3
+
+# Resume-only events.jsonl retention: the event log is append-only, so a
+# long-lived session accumulates history across every resume. Cap it to the
+# newest AE_EVENTS_KEEP lines (default 1000; numeric-guarded like _request_secs).
+# Trim atomically (tail -n N > tmp && mv) and strictly non-fatally — a failed
+# trim must never break a resume. Runs BEFORE the resume commands are sent
+# (agents aren't running yet) and under events.jsonl.lock — the same lock every
+# event writer holds — so a concurrent append (telegram/human/helper) can never
+# land between the tail read and the mv and be lost (review finding). Also
+# precedes the _events pane start (inode swap beats tail -f).
+if [[ "$RESUMING" == true ]]; then
+    _events_keep="${AE_EVENTS_KEEP:-1000}"
+    [[ "$_events_keep" =~ ^[0-9]+$ && "$_events_keep" -gt 0 ]] || _events_keep=1000
+    _events_file="${AE_META}/events.jsonl"
+    if [[ -f "$_events_file" ]]; then
+        (
+            flock -w 5 9 || exit 0
+            _events_lines="$(wc -l <"$_events_file" 2>/dev/null || echo 0)"
+            [[ "$_events_lines" =~ ^[0-9]+$ ]] || _events_lines=0
+            if ((_events_lines > _events_keep)); then
+                _events_tmp="${AE_META}/events.jsonl.trim.$$"
+                if tail -n "$_events_keep" "$_events_file" >"$_events_tmp" 2>/dev/null && mv "$_events_tmp" "$_events_file" 2>/dev/null; then
+                    echo "Trimmed events.jsonl to newest ${_events_keep} lines (was ${_events_lines})."
+                else
+                    rm -f "$_events_tmp" 2>/dev/null || true
+                fi
+            fi
+        ) 9>>"${_events_file}.lock" 2>/dev/null || true
+    fi
+fi
 
 if [[ "$RESUMING" == true ]]; then
     # Resume: use session-scoped resume commands (exact conversation, not CWD heuristic)

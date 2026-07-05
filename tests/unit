@@ -1448,6 +1448,25 @@ assert_eq "doctor-refresh: failed restart re-enables meta + warns, success is co
        && "$_refresh_fn" == *'Warning: watchdog restart failed for ${session_name}'* \
        && "$_refresh_fn" == *'restarted watchdog for ${session_name}'* ]] && echo 1 || echo 0)"
 
+# events.jsonl retention: on RESUME only, cap the append-only log to the newest
+# AE_EVENTS_KEEP lines (default 1000), atomically and non-fatally, BEFORE the
+# events pane / watchdog start (so the inode swap precedes any tail -f).
+assert_eq "events-retention: resume-gated trim exists" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ "$RESUMING" == true ]]; then'*'_events_keep="${AE_EVENTS_KEEP:-1000}"'* ]] && echo 1 || echo 0)"
+# Numeric-guard the env like _request_secs (a malformed value must degrade to the
+# default, not abort (( )) under nounset).
+assert_eq "events-retention: AE_EVENTS_KEEP is numeric-guarded" "1" \
+    "$([[ "$AE_SOURCE" == *'[[ "$_events_keep" =~ ^[0-9]+$ && "$_events_keep" -gt 0 ]] || _events_keep=1000'* ]] && echo 1 || echo 0)"
+# Atomic tail -n N > tmp && mv, every step guarded (never fail a resume), one
+# announce line only when a trim happened.
+assert_eq "events-retention: trims atomically and announces" "1" \
+    "$([[ "$AE_SOURCE" == *'tail -n "$_events_keep" "$_events_file" >"$_events_tmp" 2>/dev/null && mv "$_events_tmp" "$_events_file" 2>/dev/null'* \
+       && "$AE_SOURCE" == *'Trimmed events.jsonl to newest ${_events_keep} lines'* ]] && echo 1 || echo 0)"
+# Ordering guard: the trim must sit BEFORE the events pane is ensured, else a
+# running tail -f would keep reading the pre-swap inode.
+assert_eq "events-retention: trim precedes the _events pane start" "1" \
+    "$([[ "${AE_SOURCE#*'Trimmed events.jsonl to newest'}" == *'"${AE_META}/watchdog" _ensure-monitor'* ]] && echo 1 || echo 0)"
+
 assert_eq "watchdog: auto-start via workspace.watchdog config" \
     "1" \
     "$([[ "$AE_SOURCE" == *'workspace.watchdog'* && "$AE_SOURCE" == *'ae-monitor'* ]] && echo 1 || echo 0)"
