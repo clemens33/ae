@@ -22,9 +22,13 @@ from __future__ import annotations
 
 import abc
 import argparse
+import errno
+import fcntl
 import json
+import os
 import re
 import sys
+import time
 from pathlib import Path
 
 __version__ = "0.1.0"
@@ -287,6 +291,114 @@ def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) ->
     return names
 
 
+# ── Runtime: per-AE_HOME singleton + heartbeat ───────────────────────────
+# One supervisor per ae state root (NOT per machine): every runtime artifact
+# lives under $AE_HOME/aewatch/, so isolated roots (tests, e2e) can never collide
+# with a live one. Stale-lock handling belongs to the supervisor and is deferred.
+
+
+class SingletonLock:
+    """Non-blocking singleton via fcntl.flock on a lock file.
+
+    acquire() returns True if this instance took the lock, False if another
+    holder already has it — contention is an expected state, not an exception.
+    The lock is held for the lifetime of the open fd and released on release().
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self._fd: int | None = None
+
+    def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(fd)
+            # Only genuine contention means "already running". Any other flock
+            # failure (e.g. ENOLCK / no-locks-available) must propagate, not
+            # masquerade as a held lock and silently suppress work.
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                return False
+            raise
+        self._fd = fd
+        return True
+
+    def release(self) -> None:
+        if self._fd is not None:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self._fd)
+                self._fd = None
+
+
+class AewatchRuntime:
+    """Resolves and owns the per-AE_HOME runtime paths under $AE_HOME/aewatch/.
+
+    Creates a missing directory with private (0700) permissions. All aewatch
+    state — lock, heartbeat, daemon log, backoff — lives here and nowhere else.
+    """
+
+    def __init__(self, ae_home) -> None:
+        self.ae_home = Path(ae_home)
+        self.dir = self.ae_home / "aewatch"
+        self.lock_path = self.dir / "aewatch.lock"
+        self.heartbeat_path = self.dir / "heartbeat"
+        self.daemon_log_path = self.dir / "daemon.log"
+        self.backoff_path = self.dir / "backoff.json"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self.dir, 0o700)
+        except OSError:
+            pass
+
+    def singleton(self) -> SingletonLock:
+        return SingletonLock(self.lock_path)
+
+    def write_heartbeat(self) -> Path:
+        """Atomically refresh the heartbeat (same-dir temp + os.replace).
+
+        Readers never see partial content, and mtime/inode move cleanly each tick
+        — the mtime IS the supervisor's freshness signal. The payload is a
+        wall-clock nanosecond stamp (advisory; may not be monotonic).
+        """
+        self.dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.dir / f".heartbeat.{os.getpid()}.tmp"
+        try:
+            tmp.write_text(f"{time.time_ns()}\n", encoding="utf-8")
+            os.replace(tmp, self.heartbeat_path)
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+        return self.heartbeat_path
+
+
+def cmd_daemon(args: argparse.Namespace) -> int:
+    if not args.once:
+        print(
+            "aewatch: daemon requires --once in phase 1 (loop/supervisor mode is not implemented)",
+            file=sys.stderr,
+        )
+        return 2
+    runtime = AewatchRuntime(args.ae_home)
+    lock = runtime.singleton()
+    if not lock.acquire():
+        print(f"aewatch: already running (lock held): {runtime.lock_path}", file=sys.stderr)
+        return 3
+    try:
+        # Phase-1 skeleton tick: acquire singleton + touch heartbeat, nothing else.
+        # Discovery/log/backoff compose in later slices; no session-state mutation.
+        runtime.write_heartbeat()
+    finally:
+        lock.release()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aewatch",
@@ -309,6 +421,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="path to CONTRACTS.md (default: alongside this script)",
     )
+
+    daemon = sub.add_parser("daemon", help="run a supervisor tick (phase 1: --once only)")
+    daemon.add_argument("--ae-home", dest="ae_home", required=True, help="ae state root ($AE_HOME)")
+    daemon.add_argument("--once", action="store_true", help="run a single tick and exit")
     return parser
 
 
@@ -323,6 +439,8 @@ def main(argv: list[str] | None = None) -> int:
         # contracts_command is required=True, so argparse guarantees it is set.
         if args.contracts_command == "validate":
             return cmd_contracts_validate(args)
+    if args.command == "daemon":
+        return cmd_daemon(args)
     parser.error(f"unknown command: {args.command}")
     return 2  # unreachable (parser.error exits), kept for type-clarity.
 
