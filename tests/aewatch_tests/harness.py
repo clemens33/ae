@@ -140,6 +140,11 @@ class FakeTmux(AW.TmuxClient):
     def paste(self, target, text, submit):
         self._rec.record("tmux.paste", target=target, text=text, submit=submit)
 
+    def display_message(self, text, *, duration_ms=None):
+        # Mirrors the bash watchdog's `tmux display-message -d <ms> "<text>"` alert
+        # (no -t target). A user-visible mutation, so it records an effect.
+        self._rec.record("tmux.display_message", text=text, duration_ms=duration_ms)
+
 
 def load_fixture(fixture_id: str) -> dict:
     """Return the committed CONTRACTS.md fixture with the given id (via the sidecar loader)."""

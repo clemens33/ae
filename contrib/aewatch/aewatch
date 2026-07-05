@@ -218,6 +218,7 @@ EFFECT_KINDS = frozenset(
         "tmux.paste",        # paste (optionally submit) text into a pane
         "tmux.set_option",   # set a tmux option on a target (session or pane)
         "tmux.unset_option", # unset a tmux option on a target
+        "tmux.display_message",  # user-visible `tmux display-message -d <ms> <text>` alert
         "telegram.send",     # outbound Telegram message
         "file.write",        # write an aewatch-owned runtime file ($AE_HOME/aewatch/*)
         "log.write",         # emit a daemon.log line
@@ -301,6 +302,9 @@ class TmuxClient(abc.ABC):
     @abc.abstractmethod
     def paste(self, target: str, text: str, submit: bool) -> None: ...
 
+    @abc.abstractmethod
+    def display_message(self, text: str, *, duration_ms: int | None = None) -> None: ...
+
 
 class NullTmuxClient(TmuxClient):
     """Phase-1 placeholder: no live tmux. Reads return empty (discovery still works
@@ -326,6 +330,9 @@ class NullTmuxClient(TmuxClient):
         raise NotImplementedError("phase 1 must not mutate tmux")
 
     def paste(self, target, text, submit):
+        raise NotImplementedError("phase 1 must not mutate tmux")
+
+    def display_message(self, text, *, duration_ms=None):
         raise NotImplementedError("phase 1 must not mutate tmux")
 
 
