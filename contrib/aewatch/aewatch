@@ -291,6 +291,66 @@ def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) ->
     return names
 
 
+# ── ae-compatible INI parser (parity port) ───────────────────────────────
+# Mirrors ae's own parse_config regex semantics EXACTLY so aewatch reads the same
+# config ae does — NOT a general TOML/YAML parser. Notably: only literal spaces
+# (never tabs) around '='; quoted values kept verbatim (a '#' inside quotes is not
+# a comment); unquoted values strip an inline '#...' then right-trim; last
+# duplicate wins; section names are [a-zA-Z_-]+ (no digits); keys before any
+# section land in the "" bucket; non-matching lines are ignored.
+_INI_SECTION_RE = re.compile(r"\[([a-zA-Z_-]+)\]")
+_INI_KV_QUOTED_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_-]*) *= *"(.*)"')
+_INI_KV_UNQUOTED_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_-]*) *= *(.+)")
+
+
+def parse_ae_ini(text: str) -> dict[str, dict[str, str]]:
+    """Parse ae INI text into {section: {key: value}} (all values are strings)."""
+    result: dict[str, dict[str, str]] = {}
+    section = ""
+    if not text:
+        return result
+    # ae reads with `while IFS= read -r line`: it splits ONLY on '\n' and DROPS a
+    # final line lacking a trailing newline (read returns non-zero at EOF without
+    # a delimiter). Mirror both so phase-2 diffing has no hidden exception — do
+    # not use str.splitlines() (splits on more separators and keeps the last line).
+    lines = text.split("\n")
+    if not text.endswith("\n"):
+        lines = lines[:-1]
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        m = _INI_SECTION_RE.fullmatch(line)
+        if m:
+            section = m.group(1)
+            continue
+        m = _INI_KV_QUOTED_RE.fullmatch(line)
+        if m:
+            # Quoted value: verbatim, no comment stripping.
+            result.setdefault(section, {})[m.group(1)] = m.group(2)
+            continue
+        m = _INI_KV_UNQUOTED_RE.fullmatch(line)
+        if m:
+            # Unquoted value: strip an inline '#...' comment, then right-trim.
+            value = m.group(2).split("#", 1)[0].rstrip()
+            result.setdefault(section, {})[m.group(1)] = value
+            continue
+        # Anything else (incl. full-line '#' comments) is ignored.
+    return result
+
+
+def load_config(ae_home) -> dict[str, dict[str, str]]:
+    """Load and parse $AE_HOME/config. Missing file -> empty dict.
+
+    Phase 1 is single-file by design: a local .ae/config overlay is cwd/session
+    dependent and belongs to a later explicit-path loader, not a singleton daemon.
+    """
+    config_path = Path(ae_home) / "config"
+    if not config_path.is_file():
+        return {}
+    return parse_ae_ini(config_path.read_text(encoding="utf-8"))
+
+
 # ── Runtime: per-AE_HOME singleton + heartbeat ───────────────────────────
 # One supervisor per ae state root (NOT per machine): every runtime artifact
 # lives under $AE_HOME/aewatch/, so isolated roots (tests, e2e) can never collide
