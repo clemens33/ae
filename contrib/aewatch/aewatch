@@ -20,6 +20,7 @@ Pure stdlib — the PEP 723 dependency block is intentionally empty. See README.
 
 from __future__ import annotations
 
+import abc
 import argparse
 import json
 import re
@@ -170,6 +171,120 @@ def cmd_contracts_validate(args: argparse.Namespace) -> int:
         return 1
     print(f"aewatch: contracts OK ({len(obj['fixtures'])} fixtures) — {path}")
     return 0
+
+
+# ── Effect model (the parity oracle schema) ──────────────────────────────
+# Every OBSERVABLE side effect — and nothing else — is normalized into one of
+# these record shapes. Reads (list_sessions/list_panes/capture_pane/
+# display_option) are NOT observable and record no effect. This schema is the
+# single source of truth: the phase-2 real subprocess TmuxClient and the bash
+# fake_tmux shim must emit byte-identical records, so the dual-run diff oracle
+# has one format. The RECORDER preserves order (paste/submit/nudge sequencing
+# matters); canonical_effects() is a deterministic *presentation* sort only —
+# never the primary comparison, and it never collapses duplicates.
+EFFECT_KINDS = frozenset(
+    {
+        "event.append",     # append a record to a session's events.jsonl
+        "tmux.paste",        # paste (optionally submit) text into a pane
+        "tmux.set_option",   # set a tmux option on a target (session or pane)
+        "tmux.unset_option", # unset a tmux option on a target
+        "telegram.send",     # outbound Telegram message
+        "file.write",        # write an aewatch-owned runtime file ($AE_HOME/aewatch/*)
+        "log.write",         # emit a daemon.log line
+    }
+)
+
+
+def make_effect(kind: str, **fields: object) -> dict:
+    """Build one normalized, JSON-serializable effect record.
+
+    Raises ValueError for any kind outside the observable surface (EFFECT_KINDS).
+    """
+    if kind not in EFFECT_KINDS:
+        raise ValueError(f"unknown effect kind: {kind!r}")
+    return {"kind": kind, **fields}
+
+
+def canonical_effects(effects: list[dict]) -> list[dict]:
+    """Deterministic presentation ordering for effect lists.
+
+    Order-independent and stable, but DUPLICATE-PRESERVING — it is a summary
+    helper, not the oracle. Sequence-sensitive comparisons use the recorder's
+    ordered list (EffectRecorder.as_list()).
+    """
+    return sorted(effects, key=lambda e: json.dumps(e, sort_keys=True))
+
+
+class EffectRecorder:
+    """Ordered, duplicate-preserving sink for normalized effects.
+
+    as_list() is the first-class oracle: it keeps insertion order and repeated
+    identical records as distinct entries.
+    """
+
+    def __init__(self) -> None:
+        self._effects: list[dict] = []
+
+    def record(self, kind: str, **fields: object) -> dict:
+        effect = make_effect(kind, **fields)
+        self._effects.append(effect)
+        return effect
+
+    def log(self, level: str, message: str) -> dict:
+        return self.record("log.write", level=level, message=message)
+
+    def as_list(self) -> list[dict]:
+        return list(self._effects)
+
+
+class TmuxClient(abc.ABC):
+    """Interface both the fake (tests) and the real subprocess client implement.
+
+    READ methods return data and record NO effect. MUTATION methods each append
+    exactly one normalized effect via the client's recorder. `target` is the raw
+    tmux target string — a session name, window, or pane id — never pane-only.
+    """
+
+    @abc.abstractmethod
+    def list_sessions(self, server: str | None = None) -> list[str]: ...
+
+    @abc.abstractmethod
+    def list_panes(self, session: str, server: str | None = None) -> list: ...
+
+    @abc.abstractmethod
+    def capture_pane(self, pane_id: str) -> str: ...
+
+    @abc.abstractmethod
+    def display_option(self, target: str, option: str) -> str | None: ...
+
+    @abc.abstractmethod
+    def set_option(self, target: str, option: str, value: str) -> None: ...
+
+    @abc.abstractmethod
+    def unset_option(self, target: str, option: str) -> None: ...
+
+    @abc.abstractmethod
+    def paste(self, target: str, text: str, submit: bool) -> None: ...
+
+
+def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
+    """Phase-1 no-op input collector: READ-ONLY.
+
+    Lists the session directories that carry a `meta` file under $AE_HOME/sessions
+    and records a single log line. It performs NO mutations (no tmux writes, no
+    event appends, no runtime-file or Telegram effects). `tmux` is accepted so the
+    signature is stable for the discovery slice; the read below also proves reads
+    never record an effect.
+    """
+    sessions_dir = Path(ae_home) / "sessions"
+    names: list[str] = []
+    if sessions_dir.is_dir():
+        for child in sorted(sessions_dir.iterdir()):
+            if (child / "meta").is_file():
+                names.append(child.name)
+    tmux.list_sessions(None)  # read-only probe; must not record an effect
+    recorder.log("INFO", f"collect-inputs: {len(names)} session dir(s)")
+    return names
 
 
 def build_parser() -> argparse.ArgumentParser:
