@@ -52,7 +52,7 @@ validator fails if any family is missing.
         {
           "name": "work",
           "tmux_server": "",
-          "meta": {"session": "work", "session_id": "sess-1", "work_dir": "/repo", "watchdog": "true", "agent.main": "codex:lead:uuid"},
+          "meta": {"session": "work", "session_id": "sess-1", "work_dir": "/repo", "tmux_server": "", "watchdog": "true", "agent.main": "codex:lead:uuid"},
           "events": [{"ts": "2026-07-05T06:20:00Z", "actor": "codex:lead", "action": "state", "summary": "working"}],
           "panes": [{"pane_id": "%1", "agent": "codex:lead", "current_command": "codex", "capture": ""}],
           "tmux_options": {"%1": {"@ae_agent": "codex:lead"}}
@@ -60,7 +60,7 @@ validator fails if any family is missing.
         {
           "name": "docs",
           "tmux_server": "ae-alt",
-          "meta": {"session": "docs", "session_id": "sess-2", "work_dir": "/docs", "watchdog": "true", "agent.main": "claude:writer:uuid"},
+          "meta": {"session": "docs", "session_id": "sess-2", "work_dir": "/docs", "tmux_server": "ae-alt", "watchdog": "true", "agent.main": "claude:writer:uuid"},
           "events": [],
           "panes": [{"pane_id": "%1", "agent": "claude:writer", "current_command": "claude", "capture": ""}],
           "tmux_options": {"%1": {"@ae_agent": "claude:writer"}}

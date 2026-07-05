@@ -47,6 +47,9 @@ def load_aewatch():
     loader = importlib.machinery.SourceFileLoader("aewatch_sidecar", str(AEWATCH))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     mod = importlib.util.module_from_spec(spec)
+    # Register before exec so @dataclass can resolve annotations under
+    # `from __future__ import annotations` (sys.modules[cls.__module__]).
+    sys.modules[loader.name] = mod
     loader.exec_module(mod)
     return mod
 

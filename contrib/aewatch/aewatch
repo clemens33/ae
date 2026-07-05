@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import abc
 import argparse
+import dataclasses
 import errno
 import fcntl
 import json
@@ -349,6 +350,105 @@ def load_config(ae_home) -> dict[str, dict[str, str]]:
     if not config_path.is_file():
         return {}
     return parse_ae_ini(config_path.read_text(encoding="utf-8"))
+
+
+# ── Session discovery (per-meta tmux_server) ─────────────────────────────
+# Session `meta` is a FLAT key=value file (no sections/quotes/comments), and its
+# agent.* keys contain '.', which the config key grammar rejects — so meta has
+# its own parser, distinct from parse_ae_ini.
+
+
+def _parse_session_meta(text: str) -> dict[str, str]:
+    """Parse a flat ae session meta (key=value per line, split on the first '=')."""
+    out: dict[str, str] = {}
+    for line in text.split("\n"):
+        if "=" in line:
+            key, value = line.split("=", 1)
+            out[key] = value
+    return out
+
+
+@dataclasses.dataclass
+class DiscoveredAgent:
+    slot: str        # the key after 'agent.' — e.g. main, worker.0, spawned.1
+    ref: str         # 'alias:name'
+    session_id: str  # the agent's own tool session id (may be empty)
+
+
+@dataclasses.dataclass
+class DiscoveredSession:
+    name: str
+    session_id: str
+    work_dir: str
+    tmux_server: str
+    running: bool
+    agents: list
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "session_id": self.session_id,
+            "work_dir": self.work_dir,
+            "tmux_server": self.tmux_server,
+            "running": self.running,
+            "agents": [
+                {"slot": a.slot, "ref": a.ref, "session_id": a.session_id}
+                for a in self.agents
+            ],
+        }
+
+
+def discover_sessions(ae_home, tmux, recorder=None) -> list:
+    """Discover sessions from $AE_HOME/sessions/*/meta.
+
+    Liveness is read through EACH session's OWN tmux_server — never a global
+    server. One bad meta cannot hide good sessions: a malformed dir is skipped
+    with a recorded warning (not stderr). A directory without a meta file is not
+    a session and is ignored silently. Returns DiscoveredSession sorted by name
+    (stable for phase-2 oracle snapshots); each is JSON-serializable via to_dict().
+    """
+    sessions_dir = Path(ae_home) / "sessions"
+    result: list = []
+    if not sessions_dir.is_dir():
+        return result
+    for child in sorted(sessions_dir.iterdir()):
+        meta_file = child / "meta"
+        if not meta_file.is_file():
+            continue  # not a session directory
+        try:
+            meta = _parse_session_meta(meta_file.read_text(encoding="utf-8"))
+        except OSError as exc:
+            if recorder is not None:
+                recorder.log("WARNING", f"discovery: unreadable meta in {child.name}: {exc}")
+            continue
+        name = meta.get("session", "").strip()
+        if not name:
+            if recorder is not None:
+                recorder.log("WARNING", f"discovery: meta missing 'session' in {child.name}, skipped")
+            continue
+        agents = []
+        for key in sorted(meta):
+            if key.startswith("agent."):
+                parts = meta[key].split(":")
+                ref = ":".join(parts[:2]) if len(parts) >= 2 else meta[key]
+                agent_session_id = parts[2] if len(parts) >= 3 else ""
+                agents.append(
+                    DiscoveredAgent(slot=key[len("agent.") :], ref=ref, session_id=agent_session_id)
+                )
+        server = meta.get("tmux_server", "")
+        running = name in tmux.list_sessions(server)
+        result.append(
+            DiscoveredSession(
+                name=name,
+                session_id=meta.get("session_id", ""),
+                work_dir=meta.get("work_dir", ""),
+                tmux_server=server,
+                running=running,
+                agents=agents,
+            )
+        )
+    result.sort(key=lambda s: s.name)
+    return result
 
 
 # ── Runtime: per-AE_HOME singleton + heartbeat ───────────────────────────

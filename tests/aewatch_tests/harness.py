@@ -21,6 +21,7 @@ main() is guarded, so import has no side effects).
 import importlib.machinery
 import importlib.util
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,6 +34,9 @@ def _load_aewatch():
     loader = importlib.machinery.SourceFileLoader("aewatch_sidecar", str(_AEWATCH_PATH))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     mod = importlib.util.module_from_spec(spec)
+    # Register before exec: @dataclass + `from __future__ import annotations`
+    # resolves field annotations via sys.modules[cls.__module__] at class-creation.
+    sys.modules[loader.name] = mod
     loader.exec_module(mod)
     return mod
 
