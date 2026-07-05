@@ -723,19 +723,55 @@ def _last_event_age(session_dir, agent: str, now) -> int:
     return int(now) - epoch
 
 
+def _meta_value(session_dir, key: str) -> str:
+    """First `key=` value from session_dir/meta, '' when absent. Port of ae:7422
+    _watchdog_meta_value (grep '^key=' | head -1 | cut -d= -f2-)."""
+    if session_dir is None:
+        return ""
+    meta_file = Path(session_dir) / "meta"
+    if not meta_file.is_file():
+        return ""
+    try:
+        for line in meta_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith(key + "="):
+                return line[len(key) + 1:]
+    except OSError:
+        return ""
+    return ""
+
+
+def _now_iso(epoch) -> str:
+    """UTC epoch -> ae's `date -u +%FT%TZ` string (2026-07-05T07:00:00Z)."""
+    return datetime.datetime.fromtimestamp(int(epoch), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _nudge_text(session_dir, goal: str) -> str:
+    """The exact user-visible nudge message (ae:7933-7939). The Session-goal prefix
+    is present only when a goal is set; ${META_DIR} is the session dir (session_dir),
+    matching bash — the parity harness normalizes that runtime path."""
+    goal_line = f"Session goal: {goal}. " if goal else ""
+    return (
+        f"{goal_line}Status check: if you have more work, continue. Otherwise declare "
+        f'your state so I stop nudging: {session_dir}/state <waiting-user|blocked|done> "<reason>"'
+    )
+
+
 def run_watchdog_cycle(
-    config, state, tmux, session, *, work_dir, session_dir=None, tmux_server="", now=None, git=default_git_runner
+    config, state, tmux, session, *, work_dir, session_dir=None, tmux_server="",
+    now=None, git=default_git_runner, emit_event=None,
 ) -> None:
-    """One watchdog cycle for `session`. Counts live @ae_agent panes and classifies
-    each as active/recent (slice 5) before the end-of-cycle status + branch push.
+    """One watchdog cycle for `session`. Counts live @ae_agent panes, classifies
+    each (active/recent/stale), nudges the stale ones, then pushes the end-of-cycle
+    status + branch.
 
     Per-agent order mirrors ae:7679-7952: dead(1)/sweep(2)/quiet(3)/throttle(4) are
-    still inert fall-throughs (slices 8/10/7/9) — for the activity fixtures the
-    agent reaches the pane-activity branches directly. active/recent are pure
-    cycle_active bumps (no effect); only the '[watch <glyph> <active>/<total>]'
-    health count and the ⚠/✖ glyph escalation reflect them. Stale nudge/alert
-    lands in slice 6; here a stale agent is only counted for the glyph."""
+    still inert fall-throughs (slices 8/10/7/9). active/recent are pure cycle_active
+    bumps (no effect). A stale agent under MAX_NUDGES is NUDGED (ae:7930-7941): a
+    tmux.paste of the nudge text into its pane THEN an event.append(action=nudge)
+    via the injected emit_event(session, event). The max-nudge ALERT is slice 8;
+    here a maxed agent is only counted for the ⚠ glyph."""
     state.cycle += 1
+    goal = _meta_value(session_dir, "goal")
     total = active = stale = dead = 0
     for pane in tmux.list_panes(session, tmux_server):
         agent = (pane.agent or "").strip()
@@ -757,11 +793,28 @@ def run_watchdog_cycle(
             active += 1
             continue
         # 7. Recently alive — recent ae event from this actor (ae:7913).
-        if _last_event_age(session_dir, agent, now) < config.stale_secs:
+        event_age = _last_event_age(session_dir, agent, now)
+        if event_age < config.stale_secs:
             active += 1
             continue
-        # 8. Stale — nudge/alert is slice 6; count for the glyph only.
+        # 8. Stale — nudge under MAX_NUDGES (ae:7921-7941).
         stale += 1
+        count = state.nudge_count.get(pane_id, 0)
+        stale_min = event_age // 60
+        stale_display = "no recent events" if stale_min > 9999 else f"idle {stale_min}m"
+        if count < config.max_nudges:
+            # Paste THEN event, matching the send helper's order (ae:6468/6473).
+            tmux.paste(pane_id, _nudge_text(session_dir, goal), submit=True)
+            if emit_event is not None:
+                emit_event(session, {
+                    "ts": _now_iso(now),
+                    "actor": "watchdog",
+                    "action": "nudge",
+                    "target": agent,
+                    "summary": f"{stale_display}, no recent ae activity",
+                })
+            state.nudge_count[pane_id] = count + 1
+        # count == MAX_NUDGES -> alert; count > -> silent. Both land in slice 8.
     glyph = "✖" if dead else ("⚠" if stale else "●")
     _push_status(tmux, session, f"[watch {glyph} {active}/{total}]", work_dir, git=git)
 

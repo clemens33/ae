@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Fake tmux for the aewatch bash oracle.
 
-Serves the bash watchdog's READ subset (has-session, list-sessions, list-panes,
-capture-pane, show-options, display-message -p) from fixture tick state, and
-records the WRITE subset (set-option, display-message -d, and later paste) as
-normalized EFFECT_KINDS records — byte-identical in field names to what FakeTmux
-emits. Reads record nothing. Writes record only when AEWATCH_ORACLE_RECORD=1 (so
-`ae doctor --refresh` setup writes are not counted as watchdog-cycle effects).
+Serves the bash watchdog + send-helper READ subset (has-session, list-sessions,
+list-panes incl. -a, capture-pane, show-options, display-message -p) from fixture
+tick state, and records the WRITE subset as normalized EFFECT_KINDS records —
+byte-identical in field names to what FakeTmux emits. Reads record nothing. Writes
+record only when AEWATCH_ORACLE_RECORD=1 (so `ae doctor --refresh` setup writes are
+not counted as watchdog-cycle effects).
+
+PASTE SEAM: the send helper delivers a message with `tmux set-buffer -b buf -- text
+\\; paste-buffer -d -b buf -t pane` (ONE invocation, two ';'-separated commands)
+followed by a SEPARATE `tmux send-keys -t pane Enter`. Those are distinct fake-tmux
+PROCESSES, so the buffer + pending-paste state lives in oracle FILES (buffers.json /
+pending_paste.json), not process memory. A single tmux.paste(target,text,submit=True)
+is recorded only when the Enter finalizes a pending paste for that pane.
 
 FAILS LOUDLY (exit 2 + stderr) on any subcommand/flag it does not model — a silent
 drop would forge parity. No real tmux is ever invoked.
@@ -21,9 +28,12 @@ D = Path(os.environ["AEWATCH_ORACLE_DIR"])
 RECORD = os.environ.get("AEWATCH_ORACLE_RECORD", "0") == "1"
 
 
+class FakeTmuxError(Exception):
+    """Unsupported subcommand/flag — surfaced as stderr + exit 2 by main()."""
+
+
 def die(msg):
-    sys.stderr.write(f"fake-tmux: {msg}\n")
-    sys.exit(2)
+    raise FakeTmuxError(msg)
 
 
 def _load(name, default):
@@ -70,134 +80,275 @@ def _strip_global_opts(argv):
     return argv[i:]
 
 
+def _split_commands(argv):
+    """tmux runs multiple ';'-separated commands in one invocation (the send helper
+    does `set-buffer ... \\; paste-buffer ...`). A STANDALONE ';' argv token
+    separates commands; a ';' inside a quoted arg (e.g. buffer text after --) is a
+    different token and is NOT a separator."""
+    cmds, cur = [], []
+    for tok in argv:
+        if tok == ";":
+            cmds.append(cur)
+            cur = []
+        else:
+            cur.append(tok)
+    cmds.append(cur)
+    return [c for c in cmds if c]
+
+
+def _h_has_session(args):
+    gone = (D / "control").exists() and (D / "control").read_text().strip() == "gone"
+    return 1 if gone else 0
+
+
+def _h_list_sessions(args):
+    fmt = None
+    i = 0
+    while i < len(args):
+        if args[i] == "-F":
+            fmt, i = args[i + 1], i + 2
+        else:
+            die(f"list-sessions: unsupported arg {args[i]}")
+    for name in _load("sessions.json", []):
+        print(fmt.replace("#{session_name}", name) if fmt else name)
+    return 0
+
+
+def _fmt_pane(fmt, p):
+    line = fmt
+    line = line.replace("#{pane_id}", p.get("pane_id", ""))
+    line = line.replace("#{@ae_agent}", p.get("agent", ""))
+    line = line.replace("#{pane_current_command}", p.get("current_command", ""))
+    line = line.replace("#{pane_pid}", str(p.get("pane_pid", "")))
+    return line
+
+
+def _h_list_panes(args):
+    session = fmt = None
+    all_panes = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-s":
+            i += 1
+        elif a == "-a":  # ALL panes across sessions (ae_target_tool)
+            all_panes, i = True, i + 1
+        elif a == "-t":
+            session, i = args[i + 1], i + 2
+        elif a == "-F":
+            fmt, i = args[i + 1], i + 2
+        else:
+            die(f"list-panes: unsupported arg {a}")
+    panes_map = _load("panes.json", {})
+    if all_panes:
+        rows = [p for panes in panes_map.values() for p in panes]
+    else:
+        rows = panes_map.get(session, [])
+    for p in rows:
+        print(_fmt_pane(fmt, p))
+    return 0
+
+
+def _h_capture_pane(args):
+    pane = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-p", "-J"):
+            i += 1
+        elif a in ("-S", "-E"):
+            i += 2  # -S -40 ; -E -
+        elif a == "-t":
+            pane, i = args[i + 1], i + 2
+        else:
+            die(f"capture-pane: unsupported arg {a}")
+    print(_cur_tick().get("captures", {}).get(pane, ""))
+    return 0
+
+
+def _h_set_option(args):
+    target = None
+    unset = False
+    positional = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-t":
+            target, i = args[i + 1], i + 2
+        elif a == "-u":
+            unset, i = True, i + 1
+        elif a in ("-p", "-g", "-a"):
+            i += 1  # pane/global/append scope flags — modelled as session-scoped
+        else:
+            positional.append(a)
+            i += 1
+    options = _load("options.json", {})
+    if not positional:
+        die("set-option: no option")
+    option = positional[0]
+    if unset:
+        options.get(target, {}).pop(option, None)
+        _save("options.json", options)
+        _record({"kind": "tmux.unset_option", "target": target, "option": option})
+    else:
+        value = positional[1] if len(positional) > 1 else ""
+        options.setdefault(target, {})[option] = value
+        _save("options.json", options)
+        _record({"kind": "tmux.set_option", "target": target, "option": option, "value": value})
+    return 0
+
+
+def _h_show_options(args):
+    target = want = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-t":
+            target, i = args[i + 1], i + 2
+        elif a.startswith("-"):
+            i += 1  # -q, -v, -g flags
+        else:
+            want, i = a, i + 1
+    print(_load("options.json", {}).get(target, {}).get(want, ""))
+    return 0
+
+
+def _h_display_message(args):
+    if "-p" in args:
+        # READ form: display-message -p [-t T] '#{format}'. The send helper reads
+        # '#{pane_id}' for focus restore; empty -> restore is skipped. No effect.
+        print("")
+        return 0
+    duration = text = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-d":
+            duration, i = int(args[i + 1]), i + 2
+        elif a.startswith("-"):
+            die(f"display-message: unsupported flag {a}")
+        else:
+            text, i = a, i + 1
+    _record({"kind": "tmux.display_message", "text": text, "duration_ms": duration})
+    return 0
+
+
+def _h_set_buffer(args):
+    buf = text = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-b":
+            buf, i = args[i + 1], i + 2
+        elif a == "--":
+            text = args[i + 1] if i + 1 < len(args) else ""
+            i = len(args)
+        else:
+            die(f"set-buffer: unsupported arg {a}")
+    if buf is None:
+        die("set-buffer: no -b buffer name")
+    if text is None:
+        die("set-buffer: no -- text")
+    buffers = _load("buffers.json", {})
+    buffers[buf] = text
+    _save("buffers.json", buffers)
+    return 0
+
+
+def _h_paste_buffer(args):
+    buf = pane = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-b":
+            buf, i = args[i + 1], i + 2
+        elif a == "-t":
+            pane, i = args[i + 1], i + 2
+        elif a in ("-d", "-p", "-r"):
+            i += 1  # delete-after-paste / bracketed / no-format flags
+        else:
+            die(f"paste-buffer: unsupported arg {a}")
+    if buf is None:
+        die("paste-buffer: no -b buffer")
+    if pane is None:
+        die("paste-buffer: no -t target")
+    buffers = _load("buffers.json", {})
+    if buf not in buffers:
+        die(f"paste-buffer: unknown buffer {buf}")
+    pending = _load("pending_paste.json", {})
+    pending[pane] = buffers[buf]
+    _save("pending_paste.json", pending)
+    return 0
+
+
+def _h_send_keys(args):
+    pane = None
+    keys = []
+    copy_mode = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "-t":
+            pane, i = args[i + 1], i + 2
+        elif a == "-X":
+            copy_mode, i = True, i + 2  # -X <copy-mode-command> (e.g. cancel)
+        elif a == "-l":
+            i += 1  # literal
+        else:
+            keys.append(a)
+            i += 1
+    if copy_mode:
+        return 0  # copy-mode command — no state change, no effect
+    # An Enter finalizes a pending paste for this pane into ONE tmux.paste effect
+    # (submit=True); any other key sequence, or Enter with no pending paste, is a
+    # no-op here.
+    if "Enter" in keys and pane is not None:
+        pending = _load("pending_paste.json", {})
+        if pane in pending:
+            _record({"kind": "tmux.paste", "target": pane, "text": pending[pane], "submit": True})
+            del pending[pane]
+            _save("pending_paste.json", pending)
+    return 0
+
+
+def _h_select_pane(args):
+    return 0  # focus change — not a recorded effect
+
+
+_HANDLERS = {
+    "has-session": _h_has_session,
+    "list-sessions": _h_list_sessions,
+    "list-panes": _h_list_panes,
+    "capture-pane": _h_capture_pane,
+    "set-option": _h_set_option,
+    "show-options": _h_show_options,
+    "display-message": _h_display_message,
+    "set-buffer": _h_set_buffer,
+    "paste-buffer": _h_paste_buffer,
+    "send-keys": _h_send_keys,
+    "select-pane": _h_select_pane,
+}
+
+
+def dispatch(sub, args):
+    handler = _HANDLERS.get(sub)
+    if handler is None:
+        die(f"unsupported subcommand: {sub}")
+    return handler(args)
+
+
 def main():
     argv = _strip_global_opts(sys.argv[1:])
     if not argv:
         die("no subcommand")
-    sub, args = argv[0], argv[1:]
-
-    if sub == "has-session":
-        gone = (D / "control").exists() and (D / "control").read_text().strip() == "gone"
-        sys.exit(1 if gone else 0)
-
-    if sub == "list-sessions":
-        # -F '#{session_name}' (exact-match liveness check)
-        fmt = None
-        i = 0
-        while i < len(args):
-            if args[i] == "-F":
-                fmt = args[i + 1]
-                i += 2
-            else:
-                die(f"list-sessions: unsupported arg {args[i]}")
-        for name in _load("sessions.json", []):
-            if fmt:
-                print(fmt.replace("#{session_name}", name))
-            else:
-                print(name)
-        sys.exit(0)
-
-    if sub == "list-panes":
-        session = fmt = None
-        i = 0
-        while i < len(args):
-            a = args[i]
-            if a == "-s":
-                i += 1
-            elif a == "-t":
-                session, i = args[i + 1], i + 2
-            elif a == "-F":
-                fmt, i = args[i + 1], i + 2
-            else:
-                die(f"list-panes: unsupported arg {a}")
-        for p in _load("panes.json", {}).get(session, []):
-            line = fmt
-            line = line.replace("#{pane_id}", p.get("pane_id", ""))
-            line = line.replace("#{@ae_agent}", p.get("agent", ""))
-            line = line.replace("#{pane_current_command}", p.get("current_command", ""))
-            line = line.replace("#{pane_pid}", str(p.get("pane_pid", "")))
-            print(line)
-        sys.exit(0)
-
-    if sub == "capture-pane":
-        pane = None
-        i = 0
-        while i < len(args):
-            a = args[i]
-            if a in ("-p", "-J"):
-                i += 1
-            elif a in ("-S", "-E"):
-                i += 2  # -S -40 ; -E -
-            elif a == "-t":
-                pane, i = args[i + 1], i + 2
-            else:
-                die(f"capture-pane: unsupported arg {a}")
-        print(_cur_tick().get("captures", {}).get(pane, ""))
-        sys.exit(0)
-
-    if sub == "set-option":
-        target = None
-        unset = False
-        positional = []
-        i = 0
-        while i < len(args):
-            a = args[i]
-            if a == "-t":
-                target, i = args[i + 1], i + 2
-            elif a == "-u":
-                unset, i = True, i + 1
-            elif a in ("-p", "-g", "-a"):
-                i += 1  # pane/global/append scope flags — modelled as session-scoped
-            else:
-                positional.append(a)
-                i += 1
-        options = _load("options.json", {})
-        option = positional[0] if positional else die("set-option: no option")
-        if unset:
-            options.get(target, {}).pop(option, None)
-            _save("options.json", options)
-            _record({"kind": "tmux.unset_option", "target": target, "option": option})
-        else:
-            value = positional[1] if len(positional) > 1 else ""
-            options.setdefault(target, {})[option] = value
-            _save("options.json", options)
-            _record({"kind": "tmux.set_option", "target": target, "option": option, "value": value})
-        sys.exit(0)
-
-    if sub == "show-options":
-        target = want = None
-        i = 0
-        while i < len(args):
-            a = args[i]
-            if a == "-t":
-                target, i = args[i + 1], i + 2
-            elif a.startswith("-"):
-                i += 1  # -q, -v, -g flags
-            else:
-                want, i = a, i + 1
-        print(_load("options.json", {}).get(target, {}).get(want, ""))
-        sys.exit(0)
-
-    if sub == "display-message":
-        if "-p" in args:
-            # READ form: display-message -p [-t T] '#{format}'. Not exercised by the
-            # status-only fixture; serve empty. (Later slices extend if needed.)
-            print("")
-            sys.exit(0)
-        duration = text = None
-        i = 0
-        while i < len(args):
-            a = args[i]
-            if a == "-d":
-                duration, i = int(args[i + 1]), i + 2
-            elif a.startswith("-"):
-                die(f"display-message: unsupported flag {a}")
-            else:
-                text, i = a, i + 1
-        _record({"kind": "tmux.display_message", "text": text, "duration_ms": duration})
-        sys.exit(0)
-
-    die(f"unsupported subcommand: {sub}")
+    try:
+        rc = 0
+        for cmd in _split_commands(argv):
+            rc = dispatch(cmd[0], cmd[1:])
+        sys.exit(rc)
+    except FakeTmuxError as exc:
+        sys.stderr.write(f"fake-tmux: {exc}\n")
+        sys.exit(2)
 
 
 if __name__ == "__main__":

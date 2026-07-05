@@ -308,6 +308,9 @@ def run_python_watchdog_fixture(fixture: dict, *, git=None) -> list:
                 config, state, env.tmux, name,
                 work_dir=work_dir, session_dir=session_dir, tmux_server=server,
                 now=tick.get("epoch"), git=git_runner,
+                # sole event-emit path: records event.append AND appends compactly
+                # to events.jsonl (feed-forward), so a later tick's recency scan sees it.
+                emit_event=env.append_event,
             )
         return env.recorder.as_list()
 
