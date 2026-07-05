@@ -1419,6 +1419,17 @@ assert_eq "watchdog: supports start/stop/status subcommands" \
     "1" \
     "$([[ "$AE_SOURCE" == *'_watchdog_start'* && "$AE_SOURCE" == *'_watchdog_stop'* && "$AE_SOURCE" == *'_watchdog_status'* ]] && echo 1 || echo 0)"
 
+# Root fix: _watchdog_is_running must require a live @ae_agent=_watchdog pane in
+# its OWN session (not just a live pid) before reporting running — a recycled pid
+# from a stale pidfile must not read as running, and a stale pidfile is cleaned.
+# start/stop/status all inherit this. Extract the fn body so the pane check must
+# live INSIDE it (the same call also appears in _watchdog_stop).
+_wir_fn="$(awk '/^_watchdog_is_running\(\) \{/{f=1} f{print} f && /^\}/{exit}' <<<"$AE_SOURCE")"
+assert_eq "watchdog: is_running requires a live _watchdog pane (not just a live pid)" "1" \
+    "$([[ "$_wir_fn" == *'_monitor_find_pane _watchdog'* ]] && echo 1 || echo 0)"
+assert_eq "watchdog: is_running cleans a stale pidfile" "1" \
+    "$([[ "$_wir_fn" == *'kill -0'* && "$_wir_fn" == *'rm -f "$PIDFILE"'* ]] && echo 1 || echo 0)"
+
 # doctor --refresh cycles a RUNNING watchdog so refreshed helper code goes live.
 # Structural: the restart lives in the per-session refresh path (sync_existing_
 # session_assets). Extract just that function body so the asserts can't be

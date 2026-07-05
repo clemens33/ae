@@ -770,10 +770,10 @@ assert_contains "doctor-refresh: regenerated watchdog starts and reports running
 sleep 0.5
 
 # ── Test 11b: refresh must NOT stop a STOPPED session's stale-pid watchdog ──
-# BLOCKER regression: 'watchdog status' trusts .watchdog.pid + kill -0, so a
-# stopped session whose stale pidfile happens to point at a recycled, unrelated
-# live PID would report "is running". The liveness gate (tmux session + _watchdog
-# pane) must veto the stop so refresh never kills that innocent process.
+# The doctor --refresh liveness gate must veto the watchdog restart when the tmux
+# side is gone, so a stale .watchdog.pid pointing at a recycled, unrelated live
+# PID is never stopped/killed. (The status/start/stop root behavior — status must
+# not lie, stop must not kill — is owned by Test 11d.)
 REPO_STALE="$(setup_repo)"
 (cd "$REPO_STALE" && "$AE" --local test-stale-wd &) 2>/dev/null
 wait_for_session "test-stale-wd"
@@ -786,14 +786,12 @@ wd_poll "$STALE_WD" "is running" 20 || true # settle autostart before we kill it
 tmux kill-session -t test-stale-wd 2>/dev/null || true
 sleep 0.5
 
-# Fabricate the stale-pid hazard: a genuinely live, unrelated process, its PID
-# written into the watchdog pidfile. status now reports "is running" purely from
-# kill -0 — exactly the false positive the gate must not act on.
+# Fabricate the stale-pid hazard immediately before the refresh (no status
+# preflight — that behavior is 11d's): a genuinely live, unrelated process whose
+# PID is written into the watchdog pidfile.
 sleep 300 &
 dummy_pid=$!
 printf '%s\n' "$dummy_pid" > "$STALE_PIDFILE"
-assert_contains "stale-wd: status falsely reports running from the recycled pid" \
-    "is running" "$("$STALE_WD" status 2>&1 || true)"
 
 (cd "$REPO_STALE" && "$AE" doctor --refresh test-stale-wd > "$TMPDIR/doctor-stale.out" 2>/dev/null)
 stale_refresh_out="$(cat "$TMPDIR/doctor-stale.out")"
@@ -850,6 +848,56 @@ assert_eq "events-retention: oldest-dropped boundary gone (seedmarker-200)" \
 
 "$AE" end -f test-evretain 2>/dev/null || true
 rm -rf "$HOME/.ae/sessions/test-evretain" 2>/dev/null || true
+sleep 0.5
+
+# ── Test 11d: watchdog status/start/stop reject a stale RECYCLED pid ──────
+# Root fix (beyond the doctor --refresh gate of 11b): _watchdog_is_running must
+# require a live @ae_agent=_watchdog pane in its OWN session, not just a live pid.
+# A stale .watchdog.pid pointing at a recycled, unrelated process must read as NOT
+# running (status can't lie), must NOT be killed by stop, and must not make start
+# wrongly defer. Exercised directly through the session's own watchdog helper.
+REPO_WDR="$(setup_repo)"
+(cd "$REPO_WDR" && "$AE" --local test-wd-root &) 2>/dev/null
+wait_for_session "test-wd-root"
+WDR="$HOME/.ae/sessions/test-wd-root/watchdog"
+WDR_PID="$HOME/.ae/sessions/test-wd-root/.watchdog.pid"
+wd_poll "$WDR" "is running" 20 || true            # settle the launch autostart
+# Stop the watchdog: kills the _watchdog pane + pidfile, but the SESSION stays up.
+"$WDR" stop >/dev/null 2>&1 || true
+wd_poll "$WDR" "not running" 20 || true
+
+# Fabricate the stale-recycled-pid hazard: a genuinely live, unrelated process
+# whose pid we write into .watchdog.pid. There is NO _watchdog pane.
+sleep 300 &
+wdr_dummy=$!
+printf '%s\n' "$wdr_dummy" > "$WDR_PID"
+
+# (1) status must NOT lie: pid alive but no pane -> not running (+ cleans pidfile).
+assert_contains "wd-root: status reports not-running on a recycled pid" \
+    "not running" "$("$WDR" status 2>&1 || true)"
+assert_eq "wd-root: status did NOT kill the innocent recycled process" \
+    "1" "$(kill -0 "$wdr_dummy" 2>/dev/null && echo 1 || echo 0)"
+assert_eq "wd-root: status cleaned the stale pidfile" \
+    "1" "$([[ -f "$WDR_PID" ]] && echo 0 || echo 1)"
+
+# (2) stop must NOT kill the recycled process (re-fabricate the stale pid).
+printf '%s\n' "$wdr_dummy" > "$WDR_PID"
+"$WDR" stop >/dev/null 2>&1 || true
+assert_eq "wd-root: stop did NOT kill the innocent recycled process" \
+    "1" "$(kill -0 "$wdr_dummy" 2>/dev/null && echo 1 || echo 0)"
+
+# (3) start must NOT wrongly defer on a stale pid — it launches a fresh watchdog.
+printf '%s\n' "$wdr_dummy" > "$WDR_PID"
+"$WDR" start >/dev/null 2>&1 &
+wd_poll "$WDR" "is running" 20 || true
+assert_contains "wd-root: start launched a real watchdog (not deferred to stale pid)" \
+    "is running" "$("$WDR" status 2>&1 || true)"
+wdr_new="$(wd_pid "$WDR")"
+assert_eq "wd-root: the running watchdog pid is NOT the recycled dummy" \
+    "1" "$([[ -n "$wdr_new" && "$wdr_new" != "$wdr_dummy" ]] && echo 1 || echo 0)"
+
+kill "$wdr_dummy" 2>/dev/null || true
+"$AE" end -f test-wd-root 2>/dev/null || true
 sleep 0.5
 
 # ── goal helper: set → list → survives resume ────────────────────────

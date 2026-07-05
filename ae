@@ -7066,7 +7066,24 @@ _watchdog_is_running() {
     [[ -f "$PIDFILE" ]] || return 1
     local pid
     pid="$(cat "$PIDFILE" 2>/dev/null)"
-    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+    # Dead or empty pid → stale pidfile; clean it and report not running.
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$PIDFILE" 2>/dev/null
+        return 1
+    fi
+    # The pid is alive — but a stale pidfile can point at a RECYCLED, unrelated
+    # process (kill -0 succeeds on it). Require our OWN watchdog pane
+    # (@ae_agent=_watchdog) to be live in this session too — _monitor_find_pane is
+    # list-panes -s on our own server. No pane → not really running: clean the
+    # stale pidfile so 'status' can't lie, 'start' won't wrongly defer, and 'stop'
+    # won't kill the innocent process. Safe against a starting watchdog:
+    # _watchdog_start tags the pane before _run writes the pidfile, so whenever the
+    # pidfile exists our pane exists too.
+    if [[ -z "$(_monitor_find_pane _watchdog)" ]]; then
+        rm -f "$PIDFILE" 2>/dev/null
+        return 1
+    fi
+    return 0
 }
 
 _set_meta_kv() {
