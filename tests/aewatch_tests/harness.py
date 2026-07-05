@@ -254,11 +254,24 @@ class MultiTickEnv:
         self.clock = TickClock(self.ticks)
 
     def start_tick(self, i: int) -> None:
-        """Advance the clock to tick i and apply that tick's pane state."""
+        """Advance the clock to tick i, apply that tick's pane captures, and inject
+        its INPUT events into the primary session's events.jsonl.
+
+        Tick events (agent declarations / inbound messages) are INPUTS the cycle
+        reads, NOT watchdog side effects — so they are appended compactly to the
+        file but NEVER recorded as event.append effects. Single-session default:
+        they route to the fixture's first session (see the slice-7 schema note)."""
         self.clock.start(i)
         tick = self.ticks[i]
         for pane_id, capture in tick.get("captures", {}).items():
             self.tmux._captures[pane_id] = capture
+        events = tick.get("events")
+        if events:
+            name = self.fixture["sessions"][0]["name"]
+            path = self.home.sessions / name / "events.jsonl"
+            with path.open("a", encoding="utf-8") as handle:
+                for event in events:
+                    handle.write(_dump_event(event) + "\n")
 
     def append_event(self, session: str, event: dict) -> dict:
         """Record an event.append effect AND append it to events.jsonl so later

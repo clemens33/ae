@@ -120,6 +120,18 @@ def run_bash_watchdog_fixture(fixture, root):
     (oracle / "sessions.json").write_text(json.dumps(session_names))
     (oracle / "effects.jsonl").write_text("")
 
+    # Per-tick INPUT events: tick 0's are seeded now (before cycle 0, matching the
+    # Python start_tick(0)); ticks 1..N are appended by the fake sleep shim at each
+    # tick boundary. Route to the PRIMARY session (single-session default). Compact,
+    # matching ae's on-disk event form. events_target.txt tells the sleep shim where.
+    primary_events = sessions / session_names[0] / "events.jsonl"
+    tick0_events = ticks[0].get("events") if ticks else None
+    if tick0_events:
+        with primary_events.open("a", encoding="utf-8") as fh:
+            for ev in tick0_events:
+                fh.write(json.dumps(ev, separators=(",", ":")) + "\n")
+    (oracle / "events_target.txt").write_text(str(primary_events), encoding="utf-8")
+
     env = dict(os.environ)
     env["PATH"] = f"{_FAKEBIN}{os.pathsep}{env['PATH']}"
     env["HOME"] = str(root / "home")

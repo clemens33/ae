@@ -602,6 +602,10 @@ class WatchdogState:
     dead_agents: dict = dataclasses.field(default_factory=dict)
     alerted_missing: dict = dataclasses.field(default_factory=dict)
     throttle_streak: dict = dataclasses.field(default_factory=dict)
+    # Per-pane quiet baseline for waiting-user/blocked: the declaration's full-tuple
+    # key + the pane hash captured when it was first observed (ae's quiet_base_*).
+    quiet_base_key: dict = dataclasses.field(default_factory=dict)
+    quiet_base_hash: dict = dataclasses.field(default_factory=dict)
 
 
 def default_git_runner(work_dir, args, *, timeout: int = 2):
@@ -723,6 +727,77 @@ def _last_event_age(session_dir, agent: str, now) -> int:
     return int(now) - epoch
 
 
+def _latest_relevant_event(session_dir, agent: str, session_name: str):
+    """Newest events.jsonl line (by append order) MENTIONING agent — actor==agent,
+    target==agent, or target==f'@{session}:{agent}'. Port of ae:7329
+    _latest_relevant_event; json.loads instead of the grep/tac scan. Returns a dict
+    {action,ts,ref,actor,summary} or None."""
+    if session_dir is None:
+        return None
+    events_file = Path(session_dir) / "events.jsonl"
+    if not events_file.is_file():
+        return None
+    try:
+        lines = events_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    at_ref = f"@{session_name}:{agent}"
+    for line in reversed(lines):  # newest-in-file wins
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        actor = ev.get("actor", "")
+        target = ev.get("target", "")
+        if actor == agent or target == agent or target == at_ref:
+            return {
+                "action": ev.get("action", ""),
+                "ts": ev.get("ts", ""),
+                "ref": ev.get("ref", ""),
+                "actor": actor,
+                "summary": ev.get("summary", ""),
+            }
+    return None
+
+
+_QUIET_REASONS = frozenset({"done", "waiting-user", "blocked"})
+
+
+def _agent_quiet_reason(session_dir, agent: str, session_name: str):
+    """(reason, key) of the agent's current self-declared quiet state, or None.
+    Port of ae:7364. ONLY the agent's OWN declaration is quiet (actor==agent); a
+    newer inbound event (actor!=agent targeting it) invalidates it. Legacy
+    action==done -> 'done'; action==state with ref in {done,waiting-user,blocked}
+    -> ref. key = 'action|ts|ref|actor|summary' (full tuple, so a fresh
+    declaration re-arms even within one second)."""
+    row = _latest_relevant_event(session_dir, agent, session_name)
+    if row is None or row["actor"] != agent:
+        return None
+    if row["action"] == "done":
+        reason = "done"
+    elif row["action"] == "state" and row["ref"] in _QUIET_REASONS:
+        reason = row["ref"]
+    else:
+        return None
+    key = f'{row["action"]}|{row["ts"]}|{row["ref"]}|{row["actor"]}|{row["summary"]}'
+    return reason, key
+
+
+def _quiet_pane_decision(cur_hash, armed_key, armed_hash, decl_key) -> str:
+    """arm (new/different declaration) | hold (pane unchanged since baseline) |
+    yield (pane changed -> no longer quiet). Port of ae:7411."""
+    if armed_key != decl_key:
+        return "arm"
+    if cur_hash == armed_hash:
+        return "hold"
+    return "yield"
+
+
 def _meta_value(session_dir, key: str) -> str:
     """First `key=` value from session_dir/meta, '' when absent. Port of ae:7422
     _watchdog_meta_value (grep '^key=' | head -1 | cut -d= -f2-)."""
@@ -780,6 +855,28 @@ def run_watchdog_cycle(
         total += 1
         pane_id = pane.pane_id
         h = _pane_hash(tmux.capture_pane(pane_id))
+        # Quiet state (ae:7821-7864) — evaluated BEFORE active so a declared agent
+        # is not nudged. done is event-only (pane churn never invalidates it);
+        # waiting-user/blocked arm a per-declaration pane baseline, hold while the
+        # pane is untouched, and yield (fall through) once it changes.
+        quiet = _agent_quiet_reason(session_dir, agent, session)
+        if quiet is not None:
+            reason, decl_key = quiet
+            if reason == "done":
+                state.nudge_count[pane_id] = 0
+                active += 1
+                continue
+            decision = _quiet_pane_decision(
+                h, state.quiet_base_key.get(pane_id), state.quiet_base_hash.get(pane_id), decl_key
+            )
+            if decision == "arm":
+                state.quiet_base_key[pane_id] = decl_key
+                state.quiet_base_hash[pane_id] = h
+            if decision in ("arm", "hold"):
+                state.nudge_count[pane_id] = 0
+                active += 1
+                continue
+            # yield -> fall through to active/recent/stale (post-reply hang caught).
         # 5. Active — pane content hash changed since last cycle (ae:7894).
         if h != state.prev_hash.get(pane_id):
             state.prev_hash[pane_id] = h

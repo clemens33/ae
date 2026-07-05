@@ -22,6 +22,20 @@ if os.environ.get("AEWATCH_ORACLE_RECORD", "0") == "1":
         fh.write(json.dumps({"boundary": idx}) + "\n")
 idx += 1
 (D / "tick.idx").write_text(str(idx))
+
+# Inject the NEW tick's INPUT events (agent declarations / inbound messages) into
+# the session events.jsonl AFTER incrementing the index and BEFORE the next loop
+# reads events — the only real cross-cycle boundary without editing ae. These are
+# inputs, not effects: appended directly (compact), never recorded as event.append.
+if idx < n:
+    ticks = json.loads((D / "ticks.json").read_text())
+    events = ticks[idx].get("events") if idx < len(ticks) else None
+    target = D / "events_target.txt"
+    if events and target.exists():
+        with Path(target.read_text().strip()).open("a", encoding="utf-8") as fh:
+            for ev in events:
+                fh.write(json.dumps(ev, separators=(",", ":")) + "\n")
+
 if idx >= n:
     (D / "control").write_text("gone")
 sys.exit(0)
