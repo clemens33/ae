@@ -1023,6 +1023,7 @@ def _nudge_text(session_dir, goal: str) -> str:
 def run_watchdog_cycle(
     config, state, tmux, session, *, work_dir, session_dir=None, tmux_server="",
     now=None, git=default_git_runner, emit_event=None, has_descendant=default_has_descendant,
+    recover_pending=None,
 ) -> None:
     """One watchdog cycle for `session`. Counts live @ae_agent panes, classifies
     each (dead / throttled / quiet / active / recent / stale) and acts on them,
@@ -1037,9 +1038,11 @@ def run_watchdog_cycle(
     (pure cycle_active bumps); stale -> nudge under MAX_NUDGES (tmux.paste +
     event.append(nudge) via emit_event, actor 'watchdog') then a single max-nudge
     ALERT at count==MAX_NUDGES. After the loop, registered agents with no pane raise
-    a missing alert (latched via alerted_missing) — this runs BEFORE the status push.
-    Alerts / throttle events are DIRECT emits (actor 'human') + a tmux.display_message.
-    FUTURE seams: sweep (slice 10), recover + telegram (slices 11/12)."""
+    a missing alert (latched via alerted_missing), then pending session-ids are
+    recovered via the injected recover_pending boundary (recover events) — both run
+    BEFORE the status push. Meta-agent sweep + wedge (slice 10) run in branch 1b.
+    Alerts / throttle / recover events are DIRECT emits (actor 'human') + a
+    tmux.display_message where applicable. FUTURE seam: telegram supervise (slice 12)."""
     state.cycle += 1
     goal = _meta_value(session_dir, "goal")
     agent_bins = _load_agent_bins(session_dir)
@@ -1233,6 +1236,22 @@ def run_watchdog_cycle(
             if emit_event is not None:
                 emit_event(session, _alert_event(now, agent_ref, "pane missing — agent no longer visible in session"))
             tmux.display_message(f"[ae watchdog] {agent_ref} pane is MISSING", duration_ms=_ALERT_DURATION_MS)
+
+    # 9. Recover pending session IDs (ae:7966-7975) — retry the post-launch capture
+    #    for codex/gemini/opencode. NO-OP when ae_path is absent or non-executable.
+    #    recover_pending(session) is the injected boundary: the oracle returns the
+    #    fixture rows; production shells `ae _recover-pending` and parses the TSV.
+    ae_path = _meta_value(session_dir, "ae_path")
+    if ae_path and os.access(ae_path, os.X_OK) and recover_pending is not None:
+        for row in recover_pending(session):
+            if row.get("kind") == "ok" and row.get("captured"):
+                captured = row["captured"]
+                if emit_event is not None:
+                    emit_event(session, {
+                        "ts": _now_iso(now), "actor": "human", "action": "recover",
+                        "target": row.get("agent", ""), "ref": captured,
+                        "summary": f"captured {row.get('tool', '')} session id ({captured[:8]})",
+                    })
 
     glyph = "✖" if dead else ("⚠" if stale else "●")
     _push_status(tmux, session, f"[watch {glyph} {active}/{total}]", work_dir, git=git)

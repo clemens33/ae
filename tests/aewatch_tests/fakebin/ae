@@ -1,13 +1,43 @@
 #!/usr/bin/env python3
 """Fake ae executable for the aewatch bash oracle (the watchdog's ae_path=).
-Phase-2 boundaries only — no network, no real behavior. `_recover-pending` and
-`telegram _supervise` are deterministic no-ops for the status skeleton; later
-slices give them fixture-driven output."""
-import sys
+Phase-2 boundaries only — no network, no real behavior:
 
-sub = sys.argv[1] if len(sys.argv) > 1 else ""
-# telegram is only a boundary as `telegram _supervise`; anything else is unmodeled.
-if sub == "_recover-pending" or (sub == "telegram" and sys.argv[2:3] == ["_supervise"]):
+  _recover-pending <session>  -> print the CURRENT tick's recover rows as TSV
+                                 (kind\tslot\tagent\ttool\tcaptured), driven by
+                                 ticks.json[tick.idx].recover in AEWATCH_ORACLE_DIR.
+  telegram _supervise         -> deterministic no-op (slice 12 boundary).
+
+FAILS LOUD (exit 2 + stderr) on any other command OR a wrong arg shape — a silent
+accept would forge call-shape parity.
+"""
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def die(msg):
+    sys.stderr.write(f"fake-ae: {msg}\n")
+    sys.exit(2)
+
+
+argv = sys.argv[1:]
+
+if argv[:1] == ["_recover-pending"]:
+    if len(argv) != 2:
+        die(f"_recover-pending expects exactly <session>, got {argv[1:]}")
+    oracle = os.environ.get("AEWATCH_ORACLE_DIR")
+    if oracle:
+        D = Path(oracle)
+        idx = int((D / "tick.idx").read_text().strip()) if (D / "tick.idx").exists() else 0
+        ticks = json.loads((D / "ticks.json").read_text()) if (D / "ticks.json").exists() else []
+        rows = ticks[idx].get("recover", []) if idx < len(ticks) else []
+        for r in rows:
+            fields = [r.get("kind", ""), r.get("slot", ""), r.get("agent", ""), r.get("tool", ""), r.get("captured", "")]
+            sys.stdout.write("\t".join(fields) + "\n")
     sys.exit(0)
-sys.stderr.write(f"fake-ae: unmodeled command: {' '.join(sys.argv[1:])}\n")
-sys.exit(2)
+
+if argv == ["telegram", "_supervise"]:
+    sys.exit(0)
+
+die(f"unmodeled command: {' '.join(argv)}")

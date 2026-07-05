@@ -46,6 +46,16 @@ def _load_aewatch():
 AW = _load_aewatch()
 
 
+def _set_meta_value(meta_path, key: str, value) -> None:
+    """Set key=value in a meta file with REMOVE + APPEND semantics — drop any
+    existing `key=` line(s), then append. Mirrors bash_oracle._set_meta_value so the
+    boundary metas stay byte-faithful even if a fixture already carried the key
+    (_meta_value reads the FIRST match, so a plain append could diverge)."""
+    lines = [ln for ln in meta_path.read_text(encoding="utf-8").splitlines() if not ln.startswith(f"{key}=")]
+    lines.append(f"{key}={value}")
+    meta_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _dump_event(event: dict) -> str:
     """Serialize an ae event COMPACTLY — `{"k":"v"}`, no spaces — matching what
     ae's ae_emit_event writes. events.jsonl is an ae file contract, and ae's
@@ -333,6 +343,12 @@ def run_python_watchdog_fixture(fixture: dict, *, git=None) -> list:
     with tempfile.TemporaryDirectory() as tmp:
         env = MultiTickEnv(fixture, tmp)
         session_dir = env.home.sessions / name
+        # Mirror the bash oracle: point meta ae_path at the (executable) fake ae so
+        # the recover / telegram-supervise ae_path gate passes IDENTICALLY on both
+        # sides. REPLACE semantics (matching bash_oracle._set_meta_value) — a plain
+        # append could diverge if a fixture already set ae_path. Python doesn't shell
+        # it (it uses the injected boundaries below).
+        _set_meta_value(session_dir / "meta", "ae_path", bash_oracle._FAKEBIN / "ae")
         AW.watchdog_bootstrap(env.tmux, name, work_dir=work_dir, git=git_runner)
         for i, tick in enumerate(env.ticks):
             env.start_tick(i)  # sole tick-mutation path: applies this tick's captures
@@ -343,6 +359,9 @@ def run_python_watchdog_fixture(fixture: dict, *, git=None) -> list:
                 # sole event-emit path: records event.append AND appends compactly
                 # to events.jsonl (feed-forward), so a later tick's recency scan sees it.
                 emit_event=env.append_event,
+                # injected recover boundary: this tick's fixture recover rows (the
+                # production impl shells `ae _recover-pending` + parses the TSV).
+                recover_pending=(lambda s, _rows=tick.get("recover", []): _rows),
             )
         return env.recorder.as_list()
 
