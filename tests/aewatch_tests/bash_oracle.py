@@ -91,8 +91,12 @@ def run_bash_watchdog_fixture(fixture, root):
         meta = dict(s.get("meta", {}))
         meta.setdefault("session", name)
         _write_meta(sdir, meta)
+        # COMPACT JSON — no spaces — matching ae's ae_emit_event. The bash
+        # watchdog's _last_event_age greps for `"actor":"..."` (compact), so a
+        # spaced json.dumps would make it miss the event and go falsely stale.
         (sdir / "events.jsonl").write_text(
-            "".join(json.dumps(e) + "\n" for e in s.get("events", [])), encoding="utf-8"
+            "".join(json.dumps(e, separators=(",", ":")) + "\n" for e in s.get("events", [])),
+            encoding="utf-8",
         )
         panes_map[name] = s.get("panes", [])
     if not session_names:
