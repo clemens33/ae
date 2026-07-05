@@ -1089,16 +1089,14 @@ def run_watchdog_cycle(
                         emit_event(session, _watchdog_event(
                             now, "alert-cleared", agent, "meta-agent sweeping again (heartbeat resumed)"))
                 elif pane_id not in state.meta_reconciled:
-                    # ae's watchdog reconciles the DURABLE log here by calling
-                    # _agent_alert_reason — but that function is NOT emitted into the
-                    # generated watchdog helper (absent from its declare-f list AND
-                    # from _lib), so in ae it is UNDEFINED and the command
-                    # substitution is always empty: the post-restart reconcile NEVER
-                    # emits alert-cleared. We MATCH that actual behavior (a real ae
-                    # bug the parity oracle caught — see the slice-10 report). Only
-                    # the latch is set. (_agent_alert_reason is ported above, ready
-                    # to wire once ae emits it.)
+                    # Once per watchdog lifetime, reconcile the DURABLE event log: a
+                    # restart that lost the in-memory latch after alerting still emits
+                    # a clear if the log shows an active alert (ae:7757-7762). ae now
+                    # emits _agent_alert_reason into _lib (slice 10b), so this fires.
                     state.meta_reconciled[pane_id] = True
+                    if _agent_alert_reason(session_dir, agent, session) and emit_event is not None:
+                        emit_event(session, _watchdog_event(
+                            now, "alert-cleared", agent, "meta-agent sweeping again (heartbeat resumed)"))
             elif first_nudge > 0 and now - first_nudge > wedge_secs:
                 # Prompted long enough but the heartbeat is stale/absent -> wedge.
                 if pane_id not in state.meta_wedge_alerted:

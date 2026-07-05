@@ -1278,6 +1278,31 @@ assert_eq "template library: sources silently under set -u (no executable leaks)
     "1" "$_tpl_ok"
 rm -f "$_tpl_src"
 
+# 4. Referenced-implies-available: every ae top-level function CALLED in the
+#    watchdog helper (its emitted fns' bodies) must be AVAILABLE to the generated
+#    helper — in the watchdog declare-f list OR the _lib declare-f list. The
+#    existing guards check emitted names are DEFINED, but NOT that referenced names
+#    are AVAILABLE — the cross-section gap that made _agent_alert_reason a silent
+#    runtime no-op (watchdog called it; neither the watchdog list nor _lib emitted
+#    it). This catches that whole class.
+_lib_list="$(awk '/^ *declare -f ae_resolve /{f=1} f{l=$0; stop=(l !~ /\\ *$/); gsub(/\\ *$/,"",l); sub(/^ *declare -f /,"",l); print l; if (stop) exit}' <<<"$AE_SOURCE" | tr ' ' '\n')"
+_wd_avail="$(printf '%s\n%s\n' "$_wd_list" "$_lib_list" | grep -v '^$' | sort -u)"
+_ae_fns="$(grep -oE '^[a-z_][a-z0-9_]*\(\)' <<<"$AE_SOURCE" | sed 's/()//' | sort -u)"
+# Emitted watchdog fn bodies, full-line comments stripped (a fn name in prose must
+# not read as a call).
+_wd_bodies="$(while IFS= read -r fn; do [[ -n "$fn" ]] || continue
+    awk "/^${fn}\\(\\) \\{/,/^\\}\$/" <<<"$AE_SOURCE"; done <<<"$_wd_list" | grep -vE '^[[:space:]]*#')"
+_wd_missing=""
+while IFS= read -r fn; do
+    [[ -n "$fn" ]] || continue
+    # Called in command position (start / space / ; & | ( / $( ; then a word break).
+    if grep -qE "(^|[ \t;&|(]|\\\$\()${fn}([ \t;)&|]|\$)" <<<"$_wd_bodies"; then
+        grep -qxF "$fn" <<<"$_wd_avail" || _wd_missing+="$fn "
+    fi
+done <<<"$_ae_fns"
+assert_eq "watchdog emission: every referenced ae fn is available (emitted or in _lib)" \
+    "" "$_wd_missing"
+
 # The bash>=4 fail-fast must sit at the very top of ae, BEFORE any function
 # definition — bash parses fn bodies at definition time, so on 3.2 a later
 # guard never runs (the parser dies on bash-4 syntax first). Head = 1200 chars.

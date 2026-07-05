@@ -8693,7 +8693,7 @@ LIBPROLOGUE
             ae_current_pane ae_current_agent ae_current_agent_ref \
             ae_preview_text ae_extract_req_id ae_log_append ae_log_read \
             ae_target_tool ae_json_escape ae_emit_event ae_latest_state_for \
-            _event_json_str ae_make_req_id ae_tracked_send ae_find_request \
+            _event_json_str _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
             ae_submit_pasted_message ae_meta_get ae_meta_set ae_meta_unset
     } >"${AE_META}/_lib.tmp.$$"
     chmod 0700 "${AE_META}/_lib.tmp.$$"

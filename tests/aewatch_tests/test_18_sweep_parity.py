@@ -10,11 +10,12 @@ if it stops advancing after we've prompted long enough, raise ONE wedge alert
 
 Covers sweep cadence, wedge from an absent heartbeat, the meta gate (non-meta and
 meta-non-main workers use the normal watchdog), latch-based recovery via a fresh
-heartbeat, and the post-restart reconcile path — which the oracle exposed as DEAD
-CODE in ae (the watchdog helper omits _agent_alert_reason), so that fixture pins
-zero alert-cleared until a future ae seam emits the function. Recovery uses a
+heartbeat, and the post-restart reconcile. The oracle originally exposed that
+reconcile as DEAD CODE in ae (the generated watchdog helper omitted
+_agent_alert_reason); slice 10b FIXED it (ae now emits _agent_alert_reason into
+_lib), so the fixture pins exactly one durable-log alert-cleared. Recovery uses a
 heartbeat-mtime seam (per-tick, integer epoch - age on both sides). Non-git
-work_dir. No ae edits.
+work_dir.
 """
 
 import datetime
@@ -112,10 +113,10 @@ def _wedge_recover_fixture(work_dir):
 
 def _post_restart_reconcile_fixture(work_dir):
     """A prior watchdog's wedge alert is in the durable log; a fresh watchdog (fresh
-    WatchdogState) sees a fresh heartbeat. ae INTENDS to reconcile (emit alert-cleared)
-    here — but its watchdog helper omits _agent_alert_reason (not in the declare-f
-    list, not in _lib), so that path is DEAD CODE and NO alert-cleared is emitted.
-    This fixture pins that actual behavior (a real ae bug the oracle caught)."""
+    WatchdogState) sees a fresh heartbeat and reconciles it -> one alert-cleared.
+    The oracle originally found this path DEAD (ae omitted _agent_alert_reason from
+    the watchdog helper); slice 10b emits it via _lib, so the reconcile now fires on
+    both sides."""
     fx = _meta_fixture(work_dir, [
         {"epoch": _E, "now": _iso(_E), "captures": {_PANE: "idle"}, "heartbeat_age": 10},
     ])
@@ -196,14 +197,15 @@ class SweepParityTest(unittest.TestCase):
         self.assertEqual(cleared[0]["event"].get("actor"), "human")
         self.assertEqual(cleared[0]["event"].get("summary"), "meta-agent sweeping again (heartbeat resumed)")
 
-    def test_post_restart_reconcile_is_dead_code_in_ae(self):
-        # ae's durable-log reconcile calls _agent_alert_reason, which is undefined in
-        # the watchdog helper -> the reconcile NEVER emits. We match bash: NO
-        # alert-cleared. (Flagged to lead; re-enable emission once ae emits the fn.)
+    def test_post_restart_reconcile(self):
+        # Slice 10b fixes the ae bug (emits _agent_alert_reason into the watchdog
+        # helper): a fresh watchdog seeing a fresh heartbeat + a durable wedge alert
+        # reconciles it -> exactly one alert-cleared, on BOTH sides.
         python = self._parity(_post_restart_reconcile_fixture(str(self.nogit)), "reconcile")
         cleared = [e for e in python if e["kind"] == "event.append"
                    and e["event"].get("action") == "alert-cleared"]
-        self.assertEqual(len(cleared), 0, "ae's post-restart reconcile is dead code -> no alert-cleared")
+        self.assertEqual(len(cleared), 1, "a fresh watchdog reconciles the durable wedge alert")
+        self.assertEqual(cleared[0]["event"].get("actor"), "human")
 
 
 if __name__ == "__main__":
