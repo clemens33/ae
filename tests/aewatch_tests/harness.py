@@ -311,7 +311,14 @@ def run_python_watchdog_fixture(fixture: dict, *, git=None) -> list:
     work_dir = meta.get("work_dir", "")
     server = meta.get("tmux_server", "")
     git_runner = git or AW.default_git_runner
-    config = AW.WatchdogConfig.from_env()
+    # Mirror the tunables run_bash_watchdog_fixture forces on the bash side, so
+    # config-derived text (e.g. the throttle alert's THROTTLE_ALERT_CYCLES *
+    # INTERVAL figure) stays byte-exact across the dual run — no normalization.
+    config = AW.WatchdogConfig(
+        interval=bash_oracle._ORACLE_INTERVAL,
+        stale_min=bash_oracle._ORACLE_STALE_MIN,
+        max_nudges=bash_oracle._ORACLE_MAX_NUDGES,
+    )
     state = AW.WatchdogState()
     with tempfile.TemporaryDirectory() as tmp:
         env = MultiTickEnv(fixture, tmp)
@@ -331,4 +338,5 @@ def run_python_watchdog_fixture(fixture: dict, *, git=None) -> list:
 
 
 # Bash side of the phase-2 dual-run oracle (re-exported for the test suite).
-from bash_oracle import run_bash_watchdog_fixture  # noqa: E402
+import bash_oracle  # noqa: E402
+from bash_oracle import run_bash_watchdog_fixture  # noqa: E402,F401

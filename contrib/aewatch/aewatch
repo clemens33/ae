@@ -862,11 +862,43 @@ def _meta_agent_refs(session_dir) -> list:
     return refs
 
 
-def _alert_event(now, target: str, summary: str) -> dict:
-    """A watchdog alert event. Emitted DIRECTLY (not via send), so actor is 'human'
+def _watchdog_event(now, action: str, target: str, summary: str) -> dict:
+    """A watchdog event emitted DIRECTLY (not via send), so actor is 'human'
     (ae_current_agent_ref is empty in the _run subprocess) — NOT 'watchdog'. Omits
-    empty ref, matching ae's direct ae_emit_event."""
-    return {"ts": _now_iso(now), "actor": "human", "action": "alert", "target": target, "summary": summary}
+    empty ref, matching ae's direct ae_emit_event. Used for alert / throttled /
+    throttle-cleared (the nudge, routed through send, is actor 'watchdog')."""
+    return {"ts": _now_iso(now), "actor": "human", "action": action, "target": target, "summary": summary}
+
+
+def _alert_event(now, target: str, summary: str) -> dict:
+    return _watchdog_event(now, "alert", target, summary)
+
+
+# Verbatim per-tool throttle catalogs (ae:7517) — opencode is the UNION; refactor
+# here, never duplicate. The generic 429/503 patterns always apply.
+_THROTTLE_CLAUDE = ("Server is temporarily limiting requests", "API Error: Overloaded", "Anthropic API error")
+_THROTTLE_CODEX = ("Rate limit exceeded", "RateLimitError", "ratelimit_exceeded")
+_THROTTLE_GEMINI = ("RESOURCE_EXHAUSTED", "Quota exceeded")
+_THROTTLE_GENERIC = ("429 Too Many Requests", "503 Service Unavailable")
+_THROTTLE_CATALOGS = {
+    "claude": _THROTTLE_CLAUDE,
+    "codex": _THROTTLE_CODEX,
+    "gemini": _THROTTLE_GEMINI,
+    "opencode": _THROTTLE_CLAUDE + _THROTTLE_CODEX + _THROTTLE_GEMINI,
+}
+
+
+def _buf_shows_throttle(buf: str, agent_bin: str) -> bool:
+    """True if the pane buffer shows an upstream throttle / overload phrase for this
+    tool. Verbatim port of ae:7517 _buf_shows_throttle — the per-tool catalog
+    (opencode = the union) plus the generic patterns; an empty buffer is never
+    throttled; substring match."""
+    if not buf:
+        return False
+    for pattern in _THROTTLE_CATALOGS.get(agent_bin, ()) + _THROTTLE_GENERIC:
+        if pattern in buf:
+            return True
+    return False
 
 
 def _meta_value(session_dir, key: str) -> str:
@@ -907,18 +939,21 @@ def run_watchdog_cycle(
     now=None, git=default_git_runner, emit_event=None, has_descendant=default_has_descendant,
 ) -> None:
     """One watchdog cycle for `session`. Counts live @ae_agent panes, classifies
-    each (dead / quiet / active / recent / stale), acts on them, then pushes the
-    end-of-cycle status + branch, and finally checks for missing panes.
+    each (dead / throttled / quiet / active / recent / stale) and acts on them,
+    then checks for missing panes, and finally pushes the end-of-cycle status +
+    branch.
 
     Per-agent order mirrors ae:7679-7952. IMPLEMENTED: dead check (shell foreground
-    + no descendant -> alert, latched via dead_agents), quiet states (done event-only
-    / waiting-user / blocked arm-hold-yield), active/recent (pure cycle_active bumps),
-    and stale -> nudge under MAX_NUDGES (tmux.paste + event.append(nudge) via the
-    injected emit_event, actor 'watchdog') then a single max-nudge ALERT at
-    count==MAX_NUDGES. After the loop, registered agents with no pane raise a missing
-    alert (latched via alerted_missing). Alerts are DIRECT emits (actor 'human') +
-    a tmux.display_message. FUTURE seams: sweep (slice 10), throttle (slice 9),
-    recover + telegram (slices 11/12)."""
+    + no descendant -> alert, latched via dead_agents); throttle detect + clear
+    (before quiet) and react (after quiet, before active) — pause nudges, `throttled`
+    once, `alert` at THROTTLE_ALERT_CYCLES, `throttle-cleared` on recovery; quiet
+    states (done event-only / waiting-user / blocked arm-hold-yield); active/recent
+    (pure cycle_active bumps); stale -> nudge under MAX_NUDGES (tmux.paste +
+    event.append(nudge) via emit_event, actor 'watchdog') then a single max-nudge
+    ALERT at count==MAX_NUDGES. After the loop, registered agents with no pane raise
+    a missing alert (latched via alerted_missing) — this runs BEFORE the status push.
+    Alerts / throttle events are DIRECT emits (actor 'human') + a tmux.display_message.
+    FUTURE seams: sweep (slice 10), recover + telegram (slices 11/12)."""
     state.cycle += 1
     goal = _meta_value(session_dir, "goal")
     agent_bins = _load_agent_bins(session_dir)
@@ -947,7 +982,19 @@ def run_watchdog_cycle(
                 f"[ae watchdog] {agent} is DEAD — process dropped to shell", duration_ms=_ALERT_DURATION_MS
             )
             continue
-        h = _pane_hash(tmux.capture_pane(pane_id))
+        buf = tmux.capture_pane(pane_id)
+        h = _pane_hash(buf)
+        # Throttle detect + clear (ae:7808-7819) — BEFORE quiet, every cycle: a
+        # recovered pane with a live streak emits throttle-cleared no matter which
+        # branch the agent later exits on. The REACT is after quiet (below).
+        is_throttled = _buf_shows_throttle(buf, agent_bin)
+        if not is_throttled and pane_id in state.throttle_streak:
+            if emit_event is not None:
+                emit_event(session, _watchdog_event(
+                    now, "throttle-cleared", agent,
+                    f"throttling cleared after {state.throttle_streak[pane_id]} cycles",
+                ))
+            del state.throttle_streak[pane_id]
         # Quiet state (ae:7821-7864) — evaluated BEFORE active so a declared agent
         # is not nudged. done is event-only (pane churn never invalidates it);
         # waiting-user/blocked arm a per-declaration pane baseline, hold while the
@@ -970,6 +1017,28 @@ def run_watchdog_cycle(
                 active += 1
                 continue
             # yield -> fall through to active/recent/stale (post-reply hang caught).
+        # Throttled react (ae:7867-7892) — AFTER quiet, BEFORE active. React first
+        # so the alert cadence starts immediately (before pane-hash early-continues
+        # mask it). Updating prev_hash/last_hash_change here means a later recovery
+        # is seen as ACTIVITY, not a stale first-time hash diff.
+        if is_throttled:
+            prev_streak = state.throttle_streak.get(pane_id, 0)
+            if prev_streak == 0 and emit_event is not None:
+                emit_event(session, _watchdog_event(
+                    now, "throttled", agent, "upstream throttling detected — pausing nudges"))
+            state.throttle_streak[pane_id] = prev_streak + 1
+            if state.throttle_streak[pane_id] == config.throttle_alert_cycles:
+                if emit_event is not None:
+                    emit_event(session, _alert_event(
+                        now, agent,
+                        f"throttled for {config.throttle_alert_cycles * config.interval}s — may need attention"))
+                tmux.display_message(
+                    f"[ae watchdog] {agent} throttled persistently", duration_ms=_ALERT_DURATION_MS)
+            state.prev_hash[pane_id] = h
+            state.last_hash_change[pane_id] = now
+            state.nudge_count[pane_id] = 0
+            active += 1
+            continue
         # 5. Active — pane content hash changed since last cycle (ae:7894).
         if h != state.prev_hash.get(pane_id):
             state.prev_hash[pane_id] = h

@@ -30,6 +30,15 @@ _AE = _REPO_ROOT / "ae"
 _FAKEBIN = Path(__file__).resolve().parent / "fakebin"
 _SLEEP_SENTINEL = "424242"  # forced AE_WATCHDOG_INTERVAL_SEC; only this sleep advances a tick
 
+# The watchdog tunables this oracle forces on the bash side (run_env below). The
+# Python side (run_python_watchdog_fixture) must build WatchdogConfig from the SAME
+# values so config-derived text — e.g. the throttle alert's 'throttled for
+# {THROTTLE_ALERT_CYCLES * INTERVAL}s' — stays byte-exact WITHOUT normalization
+# (codex: normalizing would hide a hardcoded/wrong figure).
+_ORACLE_INTERVAL = int(_SLEEP_SENTINEL)
+_ORACLE_STALE_MIN = 15
+_ORACLE_MAX_NUDGES = 2
+
 
 def _write_meta(meta_dir, meta):
     (meta_dir / "meta").write_text("".join(f"{k}={v}\n" for k, v in meta.items()), encoding="utf-8")
@@ -167,9 +176,9 @@ def run_bash_watchdog_fixture(fixture, root):
     run_env = dict(
         env,
         AEWATCH_ORACLE_RECORD="1",
-        AE_WATCHDOG_INTERVAL_SEC=_SLEEP_SENTINEL,
-        AE_WATCHDOG_STALE_MIN="15",
-        AE_WATCHDOG_MAX_NUDGES="2",
+        AE_WATCHDOG_INTERVAL_SEC=str(_ORACLE_INTERVAL),
+        AE_WATCHDOG_STALE_MIN=str(_ORACLE_STALE_MIN),
+        AE_WATCHDOG_MAX_NUDGES=str(_ORACLE_MAX_NUDGES),
     )
     run = subprocess.run(
         [str(meta_dir / "watchdog"), "_run"],
