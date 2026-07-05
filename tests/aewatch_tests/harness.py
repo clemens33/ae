@@ -192,7 +192,10 @@ def build_fixture_env(fixture: dict, root, recorder):
     for session in fixture.get("sessions", []):
         name = session["name"]
         server = session.get("tmux_server", "")
-        sessions_by_server.setdefault(server, []).append(name)
+        # A session dir always exists (meta written); it is only "running" (in tmux)
+        # when running != False — so a stopped session is discoverable but running=False.
+        if session.get("running", True):
+            sessions_by_server.setdefault(server, []).append(name)
         home.session(name, meta=session.get("meta", {}), events=session.get("events", []))
         pane_objs = []
         for pane in session.get("panes", []):
@@ -371,6 +374,58 @@ def run_python_watchdog_fixture(fixture: dict, *, git=None) -> list:
                 supervise_bridge=(lambda server: env.recorder.record("telegram.supervise", tmux_server=server)),
             )
         return env.recorder.as_list()
+
+
+def run_daemon_tick_fixture(fixture: dict, *, git=None) -> list:
+    """Drive a multi-session fixture through the COMPOSED daemon tick (run_daemon_tick
+    with an injected WatchdogRunner) and return the watchdog effects only (the daemon's
+    own file.write/log.write are dropped). One run_daemon_tick call per tick; the
+    runner carries per-session state + bootstrap-once across ticks.
+
+    Slice-13 fixtures are captures-only (MultiTickEnv routes per-tick events/heartbeat
+    to the first session), and carry no recover/telegram opt-in, so those boundaries
+    are inert here (recover_pending returns [] — a per-tick multi-session recover
+    binding waits for the {session,event} extension)."""
+    import tempfile
+
+    git_runner = git or AW.default_git_runner
+    config = AW.WatchdogConfig(
+        interval=bash_oracle._ORACLE_INTERVAL,
+        stale_min=bash_oracle._ORACLE_STALE_MIN,
+        max_nudges=bash_oracle._ORACLE_MAX_NUDGES,
+        tg_supervise_secs=int(fixture.get("tg_supervise_secs", 0)),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        env = MultiTickEnv(fixture, tmp)
+        for session in fixture.get("sessions", []):
+            _set_meta_value(env.home.sessions / session["name"] / "meta", "ae_path", bash_oracle._FAKEBIN / "ae")
+        runner = AW.WatchdogRunner(
+            config, env.tmux, sessions_dir=env.home.sessions, git=git_runner,
+            emit_event=env.append_event,
+            recover_pending=(lambda s: []),
+            supervise_bridge=(lambda server: env.recorder.record("telegram.supervise", tmux_server=server)),
+        )
+        runtime = AW.AewatchRuntime(env.home.home)
+        for i, tick in enumerate(env.ticks):
+            env.start_tick(i)
+            AW.run_daemon_tick(runtime, env.tmux, env.recorder, now=tick.get("epoch"), watchdog_runner=runner)
+        return [e for e in env.recorder.as_list() if e["kind"] not in ("file.write", "log.write")]
+
+
+def run_daemon_tick_smoke(fixture: dict) -> list:
+    """The DEFAULT-CLI path: run_daemon_tick with NullTmuxClient and NO runner. Returns
+    every recorded effect — must be only the daemon's own file.write/log.write, never a
+    watchdog mutation (proves the CLI is smoke-safe)."""
+    import tempfile
+
+    recorder = AW.EffectRecorder()
+    with tempfile.TemporaryDirectory() as tmp:
+        env = MultiTickEnv(fixture, tmp)
+        runtime = AW.AewatchRuntime(env.home.home)
+        for i, tick in enumerate(env.ticks):
+            env.start_tick(i)
+            AW.run_daemon_tick(runtime, AW.NullTmuxClient(), recorder, now=tick.get("epoch"))
+        return recorder.as_list()
 
 
 # Bash side of the phase-2 dual-run oracle (re-exported for the test suite).

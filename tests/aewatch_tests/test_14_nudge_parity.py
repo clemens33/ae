@@ -67,7 +67,9 @@ def _normalize(effects):
     for e in effects:
         e = dict(e)
         if e.get("kind") == "tmux.paste" and isinstance(e.get("text"), str):
-            e["text"] = re.sub(r"\S+/sessions/work/state", "<META_DIR>/state", e["text"])
+            # Any session name segment (…/sessions/<name>/state), so this is reusable
+            # across multi-session fixtures (daemon composition), not just 'work'.
+            e["text"] = re.sub(r"\S+/sessions/[^/\s]+/state", "<META_DIR>/state", e["text"])
         out.append(e)
     return out
 

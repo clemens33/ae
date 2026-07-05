@@ -1277,6 +1277,44 @@ def run_watchdog_cycle(
     _push_status(tmux, session, f"[watch {glyph} {active}/{total}]", work_dir, git=git)
 
 
+class WatchdogRunner:
+    """Runs one watchdog cycle per session for the daemon tick, owning the long-lived
+    per-session WatchdogState + bootstrap-once — exactly ae's `_run` shape (bootstrap
+    before the loop, then a cycle each pass), but for MANY sessions in one process.
+
+    Injected into run_daemon_tick. `sessions_dir` is $AE_HOME/sessions (each session's
+    meta/events live under <sessions_dir>/<name>). The boundaries are the same seams
+    run_watchdog_cycle takes; the oracle binds fixture-backed ones, a later phase binds
+    real tmux/ae clients."""
+
+    def __init__(self, config, tmux, *, sessions_dir, git=default_git_runner, emit_event=None,
+                 has_descendant=default_has_descendant, recover_pending=None, supervise_bridge=None):
+        self.config = config
+        self.tmux = tmux
+        self._sessions_dir = Path(sessions_dir)
+        self._git = git
+        self._emit_event = emit_event
+        self._has_descendant = has_descendant
+        self._recover_pending = recover_pending
+        self._supervise_bridge = supervise_bridge
+        self._states: dict = {}
+        self._bootstrapped: set = set()
+
+    def run_cycle(self, session, now) -> None:
+        name = session.name
+        session_dir = self._sessions_dir / name
+        if name not in self._bootstrapped:
+            watchdog_bootstrap(self.tmux, name, work_dir=session.work_dir, git=self._git)
+            self._bootstrapped.add(name)
+        state = self._states.setdefault(name, WatchdogState())
+        run_watchdog_cycle(
+            self.config, state, self.tmux, name,
+            work_dir=session.work_dir, session_dir=session_dir, tmux_server=session.tmux_server,
+            now=now, git=self._git, emit_event=self._emit_event, has_descendant=self._has_descendant,
+            recover_pending=self._recover_pending, supervise_bridge=self._supervise_bridge,
+        )
+
+
 # ── Runtime: per-AE_HOME singleton + heartbeat ───────────────────────────
 # One supervisor per ae state root (NOT per machine): every runtime artifact
 # lives under $AE_HOME/aewatch/, so isolated roots (tests, e2e) can never collide
@@ -1522,17 +1560,22 @@ class BackoffState:
         self._save([])
 
 
-def run_daemon_tick(runtime: "AewatchRuntime", tmux, recorder, *, now) -> dict:
-    """Compose the phase-1 daemon tick, recording every observable effect.
+def run_daemon_tick(runtime: "AewatchRuntime", tmux, recorder, *, now, watchdog_runner=None) -> dict:
+    """Compose one daemon tick, recording every observable effect.
 
     acquire singleton -> parse config -> discover sessions (read-only, per-meta
-    tmux_server) -> refresh heartbeat -> write daemon.log -> reset backoff. Phase 1
-    is a SMOKE path, not the watchdog: it emits only file.write (the aewatch-owned
-    heartbeat + backoff writes) and log.write effects — NEVER event.append, a tmux
-    mutation, or telegram.send — and never mutates session state.
+    tmux_server) -> [optionally run one watchdog cycle per session via
+    watchdog_runner] -> refresh heartbeat -> write daemon.log -> reset backoff.
 
-    If the singleton is already held, it does NOTHING (no files, no effects) and
-    returns acquired=False. Returns {acquired, sessions, config}.
+    watchdog_runner is the injection seam: when None (the default CLI path) the tick
+    is a SMOKE path that only emits file.write (heartbeat/backoff) + log.write —
+    NEVER a tmux mutation, event.append, or telegram, and never mutates a session.
+    When provided (tests / a later real-client phase) it runs run_watchdog_cycle for
+    each discovered session, in discovery (name-sorted) order, so the full watchdog
+    branch surface executes through the recorder.
+
+    If the singleton is already held, it does NOTHING and returns acquired=False.
+    Returns {acquired, sessions, config}.
     """
     lock = runtime.singleton()
     if not lock.acquire():
@@ -1551,6 +1594,14 @@ def run_daemon_tick(runtime: "AewatchRuntime", tmux, recorder, *, now) -> dict:
             "INFO",
             f"tick: {len(config)} config section(s), discovered {len(sessions)} session(s)",
         )
+        if watchdog_runner is not None:
+            for session in sessions:  # already name-sorted by discover_sessions
+                # Only LIVE sessions get a cycle. discover_sessions also returns
+                # stopped session dirs (stale meta); the watchdog only exists inside a
+                # live tmux session, and a real client would fail/noise trying to
+                # bootstrap or set-option on a dead one (codex).
+                if session.running:
+                    watchdog_runner.run_cycle(session, now)
         try:
             runtime.write_heartbeat()
             recorder.record("file.write", path=str(runtime.heartbeat_path), redacted=False)
