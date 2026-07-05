@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+"""aewatch — optional uv/PEP 723 sidecar for ae's watchdog + telegram bridge.
+
+Phase 1 is a runnable, stdlib-only skeleton: it parses a CLI and reports its
+version. It performs NO runtime side effects yet — no nudging agents, no Telegram
+calls, no tmux option writes, no session-meta mutation. Later phases add contract
+validation, session discovery, and a read-only `daemon --once` tick whose only
+writes land under `$AE_HOME/aewatch/`.
+
+NOT part of core ae (which stays a single jq-free bash script). Optional contrib
+consumer of ae's existing file contracts (meta, events.jsonl, tmux user options).
+Runs via `uv run contrib/aewatch/aewatch ...` / `uvx`, or plain `python3` (>=3.11).
+Pure stdlib — the PEP 723 dependency block is intentionally empty. See README.md.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+__version__ = "0.1.0"
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="aewatch",
+        description="Optional sidecar for ae's watchdog + telegram bridge (phase 1 skeleton).",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"aewatch {__version__}",
+    )
+    # Subcommands land in later slices (contracts validate / discover / daemon).
+    # Declared now so `aewatch` alone yields a clean usage message, not a crash.
+    parser.add_subparsers(dest="command", metavar="<command>")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command is None:
+        # No behavior wired yet; print usage and exit non-zero like argparse would
+        # for a missing required command, without hard-failing the skeleton.
+        parser.print_help(sys.stderr)
+        return 2
+    # No subcommands are implemented in phase-1 slice 1.
+    parser.error(f"unknown command: {args.command}")
+    return 2  # unreachable (parser.error exits), kept for type-clarity.
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

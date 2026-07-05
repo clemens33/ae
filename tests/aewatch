@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Tests for the contrib aewatch sidecar (contrib/aewatch/aewatch).
+#
+# The sidecar itself is stdlib-only Python (>= 3.11); its tests are stdlib
+# `unittest` modules under tests/aewatch_tests/. This runner is thin: it gates on
+# a usable interpreter, byte-compiles the sidecar, then discovers + runs the
+# suite. No third-party deps, no `uv` required in phase 1, no network, no real
+# ~/.ae touched (the tests build isolated temp AE_HOME roots).
+#
+# Run: bash tests/aewatch
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+AEWATCH="${ROOT}/contrib/aewatch/aewatch"
+TESTS_DIR="${ROOT}/tests/aewatch_tests"
+
+# ── prerequisites: skip (not fail) when the interpreter is unusable ──────
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "SKIP: python3 not found — aewatch tests require Python >= 3.11" >&2
+    exit 0
+fi
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+    echo "SKIP: Python >= 3.11 required for aewatch tests (found $(python3 -V 2>&1))" >&2
+    exit 0
+fi
+
+# Fail fast with a clear message if the sidecar does not byte-compile. Pass the
+# path as an argv (python3 -m py_compile), never interpolated into Python source
+# — a repo path containing a quote would otherwise break the gate.
+if ! python3 -m py_compile "$AEWATCH"; then
+    echo "FAIL: contrib/aewatch/aewatch does not byte-compile" >&2
+    exit 1
+fi
+
+# Run the stdlib unittest suite. Discovery from the tests dir keeps module names
+# import-clean without a package install.
+python3 -m unittest discover -s "${TESTS_DIR}" -p 'test_*.py' -v

@@ -10,10 +10,11 @@ default_branch := "main"
 # Run all quality checks
 check: lint format-check
 
-# Lint with shellcheck (the contrib aemonitor helper is Python, not shell)
+# Lint with shellcheck (the contrib aemonitor/aewatch helpers are Python, not
+# shell; only their bash runners are linted here).
 # The e2e-ai harness + scenario drivers are linted here but NEVER run by `check`.
 lint:
-    shellcheck -x ae tests/unit tests/integration tests/aemonitor install \
+    shellcheck -x ae tests/unit tests/integration tests/aemonitor tests/aewatch install \
         tests/e2e/ai/lib.sh tests/e2e/ai/run_scenario.sh \
         $(find tests/e2e/ai/scenarios -name steps.sh)
 
@@ -28,7 +29,7 @@ format:
 # ── Testing ──────────────────────────────────────────────────────────
 
 # Run all tests
-test: test-unit test-integration test-aemonitor
+test: test-unit test-integration test-aemonitor test-aewatch
 
 # Unit tests (pure functions, no deps)
 test-unit:
@@ -41,6 +42,10 @@ test-integration:
 # contrib aemonitor helper tests (requires python3; deterministic fixtures)
 test-aemonitor:
     bash tests/aemonitor
+
+# contrib aewatch sidecar tests (stdlib unittest; skips if Python < 3.11)
+test-aewatch:
+    bash tests/aewatch
 
 # AI-driven e2e (OPT-IN: needs AE_E2E_AI=1, runs REAL agents against your real
 # subscription — real tokens, your live rate budget). NOT part of `check`/`test`.
