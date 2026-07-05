@@ -34,6 +34,31 @@ from pathlib import Path
 
 __version__ = "0.1.0"
 
+
+# ── Secret redaction (shared) ────────────────────────────────────────────
+# Security-critical and CENTRAL: no Telegram bot token / bot<TOKEN> URL may reach
+# daemon.log OR any log.write EFFECT payload. Every log.write effect (AewatchLogger
+# AND recorder.log call sites like discovery/backoff warnings) runs through this.
+# A Telegram bot token is <id>:<secret>; the secret run is consumed to the next
+# '/' or whitespace, NOT the standard charset, so a non-standard secret (e.g. one
+# containing '.') cannot be partially redacted and slip the tail past the detector.
+# A residual match triggers a fail-closed whole-line drop. Bias to over-redact.
+_TOKEN_RE = re.compile(r"\d{4,}:[^\s/]{15,}")
+_BOT_URL_TOKEN_RE = re.compile(r"(bot)\d{4,}:[^\s/]+")
+_RESIDUAL_TOKEN_RE = re.compile(r"\d{4,}:\S{15,}")
+
+
+def redact_generic(text: str) -> str:
+    """Redact Telegram tokens / bot-URL tokens from arbitrary text (no configured
+    literal secrets — that context lives in AewatchLogger). The minimum every
+    log.write effect payload must pass through."""
+    text = _BOT_URL_TOKEN_RE.sub(r"\1<REDACTED-TOKEN>", text)
+    text = _TOKEN_RE.sub("<REDACTED-TOKEN>", text)
+    if _RESIDUAL_TOKEN_RE.search(text):
+        return "<REDACTED-LINE: residual token pattern>"
+    return text
+
+
 # ── Contract fixture matrix ──────────────────────────────────────────────
 # CONTRACTS.md is human-readable prose, but the machine source of truth is ONE
 # JSON object between these literal markers. Prose outside the block is never
@@ -231,6 +256,11 @@ class EffectRecorder:
         self._effects: list[dict] = []
 
     def record(self, kind: str, **fields: object) -> dict:
+        # Central guarantee: EVERY log.write effect payload is generic-redacted,
+        # regardless of caller (discovery/backoff warnings, AewatchLogger, ...).
+        # A message already redacted by AewatchLogger passes through unchanged.
+        if kind == "log.write" and isinstance(fields.get("message"), str):
+            fields["message"] = redact_generic(fields["message"])
         effect = make_effect(kind, **fields)
         self._effects.append(effect)
         return effect
@@ -270,6 +300,33 @@ class TmuxClient(abc.ABC):
 
     @abc.abstractmethod
     def paste(self, target: str, text: str, submit: bool) -> None: ...
+
+
+class NullTmuxClient(TmuxClient):
+    """Phase-1 placeholder: no live tmux. Reads return empty (discovery still works
+    off meta, liveness=False); mutations RAISE so phase 1 can never accidentally
+    grow a tmux write."""
+
+    def list_sessions(self, server=None):
+        return []
+
+    def list_panes(self, session, server=None):
+        return []
+
+    def capture_pane(self, pane_id):
+        return ""
+
+    def display_option(self, target, option):
+        return None
+
+    def set_option(self, target, option, value):
+        raise NotImplementedError("phase 1 must not mutate tmux")
+
+    def unset_option(self, target, option):
+        raise NotImplementedError("phase 1 must not mutate tmux")
+
+    def paste(self, target, text, submit):
+        raise NotImplementedError("phase 1 must not mutate tmux")
 
 
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
@@ -546,15 +603,6 @@ class AewatchRuntime:
 # params are constants with a per-instance test override, not config keys.
 _LOG_MAX_BYTES = 1_000_000
 _LOG_BACKUPS = 3
-# A Telegram bot token is <id>:<secret> (secret ~35 chars of [A-Za-z0-9_-]). The
-# secret run is matched to the next '/' or whitespace, NOT restricted to the
-# standard charset — otherwise a non-standard secret (e.g. one containing '.')
-# would be only PARTIALLY redacted, dropping the 'digits:' anchor and slipping the
-# tail past the fail-closed residual detector (codex). Bias to over-redact.
-_LOG_TOKEN_RE = re.compile(r"\d{4,}:[^\s/]{15,}")
-_LOG_BOT_URL_TOKEN_RE = re.compile(r"(bot)\d{4,}:[^\s/]+")
-# Broader fail-closed detector: anything that still LOOKS like <id>:<secret>.
-_LOG_RESIDUAL_TOKEN_RE = re.compile(r"\d{4,}:\S{15,}")
 
 
 class AewatchLogger:
@@ -568,11 +616,13 @@ class AewatchLogger:
         backups: int = _LOG_BACKUPS,
         secrets=None,
         stderr_on_error: bool = False,
+        recorder=None,
     ) -> None:
         self.path = Path(path)
         self.max_bytes = max_bytes
         self.backups = backups
         self._stderr_on_error = stderr_on_error
+        self._recorder = recorder
         # Redaction literals: each configured secret AND its CR/LF-stripped form,
         # empties dropped (str.replace("") would corrupt every line), longest first
         # so a longer secret wins over any of its substrings.
@@ -584,15 +634,11 @@ class AewatchLogger:
         self._literals = sorted(literals, key=len, reverse=True)
 
     def _redact(self, text: str) -> str:
+        # Configured literal secrets first (the strong guarantee), then the shared
+        # generic token redaction + fail-closed drop used by every log.write effect.
         for literal in self._literals:
             text = text.replace(literal, "<REDACTED>")
-        text = _LOG_BOT_URL_TOKEN_RE.sub(r"\1<REDACTED-TOKEN>", text)
-        text = _LOG_TOKEN_RE.sub("<REDACTED-TOKEN>", text)
-        # Fail-closed: if anything STILL resembles a token, drop the whole line
-        # rather than risk writing a partially-redacted secret.
-        if _LOG_RESIDUAL_TOKEN_RE.search(text):
-            return "<REDACTED-LINE: residual token pattern>"
-        return text
+        return redact_generic(text)
 
     def _rotate(self) -> None:
         oldest = Path(f"{self.path}.{self.backups}")
@@ -606,8 +652,13 @@ class AewatchLogger:
             self.path.replace(Path(f"{self.path}.1"))
 
     def log(self, level: str, message: str) -> None:
-        line = self._redact(f"{level} {message}") + "\n"
-        data = line.encode("utf-8")
+        # Redact the MESSAGE (the level is a safe constant). The SAME redacted text
+        # is recorded as the log.write effect payload AND written to daemon.log, so
+        # no secret can reach either channel (watch item: effect payloads redacted).
+        redacted = self._redact(message)
+        if self._recorder is not None:
+            self._recorder.record("log.write", level=level, message=redacted)
+        data = f"{level} {redacted}\n".encode("utf-8")
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             if self.path.exists() and self.path.stat().st_size + len(data) > self.max_bytes:
@@ -702,6 +753,50 @@ class BackoffState:
         self._save([])
 
 
+def run_daemon_tick(runtime: "AewatchRuntime", tmux, recorder, *, now) -> dict:
+    """Compose the phase-1 daemon tick, recording every observable effect.
+
+    acquire singleton -> parse config -> discover sessions (read-only, per-meta
+    tmux_server) -> refresh heartbeat -> write daemon.log -> reset backoff. Phase 1
+    is a SMOKE path, not the watchdog: it emits only file.write (the aewatch-owned
+    heartbeat + backoff writes) and log.write effects — NEVER event.append, a tmux
+    mutation, or telegram.send — and never mutates session state.
+
+    If the singleton is already held, it does NOTHING (no files, no effects) and
+    returns acquired=False. Returns {acquired, sessions, config}.
+    """
+    lock = runtime.singleton()
+    if not lock.acquire():
+        return {"acquired": False, "sessions": [], "config": {}}
+    try:
+        config = load_config(runtime.ae_home)
+        # Redact any configured Telegram token from the log (generic patterns cover
+        # the rest); telegram config is not wired until phase 3, so this is usually
+        # empty and harmless.
+        secrets = [config.get("telegram", {}).get("token", "")]
+        logger = AewatchLogger(
+            runtime.daemon_log_path, secrets=secrets, recorder=recorder, stderr_on_error=True
+        )
+        sessions = discover_sessions(runtime.ae_home, tmux, recorder)
+        logger.log(
+            "INFO",
+            f"tick: {len(config)} config section(s), discovered {len(sessions)} session(s)",
+        )
+        try:
+            runtime.write_heartbeat()
+            recorder.record("file.write", path=str(runtime.heartbeat_path), redacted=False)
+        except OSError:
+            logger.log("WARNING", "heartbeat write failed")
+        try:
+            BackoffState(runtime.backoff_path).record_success(now)
+            recorder.record("file.write", path=str(runtime.backoff_path), redacted=False)
+        except OSError:
+            logger.log("WARNING", "backoff reset failed")
+        return {"acquired": True, "sessions": sessions, "config": config}
+    finally:
+        lock.release()
+
+
 def cmd_daemon(args: argparse.Namespace) -> int:
     if not args.once:
         print(
@@ -710,26 +805,13 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         )
         return 2
     runtime = AewatchRuntime(args.ae_home)
-    lock = runtime.singleton()
-    if not lock.acquire():
+    # Phase 1 has no live tmux client (that lands in phase 2); discovery still reads
+    # meta and reports liveness=False. Effects go to a throwaway recorder — the real
+    # side effects are the heartbeat/daemon.log/backoff files themselves.
+    result = run_daemon_tick(runtime, NullTmuxClient(), EffectRecorder(), now=time.time())
+    if not result["acquired"]:
         print(f"aewatch: already running (lock held): {runtime.lock_path}", file=sys.stderr)
         return 3
-    try:
-        # Phase-1 skeleton tick: acquire singleton + touch heartbeat + one log line.
-        # Discovery/backoff/effect-recording compose in later slices; no session-
-        # state mutation. A logging failure is best-effort and must not fail the tick.
-        runtime.write_heartbeat()
-        logger = AewatchLogger(runtime.daemon_log_path, stderr_on_error=True)
-        logger.log("INFO", "daemon --once: tick complete (heartbeat refreshed)")
-        # Success path only (no supervisor/restart loop yet): a clean tick clears
-        # the crash counter. Best-effort — a backoff write failure must not fail the
-        # tick (heartbeat is already written under the singleton).
-        try:
-            BackoffState(runtime.backoff_path).record_success(time.time())
-        except OSError:
-            pass
-    finally:
-        lock.release()
     return 0
 
 
