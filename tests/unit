@@ -801,7 +801,7 @@ assert_eq "list: cmd_list builds per-agent state column" \
 # waiting-user-over-blocked is now encoded in _attn_rank (see attn_rank tests).
 assert_eq "list: attention reasons are severity-ranked via _attn_rank" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'_attn_rank() {'* && "$AE_SOURCE" == *'waiting-user) printf '"'"'3'"'"''* && "$AE_SOURCE" == *'blocked) printf '"'"'2'"'"''* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_attn_rank() {'* && "$AE_SOURCE" == *'waiting-user) printf '"'"'4'"'"''* && "$AE_SOURCE" == *'blocked) printf '"'"'3'"'"''* ]] && echo 1 || echo 0)"
 
 assert_eq "list: meta line renders attn suffix when set" \
     "1" \
@@ -1281,6 +1281,45 @@ rm -f "$_tpl_src"
 # The bash>=4 fail-fast must sit at the very top of ae, BEFORE any function
 # definition — bash parses fn bodies at definition time, so on 3.2 a later
 # guard never runs (the parser dies on bash-4 syntax first). Head = 1200 chars.
+# Spawn prompt delivery: TUI-readiness poll before the paste (process-started
+# is not input-ready; a paste in the boot gap is swallowed wholesale).
+assert_eq "spawn: polls for TUI readiness before pasting the prompt" "1" \
+    "$([[ "$AE_SOURCE" == *'Wait for the TUI to actually ACCEPT input'* && "$AE_SOURCE" == *'❯|bypass permissions|for shortcuts'* ]] && echo 1 || echo 0)"
+
+# ── stale-request attention (unanswered) ────────────────────────────
+
+assert_eq "attn: unanswered rank is lowest actionable (below throttled)" "1" \
+    "$([[ "$AE_SOURCE" == *"unanswered) printf '1'"* && "$AE_SOURCE" == *"throttled) printf '2'"* ]] && echo 1 || echo 0)"
+
+# Behavioural: rollup flags the TARGET of an old unreplied ask; replied or
+# recent requests stay silent; a done-state target still gets flagged.
+eval "$(awk '/^_session_attn_rollup\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_attn_rank\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_parse_agent_entry\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# shellcheck disable=SC2317
+_agent_alert_reason() { printf ''; }
+# shellcheck disable=SC2317
+_session_states() { printf 'codex:w\tdone\n'; }
+# shellcheck disable=SC2317
+tmux() { printf 'codex:w\tbash\n'; }
+_sr_dir="$(mktemp -d)"
+_sr_old="$(date -u -d '2 hours ago' +%FT%TZ)"
+printf '{"ts":"%s","actor":"claude:lead","action":"ask","target":"codex:w","ref":"r1","summary":"q"}\n' "$_sr_old" > "$_sr_dir/events.jsonl"
+_session_attn_rollup s "$_sr_dir" "agent.main=codex:w:x"
+assert_eq "attn: old unreplied ask flags target unanswered (even in done state)" \
+    "unanswered|codex:w" "${_AE_ATTN_REASON}|${_AE_ATTN_AGENT}"
+printf '{"ts":"%s","actor":"codex:w","action":"reply","target":"claude:lead","ref":"r1","summary":"a"}\n' "$(date -u +%FT%TZ)" >> "$_sr_dir/events.jsonl"
+_session_attn_rollup s "$_sr_dir" "agent.main=codex:w:x"
+assert_eq "attn: replied request clears the flag" "" "$_AE_ATTN_REASON"
+printf '{"ts":"%s","actor":"claude:lead","action":"ask","target":"codex:w","ref":"r2","summary":"q2"}\n' "$(date -u +%FT%TZ)" >> "$_sr_dir/events.jsonl"
+_session_attn_rollup s "$_sr_dir" "agent.main=codex:w:x"
+assert_eq "attn: recent unreplied ask stays silent (threshold)" "" "$_AE_ATTN_REASON"
+# Malformed threshold env degrades to the default instead of aborting.
+printf '{"ts":"%s","actor":"claude:lead","action":"ask","target":"codex:w","ref":"r3","summary":"q3"}\n' "$_sr_old" >> "$_sr_dir/events.jsonl"
+assert_eq "attn: malformed AE_ATTN_REQUEST_SECS degrades (old ask still flags)" \
+    "unanswered" "$(AE_ATTN_REQUEST_SECS=abc _session_attn_rollup s "$_sr_dir" "agent.main=codex:w:x" 2>/dev/null; printf '%s' "$_AE_ATTN_REASON")"
+unset -f _agent_alert_reason _session_states tmux
+
 # ── steward companion autostart ─────────────────────────────────────
 
 assert_eq "autostart: steward companion fn exists with all four guards" "1" \

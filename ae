@@ -1678,11 +1678,12 @@ _agent_alert_reason() {
 # single most-actionable reason across a session's agents.
 _attn_rank() {
     case "$1" in
-        dead) printf '5' ;;
-        stale) printf '4' ;;
-        waiting-user) printf '3' ;;
-        blocked) printf '2' ;;
-        throttled) printf '1' ;;
+        dead) printf '6' ;;
+        stale) printf '5' ;;
+        waiting-user) printf '4' ;;
+        blocked) printf '3' ;;
+        throttled) printf '2' ;;
+        unanswered) printf '1' ;;
         *) printf '0' ;;
     esac
 }
@@ -1690,7 +1691,7 @@ _attn_rank() {
 # Session needs_attention rollup — the SINGLE source of attention semantics,
 # shared by cmd_list and cmd_next so they can never diverge. Computes the single
 # most-actionable reason across the session's CURRENT agents (severity via
-# _attn_rank: dead > stale > waiting-user > blocked > throttled), and the agent
+# _attn_rank: dead > stale > waiting-user > blocked > throttled > unanswered), and the agent
 # that raised it. 'dead' = a registered agent whose pane vanished; stale/throttled
 # come from the watchdog's alert events; waiting-user/blocked are self-declared.
 # Only agents present in meta may raise attention (a stray/retired actor must not).
@@ -1723,6 +1724,50 @@ _session_attn_rollup() {
             *) _al["$ag"]="" ;;
         esac
     done < <(tmux list-panes -s -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
+    # Stale-request pass: an ask/review whose ref never got a reply and is
+    # older than AE_ATTN_REQUEST_SECS (default 30min) marks its TARGET agent
+    # 'unanswered' — the lowest-rank attention reason. Requests between the
+    # session's agents were previously invisible unless someone ran
+    # \`requests\`; agents silently waiting on each other is a coordination
+    # blind spot (list/next/steward all read this rollup).
+    declare -A _preq=() _unans=()
+    if [[ -f "$events" ]]; then
+        local _pl _pact _pref _ptgt _pts _pnow _page _request_secs
+        # Numeric-guard the threshold BEFORE arithmetic (review finding: a
+        # malformed env value aborts (( )) under nounset instead of degrading).
+        _request_secs="${AE_ATTN_REQUEST_SECS:-1800}"
+        [[ "$_request_secs" =~ ^[0-9]+$ ]] || _request_secs=1800
+        _pnow="$(date +%s 2>/dev/null || echo 0)"
+        while IFS= read -r _pl; do
+            [[ "$_pl" == \{* ]] || continue
+            _pact="$(_event_json_str "$_pl" action)"
+            case "$_pact" in
+                ask | review)
+                    _pref="$(_event_json_str "$_pl" ref)"
+                    [[ -n "$_pref" && -z "${_preq[$_pref]+x}" ]] || continue
+                    _ptgt="$(_event_json_str "$_pl" target)"
+                    _pts="$(_event_json_str "$_pl" ts)"
+                    _page=0
+                    [[ -n "$_pts" ]] && _page="$(date -d "$_pts" +%s 2>/dev/null || echo 0)"
+                    if ((_pnow > 0 && _page > 0 && _pnow - _page >= _request_secs)); then
+                        _preq[$_pref]="$_ptgt"
+                    else
+                        _preq[$_pref]=""
+                    fi
+                    ;;
+                reply)
+                    _pref="$(_event_json_str "$_pl" ref)"
+                    [[ -n "$_pref" ]] && _preq[$_pref]=""
+                    ;;
+            esac
+        done < <(tac "$events" 2>/dev/null || true)
+        local _pt
+        for _pref in "${!_preq[@]}"; do
+            _pt="${_preq[$_pref]}"
+            [[ -n "$_pt" && -n "${_c[$_pt]+x}" ]] || continue
+            _unans[$_pt]=1
+        done
+    fi
     local a r
     for a in "${!_c[@]}"; do
         if [[ -z "${_al[$a]+x}" ]]; then
@@ -1731,7 +1776,10 @@ _session_attn_rollup() {
             r="$(_agent_alert_reason "$events" "$a" "$name")"
             [[ -n "$r" ]] || r="${_s[$a]:-}"
         fi
-        case "$r" in waiting-user | blocked | dead | stale | throttled) ;; *) r="" ;; esac
+        case "$r" in waiting-user | blocked | dead | stale | throttled | unanswered) ;; *) r="" ;; esac
+        # Lowest-rank fallback: no other reason, but the agent owes a reply
+        # (covers a worker that declared done while a request sits unanswered).
+        [[ -z "$r" && -n "${_unans[$a]+x}" ]] && r="unanswered"
         [[ -n "${_areason+x}" ]] && _areason["$a"]="$r"
         [[ -n "$r" ]] || continue
         if (($(_attn_rank "$r") > $(_attn_rank "$_AE_ATTN_REASON"))); then
@@ -5250,7 +5298,21 @@ _cmd_spawn() {
 
     # For agents with system prompt injection, send spawn prompt separately
     if [[ -z "$initial_msg" ]]; then
-        sleep 1
+        # Wait for the TUI to actually ACCEPT input before pasting.
+        # wait_for_agent_start only proves the process is running — pasting in
+        # the boot gap is swallowed wholesale, with nothing staged for the
+        # lingering-nudge below to detect (live-dogfood finding: workers booted
+        # brief-less twice). Poll for a composed-UI marker; on timeout paste
+        # anyway — the verify-nudge still covers the staged-but-unsubmitted case.
+        local _ready_i=0
+        while ((_ready_i < 30)); do
+            if tmux capture-pane -p -t "$pane_id" 2>/dev/null |
+                grep -qE '❯|bypass permissions|for shortcuts'; then
+                break
+            fi
+            sleep 0.5
+            _ready_i=$((_ready_i + 1))
+        done
         tmux select-pane -t "$pane_id"
         tmux_paste_submit "$pane_id" "$prompt"
         # A booting TUI can swallow the quick post-paste Enter, leaving the
