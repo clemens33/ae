@@ -44,6 +44,15 @@ def _write_meta(meta_dir, meta):
     (meta_dir / "meta").write_text("".join(f"{k}={v}\n" for k, v in meta.items()), encoding="utf-8")
 
 
+def _write_heartbeat(session_dir, tick):
+    """Ensure session_dir/meta-agent-state.json exists with mtime = INTEGER
+    epoch - heartbeat_age, so the watchdog's `stat -c %Y` reads the intended age."""
+    hb = Path(session_dir) / "meta-agent-state.json"
+    hb.write_text("{}", encoding="utf-8")
+    mtime = int(tick["epoch"]) - int(tick["heartbeat_age"])
+    os.utime(hb, (mtime, mtime))
+
+
 def _install_lib_wrapper(meta_dir):
     lib = meta_dir / "_lib"
     lib.rename(meta_dir / "_lib.real")
@@ -140,6 +149,10 @@ def run_bash_watchdog_fixture(fixture, root):
             for ev in tick0_events:
                 fh.write(json.dumps(ev, separators=(",", ":")) + "\n")
     (oracle / "events_target.txt").write_text(str(primary_events), encoding="utf-8")
+    # Steward heartbeat for tick 0 (before cycle 0); ticks 1+ are set by the sleep
+    # shim. Key presence; mtime = INTEGER epoch - age (matches ae `stat -c %Y`).
+    if ticks and "heartbeat_age" in ticks[0]:
+        _write_heartbeat(primary_events.parent, ticks[0])
 
     env = dict(os.environ)
     env["PATH"] = f"{_FAKEBIN}{os.pathsep}{env['PATH']}"

@@ -606,6 +606,12 @@ class WatchdogState:
     # key + the pane hash captured when it was first observed (ae's quiet_base_*).
     quiet_base_key: dict = dataclasses.field(default_factory=dict)
     quiet_base_hash: dict = dataclasses.field(default_factory=dict)
+    # Meta-agent (steward) sweep cadence + wedge latches (ae's last_sweep_nudge /
+    # first_sweep_nudge / meta_wedge_alerted / meta_reconciled).
+    last_sweep_nudge: dict = dataclasses.field(default_factory=dict)
+    first_sweep_nudge: dict = dataclasses.field(default_factory=dict)
+    meta_wedge_alerted: dict = dataclasses.field(default_factory=dict)
+    meta_reconciled: dict = dataclasses.field(default_factory=dict)
 
 
 def default_git_runner(work_dir, args, *, timeout: int = 2):
@@ -901,6 +907,86 @@ def _buf_shows_throttle(buf: str, agent_bin: str) -> bool:
     return False
 
 
+# The exact steward sweep prompt (ae:7788-7790). Fixed text — no runtime paths.
+_SWEEP_TEXT = (
+    "Run your sweep now: ae list --json, diff your state file, and report ONLY "
+    "new/changed attention to Clemens via say (stay silent if nothing changed). "
+    "Stay in 'working'."
+)
+
+
+def _meta_main_agent(session_dir) -> str:
+    """The meta session's main agent ref (alias:name) — agent.main's first two colon
+    fields (ae:7612 `cut -d: -f1,2`)."""
+    val = _meta_value(session_dir, "agent.main")
+    parts = val.split(":")
+    return f"{parts[0]}:{parts[1]}" if len(parts) >= 2 else val
+
+
+def _heartbeat_mtime(session_dir) -> int:
+    """The steward heartbeat file's mtime as INTEGER seconds (bash `stat -c %Y`), or
+    0 when absent. int() cast so (now - hb) // 60 matches bash exactly (ae:7738)."""
+    if session_dir is None:
+        return 0
+    hb = Path(session_dir) / "meta-agent-state.json"
+    if not hb.is_file():
+        return 0
+    try:
+        return int(hb.stat().st_mtime)
+    except OSError:
+        return 0
+
+
+def _agent_alert_reason(session_dir, agent: str, session_name: str) -> str:
+    """Newest decisive alert/recovery reason for `agent` from events.jsonl, or ''.
+    Port of ae:1628. Newest-first: an `alert` maps by summary (not sweeping->stale,
+    dead/dropped/missing->dead, throttl->throttled, else stale); `throttled`->
+    throttled; a clear (throttle-cleared/alert-cleared) or the agent's OWN other
+    event -> '' (recovered); a target-only event (nudge/inbound) keeps scanning."""
+    if session_dir is None:
+        return ""
+    events_file = Path(session_dir) / "events.jsonl"
+    if not events_file.is_file():
+        return ""
+    try:
+        lines = events_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    at_ref = f"@{session_name}:{agent}"
+    for line in reversed(lines):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        actor = ev.get("actor", "")
+        target = ev.get("target", "")
+        if not (actor == agent or target == agent or target == at_ref):
+            continue
+        action = ev.get("action", "")
+        if action == "alert":
+            summary = ev.get("summary", "")
+            if "not sweeping" in summary:
+                return "stale"
+            if any(x in summary for x in ("dead", "dropped", "missing", "MISSING")):
+                return "dead"
+            if "throttl" in summary:
+                return "throttled"
+            return "stale"
+        if action == "throttled":
+            return "throttled"
+        if action in ("throttle-cleared", "alert-cleared"):
+            return ""
+        if actor == agent:  # the agent's OWN activity -> recovered
+            return ""
+        # target-only event (a nudge / inbound send) is not recovery — keep scanning.
+    return ""
+
+
 def _meta_value(session_dir, key: str) -> str:
     """First `key=` value from session_dir/meta, '' when absent. Port of ae:7422
     _watchdog_meta_value (grep '^key=' | head -1 | cut -d= -f2-)."""
@@ -957,6 +1043,8 @@ def run_watchdog_cycle(
     state.cycle += 1
     goal = _meta_value(session_dir, "goal")
     agent_bins = _load_agent_bins(session_dir)
+    meta_agent = _meta_value(session_dir, "meta_agent")
+    meta_main_agent = _meta_main_agent(session_dir)
     live_agents: dict = {}
     total = active = stale = dead = 0
     for pane in tmux.list_panes(session, tmux_server):
@@ -981,6 +1069,63 @@ def run_watchdog_cycle(
             tmux.display_message(
                 f"[ae watchdog] {agent} is DEAD — process dropped to shell", duration_ms=_ALERT_DURATION_MS
             )
+            continue
+        # 1b. Meta-agent (steward) sweep cadence + wedge (ae:7719-7798) — ONLY the
+        #     meta session's main agent. Idle between sweeps is NORMAL, not stale:
+        #     prompt a sweep every SWEEP_SECS, and guard liveness via the steward's
+        #     heartbeat file (wedge alert if it stops advancing, cleared on recovery).
+        if meta_agent == "true" and agent == meta_main_agent and config.sweep_secs > 0:
+            hb = _heartbeat_mtime(session_dir)
+            wedge_secs = config.sweep_secs * 2 + 60
+            first_nudge = state.first_sweep_nudge.get(pane_id, 0)
+            if hb > 0 and now - hb <= wedge_secs:
+                # Fresh heartbeat -> recovery. Clear via the in-memory latch, OR once
+                # per lifetime reconcile the durable event log (a restart that lost
+                # the latch after alerting still emits a clear).
+                if pane_id in state.meta_wedge_alerted:
+                    del state.meta_wedge_alerted[pane_id]
+                    state.meta_reconciled[pane_id] = True
+                    if emit_event is not None:
+                        emit_event(session, _watchdog_event(
+                            now, "alert-cleared", agent, "meta-agent sweeping again (heartbeat resumed)"))
+                elif pane_id not in state.meta_reconciled:
+                    # ae's watchdog reconciles the DURABLE log here by calling
+                    # _agent_alert_reason — but that function is NOT emitted into the
+                    # generated watchdog helper (absent from its declare-f list AND
+                    # from _lib), so in ae it is UNDEFINED and the command
+                    # substitution is always empty: the post-restart reconcile NEVER
+                    # emits alert-cleared. We MATCH that actual behavior (a real ae
+                    # bug the parity oracle caught — see the slice-10 report). Only
+                    # the latch is set. (_agent_alert_reason is ported above, ready
+                    # to wire once ae emits it.)
+                    state.meta_reconciled[pane_id] = True
+            elif first_nudge > 0 and now - first_nudge > wedge_secs:
+                # Prompted long enough but the heartbeat is stale/absent -> wedge.
+                if pane_id not in state.meta_wedge_alerted:
+                    state.meta_wedge_alerted[pane_id] = True
+                    if hb > 0:
+                        wedge_detail = f"no heartbeat for {(now - hb) // 60}m"
+                    else:
+                        wedge_detail = f"never wrote a heartbeat in {(now - first_nudge) // 60}m of sweep prompts"
+                    if emit_event is not None:
+                        emit_event(session, _alert_event(
+                            now, agent, f"meta-agent not sweeping — {wedge_detail} (may be stuck)"))
+                    tmux.display_message(
+                        f"[ae watchdog] {agent} (meta-agent) not sweeping — may be stuck",
+                        duration_ms=_ALERT_DURATION_MS)
+            # Sweep cadence. Record the first nudge time so the wedge guard has a
+            # reference point even before any heartbeat file exists.
+            if now - state.last_sweep_nudge.get(pane_id, 0) >= config.sweep_secs:
+                if state.first_sweep_nudge.get(pane_id, 0) == 0:
+                    state.first_sweep_nudge[pane_id] = now
+                tmux.paste(pane_id, _SWEEP_TEXT, submit=True)
+                if emit_event is not None:
+                    emit_event(session, {
+                        "ts": _now_iso(now), "actor": "watchdog", "action": "nudge",
+                        "target": agent, "summary": "sweep cadence",
+                    })
+                state.last_sweep_nudge[pane_id] = now
+            active += 1
             continue
         buf = tmux.capture_pane(pane_id)
         h = _pane_hash(buf)

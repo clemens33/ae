@@ -29,12 +29,19 @@ idx += 1
 # inputs, not effects: appended directly (compact), never recorded as event.append.
 if idx < n:
     ticks = json.loads((D / "ticks.json").read_text())
-    events = ticks[idx].get("events") if idx < len(ticks) else None
+    tick = ticks[idx] if idx < len(ticks) else {}
     target = D / "events_target.txt"
+    events = tick.get("events")
     if events and target.exists():
         with Path(target.read_text().strip()).open("a", encoding="utf-8") as fh:
             for ev in events:
                 fh.write(json.dumps(ev, separators=(",", ":")) + "\n")
+    # Steward heartbeat for this tick (key presence; mtime = INTEGER epoch - age).
+    if "heartbeat_age" in tick and target.exists():
+        hb = Path(target.read_text().strip()).parent / "meta-agent-state.json"
+        hb.write_text("{}", encoding="utf-8")
+        mtime = int(tick["epoch"]) - int(tick["heartbeat_age"])
+        os.utime(hb, (mtime, mtime))
 
 if idx >= n:
     (D / "control").write_text("gone")

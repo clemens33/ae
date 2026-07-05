@@ -22,6 +22,7 @@ import copy
 import importlib.machinery
 import importlib.util
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -274,6 +275,15 @@ class MultiTickEnv:
             with path.open("a", encoding="utf-8") as handle:
                 for event in events:
                     handle.write(_dump_event(event) + "\n")
+        # Steward heartbeat: key presence (heartbeat_age=0 is a valid fresh beat).
+        # Set the file's mtime to INTEGER epoch - age so the watchdog's stat/os.stat
+        # reads it identically on both sides. Absence leaves the file untouched.
+        if "heartbeat_age" in tick:
+            name = self.fixture["sessions"][0]["name"]
+            hb = self.home.sessions / name / "meta-agent-state.json"
+            hb.write_text("{}", encoding="utf-8")
+            mtime = int(tick["epoch"]) - int(tick["heartbeat_age"])
+            os.utime(hb, (mtime, mtime))
 
     def append_event(self, session: str, event: dict) -> dict:
         """Record an event.append effect AND append it to events.jsonl so later
