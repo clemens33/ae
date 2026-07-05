@@ -108,6 +108,7 @@ class Pane:
     agent: str = ""
     current_command: str = ""
     capture: str = ""
+    pane_pid: str = ""
 
 
 class FakeTmux(AW.TmuxClient):
@@ -189,6 +190,7 @@ def build_fixture_env(fixture: dict, root, recorder):
                 agent=pane.get("agent", ""),
                 current_command=pane.get("current_command", ""),
                 capture=pane.get("capture", ""),
+                pane_pid=str(pane.get("pane_pid", "")),
             )
             pane_objs.append(obj)
             captures[obj.pane_id] = obj.capture

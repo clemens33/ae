@@ -798,6 +798,77 @@ def _quiet_pane_decision(cur_hash, armed_key, armed_hash, decl_key) -> str:
     return "yield"
 
 
+_SHELL_COMMANDS = frozenset({"bash", "zsh", "fish", "sh", "dash", ""})
+_ALERT_DURATION_MS = 10000
+
+
+def default_has_descendant(pane_pid, agent_bin) -> bool:
+    """Whether `agent_bin` runs as a descendant of `pane_pid` — ae's
+    _pane_has_descendant_named (pgrep -x + /proc ancestor walk, ae:7489). The fake
+    oracle has no real process tree, and dead fixtures use a nonexistent agent_bin,
+    so bash's `pgrep -x` is empty (dead); the default here returns False to match.
+    Injectable for a future process-shim slice (alive-via-descendant)."""
+    return False
+
+
+def _load_agent_bins(session_dir) -> dict:
+    """Map 'alias:name' label -> agent binary from meta agent_bin.<slot>, keyed by
+    slot via the agent.<slot> entries; fallback to the alias. Port of ae:7567."""
+    agents: dict = {}
+    if session_dir is None:
+        return agents
+    meta_file = Path(session_dir) / "meta"
+    if not meta_file.is_file():
+        return agents
+    try:
+        lines = meta_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return agents
+    slot_to_bin: dict = {}
+    for line in lines:
+        if "=" in line:
+            key, val = line.split("=", 1)
+            if key.startswith("agent_bin."):
+                slot_to_bin[key[len("agent_bin."):]] = val
+    for line in lines:
+        if "=" in line:
+            key, val = line.split("=", 1)
+            if key.startswith("agent."):
+                slot = key[len("agent."):]
+                label = val.rsplit(":", 1)[0]  # strip trailing :session_id -> alias:name
+                agents[label] = slot_to_bin.get(slot, val.split(":", 1)[0])
+    return agents
+
+
+def _meta_agent_refs(session_dir) -> list:
+    """Registered agent refs (alias:name) from meta agent.<slot> lines, in file
+    order. agent_ref = the first two colon fields of the value (ae:7957)."""
+    if session_dir is None:
+        return []
+    meta_file = Path(session_dir) / "meta"
+    if not meta_file.is_file():
+        return []
+    refs: list = []
+    try:
+        lines = meta_file.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return refs
+    for line in lines:
+        if "=" in line:
+            key, val = line.split("=", 1)
+            if key.startswith("agent."):
+                parts = val.split(":")
+                refs.append(f"{parts[0]}:{parts[1]}" if len(parts) >= 2 else val)
+    return refs
+
+
+def _alert_event(now, target: str, summary: str) -> dict:
+    """A watchdog alert event. Emitted DIRECTLY (not via send), so actor is 'human'
+    (ae_current_agent_ref is empty in the _run subprocess) — NOT 'watchdog'. Omits
+    empty ref, matching ae's direct ae_emit_event."""
+    return {"ts": _now_iso(now), "actor": "human", "action": "alert", "target": target, "summary": summary}
+
+
 def _meta_value(session_dir, key: str) -> str:
     """First `key=` value from session_dir/meta, '' when absent. Port of ae:7422
     _watchdog_meta_value (grep '^key=' | head -1 | cut -d= -f2-)."""
@@ -833,20 +904,25 @@ def _nudge_text(session_dir, goal: str) -> str:
 
 def run_watchdog_cycle(
     config, state, tmux, session, *, work_dir, session_dir=None, tmux_server="",
-    now=None, git=default_git_runner, emit_event=None,
+    now=None, git=default_git_runner, emit_event=None, has_descendant=default_has_descendant,
 ) -> None:
     """One watchdog cycle for `session`. Counts live @ae_agent panes, classifies
-    each (active/recent/stale), nudges the stale ones, then pushes the end-of-cycle
-    status + branch.
+    each (dead / quiet / active / recent / stale), acts on them, then pushes the
+    end-of-cycle status + branch, and finally checks for missing panes.
 
-    Per-agent order mirrors ae:7679-7952: dead(1)/sweep(2)/quiet(3)/throttle(4) are
-    still inert fall-throughs (slices 8/10/7/9). active/recent are pure cycle_active
-    bumps (no effect). A stale agent under MAX_NUDGES is NUDGED (ae:7930-7941): a
-    tmux.paste of the nudge text into its pane THEN an event.append(action=nudge)
-    via the injected emit_event(session, event). The max-nudge ALERT is slice 8;
-    here a maxed agent is only counted for the ⚠ glyph."""
+    Per-agent order mirrors ae:7679-7952. IMPLEMENTED: dead check (shell foreground
+    + no descendant -> alert, latched via dead_agents), quiet states (done event-only
+    / waiting-user / blocked arm-hold-yield), active/recent (pure cycle_active bumps),
+    and stale -> nudge under MAX_NUDGES (tmux.paste + event.append(nudge) via the
+    injected emit_event, actor 'watchdog') then a single max-nudge ALERT at
+    count==MAX_NUDGES. After the loop, registered agents with no pane raise a missing
+    alert (latched via alerted_missing). Alerts are DIRECT emits (actor 'human') +
+    a tmux.display_message. FUTURE seams: sweep (slice 10), throttle (slice 9),
+    recover + telegram (slices 11/12)."""
     state.cycle += 1
     goal = _meta_value(session_dir, "goal")
+    agent_bins = _load_agent_bins(session_dir)
+    live_agents: dict = {}
     total = active = stale = dead = 0
     for pane in tmux.list_panes(session, tmux_server):
         agent = (pane.agent or "").strip()
@@ -854,6 +930,23 @@ def run_watchdog_cycle(
             continue
         total += 1
         pane_id = pane.pane_id
+        live_agents[agent] = pane_id
+        # Skip already-dead agents — no further checks (ae:7688-7693).
+        if pane_id in state.dead_agents:
+            dead += 1
+            continue
+        # 1. Dead check (ae:7703-7717) — foreground is a shell and the agent is not
+        #    a live descendant -> dead alert (once), then latched via dead_agents.
+        agent_bin = agent_bins.get(agent, agent.split(":")[0])
+        if pane.current_command in _SHELL_COMMANDS and not has_descendant(pane.pane_pid, agent_bin):
+            state.dead_agents[pane_id] = True
+            dead += 1
+            if emit_event is not None:
+                emit_event(session, _alert_event(now, agent, "agent process dead — dropped to shell"))
+            tmux.display_message(
+                f"[ae watchdog] {agent} is DEAD — process dropped to shell", duration_ms=_ALERT_DURATION_MS
+            )
+            continue
         h = _pane_hash(tmux.capture_pane(pane_id))
         # Quiet state (ae:7821-7864) — evaluated BEFORE active so a declared agent
         # is not nudged. done is event-only (pane churn never invalidates it);
@@ -911,7 +1004,24 @@ def run_watchdog_cycle(
                     "summary": f"{stale_display}, no recent ae activity",
                 })
             state.nudge_count[pane_id] = count + 1
-        # count == MAX_NUDGES -> alert; count > -> silent. Both land in slice 8.
+        elif count == config.max_nudges:
+            # Max-nudge alert (ae:7942-7947) — once; count > MAX_NUDGES is silent.
+            if emit_event is not None:
+                emit_event(session, _alert_event(now, agent, f"max nudges reached ({stale_display}), needs attention"))
+            tmux.display_message(
+                f"[ae watchdog] {agent} may need attention — stale after {config.max_nudges} nudges",
+                duration_ms=_ALERT_DURATION_MS,
+            )
+            state.nudge_count[pane_id] = count + 1
+
+    # 8. Missing pane check (ae:7954-7963) — registered agents whose panes are gone.
+    for agent_ref in _meta_agent_refs(session_dir):
+        if agent_ref not in live_agents and agent_ref not in state.alerted_missing:
+            state.alerted_missing[agent_ref] = True
+            if emit_event is not None:
+                emit_event(session, _alert_event(now, agent_ref, "pane missing — agent no longer visible in session"))
+            tmux.display_message(f"[ae watchdog] {agent_ref} pane is MISSING", duration_ms=_ALERT_DURATION_MS)
+
     glyph = "✖" if dead else ("⚠" if stale else "●")
     _push_status(tmux, session, f"[watch {glyph} {active}/{total}]", work_dir, git=git)
 
