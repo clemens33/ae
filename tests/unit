@@ -1474,9 +1474,13 @@ assert_eq "events-retention: trims atomically and announces" "1" \
     "$([[ "$AE_SOURCE" == *'tail -n "$_events_keep" "$_events_file" >"$_events_tmp" 2>/dev/null && mv "$_events_tmp" "$_events_file" 2>/dev/null'* \
        && "$AE_SOURCE" == *'Trimmed events.jsonl to newest ${_events_keep} lines'* ]] && echo 1 || echo 0)"
 # Ordering guard: the trim must sit BEFORE the events pane is ensured, else a
-# running tail -f would keep reading the pre-swap inode.
+# running tail -f would keep reading the pre-swap inode. Compare grep line numbers
+# — a ${AE_SOURCE#*'…'} strip on the ~380KB source is O(n^2) in bash and hangs the
+# suite once the matched text sits late in the file.
+_evr_trim_ln="$(grep -nF 'Trimmed events.jsonl to newest' <<<"$AE_SOURCE" | head -1 | cut -d: -f1)"
+_evr_mon_ln="$(grep -nF '"${AE_META}/watchdog" _ensure-monitor' <<<"$AE_SOURCE" | head -1 | cut -d: -f1)"
 assert_eq "events-retention: trim precedes the _events pane start" "1" \
-    "$([[ "${AE_SOURCE#*'Trimmed events.jsonl to newest'}" == *'"${AE_META}/watchdog" _ensure-monitor'* ]] && echo 1 || echo 0)"
+    "$([[ -n "$_evr_trim_ln" && -n "$_evr_mon_ln" ]] && ((_evr_trim_ln < _evr_mon_ln)) && echo 1 || echo 0)"
 
 assert_eq "watchdog: auto-start via workspace.watchdog config" \
     "1" \
