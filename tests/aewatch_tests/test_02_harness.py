@@ -119,6 +119,7 @@ class HarnessTest(unittest.TestCase):
             AW.make_effect("tmux.unset_option", target="%1", option="@ae_x"),
             AW.make_effect("tmux.display_message", text="[ae watchdog] x is DEAD", duration_ms=10000),
             AW.make_effect("telegram.send", text="[s] chat ..."),
+            AW.make_effect("telegram.supervise", tmux_server="ae-alt"),
             AW.make_effect("file.write", path="$AE_HOME/aewatch/heartbeat", redacted=False),
             AW.make_effect("log.write", level="INFO", message="discovered 2 sessions"),
         ]

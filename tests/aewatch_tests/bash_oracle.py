@@ -186,12 +186,17 @@ def run_bash_watchdog_fixture(fixture, root):
     _set_meta_value(meta_dir, "ae_path", str(_FAKEBIN / "ae"))
 
     # 4. Run the real watchdog loop (recording ON) with the sentinel interval.
+    #    TG_SUPERVISE defaults to 0 (DISABLED) so the bridge-supervise scheduler only
+    #    fires for fixtures that opt in (`tg_supervise_secs`) — otherwise it would
+    #    supervise on cycle 1 of EVERY fixture (ae_path is always set) and pollute
+    #    every unrelated stream. run_python_watchdog_fixture mirrors this default.
     run_env = dict(
         env,
         AEWATCH_ORACLE_RECORD="1",
         AE_WATCHDOG_INTERVAL_SEC=str(_ORACLE_INTERVAL),
         AE_WATCHDOG_STALE_MIN=str(_ORACLE_STALE_MIN),
         AE_WATCHDOG_MAX_NUDGES=str(_ORACLE_MAX_NUDGES),
+        AE_WATCHDOG_TG_SUPERVISE_SEC=str(int(fixture.get("tg_supervise_secs", 0))),
     )
     run = subprocess.run(
         [str(meta_dir / "watchdog"), "_run"],

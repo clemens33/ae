@@ -241,6 +241,7 @@ EFFECT_KINDS = frozenset(
         "tmux.unset_option", # unset a tmux option on a target
         "tmux.display_message",  # user-visible `tmux display-message -d <ms> <text>` alert
         "telegram.send",     # outbound Telegram message
+        "telegram.supervise",  # best-effort bridge-revive ATTEMPT (scheduler; NOT a send)
         "file.write",        # write an aewatch-owned runtime file ($AE_HOME/aewatch/*)
         "log.write",         # emit a daemon.log line
     }
@@ -612,6 +613,8 @@ class WatchdogState:
     first_sweep_nudge: dict = dataclasses.field(default_factory=dict)
     meta_wedge_alerted: dict = dataclasses.field(default_factory=dict)
     meta_reconciled: dict = dataclasses.field(default_factory=dict)
+    # Telegram bridge supervise cadence (ae's last_tg_supervise; init 0 -> cycle 1 due).
+    last_tg_supervise: int = 0
 
 
 def default_git_runner(work_dir, args, *, timeout: int = 2):
@@ -1023,7 +1026,7 @@ def _nudge_text(session_dir, goal: str) -> str:
 def run_watchdog_cycle(
     config, state, tmux, session, *, work_dir, session_dir=None, tmux_server="",
     now=None, git=default_git_runner, emit_event=None, has_descendant=default_has_descendant,
-    recover_pending=None,
+    recover_pending=None, supervise_bridge=None,
 ) -> None:
     """One watchdog cycle for `session`. Counts live @ae_agent panes, classifies
     each (dead / throttled / quiet / active / recent / stale) and acts on them,
@@ -1042,7 +1045,10 @@ def run_watchdog_cycle(
     recovered via the injected recover_pending boundary (recover events) — both run
     BEFORE the status push. Meta-agent sweep + wedge (slice 10) run in branch 1b.
     Alerts / throttle / recover events are DIRECT emits (actor 'human') + a
-    tmux.display_message where applicable. FUTURE seam: telegram supervise (slice 12)."""
+    tmux.display_message where applicable. Finally, the telegram bridge supervise
+    scheduler (branch 10, throttled to TG_SUPERVISE_SECS) fires the injected
+    supervise_bridge boundary when due -> a telegram.supervise effect. All watchdog
+    branches are now ported; phase 3 owns the real tmux/bridge clients."""
     state.cycle += 1
     goal = _meta_value(session_dir, "goal")
     agent_bins = _load_agent_bins(session_dir)
@@ -1252,6 +1258,20 @@ def run_watchdog_cycle(
                         "target": row.get("agent", ""), "ref": captured,
                         "summary": f"captured {row.get('tool', '')} session id ({captured[:8]})",
                     })
+
+    # 10. Telegram bridge supervise (ae:7977-7997) — scheduler only, throttled to
+    #     TG_SUPERVISE_SECS. Best-effort revive of the machine-global bridge; NO-OP
+    #     when ae_path is absent/non-executable. supervise_bridge(tmux_server) is the
+    #     injected boundary (oracle records telegram.supervise; production reboots the
+    #     bridge with AE_TMUX_SERVER=<server>). No network / offset / send here.
+    if (
+        config.tg_supervise_secs > 0
+        and ae_path and os.access(ae_path, os.X_OK)
+        and supervise_bridge is not None
+        and now - state.last_tg_supervise >= config.tg_supervise_secs
+    ):
+        state.last_tg_supervise = now
+        supervise_bridge(_meta_value(session_dir, "tmux_server"))
 
     glyph = "✖" if dead else ("⚠" if stale else "●")
     _push_status(tmux, session, f"[watch {glyph} {active}/{total}]", work_dir, git=git)

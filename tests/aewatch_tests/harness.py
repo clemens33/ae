@@ -338,6 +338,9 @@ def run_python_watchdog_fixture(fixture: dict, *, git=None) -> list:
         interval=bash_oracle._ORACLE_INTERVAL,
         stale_min=bash_oracle._ORACLE_STALE_MIN,
         max_nudges=bash_oracle._ORACLE_MAX_NUDGES,
+        # DISABLED by default (mirror bash_oracle): the bridge-supervise scheduler
+        # opts in per fixture so it never pollutes unrelated slices' streams.
+        tg_supervise_secs=int(fixture.get("tg_supervise_secs", 0)),
     )
     state = AW.WatchdogState()
     with tempfile.TemporaryDirectory() as tmp:
@@ -362,6 +365,10 @@ def run_python_watchdog_fixture(fixture: dict, *, git=None) -> list:
                 # injected recover boundary: this tick's fixture recover rows (the
                 # production impl shells `ae _recover-pending` + parses the TSV).
                 recover_pending=(lambda s, _rows=tick.get("recover", []): _rows),
+                # injected bridge supervisor: records a telegram.supervise effect
+                # (NOT on FakeTmux — it is not a tmux op). Production reboots the
+                # bridge with AE_TMUX_SERVER=<server>.
+                supervise_bridge=(lambda server: env.recorder.record("telegram.supervise", tmux_server=server)),
             )
         return env.recorder.as_list()
 

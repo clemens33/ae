@@ -5,7 +5,9 @@ Phase-2 boundaries only — no network, no real behavior:
   _recover-pending <session>  -> print the CURRENT tick's recover rows as TSV
                                  (kind\tslot\tagent\ttool\tcaptured), driven by
                                  ticks.json[tick.idx].recover in AEWATCH_ORACLE_DIR.
-  telegram _supervise         -> deterministic no-op (slice 12 boundary).
+  telegram _supervise         -> record a telegram.supervise effect carrying the
+                                 propagated tmux server (AE_TMUX_SERVER, '' if unset),
+                                 only when AEWATCH_ORACLE_RECORD=1. No network/send.
 
 FAILS LOUD (exit 2 + stderr) on any other command OR a wrong arg shape — a silent
 accept would forge call-shape parity.
@@ -38,6 +40,11 @@ if argv[:1] == ["_recover-pending"]:
     sys.exit(0)
 
 if argv == ["telegram", "_supervise"]:
+    oracle = os.environ.get("AEWATCH_ORACLE_DIR")
+    if oracle and os.environ.get("AEWATCH_ORACLE_RECORD", "0") == "1":
+        effect = {"kind": "telegram.supervise", "tmux_server": os.environ.get("AE_TMUX_SERVER", "")}
+        with (Path(oracle) / "effects.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(effect) + "\n")
     sys.exit(0)
 
 die(f"unmodeled command: {' '.join(argv)}")
