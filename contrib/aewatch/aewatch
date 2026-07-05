@@ -621,6 +621,87 @@ class AewatchLogger:
                 print(f"aewatch: daemon.log write failed ({self.path}): {exc}", file=sys.stderr)
 
 
+# ── Crash-loop backoff state ─────────────────────────────────────────────
+# The supervisor (a later slice) restarts a dead daemon but must give up after
+# too many crashes within a rolling window rather than hot-loop forever. This
+# owns only the STATE; the supervisor loop and crash recording come later. Epochs
+# are injected/persisted wall-clock (a monotonic clock would not survive restart).
+_BACKOFF_WINDOW_SECS = 3600
+_BACKOFF_BUDGET = 5
+
+
+class BackoffState:
+    """Rolling-window crash counter persisted to $AE_HOME/aewatch/backoff.json."""
+
+    def __init__(self, path, *, window_secs=_BACKOFF_WINDOW_SECS, budget=_BACKOFF_BUDGET, recorder=None):
+        self.path = Path(path)
+        self.window_secs = window_secs
+        self.budget = budget
+        self._recorder = recorder
+
+    def _warn_corrupt(self) -> None:
+        if self._recorder is not None:
+            self._recorder.log("WARNING", f"backoff: corrupt state at {self.path}, resetting to fresh")
+
+    def _load(self) -> list:
+        try:
+            raw = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return []
+        except OSError:
+            self._warn_corrupt()
+            return []
+        try:
+            crashes = json.loads(raw)["crashes"]
+            # Valid JSON but wrong shape must degrade to fresh, not poison the count.
+            if not isinstance(crashes, list) or not all(
+                isinstance(c, (int, float)) and not isinstance(c, bool) for c in crashes
+            ):
+                raise ValueError("bad crashes schema")
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            self._warn_corrupt()
+            return []
+        return [float(c) for c in crashes]
+
+    def _prune(self, crashes: list, now) -> list:
+        # A crash exactly window_secs old is still IN-window (inclusive boundary).
+        return [c for c in crashes if now - c <= self.window_secs]
+
+    def _save(self, crashes: list) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.parent / f".backoff.{os.getpid()}.tmp"
+        try:
+            tmp.write_text(json.dumps({"crashes": crashes}), encoding="utf-8")
+            os.replace(tmp, self.path)
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+
+    def count(self, now) -> int:
+        return len(self._prune(self._load(), now))
+
+    def record_crash(self, now) -> bool:
+        """Record a crash; return True if over budget within the window ('should stop')."""
+        crashes = self._prune(self._load(), now)
+        crashes.append(now)
+        self._save(crashes)
+        over = len(crashes) > self.budget
+        if over and self._recorder is not None:
+            self._recorder.log(
+                "ERROR",
+                f"backoff: {len(crashes)} crashes within {self.window_secs}s — over budget "
+                f"({self.budget}), should stop",
+            )
+        return over
+
+    def record_success(self, now) -> None:
+        """A healthy tick clears the crash counter."""
+        self._save([])
+
+
 def cmd_daemon(args: argparse.Namespace) -> int:
     if not args.once:
         print(
@@ -640,6 +721,13 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         runtime.write_heartbeat()
         logger = AewatchLogger(runtime.daemon_log_path, stderr_on_error=True)
         logger.log("INFO", "daemon --once: tick complete (heartbeat refreshed)")
+        # Success path only (no supervisor/restart loop yet): a clean tick clears
+        # the crash counter. Best-effort — a backoff write failure must not fail the
+        # tick (heartbeat is already written under the singleton).
+        try:
+            BackoffState(runtime.backoff_path).record_success(time.time())
+        except OSError:
+            pass
     finally:
         lock.release()
     return 0
