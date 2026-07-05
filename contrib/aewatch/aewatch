@@ -534,6 +534,157 @@ def discover_sessions(ae_home, tmux, recorder=None) -> list:
     return result
 
 
+# ── Watchdog cycle (phase-2 parity port of ae's `watchdog _run`) ─────────
+# The Python side of the dual-run oracle. Each function mirrors a NAMED bash
+# helper so the ordered effect stream is byte-identical to the generated
+# watchdog. Slice 4 covers the status side channel (bootstrap + end-of-cycle
+# @ae_watchdog_status / @ae_branch_status / @ae_branch_name); later slices fill
+# activity, nudges, alerts, throttle, and sweep on the same WatchdogState.
+
+# Panes that are never counted as agents (ae:7682-7684 case + the empty guard).
+_SYSTEM_AGENTS = frozenset({"", "(null)", "_watchdog", "_shepherd", "_loop", "_events"})
+
+
+def _env_int(env, *names, default: int) -> int:
+    """First present AE_WATCHDOG_*/AE_LOOP_* name wins. A set-but-non-numeric
+    override falls back to `default` — mirrors bash `${VAR:-${LEGACY:-N}}` plus the
+    SWEEP numeric guard (ae:7608). An unset/empty name is skipped, not a fallback."""
+    for name in names:
+        raw = env.get(name)
+        if raw is None or raw == "":
+            continue
+        return int(raw) if raw.isdigit() else default
+    return default
+
+
+@dataclasses.dataclass
+class WatchdogConfig:
+    """Watchdog tunables (ae:7595-7608). Values do not affect the slice-4 status
+    stream (they gate sleep/nudge/sweep, added later) but the seam is here now."""
+
+    interval: int = 60
+    stale_min: int = 15
+    max_nudges: int = 2
+    throttle_alert_cycles: int = 5
+    tg_supervise_secs: int = 120
+    sweep_secs: int = 300
+
+    @property
+    def stale_secs(self) -> int:
+        return self.stale_min * 60
+
+    @classmethod
+    def from_env(cls, env=None) -> "WatchdogConfig":
+        env = os.environ if env is None else env
+        return cls(
+            interval=_env_int(env, "AE_WATCHDOG_INTERVAL_SEC", "AE_LOOP_INTERVAL_SEC", default=60),
+            stale_min=_env_int(env, "AE_WATCHDOG_STALE_MIN", "AE_LOOP_STALE_MIN", default=15),
+            max_nudges=_env_int(env, "AE_WATCHDOG_MAX_NUDGES", "AE_LOOP_MAX_NUDGES", default=2),
+            throttle_alert_cycles=_env_int(
+                env, "AE_WATCHDOG_THROTTLE_ALERT_CYCLES", "AE_LOOP_THROTTLE_ALERT_CYCLES", default=5
+            ),
+            tg_supervise_secs=_env_int(env, "AE_WATCHDOG_TG_SUPERVISE_SEC", "AE_LOOP_TG_SUPERVISE_SEC", default=120),
+            sweep_secs=_env_int(env, "AE_WATCHDOG_SWEEP_SEC", "AE_LOOP_SWEEP_SEC", default=300),
+        )
+
+
+@dataclasses.dataclass
+class WatchdogState:
+    """Per-session mutable state carried across cycles (ae's `declare -A` maps).
+    Mostly dormant in slice 4; later slices populate the hash/nudge/alert maps."""
+
+    cycle: int = 0
+    prev_hash: dict = dataclasses.field(default_factory=dict)
+    last_hash_change: dict = dataclasses.field(default_factory=dict)
+    nudge_count: dict = dataclasses.field(default_factory=dict)
+    dead_agents: dict = dataclasses.field(default_factory=dict)
+    alerted_missing: dict = dataclasses.field(default_factory=dict)
+    throttle_streak: dict = dataclasses.field(default_factory=dict)
+
+
+def default_git_runner(work_dir, args, *, timeout: int = 2):
+    """Run `git -C work_dir <args>` with a 2s cap, stderr discarded; return
+    (returncode, stdout). Any spawn/timeout failure -> (1, ''). Mirrors bash
+    `timeout 2 git -C "$work_dir" ... 2>/dev/null` (ae:7438). Injectable so branch
+    fixtures (slice 5+) can drive deterministic branch/dirty state without ambient
+    git/timeout/repo/filesystem dependence (codex)."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(work_dir), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode, proc.stdout
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+
+
+def _trim_branch(text: str, max_len: int = 24) -> str:
+    """Port of ae:7427 `_watchdog_trim`: newline/CR -> space; overflow ->
+    first (max_len - 1) chars + '~'."""
+    text = text.replace("\n", " ").replace("\r", " ")
+    if len(text) > max_len:
+        return text[: max_len - 1] + "~"
+    return text
+
+
+def _write_branch_segment(tmux, session, work_dir, *, git) -> str:
+    """Port of ae:7454 `_watchdog_branch_segment`. Writes the @ae_branch_name
+    machine side channel (set FULL untrimmed branch, or unset) and RETURNS the
+    display segment the caller pushes into @ae_branch_status: ' <branch><dirty>'
+    for a git work_dir, '' otherwise."""
+    if not work_dir or git(work_dir, ["rev-parse", "--is-inside-work-tree"])[0] != 0:
+        tmux.unset_option(session, "@ae_branch_name")
+        return ""
+    rc, out = git(work_dir, ["symbolic-ref", "--quiet", "--short", "HEAD"])
+    full = out.strip() if rc == 0 else ""
+    if not full:
+        rc2, out2 = git(work_dir, ["rev-parse", "--short", "HEAD"])
+        full = out2.strip() if rc2 == 0 else ""
+    branch = _trim_branch(full, 24)
+    if not branch:
+        tmux.unset_option(session, "@ae_branch_name")
+        return ""
+    tmux.set_option(session, "@ae_branch_name", full)
+    dirty = "*" if git(work_dir, ["status", "--porcelain", "--untracked-files=no"])[1].strip() else ""
+    return f" {branch}{dirty}"
+
+
+def _push_status(tmux, session, status_value, work_dir, *, git) -> None:
+    """The ae per-cycle status push (ae:7633-7634 / 8008-8009), IN ORDER:
+    set @ae_watchdog_status, then the branch segment (which unsets/sets
+    @ae_branch_name), then set @ae_branch_status to that segment."""
+    tmux.set_option(session, "@ae_watchdog_status", status_value)
+    segment = _write_branch_segment(tmux, session, work_dir, git=git)
+    tmux.set_option(session, "@ae_branch_status", segment)
+
+
+def watchdog_bootstrap(tmux, session, *, work_dir, git=default_git_runner) -> None:
+    """The pre-loop status write (ae:7633-7634): '[watch ◌ starting]' + branch."""
+    _push_status(tmux, session, "[watch ◌ starting]", work_dir, git=git)
+
+
+def run_watchdog_cycle(
+    config, state, tmux, session, *, work_dir, tmux_server="", now=None, git=default_git_runner
+) -> None:
+    """One watchdog cycle for `session`. Slice 4: count live @ae_agent panes and
+    push end-of-cycle status + branch. active/stale/dead classification (and the
+    glyph escalation to ⚠/✖) lands in slices 5-9; here they stay 0 -> '●'."""
+    state.cycle += 1
+    total = active = stale = dead = 0
+    for pane in tmux.list_panes(session, tmux_server):
+        agent = (pane.get("agent") or "").strip()
+        if agent in _SYSTEM_AGENTS:
+            continue
+        total += 1
+        # active/stale/dead classification lands in slices 5+.
+    glyph = "✖" if dead else ("⚠" if stale else "●")
+    _push_status(tmux, session, f"[watch {glyph} {active}/{total}]", work_dir, git=git)
+
+
 # ── Runtime: per-AE_HOME singleton + heartbeat ───────────────────────────
 # One supervisor per ae state root (NOT per machine): every runtime artifact
 # lives under $AE_HOME/aewatch/, so isolated roots (tests, e2e) can never collide

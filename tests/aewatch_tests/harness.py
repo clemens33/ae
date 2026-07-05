@@ -267,5 +267,35 @@ class MultiTickEnv:
         return self.home.read_jsonl(session)
 
 
+def run_python_watchdog_fixture(fixture: dict, *, git=None) -> list:
+    """Python side of the phase-2 dual-run oracle: mirrors run_bash_watchdog_fixture
+    but drives the in-process aewatch cycle instead of the generated bash watchdog.
+
+    Bootstrap once (ae `_run` startup before the loop), then one run_watchdog_cycle
+    per tick (ae's one cycle per sentinel sleep). Returns the ordered effect stream
+    (recorder.as_list()) for byte-identical diffing against the bash oracle. `git`
+    injects a fake git runner (branch fixtures, slice 5+); default is real git, so
+    a non-git work_dir resolves identically on both sides."""
+    recorder = AW.EffectRecorder()
+    session = fixture["sessions"][0]
+    name = session["name"]
+    meta = session.get("meta", {})
+    work_dir = meta.get("work_dir", "")
+    server = meta.get("tmux_server", "")
+    tmux = FakeTmux(recorder, {"panes": {name: session.get("panes", [])}})
+    config = AW.WatchdogConfig.from_env()
+    state = AW.WatchdogState()
+    git_runner = git or AW.default_git_runner
+    AW.watchdog_bootstrap(tmux, name, work_dir=work_dir, git=git_runner)
+    for tick in load_ticks(fixture):
+        for pane_id, capture in (tick.get("captures") or {}).items():
+            tmux._captures[pane_id] = capture  # per-tick pane state (slice 5+)
+        AW.run_watchdog_cycle(
+            config, state, tmux, name,
+            work_dir=work_dir, tmux_server=server, now=tick.get("epoch"), git=git_runner,
+        )
+    return recorder.as_list()
+
+
 # Bash side of the phase-2 dual-run oracle (re-exported for the test suite).
 from bash_oracle import run_bash_watchdog_fixture  # noqa: E402
