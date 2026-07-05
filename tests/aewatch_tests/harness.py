@@ -18,6 +18,7 @@ Pure stdlib. The sidecar is imported from its extensionless path (its top-level
 main() is guarded, so import has no side effects).
 """
 
+import copy
 import importlib.machinery
 import importlib.util
 import json
@@ -197,3 +198,70 @@ def build_fixture_env(fixture: dict, root, recorder):
 def canonical(effects: list) -> list:
     """Deterministic presentation ordering (delegates to the sidecar helper)."""
     return AW.canonical_effects(effects)
+
+
+# ── Multi-tick fixture harness (phase-2 dual-run oracle input) ─────────────
+# The watchdog is a per-cycle state machine, so a fixture models N cycles and
+# effects recorded in one tick MUST mutate the fake state so the next tick reads
+# them (the plan's Effect Application rule). Tick boundaries stay explicit —
+# start_tick(i) — so the oracle can diff per cycle; effect-recording helpers
+# couple record + mutate to avoid any double-apply.
+
+
+def load_ticks(fixture: dict) -> list:
+    """The fixture's `ticks`, or a single tick derived from `time` when the key is
+    ABSENT. Key presence (not truthiness) — an explicit `ticks: []` is honored as
+    empty, never masked by a synthetic time tick (the validator rejects empty)."""
+    if "ticks" in fixture:
+        return fixture["ticks"]
+    t = fixture.get("time", {})
+    return [{"epoch": t.get("epoch"), "now": t.get("now")}]
+
+
+class TickClock:
+    """Fake clock stepping through a fixture's ticks (no real time)."""
+
+    def __init__(self, ticks: list):
+        self._ticks = ticks
+        self._i = 0
+
+    def start(self, i: int) -> None:
+        self._i = i
+
+    def epoch(self):
+        return self._ticks[self._i]["epoch"]
+
+    def now(self):
+        return self._ticks[self._i].get("now")
+
+
+class MultiTickEnv:
+    """Multi-cycle fake environment for a phase-2 watchdog fixture."""
+
+    def __init__(self, fixture: dict, root):
+        self.fixture = fixture
+        self.recorder = AW.EffectRecorder()
+        self.home, self.tmux = build_fixture_env(fixture, root, self.recorder)
+        self.ticks = load_ticks(fixture)
+        self.clock = TickClock(self.ticks)
+
+    def start_tick(self, i: int) -> None:
+        """Advance the clock to tick i and apply that tick's pane state."""
+        self.clock.start(i)
+        tick = self.ticks[i]
+        for pane_id, capture in tick.get("captures", {}).items():
+            self.tmux._captures[pane_id] = capture
+
+    def append_event(self, session: str, event: dict) -> dict:
+        """Record an event.append effect AND append it to events.jsonl so later
+        ticks see it. The event is snapshotted so a later caller mutation of the
+        original dict cannot retroactively change the effect or the file."""
+        snapshot = copy.deepcopy(event)
+        self.recorder.record("event.append", session=session, event=snapshot)
+        path = self.home.sessions / session / "events.jsonl"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(snapshot) + "\n")
+        return snapshot
+
+    def read_events(self, session: str) -> list:
+        return self.home.read_jsonl(session)
