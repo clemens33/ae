@@ -5,11 +5,12 @@
 # ///
 """aewatch — optional uv/PEP 723 sidecar for ae's watchdog + telegram bridge.
 
-Phase 1 is a runnable, stdlib-only skeleton: it parses a CLI and reports its
-version. It performs NO runtime side effects yet — no nudging agents, no Telegram
-calls, no tmux option writes, no session-meta mutation. Later phases add contract
-validation, session discovery, and a read-only `daemon --once` tick whose only
-writes land under `$AE_HOME/aewatch/`.
+Phase 1 is a runnable, stdlib-only skeleton growing one slice at a time. So far:
+version reporting and the contract fixture-matrix loader/validator. It performs
+NO runtime side effects on sessions yet — no nudging agents, no Telegram calls,
+no tmux option writes, no session-meta mutation. Later slices add session
+discovery and a read-only `daemon --once` tick whose only writes land under
+`$AE_HOME/aewatch/`.
 
 NOT part of core ae (which stays a single jq-free bash script). Optional contrib
 consumer of ae's existing file contracts (meta, events.jsonl, tmux user options).
@@ -20,24 +21,179 @@ Pure stdlib — the PEP 723 dependency block is intentionally empty. See README.
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import sys
+from pathlib import Path
 
 __version__ = "0.1.0"
+
+# ── Contract fixture matrix ──────────────────────────────────────────────
+# CONTRACTS.md is human-readable prose, but the machine source of truth is ONE
+# JSON object between these literal markers. Prose outside the block is never
+# asserted. See CONTRACTS.md and tests/aewatch_tests/test_01_contracts.py.
+CONTRACTS_JSON_START = "<!-- AEWATCH_CONTRACTS_JSON_START -->"
+CONTRACTS_JSON_END = "<!-- AEWATCH_CONTRACTS_JSON_END -->"
+
+# Every future behavior family must have at least one placeholder fixture id in
+# phase 1, so phase 2/3 cannot silently shrink the contract surface. The
+# validator (not just the test suite) owns this coverage check.
+REQUIRED_FIXTURE_FAMILIES = (
+    "session.discovery",
+    "watchdog.status",
+    "watchdog.nudge",
+    "watchdog.alert",
+    "watchdog.meta",
+    "telegram.outbound",
+    "telegram.inbound",
+    "telegram.security",
+    "daemon.runtime",
+)
+
+# Lowercase dotted/kebab token: dotted families + kebab leaf names, no uppercase,
+# no empty segments, no doubled separators.
+_FIXTURE_ID_RE = re.compile(r"^[a-z0-9]+([.-][a-z0-9]+)*$")
+
+_FENCED_JSON_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
+
+_DEFAULT_CONTRACTS = Path(__file__).resolve().parent / "CONTRACTS.md"
+
+
+def extract_contracts_json(text: str) -> dict:
+    """Extract and parse the single marked JSON object from CONTRACTS.md text.
+
+    Raises ValueError on missing markers, a missing fenced ```json block, invalid
+    JSON, or a non-object top level. This is the ONLY contract parser — the CLI
+    and the test suite both call it.
+    """
+    start = text.find(CONTRACTS_JSON_START)
+    if start == -1:
+        raise ValueError(f"contracts: start marker not found ({CONTRACTS_JSON_START})")
+    end = text.find(CONTRACTS_JSON_END, start + len(CONTRACTS_JSON_START))
+    if end == -1:
+        raise ValueError(f"contracts: end marker not found ({CONTRACTS_JSON_END})")
+    between = text[start + len(CONTRACTS_JSON_START):end]
+    blocks = _FENCED_JSON_RE.findall(between)
+    if not blocks:
+        raise ValueError("contracts: no ```json fenced block between markers")
+    if len(blocks) > 1:
+        # Exactly one matrix between the markers — a duplicate/stale block must
+        # fail fast rather than silently using the first (codex NIT).
+        raise ValueError(
+            f"contracts: expected exactly one ```json block between markers, found {len(blocks)}"
+        )
+    try:
+        obj = json.loads(blocks[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"contracts: invalid JSON in marked block: {exc}") from exc
+    if not isinstance(obj, dict):
+        raise ValueError("contracts: marked JSON must be an object")
+    return obj
+
+
+def validate_contracts(obj: dict) -> list[str]:
+    """Validate the contracts object against the phase-1 schema.
+
+    Returns a list of human-readable error strings; an empty list means valid.
+    """
+    errors: list[str] = []
+    if not isinstance(obj, dict):
+        return ["contracts: top-level value must be an object"]
+    if obj.get("schema_version") != 1:
+        errors.append(f"schema_version must be 1, got {obj.get('schema_version')!r}")
+
+    fixtures = obj.get("fixtures")
+    if not isinstance(fixtures, list):
+        errors.append("fixtures must be a list")
+        return errors
+
+    required_keys = ("time", "config", "sessions", "telegram", "expect")
+    seen_ids: set[str] = set()
+    ids: list[str] = []
+    for idx, fixture in enumerate(fixtures):
+        where = f"fixtures[{idx}]"
+        if not isinstance(fixture, dict):
+            errors.append(f"{where}: must be an object")
+            continue
+        fid = fixture.get("id")
+        if not isinstance(fid, str) or not fid:
+            errors.append(f"{where}: missing string 'id'")
+        else:
+            where = f"fixture {fid!r}"
+            ids.append(fid)
+            if not _FIXTURE_ID_RE.match(fid):
+                errors.append(f"{where}: id is not a lowercase dotted/kebab token")
+            if fid in seen_ids:
+                errors.append(f"{where}: duplicate id")
+            seen_ids.add(fid)
+        for key in required_keys:
+            if key not in fixture:
+                errors.append(f"{where}: missing required key '{key}'")
+        # Type-check the schema keys the prose already promises, so phase 2 can
+        # rely on shape (a non-object `expect` must not slip past effects checks).
+        for key in ("time", "config", "telegram"):
+            if key in fixture and not isinstance(fixture[key], dict):
+                errors.append(f"{where}: '{key}' must be an object")
+        if "sessions" in fixture and not isinstance(fixture["sessions"], list):
+            errors.append(f"{where}: 'sessions' must be a list")
+        if "expect" in fixture:
+            expect = fixture["expect"]
+            if not isinstance(expect, dict):
+                errors.append(f"{where}: 'expect' must be an object")
+            elif "effects" not in expect:
+                errors.append(f"{where}: expect.effects must be present (even if empty)")
+            elif not isinstance(expect["effects"], list):
+                errors.append(f"{where}: expect.effects must be a list")
+
+    for family in REQUIRED_FIXTURE_FAMILIES:
+        if not any(i == family or i.startswith(family + ".") for i in ids):
+            errors.append(f"required fixture family {family!r} has no fixture")
+    return errors
+
+
+def cmd_contracts_validate(args: argparse.Namespace) -> int:
+    path = Path(args.contracts) if args.contracts else _DEFAULT_CONTRACTS
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"aewatch: cannot read contracts {path}: {exc}", file=sys.stderr)
+        return 2
+    try:
+        obj = extract_contracts_json(text)
+    except ValueError as exc:
+        print(f"aewatch: {exc}", file=sys.stderr)
+        return 1
+    errors = validate_contracts(obj)
+    if errors:
+        for err in errors:
+            print(f"aewatch: contract error: {err}", file=sys.stderr)
+        return 1
+    print(f"aewatch: contracts OK ({len(obj['fixtures'])} fixtures) — {path}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aewatch",
-        description="Optional sidecar for ae's watchdog + telegram bridge (phase 1 skeleton).",
+        description="Optional sidecar for ae's watchdog + telegram bridge (phase 1).",
     )
     parser.add_argument(
         "--version",
         action="version",
         version=f"aewatch {__version__}",
     )
-    # Subcommands land in later slices (contracts validate / discover / daemon).
-    # Declared now so `aewatch` alone yields a clean usage message, not a crash.
-    parser.add_subparsers(dest="command", metavar="<command>")
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    contracts = sub.add_parser("contracts", help="contract fixture-matrix operations")
+    contracts_sub = contracts.add_subparsers(
+        dest="contracts_command", metavar="<subcommand>", required=True
+    )
+    validate = contracts_sub.add_parser("validate", help="validate CONTRACTS.md")
+    validate.add_argument(
+        "--contracts",
+        default=None,
+        help="path to CONTRACTS.md (default: alongside this script)",
+    )
     return parser
 
 
@@ -45,11 +201,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command is None:
-        # No behavior wired yet; print usage and exit non-zero like argparse would
-        # for a missing required command, without hard-failing the skeleton.
+        # No behavior wired without a subcommand; print usage and exit non-zero.
         parser.print_help(sys.stderr)
         return 2
-    # No subcommands are implemented in phase-1 slice 1.
+    if args.command == "contracts":
+        # contracts_command is required=True, so argparse guarantees it is set.
+        if args.contracts_command == "validate":
+            return cmd_contracts_validate(args)
     parser.error(f"unknown command: {args.command}")
     return 2  # unreachable (parser.error exits), kept for type-clarity.
 
