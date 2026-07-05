@@ -1419,6 +1419,35 @@ assert_eq "watchdog: supports start/stop/status subcommands" \
     "1" \
     "$([[ "$AE_SOURCE" == *'_watchdog_start'* && "$AE_SOURCE" == *'_watchdog_stop'* && "$AE_SOURCE" == *'_watchdog_status'* ]] && echo 1 || echo 0)"
 
+# doctor --refresh cycles a RUNNING watchdog so refreshed helper code goes live.
+# Structural: the restart lives in the per-session refresh path (sync_existing_
+# session_assets). Extract just that function body so the asserts can't be
+# satisfied by an unrelated match elsewhere in the source.
+_refresh_fn="$(awk '/^sync_existing_session_assets\(\) \{/{f=1} f{print} f && /^\}/{exit}' <<<"$AE_SOURCE")"
+assert_eq "doctor-refresh: restarts a running watchdog in the refresh path" "1" \
+    "$([[ "$_refresh_fn" == *'wd_helper="${meta_dir}/watchdog"'* ]] && echo 1 || echo 0)"
+# BLOCKER gate: never stop a stale-pid session. Require genuine liveness first —
+# exact-match tmux session on its own server AND a live @ae_agent=_watchdog pane —
+# before trusting the pid-based 'is running' status.
+assert_eq "doctor-refresh: gate proves the tmux session is live (exact match)" "1" \
+    "$([[ "$_refresh_fn" == *"list-sessions -F '#{session_name}' 2>/dev/null | grep -Fxq -- \"\$session_name\""* ]] && echo 1 || echo 0)"
+assert_eq "doctor-refresh: gate requires a live _watchdog pane" "1" \
+    "$([[ "$_refresh_fn" == *"list-panes -s -t \"\$session_name\" -F '#{@ae_agent}' 2>/dev/null | grep -Fxq -- \"_watchdog\""* \
+       && "$_refresh_fn" == *'"$wd_pane_live" == "yes"'* ]] && echo 1 || echo 0)"
+assert_eq "doctor-refresh: only stops a genuinely-running watchdog" "1" \
+    "$([[ "$_refresh_fn" == *'"$wd_status" == *"is running"*'* \
+       && "$_refresh_fn" == *'"$wd_helper" stop'* \
+       && "$_refresh_fn" == *'"$wd_helper" start'* ]] && echo 1 || echo 0)"
+# IMPORTANT verify: poll for the restart, announce success only on confirmation,
+# and re-record watchdog=true (never leave it disabled) on failure.
+assert_eq "doctor-refresh: verifies the restart before claiming success" "1" \
+    "$([[ "$_refresh_fn" == *'wd_up="yes"'* \
+       && "$_refresh_fn" == *'"$wd_helper" status 2>/dev/null || true'* ]] && echo 1 || echo 0)"
+assert_eq "doctor-refresh: failed restart re-enables meta + warns, success is conditional" "1" \
+    "$([[ "$_refresh_fn" == *'set_session_meta_value "${meta_dir}/meta" "watchdog" "true"'* \
+       && "$_refresh_fn" == *'Warning: watchdog restart failed for ${session_name}'* \
+       && "$_refresh_fn" == *'restarted watchdog for ${session_name}'* ]] && echo 1 || echo 0)"
+
 assert_eq "watchdog: auto-start via workspace.watchdog config" \
     "1" \
     "$([[ "$AE_SOURCE" == *'workspace.watchdog'* && "$AE_SOURCE" == *'ae-monitor'* ]] && echo 1 || echo 0)"

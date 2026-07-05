@@ -671,6 +671,25 @@ REPO11="$(setup_repo)"
 wait_for_session "test-sync"
 sleep 1
 
+# Watchdog probe helpers (used both before and after refresh). Bounded polling,
+# not fixed sleeps — the launch autostarts the watchdog in the background.
+wd_poll() { # wd_poll <helper> <needle> [tries] — bounded status poll
+    local h="$1" needle="$2" tries="${3:-20}" i=0
+    while ((i < tries)); do
+        [[ "$("$h" status 2>&1 || true)" == *"$needle"* ]] && return 0
+        sleep 0.5
+        i=$((i + 1))
+    done
+    return 1
+}
+wd_pid() { "$1" status 2>&1 | sed -n 's/.*pid \([0-9]*\).*/\1/p'; }
+WD_HELPER="$HOME/.ae/sessions/test-sync/watchdog"
+
+# Settle the launch autostart so the watchdog is genuinely running before refresh,
+# then snapshot its pid — refresh must restart it (new pid), not merely leave it.
+wd_poll "$WD_HELPER" "is running" 20 || true
+wd_pid_before="$(wd_pid "$WD_HELPER")"
+
 printf '#!/usr/bin/env bash\necho stale-helper\n' > "$HOME/.ae/sessions/test-sync/reply"
 chmod 0700 "$HOME/.ae/sessions/test-sync/reply"
 printf '#!/usr/bin/env bash\necho stale-helper\n' > "$HOME/.ae/sessions/test-sync/state"
@@ -686,6 +705,21 @@ meta_ae_path="$(grep '^ae_path=' "$HOME/.ae/sessions/test-sync/meta" | cut -d= -
 
 assert_contains "doctor-refresh: reports refreshed session" "OK    refresh:test-sync" "$doctor_sync_output"
 assert_contains "doctor-refresh: summary still succeeds" "Summary: 0 failure(s)" "$doctor_sync_output"
+
+# The refresh must have cycled the running watchdog so the regenerated helper
+# body goes live: it announces the restart and comes back up under a NEW pid.
+assert_contains "doctor-refresh: announces the watchdog restart" \
+    "restarted watchdog for test-sync" "$doctor_sync_output"
+wd_poll "$WD_HELPER" "is running" 20 || true
+assert_contains "doctor-refresh: watchdog running again after refresh" \
+    "is running" "$("$WD_HELPER" status 2>&1 || true)"
+wd_pid_after="$(wd_pid "$WD_HELPER")"
+assert_eq "doctor-refresh: watchdog restarted (before pid captured)" \
+    "1" "$([[ -n "$wd_pid_before" ]] && echo 1 || echo 0)"
+assert_eq "doctor-refresh: watchdog restarted (after pid captured)" \
+    "1" "$([[ -n "$wd_pid_after" ]] && echo 1 || echo 0)"
+assert_eq "doctor-refresh: watchdog pid changed across refresh" \
+    "1" "$([[ -n "$wd_pid_before" && -n "$wd_pid_after" && "$wd_pid_before" != "$wd_pid_after" ]] && echo 1 || echo 0)"
 assert_contains "doctor-refresh: reply helper regenerated" "Usage: reply [--as <agent>] <request-id> <message>" "$reply_output"
 assert_contains "doctor-refresh: workspace regenerated" "memo add" "$workspace_output"
 assert_eq "doctor-sync: meta ae_path refreshed" "$AE" "$meta_ae_path"
@@ -716,21 +750,9 @@ assert_contains "doctor-refresh: regenerated state emitted a real event" \
     '"action":"state"' "$(tail -1 "$HOME/.ae/sessions/test-sync/events.jsonl")"
 # watchdog is declare-f generated too. A RUNNING watchdog keeps its loaded body
 # until restarted — so smoke the regenerated artifact through a full
-# stop → status → start → status cycle (real _lib, real panes).
-# Bounded polling, not fixed sleeps: launch AUTOSTARTS a watchdog in the
-# background, so (a) settle until it is actually up before stopping (else the
-# stop no-ops mid-autostart and the later status still shows running), and
-# (b) poll each transition instead of racing it.
-wd_poll() { # wd_poll <helper> <needle> [tries] — bounded status poll
-    local h="$1" needle="$2" tries="${3:-20}" i=0
-    while ((i < tries)); do
-        [[ "$("$h" status 2>&1 || true)" == *"$needle"* ]] && return 0
-        sleep 0.5
-        i=$((i + 1))
-    done
-    return 1
-}
-WD_HELPER="$HOME/.ae/sessions/test-sync/watchdog"
+# stop → status → start → status cycle (real _lib, real panes). wd_poll/WD_HELPER
+# were defined above (before the refresh) so the pid-change assertions could use
+# them; the refresh already restarted it once, so it is running here.
 assert_contains "doctor-refresh: watchdog carries emitted main fn" \
     "helper_watchdog_main" "$(cat "$WD_HELPER")"
 wd_poll "$WD_HELPER" "is running" 20 || true # settle the launch autostart
@@ -745,6 +767,45 @@ assert_contains "doctor-refresh: regenerated watchdog starts and reports running
 
 # Clean up
 "$AE" end -f test-sync 2>/dev/null || true
+sleep 0.5
+
+# ── Test 11b: refresh must NOT stop a STOPPED session's stale-pid watchdog ──
+# BLOCKER regression: 'watchdog status' trusts .watchdog.pid + kill -0, so a
+# stopped session whose stale pidfile happens to point at a recycled, unrelated
+# live PID would report "is running". The liveness gate (tmux session + _watchdog
+# pane) must veto the stop so refresh never kills that innocent process.
+REPO_STALE="$(setup_repo)"
+(cd "$REPO_STALE" && "$AE" --local test-stale-wd &) 2>/dev/null
+wait_for_session "test-stale-wd"
+STALE_WD="$HOME/.ae/sessions/test-stale-wd/watchdog"
+STALE_PIDFILE="$HOME/.ae/sessions/test-stale-wd/.watchdog.pid"
+wd_poll "$STALE_WD" "is running" 20 || true # settle autostart before we kill it
+
+# Stop the session at the tmux layer only — leave ~/.ae/sessions/test-stale-wd/
+# (meta + generated helpers) on disk so doctor --refresh has something to refresh.
+tmux kill-session -t test-stale-wd 2>/dev/null || true
+sleep 0.5
+
+# Fabricate the stale-pid hazard: a genuinely live, unrelated process, its PID
+# written into the watchdog pidfile. status now reports "is running" purely from
+# kill -0 — exactly the false positive the gate must not act on.
+sleep 300 &
+dummy_pid=$!
+printf '%s\n' "$dummy_pid" > "$STALE_PIDFILE"
+assert_contains "stale-wd: status falsely reports running from the recycled pid" \
+    "is running" "$("$STALE_WD" status 2>&1 || true)"
+
+(cd "$REPO_STALE" && "$AE" doctor --refresh test-stale-wd > "$TMPDIR/doctor-stale.out" 2>/dev/null)
+stale_refresh_out="$(cat "$TMPDIR/doctor-stale.out")"
+
+assert_eq "stale-wd: refresh did NOT kill the innocent recycled-pid process" \
+    "1" "$(kill -0 "$dummy_pid" 2>/dev/null && echo 1 || echo 0)"
+assert_eq "stale-wd: refresh did not announce a restart for a dead session" \
+    "0" "$([[ "$stale_refresh_out" == *"restarted watchdog for test-stale-wd"* ]] && echo 1 || echo 0)"
+
+kill "$dummy_pid" 2>/dev/null || true
+"$AE" end -f test-stale-wd 2>/dev/null || true
+rm -rf "$HOME/.ae/sessions/test-stale-wd" 2>/dev/null || true
 sleep 0.5
 
 # ── goal helper: set → list → survives resume ────────────────────────

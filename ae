@@ -2467,6 +2467,59 @@ sync_existing_session_assets() {
     local server
     server="$(read_session_meta "$session_name" tmux_server)"
     _ae_apply_status_left "$session_name" "$mode" "$origin" "$work_dir" "$server"
+
+    # Cycle a RUNNING watchdog so refreshed helper code actually goes live. The
+    # running watchdog keeps its already-loaded body until restarted (refresh only
+    # rewrites the on-disk script), so a stop→start makes it re-source the fresh
+    # helper. Invoke the SESSION's own generated helper by path. Non-fatal: a failed
+    # restart must not fail the refresh, and every probe is guarded (set -e).
+    #
+    # Liveness gate (BLOCKER): 'watchdog status' trusts .watchdog.pid + kill -0,
+    # which a STOPPED session's stale pidfile satisfies if that PID was recycled by
+    # an unrelated live process — a stop would then kill that innocent process. So
+    # require genuine liveness FIRST: the tmux session exists on its own server
+    # (exact match via list-sessions|grep -Fxq, not has-session which prefix-matches)
+    # AND a pane still carries @ae_agent=_watchdog. Only then trust the status text.
+    local wd_helper="${meta_dir}/watchdog"
+    local _wt=(tmux)
+    [[ -n "$server" ]] && _wt=(command tmux -L "$server")
+    local sess_live="" wd_pane_live=""
+    if "${_wt[@]}" list-sessions -F '#{session_name}' 2>/dev/null | grep -Fxq -- "$session_name"; then
+        sess_live="yes"
+    fi
+    if [[ "$sess_live" == "yes" ]] &&
+        "${_wt[@]}" list-panes -s -t "$session_name" -F '#{@ae_agent}' 2>/dev/null | grep -Fxq -- "_watchdog"; then
+        wd_pane_live="yes"
+    fi
+    if [[ -x "$wd_helper" && "$wd_pane_live" == "yes" ]]; then
+        local wd_status
+        wd_status="$("$wd_helper" status 2>/dev/null || true)"
+        if [[ "$wd_status" == *"is running"* ]]; then
+            "$wd_helper" stop >/dev/null 2>&1 || true
+            sleep 0.3 # brief settle so the pane is gone before the fresh start
+            "$wd_helper" start >/dev/null 2>&1 || true
+            # Verify it actually came back up before claiming success (IMPORTANT):
+            # 'stop' flips meta watchdog=false, so a failed 'start' would leave the
+            # watchdog persistently disabled. Poll, then either announce success or
+            # re-record watchdog=true so the next resume revives it — never echo
+            # success unconditionally.
+            local wd_up="" _i=0
+            while ((_i < 5)); do
+                if [[ "$("$wd_helper" status 2>/dev/null || true)" == *"is running"* ]]; then
+                    wd_up="yes"
+                    break
+                fi
+                sleep 0.5
+                _i=$((_i + 1))
+            done
+            if [[ "$wd_up" == "yes" ]]; then
+                echo "restarted watchdog for ${session_name}"
+            else
+                set_session_meta_value "${meta_dir}/meta" "watchdog" "true" || true
+                echo "Warning: watchdog restart failed for ${session_name} — re-enable recorded; it will start on next resume"
+            fi
+        fi
+    fi
 }
 
 # Try to capture a pending session ID from on-disk agent session files (no live pane needed).
