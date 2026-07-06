@@ -623,6 +623,7 @@ class RealTmuxClient(TmuxClient):
 
 
 _TELEGRAM_TRUTHY = frozenset({"1", "true", "yes", "on"})  # ae:3001-3006
+_TG_INCLUDE_DEFAULT = "send,ask,review,reply,done,alert,throttled,chat"  # ae:3135
 
 
 def _telegram_enabled(value) -> bool:
@@ -641,6 +642,8 @@ class TelegramConfig:
     token: str = ""
     chat_id: str = ""
     allowed_user_ids: str = ""
+    include: str = _TG_INCLUDE_DEFAULT
+    exclude: str = ""
     disabled_reason: str = ""
 
     @property
@@ -693,7 +696,8 @@ def load_telegram_config(config, *, geteuid=None, stat_fn=None) -> "TelegramConf
     if not token:
         return disabled("token file is empty")
     return TelegramConfig(enabled=True, token=token, chat_id=chat_id,
-                          allowed_user_ids=tg.get("allowed_user_ids", ""))  # ae:3196
+                          allowed_user_ids=tg.get("allowed_user_ids", ""),  # ae:3196
+                          include=tg.get("include", _TG_INCLUDE_DEFAULT), exclude=tg.get("exclude", ""))  # ae:3194-3195
 
 
 class TelegramTransport(abc.ABC):
@@ -1276,6 +1280,55 @@ def route_message(from_id, text, update, *, sessions, ae_home, current_target, r
         return
     reply("No steward running and no /use target set. Start one with 'ae steward' (then just talk "
           "to it), reply to a message, use @session:agent <msg>, or /use <session> <agent>. (/help)")
+
+
+def truncate_text(text, limit) -> str:
+    """UTF-8-safe truncation (ae:3250-3257): a CODEPOINT slice — never splits a multibyte
+    char — with an '…(truncated)' marker when over the limit."""
+    return text if len(text) <= limit else text[:limit] + "…(truncated)"
+
+
+def _action_set(spec) -> set:
+    return {t for t in re.split(r"[,\s]+", (spec or "").strip()) if t}
+
+
+def event_action_allowed(action, include, exclude) -> bool:
+    """Forward only actions in `include` and not in `exclude` (ae:3232-3247; comma/space
+    lists)."""
+    if action not in _action_set(include):
+        return False
+    return action not in _action_set(exclude)
+
+
+def format_event(name, event, *, limit=3500) -> str:
+    """The forwarded chat line (ae:3261-3275): '[<name>] <action>  <actor>[ → <target>]'
+    then, if a summary, a newline + truncated summary. This header is EXACTLY what s11c's
+    _parse_reply_target reads back, keeping the reply round-trip consistent."""
+    action = event.get("action", "")
+    actor = event.get("actor", "")
+    target = event.get("target", "")
+    summary = event.get("summary", "")
+    hdr = f"[{name}] {action}  {actor}"
+    if target:
+        hdr += f" → {target}"
+    if summary:
+        return f"{hdr}\n{truncate_text(summary, limit)}"
+    return hdr
+
+
+def forward_event(name, event, config, *, send, recorder=None):
+    """Forward one ae event to Telegram IF its action passes include/exclude: format it,
+    send via the injected seam, and record a telegram.send effect. A filtered event does
+    NOT send or record. Records the send ATTEMPT regardless of the send result (s13 adds
+    at-least-once retry); returns the send result for the caller to inspect."""
+    action = event.get("action", "")
+    if not event_action_allowed(action, config.include, config.exclude):
+        return None
+    text = format_event(name, event)
+    result = send(config.chat_id, text)
+    if recorder is not None:
+        recorder.record("telegram.send", session=name, action=action, text=text)
+    return result
 
 
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
