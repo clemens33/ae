@@ -1026,6 +1026,258 @@ def tg_dispatch(sessions, session_ref, verb, agent_ref, msg, *, from_id, ae_home
     return deliver_to_agent(sr.value, verb, agent_ref, msg, from_id=from_id, ae_home=ae_home, timeout=timeout)
 
 
+class CurrentTarget:
+    """The sticky /use target — a single machine-global "<session>\\t<agent>" for the one
+    control chat (ae:3618), stored owner-only. Re-validated on every send, so a stopped
+    session just errors rather than misrouting."""
+
+    def __init__(self, path):
+        self._path = Path(path)
+
+    def load(self):
+        try:
+            raw = self._path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if "\t" not in raw:
+            return None
+        session, agent = raw.split("\t", 1)
+        return (session, agent) if session and agent else None
+
+    def save(self, session, agent) -> bool:
+        import os as _os
+
+        tmp = Path(f"{self._path}.tmp.{_os.getpid()}")
+        try:
+            fd = _os.open(str(tmp), _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)  # umask-077 equiv
+            with _os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(f"{session}\t{agent}\n")
+            _os.replace(tmp, self._path)
+            return True
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return False
+
+    def clear(self):
+        try:
+            self._path.unlink()
+        except OSError:
+            pass
+
+
+def _session_main_ref(session) -> str:
+    for a in session.agents:
+        if a.slot == "main":
+            return a.ref
+    return ""
+
+
+def find_steward(sessions, ae_home):
+    """The running steward (meta-agent) for auto-default routing (ae:3717-3746): a running
+    session with meta_agent=true in its meta. Prefer canonical 'steward', then legacy
+    'hub', then any other running meta-agent. Returns (session_name, main_agent_ref) or None."""
+    hub = other = None
+    for s in sessions:
+        if not s.running:
+            continue
+        if _meta_value(Path(ae_home) / "sessions" / s.name, "meta_agent") != "true":
+            continue
+        main = _session_main_ref(s)
+        if not main:
+            continue
+        if s.name == "steward":
+            return (s.name, main)
+        if s.name == "hub":
+            if hub is None:
+                hub = (s.name, main)
+        elif other is None:
+            other = (s.name, main)
+    return hub or other
+
+
+_HELP_TEXT = (
+    "ae telegram:\n"
+    "• Plain text → your steward (auto-default; just talk to it).\n"
+    "• Reply to any forwarded message → answers that agent (no command).\n"
+    "• @session:agent <msg> → send to an agent directly.\n"
+    "• /use <session> <agent> → redirect plain messages elsewhere; /use clear → back to the steward.\n"
+    "/list\n"
+    "/session <name|id-prefix> send|ask <agent> <msg>"
+)
+
+
+def _list_sessions(sessions) -> str:
+    running = [s for s in sessions if s.running]
+    if not running:
+        return "(no running sessions)"
+    return "Running sessions:\n" + "\n".join(f"• {s.name}  [{s.session_id[:8]}]" for s in running)
+
+
+def _parse_reply_target(rtext):
+    """Parse a forwarded event's header line (ae:3591-3600): '[<session>] <action>  <actor>'
+    -> (session, actor). A misparse returns None so the caller FAILS SAFE (guidance),
+    never a blind dispatch."""
+    first = rtext.split("\n", 1)[0]
+    if not (first.startswith("[") and "] " in first):
+        return None
+    session = first[1:].split("]", 1)[0]
+    rest = first.split("] ", 1)[1]
+    tokens = rest.split()
+    if len(tokens) < 2 or not session:
+        return None
+    return (session, tokens[1])
+
+
+def _dispatch_message(result, session_ref, agent_ref) -> str:
+    """Map a DispatchResult status to the user-facing chat line (ae:3553/3554/3567/3568/
+    3574/3580/3582)."""
+    s = result.status
+    if s == "delivered":
+        return f"→ {result.verb} delivered to {result.agent} in {result.session}"
+    if s == "failed":
+        return f"Failed to {result.verb} {result.agent} in {result.session}"
+    if s == "no_session":
+        return f"No running session matching '{session_ref}'"
+    if s == "ambiguous_session":
+        return f"Ambiguous session '{session_ref}' — be more specific"
+    if s == "no_agent":
+        return f"No agent '{agent_ref}' in session {result.session}"
+    if s == "ambiguous_agent":
+        return f"Ambiguous agent '{agent_ref}' in {result.session} — use alias:name"
+    if s == "no_helper":
+        return f"Session '{result.session}' has no '{result.verb}' helper"
+    if s == "bad_verb":
+        return f"Unknown verb '{result.verb}' (use send or ask)"
+    return "Command failed"
+
+
+def _deliver_and_report(from_id, session_ref, verb, agent_ref, msg, *, sessions, ae_home, reply, timeout):
+    result = tg_dispatch(sessions, session_ref, verb, agent_ref, msg, from_id=from_id, ae_home=ae_home, timeout=timeout)
+    reply(_dispatch_message(result, session_ref, agent_ref))
+
+
+def _route_at(from_id, stripped, *, sessions, ae_home, reply, timeout):
+    parts = stripped.split(None, 1)
+    spec = parts[0][1:]  # drop the leading '@'
+    msg = parts[1] if len(parts) > 1 else ""
+    if ":" not in spec:
+        reply("Usage: @session:agent <msg>  (e.g. @mdk:claude:lead do X)")
+        return
+    session, agent = spec.split(":", 1)  # session up to first ':', agent keeps its alias:name
+    if not msg:
+        reply("Nothing to send — @session:agent <msg>")
+        return
+    _deliver_and_report(from_id, session, "send", agent, msg, sessions=sessions, ae_home=ae_home, reply=reply, timeout=timeout)
+
+
+def _route_session(from_id, rest, *, sessions, ae_home, reply, timeout):
+    tokens = rest.split(None, 3)
+    if len(tokens) < 4:
+        reply("Usage: /session <name|id-prefix> <send|ask> <agent> <msg>")
+        return
+    ref, verb, agent, msg = tokens
+    if verb not in _DISPATCH_VERBS:  # caller-side verb validation (complements s11b's boundary)
+        reply(f"Unknown verb '{verb}' (use send or ask)")
+        return
+    _deliver_and_report(from_id, ref, verb, agent, msg, sessions=sessions, ae_home=ae_home, reply=reply, timeout=timeout)
+
+
+def _route_use(from_id, args, *, sessions, ae_home, current_target, reply):
+    args = args.strip()
+    if not args:
+        cur = current_target.load()
+        if cur:
+            reply(f"Current target: {cur[0]} → {cur[1]}  (plain messages go here; /use clear to fall back to the steward)")
+            return
+        st = find_steward(sessions, ae_home)
+        if st:
+            reply(f"No override set — plain messages go to the steward ({st[0]} → {st[1]}). /use <session> <agent> to redirect.")
+        else:
+            reply("No override set and no steward running. Start one with 'ae steward', or /use <session> <agent>.")
+        return
+    parts = args.split()
+    ref = parts[0]
+    if ref in ("clear", "off", "none"):
+        current_target.clear()
+        reply("Override cleared — plain messages go to the steward again.")
+        return
+    if len(parts) < 2:
+        reply("Usage: /use <session> <agent>   (or /use clear)")
+        return
+    agent = parts[1]
+    sr = resolve_session_ref(sessions, ref)
+    if not sr.ok:
+        reply(f"Ambiguous session '{ref}' — be more specific" if sr.status == "ambiguous"
+              else f"No running session matching '{ref}'")
+        return
+    ar = resolve_agent_in_session(sr.value.agents, agent)
+    if not ar.ok:
+        reply(f"Ambiguous agent '{agent}' in {sr.value.name} — use alias:name" if ar.status == "ambiguous"
+              else f"No agent '{agent}' in session {sr.value.name}")
+        return
+    if current_target.save(sr.value.name, ar.value):
+        reply(f"Override set: {sr.value.name} → {ar.value}. Plain messages go here until /use clear (then back to the steward).")
+    else:
+        reply("Failed to save current target")
+
+
+def _route_command(from_id, stripped, *, sessions, ae_home, current_target, reply, timeout):
+    parts = stripped.split(None, 1)
+    cmd = parts[0].split("@", 1)[0]  # tolerate /cmd@botname
+    rest = parts[1] if len(parts) > 1 else ""
+    if cmd == "/help":
+        reply(_HELP_TEXT)
+    elif cmd == "/list":
+        reply(_list_sessions(sessions))
+    elif cmd == "/use":
+        _route_use(from_id, rest, sessions=sessions, ae_home=ae_home, current_target=current_target, reply=reply)
+    elif cmd == "/session":
+        _route_session(from_id, rest, sessions=sessions, ae_home=ae_home, reply=reply, timeout=timeout)
+    else:
+        reply(f"Unknown command: {cmd} — try /help")
+
+
+def route_message(from_id, text, update, *, sessions, ae_home, current_target, reply, timeout=10):
+    """Route one authorized inbound message by PRECEDENCE (ae:3485-3517 + the poll-level
+    reply decision ae:3792-3797): slash command > non-slash reply > @session:agent >
+    /use sticky > steward default > guidance. Delivers via tg_dispatch (s11b); every
+    user-facing line goes through the injected `reply` seam (the s16 daemon wires it to
+    the transport's send_message). poll_inbound's `dispatch` seam binds this."""
+    stripped = text.strip()
+    if stripped.startswith("/"):  # slash beats reply — a /cmd sent as a reply is a command
+        _route_command(from_id, stripped, sessions=sessions, ae_home=ae_home,
+                       current_target=current_target, reply=reply, timeout=timeout)
+        return
+    reply_to = ((update.get("message") or {}).get("reply_to_message") or {}).get("text")
+    if reply_to:
+        parsed = _parse_reply_target(reply_to)
+        if parsed is None:  # fail safe — a forged/broken reply must NOT blind-dispatch
+            reply("Couldn't tell which agent that was a reply to — use /session <name> send <agent> <msg>")
+            return
+        session, actor = parsed
+        _deliver_and_report(from_id, session, "send", actor, text, sessions=sessions, ae_home=ae_home, reply=reply, timeout=timeout)
+        return
+    if not stripped:  # whitespace-only, non-reply -> help (ae /help|"")
+        reply(_HELP_TEXT)
+        return
+    if stripped.startswith("@"):
+        _route_at(from_id, stripped, sessions=sessions, ae_home=ae_home, reply=reply, timeout=timeout)
+        return
+    target = current_target.load()
+    if target:
+        _deliver_and_report(from_id, target[0], "send", target[1], text, sessions=sessions, ae_home=ae_home, reply=reply, timeout=timeout)
+        return
+    steward = find_steward(sessions, ae_home)
+    if steward:
+        _deliver_and_report(from_id, steward[0], "send", steward[1], text, sessions=sessions, ae_home=ae_home, reply=reply, timeout=timeout)
+        return
+    reply("No steward running and no /use target set. Start one with 'ae steward' (then just talk "
+          "to it), reply to a message, use @session:agent <msg>, or /use <session> <agent>. (/help)")
+
+
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
     """Phase-1 no-op input collector: READ-ONLY.
 
