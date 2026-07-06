@@ -1531,6 +1531,63 @@ class TelegramBridge:
         self._outbound_state.save(state)
 
 
+_AEWATCH_SESSION = "ae-aewatch"
+
+
+def _heartbeat_fresh(runtime, clock, max_age) -> bool:
+    try:
+        age = clock() - runtime.heartbeat_path.stat().st_mtime
+    except OSError:
+        return False  # no heartbeat file -> not fresh (wedged / never started)
+    return 0 <= age <= max_age
+
+
+def ensure_aewatch_session(runtime, *, argv, tmux_server="", cwd=None, env=None,
+                           tmux_bin="tmux", clock, heartbeat_max_age=90, logger=None) -> str:
+    """Ensure the dedicated ae-aewatch daemon session exists — PER-AE_HOME, on the root's
+    OWN tmux server (the P1 s4 singleton scope; -L <server>), NOT a global session (port of
+    ae:4067-4079). Returns 'running' (alive + FRESH heartbeat -> refuse a duplicate),
+    'restarted' (existed but stale / no heartbeat = wedged -> kill + recreate), 'started', or
+    'failed' (new-session did not succeed — best-effort must never return FALSE success). The
+    daemon argv is shell-QUOTED and AE_HOME defaults to the runtime's root (caller env
+    overlays it); the launcher is non-fatal (tmux failures captured, never raised — the s18
+    autostart path must never break a session launch)."""
+    import shlex
+    import subprocess
+
+    server_args = ["-L", tmux_server] if tmux_server else []
+
+    def _tmux(*args) -> int:
+        try:
+            return subprocess.run([tmux_bin, *server_args, *args],
+                                  capture_output=True, text=True, timeout=5).returncode
+        except (OSError, subprocess.SubprocessError):
+            return 1
+
+    def _warn(message):
+        if logger is not None:
+            logger.log("WARNING", message)
+
+    status = "started"
+    if _tmux("has-session", "-t", _AEWATCH_SESSION) == 0:
+        if _heartbeat_fresh(runtime, clock, heartbeat_max_age):
+            return "running"
+        _tmux("kill-session", "-t", _AEWATCH_SESSION)  # wedged daemon -> reap before recreate
+        status = "restarted"
+    # Per-AE_HOME scope: the spawned daemon must read the SAME root, so AE_HOME defaults to
+    # the runtime's; a caller env value overlays it. `exec` replaces the shell so SIGTERM/
+    # SIGHUP reach the daemon directly (s16 signals). argv + env are shell-quoted.
+    full_env = {"AE_HOME": str(runtime.ae_home), **(env or {})}
+    env_prefix = "".join(f"{k}={shlex.quote(str(v))} " for k, v in full_env.items())
+    command = f"{env_prefix}exec {shlex.join(list(argv))}"
+    if _tmux("new-session", "-d", "-s", _AEWATCH_SESSION, "-c", cwd or str(Path.home()), command) != 0:
+        _warn(f"ae-aewatch session create failed (intended={status})")
+        return "failed"  # non-fatal to the caller, but never a FALSE success
+    _tmux("set-option", "-t", _AEWATCH_SESSION, "status", "off")  # cosmetic — failure ignored
+    _tmux("rename-window", "-t", _AEWATCH_SESSION, _AEWATCH_SESSION)
+    return status
+
+
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
     """Phase-1 no-op input collector: READ-ONLY.
 
