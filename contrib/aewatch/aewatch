@@ -601,9 +601,14 @@ _SYSTEM_AGENTS = frozenset({"", "(null)", "_watchdog", "_shepherd", "_loop", "_e
 
 
 def _env_int(env, *names, default: int) -> int:
-    """First present AE_WATCHDOG_*/AE_LOOP_* name wins. A set-but-non-numeric
-    override falls back to `default` — mirrors bash `${VAR:-${LEGACY:-N}}` plus the
-    SWEEP numeric guard (ae:7608). An unset/empty name is skipped, not a fallback."""
+    """First present AE_WATCHDOG_*/AE_LOOP_* name wins; an unset/empty name is skipped
+    (not a fallback). Name precedence mirrors bash `${VAR:-${LEGACY:-N}}` (ae:7595-7607).
+    Numeric handling does NOT fully mirror bash: bash guards ONLY SWEEP against a
+    non-numeric value (ae:7608) and raw-propagates every OTHER bad string; aewatch
+    instead normalizes ANY set-but-non-numeric value (per `isdigit()` — so negative /
+    whitespaced / leading-`+` forms too) to `default` on every knob. That is a
+    deliberate divergence, safer for a long-lived daemon than propagating a value that
+    would crash the arithmetic downstream (test_24 pins it)."""
     for name in names:
         raw = env.get(name)
         if raw is None or raw == "":
