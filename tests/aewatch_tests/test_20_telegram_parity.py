@@ -108,7 +108,7 @@ class TelegramParityTest(unittest.TestCase):
     def test_recover_then_supervise_then_status_order(self):
         # ae step 9 (recover) -> step 10 (telegram supervise) -> end-of-cycle status.
         fx = _fixture(str(self.nogit), [{"epoch": _E, "now": _iso(_E), "captures": {_PANE: "working"},
-            "recover": [{"kind": "ok", "slot": "main", "agent": _AGENT, "tool": "codex", "captured": "abcd1234"}]}])
+            "recover": {"work": [{"kind": "ok", "slot": "main", "agent": _AGENT, "tool": "codex", "captured": "abcd1234"}]}}])
         python = self._parity(fx, "order")
         rec = next(i for i, e in enumerate(python)
                    if e["kind"] == "event.append" and e["event"].get("action") == "recover")
