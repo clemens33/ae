@@ -1431,6 +1431,39 @@ def process_session_events(events_file, prev, name, config, *, send, recorder=No
     return (file_inode, new_offset)
 
 
+_COMMAND_MENU = [  # ae:3313-3316
+    {"command": "list", "description": "Running sessions (name, id, last activity)"},
+    {"command": "use",
+     "description": "Redirect plain messages to a session (default is the steward): /use <session> <agent>"},
+    {"command": "session", "description": "Message an agent: /session <name> send|ask <agent> <msg>"},
+    {"command": "help", "description": "Show help"},
+]
+
+
+def register_commands(transport, config, *, logger=None) -> bool:
+    """Register the bot slash-command menu (setMyCommands, ae:3306-3352) — best-effort and
+    ONLY when inbound is enabled (no point advertising commands that would be rejected).
+    A raising transport OR a non-ok result logs REDACTED and returns False; setMyCommands
+    can NEVER fail the bridge tick (the plan's explicit non-fatal contract — unlike s12's
+    delivery seam, which surfaces a broken transport). Returns True only on ok."""
+    if not inbound_enabled(config):
+        return False
+
+    def _warn(message):
+        if logger is not None:
+            logger.log("WARNING", message)
+
+    try:
+        result = transport.set_my_commands(_COMMAND_MENU)
+    except Exception as exc:
+        _warn(f"setMyCommands error: {exc}")
+        return False
+    if not (isinstance(result, dict) and result.get("ok")):
+        _warn("setMyCommands not ok")
+        return False
+    return True
+
+
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
     """Phase-1 no-op input collector: READ-ONLY.
 
