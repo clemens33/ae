@@ -976,6 +976,56 @@ def resolve_agent_in_session(agents, want) -> "Resolution":
     return Resolution("ambiguous" if len(bare) > 1 else "none")
 
 
+_DISPATCH_VERBS = frozenset({"send", "ask"})  # a chat command may only send/ask (ae:3532-3535)
+
+
+@dataclasses.dataclass
+class DispatchResult:
+    """Outcome of routing a chat command to a session agent. `status` maps to a s11c chat
+    message; delivery carries the resolved session/agent/verb for that message."""
+
+    status: str   # delivered|failed|no_session|ambiguous_session|no_agent|ambiguous_agent|no_helper|bad_verb
+    session: str = ""
+    agent: str = ""
+    verb: str = ""
+
+
+def deliver_to_agent(session, verb, agent_ref, msg, *, from_id, ae_home, timeout=10) -> "DispatchResult":
+    """Execute a chat command by running the session's OWN <verb> helper under the
+    external-actor identity (ae:3572-3583) — never raw tmux, so ask-tracking + event
+    emission stay identical. DEFENSE-IN-DEPTH at the execution boundary: only send/ask are
+    runnable (a chat command must never invoke state/retire/etc); only the CANONICAL
+    alias:name reaches the helper; the message is a POSITIONAL arg (no eval / no shell)."""
+    if verb not in _DISPATCH_VERBS:
+        return DispatchResult("bad_verb", session=session.name, verb=verb)
+    ar = resolve_agent_in_session(session.agents, agent_ref)
+    if not ar.ok:
+        return DispatchResult("ambiguous_agent" if ar.status == "ambiguous" else "no_agent",
+                              session=session.name, verb=verb)
+    canon = ar.value
+    helper = Path(ae_home) / "sessions" / session.name / verb
+    if not os.access(helper, os.X_OK):
+        return DispatchResult("no_helper", session=session.name, agent=canon, verb=verb)
+    import subprocess
+
+    env = dict(os.environ, AE_SENDER_OVERRIDE=f"telegram:{from_id}")
+    try:
+        proc = subprocess.run([str(helper), canon, msg], env=env, capture_output=True, text=True, timeout=timeout)
+        status = "delivered" if proc.returncode == 0 else "failed"
+    except (OSError, subprocess.SubprocessError):
+        status = "failed"
+    return DispatchResult(status, session=session.name, agent=canon, verb=verb)
+
+
+def tg_dispatch(sessions, session_ref, verb, agent_ref, msg, *, from_id, ae_home, timeout=10) -> "DispatchResult":
+    """Resolve the session ref (s11a) then deliver (ae:3545-3558). Structured result only;
+    s11c maps status -> the chat message."""
+    sr = resolve_session_ref(sessions, session_ref)
+    if not sr.ok:
+        return DispatchResult("ambiguous_session" if sr.status == "ambiguous" else "no_session")
+    return deliver_to_agent(sr.value, verb, agent_ref, msg, from_id=from_id, ae_home=ae_home, timeout=timeout)
+
+
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
     """Phase-1 no-op input collector: READ-ONLY.
 
