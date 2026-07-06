@@ -16,7 +16,9 @@ Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex
 - **Agents talk to each other** -- each agent gets workspace context injected into its system prompt. They send messages by name, spawn new agents, and coordinate without manual wiring.
 - **Everything survives reboots** -- sessions, spawned agents, conversation history. Pick up exactly where you left off.
 - **Nothing touches your repo** -- session state lives in `~/.ae/sessions/`. Your working directory stays clean.
-- **Single bash script** -- no frameworks, no runtimes, no abstractions. Just bash, tmux, and git.
+- **Tiered delegation** -- leads run the strongest model; bounded chores go to cheap spawned workers in their own tmux windows, reviewed and retired. Convention, not machinery ([docs](docs/reference/delegation.md)).
+- **A chief of staff on your phone** -- the optional steward session watches your whole fleet and reports over Telegram; tell it your objective and it helps you hold it. Both come up automatically with any session launch.
+- **Single bash script** -- no frameworks, no runtimes, no abstractions. Just bash, tmux, and git. (Optional companions live in `contrib/` and are never required -- see below.)
 
 ## Install
 
@@ -62,7 +64,7 @@ ae my-feature                  # all agents resume with their conversation histo
 **Check on agents without attaching:**
 ```bash
 ae status my-feature           # see recent output from all agents
-ae list                        # running sessions, per-agent state + attn marker
+ae list                        # running sessions: goal (+age), git branch, per-agent state + attn marker
 ae list --needs-attn           # only sessions needing attention (waiting-user/blocked/dead/stale/throttled/unanswered)
 ae list --active               # only sessions with recent activity (in flight)
 ae list --attn                 # short alias for --needs-attn
@@ -132,10 +134,16 @@ Use `memo` for durable findings, decisions, and handoffs that should survive age
 
 ```toml
 [agents]
-claude = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
+claude = "claude --permission-mode bypassPermissions --model opus"
 codex = "codex --yolo -m gpt-5.5 -c model_reasoning_effort=high"
-gemini = "gemini --yolo -m gemini-2.5-pro"
-opencode = "opencode -m google/gemini-3-pro-preview"
+gemini = "gemini --yolo -m gemini-3-pro-preview"
+opencode = "opencode"
+
+# Recommended: capability tiers named by intent, not vendor model —
+# leads on optimal/best, chores/tests/scouts on fast, scoped work on standard.
+# Full block + role guidance: docs/getting-started/config.md
+fast = "claude --permission-mode bypassPermissions --model sonnet --effort low"
+best = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
 
 [workspace]
 main = claude:lead
@@ -210,6 +218,33 @@ When run inside an ae session, `stop`, `end`, `status`, and `watchdog` detect th
 Each agent gets a workspace context injected into its system prompt (Claude Code's `--append-system-prompt`, Codex's `developer_instructions`, Gemini's `-i`). That context tells it who the other agents are, how to reach them by name, and how to spawn or retire agents. The actual communication happens through shell helpers (`send`, `peek`, `spawn`, `retire`, etc.) that ae generates in `~/.ae/sessions/` -- agents call them like any other CLI tool.
 
 No custom protocols, no frameworks. Just system prompts and bash scripts that agents already know how to use.
+
+## Still one bash script
+
+The core contract has not moved: `ae` is a single bash script whose only hard
+dependencies are bash >= 4.0, tmux, and git. Your repos stay untouched --
+session state lives in `~/.ae/sessions/`, and `--copy`/`--worktree` modes give
+agents isolated workspaces when you want them.
+
+Everything else is an **optional companion** under `contrib/`, never required
+for core commands to work:
+
+| Companion | What | Deps |
+|---|---|---|
+| `ae telegram` | machine-global bridge: fleet events to your Telegram chat, replies route back | `jq` + `curl` |
+| `ae steward` ([contrib/aesteward](contrib/aesteward)) | the fleet's chief of staff: monitors every session, relays and reports, guards your objective once you set one (`objective: ...` over Telegram; `drop objective` disarms) | an agent CLI |
+| [contrib/aemonitor](contrib/aemonitor) | deterministic sweep helper the steward uses | Python 3 stdlib |
+| [contrib/aewatch](contrib/aewatch) | the next-generation watchdog + bridge as a single-file Python sidecar (PEP 723, stdlib-only, zero pip deps) -- built test-first with a dual-run oracle that proves byte-exact parity with the bash watchdog it will eventually replace. The bash implementations remain the default and the fallback. | Python >= 3.11 |
+
+That last one is deliberate honesty rather than scope creep: the long-running
+daemon half (watchdog, bridge) is where bash hurts most, so it is being carved
+out under strict behavioral-parity testing -- per the documented revisit
+triggers in [AGENTS.md](AGENTS.md). The tmux-glue half, where bash is
+best-in-class, stays bash.
+
+The steward and the Telegram bridge start automatically with any `ae` launch
+once you've opted in (a steward scaffold exists / `[telegram] enabled = true`).
+`AE_NO_AUTOSTART=1` skips.
 
 ## Requirements
 
