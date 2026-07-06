@@ -1331,6 +1331,106 @@ def forward_event(name, event, config, *, send, recorder=None):
     return result
 
 
+class OutboundState:
+    """Per-session outbound tail state (session_id -> (inode, byte_offset)) persisted to
+    state.tsv (ae:3826-3856). Atomic save; header / comment / malformed / non-numeric rows
+    are skipped on load. The 4th column (last_ts) is kept for ae-format compatibility but
+    aewatch does not use it."""
+
+    def __init__(self, path):
+        self._path = Path(path)
+
+    def load(self) -> dict:
+        out: dict = {}
+        try:
+            text = self._path.read_text(encoding="utf-8")
+        except OSError:
+            return out
+        for line in text.splitlines():
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 3 or not parts[0]:
+                continue
+            inode, offset = parts[1], parts[2]
+            if not inode.isdigit() or not offset.isdigit():
+                continue
+            out[parts[0]] = (int(inode), int(offset))
+        return out
+
+    def save(self, state) -> bool:
+        import os as _os
+
+        tmp = Path(f"{self._path}.tmp.{_os.getpid()}")
+        try:
+            lines = ["# session_id\tinode\tbyte_offset\tlast_ts"]
+            for sid, (inode, offset) in sorted(state.items()):
+                lines.append(f"{sid}\t{inode}\t{offset}\t")
+            fd = _os.open(str(tmp), _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
+            with _os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(lines) + "\n")
+            _os.replace(tmp, self._path)
+            return True
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return False
+
+
+def _send_ok(result) -> bool:
+    return isinstance(result, dict) and bool(result.get("ok"))
+
+
+def process_session_events(events_file, prev, name, config, *, send, recorder=None):
+    """Byte-accurate, at-least-once tail of a session's events.jsonl (ae:3875-3934). An
+    UNSEEN session or an INODE CHANGE jumps to EOF (never replay history; handle
+    transfer/rotation); size<=offset is a no-op; else forward each COMPLETE event via
+    forward_event and advance the offset by the raw line bytes. A send failure stops
+    WITHOUT advancing past the failed line, so it + everything after retries next cycle;
+    a partial trailing line is ignored. Returns the new (inode, offset)."""
+    events_file = Path(events_file)
+    try:
+        st = events_file.stat()
+    except OSError:
+        return prev
+    file_inode, file_size = st.st_ino, st.st_size
+    if prev is None or prev[0] != file_inode:   # unseen OR inode change -> EOF
+        return (file_inode, file_size)
+    cur_offset = prev[1]
+    if file_size < cur_offset:   # TRUNCATED in place (same inode) -> reset to the new EOF,
+        return (file_inode, file_size)  # else the offset stalls beyond EOF forever (codex)
+    if file_size == cur_offset:  # nothing new -> no-op
+        return (file_inode, cur_offset)
+    try:
+        with events_file.open("rb") as fh:
+            fh.seek(cur_offset)
+            data = fh.read(file_size - cur_offset)  # bound to the stat'd size
+    except OSError:
+        return (file_inode, cur_offset)
+    new_offset = cur_offset
+    start = 0
+    while True:
+        nl = data.find(b"\n", start)
+        if nl == -1:
+            break  # partial trailing line -> ignore (retried when the newline arrives)
+        line_bytes = data[start:nl + 1]
+        line = line_bytes[:-1].decode("utf-8", errors="replace")
+        if line.strip():
+            try:
+                event = json.loads(line)
+            except (ValueError, TypeError):
+                event = None
+            if isinstance(event, dict):
+                result = forward_event(name, event, config, send=send, recorder=recorder)
+                if result is not None and not _send_ok(result):
+                    break  # send failed -> do NOT advance; retry this line + everything after
+        new_offset += len(line_bytes)
+        start = nl + 1
+    return (file_inode, new_offset)
+
+
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
     """Phase-1 no-op input collector: READ-ONLY.
 
