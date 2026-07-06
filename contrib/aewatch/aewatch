@@ -809,6 +809,108 @@ class RealTelegramTransport(TelegramTransport):
                           socket_timeout=self._timeout)
 
 
+class OffsetStore:
+    """Durable getUpdates offset (ae:3356-3372). load() validates numeric-or-0; save() is
+    atomic (tmp + rename) and returns False on failure so the caller can stop before
+    dispatch — at-most-once depends on the offset being persisted first."""
+
+    def __init__(self, path):
+        self._path = Path(path)
+
+    def load(self) -> int:
+        try:
+            raw = self._path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return 0
+        return int(raw) if raw.isdigit() else 0
+
+    def save(self, value) -> bool:
+        import os as _os
+
+        tmp = Path(f"{self._path}.tmp.{_os.getpid()}")
+        try:
+            tmp.write_text(f"{int(value)}\n", encoding="utf-8")
+            _os.replace(tmp, self._path)
+            return True
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return False
+
+
+def inbound_enabled(config) -> bool:
+    """Inbound commands are enabled only with at least one allow-listed id — otherwise the
+    bridge stays outbound-only (ae:3203-3205)."""
+    return bool(re.sub(r"[,\s]", "", config.allowed_user_ids or ""))
+
+
+def _allowed_ids(config) -> set:
+    return {t for t in re.split(r"[,\s]+", (config.allowed_user_ids or "").strip()) if t}
+
+
+def update_authorized(from_id, chat_id, chat_type, config) -> bool:
+    """Authorize an inbound update — ALL must hold (ae:3210-3230): numeric sender, PRIVATE
+    chat, EXACT control chat_id, allow-listed sender. Confines command execution to the
+    intended 1:1 channel; a group / accidental-add cannot drive ae."""
+    from_id = str(from_id)
+    if not from_id.isdigit():
+        return False
+    if chat_type != "private":
+        return False
+    if str(chat_id) != str(config.chat_id):
+        return False
+    return from_id in _allowed_ids(config)
+
+
+def poll_inbound(transport, offset_store, config, *, dispatch, logger=None, timeout=0, limit=10):
+    """One inbound getUpdates cycle (ae:3745-3799). Persists the offset BEFORE dispatch
+    (at-most-once, ae:3770-3775), drops non-text + unauthorized updates, and hands
+    authorized text to `dispatch`. A dispatch error is logged (redacted) and the batch
+    CONTINUES — ae runs tg_handle_command best-effort, so one bad command must not drop
+    the rest of the batch. offset-before-dispatch gives at-most-once regardless."""
+
+    def _log(msg):
+        if logger is not None:
+            logger.log("WARNING", msg)
+
+    if not inbound_enabled(config):  # ae:3746
+        return
+    offset = offset_store.load()
+    resp = transport.get_updates(offset + 1, timeout=timeout, limit=limit)  # stored+1, ae:3748-3749
+    if not resp.get("ok"):
+        _log("getUpdates not ok")  # ae:3760-3761
+        return
+    result = resp.get("result")
+    if not isinstance(result, list):  # a real transport returns a raw dict — never iterate a str/dict
+        _log("getUpdates result missing or not a list")
+        return
+    for update in result:
+        uid = update.get("update_id")
+        if not isinstance(uid, int) or isinstance(uid, bool):  # ae:3769
+            continue
+        if not offset_store.save(uid):  # persist BEFORE dispatch (ae:3772-3775)
+            _log("offset persist failed — skipping inbound dispatch until it recovers")
+            return
+        message = update.get("message") or {}
+        from_id = str((message.get("from") or {}).get("id", ""))
+        chat = message.get("chat") or {}
+        chat_id = str(chat.get("id", ""))
+        chat_type = chat.get("type", "")
+        text = message.get("text", "")
+        if not text:  # ae:3780
+            continue
+        if not update_authorized(from_id, chat_id, chat_type, config):  # ae:3781-3784 (no secret)
+            _log(f"dropped unauthorized update (from={from_id} chat={chat_id} type={chat_type})")
+            continue
+        try:
+            dispatch(from_id, text, update)
+        except Exception as exc:  # best-effort per-command (ae): log + continue the batch
+            # str(exc) may carry secret-bearing text; the logger redacts it.
+            _log(f"inbound dispatch error: {type(exc).__name__}: {exc}")
+
+
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
     """Phase-1 no-op input collector: READ-ONLY.
 
