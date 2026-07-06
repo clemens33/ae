@@ -362,10 +362,10 @@ class TmuxClient(abc.ABC):
     def list_panes(self, session: str, server: str | None = None) -> list: ...
 
     @abc.abstractmethod
-    def capture_pane(self, pane_id: str) -> str: ...
+    def capture_pane(self, pane_id: str, server: str | None = None) -> str: ...
 
     @abc.abstractmethod
-    def display_option(self, target: str, option: str) -> str | None: ...
+    def display_option(self, target: str, option: str, server: str | None = None) -> str | None: ...
 
     @abc.abstractmethod
     def set_option(self, target: str, option: str, value: str) -> None: ...
@@ -391,10 +391,10 @@ class NullTmuxClient(TmuxClient):
     def list_panes(self, session, server=None):
         return []
 
-    def capture_pane(self, pane_id):
+    def capture_pane(self, pane_id, server=None):
         return ""
 
-    def display_option(self, target, option):
+    def display_option(self, target, option, server=None):
         return None
 
     def set_option(self, target, option, value):
@@ -408,6 +408,118 @@ class NullTmuxClient(TmuxClient):
 
     def display_message(self, text, *, duration_ms=None):
         raise NotImplementedError("phase 1 must not mutate tmux")
+
+
+@dataclasses.dataclass
+class Pane:
+    """A tmux pane as the watchdog cycle consumes it — duck-typed on pane_id / agent /
+    current_command / pane_pid. `capture` is filled SEPARATELY via capture_pane (not
+    from the list-panes `-F` row), so RealTmuxClient leaves it empty. This is the one
+    production pane type; the test harness aliases it so both sides stay in lockstep."""
+
+    pane_id: str
+    agent: str = ""
+    current_command: str = ""
+    capture: str = ""
+    pane_pid: str = ""
+
+
+# The watchdog's per-session pane enumeration format (ae:7952) — pipe-delimited so a
+# tab inside a value can never split a field, matching bash `IFS='|' read`.
+_PANE_LIST_FORMAT = "#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}"
+
+
+class RealTmuxClient(TmuxClient):
+    """Subprocess-backed TmuxClient for the live daemon (slice 16-17).
+
+    Slice 3 = the READ half. Every read shells a real `tmux`, and swallows a nonzero
+    exit / spawn failure / timeout into []/""/None — mirroring the bash watchdog's
+    `2>/dev/null || true`, so a stopped or absent session degrades instead of raising.
+    Reads record NO effect. MUTATION methods land in slice 4.
+
+    Server model: aewatch is a SINGLETON reaching sessions on their per-meta
+    `tmux_server`, so every read takes an optional `server` — None (ambient) and ""
+    (a meta's default) both mean the default server (no `-L`); a named server prefixes
+    `-L <server>`."""
+
+    def __init__(self, recorder, *, tmux_bin: str = "tmux", timeout: int = 2):
+        self._rec = recorder
+        self._tmux_bin = tmux_bin
+        self._timeout = timeout
+
+    @staticmethod
+    def _server_args(server) -> list:
+        # None (ambient) and "" (a meta's default tmux_server) -> the SAME default
+        # server. Only a truthy name adds `-L <server>`.
+        return [] if not server else ["-L", server]
+
+    def _run(self, args) -> tuple:
+        """Run `tmux <args>`; return (returncode, stdout). Spawn failure / timeout ->
+        (1, '') so every read degrades to its empty value instead of propagating."""
+        import subprocess
+
+        try:
+            proc = subprocess.run(
+                [self._tmux_bin, *args],
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
+            )
+            return proc.returncode, proc.stdout
+        except (OSError, subprocess.SubprocessError):
+            return 1, ""
+
+    # ── reads: return data, record nothing ──────────────────────────────
+    def list_sessions(self, server=None):
+        rc, out = self._run([*self._server_args(server), "list-sessions", "-F", "#{session_name}"])
+        if rc != 0:
+            return []
+        return [ln for ln in out.split("\n") if ln.strip()]
+
+    def list_panes(self, session, server=None):
+        rc, out = self._run(
+            [*self._server_args(server), "list-panes", "-s", "-t", session, "-F", _PANE_LIST_FORMAT]
+        )
+        if rc != 0:
+            return []
+        panes = []
+        for line in out.split("\n"):
+            if not line.strip():
+                continue
+            # bash `IFS='|' read -r pane agent proc pane_pid_val`: the LAST field
+            # absorbs any extra pipes; a short row leaves later vars empty.
+            parts = line.split("|", 3)
+            parts += [""] * (4 - len(parts))
+            panes.append(Pane(pane_id=parts[0], agent=parts[1], current_command=parts[2], pane_pid=parts[3]))
+        return panes
+
+    def capture_pane(self, pane_id, server=None):
+        rc, out = self._run(
+            [*self._server_args(server), "capture-pane", "-p", "-J", "-S", "-40", "-E", "-", "-t", pane_id]
+        )
+        return out if rc == 0 else ""
+
+    def display_option(self, target, option, server=None):
+        rc, out = self._run([*self._server_args(server), "show-options", "-t", target, "-qv", option])
+        if rc != 0:
+            return None
+        # `-qv` prints the value + newline (or nothing when unset); `$(...)` in bash
+        # strips the trailing newline. Empty (unset or set-empty) -> None.
+        out = out.strip()
+        return out or None
+
+    # ── mutations: slice 4 ──────────────────────────────────────────────
+    def set_option(self, target, option, value):
+        raise NotImplementedError("RealTmuxClient write path lands in slice 4")
+
+    def unset_option(self, target, option):
+        raise NotImplementedError("RealTmuxClient write path lands in slice 4")
+
+    def paste(self, target, text, submit):
+        raise NotImplementedError("RealTmuxClient write path lands in slice 4")
+
+    def display_message(self, text, *, duration_ms=None):
+        raise NotImplementedError("RealTmuxClient write path lands in slice 4")
 
 
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:

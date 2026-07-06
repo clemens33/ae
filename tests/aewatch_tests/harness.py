@@ -24,7 +24,6 @@ import importlib.util
 import json
 import os
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -113,13 +112,9 @@ class FakeAeHome:
         return self.aewatch / name
 
 
-@dataclass
-class Pane:
-    pane_id: str
-    agent: str = ""
-    current_command: str = ""
-    capture: str = ""
-    pane_pid: str = ""
+# Single source of truth: the production pane type. Aliased (not re-declared) so the
+# fake and the real client can never drift on the fields the cycle reads.
+Pane = AW.Pane
 
 
 class FakeTmux(AW.TmuxClient):
@@ -143,10 +138,10 @@ class FakeTmux(AW.TmuxClient):
         server = server or ""  # normalized for when list_panes becomes server-aware
         return list(self._panes.get(session, []))
 
-    def capture_pane(self, pane_id):
+    def capture_pane(self, pane_id, server=None):
         return self._captures.get(pane_id, "")
 
-    def display_option(self, target, option):
+    def display_option(self, target, option, server=None):
         return self._options.get(target, {}).get(option)
 
     # ── mutations: each records exactly one normalized effect ───────────
