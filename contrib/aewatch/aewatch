@@ -1464,6 +1464,73 @@ def register_commands(transport, config, *, logger=None) -> bool:
     return True
 
 
+class TelegramBridge:
+    """One composed Telegram bridge tick (the s8-15 capstone): load [telegram] config ->
+    (if enabled) register the command menu once -> poll + route inbound -> drain each
+    running session's outbound events -> persist. Inbound (tg_offset) and outbound
+    (state.tsv) offsets are SEPARATE stores, so one tick's inbound dispatch and outbound
+    forward cannot corrupt each other. All seams are injected (tmux-decoupled: `discover`
+    is () -> list[DiscoveredSession], wired to discover_sessions in the s16 daemon)."""
+
+    def __init__(self, ae_home, transport, *, discover, offset_store, outbound_state,
+                 current_target, logger=None, recorder=None, poll_timeout=0, poll_limit=10):
+        self._ae_home = Path(ae_home)
+        self._transport = transport
+        self._discover = discover
+        self._offset_store = offset_store
+        self._outbound_state = outbound_state
+        self._current_target = current_target
+        self._logger = logger
+        self._recorder = recorder
+        self._poll_timeout = poll_timeout
+        self._poll_limit = poll_limit
+        self._registered = False
+
+    def _warn(self, message):
+        if self._logger is not None:
+            self._logger.log("WARNING", message)
+
+    def tick(self, now=None):
+        config = load_telegram_config(load_config(self._ae_home))  # reloaded each tick
+        if not config.enabled:
+            return
+        if not self._registered:
+            # Retry until the FIRST success — a long-lived tick can recover from a
+            # transient setMyCommands failure (register_commands is False when inbound
+            # is disabled OR on failure, so `_registered` means "registered once").
+            self._registered = register_commands(self._transport, config, logger=self._logger)
+        sessions = self._discover()
+        # OUTBOUND before INBOUND (ae:3988-4000): outbound offsets are persisted before
+        # inbound command handling can run arbitrary session-helper code.
+        self._drain_outbound(config, sessions)
+        self._poll_inbound(config, sessions)
+
+    def _poll_inbound(self, config, sessions):
+        def reply(text):
+            self._transport.send_message(config.chat_id, text)
+
+        def dispatch(from_id, text, update):
+            route_message(from_id, text, update, sessions=sessions, ae_home=self._ae_home,
+                          current_target=self._current_target, reply=reply)
+
+        poll_inbound(self._transport, self._offset_store, config, dispatch=dispatch,
+                     logger=self._logger, timeout=self._poll_timeout, limit=self._poll_limit)
+
+    def _drain_outbound(self, config, sessions):
+        state = self._outbound_state.load()
+        for session in sessions:
+            if not session.running or not session.session_id:
+                continue
+            events_file = self._ae_home / "sessions" / session.name / "events.jsonl"
+            try:
+                state[session.session_id] = process_session_events(
+                    events_file, state.get(session.session_id), session.name, config,
+                    send=self._transport.send_message, recorder=self._recorder)
+            except Exception as exc:  # one bad session must not abort the whole tick
+                self._warn(f"outbound drain error for {session.name}: {type(exc).__name__}")
+        self._outbound_state.save(state)
+
+
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
     """Phase-1 no-op input collector: READ-ONLY.
 
