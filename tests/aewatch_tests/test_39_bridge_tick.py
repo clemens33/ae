@@ -49,7 +49,7 @@ class BridgeFixture:
         self.transport = FakeTelegramTransport(updates=updates or [], allow_default_ok=True)
         self.recorder = AW.EffectRecorder()
         self.bridge = AW.TelegramBridge(
-            self.ae_home, self.transport,
+            self.ae_home, transport_provider=lambda cfg: self.transport,
             discover=lambda: self._discover(),
             offset_store=AW.OffsetStore(self.ae_home / "tg_offset"),
             outbound_state=AW.OutboundState(self.ae_home / "state.tsv"),

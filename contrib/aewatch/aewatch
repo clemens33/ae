@@ -1472,10 +1472,10 @@ class TelegramBridge:
     forward cannot corrupt each other. All seams are injected (tmux-decoupled: `discover`
     is () -> list[DiscoveredSession], wired to discover_sessions in the s16 daemon)."""
 
-    def __init__(self, ae_home, transport, *, discover, offset_store, outbound_state,
+    def __init__(self, ae_home, *, transport_provider, discover, offset_store, outbound_state,
                  current_target, logger=None, recorder=None, poll_timeout=0, poll_limit=10):
         self._ae_home = Path(ae_home)
-        self._transport = transport
+        self._transport_provider = transport_provider
         self._discover = discover
         self._offset_store = offset_store
         self._outbound_state = outbound_state
@@ -1485,6 +1485,7 @@ class TelegramBridge:
         self._poll_timeout = poll_timeout
         self._poll_limit = poll_limit
         self._registered = False
+        self._registered_token = None
 
     def _warn(self, message):
         if self._logger is not None:
@@ -1494,29 +1495,40 @@ class TelegramBridge:
         config = load_telegram_config(load_config(self._ae_home))  # reloaded each tick
         if not config.enabled:
             return
+        # Resolve the transport from the CURRENT config EVERY tick (B2): a bridge that
+        # started disabled/token-less must pick up a later enable, and a rotated token
+        # must send on the new bot — never a transport frozen at daemon start.
+        transport = self._transport_provider(config)
+        if transport is None:
+            return  # enabled but no usable transport yet (e.g. token unreadable) — clean no-op
+        # setMyCommands is a per-BOT side channel: a token rotation is a new bot, so
+        # re-register even though we "registered once" for the old token.
+        if config.token != self._registered_token:
+            self._registered = False
+            self._registered_token = config.token
         if not self._registered:
             # Retry until the FIRST success — a long-lived tick can recover from a
             # transient setMyCommands failure (register_commands is False when inbound
             # is disabled OR on failure, so `_registered` means "registered once").
-            self._registered = register_commands(self._transport, config, logger=self._logger)
+            self._registered = register_commands(transport, config, logger=self._logger)
         sessions = self._discover()
         # OUTBOUND before INBOUND (ae:3988-4000): outbound offsets are persisted before
         # inbound command handling can run arbitrary session-helper code.
-        self._drain_outbound(config, sessions)
-        self._poll_inbound(config, sessions)
+        self._drain_outbound(config, sessions, transport)
+        self._poll_inbound(config, sessions, transport)
 
-    def _poll_inbound(self, config, sessions):
+    def _poll_inbound(self, config, sessions, transport):
         def reply(text):
-            self._transport.send_message(config.chat_id, text)
+            transport.send_message(config.chat_id, text)
 
         def dispatch(from_id, text, update):
             route_message(from_id, text, update, sessions=sessions, ae_home=self._ae_home,
                           current_target=self._current_target, reply=reply)
 
-        poll_inbound(self._transport, self._offset_store, config, dispatch=dispatch,
+        poll_inbound(transport, self._offset_store, config, dispatch=dispatch,
                      logger=self._logger, timeout=self._poll_timeout, limit=self._poll_limit)
 
-    def _drain_outbound(self, config, sessions):
+    def _drain_outbound(self, config, sessions, transport):
         state = self._outbound_state.load()
         for session in sessions:
             if not session.running or not session.session_id:
@@ -1525,7 +1537,7 @@ class TelegramBridge:
             try:
                 state[session.session_id] = process_session_events(
                     events_file, state.get(session.session_id), session.name, config,
-                    send=self._transport.send_message, recorder=self._recorder)
+                    send=transport.send_message, recorder=self._recorder)
             except Exception as exc:  # one bad session must not abort the whole tick
                 self._warn(f"outbound drain error for {session.name}: {type(exc).__name__}")
         self._outbound_state.save(state)
@@ -2994,8 +3006,8 @@ def run_daemon_tick(runtime: "AewatchRuntime", tmux, recorder, *, now, watchdog_
 def run_daemon_loop(runtime, components, *, clock, interval, sleep=None, recorder=None,
                     secrets_provider=None, install_signals=True) -> dict:
     """The long-running daemon supervisor. `components` is [(name, tick(now)), ...] — the
-    daemon wires ('watchdog', _run_daemon_tick_body-closure) + ('bridge',
-    TelegramBridge.tick). Holds the singleton for its whole lifetime.
+    s18 CLI wires ('watchdog', _run_daemon_tick_body-closure) ONLY; s19 adds
+    ('bridge', TelegramBridge.tick). Holds the singleton for its whole lifetime.
 
     Each iteration ticks EVERY component in its own try/except (containment — one crash
     can't skip the others), records a REDACTED traceback + a PER-COMPONENT crash on
@@ -3088,17 +3100,75 @@ def run_daemon_loop(runtime, components, *, clock, interval, sleep=None, recorde
     return {"started": True, "reason": stop_reason or signal_name[0] or "shutdown"}
 
 
-def cmd_daemon(args: argparse.Namespace) -> int:
-    if not args.once:
-        print(
-            "aewatch: daemon requires --once in phase 1 (loop/supervisor mode is not implemented)",
-            file=sys.stderr,
-        )
-        return 2
+def cmd_up(args: argparse.Namespace) -> int:
+    """Ensure the ae-aewatch daemon session (s17, idempotent + heartbeat-aware), preserving
+    the chosen runner into the spawned loop argv so the uv-run / python3 execution contract
+    survives (no bare sys.executable PEP723 footgun)."""
     runtime = AewatchRuntime(args.ae_home)
-    # Phase 1 has no live tmux client (that lands in phase 2); discovery still reads
-    # meta and reports liveness=False. Effects go to a throwaway recorder — the real
-    # side effects are the heartbeat/daemon.log/backoff files themselves.
+    script = os.path.abspath(__file__)
+    if args.runner == "uv":
+        loop_argv = ["uv", "run", script, "daemon", "--loop", "--ae-home", args.ae_home]
+    else:
+        loop_argv = [sys.executable, script, "daemon", "--loop", "--ae-home", args.ae_home]
+    server = args.tmux_server or os.environ.get("AE_TMUX_SERVER", "")
+    logger = AewatchLogger(
+        runtime.daemon_log_path,
+        secrets=load_telegram_config(load_config(runtime.ae_home)).secrets,
+        stderr_on_error=True,
+    )
+    status = ensure_aewatch_session(runtime, argv=loop_argv, tmux_server=server,
+                                    clock=time.time, logger=logger)
+    print(status)
+    return 1 if status == "failed" else 0
+
+
+def _run_daemon_loop_cli(runtime: "AewatchRuntime", *, install_signals: bool = True) -> int:
+    """Wire the PRODUCTION supervisor loop (s16), WATCHDOG-ONLY for s18: a watchdog
+    component (RealTmuxClient + WatchdogRunner over the real ae/event boundaries). The
+    co-located Telegram bridge is deliberately NOT wired yet — under AE_WATCHDOG_IMPL=uv
+    the bash `ae telegram` bridge still runs, so wiring the aewatch bridge here would
+    double-run it; s19 owns bridge compat/exclusivity. supervise_bridge stays a no-op."""
+    recorder = EffectRecorder()
+    logger = AewatchLogger(
+        runtime.daemon_log_path,
+        secrets=load_telegram_config(load_config(runtime.ae_home)).secrets,
+        recorder=recorder, stderr_on_error=True,
+    )
+    tmux = RealTmuxClient(recorder)
+    sessions_dir = runtime.ae_home / "sessions"
+    wd_config = WatchdogConfig.from_env()
+    watchdog_runner = WatchdogRunner(
+        wd_config, tmux, sessions_dir=sessions_dir,
+        emit_event=make_emit_event(sessions_dir, recorder),
+        recover_pending=make_recover_pending(sessions_dir, recorder),
+        supervise_bridge=None,  # the bridge runs IN this daemon — nothing external to revive
+    )
+
+    def watchdog_tick(now):
+        _run_daemon_tick_body(runtime, tmux, recorder, now=now,
+                              config=load_config(runtime.ae_home),
+                              watchdog_runner=watchdog_runner, logger=logger)
+
+    # s18 wires the WATCHDOG only (see the docstring): the co-located aewatch bridge
+    # stays dark until s19 handles `ae telegram` bridge exclusivity — wiring it now
+    # would double-run the bash bridge under AE_WATCHDOG_IMPL=uv. B2's live-config
+    # TelegramBridge (transport_provider resolved per tick) is ready for that slice.
+    run_daemon_loop(
+        runtime, [("watchdog", watchdog_tick)],
+        clock=time.time, interval=wd_config.interval, recorder=recorder,
+        install_signals=install_signals,
+    )
+    return 0
+
+
+def cmd_daemon(args: argparse.Namespace) -> int:
+    runtime = AewatchRuntime(args.ae_home)
+    if getattr(args, "loop", False):
+        return _run_daemon_loop_cli(runtime)
+    if not args.once:
+        print("aewatch: daemon requires --once or --loop", file=sys.stderr)
+        return 2
+    # --once is a SMOKE single tick (NullTmuxClient — no live tmux, no mutations).
     result = run_daemon_tick(runtime, NullTmuxClient(), EffectRecorder(), now=time.time())
     if not result["acquired"]:
         print(f"aewatch: already running (lock held): {runtime.lock_path}", file=sys.stderr)
@@ -3129,9 +3199,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to CONTRACTS.md (default: alongside this script)",
     )
 
-    daemon = sub.add_parser("daemon", help="run a supervisor tick (phase 1: --once only)")
+    up = sub.add_parser("up", help="ensure the ae-aewatch daemon session is running")
+    up.add_argument("--ae-home", dest="ae_home", required=True, help="ae state root ($AE_HOME)")
+    up.add_argument("--runner", choices=("uv", "python3"), default="python3",
+                    help="how to re-invoke the sidecar for the loop (uv run / python3)")
+    up.add_argument("--tmux-server", dest="tmux_server", default="",
+                    help="tmux server for the session (default: $AE_TMUX_SERVER)")
+
+    daemon = sub.add_parser("daemon", help="run the watchdog supervisor (--once smoke / --loop; bridge in s19)")
     daemon.add_argument("--ae-home", dest="ae_home", required=True, help="ae state root ($AE_HOME)")
-    daemon.add_argument("--once", action="store_true", help="run a single tick and exit")
+    daemon.add_argument("--once", action="store_true", help="run a single tick and exit (smoke)")
+    daemon.add_argument("--loop", action="store_true", help="run the long supervisor loop")
     return parser
 
 
@@ -3146,6 +3224,8 @@ def main(argv: list[str] | None = None) -> int:
         # contracts_command is required=True, so argparse guarantees it is set.
         if args.contracts_command == "validate":
             return cmd_contracts_validate(args)
+    if args.command == "up":
+        return cmd_up(args)
     if args.command == "daemon":
         return cmd_daemon(args)
     parser.error(f"unknown command: {args.command}")

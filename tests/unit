@@ -1511,9 +1511,11 @@ assert_eq "watchdog: auto-start via workspace.watchdog config" \
     "1" \
     "$([[ "$AE_SOURCE" == *'workspace.watchdog'* && "$AE_SOURCE" == *'ae-monitor'* ]] && echo 1 || echo 0)"
 
-# Watchdog is on-by-default; only explicit false/no/off/0 disables.
+# Watchdog is on-by-default; only explicit false/no/off/0 disables. The launch path
+# delegates the impl choice to _start_session_watchdog, which keeps the disabled-list
+# (anything else — including unset/empty — starts a watchdog).
 assert_eq "watchdog: default-on resolution (unset/empty means start)" "1" \
-    "$([[ "$AE_SOURCE" == *'case "${WATCHDOG_ENABLED,,}" in'* && "$AE_SOURCE" == *'false | no | off | 0)'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_start_session_watchdog "$WATCHDOG_ENABLED"'* && "$AE_SOURCE" == *'false | no | off | 0)'* ]] && echo 1 || echo 0)"
 
 assert_eq "watchdog: DEFAULT_CONFIG advertises watchdog = true to new installs" "1" \
     "$([[ "$AE_SOURCE" == *'watchdog = true'* ]] && echo 1 || echo 0)"
@@ -3981,6 +3983,53 @@ assert_eq "ae end: default purge resolved per-session from its meta config" "1" 
         && "$AE_SOURCE" == *'get_config workspace.purge_agent_history'* ]] && echo 1 || echo 0)"
 assert_eq "ae end: purge gated on the resolved decision (kept unless true)" "1" \
     "$([[ "$AE_SOURCE" == *'"$_purge" == "true"'*'_cleanup_agent_session_files'* ]] && echo 1 || echo 0)"
+
+# ── _aewatch_autostart_if_available (s18: companion-autostart seam) ──
+# Structural guards: mirrors the steward hook — AE_NO_AUTOSTART guard, an
+# AE_WATCHDOG_IMPL=uv OPT-IN gate (availability must NOT be the trigger — a live daemon
+# by default would double-run the bash watchdogs, the s18-gate blocker), availability-
+# gated silent no-op, HEARTBEAT-FRESH fast path (NOT name-only — a stale session falls
+# through to restart), --runner passthrough, backgrounded. Called ONCE, from the
+# _start_session_watchdog decision below; the reattach mode-switch is a later slice.
+_AW_FN="$(awk '/^_aewatch_autostart_if_available\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' <<<"$AE_SOURCE")"
+assert_eq "aewatch-autostart: function defined" "yes" "$([[ -n "$_AW_FN" ]] && echo yes || echo no)"
+assert_eq "aewatch-autostart: AE_NO_AUTOSTART guard" "yes" "$(grep -q 'AE_NO_AUTOSTART' <<<"$_AW_FN" && echo yes || echo no)"
+assert_eq "aewatch-autostart: AE_WATCHDOG_IMPL=uv opt-in gate (not availability)" "yes" "$(grep -qE 'AE_WATCHDOG_IMPL.*==.*uv' <<<"$_AW_FN" && echo yes || echo no)"
+assert_eq "aewatch-autostart: availability check (contrib/aewatch script)" "yes" "$(grep -q 'contrib/aewatch/aewatch' <<<"$_AW_FN" && echo yes || echo no)"
+assert_eq "aewatch-autostart: silent no-op when script missing" "yes" "$(grep -qE '\[\[ -f "\$_aw" \]\] \|\| return 0' <<<"$_AW_FN" && echo yes || echo no)"
+assert_eq "aewatch-autostart: runtime check (uv or python3)" "yes" "$(grep -qE 'command -v uv|command -v python3' <<<"$_AW_FN" && echo yes || echo no)"
+assert_eq "aewatch-autostart: HEARTBEAT-fresh fast path (not name-only)" "yes" "$(grep -q 'heartbeat' <<<"$_AW_FN" && echo yes || echo no)"
+assert_eq "aewatch-autostart: invokes 'up' with --ae-home + --runner" "yes" "$(grep -qE 'up --ae-home .* --runner' <<<"$_AW_FN" && echo yes || echo no)"
+assert_eq "aewatch-autostart: backgrounded (non-blocking)" "yes" "$(grep -qE '&\)' <<<"$_AW_FN" && echo yes || echo no)"
+assert_eq "aewatch-autostart: called once, non-fatal, from the watchdog decision" "1" "$(grep -c '_aewatch_autostart_if_available 2>/dev/null || true' <<<"$AE_SOURCE")"
+
+# ── _start_session_watchdog: the single watchdog-ownership decision (s18 rework) ──
+# The plan's no-double-run non-negotiable made STRUCTURAL: EXACTLY ONE watchdog per
+# session — the aewatch daemon under AE_WATCHDOG_IMPL=uv (bash stands down), else the
+# bash per-session watchdog; a disabled watchdog (meta/config false) starts NEITHER.
+# Driven behaviorally: a fake ${AE_META}/watchdog executable records a bash start, a
+# stubbed hook records an aewatch start; exactly one (or none) may fire.
+eval "$(awk '/^_start_session_watchdog\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "watchdog-decision: _start_session_watchdog defined" "yes" "$(declare -F _start_session_watchdog >/dev/null && echo yes || echo no)"
+_sw_run() {  # <impl> <enabled> -> "bash" | "aewatch" | "none"
+    local impl="$1" enabled="$2" d
+    d="$(mktemp -d)"
+    mkdir -p "$d/meta"
+    printf '#!/usr/bin/env bash\necho bash >>"%s/rec"\n' "$d" >"$d/meta/watchdog"
+    chmod +x "$d/meta/watchdog"
+    : >"$d/rec"
+    # shellcheck disable=SC2317  # invoked indirectly by the eval'd _start_session_watchdog
+    _aewatch_autostart_if_available() { echo aewatch >>"$d/rec"; }
+    AE_META="$d/meta" AE_WATCHDOG_IMPL="$impl" _start_session_watchdog "$enabled"
+    if [[ -s "$d/rec" ]]; then cat "$d/rec"; else echo none; fi
+    rm -rf "$d"
+}
+assert_eq "watchdog-decision: default+enabled -> bash ONLY" "bash" "$(_sw_run '' true)"
+assert_eq "watchdog-decision: uv+enabled -> aewatch ONLY (bash stands down)" "aewatch" "$(_sw_run uv true)"
+assert_eq "watchdog-decision: explicit bash -> bash" "bash" "$(_sw_run bash true)"
+assert_eq "watchdog-decision: invalid impl -> bash (never aewatch)" "bash" "$(_sw_run xyz true)"
+assert_eq "watchdog-decision: disabled+uv -> NEITHER" "none" "$(_sw_run uv false)"
+assert_eq "watchdog-decision: disabled+default -> NEITHER" "none" "$(_sw_run '' false)"
 
 # ── Results ──────────────────────────────────────────────────────────
 

@@ -4112,6 +4112,64 @@ _steward_autostart_if_scaffolded() {
     return 0
 }
 
+# Companion: bring up the aewatch sidecar daemon (WATCHDOG only for now; the bridge is
+# wired in s19) in its own per-AE_HOME tmux session. OPT-IN via AE_WATCHDOG_IMPL=uv ONLY
+# — never by mere availability; the plain default keeps the bash per-session watchdog, so
+# there is no live double-run (plan p3). Then additionally availability-gated (the
+# contrib/aewatch script + a uv/python3 runtime); anything missing is a SILENT no-op.
+# Guarded by AE_NO_AUTOSTART; strictly non-fatal — never blocks or fails a launch. The
+# existing-session fast path is HEARTBEAT-FRESH-aware — a stale/wedged ae-aewatch session
+# must still fall through to `up`, which kills + recreates it (never name-only suppress).
+# Invoked exclusively from _start_session_watchdog (below), which owns the bash-standdown.
+_aewatch_autostart_if_available() {
+    [[ "${AE_NO_AUTOSTART:-}" == "1" ]] && return 0
+    # OPT-IN ONLY (plan p3: no live watchdog double-run by default). The aewatch daemon
+    # watchdog runs solely under the explicit AE_WATCHDOG_IMPL=uv switch; unset/bash/any
+    # other value keeps the bash per-session watchdog and starts NO aewatch daemon.
+    [[ "${AE_WATCHDOG_IMPL:-}" == "uv" ]] || return 0
+    local _aw
+    _aw="$(cd "$(dirname "$0")" && pwd)/contrib/aewatch/aewatch"
+    [[ -f "$_aw" ]] || return 0
+    local -a _run
+    local _runner=""
+    if command -v uv >/dev/null 2>&1; then
+        _run=(uv run "$_aw")
+        _runner=uv
+    elif command -v python3 >/dev/null 2>&1; then
+        _run=(python3 "$_aw")
+        _runner=python3
+    else
+        return 0
+    fi
+    # Fast path ONLY when the heartbeat is fresh (age <= 90s, matching aewatch's
+    # heartbeat_max_age); a stale/absent heartbeat falls through to `up` for a restart.
+    local _hb="$CONFIG_DIR/aewatch/heartbeat"
+    if daemon_session_running ae-aewatch && [[ -f "$_hb" ]]; then
+        local _age=$(($(date +%s) - $(stat -c %Y "$_hb" 2>/dev/null || echo 0)))
+        ((_age >= 0 && _age <= 90)) && return 0
+    fi
+    echo "Starting aewatch companion daemon in the background (AE_NO_AUTOSTART=1 skips)."
+    (AE_NO_AUTOSTART=1 "${_run[@]}" up --ae-home "$CONFIG_DIR" --runner "$_runner" >/dev/null 2>&1 &)
+    return 0
+}
+
+# The single watchdog-ownership decision for a launching session (plan p3: exactly
+# one watchdog per session, no double-run). Arg is the effective watchdog-enabled
+# value (meta > config). Disabled -> NEITHER. AE_WATCHDOG_IMPL=uv -> the aewatch
+# daemon watches (bash stands down); anything else -> the bash per-session watchdog.
+# The aewatch hook itself is availability/heartbeat-gated and non-fatal.
+_start_session_watchdog() {
+    local _enabled="$1"
+    case "${_enabled,,}" in
+        false | no | off | 0) return 0 ;;
+    esac
+    if [[ "${AE_WATCHDOG_IMPL:-}" == "uv" ]]; then
+        _aewatch_autostart_if_available 2>/dev/null || true
+    else
+        "${AE_META}/watchdog" start
+    fi
+}
+
 _telegram_autostart_if_enabled() {
     [[ "$(_telegram_intent_enabled)" == "true" ]] || return 0
     _telegram_daemon_running && return 0
@@ -8233,6 +8291,10 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
     if tmux show-environment -t "$SESSION" AE_SESSION 2>/dev/null | grep -q '^AE_SESSION='; then
         _telegram_autostart_if_enabled 2>/dev/null || true
         _steward_autostart_if_scaffolded 2>/dev/null || true
+        # NOTE: aewatch autostart is deliberately NOT wired on reattach. Watchdog
+        # ownership is decided once at launch (_start_session_watchdog); reviving or
+        # migrating a running session's watchdog under AE_WATCHDOG_IMPL=uv (a bash-owned
+        # session reattached with uv) would double-run — that mode-switch is its own slice.
         if [[ "$ATTACH_ON_READY" != "true" ]]; then
             echo "Session '$SESSION' is running. Use 'ae steward --attach' to view."
             exit 0
@@ -9103,10 +9165,10 @@ else
     WATCHDOG_ENABLED="$(get_config workspace.watchdog)"
     [[ -n "$WATCHDOG_ENABLED" ]] || WATCHDOG_ENABLED="$(get_config workspace.loop)"
 fi
-case "${WATCHDOG_ENABLED,,}" in
-    false | no | off | 0) ;;
-    *) "${AE_META}/watchdog" start ;;
-esac
+# Exactly one watchdog per session (plan p3: no double-run): AE_WATCHDOG_IMPL=uv
+# picks the aewatch daemon (bash stands down), else the bash per-session watchdog;
+# disabled starts neither.
+_start_session_watchdog "$WATCHDOG_ENABLED"
 
 # Optional: auto-start the Telegram bridge if [telegram] enabled = true.
 # Strictly non-fatal: any error here must not affect session attach.

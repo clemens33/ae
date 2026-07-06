@@ -1284,6 +1284,63 @@ assert_eq "autostart: AE_NO_AUTOSTART=1 keeps the steward down" "1" \
 rm -rf "$HOME/.ae/steward"
 sleep 0.5
 
+# ── _aewatch_autostart_if_available behavior (slice 18) ────────────────
+# Extract the hook to a file and run it in a controlled env: a FAKE sidecar under a temp
+# $0 dir (records its `up` argv), a stubbed daemon_session_running, and a controlled
+# heartbeat. Proves start / silent no-op / existing-session fast path / STALE-restart.
+_AW_HOOK="$TMPDIR/aw-hook.sh"
+awk '/^_aewatch_autostart_if_available\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "$AE" > "$_AW_HOOK"
+
+# _aw_run <running_rc> <heartbeat: none|fresh|stale> <no_autostart> [no_sidecar] [impl]
+# echoes "invoked:<recorded argv>" or "noop". impl defaults to uv (the opt-in that ARMS
+# the hook); any other value / empty must be a no-op (the exclusivity opt-in gate).
+_aw_run() {
+    local running_rc="$1" hb="$2" noauto="$3" no_sidecar="${4:-}" impl="${5-uv}"
+    local d; d="$(mktemp -d "$TMPDIR/aw.XXXXXX")"
+    mkdir -p "$d/home/aewatch"
+    if [[ -z "$no_sidecar" ]]; then
+        mkdir -p "$d/contrib/aewatch"
+        cat > "$d/contrib/aewatch/aewatch" <<'FAKE'
+#!/usr/bin/env python3
+import sys, pathlib
+pathlib.Path(sys.argv[0] + ".rec").write_text(" ".join(sys.argv[1:]))
+FAKE
+        chmod +x "$d/contrib/aewatch/aewatch"
+    fi
+    case "$hb" in
+        fresh) : > "$d/home/aewatch/heartbeat" ;;
+        stale) : > "$d/home/aewatch/heartbeat"; touch -d '2 hours ago' "$d/home/aewatch/heartbeat" ;;
+    esac
+    cat > "$d/wrapper" <<WRAP
+#!/usr/bin/env bash
+AE_NO_AUTOSTART=$noauto
+AE_WATCHDOG_IMPL=$impl
+CONFIG_DIR="$d/home"
+daemon_session_running() { return $running_rc; }
+source "$_AW_HOOK"
+_aewatch_autostart_if_available
+WRAP
+    bash "$d/wrapper" >/dev/null 2>&1
+    sleep 0.3
+    if [[ -f "$d/contrib/aewatch/aewatch.rec" ]]; then
+        echo "invoked:$(cat "$d/contrib/aewatch/aewatch.rec")"
+    else
+        echo "noop"
+    fi
+}
+
+_AW_START="$(_aw_run 1 none 0)"   # not running, sidecar present, impl=uv -> start
+assert_eq "aewatch-autostart: invokes up when available + not running (opt-in uv)" "yes" "$([[ "$_AW_START" == invoked:* ]] && echo yes || echo no)"
+assert_eq "aewatch-autostart: passes up --ae-home + --runner" "yes" "$(grep -qE 'up --ae-home .* --runner (uv|python3)' <<<"$_AW_START" && echo yes || echo no)"
+assert_eq "aewatch-autostart: silent no-op when sidecar script absent" "noop" "$(_aw_run 1 none 0 nosidecar)"
+assert_eq "aewatch-autostart: no-op when running + FRESH heartbeat (fast path)" "noop" "$(_aw_run 0 fresh 0)"
+assert_eq "aewatch-autostart: RESTARTS when running + STALE heartbeat (blocker guard)" "yes" "$([[ "$(_aw_run 0 stale 0)" == invoked:* ]] && echo yes || echo no)"
+assert_eq "aewatch-autostart: AE_NO_AUTOSTART=1 skips" "noop" "$(_aw_run 1 none 1)"
+# Exclusivity opt-in gate: WITHOUT AE_WATCHDOG_IMPL=uv the daemon must NOT start, even
+# fully available + not running (default = bash watchdog only, no live double-run).
+assert_eq "aewatch-autostart: no-op under AE_WATCHDOG_IMPL=bash (default path)" "noop" "$(_aw_run 1 none 0 '' bash)"
+assert_eq "aewatch-autostart: no-op when AE_WATCHDOG_IMPL unset/empty" "noop" "$(_aw_run 1 none 0 '' '')"
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""
