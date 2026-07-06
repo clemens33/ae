@@ -2887,48 +2887,37 @@ class BackoffState:
         self._save([])
 
 
+def _run_daemon_tick_body(runtime, tmux, recorder, *, now, config, watchdog_runner, logger) -> list:
+    """The singleton-FREE watchdog tick body — the CALLER owns any needed lock (avoids a
+    hold_lock footgun on the public run_daemon_tick). Discovers sessions and, if a
+    watchdog_runner is provided, runs one cycle per LIVE session (name-sorted)."""
+    sessions = discover_sessions(runtime.ae_home, tmux, recorder)
+    logger.log("INFO", f"tick: {len(config)} config section(s), discovered {len(sessions)} session(s)")
+    if watchdog_runner is not None:
+        for session in sessions:
+            if session.running:
+                watchdog_runner.run_cycle(session, now)
+    return sessions
+
+
 def run_daemon_tick(runtime: "AewatchRuntime", tmux, recorder, *, now, watchdog_runner=None) -> dict:
-    """Compose one daemon tick, recording every observable effect.
-
-    acquire singleton -> parse config -> discover sessions (read-only, per-meta
-    tmux_server) -> [optionally run one watchdog cycle per session via
-    watchdog_runner] -> refresh heartbeat -> write daemon.log -> reset backoff.
-
-    watchdog_runner is the injection seam: when None (the default CLI path) the tick
-    is a SMOKE path that only emits file.write (heartbeat/backoff) + log.write —
-    NEVER a tmux mutation, event.append, or telegram, and never mutates a session.
-    When provided (tests / a later real-client phase) it runs run_watchdog_cycle for
-    each discovered session, in discovery (name-sorted) order, so the full watchdog
-    branch surface executes through the recorder.
-
-    If the singleton is already held, it does NOTHING and returns acquired=False.
-    Returns {acquired, sessions, config}.
+    """Compose one daemon tick (the CLI/smoke single-tick wrapper): acquire the singleton
+    -> discover -> [watchdog cycle per live session] -> heartbeat -> reset backoff ->
+    release. Delegates the watchdog work to _run_daemon_tick_body (shared with the long
+    loop). If the singleton is already held, does NOTHING and returns acquired=False.
     """
     lock = runtime.singleton()
     if not lock.acquire():
         return {"acquired": False, "sessions": [], "config": {}}
     try:
         config = load_config(runtime.ae_home)
-        # Redact any configured Telegram token from the log (generic patterns cover
-        # the rest); telegram config is not wired until phase 3, so this is usually
-        # empty and harmless.
         secrets = [config.get("telegram", {}).get("token", "")]
         logger = AewatchLogger(
             runtime.daemon_log_path, secrets=secrets, recorder=recorder, stderr_on_error=True
         )
-        sessions = discover_sessions(runtime.ae_home, tmux, recorder)
-        logger.log(
-            "INFO",
-            f"tick: {len(config)} config section(s), discovered {len(sessions)} session(s)",
+        sessions = _run_daemon_tick_body(
+            runtime, tmux, recorder, now=now, config=config, watchdog_runner=watchdog_runner, logger=logger
         )
-        if watchdog_runner is not None:
-            for session in sessions:  # already name-sorted by discover_sessions
-                # Only LIVE sessions get a cycle. discover_sessions also returns
-                # stopped session dirs (stale meta); the watchdog only exists inside a
-                # live tmux session, and a real client would fail/noise trying to
-                # bootstrap or set-option on a dead one (codex).
-                if session.running:
-                    watchdog_runner.run_cycle(session, now)
         try:
             runtime.write_heartbeat()
             recorder.record("file.write", path=str(runtime.heartbeat_path), redacted=False)
@@ -2942,6 +2931,103 @@ def run_daemon_tick(runtime: "AewatchRuntime", tmux, recorder, *, now, watchdog_
         return {"acquired": True, "sessions": sessions, "config": config}
     finally:
         lock.release()
+
+
+def run_daemon_loop(runtime, components, *, clock, interval, sleep=None, recorder=None,
+                    secrets_provider=None, install_signals=True) -> dict:
+    """The long-running daemon supervisor. `components` is [(name, tick(now)), ...] — the
+    daemon wires ('watchdog', _run_daemon_tick_body-closure) + ('bridge',
+    TelegramBridge.tick). Holds the singleton for its whole lifetime.
+
+    Each iteration ticks EVERY component in its own try/except (containment — one crash
+    can't skip the others), records a REDACTED traceback + a PER-COMPONENT crash on
+    failure (over its budget -> alert + stop the whole daemon), heartbeats regardless,
+    and resets a component's streak only after ITS clean tick (so one component's health
+    can't mask another's crash cadence). Injectable clock()/sleep(interval)->bool (True
+    stops) mean no real time in tests. SIGTERM/SIGHUP/SIGINT set a shutdown flag ONLY
+    (no work in-handler) -> a CLEAN shutdown (never counted as a crash; SIGHUP from a
+    tmux pane teardown must not crash-loop). Redaction secrets are re-read EACH iteration
+    so a rotated token still can't reach a crash traceback."""
+    import signal as _signal
+    import threading
+    import traceback as _traceback
+
+    secrets_provider = secrets_provider or (
+        lambda: load_telegram_config(load_config(runtime.ae_home)).secrets
+    )
+    names = [name for name, _ in components]
+    if len(names) != len(set(names)):
+        raise ValueError(f"duplicate component names would share one backoff file: {names}")
+    shutdown = threading.Event()
+    signal_name = [None]
+
+    lock = runtime.singleton()
+    if not lock.acquire():
+        return {"started": False, "reason": "already running"}
+
+    def _logger():
+        return AewatchLogger(runtime.daemon_log_path, secrets=secrets_provider(),
+                             recorder=recorder, stderr_on_error=True)
+
+    prev_handlers = {}
+    if install_signals:
+        def _on_signal(signum, frame):  # ONLY set the flag + record the name — no unsafe work
+            signal_name[0] = _signal.Signals(signum).name
+            shutdown.set()
+
+        for sig in (_signal.SIGTERM, _signal.SIGHUP, _signal.SIGINT):
+            try:
+                prev_handlers[sig] = _signal.signal(sig, _on_signal)
+            except (ValueError, OSError):
+                pass  # not the main thread / unsupported platform
+
+    wait = sleep or shutdown.wait  # production: interruptible wait, returns True on shutdown
+    backoffs = {name: BackoffState(runtime.dir / f"backoff-{name}.json", recorder=recorder)
+                for name, _ in components}
+    stop_reason = None
+    try:
+        while not shutdown.is_set():
+            now = clock()
+            logger = _logger()
+            for name, tick in components:
+                if shutdown.is_set():
+                    break
+                try:
+                    tick(now)
+                except Exception:
+                    logger.log("ERROR", f"{name} tick crashed:\n{_traceback.format_exc()}")
+                    try:
+                        over_budget = backoffs[name].record_crash(now)
+                    except OSError:
+                        # a broken backoff file must NOT turn a contained crash into a
+                        # daemon crash — log + continue without budgeting this event.
+                        logger.log("WARNING", f"{name} backoff persist failed — crash not budgeted")
+                        over_budget = False
+                    if over_budget:
+                        logger.log("ERROR", f"{name} over crash budget — stopping daemon")
+                        stop_reason = f"{name}-over-budget"
+                        shutdown.set()
+                        break
+                else:
+                    try:
+                        backoffs[name].record_success(now)  # only THIS clean component resets
+                    except OSError:
+                        logger.log("WARNING", f"{name} backoff reset failed")
+            try:
+                runtime.write_heartbeat()  # every iteration, incl. crash iterations
+            except OSError:
+                logger.log("WARNING", "heartbeat write failed")
+            if shutdown.is_set() or wait(interval):
+                break
+        _logger().log("INFO", f"daemon shutting down (signal={signal_name[0]}, reason={stop_reason})")
+    finally:
+        for sig, handler in prev_handlers.items():
+            try:
+                _signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+        lock.release()
+    return {"started": True, "reason": stop_reason or signal_name[0] or "shutdown"}
 
 
 def cmd_daemon(args: argparse.Namespace) -> int:
