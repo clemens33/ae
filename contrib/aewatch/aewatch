@@ -1881,13 +1881,13 @@ def _trim_branch(text: str, max_len: int = 24) -> str:
     return text
 
 
-def _write_branch_segment(tmux, session, work_dir, *, git) -> str:
+def _write_branch_segment(tmux, session, work_dir, *, git, server="") -> str:
     """Port of ae:7454 `_watchdog_branch_segment`. Writes the @ae_branch_name
     machine side channel (set FULL untrimmed branch, or unset) and RETURNS the
     display segment the caller pushes into @ae_branch_status: ' <branch><dirty>'
     for a git work_dir, '' otherwise."""
     if not work_dir or git(work_dir, ["rev-parse", "--is-inside-work-tree"])[0] != 0:
-        tmux.unset_option(session, "@ae_branch_name")
+        tmux.unset_option(session, "@ae_branch_name", server=server)
         return ""
     rc, out = git(work_dir, ["symbolic-ref", "--quiet", "--short", "HEAD"])
     full = out.strip() if rc == 0 else ""
@@ -1896,25 +1896,25 @@ def _write_branch_segment(tmux, session, work_dir, *, git) -> str:
         full = out2.strip() if rc2 == 0 else ""
     branch = _trim_branch(full, 24)
     if not branch:
-        tmux.unset_option(session, "@ae_branch_name")
+        tmux.unset_option(session, "@ae_branch_name", server=server)
         return ""
-    tmux.set_option(session, "@ae_branch_name", full)
+    tmux.set_option(session, "@ae_branch_name", full, server=server)
     dirty = "*" if git(work_dir, ["status", "--porcelain", "--untracked-files=no"])[1].strip() else ""
     return f" {branch}{dirty}"
 
 
-def _push_status(tmux, session, status_value, work_dir, *, git) -> None:
+def _push_status(tmux, session, status_value, work_dir, *, git, server="") -> None:
     """The ae per-cycle status push (ae:7633-7634 / 8008-8009), IN ORDER:
     set @ae_watchdog_status, then the branch segment (which unsets/sets
     @ae_branch_name), then set @ae_branch_status to that segment."""
-    tmux.set_option(session, "@ae_watchdog_status", status_value)
-    segment = _write_branch_segment(tmux, session, work_dir, git=git)
-    tmux.set_option(session, "@ae_branch_status", segment)
+    tmux.set_option(session, "@ae_watchdog_status", status_value, server=server)
+    segment = _write_branch_segment(tmux, session, work_dir, git=git, server=server)
+    tmux.set_option(session, "@ae_branch_status", segment, server=server)
 
 
-def watchdog_bootstrap(tmux, session, *, work_dir, git=default_git_runner) -> None:
+def watchdog_bootstrap(tmux, session, *, work_dir, git=default_git_runner, server="") -> None:
     """The pre-loop status write (ae:7633-7634): '[watch ◌ starting]' + branch."""
-    _push_status(tmux, session, "[watch ◌ starting]", work_dir, git=git)
+    _push_status(tmux, session, "[watch ◌ starting]", work_dir, git=git, server=server)
 
 
 def _pane_hash(buf: str) -> str:
@@ -2460,7 +2460,7 @@ def run_watchdog_cycle(
             if emit_event is not None:
                 emit_event(session, _alert_event(now, agent, "agent process dead — dropped to shell"))
             tmux.display_message(
-                f"[ae watchdog] {agent} is DEAD — process dropped to shell", duration_ms=_ALERT_DURATION_MS
+                f"[ae watchdog] {agent} is DEAD — process dropped to shell", duration_ms=_ALERT_DURATION_MS, server=tmux_server
             )
             continue
         # 1b. Meta-agent (steward) sweep cadence + wedge (ae:7719-7798) — ONLY the
@@ -2503,13 +2503,13 @@ def run_watchdog_cycle(
                             now, agent, f"meta-agent not sweeping — {wedge_detail} (may be stuck)"))
                     tmux.display_message(
                         f"[ae watchdog] {agent} (meta-agent) not sweeping — may be stuck",
-                        duration_ms=_ALERT_DURATION_MS)
+                        duration_ms=_ALERT_DURATION_MS, server=tmux_server)
             # Sweep cadence. Record the first nudge time so the wedge guard has a
             # reference point even before any heartbeat file exists.
             if now - state.last_sweep_nudge.get(pane_id, 0) >= config.sweep_secs:
                 if state.first_sweep_nudge.get(pane_id, 0) == 0:
                     state.first_sweep_nudge[pane_id] = now
-                tmux.paste(pane_id, _SWEEP_TEXT, submit=True)
+                tmux.paste(pane_id, _SWEEP_TEXT, submit=True, server=tmux_server)
                 if emit_event is not None:
                     emit_event(session, {
                         "ts": _now_iso(now), "actor": "watchdog", "action": "nudge",
@@ -2518,7 +2518,7 @@ def run_watchdog_cycle(
                 state.last_sweep_nudge[pane_id] = now
             active += 1
             continue
-        buf = tmux.capture_pane(pane_id)
+        buf = tmux.capture_pane(pane_id, server=tmux_server)
         h = _pane_hash(buf)
         # Throttle detect + clear (ae:7808-7819) — BEFORE quiet, every cycle: a
         # recovered pane with a live streak emits throttle-cleared no matter which
@@ -2569,7 +2569,7 @@ def run_watchdog_cycle(
                         now, agent,
                         f"throttled for {config.throttle_alert_cycles * config.interval}s — may need attention"))
                 tmux.display_message(
-                    f"[ae watchdog] {agent} throttled persistently", duration_ms=_ALERT_DURATION_MS)
+                    f"[ae watchdog] {agent} throttled persistently", duration_ms=_ALERT_DURATION_MS, server=tmux_server)
             state.prev_hash[pane_id] = h
             state.last_hash_change[pane_id] = now
             state.nudge_count[pane_id] = 0
@@ -2599,7 +2599,7 @@ def run_watchdog_cycle(
         stale_display = "no recent events" if stale_min > 9999 else f"idle {stale_min}m"
         if count < config.max_nudges:
             # Paste THEN event, matching the send helper's order (ae:6468/6473).
-            tmux.paste(pane_id, _nudge_text(session_dir, goal), submit=True)
+            tmux.paste(pane_id, _nudge_text(session_dir, goal), submit=True, server=tmux_server)
             if emit_event is not None:
                 emit_event(session, {
                     "ts": _now_iso(now),
@@ -2616,6 +2616,7 @@ def run_watchdog_cycle(
             tmux.display_message(
                 f"[ae watchdog] {agent} may need attention — stale after {config.max_nudges} nudges",
                 duration_ms=_ALERT_DURATION_MS,
+                server=tmux_server,
             )
             state.nudge_count[pane_id] = count + 1
 
@@ -2625,7 +2626,7 @@ def run_watchdog_cycle(
             state.alerted_missing[agent_ref] = True
             if emit_event is not None:
                 emit_event(session, _alert_event(now, agent_ref, "pane missing — agent no longer visible in session"))
-            tmux.display_message(f"[ae watchdog] {agent_ref} pane is MISSING", duration_ms=_ALERT_DURATION_MS)
+            tmux.display_message(f"[ae watchdog] {agent_ref} pane is MISSING", duration_ms=_ALERT_DURATION_MS, server=tmux_server)
 
     # 9. Recover pending session IDs (ae:7966-7975) — retry the post-launch capture
     #    for codex/gemini/opencode. NO-OP when ae_path is absent or non-executable.
@@ -2658,7 +2659,7 @@ def run_watchdog_cycle(
         supervise_bridge(_meta_value(session_dir, "tmux_server"))
 
     glyph = "✖" if dead else ("⚠" if stale else "●")
-    _push_status(tmux, session, f"[watch {glyph} {active}/{total}]", work_dir, git=git)
+    _push_status(tmux, session, f"[watch {glyph} {active}/{total}]", work_dir, git=git, server=tmux_server)
 
 
 class WatchdogRunner:
@@ -2688,7 +2689,7 @@ class WatchdogRunner:
         name = session.name
         session_dir = self._sessions_dir / name
         if name not in self._bootstrapped:
-            watchdog_bootstrap(self.tmux, name, work_dir=session.work_dir, git=self._git)
+            watchdog_bootstrap(self.tmux, name, work_dir=session.work_dir, git=self._git, server=session.tmux_server)
             self._bootstrapped.add(name)
         state = self._states.setdefault(name, WatchdogState())
         run_watchdog_cycle(

@@ -127,36 +127,52 @@ class FakeTmux(AW.TmuxClient):
         self._panes = {k: list(v) for k, v in spec.get("panes", {}).items()}
         self._options = {t: dict(o) for t, o in spec.get("options", {}).items()}
         self._captures = dict(spec.get("captures", {}))
+        # Server-aware observability (s18a): every method logs the server it was called
+        # with, normalized (None ambient / "" meta-default both -> ""), so a regression
+        # can prove a named `-L` server propagates past list_panes to EVERY downstream
+        # read/write. These notes NEVER touch the effect stream (the oracle compares
+        # effect KINDS), so bash-vs-python parity is unperturbed.
+        self.server_calls: list = []
+
+    def _note(self, method: str, server) -> None:
+        self.server_calls.append((method, server or ""))
 
     # ── reads: return data, record nothing ──────────────────────────────
     # `None` (the real client's ambient/default server) and `""` (a fixture's
     # default `tmux_server` from meta) resolve to the SAME default server.
     def list_sessions(self, server=None):
+        self._note("list_sessions", server)
         return list(self._sessions_by_server.get(server or "", []))
 
     def list_panes(self, session, server=None):
-        server = server or ""  # normalized for when list_panes becomes server-aware
+        self._note("list_panes", server)
         return list(self._panes.get(session, []))
 
     def capture_pane(self, pane_id, server=None):
+        self._note("capture_pane", server)
         return self._captures.get(pane_id, "")
 
     def display_option(self, target, option, server=None):
+        self._note("display_option", server)
         return self._options.get(target, {}).get(option)
 
     # ── mutations: each records exactly one normalized effect ───────────
     def set_option(self, target, option, value, server=None):
+        self._note("set_option", server)
         self._options.setdefault(target, {})[option] = value
         self._rec.record("tmux.set_option", target=target, option=option, value=value)
 
     def unset_option(self, target, option, server=None):
+        self._note("unset_option", server)
         self._options.get(target, {}).pop(option, None)
         self._rec.record("tmux.unset_option", target=target, option=option)
 
     def paste(self, target, text, submit, server=None):
+        self._note("paste", server)
         self._rec.record("tmux.paste", target=target, text=text, submit=submit)
 
     def display_message(self, text, *, duration_ms=None, server=None):
+        self._note("display_message", server)
         # Mirrors the bash watchdog's `tmux display-message -d <ms> "<text>"` alert
         # (no -t target). A user-visible mutation, so it records an effect.
         self._rec.record("tmux.display_message", text=text, duration_ms=duration_ms)
@@ -345,7 +361,7 @@ def run_python_watchdog_fixture(fixture: dict, *, git=None) -> list:
         # append could diverge if a fixture already set ae_path. Python doesn't shell
         # it (it uses the injected boundaries below).
         _set_meta_value(session_dir / "meta", "ae_path", bash_oracle._FAKEBIN / "ae")
-        AW.watchdog_bootstrap(env.tmux, name, work_dir=work_dir, git=git_runner)
+        AW.watchdog_bootstrap(env.tmux, name, work_dir=work_dir, git=git_runner, server=server)
         for i, tick in enumerate(env.ticks):
             env.start_tick(i)  # sole tick-mutation path: applies this tick's captures
             AW.run_watchdog_cycle(
