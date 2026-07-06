@@ -255,6 +255,52 @@ def validate_contracts(obj: dict) -> list[str]:
     return errors
 
 
+# A bash-daemon source anchor: `ae:<line>` or `ae:<start>-<end>`. The lead's binding
+# rule — EVERY bridge fixture expectation must cite the ae:NNNN it is a contract for —
+# is machine-checked here so an un-anchored bridge expectation is an automatic failure.
+_BRIDGE_ANCHOR_RE = re.compile(r"^ae:(\d+)(?:-(\d+))?$")
+
+
+def _valid_bridge_anchor(ref) -> bool:
+    """A real 1-based bash-daemon anchor: `ae:N` or `ae:N-M` with N >= 1 and M >= N.
+    Rejects impossible forms like ae:0 or ae:99-12 that still look anchored."""
+    if not isinstance(ref, str):
+        return False
+    m = _BRIDGE_ANCHOR_RE.match(ref)
+    if not m:
+        return False
+    start = int(m.group(1))
+    end = int(m.group(2)) if m.group(2) else start
+    return start >= 1 and end >= start
+
+
+def validate_bridge_fixture(fixture: dict) -> list:
+    """Validate one bridge fixture's expectation anchors. Returns human-readable errors
+    ([] = valid). Each entry in `expect` must be an object carrying a `source` anchor —
+    a single `ae:NNNN[-MMM]` string or a non-empty list of them — tying the expectation
+    to the bash daemon behavior it reproduces (the fake models the API; these refs prove
+    each expectation is grounded in real code, not invented)."""
+    errors: list = []
+    fid = fixture.get("id")
+    if not isinstance(fid, str) or not fid:
+        errors.append("bridge fixture: missing 'id'")
+        fid = "<no-id>"
+    expect = fixture.get("expect")
+    if not isinstance(expect, list) or not expect:
+        errors.append(f"{fid}: 'expect' must be a non-empty list of expectations")
+        return errors
+    for i, exp in enumerate(expect):
+        where = f"{fid}.expect[{i}]"
+        if not isinstance(exp, dict):
+            errors.append(f"{where}: expectation must be an object")
+            continue
+        src = exp.get("source")
+        refs = src if isinstance(src, list) else [src]
+        if not src or not all(_valid_bridge_anchor(r) for r in refs):
+            errors.append(f"{where}: missing/invalid ae:NNNN source anchor (got {src!r})")
+    return errors
+
+
 def cmd_contracts_validate(args: argparse.Namespace) -> int:
     path = Path(args.contracts) if args.contracts else _DEFAULT_CONTRACTS
     try:
@@ -574,6 +620,31 @@ class RealTmuxClient(TmuxClient):
                 if rc == 0 and _PASTED_TEXT_RE.search("\n".join(out.splitlines()[-15:])):
                     self._run_write([*sa, "send-keys", "-t", target, "Enter"])
         self._rec.record("tmux.paste", target=target, text=text, submit=submit)
+
+
+class TelegramTransport(abc.ABC):
+    """The one Telegram Bot API seam — FakeTelegramTransport (bridge tests) and the s9
+    RealTelegramTransport (urllib) both implement it. Methods return the RAW parsed API
+    response dict ({"ok": bool, ...}) so bridge slices can test ok=false / error_code /
+    retry_after without a lossy typed wrapper (mirrors ae's jq-facing shape)."""
+
+    @abc.abstractmethod
+    def get_updates(self, offset: int, *, timeout: int = 0, limit: int = 10, allowed_updates=("message",)) -> dict:
+        """getUpdates (ae:3745-3799): {"ok": true, "result": [update, ...]} for update_id
+        at/above the acknowledged offset. The caller persists offset+1 BEFORE dispatch
+        (ae:3368-3372) for at-most-once."""
+        ...
+
+    @abc.abstractmethod
+    def send_message(self, chat_id, text) -> dict:
+        """sendMessage (ae:3274-3304): {"ok": true, "result": {...}} or {"ok": false,
+        "error_code": N, ..., "parameters": {"retry_after": N}} on 429."""
+        ...
+
+    @abc.abstractmethod
+    def set_my_commands(self, commands) -> dict:
+        """setMyCommands (ae:3310-3352): {"ok": true, "result": true}."""
+        ...
 
 
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
