@@ -721,6 +721,94 @@ class TelegramTransport(abc.ABC):
         ...
 
 
+def _json_object_or_none(raw):
+    """Parse `raw` as a JSON OBJECT. A non-object (`[]`, `true`, a bare string) or a
+    parse error -> None, so a malformed body never reaches bridge code that does .get."""
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+class RealTelegramTransport(TelegramTransport):
+    """The urllib impl of TelegramTransport (FakeTelegramTransport is the other). NEVER
+    raises: any HTTP / transport / decode failure degrades to a synthetic {"ok": False}
+    so the bridge loop decides retry/sleep instead of crashing. The URL embeds
+    bot<token>, so every error is logged through `logger` (an AewatchLogger with
+    secrets=[token]) — the redacted URL names the failing endpoint without leaking the
+    secret. The ABC `timeout` is Telegram's long-poll parameter; the urllib SOCKET
+    timeout is implementation policy that must OUTLAST it."""
+
+    def __init__(self, token, *, urlopen=None, timeout=30, long_poll_margin=10, logger=None,
+                 base_url="https://api.telegram.org"):
+        import urllib.request
+
+        self._token = token
+        self._urlopen = urlopen or urllib.request.urlopen
+        self._timeout = timeout
+        self._long_poll_margin = long_poll_margin
+        self._logger = logger
+        self._base = base_url
+
+    def _log(self, message):
+        if self._logger is not None:
+            self._logger.log("WARNING", message)  # AewatchLogger scrubs the token / URL
+
+    def _call(self, method, params, *, socket_timeout):
+        import socket
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        url = f"{self._base}/bot{self._token}/{method}"
+        data = urllib.parse.urlencode(params).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method="POST")
+        try:
+            with self._urlopen(req, timeout=socket_timeout) as resp:
+                body = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            # Telegram returns a JSON body even on 4xx/5xx (ok=false + error_code +
+            # parameters.retry_after) — return it so s13 can retry correctly.
+            self._log(f"{url} HTTP {exc.code}")
+            try:
+                raw = exc.read().decode("utf-8")
+            except (OSError, ValueError):
+                raw = ""
+            parsed = _json_object_or_none(raw)
+            return parsed if parsed is not None else {"ok": False, "error_code": exc.code, "description": "http error"}
+        except (urllib.error.URLError, socket.timeout, TimeoutError, OSError) as exc:
+            self._log(f"{url} transport error: {exc}")
+            return {"ok": False, "error_code": None, "description": "transport error"}
+        parsed = _json_object_or_none(body)
+        if parsed is None:
+            self._log(f"{url} response was not a JSON object")
+            return {"ok": False, "error_code": None, "description": "invalid JSON response"}
+        return parsed
+
+    def _socket_timeout(self, api_timeout):
+        # The socket must outlast a long poll: Telegram holds the request up to
+        # `api_timeout` s, so the deadline is at least api_timeout + margin, floored at
+        # the quick-call request timeout.
+        return max(self._timeout, api_timeout + self._long_poll_margin)
+
+    def get_updates(self, offset, *, timeout=0, limit=10, allowed_updates=("message",)):
+        params = {
+            "offset": offset,  # thin passthrough — the bridge owns stored offset + 1
+            "limit": limit,
+            "timeout": timeout,
+            "allowed_updates": json.dumps(list(allowed_updates), separators=(",", ":")),
+        }
+        return self._call("getUpdates", params, socket_timeout=self._socket_timeout(timeout))
+
+    def send_message(self, chat_id, text):
+        return self._call("sendMessage", {"chat_id": chat_id, "text": text}, socket_timeout=self._timeout)
+
+    def set_my_commands(self, commands):
+        return self._call("setMyCommands", {"commands": json.dumps(commands, separators=(",", ":"))},
+                          socket_timeout=self._timeout)
+
+
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
     """Phase-1 no-op input collector: READ-ONLY.
 
