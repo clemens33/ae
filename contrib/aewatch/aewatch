@@ -1246,6 +1246,109 @@ def _nudge_text(session_dir, goal: str) -> str:
     )
 
 
+# ── Real ae/event boundaries (the live daemon's emit_event + recover_pending) ──
+# Phase 2 injected these from fixtures; the daemon binds these real ones (slice 16).
+
+_RECOVER_FIELDS = ("kind", "slot", "agent", "tool", "captured")
+_RECOVER_KINDS = frozenset({"ok", "already", "miss", "skip"})  # ae:2692-2695
+
+
+def _locked_append(path, line, *, timeout=5) -> bool:
+    """Append `line` + newline to `path` under the SAME flock protocol as ae's
+    ae_log_append (ae:6192-6198): LOCK_EX on `<path>.lock`, bounded ~`timeout`s to
+    emulate `flock -w`. The daemon shares events.jsonl with live ae processes, so it
+    must take the same lock. Returns True if appended, False on lock timeout (the
+    caller warns + drops the event, matching ae's `flock -w 5 || exit 1`)."""
+    import fcntl
+    import time
+
+    path = Path(path)
+    lock_path = str(path) + ".lock"
+    with open(lock_path, "a") as lockf:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(lockf.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.02)
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        finally:
+            fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
+    return True
+
+
+def make_emit_event(sessions_dir, recorder=None, *, timeout=5):
+    """Production emit_event boundary: compact append (one JSON object per line —
+    matches ae_emit_event) to `<sessions_dir>/<session>/events.jsonl`, flock-serialized
+    like ae. Records an event.append effect ONLY after the line is actually appended;
+    a lock timeout warns (redacted) + DROPS the event (ae's drop-and-continue), records
+    no effect, and returns None."""
+    sessions_dir = Path(sessions_dir)
+
+    def emit(session, event):
+        appended = _locked_append(
+            sessions_dir / session / "events.jsonl", json.dumps(event, separators=(",", ":")), timeout=timeout
+        )
+        if not appended:
+            if recorder is not None:
+                recorder.log("WARNING", f"emit_event: lock timeout, dropped {event.get('action', '')} for {session}")
+            return None
+        if recorder is not None:
+            recorder.record("event.append", session=session, event=event)
+        return event
+
+    return emit
+
+
+def make_recover_pending(sessions_dir, recorder=None, *, timeout=5):
+    """Production recover_pending boundary: resolve ae_path from the session meta
+    (per-call — one daemon serves many sessions), then shell `<ae_path> _recover-pending
+    <session>` and parse the TSV rows (ae:2683-2695). No-op ([]) when ae_path is
+    absent/non-executable or the shell fails (nonzero/timeout/OSError — a read boundary
+    degrades). A malformed (non-5-field) row OR an unknown `kind` (ae contract drift)
+    warns through a REDACTED log.write and is skipped."""
+    sessions_dir = Path(sessions_dir)
+
+    def recover(session):
+        ae_path = _meta_value(sessions_dir / session, "ae_path")
+        if not ae_path or not os.access(ae_path, os.X_OK):
+            return []
+        import subprocess
+
+        try:
+            proc = subprocess.run(
+                [ae_path, "_recover-pending", session], capture_output=True, text=True, timeout=timeout
+            )
+            if proc.returncode != 0:
+                return []
+            out = proc.stdout
+        except (OSError, subprocess.SubprocessError):
+            return []
+        rows = []
+        for line in out.split("\n"):
+            if not line.strip():
+                continue
+            fields = line.split("\t")
+            if len(fields) != 5:
+                if recorder is not None:
+                    recorder.log("WARNING", f"recover: malformed row (expected 5 fields): {line}")
+                continue
+            row = dict(zip(_RECOVER_FIELDS, fields))
+            if row["kind"] not in _RECOVER_KINDS:
+                if recorder is not None:
+                    recorder.log("WARNING", f"recover: unknown kind {row['kind']!r} (ae contract drift): {line}")
+                continue
+            rows.append(row)
+        return rows
+
+    return recover
+
+
 def run_watchdog_cycle(
     config, state, tmux, session, *, work_dir, session_dir=None, tmux_server="",
     now=None, git=default_git_runner, emit_event=None, has_descendant=default_has_descendant,
