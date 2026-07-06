@@ -911,6 +911,71 @@ def poll_inbound(transport, offset_store, config, *, dispatch, logger=None, time
             _log(f"inbound dispatch error: {type(exc).__name__}: {exc}")
 
 
+@dataclasses.dataclass
+class Resolution:
+    """The outcome of resolving a chat session/agent ref (maps to ae's rc 0/1/2). `value`
+    is the resolved DiscoveredSession or the canonical alias:name; s11b maps `status` to
+    the user-facing chat message."""
+
+    status: str            # "ok" | "none" | "ambiguous"
+    value: object = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+
+def resolve_session_ref(sessions, ref) -> "Resolution":
+    """Resolve a chat session ref against RUNNING sessions (ae:3387-3417). EXACT name wins;
+    else a UNIQUE non-empty session_id PREFIX. An empty ref resolves to nothing."""
+    ref = (ref or "").strip()
+    if not ref:
+        return Resolution("none")
+    running = [s for s in sessions if s.running]
+    for s in running:
+        if s.name == ref:                       # exact name beats any prefix (ae:3397-3406)
+            return Resolution("ok", s)
+    prefix = [s for s in running if s.session_id and s.session_id.startswith(ref)]  # ae:3400
+    if len(prefix) == 1:
+        return Resolution("ok", prefix[0])
+    return Resolution("ambiguous" if len(prefix) > 1 else "none")
+
+
+def resolve_agent_in_session(agents, want) -> "Resolution":
+    """Resolve a chat agent ref against a session's actual agents (ae:3428-3450). EXACT
+    alias:name wins; else a UNIQUE bare name. Returns the CANONICAL alias:name. A %pane /
+    @session:agent / telegram:<id> / foreign-prefix ref matches no real agent.* entry ->
+    none (the confinement, codex BLOCKER in ae)."""
+    want = (want or "").strip()
+    if not want:
+        return Resolution("none")
+    # Explicit confinement guard (codex): a %pane-id, an @session ref, or a multi-colon
+    # escape (e.g. codex:lead:extra) can never be a legitimate alias:name or bare name.
+    # Reject up front so a future meta change can't let one slip through implicit
+    # non-match. A legitimate want is a bare name (0 colons) or alias:name (1 colon).
+    if "%" in want or "@" in want or want.count(":") > 1:
+        return Resolution("none")
+    exact = None
+    bare = []
+    for a in agents:
+        ref = a.ref
+        if ref.count(":") != 1:                 # a canonical agent ref is exactly alias:name
+            continue
+        alias, name = ref.split(":", 1)
+        if not alias or not name:
+            continue
+        if want == ref:
+            exact = ref
+            break
+        if want == name:
+            bare.append(ref)
+    if exact is not None:
+        return Resolution("ok", exact)
+    if len(bare) == 1:
+        return Resolution("ok", bare[0])
+    return Resolution("ambiguous" if len(bare) > 1 else "none")
+
+
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
     """Phase-1 no-op input collector: READ-ONLY.
 
