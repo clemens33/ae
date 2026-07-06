@@ -107,7 +107,7 @@ def _wedge_recover_fixture(work_dir):
     return _meta_fixture(work_dir, [
         {"epoch": _E, "now": _iso(_E), "captures": {_PANE: "idle"}},
         {"epoch": _E + 1000, "now": _iso(_E + 1000), "captures": {_PANE: "idle"}},
-        {"epoch": _E + 2000, "now": _iso(_E + 2000), "captures": {_PANE: "idle"}, "heartbeat_age": 10},
+        {"epoch": _E + 2000, "now": _iso(_E + 2000), "captures": {_PANE: "idle"}, "heartbeats": {"work": {"age": 10}}},
     ])
 
 
@@ -118,7 +118,7 @@ def _post_restart_reconcile_fixture(work_dir):
     the watchdog helper); slice 10b emits it via _lib, so the reconcile now fires on
     both sides."""
     fx = _meta_fixture(work_dir, [
-        {"epoch": _E, "now": _iso(_E), "captures": {_PANE: "idle"}, "heartbeat_age": 10},
+        {"epoch": _E, "now": _iso(_E), "captures": {_PANE: "idle"}, "heartbeats": {"work": {"age": 10}}},
     ])
     fx["sessions"][0]["events"] = [
         {"ts": _iso(_E - 100), "actor": "human", "action": "alert", "target": _AGENT,

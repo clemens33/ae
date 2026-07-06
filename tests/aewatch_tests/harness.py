@@ -271,31 +271,26 @@ class MultiTickEnv:
 
     def start_tick(self, i: int) -> None:
         """Advance the clock to tick i, apply that tick's pane captures, and inject
-        its INPUT events into the primary session's events.jsonl.
+        its per-session INPUT events + heartbeats.
 
-        Tick events (agent declarations / inbound messages) are INPUTS the cycle
-        reads, NOT watchdog side effects — so they are appended compactly to the
-        file but NEVER recorded as event.append effects. Single-session default:
-        they route to the fixture's first session (see the slice-7 schema note)."""
+        Phase-3: tick inputs are SESSION-KEYED (no first-session shortcut). events is
+        [{session, event}] — each event.INPUT (agent declaration / inbound message)
+        is appended to THAT session's events.jsonl, NEVER recorded as an event.append
+        effect. heartbeats is {session: {age}} — each sets that session's
+        meta-agent-state.json mtime to INTEGER epoch - age (identical on both oracle
+        sides). recover ({session:[rows]}) is served by the injected recover_pending."""
         self.clock.start(i)
         tick = self.ticks[i]
         for pane_id, capture in tick.get("captures", {}).items():
             self.tmux._captures[pane_id] = capture
-        events = tick.get("events")
-        if events:
-            name = self.fixture["sessions"][0]["name"]
-            path = self.home.sessions / name / "events.jsonl"
+        for entry in tick.get("events", []):
+            path = self.home.sessions / entry["session"] / "events.jsonl"
             with path.open("a", encoding="utf-8") as handle:
-                for event in events:
-                    handle.write(_dump_event(event) + "\n")
-        # Steward heartbeat: key presence (heartbeat_age=0 is a valid fresh beat).
-        # Set the file's mtime to INTEGER epoch - age so the watchdog's stat/os.stat
-        # reads it identically on both sides. Absence leaves the file untouched.
-        if "heartbeat_age" in tick:
-            name = self.fixture["sessions"][0]["name"]
-            hb = self.home.sessions / name / "meta-agent-state.json"
+                handle.write(_dump_event(entry["event"]) + "\n")
+        for session, spec in tick.get("heartbeats", {}).items():
+            hb = self.home.sessions / session / "meta-agent-state.json"
             hb.write_text("{}", encoding="utf-8")
-            mtime = int(tick["epoch"]) - int(tick["heartbeat_age"])
+            mtime = int(tick["epoch"]) - int(spec["age"])
             os.utime(hb, (mtime, mtime))
 
     def append_event(self, session: str, event: dict) -> dict:
@@ -365,9 +360,10 @@ def run_python_watchdog_fixture(fixture: dict, *, git=None) -> list:
                 # sole event-emit path: records event.append AND appends compactly
                 # to events.jsonl (feed-forward), so a later tick's recency scan sees it.
                 emit_event=env.append_event,
-                # injected recover boundary: this tick's fixture recover rows (the
-                # production impl shells `ae _recover-pending` + parses the TSV).
-                recover_pending=(lambda s, _rows=tick.get("recover", []): _rows),
+                # injected recover boundary: this tick's fixture recover rows for the
+                # named session (recover is {session:[rows]}; the production impl
+                # shells `ae _recover-pending <session>` + parses the TSV).
+                recover_pending=(lambda s, _rec=tick.get("recover", {}): _rec.get(s, [])),
                 # injected bridge supervisor: records a telegram.supervise effect
                 # (NOT on FakeTmux — it is not a tmux op). Production reboots the
                 # bridge with AE_TMUX_SERVER=<server>.

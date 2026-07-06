@@ -41,7 +41,7 @@ def _fixture(work_dir, recover_rows):
                      "agent.main": f"{_AGENT}:s1"},
             "events": [], "panes": [{"pane_id": _PANE, "agent": _AGENT, "current_command": "node",
                                      "pane_pid": 999999, "capture": ""}]}],
-        "ticks": [{"epoch": _E, "now": _iso(_E), "captures": {_PANE: "working"}, "recover": recover_rows}],
+        "ticks": [{"epoch": _E, "now": _iso(_E), "captures": {_PANE: "working"}, "recover": {"work": recover_rows}}],
     }
 
 

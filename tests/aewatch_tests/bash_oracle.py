@@ -45,12 +45,12 @@ def _write_meta(meta_dir, meta):
     (meta_dir / "meta").write_text("".join(f"{k}={v}\n" for k, v in meta.items()), encoding="utf-8")
 
 
-def _write_heartbeat(session_dir, tick):
+def _write_heartbeat(session_dir, epoch, age):
     """Ensure session_dir/meta-agent-state.json exists with mtime = INTEGER
-    epoch - heartbeat_age, so the watchdog's `stat -c %Y` reads the intended age."""
+    epoch - age, so the watchdog's `stat -c %Y` reads the intended age."""
     hb = Path(session_dir) / "meta-agent-state.json"
     hb.write_text("{}", encoding="utf-8")
-    mtime = int(tick["epoch"]) - int(tick["heartbeat_age"])
+    mtime = int(epoch) - int(age)
     os.utime(hb, (mtime, mtime))
 
 
@@ -146,21 +146,18 @@ def run_bash_watchdog_fixture(fixture, root):
     (oracle / "sessions.json").write_text(json.dumps(session_names))
     (oracle / "effects.jsonl").write_text("")
 
-    # Per-tick INPUT events: tick 0's are seeded now (before cycle 0, matching the
-    # Python start_tick(0)); ticks 1..N are appended by the fake sleep shim at each
-    # tick boundary. Route to the PRIMARY session (single-session default). Compact,
-    # matching ae's on-disk event form. events_target.txt tells the sleep shim where.
-    primary_events = sessions / session_names[0] / "events.jsonl"
-    tick0_events = ticks[0].get("events") if ticks else None
-    if tick0_events:
-        with primary_events.open("a", encoding="utf-8") as fh:
-            for ev in tick0_events:
-                fh.write(json.dumps(ev, separators=(",", ":")) + "\n")
-    (oracle / "events_target.txt").write_text(str(primary_events), encoding="utf-8")
-    # Steward heartbeat for tick 0 (before cycle 0); ticks 1+ are set by the sleep
-    # shim. Key presence; mtime = INTEGER epoch - age (matches ae `stat -c %Y`).
-    if ticks and "heartbeat_age" in ticks[0]:
-        _write_heartbeat(primary_events.parent, ticks[0])
+    # Per-tick INPUT events/heartbeats are SESSION-KEYED (phase 3, no first-session
+    # shortcut): tick 0's are seeded now (before cycle 0, matching Python
+    # start_tick(0)); ticks 1..N are routed by the fake sleep shim at each boundary.
+    # sessions_dir.txt tells the shim where the per-session dirs live.
+    (oracle / "sessions_dir.txt").write_text(str(sessions), encoding="utf-8")
+    if ticks:
+        for entry in ticks[0].get("events", []):
+            evpath = sessions / entry["session"] / "events.jsonl"
+            with evpath.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry["event"], separators=(",", ":")) + "\n")
+        for session, spec in ticks[0].get("heartbeats", {}).items():
+            _write_heartbeat(sessions / session, ticks[0]["epoch"], spec["age"])
 
     env = dict(os.environ)
     env["PATH"] = f"{_FAKEBIN}{os.pathsep}{env['PATH']}"

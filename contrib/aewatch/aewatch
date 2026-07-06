@@ -196,6 +196,58 @@ def validate_contracts(obj: dict) -> list[str]:
                     epoch = tick.get("epoch")
                     if not isinstance(epoch, (int, float)) or isinstance(epoch, bool):
                         errors.append(f"{where}: ticks[{tidx}] 'epoch' must be numeric")
+                    # Phase-3: tick inputs are SESSION-KEYED (no first-session
+                    # shortcut). events -> [{session,event}]; heartbeats/recover ->
+                    # dicts keyed by session; the phase-2 singular heartbeat_age is
+                    # gone; telegram (if present) is a dict (subfields land in slice 7).
+                    tw = f"{where}: ticks[{tidx}]"
+                    # Session refs in tick inputs must name a KNOWN fixture session —
+                    # an unknown/empty key would write outside any session or silently
+                    # route nowhere (codex). Build the fixture's session-name set.
+                    known_sessions = {
+                        s["name"] for s in fixture.get("sessions", [])
+                        if isinstance(s, dict) and isinstance(s.get("name"), str) and s["name"]
+                    }
+                    if "heartbeat_age" in tick:
+                        errors.append(f"{tw} 'heartbeat_age' is removed — use heartbeats {{session:{{age}}}}")
+                    events = tick.get("events")
+                    if events is not None:
+                        if not isinstance(events, list):
+                            errors.append(f"{tw} 'events' must be a list of {{session,event}} objects")
+                        else:
+                            for eidx, entry in enumerate(events):
+                                if not isinstance(entry, dict):
+                                    errors.append(f"{tw} events[{eidx}] must be a {{session,event}} object")
+                                    continue
+                                sess = entry.get("session")
+                                if not isinstance(sess, str) or sess not in known_sessions:
+                                    errors.append(f"{tw} events[{eidx}] session {sess!r} is not a known session")
+                                if not isinstance(entry.get("event"), dict):
+                                    errors.append(f"{tw} events[{eidx}] must have an 'event' object")
+                    heartbeats = tick.get("heartbeats")
+                    if heartbeats is not None:
+                        if not isinstance(heartbeats, dict):
+                            errors.append(f"{tw} 'heartbeats' must be a dict keyed by session")
+                        else:
+                            for sess, spec in heartbeats.items():
+                                if not isinstance(sess, str) or sess not in known_sessions:
+                                    errors.append(f"{tw} heartbeats key {sess!r} is not a known session")
+                                age = spec.get("age") if isinstance(spec, dict) else None
+                                if not isinstance(age, (int, float)) or isinstance(age, bool):
+                                    errors.append(f"{tw} heartbeats[{sess!r}] must be {{age:<number>}}")
+                    recover = tick.get("recover")
+                    if recover is not None:
+                        if not isinstance(recover, dict):
+                            errors.append(f"{tw} 'recover' must be a dict keyed by session")
+                        else:
+                            for sess, rows in recover.items():
+                                if not isinstance(sess, str) or sess not in known_sessions:
+                                    errors.append(f"{tw} recover key {sess!r} is not a known session")
+                                if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+                                    errors.append(f"{tw} recover[{sess!r}] must be a list of row objects")
+                    telegram = tick.get("telegram")
+                    if telegram is not None and not isinstance(telegram, dict):
+                        errors.append(f"{tw} 'telegram' must be an object")
 
     for family in REQUIRED_FIXTURE_FAMILIES:
         if not any(i == family or i.startswith(family + ".") for i in ids):

@@ -28,12 +28,15 @@ argv = sys.argv[1:]
 if argv[:1] == ["_recover-pending"]:
     if len(argv) != 2:
         die(f"_recover-pending expects exactly <session>, got {argv[1:]}")
+    session = argv[1]
     oracle = os.environ.get("AEWATCH_ORACLE_DIR")
     if oracle:
         D = Path(oracle)
         idx = int((D / "tick.idx").read_text().strip()) if (D / "tick.idx").exists() else 0
         ticks = json.loads((D / "ticks.json").read_text()) if (D / "ticks.json").exists() else []
-        rows = ticks[idx].get("recover", []) if idx < len(ticks) else []
+        # recover is SESSION-KEYED: {session: [rows]} (phase 3).
+        recover = ticks[idx].get("recover", {}) if idx < len(ticks) else {}
+        rows = recover.get(session, [])
         for r in rows:
             fields = [r.get("kind", ""), r.get("slot", ""), r.get("agent", ""), r.get("tool", ""), r.get("captured", "")]
             sys.stdout.write("\t".join(fields) + "\n")
