@@ -1349,6 +1349,52 @@ def make_recover_pending(sessions_dir, recorder=None, *, timeout=5):
     return recover
 
 
+class BridgeSupervisor:
+    """Real supervise_bridge boundary for the live daemon (slice 16). Best-effort revive
+    of the machine-global Telegram bridge: records a telegram.supervise ATTEMPT (the same
+    observation phase-2's fixture lambda recorded when due), then shells the legacy
+    `ae telegram _supervise` propagating the session's tmux server (ae:7982-7995) so the
+    bridge is checked on the SAME server the session uses.
+
+    A no-op (no record, no shell) when disabled or when there is no executable ae to
+    revive it. NEVER raises — the revive is a throttled scheduler, silent + non-fatal
+    (ae:7992-7994 `>/dev/null 2>&1 || true`), deliberately unlike the s4 write path which
+    fails loud. The daemon owns [telegram] enabled and passes it as `enabled`."""
+
+    def __init__(self, recorder, *, ae_path=None, enabled=True, timeout=5):
+        self._rec = recorder
+        self._ae_path = ae_path
+        self._enabled = enabled
+        self._timeout = timeout
+
+    def ensure_started(self, tmux_server):
+        """The supervise_bridge seam: the cycle calls this with the session's tmux
+        server when the supervise cadence fires."""
+        if not self._enabled or not self._ae_path or not os.access(self._ae_path, os.X_OK):
+            return
+        # Record the ATTEMPT first (not success) — a failed shell still leaves the
+        # attempt in the stream plus a warning.
+        self._rec.record("telegram.supervise", tmux_server=tmux_server)
+        import subprocess
+
+        env = dict(os.environ)
+        if tmux_server:
+            env["AE_TMUX_SERVER"] = tmux_server
+        else:
+            # Explicit pop: an inherited parent AE_TMUX_SERVER must NOT leak into a
+            # default-server revive (the daemon is a singleton over many servers).
+            env.pop("AE_TMUX_SERVER", None)
+        try:
+            proc = subprocess.run(
+                [self._ae_path, "telegram", "_supervise"],
+                capture_output=True, text=True, timeout=self._timeout, env=env,
+            )
+            if proc.returncode != 0:
+                self._rec.log("WARNING", f"bridge supervise: ae telegram _supervise exited {proc.returncode}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            self._rec.log("WARNING", f"bridge supervise: {type(exc).__name__} shelling ae telegram _supervise")
+
+
 def run_watchdog_cycle(
     config, state, tmux, session, *, work_dir, session_dir=None, tmux_server="",
     now=None, git=default_git_runner, emit_event=None, has_descendant=default_has_descendant,
