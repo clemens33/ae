@@ -622,6 +622,80 @@ class RealTmuxClient(TmuxClient):
         self._rec.record("tmux.paste", target=target, text=text, submit=submit)
 
 
+_TELEGRAM_TRUTHY = frozenset({"1", "true", "yes", "on"})  # ae:3001-3006
+
+
+def _telegram_enabled(value) -> bool:
+    return isinstance(value, str) and value.strip().lower() in _TELEGRAM_TRUTHY
+
+
+@dataclasses.dataclass
+class TelegramConfig:
+    """The validated [telegram] config. A DISABLED config (enabled=False) carries a
+    leak-free `disabled_reason` and NO token — non-secret required config is checked
+    before the token file is ever opened, so a disabled config never reads or retains
+    the secret. `secrets` feeds AewatchLogger so the token is redacted in logs even when
+    it isn't a <id>:<secret>-shaped generic match."""
+
+    enabled: bool = False
+    token: str = ""
+    chat_id: str = ""
+    allowed_user_ids: str = ""
+    disabled_reason: str = ""
+
+    @property
+    def secrets(self) -> list:
+        return [self.token] if self.token else []
+
+
+def load_telegram_config(config, *, geteuid=None, stat_fn=None) -> "TelegramConfig":
+    """Load + validate the [telegram] block (ae:3154-3198 read_config + load_runtime_config).
+    Returns a DISABLED config with a leak-free reason on any failure. Order matters: the
+    NON-SECRET required config (enabled, token_file, chat_id presence) is validated BEFORE
+    the token file is opened, so a missing-chat_id config never touches the secret (codex).
+    BEYOND ae's readable-only check (ae:3187), the token file must be a REGULAR file OWNED
+    by the running user with mode EXACTLY 400 or 600 — a secret must never be group/world
+    readable. Token strip mirrors ae (ae:3189-3190): ONE trailing newline, then all CRs."""
+    import os as _os
+    import stat as _stat
+
+    geteuid = geteuid or _os.geteuid
+    stat_fn = stat_fn or _os.stat
+    tg = config.get("telegram", {}) if isinstance(config, dict) else {}
+
+    def disabled(reason):
+        return TelegramConfig(enabled=False, disabled_reason=reason)
+
+    if not _telegram_enabled(tg.get("enabled", "")):
+        return disabled("telegram not enabled")
+    token_file = tg.get("token_file", "")
+    if not token_file:
+        return disabled("missing telegram.token_file")
+    chat_id = tg.get("chat_id", "")
+    if not chat_id:  # checked BEFORE the token file is ever touched
+        return disabled("missing telegram.chat_id")  # ae:3192-3193
+    path = _os.path.expanduser(token_file)  # ae:3186
+    try:
+        st = stat_fn(path)
+    except OSError:
+        return disabled(f"token file not readable: {path}")
+    if not _stat.S_ISREG(st.st_mode):
+        return disabled(f"token file is not a regular file: {path}")
+    if st.st_uid != geteuid():
+        return disabled(f"token file owner mismatch (not the running user): {path}")
+    if (st.st_mode & 0o777) not in (0o400, 0o600):
+        return disabled(f"token file mode {oct(st.st_mode & 0o777)} not 400/600: {path}")
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return disabled(f"token file not readable: {path}")
+    token = (raw[:-1] if raw.endswith("\n") else raw).replace("\r", "")  # ae:3189-3190
+    if not token:
+        return disabled("token file is empty")
+    return TelegramConfig(enabled=True, token=token, chat_id=chat_id,
+                          allowed_user_ids=tg.get("allowed_user_ids", ""))  # ae:3196
+
+
 class TelegramTransport(abc.ABC):
     """The one Telegram Bot API seam — FakeTelegramTransport (bridge tests) and the s9
     RealTelegramTransport (urllib) both implement it. Methods return the RAW parsed API
