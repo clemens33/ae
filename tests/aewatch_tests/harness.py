@@ -145,18 +145,18 @@ class FakeTmux(AW.TmuxClient):
         return self._options.get(target, {}).get(option)
 
     # ── mutations: each records exactly one normalized effect ───────────
-    def set_option(self, target, option, value):
+    def set_option(self, target, option, value, server=None):
         self._options.setdefault(target, {})[option] = value
         self._rec.record("tmux.set_option", target=target, option=option, value=value)
 
-    def unset_option(self, target, option):
+    def unset_option(self, target, option, server=None):
         self._options.get(target, {}).pop(option, None)
         self._rec.record("tmux.unset_option", target=target, option=option)
 
-    def paste(self, target, text, submit):
+    def paste(self, target, text, submit, server=None):
         self._rec.record("tmux.paste", target=target, text=text, submit=submit)
 
-    def display_message(self, text, *, duration_ms=None):
+    def display_message(self, text, *, duration_ms=None, server=None):
         # Mirrors the bash watchdog's `tmux display-message -d <ms> "<text>"` alert
         # (no -t target). A user-visible mutation, so it records an effect.
         self._rec.record("tmux.display_message", text=text, duration_ms=duration_ms)

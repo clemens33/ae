@@ -368,16 +368,16 @@ class TmuxClient(abc.ABC):
     def display_option(self, target: str, option: str, server: str | None = None) -> str | None: ...
 
     @abc.abstractmethod
-    def set_option(self, target: str, option: str, value: str) -> None: ...
+    def set_option(self, target: str, option: str, value: str, server: str | None = None) -> None: ...
 
     @abc.abstractmethod
-    def unset_option(self, target: str, option: str) -> None: ...
+    def unset_option(self, target: str, option: str, server: str | None = None) -> None: ...
 
     @abc.abstractmethod
-    def paste(self, target: str, text: str, submit: bool) -> None: ...
+    def paste(self, target: str, text: str, submit: bool, server: str | None = None) -> None: ...
 
     @abc.abstractmethod
-    def display_message(self, text: str, *, duration_ms: int | None = None) -> None: ...
+    def display_message(self, text: str, *, duration_ms: int | None = None, server: str | None = None) -> None: ...
 
 
 class NullTmuxClient(TmuxClient):
@@ -397,16 +397,16 @@ class NullTmuxClient(TmuxClient):
     def display_option(self, target, option, server=None):
         return None
 
-    def set_option(self, target, option, value):
+    def set_option(self, target, option, value, server=None):
         raise NotImplementedError("phase 1 must not mutate tmux")
 
-    def unset_option(self, target, option):
+    def unset_option(self, target, option, server=None):
         raise NotImplementedError("phase 1 must not mutate tmux")
 
-    def paste(self, target, text, submit):
+    def paste(self, target, text, submit, server=None):
         raise NotImplementedError("phase 1 must not mutate tmux")
 
-    def display_message(self, text, *, duration_ms=None):
+    def display_message(self, text, *, duration_ms=None, server=None):
         raise NotImplementedError("phase 1 must not mutate tmux")
 
 
@@ -428,6 +428,10 @@ class Pane:
 # tab inside a value can never split a field, matching bash `IFS='|' read`.
 _PANE_LIST_FORMAT = "#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}"
 
+# The staged-paste token Claude shows for a large paste (ae:147); its presence in the
+# last 15 captured lines means the paste needs one extra Enter to submit.
+_PASTED_TEXT_RE = re.compile(r"\[Pasted text #[0-9]+ \+[0-9]+ lines\]")
+
 
 class RealTmuxClient(TmuxClient):
     """Subprocess-backed TmuxClient for the live daemon (slice 16-17).
@@ -442,10 +446,16 @@ class RealTmuxClient(TmuxClient):
     (a meta's default) both mean the default server (no `-L`); a named server prefixes
     `-L <server>`."""
 
-    def __init__(self, recorder, *, tmux_bin: str = "tmux", timeout: int = 2):
+    def __init__(self, recorder, *, tmux_bin: str = "tmux", timeout: int = 2, sleep=None):
         self._rec = recorder
         self._tmux_bin = tmux_bin
         self._timeout = timeout
+        if sleep is None:
+            import time
+
+            sleep = time.sleep
+        # Injected so the paste readiness pauses (ae's 0.1/0.2 sleeps) never wait in tests.
+        self._sleep = sleep
 
     @staticmethod
     def _server_args(server) -> list:
@@ -508,18 +518,62 @@ class RealTmuxClient(TmuxClient):
         out = out.strip()
         return out or None
 
-    # ── mutations: slice 4 ──────────────────────────────────────────────
-    def set_option(self, target, option, value):
-        raise NotImplementedError("RealTmuxClient write path lands in slice 4")
+    # ── mutations: run the tmux write, then record exactly one effect ───
+    def _run_write(self, args) -> str:
+        """A mutation subprocess. A nonzero exit / spawn failure / timeout RAISES
+        (loud) — unlike bash's `2>/dev/null || true`, a long-lived daemon must know a
+        write failed rather than record a phantom effect. Returns stdout on success."""
+        rc, out = self._run(args)
+        if rc != 0:
+            raise RuntimeError(f"tmux write failed (rc={rc}): {args}")
+        return out
 
-    def unset_option(self, target, option):
-        raise NotImplementedError("RealTmuxClient write path lands in slice 4")
+    def _pane_command(self, target, server=None) -> str:
+        """The pane's foreground command (ae:157) — drives the paste dialect. A read:
+        degrades to '' on failure, so paste falls back to the plain (non-codex) path."""
+        rc, out = self._run(
+            [*self._server_args(server), "display-message", "-p", "-t", target, "#{pane_current_command}"]
+        )
+        return out.strip() if rc == 0 else ""
 
-    def paste(self, target, text, submit):
-        raise NotImplementedError("RealTmuxClient write path lands in slice 4")
+    def set_option(self, target, option, value, server=None):
+        self._run_write([*self._server_args(server), "set-option", "-t", target, option, value])
+        self._rec.record("tmux.set_option", target=target, option=option, value=value)
 
-    def display_message(self, text, *, duration_ms=None):
-        raise NotImplementedError("RealTmuxClient write path lands in slice 4")
+    def unset_option(self, target, option, server=None):
+        self._run_write([*self._server_args(server), "set-option", "-t", target, "-u", option])
+        self._rec.record("tmux.unset_option", target=target, option=option)
+
+    def display_message(self, text, *, duration_ms=None, server=None):
+        args = [*self._server_args(server), "display-message"]
+        if duration_ms is not None:
+            args += ["-d", str(duration_ms)]
+        args.append(text)
+        self._run_write(args)
+        self._rec.record("tmux.display_message", text=text, duration_ms=duration_ms)
+
+    def paste(self, target, text, submit, server=None):
+        """Port of tmux_paste_submit (ae:120-151). Stage via set-buffer+paste-buffer
+        (bracketed `-p` for codex), then submit with Enter and — for claude — one
+        bounded readiness retry when the staged-paste token is in the last 15 lines.
+        Every internal tmux process carries the SAME server args. Records ONE
+        tmux.paste effect only after the full logical mutation succeeds."""
+        sa = self._server_args(server)
+        cmd = self._pane_command(target, server)
+        buf = f"ae-ps-{os.getpid()}-{target}"
+        bracketed = ["-p"] if cmd == "codex" else []
+        self._run_write(
+            [*sa, "set-buffer", "-b", buf, "--", text, ";", "paste-buffer", "-d", *bracketed, "-b", buf, "-t", target]
+        )
+        if submit:
+            self._sleep(0.1)
+            self._run_write([*sa, "send-keys", "-t", target, "Enter"])
+            if cmd == "claude":
+                self._sleep(0.2)
+                rc, out = self._run([*sa, "capture-pane", "-p", "-t", target])
+                if rc == 0 and _PASTED_TEXT_RE.search("\n".join(out.splitlines()[-15:])):
+                    self._run_write([*sa, "send-keys", "-t", target, "Enter"])
+        self._rec.record("tmux.paste", target=target, text=text, submit=submit)
 
 
 def collect_inputs(ae_home: Path, tmux: TmuxClient, recorder: EffectRecorder) -> list[str]:
