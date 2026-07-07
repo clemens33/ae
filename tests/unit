@@ -495,9 +495,12 @@ assert_eq "helpers: send uses shared submit helper" \
     "1" \
     "$([[ "$AE_SOURCE" == *'ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"'* ]] && echo 1 || echo 0)"
 
-assert_eq "helpers: launch paste helper handles staged Claude pastes" \
+# Unified: launch paste (tmux_paste_submit) delegates to ae_submit_pasted_message
+# so the two paste paths can't drift; staged-claude detection lives in the shared
+# _paste_still_staged predicate.
+assert_eq "helpers: launch paste delegates to the shared submit helper" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ "$cmd" == "claude" ]]'* && "$AE_SOURCE" == *'tail -n 15'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'ae_submit_pasted_message "$pane" "$tool" "$buf" "$text"'* ]] && echo 1 || echo 0)"
 
 # ── events.jsonl infrastructure ─────────────────────────────────────
 
@@ -4118,6 +4121,105 @@ _rwm_status=0
 (_rw_resume_missing) >/dev/null 2>&1 || _rwm_status=$?
 assert_eq "workers-resume: undefined alias errors loudly (codex empty-cmd)" "1" "$_rwm_status"
 
+# ── request-integrity-2 R2: spawned-slot stability across a compacting resume ─────────
+# _resolve_spawned must preserve each survivor's ORIGINAL spawned.N index across a
+# gap. A retire removes exactly one agent.spawned.<n> line; renumbering the rest
+# would break the slot key and orphan any in-flight slotted request to it.
+eval "$(awk '/^_spawned_meta_indices\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_resolve_spawned\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^read_session_meta\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_rs_tmp="$(mktemp -d)"
+_rs_run() {  # <session>; meta on stdin -> "idx:alias:name;idx:alias:name;..." (resolved only)
+    local sess="$1" metadir="$_rs_tmp/$1" i out=""
+    mkdir -p "$metadir"
+    cat >"$metadir/meta"
+    # shellcheck disable=SC2317  # invoked indirectly by _resolve_spawned
+    get_config() { case "$1" in agents.gone*) echo "" ;; agents.*) echo "cmd-$1" ;; esac; return 0; }
+    # shellcheck disable=SC2317
+    resolve_agent_session_id() { echo "sid"; return 0; }
+    SESSIONS_DIR="$_rs_tmp" WORKTREES_DIR="$_rs_tmp/.wt" SESSION="$sess" _resolve_spawned
+    for i in "${!SPAWNED_ALIASES[@]}"; do out+="${SPAWNED_IDX[$i]}:${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]};"; done
+    echo "${out%;}"
+}
+# _spawned_meta_indices returns present indices numerically, skipping the gap.
+mkdir -p "$_rs_tmp/idx"
+printf 'agent.spawned.2=c:z:u\nagent.spawned.1=a:y:u\n' >"$_rs_tmp/idx/meta"
+assert_eq "spawned-indices: gap skipped, numeric order" "1
+2" "$(SESSIONS_DIR="$_rs_tmp" WORKTREES_DIR="$_rs_tmp/.wt" _spawned_meta_indices idx)"
+# Retire spawned.0 -> survivors keep 1,2 (a renumber would yield 0,1).
+assert_eq "spawned-resume: indices preserved across a retire gap (no renumber)" \
+    "1:optimal:builderB;2:codex:builderC" \
+    "$(_rs_run gap <<'META'
+mode=local
+agent.spawned.1=optimal:builderB:uuidb
+agent.spawned.2=codex:builderC:uuidc
+META
+)"
+# An unresolved (alias-missing) earlier slot must not renumber the resolved survivor.
+assert_eq "spawned-resume: resolved keeps its index when an earlier slot is unresolved" \
+    "2:codex:builderC" \
+    "$(_rs_run mix 2>/dev/null <<'META'
+agent.spawned.0=goneAlias:builderA:uuida
+agent.spawned.2=codex:builderC:uuidc
+META
+)"
+# Unresolved entries carry their ORIGINAL index in UNRESOLVED_IDX (re-emitted in place).
+_rs_unres_idx() {  # runs _resolve_spawned in THIS subshell so UNRESOLVED_IDX is visible
+    local metadir="$_rs_tmp/un2"
+    mkdir -p "$metadir"
+    printf 'agent.spawned.0=goneAlias:builderA:uuida\nagent.spawned.3=codex:builderC:uuidc\n' >"$metadir/meta"
+    # shellcheck disable=SC2317
+    get_config() { case "$1" in agents.gone*) echo "" ;; agents.*) echo "cmd-$1" ;; esac; return 0; }
+    # shellcheck disable=SC2317
+    resolve_agent_session_id() { echo "sid"; return 0; }
+    SESSIONS_DIR="$_rs_tmp" WORKTREES_DIR="$_rs_tmp/.wt" SESSION="un2" _resolve_spawned 2>/dev/null
+    echo "${UNRESOLVED_IDX[*]:-none}"
+}
+assert_eq "spawned-resume: unresolved keeps original index" "0" "$(_rs_unres_idx)"
+
+# ── request-integrity-2 I1: live-stamp @ae_slot onto running panes at refresh ─────────
+# _stamp_live_slots maps each unstamped pane's @ae_agent to its meta slot and stamps
+# @ae_slot. Idempotent (a pane with a valid slot is skipped) so it is safe at launch
+# and at doctor --refresh; a pane whose @ae_agent isn't in meta (external) is left alone.
+eval "$(awk '/^_valid_slot\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_stamp_live_slots\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_sls_tmp="$(mktemp -d)"
+_sls_run() {  # emits "PANE SLOT" per stamped pane
+    local metafile="$_sls_tmp/meta"
+    cat >"$metafile" <<'META'
+tmux_server=
+agent.main=claude:lead:uuidm
+agent.worker.0=optimal:builder:uuidw
+agent.spawned.1=codex:helper:uuids
+META
+    # shellcheck disable=SC2317  # invoked indirectly by _stamp_live_slots
+    tmux() {
+        if [[ "$1" == list-panes ]]; then
+            # %1 already stamped (idempotent skip); %2/%3 unstamped mapped panes;
+            # %4 unstamped but external (@ae_agent not in meta -> skip). '|'
+            # delimiter with an EMPTY slot field — the tab-collapse repro.
+            printf '%s|%s|%s\n' "%1" "main" "claude:lead"
+            printf '%s|%s|%s\n' "%2" "" "optimal:builder"
+            printf '%s|%s|%s\n' "%3" "" "codex:helper"
+            printf '%s|%s|%s\n' "%4" "" "someone:external"
+            return 0
+        fi
+        if [[ "$1" == set-option ]]; then
+            printf '%s %s\n' "$4" "$6" >>"$_sls_tmp/stamps"
+        fi
+        return 0
+    }
+    : >"$_sls_tmp/stamps"
+    _stamp_live_slots "sess" "$metafile"
+    cat "$_sls_tmp/stamps" 2>/dev/null || true
+}
+assert_eq "stamp-live: unstamped mapped panes stamped, stamped+external skipped" \
+    "%2 worker.0
+%3 spawned.1" \
+    "$(_sls_run)"
+# No meta file -> no-op (never crashes).
+assert_eq "stamp-live: missing meta is a no-op" "" "$(_stamp_live_slots sess /nonexistent/meta && echo "" || echo ERR)"
+
 # ── request-integrity Bug B (foundational): @ae_slot stamping + slot helpers ─────────
 eval "$(awk '/^_valid_slot\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 assert_eq "valid-slot: main" "ok" "$(_valid_slot main && echo ok || echo no)"
@@ -4195,14 +4297,243 @@ eval "$(awk '/^ae_slot_resolver\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _slotres_run() {  # <want_session> <want_slot> -> resolved ref
     local ws="$1" wslot="$2"
     _AE_SESSION="s1"
-    # shellcheck disable=SC2317
-    tmux() { [[ "$1" == list-panes ]] || return 0; printf '%%1\tmain\tclaude:lead\n%%2\tworker.0\topus48:builder\n'; return 0; }
+    # shellcheck disable=SC2317  # '|' delimiter — matches the resolver's -F
+    tmux() { [[ "$1" == list-panes ]] || return 0; printf '%%1|main|claude:lead\n%%2|worker.0|opus48:builder\n'; return 0; }
     ae_slot_resolver "$ws" "$wslot"
 }
 assert_eq "slot-resolver: worker.0 same session -> current agent" "opus48:builder" "$(_slotres_run '' worker.0)"
 assert_eq "slot-resolver: main same session -> current agent" "claude:lead" "$(_slotres_run s1 main)"
 assert_eq "slot-resolver: cross-session -> @session:agent" "@s2:opus48:builder" "$(_slotres_run s2 worker.0)"
 assert_eq "slot-resolver: unknown slot -> empty (routing falls back to name)" "" "$(_slotres_run '' worker.9)"
+# lead: an UNSTAMPED pane (empty @ae_slot MIDDLE field) must not collapse under
+# IFS and mis-route — the resolver still finds the stamped worker.0 pane.
+_slotres_unstamped() {
+    _AE_SESSION="s1"
+    # shellcheck disable=SC2317  # %3 is unstamped: empty slot field between '|'s
+    tmux() { [[ "$1" == list-panes ]] || return 0; printf '%%3||someone:external\n%%2|worker.0|opus48:builder\n'; return 0; }
+    ae_slot_resolver '' worker.0
+}
+assert_eq "slot-resolver: unstamped pane present -> still routes to stamped pane" "opus48:builder" "$(_slotres_unstamped)"
+
+# ── request-integrity-2 Bug C: paste submit-verification + protect-human-typing ──────
+eval "$(awk '/^_paste_still_staged\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_paste_input_busy\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^ae_submit_pasted_message\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+
+# still-staged predicate — per-tool, positive-only (unverifiable -> submitted).
+_pss() {  # <tool> <msg> <capture-fixture> -> staged|clear
+    local _CAP="$3"
+    # shellcheck disable=SC2317
+    tmux() { [[ "$1" == capture-pane ]] && printf '%s\n' "$_CAP"; return 0; }
+    _paste_still_staged "%1" "$1" "$2" && echo staged || echo clear
+}
+assert_eq "still-staged: claude [Pasted text] token -> staged" "staged" "$(_pss claude msg $'> \n[Pasted text #3 +5 lines]')"
+assert_eq "still-staged: claude clear input -> clear (submitted)" "clear" "$(_pss claude msg $'───\n❯ \n───')"
+# Codex positive staged-detection DROPPED (codex code-round F4): a color-stripped
+# capture can't isolate the input box, and a just-submitted SHORT message echoes
+# into the visible transcript -> matching text there would false-positive -> a
+# false UNCONFIRMED -> the sender DUPLICATES an already-sent message. Codex now
+# always reports "clear" (non-regressive; the send-path busy-defer covers the
+# swallowed-Enter exhibit). The history-echo fixture that used to false-positive
+# must return clear.
+assert_eq "still-staged: codex message echoed in history but input clear -> clear (no dup)" "clear" "$(_pss codex $'please\nreview the diff' $'› review the diff\n\n  gpt-5.5 xhigh · ~/p')"
+assert_eq "still-staged: codex never positively staged (dropped) -> clear" "clear" "$(_pss codex $'anything' $'› some text\n  gpt-5.5 xhigh · ~/p')"
+assert_eq "still-staged: no capture -> clear (cannot confirm, non-regressive)" "clear" "$(_pss codex msg '')"
+
+# input-busy predicate — fail-CLOSED (unsafe unless a confident idle+empty read).
+_pib() {  # <tool> <capture-fixture> -> safe|unsafe
+    local _CAP="$2"
+    # shellcheck disable=SC2317
+    tmux() { [[ "$1" == capture-pane ]] && printf '%s\n' "$_CAP"; return 0; }
+    _paste_input_busy "%1" "$1" && echo unsafe || echo safe
+}
+assert_eq "input-busy: claude empty prompt -> safe" "safe" "$(_pib claude $'───\n❯ \n───')"
+assert_eq "input-busy: claude typed text -> unsafe (protect human input)" "unsafe" "$(_pib claude $'❯ Would you go with the sep')"
+assert_eq "input-busy: claude staged token -> unsafe" "unsafe" "$(_pib claude $'❯ \n[Pasted text #1 +4 lines]')"
+assert_eq "input-busy: claude mid-generation (no bare prompt) -> unsafe" "unsafe" "$(_pib claude $'✻ Crunched for 23s')"
+assert_eq "input-busy: codex idle footer -> safe" "safe" "$(_pib codex $'› Write tests\n\n  gpt-5.5 xhigh · ~/projects/ae')"
+assert_eq "input-busy: codex mid-generation (no footer) -> unsafe" "unsafe" "$(_pib codex $'─ Worked for 2m 45s ─')"
+assert_eq "input-busy: modeled tool, no capture -> unsafe (fail-closed)" "unsafe" "$(_pib codex '')"
+# Unknown tools (gemini/opencode/shells/dummies) have no predicate -> ALLOW, so
+# fail-closed doesn't break every send to a non-claude/codex target.
+assert_eq "input-busy: unknown tool -> safe (no predicate, don't regress)" "safe" "$(_pib bash $'$ ')"
+
+# submit-verification bounded retry + LOUD failure. Stub _paste_still_staged to
+# stay staged for the first N checks; count Enter keystrokes.
+_asp() {  # <staged-for-N-checks> -> "rc=? enters=? checks=?"
+    local staged_for="$1" checks=0 enters=0 rc
+    # shellcheck disable=SC2317
+    sleep() { :; }
+    # shellcheck disable=SC2317
+    _paste_still_staged() { checks=$((checks + 1)); ((checks <= staged_for)) && return 0 || return 1; }
+    # shellcheck disable=SC2317
+    tmux() { [[ "$1" == send-keys && "$*" == *Enter* ]] && enters=$((enters + 1)); return 0; }
+    ae_submit_pasted_message "%1" "codex" "buf" "hi" 2>/dev/null
+    rc=$?
+    echo "rc=$rc enters=$enters checks=$checks"
+}
+assert_eq "submit-verify: submits first try -> rc=0, one Enter" "rc=0 enters=1 checks=1" "$(_asp 0)"
+assert_eq "submit-verify: staged once then clears -> rc=0, retry Enter" "rc=0 enters=2 checks=2" "$(_asp 1)"
+assert_eq "submit-verify: never submits -> rc=1 LOUD after bounded 2 retries" "rc=1 enters=3 checks=3" "$(_asp 9)"
+# The loud failure writes a warning to stderr.
+_asp_loud() {  # always-staged -> emits the LOUD warning to stderr
+    # shellcheck disable=SC2317
+    sleep() { :; }
+    # shellcheck disable=SC2317
+    _paste_still_staged() { return 0; }
+    # shellcheck disable=SC2317
+    tmux() { return 0; }
+    ae_submit_pasted_message "%1" codex buf hi
+}
+assert_eq "submit-verify: unconfirmed writes a LOUD stderr warning" "1" \
+    "$(_asp_loud 2>&1 1>/dev/null | grep -c 'submit UNCONFIRMED')"
+
+# helper_send_main reorder: inspect input (busy?) BEFORE the cancel keystroke,
+# and fail LOUD (exit 1) on an unconfirmed submit — no false send event.
+assert_eq "send-reorder: input-busy check precedes the cancel keystroke" "1" \
+    "$([[ "$AE_SOURCE" == *'while _paste_input_busy "$target" "$tool"'*'send-keys -t "$target" -X cancel'* ]] && echo 1 || echo 0)"
+assert_eq "send-reorder: unconfirmed submit exits 1 without emitting a send event" "1" \
+    "$([[ "$AE_SOURCE" == *'if ! ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"; then'*'UNCONFIRMED'*'exit 1'* ]] && echo 1 || echo 0)"
+
+# F1 (hazard read): the LAUNCH path was dummy=bash-blind. A MODELED tool whose
+# paste never submits makes ae_submit_pasted_message -> return 1, which
+# tmux_paste_submit PROPAGATES — hence the `|| true` guards at the launch sites.
+eval "$(awk '/^pane_current_command\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^tmux_paste_submit\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_tps_staged() {  # modeled tool stays staged -> propagated nonzero
+    local rc
+    # shellcheck disable=SC2317
+    sleep() { :; }
+    # shellcheck disable=SC2317
+    tmux() {
+        case "$1" in
+            display-message) printf 'claude' ;;                    # pane_current_command
+            capture-pane) printf '> \n[Pasted text #2 +7 lines]\n' ;; # always staged
+        esac
+        return 0
+    }
+    tmux_paste_submit "%1" "a long message that never submits"
+    rc=$?
+    echo "$rc"
+}
+assert_eq "F1: launch paste propagates nonzero when a modeled tool never submits" "1" "$(_tps_staged 2>/dev/null)"
+
+# ── request-integrity-2 shell guard (lead ruling): interpreted-sink protection ───────
+# A real agent that dies drops its pane to a shell; a send's paste + Enter would
+# EXECUTE the message as a command. _pane_agent_is_dead refuses ONLY when the pane
+# is a shell AND the expected agent_bin is a real (non-shell) agent — so a
+# shell-BASED agent (dummy=bash) and live agents still deliver.
+eval "$(awk '/^command_is_shell\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_agent_bin_for_pane\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_pane_agent_is_dead\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_pad() {  # <pane-foreground-command> <agent_bin> -> dead|alive
+    local _PROC="$1" _ABIN="$2"
+    # shellcheck disable=SC2317
+    tmux() { [[ "$1" == display-message ]] && printf '%s' "$_PROC"; return 0; }
+    # shellcheck disable=SC2317
+    _agent_bin_for_pane() { printf '%s' "$_ABIN"; }
+    _pane_agent_is_dead "%1" && echo dead || echo alive
+}
+assert_eq "dead-shell: real agent dropped to shell -> dead (REFUSE)" "dead" "$(_pad bash claude)"
+assert_eq "dead-shell: live real agent in foreground -> alive (deliver)" "alive" "$(_pad claude claude)"
+assert_eq "dead-shell: node-wrapped live agent -> alive" "alive" "$(_pad node claude)"
+assert_eq "dead-shell: shell-based agent (dummy=bash) -> alive (don't break dummy delivery)" "alive" "$(_pad bash bash)"
+assert_eq "dead-shell: undeterminable agent_bin -> alive (fail-open, don't break delivery)" "alive" "$(_pad bash '')"
+assert_eq "dead-shell: empty/unreadable pane command + real agent -> dead (fail-closed)" "dead" "$(_pad '' codex)"
+
+# _agent_bin_for_pane reads agent_bin.<slot> from the pane's OWN session meta.
+_abfp_tmp="$(mktemp -d)"
+mkdir -p "$_abfp_tmp/sessX"
+printf 'agent_bin.main=claude\nagent_bin.worker.0=codex\n' >"$_abfp_tmp/sessX/meta"
+_abfp() {  # <slot> -> agent_bin
+    local _SLOT="$1" _AE_SESSIONS_DIR="$_abfp_tmp"
+    # shellcheck disable=SC2317
+    tmux() {
+        [[ "$1" == display-message ]] || return 0
+        case "$*" in
+            *@ae_slot*) printf '%s' "$_SLOT" ;;
+            *'#S'*) printf 'sessX' ;;
+        esac
+        return 0
+    }
+    _agent_bin_for_pane "%1"
+}
+assert_eq "agent-bin-for-pane: reads agent_bin.<slot> from the pane's session meta" "claude" "$(_abfp main)"
+assert_eq "agent-bin-for-pane: worker slot" "codex" "$(_abfp worker.0)"
+assert_eq "agent-bin-for-pane: unstamped (invalid slot) -> empty" "" "$(_abfp '')"
+
+# helper_send_main refuses a dead-shell target BEFORE the lock (fail fast, no defer).
+assert_eq "send-guard: dead-shell refusal precedes the lock" "1" \
+    "$([[ "$AE_SOURCE" == *'if _pane_agent_is_dead "$target"; then'*'REFUSED'*'exit 1'*'ae_lock_target "$target"'* ]] && echo 1 || echo 0)"
+# helper_interrupt_main refuses a MESSAGE-carrying interrupt to a dead-shell pane
+# (same sink); a no-message interrupt (bare cancel keystrokes) is unaffected.
+assert_eq "interrupt-guard: message interrupt to a dead-shell pane refuses (same sink)" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ -n "$msg" ]] && _pane_agent_is_dead "$target"; then'*'interrupt of '*'REFUSED'*'exit 1'* ]] && echo 1 || echo 0)"
+# Behavioral: a message interrupt to a dead real-agent pane exits nonzero and pastes nothing.
+eval "$(awk '/^helper_interrupt_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_int_dead() {  # -> "rc=? pasted=?"
+    local rc pasted=0
+    # shellcheck disable=SC2317,SC2034  # AE_RESOLVED_AGENT read by helper_interrupt_main
+    ae_resolve() {
+        AE_RESOLVED_PANE="%9"
+        AE_RESOLVED_AGENT="claude:ghost"
+        return 0
+    }
+    # shellcheck disable=SC2317
+    _pane_agent_is_dead() { return 0; } # dead real agent
+    # shellcheck disable=SC2317
+    ae_lock_target() { return 0; }
+    # shellcheck disable=SC2317
+    ae_submit_pasted_message() { pasted=1; return 0; }
+    # shellcheck disable=SC2317
+    ae_unlock_target() { return 0; }
+    # shellcheck disable=SC2317
+    ae_emit_event() { return 0; }
+    # shellcheck disable=SC2317
+    tmux() { return 0; }
+    # shellcheck disable=SC2317
+    sleep() { :; }
+    ( helper_interrupt_main claude:ghost "stop and run rm -rf" ) 2>/dev/null
+    rc=$?
+    echo "rc=$rc pasted=$pasted"
+}
+assert_eq "interrupt-guard: dead-agent message interrupt exits 1, pastes nothing" "rc=1 pasted=0" "$(_int_dead)"
+# codex code-round: a message interrupt whose submit is UNCONFIRMED must exit 1
+# and emit NO interrupt event (the "false delivered" class the send path fixes).
+_int_unconfirmed() {  # live target, submit fails -> "rc=? emitted=?"
+    local rc evfile
+    evfile="$(mktemp)" # a FILE survives the subshell fork (a var would not)
+    # shellcheck disable=SC2317,SC2034  # AE_RESOLVED_AGENT read by helper_interrupt_main
+    ae_resolve() {
+        AE_RESOLVED_PANE="%9"
+        AE_RESOLVED_AGENT="claude:live"
+        return 0
+    }
+    # shellcheck disable=SC2317
+    _pane_agent_is_dead() { return 1; } # alive
+    # shellcheck disable=SC2317
+    ae_lock_target() { return 0; }
+    # shellcheck disable=SC2317
+    ae_target_tool() { echo claude; }
+    # shellcheck disable=SC2317
+    ae_submit_pasted_message() { return 1; } # submit UNCONFIRMED
+    # shellcheck disable=SC2317
+    ae_unlock_target() { return 0; }
+    # shellcheck disable=SC2317
+    ae_emit_event() {
+        echo x >>"$evfile"
+        return 0
+    }
+    # shellcheck disable=SC2317
+    tmux() { return 0; }
+    # shellcheck disable=SC2317
+    sleep() { :; }
+    ( helper_interrupt_main claude:live "stop now" ) 2>/dev/null
+    rc=$?
+    echo "rc=$rc emitted=$([[ -s "$evfile" ]] && echo 1 || echo 0)"
+    rm -f "$evfile"
+}
+assert_eq "interrupt-verify: unconfirmed submit exits 1, emits NO interrupt event" "rc=1 emitted=0" "$(_int_unconfirmed)"
 
 # ── Results ──────────────────────────────────────────────────────────
 

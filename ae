@@ -123,37 +123,17 @@ get_config() {
     printf '%s' "$result"
 }
 
-# Atomic paste-and-submit: set buffer, paste, and send C-m in one tmux server call.
-# Eliminates race between paste-buffer and send-keys that caused agents to not start.
-# Usage: tmux_paste_submit <pane> <text>
+# Launch-time paste-and-submit. Delegates to ae_submit_pasted_message (the
+# single unified paste+submit-verify impl) so the two paste paths can't drift —
+# the tool-specific bracketed-paste + staged-recheck logic lives in ONE place.
+# ae_submit_pasted_message is a column-0 fn, so it is available here at launch as
+# well as in the generated helpers (via _lib). Usage: tmux_paste_submit <pane> <text>
 tmux_paste_submit() {
     local pane="$1" text="$2"
     local buf="ae-ps-$$-${pane}"
-    local cmd
-    cmd="$(pane_current_command "$pane")"
-
-    if [[ "$cmd" == "codex" ]]; then
-        # Codex expects bracketed-paste mode for injected input.
-        tmux set-buffer -b "$buf" -- "$text" \; \
-            paste-buffer -d -p -b "$buf" -t "$pane"
-        sleep 0.1
-        tmux send-keys -t "$pane" Enter
-        return 0
-    fi
-
-    tmux set-buffer -b "$buf" -- "$text" \; \
-        paste-buffer -d -b "$buf" -t "$pane"
-    sleep 0.1
-    tmux send-keys -t "$pane" Enter
-
-    # Claude sometimes stages large pastes as a "[Pasted text #…]" token
-    # that requires an extra submit keystroke.
-    if [[ "$cmd" == "claude" ]]; then
-        sleep 0.2
-        if tmux capture-pane -p -t "$pane" 2>/dev/null | tail -n 15 | grep -Eq '\[Pasted text #[0-9]+ \+[0-9]+ lines\]'; then
-            tmux send-keys -t "$pane" Enter
-        fi
-    fi
+    local tool
+    tool="$(pane_current_command "$pane")"
+    ae_submit_pasted_message "$pane" "$tool" "$buf" "$text"
 }
 
 shell_quote() {
@@ -1197,6 +1177,66 @@ _resolve_workers() {
             WORKER_NAMES[i]="${wn}-${i}"
         fi
         _name_seen["${WORKER_NAMES[$i]}"]=1
+    done
+    return 0
+}
+
+# Present spawned indices from a session's meta, in numeric order, WITHOUT
+# renumbering. A retire removes exactly one agent.spawned.<n> line, leaving a
+# gap; this returns the survivors' ORIGINAL indices so resume can preserve them
+# (R2 — a renumber would break the slot key and orphan in-flight slotted
+# requests). Query helper: result is stdout, exit status incidental (set -e).
+_spawned_meta_indices() {
+    local session_name="$1" meta
+    meta="${SESSIONS_DIR}/${session_name}/meta"
+    [[ -f "$meta" ]] || meta="${WORKTREES_DIR}/${session_name}/.ae/${session_name}/meta"
+    [[ -f "$meta" ]] || return 0
+    grep -oE '^agent\.spawned\.[0-9]+' "$meta" 2>/dev/null | sed -E 's/.*\.//' | sort -n -u || true
+    return 0
+}
+
+# Recover spawned agents from meta on resume, PRESERVING each survivor's
+# original spawned.N index across gaps. Populates the SPAWNED_* globals
+# (parallel arrays; SPAWNED_IDX carries the original index alongside each
+# entry) plus UNRESOLVED_SPAWNED/UNRESOLVED_IDX for entries whose alias is no
+# longer configured on this machine. Symmetric with _resolve_workers: meta wins
+# on resume, cmd comes from config by alias. No tmux — pure, unit-testable.
+_resolve_spawned() {
+    SPAWNED_ALIASES=()
+    SPAWNED_NAMES=()
+    SPAWNED_CMDS=()
+    SPAWNED_SESSION_IDS=()
+    SPAWNED_IDX=()
+    UNRESOLVED_SPAWNED=()
+    UNRESOLVED_IDX=()
+    local _idxs
+    _idxs="$(_spawned_meta_indices "$SESSION")"
+    [[ -n "$_idxs" ]] || return 0
+    local _si _saved _salias _srest _sname _scmd
+    for _si in $_idxs; do
+        _saved="$(read_session_meta "$SESSION" "agent.spawned.${_si}")"
+        [[ -n "$_saved" ]] || continue
+        # Format: alias:name:session_id
+        _salias="${_saved%%:*}"
+        _srest="${_saved#*:}"
+        _sname="${_srest%%:*}"
+        _scmd="$(get_config "agents.${_salias}")"
+        if [[ -n "$_scmd" ]]; then
+            SPAWNED_ALIASES+=("$_salias")
+            SPAWNED_NAMES+=("$_sname")
+            SPAWNED_CMDS+=("$_scmd")
+            SPAWNED_SESSION_IDS+=("$(resolve_agent_session_id "$_scmd" "spawned.${_si}")")
+            SPAWNED_IDX+=("$_si")
+        else
+            # Loud, not silent (audit finding): after a transfer the destination
+            # config may lack the alias — dropping the worker quietly loses the
+            # operator's intent. Preserve the raw entry AND its original index so
+            # the meta rewrite re-emits it in place and a later resume (with the
+            # alias added) can still restore the worker.
+            UNRESOLVED_SPAWNED+=("$_saved")
+            UNRESOLVED_IDX+=("$_si")
+            echo "Warning: spawned agent '${_salias}:${_sname}' NOT restored — alias '${_salias}' missing from this machine's ae config. Entry preserved; add the alias and resume again." >&2
+        fi
     done
     return 0
 }
@@ -5540,7 +5580,12 @@ _cmd_spawn() {
             _ready_i=$((_ready_i + 1))
         done
         tmux select-pane -t "$pane_id"
-        tmux_paste_submit "$pane_id" "$prompt"
+        # || true: launch paste is fire-and-forget — a slow-booting modeled TUI
+        # whose paste stays staged past the bounded verify-retries now returns
+        # non-zero, and this bare call runs under set -e. The launch must not
+        # abort on an unconfirmed submit (the verify-retry still helped). The
+        # agent-to-agent send path keeps the loud failure; launch swallows it.
+        tmux_paste_submit "$pane_id" "$prompt" || true
         # A booting TUI can swallow the quick post-paste Enter, leaving the
         # prompt staged in the input box (live-dogfood find). Verify the text
         # actually left the input; nudge Enter once more if it lingers.
@@ -5983,7 +6028,10 @@ send_agent_cmd() {
     launch_script="$(write_launch_script "$meta_dir" "$slot" "$launch_cmd")"
     launch_exec="$(shell_quote "$launch_script")"
 
-    tmux_paste_submit "$pane" "$launch_exec"
+    # || true: fire-and-forget launch paste (of the launch command into the
+    # shell) must not abort the launch on an unconfirmed submit — see the 3
+    # $prompt sites. Safe today (shell tool -> return 0), guarded defensively.
+    tmux_paste_submit "$pane" "$launch_exec" || true
     # Brief wait to confirm launch started (don't block attach on slow agent init)
     wait_for_agent_start "$pane" "$tool_kind" 10 || true
 
@@ -5995,7 +6043,7 @@ send_agent_cmd() {
                     sleep 3 &&
                         if [[ "$(pane_current_command "$pane")" == "codex" ]]; then
                             tmux select-pane -t "$pane"
-                            tmux_paste_submit "$pane" "$prompt"
+                            tmux_paste_submit "$pane" "$prompt" || true # fire-and-forget launch paste
                         fi
                 ) &
             fi
@@ -6007,7 +6055,7 @@ send_agent_cmd() {
                     sleep 3 &&
                         if [[ "$(pane_current_command "$pane")" == "opencode" ]]; then
                             tmux select-pane -t "$pane"
-                            tmux_paste_submit "$pane" "$prompt"
+                            tmux_paste_submit "$pane" "$prompt" || true # fire-and-forget launch paste
                         fi
                 ) &
             fi
@@ -6359,7 +6407,13 @@ ae_slot_resolver() {
     local want_session="$1" want_slot="$2" pid pslot pagent
     [[ -n "$want_slot" ]] || return 0
     local search="${want_session:-$_AE_SESSION}"
-    while IFS=$'\t' read -r pid pslot pagent; do
+    # '|' delimiter, NOT tab: @ae_slot is the MIDDLE field and an UNSTAMPED pane
+    # emits it empty — tab is IFS-whitespace, so `read` would collapse the empty
+    # field and slide the AGENT value into pslot. Benign today (a misparsed agent
+    # ref can't equal a valid want_slot, so unstamped panes are skipped by
+    # accident), but it is the same class fixed in _stamp_live_slots and one
+    # refactor from biting. '|' is non-whitespace, so empty fields survive.
+    while IFS='|' read -r pid pslot pagent; do
         [[ "$pslot" == "$want_slot" ]] || continue
         [[ -n "$pagent" ]] || continue
         if [[ -n "$want_session" && "$want_session" != "$_AE_SESSION" ]]; then
@@ -6368,7 +6422,7 @@ ae_slot_resolver() {
             printf '%s' "$pagent"
         fi
         return 0
-    done < <(tmux list-panes -s -t "$search" -F '#{pane_id}	#{@ae_slot}	#{@ae_agent}' 2>/dev/null || true)
+    done < <(tmux list-panes -s -t "$search" -F '#{pane_id}|#{@ae_slot}|#{@ae_agent}' 2>/dev/null || true)
     return 0
 }
 
@@ -6378,6 +6432,72 @@ _valid_slot() {
     # Anchored: exactly main / worker.<digits> / spawned.<digits> — a loose glob accepted
     # worker.0x, letting a malformed/tampered @ae_slot mint a bogus slotted event.
     [[ "$1" =~ ^(main|worker\.[0-9]+|spawned\.[0-9]+)$ ]]
+}
+
+# I1: stamp @ae_slot onto RUNNING panes that lack it, mapping each pane's
+# @ae_agent (alias:name) to its meta slot. Idempotent — a pane with a valid
+# @ae_slot is skipped — so it is safe to run at every launch (a no-op there, the
+# panes are freshly stamped) AND at `doctor --refresh`, which is the point: a
+# session started BEFORE slot-keyed identity landed carries no @ae_slot, so its
+# new requests fall back to name matching until a full resume; this stamps live.
+#
+# Called from the SYNC_SESSION_ASSETS_BODY marker region so both launch (the
+# real def) and refresh (the wrapper's awk-source of that region) run it. It is
+# a column-0 fn — defined for BOTH the launch process and the doctor process —
+# because the refresh path only awk-sources the marker BODY; a fn defined inside
+# the launch block would be invisible there and break --refresh.
+#
+# tmux-server-aware WITHOUT AE_TMUX_SERVER: `doctor --refresh` runs from a plain
+# shell where that env var is unset, so the server is read from the session's
+# own meta (matches sync_existing_session_assets' watchdog-restart path).
+_stamp_live_slots() {
+    local sess="$1" meta_file="$2"
+    [[ -n "$sess" ]] || return 0
+    [[ -f "$meta_file" ]] || return 0
+    local _srv
+    _srv="$(grep '^tmux_server=' "$meta_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    local -a _st=(tmux)
+    if [[ -n "$_srv" ]]; then
+        _st=(command tmux -L "$_srv")
+    fi
+    # Reverse map: alias:name (display, :uuid stripped) -> slot, from meta.
+    # F5 (transition-only, best-effort): keyed by DISPLAY name — the churn-prone
+    # key slot-identity exists to replace. Two panes sharing a display name in
+    # ONE session would collapse (last-wins) -> a mis-stamp; distinct names are
+    # the norm and a mis-route self-heals at the next resume, so this is an
+    # acceptable limit for the one-shot live-transition stamp.
+    local -A _slot_by_agent=()
+    local _k _v _an
+    while IFS='=' read -r _k _v; do
+        case "$_k" in
+            agent.main | agent.worker.* | agent.spawned.*) ;;
+            *) continue ;;
+        esac
+        _an="${_v%:*}" # strip trailing :uuid -> alias:name
+        [[ -n "$_an" ]] || continue
+        _slot_by_agent["$_an"]="${_k#agent.}"
+    done <"$meta_file"
+    # Stamp each unstamped pane whose @ae_agent maps to a known slot. Delimiter is
+    # '|' (ae's convention for pane parsing — see the list-panes callers), NOT a
+    # tab: an UNSTAMPED pane has an EMPTY @ae_slot field, and tab is IFS-
+    # whitespace, so `read` would COLLAPSE the empty middle field and mis-parse
+    # the row — exactly the panes I1 must detect. '|' is non-whitespace, so empty
+    # fields survive. Agent names/slots/pane-ids never contain '|'.
+    local _pid _pslot _pagent _want
+    while IFS='|' read -r _pid _pslot _pagent; do
+        [[ -n "$_pid" ]] || continue
+        # Idempotent: leave already-stamped panes untouched.
+        if _valid_slot "$_pslot"; then
+            continue
+        fi
+        [[ -n "$_pagent" ]] || continue
+        _want="${_slot_by_agent[$_pagent]:-}"
+        [[ -n "$_want" ]] || continue
+        # || true: a pane vanishing mid-refresh must not abort the sourced BODY
+        # (this runs under set -e in both the launch and doctor processes).
+        "${_st[@]}" set-option -p -t "$_pid" @ae_slot "$_want" 2>/dev/null || true
+    done < <("${_st[@]}" list-panes -s -t "$sess" -F '#{pane_id}|#{@ae_slot}|#{@ae_agent}' 2>/dev/null || true)
+    return 0
 }
 
 ae_current_agent_ref() {
@@ -6604,29 +6724,184 @@ ae_find_request() {
     return 1
 }
 
+# Is our pasted message STILL STAGED (unsent) in the target's input box? Return
+# 0 (staged) only on a POSITIVE detection so an unverifiable case degrades to
+# "submitted" (non-regressive: no worse than the old fire-and-forget), never a
+# false loud alarm. Per-tool because the tell differs.
+_paste_still_staged() {
+    local pane="$1" tool="$2" msg="$3" cap
+    cap="$(tmux capture-pane -p -t "$pane" 2>/dev/null | tail -n 6 || true)"
+    [[ -n "$cap" ]] || return 1 # no capture -> cannot confirm staged -> submitted
+    case "$tool" in
+        claude)
+            # Claude stages large pastes behind a "[Pasted text #N +M lines]"
+            # token that needs another Enter; small pastes submit on the first.
+            if grep -qE '\[Pasted text #[0-9]+ \+[0-9]+ lines\]' <<<"$cap"; then
+                return 0
+            fi
+            return 1
+            ;;
+        *)
+            # ⚠ DO NOT re-add naive text-matching staged-detection for codex here.
+            # Codex (and every non-claude tool) has NO reliable staged tell in a
+            # color-stripped `capture-pane -p`: codex has no staging token like
+            # claude's "[Pasted text #…]", and a just-submitted SHORT message
+            # ECHOES into the visible transcript — so matching the message text in
+            # the bottom region false-positives, producing a false UNCONFIRMED that
+            # makes the LLM sender DUPLICATE an already-sent message (a common,
+            # confirmed harm — WORSE than the rare silent-drop it would catch). The
+            # bottom-N-grep approach was tried and dropped (codex code-round F4,
+            # ratified). Any future codex detection needs validated input-REGION
+            # isolation, not transcript grep — same color-stripped ambiguity the
+            # watchdog-v2 codex TUI pattern catalog must clear (see docs). So: no
+            # positive detection -> always "submitted" (non-regressive; the
+            # send-path busy-defer already stops us pasting into a busy codex, the
+            # swallowed-Enter A4 exhibit). $msg kept in the signature for the
+            # claude branch / caller symmetry.
+            return 1
+            ;;
+    esac
+}
+
+# Is it UNSAFE to paste into this pane right now? Return 0 (unsafe) when the
+# input holds unsent/human-typed content OR the target is mid-generation OR the
+# state can't be read — fail-CLOSED, NEVER paste into uncertainty (delivery-bug
+# exhibit #3: a helper paste clipped the human's half-typed question). Return 1
+# (safe) ONLY on a confident idle+empty read. Robust for claude (the exhibit
+# tool); best-effort for codex (its dim empty-placeholder is indistinguishable
+# from typed text in a color-stripped capture — NOTE for the codex reviewer).
+_paste_input_busy() {
+    local pane="$1" tool="$2" cap
+    # Only claude/codex are modeled for input protection. Other tools (gemini,
+    # opencode, plain shells, test dummies) have NO reliable input predicate, so
+    # fail-closed there would break every send to them — instead ALLOW (preserve
+    # the pre-existing unconditional-paste behavior; the exhibits were claude +
+    # codex). Fail-closed applies WITHIN a modeled tool, not to unknown ones.
+    case "$tool" in
+        claude | codex) ;;
+        *) return 1 ;;
+    esac
+    cap="$(tmux capture-pane -p -t "$pane" 2>/dev/null | tail -n 8 || true)"
+    [[ -n "$cap" ]] || return 0 # modeled tool but unreadable -> UNSAFE (fail-closed)
+    # A staged paste token means unsent content is already sitting there.
+    if grep -qE '\[Pasted text #[0-9]+ \+[0-9]+ lines\]' <<<"$cap"; then
+        return 0
+    fi
+    case "$tool" in
+        claude)
+            # Confidently empty ONLY when the input line is the bare prompt
+            # ornament (>, ❯, ▌, optionally boxed by │) + whitespace. A
+            # mid-generation claude shows a spinner line instead, so this also
+            # gates on idleness. Anything else is UNSAFE (fail-closed).
+            if grep -qE '^[[:space:]]*│?[[:space:]]*[>❯▌][[:space:]]*$' <<<"$cap"; then
+                return 1
+            fi
+            return 0
+            ;;
+        codex)
+            # SCOPE: this is BUSY-detection for codex, NOT human-input detection.
+            # A color-stripped `capture-pane -p` cannot distinguish codex's dim
+            # empty-placeholder from typed text, so idle-but-human-typing is NOT
+            # detectable here and is NOT protected (codex code-round F3 confirms
+            # no reliable -p signal; `-e` dim styling is unverified/unstable). We
+            # gate on the idle footer "<model> <effort> · <path>": present => idle
+            # (not mid-generation, which shows a "Worked for …" separator) => a
+            # paste won't be swallowed by a busy TUI (exhibit #1). SAFE when idle,
+            # UNSAFE (defer) when busy/unknown. The human-clobber exhibit was on
+            # CLAUDE (handled above); codex human-typing protection is out of reach
+            # with this capture mode — a documented, tested limit, not a bug.
+            if grep -qE '·[[:space:]].*[~/]' <<<"$cap"; then
+                return 1
+            fi
+            return 0
+            ;;
+        *)
+            return 0 # unknown tool -> UNSAFE
+            ;;
+    esac
+}
+
+# Resolve the agent BINARY expected in a pane from meta agent_bin.<slot>
+# (authoritative — written at launch via extract_binary_from_cmd; the @ae_agent
+# alias is arbitrary user text). Empty when the pane is unstamped or the meta
+# can't be read. Cross-session aware (reads the pane's OWN session meta). Query
+# helper: result is stdout, explicit return.
+_agent_bin_for_pane() {
+    local pane="$1" slot psess meta
+    slot="$(tmux display-message -p -t "$pane" '#{@ae_slot}' 2>/dev/null || true)"
+    _valid_slot "$slot" || {
+        printf ''
+        return 0
+    }
+    psess="$(tmux display-message -p -t "$pane" '#S' 2>/dev/null || true)"
+    [[ -n "$psess" ]] || {
+        printf ''
+        return 0
+    }
+    meta="${_AE_SESSIONS_DIR}/${psess}/meta"
+    [[ -f "$meta" ]] || {
+        printf ''
+        return 0
+    }
+    grep "^agent_bin.${slot}=" "$meta" 2>/dev/null | head -1 | cut -d= -f2- || true
+    return 0
+}
+
+# Is this pane a DEAD-agent shell? A real agent that exits drops its pane back to
+# a login shell; a subsequent paste + Enter would EXECUTE the message as a shell
+# command — the AGENTS.md interpreted-sink class (message-as-code). Detect: the
+# pane's foreground is a shell AND the agent EXPECTED there is NOT itself a shell.
+# A shell-BASED agent (agent_bin is bash/etc — e.g. test dummies) and an
+# undeterminable pane fail-OPEN (return 1, deliver) so this never breaks
+# legitimate delivery. Live real agents run in the foreground under the
+# `exec bash -lc` launcher, so their pane_current_command IS the agent binary
+# (not a shell) — only a genuinely dead one shows a bare shell. Mirrors the
+# watchdog dead-check heuristic (command_is_shell + expected binary).
+_pane_agent_is_dead() {
+    local pane="$1" proc abin
+    proc="$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
+    command_is_shell "$proc" || return 1 # a real process is in the foreground -> alive
+    abin="$(_agent_bin_for_pane "$pane")"
+    command_is_shell "$abin" && return 1 # shell-based agent or undeterminable -> deliver
+    return 0                             # real agent expected, pane fell to a shell -> DEAD
+}
+
+# Paste a message into a pane and CONFIRM it submitted. On a busy TUI a single
+# Enter can be swallowed and the staged text later clears WITHOUT sending (the
+# founding deadlock exhibit: a review paste that never reached a busy codex).
+# After the initial Enter, verify the input cleared; retry Enter BOUNDED (2
+# attempts, ~2s total); if never confirmed, fail LOUD (non-zero + a warning).
+# NO durable outbox — ae is not a queue (doctrine); the LLM sender re-sends when
+# it sees the failure. Unified: tmux_paste_submit (launch) delegates here so the
+# two paste paths can't drift.
 ae_submit_pasted_message() {
     local pane="$1" tool="$2" buf="$3" msg="$4"
     if [[ "$tool" == "codex" ]]; then
+        # Codex expects bracketed-paste mode for injected input.
         tmux set-buffer -b "$buf" -- "$msg" \; \
             paste-buffer -d -p -b "$buf" -t "$pane"
-        sleep 0.1
-        tmux send-keys -t "$pane" Enter
-        return 0
+    else
+        tmux set-buffer -b "$buf" -- "$msg" \; \
+            paste-buffer -d -b "$buf" -t "$pane"
     fi
-
-    tmux set-buffer -b "$buf" -- "$msg" \; \
-        paste-buffer -d -b "$buf" -t "$pane"
     sleep 0.1
     tmux send-keys -t "$pane" Enter
 
-    # Claude sometimes stages large pastes as a "[Pasted text #…]" token
-    # that requires an extra submit keystroke.
-    if [[ "$tool" == "claude" ]]; then
-        sleep 0.2
-        if tmux capture-pane -p -t "$pane" 2>/dev/null | tail -n 8 | grep -Eq '\[Pasted text #[0-9]+ \+[0-9]+ lines\]'; then
-            tmux send-keys -t "$pane" Enter
+    local _attempt=0
+    while ((_attempt < 2)); do
+        sleep 0.3
+        if ! _paste_still_staged "$pane" "$tool" "$msg"; then
+            return 0
         fi
+        tmux send-keys -t "$pane" Enter
+        _attempt=$((_attempt + 1))
+    done
+    sleep 0.3
+    if ! _paste_still_staged "$pane" "$tool" "$msg"; then
+        return 0
     fi
+    echo "ae: submit UNCONFIRMED to pane ${pane} (${tool}) — message may not have sent. Re-send." >&2
+    return 1
 }
 
 # --- session meta key/value (locked) -------------------------------------
@@ -6704,14 +6979,49 @@ helper_send_main() {
     logged_target="${AE_RESOLVED_AGENT:-$target_ref}"
     buf="ae-send-$$"
 
+    # Interpreted-sink guard: refuse to paste into a pane whose agent has DIED
+    # and dropped to a shell — a stray Enter would EXECUTE the message as a shell
+    # command (message-as-code). No retry/defer: a dead agent won't recover on
+    # its own. Placed BEFORE the lock and the busy-defer loop so a dead target
+    # fails fast, not after a 5x defer. (Launch legitimately pastes into a shell
+    # via tmux_paste_submit, not this send path, so the guard lives here.)
+    if _pane_agent_is_dead "$target"; then
+        echo "ae: send to ${logged_target} REFUSED — target pane is a shell, not a running agent (the agent process is gone). Nothing pasted; a stray Enter would EXECUTE the message as a shell command. Re-launch the agent, then re-send." >&2
+        exit 1
+    fi
+
     ae_lock_target "$target"
 
+    tool="$(ae_target_tool "$target")"
     current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+
+    # Protect in-progress input and avoid a busy target (delivery-bug exhibits: a
+    # helper paste CLIPPED the human's half-typed question; a review paste never
+    # submitted to a busy codex). The cancel keystroke ITSELF would clobber
+    # staged or human-typed text, so inspect the input state BEFORE any cancel.
+    # Defer while unsafe (non-empty / mid-generation / unreadable — fail-closed),
+    # bounded; then LOUD failure (the LLM re-sends). No durable outbox.
+    _defer=0
+    while _paste_input_busy "$target" "$tool"; do
+        if ((_defer >= 5)); then
+            ae_unlock_target
+            echo "ae: send to ${logged_target} ABANDONED — target has unsent/human input or is busy (input never cleared). Re-send." >&2
+            exit 1
+        fi
+        sleep 0.4
+        _defer=$((_defer + 1))
+    done
+
+    # Safe now: focus, cancel (only AFTER the safety check), paste + verify.
     tmux select-pane -t "$target"
     tmux send-keys -t "$target" -X cancel 2>/dev/null || true
 
-    tool="$(ae_target_tool "$target")"
-    ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"
+    if ! ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"; then
+        if [[ -n "$current" ]]; then tmux select-pane -t "$current" 2>/dev/null || true; fi
+        ae_unlock_target
+        echo "ae: send to ${logged_target} UNCONFIRMED — submit not verified. Re-send." >&2
+        exit 1
+    fi
     sleep 0.3 # let target TUI process input before focus restore
 
     if [[ -n "$current" ]]; then tmux select-pane -t "$current" 2>/dev/null || true; fi
@@ -7151,6 +7461,15 @@ helper_interrupt_main() {
     target="$AE_RESOLVED_PANE"
     msg="${*:-}"
 
+    # Interpreted-sink guard (same as send): if the agent is dead and its pane
+    # dropped to a shell, a message paste + Enter would EXECUTE as a shell
+    # command. Only refuse when there IS a message — a no-message interrupt is
+    # just harmless cancel keystrokes into whatever is there.
+    if [[ -n "$msg" ]] && _pane_agent_is_dead "$target"; then
+        echo "ae: interrupt of ${AE_RESOLVED_AGENT:-$target} REFUSED — target pane is a shell, not a running agent; a stray Enter would EXECUTE the message as a shell command. Re-launch the agent, then re-send." >&2
+        exit 1
+    fi
+
     ae_lock_target "$target"
 
     current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
@@ -7162,7 +7481,15 @@ helper_interrupt_main() {
         sleep 0.5
         buf="ae-interrupt-$$"
         tool="$(ae_target_tool "$target")"
-        ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"
+        # Mirror send: a message interrupt must NOT log success on an unconfirmed
+        # submit (codex code-round finding — the "false delivered" class the send
+        # path already fixes). Restore focus, unlock, fail LOUD, emit NO event.
+        if ! ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"; then
+            if [[ -n "$current" ]]; then tmux select-pane -t "$current" 2>/dev/null || true; fi
+            ae_unlock_target
+            echo "ae: interrupt message to ${AE_RESOLVED_AGENT:-$target} UNCONFIRMED — submit not verified. Re-send." >&2
+            exit 1
+        fi
         sleep 0.3 # let target TUI process input before focus restore
     fi
 
@@ -8794,34 +9121,14 @@ for i in "${!WORKER_CMDS[@]}"; do
     fi
 done
 
-# Load spawned agents from previous session (resume only)
-declare -a SPAWNED_ALIASES=() SPAWNED_NAMES=() SPAWNED_CMDS=() SPAWNED_SESSION_IDS=() UNRESOLVED_SPAWNED=()
+# Load spawned agents from previous session (resume only). SPAWNED_IDX carries
+# each entry's ORIGINAL spawned.N index (preserved across gaps — see R2).
+declare -a SPAWNED_ALIASES=() SPAWNED_NAMES=() SPAWNED_CMDS=() SPAWNED_SESSION_IDS=() SPAWNED_IDX=() UNRESOLVED_SPAWNED=() UNRESOLVED_IDX=()
 if [[ "$RESUMING" == true ]]; then
-    sidx=0
-    while true; do
-        spawned_entry="$(read_session_meta "$SESSION" "agent.spawned.${sidx}")"
-        [[ -z "$spawned_entry" ]] && break
-        # Format: alias:name:session_id
-        salias="${spawned_entry%%:*}"
-        _rest="${spawned_entry#*:}"
-        sname="${_rest%%:*}"
-        scmd="$(get_config "agents.${salias}")"
-        if [[ -n "$scmd" ]]; then
-            SPAWNED_ALIASES+=("$salias")
-            SPAWNED_NAMES+=("$sname")
-            SPAWNED_CMDS+=("$scmd")
-            SPAWNED_SESSION_IDS+=("$(resolve_agent_session_id "$scmd" "spawned.${sidx}")")
-        else
-            # Loud, not silent (audit finding): after a transfer the destination
-            # config may lack the alias — dropping the worker quietly loses the
-            # operator's intent. Preserve the raw entry so the meta rewrite
-            # below re-emits it and a later resume (with the alias added) can
-            # still restore the worker.
-            UNRESOLVED_SPAWNED+=("$spawned_entry")
-            echo "Warning: spawned agent '${salias}:${sname}' NOT restored — alias '${salias}' missing from this machine's ae config. Entry preserved; add the alias and resume again." >&2
-        fi
-        sidx=$((sidx + 1))
-    done
+    # Recover spawned agents from meta, preserving each survivor's original
+    # index (a retire leaves a hole; renumbering would break the slot key and
+    # orphan any in-flight slotted request addressed to it).
+    _resolve_spawned
 
     # Create panes for spawned agents
     for i in "${!SPAWNED_ALIASES[@]}"; do
@@ -8832,7 +9139,7 @@ if [[ "$RESUMING" == true ]]; then
         PANE_IDS+=("$local_id")
         tmux select-pane -t "$local_id" -T "ae:${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}"
         tmux set-option -p -t "$local_id" @ae_agent "${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}"
-        tmux set-option -p -t "$local_id" @ae_slot "spawned.${i}"
+        tmux set-option -p -t "$local_id" @ae_slot "spawned.${SPAWNED_IDX[$i]}"
     done
     # Rebalance if spawned agents were added
     if ((${#SPAWNED_ALIASES[@]} > 0)); then
@@ -8903,16 +9210,16 @@ for i in "${!WORKER_CMDS[@]}"; do
     echo "agent_bin.worker.${i}=$(extract_binary_from_cmd "${WORKER_CMDS[$i]}")" >>"${AE_META}/meta"
 done
 for i in "${!SPAWNED_ALIASES[@]}"; do
-    echo "agent.spawned.${i}=${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}:${SPAWNED_SESSION_IDS[$i]}" >>"${AE_META}/meta"
-    echo "agent_bin.spawned.${i}=$(extract_binary_from_cmd "${SPAWNED_CMDS[$i]}")" >>"${AE_META}/meta"
+    echo "agent.spawned.${SPAWNED_IDX[$i]}=${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}:${SPAWNED_SESSION_IDS[$i]}" >>"${AE_META}/meta"
+    echo "agent_bin.spawned.${SPAWNED_IDX[$i]}=$(extract_binary_from_cmd "${SPAWNED_CMDS[$i]}")" >>"${AE_META}/meta"
 done
 # Unresolved spawned entries (alias missing on this machine) survive the
-# rewrite verbatim, re-indexed after the resolved ones — a later resume with
-# the alias configured restores the worker (review BLOCKER: they were being
-# warned about and then silently deleted right here).
-_unres_base=${#SPAWNED_ALIASES[@]}
+# rewrite verbatim AT THEIR ORIGINAL INDEX — a later resume with the alias
+# configured restores the worker (review BLOCKER: they were being warned about
+# and then silently deleted right here). Preserving the original index keeps the
+# slot key stable and can't collide with a resolved entry (distinct meta keys).
 for i in "${!UNRESOLVED_SPAWNED[@]}"; do
-    echo "agent.spawned.$((_unres_base + i))=${UNRESOLVED_SPAWNED[$i]}" >>"${AE_META}/meta"
+    echo "agent.spawned.${UNRESOLVED_IDX[$i]}=${UNRESOLVED_SPAWNED[$i]}" >>"${AE_META}/meta"
 done
 [[ -n "$MAIN_LAUNCH_ID" ]] && echo "launch_id.main=${MAIN_LAUNCH_ID}" >>"${AE_META}/meta"
 for i in "${!WORKER_LAUNCH_IDS[@]}"; do
@@ -8975,7 +9282,9 @@ LIBPROLOGUE
             ae_preview_text ae_extract_req_id ae_log_append ae_log_read \
             ae_target_tool ae_json_escape ae_emit_event ae_latest_state_for \
             _event_json_str _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
-            ae_submit_pasted_message ae_meta_get ae_meta_set ae_meta_unset
+            ae_submit_pasted_message _paste_still_staged _paste_input_busy \
+            command_is_shell _agent_bin_for_pane _pane_agent_is_dead \
+            ae_meta_get ae_meta_set ae_meta_unset
     } >"${AE_META}/_lib.tmp.$$"
     chmod 0700 "${AE_META}/_lib.tmp.$$"
     mv "${AE_META}/_lib.tmp.$$" "${AE_META}/_lib"
@@ -9263,6 +9572,12 @@ LOOPSHIMEOF
 
     # Generate initial workspace.md from live pane state
     regenerate_manifest "$SESSION" "$WORK_DIR" "$ORIGIN_DIR" "$COPY_MODE" "$MAIN_PANE" "$AE_META"
+
+    # I1: stamp @ae_slot onto any running pane still missing it (sessions from
+    # before slot-keyed identity landed). Runs at launch (no-op, panes already
+    # stamped) AND at doctor --refresh (the live transition). Inside the marker
+    # region so the refresh awk-source runs it; _stamp_live_slots is column-0.
+    _stamp_live_slots "$SESSION" "${AE_META}/meta"
     # SYNC_SESSION_ASSETS_BODY_END
 
     CONFIG_FILE="$previous_config"
@@ -9317,12 +9632,15 @@ if [[ "$RESUMING" == true ]]; then
         WORKER_RESUME="$(inject_ae_context "$WORKER_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")"
         send_agent_cmd "${PANE_IDS[$idx]}" "$WORKER_RESUME" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")" "$AE_META" "worker.${i}"
     done
-    # Resume spawned agents
+    # Resume spawned agents. The PANE_IDS position is array-order (sidx); the
+    # slot string carries the PRESERVED original index (SPAWNED_IDX) so context
+    # injection + sid registration key on the stable slot (R2).
     for i in "${!SPAWNED_CMDS[@]}"; do
         sidx=$((${#WORKER_CMDS[@]} + i + 1))
+        _sp_slot="spawned.${SPAWNED_IDX[$i]}"
         SPAWNED_RESUME="$(resume_cmd_from_cmd "${SPAWNED_CMDS[$i]}" "${SPAWNED_SESSION_IDS[$i]:-}")"
-        SPAWNED_RESUME="$(inject_ae_context "$SPAWNED_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "spawned.${i}")"
-        send_agent_cmd "${PANE_IDS[$sidx]}" "$SPAWNED_RESUME" "$(initial_prompt_for_cmd "${SPAWNED_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR" "spawned.${i}")" "$AE_META" "spawned.${i}"
+        SPAWNED_RESUME="$(inject_ae_context "$SPAWNED_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "$_sp_slot")"
+        send_agent_cmd "${PANE_IDS[$sidx]}" "$SPAWNED_RESUME" "$(initial_prompt_for_cmd "${SPAWNED_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR" "$_sp_slot")" "$AE_META" "$_sp_slot"
     done
 else
     # Fresh start with session-scoped IDs (enables targeted resume later)
