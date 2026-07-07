@@ -68,6 +68,21 @@ Every event has these keys; `target`, `ref`, and `summary` are optional and omit
 
 String values are JSON-escaped: `\"` `\\` `\n` `\t` `\r`. The flat schema is intentionally cheap to parse from bash (`_event_json_str` in `_lib` is a pure bash walker).
 
+### Routing-key fields
+
+Messaging events (`send` / `ask` / `review` / `reply`) also carry the sender's and recipient's **slot** and **session** when known — the churn-proof routing key that survives a display-name change (see [slot identity](../reference/helpers.md#slot-identity)):
+
+```json
+{
+  "actor_slot":     "main",         // sender's slot: main | worker.<n> | spawned.<n>
+  "actor_session":  "my-feature",   // sender's session
+  "target_slot":    "worker.0",     // recipient's slot
+  "target_session": "my-feature"    // recipient's session
+}
+```
+
+Each is optional and omitted when empty. Readers that don't understand them ignore them; readers that do (`reply`, `requests`) prefer slot + session over the display name for pairing and delivery.
+
 ## Actions
 
 | Action | Emitted by | Meaning |
@@ -96,6 +111,8 @@ String values are JSON-escaped: `\"` `\\` `\n` `\t` `\r`. The flat schema is int
 - The latest `reply` event per `ref` → reply row.
 
 A request is `replied` only when the reply's `actor` equals the request's `target` AND the reply's `target` equals the request's `actor`. Stray reply events (wrong actor / wrong target) leave the request `pending`. Without that check a misrouted or manual reply could falsely close a request.
+
+`ae_find_request` returns the matched request as a tab-separated row. When the event carries routing-key fields the row is seven columns — `action  actor  target  actor_slot  actor_session  target_slot  target_session` — and `reply` verifies the responder's live slot against `target_slot` + `target_session` before delivering, so identity survives a name change. An event without those fields yields a three-column row (`action  actor  target`) and pairing falls back to the display name.
 
 ## How `_agent_done_epoch` reads events
 
