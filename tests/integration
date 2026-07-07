@@ -476,12 +476,40 @@ assert_contains "spawn: requests show replied after correct reply" "replied" "$r
 
 TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/ask" dummy2 "check override reply flow" 2>/dev/null || true
 override_req_id="$(tac "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | grep -m1 -E '"action":"(ask|review)"' | grep -oE '"ref":"[^"]+"' | cut -d'"' -f4)"
+# codex BLOCKER: --as CANNOT bypass the slot proof on a SLOTTED request. The WRONG pane
+# (main) with --as impersonating the target is rejected; the RIGHT pane (the target) with a
+# stale/mismatched --as name warns but still succeeds (slot verified).
+spoof_status=0
+TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/reply" --as "dummy2:helper-0" "$override_req_id" "spoofed" >/dev/null 2>&1 || spoof_status=$?
+assert_eq "spawn: --as cannot bypass the slot proof from the wrong pane" "1" "$spoof_status"
 override_status=0
-TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/reply" --as "dummy2:helper-0" "$override_req_id" "override handled" >/dev/null 2>&1 || override_status=$?
-assert_eq "spawn: reply --as allows tracked reply when pane identity is unavailable" "0" "$override_status"
+TMUX_PANE="$worker_pane" "$HOME/.ae/sessions/test-spawn/reply" --as "stale:oldname" "$override_req_id" "override handled" >/dev/null 2>&1 || override_status=$?
+assert_eq "spawn: right pane + stale --as warns but succeeds (slot verified)" "0" "$override_status"
 requests_output="$("$HOME/.ae/sessions/test-spawn/requests" all 2>/dev/null || true)"
 assert_contains "spawn: override reply recorded as replied" "$override_req_id" "$requests_output"
 assert_contains "spawn: override reply summary updated" "override handled" "$requests_output"
+
+# ── request-integrity: slot-routed reply survives a display-name CHURN (codex B1) ──
+# ask main->worker stores actor_slot + target_slot; churn BOTH @ae_agent names (keeping
+# @ae_slot); the reply must verify by SLOT and ROUTE to main's CURRENT name, not the stale one.
+TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/ask" dummy2 "churn round-trip" 2>/dev/null || true
+churn_req="$(tac "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | grep -m1 -E '"action":"(ask|review)"' | grep -oE '"ref":"[^"]+"' | cut -d'"' -f4)"
+# Confirm the ask recorded slot identity (the whole point).
+assert_eq "request-integrity: ask records target_slot" "1" "$(grep -q '"target_slot"' <<<"$(tac "$HOME/.ae/sessions/test-spawn/events.jsonl" | grep -m1 "$churn_req")" && echo 1 || echo 0)"
+# CHURN: rename @ae_agent on both panes; @ae_slot untouched.
+tmux set-option -p -t "$main_pane" @ae_agent "churned:lead2"
+tmux set-option -p -t "$worker_pane" @ae_agent "churned:worker2"
+churn_reply_status=0
+TMUX_PANE="$worker_pane" "$HOME/.ae/sessions/test-spawn/reply" "$churn_req" "routed by slot" >/dev/null 2>&1 || churn_reply_status=$?
+assert_eq "request-integrity: reply verifies by slot after a name churn" "0" "$churn_reply_status"
+churn_reply_target="$(tac "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | grep -m1 '"action":"reply"' | grep -oE '"target":"[^"]+"' | cut -d'"' -f4)"
+assert_eq "request-integrity: reply ROUTES to the sender CURRENT name via slot (not stale)" "churned:lead2" "$churn_reply_target"
+# requests must still show the churned request as REPLIED (slot-matched, not stale name).
+churn_req_status="$(TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/requests" all 2>/dev/null | awk -v r="$churn_req" '$3==r{print $1}')"
+assert_eq "request-integrity: requests shows the churned request replied (slot-matched)" "replied" "$churn_req_status"
+# Restore original names so downstream tests are unaffected.
+tmux set-option -p -t "$main_pane" @ae_agent "dummy:dummy"
+tmux set-option -p -t "$worker_pane" @ae_agent "dummy2:helper-0"
 
 # Kill tmux session (simulate reboot), re-launch
 tmux kill-session -t test-spawn 2>/dev/null || true

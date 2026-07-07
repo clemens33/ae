@@ -4070,6 +4070,140 @@ assert_eq "s19: cmd_telegram_start WARNS then still spawns (human bypass)" "yes"
 assert_eq "s19: status reports the active backend (marker)" "yes" \
     "$([[ "$AE_SOURCE" == *'backend: aewatch'* && "$AE_SOURCE" == *'backend: bash'* ]] && echo yes || echo no)"
 
+# ── request-integrity Bug A: worker resume symmetry (recover from meta like main) ────
+# On resume, workers must be recovered from meta agent.worker.N (names PRESERVED), NOT
+# re-derived from config workspace.workers + re-deduped — mirroring the main-agent
+# meta-preservation (ae:8361). A config workers= rename applies to NEW sessions ONLY.
+eval "$(awk '/^_resolve_workers\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "workers-resume: _resolve_workers defined" "yes" "$(declare -F _resolve_workers >/dev/null && echo yes || echo no)"
+_rw_run() {  # <mode: resume|fresh> <config_workers> -> "alias:name,alias:name,..."
+    local mode="$1" cfg_workers="$2" i out=""
+    # shellcheck disable=SC2317  # invoked indirectly by the eval'd _resolve_workers
+    read_session_meta() {
+        [[ "$mode" == resume ]] || return 0
+        case "$2" in
+            agent.worker.0) echo "opus48:builder:uuid-a" ;;
+            agent.worker.1) echo "gpt55:reviewer:uuid-b" ;;
+        esac
+        return 0
+    }
+    # shellcheck disable=SC2317
+    get_config() { case "$1" in agents.*) echo "cmd-for-$1" ;; esac; return 0; }
+    MAIN_NAME="lead" WORKERS_RAW="$cfg_workers" SESSION="s" _resolve_workers
+    for i in "${!WORKER_ALIASES[@]}"; do out+="${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]},"; done
+    echo "${out%,}"
+}
+# Resume: config CHANGED (renamed) but META names WIN (no re-derive, no -1 dedup) — the churn fix.
+assert_eq "workers-resume: recovered from meta, config rename IGNORED" "opus48:builder,gpt55:reviewer" "$(_rw_run resume 'newalias:renamed1, newalias2:renamed2')"
+# Fresh: no meta -> config parsed.
+assert_eq "workers-fresh: parsed from config" "opus48:builder,gpt55:reviewer" "$(_rw_run fresh 'opus48:builder, gpt55:reviewer')"
+# Fresh dedup: duplicate name -> -1 suffix (preserved for FRESH launches only).
+assert_eq "workers-fresh: dedup on name collision" "a:dup,b:dup-1" "$(_rw_run fresh 'a:dup, b:dup')"
+# codex: a resumed worker whose alias is no longer defined in config must ERROR loudly
+# (mirror fresh/main), not silently create a worker with an empty command.
+_rw_resume_missing() {
+    # shellcheck disable=SC2317
+    read_session_meta() {
+        case "$2" in
+            agent.worker.0) echo "opus48:builder:uuid-a" ;;
+            agent.worker.1) echo "goneAlias:reviewer:uuid-b" ;;
+        esac
+        return 0
+    }
+    # shellcheck disable=SC2317
+    get_config() { case "$1" in agents.opus48) echo "cmd" ;; *) echo "" ;; esac; return 0; }
+    MAIN_NAME="lead" WORKERS_RAW="" SESSION="s" _resolve_workers
+}
+_rwm_status=0
+(_rw_resume_missing) >/dev/null 2>&1 || _rwm_status=$?
+assert_eq "workers-resume: undefined alias errors loudly (codex empty-cmd)" "1" "$_rwm_status"
+
+# ── request-integrity Bug B (foundational): @ae_slot stamping + slot helpers ─────────
+eval "$(awk '/^_valid_slot\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "valid-slot: main" "ok" "$(_valid_slot main && echo ok || echo no)"
+assert_eq "valid-slot: worker.0" "ok" "$(_valid_slot worker.0 && echo ok || echo no)"
+assert_eq "valid-slot: spawned.3" "ok" "$(_valid_slot spawned.3 && echo ok || echo no)"
+assert_eq "valid-slot: display name rejected" "no" "$(_valid_slot lead && echo ok || echo no)"
+assert_eq "valid-slot: empty rejected" "no" "$(_valid_slot '' && echo ok || echo no)"
+assert_eq "valid-slot: worker.x rejected" "no" "$(_valid_slot worker.x && echo ok || echo no)"
+# codex: the old glob worker.[0-9]* accepted a trailing suffix — an anchored regex must reject it.
+assert_eq "valid-slot: worker.0x rejected (loose-glob exhibit)" "no" "$(_valid_slot worker.0x && echo ok || echo no)"
+assert_eq "valid-slot: spawned.3x rejected (loose-glob exhibit)" "no" "$(_valid_slot spawned.3x && echo ok || echo no)"
+assert_eq "valid-slot: worker.12 multi-digit accepted" "ok" "$(_valid_slot worker.12 && echo ok || echo no)"
+assert_eq "valid-slot: worker. (no digits) rejected" "no" "$(_valid_slot worker. && echo ok || echo no)"
+assert_eq "current-slot: ae_current_slot reads @ae_slot" "yes" "$([[ "$AE_SOURCE" == *'ae_current_slot()'*'@ae_slot'* ]] && echo yes || echo no)"
+assert_eq "slot-stamp: main pane -> main" "yes" "$([[ "$AE_SOURCE" == *'@ae_slot "main"'* ]] && echo yes || echo no)"
+assert_eq "slot-stamp: worker pane -> worker.i" "yes" "$([[ "$AE_SOURCE" == *'@ae_slot "worker.${i}"'* ]] && echo yes || echo no)"
+assert_eq "slot-stamp: spawn -> slot var" "yes" "$([[ "$AE_SOURCE" == *'@ae_slot "${slot}"'* ]] && echo yes || echo no)"
+# codex: ae_current_slot must ENFORCE _valid_slot — a malformed/tampered @ae_slot degrades to
+# empty (slotless name-fallback), never mints a bogus slotted event.
+eval "$(awk '/^ae_current_slot\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_cs_run() {
+    # shellcheck disable=SC2317
+    ae_current_pane() { echo "%9"; }
+    # shellcheck disable=SC2317
+    tmux() { [[ "$1" == display-message ]] && printf '%s' "$_SLOTVAL"; return 0; }
+    ae_current_slot
+}
+assert_eq "current-slot: valid slot passes through" "worker.2" "$(_SLOTVAL=worker.2 _cs_run)"
+assert_eq "current-slot: invalid @ae_slot -> empty (slotless fallback)" "" "$(_SLOTVAL=worker.0x _cs_run)"
+assert_eq "current-slot: empty @ae_slot -> empty" "" "$(_SLOTVAL='' _cs_run)"
+# codex IMPORTANT-1: reply event's actor_session comes from THIS pane (#S), not $_AE_SESSION
+# (a cross-session replier would otherwise record the helper's session); and requests
+# matching is session-qualified (main@A must not collide with main@B).
+assert_eq "reply-event: actor_session from current pane, not \$_AE_SESSION" "yes" "$([[ "$AE_SOURCE" == *'_AE_EVENT_ACTOR_SESSION="$self_session"'* ]] && echo yes || echo no)"
+assert_eq "requests: filter session-qualified (mine)" "yes" "$([[ "$AE_SOURCE" == *'req_actor_session[$ref]:-}" == "$self_session"'* ]] && echo yes || echo no)"
+assert_eq "requests: replied-match session-qualified" "yes" "$([[ "$AE_SOURCE" == *'reply_actor_session[$ref]:-}" == "${req_target_session[$ref]'* ]] && echo yes || echo no)"
+# codex BLOCKER: --as no longer gates the slot self-check (it runs unconditionally for slotted).
+assert_eq "reply: slot self-check not guarded by sender_override" "no" "$([[ "$AE_SOURCE" == *'if [[ -z "$sender_override" ]]; then
+            if [[ "$self_slot" != "$target_slot"'* ]] && echo yes || echo no)"
+# R1 (lead gate): a slotted request with EMPTY target_session must NOT fail-open — a right-slot
+# pane from ANOTHER tmux session is rejected (defaults to $_AE_SESSION, the request's own session).
+eval "$(awk '/^helper_reply_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_reply_verify() {  # <row> <self_slot> <self_session> <_AE_SESSION> -> exit status (1 = rejected)
+    local _row="$1" _self_slot="$2" _self_session="$3"
+    _AE_SESSION="$4"
+    # shellcheck disable=SC2317
+    ae_find_request() { printf '%s\n' "$_row"; return 0; }
+    # shellcheck disable=SC2317
+    ae_current_agent_ref() { echo "replier"; return 0; }
+    # shellcheck disable=SC2317
+    ae_current_slot() { printf '%s' "$_self_slot"; return 0; }
+    # shellcheck disable=SC2317
+    ae_current_pane() { echo "%1"; return 0; }
+    # shellcheck disable=SC2317
+    tmux() { [[ "$1" == display-message ]] && printf '%s' "$_self_session"; return 0; }
+    helper_reply_main "req-1" "msg"
+}
+_r1_rej=0
+(_reply_verify "$(printf 'ask\ta:b\tc:d\tmain\tsessA\tworker.0\t')" worker.0 sessB sessA) >/dev/null 2>&1 || _r1_rej=$?
+assert_eq "reply-R1: empty target_session + right slot + WRONG session -> rejected" "1" "$_r1_rej"
+_r1_wrongslot=0
+(_reply_verify "$(printf 'ask\ta:b\tc:d\tmain\tsessA\tworker.0\t')" worker.9 sessA sessA) >/dev/null 2>&1 || _r1_wrongslot=$?
+assert_eq "reply-R1: wrong slot (same session) still rejected" "1" "$_r1_wrongslot"
+
+_AE_META_DIR2="$(mktemp -d)"
+# ── request-integrity Bug B (consumer): find_request slots + ae_slot_resolver ────────
+# A SLOTTED ask event returns the extended 7-column row (backward-compat: slotless -> 3).
+cat >"$_AE_META_DIR2/events.jsonl" <<'EVENTS'
+{"ts":"2026-01-01T00:00:00Z","actor":"a:b","action":"ask","target":"c:d","ref":"slot-req","actor_slot":"main","actor_session":"s1","target_slot":"worker.0","target_session":"s1","summary":"q"}
+EVENTS
+_AE_META_DIR="$_AE_META_DIR2" assert_eq "ae_find_request: slotted event -> 7 cols" $'ask\ta:b\tc:d\tmain\ts1\tworker.0\ts1' "$(_AE_META_DIR="$_AE_META_DIR2" ae_find_request "slot-req")"
+
+# ae_slot_resolver: session-qualified slot -> the CURRENT agent ref (survives name churn).
+eval "$(awk '/^ae_slot_resolver\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_slotres_run() {  # <want_session> <want_slot> -> resolved ref
+    local ws="$1" wslot="$2"
+    _AE_SESSION="s1"
+    # shellcheck disable=SC2317
+    tmux() { [[ "$1" == list-panes ]] || return 0; printf '%%1\tmain\tclaude:lead\n%%2\tworker.0\topus48:builder\n'; return 0; }
+    ae_slot_resolver "$ws" "$wslot"
+}
+assert_eq "slot-resolver: worker.0 same session -> current agent" "opus48:builder" "$(_slotres_run '' worker.0)"
+assert_eq "slot-resolver: main same session -> current agent" "claude:lead" "$(_slotres_run s1 main)"
+assert_eq "slot-resolver: cross-session -> @session:agent" "@s2:opus48:builder" "$(_slotres_run s2 worker.0)"
+assert_eq "slot-resolver: unknown slot -> empty (routing falls back to name)" "" "$(_slotres_run '' worker.9)"
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""
