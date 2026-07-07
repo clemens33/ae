@@ -473,6 +473,44 @@ assert_eq "initial_prompt: opencode gets helpers path" \
     "1" \
     "$([[ "$result_opencode" == *"Helper scripts in /tmp/ae/"* ]] && echo 1 || echo 0)"
 
+# ── lead-default Part 1: DEFAULT_CONFIG — model-named aliases, strict pins, opus48:lead ──
+# Extract the DEFAULT_CONFIG string from source, parse it with the real get_config.
+eval "$(awk "/^DEFAULT_CONFIG='/{p=1} p{print} p&&/watchdog = true'/{exit}" <<<"$AE_SOURCE")"
+_dc_cfg="$(mktemp)"
+printf '%s\n' "$DEFAULT_CONFIG" >"$_dc_cfg"
+_dc_xdg="$(mktemp -d)"
+_dc_get() { CONFIG_FILE="$_dc_cfg" AE_LOCAL_CONFIG="" XDG_RUNTIME_DIR="$_dc_xdg" get_config "$1"; }
+# SPEC: Opus is the everyday default lead (Fable left the plans); distinct worker role names.
+assert_eq "default-config: main = opus48:lead" "opus48:lead" "$(_dc_get workspace.main)"
+assert_eq "default-config: workers = opus48:builder, gpt55:reviewer" "opus48:builder, gpt55:reviewer" "$(_dc_get workspace.workers)"
+assert_eq "default-config: layout = lead-solo" "lead-solo" "$(_dc_get workspace.layout)"
+# STRICT model pins — a model-named alias must never silently run another model.
+assert_eq "default-config: opus48 pins --model opus" "1" "$([[ "$(_dc_get agents.opus48)" == *'--model opus'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: fable5 defined + pins --model fable (premium tier)" "1" "$([[ "$(_dc_get agents.fable5)" == *'--model fable'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: sonnet5 pins --model sonnet" "1" "$([[ "$(_dc_get agents.sonnet5)" == *'--model sonnet'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: gpt55 defined" "1" "$([[ "$(_dc_get agents.gpt55)" == *'gpt-5.5'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: gpt54mini defined" "1" "$([[ "$(_dc_get agents.gpt54mini)" == *'gpt-5.4-mini'* ]] && echo 1 || echo 0)"
+# NO alias-definition line uses --model best (comments may mention the anti-pattern).
+assert_eq "default-config: no alias uses --model best (strict pins only)" "0" "$(printf '%s\n' "$DEFAULT_CONFIG" | grep -E '^[a-z0-9]+ = ' | grep -c -- '--model best')"
+# Old tier-named aliases retired.
+assert_eq "default-config: tier alias 'optimal' retired" "" "$(_dc_get agents.optimal)"
+assert_eq "default-config: tier alias 'fast' retired" "" "$(_dc_get agents.fast)"
+rm -f "$_dc_cfg"
+
+# ── lead-default Part 2: build_ae_context slot-aware lead/worker blocks (code, NO config key) ──
+_lead_ctx="$(CONFIG_FILE=/dev/null build_ae_context "/tmp/ae" "sess" "/work" "main")"
+_worker_ctx="$(CONFIG_FILE=/dev/null build_ae_context "/tmp/ae" "sess" "/work" "worker.0")"
+_spawn_ctx="$(CONFIG_FILE=/dev/null build_ae_context "/tmp/ae" "sess" "/work" "spawned.1")"
+_noslot_ctx="$(CONFIG_FILE=/dev/null build_ae_context "/tmp/ae" "sess" "/work" "")"
+assert_eq "ae_context: lead slot gets LEAD ROLE block" "1" "$([[ "$_lead_ctx" == *"LEAD ROLE"* ]] && echo 1 || echo 0)"
+assert_eq "ae_context: lead slot has NO worker block" "0" "$([[ "$_lead_ctx" == *"WORKER ROLE"* ]] && echo 1 || echo 0)"
+assert_eq "ae_context: worker slot gets WORKER ROLE block" "1" "$([[ "$_worker_ctx" == *"WORKER ROLE"* ]] && echo 1 || echo 0)"
+assert_eq "ae_context: worker slot has NO lead block" "0" "$([[ "$_worker_ctx" == *"LEAD ROLE"* ]] && echo 1 || echo 0)"
+assert_eq "ae_context: spawned slot gets WORKER ROLE block" "1" "$([[ "$_spawn_ctx" == *"WORKER ROLE"* ]] && echo 1 || echo 0)"
+assert_eq "ae_context: no-slot gets NEITHER role block (generic only)" "0" "$([[ "$_noslot_ctx" == *"LEAD ROLE"* || "$_noslot_ctx" == *"WORKER ROLE"* ]] && echo 1 || echo 0)"
+assert_eq "ae_context: generic rules present for lead" "1" "$([[ "$_lead_ctx" == *"Communicate only through ae helpers"* ]] && echo 1 || echo 0)"
+assert_eq "ae_context: generic rules present for worker" "1" "$([[ "$_worker_ctx" == *"Communicate only through ae helpers"* ]] && echo 1 || echo 0)"
+
 _meta_dir="$(mktemp -d)"
 printf 'launch_id.worker.0=opencode-123\n' > "$_meta_dir/meta"
 result_opencode_slot="$(initial_prompt_for_cmd "opencode" "$_meta_dir" "sess" "/home/user" "worker.0")"
@@ -1573,6 +1611,13 @@ assert_eq "status-left: tmux #(cmd) neutralized (no status-job shell execution)"
     "$(_ae_tmux_format_literal 'x#(id)')"
 assert_eq "status-left: strftime %Y/%s in a path doubled (renders verbatim, not a date)" '/tmp/%%Y/%%s' \
     "$(_ae_tmux_format_literal '/tmp/%Y/%s')"
+# lead-default hazard fix (%142): every user-text rename-window NAME arg goes through the escaper
+# — rename-window expands #{...} at rename time, so a #-bearing agent/session name would corrupt
+# the window name / leak tmux state. The static ones (ae-telegram / workers) stay unescaped.
+assert_eq "rename-window: spawn agent name escaped" "1" "$([[ "$AE_SOURCE" == *'rename-window -t "$pane_id" "$(_ae_tmux_format_literal "$spawn_name")"'* ]] && echo 1 || echo 0)"
+assert_eq "rename-window: spawned-resume name escaped" "1" "$([[ "$AE_SOURCE" == *'_ae_tmux_format_literal "${SPAWNED_NAMES[$i]}"'* ]] && echo 1 || echo 0)"
+assert_eq "rename-window: session-rename name escaped" "1" "$([[ "$AE_SOURCE" == *'rename-window -t "${new_name}:0" "$(_ae_tmux_format_literal "$new_name")"'* ]] && echo 1 || echo 0)"
+assert_eq "rename-window: window-0 session name escaped" "1" "$([[ "$AE_SOURCE" == *'rename-window -t "$SESSION" "$(_ae_tmux_format_literal "$SESSION")"'* ]] && echo 1 || echo 0)"
 assert_eq "status-left: combined # and % both escaped" '/a##%%Y/b' \
     "$(_ae_tmux_format_literal '/a#%Y/b')"
 assert_eq "status-left: plain path text unchanged by escape" 'feature/x' \

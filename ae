@@ -46,19 +46,23 @@ fi
 #   Launch:     send_agent_cmd, capture_codex_session_id
 
 DEFAULT_CONFIG='[agents]
-# lead tier: --model best = Fable where available, latest Opus otherwise
-claude = "claude --permission-mode bypassPermissions --model best --effort xhigh"
-optimal = "claude --permission-mode bypassPermissions --model opus --effort xhigh"
-fast = "claude --permission-mode bypassPermissions --model sonnet --effort low"
-codex = "codex --yolo -m gpt-5.5 -c model_reasoning_effort=xhigh"
+# Model-named aliases: the prefix names the model + major, so the running model is legible at
+# a glance. STRICT pins (never --model best) — a model-named alias must not silently run a
+# different model; that would make the name lie and blind the model-drift alarm.
+opus48 = "claude --permission-mode bypassPermissions --model opus --effort xhigh"
+# fable5 = PREMIUM tier — high-stakes sessions only (frontier where the edge pays).
+fable5 = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
+sonnet5 = "claude --permission-mode bypassPermissions --model sonnet --effort low"
+gpt55 = "codex --yolo -m gpt-5.5 -c model_reasoning_effort=xhigh"
+gpt54mini = "codex -m gpt-5.4-mini -c model_reasoning_effort=low -a never"
 opencode = "opencode"
 
 [workspace]
-# the lead focuses on hard tasks and delegates; two standing coworkers
-# (see docs/reference/delegation.md — spawn fast:* workers for chores)
-main = claude:lead
-workers = optimal:coworker, codex:coworker
-layout = vertical
+# The lead delegates by rule (see docs/reference/delegation.md — spawn sonnet5:* / gpt54mini:*
+# for chores). Distinct worker role names (builder/reviewer) avoid the duplicate-name dedup churn.
+main = opus48:lead
+workers = opus48:builder, gpt55:reviewer
+layout = lead-solo
 watchdog = true'
 
 # Create default config if missing
@@ -568,7 +572,7 @@ _ae_apply_status_left() {
 
 # Build ae workspace context string (shared by inject_ae_context and initial prompt fallback)
 build_ae_context() {
-    local meta_dir="$1" session="${2:-}" work_dir="${3:-}"
+    local meta_dir="$1" session="${2:-}" work_dir="${3:-}" slot="${4:-}"
     local ctx="You are in an ae multi-agent workspace. Session: ${session}. Directory: ${work_dir}."
     ctx+=" Helper scripts in ${meta_dir}/ — always invoke them by their full path (they are not on PATH). Read ${meta_dir}/workspace.md for the full helper catalog and current agent names."
     ctx+=" REQUIRED RULES:"
@@ -580,7 +584,18 @@ build_ae_context() {
     ctx+=" (6) ${meta_dir}/memo add [--topic <topic>] <text> for durable shared findings, decisions, and handoffs that survive restarts. Do not dump chat transcripts into memo."
     ctx+=" (7) IMPORTANT — CONCURRENT COLLABORATION: Other agents may be editing files in this same workspace RIGHT NOW. Files you read may change. Coordinate on shared files; verify intent via ${meta_dir}/send before reverting or overwriting unexpected modifications."
     ctx+=" (8) ${meta_dir}/say <text> pushes a free-text line to the human's Telegram chat (if the bridge is running). Use it to answer the human when they message you from Telegram — your normal pane replies do NOT reach them. Replies to your message on Telegram route back to you."
-    ctx+=" (9) DELEGATION: for bounded subtasks (spec fits ~10 lines, clear stop condition, result verifiable by tests/grep/review), spawn the cheapest capable alias with a role name instead of polluting your own context: ${meta_dir}/spawn <alias>:<name> [prompt] — pick an alias from workspace.md (e.g. if a fast tier exists: spawn fast:tests 'run just test-unit; report failures only'). PREFER ae spawn over your harness's internal subagents for anything beyond a quick or bursty read-only lookup/fan-out consumed immediately: ae workers are visible to the human (own window), steward-monitored, and messageable — internal subagents are invisible to everyone but you. Brief workers with objective, scope, verification command, and expected reply shape; expect a distilled summary (Outcome/Changed/Verified/Risks), never raw logs. One writer per file. YOU own review and ${meta_dir}/retire <name> — workers never self-retire; keep judgment-heavy work yourself. See workspace.md 'Delegation'."
+    ctx+=" (9) DELEGATION: for bounded subtasks (spec fits ~10 lines, clear stop condition, result verifiable by tests/grep/review), spawn the cheapest capable alias with a role name instead of polluting your own context: ${meta_dir}/spawn <alias>:<name> [prompt] — pick an alias from workspace.md (e.g. a cheap-burst tier: spawn sonnet5:tests 'run just test-unit; report failures only'). PREFER ae spawn over your harness's internal subagents for anything beyond a quick or bursty read-only lookup/fan-out consumed immediately: ae workers are visible to the human (own window), steward-monitored, and messageable — internal subagents are invisible to everyone but you. Brief workers with objective, scope, verification command, and expected reply shape; expect a distilled summary (Outcome/Changed/Verified/Risks), never raw logs. One writer per file. YOU own review and ${meta_dir}/retire <name> — workers never self-retire; keep judgment-heavy work yourself. See workspace.md 'Delegation'."
+    # Slot-aware ROLE block (hardcoded, like the rules above — NOT a config key). The lead gets
+    # the delegation decision-rule; workers get the execution contract. Slot is main/worker.N/
+    # spawned.N from meta (never user text), so it is safe in this branch.
+    case "$slot" in
+        main)
+            ctx+=" LEAD ROLE: your tokens are for JUDGMENT — triage, rulings, gates, adjudication, and the human interface; never delegate those. DELEGATE the rest (implementation, tests, docs, chores, research, scoping): when a subtask has a spec that fits ~10 lines AND a verifiable stop condition, spawn a worker (rule 9) instead of spending your own context on it. You still own review and retirement of every worker, and you keep the judgment-heavy work yourself."
+            ;;
+        worker.* | spawned.*)
+            ctx+=" WORKER ROLE: you execute the briefed subtask within its stated scope. Report a distilled summary — Outcome / Changed / Verified (command + result) / Risks / Need-from-lead — never raw logs. Stay in your assigned files (one writer per file); surface any decision that needs judgment to the lead rather than deciding it unilaterally. You do not self-retire — the lead retires you when the task is verified done."
+            ;;
+    esac
     local user_instr
     user_instr="$(get_config prompt.instructions)"
     [[ -n "$user_instr" ]] && ctx="${ctx} --- Workspace instructions: ${user_instr}"
@@ -592,7 +607,7 @@ build_ae_context() {
 inject_ae_context() {
     local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}" slot="${5:-}"
     local ctx
-    ctx="$(build_ae_context "$meta_dir" "$session" "$work_dir")"
+    ctx="$(build_ae_context "$meta_dir" "$session" "$work_dir" "$slot")"
     case "$cmd" in
         claude*)
             local escaped="${ctx//\'/\'\\\'\'}"
@@ -644,7 +659,7 @@ initial_prompt_for_cmd() {
         opencode*)
             local ctx
             local launch_marker=""
-            ctx="$(build_ae_context "$meta_dir" "$session" "$work_dir")"
+            ctx="$(build_ae_context "$meta_dir" "$session" "$work_dir" "$slot")"
             if [[ -n "$slot" && -f "${meta_dir}/meta" ]]; then
                 local launch_id
                 launch_id="$(read_launch_id_for_slot "$meta_dir" "$slot")"
@@ -5363,7 +5378,7 @@ cmd_rename() {
     # that only touches the session leaves the old name in the status bar.
     # The monitor window keeps its own name; only the agent window 0 tracks
     # the session name.
-    tmux rename-window -t "${new_name}:0" "$new_name" 2>/dev/null || true
+    tmux rename-window -t "${new_name}:0" "$(_ae_tmux_format_literal "$new_name")" 2>/dev/null || true
 
     # 2. Move session directory
     if [[ -d "$old_meta" ]]; then
@@ -5540,7 +5555,7 @@ _cmd_spawn() {
     tmux select-pane -t "$pane_id" -T "ae:${alias_name}:${spawn_name}"
     tmux set-option -p -t "$pane_id" @ae_agent "${alias_name}:${spawn_name}"
     tmux set-option -p -t "$pane_id" @ae_slot "${slot}"
-    tmux rename-window -t "$pane_id" "$spawn_name" 2>/dev/null || true
+    tmux rename-window -t "$pane_id" "$(_ae_tmux_format_literal "$spawn_name")" 2>/dev/null || true
 
     # Regenerate workspace.md from live panes
     regenerate_manifest "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$meta_dir"
@@ -5974,9 +5989,9 @@ remain fine for fast same-harness reads whose result you consume
 immediately.
 
 Conventions:
-- Alias = capability tier (\`fast\`/\`standard\`/\`optimal\`/\`best\`, \`codexfast\`…
-  — whatever ~/.ae/config defines); name = role. Good: \`fast:tests\`,
-  \`codexfast:callers\`, \`standard:docs-sync\`. Bad: \`worker\`, \`helper-3\`.
+- Alias = the model (\`opus48\`/\`fable5\`/\`sonnet5\`/\`gpt55\`/\`gpt54mini\`…
+  — whatever ~/.ae/config defines); name = role. Good: \`sonnet5:tests\`,
+  \`gpt54mini:callers\`, \`opus48:docs-sync\`. Bad: \`worker\`, \`helper-3\`.
 - Brief contract: objective, allowed scope/files, verification command,
   expected reply shape, whether edits are allowed.
 - Result contract (worker replies with): Outcome / Changed / Verified (command
@@ -9025,6 +9040,15 @@ else
     echo "Working copy ready."
 fi
 
+# Resume: layout is META-WINS — pinned at launch, preserved on resume (a config `layout` flip
+# applies to NEW sessions only, mirroring agent.* identity). Explicit if (set -e safe).
+if [[ "$RESUMING" == true ]]; then
+    _saved_layout="$(read_session_meta "$SESSION" layout)"
+    if [[ -n "$_saved_layout" ]]; then
+        LAYOUT="$_saved_layout"
+    fi
+fi
+
 # --- Create tmux session in the worktree ---
 PANE_IDS=()
 tmux new-session -d -s "$SESSION" -c "$WORK_DIR"
@@ -9050,13 +9074,21 @@ tmux set-option -t "$SESSION" pane-border-status top
 tmux set-option -t "$SESSION" pane-border-format " #{@ae_agent} "
 _ae_apply_status_left "$SESSION" "$COPY_MODE" "$ORIGIN_DIR" "$WORK_DIR"
 tmux set-option -t "$SESSION" automatic-rename off
-tmux rename-window -t "$SESSION" "$SESSION"
+tmux rename-window -t "$SESSION" "$(_ae_tmux_format_literal "$SESSION")"
 
 PANE_IDS+=("$(tmux display-message -t "$SESSION" -p '#{pane_id}')")
 
 for i in "${!WORKER_CMDS[@]}"; do
     local_id=""
-    if [[ "$LAYOUT" == "vertical" ]]; then
+    if [[ "$LAYOUT" == "lead-solo" ]]; then
+        # Workers live in window 1, split among THEMSELVES; window 0 stays lead-only.
+        if ((i == 0)); then
+            local_id="$(tmux new-window -d -t "${SESSION}:" -c "$WORK_DIR" -P -F '#{pane_id}')"
+        else
+            _prev=$((${#PANE_IDS[@]} - 1)) # split the previous worker pane (4.0-safe index)
+            local_id="$(tmux split-window -v -t "${PANE_IDS[$_prev]}" -c "$WORK_DIR" -P -F '#{pane_id}')"
+        fi
+    elif [[ "$LAYOUT" == "vertical" ]]; then
         local_id="$(tmux split-window -h -t "$SESSION" -c "$WORK_DIR" -P -F '#{pane_id}')"
     else
         local_id="$(tmux split-window -v -t "$SESSION" -c "$WORK_DIR" -P -F '#{pane_id}')"
@@ -9066,11 +9098,22 @@ done
 
 # Distribute panes evenly
 if ((${#PANE_IDS[@]} > 1)); then
-    if [[ "$LAYOUT" == "vertical" ]]; then
+    if [[ "$LAYOUT" == "lead-solo" ]]; then
+        # Distribute the workers WITHIN window 1 (only when 2+ workers).
+        if ((${#WORKER_CMDS[@]} > 1)); then
+            tmux select-layout -t "${PANE_IDS[1]}" even-vertical
+        fi
+    elif [[ "$LAYOUT" == "vertical" ]]; then
         tmux select-layout -t "$SESSION" even-horizontal
     else
         tmux select-layout -t "$SESSION" even-vertical
     fi
+fi
+# lead-solo: name the worker window with a FIXED literal — NEVER an agent name. Agent identity
+# lives on @ae_agent; a name-derived window name would feed the tmux rename-window/format
+# interpreted-sink (# introduces formats). Zero workers -> no window 1 (valid no-op).
+if [[ "$LAYOUT" == "lead-solo" ]] && ((${#WORKER_CMDS[@]} > 0)); then
+    tmux rename-window -t "${PANE_IDS[1]}" "workers" 2>/dev/null || true
 fi
 
 # Label panes: title for border display, @ae_agent option for reliable identity
@@ -9135,7 +9178,7 @@ if [[ "$RESUMING" == true ]]; then
         # Spawned agents live in their own windows (matches _cmd_spawn — the
         # main window keeps the lead/worker layout).
         local_id="$(tmux new-window -d -t "${SESSION}:" -c "$WORK_DIR" -P -F '#{pane_id}')"
-        tmux rename-window -t "$local_id" "${SPAWNED_NAMES[$i]}" 2>/dev/null || true
+        tmux rename-window -t "$local_id" "$(_ae_tmux_format_literal "${SPAWNED_NAMES[$i]}")" 2>/dev/null || true
         PANE_IDS+=("$local_id")
         tmux select-pane -t "$local_id" -T "ae:${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}"
         tmux set-option -p -t "$local_id" @ae_agent "${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}"

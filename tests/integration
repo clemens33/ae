@@ -1422,6 +1422,54 @@ assert_eq "s19: bridge-owner + STALE heartbeat -> bash bridge spawns (fallback r
 # Default path zero-diff: no marker -> bash autostarts exactly as before.
 assert_eq "s19: no marker + enabled -> bash bridge spawns (default path unchanged)" "spawned" "$(_tg_run no none 1)"
 
+# ── lead-default Part 3: layout = lead-solo (real tmux windows) ───────
+cp "$HOME/.ae/config" "$HOME/.ae/config.ls-bak"
+cat >"$HOME/.ae/config" <<'EOF'
+[agents]
+dummy = "bash"
+dummy2 = "bash"
+dummy3 = "bash"
+
+[workspace]
+main = dummy:lead
+workers = dummy2:builder, dummy3:reviewer
+layout = lead-solo
+watchdog = false
+EOF
+REPO_LS="$(setup_repo)"
+(cd "$REPO_LS" && "$AE" --local test-leadsolo >/dev/null 2>&1 &)
+wait_for_session "test-leadsolo"
+sleep 1
+ls_win0_panes="$(tmux list-windows -t test-leadsolo -F '#{window_index} #{window_panes}' 2>/dev/null | awk '$1==0{print $2}')"
+ls_win1_panes="$(tmux list-windows -t test-leadsolo -F '#{window_index} #{window_panes}' 2>/dev/null | awk '$1==1{print $2}')"
+ls_win1_name="$(tmux list-windows -t test-leadsolo -F '#{window_index} #{window_name}' 2>/dev/null | awk '$1==1{print $2}')"
+assert_eq "lead-solo: window 0 holds ONLY the lead (1 pane)" "1" "$ls_win0_panes"
+assert_eq "lead-solo: window 1 holds the 2 workers (2 panes)" "2" "$ls_win1_panes"
+assert_eq "lead-solo: window 1 named 'workers' (safe literal, not an agent name)" "workers" "$ls_win1_name"
+ls_main_slot="$(tmux list-panes -s -t test-leadsolo -F '#{@ae_agent} #{@ae_slot}' 2>/dev/null | awk '$1=="dummy:lead"{print $2}')"
+assert_eq "lead-solo: lead pane carries @ae_slot=main" "main" "$ls_main_slot"
+assert_eq "lead-solo: layout pinned in meta (META-WINS on resume)" "lead-solo" "$(grep '^layout=' "$HOME/.ae/sessions/test-leadsolo/meta" 2>/dev/null | cut -d= -f2-)"
+"$AE" end -f test-leadsolo >/dev/null 2>&1 || true
+
+# Zero-worker lead-solo = window 0 only (valid no-op, no window 1).
+cat >"$HOME/.ae/config" <<'EOF'
+[agents]
+dummy = "bash"
+
+[workspace]
+main = dummy:solo
+layout = lead-solo
+watchdog = false
+EOF
+REPO_LS0="$(setup_repo)"
+(cd "$REPO_LS0" && "$AE" --local test-leadsolo0 >/dev/null 2>&1 &)
+wait_for_session "test-leadsolo0"
+sleep 1
+ls0_has_win1="$(tmux list-windows -t test-leadsolo0 -F '#{window_index}' 2>/dev/null | grep -c '^1$' || true)"
+assert_eq "lead-solo zero-worker: no window 1 (valid no-op)" "0" "$ls0_has_win1"
+"$AE" end -f test-leadsolo0 >/dev/null 2>&1 || true
+mv "$HOME/.ae/config.ls-bak" "$HOME/.ae/config"
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""
