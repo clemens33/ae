@@ -77,11 +77,18 @@ REQUIRED_FIXTURE_FAMILIES = (
     "watchdog.nudge",
     "watchdog.alert",
     "watchdog.meta",
+    "watchdog.telegram-supervise",
     "telegram.outbound",
     "telegram.inbound",
     "telegram.security",
+    "telegram.command-menu",
     "daemon.runtime",
 )
+
+# s20 source anchor: ae:<line> (bash impl) or aewatch:<line> (python-only behavior, e.g. the
+# s19 handoff marker->kill->send which has no bash twin). Every fixture must cite >=1 so no
+# expectation floats free of the implementation it is a contract for.
+_SOURCE_ANCHOR_RE = re.compile(r"^(?:ae|aewatch):(\d+)(?:-(\d+))?$")
 
 # Lowercase dotted/kebab token: dotted families + kebab leaf names, no uppercase,
 # no empty segments, no doubled separators.
@@ -177,6 +184,24 @@ def validate_contracts(obj: dict) -> list[str]:
                 errors.append(f"{where}: expect.effects must be present (even if empty)")
             elif not isinstance(expect["effects"], list):
                 errors.append(f"{where}: expect.effects must be a list")
+            else:
+                # s20: each effect entry must be a well-formed record with a KNOWN kind — an
+                # unknown/malformed effect would let a fixture claim coverage the recorder can
+                # never emit (codex).
+                for eidx, eff in enumerate(expect["effects"]):
+                    if not isinstance(eff, dict) or not isinstance(eff.get("kind"), str):
+                        errors.append(f"{where}: expect.effects[{eidx}] must be an object with a string 'kind'")
+                    elif eff["kind"] not in EFFECT_KINDS:
+                        errors.append(f"{where}: expect.effects[{eidx}] unknown effect kind {eff['kind']!r}")
+        # s20: every fixture must cite its SOURCE — a non-empty list of ae:<line> and/or
+        # aewatch:<line> anchors — so no expectation is un-anchored (codex B2).
+        src = fixture.get("source")
+        if not isinstance(src, list) or not src:
+            errors.append(f"{where}: missing 'source' — a non-empty list of ae:/aewatch: anchors")
+        else:
+            for a in src:
+                if not (isinstance(a, str) and _SOURCE_ANCHOR_RE.match(a)):
+                    errors.append(f"{where}: source anchor {a!r} is not ae:NNNN / aewatch:NNNN")
         # Optional phase-2 field: `ticks`. If present it must be a list of objects,
         # each with a numeric (non-bool) epoch — otherwise a valid-looking fixture
         # would crash the multi-tick oracle before it reaches behavior diffing.
@@ -252,6 +277,46 @@ def validate_contracts(obj: dict) -> list[str]:
     for family in REQUIRED_FIXTURE_FAMILIES:
         if not any(i == family or i.startswith(family + ".") for i in ids):
             errors.append(f"required fixture family {family!r} has no fixture")
+    # s20 EFFECT coverage: every EFFECT_KIND must have >=1 representative in some fixture's
+    # expect.effects — else the matrix could go green with empty placeholders (blind to a kind).
+    represented: set = set()
+    for fixture in fixtures:
+        if isinstance(fixture, dict) and isinstance(fixture.get("expect"), dict):
+            for eff in fixture["expect"].get("effects") or []:
+                if isinstance(eff, dict) and isinstance(eff.get("kind"), str):
+                    represented.add(eff["kind"])
+    for kind in sorted(EFFECT_KINDS):
+        if kind not in represented:
+            errors.append(f"effect kind {kind!r} has no representative fixture (expect.effects)")
+
+    # s20 NON-EFFECT assertion coverage: behaviors outside EFFECT_KINDS must be documented
+    # explicitly (codex B1) — command-menu via expect.telegram_commands; the s19 bridge handoff
+    # via expect.handoff_order + expect.killed_sessions (kill_session is off the effect stream).
+    def _fixture_for(prefix: str):
+        for fx in fixtures:
+            if isinstance(fx, dict) and isinstance(fx.get("id"), str):
+                if fx["id"] == prefix or fx["id"].startswith(prefix + "."):
+                    return fx
+        return None
+
+    cm = _fixture_for("telegram.command-menu")
+    if cm is not None and isinstance(cm.get("expect"), dict):
+        tc = cm["expect"].get("telegram_commands")
+        if not (isinstance(tc, list) and tc
+                and all(isinstance(c, dict)
+                        and isinstance(c.get("command"), str) and c["command"]
+                        and isinstance(c.get("description"), str) and c["description"] for c in tc)):
+            errors.append("telegram.command-menu expect.telegram_commands must be a non-empty list of "
+                          "{command:<non-empty str>, description:<non-empty str>} objects")
+    ho = _fixture_for("daemon.runtime.bridge-handoff")
+    if ho is not None and isinstance(ho.get("expect"), dict):
+        if ho["expect"].get("handoff_order") != ["bridge-owner-marker", "stop-bash", "send"]:
+            errors.append("daemon.runtime.bridge-handoff expect.handoff_order must be exactly "
+                          "['bridge-owner-marker', 'stop-bash', 'send'] (the s19 no-double-send order)")
+        ks = ho["expect"].get("killed_sessions")
+        if not (isinstance(ks, list) and all(isinstance(x, str) for x in ks) and "ae-telegram" in ks):
+            errors.append("daemon.runtime.bridge-handoff expect.killed_sessions must be a list of strings "
+                          "containing 'ae-telegram'")
     return errors
 
 

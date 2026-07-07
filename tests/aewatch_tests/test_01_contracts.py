@@ -27,17 +27,19 @@ CONTRACTS = REPO_ROOT / "contrib" / "aewatch" / "CONTRACTS.md"
 START = "<!-- AEWATCH_CONTRACTS_JSON_START -->"
 END = "<!-- AEWATCH_CONTRACTS_JSON_END -->"
 
-# Every future fixture family must have at least one placeholder id in phase 1,
-# so phase 2/3 cannot silently shrink the contract surface.
+# Every behavior family has at least one REPRESENTATIVE fixture (s20 filled the phase-1
+# placeholders); the validator + these guards keep later work from silently shrinking it.
 REQUIRED_FAMILIES = (
     "session.discovery",
     "watchdog.status",
     "watchdog.nudge",
     "watchdog.alert",
     "watchdog.meta",
+    "watchdog.telegram-supervise",
     "telegram.outbound",
     "telegram.inbound",
     "telegram.security",
+    "telegram.command-menu",
     "daemon.runtime",
 )
 
@@ -76,6 +78,10 @@ class ContractsLoaderTest(unittest.TestCase):
         obj = self.aw.extract_contracts_json(CONTRACTS.read_text(encoding="utf-8"))
         errors = self.aw.validate_contracts(obj)
         self.assertEqual(errors, [], f"committed contracts have errors: {errors}")
+
+    def test_required_families_match_the_validator(self):
+        # The test-side copy must not drift from the sidecar's source of truth.
+        self.assertEqual(tuple(self.aw.REQUIRED_FIXTURE_FAMILIES), REQUIRED_FAMILIES)
 
     def test_all_required_families_have_a_fixture(self):
         obj = self.aw.extract_contracts_json(CONTRACTS.read_text(encoding="utf-8"))

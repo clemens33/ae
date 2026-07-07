@@ -39,6 +39,7 @@ def _two_tick_fixture():
             }
         ],
         "telegram": {"enabled": False, "offset": 0, "state_tsv": ""},
+        "source": ["aewatch:1"],
         "ticks": [
             {"epoch": 1000, "now": "2026-07-05T07:00:00Z", "captures": {"%1": "tick-1 pane text"}},
             {"epoch": 1060, "now": "2026-07-05T07:01:00Z", "captures": {"%1": "tick-2 pane text"}},
