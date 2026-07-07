@@ -68,17 +68,6 @@ The agent must call `mark-done` *after* the most recent watchdog nudge:
 
 `mark-done` emits a `done` event. The watchdog honors it until a newer ae event mentions the agent. If you nudge the agent again afterwards (via `send` / `ask` / etc.), that newer event invalidates the done. To re-mark, run `mark-done` again.
 
-## Watchdog nudges right after I marked done
-
-Bug fixed in `de2575e`. If you're seeing it on a session with a long-running watchdog, the running process loaded the old code. Stop and restart:
-
-```bash
-~/.ae/sessions/<name>/watchdog stop
-~/.ae/sessions/<name>/watchdog start
-```
-
-`ae doctor --refresh` alone does not restart the running watchdog.
-
 ## Watchdog alerts but I'm not at the terminal
 
 Watchdog alerts go to tmux `display-message` (10 seconds) and `events.jsonl`. There's no external notifier. For overnight runs, tail the event log to your pager:

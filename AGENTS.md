@@ -78,7 +78,7 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 | `reply <request-id> <message>` | Reply to a logged `ask`/`review` by request ID. Verified against the request's stored **slot** (routing key), not the display name; `--as <agent>` is advisory display only |
 | `requests [mine\|inbox\|all]` | Inspect pending and replied requests without peeking panes |
 | `state <working\|waiting-user\|blocked\|done> [reason]` | Declare current work state (no args prints current). Shows in `ae list` (per agent + session `attn:` marker). The watchdog stops nudging on any quiet state: `done` (event-only), `waiting-user`/`blocked` (until the pane is touched) |
-| `mark-done [message]` | Shim over `state done`; also emits a legacy `done` event so a watchdog process started before the state helper keeps working. The current watchdog reads `state done` and legacy `done` |
+| `mark-done [message]` | Shim over `state done`; also emits a `done` event consumed by older watchdog processes |
 | `say <text>` | Push a free-text line to the human's Telegram chat (args or piped stdin). Emits a `chat` event the bridge forwards; a Telegram reply routes back to the agent. The deliberate way to answer the human on Telegram — pane output is not forwarded |
 | `memo add [--topic t] <text>` | Append durable shared session memory |
 | `memo read [--topic t]` | Read shared session memory |
