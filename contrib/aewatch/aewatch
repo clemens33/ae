@@ -425,6 +425,9 @@ class TmuxClient(abc.ABC):
     @abc.abstractmethod
     def display_message(self, text: str, *, duration_ms: int | None = None, server: str | None = None) -> None: ...
 
+    @abc.abstractmethod
+    def kill_session(self, session: str, server: str | None = None) -> None: ...
+
 
 class NullTmuxClient(TmuxClient):
     """Phase-1 placeholder: no live tmux. Reads return empty (discovery still works
@@ -453,6 +456,9 @@ class NullTmuxClient(TmuxClient):
         raise NotImplementedError("phase 1 must not mutate tmux")
 
     def display_message(self, text, *, duration_ms=None, server=None):
+        raise NotImplementedError("phase 1 must not mutate tmux")
+
+    def kill_session(self, session, server=None):
         raise NotImplementedError("phase 1 must not mutate tmux")
 
 
@@ -597,6 +603,12 @@ class RealTmuxClient(TmuxClient):
         args.append(text)
         self._run_write(args)
         self._rec.record("tmux.display_message", text=text, duration_ms=duration_ms)
+
+    def kill_session(self, session, server=None):
+        # Tolerant (like bash's `kill-session ... 2>/dev/null || true`): a bridge that
+        # isn't running is fine. Records NO effect — a daemon-lifecycle handoff, not a
+        # watchdog-cycle mutation, so it never enters the dual-run oracle stream.
+        self._run([*self._server_args(server), "kill-session", "-t", session])
 
     def paste(self, target, text, submit, server=None):
         """Port of tmux_paste_submit (ae:120-151). Stage via set-buffer+paste-buffer
@@ -2769,6 +2781,7 @@ class AewatchRuntime:
         self.heartbeat_path = self.dir / "heartbeat"
         self.daemon_log_path = self.dir / "daemon.log"
         self.backoff_path = self.dir / "backoff.json"
+        self.bridge_owner_path = self.dir / "bridge-owner"
         self.dir.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(self.dir, 0o700)
@@ -2777,6 +2790,40 @@ class AewatchRuntime:
 
     def singleton(self) -> SingletonLock:
         return SingletonLock(self.lock_path)
+
+    def write_bridge_owner(self) -> bool:
+        """Claim Telegram-bridge ownership (atomic tmp+replace; content = OUR pid + ns stamp).
+        Returns True only on a DURABLE claim — the handoff is fail-CLOSED: if this returns
+        False (permissions/disk/replace failure) the daemon must NOT stop bash or send, since
+        bash revive paths would see no owner. The bash guard stands down while the marker
+        exists AND the heartbeat is fresh; a stale heartbeat or missing marker lets bash revive."""
+        self.dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.dir / f".bridge-owner.{os.getpid()}.tmp"
+        try:
+            tmp.write_text(f"{os.getpid()} {time.time_ns()}\n", encoding="utf-8")
+            os.replace(tmp, self.bridge_owner_path)
+            return True
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return False
+
+    def clear_bridge_owner(self) -> None:
+        """Remove the marker ONLY if THIS process wrote it (pid match), so a second daemon
+        invocation that lost the singleton race never clears the REAL owner's live marker
+        (which would let bash double-send). Clean owner stop -> instant bash resume; a crash
+        leaves the marker but the heartbeat stales -> bash revives (the free fallback)."""
+        try:
+            first = self.bridge_owner_path.read_text(encoding="utf-8").split(" ", 1)[0]
+        except OSError:
+            return
+        if first == str(os.getpid()):
+            try:
+                self.bridge_owner_path.unlink()
+            except OSError:
+                pass
 
     def write_heartbeat(self) -> Path:
         """Atomically refresh the heartbeat (same-dir temp + os.replace).
@@ -3003,6 +3050,10 @@ def run_daemon_tick(runtime: "AewatchRuntime", tmux, recorder, *, now, watchdog_
         lock.release()
 
 
+_HEARTBEAT_DECAY_STOP_SECS = 60  # < the 90s ownership-decay budget: stop before the fact rots
+_HEARTBEAT_REFRESH_MAX_SECS = 60  # cap the loop wait so the heartbeat can't decay between refreshes
+
+
 def run_daemon_loop(runtime, components, *, clock, interval, sleep=None, recorder=None,
                     secrets_provider=None, install_signals=True) -> dict:
     """The long-running daemon supervisor. `components` is [(name, tick(now)), ...] — the
@@ -3055,15 +3106,33 @@ def run_daemon_loop(runtime, components, *, clock, interval, sleep=None, recorde
     backoffs = {name: BackoffState(runtime.dir / f"backoff-{name}.json", recorder=recorder)
                 for name, _ in components}
     stop_reason = None
+    last_hb_ok_at = clock()
     try:
         while not shutdown.is_set():
             now = clock()
             logger = _logger()
+            # B5/B6: maintain the ownership fact (marker + FRESH heartbeat) BEFORE any component
+            # ticks this iteration, so the bridge never SENDS with a stale fact. If the heartbeat
+            # cannot be kept fresh within the decay-stop budget (disk-full / perms / ro-remount,
+            # or a long interval / scheduler stall), STOP before ticking -> the CLI finally clears
+            # the marker (unlink needs no free bytes) -> bash revives -> single sender. A single
+            # transient blip with a still-fresh heartbeat stays WARN. The wait is capped so the
+            # heartbeat is refreshed well under the 90s decay regardless of the configured interval.
+            try:
+                runtime.write_heartbeat()
+                last_hb_ok_at = now
+            except OSError:
+                logger.log("WARNING", "heartbeat write failed")
+                if now - last_hb_ok_at >= _HEARTBEAT_DECAY_STOP_SECS:
+                    logger.log("ERROR", "heartbeat unmaintainable — stopping daemon before ownership decays")
+                    stop_reason = "heartbeat-write-failed"
+                    shutdown.set()
+                    break
             for name, tick in components:
                 if shutdown.is_set():
                     break
                 try:
-                    tick(now)
+                    tick_result = tick(now)
                 except Exception:
                     logger.log("ERROR", f"{name} tick crashed:\n{_traceback.format_exc()}")
                     try:
@@ -3079,15 +3148,13 @@ def run_daemon_loop(runtime, components, *, clock, interval, sleep=None, recorde
                         shutdown.set()
                         break
                 else:
+                    if tick_result is _TICK_SKIPPED:
+                        continue  # a not-due gated wake did no work -> don't reset the crash streak (B9)
                     try:
                         backoffs[name].record_success(now)  # only THIS clean component resets
                     except OSError:
                         logger.log("WARNING", f"{name} backoff reset failed")
-            try:
-                runtime.write_heartbeat()  # every iteration, incl. crash iterations
-            except OSError:
-                logger.log("WARNING", "heartbeat write failed")
-            if shutdown.is_set() or wait(interval):
+            if shutdown.is_set() or wait(min(interval, _HEARTBEAT_REFRESH_MAX_SECS)):
                 break
         _logger().log("INFO", f"daemon shutting down (signal={signal_name[0]}, reason={stop_reason})")
     finally:
@@ -3122,12 +3189,110 @@ def cmd_up(args: argparse.Namespace) -> int:
     return 1 if status == "failed" else 0
 
 
+_TELEGRAM_BASH_SESSION = "ae-telegram"
+
+
+_BRIDGE_HEARTBEAT_MAX_AGE = 90  # seconds; the same freshness rule the bash guard uses
+
+
+def _bridge_ownership_fresh(runtime, *, now=None, max_age=_BRIDGE_HEARTBEAT_MAX_AGE) -> bool:
+    """The FULL ownership fact a bash reviver checks: the bridge-owner marker exists AND the
+    heartbeat is fresh (age <= max_age). The handoff must make this TRUE before it kills/sends,
+    else a concurrent _supervise sees marker-but-no-fresh-heartbeat and revives bash."""
+    if not runtime.bridge_owner_path.exists():
+        return False
+    try:
+        age = (time.time() if now is None else now) - runtime.heartbeat_path.stat().st_mtime
+    except OSError:
+        return False
+    return 0 <= age <= max_age
+
+
+def _stop_bash_bridge_all_servers(tmux, discover) -> None:
+    """Kill the bash ae-telegram bridge on EVERY server it could be on — the ambient/default
+    server AND every unique tmux_server across discovered sessions. A watchdog _supervise
+    running inside a named (-L) server pane revives ae-telegram on THAT server (inherited via
+    $TMUX), so an ambient-only kill would leave a second bridge sending."""
+    servers = {""}  # "" / None == the ambient default server
+    try:
+        for sess in discover():
+            servers.add(getattr(sess, "tmux_server", "") or "")
+    except Exception:  # noqa: BLE001 — discovery failure must not abort the handoff
+        pass
+    for srv in servers:
+        tmux.kill_session(_TELEGRAM_BASH_SESSION, server=(srv or None))
+
+
+# Sentinel a component tick returns when it did NO work this wake (a not-due _due_gated tick), so
+# run_daemon_loop does NOT count it as a clean tick — otherwise a skipped wake would reset the
+# component's crash-backoff streak (the "reset only after ITS clean tick" containment contract, B9).
+_TICK_SKIPPED = object()
+
+
+def _due_gated(inner, interval):
+    """Wrap a component tick so it runs only when its CONFIGURED cadence is due (now >= next_due),
+    even though the daemon loop wakes more often (B6 caps the wait at <=60s for heartbeat
+    maintenance). The first tick always runs; then next_due = now + interval. Keeps the watchdog
+    on AE_WATCHDOG_INTERVAL_SEC (default 180) so cycle-counted logic (throttle/nudge/alert-text)
+    doesn't skew, while the bridge component ticks every wake for command-routing responsiveness.
+    A not-due wake returns _TICK_SKIPPED so the loop won't record it as a clean (streak-resetting)
+    tick."""
+    due = {"at": None}
+
+    def tick(now):
+        if due["at"] is not None and now < due["at"]:
+            return _TICK_SKIPPED
+        due["at"] = now + interval
+        return inner(now)
+
+    return tick
+
+
+def _make_bridge_component(bridge, runtime, tmux, discover):
+    """Wrap the bridge tick with the s19 handoff — order marker -> stop-bash -> first send,
+    never a double-send window. On the FIRST tick where [telegram] is enabled: (a) DURABLY
+    claim the bridge-owner marker (fail-CLOSED — if the claim fails, do NOT stop bash and do
+    NOT send; retry next tick), (b) stop the live bash bridge on every server, THEN (c) tick.
+    Idempotent (handoff once). Exposes .bridge for wiring tests."""
+    state = {"handed_off": False}
+
+    def tick(now):
+        cfg = load_telegram_config(load_config(runtime.ae_home))
+        if cfg.enabled and not state["handed_off"]:
+            if not runtime.write_bridge_owner():          # a) claim the marker (fail-closed)
+                return
+            # a2) complete the OWNERSHIP FACT before the first kill/send: establish a fresh
+            # heartbeat so a bash reviver sees marker + FRESH heartbeat (belt-and-braces with the
+            # loop-top heartbeat). If it can't be made fresh, back out (clear marker, no kill/send).
+            runtime.write_heartbeat()
+            if not _bridge_ownership_fresh(runtime):
+                runtime.clear_bridge_owner()
+                return
+            _stop_bash_bridge_all_servers(tmux, discover)  # b) stop bash on EVERY server
+            state["handed_off"] = True
+        elif cfg.enabled and not _bridge_ownership_fresh(runtime):
+            # PER-SEND guard (B7/B8): time can pass INSIDE one iteration (a slow watchdog component
+            # / a stall) between the loop-top heartbeat and this send. If the fact decayed, bash may
+            # have revived, so the bridge must NOT send. AND we INVALIDATE the handoff (reset + clear
+            # our marker): re-freshening ownership on the next wake is NOT enough — a revived bash
+            # must be re-killed first, so the next enabled tick re-runs the FULL handoff (marker ->
+            # fresh heartbeat -> kill EVERY bash bridge -> send).
+            state["handed_off"] = False
+            runtime.clear_bridge_owner()
+            return
+        bridge.tick(now)                                  # c) send (or idle internally if disabled)
+
+    tick.bridge = bridge
+    return tick
+
+
 def _run_daemon_loop_cli(runtime: "AewatchRuntime", *, install_signals: bool = True) -> int:
-    """Wire the PRODUCTION supervisor loop (s16), WATCHDOG-ONLY for s18: a watchdog
-    component (RealTmuxClient + WatchdogRunner over the real ae/event boundaries). The
-    co-located Telegram bridge is deliberately NOT wired yet — under AE_WATCHDOG_IMPL=uv
-    the bash `ae telegram` bridge still runs, so wiring the aewatch bridge here would
-    double-run it; s19 owns bridge compat/exclusivity. supervise_bridge stays a no-op."""
+    """Wire the PRODUCTION supervisor loop (s16): a watchdog component (RealTmuxClient +
+    WatchdogRunner over the real ae/event boundaries) AND (s19) the co-located Telegram
+    bridge. The bridge stores point at the SHARED bash telegram dir ($AE_HOME/telegram) so
+    the aewatch bridge RESUMES from the bash bridge's last durable offset across the =uv
+    handoff (durable-offset continuity). ae stands down the bash bridge (only ONE sends);
+    the tick idles on [telegram] enabled. supervise_bridge stays a no-op (bridge co-located)."""
     recorder = EffectRecorder()
     logger = AewatchLogger(
         runtime.daemon_log_path,
@@ -3144,20 +3309,49 @@ def _run_daemon_loop_cli(runtime: "AewatchRuntime", *, install_signals: bool = T
         supervise_bridge=None,  # the bridge runs IN this daemon — nothing external to revive
     )
 
-    def watchdog_tick(now):
+    # B7 (cadence decouple): the loop wakes every min(interval, 60)s (B6 heartbeat maintenance +
+    # bridge polling), but the WATCHDOG must keep its CONFIGURED cadence (AE_WATCHDOG_INTERVAL_SEC,
+    # default 180) — cycle-counted logic (throttle/nudge budgets, the alert-text "~15min" figure)
+    # skews if it sweeps 3x. Self-gate the watchdog on a due-time (below); the bridge ticks every
+    # wake DELIBERATELY (<=60s command-routing responsiveness).
+    def _watchdog_body(now):
         _run_daemon_tick_body(runtime, tmux, recorder, now=now,
                               config=load_config(runtime.ae_home),
                               watchdog_runner=watchdog_runner, logger=logger)
 
-    # s18 wires the WATCHDOG only (see the docstring): the co-located aewatch bridge
-    # stays dark until s19 handles `ae telegram` bridge exclusivity — wiring it now
-    # would double-run the bash bridge under AE_WATCHDOG_IMPL=uv. B2's live-config
-    # TelegramBridge (transport_provider resolved per tick) is ready for that slice.
-    run_daemon_loop(
-        runtime, [("watchdog", watchdog_tick)],
-        clock=time.time, interval=wd_config.interval, recorder=recorder,
-        install_signals=install_signals,
+    watchdog_tick = _due_gated(_watchdog_body, wd_config.interval)
+
+    # s19: wire the co-located Telegram bridge. Stores point at the SHARED bash telegram
+    # dir ($AE_HOME/telegram) — byte-compatible formats — so the aewatch bridge resumes from
+    # the bash bridge's last DURABLE offset across the =uv handoff (no loss, no replay of
+    # durably-past; kill-mid-send stays at-least-once). ae stands down the bash bridge so
+    # only ONE bridge sends. The tick idles on [telegram] enabled (config-live, B2).
+    telegram_dir = runtime.ae_home / "telegram"
+    telegram_dir.mkdir(parents=True, exist_ok=True)  # the stores do not create parents
+
+    def _transport_provider(cfg):
+        return RealTelegramTransport(cfg.token, logger=logger) if cfg.token else None
+
+    def bridge_discover():
+        return discover_sessions(runtime.ae_home, tmux, recorder)
+
+    bridge = TelegramBridge(
+        runtime.ae_home, transport_provider=_transport_provider,
+        discover=bridge_discover,
+        offset_store=OffsetStore(telegram_dir / "tg_offset"),
+        outbound_state=OutboundState(telegram_dir / "state.tsv"),
+        current_target=CurrentTarget(telegram_dir / "current_target"),
+        logger=logger, recorder=recorder,
     )
+    bridge_component = _make_bridge_component(bridge, runtime, tmux, bridge_discover)
+    try:
+        run_daemon_loop(
+            runtime, [("watchdog", watchdog_tick), ("bridge", bridge_component)],
+            clock=time.time, interval=wd_config.interval, recorder=recorder,
+            install_signals=install_signals,
+        )
+    finally:
+        runtime.clear_bridge_owner()  # clean shutdown -> bash resumes instantly (not after decay)
     return 0
 
 

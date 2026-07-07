@@ -133,9 +133,17 @@ class FakeTmux(AW.TmuxClient):
         # read/write. These notes NEVER touch the effect stream (the oracle compares
         # effect KINDS), so bash-vs-python parity is unperturbed.
         self.server_calls: list = []
+        # s19: sessions killed via kill_session, in order (the bridge handoff kills the bash
+        # ae-telegram bridge). A daemon-lifecycle mutation, recorded HERE (not the effect
+        # stream) so the dual-run watchdog oracle is unperturbed.
+        self.killed_sessions: list = []
 
     def _note(self, method: str, server) -> None:
         self.server_calls.append((method, server or ""))
+
+    def kill_session(self, session, server=None):
+        self._note("kill_session", server)
+        self.killed_sessions.append(session)
 
     # ── reads: return data, record nothing ──────────────────────────────
     # `None` (the real client's ambient/default server) and `""` (a fixture's

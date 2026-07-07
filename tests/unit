@@ -4031,6 +4031,45 @@ assert_eq "watchdog-decision: invalid impl -> bash (never aewatch)" "bash" "$(_s
 assert_eq "watchdog-decision: disabled+uv -> NEITHER" "none" "$(_sw_run uv false)"
 assert_eq "watchdog-decision: disabled+default -> NEITHER" "none" "$(_sw_run '' false)"
 
+# ── s19: Telegram bridge ownership (aewatch vs bash), no double-send ──────────
+# Ownership is a DURABLE MARKER + fresh heartbeat (NOT env — a concurrent bash reviver via
+# `telegram _supervise` never shares the uv-launcher's env, so ownership must be a machine-
+# readable fact). _aewatch_owns_bridge: $AE_HOME/aewatch/bridge-owner exists AND the heartbeat
+# is fresh (<=90s, the s18-hook rule). Marker but STALE heartbeat (aewatch dead) -> NOT owned,
+# so the next _supervise revives bash (the free fallback). The bash STOP lives in the aewatch
+# daemon's handoff, NOT in ae.
+eval "$(awk '/^_aewatch_owns_bridge\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_owns_run() {  # <marker: yes|no> <hb: none|fresh|stale> -> yes|no
+    local marker="$1" hb="$2" d
+    d="$(mktemp -d)"
+    mkdir -p "$d/aewatch"
+    [[ "$marker" == yes ]] && : >"$d/aewatch/bridge-owner"
+    case "$hb" in
+        fresh) : >"$d/aewatch/heartbeat" ;;
+        stale) : >"$d/aewatch/heartbeat"; touch -d '2 hours ago' "$d/aewatch/heartbeat" ;;
+    esac
+    if CONFIG_DIR="$d" _aewatch_owns_bridge; then echo yes; else echo no; fi
+    rm -rf "$d"
+}
+assert_eq "owns-bridge: marker + FRESH heartbeat -> owns" "yes" "$(_owns_run yes fresh)"
+assert_eq "owns-bridge: marker + STALE heartbeat -> NOT owns (bash revives = fallback)" "no" "$(_owns_run yes stale)"
+assert_eq "owns-bridge: marker + NO heartbeat -> NOT owns" "no" "$(_owns_run yes none)"
+assert_eq "owns-bridge: NO marker + fresh heartbeat -> NOT owns (default path zero-diff)" "no" "$(_owns_run no fresh)"
+assert_eq "owns-bridge: NO marker + no heartbeat -> NOT owns" "no" "$(_owns_run no none)"
+
+# Structural: ONE ownership guard at the top of _telegram_autostart_if_enabled (launch,
+# reattach, AND _supervise all flow through it); no ae-side standdown (the daemon stops bash);
+# cmd_telegram_start WARNS but honors explicit human intent; status is backend-aware.
+_TG_AS_FN="$(awk '/^_telegram_autostart_if_enabled\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' <<<"$AE_SOURCE")"
+assert_eq "s19 guard: autostart defers to the aewatch owner (return 0, no spawn)" "yes" \
+    "$(grep -qE '_aewatch_owns_bridge && return 0' <<<"$_TG_AS_FN" && echo yes || echo no)"
+assert_eq "s19: no ae-side _telegram_standdown (the daemon owns the bash stop)" "yes" \
+    "$(grep -q '_telegram_standdown' <<<"$AE_SOURCE" && echo no || echo yes)"
+assert_eq "s19: cmd_telegram_start WARNS then still spawns (human bypass)" "yes" \
+    "$([[ "$AE_SOURCE" == *'_aewatch_owns_bridge'*'aewatch owns the bridge'*'_telegram_spawn_daemon'* ]] && echo yes || echo no)"
+assert_eq "s19: status reports the active backend (marker)" "yes" \
+    "$([[ "$AE_SOURCE" == *'backend: aewatch'* && "$AE_SOURCE" == *'backend: bash'* ]] && echo yes || echo no)"
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

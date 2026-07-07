@@ -1341,6 +1341,59 @@ assert_eq "aewatch-autostart: AE_NO_AUTOSTART=1 skips" "noop" "$(_aw_run 1 none 
 assert_eq "aewatch-autostart: no-op under AE_WATCHDOG_IMPL=bash (default path)" "noop" "$(_aw_run 1 none 0 '' bash)"
 assert_eq "aewatch-autostart: no-op when AE_WATCHDOG_IMPL unset/empty" "noop" "$(_aw_run 1 none 0 '' '')"
 
+# ── s19: Telegram bridge ownership / no-double-send (the MANDATORY guard test) ──
+# All THREE bash-bridge revive paths (launch, reattach, watchdog _supervise) funnel through
+# _telegram_autostart_if_enabled. Ownership is a DURABLE MARKER + fresh heartbeat (NOT env —
+# a concurrent bash reviver never shares the uv-launcher's env). Drive the REAL
+# _aewatch_owns_bridge + _telegram_autostart_if_enabled with stubbed lifecycle deps: a
+# bridge-owner marker + FRESH heartbeat suppresses the bash bridge for ANY caller (codex's
+# concurrent-revive assertion); marker+STALE or NO-marker leaves the bash fallback unchanged.
+# (Stopping a RUNNING bash bridge is the aewatch daemon's handoff, tested aewatch-side.)
+_TG_FNS="$TMPDIR/tg-fns.sh"
+{
+    awk '/^_aewatch_owns_bridge\(\) \{/,/^\}$/' "$AE"
+    awk '/^_telegram_autostart_if_enabled\(\) \{/,/^\}$/' "$AE"
+} >"$_TG_FNS"
+
+# _tg_run <marker: yes|no> <hb: none|fresh|stale> <bash_running_rc> -> spawned|nospawn
+_tg_run() {
+    local marker="$1" hb="$2" bashrc="$3" d
+    d="$(mktemp -d "$TMPDIR/tg.XXXXXX")"
+    mkdir -p "$d/aewatch"
+    [[ "$marker" == yes ]] && : >"$d/aewatch/bridge-owner"
+    case "$hb" in
+        fresh) : >"$d/aewatch/heartbeat" ;;
+        stale) : >"$d/aewatch/heartbeat"; touch -d '2 hours ago' "$d/aewatch/heartbeat" ;;
+    esac
+    cat >"$d/wrapper" <<WRAP
+#!/usr/bin/env bash
+CONFIG_DIR="$d"
+_TELEGRAM_TMUX_SESSION="ae-telegram"
+_telegram_daemon_running() { return $bashrc; }
+_telegram_intent_enabled() { echo true; }
+_telegram_intent_enabled_uncached() { echo true; }
+_telegram_missing_deps() { :; }
+_telegram_validate_token_file() { :; }
+_telegram_control_lock_file() { echo "$d/lock"; }
+_telegram_spawn_daemon() { echo spawned >"$d/spawned"; }
+get_config() { :; }
+source "$_TG_FNS"
+_telegram_autostart_if_enabled
+WRAP
+    bash "$d/wrapper" >/dev/null 2>&1
+    { [[ -f "$d/spawned" ]] && echo spawned; } || echo nospawn
+    rm -rf "$d"
+}
+# Concurrent-revive guard (the mandatory invariant, ae side): marker + fresh heartbeat
+# suppresses the bash bridge even for a non-uv reviver (_supervise/reattach/launch).
+assert_eq "s19: bridge-owner + fresh heartbeat -> NO bash bridge spawned (any caller)" "nospawn" "$(_tg_run yes fresh 1)"
+# marker present but bash somehow already running: the guard still refuses a SECOND spawn.
+assert_eq "s19: bridge-owner + fresh + bash already running -> no second spawn" "nospawn" "$(_tg_run yes fresh 0)"
+# Fallback: aewatch died (STALE heartbeat) -> bash revives, single-sender restored.
+assert_eq "s19: bridge-owner + STALE heartbeat -> bash bridge spawns (fallback revive)" "spawned" "$(_tg_run yes stale 1)"
+# Default path zero-diff: no marker -> bash autostarts exactly as before.
+assert_eq "s19: no marker + enabled -> bash bridge spawns (default path unchanged)" "spawned" "$(_tg_run no none 1)"
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

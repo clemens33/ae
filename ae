@@ -2910,7 +2910,9 @@ cmd_doctor() {
             doctor_report "WARN" "telegram.chat_id" "telegram.chat_id not set"
         fi
         if [[ "$(_telegram_intent_enabled)" == "true" ]]; then
-            if _telegram_daemon_running; then
+            if _aewatch_owns_bridge; then
+                doctor_report "OK" "telegram.daemon" "enabled; aewatch daemon owns the bridge"
+            elif _telegram_daemon_running; then
                 doctor_report "OK" "telegram.daemon" "running"
             else
                 doctor_report "WARN" "telegram.daemon" "enabled but not running (will autostart on 'ae <name>')"
@@ -4170,7 +4172,29 @@ _start_session_watchdog() {
     fi
 }
 
+# s19: does a live aewatch daemon OWN the Telegram bridge? True when the durable bridge-owner
+# marker exists AND the ae-aewatch heartbeat is fresh (age <= 90s, the s18-hook rule).
+# Ownership is a machine-readable FACT, NOT env: a concurrent bash reviver (another session's
+# `telegram _supervise`) never shares the uv-launcher's env, so the marker (written by the
+# aewatch daemon's handoff) is what suppresses every revive path — only ONE bridge ever sends.
+_aewatch_owns_bridge() {
+    # Ownership is a DURABLE MARKER + fresh heartbeat, NOT env: a concurrent bash reviver
+    # (another session's `telegram _supervise`) never shares the uv-launcher's env. The
+    # aewatch daemon writes bridge-owner while its bridge is active; a STALE heartbeat means
+    # aewatch is dead, so bash revives (the free fallback).
+    [[ -f "$CONFIG_DIR/aewatch/bridge-owner" ]] || return 1
+    local _hb="$CONFIG_DIR/aewatch/heartbeat"
+    [[ -f "$_hb" ]] || return 1
+    local _age=$(($(date +%s) - $(stat -c %Y "$_hb" 2>/dev/null || echo 0)))
+    ((_age >= 0 && _age <= 90))
+}
+
 _telegram_autostart_if_enabled() {
+    # s19: a live aewatch daemon owning the bridge (bridge-owner marker + fresh heartbeat)
+    # stands bash down — return 0, do NOT start. This ONE guard covers every revive path
+    # (launch, reattach, watchdog _supervise) that funnels here. A STALE heartbeat (aewatch
+    # dead) falls through and bash revives — the free fallback.
+    _aewatch_owns_bridge && return 0
     [[ "$(_telegram_intent_enabled)" == "true" ]] || return 0
     _telegram_daemon_running && return 0
     local missing
@@ -4318,6 +4342,11 @@ cmd_telegram_start() {
             return 1
         }
         _telegram_persist_intent "true"
+        # s19: if the aewatch daemon owns the bridge, WARN but honor the explicit human
+        # request (`ae telegram start`) — human intent wins; we just say so, then spawn.
+        if _aewatch_owns_bridge; then
+            echo "ae telegram: WARNING — aewatch owns the bridge (bridge-owner + fresh heartbeat); starting the bash bridge too may double-send. Proceeding on your explicit request." >&2
+        fi
         if _telegram_daemon_running; then
             echo "ae telegram: already running (tmux session $_TELEGRAM_TMUX_SESSION)"
             return 0
@@ -4361,7 +4390,12 @@ cmd_telegram_status() {
     if _telegram_daemon_running; then runtime="running"; else runtime="stopped"; fi
     echo "ae telegram:"
     echo "  intent:  enabled=$intent (in $CONFIG_FILE)"
-    echo "  runtime: $runtime (tmux session $_TELEGRAM_TMUX_SESSION)"
+    if _aewatch_owns_bridge; then
+        echo "  backend: aewatch (bridge-owner marker + fresh heartbeat; shared state in $CONFIG_DIR/telegram)"
+    else
+        echo "  backend: bash"
+    fi
+    echo "  runtime: bash daemon $runtime (tmux session $_TELEGRAM_TMUX_SESSION)"
     local missing
     missing="$(_telegram_missing_deps)"
     if [[ -n "$missing" ]]; then
