@@ -6,10 +6,10 @@ Every ae session has a directory at `~/.ae/sessions/<name>/` filled with generat
 
 | Helper | Purpose |
 |---|---|
-| `send <agent> <message>` | Fire-and-forget message to another pane (serialized with flock). |
+| `send <agent> <message>` | Deliver a message to another agent's pane (serialized with flock). Refuses a dead pane, waits out a busy or human-occupied input, pastes, and verifies the submit — see [How `send` delivers](#how-send-delivers). |
 | `ask <agent> <question>` | Tracked request — embeds your identity and an exact reply command with a request id. |
 | `review <agent> <request>` | Like `ask`, but with the critical-review prompt template (findings-first, BLOCKER/IMPORTANT/NIT). |
-| `reply <request-id> <message>` | Reply to a logged `ask` / `review` by request id. Pass `--as <agent>` to override identity when needed. |
+| `reply <request-id> <message>` | Reply to a logged `ask` / `review` by request id. Verified against the request's stored **slot** (the routing key), not the display name; `--as <agent>` sets the displayed sender only and cannot bypass that check. |
 | `requests [mine\|inbox\|all]` | Inspect pending / replied state from `events.jsonl` without peeking panes. |
 | `say <text>` | Push a free-text line to the human's Telegram chat (args or piped stdin). Emits a `chat` event the [Telegram bridge](telegram.md) forwards; a Telegram reply routes back to you. Pane output is not forwarded — this is how you answer the human on Telegram. |
 
@@ -39,6 +39,24 @@ flowchart LR
 ```
 
 Only one helper touches tmux (`send`). Only one path mints request ids (`ae_tracked_send`). Only one helper validates reply pairing (`ae_find_request`). That symmetry is why the surface is auditable in `events.jsonl` — every interaction passes through the same emit point.
+
+### How `send` delivers
+
+`send` protects the target pane and confirms delivery, then reports loudly if it can't — it never drops a message silently:
+
+1. **Dead-pane refusal.** If the target agent has exited and its pane fell back to a shell, `send` refuses — a stray Enter would run the message as a shell command. Nothing is pasted:
+   `ae: send to <target> REFUSED — target pane is a shell, not a running agent …`
+2. **Busy / human-input defer.** For a modelled TUI (claude, codex) `send` waits while the input box is non-empty, mid-generation, or unreadable — fail-closed, so it never clips a half-typed human question or pastes into a busy prompt. It retries for ~2s (5 × 0.4s); if the input never clears it abandons rather than clobbering:
+   `ae: send to <target> ABANDONED — target has unsent/human input or is busy …`
+3. **Submit verification.** After pasting, `send` confirms the text left the input box, nudging Enter up to twice more. If it still can't confirm, it fails loudly:
+   `ae: send to <target> UNCONFIRMED — submit not verified. Re-send.`
+4. **No durable outbox.** ae is not a queue — a loud failure is the signal for the sender to re-send. `ask` / `review` / `reply` / `interrupt` all deliver through this same path and inherit every guard.
+
+Other tools (gemini, opencode, plain shells) receive without the modelled busy / human-input protection — only claude and codex expose a reliable input-state read.
+
+### Slot identity
+
+Every agent pane carries a stable **slot** — `main`, `worker.<n>`, or `spawned.<n>` — stamped as the `@ae_slot` tmux pane option and recorded in the session meta. The slot is the **routing key**: requests and replies are addressed and verified by slot + session, so a reply reaches the right agent even after its display name (`@ae_agent`) changes. The name is display only. `reply` checks the sender's live slot against the request's stored slot before delivering; a name passed with `--as` is shown but never trusted for routing. Live sessions that predate slot stamping get their `@ae_slot` filled in on the next `ae doctor --refresh` or resume.
 
 ## State
 

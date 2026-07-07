@@ -11,6 +11,25 @@ The watchdog is a per-session monitor that lives inside the hidden `ae-monitor` 
 
 The watchdog runs as a `bash` subprocess pinned to a single tmux pane named `_watchdog`.
 
+## Implementations: bash (default) and aewatch (opt-in)
+
+Two implementations reproduce the same watchdog behavior. The **bash watchdog** described on this page is the default and needs nothing beyond `bash` + `tmux`. The **aewatch sidecar** is an optional Python reproduction of the watchdog *and* the [Telegram bridge](../reference/telegram.md), enabled per shell with `AE_WATCHDOG_IMPL=uv`.
+
+| | bash watchdog (default) | aewatch sidecar (`AE_WATCHDOG_IMPL=uv`) |
+|---|---|---|
+| Runtime | a `bash` subprocess in each session's `_watchdog` pane | one `uv` / PEP 723 Python process (`contrib/aewatch/aewatch`, stdlib-only) |
+| Scope | per session | one daemon per `AE_HOME`, sweeping every discovered session |
+| Home | the session's `ae-monitor` window | a dedicated `ae-aewatch` tmux session on the root server |
+| Liveness | the `_watchdog` pane + pid | a heartbeat file (`$AE_HOME/aewatch/heartbeat`) touched each tick |
+
+**Selection is exclusive and decided once, at session start.** `_start_session_watchdog` reads the effective `AE_WATCHDOG_IMPL`: `uv` starts (or reuses) the aewatch daemon and does *not* start the bash `_watchdog`; anything else starts the bash watchdog. A component — watchdog or bridge — never runs twice against the same session.
+
+**Reuse is heartbeat-aware.** Launching under `=uv` reuses a running `ae-aewatch` session only when its heartbeat is fresh; a stale or wedged daemon is replaced, not trusted.
+
+**bash is the living fallback.** aewatch owns the Telegram bridge only while it holds the `bridge-owner` marker *and* its heartbeat is fresh (age ≤ 90s). If the aewatch daemon dies, the heartbeat goes stale and the next bash `telegram _supervise` revives the bash bridge — so exactly one bridge sends, with no extra code on the fallback path. See [the bridge protocol](bridge-protocol.md) for the handoff.
+
+The rest of this page describes the bash watchdog. aewatch reproduces the same per-cycle state machine and effects; the two are cross-checked by a bash-vs-Python parity oracle in `contrib/aewatch/`.
+
 ## Tunables
 
 | Variable | Default | Meaning |
