@@ -106,6 +106,16 @@ grep '^session_id=' ~/.ae/sessions/<name>/meta | cut -d= -f2-
 
 The session UUID is generated at first session creation, preserved on resume, preserved across rename, and copied during transfer. Bridges discovering sessions on a host can scan `~/.ae/sessions/*/meta` for `session_id` and key their internal state on that value.
 
+## Bridge ownership
+
+ae can drive a session's outbound path from either of two bridge implementations — the bash `ae-telegram` daemon or the in-process aewatch bridge (see [Telegram backends](../reference/telegram.md#backends-bash-daemon-and-aewatch-opt-in)). Only one may send at a time, coordinated by a durable marker rather than a lock — a lock can't span the bash/Python boundary or a process handoff:
+
+- The owning bridge writes `$AE_HOME/aewatch/bridge-owner` and keeps `$AE_HOME/aewatch/heartbeat` fresh (touched each tick).
+- Any bridge — or a bash reviver — treats the marker as authoritative only while the heartbeat is fresh (age ≤ 90s). A stale heartbeat means the owner is gone and the marker suppresses no one.
+- Handoff order is strict: claim the marker → stop the other bridge → only then send. There is no window in which both send, and the shared `~/.ae/telegram/` offset files mean the taking-over bridge resumes from the last durable offset.
+
+A bridge implementer coexisting with ae's own bridges should honor the same marker: if `bridge-owner` exists with a fresh heartbeat, stand down.
+
 ## Allowed and disallowed assumptions
 
 **Allowed:**
@@ -122,7 +132,7 @@ The session UUID is generated at first session creation, preserved on resume, pr
 - Assuming the human-readable session name is stable. Use `session_id`.
 - Assuming `actor` always matches a tmux pane. External actors won't.
 - Writing to `events.jsonl` directly. Always go through `send` / `ask` / `review` / `reply` / `memo` — the schema is enforced by `_lib::ae_emit_event`, not by file convention.
-- Assuming this list of write helpers is final. Stage 0 covers the substrate listed above; new helpers (e.g. an in-flight `state` helper for declaring `working` / `waiting-user` / `blocked` / `done`) will be added to this contract as they ship. Bridges should ignore unknown event actions.
+- Assuming this list of write helpers is final. New helpers add new event actions over time (the `state` helper emits `state` events for `working` / `waiting-user` / `blocked` / `done`; the `say` helper emits `chat`). Bridges should ignore unknown event actions.
 
 ## Versioning
 
@@ -130,6 +140,6 @@ The protocol has no explicit version field today. The schema is the version. Add
 
 ## Open work
 
-This document covers the Stage 0 substrate shipped in commit `4ed3e21`: `events.jsonl` as a tail target, `AE_SENDER_OVERRIDE` for caller identity, the `telegram:` / `discord:` event-only target prefixes, and `session_id`. Helpers landing later (such as the `state` work currently in design) will be added here as they merge.
+This document covers the bridge substrate: `events.jsonl` as a tail target, `AE_SENDER_OVERRIDE` for caller identity, the `telegram:` / `discord:` event-only target prefixes, `session_id`, and bridge ownership. New write helpers add new event actions as they ship (bridges ignore unknown actions).
 
 The bridge daemon itself — its deploy story, auth model, rate-limit handling, and platform priority — is tracked in [issue #1](https://github.com/clemens33/ae/issues/1) and out of scope here.
