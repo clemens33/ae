@@ -62,7 +62,7 @@ The `ae` script does everything: config parsing, tmux orchestration, helper gene
 
 When you start a session, ae creates `~/.ae/sessions/<name>/` and fills it with:
 
-- **`meta`** — INI-style key/value pairs: session name, work_dir, origin, mode, agent slots, captured tool session ids, status-right backup. Read on resume.
+- **`meta`** — INI-style key/value pairs: session name, work_dir, origin, mode, per-slot agent records (`agent.<slot>` = `alias:name:session_id` and `agent_bin.<slot>` = the launched binary, for `main` / `worker.<n>` / `spawned.<n>`), captured tool session ids, status-right backup. Read on resume.
 - **`events.jsonl`** — append-only JSONL audit log. Single source of truth for messaging and request state.
 - **`memo.tsv`** — shared session memory (durable findings, decisions, handoffs).
 - **`workspace.md`** — human/agent-readable manifest of the session (regenerated on every resume).
@@ -71,6 +71,17 @@ When you start a session, ae creates `~/.ae/sessions/<name>/` and fills it with:
 - **`launch.*.sh`** — pre-built launch commands per agent slot (for resume).
 
 Nothing in the project working directory changes.
+
+## Agent identity
+
+An agent is described by four distinct facets — keeping them separate is what lets messaging survive churn (a renamed agent, a transferred config, a resumed session). Pattern 9 in [design patterns](../design-patterns.md) is the full treatment; the layers:
+
+- **Address** — how you *refer* to an agent: `alias:name`, a bare name, a `%pane-id`, or `@session:agent`. Resolved flexibly, and deliberately not a stable key.
+- **Spec** — what config says the agent *should be*: `agents.<alias>` → the launch command. The resolved binary is recorded per slot as `agent_bin.<slot>` in meta (authoritative — the display name is arbitrary user text).
+- **Truth** — what is *actually* running in the pane now: `pane_current_command` and the `@ae_agent` tmux option. The watchdog's dead-check and the send path's shell guard read this.
+- **Routing key** — the stable identity used to *deliver and verify* messages: the pane's `@ae_slot` (`main` / `worker.<n>` / `spawned.<n>`) plus its session. Requests and replies are keyed on slot + session, so a reply reaches the right agent even after its display name changes. Slots are stamped at launch and back-filled on `ae doctor --refresh`.
+
+The display name (`@ae_agent`) is for humans; the slot is for routing. `reply` verifies the responder's live slot against the request's stored slot before delivering — the name is never trusted for routing.
 
 ## Regenerate on resume
 
@@ -106,7 +117,7 @@ Resume uses the captured UUID for exact conversation restore; falls back to a CW
 
 ## Communication: events as source of truth
 
-Earlier versions wrote messages to `messages.tsv` and request state to `requests.tsv`. Today, `events.jsonl` is the only log. Every `send` / `ask` / `review` / `reply` / `mark-done` / `memo` / `spawn` / `retire` / `focus` / `interrupt` / `nudge` / `alert` / `throttled` / `throttle-cleared` / `recover` emits one JSON event:
+`events.jsonl` is the only communication log. Every `send` / `ask` / `review` / `reply` / `mark-done` / `memo` / `spawn` / `retire` / `focus` / `interrupt` / `nudge` / `alert` / `throttled` / `throttle-cleared` / `recover` emits one JSON event:
 
 ```json
 {"ts":"2026-05-19T07:29:45Z","actor":"claude:lead","action":"done","summary":"..."}

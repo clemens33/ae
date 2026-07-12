@@ -5,11 +5,30 @@ The watchdog is a per-session monitor that lives inside the hidden `ae-monitor` 
 ## Lifecycle
 
 - **On by default.** Created with the session, unless `workspace.watchdog = false` in config or the session meta says otherwise (`watchdog = false`). Explicit `false`/`no`/`off`/`0` disables it.
-- **Manual control:** `~/.ae/sessions/<name>/watchdog start|stop|status`.
+- **Manual control:** `~/.ae/sessions/<name>/watchdog start|stop|status` (alias: `loop`).
 - **Persists across resume.** The state is recorded in session meta.
 - **Self-terminates** if the tmux session or `meta` file disappears.
 
 The watchdog runs as a `bash` subprocess pinned to a single tmux pane named `_watchdog`.
+
+## Implementations: bash (default) and aewatch (opt-in)
+
+Two implementations reproduce the same watchdog behavior. The **bash watchdog** described on this page is the default and needs nothing beyond `bash` + `tmux`. The **aewatch sidecar** is an optional Python reproduction of the watchdog *and* the [Telegram bridge](../reference/telegram.md), enabled per shell with `AE_WATCHDOG_IMPL=uv`.
+
+| | bash watchdog (default) | aewatch sidecar (`AE_WATCHDOG_IMPL=uv`) |
+|---|---|---|
+| Runtime | a `bash` subprocess in each session's `_watchdog` pane | one `uv` / PEP 723 Python process (`contrib/aewatch/aewatch`, stdlib-only) |
+| Scope | per session | one daemon per `AE_HOME`, sweeping every discovered session |
+| Home | the session's `ae-monitor` window | a dedicated `ae-aewatch` tmux session on the root server |
+| Liveness | the `_watchdog` pane + pid | a heartbeat file (`$AE_HOME/aewatch/heartbeat`) touched each tick |
+
+**Selection is exclusive and decided once, at session start.** `_start_session_watchdog` reads the effective `AE_WATCHDOG_IMPL`: `uv` starts (or reuses) the aewatch daemon and does *not* start the bash `_watchdog`; anything else starts the bash watchdog. A component — watchdog or bridge — never runs twice against the same session.
+
+**Reuse is heartbeat-aware.** Launching under `=uv` reuses a running `ae-aewatch` session only when its heartbeat is fresh; a stale or wedged daemon is replaced, not trusted.
+
+**bash is the living fallback.** aewatch owns the Telegram bridge only while it holds the `bridge-owner` marker *and* its heartbeat is fresh (age ≤ 90s). If the aewatch daemon dies, the heartbeat goes stale and the next bash `telegram _supervise` revives the bash bridge — so exactly one bridge sends, with no extra code on the fallback path. See [the bridge protocol](bridge-protocol.md) for the handoff.
+
+The rest of this page describes the bash watchdog. aewatch reproduces the same per-cycle state machine and effects; the two are cross-checked by a bash-vs-Python parity oracle in `contrib/aewatch/`.
 
 ## Tunables
 
@@ -23,26 +42,6 @@ The watchdog runs as a `bash` subprocess pinned to a single tmux pane named `_wa
 | `AE_WATCHDOG_SWEEP_SEC` | 300 | Steward/meta-agent sweep cadence in seconds (`0` falls back to the normal watchdog) |
 
 Set them in the shell before `ae <name>`, or via your shell rc.
-
-## Compatibility (renamed from `loop`)
-
-This feature was called **`loop`** before. The old names still work as deprecated
-aliases so existing config, shell rc, scripts, and running sessions don't break:
-
-| Surface | Canonical | Deprecated alias (still honoured) |
-|---|---|---|
-| Command | `ae watchdog start\|stop\|status` | `ae loop …` |
-| Helper path | `~/.ae/sessions/<name>/watchdog` | `loop` wrapper |
-| Env tunables | `AE_WATCHDOG_*` | `AE_LOOP_*` |
-| Config key | `workspace.watchdog` | `workspace.loop` |
-| Meta key | `watchdog=` | `loop=` (read on resume, then converged) |
-
-Precedence is canonical-wins: if both `watchdog` and `loop` forms are present, the
-`watchdog` form is used. A session created before the rename is migrated on its next
-start/resume. A pre-rename watchdog still running under the old `_loop` pane and pid
-file is reaped automatically when the watchdog next starts or stops, so two watchdogs
-never run at once. The aliases will be removed once no pre-rename sessions remain in
-the wild.
 
 ## Per-cycle state machine
 
@@ -69,7 +68,7 @@ flowchart TD
 In source order:
 
 1. **Dead** — pane's foreground command is a shell AND no agent binary is in the descendant process tree. Alert once, mark dead, ignore in future cycles.
-2. **Declared quiet state** *(strongest)* — agent's latest relevant event is its own `state` declaration of `done`, `waiting-user`, or `blocked` (legacy `mark-done`/`done` events count as `done`), AND no newer ae event mentions them as actor or target. `done` is skipped silently and is event-only (pane churn never revives it). `waiting-user`/`blocked` are also skipped, but yield to pane activity: if the pane changed since the declaration (e.g. the human replied directly in it, leaving no event), the quiet state no longer holds and the normal branches resume — so a post-reply hang is still caught.
+2. **Declared quiet state** *(strongest)* — agent's latest relevant event is its own `state` declaration of `done`, `waiting-user`, or `blocked` (`mark-done`/`done` events count as `done`), AND no newer ae event mentions them as actor or target. `done` is skipped silently and is event-only (pane churn never revives it). `waiting-user`/`blocked` are also skipped, but yield to pane activity: if the pane changed since the declaration (e.g. the human replied directly in it, leaving no event), the quiet state no longer holds and the normal branches resume — so a post-reply hang is still caught.
 3. **Throttled** — pane buffer contains a known upstream rate-limit / overload phrase for the agent's binary. Skip nudge, emit `throttled` event first time per streak, escalate to `alert` after `THROTTLE_ALERT_CYCLES` continuous cycles.
 4. **Active** — pane content hash differs from last cycle. Update hash, reset nudge counter.
 5. **Recently visible** — pane changed within the stale window. Skip.
@@ -83,7 +82,7 @@ After the per-pane pass:
 
 ## Quiet states and how they're invalidated
 
-`_agent_quiet_reason` returns an agent's current quiet state (`done` / `waiting-user` / `blocked`) plus its declaration timestamp, or empty. It reads the *latest relevant event* for the agent: a `state` declaration (or a legacy `mark-done`/`done` event, mapped to `done`) wins only if no newer event mentions the agent as actor or target. An inbound `send`/`ask`/`review`/`nudge` is newer → quiet state invalidated.
+`_agent_quiet_reason` returns an agent's current quiet state (`done` / `waiting-user` / `blocked`) plus its declaration timestamp, or empty. It reads the *latest relevant event* for the agent: a `state` declaration (or a `mark-done`/`done` event, mapped to `done`) wins only if no newer event mentions the agent as actor or target. An inbound `send`/`ask`/`review`/`nudge` is newer → quiet state invalidated.
 
 **`done` is event-only.** Pane hash changes, terminal resizes, scrollback churn — none of these revive a done agent. The historical "pane churn after done = agent kept working" heuristic was too noisy and was removed. Trade-off: silent work after `done` (output without ae helpers) is invisible to the watchdog. Acceptable — ae already requires helper discipline; a resuming agent should emit an ae event.
 
@@ -96,9 +95,9 @@ Concretely:
 - Human types unblock info in the pane → pane hash diverges from the armed baseline → `_quiet_pane_decision` yields → normal state machine resumes; if the agent then hangs, it gets nudged.
 - Or another agent sends it a message → newer event → quiet invalidated the same way.
 
-### Legacy `done` dual-emit (transitional)
+### `done` dual-emit
 
-`state done` (and the `mark-done` shim) emit *both* a `state ref=done` event and a legacy `action=done` event. The watchdog reads either. The dual-emit exists so a still-running pre-state-helper watchdog process (which only understands `action=done`) keeps recognizing completions after helpers are refreshed. It will be removed once `ae doctor --refresh` restarts a running watchdog.
+`state done` (and the `mark-done` shim) emit both a `state ref=done` event and an `action=done` event; the watchdog reads either, so a watchdog process started before the `state` helper still recognizes completions.
 
 ## Throttle detection
 

@@ -42,6 +42,22 @@ ae doctor --refresh my-fix  # single session
 ae end -f <name>                                    # nuclear option
 ```
 
+## `send` reports REFUSED, ABANDONED, or UNCONFIRMED
+
+`send` (and `ask` / `review` / `reply` / `interrupt`) report loudly rather than dropping a message. The stderr line names the guard that fired:
+
+- **`send to <target> REFUSED — target pane is a shell, not a running agent`** — the target agent has exited and its pane fell back to a shell. Nothing was pasted (a stray Enter would run your message as a shell command). Re-launch the agent, then re-send.
+- **`send to <target> ABANDONED — target has unsent/human input or is busy`** — the target's input box stayed non-empty for ~2s (a human is typing, or it's mid-generation). Nothing was pasted, to avoid clipping that input. Wait, then re-send.
+- **`send to <target> UNCONFIRMED — submit not verified`** (or `submit UNCONFIRMED to pane …`) — the message was pasted but ae couldn't confirm it left the input box after retrying Enter. It may or may not have sent; re-send. ae keeps no outbox — the loud failure is your cue.
+
+## `reply` rejected: `request … is assigned to slot …`
+
+```text
+Error: request 'ae-…' is assigned to slot 'worker.0'@'my-feature', current pane is slot 'main'@'my-feature'
+```
+
+Replies are verified by the request's **slot** (the routing key), not the display name — you're replying from the wrong pane. Run the exact `reply` command from the agent the request was addressed to. `--as` sets the displayed sender only; it cannot satisfy the slot check.
+
 ## Watchdog keeps nudging an agent that's done
 
 The agent must call `mark-done` *after* the most recent watchdog nudge:
@@ -51,17 +67,6 @@ The agent must call `mark-done` *after* the most recent watchdog nudge:
 ```
 
 `mark-done` emits a `done` event. The watchdog honors it until a newer ae event mentions the agent. If you nudge the agent again afterwards (via `send` / `ask` / etc.), that newer event invalidates the done. To re-mark, run `mark-done` again.
-
-## Watchdog nudges right after I marked done
-
-Bug fixed in `de2575e`. If you're seeing it on a session with a long-running watchdog, the running process loaded the old code. Stop and restart:
-
-```bash
-~/.ae/sessions/<name>/watchdog stop
-~/.ae/sessions/<name>/watchdog start
-```
-
-`ae doctor --refresh` alone does not restart the running watchdog.
 
 ## Watchdog alerts but I'm not at the terminal
 

@@ -45,3 +45,11 @@ Two agents in own tmux windows, talking to each other through generated shell he
 - [Configure agents and layouts](getting-started/config.md)
 - [Browse the command reference](reference/commands.md)
 - [Telegram bridge + steward-centric routing](reference/telegram.md)
+
+### Doctrine
+
+How this project is built, reviewed, and handed off:
+
+- [Gatekeeping](gatekeeping.md) — how changes are reviewed and gated before they land
+- [Design patterns](design-patterns.md) — the recurring patterns behind ae's design (including the agent-identity model)
+- [Lead handover](lead-handover.md) — how a lead agent carries a session across context

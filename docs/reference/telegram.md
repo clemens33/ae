@@ -176,6 +176,27 @@ The daemon is **per-machine**, not per-session. A single instance serves every a
 
 To have the bridge alive before the first `ae <name>` of a session, run `ae telegram start` from your shell login (e.g. `~/.bashrc`, `~/.config/fish/conf.d/`).
 
+## Backends: bash daemon and aewatch (opt-in)
+
+The bridge has two interchangeable backends. The **bash daemon** (the `ae-telegram` tmux session) described above is the default. When the [aewatch sidecar](../internals/watchdog.md#implementations-bash-default-and-aewatch-opt-in) runs (`AE_WATCHDOG_IMPL=uv`), it hosts the bridge in-process instead — reproducing the same outbound filter, inbound routing, and command menu over the **same on-disk state**.
+
+**One sender at a time.** The aewatch daemon claims ownership by writing `$AE_HOME/aewatch/bridge-owner` and keeping its heartbeat fresh. While that marker exists *and* the heartbeat is fresh (age ≤ 90s), ae treats the aewatch bridge as the owner: the bash autostart hook and the watchdog's `telegram _supervise` revive both stand down, so exactly one bridge ever sends. The handoff order is marker → stop the bash daemon → send, with no window where both send. See [bridge ownership](../internals/bridge-protocol.md#bridge-ownership) for the mechanism.
+
+**Shared state = seamless handoff.** The aewatch bridge reads and writes the same `~/.ae/telegram/{state.tsv, tg_offset, current_target}` files as the bash daemon, so it resumes from the last durable offset — no replayed history, no lost `/use` target.
+
+**bash is the fallback.** If the aewatch daemon dies, its heartbeat goes stale, the marker stops counting, and the next watchdog `telegram _supervise` brings the bash daemon back.
+
+**Backend-aware reporting.** `ae telegram status` and `ae doctor` name the active backend:
+
+- `ae doctor` → `OK    telegram.daemon    enabled; aewatch daemon owns the bridge`
+- `ae telegram status` → `backend: aewatch (bridge-owner marker + fresh heartbeat; shared state in ~/.ae/telegram)`
+
+`ae telegram start` still honors an explicit human request even when aewatch owns the bridge, but warns first:
+
+```text
+ae telegram: WARNING — aewatch owns the bridge (bridge-owner + fresh heartbeat); starting the bash bridge too may double-send. Proceeding on your explicit request.
+```
+
 ## State files
 
 | Path | Purpose |
@@ -183,6 +204,8 @@ To have the bridge alive before the first `ae <name>` of a session, run `ae tele
 | `~/.ae/telegram-daemon` | The generated daemon script (regenerated on every `ae telegram start`) |
 | `~/.ae/telegram/state.tsv` | Per-session `(session_id, inode, byte_offset, last_ts)` so restarts don't replay events |
 | `~/.ae/telegram/daemon.lock` | `flock` guard preventing two daemons from running at once |
+| `~/.ae/telegram/current_target` | The active `/use` inbound routing target (shared with the aewatch backend) |
+| `$AE_HOME/aewatch/bridge-owner` | Ownership marker written by the aewatch bridge; with a fresh heartbeat it signals the bash daemon to stand down (see [Backends](#backends-bash-daemon-and-aewatch-opt-in)) |
 | `~/.ae/telegram/daemon.log` | All daemon output (stderr+stdout), so a crash is diagnosable after the tmux session is gone. Rotated to `daemon.log.1` once at startup past ~1 MiB (`AE_TELEGRAM_LOG_MAX_BYTES`) |
 | `~/.config/ae/telegram-bot.token` | The Bot API token (chmod 600, owner-only) |
 
