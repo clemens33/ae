@@ -53,15 +53,16 @@ opus48 = "claude --permission-mode bypassPermissions --model opus --effort xhigh
 # fable5 = PREMIUM tier — high-stakes sessions only (frontier where the edge pays).
 fable5 = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
 sonnet5 = "claude --permission-mode bypassPermissions --model sonnet --effort low"
-gpt55 = "codex --yolo -m gpt-5.5 -c model_reasoning_effort=xhigh"
-gpt54mini = "codex -m gpt-5.4-mini -c model_reasoning_effort=low -a never"
+gpt56sol = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
+gpt56terra = "codex --yolo -m gpt-5.6-terra -c model_reasoning_effort=xhigh"
+gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=low -a never"
 opencode = "opencode"
 
 [workspace]
-# The lead delegates by rule (see docs/reference/delegation.md — spawn sonnet5:* / gpt54mini:*
+# The lead delegates by rule (see docs/reference/delegation.md — spawn sonnet5:* / gpt56luna:*
 # for chores). Distinct worker role names (builder/reviewer) avoid the duplicate-name dedup churn.
 main = opus48:lead
-workers = opus48:builder, gpt55:reviewer
+workers = opus48:builder, gpt56sol:reviewer
 layout = lead-solo
 watchdog = true'
 
@@ -5989,9 +5990,9 @@ remain fine for fast same-harness reads whose result you consume
 immediately.
 
 Conventions:
-- Alias = the model (\`opus48\`/\`fable5\`/\`sonnet5\`/\`gpt55\`/\`gpt54mini\`…
+- Alias = the model (\`opus48\`/\`fable5\`/\`sonnet5\`/\`gpt56sol\`/\`gpt56luna\`…
   — whatever ~/.ae/config defines); name = role. Good: \`sonnet5:tests\`,
-  \`gpt54mini:callers\`, \`opus48:docs-sync\`. Bad: \`worker\`, \`helper-3\`.
+  \`gpt56luna:callers\`, \`opus48:docs-sync\`. Bad: \`worker\`, \`helper-3\`.
 - Brief contract: objective, allowed scope/files, verification command,
   expected reply shape, whether edits are allowed.
 - Result contract (worker replies with): Outcome / Changed / Verified (command

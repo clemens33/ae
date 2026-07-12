@@ -482,14 +482,15 @@ _dc_xdg="$(mktemp -d)"
 _dc_get() { CONFIG_FILE="$_dc_cfg" AE_LOCAL_CONFIG="" XDG_RUNTIME_DIR="$_dc_xdg" get_config "$1"; }
 # SPEC: Opus is the everyday default lead (Fable left the plans); distinct worker role names.
 assert_eq "default-config: main = opus48:lead" "opus48:lead" "$(_dc_get workspace.main)"
-assert_eq "default-config: workers = opus48:builder, gpt55:reviewer" "opus48:builder, gpt55:reviewer" "$(_dc_get workspace.workers)"
+assert_eq "default-config: workers = opus48:builder, gpt56sol:reviewer" "opus48:builder, gpt56sol:reviewer" "$(_dc_get workspace.workers)"
 assert_eq "default-config: layout = lead-solo" "lead-solo" "$(_dc_get workspace.layout)"
 # STRICT model pins — a model-named alias must never silently run another model.
 assert_eq "default-config: opus48 pins --model opus" "1" "$([[ "$(_dc_get agents.opus48)" == *'--model opus'* ]] && echo 1 || echo 0)"
 assert_eq "default-config: fable5 defined + pins --model fable (premium tier)" "1" "$([[ "$(_dc_get agents.fable5)" == *'--model fable'* ]] && echo 1 || echo 0)"
 assert_eq "default-config: sonnet5 pins --model sonnet" "1" "$([[ "$(_dc_get agents.sonnet5)" == *'--model sonnet'* ]] && echo 1 || echo 0)"
-assert_eq "default-config: gpt55 defined" "1" "$([[ "$(_dc_get agents.gpt55)" == *'gpt-5.5'* ]] && echo 1 || echo 0)"
-assert_eq "default-config: gpt54mini defined" "1" "$([[ "$(_dc_get agents.gpt54mini)" == *'gpt-5.4-mini'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: gpt56sol pins gpt-5.6-sol" "1" "$([[ "$(_dc_get agents.gpt56sol)" == *'gpt-5.6-sol'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: gpt56terra pins gpt-5.6-terra" "1" "$([[ "$(_dc_get agents.gpt56terra)" == *'gpt-5.6-terra'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: gpt56luna pins gpt-5.6-luna" "1" "$([[ "$(_dc_get agents.gpt56luna)" == *'gpt-5.6-luna'* ]] && echo 1 || echo 0)"
 # NO alias-definition line uses --model best (comments may mention the anti-pattern).
 assert_eq "default-config: no alias uses --model best (strict pins only)" "0" "$(printf '%s\n' "$DEFAULT_CONFIG" | grep -E '^[a-z0-9]+ = ' | grep -c -- '--model best')"
 # Old tier-named aliases retired.
