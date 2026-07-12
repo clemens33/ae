@@ -4404,6 +4404,21 @@ assert_eq "input-busy: modeled tool, no capture -> unsafe (fail-closed)" "unsafe
 # fail-closed doesn't break every send to a non-claude/codex target.
 assert_eq "input-busy: unknown tool -> safe (no predicate, don't regress)" "safe" "$(_pib bash $'$ ')"
 
+# ── ri-3: comms-outage fixes — NBSP idle + virgin-pane ghost placeholder ──────────
+# Claude's updated TUI renders the EMPTY prompt as '❯'+U+00A0 (no-break space, bytes
+# c2 a0). GNU grep [[:space:]] does NOT match U+00A0, so pre-fix the trailing
+# [[:space:]]*$ never matched -> every claude send read as busy -> ABANDONED (a
+# fleet-wide comms outage). Normalizing NBSP->space at capture restores idle detection.
+assert_eq "input-busy: claude NBSP empty prompt (U+00A0) -> safe (idle)" "safe" "$(_pib claude $'───\n❯\xc2\xa0\n───')"
+# A virgin pane's dim GHOST placeholder ('❯ Try "…"') is NOT yet treated as idle:
+# matching it against a color-stripped whole-capture risks clobbering real input or a
+# transcript-history line (codex ri-3 BLOCKER) -> deferred to ri-4 (input-region
+# isolation). It reads as UNSAFE, so first-contact sends ABANDON loudly (re-sendable),
+# never clobber. This locks in the no-clobber direction until the safe detector lands.
+assert_eq "input-busy: claude virgin ghost placeholder -> unsafe (safe idle deferred to ri-4)" "unsafe" "$(_pib claude $'───\n❯\xc2\xa0Try \"write a test for foo\"\n───')"
+# Real human input (even starting with 'Try') stays protected.
+assert_eq "input-busy: claude typed 'Try ...' -> unsafe (protect human input)" "unsafe" "$(_pib claude $'❯ Try refactoring the parser')"
+
 # submit-verification bounded retry + LOUD failure. Stub _paste_still_staged to
 # stay staged for the first N checks; count Enter keystrokes.
 _asp() {  # <staged-for-N-checks> -> "rc=? enters=? checks=?"
@@ -4471,13 +4486,23 @@ assert_eq "F1: launch paste propagates nonzero when a modeled tool never submits
 # shell-BASED agent (dummy=bash) and live agents still deliver.
 eval "$(awk '/^command_is_shell\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_agent_bin_for_pane\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_pane_has_descendant_named\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_pane_agent_is_dead\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-_pad() {  # <pane-foreground-command> <agent_bin> -> dead|alive
-    local _PROC="$1" _ABIN="$2"
+_pad() {  # <pane-foreground-command> <agent_bin> [agent-in-tree: 0=yes 1=no] -> dead|alive
+    local _PROC="$1" _ABIN="$2" _INTREE="${3:-1}" # default 1 = agent NOT in the tree
     # shellcheck disable=SC2317
-    tmux() { [[ "$1" == display-message ]] && printf '%s' "$_PROC"; return 0; }
+    tmux() {
+        [[ "$1" == display-message ]] || return 0
+        case "$*" in
+        *pane_pid*) printf '99999' ;; # numeric pid so the tree walk runs
+        *) printf '%s' "$_PROC" ;;    # pane_current_command
+        esac
+        return 0
+    }
     # shellcheck disable=SC2317
     _agent_bin_for_pane() { printf '%s' "$_ABIN"; }
+    # shellcheck disable=SC2317
+    _pane_has_descendant_named() { return "$_INTREE"; } # 0=agent alive in tree, 1=not found
     _pane_agent_is_dead "%1" && echo dead || echo alive
 }
 assert_eq "dead-shell: real agent dropped to shell -> dead (REFUSE)" "dead" "$(_pad bash claude)"
@@ -4486,6 +4511,19 @@ assert_eq "dead-shell: node-wrapped live agent -> alive" "alive" "$(_pad node cl
 assert_eq "dead-shell: shell-based agent (dummy=bash) -> alive (don't break dummy delivery)" "alive" "$(_pad bash bash)"
 assert_eq "dead-shell: undeterminable agent_bin -> alive (fail-open, don't break delivery)" "alive" "$(_pad bash '')"
 assert_eq "dead-shell: empty/unreadable pane command + real agent -> dead (fail-closed)" "dead" "$(_pad '' codex)"
+# ri-3: a LIVE agent momentarily running a Bash tool (or under the bash -lc wrapper)
+# shows a shell foreground while its binary is alive as a DESCENDANT — the tree walk
+# must DELIVER, not false-refuse. Reverting the walk makes this return "dead" (fails).
+assert_eq "dead-shell: shell foreground BUT agent alive in process tree -> alive (ri-3)" "alive" "$(_pad bash claude 0)"
+# ri-3 (codex review finding): exercise the REAL _pane_has_descendant_named — the _pad
+# tests stub it, so the actual pgrep + /proc ancestor walk needs its own coverage.
+eval "$(awk '/^_pane_has_descendant_named\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+sleep 30 &
+_ri3_sleep=$!
+assert_eq "descendant-walk: a live child IS found under its parent pid" "0" "$(_pane_has_descendant_named "$$" sleep >/dev/null; echo $?)"
+assert_eq "descendant-walk: an absent process name -> not found" "1" "$(_pane_has_descendant_named "$$" no_such_proc_ri3xyz >/dev/null; echo $?)"
+assert_eq "descendant-walk: empty args -> not found (guard)" "1" "$(_pane_has_descendant_named '' claude >/dev/null; echo $?)"
+kill "$_ri3_sleep" 2>/dev/null || true
 
 # _agent_bin_for_pane reads agent_bin.<slot> from the pane's OWN session meta.
 _abfp_tmp="$(mktemp -d)"

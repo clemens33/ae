@@ -6747,6 +6747,7 @@ ae_find_request() {
 _paste_still_staged() {
     local pane="$1" tool="$2" msg="$3" cap
     cap="$(tmux capture-pane -p -t "$pane" 2>/dev/null | tail -n 6 || true)"
+    cap="${cap//$'\xc2\xa0'/ }" # normalize NBSP (U+00A0)->space (see _paste_input_busy)
     [[ -n "$cap" ]] || return 1 # no capture -> cannot confirm staged -> submitted
     case "$tool" in
         claude)
@@ -6798,6 +6799,14 @@ _paste_input_busy() {
         *) return 1 ;;
     esac
     cap="$(tmux capture-pane -p -t "$pane" 2>/dev/null | tail -n 8 || true)"
+    # Normalize the no-break space (U+00A0, bytes c2 a0) to a regular space BEFORE
+    # any regex: GNU grep does NOT classify U+00A0 as [[:space:]], and Claude's TUI
+    # renders the EMPTY prompt line as '❯'+U+00A0, so the trailing [[:space:]]*$ in
+    # the idle check never matched -> every claude send read as busy -> ABANDONED.
+    # One normalization point covers the claude idle regex AND the codex footer regex
+    # below, so those stay readable. Only U+00A0 is normalized (the observed variant);
+    # add U+202F / U+2007 here if a future TUI uses them — do not broaden blindly.
+    cap="${cap//$'\xc2\xa0'/ }"
     [[ -n "$cap" ]] || return 0 # modeled tool but unreadable -> UNSAFE (fail-closed)
     # A staged paste token means unsent content is already sitting there.
     if grep -qE '\[Pasted text #[0-9]+ \+[0-9]+ lines\]' <<<"$cap"; then
@@ -6805,10 +6814,15 @@ _paste_input_busy() {
     fi
     case "$tool" in
         claude)
-            # Confidently empty ONLY when the input line is the bare prompt
-            # ornament (>, ❯, ▌, optionally boxed by │) + whitespace. A
-            # mid-generation claude shows a spinner line instead, so this also
-            # gates on idleness. Anything else is UNSAFE (fail-closed).
+            # Confidently empty when the input line is the bare prompt ornament
+            # (>, ❯, ▌, optionally boxed by │) + whitespace. A mid-generation claude
+            # shows a spinner line instead, so this also gates on idleness.
+            # NOTE (ri-3): a VIRGIN pane's dim GHOST placeholder ('❯ Try "…"') is NOT
+            # treated as idle here. Matching it against a color-stripped WHOLE capture
+            # risks clobbering real input or a transcript-history line (codex ri-3
+            # BLOCKER). First-contact sends to a fresh pane therefore ABANDON loudly
+            # (re-sendable, never a silent clobber) until ri-4 adds input-REGION
+            # isolation to detect the ghost safely.
             if grep -qE '^[[:space:]]*│?[[:space:]]*[>❯▌][[:space:]]*$' <<<"$cap"; then
                 return 1
             fi
@@ -6874,12 +6888,22 @@ _agent_bin_for_pane() {
 # (not a shell) — only a genuinely dead one shows a bare shell. Mirrors the
 # watchdog dead-check heuristic (command_is_shell + expected binary).
 _pane_agent_is_dead() {
-    local pane="$1" proc abin
+    local pane="$1" proc abin pane_pid
     proc="$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
     command_is_shell "$proc" || return 1 # a real process is in the foreground -> alive
     abin="$(_agent_bin_for_pane "$pane")"
     command_is_shell "$abin" && return 1 # shell-based agent or undeterminable -> deliver
-    return 0                             # real agent expected, pane fell to a shell -> DEAD
+    # Foreground is a shell AND a real agent is expected — but a LIVE agent running a
+    # Bash tool (or launched under the `bash -lc` wrapper) shows a shell foreground
+    # while its binary is alive as a DESCENDANT. Walk the process tree before declaring
+    # death, exactly as the watchdog dead-check does (_pane_has_descendant_named). The
+    # earlier version omitted this walk and false-refused sends to live-but-busy agents
+    # (proven: a live claude under `bash` still got a REFUSED send).
+    pane_pid="$(tmux display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)"
+    if [[ -n "$pane_pid" ]] && _pane_has_descendant_named "$pane_pid" "$abin"; then
+        return 1 # agent binary alive in the pane's process tree -> deliver
+    fi
+    return 0 # real agent expected, only a shell in the tree -> genuinely DEAD
 }
 
 # Paste a message into a pane and CONFIRM it submitted. On a busy TUI a single
@@ -9327,7 +9351,7 @@ LIBPROLOGUE
             ae_target_tool ae_json_escape ae_emit_event ae_latest_state_for \
             _event_json_str _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
             ae_submit_pasted_message _paste_still_staged _paste_input_busy \
-            command_is_shell _agent_bin_for_pane _pane_agent_is_dead \
+            command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
             ae_meta_get ae_meta_set ae_meta_unset
     } >"${AE_META}/_lib.tmp.$$"
     chmod 0700 "${AE_META}/_lib.tmp.$$"
