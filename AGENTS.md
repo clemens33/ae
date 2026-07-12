@@ -55,6 +55,14 @@ AGENTS.md           — this file
 CLAUDE.md           — @AGENTS.md
 ```
 
+## Doctrine docs
+
+How this project is built and reviewed, distilled from lived sessions — load them when acting in the matching role:
+
+- `docs/gatekeeping.md` — the slice-gate craft: invariant-first diff reads, the failure taxonomy, verification mechanics. Read before gating or reviewing an ae change.
+- `docs/design-patterns.md` — the coordination patterns behind ae's design (ownership facts, chokepoint guards, fallback-for-free, identity facets).
+- `docs/lead-handover.md` — trust map, first-looks table, and session mechanics for a lead agent taking over ae development.
+
 ## How it works
 
 1. Parses `~/.ae/config` for agent commands and layout
