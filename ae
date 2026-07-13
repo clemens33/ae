@@ -597,10 +597,31 @@ build_ae_context() {
             ctx+=" WORKER ROLE: you execute the briefed subtask within its stated scope. Report a distilled summary — Outcome / Changed / Verified (command + result) / Risks / Need-from-lead — never raw logs. Stay in your assigned files (one writer per file); surface any decision that needs judgment to the lead rather than deciding it unilaterally. You do not self-retire — the lead retires you when the task is verified done."
             ;;
     esac
+    # Mode-aware WORKING-TREE block (hardcoded like the slot role — code, not config).
+    # Read mode + origin from meta so callers stay unchanged and it works on resume too.
+    # Missing/unknown mode -> no block (fail-quiet, like a slotless pane). Rule 7's
+    # concurrency caution is universal; the human-LIVE-tree caution lives ONLY here.
+    local _mode="" _origin=""
+    if [[ -f "${meta_dir}/meta" ]]; then
+        _mode="$(grep '^mode=' "${meta_dir}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+        _origin="$(grep '^origin=' "${meta_dir}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    fi
+    case "$_mode" in
+        local)
+            ctx+=" WORKING TREE: you are in the human's LIVE checkout — their uncommitted work may be present. One writer per file; NO destructive git operations (no reset --hard, clean -fd, or checkout of files you did not change); never assume the tree is yours alone."
+            ;;
+        git)
+            ctx+=" WORKING TREE: an isolated git worktree checked out at a DETACHED HEAD from origin (not a named branch yet) — work BOLDLY here. The origin checkout at ${_origin} is strictly OFF-LIMITS. Untracked files (dependencies, .env) from the origin do NOT exist here — install locally if you need them. 'ae end' commits your work and pushes it to a new ae/<session> branch."
+            ;;
+        full)
+            ctx+=" WORKING TREE: a full copy of the project in a separate directory. The origin at ${_origin} is off-limits; your changes reach the project only via 'ae end' (its branch push)."
+            ;;
+    esac
     local user_instr
     user_instr="$(get_config prompt.instructions)"
     [[ -n "$user_instr" ]] && ctx="${ctx} --- Workspace instructions: ${user_instr}"
     printf '%s' "$ctx"
+    return 0
 }
 
 # Inject ae workspace context into agent system prompt (survives context compaction)
@@ -5790,9 +5811,9 @@ regenerate_manifest() {
     # Describe copy mode
     local copy_desc
     case "$mode" in
-        git) copy_desc="You are working on a git worktree (detached HEAD from the origin). Push to remote and merge from there." ;;
-        full) copy_desc="You are working on a full copy of the project. Push to remote and merge from there." ;;
-        local) copy_desc="You are working directly in the project directory (local mode). Changes affect the original files immediately." ;;
+        git) copy_desc="Isolated git worktree at a DETACHED HEAD from origin (not a named branch yet) — work boldly here. The origin checkout at ${origin} is OFF-LIMITS. Untracked files (deps, .env) do not exist here; install locally. 'ae end' commits + pushes to a new ae/${sess} branch." ;;
+        full) copy_desc="Full copy of the project in a separate directory. The origin at ${origin} is off-limits. Changes reach the project only via 'ae end' (branch push)." ;;
+        local) copy_desc="You are in the human's LIVE checkout (local mode) — their uncommitted work may be present. One writer per file; no destructive git operations; never assume the tree is yours alone." ;;
     esac
 
     # Build agent rows from live panes (using @ae_agent option, immune to title overrides)
