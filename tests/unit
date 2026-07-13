@@ -482,8 +482,8 @@ _dc_xdg="$(mktemp -d)"
 _dc_get() { CONFIG_FILE="$_dc_cfg" AE_LOCAL_CONFIG="" XDG_RUNTIME_DIR="$_dc_xdg" get_config "$1"; }
 # SPEC: Opus is the everyday default lead (Fable left the plans); distinct worker role names.
 assert_eq "default-config: main = opus48:lead" "opus48:lead" "$(_dc_get workspace.main)"
-assert_eq "default-config: workers = opus48:builder, gpt56sol:reviewer" "opus48:builder, gpt56sol:reviewer" "$(_dc_get workspace.workers)"
-assert_eq "default-config: layout = lead-solo" "lead-solo" "$(_dc_get workspace.layout)"
+assert_eq "default-config: workers = colead (worker.0 seat), builder, reviewer" "gpt56sol:colead, opus48:builder, gpt56sol:reviewer" "$(_dc_get workspace.workers)"
+assert_eq "default-config: layout = lead-pair" "lead-pair" "$(_dc_get workspace.layout)"
 # STRICT model pins — a model-named alias must never silently run another model.
 assert_eq "default-config: opus48 pins --model opus" "1" "$([[ "$(_dc_get agents.opus48)" == *'--model opus'* ]] && echo 1 || echo 0)"
 assert_eq "default-config: fable5 defined + pins --model fable (premium tier)" "1" "$([[ "$(_dc_get agents.fable5)" == *'--model fable'* ]] && echo 1 || echo 0)"
@@ -529,6 +529,22 @@ assert_eq "mode-context: full -> full copy + origin off-limits" "1" "$([[ "$_mc_
 assert_eq "mode-context: unknown mode -> NO working-tree block (fail-quiet)" "0" "$([[ "$_mc_unknown" == *"WORKING TREE"* ]] && echo 1 || echo 0)"
 assert_eq "mode-context: mode block COMPOSES with slot block (git + worker)" "1" "$([[ "$_mc_git" == *"WORKER ROLE"* && "$_mc_git" == *"isolated git worktree"* ]] && echo 1 || echo 0)"
 rm -rf "$_mc_dir"
+
+# ── session-shape: COLEAD role block — structural on layout=lead-pair + worker.0 ──
+_cl_dir="$(mktemp -d)"
+printf 'mode=local\norigin=/o\nlayout=lead-pair\n' >"$_cl_dir/meta"
+_cl_colead="$(CONFIG_FILE=/dev/null build_ae_context "$_cl_dir" "sess" "/work" "worker.0")"
+_cl_w1="$(CONFIG_FILE=/dev/null build_ae_context "$_cl_dir" "sess" "/work" "worker.1")"
+_cl_main="$(CONFIG_FILE=/dev/null build_ae_context "$_cl_dir" "sess" "/work" "main")"
+printf 'mode=local\norigin=/o\nlayout=lead-solo\n' >"$_cl_dir/meta"
+_cl_solo_w0="$(CONFIG_FILE=/dev/null build_ae_context "$_cl_dir" "sess" "/work" "worker.0")"
+assert_eq "colead: lead-pair + worker.0 -> COLEAD block (judgment partner, lead rules)" "1" "$([[ "$_cl_colead" == *"COLEAD ROLE"* && "$_cl_colead" == *"THE LEAD RULES"* ]] && echo 1 || echo 0)"
+assert_eq "colead: lead-pair worker.0 has NO plain worker block" "0" "$([[ "$_cl_colead" == *"WORKER ROLE"* ]] && echo 1 || echo 0)"
+assert_eq "colead: lead-pair worker.1 stays a plain WORKER" "1" "$([[ "$_cl_w1" == *"WORKER ROLE"* && "$_cl_w1" != *"COLEAD ROLE"* ]] && echo 1 || echo 0)"
+assert_eq "colead: lead-pair main stays LEAD (no colead leak)" "1" "$([[ "$_cl_main" == *"LEAD ROLE"* && "$_cl_main" != *"COLEAD ROLE"* ]] && echo 1 || echo 0)"
+assert_eq "colead: lead-solo worker.0 is a plain WORKER (colead is structural, not slot-only)" "1" "$([[ "$_cl_solo_w0" == *"WORKER ROLE"* && "$_cl_solo_w0" != *"COLEAD ROLE"* ]] && echo 1 || echo 0)"
+assert_eq "colead: composes with the mode block (local caution present)" "1" "$([[ "$_cl_colead" == *"COLEAD ROLE"* && "$_cl_colead" == *"LIVE checkout"* ]] && echo 1 || echo 0)"
+rm -rf "$_cl_dir"
 
 _meta_dir="$(mktemp -d)"
 printf 'launch_id.worker.0=opencode-123\n' > "$_meta_dir/meta"
@@ -1632,8 +1648,19 @@ assert_eq "status-left: location built mode-aware (local one path, copy/worktree
 assert_eq "status-left: \$HOME abbreviated and long paths left-truncated" "1" \
     "$([[ "$AE_SOURCE" == *'_ae_abbrev_home()'* && "$AE_SOURCE" == *'_ae_trunc_left()'* ]] && echo 1 || echo 0)"
 
-assert_eq "status-left: applied via _ae_apply_status_left ([ae path + #{@ae_branch_status}] + raised length)" "1" \
-    "$([[ "$AE_SOURCE" == *'_ae_apply_status_left()'* && "$AE_SOURCE" == *'status-left "[ae ${paths}#{@ae_branch_status}] "'* && "$AE_SOURCE" == *'status-left-length 90'* ]] && echo 1 || echo 0)"
+assert_eq "status-left: applied via _ae_apply_status_left ([ae session path + #{@ae_branch_status}] + raised length)" "1" \
+    "$([[ "$AE_SOURCE" == *'_ae_apply_status_left()'* && "$AE_SOURCE" == *'status-left "[ae ${sess_lit} ${paths}#{@ae_branch_status}] "'* && "$AE_SOURCE" == *'status-left-length 100'* ]] && echo 1 || echo 0)"
+
+# session-shape: the SESSION NAME in status-left is user text in a tmux format context —
+# it must go through the format-literal escaper like the path does.
+assert_eq "status-left: session name format-literal escaped" "1" \
+    "$([[ "$AE_SOURCE" == *'sess_lit="$(_ae_tmux_format_literal "$session")"'* ]] && echo 1 || echo 0)"
+# session-shape: cmd_rename refreshes status-left (it now carries the session name) and
+# only renames window 0 when it still tracks the session name (lead-pair role naming).
+assert_eq "status-left: cmd_rename refreshes it after a rename" "1" \
+    "$([[ "$AE_SOURCE" == *'_ae_apply_status_left "$new_name"'* ]] && echo 1 || echo 0)"
+assert_eq "rename-window: window-0 rename skipped under lead-pair (layout FACT, not name inference)" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ "$_ren_layout" != "lead-pair" ]]; then'* ]] && echo 1 || echo 0)"
 
 assert_eq "status-left: applied on BOTH session creation and doctor --refresh" "1" \
     "$([[ "$AE_SOURCE" == *'_ae_apply_status_left "$SESSION"'* && "$AE_SOURCE" == *'_ae_apply_status_left "$session_name"'* ]] && echo 1 || echo 0)"
@@ -1668,7 +1695,7 @@ assert_eq "status-left: escaping is wired before the tmux set-option" "1" \
 # space, or `$(…)` is safe with zero escaping. Assert the safe wiring + that the
 # fragile cat-directive helpers are gone.
 assert_eq "status-left: live branch via #{@ae_branch_status} user option" "1" \
-    "$([[ "$AE_SOURCE" == *'status-left "[ae ${paths}#{@ae_branch_status}] "'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'status-left "[ae ${sess_lit} ${paths}#{@ae_branch_status}] "'* ]] && echo 1 || echo 0)"
 assert_eq "watchdog: health via #{@ae_watchdog_status} user option in status-right" "1" \
     "$([[ "$AE_SOURCE" == *'new_status_right="#{@ae_watchdog_status} '* ]] && echo 1 || echo 0)"
 assert_eq "watchdog: status user options cleared on stop AND exit trap (clean fallback)" "1" \
@@ -4160,8 +4187,16 @@ assert_eq "s19: status reports the active backend (marker)" "yes" \
 # meta-preservation (ae:8361). A config workers= rename applies to NEW sessions ONLY.
 eval "$(awk '/^_resolve_workers\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 assert_eq "workers-resume: _resolve_workers defined" "yes" "$(declare -F _resolve_workers >/dev/null && echo yes || echo no)"
-_rw_run() {  # <mode: resume|fresh> <config_workers> -> "alias:name,alias:name,..."
+_rw_tmp_root="$(mktemp -d)"
+_rw_run() {  # <mode: resume|resume-empty|fresh> <config_workers> -> "alias:name,..."
     local mode="$1" cfg_workers="$2" i out=""
+    # The resume DECISION keys on the meta FILE existing (meta is authoritative
+    # including emptiness); the worker ENTRIES still come via read_session_meta.
+    rm -rf "$_rw_tmp_root/s"
+    if [[ "$mode" != fresh ]]; then
+        mkdir -p "$_rw_tmp_root/s"
+        printf 'session=s\n' >"$_rw_tmp_root/s/meta"
+    fi
     # shellcheck disable=SC2317  # invoked indirectly by the eval'd _resolve_workers
     read_session_meta() {
         [[ "$mode" == resume ]] || return 0
@@ -4173,7 +4208,8 @@ _rw_run() {  # <mode: resume|fresh> <config_workers> -> "alias:name,alias:name,.
     }
     # shellcheck disable=SC2317
     get_config() { case "$1" in agents.*) echo "cmd-for-$1" ;; esac; return 0; }
-    MAIN_NAME="lead" WORKERS_RAW="$cfg_workers" SESSION="s" _resolve_workers
+    MAIN_NAME="lead" WORKERS_RAW="$cfg_workers" SESSION="s" \
+        SESSIONS_DIR="$_rw_tmp_root" WORKTREES_DIR="$_rw_tmp_root/wt" _resolve_workers
     for i in "${!WORKER_ALIASES[@]}"; do out+="${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]},"; done
     echo "${out%,}"
 }
@@ -4183,9 +4219,33 @@ assert_eq "workers-resume: recovered from meta, config rename IGNORED" "opus48:b
 assert_eq "workers-fresh: parsed from config" "opus48:builder,gpt55:reviewer" "$(_rw_run fresh 'opus48:builder, gpt55:reviewer')"
 # Fresh dedup: duplicate name -> -1 suffix (preserved for FRESH launches only).
 assert_eq "workers-fresh: dedup on name collision" "a:dup,b:dup-1" "$(_rw_run fresh 'a:dup, b:dup')"
+# session-shape (codex): a ZERO-worker session must STAY zero-worker on resume — meta
+# is authoritative INCLUDING emptiness. Keying on agent.worker.0 alone fell through to
+# the config path and silently grew workers when config workers= grew (lead-pair default).
+assert_eq "workers-resume: zero-worker session stays zero on resume (meta emptiness wins)" "" "$(_rw_run resume-empty 'newalias:w1, newalias2:w2')"
+# session-shape (codex verification): the WORKTREE-meta fallback path must also count
+# as resume — a --worktree session's meta lives under WORKTREES_DIR, not SESSIONS_DIR.
+_rw_wt() {
+    rm -rf "$_rw_tmp_root/s" "$_rw_tmp_root/wt"
+    mkdir -p "$_rw_tmp_root/wt/s/.ae/s"
+    printf 'session=s\n' >"$_rw_tmp_root/wt/s/.ae/s/meta"
+    # shellcheck disable=SC2317
+    read_session_meta() { return 0; } # no workers recorded
+    # shellcheck disable=SC2317
+    get_config() { case "$1" in agents.*) echo "cmd" ;; esac; return 0; }
+    MAIN_NAME="lead" WORKERS_RAW="cfg:w1" SESSION="s" \
+        SESSIONS_DIR="$_rw_tmp_root" WORKTREES_DIR="$_rw_tmp_root/wt" _resolve_workers
+    echo "${#WORKER_NAMES[@]}"
+}
+assert_eq "workers-resume: worktree-meta fallback counts as resume (config ignored)" "0" "$(_rw_wt)"
+rm -rf "$_rw_tmp_root"
 # codex: a resumed worker whose alias is no longer defined in config must ERROR loudly
 # (mirror fresh/main), not silently create a worker with an empty command.
 _rw_resume_missing() {
+    local _rwm_tmp
+    _rwm_tmp="$(mktemp -d)"
+    mkdir -p "$_rwm_tmp/s"
+    printf 'session=s\n' >"$_rwm_tmp/s/meta" # resume decision keys on meta existence
     # shellcheck disable=SC2317
     read_session_meta() {
         case "$2" in
@@ -4196,7 +4256,8 @@ _rw_resume_missing() {
     }
     # shellcheck disable=SC2317
     get_config() { case "$1" in agents.opus48) echo "cmd" ;; *) echo "" ;; esac; return 0; }
-    MAIN_NAME="lead" WORKERS_RAW="" SESSION="s" _resolve_workers
+    MAIN_NAME="lead" WORKERS_RAW="" SESSION="s" \
+        SESSIONS_DIR="$_rwm_tmp" WORKTREES_DIR="$_rwm_tmp/wt" _resolve_workers
 }
 _rwm_status=0
 (_rw_resume_missing) >/dev/null 2>&1 || _rwm_status=$?

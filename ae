@@ -60,10 +60,12 @@ opencode = "opencode"
 
 [workspace]
 # The lead delegates by rule (see docs/reference/delegation.md — spawn sonnet5:* / gpt56luna:*
-# for chores). Distinct worker role names (builder/reviewer) avoid the duplicate-name dedup churn.
+# for chores). Distinct worker role names avoid the duplicate-name dedup churn. Worker ORDER
+# matters under lead-pair: the FIRST worker (worker.0) is the COLEAD seat — a cross-model
+# judgment partner sharing window 0 with the lead; builder/reviewer live in the workers window.
 main = opus48:lead
-workers = opus48:builder, gpt56sol:reviewer
-layout = lead-solo
+workers = gpt56sol:colead, opus48:builder, gpt56sol:reviewer
+layout = lead-pair
 watchdog = true'
 
 # Create default config if missing
@@ -559,16 +561,20 @@ _ae_apply_status_left() {
     local _t=(tmux)
     [[ -n "$server" ]] && _t=(command tmux -L "$server")
     "${_t[@]}" has-session -t "$session" 2>/dev/null || return 0
-    local paths
+    local paths sess_lit
     paths="$(_ae_tmux_format_literal "$(_ae_status_left_paths "$mode" "$origin" "$work_dir")")"
+    # The SESSION NAME is user text entering a tmux FORMAT context — #-escape it like
+    # the path (a name with '#' would otherwise open a format/#() directive). With the
+    # name in status-left, window 0 is free to carry a role name under lead-pair.
+    sess_lit="$(_ae_tmux_format_literal "$session")"
     # The path is static; the live git branch + tracked-dirty marker is appended via
     # the @ae_branch_status tmux user option, which the watchdog sets each cycle. A
     # user-option value is interpolated literally — NOT re-expanded and not parsed for
     # directives — so a branch/path with `)`, `#`, spaces, or shell metacharacters is
     # harmless (no #() command, no shell). Empty (watchdog off / non-git) falls back to
     # just the path. The static path text is #-escaped above (it sits in format text).
-    "${_t[@]}" set-option -t "$session" status-left "[ae ${paths}#{@ae_branch_status}] " 2>/dev/null || true
-    "${_t[@]}" set-option -t "$session" status-left-length 90 2>/dev/null || true
+    "${_t[@]}" set-option -t "$session" status-left "[ae ${sess_lit} ${paths}#{@ae_branch_status}] " 2>/dev/null || true
+    "${_t[@]}" set-option -t "$session" status-left-length 100 2>/dev/null || true
 }
 
 # Build ae workspace context string (shared by inject_ae_context and initial prompt fallback)
@@ -586,26 +592,36 @@ build_ae_context() {
     ctx+=" (7) IMPORTANT — CONCURRENT COLLABORATION: Other agents may be editing files in this same workspace RIGHT NOW. Files you read may change. Coordinate on shared files; verify intent via ${meta_dir}/send before reverting or overwriting unexpected modifications."
     ctx+=" (8) ${meta_dir}/say <text> pushes a free-text line to the human's Telegram chat (if the bridge is running). Use it to answer the human when they message you from Telegram — your normal pane replies do NOT reach them. Replies to your message on Telegram route back to you."
     ctx+=" (9) DELEGATION: for bounded subtasks (spec fits ~10 lines, clear stop condition, result verifiable by tests/grep/review), spawn the cheapest capable alias with a role name instead of polluting your own context: ${meta_dir}/spawn <alias>:<name> [prompt] — pick an alias from workspace.md (e.g. a cheap-burst tier: spawn sonnet5:tests 'run just test-unit; report failures only'). PREFER ae spawn over your harness's internal subagents for anything beyond a quick or bursty read-only lookup/fan-out consumed immediately: ae workers are visible to the human (own window), steward-monitored, and messageable — internal subagents are invisible to everyone but you. Brief workers with objective, scope, verification command, and expected reply shape; expect a distilled summary (Outcome/Changed/Verified/Risks), never raw logs. One writer per file. YOU own review and ${meta_dir}/retire <name> — workers never self-retire; keep judgment-heavy work yourself. See workspace.md 'Delegation'."
+    # Session facts from meta (mode, origin, layout) — read ONCE, up front: the role
+    # block needs layout (the colead seat is structural: layout=lead-pair + worker.0)
+    # and the working-tree block needs mode/origin. Callers stay unchanged; works at
+    # launch and resume. Missing meta -> empty values -> the generic fallbacks below.
+    local _mode="" _origin="" _layout=""
+    if [[ -f "${meta_dir}/meta" ]]; then
+        _mode="$(grep '^mode=' "${meta_dir}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+        _origin="$(grep '^origin=' "${meta_dir}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+        _layout="$(grep '^layout=' "${meta_dir}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    fi
     # Slot-aware ROLE block (hardcoded, like the rules above — NOT a config key). The lead gets
-    # the delegation decision-rule; workers get the execution contract. Slot is main/worker.N/
-    # spawned.N from meta (never user text), so it is safe in this branch.
+    # the delegation decision-rule; workers get the execution contract. Under layout=lead-pair
+    # the FIRST worker (worker.0) is the COLEAD seat — a judgment partner, not a builder. Slot
+    # is main/worker.N/spawned.N from meta and layout is an ae-validated keyword (never user
+    # text), so both are safe in this branch.
     case "$slot" in
         main)
             ctx+=" LEAD ROLE: your tokens are for JUDGMENT — triage, rulings, gates, adjudication, and the human interface; never delegate those. DELEGATE the rest (implementation, tests, docs, chores, research, scoping): when a subtask has a spec that fits ~10 lines AND a verifiable stop condition, spawn a worker (rule 9) instead of spending your own context on it. You still own review and retirement of every worker, and you keep the judgment-heavy work yourself."
             ;;
         worker.* | spawned.*)
-            ctx+=" WORKER ROLE: you execute the briefed subtask within its stated scope. Report a distilled summary — Outcome / Changed / Verified (command + result) / Risks / Need-from-lead — never raw logs. Stay in your assigned files (one writer per file); surface any decision that needs judgment to the lead rather than deciding it unilaterally. You do not self-retire — the lead retires you when the task is verified done."
+            if [[ "$slot" == "worker.0" && "$_layout" == "lead-pair" ]]; then
+                ctx+=" COLEAD ROLE: you are the lead's JUDGMENT PARTNER, sharing its window — not a builder, and not the code reviewer (the reviewer reviews what was BUILT; you challenge what is being DECIDED). Stress-test rulings and briefs BEFORE they ship, run second gate reads on gated diffs, and hunt the blind spot in the lead's reasoning. Disagree once, concretely, with evidence — log dissent via memo so it survives — then THE LEAD RULES: one owner per decision, no stalemates, and you commit to the ruling. You own no files and build no slices; your output is judgment, findings-first."
+            else
+                ctx+=" WORKER ROLE: you execute the briefed subtask within its stated scope. Report a distilled summary — Outcome / Changed / Verified (command + result) / Risks / Need-from-lead — never raw logs. Stay in your assigned files (one writer per file); surface any decision that needs judgment to the lead rather than deciding it unilaterally. You do not self-retire — the lead retires you when the task is verified done."
+            fi
             ;;
     esac
     # Mode-aware WORKING-TREE block (hardcoded like the slot role — code, not config).
-    # Read mode + origin from meta so callers stay unchanged and it works on resume too.
     # Missing/unknown mode -> no block (fail-quiet, like a slotless pane). Rule 7's
     # concurrency caution is universal; the human-LIVE-tree caution lives ONLY here.
-    local _mode="" _origin=""
-    if [[ -f "${meta_dir}/meta" ]]; then
-        _mode="$(grep '^mode=' "${meta_dir}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-        _origin="$(grep '^origin=' "${meta_dir}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    fi
     case "$_mode" in
         local)
             ctx+=" WORKING TREE: you are in the human's LIVE checkout — their uncommitted work may be present. One writer per file; NO destructive git operations (no reset --hard, clean -fd, or checkout of files you did not change); never assume the tree is yours alone."
@@ -1156,8 +1172,15 @@ _resolve_workers() {
     WORKER_CMDS=()
     WORKER_ALIASES=()
     WORKER_NAMES=()
-    # Resume: meta wins (recover agent.worker.N alias:name; cmd from config by alias).
-    if [[ -n "$(read_session_meta "$SESSION" agent.worker.0)" ]]; then
+    # Resume: the session META EXISTS -> meta is authoritative INCLUDING EMPTINESS.
+    # Keying on agent.worker.0 alone let a ZERO-worker session fall through to the
+    # config path on resume — silently gaining workers the human never launched
+    # (codex session-shape finding; bites whenever config workers= grows, e.g. the
+    # lead-pair default). A fresh launch has no meta file yet, so file-existence is
+    # the resume fact.
+    local _rw_meta="${SESSIONS_DIR}/${SESSION}/meta"
+    [[ -f "$_rw_meta" ]] || _rw_meta="${WORKTREES_DIR}/${SESSION}/.ae/${SESSION}/meta"
+    if [[ -f "$_rw_meta" ]]; then
         local _wi=0 _saved _walias _wrest _wname _wcmd
         while :; do
             _saved="$(read_session_meta "$SESSION" "agent.worker.${_wi}")"
@@ -5395,12 +5418,16 @@ cmd_rename() {
     # 1. Rename tmux session
     tmux rename-session -t "$old_name" "$new_name"
 
-    # 1b. Rename the main window to match. Session creation names window 0
-    # after the session (with automatic-rename off so it sticks), so a rename
-    # that only touches the session leaves the old name in the status bar.
-    # The monitor window keeps its own name; only the agent window 0 tracks
-    # the session name.
-    tmux rename-window -t "${new_name}:0" "$(_ae_tmux_format_literal "$new_name")" 2>/dev/null || true
+    # 1b. Rename the main window to match — but NOT under lead-pair, where window 0
+    # carries the ROLE name 'lead' (the session name lives in status-left) and must
+    # survive a rename. Decide by the LAYOUT FACT from meta, never by comparing the
+    # window name to the session name — a session literally named 'lead' would fool
+    # a name check (codex session-shape finding). Meta hasn't moved yet at this step.
+    local _ren_layout
+    _ren_layout="$(grep '^layout=' "${old_meta}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    if [[ "$_ren_layout" != "lead-pair" ]]; then
+        tmux rename-window -t "${new_name}:0" "$(_ae_tmux_format_literal "$new_name")" 2>/dev/null || true
+    fi
 
     # 2. Move session directory
     if [[ -d "$old_meta" ]]; then
@@ -5420,6 +5447,8 @@ cmd_rename() {
         mode="$(grep '^mode=' "${new_meta}/meta" 2>/dev/null | cut -d= -f2- || true)"
         main_pane="$(grep '^main_pane=' "${new_meta}/meta" 2>/dev/null | cut -d= -f2- || true)"
         regenerate_manifest "$new_name" "${work_dir:-.}" "${origin:-.}" "${mode:-local}" "${main_pane:-%0}" "$new_meta"
+        # 4b. Refresh status-left — it carries the SESSION NAME now, which just changed.
+        _ae_apply_status_left "$new_name" "${mode:-local}" "${origin:-.}" "${work_dir:-.}"
     fi
 
     echo "Renamed '${old_name}' → '${new_name}'"
@@ -9144,7 +9173,18 @@ PANE_IDS+=("$(tmux display-message -t "$SESSION" -p '#{pane_id}')")
 
 for i in "${!WORKER_CMDS[@]}"; do
     local_id=""
-    if [[ "$LAYOUT" == "lead-solo" ]]; then
+    if [[ "$LAYOUT" == "lead-pair" ]]; then
+        # worker.0 = the COLEAD SEAT: shares window 0 with the lead, side by side.
+        # Workers 1+ live in window 1, split among themselves.
+        if ((i == 0)); then
+            local_id="$(tmux split-window -h -t "${PANE_IDS[0]}" -c "$WORK_DIR" -P -F '#{pane_id}')"
+        elif ((i == 1)); then
+            local_id="$(tmux new-window -d -t "${SESSION}:" -c "$WORK_DIR" -P -F '#{pane_id}')"
+        else
+            _prev=$((${#PANE_IDS[@]} - 1)) # split the previous worker pane (4.0-safe index)
+            local_id="$(tmux split-window -v -t "${PANE_IDS[$_prev]}" -c "$WORK_DIR" -P -F '#{pane_id}')"
+        fi
+    elif [[ "$LAYOUT" == "lead-solo" ]]; then
         # Workers live in window 1, split among THEMSELVES; window 0 stays lead-only.
         if ((i == 0)); then
             local_id="$(tmux new-window -d -t "${SESSION}:" -c "$WORK_DIR" -P -F '#{pane_id}')"
@@ -9162,7 +9202,13 @@ done
 
 # Distribute panes evenly
 if ((${#PANE_IDS[@]} > 1)); then
-    if [[ "$LAYOUT" == "lead-solo" ]]; then
+    if [[ "$LAYOUT" == "lead-pair" ]]; then
+        # Window 0: lead + colead side by side. Window 1: workers 1+ (even only when 2+).
+        tmux select-layout -t "${PANE_IDS[0]}" even-horizontal
+        if ((${#WORKER_CMDS[@]} > 2)); then
+            tmux select-layout -t "${PANE_IDS[2]}" even-vertical
+        fi
+    elif [[ "$LAYOUT" == "lead-solo" ]]; then
         # Distribute the workers WITHIN window 1 (only when 2+ workers).
         if ((${#WORKER_CMDS[@]} > 1)); then
             tmux select-layout -t "${PANE_IDS[1]}" even-vertical
@@ -9173,11 +9219,19 @@ if ((${#PANE_IDS[@]} > 1)); then
         tmux select-layout -t "$SESSION" even-vertical
     fi
 fi
-# lead-solo: name the worker window with a FIXED literal — NEVER an agent name. Agent identity
+# Role-based window names use FIXED literals — NEVER an agent name. Agent identity
 # lives on @ae_agent; a name-derived window name would feed the tmux rename-window/format
 # interpreted-sink (# introduces formats). Zero workers -> no window 1 (valid no-op).
 if [[ "$LAYOUT" == "lead-solo" ]] && ((${#WORKER_CMDS[@]} > 0)); then
     tmux rename-window -t "${PANE_IDS[1]}" "workers" 2>/dev/null || true
+fi
+# lead-pair: window 0 carries the ROLE name (the session name lives in status-left now);
+# window 1 exists only with 2+ workers. cmd_rename preserves a role-named window 0.
+if [[ "$LAYOUT" == "lead-pair" ]]; then
+    tmux rename-window -t "${PANE_IDS[0]}" "lead" 2>/dev/null || true
+    if ((${#WORKER_CMDS[@]} > 1)); then
+        tmux rename-window -t "${PANE_IDS[2]}" "workers" 2>/dev/null || true
+    fi
 fi
 
 # Label panes: title for border display, @ae_agent option for reliable identity
@@ -9248,8 +9302,11 @@ if [[ "$RESUMING" == true ]]; then
         tmux set-option -p -t "$local_id" @ae_agent "${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}"
         tmux set-option -p -t "$local_id" @ae_slot "spawned.${SPAWNED_IDX[$i]}"
     done
-    # Rebalance if spawned agents were added
-    if ((${#SPAWNED_ALIASES[@]} > 0)); then
+    # Rebalance if spawned agents were added — SPLIT layouts only. Spawned agents get
+    # their own windows, so window 0 gains no panes; under lead-solo (1 pane, no-op)
+    # and lead-pair (lead+colead split -h, which even-vertical would STACK) touching
+    # window 0 is wrong. Skip both.
+    if ((${#SPAWNED_ALIASES[@]} > 0)) && [[ "$LAYOUT" != "lead-solo" && "$LAYOUT" != "lead-pair" ]]; then
         if [[ "$LAYOUT" == "vertical" ]]; then
             tmux select-layout -t "$SESSION" even-horizontal
         else

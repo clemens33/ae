@@ -13,8 +13,8 @@ opencode = "opencode -m google/gemini-3-pro-preview"
 
 [workspace]
 main = claude:lead
-workers = codex:reviewer
-layout = vertical
+workers = codex:colead, claude:builder, codex:reviewer
+layout = lead-pair
 watchdog = true
 
 [prompt]
@@ -29,13 +29,16 @@ Register any CLI tool as an agent alias. The value is the shell command to launc
 
 | Key       | Description                                          | Default       |
 |-----------|------------------------------------------------------|---------------|
-| `main`    | `alias:name` for the primary agent                   | `claude:lead` |
-| `workers` | Comma-separated agents launched at startup           | *(empty)*     |
-| `layout`  | `vertical` (side-by-side) or `horizontal` (stacked)  | `vertical`    |
+| `main`    | `alias:name` for the primary agent                   | `opus48:lead` |
+| `workers` | Comma-separated agents launched at startup. Under `lead-pair` the FIRST worker is the colead seat | colead, builder, reviewer |
+| `layout`  | `lead-pair` (lead + colead share window 0, other workers in window 1), `lead-solo` (lead alone in window 0, workers in window 1), `vertical` (side-by-side splits), `horizontal` (stacked splits) | `lead-pair`   |
 | `copy`    | Working directory mode (see below)                   | `local`       |
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
 
-Names show in pane borders and are how agents address each other.
+Names show in pane borders and are how agents address each other. Under `lead-pair`
+the windows carry role names (`0:lead`, `1:workers`); under `lead-solo` window 0 keeps
+the session name and only window 1 is role-named (`workers`). The session name always
+shows in the status bar (status-left).
 
 ## Copy modes
 

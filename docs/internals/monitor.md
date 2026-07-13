@@ -68,15 +68,17 @@ watchdog health (monitoring state) on the right.
   (status-left renders it as `#{@ae_branch_status}`). A user-option value is
   interpolated literally — no shell job, no `#()` parsing — so a branch with a `#`,
   `)`, space, or any character is safe with zero escaping; it's empty (left falls back
-  to just the path) when the watchdog is off or the work dir isn't a repo. The session
-  *name* is omitted (it's already the window label `0:<session>`). The static path text
-  is escaped for tmux's format syntax — both `#` → `##` (format vars) and `%` → `%%`
-  (strftime) — so a directory like `/tmp/%Y` or `/repo#1` renders verbatim.
+  to just the name + path) when the watchdog is off or the work dir isn't a repo. The
+  session *name* leads the segment — under `lead-pair` the window label carries a role
+  name (`0:lead`), so status-left is where the session name lives. The
+  name and the static path text are both user text in tmux format syntax and are
+  escaped — `#` → `##` (format vars) and `%` → `%%` (strftime) — so a session `a#b` or
+  a directory like `/tmp/%Y` renders verbatim.
 
   ```text
-  [ae ~/projects/clemens33/ae main*]                         # local: path + branch
-  [ae ~/projects/clemens33/ae → ~/.ae/copies/aedev main*]    # copy (full): origin → copy
-  [ae ~/projects/clemens33/ae ⌁ ~/.ae/worktrees/aedev feat*] # git: origin repo ⌁ worktree
+  [ae aedev ~/projects/clemens33/ae main*]                         # local: name + path + branch
+  [ae aedev ~/projects/clemens33/ae → ~/.ae/copies/aedev main*]    # copy (full): origin → copy
+  [ae aedev ~/projects/clemens33/ae ⌁ ~/.ae/worktrees/aedev feat*] # git: origin ⌁ worktree
   ```
 
   `$HOME` is abbreviated to `~`; long paths are truncated from the left (keeping the
