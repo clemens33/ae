@@ -7952,6 +7952,19 @@ _watchdog_status() {
     exit 0
 }
 
+# Strip every leading '#{@ae_watchdog_status} ' from a status-right value. Makes the
+# watchdog start IDEMPOTENT: a re-start (or an already-doubled footer) must not stack a
+# second indicator or save a contaminated baseline. Pure; result on stdout. The while-loop
+# self-heals an already-doubled footer on the next start.
+_strip_watchdog_status_prefix() {
+    local s="$1"
+    while [[ "$s" == '#{@ae_watchdog_status} '* ]]; do
+        s="${s#'#{@ae_watchdog_status} '}"
+    done
+    printf '%s' "$s"
+    return 0
+}
+
 _watchdog_start() {
     # A pre-rename watchdog may still be running under legacy artifacts after an
     # upgrade + refresh (helpers are rewritten but the running watchdog is not
@@ -7993,6 +8006,11 @@ _watchdog_start() {
         prev_status_right="$(tmux show-options -gv status-right 2>/dev/null || true)"
         was_session="false"
     fi
+    # Idempotent: drop any watchdog indicator ALREADY prepended (a prior start, or a
+    # doubled footer) so the SAVED baseline is clean and we prepend exactly one below.
+    # Without this, a re-start saves '#{@ae_watchdog_status} <orig>' as the baseline AND
+    # stacks a second indicator on the live status-right.
+    prev_status_right="$(_strip_watchdog_status_prefix "$prev_status_right")"
     # Persist alongside meta via the locked helper to avoid clobbering concurrent writers
     _set_meta_kv "status_right_prev" "$prev_status_right"
     _set_meta_kv "status_right_was_session" "$was_session"
@@ -9638,7 +9656,7 @@ source "$(cd "$(dirname "$0")" && pwd)/_lib"
 WDPROLOGUE
         declare -f _watchdog_is_running _set_meta_kv _unset_meta_kv _set_meta_watchdog \
             _monitor_find_pane _monitor_ensure_events_pane _watchdog_ensure_monitor _watchdog_reap_legacy_one \
-            _watchdog_reap_legacy _watchdog_restore_status_right _watchdog_stop _watchdog_status \
+            _watchdog_reap_legacy _watchdog_restore_status_right _strip_watchdog_status_prefix _watchdog_stop _watchdog_status \
             _watchdog_start _last_event_age _latest_relevant_event _agent_quiet_reason \
             _quiet_pane_decision _watchdog_meta_value _watchdog_trim _watchdog_git \
             _watchdog_branch_segment _watchdog_set_status _watchdog_log _pane_has_descendant_named \

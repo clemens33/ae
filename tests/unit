@@ -1504,6 +1504,23 @@ assert_eq "watchdog: supports start/stop/status subcommands" \
     "1" \
     "$([[ "$AE_SOURCE" == *'_watchdog_start'* && "$AE_SOURCE" == *'_watchdog_stop'* && "$AE_SOURCE" == *'_watchdog_status'* ]] && echo 1 || echo 0)"
 
+# ── watchdog status-right dedup: idempotent start (strip any prepended indicator) ──
+eval "$(awk '/^_strip_watchdog_status_prefix\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "wd-dedup: strip a single leading indicator" "orig text" "$(_strip_watchdog_status_prefix '#{@ae_watchdog_status} orig text')"
+assert_eq "wd-dedup: strip a DOUBLED indicator (self-heal)" "orig text" "$(_strip_watchdog_status_prefix '#{@ae_watchdog_status} #{@ae_watchdog_status} orig text')"
+assert_eq "wd-dedup: no indicator -> unchanged" "plain #(date)" "$(_strip_watchdog_status_prefix 'plain #(date)')"
+assert_eq "wd-dedup: empty -> empty" "" "$(_strip_watchdog_status_prefix '')"
+assert_eq "wd-dedup: only-indicator -> empty baseline" "" "$(_strip_watchdog_status_prefix '#{@ae_watchdog_status} ')"
+assert_eq "wd-dedup: an EMBEDDED (non-leading) marker is PRESERVED (strip is leading-only)" "keep #{@ae_watchdog_status} here" "$(_strip_watchdog_status_prefix 'keep #{@ae_watchdog_status} here')"
+# The start block must STRIP before saving the baseline AND before prepending, so a
+# re-start neither contaminates status_right_prev nor doubles the live indicator.
+_wds_fn="$(awk '/^_watchdog_start\(\) \{/{f=1} f{print} f && /^\}/{exit}' <<<"$AE_SOURCE")"
+assert_eq "wd-dedup: start strips prev_status_right before saving the baseline" "1" \
+    "$([[ "$_wds_fn" == *'prev_status_right="$(_strip_watchdog_status_prefix "$prev_status_right")"'*'_set_meta_kv "status_right_prev"'* ]] && echo 1 || echo 0)"
+# Emission: the new pure fn must be in the watchdog _lib declare -f list (runtime needs it).
+assert_eq "wd-dedup: _strip_watchdog_status_prefix emitted into the watchdog _lib" "1" \
+    "$([[ "$AE_SOURCE" == *'_watchdog_restore_status_right _strip_watchdog_status_prefix'* ]] && echo 1 || echo 0)"
+
 # Root fix: _watchdog_is_running must require a live @ae_agent=_watchdog pane in
 # its OWN session (not just a live pid) before reporting running — a recycled pid
 # from a stale pidfile must not read as running, and a stale pidfile is cleaned.

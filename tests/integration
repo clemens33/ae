@@ -928,6 +928,29 @@ kill "$wdr_dummy" 2>/dev/null || true
 "$AE" end -f test-wd-root 2>/dev/null || true
 sleep 0.5
 
+# ── Test 11e: watchdog start is IDEMPOTENT — heals a doubled status indicator ──
+# The start save+prepend must strip any '#{@ae_watchdog_status} ' already present BEFORE
+# saving the baseline and prepending exactly one, so a leftover/doubled footer (from a
+# crash or a prior non-idempotent start) self-heals on the next start instead of stacking.
+REPO_WDD="$(setup_repo)"
+(cd "$REPO_WDD" && "$AE" --local test-wd-dedup &) 2>/dev/null
+wait_for_session "test-wd-dedup"
+WDD="$HOME/.ae/sessions/test-wd-dedup/watchdog"
+wd_poll "$WDD" "is running" 20 || true
+"$WDD" stop >/dev/null 2>&1 || true
+wd_poll "$WDD" "not running" 20 || true
+# Fabricate a DOUBLED leftover indicator on the live status-right, then start.
+tmux set-option -t test-wd-dedup status-right '#{@ae_watchdog_status} #{@ae_watchdog_status} BASE' 2>/dev/null || true
+"$WDD" start >/dev/null 2>&1 &
+wd_poll "$WDD" "is running" 20 || true
+wdd_sr="$(tmux show-options -v -t test-wd-dedup status-right 2>/dev/null || true)"
+assert_eq "wd-dedup: start heals a doubled indicator to exactly one" \
+    "1" "$(grep -oF '#{@ae_watchdog_status}' <<<"$wdd_sr" | wc -l | tr -d ' ')"
+wdd_base="$(grep '^status_right_prev=' "$HOME/.ae/sessions/test-wd-dedup/meta" 2>/dev/null | cut -d= -f2- || true)"
+assert_eq "wd-dedup: saved baseline is clean (no indicator)" "BASE" "$wdd_base"
+"$AE" end -f test-wd-dedup 2>/dev/null || true
+sleep 0.5
+
 # ── goal helper: set → list → survives resume ────────────────────────
 REPO_GOAL="$(setup_repo)"
 (cd "$REPO_GOAL" && "$AE" --local goaltest &) 2>/dev/null
