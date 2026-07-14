@@ -200,9 +200,15 @@ build_launch_command() {
             ;;
     esac
 
-    # Ensure Claude Code doesn't detect nesting when ae is run from inside a Claude session.
+    # Ensure Claude Code doesn't detect nesting when ae is run from inside a Claude
+    # session. Also disable the input-box ghost SUGGESTION: claude styling is not
+    # focus-invariant, so the input-region sensor is content-based and needs "idle ==
+    # bare ornament" to hold — a ghost placeholder would read as content and defer
+    # first-contact sends. Off => a fresh pane shows only the ornament (input-region
+    # slice, colead characterization). If the flag is ignored by a future claude, a
+    # returned ghost simply reads as occupied => we fail closed, never clobber.
     if [[ "$cmd" == claude* ]]; then
-        launch_cmd="env -u CLAUDECODE -u CLAUDE_CODE_SESSION ${launch_cmd}"
+        launch_cmd="env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 ${launch_cmd}"
     fi
 
     # Resilient resume: if claude --resume UUID fails, fall back to --continue.
@@ -6830,48 +6836,94 @@ _capture_input_region() {
     local pane="$1" cy start
     cy="$(tmux display-message -p -t "$pane" '#{cursor_y}' 2>/dev/null || true)"
     [[ "$cy" =~ ^[0-9]+$ ]] || return 0 # no cursor row -> empty -> fail-closed at caller
-    start=$((cy > 0 ? cy - 1 : 0))
+    # Window back from the cursor: enough rows to include the prompt-ornament line of a
+    # MULTILINE input (the cursor sits on its LAST row; the › / ❯ is on the FIRST). 8
+    # covers a realistic typed multiline; a large PASTE collapses to a single
+    # '[Pasted Content N chars]' row so it never needs the depth. Extra rows above only
+    # add transcript, which the per-tool anchor (last live prompt / last ornament)
+    # steps over. Box-top border sits at the low end for a single-line input.
+    start=$((cy > 8 ? cy - 8 : 0))
     tmux capture-pane -e -p -t "$pane" -S "$start" -E "$cy" 2>/dev/null || true
     return 0
 }
 
-# Is our pasted message STILL STAGED (unsent) in the target's input box? Return
-# 0 (staged) only on a POSITIVE detection so an unverifiable case degrades to
-# "submitted" (non-regressive: no worse than the old fire-and-forget), never a
-# false loud alarm. Per-tool because the tell differs.
-_paste_still_staged() {
-    local pane="$1" tool="$2" msg="$3" cap
-    cap="$(tmux capture-pane -p -t "$pane" 2>/dev/null | tail -n 6 || true)"
-    cap="${cap//$'\xc2\xa0'/ }" # normalize NBSP (U+00A0)->space (see _paste_input_busy)
-    [[ -n "$cap" ]] || return 1 # no capture -> cannot confirm staged -> submitted
+# Occupancy of the target's live input box, from the cursor-derived region (colead
+# characterization, 2026-07-14). PER-TOOL — the "empty" tell differs. Returns:
+#   0 = OCCUPIED       real typed/staged content sits in the input
+#   1 = IDLE           bare ornament / a dim placeholder suggestion only
+#   2 = INDETERMINATE  no live prompt in view / unreadable — callers fail-closed
+#                      their OWN way (pre-paste busy => UNSAFE, post-submit staged
+#                      => CLEAR/non-regressive).
+_input_region_occupied() {
+    local pane="$1" tool="$2" region
+    region="$(_capture_input_region "$pane")"
+    [[ -n "$region" ]] || return 2 # unreadable
     case "$tool" in
+        codex)
+            # Live input starts at the last BOLD-ONLY prompt $'\e[1m›'. A SUBMITTED
+            # transcript echo is BOLD+DIM $'\e[1;2m›' — excluded, so cursor-region
+            # isolation kills the F4 transcript-echo false-positive by style+geometry,
+            # NOT a content grep (live repro 2026-07-14: '\e[1;2m› \e[0mMemo read …').
+            # From the live prompt to the cursor: drop the DIM (SGR 2) placeholder-
+            # suggestion span, strip remaining SGR + ornament + whitespace; ANY
+            # printable remainder — INCLUDING the unstyled '[Pasted Content N chars]'
+            # staging token — is OCCUPIED. (Re-enables codex staged detection safely;
+            # supersedes the ri-2 DO-NOT-RE-ADD note, whose transcript-echo objection
+            # stays correct and is what cursor-region isolation now resolves. Live
+            # repro: staged '[Pasted Content 1469 chars]' — the old detector returned
+            # clear and would have logged a false success = silent loss.)
+            local -a _ir_lines=()
+            local i live=""
+            mapfile -t _ir_lines <<<"$region"
+            for ((i = ${#_ir_lines[@]} - 1; i >= 0; i--)); do
+                [[ "${_ir_lines[i]}" == *$'\e[1m›'* ]] && {
+                    live=$i
+                    break
+                }
+            done
+            [[ -n "$live" ]] || return 2 # no live prompt (mid-generation / abnormal)
+            local s
+            s="$(printf '%s\n' "${_ir_lines[@]:live}")"
+            s="$(sed -E 's/\x1b\[2m[^\x1b]*\x1b\[0?m//g' <<<"$s")" # drop dim placeholder span
+            s="$(sed -E 's/\x1b\[[0-9;]*m//g' <<<"$s")"            # strip remaining SGR
+            s="${s//$'\xc2\xa0'/ }"
+            s="$(tr -d '›\n\t ' <<<"$s")"
+            [[ -n "$s" ]] && return 0 || return 1
+            ;;
         claude)
-            # Claude stages large pastes behind a "[Pasted text #N +M lines]"
-            # token that needs another Enter; small pastes submit on the first.
-            if grep -qE '\[Pasted text #[0-9]+ \+[0-9]+ lines\]' <<<"$cap"; then
-                return 0
-            fi
-            return 1
+            # Claude styling is NOT focus-invariant (an INACTIVE pane dims typed text
+            # exactly like a ghost — the live-capture confound), so claude is
+            # CONTENT-only: suggestions are disabled at launch
+            # (CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0), so the idle input is a BARE
+            # ornament and ANY content after it = OCCUPIED. If that flag ever fails
+            # and a ghost returns, the ghost reads as content -> OCCUPIED -> we fail
+            # CLOSED (defer/abandon), never a silent clobber. Also subsumes claude's
+            # own '[Pasted text #N +M lines]' staging token (content -> occupied).
+            local s last
+            s="$(sed -E 's/\x1b\[[0-9;]*m//g' <<<"$region")" # strip all SGR (unreliable anyway)
+            s="${s//$'\xc2\xa0'/ }"
+            last="$(grep -nE '[>❯▌]' <<<"$s" | tail -n1 | cut -d: -f2- || true)"
+            [[ -n "$last" ]] || return 2 # no ornament in view (mid-generation / abnormal)
+            last="$(sed -E 's/^[[:space:]]*│?[[:space:]]*[>❯▌]//' <<<"$last")"
+            [[ -n "$(tr -d '[:space:]' <<<"$last")" ]] && return 0 || return 1
             ;;
-        *)
-            # ⚠ DO NOT re-add naive text-matching staged-detection for codex here.
-            # Codex (and every non-claude tool) has NO reliable staged tell in a
-            # color-stripped `capture-pane -p`: codex has no staging token like
-            # claude's "[Pasted text #…]", and a just-submitted SHORT message
-            # ECHOES into the visible transcript — so matching the message text in
-            # the bottom region false-positives, producing a false UNCONFIRMED that
-            # makes the LLM sender DUPLICATE an already-sent message (a common,
-            # confirmed harm — WORSE than the rare silent-drop it would catch). The
-            # bottom-N-grep approach was tried and dropped (codex code-round F4,
-            # ratified). Any future codex detection needs validated input-REGION
-            # isolation, not transcript grep — same color-stripped ambiguity the
-            # watchdog-v2 codex TUI pattern catalog must clear (see docs). So: no
-            # positive detection -> always "submitted" (non-regressive; the
-            # send-path busy-defer already stops us pasting into a busy codex, the
-            # swallowed-Enter A4 exhibit). $msg kept in the signature for the
-            # claude branch / caller symmetry.
-            return 1
+        *) return 1 ;; # unmodeled tool -> treat as idle (don't block delivery)
+    esac
+}
+
+# Is our pasted message STILL STAGED (unsent) in the target's input box? Return
+# 0 (staged) ONLY on a positive OCCUPIED read of the cursor-region — an idle or
+# indeterminate read degrades to "submitted" (non-regressive: never a false loud
+# alarm that would make the sender DUPLICATE an already-sent message, the F4 class).
+_paste_still_staged() {
+    local pane="$1" tool="$2" msg="$3" rc # msg kept for caller symmetry
+    case "$tool" in
+        claude | codex)
+            _input_region_occupied "$pane" "$tool"
+            rc=$?
+            ((rc == 0)) && return 0 || return 1 # OCCUPIED=staged; idle/indeterminate=clear
             ;;
+        *) return 1 ;; # unmodeled -> clear (non-regressive)
     esac
 }
 
@@ -6905,7 +6957,7 @@ _pane_recently_viewed() {
 }
 
 _paste_input_busy() {
-    local pane="$1" tool="$2" cap
+    local pane="$1" tool="$2"
     # Only claude/codex are modeled for input protection. Other tools (gemini,
     # opencode, plain shells, test dummies) have NO reliable input predicate, so
     # fail-closed there would break every send to them — instead ALLOW (preserve
@@ -6913,59 +6965,16 @@ _paste_input_busy() {
     # codex). Fail-closed applies WITHIN a modeled tool, not to unknown ones.
     case "$tool" in
         claude | codex) ;;
-        *) return 1 ;;
+        *) return 1 ;; # unmodeled -> safe (allow, don't regress)
     esac
-    cap="$(tmux capture-pane -p -t "$pane" 2>/dev/null | tail -n 8 || true)"
-    # Normalize the no-break space (U+00A0, bytes c2 a0) to a regular space BEFORE
-    # any regex: GNU grep does NOT classify U+00A0 as [[:space:]], and Claude's TUI
-    # renders the EMPTY prompt line as '❯'+U+00A0, so the trailing [[:space:]]*$ in
-    # the idle check never matched -> every claude send read as busy -> ABANDONED.
-    # One normalization point covers the claude idle regex AND the codex footer regex
-    # below, so those stay readable. Only U+00A0 is normalized (the observed variant);
-    # add U+202F / U+2007 here if a future TUI uses them — do not broaden blindly.
-    cap="${cap//$'\xc2\xa0'/ }"
-    [[ -n "$cap" ]] || return 0 # modeled tool but unreadable -> UNSAFE (fail-closed)
-    # A staged paste token means unsent content is already sitting there.
-    if grep -qE '\[Pasted text #[0-9]+ \+[0-9]+ lines\]' <<<"$cap"; then
-        return 0
-    fi
-    case "$tool" in
-        claude)
-            # Confidently empty when the input line is the bare prompt ornament
-            # (>, ❯, ▌, optionally boxed by │) + whitespace. A mid-generation claude
-            # shows a spinner line instead, so this also gates on idleness.
-            # NOTE (ri-3): a VIRGIN pane's dim GHOST placeholder ('❯ Try "…"') is NOT
-            # treated as idle here. Matching it against a color-stripped WHOLE capture
-            # risks clobbering real input or a transcript-history line (codex ri-3
-            # BLOCKER). First-contact sends to a fresh pane therefore ABANDON loudly
-            # (re-sendable, never a silent clobber) until ri-4 adds input-REGION
-            # isolation to detect the ghost safely.
-            if grep -qE '^[[:space:]]*│?[[:space:]]*[>❯▌][[:space:]]*$' <<<"$cap"; then
-                return 1
-            fi
-            return 0
-            ;;
-        codex)
-            # SCOPE: this is BUSY-detection for codex, NOT human-input detection.
-            # A color-stripped `capture-pane -p` cannot distinguish codex's dim
-            # empty-placeholder from typed text, so idle-but-human-typing is NOT
-            # detectable here and is NOT protected (codex code-round F3 confirms
-            # no reliable -p signal; `-e` dim styling is unverified/unstable). We
-            # gate on the idle footer "<model> <effort> · <path>": present => idle
-            # (not mid-generation, which shows a "Worked for …" separator) => a
-            # paste won't be swallowed by a busy TUI (exhibit #1). SAFE when idle,
-            # UNSAFE (defer) when busy/unknown. The human-clobber exhibit was on
-            # CLAUDE (handled above); codex human-typing protection is out of reach
-            # with this capture mode — a documented, tested limit, not a bug.
-            if grep -qE '·[[:space:]].*[~/]' <<<"$cap"; then
-                return 1
-            fi
-            return 0
-            ;;
-        *)
-            return 0 # unknown tool -> UNSAFE
-            ;;
-    esac
+    # UNSAFE unless the cursor-region reads confidently IDLE. OCCUPIED (typed/staged)
+    # and INDETERMINATE (no live prompt = mid-generation / unreadable) both fail
+    # CLOSED — never paste into uncertainty (delivery-bug exhibit #3: a helper paste
+    # clipped a half-typed human question). Only a positive idle read is safe.
+    local rc
+    _input_region_occupied "$pane" "$tool"
+    rc=$?
+    ((rc == 1)) && return 1 || return 0 # IDLE=safe; OCCUPIED/INDETERMINATE=unsafe
 }
 
 # Resolve the agent BINARY expected in a pane from meta agent_bin.<slot>
@@ -9645,7 +9654,7 @@ LIBPROLOGUE
             ae_preview_text ae_extract_req_id ae_log_append ae_log_read \
             ae_target_tool ae_json_escape ae_emit_event ae_latest_state_for \
             _event_json_str _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
-            ae_submit_pasted_message _capture_input_region _paste_still_staged _paste_input_busy _pane_recently_viewed \
+            ae_submit_pasted_message _capture_input_region _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
             command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
             ae_meta_get ae_meta_set ae_meta_unset
     } >"${AE_META}/_lib.tmp.$$"

@@ -193,16 +193,16 @@ assert_eq "name: unknown passes through" "mytool --flag" "$(tool_name_from_cmd "
 
 # ── build_launch_command ────────────────────────────────────────────
 
-assert_eq "launch: claude fresh adds nested-session guard" \
-    "env -u CLAUDECODE -u CLAUDE_CODE_SESSION claude --model opus" \
+assert_eq "launch: claude fresh adds nested-session guard + suggestion-off" \
+    "env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 claude --model opus" \
     "$(build_launch_command "claude --model opus" "")"
 
 assert_eq "launch: claude resume keeps continue fallback" \
-    "env -u CLAUDECODE -u CLAUDE_CODE_SESSION claude --model opus --resume abc-123 || env -u CLAUDECODE -u CLAUDE_CODE_SESSION claude --model opus --continue" \
+    "env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 claude --model opus --resume abc-123 || env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 claude --model opus --continue" \
     "$(build_launch_command "claude --model opus --resume abc-123" "")"
 
 assert_eq "launch: prompt is shell-quoted once" \
-    "env -u CLAUDECODE -u CLAUDE_CODE_SESSION claude --model opus don\\'t\\ break" \
+    "env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 claude --model opus don\\'t\\ break" \
     "$(build_launch_command "claude --model opus" "don't break")"
 
 assert_eq "launch: codex resume keeps fresh-start fallback" \
@@ -4633,63 +4633,91 @@ _slotres_unstamped() {
 }
 assert_eq "slot-resolver: unstamped pane present -> still routes to stamped pane" "opus48:builder" "$(_slotres_unstamped)"
 
-# ── request-integrity-2 Bug C: paste submit-verification + protect-human-typing ──────
+# ── input-region slice: cursor-region SGR sensor (colead REAL fixtures 2026-07-14) ──
+# Fixtures are printf %b (\033=ESC, \xc2\xa0=NBSP) — the EXACT bytes colead captured
+# from disposable Codex 0.144.4 / Claude 2.1.209 at cursor_y. The sensor is fed by
+# stubbing _capture_input_region (the one place tmux is touched); everything else is
+# the real per-tool logic. Codex: dim(SGR2) placeholder = idle, any unstyled content =
+# occupied, live prompt = BOLD-only \033[1m› (a submitted echo is BOLD+DIM \033[1;2m›).
+# Claude: content-only (style not focus-invariant), bare ornament = idle.
+eval "$(awk '/^_capture_input_region\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_input_region_occupied\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_paste_still_staged\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_paste_input_busy\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^ae_submit_pasted_message\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 
-# still-staged predicate — per-tool, positive-only (unverifiable -> submitted).
-_pss() {  # <tool> <msg> <capture-fixture> -> staged|clear
-    local _CAP="$3"
-    # shellcheck disable=SC2317
-    tmux() { [[ "$1" == capture-pane ]] && printf '%s\n' "$_CAP"; return 0; }
-    _paste_still_staged "%1" "$1" "$2" && echo staged || echo clear
+_occ() { # <tool> <region-printf_b> -> occupied|idle|indeterminate
+    local _R; _R="$(printf '%b' "$2")"
+    # shellcheck disable=SC2317  # the sensor calls this
+    _capture_input_region() { printf '%s' "$_R"; }
+    _input_region_occupied "%1" "$1"
+    case $? in 0) echo occupied ;; 1) echo idle ;; *) echo indeterminate ;; esac
 }
-assert_eq "still-staged: claude [Pasted text] token -> staged" "staged" "$(_pss claude msg $'> \n[Pasted text #3 +5 lines]')"
-assert_eq "still-staged: claude clear input -> clear (submitted)" "clear" "$(_pss claude msg $'───\n❯ \n───')"
-# Codex positive staged-detection DROPPED (codex code-round F4): a color-stripped
-# capture can't isolate the input box, and a just-submitted SHORT message echoes
-# into the visible transcript -> matching text there would false-positive -> a
-# false UNCONFIRMED -> the sender DUPLICATES an already-sent message. Codex now
-# always reports "clear" (non-regressive; the send-path busy-defer covers the
-# swallowed-Enter exhibit). The history-echo fixture that used to false-positive
-# must return clear.
-assert_eq "still-staged: codex message echoed in history but input clear -> clear (no dup)" "clear" "$(_pss codex $'please\nreview the diff' $'› review the diff\n\n  gpt-5.5 xhigh · ~/p')"
-assert_eq "still-staged: codex never positively staged (dropped) -> clear" "clear" "$(_pss codex $'anything' $'› some text\n  gpt-5.5 xhigh · ~/p')"
-assert_eq "still-staged: no capture -> clear (cannot confirm, non-regressive)" "clear" "$(_pss codex msg '')"
+# ── the sensor, per-tool, against the REAL fixtures (active + inactive parity) ──
+assert_eq "occ: codex empty placeholder (dim) -> idle"    "idle"     "$(_occ codex '\033[1m›\033[0m \033[2mExplain this codebase\033[0m')"
+assert_eq "occ: codex short typed (unstyled) -> occupied" "occupied" "$(_occ codex '\033[1m›\033[0m human draft')"
+assert_eq "occ: codex LARGE paste staged -> occupied"     "occupied" "$(_occ codex '\033[1m›\033[0m [Pasted Content 1469 chars]')"
+assert_eq "occ: codex multiline unstyled -> occupied"     "occupied" "$(_occ codex '\033[1m›\033[0m AE_DIAG line one\n  line two with more content\n  line three\n  line four')"
+assert_eq "occ: codex F4 transcript echo (BOLD+DIM prompt, not live) -> indeterminate" "indeterminate" "$(_occ codex '\033[1;2m› \033[0mMemo read — superb work')"
+# Realistic multi-row region: a submitted echo (BOLD+DIM) ABOVE, then the LIVE prompt
+# (BOLD-only) with a staged paste below — the anchor must step over the echo to the
+# live prompt and detect the paste (widened cursor-back window makes this reachable).
+assert_eq "occ: transcript echo ABOVE + live staged paste -> occupied (anchor steps over echo)" "occupied" "$(_occ codex '\033[1;2m› \033[0mold submitted prompt\n\033[38;5;244m────\033[39m\n\033[1m›\033[0m [Pasted Content 900 chars]')"
+assert_eq "occ: codex placeholder FOCUS-STABLE (inactive == active) -> idle" "idle" "$(_occ codex '\033[1m›\033[0m \033[2mSummarize recent commits\033[0m')"
+assert_eq "occ: codex unreadable region -> indeterminate" "indeterminate" "$(_occ codex '')"
+assert_eq "occ: claude empty ornament -> idle"            "idle"     "$(_occ claude '❯\xc2\xa0')"
+assert_eq "occ: claude empty w/ box border above -> idle" "idle"     "$(_occ claude '\033[38;5;244m────────\033[39m\n\033[38;5;246m❯\xc2\xa0\033[39m')"
+assert_eq "occ: claude ghost (content, style unreliable) -> occupied" "occupied" "$(_occ claude '❯\xc2\xa0Try \"create a util logging.py that...\"')"
+assert_eq "occ: claude typed (inactive DIM, still content) -> occupied" "occupied" "$(_occ claude '\033[39m❯\xc2\xa0\033[2mhuman draft while pane inactive\033[0m')"
+assert_eq "occ: claude no ornament (mid-gen) -> indeterminate" "indeterminate" "$(_occ claude '✻ Crunched for 23s')"
 
-# input-busy predicate — fail-CLOSED (unsafe unless a confident idle+empty read).
-_pib() {  # <tool> <capture-fixture> -> safe|unsafe
-    local _CAP="$2"
+# ── consumer 1: _paste_still_staged (post-submit) — OCCUPIED=staged, else CLEAR ──
+_pss() { # <tool> <region-printf_b> -> staged|clear
+    local _R; _R="$(printf '%b' "$2")"
     # shellcheck disable=SC2317
-    tmux() { [[ "$1" == capture-pane ]] && printf '%s\n' "$_CAP"; return 0; }
+    _capture_input_region() { printf '%s' "$_R"; }
+    _paste_still_staged "%1" "$1" "msg" && echo staged || echo clear
+}
+# THE BUG (silent loss): codex staged '[Pasted Content N chars]' MUST be detected now.
+assert_eq "still-staged: codex '[Pasted Content N chars]' -> staged (kills silent loss)" "staged" "$(_pss codex '\033[1m›\033[0m [Pasted Content 1469 chars]')"
+assert_eq "still-staged: codex empty placeholder -> clear (submitted)" "clear" "$(_pss codex '\033[1m›\033[0m \033[2mExplain this codebase\033[0m')"
+# F4 dup-class: a submitted message echoed in the TRANSCRIPT must NOT read as staged.
+assert_eq "still-staged: codex transcript echo (not live input) -> clear (kills F4 dup)" "clear" "$(_pss codex '\033[1;2m› \033[0mMemo read — superb work')"
+assert_eq "still-staged: codex unreadable -> clear (non-regressive)" "clear" "$(_pss codex '')"
+assert_eq "still-staged: claude '[Pasted text]' still in input -> staged" "staged" "$(_pss claude '❯\xc2\xa0[Pasted text #3 +5 lines]')"
+assert_eq "still-staged: claude clear input -> clear (submitted)" "clear" "$(_pss claude '❯\xc2\xa0')"
+
+# ── consumer 2: _paste_input_busy (pre-paste) — IDLE=safe, OCCUPIED/INDETERMINATE=unsafe ──
+_pib() { # <tool> <region-printf_b> -> safe|unsafe
+    local _R; _R="$(printf '%b' "$2")"
+    # shellcheck disable=SC2317
+    _capture_input_region() { printf '%s' "$_R"; }
     _paste_input_busy "%1" "$1" && echo unsafe || echo safe
 }
-assert_eq "input-busy: claude empty prompt -> safe" "safe" "$(_pib claude $'───\n❯ \n───')"
-assert_eq "input-busy: claude typed text -> unsafe (protect human input)" "unsafe" "$(_pib claude $'❯ Would you go with the sep')"
-assert_eq "input-busy: claude staged token -> unsafe" "unsafe" "$(_pib claude $'❯ \n[Pasted text #1 +4 lines]')"
-assert_eq "input-busy: claude mid-generation (no bare prompt) -> unsafe" "unsafe" "$(_pib claude $'✻ Crunched for 23s')"
-assert_eq "input-busy: codex idle footer -> safe" "safe" "$(_pib codex $'› Write tests\n\n  gpt-5.5 xhigh · ~/projects/ae')"
-assert_eq "input-busy: codex mid-generation (no footer) -> unsafe" "unsafe" "$(_pib codex $'─ Worked for 2m 45s ─')"
-assert_eq "input-busy: modeled tool, no capture -> unsafe (fail-closed)" "unsafe" "$(_pib codex '')"
-# Unknown tools (gemini/opencode/shells/dummies) have no predicate -> ALLOW, so
-# fail-closed doesn't break every send to a non-claude/codex target.
-assert_eq "input-busy: unknown tool -> safe (no predicate, don't regress)" "safe" "$(_pib bash $'$ ')"
+assert_eq "input-busy: codex empty placeholder -> safe (idle)"      "safe"   "$(_pib codex '\033[1m›\033[0m \033[2mExplain this codebase\033[0m')"
+assert_eq "input-busy: codex typed -> unsafe (protect human input)" "unsafe" "$(_pib codex '\033[1m›\033[0m human draft')"
+assert_eq "input-busy: codex staged paste -> unsafe"                "unsafe" "$(_pib codex '\033[1m›\033[0m [Pasted Content 1469 chars]')"
+assert_eq "input-busy: codex mid-gen (no live prompt) -> unsafe (fail-closed)" "unsafe" "$(_pib codex '─ Worked for 2m 45s ─')"
+assert_eq "input-busy: codex unreadable -> unsafe (fail-closed)"    "unsafe" "$(_pib codex '')"
+assert_eq "input-busy: claude empty ornament -> safe (idle)"        "safe"   "$(_pib claude '❯\xc2\xa0')"
+assert_eq "input-busy: claude NBSP empty w/ border -> safe (idle)"  "safe"   "$(_pib claude '\033[38;5;244m────\033[39m\n\033[38;5;246m❯\xc2\xa0\033[39m')"
+# Ghost reads as content -> occupied -> UNSAFE (fail-closed); suggestions are disabled
+# at launch so a fresh pane shows a bare ornament (safe) — this asserts the no-clobber
+# direction holds even if the flag is ignored and a ghost leaks.
+assert_eq "input-busy: claude ghost leaked -> unsafe (fail-closed, no clobber)" "unsafe" "$(_pib claude '❯\xc2\xa0Try \"write a test for foo\"')"
+assert_eq "input-busy: claude typed -> unsafe (protect human input)" "unsafe" "$(_pib claude '❯\xc2\xa0Would you go with the sep')"
+assert_eq "input-busy: claude mid-gen (no ornament) -> unsafe"      "unsafe" "$(_pib claude '✻ Crunched for 23s')"
+assert_eq "input-busy: unknown tool -> safe (no predicate, don't regress)" "safe" "$(_pib bash 'anything')"
 
-# ── ri-3: comms-outage fixes — NBSP idle + virgin-pane ghost placeholder ──────────
-# Claude's updated TUI renders the EMPTY prompt as '❯'+U+00A0 (no-break space, bytes
-# c2 a0). GNU grep [[:space:]] does NOT match U+00A0, so pre-fix the trailing
-# [[:space:]]*$ never matched -> every claude send read as busy -> ABANDONED (a
-# fleet-wide comms outage). Normalizing NBSP->space at capture restores idle detection.
-assert_eq "input-busy: claude NBSP empty prompt (U+00A0) -> safe (idle)" "safe" "$(_pib claude $'───\n❯\xc2\xa0\n───')"
-# A virgin pane's dim GHOST placeholder ('❯ Try "…"') is NOT yet treated as idle:
-# matching it against a color-stripped whole-capture risks clobbering real input or a
-# transcript-history line (codex ri-3 BLOCKER) -> deferred to ri-4 (input-region
-# isolation). It reads as UNSAFE, so first-contact sends ABANDON loudly (re-sendable),
-# never clobber. This locks in the no-clobber direction until the safe detector lands.
-assert_eq "input-busy: claude virgin ghost placeholder -> unsafe (safe idle deferred to ri-4)" "unsafe" "$(_pib claude $'───\n❯\xc2\xa0Try \"write a test for foo\"\n───')"
-# Real human input (even starting with 'Try') stays protected.
-assert_eq "input-busy: claude typed 'Try ...' -> unsafe (protect human input)" "unsafe" "$(_pib claude $'❯ Try refactoring the parser')"
+# The claude launch DISABLES the input-box ghost suggestion (so idle==bare ornament).
+assert_eq "launch: claude env disables prompt suggestion" "1" \
+    "$([[ "$AE_SOURCE" == *'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 ${launch_cmd}'* ]] && echo 1 || echo 0)"
+# The shared sensor + region primitive are emitted into the send-path _lib (runtime).
+assert_eq "emission: _capture_input_region + _input_region_occupied in send-path _lib" "1" \
+    "$([[ "$AE_SOURCE" == *'ae_submit_pasted_message _capture_input_region _input_region_occupied _paste_still_staged'* ]] && echo 1 || echo 0)"
+# The sensor is CURSOR-anchored (geometry fix), not tail -N.
+assert_eq "geometry: region anchored on #{cursor_y}, not tail -N" "1" \
+    "$([[ "$AE_SOURCE" == *"'#{cursor_y}'"* && "$AE_SOURCE" == *'capture-pane -e -p -t "$pane" -S "$start" -E "$cy"'* ]] && echo 1 || echo 0)"
 
 # submit-verification bounded retry + LOUD failure. Stub _paste_still_staged to
 # stay staged for the first N checks; count Enter keystrokes.
@@ -4740,8 +4768,13 @@ _tps_staged() {  # modeled tool stays staged -> propagated nonzero
     # shellcheck disable=SC2317
     tmux() {
         case "$1" in
-            display-message) printf 'claude' ;;                    # pane_current_command
-            capture-pane) printf '> \n[Pasted text #2 +7 lines]\n' ;; # always staged
+            display-message)
+                case "$*" in
+                    *cursor_y*) printf '5' ;;    # cursor row (input-region anchor)
+                    *) printf 'claude' ;;        # pane_current_command
+                esac
+                ;;
+            capture-pane) printf '❯ [Pasted text #2 +7 lines]\n' ;; # staged in the input region
         esac
         return 0
     }
