@@ -1532,6 +1532,21 @@ assert_eq "lead-pair: status-left is name-only ([ae <session>] )" "[ae test-lead
 lp_status_right="$(tmux show-options -t test-leadpair -v status-right 2>/dev/null || true)"
 assert_eq "lead-pair: status-right carries path+git+watch (ae-owned)" "1" "$([[ "$lp_status_right" == "["*"#{@ae_branch_status}] #{@ae_watchdog_status}" ]] && echo 1 || echo 0)"
 assert_eq "lead-pair: layout pinned in meta (META-WINS on resume)" "lead-pair" "$(grep '^layout=' "$HOME/.ae/sessions/test-leadpair/meta" 2>/dev/null | cut -d= -f2-)"
+# send-focus regression (codex): a send to the INACTIVE seat-mate must deliver WITHOUT
+# changing the window's active pane — select-pane mid-send routed the human's in-flight
+# keystrokes into the target (acute exactly here, where lead+colead share window 0).
+lp_lead_pane="$(tmux list-panes -s -t test-leadpair -F '#{@ae_agent} #{pane_id}' 2>/dev/null | awk '$1=="dummy:lead"{print $2}')"
+tmux select-pane -t "$lp_lead_pane" 2>/dev/null || true
+"$HOME/.ae/sessions/test-leadpair/send" colead "focus-regression-ping" >/dev/null 2>&1 || true
+sleep 1
+lp_active_after="$(tmux list-panes -t test-leadpair:0 -F '#{pane_active} #{pane_id}' 2>/dev/null | awk '$1==1{print $2}')"
+# (Behavioral smoke: post-send active pane is the lead. The DISTINGUISHING guard for
+# zero-select-pane is the unit pin on the helper source — a select+restore would also
+# pass this after-the-fact check; this assert documents delivery without focus.)
+assert_eq "send-focus: active pane is the lead after send to the same-window seat-mate" "$lp_lead_pane" "$lp_active_after"
+lp_colead_pane="$(tmux list-panes -s -t test-leadpair -F '#{@ae_agent} #{pane_id}' 2>/dev/null | awk '$1=="dummy2:colead"{print $2}')"
+lp_colead_content="$(tmux capture-pane -p -t "$lp_colead_pane" 2>/dev/null | tr -d '\n')"
+assert_eq "send-focus: inactive seat-mate RECEIVED the paste" "1" "$([[ "$lp_colead_content" == *focus-regression-ping* ]] && echo 1 || echo 0)"
 # Rename regression (codex): under lead-pair the window-0 role name must SURVIVE a
 # session rename (layout fact decides — even the nastiest case, a session named 'lead'),
 # and status-left must refresh to the new name (it carries the session name now).

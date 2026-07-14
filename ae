@@ -112,33 +112,19 @@ parse_config() {
 # Last match wins — local config overrides global
 # Cached via deterministic temp file so subshells share the same parsed result.
 get_config() {
-    local cache="${XDG_RUNTIME_DIR:-/tmp}/.ae-config-cache-${UID:-0}"
-    # CONTENT-fingerprint keying, NOT mtime: mtime has 1-second resolution, so a
-    # config rewrite within the same second kept the key identical and get_config
-    # served the PREVIOUS config from cache (bit the integration suite: rapid
-    # config rewrites between tests poisoned a later session's layout/workers).
-    local fpr_main fpr_local
-    fpr_main="$(md5sum <"$CONFIG_FILE" 2>/dev/null | cut -d' ' -f1 || true)"
-    fpr_local="absent"
-    if [[ -n "${AE_LOCAL_CONFIG:-}" && -f "${AE_LOCAL_CONFIG:-}" ]]; then
-        fpr_local="$(md5sum <"$AE_LOCAL_CONFIG" 2>/dev/null | cut -d' ' -f1 || true)"
-    fi
-    local cache_key="${CONFIG_FILE}:${AE_LOCAL_CONFIG:-}:${fpr_main}:${fpr_local}"
-    if [[ ! -f "$cache" ]] || [[ "$(head -1 "$cache" 2>/dev/null)" != "#${cache_key}" ]]; then
-        # Atomic replace (temp + mv): concurrent ae processes share this cache; a
-        # truncate-then-append let a concurrent reader see a torn half-written file.
-        {
-            printf '%s\n' "#${cache_key}"
-            parse_config
-        } >"${cache}.tmp.$$"
-        mv "${cache}.tmp.$$" "$cache"
-    fi
-    local result=""
+    # NO disk cache — parse on every call. The old UID-global cache file raced:
+    # (a) mtime keying (1-second resolution) served a same-second config REWRITE
+    # stale, and (b) the check/write/read was not one transaction, so two concurrent
+    # ae invocations with DIFFERENT configs could read each other's parse (codex
+    # repro: 99/300 wrong-owner reads across 300 concurrent pairs; tmp.$$ names also
+    # collide across subshells of one parent). The config is under a kilobyte and
+    # parse_config is pure bash — direct parsing costs microseconds and cannot lie.
+    local result="" entry
     while IFS= read -r entry; do
         if [[ "$entry" == "${1}="* ]]; then
             result="${entry#*=}"
         fi
-    done <"$cache"
+    done < <(parse_config)
     printf '%s' "$result"
 }
 
@@ -4254,11 +4240,8 @@ _telegram_persist_intent() {
             END { if (in_tg && !done) print "enabled = " val }
         ' "$cfg" >"$tmp" && mv "$tmp" "$cfg"
     fi
-    # Bust the get_config cache. Its key is the config mtime (1s granularity), so
-    # a same-second write would otherwise serve a stale `enabled` — which the
-    # watchdog supervisor could act on, reviving a just-stopped bridge. Dropping the
-    # cache forces the next read (incl. the under-lock re-check) to re-parse.
-    rm -f "${XDG_RUNTIME_DIR:-/tmp}/.ae-config-cache-${UID:-0}" 2>/dev/null || true
+    # (No cache to bust: get_config parses fresh on every call — the disk cache was
+    # removed after proving both stale-mtime and cross-process wrong-owner races.)
 }
 
 # Spawn the daemon in its dedicated tmux session. Caller must have
@@ -6866,6 +6849,28 @@ _paste_still_staged() {
 # (safe) ONLY on a confident idle+empty read. Robust for claude (the exhibit
 # tool); best-effort for codex (its dim empty-placeholder is indistinguishable
 # from typed text in a color-stripped capture — NOTE for the codex reviewer).
+# Is an attached client LOOKING AT this pane with recent input activity? Supplemental
+# human-presence signal for the send defer (codex send-focus review): typing into an
+# IDLE codex is undetectable in a color-stripped capture, but a human plausibly AT the
+# pane right now is cheap to see. list-clients' #{pane_id} is the client's own active
+# pane — stronger than #{pane_active}, which only means active-in-window, not viewed.
+# #{client_activity} is the epoch of the client's last INPUT; navigation/mouse count
+# too, so false positives are safe deferrals. This cannot prove the input box is empty
+# (the busy predicate stays primary) and cannot close the check-to-paste race — it
+# narrows the codex idle-typing gap, nothing more. Grace ~4s of quiet.
+_pane_recently_viewed() {
+    local pane="$1" grace="${2:-4}" now cpane cact
+    now="$(date +%s)"
+    while IFS='|' read -r cpane cact; do
+        [[ "$cpane" == "$pane" ]] || continue
+        [[ "$cact" =~ ^[0-9]+$ ]] || continue
+        if ((now - cact < grace)); then
+            return 0 # human plausibly typing HERE right now -> defer
+        fi
+    done < <(tmux list-clients -F '#{pane_id}|#{client_activity}' 2>/dev/null || true)
+    return 1
+}
+
 _paste_input_busy() {
     local pane="$1" tool="$2" cap
     # Only claude/codex are modeled for input protection. Other tools (gemini,
@@ -7112,38 +7117,43 @@ helper_send_main() {
     ae_lock_target "$target"
 
     tool="$(ae_target_tool "$target")"
-    current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
 
+    # NO FOCUS CHANGE — ever. paste-buffer -t / send-keys -t write to the NAMED pane;
+    # focus is not part of any TUI's submission contract (codex send-focus review).
+    # select-pane here changed the window's active pane, routing the human's in-flight
+    # keystrokes into the TARGET mid-send — acute under lead-pair, where lead and
+    # colead share window 0. Only the explicit `focus` helper may select panes.
+    #
     # Protect in-progress input and avoid a busy target (delivery-bug exhibits: a
     # helper paste CLIPPED the human's half-typed question; a review paste never
-    # submitted to a busy codex). The cancel keystroke ITSELF would clobber
-    # staged or human-typed text, so inspect the input state BEFORE any cancel.
-    # Defer while unsafe (non-empty / mid-generation / unreadable — fail-closed),
-    # bounded; then LOUD failure (the LLM re-sends). No durable outbox.
-    _defer=0
-    while _paste_input_busy "$target" "$tool"; do
-        if ((_defer >= 5)); then
+    # submitted to a busy codex). The cancel keystroke ITSELF would clobber staged or
+    # human-typed text, so inspect the state BEFORE any cancel. Defer while unsafe:
+    # busy/non-empty input (fail-closed for modeled TUIs) OR a human plausibly AT the
+    # pane right now (attached client viewing it with recent input — supplemental,
+    # tool-agnostic; codex idle typing is otherwise undetectable). Bounded in-process
+    # wait (AE_SEND_DEFER_SEC, default 30s — a human mid-sentence outlasts 2s), then
+    # LOUD failure. The target flock is HELD while waiting, so competing sends and
+    # interrupts to this target queue behind us in order. No durable outbox.
+    _defer_sec="${AE_SEND_DEFER_SEC:-30}"
+    [[ "$_defer_sec" =~ ^[0-9]+$ ]] || _defer_sec=30
+    _wait_start=$SECONDS
+    while _paste_input_busy "$target" "$tool" || _pane_recently_viewed "$target"; do
+        if ((SECONDS - _wait_start >= _defer_sec)); then
             ae_unlock_target
-            echo "ae: send to ${logged_target} ABANDONED — target has unsent/human input or is busy (input never cleared). Re-send." >&2
+            echo "ae: send to ${logged_target} ABANDONED — target stayed busy / human input or attention (not clear within ${_defer_sec}s; AE_SEND_DEFER_SEC overrides). Re-send." >&2
             exit 1
         fi
         sleep 0.4
-        _defer=$((_defer + 1))
     done
 
-    # Safe now: focus, cancel (only AFTER the safety check), paste + verify.
-    tmux select-pane -t "$target"
+    # Safe now: cancel (only AFTER the safety check), paste + verify — all by -t target.
     tmux send-keys -t "$target" -X cancel 2>/dev/null || true
 
     if ! ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"; then
-        if [[ -n "$current" ]]; then tmux select-pane -t "$current" 2>/dev/null || true; fi
         ae_unlock_target
         echo "ae: send to ${logged_target} UNCONFIRMED — submit not verified. Re-send." >&2
         exit 1
     fi
-    sleep 0.3 # let target TUI process input before focus restore
-
-    if [[ -n "$current" ]]; then tmux select-pane -t "$current" 2>/dev/null || true; fi
     ae_unlock_target
     ae_emit_event "${_AE_EVENT_ACTION:-send}" "$logged_target" "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_SUMMARY:-$msg}"
 }
@@ -7591,8 +7601,8 @@ helper_interrupt_main() {
 
     ae_lock_target "$target"
 
-    current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
-    tmux select-pane -t "$target"
+    # NO FOCUS CHANGE — send-keys -t (incl. -X cancel and Escape) targets the pane
+    # without selecting it; see helper_send_main. Only `focus` selects panes.
     tmux send-keys -t "$target" -X cancel 2>/dev/null || true
     tmux send-keys -t "$target" Escape
 
@@ -7602,18 +7612,15 @@ helper_interrupt_main() {
         tool="$(ae_target_tool "$target")"
         # Mirror send: a message interrupt must NOT log success on an unconfirmed
         # submit (codex code-round finding — the "false delivered" class the send
-        # path already fixes). Restore focus, unlock, fail LOUD, emit NO event.
+        # path already fixes). Unlock, fail LOUD, emit NO event.
         if ! ae_submit_pasted_message "$target" "$tool" "$buf" "$msg"; then
-            if [[ -n "$current" ]]; then tmux select-pane -t "$current" 2>/dev/null || true; fi
             ae_unlock_target
             echo "ae: interrupt message to ${AE_RESOLVED_AGENT:-$target} UNCONFIRMED — submit not verified. Re-send." >&2
             exit 1
         fi
-        sleep 0.3 # let target TUI process input before focus restore
     fi
 
     ae_emit_event "interrupt" "${AE_RESOLVED_AGENT:-$target}" "" "$msg"
-    if [[ -n "$current" ]]; then tmux select-pane -t "$current" 2>/dev/null || true; fi
     ae_unlock_target
 }
 
@@ -9405,7 +9412,7 @@ LIBPROLOGUE
             ae_preview_text ae_extract_req_id ae_log_append ae_log_read \
             ae_target_tool ae_json_escape ae_emit_event ae_latest_state_for \
             _event_json_str _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
-            ae_submit_pasted_message _paste_still_staged _paste_input_busy \
+            ae_submit_pasted_message _paste_still_staged _paste_input_busy _pane_recently_viewed \
             command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
             ae_meta_get ae_meta_set ae_meta_unset
     } >"${AE_META}/_lib.tmp.$$"

@@ -58,41 +58,30 @@ The session's `agents` helper also lists `_events` and `_watchdog` as agents (wi
 
 ## Status bar
 
-ae splits its tmux status bar by **side**: repo context (where you are) on the left,
-watchdog health (monitoring state) on the right.
+The status bar is **owned by ae** — `_ae_apply_status_bar` bakes both halves at
+session creation, resume, rename, and `doctor --refresh`; the watchdog never rewrites
+the bar, it only feeds tmux **user options** (interpolated literally — no shell job,
+no `#()` parsing — so any branch/status text is safe with zero escaping). Shape:
 
-- **`status-left`** carries the session **location + git branch** — the repo context.
-  The path(s) the session works in (by mode) are static, set at launch and re-applied
-  by `ae doctor --refresh`; the branch + tracked-dirty marker is appended live by the
-  watchdog, which writes it to the `@ae_branch_status` tmux **user option** each cycle
-  (status-left renders it as `#{@ae_branch_status}`). A user-option value is
-  interpolated literally — no shell job, no `#()` parsing — so a branch with a `#`,
-  `)`, space, or any character is safe with zero escaping; it's empty (left falls back
-  to just the name + path) when the watchdog is off or the work dir isn't a repo. The
-  session *name* leads the segment — under `lead-pair` the window label carries a role
-  name (`0:lead`), so status-left is where the session name lives. The
-  name and the static path text are both user text in tmux format syntax and are
-  escaped — `#` → `##` (format vars) and `%` → `%%` (strftime) — so a session `a#b` or
-  a directory like `/tmp/%Y` renders verbatim.
+```text
+[ae aedev]  0:leads 1:workers 99:ae-monitor  [~/projects/clemens33/ae main*] [watch ● 2/2]
+```
 
-  ```text
-  [ae aedev ~/projects/clemens33/ae main*]                         # local: name + path + branch
-  [ae aedev ~/projects/clemens33/ae → ~/.ae/copies/aedev main*]    # copy (full): origin → copy
-  [ae aedev ~/projects/clemens33/ae ⌁ ~/.ae/worktrees/aedev feat*] # git: origin ⌁ worktree
-  ```
-
-  `$HOME` is abbreviated to `~`; long paths are truncated from the left (keeping the
-  tail) with a leading `…`. `status-left-length` is raised to fit. `main*` is the git
-  branch (or detached short commit); `*` = tracked changes
-  (`git status --porcelain --untracked-files=no`); omitted for non-git work dirs.
-
-- **`status-right`** carries only the watchdog's per-cycle **health**, rendered from
-  the `@ae_watchdog_status` user option (set by the watchdog each cycle, same
-  literal-interpolation safety as the branch):
-
-  ```text
-  [watch ● 2/2]  ckriech@host  10:42
-  ```
+- **`status-left`** is the session **name only** (`[ae <session>] `) — tmux's window
+  list renders after it over the role-named windows. The name is user text in tmux
+  format syntax and is escaped (`#` → `##`, `%` → `%%`), so a session `a#b` renders
+  verbatim.
+- **`status-right`** carries **location + git branch + watchdog health**:
+  `[<path><branch>] [watch …]`. The path(s) (by mode: local one path, copy `→`,
+  worktree `⌁`) are static escaped text; the branch + tracked-dirty marker arrives
+  live via the `@ae_branch_status` user option (watchdog, each cycle; empty when the
+  watchdog is off or the dir isn't a repo), and the health block via
+  `@ae_watchdog_status` at the very end (empty when the watchdog is off). `$HOME` is
+  abbreviated to `~`; long paths are left-truncated with a leading `…`; `main*` is
+  the branch (or detached short commit), `*` = tracked changes.
+- A **second status line** shows the focused pane's `@ae_agent`: tmux renders pane
+  borders (which carry the agent name) only in windows with 2+ panes, so a lone
+  agent in its own window would otherwise have no visible identity.
 
 The `[watch …]` bracket is watchdog health:
 
@@ -105,7 +94,8 @@ The `[watch …]` bracket is watchdog health:
 `2/2` means two watched agent panes are currently okay out of two total. Monitor
 panes such as `_watchdog` and `_events` are excluded.
 
-`watchdog stop` restores the previous `status-right`.
+`watchdog stop` unsets the `@ae_branch_status` / `@ae_watchdog_status` user options —
+the baked bar stays, its live segments simply render empty.
 
 ## Restarting
 

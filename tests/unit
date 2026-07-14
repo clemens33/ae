@@ -498,23 +498,22 @@ assert_eq "default-config: tier alias 'optimal' retired" "" "$(_dc_get agents.op
 assert_eq "default-config: tier alias 'fast' retired" "" "$(_dc_get agents.fast)"
 rm -f "$_dc_cfg"
 
-# ── get_config cache: CONTENT-keyed, not mtime-keyed (same-second-rewrite poisoning) ──
-# mtime has 1-SECOND resolution: rewriting the config within the same second kept the
-# key identical, so get_config served the PREVIOUS config from the shared disk cache.
-# Bit as: integration tests rewrite config rapidly -> a lead-solo test read the prior
-# test's layout (vertical) -> 4 assertion failures. The key must fingerprint CONTENT.
+# ── get_config: NO disk cache — every call parses fresh (cache races removed) ──────
+# The old UID-global cache file (a) served same-second config rewrites STALE (mtime
+# keying, 1s resolution — bit the integration suite: a later test read the prior
+# test's layout) and (b) raced wrong-owner across concurrent ae invocations with
+# different configs (codex repro: 99/300 cross-config reads — check/write/read was
+# not one transaction). Direct parse of the <1 KB config cannot lie.
 _gcc_tmp="$(mktemp -d)"
-_gcc_get() { CONFIG_FILE="$_gcc_tmp/config" AE_LOCAL_CONFIG="" XDG_RUNTIME_DIR="$_gcc_tmp" get_config "$1"; }
+_gcc_get() { CONFIG_FILE="$_gcc_tmp/config" AE_LOCAL_CONFIG="" get_config "$1"; }
 printf '[workspace]\nlayout = vertical\n' >"$_gcc_tmp/config"
 touch -d "2001-01-01 00:00:00" "$_gcc_tmp/config"
-assert_eq "config-cache: primed with the first value" "vertical" "$(_gcc_get workspace.layout)"
+assert_eq "config: first value read" "vertical" "$(_gcc_get workspace.layout)"
 printf '[workspace]\nlayout = lead-solo\n' >"$_gcc_tmp/config"
 touch -d "2001-01-01 00:00:00" "$_gcc_tmp/config" # SAME mtime second — only content differs
-assert_eq "config-cache: a same-mtime rewrite is served FRESH (content-keyed, not mtime)" "lead-solo" "$(_gcc_get workspace.layout)"
-# Atomic write: the cache must be written via temp + mv, never truncate-then-append —
-# concurrent ae processes share this file and a torn read yields silent empty values.
-assert_eq "config-cache: written atomically (temp + mv)" "1" \
-    "$([[ "$AE_SOURCE" == *'mv "${cache}.tmp.$$" "$cache"'* ]] && echo 1 || echo 0)"
+assert_eq "config: a same-mtime rewrite is served FRESH (no stale cache)" "lead-solo" "$(_gcc_get workspace.layout)"
+assert_eq "config: NO cross-process disk cache exists (and no md5sum core dependency)" "1" \
+    "$([[ "$AE_SOURCE" != *'.ae-config-cache'* && "$AE_SOURCE" != *'md5sum <"$CONFIG_FILE"'* ]] && echo 1 || echo 0)"
 rm -rf "$_gcc_tmp"
 
 # ── lead-default Part 2: build_ae_context slot-aware lead/worker blocks (code, NO config key) ──
@@ -3588,11 +3587,11 @@ assert_eq "tg-sup: stop returns busy if it can't get the lock" "1" \
 assert_eq "tg-sup: start runs under the lock + returns busy on contention" "1" \
     "$([[ "$AE_SOURCE" == *'flock -w 5 9 || {'*'ae telegram: busy'* && "$AE_SOURCE" == *'_telegram_persist_intent "true"'* ]] && echo 1 || echo 0)"
 
-# persist_intent also busts the get_config cache so `ae telegram status` is
-# accurate immediately after a stop (the uncached re-check above is what closes
-# the race; this keeps status coherent too).
-assert_eq "tg-sup: persist_intent busts the config cache after writing" "1" \
-    "$([[ "$AE_SOURCE" == *'rm -f "${XDG_RUNTIME_DIR:-/tmp}/.ae-config-cache-${UID:-0}"'* ]] && echo 1 || echo 0)"
+# get_config has NO disk cache anymore (fresh parse per call), so persist_intent
+# needs no cache-bust for `ae telegram status` to be immediately accurate — assert
+# the workaround stays gone along with the cache itself.
+assert_eq "tg-sup: no cache-bust needed (get_config parses fresh; cache removed)" "1" \
+    "$([[ "$AE_SOURCE" != *'rm -f "${XDG_RUNTIME_DIR:-/tmp}/.ae-config-cache'* ]] && echo 1 || echo 0)"
 
 # Behavioral regression (codex IMPORTANT): the uncached reader must strip inline
 # comments exactly like parse_config — `enabled = true # comment` is valid config
@@ -4659,6 +4658,49 @@ _abfp() {  # <slot> -> agent_bin
 assert_eq "agent-bin-for-pane: reads agent_bin.<slot> from the pane's session meta" "claude" "$(_abfp main)"
 assert_eq "agent-bin-for-pane: worker slot" "codex" "$(_abfp worker.0)"
 assert_eq "agent-bin-for-pane: unstamped (invalid slot) -> empty" "" "$(_abfp '')"
+
+# ── send-focus (codex review): NO focus change in send/interrupt, longer patience ──
+# select-pane changed the window's ACTIVE pane mid-send — the human's in-flight
+# keystrokes routed into the TARGET (acute under lead-pair: lead+colead share window
+# 0). paste-buffer/send-keys take -t; focus is not part of any TUI submission contract.
+_sf_send="$(awk '/^helper_send_main\(\) \{/{f=1} f{print} f && /^\}$/{exit}' <<<"$AE_SOURCE")"
+_sf_int="$(awk '/^helper_interrupt_main\(\) \{/{f=1} f{print} f && /^\}$/{exit}' <<<"$AE_SOURCE")"
+assert_eq "send-focus: helper_send_main issues ZERO select-pane (code, not comments)" "0" \
+    "$(grep -vE '^\s*#' <<<"$_sf_send" | grep -c 'select-pane')"
+assert_eq "send-focus: helper_interrupt_main issues ZERO select-pane (code, not comments)" "0" \
+    "$(grep -vE '^\s*#' <<<"$_sf_int" | grep -c 'select-pane')"
+# Patience: bounded in-process wait, numeric-guarded env override, 30s default.
+assert_eq "send-focus: defer bound is AE_SEND_DEFER_SEC (default 30, numeric-guarded)" "1" \
+    "$([[ "$_sf_send" == *'_defer_sec="${AE_SEND_DEFER_SEC:-30}"'* && "$_sf_send" == *'=~ ^[0-9]+$ ]] || _defer_sec=30'* ]] && echo 1 || echo 0)"
+# The wait holds the target flock (ordering): lock is taken BEFORE the defer loop.
+assert_eq "send-focus: target flock held during the wait (lock precedes defer loop)" "1" \
+    "$([[ "$_sf_send" == *'ae_lock_target "$target"'*'while _paste_input_busy'* ]] && echo 1 || echo 0)"
+# Human-presence signal joins the defer condition (supplemental, tool-agnostic).
+assert_eq "send-focus: defer also gates on _pane_recently_viewed" "1" \
+    "$([[ "$_sf_send" == *'_paste_input_busy "$target" "$tool" || _pane_recently_viewed "$target"'* ]] && echo 1 || echo 0)"
+# _pane_recently_viewed: client-at-pane with fresh activity -> defer; stale/other -> clear.
+eval "$(awk '/^_pane_recently_viewed\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_prv() {  # <client-pane> <activity-age-s> <target> -> viewed|clear
+    local _CP="$1" _AGE="$2"
+    # shellcheck disable=SC2317  # invoked indirectly by _pane_recently_viewed
+    date() { printf '1000000'; }
+    # shellcheck disable=SC2317  # invoked indirectly by _pane_recently_viewed
+    tmux() { printf '%s|%s\n' "$_CP" "$((1000000 - _AGE))"; }
+    _pane_recently_viewed "$3" && echo viewed || echo clear
+}
+assert_eq "presence: client at target pane, 1s-old activity -> viewed (defer)" "viewed" "$(_prv %5 1 %5)"
+assert_eq "presence: client at target pane, 60s-old activity -> clear" "clear" "$(_prv %5 60 %5)"
+assert_eq "presence: client at ANOTHER pane, fresh activity -> clear" "clear" "$(_prv %7 1 %5)"
+_prv_none() {
+    # shellcheck disable=SC2317  # invoked indirectly by _pane_recently_viewed
+    tmux() { :; }
+    # shellcheck disable=SC2317  # invoked indirectly by _pane_recently_viewed
+    date() { printf '1000000'; }
+    _pane_recently_viewed %5 && echo viewed || echo clear
+}
+assert_eq "presence: no clients -> clear" "clear" "$(_prv_none)"
+assert_eq "presence: emitted into the send-path _lib" "1" \
+    "$([[ "$AE_SOURCE" == *'_paste_input_busy _pane_recently_viewed'* ]] && echo 1 || echo 0)"
 
 # helper_send_main refuses a dead-shell target BEFORE the lock (fail fast, no defer).
 assert_eq "send-guard: dead-shell refusal precedes the lock" "1" \

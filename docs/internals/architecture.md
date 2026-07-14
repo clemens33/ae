@@ -62,7 +62,7 @@ The `ae` script does everything: config parsing, tmux orchestration, helper gene
 
 When you start a session, ae creates `~/.ae/sessions/<name>/` and fills it with:
 
-- **`meta`** — INI-style key/value pairs: session name, work_dir, origin, mode, per-slot agent records (`agent.<slot>` = `alias:name:session_id` and `agent_bin.<slot>` = the launched binary, for `main` / `worker.<n>` / `spawned.<n>`), captured tool session ids, status-right backup. Read on resume.
+- **`meta`** — INI-style key/value pairs: session name, work_dir, origin, mode, layout, per-slot agent records (`agent.<slot>` = `alias:name:session_id` and `agent_bin.<slot>` = the launched binary, for `main` / `worker.<n>` / `spawned.<n>`), captured tool session ids. Read on resume.
 - **`events.jsonl`** — append-only JSONL audit log. Single source of truth for messaging and request state.
 - **`memo.tsv`** — shared session memory (durable findings, decisions, handoffs).
 - **`workspace.md`** — human/agent-readable manifest of the session (regenerated on every resume).
