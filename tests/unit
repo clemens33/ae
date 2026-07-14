@@ -481,8 +481,8 @@ printf '%s\n' "$DEFAULT_CONFIG" >"$_dc_cfg"
 _dc_xdg="$(mktemp -d)"
 _dc_get() { CONFIG_FILE="$_dc_cfg" AE_LOCAL_CONFIG="" XDG_RUNTIME_DIR="$_dc_xdg" get_config "$1"; }
 # SPEC: Opus is the everyday default lead (Fable left the plans); distinct worker role names.
-assert_eq "default-config: main = opus48:lead" "opus48:lead" "$(_dc_get workspace.main)"
-assert_eq "default-config: workers = colead (worker.0 seat), builder, reviewer" "gpt56sol:colead, opus48:builder, gpt56sol:reviewer" "$(_dc_get workspace.workers)"
+assert_eq "default-config: main = fable5:lead (frontier lead, cross-model colead beside it)" "fable5:lead" "$(_dc_get workspace.main)"
+assert_eq "default-config: workers = colead (worker.0 seat) + builder" "gpt56sol:colead, opus48:builder" "$(_dc_get workspace.workers)"
 assert_eq "default-config: layout = lead-pair" "lead-pair" "$(_dc_get workspace.layout)"
 # STRICT model pins — a model-named alias must never silently run another model.
 assert_eq "default-config: opus48 pins --model opus" "1" "$([[ "$(_dc_get agents.opus48)" == *'--model opus'* ]] && echo 1 || echo 0)"
@@ -1539,22 +1539,15 @@ assert_eq "watchdog: supports start/stop/status subcommands" \
     "1" \
     "$([[ "$AE_SOURCE" == *'_watchdog_start'* && "$AE_SOURCE" == *'_watchdog_stop'* && "$AE_SOURCE" == *'_watchdog_status'* ]] && echo 1 || echo 0)"
 
-# ── watchdog status-right dedup: idempotent start (strip any prepended indicator) ──
-eval "$(awk '/^_strip_watchdog_status_prefix\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-assert_eq "wd-dedup: strip a single leading indicator" "orig text" "$(_strip_watchdog_status_prefix '#{@ae_watchdog_status} orig text')"
-assert_eq "wd-dedup: strip a DOUBLED indicator (self-heal)" "orig text" "$(_strip_watchdog_status_prefix '#{@ae_watchdog_status} #{@ae_watchdog_status} orig text')"
-assert_eq "wd-dedup: no indicator -> unchanged" "plain #(date)" "$(_strip_watchdog_status_prefix 'plain #(date)')"
-assert_eq "wd-dedup: empty -> empty" "" "$(_strip_watchdog_status_prefix '')"
-assert_eq "wd-dedup: only-indicator -> empty baseline" "" "$(_strip_watchdog_status_prefix '#{@ae_watchdog_status} ')"
-assert_eq "wd-dedup: an EMBEDDED (non-leading) marker is PRESERVED (strip is leading-only)" "keep #{@ae_watchdog_status} here" "$(_strip_watchdog_status_prefix 'keep #{@ae_watchdog_status} here')"
-# The start block must STRIP before saving the baseline AND before prepending, so a
-# re-start neither contaminates status_right_prev nor doubles the live indicator.
+# ── status-right ownership: AE bakes the bar; the watchdog NEVER rewrites it ──────
+# The old save/prepend/restore machinery (and its dedup strip) is GONE: _watchdog_start
+# must not capture, save, or set status-right — idempotence now holds by shape, and a
+# doubled indicator is structurally impossible. The watchdog only feeds user options.
 _wds_fn="$(awk '/^_watchdog_start\(\) \{/{f=1} f{print} f && /^\}/{exit}' <<<"$AE_SOURCE")"
-assert_eq "wd-dedup: start strips prev_status_right before saving the baseline" "1" \
-    "$([[ "$_wds_fn" == *'prev_status_right="$(_strip_watchdog_status_prefix "$prev_status_right")"'*'_set_meta_kv "status_right_prev"'* ]] && echo 1 || echo 0)"
-# Emission: the new pure fn must be in the watchdog _lib declare -f list (runtime needs it).
-assert_eq "wd-dedup: _strip_watchdog_status_prefix emitted into the watchdog _lib" "1" \
-    "$([[ "$AE_SOURCE" == *'_watchdog_restore_status_right _strip_watchdog_status_prefix'* ]] && echo 1 || echo 0)"
+assert_eq "status-right ownership: _watchdog_start never sets/reads status-right (code, not comments)" "0" \
+    "$(grep -vE '^\s*#' <<<"$_wds_fn" | grep -c 'status-right')"
+assert_eq "status-right ownership: save/prepend/restore machinery deleted" "0" \
+    "$(grep -c '_watchdog_restore_status_right\|_strip_watchdog_status_prefix\|status_right_prev' <<<"$AE_SOURCE")"
 
 # Root fix: _watchdog_is_running must require a live @ae_agent=_watchdog pane in
 # its OWN session (not just a live pid) before reporting running — a recycled pid
@@ -1667,8 +1660,14 @@ assert_eq "status-left: location built mode-aware (local one path, copy/worktree
 assert_eq "status-left: \$HOME abbreviated and long paths left-truncated" "1" \
     "$([[ "$AE_SOURCE" == *'_ae_abbrev_home()'* && "$AE_SOURCE" == *'_ae_trunc_left()'* ]] && echo 1 || echo 0)"
 
-assert_eq "status-left: applied via _ae_apply_status_left ([ae session path + #{@ae_branch_status}] + raised length)" "1" \
-    "$([[ "$AE_SOURCE" == *'_ae_apply_status_left()'* && "$AE_SOURCE" == *'status-left "[ae ${sess_lit} ${paths}#{@ae_branch_status}] "'* && "$AE_SOURCE" == *'status-left-length 100'* ]] && echo 1 || echo 0)"
+# Footer shape: [ae <session>] · window list · [<path><git>] [watch …] — one owner (ae).
+assert_eq "status-bar: left is name-only, right carries path+git+watch (ae-owned)" "1" \
+    "$([[ "$AE_SOURCE" == *'_ae_apply_status_bar()'* && "$AE_SOURCE" == *'status-left "[ae ${sess_lit}] "'* && "$AE_SOURCE" == *'status-right "[${paths}#{@ae_branch_status}] #{@ae_watchdog_status}"'* && "$AE_SOURCE" == *'status-right-length 100'* ]] && echo 1 || echo 0)"
+# Second status line: pane borders only render with 2+ panes, so a lone agent in its
+# own window had no visible identity — line 1 shows the active pane's @ae_agent.
+_sb_fmt1="'status-format[1]' '#[align=left] #{@ae_agent}'"
+assert_eq "status-bar: second line shows the focused pane's agent identity" "1" \
+    "$([[ "$AE_SOURCE" == *"set-option -t \"\$session\" status 2"* && "$AE_SOURCE" == *"$_sb_fmt1"* ]] && echo 1 || echo 0)"
 
 # session-shape: the SESSION NAME in status-left is user text in a tmux format context —
 # it must go through the format-literal escaper like the path does.
@@ -1676,13 +1675,13 @@ assert_eq "status-left: session name format-literal escaped" "1" \
     "$([[ "$AE_SOURCE" == *'sess_lit="$(_ae_tmux_format_literal "$session")"'* ]] && echo 1 || echo 0)"
 # session-shape: cmd_rename refreshes status-left (it now carries the session name) and
 # only renames window 0 when it still tracks the session name (lead-pair role naming).
-assert_eq "status-left: cmd_rename refreshes it after a rename" "1" \
-    "$([[ "$AE_SOURCE" == *'_ae_apply_status_left "$new_name"'* ]] && echo 1 || echo 0)"
+assert_eq "status-bar: cmd_rename refreshes it after a rename" "1" \
+    "$([[ "$AE_SOURCE" == *'_ae_apply_status_bar "$new_name"'* ]] && echo 1 || echo 0)"
 assert_eq "rename-window: window-0 rename skipped under lead-pair (layout FACT, not name inference)" "1" \
     "$([[ "$AE_SOURCE" == *'if [[ "$_ren_layout" != "lead-pair" ]]; then'* ]] && echo 1 || echo 0)"
 
-assert_eq "status-left: applied on BOTH session creation and doctor --refresh" "1" \
-    "$([[ "$AE_SOURCE" == *'_ae_apply_status_left "$SESSION"'* && "$AE_SOURCE" == *'_ae_apply_status_left "$session_name"'* ]] && echo 1 || echo 0)"
+assert_eq "status-bar: applied on BOTH session creation and doctor --refresh" "1" \
+    "$([[ "$AE_SOURCE" == *'_ae_apply_status_bar "$SESSION"'* && "$AE_SOURCE" == *'_ae_apply_status_bar "$session_name"'* ]] && echo 1 || echo 0)"
 
 # BLOCKER regression (codex): a path/branch with tmux format metachars must not
 # expand or run a status job. _ae_apply_status_left escapes via _ae_tmux_format_literal.
@@ -1713,10 +1712,10 @@ assert_eq "status-left: escaping is wired before the tmux set-option" "1" \
 # shell job, no `#()` directive parsing — so a branch/path containing `)`, `#`, a
 # space, or `$(…)` is safe with zero escaping. Assert the safe wiring + that the
 # fragile cat-directive helpers are gone.
-assert_eq "status-left: live branch via #{@ae_branch_status} user option" "1" \
-    "$([[ "$AE_SOURCE" == *'status-left "[ae ${sess_lit} ${paths}#{@ae_branch_status}] "'* ]] && echo 1 || echo 0)"
-assert_eq "watchdog: health via #{@ae_watchdog_status} user option in status-right" "1" \
-    "$([[ "$AE_SOURCE" == *'new_status_right="#{@ae_watchdog_status} '* ]] && echo 1 || echo 0)"
+assert_eq "status-bar: live branch via #{@ae_branch_status} user option (right, in-bracket)" "1" \
+    "$([[ "$AE_SOURCE" == *'status-right "[${paths}#{@ae_branch_status}] #{@ae_watchdog_status}"'* ]] && echo 1 || echo 0)"
+assert_eq "status-bar: watch health via #{@ae_watchdog_status} user option, END of the bar" "1" \
+    "$([[ "$AE_SOURCE" == *'#{@ae_branch_status}}] #{@ae_watchdog_status}"'* || "$AE_SOURCE" == *'] #{@ae_watchdog_status}"'* ]] && echo 1 || echo 0)"
 assert_eq "watchdog: status user options cleared on stop AND exit trap (clean fallback)" "1" \
     "$([[ "$AE_SOURCE" == *'-u @ae_branch_status'* && "$AE_SOURCE" == *'-u @ae_watchdog_status'* ]] && echo 1 || echo 0)"
 assert_eq "status bar: fragile #(cat <path>) directive helpers removed" "1" \

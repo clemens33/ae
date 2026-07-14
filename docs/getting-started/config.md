@@ -29,16 +29,21 @@ Register any CLI tool as an agent alias. The value is the shell command to launc
 
 | Key       | Description                                          | Default       |
 |-----------|------------------------------------------------------|---------------|
-| `main`    | `alias:name` for the primary agent                   | `opus48:lead` |
-| `workers` | Comma-separated agents launched at startup. Under `lead-pair` the FIRST worker is the colead seat | colead, builder, reviewer |
+| `main`    | `alias:name` for the primary agent                   | `fable5:lead` |
+| `workers` | Comma-separated agents launched at startup. Under `lead-pair` the FIRST worker is the colead seat | `gpt56sol:colead, opus48:builder` |
 | `layout`  | `lead-pair` (lead + colead share window 0, other workers in window 1), `lead-solo` (lead alone in window 0, workers in window 1), `vertical` (side-by-side splits), `horizontal` (stacked splits) | `lead-pair`   |
 | `copy`    | Working directory mode (see below)                   | `local`       |
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
 
 Names show in pane borders and are how agents address each other. Under `lead-pair`
-the windows carry role names (`0:lead`, `1:workers`); under `lead-solo` window 0 keeps
-the session name and only window 1 is role-named (`workers`). The session name always
-shows in the status bar (status-left).
+the windows carry role names (`0:leads`, `1:workers`); under `lead-solo` window 0 keeps
+the session name and only window 1 is role-named (`workers`).
+
+The status bar reads `[ae <session>]  0:leads 1:workers 99:ae-monitor  [<path> <git>] [watch …]`
+— session name left, the window list in the middle, path + git branch + watchdog health
+right. A second status line shows the focused pane's agent identity (pane borders only
+render in windows with two or more panes, so a lone agent would otherwise have no
+visible name).
 
 ## Copy modes
 

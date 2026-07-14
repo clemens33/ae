@@ -928,27 +928,31 @@ kill "$wdr_dummy" 2>/dev/null || true
 "$AE" end -f test-wd-root 2>/dev/null || true
 sleep 0.5
 
-# ── Test 11e: watchdog start is IDEMPOTENT — heals a doubled status indicator ──
-# The start save+prepend must strip any '#{@ae_watchdog_status} ' already present BEFORE
-# saving the baseline and prepending exactly one, so a leftover/doubled footer (from a
-# crash or a prior non-idempotent start) self-heals on the next start instead of stacking.
+# ── Test 11e: status bar is AE-OWNED — the watchdog never rewrites status-right ──
+# ae bakes '[<path><git>] [watch …]' once (_ae_apply_status_bar); the watchdog only
+# feeds the @ae_watchdog_status user option. A stop/start cycle must leave the baked
+# status-right byte-identical — the old save/prepend/restore (and its doubling bug)
+# is structurally gone. The second status line carries the focused agent's identity.
 REPO_WDD="$(setup_repo)"
-(cd "$REPO_WDD" && "$AE" --local test-wd-dedup &) 2>/dev/null
-wait_for_session "test-wd-dedup"
-WDD="$HOME/.ae/sessions/test-wd-dedup/watchdog"
+(cd "$REPO_WDD" && "$AE" --local test-wd-own &) 2>/dev/null
+wait_for_session "test-wd-own"
+WDD="$HOME/.ae/sessions/test-wd-own/watchdog"
 wd_poll "$WDD" "is running" 20 || true
+wdo_sr0="$(tmux show-options -v -t test-wd-own status-right 2>/dev/null || true)"
+assert_eq "status-bar: right is the ae-baked shape ([path…] + watch option at END)" \
+    "1" "$([[ "$wdo_sr0" == "["*"] #{@ae_watchdog_status}" ]] && echo 1 || echo 0)"
+assert_eq "status-bar: exactly ONE watch-option reference" \
+    "1" "$(grep -oF '#{@ae_watchdog_status}' <<<"$wdo_sr0" | wc -l | tr -d ' ')"
+assert_eq "status-bar: second line = focused agent identity" \
+    "1" "$([[ "$(tmux show-options -v -t test-wd-own 'status-format[1]' 2>/dev/null)" == *'#{@ae_agent}'* ]] && echo 1 || echo 0)"
 "$WDD" stop >/dev/null 2>&1 || true
 wd_poll "$WDD" "not running" 20 || true
-# Fabricate a DOUBLED leftover indicator on the live status-right, then start.
-tmux set-option -t test-wd-dedup status-right '#{@ae_watchdog_status} #{@ae_watchdog_status} BASE' 2>/dev/null || true
 "$WDD" start >/dev/null 2>&1 &
 wd_poll "$WDD" "is running" 20 || true
-wdd_sr="$(tmux show-options -v -t test-wd-dedup status-right 2>/dev/null || true)"
-assert_eq "wd-dedup: start heals a doubled indicator to exactly one" \
-    "1" "$(grep -oF '#{@ae_watchdog_status}' <<<"$wdd_sr" | wc -l | tr -d ' ')"
-wdd_base="$(grep '^status_right_prev=' "$HOME/.ae/sessions/test-wd-dedup/meta" 2>/dev/null | cut -d= -f2- || true)"
-assert_eq "wd-dedup: saved baseline is clean (no indicator)" "BASE" "$wdd_base"
-"$AE" end -f test-wd-dedup 2>/dev/null || true
+wdo_sr1="$(tmux show-options -v -t test-wd-own status-right 2>/dev/null || true)"
+assert_eq "status-bar: watchdog stop/start leaves status-right byte-identical" \
+    "$wdo_sr0" "$wdo_sr1"
+"$AE" end -f test-wd-own 2>/dev/null || true
 sleep 0.5
 
 # ── goal helper: set → list → survives resume ────────────────────────
@@ -1516,15 +1520,17 @@ lp_win0_name="$(tmux list-windows -t test-leadpair -F '#{window_index} #{window_
 lp_win1_name="$(tmux list-windows -t test-leadpair -F '#{window_index} #{window_name}' 2>/dev/null | awk '$1==1{print $2}')"
 assert_eq "lead-pair: window 0 holds lead + colead (2 panes)" "2" "$lp_win0_panes"
 assert_eq "lead-pair: window 1 holds builder + reviewer (2 panes)" "2" "$lp_win1_panes"
-assert_eq "lead-pair: window 0 named 'lead' (role literal)" "lead" "$lp_win0_name"
+assert_eq "lead-pair: window 0 named 'leads' (role literal)" "leads" "$lp_win0_name"
 assert_eq "lead-pair: window 1 named 'workers' (role literal)" "workers" "$lp_win1_name"
 lp_colead_slot="$(tmux list-panes -s -t test-leadpair -F '#{@ae_agent} #{@ae_slot}' 2>/dev/null | awk '$1=="dummy2:colead"{print $2}')"
 assert_eq "lead-pair: colead pane carries @ae_slot=worker.0" "worker.0" "$lp_colead_slot"
 lp_colead_win="$(tmux list-panes -s -t test-leadpair -F '#{@ae_agent} #{window_index}' 2>/dev/null | awk '$1=="dummy2:colead"{print $2}')"
 assert_eq "lead-pair: colead pane lives in window 0 (the lead's window)" "0" "$lp_colead_win"
-# status-left carries the session name (session-shape) — [ae <session> <path>…]
+# Footer: left = name-only '[ae <session>] '; right = '[<path><git>] [watch …]'.
 lp_status_left="$(tmux show-options -t test-leadpair -v status-left 2>/dev/null || true)"
-assert_eq "lead-pair: status-left carries the session name" "1" "$([[ "$lp_status_left" == "[ae test-leadpair "* ]] && echo 1 || echo 0)"
+assert_eq "lead-pair: status-left is name-only ([ae <session>] )" "[ae test-leadpair] " "$lp_status_left"
+lp_status_right="$(tmux show-options -t test-leadpair -v status-right 2>/dev/null || true)"
+assert_eq "lead-pair: status-right carries path+git+watch (ae-owned)" "1" "$([[ "$lp_status_right" == "["*"#{@ae_branch_status}] #{@ae_watchdog_status}" ]] && echo 1 || echo 0)"
 assert_eq "lead-pair: layout pinned in meta (META-WINS on resume)" "lead-pair" "$(grep '^layout=' "$HOME/.ae/sessions/test-leadpair/meta" 2>/dev/null | cut -d= -f2-)"
 # Rename regression (codex): under lead-pair the window-0 role name must SURVIVE a
 # session rename (layout fact decides — even the nastiest case, a session named 'lead'),
@@ -1532,9 +1538,9 @@ assert_eq "lead-pair: layout pinned in meta (META-WINS on resume)" "lead-pair" "
 "$AE" rename test-leadpair lead >/dev/null 2>&1 || true
 "$AE" rename lead test-leadpair2 >/dev/null 2>&1 || true
 lp2_win0_name="$(tmux list-windows -t test-leadpair2 -F '#{window_index} #{window_name}' 2>/dev/null | awk '$1==0{print $2}')"
-assert_eq "lead-pair rename: window 0 keeps role name 'lead' (survives rename, even session named 'lead')" "lead" "$lp2_win0_name"
+assert_eq "lead-pair rename: window 0 keeps role name 'leads' (survives rename, even session named 'lead')" "leads" "$lp2_win0_name"
 lp2_status_left="$(tmux show-options -t test-leadpair2 -v status-left 2>/dev/null || true)"
-assert_eq "lead-pair rename: status-left refreshed to the new session name" "1" "$([[ "$lp2_status_left" == "[ae test-leadpair2 "* ]] && echo 1 || echo 0)"
+assert_eq "lead-pair rename: status-left refreshed to the new session name" "[ae test-leadpair2] " "$lp2_status_left"
 "$AE" end -f test-leadpair2 >/dev/null 2>&1 || true
 "$AE" end -f test-leadpair >/dev/null 2>&1 || true
 mv "$HOME/.ae/config.ls-bak" "$HOME/.ae/config"

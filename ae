@@ -50,7 +50,7 @@ DEFAULT_CONFIG='[agents]
 # a glance. STRICT pins (never --model best) — a model-named alias must not silently run a
 # different model; that would make the name lie and blind the model-drift alarm.
 opus48 = "claude --permission-mode bypassPermissions --model opus --effort xhigh"
-# fable5 = PREMIUM tier — high-stakes sessions only (frontier where the edge pays).
+# fable5 = frontier lead tier (the default session lead; pair it with a cross-model colead).
 fable5 = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
 sonnet5 = "claude --permission-mode bypassPermissions --model sonnet --effort low"
 gpt56sol = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
@@ -62,9 +62,9 @@ opencode = "opencode"
 # The lead delegates by rule (see docs/reference/delegation.md — spawn sonnet5:* / gpt56luna:*
 # for chores). Distinct worker role names avoid the duplicate-name dedup churn. Worker ORDER
 # matters under lead-pair: the FIRST worker (worker.0) is the COLEAD seat — a cross-model
-# judgment partner sharing window 0 with the lead; builder/reviewer live in the workers window.
-main = opus48:lead
-workers = gpt56sol:colead, opus48:builder, gpt56sol:reviewer
+# judgment partner sharing the leads window (0:leads); builders live in 1:workers.
+main = fable5:lead
+workers = gpt56sol:colead, opus48:builder
 layout = lead-pair
 watchdog = true'
 
@@ -568,7 +568,12 @@ _ae_tmux_format_literal() {
 # both halves of the bar in sync. server="" uses the ambient tmux (the wrapped
 # server at launch); a non-empty server (refresh path, read from meta) targets it
 # explicitly via -L.
-_ae_apply_status_left() {
+# Apply ae's status BAR to a session — both halves, one owner (ae; the watchdog only
+# feeds user options). Shape: [ae <session>]  0:leads 1:workers 99:ae-monitor  [<path> <git>] [watch …]
+#   left   = [ae <session>]           (name only — the window list renders after it)
+#   middle = tmux's native window list (role-named windows under lead-pair/lead-solo)
+#   right  = [<path><git>] [watch …]  (path static; git + watch via user options)
+_ae_apply_status_bar() {
     local session="$1" mode="$2" origin="$3" work_dir="$4" server="${5:-}"
     local _t=(tmux)
     [[ -n "$server" ]] && _t=(command tmux -L "$server")
@@ -579,14 +584,26 @@ _ae_apply_status_left() {
     # the path (a name with '#' would otherwise open a format/#() directive). With the
     # name in status-left, window 0 is free to carry a role name under lead-pair.
     sess_lit="$(_ae_tmux_format_literal "$session")"
-    # The path is static; the live git branch + tracked-dirty marker is appended via
-    # the @ae_branch_status tmux user option, which the watchdog sets each cycle. A
-    # user-option value is interpolated literally — NOT re-expanded and not parsed for
-    # directives — so a branch/path with `)`, `#`, spaces, or shell metacharacters is
-    # harmless (no #() command, no shell). Empty (watchdog off / non-git) falls back to
-    # just the path. The static path text is #-escaped above (it sits in format text).
-    "${_t[@]}" set-option -t "$session" status-left "[ae ${sess_lit} ${paths}#{@ae_branch_status}] " 2>/dev/null || true
-    "${_t[@]}" set-option -t "$session" status-left-length 100 2>/dev/null || true
+    "${_t[@]}" set-option -t "$session" status-left "[ae ${sess_lit}] " 2>/dev/null || true
+    "${_t[@]}" set-option -t "$session" status-left-length 40 2>/dev/null || true
+    # status-right is OWNED BY AE, baked once here — the watchdog never rewrites it
+    # (it only sets/unsets the user options below, so there is nothing to save,
+    # prepend, restore, or dedup). The path is static #-escaped text; the live parts
+    # come via user options, which tmux interpolates LITERALLY — not re-expanded, not
+    # parsed for directives — so branch names / status text with ), #, spaces, or
+    # shell metacharacters are harmless (no #() command, no shell):
+    #   @ae_branch_status   ' <branch><dirty>' — watchdog, each cycle (empty when off)
+    #   @ae_watchdog_status '[watch <glyph> a/t]' — watchdog health (empty when off)
+    "${_t[@]}" set-option -t "$session" status-right "[${paths}#{@ae_branch_status}] #{@ae_watchdog_status}" 2>/dev/null || true
+    "${_t[@]}" set-option -t "$session" status-right-length 100 2>/dev/null || true
+    "${_t[@]}" set-option -t "$session" status-interval 5 2>/dev/null || true
+    # SECOND status line: the focused pane's agent identity. tmux renders pane borders
+    # (which carry #{@ae_agent}) only in windows with 2+ panes — a lone agent in its own
+    # window (lead-solo's lead, a single worker, spawned agents) had NO visible identity.
+    # Line 1 shows the active pane's @ae_agent (user option -> interpolated literally,
+    # injection-safe) so 'who am I looking at' is always answered, any pane count.
+    "${_t[@]}" set-option -t "$session" status 2 2>/dev/null || true
+    "${_t[@]}" set-option -t "$session" 'status-format[1]' '#[align=left] #{@ae_agent}' 2>/dev/null || true
 }
 
 # Build ae workspace context string (shared by inject_ae_context and initial prompt fallback)
@@ -2658,7 +2675,7 @@ sync_existing_session_assets() {
     # session isn't running. Targets the session's own tmux server (from meta).
     local server
     server="$(read_session_meta "$session_name" tmux_server)"
-    _ae_apply_status_left "$session_name" "$mode" "$origin" "$work_dir" "$server"
+    _ae_apply_status_bar "$session_name" "$mode" "$origin" "$work_dir" "$server"
 
     # Cycle a RUNNING watchdog so refreshed helper code actually goes live. The
     # running watchdog keeps its already-loaded body until restarted (refresh only
@@ -5431,7 +5448,7 @@ cmd_rename() {
     tmux rename-session -t "$old_name" "$new_name"
 
     # 1b. Rename the main window to match — but NOT under lead-pair, where window 0
-    # carries the ROLE name 'lead' (the session name lives in status-left) and must
+    # carries the ROLE name 'leads' (the session name lives in status-left) and must
     # survive a rename. Decide by the LAYOUT FACT from meta, never by comparing the
     # window name to the session name — a session literally named 'lead' would fool
     # a name check (codex session-shape finding). Meta hasn't moved yet at this step.
@@ -5460,7 +5477,7 @@ cmd_rename() {
         main_pane="$(grep '^main_pane=' "${new_meta}/meta" 2>/dev/null | cut -d= -f2- || true)"
         regenerate_manifest "$new_name" "${work_dir:-.}" "${origin:-.}" "${mode:-local}" "${main_pane:-%0}" "$new_meta"
         # 4b. Refresh status-left — it carries the SESSION NAME now, which just changed.
-        _ae_apply_status_left "$new_name" "${mode:-local}" "${origin:-.}" "${work_dir:-.}"
+        _ae_apply_status_bar "$new_name" "${mode:-local}" "${origin:-.}" "${work_dir:-.}"
     fi
 
     echo "Renamed '${old_name}' → '${new_name}'"
@@ -7924,28 +7941,6 @@ _watchdog_reap_legacy() {
     _watchdog_reap_legacy_one "loop"
 }
 
-# Restore status-right to the value saved before a watchdog (legacy or current)
-# modified it, then clear the saved keys. Shared by stop (final restore) and start
-# (to undo a stale/legacy '#(cat .*.status)' hook BEFORE capturing a fresh
-# baseline — otherwise start would re-save the polluted value). No-op when nothing
-# was saved. If was_session=true the saved value was an explicit session override
-# and is restored verbatim; otherwise we unset our override so the session falls
-# back to whatever the global value is *now*.
-_watchdog_restore_status_right() {
-    grep -q '^status_right_prev=' "$META_DIR/meta" 2>/dev/null || return 0
-    local prev was_session
-    prev="$(grep '^status_right_prev=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
-    was_session="$(grep '^status_right_was_session=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
-    if [[ "$was_session" == "true" ]]; then
-        tmux set-option -t "$_AE_SESSION" status-right "$prev" 2>/dev/null || true
-    else
-        tmux set-option -u -t "$_AE_SESSION" status-right 2>/dev/null || true
-    fi
-    tmux set-option -u -t "$_AE_SESSION" status-interval 2>/dev/null || true
-    _unset_meta_kv "status_right_prev"
-    _unset_meta_kv "status_right_was_session"
-}
-
 _watchdog_stop() {
     # Reap a pre-rename watchdog first (see _watchdog_reap_legacy). Note whether one
     # was present so we still report "stopped" even if no current watchdog ran.
@@ -7972,9 +7967,6 @@ _watchdog_stop() {
         stopped="yes"
     fi
 
-    # Restore status-right (no-op if nothing was saved). The saved meta keys are
-    # shared between the legacy and current watchdog, so this covers both.
-    _watchdog_restore_status_right
     if [[ "$stopped" == "yes" || "$had_legacy" == "yes" ]]; then
         echo "Watchdog stopped."
     else
@@ -7993,19 +7985,6 @@ _watchdog_status() {
     exit 0
 }
 
-# Strip every leading '#{@ae_watchdog_status} ' from a status-right value. Makes the
-# watchdog start IDEMPOTENT: a re-start (or an already-doubled footer) must not stack a
-# second indicator or save a contaminated baseline. Pure; result on stdout. The while-loop
-# self-heals an already-doubled footer on the next start.
-_strip_watchdog_status_prefix() {
-    local s="$1"
-    while [[ "$s" == '#{@ae_watchdog_status} '* ]]; do
-        s="${s#'#{@ae_watchdog_status} '}"
-    done
-    printf '%s' "$s"
-    return 0
-}
-
 _watchdog_start() {
     # A pre-rename watchdog may still be running under legacy artifacts after an
     # upgrade + refresh (helpers are rewritten but the running watchdog is not
@@ -8018,11 +7997,6 @@ _watchdog_start() {
         _set_meta_watchdog "true"
         exit 0
     fi
-    # No current watchdog is running. Undo any stale '#(cat .*.status)' status-right
-    # hook left by a reaped legacy watchdog or an unclean prior start — restoring the
-    # saved original BEFORE we capture the fresh baseline below, so we never re-save
-    # a polluted value.
-    _watchdog_restore_status_right
     # Make sure the ae-monitor window with the _events pane exists; insert the
     # _watchdog pane above it so the visual order stays watchdog-on-top / events-below.
     _monitor_ensure_events_pane || exit 1
@@ -8036,31 +8010,10 @@ _watchdog_start() {
     tmux select-pane -t "$watchdog_pane" -T "ae watchdog" 2>/dev/null || true
     # Read-only: disable input on the watchdog pane (events pane was already disabled).
     tmux select-pane -t "$watchdog_pane" -d 2>/dev/null || true
-    # Capture the current effective status-right and track whether it came from a
-    # session-level override or the global default. We must distinguish those so
-    # _watchdog_stop can restore correctly even if the global value changes mid-run.
-    local prev_status_right was_session
-    prev_status_right="$(tmux show-options -v -t "$_AE_SESSION" status-right 2>/dev/null || true)"
-    if [[ -n "$prev_status_right" ]]; then
-        was_session="true"
-    else
-        prev_status_right="$(tmux show-options -gv status-right 2>/dev/null || true)"
-        was_session="false"
-    fi
-    # Idempotent: drop any watchdog indicator ALREADY prepended (a prior start, or a
-    # doubled footer) so the SAVED baseline is clean and we prepend exactly one below.
-    # Without this, a re-start saves '#{@ae_watchdog_status} <orig>' as the baseline AND
-    # stacks a second indicator on the live status-right.
-    prev_status_right="$(_strip_watchdog_status_prefix "$prev_status_right")"
-    # Persist alongside meta via the locked helper to avoid clobbering concurrent writers
-    _set_meta_kv "status_right_prev" "$prev_status_right"
-    _set_meta_kv "status_right_was_session" "$was_session"
-    # Prepend the watchdog health indicator to the existing status-right. It reads the
-    # @ae_watchdog_status tmux user option (set by the loop each cycle) — no #() shell
-    # job, no path embedded in the format, so nothing to quote or escape.
-    local new_status_right="#{@ae_watchdog_status} ${prev_status_right}"
-    tmux set-option -t "$_AE_SESSION" status-right "$new_status_right" 2>/dev/null || true
-    tmux set-option -t "$_AE_SESSION" status-interval 5 2>/dev/null || true
+    # status-right is OWNED BY AE (_ae_apply_status_bar bakes '[path git] [watch …]' with
+    # the #{@ae_watchdog_status} reference at the END). The watchdog never rewrites the
+    # bar — it only feeds the user option each cycle — so there is nothing to capture,
+    # save, prepend, restore, or dedup here, and start/stop are idempotent by shape.
     _set_meta_watchdog "true"
     echo "Watchdog started in hidden ae-monitor window. Use 'peek _watchdog' or 'peek _events' to inspect."
     exit 0
@@ -8235,7 +8188,7 @@ _watchdog_branch_segment() {
 }
 
 # Live status is pushed into tmux user options, read by the bars as
-# #{@ae_branch_status} (status-LEFT, after the static path) and #{@ae_watchdog_status}
+# #{@ae_branch_status} (status-RIGHT, after the static path) and #{@ae_watchdog_status}
 # (status-RIGHT health). User-option values are interpolated literally — no shell, no
 # #() parsing — so a branch/path with spaces, ), #, etc. is safe with no escaping.
 # Cleared on exit so the bars fall back cleanly (left → just the path).
@@ -9177,7 +9130,7 @@ tmux set-option -t "$SESSION" focus-events on 2>/dev/null || true
 tmux set-option -t "$SESSION" history-limit 50000
 tmux set-option -t "$SESSION" pane-border-status top
 tmux set-option -t "$SESSION" pane-border-format " #{@ae_agent} "
-_ae_apply_status_left "$SESSION" "$COPY_MODE" "$ORIGIN_DIR" "$WORK_DIR"
+_ae_apply_status_bar "$SESSION" "$COPY_MODE" "$ORIGIN_DIR" "$WORK_DIR"
 tmux set-option -t "$SESSION" automatic-rename off
 tmux rename-window -t "$SESSION" "$(_ae_tmux_format_literal "$SESSION")"
 
@@ -9240,7 +9193,7 @@ fi
 # lead-pair: window 0 carries the ROLE name (the session name lives in status-left now);
 # window 1 exists only with 2+ workers. cmd_rename preserves a role-named window 0.
 if [[ "$LAYOUT" == "lead-pair" ]]; then
-    tmux rename-window -t "${PANE_IDS[0]}" "lead" 2>/dev/null || true
+    tmux rename-window -t "${PANE_IDS[0]}" "leads" 2>/dev/null || true
     if ((${#WORKER_CMDS[@]} > 1)); then
         tmux rename-window -t "${PANE_IDS[2]}" "workers" 2>/dev/null || true
     fi
@@ -9333,8 +9286,6 @@ AE_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 # canonical 'watchdog=' key, falling back to the legacy 'loop=' key so a session
 # created before the rename keeps its on/off setting across resume.
 PRESERVED_WATCHDOG=""
-PRESERVED_STATUS_RIGHT_PREV=""
-PRESERVED_STATUS_RIGHT_WAS_SESSION=""
 PRESERVED_SESSION_ID=""
 PRESERVED_GOAL=""
 if [[ -f "${AE_META}/meta" ]]; then
@@ -9343,8 +9294,6 @@ if [[ -f "${AE_META}/meta" ]]; then
     # absent (matches the runtime read order). A first-line-wins grep would let a
     # 'loop=' that happens to sit above 'watchdog=' override the canonical value.
     [[ -n "$PRESERVED_WATCHDOG" ]] || PRESERVED_WATCHDOG="$(grep '^loop=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    PRESERVED_STATUS_RIGHT_PREV="$(grep '^status_right_prev=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
-    PRESERVED_STATUS_RIGHT_WAS_SESSION="$(grep '^status_right_was_session=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
     PRESERVED_SESSION_ID="$(grep '^session_id=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
     PRESERVED_GOAL="$(grep '^goal=' "${AE_META}/meta" 2>/dev/null | head -1 | cut -d= -f2- || true)"
 fi
@@ -9379,8 +9328,6 @@ EOF
 case "$META_AGENT_CFG" in
     true | 1 | yes | on) echo "meta_agent=true" >>"${AE_META}/meta" ;;
 esac
-[[ -n "$PRESERVED_STATUS_RIGHT_PREV" ]] && echo "status_right_prev=${PRESERVED_STATUS_RIGHT_PREV}" >>"${AE_META}/meta"
-[[ -n "$PRESERVED_STATUS_RIGHT_WAS_SESSION" ]] && echo "status_right_was_session=${PRESERVED_STATUS_RIGHT_WAS_SESSION}" >>"${AE_META}/meta"
 for i in "${!WORKER_CMDS[@]}"; do
     echo "agent.worker.${i}=${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]}:${WORKER_SESSION_IDS[$i]}" >>"${AE_META}/meta"
     echo "agent_bin.worker.${i}=$(extract_binary_from_cmd "${WORKER_CMDS[$i]}")" >>"${AE_META}/meta"
@@ -9725,7 +9672,7 @@ source "$(cd "$(dirname "$0")" && pwd)/_lib"
 WDPROLOGUE
         declare -f _watchdog_is_running _set_meta_kv _unset_meta_kv _set_meta_watchdog \
             _monitor_find_pane _monitor_ensure_events_pane _watchdog_ensure_monitor _watchdog_reap_legacy_one \
-            _watchdog_reap_legacy _watchdog_restore_status_right _strip_watchdog_status_prefix _watchdog_stop _watchdog_status \
+            _watchdog_reap_legacy _watchdog_stop _watchdog_status \
             _watchdog_start _last_event_age _latest_relevant_event _agent_quiet_reason \
             _quiet_pane_decision _watchdog_meta_value _watchdog_trim _watchdog_git \
             _watchdog_branch_segment _watchdog_set_status _watchdog_log _pane_has_descendant_named \
