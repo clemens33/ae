@@ -945,6 +945,14 @@ assert_eq "status-bar: exactly ONE watch-option reference" \
     "1" "$(grep -oF '#{@ae_watchdog_status}' <<<"$wdo_sr0" | wc -l | tr -d ' ')"
 assert_eq "status-bar: second line = focused agent identity" \
     "1" "$([[ "$(tmux show-options -v -t test-wd-own 'status-format[1]' 2>/dev/null)" == *'#{@ae_agent}'* ]] && echo 1 || echo 0)"
+# Array-shadowing regression: session-scope [1] alone EMPTIES line 0 (tmux array
+# options don't inherit per-index) — the standard bar must both exist at session
+# scope AND actually RENDER non-empty (the live exhibit was two blank green lines).
+assert_eq "status-bar: line 0 (standard bar) present at session scope" \
+    "1" "$([[ -n "$(tmux show-options -v -t test-wd-own 'status-format[0]' 2>/dev/null)" ]] && echo 1 || echo 0)"
+wdo_line0="$(tmux display-message -p -t test-wd-own:0 '#{T:status-format[0]}' 2>/dev/null || true)"
+assert_eq "status-bar: line 0 RENDERS non-empty (bar visible, not a blank line)" \
+    "1" "$([[ -n "$wdo_line0" && "$wdo_line0" == *"test-wd-own"* ]] && echo 1 || echo 0)"
 "$WDD" stop >/dev/null 2>&1 || true
 wd_poll "$WDD" "not running" 20 || true
 "$WDD" start >/dev/null 2>&1 &

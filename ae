@@ -589,6 +589,16 @@ _ae_apply_status_bar() {
     # Line 1 shows the active pane's @ae_agent (user option -> interpolated literally,
     # injection-safe) so 'who am I looking at' is always answered, any pane count.
     "${_t[@]}" set-option -t "$session" status 2 2>/dev/null || true
+    # tmux ARRAY options do NOT inherit per-index: setting session-scope
+    # status-format[1] alone shadows the WHOLE global array, leaving index 0 (the
+    # standard bar: status-left + window list + status-right) EMPTY at session scope
+    # — the bar renders as a blank line (live exhibit: the first session-shape
+    # launch). Copy the global [0] into the session alongside our [1].
+    local _fmt0
+    _fmt0="$("${_t[@]}" show-options -gv 'status-format[0]' 2>/dev/null || true)"
+    if [[ -n "$_fmt0" ]]; then
+        "${_t[@]}" set-option -t "$session" 'status-format[0]' "$_fmt0" 2>/dev/null || true
+    fi
     "${_t[@]}" set-option -t "$session" 'status-format[1]' '#[align=left] #{@ae_agent}' 2>/dev/null || true
 }
 

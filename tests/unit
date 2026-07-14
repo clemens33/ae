@@ -1667,6 +1667,12 @@ assert_eq "status-bar: left is name-only, right carries path+git+watch (ae-owned
 _sb_fmt1="'status-format[1]' '#[align=left] #{@ae_agent}'"
 assert_eq "status-bar: second line shows the focused pane's agent identity" "1" \
     "$([[ "$AE_SOURCE" == *"set-option -t \"\$session\" status 2"* && "$AE_SOURCE" == *"$_sb_fmt1"* ]] && echo 1 || echo 0)"
+# tmux ARRAY options do not inherit per-index: session-scope status-format[1] alone
+# shadows the whole global array and line 0 (the standard bar) renders EMPTY (live
+# exhibit: first session-shape launch showed two blank green lines). The template
+# must copy the global [0] into the session BEFORE setting [1].
+assert_eq "status-bar: global status-format[0] copied to session scope (array-shadowing fix)" "1" \
+    "$([[ "$AE_SOURCE" == *"show-options -gv 'status-format[0]'"* && "$AE_SOURCE" == *"set-option -t \"\$session\" 'status-format[0]' \"\$_fmt0\""* ]] && echo 1 || echo 0)"
 
 # session-shape: the SESSION NAME in status-left is user text in a tmux format context —
 # it must go through the format-literal escaper like the path does.
