@@ -6816,6 +6816,25 @@ ae_find_request() {
     return 1
 }
 
+# Capture the pane's INPUT REGION with SGR escape sequences PRESERVED (capture-pane
+# -e), anchored at the CURSOR ROW (#{cursor_y}) rather than tail -N. tail -N is
+# geometry-blind: a top-anchored TUI input box can sit far above the pane bottom, so
+# a fixed bottom slice can miss the live input entirely (and catch transcript echo
+# instead — the F4 false-positive class). The cursor sits on the live input line;
+# capturing [cursor_y-1 .. cursor_y] returns the input line plus the box-top border
+# above it, which carries the prompt ornament and the styled content the predicates
+# read. ONE sensor, TWO consumers (_paste_input_busy pre-paste, _paste_still_staged
+# post-submit). FAIL-CLOSED: no cursor / unreadable -> empty output; both callers
+# treat empty as "cannot confirm safe" (busy / still-staged), never as idle/clear.
+_capture_input_region() {
+    local pane="$1" cy start
+    cy="$(tmux display-message -p -t "$pane" '#{cursor_y}' 2>/dev/null || true)"
+    [[ "$cy" =~ ^[0-9]+$ ]] || return 0 # no cursor row -> empty -> fail-closed at caller
+    start=$((cy > 0 ? cy - 1 : 0))
+    tmux capture-pane -e -p -t "$pane" -S "$start" -E "$cy" 2>/dev/null || true
+    return 0
+}
+
 # Is our pasted message STILL STAGED (unsent) in the target's input box? Return
 # 0 (staged) only on a POSITIVE detection so an unverifiable case degrades to
 # "submitted" (non-regressive: no worse than the old fire-and-forget), never a
@@ -9626,7 +9645,7 @@ LIBPROLOGUE
             ae_preview_text ae_extract_req_id ae_log_append ae_log_read \
             ae_target_tool ae_json_escape ae_emit_event ae_latest_state_for \
             _event_json_str _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
-            ae_submit_pasted_message _paste_still_staged _paste_input_busy _pane_recently_viewed \
+            ae_submit_pasted_message _capture_input_region _paste_still_staged _paste_input_busy _pane_recently_viewed \
             command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
             ae_meta_get ae_meta_set ae_meta_unset
     } >"${AE_META}/_lib.tmp.$$"
