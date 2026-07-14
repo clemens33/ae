@@ -498,6 +498,25 @@ assert_eq "default-config: tier alias 'optimal' retired" "" "$(_dc_get agents.op
 assert_eq "default-config: tier alias 'fast' retired" "" "$(_dc_get agents.fast)"
 rm -f "$_dc_cfg"
 
+# ── get_config cache: CONTENT-keyed, not mtime-keyed (same-second-rewrite poisoning) ──
+# mtime has 1-SECOND resolution: rewriting the config within the same second kept the
+# key identical, so get_config served the PREVIOUS config from the shared disk cache.
+# Bit as: integration tests rewrite config rapidly -> a lead-solo test read the prior
+# test's layout (vertical) -> 4 assertion failures. The key must fingerprint CONTENT.
+_gcc_tmp="$(mktemp -d)"
+_gcc_get() { CONFIG_FILE="$_gcc_tmp/config" AE_LOCAL_CONFIG="" XDG_RUNTIME_DIR="$_gcc_tmp" get_config "$1"; }
+printf '[workspace]\nlayout = vertical\n' >"$_gcc_tmp/config"
+touch -d "2001-01-01 00:00:00" "$_gcc_tmp/config"
+assert_eq "config-cache: primed with the first value" "vertical" "$(_gcc_get workspace.layout)"
+printf '[workspace]\nlayout = lead-solo\n' >"$_gcc_tmp/config"
+touch -d "2001-01-01 00:00:00" "$_gcc_tmp/config" # SAME mtime second — only content differs
+assert_eq "config-cache: a same-mtime rewrite is served FRESH (content-keyed, not mtime)" "lead-solo" "$(_gcc_get workspace.layout)"
+# Atomic write: the cache must be written via temp + mv, never truncate-then-append —
+# concurrent ae processes share this file and a torn read yields silent empty values.
+assert_eq "config-cache: written atomically (temp + mv)" "1" \
+    "$([[ "$AE_SOURCE" == *'mv "${cache}.tmp.$$" "$cache"'* ]] && echo 1 || echo 0)"
+rm -rf "$_gcc_tmp"
+
 # ── lead-default Part 2: build_ae_context slot-aware lead/worker blocks (code, NO config key) ──
 _lead_ctx="$(CONFIG_FILE=/dev/null build_ae_context "/tmp/ae" "sess" "/work" "main")"
 _worker_ctx="$(CONFIG_FILE=/dev/null build_ae_context "/tmp/ae" "sess" "/work" "worker.0")"

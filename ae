@@ -113,13 +113,25 @@ parse_config() {
 # Cached via deterministic temp file so subshells share the same parsed result.
 get_config() {
     local cache="${XDG_RUNTIME_DIR:-/tmp}/.ae-config-cache-${UID:-0}"
-    local mtime_main mtime_local
-    mtime_main="$(stat -c %Y "$CONFIG_FILE" 2>/dev/null || echo 0)"
-    mtime_local="$(stat -c %Y "${AE_LOCAL_CONFIG:-/dev/null}" 2>/dev/null || echo 0)"
-    local cache_key="${CONFIG_FILE}:${AE_LOCAL_CONFIG:-}:${mtime_main}:${mtime_local}"
+    # CONTENT-fingerprint keying, NOT mtime: mtime has 1-second resolution, so a
+    # config rewrite within the same second kept the key identical and get_config
+    # served the PREVIOUS config from cache (bit the integration suite: rapid
+    # config rewrites between tests poisoned a later session's layout/workers).
+    local fpr_main fpr_local
+    fpr_main="$(md5sum <"$CONFIG_FILE" 2>/dev/null | cut -d' ' -f1 || true)"
+    fpr_local="absent"
+    if [[ -n "${AE_LOCAL_CONFIG:-}" && -f "${AE_LOCAL_CONFIG:-}" ]]; then
+        fpr_local="$(md5sum <"$AE_LOCAL_CONFIG" 2>/dev/null | cut -d' ' -f1 || true)"
+    fi
+    local cache_key="${CONFIG_FILE}:${AE_LOCAL_CONFIG:-}:${fpr_main}:${fpr_local}"
     if [[ ! -f "$cache" ]] || [[ "$(head -1 "$cache" 2>/dev/null)" != "#${cache_key}" ]]; then
-        printf '%s\n' "#${cache_key}" >"$cache"
-        parse_config >>"$cache"
+        # Atomic replace (temp + mv): concurrent ae processes share this cache; a
+        # truncate-then-append let a concurrent reader see a torn half-written file.
+        {
+            printf '%s\n' "#${cache_key}"
+            parse_config
+        } >"${cache}.tmp.$$"
+        mv "${cache}.tmp.$$" "$cache"
     fi
     local result=""
     while IFS= read -r entry; do
