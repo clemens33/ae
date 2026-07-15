@@ -4840,17 +4840,17 @@ _cl_linestart='\033[38;5;231m●\033[39m [11:41] > LINESTART_SENTINEL\n  compari
 # NOT the row's first cell (the logo starts '▐') — structure alone must reject it.
 # Does the chrome bound exclude every row below the box's border? -> 1 if the hint and
 # status rows fall outside [prompt_line, _SGR_CONTENT_END).
-_cl_end() {  # <region-printf_b> <border|blank> -> 1 if the hint row is excluded
-    local _R hint_line=-1 i
+_cl_end() {  # <region-printf_b> <border|blank> <chrome-marker> -> 1 if that row is excluded
+    local _R marker_line=-1 i
     _R="$(printf '%b' "$1")"
     _sgr_parse "$_R"
     _input_region_prompt_seg 0 '❯' '>' '▌' || { echo "no-prompt"; return 0; }
     _input_region_content_end "${_SGR_LINE[$_SGR_PROMPT_SEG]}" "$2"
     for ((i = 0; i < ${#_SGR_TEXT[@]}; i++)); do
-        [[ "${_SGR_TEXT[i]}" == *'paste again to expand'* ]] && hint_line=${_SGR_LINE[i]}
+        [[ "${_SGR_TEXT[i]}" == *"$3"* ]] && marker_line=${_SGR_LINE[i]}
     done
-    ((hint_line >= 0)) || { echo "no-hint"; return 0; }
-    ((hint_line >= _SGR_CONTENT_END)) && echo 1 || echo 0
+    ((marker_line >= 0)) || { echo "marker-absent"; return 0; }
+    ((marker_line >= _SGR_CONTENT_END)) && echo 1 || echo 0
     return 0
 }
 assert_eq "nb2: REAL claude live-empty baseline (v2.1.209) -> idle" "idle" "$(_occ claude "$_cl_baseline")"
@@ -4891,7 +4891,7 @@ assert_eq "nb2: REAL specimen-5 staged token on prompt row -> occupied" "occupie
 assert_eq "nb2: specimen-5 — the hint IS in the region (whole-pane capture)" "1" \
     "$([[ "$(printf '%b' "$_cl_staged")" == *'paste again to expand'* ]] && echo 1 || echo 0)"
 assert_eq "nb2: specimen-5 — hint sits below the border, so it is never content" "1" \
-    "$(_cl_end "$_cl_staged" border)"
+    "$(_cl_end "$_cl_staged" border 'paste again to expand')"
 # Detection must not be text-matched to the token either: raw text staged behind the
 # ornament is the steward's variant-3 loss and is caught by the same CLASS rule.
 assert_eq "nb2: REAL prompt row + raw typed text -> occupied" "occupied" \
@@ -4926,6 +4926,29 @@ assert_eq "still-staged: claude short RAW text staged (no token) -> staged (vari
 assert_eq "nb2: still-staged REAL submitted echo + live empty -> clear (no F4 dup)" "clear" "$(_pss claude "$_cl_echo")"
 assert_eq "nb2: still-staged REAL specimen-5 staged token -> staged (no silent loss)" "staged" "$(_pss claude "$_cl_staged")"
 
+# ── REAL HUMAN-TYPED specimens (Claude Code v2.1.209, captured 2026-07-15) ──────
+# Captured in a DISPOSABLE rig I own — a throwaway claude pane, text type-simulated with
+# send-keys, then capture-pane -e. Never a real person's pane: manufacturing a specimen
+# by typing into someone's live input is the clobber this sensor exists to prevent.
+# Rows are the input box downward (the welcome box above carries the account email and is
+# deliberately excluded); trailing blank rows dropped. Bytes round-trip to the capture.
+_hu_typed='\033[38;5;244m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m❯\xc2\xa0Would you go with the separate slice or fold it in?\n\033[38;5;244m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m  \033[38;5;246m🧠 Haiku 4.5  📁 humantyped\033[39m\n  \033[38;5;211m⏵⏵\033[39m \033[38;5;211mbypass\033[39m \033[38;5;211mpermissions\033[39m \033[38;5;211mon\033[38;5;246m (shift+tab\033[39m \033[38;5;246mto\033[39m \033[38;5;246mcycle)\033[39m\n'
+# A human draft typed at the prompt: unstyled text after the ornament, chrome below.
+assert_eq "human-typed: REAL typed draft (v2.1.209 rig) -> occupied" "occupied" "$(_occ claude "$_hu_typed")"
+assert_eq "human-typed: REAL typed draft -> post-submit staged (would re-Enter, not lose it)" "staged" "$(_pss claude "$_hu_typed")"
+# THE ROUND4 BLOCKER, on a REAL claude TUI rather than a constructed pane: a multiline
+# draft whose FIRST row is empty with the text BELOW, and the edit cursor parked back on
+# the empty row (cursor_y=14 while the draft's last row was 15). The old cursor-bounded
+# capture read this exact pane as IDLE / pre-paste SAFE — it would have overwritten a
+# real person's unsent draft. Colead reproduced the shape synthetically; this is claude
+# actually doing it.
+_hu_blankfirst='\033[38;5;244m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m❯\xc2\xa0\n  the only text is on this second row\n  second line sits BELOW the cursor\n\033[38;5;244m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m  \033[38;5;246m🧠 Haiku 4.5  📁 humantyped\033[39m\n  \033[38;5;211m⏵⏵\033[39m \033[38;5;211mbypass\033[39m \033[38;5;211mpermissions\033[39m \033[38;5;211mon\033[38;5;246m (shift+tab\033[39m \033[38;5;246mto\033[39m \033[38;5;246mcycle)\033[39m\n'
+assert_eq "cursor-end: REAL claude draft, empty prompt row + text below cursor -> occupied" "occupied" \
+    "$(_occ claude "$_hu_blankfirst")"
+# ...and the chrome under that same real box is still excluded (no send outage).
+# (marker must sit inside ONE SGR run — claude styles the status row word by word)
+assert_eq "cursor-end: REAL claude box — the status row below the border is not content" "1" \
+    "$(_cl_end "$_hu_blankfirst" border 'bypass')"
 # ── consumer 2: _paste_input_busy (pre-paste) — IDLE=safe, OCCUPIED/INDETERMINATE=unsafe ──
 _pib() { # <tool> <region-printf_b> -> safe|unsafe
     local _R
@@ -4947,6 +4970,10 @@ assert_eq "input-busy: claude NBSP empty w/ border -> safe (idle)" "safe" "$(_pi
 assert_eq "input-busy: claude ghost leaked -> unsafe (fail-closed, no clobber)" "unsafe" "$(_pib claude '❯\xc2\xa0Try \"write a test for foo\"')"
 assert_eq "input-busy: claude typed -> unsafe (protect human input)" "unsafe" "$(_pib claude '❯\xc2\xa0Would you go with the sep')"
 assert_eq "input-busy: claude mid-gen (no ornament) -> unsafe" "unsafe" "$(_pib claude '✻ Crunched for 23s')"
+# Against the REAL v2.1.209 rig captures (fixtures defined in the sensor block above):
+assert_eq "human-typed: REAL typed draft -> pre-paste UNSAFE (protect the human)" "unsafe" "$(_pib claude "$_hu_typed")"
+assert_eq "cursor-end: REAL claude draft below the cursor -> pre-paste UNSAFE (no clobber)" "unsafe" \
+    "$(_pib claude "$_hu_blankfirst")"
 assert_eq "input-busy: unknown tool -> safe (no predicate, don't regress)" "safe" "$(_pib bash 'anything')"
 
 # The claude launch DISABLES the input-box ghost suggestion (so idle==bare ornament).
