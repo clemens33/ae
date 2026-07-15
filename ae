@@ -5538,9 +5538,12 @@ cmd_help() {
 #
 # The marker grep this replaces ('❯|bypass permissions|for shortcuts') answered a
 # different question than the caller was asking. claude's trust dialog renders
-# '❯ 1. Yes, I trust this folder' and its footer says 'bypass permissions', so a modal
-# read READY and the brief was pasted into it — Enter then answers the dialog rather than
-# submitting the brief (colead ROUND5 BLOCKER 2, from the trust-dialog specimen).
+# '❯ 1. Yes, I trust this folder' — and that BARE ORNAMENT alone was the whole match: the
+# real captured dialog contains neither 'bypass permissions' nor 'for shortcuts' (they
+# belong to the composed TUI's footer, which is not drawn yet). So a modal read READY and
+# the brief was pasted into it, where Enter answers the dialog rather than submitting
+# (colead ROUND5 BLOCKER 2). One incidental glyph was enough — which is the argument for
+# a predicate over a marker, not for a longer marker list.
 #
 # For modeled tools this is the SAME structural predicate the send path uses, so spawn
 # can no longer disagree with it: a booting TUI has no live prompt (indeterminate ->
@@ -5692,6 +5695,12 @@ _cmd_spawn() {
     # Post-launch: capture agent session ID if needed
     start_capture_session_id "$tool_kind" "$pane_id" "$slot" "$meta_dir"
 
+    # Brief-delivered truth, tracked separately from pane-created truth (see the outer
+    # contract below). Tools WITHOUT system-prompt injection carry the brief in
+    # initial_msg, which send_agent_cmd already delivered as the first message — for those
+    # there is no separate paste to fail, so delivery is settled here.
+    local _delivered=1 _fail_reason=""
+
     # For agents with system prompt injection, send spawn prompt separately
     if [[ -z "$initial_msg" ]]; then
         # Wait for the TUI to actually ACCEPT input before pasting.
@@ -5712,14 +5721,12 @@ _cmd_spawn() {
             # for any of '❯|bypass permissions|for shortcuts' and pasted on timeout
             # regardless — so claude's trust dialog ('❯ 1. Yes, I trust this folder')
             # read READY and the brief went INTO THE MODAL, where Enter answers the
-            # dialog instead. Then tmux_paste_submit's failure was swallowed by
-            # `|| true`, leaving a launched, brief-less worker and no signal: the
-            # silent-loss class this slice exists to kill, one caller further out
-            # (colead ROUND5 BLOCKER 2). Fail LOUD and leave the pane untouched — the
-            # brief is re-sendable by hand, a clobbered modal is not.
-            echo "ae: ${alias_name}:${spawn_name} — pane $pane_id never reached a confirmed-idle input" >&2
-            echo "ae: brief NOT delivered (input busy, modal, or unreadable). Send it manually:" >&2
-            echo "ae:   ${meta_dir}/send ${alias_name}:${spawn_name} '<the brief>'" >&2
+            # dialog instead (colead ROUND5 BLOCKER 2). Leave the pane untouched — the
+            # brief is re-sendable, a clobbered modal is not — and record NOT-DELIVERED
+            # so the caller sees it (colead ROUND6: stderr alone let the positive path
+            # run on and claim success).
+            _delivered=0
+            _fail_reason="input never reached a confirmed-idle state (busy, modal, or unreadable)"
         else
             tmux select-pane -t "$pane_id"
             # Launch paste is best-effort for DELIVERY, but never silent: a slow TUI
@@ -5730,7 +5737,10 @@ _cmd_spawn() {
             local _paste_rc=0
             tmux_paste_submit "$pane_id" "$prompt" || _paste_rc=$?
             if ((_paste_rc != 0)); then
-                echo "ae: ${alias_name}:${spawn_name} — brief submit UNCONFIRMED (rc=$_paste_rc); verify the pane" >&2
+                # Staged past the bounded verify-retries: the text may be sitting unsent
+                # in the box. UNCONFIRMED is not delivered, and must not read as success.
+                _delivered=0
+                _fail_reason="brief submit UNCONFIRMED (tmux_paste_submit rc=$_paste_rc) — it may be staged unsent"
             fi
         fi
         if ((_ready == 1)); then
@@ -5746,8 +5756,48 @@ _cmd_spawn() {
         fi
     fi
 
+    # PANE-CREATED and BRIEF-DELIVERED are different truths, and only the second one
+    # means the worker was assigned its task. Conflating them is how a delivery failure
+    # became a success at the caller: both failure branches printed to stderr and then
+    # control ran on to the positive line, a task-bearing action=spawn event, and rc=0 —
+    # so supervision saw an assigned worker whose brief was absent, and automation could
+    # not tell (colead ROUND6 BLOCKER, caller-probed). stderr is for humans; rc and the
+    # event log are the machine-visible contract, and they must agree with reality.
+    if ((_delivered == 0)); then
+        # The pane EXISTS and is in meta — say so, so nobody respawns a duplicate — but
+        # report failure and never claim the task was assigned. The brief is preserved on
+        # disk rather than quoted into the message: it is arbitrary multi-line text, and a
+        # '<the brief>' placeholder is not a resend path anyone can run (colead ROUND6).
+        local _brief_file="${meta_dir}/undelivered.${alias_name}-${spawn_name}.txt"
+        printf '%s' "$prompt" >"$_brief_file" 2>/dev/null || _brief_file=""
+        [[ -n "$_brief_file" ]] && chmod 600 "$_brief_file" 2>/dev/null
+        echo "ae: SPAWN INCOMPLETE — ${alias_name}:${spawn_name} exists in pane ${pane_id}, brief NOT delivered" >&2
+        echo "ae: reason: ${_fail_reason}" >&2
+        echo "ae: do NOT respawn (the pane is live) — send to the existing agent:" >&2
+        if [[ -n "$_brief_file" ]]; then
+            echo "ae:   ${meta_dir}/send ${alias_name}:${spawn_name} \"\$(cat ${_brief_file})\"" >&2
+        else
+            echo "ae:   ${meta_dir}/send ${alias_name}:${spawn_name} '<re-send your brief>'" >&2
+        fi
+        # An explicit delivery-failed FACT, not silence: supervision reads this log, and a
+        # missing event is indistinguishable from a spawn that never happened. It carries
+        # NO task summary — nothing here assigned that task.
+        _spawn_emit_event "$meta_dir" "${caller_agent:-human}" "${alias_name}:${spawn_name}" \
+            "spawn-failed" "brief not delivered: ${_fail_reason}"
+        return 1
+    fi
+
     echo "Spawned ${alias_name}:${spawn_name} in pane $pane_id"
-    # Emit event (inline — _cmd_spawn runs outside _lib context)
+    _spawn_emit_event "$meta_dir" "${caller_agent:-human}" "${alias_name}:${spawn_name}" \
+        "spawn" "$(printf '%.200s' "${user_prompt:-}" | tr '\n\t' '  ')"
+    return 0
+}
+
+# Append one event to the session log. Inline-equivalent of ae_emit_event — _cmd_spawn
+# runs outside the _lib context — kept as its own function so the spawn path has exactly
+# ONE event writer and the success/failure calls cannot drift apart.
+_spawn_emit_event() { # <meta_dir> <actor> <target> <action> <summary>
+    local meta_dir="$1" actor="$2" target="$3" action="$4" summary="$5"
     local _esc _actor _target _summary _ts _json
     _esc() {
         local s="$1"
@@ -5758,14 +5808,15 @@ _cmd_spawn() {
         s="${s//$'\r'/\\r}"
         printf '%s' "$s"
     }
-    _actor="$(_esc "${caller_agent:-human}")"
-    _target="$(_esc "${alias_name}:${spawn_name}")"
-    _summary="$(_esc "$(printf '%.200s' "${user_prompt:-}" | tr '\n\t' '  ')")"
+    _actor="$(_esc "$actor")"
+    _target="$(_esc "$target")"
+    _summary="$(_esc "$summary")"
     _ts="$(date -u +%FT%TZ)"
-    _json="$(printf '{"ts":"%s","actor":"%s","action":"spawn","target":"%s"' "$_ts" "$_actor" "$_target")"
+    _json="$(printf '{"ts":"%s","actor":"%s","action":"%s","target":"%s"' "$_ts" "$_actor" "$action" "$_target")"
     [[ -n "$_summary" ]] && _json+="$(printf ',"summary":"%s"' "$_summary")"
     _json+="}"
     { flock -w 5 8 && printf '%s\n' "$_json" >>"$meta_dir/events.jsonl"; } 8>>"$meta_dir/events.jsonl.lock"
+    return 0
 }
 
 # Internal: retire a spawned agent (called via retire helper → ae _retire)
