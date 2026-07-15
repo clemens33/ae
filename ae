@@ -6823,27 +6823,94 @@ ae_find_request() {
 }
 
 # Capture the pane's INPUT REGION with SGR escape sequences PRESERVED (capture-pane
-# -e), anchored at the CURSOR ROW (#{cursor_y}) rather than tail -N. tail -N is
+# -e), bounded by the CURSOR ROW (#{cursor_y}) rather than tail -N. tail -N is
 # geometry-blind: a top-anchored TUI input box can sit far above the pane bottom, so
 # a fixed bottom slice can miss the live input entirely (and catch transcript echo
-# instead — the F4 false-positive class). The cursor sits on the live input line;
-# capturing [cursor_y-1 .. cursor_y] returns the input line plus the box-top border
-# above it, which carries the prompt ornament and the styled content the predicates
-# read. ONE sensor, TWO consumers (_paste_input_busy pre-paste, _paste_still_staged
-# post-submit). FAIL-CLOSED: no cursor / unreadable -> empty output; both callers
-# treat empty as "cannot confirm safe" (busy / still-staged), never as idle/clear.
+# instead — the F4 false-positive class). The cursor sits on the LAST row of the live
+# input, so this captures [0 .. cursor_y] and lets the per-tool anchor pick the last
+# semantic live prompt; no row-count window is imposed (see below). ONE sensor, TWO
+# consumers (_paste_input_busy pre-paste, _paste_still_staged post-submit).
+# UNREADABLE DIRECTIONS DIFFER, deliberately: no cursor / unreadable -> empty output;
+# _paste_input_busy treats empty as UNSAFE (fail-closed: defer, never clobber), while
+# _paste_still_staged maps indeterminate to "clear" — the F4 compromise that trades a
+# rare missed retry for never duplicating an already-sent message.
 _capture_input_region() {
-    local pane="$1" cy start
+    local pane="$1" cy
     cy="$(tmux display-message -p -t "$pane" '#{cursor_y}' 2>/dev/null || true)"
     [[ "$cy" =~ ^[0-9]+$ ]] || return 0 # no cursor row -> empty -> fail-closed at caller
-    # Window back from the cursor: enough rows to include the prompt-ornament line of a
-    # MULTILINE input (the cursor sits on its LAST row; the › / ❯ is on the FIRST). 8
-    # covers a realistic typed multiline; a large PASTE collapses to a single
-    # '[Pasted Content N chars]' row so it never needs the depth. Extra rows above only
-    # add transcript, which the per-tool anchor (last live prompt / last ornament)
-    # steps over. Box-top border sits at the low end for a single-line input.
-    start=$((cy > 8 ? cy - 8 : 0))
-    tmux capture-pane -e -p -t "$pane" -S "$start" -E "$cy" 2>/dev/null || true
+    # Everything visible from the TOP of the pane through the CURSOR row. No row-count
+    # window: a fixed look-back (the old cy-8) was an INVENTED bound — the deepest real
+    # fixture was 4 rows, which is a sample, not a limit. A legal 10-row multiline input
+    # puts its prompt ornament above any such window, the sensor then finds no prompt and
+    # post-submit maps that to "clear" = false success = the silent loss this slice
+    # exists to kill (colead BLOCKER 2, reproduced). Rows above the input are only
+    # transcript, and the per-tool anchor selects the LAST *semantic* live prompt, so
+    # extra context is inert — cost is a slightly bigger capture, which is the right
+    # trade against a false success.
+    tmux capture-pane -e -p -t "$pane" -S 0 -E "$cy" 2>/dev/null || true
+    return 0
+}
+
+# Parse a captured region into styled SEGMENTS: parallel arrays _SGR_BOLD/_SGR_DIM/
+# _SGR_TEXT, one entry per run of text sharing an SGR state. Parses SGR *state* —
+# params, grouping and resets — never byte literals: tmux legally serializes the SAME
+# visual state many ways ($'\e[1m›', $'\e[0;1m›', $'\e[2m…\e[1m›'), so an exact-byte
+# anchor is unsound and mis-reads real panes (colead BLOCKER 1, reproduced in isolated
+# tmux). Only intensity matters here: 1 = bold on, 2 = dim on, 0/22 = both off; an
+# extended-colour introducer (38/48) has its arguments skipped so a nested '1'/'2'
+# parameter is never mistaken for bold/dim.
+_sgr_parse() {
+    _SGR_BOLD=()
+    _SGR_DIM=()
+    _SGR_TEXT=()
+    local rest="$1" bold=0 dim=0 body seq rem final params text
+    local -a ps
+    local j v
+    while [[ -n "$rest" ]]; do
+        if [[ "$rest" == $'\e['* ]]; then
+            body="${rest#$'\e['}"
+            seq="${body%%[a-zA-Z]*}"
+            rem="${body#"$seq"}"
+            final="${rem:0:1}"
+            rest="${rem:1}"
+            [[ "$final" == "m" ]] || continue # non-SGR CSI: consumed, no state change
+            params="${seq:-0}"
+            IFS=';' read -ra ps <<<"$params"
+            j=0
+            while ((j < ${#ps[@]})); do
+                v="${ps[j]:-0}"
+                case "$v" in
+                    "" | 0)
+                        bold=0
+                        dim=0
+                        ;;
+                    1) bold=1 ;;
+                    2) dim=1 ;;
+                    21 | 22)
+                        bold=0
+                        dim=0
+                        ;;
+                    38 | 48)
+                        # 38;5;N (256) or 38;2;R;G;B (truecolour) — skip the arguments
+                        if [[ "${ps[j + 1]:-}" == "5" ]]; then
+                            ((j += 2))
+                        elif [[ "${ps[j + 1]:-}" == "2" ]]; then
+                            ((j += 4))
+                        fi
+                        ;;
+                esac
+                ((j++))
+            done
+            continue
+        fi
+        text="${rest%%$'\e'*}"
+        rest="${rest#"$text"}"
+        if [[ -n "$text" ]]; then
+            _SGR_BOLD+=("$bold")
+            _SGR_DIM+=("$dim")
+            _SGR_TEXT+=("$text")
+        fi
+    done
     return 0
 }
 
@@ -6872,22 +6939,38 @@ _input_region_occupied() {
             # stays correct and is what cursor-region isolation now resolves. Live
             # repro: staged '[Pasted Content 1469 chars]' — the old detector returned
             # clear and would have logged a false success = silent loss.)
-            local -a _ir_lines=()
-            local i live=""
-            mapfile -t _ir_lines <<<"$region"
-            for ((i = ${#_ir_lines[@]} - 1; i >= 0; i--)); do
-                [[ "${_ir_lines[i]}" == *$'\e[1m›'* ]] && {
+            local i live=-1 s
+            _sgr_parse "$region"
+            # The LIVE prompt is the LAST ornament cell in BOLD-and-NOT-DIM state; a
+            # submitted transcript echo is the same ornament in BOLD-AND-DIM state.
+            # State, not bytes: $'\e[2m…\e[1m›' leaves DIM active (an echo) while
+            # $'\e[2m…\e[0;1m›' resets first (live) — visually identical prefixes,
+            # opposite meanings. This is what kills the F4 transcript-echo
+            # false-positive by style+geometry rather than a content grep.
+            for ((i = ${#_SGR_TEXT[@]} - 1; i >= 0; i--)); do
+                if [[ "${_SGR_BOLD[i]}" == 1 && "${_SGR_DIM[i]}" == 0 && "${_SGR_TEXT[i]}" == *'›'* ]]; then
                     live=$i
                     break
-                }
+                fi
             done
-            [[ -n "$live" ]] || return 2 # no live prompt (mid-generation / abnormal)
-            local s
-            s="$(printf '%s\n' "${_ir_lines[@]:live}")"
-            s="$(sed -E 's/\x1b\[2m[^\x1b]*\x1b\[0?m//g' <<<"$s")" # drop dim placeholder span
-            s="$(sed -E 's/\x1b\[[0-9;]*m//g' <<<"$s")"            # strip remaining SGR
+            ((live >= 0)) || return 2 # no live prompt (mid-generation / abnormal)
+            # Content = everything after the ANCHOR ornament only. Removing every '›'
+            # in the region (the old tr -d) made a user-typed ornament vanish, reading
+            # real input as idle and permitting a clobber — violating the very class
+            # rule this sensor enforces (colead BLOCKER 3). Strip the anchor, keep all
+            # printable content that follows it, including further ornaments.
+            s="${_SGR_TEXT[live]#*›}"
+            for ((i = live + 1; i < ${#_SGR_TEXT[@]}; i++)); do
+                # DIM-state text is the placeholder suggestion — not user content.
+                [[ "${_SGR_DIM[i]}" == 1 ]] && continue
+                s+="${_SGR_TEXT[i]}"
+            done
             s="${s//$'\xc2\xa0'/ }"
-            s="$(tr -d '›\n\t ' <<<"$s")"
+            s="$(tr -d '\n\t ' <<<"$s")"
+            # ANY unstyled printable remainder is OCCUPIED — including the unstyled
+            # '[Pasted Content N chars]' staging token(s), chunked multi-token rows and
+            # a leaked plaintext tail (occurrence #3). The token text is documentation,
+            # never the predicate: the CLASS (unstyled printable) is the rule.
             [[ -n "$s" ]] && return 0 || return 1
             ;;
         claude)
@@ -9654,7 +9737,7 @@ LIBPROLOGUE
             ae_preview_text ae_extract_req_id ae_log_append ae_log_read \
             ae_target_tool ae_json_escape ae_emit_event ae_latest_state_for \
             _event_json_str _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
-            ae_submit_pasted_message _capture_input_region _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
+            ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
             command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
             ae_meta_get ae_meta_set ae_meta_unset
     } >"${AE_META}/_lib.tmp.$$"

@@ -39,7 +39,7 @@ trap cleanup EXIT
 tmux() { command tmux -L "$AE_TMUX_SERVER" "$@"; }
 
 # Dummy agent config (bash as agent — no real AI tool needed)
-cat > "$HOME/.ae/config" <<'EOF'
+cat >"$HOME/.ae/config" <<'EOF'
 [agents]
 dummy = "bash"
 dummy2 = "bash"
@@ -95,7 +95,7 @@ wait_for_session() {
     while ! tmux has-session -t "$name" 2>/dev/null; do
         sleep 0.5
         i=$((i + 1))
-        if (( i >= max * 2 )); then
+        if ((i >= max * 2)); then
             echo "Timeout waiting for session $name" >&2
             return 1
         fi
@@ -107,10 +107,13 @@ wait_for_session() {
 REPO="$(setup_repo)"
 (cd "$REPO" && "$AE" --local test-life &) 2>/dev/null
 wait_for_session "test-life"
-sleep 1  # let session setup complete (meta, manifest)
+sleep 1 # let session setup complete (meta, manifest)
 
 # Session should be running
-assert_eq "lifecycle: tmux session exists" "0" "$(tmux has-session -t test-life 2>/dev/null; echo $?)"
+assert_eq "lifecycle: tmux session exists" "0" "$(
+    tmux has-session -t test-life 2>/dev/null
+    echo $?
+)"
 
 # ae list should show it
 list_output="$("$AE" list 2>/dev/null)"
@@ -150,7 +153,10 @@ assert_contains "resume: list --all shows stopped" "stopped" "$list_output"
 # Re-launch should resume (reuse meta)
 (cd "$REPO2" && "$AE" --local test-resume &) 2>/dev/null
 wait_for_session "test-resume"
-assert_eq "resume: session re-created" "0" "$(tmux has-session -t test-resume 2>/dev/null; echo $?)"
+assert_eq "resume: session re-created" "0" "$(
+    tmux has-session -t test-resume 2>/dev/null
+    echo $?
+)"
 
 # Clean up
 "$AE" end -f test-resume 2>/dev/null || true
@@ -170,7 +176,10 @@ assert_eq "rename: window 0 starts named after the session" "test-rename-old" \
 "$AE" rename test-rename-old test-rename-new 2>/dev/null
 sleep 0.5
 
-assert_eq "rename: tmux session renamed" "0" "$(tmux has-session -t test-rename-new 2>/dev/null; echo $?)"
+assert_eq "rename: tmux session renamed" "0" "$(
+    tmux has-session -t test-rename-new 2>/dev/null
+    echo $?
+)"
 assert_eq "rename: old tmux session gone" "1" "$(tmux has-session -t test-rename-old 2>/dev/null && echo 0 || echo 1)"
 # The regression: the main window must follow the rename, not keep the old name.
 assert_eq "rename: window 0 follows the session rename" "test-rename-new" \
@@ -187,7 +196,7 @@ sleep 0.5
 REPO3="$(setup_repo)"
 (cd "$REPO3" && "$AE" --local test-health &) 2>/dev/null
 wait_for_session "test-health"
-sleep 1  # let agent (bash) start
+sleep 1 # let agent (bash) start
 
 # Agent is bash — health check sees shell = dead agent (correct behavior)
 # Verify idle agent shows ! marker in agent detail row
@@ -404,10 +413,12 @@ assert_eq "next: output does not advertise attach (read-only)" "0" \
 
 # Arg handling (codex IMPORTANT): --help exits 0; unknown/unimplemented flags
 # exit non-zero rather than silently behaving like plain `ae next`.
-help_rc=0; help_out="$("$AE" next --help 2>&1)" || help_rc=$?
+help_rc=0
+help_out="$("$AE" next --help 2>&1)" || help_rc=$?
 assert_eq "next: --help exits 0" "0" "$help_rc"
 assert_contains "next: --help prints usage" "Usage: ae next" "$help_out"
-bogus_rc=0; "$AE" next --bogus >/dev/null 2>&1 || bogus_rc=$?
+bogus_rc=0
+"$AE" next --bogus >/dev/null 2>&1 || bogus_rc=$?
 assert_eq "next: unknown flag exits non-zero" "1" \
     "$([[ "$bogus_rc" -ne 0 ]] && echo 1 || echo 0)"
 
@@ -520,7 +531,7 @@ sleep 1
 
 # Missing-alias preservation (review BLOCKER): seed a spawned entry whose
 # alias is NOT in the test config — resume must warn AND keep the entry.
-printf 'agent.spawned.7=missingalias:ghostworker:pending\n' >> "$HOME/.ae/sessions/test-spawn/meta"
+printf 'agent.spawned.7=missingalias:ghostworker:pending\n' >>"$HOME/.ae/sessions/test-spawn/meta"
 
 # Spawned agent restored — again in its own window
 pane_count="$(tmux list-panes -s -t test-spawn -F '#{@ae_agent}' 2>/dev/null | grep -c ':' || true)"
@@ -533,7 +544,7 @@ assert_eq "resume: missing-alias spawned entry preserved in rewritten meta" "1" 
 # Seed stale launch bookkeeping for the slot — retire must purge it, or a
 # reused spawned.0 accumulates duplicate launch_time lines and
 # read_launch_time_for_slot degrades to 0 (codex IMPORTANT).
-printf 'launch_time.spawned.0=1111\nlaunch_id.spawned.0=stale-uuid\n' >> "$HOME/.ae/sessions/test-spawn/meta"
+printf 'launch_time.spawned.0=1111\nlaunch_id.spawned.0=stale-uuid\n' >>"$HOME/.ae/sessions/test-spawn/meta"
 # Cross-window retire: kills the worker, its window, and the meta entry.
 "$HOME/.ae/sessions/test-spawn/retire" helper-0 2>/dev/null || true
 sleep 0.5
@@ -570,7 +581,7 @@ if [[ -n "$work_dir" ]] && [[ -d "$work_dir" ]]; then
     git -C "$work_dir" remote set-url origin "$REMOTE5" 2>/dev/null || git -C "$work_dir" remote add origin "$REMOTE5"
 
     # Create a file to commit
-    echo "test" > "$work_dir/testfile.txt"
+    echo "test" >"$work_dir/testfile.txt"
     git -C "$work_dir" add testfile.txt
     git -C "$work_dir" commit -q -m "test commit"
 
@@ -586,7 +597,7 @@ if [[ -n "$work_dir" ]] && [[ -d "$work_dir" ]]; then
     assert_not_exists "end: session dir cleaned" "$HOME/.ae/sessions/test-end"
 else
     # Worktree creation may fail in some environments (nested git)
-    PASS=$((PASS + 2))  # skip these tests gracefully
+    PASS=$((PASS + 2)) # skip these tests gracefully
 fi
 
 # ── Test 6: ae status ──────────────────────────────────────────────
@@ -615,7 +626,7 @@ sleep 0.5
 REPO7="$(setup_repo)"
 # Create a per-project config that overrides main agent
 mkdir -p "$REPO7/.ae"
-cat > "$REPO7/.ae/config" <<'EOF'
+cat >"$REPO7/.ae/config" <<'EOF'
 [workspace]
 main = dummy2
 EOF
@@ -683,7 +694,7 @@ sleep 0.5
 # ── Test 10: ae doctor ───────────────────────────────────────────────
 
 REPO10="$(setup_repo)"
-(cd "$REPO10" && "$AE" doctor > "$TMPDIR/doctor.out" 2>/dev/null)
+(cd "$REPO10" && "$AE" doctor >"$TMPDIR/doctor.out" 2>/dev/null)
 doctor_output="$(cat "$TMPDIR/doctor.out")"
 assert_contains "doctor: prints header" "ae doctor" "$doctor_output"
 assert_contains "doctor: checks bash" "OK    bash" "$doctor_output"
@@ -718,14 +729,14 @@ WD_HELPER="$HOME/.ae/sessions/test-sync/watchdog"
 wd_poll "$WD_HELPER" "is running" 20 || true
 wd_pid_before="$(wd_pid "$WD_HELPER")"
 
-printf '#!/usr/bin/env bash\necho stale-helper\n' > "$HOME/.ae/sessions/test-sync/reply"
+printf '#!/usr/bin/env bash\necho stale-helper\n' >"$HOME/.ae/sessions/test-sync/reply"
 chmod 0700 "$HOME/.ae/sessions/test-sync/reply"
-printf '#!/usr/bin/env bash\necho stale-helper\n' > "$HOME/.ae/sessions/test-sync/state"
+printf '#!/usr/bin/env bash\necho stale-helper\n' >"$HOME/.ae/sessions/test-sync/state"
 chmod 0700 "$HOME/.ae/sessions/test-sync/state"
-printf '# stale lib\n' > "$HOME/.ae/sessions/test-sync/_lib"
-printf 'stale manifest\n' > "$HOME/.ae/sessions/test-sync/workspace.md"
+printf '# stale lib\n' >"$HOME/.ae/sessions/test-sync/_lib"
+printf 'stale manifest\n' >"$HOME/.ae/sessions/test-sync/workspace.md"
 
-(cd "$REPO11" && "$AE" doctor --refresh test-sync > "$TMPDIR/doctor-sync.out" 2>/dev/null)
+(cd "$REPO11" && "$AE" doctor --refresh test-sync >"$TMPDIR/doctor-sync.out" 2>/dev/null)
 doctor_sync_output="$(cat "$TMPDIR/doctor-sync.out")"
 reply_output="$("$HOME/.ae/sessions/test-sync/reply" 2>&1 || true)"
 workspace_output="$(cat "$HOME/.ae/sessions/test-sync/workspace.md")"
@@ -819,9 +830,9 @@ sleep 0.5
 # PID is written into the watchdog pidfile.
 sleep 300 &
 dummy_pid=$!
-printf '%s\n' "$dummy_pid" > "$STALE_PIDFILE"
+printf '%s\n' "$dummy_pid" >"$STALE_PIDFILE"
 
-(cd "$REPO_STALE" && "$AE" doctor --refresh test-stale-wd > "$TMPDIR/doctor-stale.out" 2>/dev/null)
+(cd "$REPO_STALE" && "$AE" doctor --refresh test-stale-wd >"$TMPDIR/doctor-stale.out" 2>/dev/null)
 stale_refresh_out="$(cat "$TMPDIR/doctor-stale.out")"
 
 assert_eq "stale-wd: refresh did NOT kill the innocent recycled-pid process" \
@@ -849,19 +860,19 @@ sleep 0.5
 EVR_EVENTS="$HOME/.ae/sessions/test-evretain/events.jsonl"
 for n in $(seq 1 1200); do
     printf '{"ts":"2026-01-01T00:00:00Z","actor":"seed","action":"noop","summary":"seedmarker-%s"}\n' "$n"
-done > "$EVR_EVENTS"
-printf 'watchdog=false\n' >> "$HOME/.ae/sessions/test-evretain/meta"
+done >"$EVR_EVENTS"
+printf 'watchdog=false\n' >>"$HOME/.ae/sessions/test-evretain/meta"
 assert_eq "events-retention: seeded 1200 events pre-resume" \
-    "1200" "$(wc -l < "$EVR_EVENTS" | tr -d ' ')"
+    "1200" "$(wc -l <"$EVR_EVENTS" | tr -d ' ')"
 
 (cd "$REPO_EVR" && "$AE" --local test-evretain &) 2>/dev/null
 wait_for_session "test-evretain"
 # Trim runs during launch (before the events pane starts); poll until it lands.
 for i in $(seq 1 20); do
-    [[ "$(wc -l < "$EVR_EVENTS" 2>/dev/null || echo 0)" -le 1000 ]] && break
+    [[ "$(wc -l <"$EVR_EVENTS" 2>/dev/null || echo 0)" -le 1000 ]] && break
     sleep 0.5
 done
-evr_lines="$(wc -l < "$EVR_EVENTS" 2>/dev/null | tr -d ' ')"
+evr_lines="$(wc -l <"$EVR_EVENTS" 2>/dev/null | tr -d ' ')"
 
 assert_eq "events-retention: resume trimmed log to exactly 1000 lines" \
     "1000" "$evr_lines"
@@ -889,7 +900,7 @@ REPO_WDR="$(setup_repo)"
 wait_for_session "test-wd-root"
 WDR="$HOME/.ae/sessions/test-wd-root/watchdog"
 WDR_PID="$HOME/.ae/sessions/test-wd-root/.watchdog.pid"
-wd_poll "$WDR" "is running" 20 || true            # settle the launch autostart
+wd_poll "$WDR" "is running" 20 || true # settle the launch autostart
 # Stop the watchdog: kills the _watchdog pane + pidfile, but the SESSION stays up.
 "$WDR" stop >/dev/null 2>&1 || true
 wd_poll "$WDR" "not running" 20 || true
@@ -898,7 +909,7 @@ wd_poll "$WDR" "not running" 20 || true
 # whose pid we write into .watchdog.pid. There is NO _watchdog pane.
 sleep 300 &
 wdr_dummy=$!
-printf '%s\n' "$wdr_dummy" > "$WDR_PID"
+printf '%s\n' "$wdr_dummy" >"$WDR_PID"
 
 # (1) status must NOT lie: pid alive but no pane -> not running (+ cleans pidfile).
 assert_contains "wd-root: status reports not-running on a recycled pid" \
@@ -909,13 +920,13 @@ assert_eq "wd-root: status cleaned the stale pidfile" \
     "1" "$([[ -f "$WDR_PID" ]] && echo 0 || echo 1)"
 
 # (2) stop must NOT kill the recycled process (re-fabricate the stale pid).
-printf '%s\n' "$wdr_dummy" > "$WDR_PID"
+printf '%s\n' "$wdr_dummy" >"$WDR_PID"
 "$WDR" stop >/dev/null 2>&1 || true
 assert_eq "wd-root: stop did NOT kill the innocent recycled process" \
     "1" "$(kill -0 "$wdr_dummy" 2>/dev/null && echo 1 || echo 0)"
 
 # (3) start must NOT wrongly defer on a stale pid — it launches a fresh watchdog.
-printf '%s\n' "$wdr_dummy" > "$WDR_PID"
+printf '%s\n' "$wdr_dummy" >"$WDR_PID"
 "$WDR" start >/dev/null 2>&1 &
 wd_poll "$WDR" "is running" 20 || true
 assert_contains "wd-root: start launched a real watchdog (not deferred to stale pid)" \
@@ -1087,7 +1098,10 @@ assert_eq "goal: list --json carries no raw ESC/BEL bytes" "0" \
     "$(printf '%s' "$goal_ctrl_json" | grep -c $'[\033\007]' || true)"
 if command -v python3 >/dev/null 2>&1; then
     assert_eq "goal: list --json still parses as JSON (python3 json.tool)" "0" \
-        "$(printf '%s' "$goal_ctrl_json" | python3 -m json.tool >/dev/null 2>&1; echo $?)"
+        "$(
+            printf '%s' "$goal_ctrl_json" | python3 -m json.tool >/dev/null 2>&1
+            echo $?
+        )"
 fi
 
 # Clean up
@@ -1104,7 +1118,8 @@ sleep 0.5
 run_capture() {
     # Args: variable-prefix command...
     # Sets <prefix>_out and <prefix>_rc as globals via eval.
-    local _prefix="$1"; shift
+    local _prefix="$1"
+    shift
     local _out _rc=0
     if _out="$("$@" 2>&1)"; then :; else _rc=$?; fi
     eval "${_prefix}_out=\"\$_out\""
@@ -1218,7 +1233,10 @@ tmux kill-session -t hub 2>/dev/null || true
 # session named <extra> using the hub config (the generic parser's last-positional
 # -wins leak codex flagged).
 assert_eq "hub: rejects an extra positional (reserved-name leak guard)" "1" \
-    "$(AE_HUB_DIR="$HUB_DIR" "$AE" hub other 2>/dev/null; echo $?)"
+    "$(
+        AE_HUB_DIR="$HUB_DIR" "$AE" hub other 2>/dev/null
+        echo $?
+    )"
 assert_eq "hub: the extra-arg name was NOT created as a session" "1" \
     "$(tmux has-session -t other 2>/dev/null && echo 0 || echo 1)"
 
@@ -1250,7 +1268,10 @@ assert_contains "steward: bare launch starts detached as session 'steward'" "Ses
 assert_contains "steward: meta_agent mode on via 'steward = true'" "meta_agent=true" \
     "$(cat "$HOME/.ae/sessions/steward/meta" 2>/dev/null)"
 assert_eq "steward: rejects an extra positional (reserved-name leak guard)" "1" \
-    "$(AE_STEWARD_DIR="$STW_DIR" "$AE" steward other2 2>/dev/null; echo $?)"
+    "$(
+        AE_STEWARD_DIR="$STW_DIR" "$AE" steward other2 2>/dev/null
+        echo $?
+    )"
 tmux kill-session -t steward 2>/dev/null || true
 
 # AE_HOME relocates ALL ae state away from $HOME/.ae WITHOUT swapping $HOME — the
@@ -1339,7 +1360,10 @@ assert_contains "ae end: session with no usable stored config KEEPS (no cwd fall
 
 # Destructive command rejects a stray second positional rather than dropping it.
 assert_eq "ae end: rejects a second positional argument" "1" \
-    "$("$AE" end -f foo bar 2>/dev/null; echo $?)"
+    "$(
+        "$AE" end -f foo bar 2>/dev/null
+        echo $?
+    )"
 
 # ── ae list robustness: a per-session helper returning non-zero must NOT abort
 #    the listing. Regression: cmd_list ran under `set -e`, so when
@@ -1357,7 +1381,10 @@ jr_agent="$(sed -n 's/^agent.main=//p' "$HOME/.ae/sessions/jsonrobust/meta" | cu
 # non-zero return for this session's live agent.
 printf '{"actor":"other:sender","target":"%s","action":"send","summary":"hi"}\n' \
     "$jr_agent" >"$HOME/.ae/sessions/jsonrobust/events.jsonl"
-json_rc="$("$AE" list --json >/dev/null 2>&1; echo $?)"
+json_rc="$(
+    "$AE" list --json >/dev/null 2>&1
+    echo $?
+)"
 assert_eq "list --json: exits 0 when a per-session helper returns non-zero" "0" "$json_rc"
 json_out="$("$AE" list --json 2>/dev/null || true)"
 assert_contains "list --json: emits the top-level open" '"schema_version":1' "$json_out"
@@ -1365,13 +1392,16 @@ if command -v python3 >/dev/null 2>&1; then
     json_valid="$(printf '%s' "$json_out" | python3 -c 'import sys,json; json.load(sys.stdin)' 2>/dev/null && echo ok || echo invalid)"
     assert_eq "list --json: stays valid JSON when a per-session helper returns non-zero" "ok" "$json_valid"
 fi
-human_rc="$("$AE" list >/dev/null 2>&1; echo $?)"
+human_rc="$(
+    "$AE" list >/dev/null 2>&1
+    echo $?
+)"
 assert_eq "list (human): exits 0 when a per-session helper returns non-zero" "0" "$human_rc"
 "$AE" end -f jsonrobust 2>/dev/null || true
 
 # ── steward companion autostart: scaffold → any launch brings it up ──
 mkdir -p "$HOME/.ae/steward"
-cat > "$HOME/.ae/steward/steward.config" <<'EOF'
+cat >"$HOME/.ae/steward/steward.config" <<'EOF'
 [agents]
 dummy = "bash"
 
@@ -1389,7 +1419,10 @@ while ! tmux has-session -t steward 2>/dev/null && ((as_i < 20)); do
     as_i=$((as_i + 1))
 done
 assert_eq "autostart: steward companion comes up with a fleet launch" "0" \
-    "$(tmux has-session -t steward 2>/dev/null; echo $?)"
+    "$(
+        tmux has-session -t steward 2>/dev/null
+        echo $?
+    )"
 # Existing-session fast path (codex IMPORTANT): steward down + re-running
 # 'ae <existing>' must bring it back (previously only the bridge was ensured).
 "$AE" stop steward 2>/dev/null || true
@@ -1401,7 +1434,10 @@ while ! tmux has-session -t steward 2>/dev/null && ((as_i < 20)); do
     as_i=$((as_i + 1))
 done
 assert_eq "autostart: existing-session relaunch revives the steward" "0" \
-    "$(tmux has-session -t steward 2>/dev/null; echo $?)"
+    "$(
+        tmux has-session -t steward 2>/dev/null
+        echo $?
+    )"
 "$AE" stop steward 2>/dev/null || true
 "$AE" end -f autostart-host 2>/dev/null || true
 sleep 0.5
@@ -1421,18 +1457,19 @@ sleep 0.5
 # $0 dir (records its `up` argv), a stubbed daemon_session_running, and a controlled
 # heartbeat. Proves start / silent no-op / existing-session fast path / STALE-restart.
 _AW_HOOK="$TMPDIR/aw-hook.sh"
-awk '/^_aewatch_autostart_if_available\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "$AE" > "$_AW_HOOK"
+awk '/^_aewatch_autostart_if_available\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "$AE" >"$_AW_HOOK"
 
 # _aw_run <running_rc> <heartbeat: none|fresh|stale> <no_autostart> [no_sidecar] [impl]
 # echoes "invoked:<recorded argv>" or "noop". impl defaults to uv (the opt-in that ARMS
 # the hook); any other value / empty must be a no-op (the exclusivity opt-in gate).
 _aw_run() {
     local running_rc="$1" hb="$2" noauto="$3" no_sidecar="${4:-}" impl="${5-uv}"
-    local d; d="$(mktemp -d "$TMPDIR/aw.XXXXXX")"
+    local d
+    d="$(mktemp -d "$TMPDIR/aw.XXXXXX")"
     mkdir -p "$d/home/aewatch"
     if [[ -z "$no_sidecar" ]]; then
         mkdir -p "$d/contrib/aewatch"
-        cat > "$d/contrib/aewatch/aewatch" <<'FAKE'
+        cat >"$d/contrib/aewatch/aewatch" <<'FAKE'
 #!/usr/bin/env python3
 import sys, pathlib
 pathlib.Path(sys.argv[0] + ".rec").write_text(" ".join(sys.argv[1:]))
@@ -1440,10 +1477,13 @@ FAKE
         chmod +x "$d/contrib/aewatch/aewatch"
     fi
     case "$hb" in
-        fresh) : > "$d/home/aewatch/heartbeat" ;;
-        stale) : > "$d/home/aewatch/heartbeat"; touch -d '2 hours ago' "$d/home/aewatch/heartbeat" ;;
+        fresh) : >"$d/home/aewatch/heartbeat" ;;
+        stale)
+            : >"$d/home/aewatch/heartbeat"
+            touch -d '2 hours ago' "$d/home/aewatch/heartbeat"
+            ;;
     esac
-    cat > "$d/wrapper" <<WRAP
+    cat >"$d/wrapper" <<WRAP
 #!/usr/bin/env bash
 AE_NO_AUTOSTART=$noauto
 AE_WATCHDOG_IMPL=$impl
@@ -1461,7 +1501,7 @@ WRAP
     fi
 }
 
-_AW_START="$(_aw_run 1 none 0)"   # not running, sidecar present, impl=uv -> start
+_AW_START="$(_aw_run 1 none 0)" # not running, sidecar present, impl=uv -> start
 assert_eq "aewatch-autostart: invokes up when available + not running (opt-in uv)" "yes" "$([[ "$_AW_START" == invoked:* ]] && echo yes || echo no)"
 assert_eq "aewatch-autostart: passes up --ae-home + --runner" "yes" "$(grep -qE 'up --ae-home .* --runner (uv|python3)' <<<"$_AW_START" && echo yes || echo no)"
 assert_eq "aewatch-autostart: silent no-op when sidecar script absent" "noop" "$(_aw_run 1 none 0 nosidecar)"
@@ -1495,7 +1535,10 @@ _tg_run() {
     [[ "$marker" == yes ]] && : >"$d/aewatch/bridge-owner"
     case "$hb" in
         fresh) : >"$d/aewatch/heartbeat" ;;
-        stale) : >"$d/aewatch/heartbeat"; touch -d '2 hours ago' "$d/aewatch/heartbeat" ;;
+        stale)
+            : >"$d/aewatch/heartbeat"
+            touch -d '2 hours ago' "$d/aewatch/heartbeat"
+            ;;
     esac
     cat >"$d/wrapper" <<WRAP
 #!/usr/bin/env bash
