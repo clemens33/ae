@@ -1041,6 +1041,7 @@ sleep 0.5
 eval "$(awk '/^_capture_input_region\(\) \{/,/^\}$/' "$AE")"
 eval "$(awk '/^_sgr_parse\(\) \{/,/^\}$/' "$AE")"
 eval "$(awk '/^_input_region_prompt_seg\(\) \{/,/^\}$/' "$AE")"
+eval "$(awk '/^_input_region_content_end\(\) \{/,/^\}$/' "$AE")"
 eval "$(awk '/^_input_region_occupied\(\) \{/,/^\}$/' "$AE")"
 # The payload is the pane's OWN process (not typed into a shell): a shell would echo
 # the command and redraw its prompt, polluting the region with an unstyled ornament.
@@ -1066,6 +1067,61 @@ _input_region_occupied "$ir_pane" codex || ir_rc=$?
 assert_eq "input-region: real seam detects the staged multiline as OCCUPIED (not false-clear)" "0" "$ir_rc"
 tmux kill-session -t ir-geom 2>/dev/null || true
 rm -f "$ir_script"
+
+# ── input-region: CURSOR IS NOT THE REGION END (colead ROUND4 BLOCKER) ───────────
+# cursor_y is the EDIT position, not the last row of the input. A multiline draft keeps
+# real unsent rows BELOW the cursor after cursor navigation (or a leading blank line);
+# bounding the capture at cursor_y dropped them, the sensor read IDLE, and the pre-paste
+# guard would CLOBBER the draft. Reproduced on real tmux by colead: prompt on row 0,
+# unsent continuation on row 1, cursor moved back to row 0 -> region held only the
+# ornament row -> rc=1 (IDLE). This is that seam, with colead's required shape: a BLANK
+# cursor row plus non-blank continuation below it.
+ir2_script="$TMPDIR/ir-cursor.sh"
+cat >"$ir2_script" <<'IRSH'
+printf '\033[1m›\033[0m \n'                       # live prompt row, input BLANK
+printf '  unsent continuation below cursor\n'     # real unsent input, BELOW the cursor
+printf '\n'
+printf '  gpt-5.6-sol xhigh \302\267 ~/projects/clemens33/ae\n'  # the codex footer (chrome)
+printf '\033[H'                                   # park the edit cursor back on row 0
+sleep 300
+IRSH
+tmux kill-session -t ir-cursor 2>/dev/null || true
+tmux new-session -d -s ir-cursor -x 80 -y 24 "bash $ir2_script"
+sleep 1
+ir2_pane="$(tmux list-panes -t ir-cursor -F '#{pane_id}' 2>/dev/null | head -1)"
+ir2_cy="$(tmux display-message -p -t "$ir2_pane" '#{cursor_y}' 2>/dev/null || echo 9)"
+ir2_region="$(_capture_input_region "$ir2_pane")"
+assert_eq "cursor-not-end: the cursor really sits ABOVE the unsent continuation" "1" \
+    "$([[ "$ir2_cy" -lt 1 ]] && echo 1 || echo 0)"
+assert_eq "cursor-not-end: region reaches rows BELOW the cursor (not -E cursor_y)" "1" \
+    "$([[ "$ir2_region" == *'unsent continuation below cursor'* ]] && echo 1 || echo 0)"
+ir2_rc=0
+_input_region_occupied "$ir2_pane" codex || ir2_rc=$?
+assert_eq "cursor-not-end: raw sensor reads OCCUPIED (draft below cursor is real input)" "0" "$ir2_rc"
+# and the consumer that MATTERS for this blocker: pre-paste must refuse to clobber it
+eval "$(awk '/^_paste_input_busy\(\) \{/,/^\}$/' "$AE")"
+ir2_busy=0
+_paste_input_busy "$ir2_pane" codex && ir2_busy=1
+assert_eq "cursor-not-end: pre-paste consumer reads UNSAFE (no clobber of the draft)" "1" "$ir2_busy"
+# The chrome bound must still hold on the same pane: the footer is NOT input content.
+# (If it were counted, an idle pane would read OCCUPIED forever = the ri-3 send outage.)
+tmux kill-session -t ir-cursor 2>/dev/null || true
+ir3_script="$TMPDIR/ir-idle.sh"
+cat >"$ir3_script" <<'IRSH'
+printf '\033[1m›\033[0m \033[2mExplain this codebase\033[0m\n'   # idle: dim placeholder
+printf '\n'
+printf '  gpt-5.6-sol xhigh \302\267 ~/projects/clemens33/ae\n'  # footer chrome below
+sleep 300
+IRSH
+tmux kill-session -t ir-idle 2>/dev/null || true
+tmux new-session -d -s ir-idle -x 80 -y 24 "bash $ir3_script"
+sleep 1
+ir3_pane="$(tmux list-panes -t ir-idle -F '#{pane_id}' 2>/dev/null | head -1)"
+ir3_rc=0
+_input_region_occupied "$ir3_pane" codex || ir3_rc=$?
+assert_eq "chrome-bound: real idle pane w/ footer below stays IDLE (no send outage)" "1" "$ir3_rc"
+tmux kill-session -t ir-idle 2>/dev/null || true
+rm -f "$ir2_script" "$ir3_script"
 
 # ── goal helper: set → list → survives resume ────────────────────────
 REPO_GOAL="$(setup_repo)"

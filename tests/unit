@@ -4643,6 +4643,7 @@ assert_eq "slot-resolver: unstamped pane present -> still routes to stamped pane
 eval "$(awk '/^_capture_input_region\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_sgr_parse\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_input_region_prompt_seg\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_input_region_content_end\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_input_region_occupied\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_paste_still_staged\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_paste_input_busy\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
@@ -4745,6 +4746,43 @@ assert_eq "nb1: mid-gen — bold prose '›' + line-leading BOLD+DIM echo, no li
 # selector reads the upper row and returns occupied -> post-submit false staged.
 assert_eq "nb1: bottom-most line-leading ornament wins over an earlier occupied one" "idle" \
     "$(_occ codex '\033[1m›\033[0m an earlier prompt row with content\n\033[1m›\033[0m \033[2mExplain this codebase\033[0m')"
+# ── colead ROUND4 BLOCKER: the cursor is NOT the end of the input ────────────────
+# cursor_y is the EDIT position. A multiline draft keeps real unsent rows BELOW it after
+# cursor navigation or a leading blank line, and bounding the capture at cursor_y dropped
+# them -> false IDLE -> the pre-paste guard clobbers a live draft. The region is now the
+# whole visible pane and CONTENT is bounded by the chrome under the box instead, so the
+# read no longer depends on where the edit cursor happens to sit.
+# colead's required shape: BLANK prompt row + non-blank continuation below it.
+assert_eq "cursor-end: blank prompt row + continuation below -> occupied" "occupied" \
+    "$(_occ codex '\033[1m›\033[0m \n  unsent continuation below cursor')"
+assert_eq "cursor-end: blank claude prompt row + continuation below -> occupied" "occupied" \
+    "$(_occ claude '\033[39m❯\xc2\xa0\n  unsent continuation below cursor')"
+# ── the chrome bound, from REAL live-pane captures (2026-07-15) ──────────────────
+# Counting chrome as content is the OTHER failure direction and it is worse than it
+# looks: an idle pane would read OCCUPIED forever, every send would defer, and that is
+# the ri-3 fleet-wide comms outage. These are the real rows below each tool's box.
+# codex: a blank row, then the model/path footer (no bottom border).
+assert_eq "chrome: REAL codex idle + footer below -> idle (footer is not input)" "idle" \
+    "$(_occ codex '\033[0;1m›\033[0m \033[2mExplain this codebase\033[0m\n\n  \033[38;2;246;226;183mgpt-5.6-sol xhigh\033[2m\033[39m \xc2\xb7 \033[0m\033[38;2;171;223;167m~/projects/clemens33/ae\033[39m')"
+assert_eq "chrome: REAL codex staged + footer below -> occupied" "occupied" \
+    "$(_occ codex '\033[0;1m›\033[0m [Pasted Content 1469 chars]\n\n  \033[38;2;246;226;183mgpt-5.6-sol xhigh\033[2m\033[39m \xc2\xb7 \033[0m\033[38;2;171;223;167m~/projects/clemens33/ae\033[39m')"
+# claude: the box's bottom border row, then the model/status rows.
+assert_eq "chrome: REAL claude idle + border/status below -> idle (no send outage)" "idle" \
+    "$(_occ claude '\033[38;5;246m❯\xc2\xa0\033[39m\n\033[38;5;244m────────────\033[39m\n\033[39m  \033[38;5;246m🧠\033[39m \033[38;5;246mOpus\033[39m \033[38;5;246m4.8\033[39m \033[38;5;246m(xhigh)\033[39m\n  \033[38;5;211m⏵⏵\033[39m \033[38;5;211mbypass\033[39m \033[38;5;211mpermissions\033[39m \033[38;5;211mon\033[39m')"
+assert_eq "chrome: REAL claude typed + border/status below -> occupied" "occupied" \
+    "$(_occ claude '\033[38;5;246m❯\xc2\xa0human draft\033[39m\n\033[38;5;244m────────────\033[39m\n\033[39m  \033[38;5;246m🧠\033[39m \033[38;5;246mOpus\033[39m \033[38;5;246m4.8\033[39m \033[38;5;246m(xhigh)\033[39m')"
+# A multiline draft whose LAST row carries the only content, with chrome below it: the
+# bound must not clip the draft's tail (that would be the clobber direction again).
+assert_eq "chrome: claude multiline, content only on the LAST input row -> occupied" "occupied" \
+    "$(_occ claude '\033[39m❯\xc2\xa0\n  \n  the only content is on this last row\n\033[38;5;244m────────────\033[39m\n  \033[38;5;246mOpus\033[39m')"
+# The codex bound must be the LAST blank row below the prompt, not the first: a draft
+# carries its own blank rows (an empty first line, a paragraph break) and stopping at one
+# drops the real text below it -> false IDLE -> clobber, the same class as the cursor
+# bound this replaced. Mutating it to first-blank must fail here.
+assert_eq "chrome: codex draft below a LEADING blank continuation row -> occupied" "occupied" \
+    "$(_occ codex '\033[1m›\033[0m \n  \n  the real draft text\n\n  \033[38;2;246;226;183mgpt-5.6-sol xhigh\033[39m')"
+assert_eq "chrome: codex draft with an internal paragraph break -> occupied" "occupied" \
+    "$(_occ codex '\033[1m›\033[0m first paragraph\n  \n  second paragraph\n\n  \033[38;2;246;226;183mgpt-5.6-sol xhigh\033[39m')"
 assert_eq "occ: codex unreadable region -> indeterminate" "indeterminate" "$(_occ codex '')"
 # _sgr_parse must ADVANCE on a non-CSI ESC. The old loop matched an empty text run
 # there and spun forever; a hung sensor hangs the send path, so this test is the
@@ -4902,16 +4940,24 @@ assert_eq "settle: claude paste->Enter settle bumped to 0.3s, codex unchanged" "
 # _input_region_prompt_seg is load-bearing: unemitted, every codex send would call an
 # undefined function, read indeterminate, and silently stop verifying submits.
 assert_eq "emission: sensor + SGR parser + prompt selector + predicates in send-path _lib" "1" \
-    "$([[ "$AE_SOURCE" == *'ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_occupied _paste_still_staged'* ]] && echo 1 || echo 0)"
-# Geometry: the capture is bounded by #{cursor_y} with NO invented row-count window.
-# The old cy-8 look-back was a fabricated bound (deepest real fixture = 4 rows, a
-# SAMPLE not a limit): a legal 10-row multiline hides its prompt above the window ->
-# no prompt found -> post-submit maps that to clear -> false success (colead BLOCKER
-# 2). The real capture+sensor seam is exercised against live tmux in tests/integration
-# ("input-region: prompt >8 rows above cursor"), because a source-text match like this
-# one cannot prove geometry — colead's finding that the old geometry test was inert.
-assert_eq "geometry: capture is 0..#{cursor_y}, no fixed look-back window" "1" \
-    "$([[ "$AE_SOURCE" == *"'#{cursor_y}'"* && "$AE_SOURCE" == *'capture-pane -e -p -t "$pane" -S 0 -E "$cy"'* && "$AE_SOURCE" != *'cy > 8 ? cy - 8'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_content_end _input_region_occupied _paste_still_staged'* ]] && echo 1 || echo 0)"
+# Geometry: the capture has NO bottom bound at all — neither an invented row-count
+# window (the old cy-8: a fabricated limit, so a legal 10-row multiline hid its prompt
+# above it -> no prompt -> post-submit "clear" -> false success, colead BLOCKER 2) nor
+# the CURSOR ROW (cursor_y is the EDIT position, so a draft extends below it -> dropped
+# rows -> false IDLE -> the pre-paste guard clobbers the draft, colead ROUND4 BLOCKER).
+# The bottom is bounded by the box's CHROME instead (_input_region_content_end), which
+# is a property of the rendered box rather than of where the caret happens to be.
+# Source-text matching cannot prove geometry — that is colead's finding that the old
+# geometry test was inert — so both real seams live in tests/integration
+# ("input-region: prompt >8 rows above cursor", "cursor-not-end: ...").
+assert_eq "geometry: capture is unbounded below; cursor_y is NOT a bound" "1" \
+    "$([[ "$AE_SOURCE" == *'tmux capture-pane -e -p -t "$pane" -S 0 2>/dev/null'* && "$AE_SOURCE" != *'-S 0 -E "$cy"'* && "$AE_SOURCE" != *'cy > 8 ? cy - 8'* ]] && echo 1 || echo 0)"
+# The sensed region must not consult the edit cursor at all — the blocker was that
+# cursor_y answered a question ("where does the input end?") it cannot answer.
+# (matches the tmux QUERY, not the prose: the body documents why cursor_y is unusable)
+assert_eq "geometry: _capture_input_region never queries the cursor" "1" \
+    "$([[ "$(awk '/^_capture_input_region\(\) \{/,/^\}$/' <<<"$AE_SOURCE")" != *'#{cursor_y}'* && "$(awk '/^_capture_input_region\(\) \{/,/^\}$/' <<<"$AE_SOURCE")" != *'display-message'* ]] && echo 1 || echo 0)"
 
 # submit-verification bounded retry + LOUD failure. Stub _paste_still_staged to
 # stay staged for the first N checks; count Enter keystrokes.

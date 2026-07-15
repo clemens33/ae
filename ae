@@ -6822,32 +6822,34 @@ ae_find_request() {
     return 1
 }
 
-# Capture the pane's INPUT REGION with SGR escape sequences PRESERVED (capture-pane
-# -e), bounded by the CURSOR ROW (#{cursor_y}) rather than tail -N. tail -N is
-# geometry-blind: a top-anchored TUI input box can sit far above the pane bottom, so
-# a fixed bottom slice can miss the live input entirely (and catch transcript echo
-# instead — the F4 false-positive class). The cursor sits on the LAST row of the live
-# input, so this captures [0 .. cursor_y] and lets the per-tool anchor pick the last
-# semantic live prompt; no row-count window is imposed (see below). ONE sensor, TWO
-# consumers (_paste_input_busy pre-paste, _paste_still_staged post-submit).
-# UNREADABLE DIRECTIONS DIFFER, deliberately: no cursor / unreadable -> empty output;
+# Capture the pane's INPUT REGION with SGR escape sequences PRESERVED (capture-pane -e).
+# tail -N was geometry-blind: a top-anchored TUI input box can sit far above the pane
+# bottom, so a fixed bottom slice misses the live input and catches transcript echo
+# instead (the F4 false-positive class). A fixed look-back (the old cy-8) was an INVENTED
+# bound — the deepest real fixture was 4 rows, a sample not a limit — so a legal 10-row
+# multiline input hid its prompt above the window, no prompt was found, and post-submit
+# mapped that to "clear" = false success = silent loss (colead BLOCKER 2, reproduced).
+# ONE sensor, TWO consumers (_paste_input_busy pre-paste, _paste_still_staged
+# post-submit). UNREADABLE DIRECTIONS DIFFER, deliberately: unreadable -> empty output;
 # _paste_input_busy treats empty as UNSAFE (fail-closed: defer, never clobber), while
 # _paste_still_staged maps indeterminate to "clear" — the F4 compromise that trades a
 # rare missed retry for never duplicating an already-sent message.
 _capture_input_region() {
-    local pane="$1" cy
-    cy="$(tmux display-message -p -t "$pane" '#{cursor_y}' 2>/dev/null || true)"
-    [[ "$cy" =~ ^[0-9]+$ ]] || return 0 # no cursor row -> empty -> fail-closed at caller
-    # Everything visible from the TOP of the pane through the CURSOR row. No row-count
-    # window: a fixed look-back (the old cy-8) was an INVENTED bound — the deepest real
-    # fixture was 4 rows, which is a sample, not a limit. A legal 10-row multiline input
-    # puts its prompt ornament above any such window, the sensor then finds no prompt and
-    # post-submit maps that to "clear" = false success = the silent loss this slice
-    # exists to kill (colead BLOCKER 2, reproduced). Rows above the input are only
-    # transcript, and the per-tool anchor selects the LAST *semantic* live prompt, so
-    # extra context is inert — cost is a slightly bigger capture, which is the right
-    # trade against a false success.
-    tmux capture-pane -e -p -t "$pane" -S 0 -E "$cy" 2>/dev/null || true
+    # The WHOLE visible pane. Bounding the bottom at [0 .. cursor_y] was wrong in the
+    # DANGEROUS direction: cursor_y is the EDIT position, not the end of the input. A
+    # multiline draft keeps real unsent rows BELOW the cursor after cursor navigation or
+    # a leading blank line; -E cursor_y dropped them, the sensor read IDLE, and the
+    # pre-paste guard would CLOBBER a live draft (colead ROUND4 BLOCKER, reproduced on
+    # real tmux: prompt row 0, unsent continuation row 1, cursor parked back on row 0 ->
+    # region held only the ornament row -> IDLE). The region therefore no longer depends
+    # on where the edit cursor happens to sit.
+    # Rows ABOVE the input are transcript, and the structural anchor
+    # (_input_region_prompt_seg) picks the live prompt out of them; rows BELOW it are the
+    # box's chrome, which _input_region_content_end excludes. Extra context is inert — a
+    # slightly bigger capture is the right trade against both a false success and a
+    # clobber.
+    local pane="$1"
+    tmux capture-pane -e -p -t "$pane" -S 0 2>/dev/null || true
     return 0
 }
 
@@ -7014,8 +7016,62 @@ _input_region_prompt_seg() { # <live_only:0|1> <ornament>... -> 0 + _SGR_PROMPT_
     return 1
 }
 
-# Occupancy of the target's live input box, from the cursor-derived region (colead
-# characterization, 2026-07-14). PER-TOOL — the "empty" tell differs. Returns:
+# Where the input box ENDS: the first CHROME row below the prompt, exclusive. Sets
+# _SGR_CONTENT_END (a line index; rows >= it are not input).
+#
+# This replaces cursor_y as the bottom bound. The cursor could not do this job — it marks
+# the EDIT position, so a draft can extend below it (colead ROUND4 BLOCKER) — but
+# something must, because the capture now runs to the pane bottom and every input box has
+# chrome under it. Counting chrome as content is the OPPOSITE failure and it is worse
+# than it looks: an idle pane would read OCCUPIED forever, every send would defer, and
+# that is the ri-3 fleet-wide comms outage. So this bound is load-bearing in BOTH
+# directions — too high clobbers a draft, too low blocks all delivery.
+#
+# The boundary is per-tool because the two real layouts differ (live captures,
+# 2026-07-15) — each tool is given the row that actually closes ITS box:
+#   claude ('border') — the box's BOTTOM BORDER sits directly under the input (a row
+#           whose first non-blank cell is '─'), then the model/status rows and specimen
+#           #5's 'paste again to expand' hint. Claude must NOT stop at a blank row: a
+#           draft can contain one, and clipping there would drop the rows below it.
+#   codex  ('blank')  — no bottom border at all: a BLANK row, then the model/path footer
+#           ('  gpt-5.6-sol xhigh · ~/projects/clemens33/ae').
+# Deliberately NOT "the pane's last non-blank row is the footer": that guesses chrome
+# from position, and with no footer present it clips the draft's last row instead —
+# the clobber direction, caught by the fixtures.
+_input_region_content_end() { # <prompt_line> <stop_at: border|blank>
+    local pl="$1" stop_at="$2" n=${#_SGR_TEXT[@]} i line lead rest
+    local -a nonblank=()
+    _SGR_CONTENT_END=$((${_SGR_LINE[n - 1]} + 1)) # default: everything below the prompt
+    for ((i = 0; i < n; i++)); do
+        line=${_SGR_LINE[i]}
+        ((line > pl)) || continue
+        ((line < _SGR_CONTENT_END)) || continue
+        [[ -z "${_SGR_TEXT[i]//[[:space:]]/}" ]] && continue
+        nonblank[line]=1
+        if [[ "$stop_at" == "border" ]]; then
+            lead="${_SGR_TEXT[i]}"
+            rest="${lead#"${lead%%[![:space:]]*}"}"
+            [[ "$rest" == '─'* ]] && _SGR_CONTENT_END=$line
+        fi
+    done
+    if [[ "$stop_at" == "blank" ]]; then
+        # The LAST blank row below the prompt — codex's separator above the footer.
+        # Deliberately not the FIRST: a draft carries its own blank rows (an empty first
+        # line, a paragraph break), and stopping at one of those drops the real text
+        # below it -> false IDLE -> clobber. That is the same class as the cursor bound
+        # this replaced, so the bound has to be the LAST one to stay on the safe side.
+        for ((line = _SGR_CONTENT_END - 1; line > pl; line--)); do
+            if [[ -z "${nonblank[line]:-}" ]]; then
+                _SGR_CONTENT_END=$line
+                break
+            fi
+        done
+    fi
+    return 0
+}
+
+# Occupancy of the target's live input box (colead characterization, 2026-07-14/15).
+# PER-TOOL — the "empty" tell differs. Returns:
 #   0 = OCCUPIED       real typed/staged content sits in the input
 #   1 = IDLE           bare ornament / a dim placeholder suggestion only
 #   2 = INDETERMINATE  no live prompt in view / unreadable — callers fail-closed
@@ -7049,6 +7105,7 @@ _input_region_occupied() {
             # visually identical prefixes, opposite meanings.
             _input_region_prompt_seg 1 '›' || return 2 # no live prompt (mid-gen/abnormal)
             live=$_SGR_PROMPT_SEG
+            _input_region_content_end "${_SGR_LINE[live]}" blank
             # Content = everything after the ANCHOR ornament only. Removing every '›'
             # in the region (the old tr -d) made a user-typed ornament vanish, reading
             # real input as idle and permitting a clobber — violating the very class
@@ -7056,6 +7113,8 @@ _input_region_occupied() {
             # printable content that follows it, including further ornaments.
             s="${_SGR_PROMPT_TAIL#*›}"
             for ((i = live + 1; i < ${#_SGR_TEXT[@]}; i++)); do
+                # Below the box (blank row + model/path footer) is chrome, not input.
+                ((_SGR_LINE[i] < _SGR_CONTENT_END)) || break
                 # DIM-state text is the placeholder suggestion — not user content.
                 [[ "${_SGR_DIM[i]}" == 1 ]] && continue
                 s+="${_SGR_TEXT[i]}"
@@ -7098,10 +7157,13 @@ _input_region_occupied() {
             local i s
             _sgr_parse "$region"
             _input_region_prompt_seg 0 '❯' '>' '▌' || return 2 # no live prompt in view
+            _input_region_content_end "${_SGR_LINE[$_SGR_PROMPT_SEG]}" border
             s="${_SGR_PROMPT_TAIL#"$_SGR_PROMPT_ORN"}"
-            # Continuation rows of a multiline input sit between the prompt row and the
-            # cursor; the prompt is bottom-most, so everything after it is input.
+            # Continuation rows of a multiline draft sit BELOW the prompt row — including
+            # below the edit cursor — and are real unsent input; the box's bottom border
+            # (then the status/hint rows) is where they stop being input.
             for ((i = _SGR_PROMPT_SEG + 1; i < ${#_SGR_TEXT[@]}; i++)); do
+                ((_SGR_LINE[i] < _SGR_CONTENT_END)) || break
                 s+="${_SGR_TEXT[i]}"
             done
             s="${s//$'\xc2\xa0'/ }" # NBSP (U+00A0) follows ❯ on a real idle row
@@ -9864,7 +9926,7 @@ LIBPROLOGUE
             ae_preview_text ae_extract_req_id ae_log_append ae_log_read \
             ae_target_tool ae_json_escape ae_emit_event ae_latest_state_for \
             _event_json_str _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
-            ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
+            ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_content_end _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
             command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
             ae_meta_get ae_meta_set ae_meta_unset
     } >"${AE_META}/_lib.tmp.$$"
