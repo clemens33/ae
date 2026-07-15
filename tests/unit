@@ -4643,6 +4643,7 @@ assert_eq "slot-resolver: unstamped pane present -> still routes to stamped pane
 eval "$(awk '/^_capture_input_region\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_sgr_parse\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_input_region_prompt_seg\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_input_region_is_border\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_input_region_content_end\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_input_region_occupied\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_paste_still_staged\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
@@ -4767,8 +4768,13 @@ assert_eq "chrome: REAL codex idle + footer below -> idle (footer is not input)"
 assert_eq "chrome: REAL codex staged + footer below -> occupied" "occupied" \
     "$(_occ codex '\033[0;1m›\033[0m [Pasted Content 1469 chars]\n\n  \033[38;2;246;226;183mgpt-5.6-sol xhigh\033[2m\033[39m \xc2\xb7 \033[0m\033[38;2;171;223;167m~/projects/clemens33/ae\033[39m')"
 # claude: the box's bottom border row, then the model/status rows.
+# REAL pristine-idle rig capture (v2.1.209): empty prompt, the box's real FULL-WIDTH
+# bottom border, then the model/status rows. The earlier version of this fixture had a
+# hand-shortened 12-cell border — not byte-faithful, and the width test correctly
+# rejected it. A fixture that is not what the pane actually emits proves nothing.
+_hu_idle='\033[38;5;244m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m❯\xc2\xa0\n\033[38;5;244m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m  \033[38;5;246m🧠 Haiku 4.5  📁 b1rig\033[39m\n  \033[38;5;211m⏵⏵\033[39m \033[38;5;211mbypass\033[39m \033[38;5;211mpermissions\033[39m \033[38;5;211mon\033[38;5;246m (shift+tab\033[39m \033[38;5;246mto\033[39m \033[38;5;246mcycle)\033[39m \033[38;5;246m·\033[39m \033[38;5;246m←\033[39m \033[38;5;246mfor\033[39m \033[38;5;246magents\033[39m\n'
 assert_eq "chrome: REAL claude idle + border/status below -> idle (no send outage)" "idle" \
-    "$(_occ claude '\033[38;5;246m❯\xc2\xa0\033[39m\n\033[38;5;244m────────────\033[39m\n\033[39m  \033[38;5;246m🧠\033[39m \033[38;5;246mOpus\033[39m \033[38;5;246m4.8\033[39m \033[38;5;246m(xhigh)\033[39m\n  \033[38;5;211m⏵⏵\033[39m \033[38;5;211mbypass\033[39m \033[38;5;211mpermissions\033[39m \033[38;5;211mon\033[39m')"
+    "$(_occ claude "$_hu_idle")"
 assert_eq "chrome: REAL claude typed + border/status below -> occupied" "occupied" \
     "$(_occ claude '\033[38;5;246m❯\xc2\xa0human draft\033[39m\n\033[38;5;244m────────────\033[39m\n\033[39m  \033[38;5;246m🧠\033[39m \033[38;5;246mOpus\033[39m \033[38;5;246m4.8\033[39m \033[38;5;246m(xhigh)\033[39m')"
 # A multiline draft whose LAST row carries the only content, with chrome below it: the
@@ -4881,8 +4887,10 @@ assert_eq "nb2: REAL line-start-'>' attempts BELOW a live empty prompt -> idle" 
     "$(_occ claude "$_cl_linestart"'\033[39m❯\xc2\xa0\n')"
 # (5) specimen #5 — staging-hint drift. The staged token sits UNSTYLED on the prompt row,
 # so the CLASS rule (any content after the ornament) already reports occupied. The hint
-# 'paste again to expand' is THREE ROWS BELOW cursor_y — outside a 0..cy capture entirely.
-# So occupancy must never depend on, or text-match, that hint: it is not reachable.
+# 'paste again to expand' renders BELOW the box's bottom border, so the CHROME BOUND
+# excludes it — occupancy must never depend on, or text-match, that hint, and its phrasing
+# can drift freely. (colead's capture measured the hint three rows below cursor_y; that
+# framing is stale — the capture is the whole pane now, so the hint IS in the region.)
 assert_eq "nb2: REAL specimen-5 staged token on prompt row -> occupied" "occupied" "$(_occ claude "$_cl_staged")"
 # The region is the WHOLE pane now, so the hint IS captured (it was not, back when the
 # capture stopped at cursor_y — that bound is gone, see the ROUND4 blocker). It reaching
@@ -4949,6 +4957,119 @@ assert_eq "cursor-end: REAL claude draft, empty prompt row + text below cursor -
 # (marker must sit inside ONE SGR run — claude styles the status row word by word)
 assert_eq "cursor-end: REAL claude box — the status row below the border is not content" "1" \
     "$(_cl_end "$_hu_blankfirst" border 'bypass')"
+# ── colead ROUND5 BLOCKER 1: a '─' PREFIX is not a border ───────────────────────
+# REAL v2.1.209 rig capture of colead's adversarial region: empty live prompt row, a
+# continuation row the user pasted starting '─ user-pasted heading', the body below it,
+# then the box's real bottom border and status rows. Measured on that live pane, the
+# glyph-prefix bound read sensor=IDLE / pre-paste=safe — it would have CLOBBERED the
+# draft. The bound must identify a border POSITIVELY, not by first-cell glyph:
+#   real border  -> printable content is ENTIRELY U+2500 *and* spans the full region width
+#   pasted rule  -> '─ user-pasted heading' has other characters (fails morphology) and is
+#                   23 cells wide against the box's 167 (fails width)
+# Both discriminators come from the capture, not from reasoning about what a border is.
+_hu_heading='\033[38;5;244m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m❯\xc2\xa0\n  ─ user-pasted heading\n  the unsent body sits below that heading\n\033[38;5;244m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m  \033[38;5;246m🧠 Haiku 4.5  📁 b1rig\033[39m                                                                                                                    \033[38;5;246mctrl+g to edit in VS Code\033[39m\n  \033[38;5;211m⏵⏵\033[39m \033[38;5;211mbypass\033[39m \033[38;5;211mpermissions\033[39m \033[38;5;211mon\033[38;5;246m (shift+tab\033[39m \033[38;5;246mto\033[39m \033[38;5;246mcycle)\033[39m\n'
+assert_eq "b1: REAL draft w/ a pasted '─ heading' row -> occupied (border is not a prefix)" "occupied" \
+    "$(_occ claude "$_hu_heading")"
+assert_eq "b1: the pasted-heading row is NOT taken as the border (real border is)" "1" \
+    "$(_cl_end "$_hu_heading" border 'bypass')"
+# Morphology alone is NOT enough either, which is why the border test also checks width.
+# REAL rig capture: a user pastes a short rule line into a draft. That row IS pure U+2500
+# — morphologically a border — but it is 11 cells against the box's 167. Without the
+# width test it truncates the region and the body below it reads IDLE: BLOCKER 1 again,
+# wearing different clothes. (Found by mutation: dropping the width test broke no test.)
+_hu_rule='\033[38;5;244m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m❯\xc2\xa0\n  ─────────\n  body below a pasted rule line\n\033[38;5;244m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m  \033[38;5;246m🧠 Haiku 4.5  📁 b1rig\033[39m                                                                                                                    \033[38;5;246mctrl+g to edit in VS Code\033[39m\n  \033[38;5;211m⏵⏵\033[39m \033[38;5;211mbypass\033[39m \033[38;5;211mpermissions\033[39m \033[38;5;211mon\033[38;5;246m (shift+tab\033[39m \033[38;5;246mto\033[39m \033[38;5;246mcycle)\033[39m\n'
+assert_eq "b1: REAL draft w/ a pasted SHORT rule line -> occupied (width separates it)" "occupied" \
+    "$(_occ claude "$_hu_rule")"
+# ── _input_region_is_border contract (colead ROUND5: identify POSITIVELY) ────────
+# Pinned at the FUNCTION, not through a region, and the reason is worth recording: no
+# real claude region can currently exercise the width test, because continuation rows
+# carry a 2-space gutter, so a draft row is never pure U+2500 and morphology alone
+# already decides every real capture. The width test is defence-in-depth for a renderer
+# that drops the gutter — the clobber direction is the one that keeps biting this slice,
+# so the redundancy stays. (Mutation found this: dropping the width test broke no test
+# even with the real short-rule fixture present.)
+eval "$(awk '/^_input_region_is_border\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_bar() { local n="$1" o="" i; for ((i = 0; i < n; i++)); do o+='─'; done; printf '%s' "$o"; }
+_isb() { _input_region_is_border "$1" "$2" && echo border || echo not-border; }
+assert_eq "is-border: full-width pure U+2500 -> border" "border" "$(_isb "$(_bar 167)" 167)"
+assert_eq "is-border: short pure U+2500 rule -> NOT border (width)" "not-border" "$(_isb "$(_bar 11)" 167)"
+assert_eq "is-border: '─ heading' -> NOT border (morphology)" "not-border" "$(_isb "─ user-pasted heading" 167)"
+assert_eq "is-border: gutter + bars -> NOT border (a draft row keeps its gutter)" "not-border" "$(_isb "  $(_bar 9)" 167)"
+assert_eq "is-border: welcome-box rule '╭───' -> NOT border" "not-border" "$(_isb "╭$(_bar 166)" 167)"
+assert_eq "is-border: empty row -> NOT border" "not-border" "$(_isb "" 167)"
+
+# ── colead ROUND5 BLOCKER 2: spawn readiness must go THROUGH the sensor ──────────
+# REAL v2.1.209 trust dialog, captured from a disposable rig. The sensor already read
+# this state OCCUPIED — but _cmd_spawn never asked it. It polled for
+# '❯|bypass permissions|for shortcuts', and this dialog satisfies BOTH ('❯ 1. Yes, I
+# trust this folder' plus a 'bypass permissions' footer), so it read READY and the worker
+# brief was pasted INTO THE MODAL, where Enter answers the dialog instead of submitting.
+# On timeout it pasted anyway, and tmux_paste_submit's failure was swallowed by `|| true`
+# -> a launched, brief-less worker with no signal. Pinned at the SPAWN CALLER, per
+# colead: proving the sensor alone is what let this ship.
+_sp_trust='\033[38;5;220m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m \033[1m\033[38;5;220mAccessing\033[0m \033[1m\033[38;5;220mworkspace:\033[0m\n\n \033[1m/tmp/claude-1000/-home-ckriech-projects-clemens33-ae/2ccfd9a6-8b8f-4bd0-a261-641af492bd21/scratchpad/humantyped\033[0m\n\n Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a\n moment to review what\047s in this folder first.\n\n Claude Code\047ll be able to read, edit, and execute files here.\n\n \033[38;5;246m\033]8;id=zaxmda;https://code.claude.com/docs/en/security\033\\Security guide\033[39m\033]8;;\033\\\n\n \033[38;5;153m❯\033[39m \033[38;5;246m1.\033[39m \033[38;5;153mYes,\033[39m \033[38;5;153mI\033[39m \033[38;5;153mtrust\033[39m \033[38;5;153mthis\033[39m \033[38;5;153mfolder\033[39m\n   \033[38;5;246m2.\033[39m No, exit\n\n \033[38;5;246mEnter\033[39m \033[38;5;246mto\033[39m \033[38;5;246mconfirm\033[39m \033[38;5;246m·\033[39m \033[38;5;246mEsc\033[39m \033[38;5;246mto\033[39m \033[38;5;246mcancel\033[39m\n'
+eval "$(awk '/^_spawn_input_ready\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_spr() {  # <tool_kind> <capture-fixture-printf_b> -> ready|not-ready
+    local _R
+    _R="$(printf '%b' "$2")"
+    # shellcheck disable=SC2317
+    _capture_input_region() { printf '%s' "$_R"; }
+    # shellcheck disable=SC2317
+    tmux() { [[ "$1" == capture-pane ]] && printf '%s' "$_R"; return 0; }
+    _spawn_input_ready "%1" "$1" && echo ready || echo not-ready
+}
+assert_eq "b2: REAL trust dialog is NOT spawn-ready (brief must not enter a modal)" "not-ready" \
+    "$(_spr claude "$_sp_trust")"
+assert_eq "b2: REAL idle claude IS spawn-ready" "ready" "$(_spr claude "$_hu_idle")"
+assert_eq "b2: a human draft in the box is NOT spawn-ready (never clobber it)" "not-ready" \
+    "$(_spr claude "$_hu_typed")"
+assert_eq "b2: boot gap (no TUI drawn yet) is NOT spawn-ready" "not-ready" "$(_spr claude '')"
+assert_eq "b2: codex idle IS spawn-ready" "ready" \
+    "$(_spr codex '\033[0;1m›\033[0m \033[2mExplain this codebase\033[0m\n\n  \033[38;2;246;226;183mgpt-5.6-sol xhigh\033[39m')"
+assert_eq "b2: codex staged paste is NOT spawn-ready" "not-ready" \
+    "$(_spr codex '\033[0;1m›\033[0m [Pasted Content 1469 chars]\n\n  \033[38;2;246;226;183mgpt-5.6-sol xhigh\033[39m')"
+# Unmodeled TUIs (gemini) have no sensor predicate — _paste_input_busy calls them safe
+# unconditionally, which would mean "ready" the moment the pane exists: the boot-gap
+# paste this poll exists to prevent. They keep the marker probe they always had.
+assert_eq "b2: unmodeled tool keeps the marker probe (boot gap still guarded)" "not-ready" \
+    "$(_spr gemini 'still booting, no UI yet')"
+assert_eq "b2: unmodeled tool with a composed UI is ready" "ready" "$(_spr gemini '❯ ')"
+# On timeout the caller must NOT paste, and must say so LOUDLY.
+assert_eq "b2: spawn does not paste when readiness never confirms" "1" \
+    "$([[ "$AE_SOURCE" == *'if ((_ready == 0)); then'* && "$AE_SOURCE" == *'brief NOT delivered (input busy, modal, or unreadable)'* ]] && echo 1 || echo 0)"
+assert_eq "b2: spawn paste status is captured, not swallowed by '|| true'" "1" \
+    "$([[ "$AE_SOURCE" == *'tmux_paste_submit "$pane_id" "$prompt" || _paste_rc=$?'* \
+        && "$AE_SOURCE" == *'brief submit UNCONFIRMED'* \
+        && "$AE_SOURCE" != *'tmux_paste_submit "$pane_id" "$prompt" || true'* ]] && echo 1 || echo 0)"
+assert_eq "b2: spawn readiness no longer greps markers for modeled tools" "1" \
+    "$([[ "$AE_SOURCE" == *'_spawn_input_ready "$pane_id" "$tool_kind"'* ]] && echo 1 || echo 0)"
+
+# ── set -e liveness: the sensor is called from `ae`, which runs set -euo pipefail ──
+# These functions were NOT set -e safe and the suite could never have shown it: tests/unit
+# does not enable errexit, the generated helpers do not either, and every production call
+# happened to sit in an `if` condition, where set -e is suspended. So the bug was real and
+# fully masked. `((x++))` yields the OLD value, so at 0 it is a FALSE arithmetic result ->
+# status 1 -> a bare call aborts the caller mid-way. `_cmd_spawn` now calls this tree, and
+# a spawn dying inside the sensor would be the silent-loss class wearing a crash.
+# Drive them BARE (no condition context) under set -euo pipefail — that is the only shape
+# that can catch it.
+_sete_probe() { # -> ok|ABORT:<stage>
+    timeout 10 bash -c '
+        set -euo pipefail
+        for fn in _sgr_parse _input_region_is_border _input_region_content_end \
+            _input_region_prompt_seg _input_region_occupied; do
+            eval "$(awk "/^${fn}\(\) \{/,/^\}\$/" "$1")"
+        done
+        echo -n ""
+        _sgr_parse "$(printf "%b" "\033[1m›\033[0m draft\n  second row\n\n  footer")"
+        _input_region_content_end 0 blank
+        _input_region_prompt_seg 1 "›"
+        printf "ok"
+    ' _ "$(dirname "$0")/../ae" 2>/dev/null || printf "ABORT:rc=%s" "$?"
+    return 0
+}
+assert_eq "set-e: bare sensor calls survive errexit (no ((x++)) at zero)" "ok" "$(_sete_probe)"
+
 # ── consumer 2: _paste_input_busy (pre-paste) — IDLE=safe, OCCUPIED/INDETERMINATE=unsafe ──
 _pib() { # <tool> <region-printf_b> -> safe|unsafe
     local _R
@@ -4974,6 +5095,13 @@ assert_eq "input-busy: claude mid-gen (no ornament) -> unsafe" "unsafe" "$(_pib 
 assert_eq "human-typed: REAL typed draft -> pre-paste UNSAFE (protect the human)" "unsafe" "$(_pib claude "$_hu_typed")"
 assert_eq "cursor-end: REAL claude draft below the cursor -> pre-paste UNSAFE (no clobber)" "unsafe" \
     "$(_pib claude "$_hu_blankfirst")"
+# colead ROUND5 B1 sensor-WIRING regression: the same region through the CONSUMER that
+# would do the damage. Measured on the live pane before the fix: pre-paste read safe.
+assert_eq "b1: REAL pasted-heading draft -> pre-paste UNSAFE (wiring, not just the bound)" "unsafe" \
+    "$(_pib claude "$_hu_heading")"
+assert_eq "chrome: REAL claude idle -> pre-paste SAFE (delivery is not blocked)" "safe" \
+    "$(_pib claude "$_hu_idle")"
+assert_eq "b1: REAL pasted-rule draft -> pre-paste UNSAFE (wiring)" "unsafe" "$(_pib claude "$_hu_rule")"
 assert_eq "input-busy: unknown tool -> safe (no predicate, don't regress)" "safe" "$(_pib bash 'anything')"
 
 # The claude launch DISABLES the input-box ghost suggestion (so idle==bare ornament).
@@ -4988,7 +5116,7 @@ assert_eq "settle: claude paste->Enter settle bumped to 0.3s, codex unchanged" "
 # _input_region_prompt_seg is load-bearing: unemitted, every codex send would call an
 # undefined function, read indeterminate, and silently stop verifying submits.
 assert_eq "emission: sensor + SGR parser + prompt selector + predicates in send-path _lib" "1" \
-    "$([[ "$AE_SOURCE" == *'ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_content_end _input_region_occupied _paste_still_staged'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_is_border _input_region_content_end _input_region_occupied _paste_still_staged'* ]] && echo 1 || echo 0)"
 # Geometry: the capture has NO bottom bound at all — neither an invented row-count
 # window (the old cy-8: a fabricated limit, so a legal 10-row multiline hid its prompt
 # above it -> no prompt -> post-submit "clear" -> false success, colead BLOCKER 2) nor
@@ -5056,12 +5184,7 @@ _tps_staged() {  # modeled tool stays staged -> propagated nonzero
     # shellcheck disable=SC2317
     tmux() {
         case "$1" in
-            display-message)
-                case "$*" in
-                    *cursor_y*) printf '5' ;;  # cursor row (input-region anchor)
-                    *) printf 'claude' ;;      # pane_current_command
-                esac
-                ;;
+            display-message) printf 'claude' ;;                     # pane_current_command
             capture-pane) printf '❯ [Pasted text #2 +7 lines]\n' ;; # staged in the input region
         esac
         return 0

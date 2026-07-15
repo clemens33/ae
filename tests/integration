@@ -1041,6 +1041,7 @@ sleep 0.5
 eval "$(awk '/^_capture_input_region\(\) \{/,/^\}$/' "$AE")"
 eval "$(awk '/^_sgr_parse\(\) \{/,/^\}$/' "$AE")"
 eval "$(awk '/^_input_region_prompt_seg\(\) \{/,/^\}$/' "$AE")"
+eval "$(awk '/^_input_region_is_border\(\) \{/,/^\}$/' "$AE")"
 eval "$(awk '/^_input_region_content_end\(\) \{/,/^\}$/' "$AE")"
 eval "$(awk '/^_input_region_occupied\(\) \{/,/^\}$/' "$AE")"
 # The payload is the pane's OWN process (not typed into a shell): a shell would echo

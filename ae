@@ -5533,6 +5533,38 @@ cmd_help() {
 }
 
 # Internal: spawn a new agent pane (called via spawn helper → ae _spawn)
+# Is a freshly-launched pane's TUI ready to RECEIVE its brief? Ready means the input is
+# CONFIRMED IDLE — not "the process is up", and not "some marker is somewhere on screen".
+#
+# The marker grep this replaces ('❯|bypass permissions|for shortcuts') answered a
+# different question than the caller was asking. claude's trust dialog renders
+# '❯ 1. Yes, I trust this folder' and its footer says 'bypass permissions', so a modal
+# read READY and the brief was pasted into it — Enter then answers the dialog rather than
+# submitting the brief (colead ROUND5 BLOCKER 2, from the trust-dialog specimen).
+#
+# For modeled tools this is the SAME structural predicate the send path uses, so spawn
+# can no longer disagree with it: a booting TUI has no live prompt (indeterminate ->
+# unsafe -> not ready), and a modal is occupied (-> not ready). Unmodeled TUIs have no
+# predicate — _paste_input_busy reports them safe unconditionally, which would mean
+# "ready" the instant the pane exists, i.e. the boot-gap paste this poll exists to
+# prevent. They keep the marker, which is weaker but is what they had before.
+_spawn_input_ready() { # <pane> <tool_kind>
+    local pane="$1" tool_kind="$2"
+    case "$tool_kind" in
+        claude | codex)
+            if _paste_input_busy "$pane" "$tool_kind"; then
+                return 1 # busy / modal / unreadable -> NOT ready
+            fi
+            return 0
+            ;;
+        *)
+            tmux capture-pane -p -t "$pane" 2>/dev/null |
+                grep -qE '❯|bypass permissions|for shortcuts' || return 1
+            return 0
+            ;;
+    esac
+}
+
 _cmd_spawn() {
     local meta_dir="$1"
     shift
@@ -5663,34 +5695,54 @@ _cmd_spawn() {
     # For agents with system prompt injection, send spawn prompt separately
     if [[ -z "$initial_msg" ]]; then
         # Wait for the TUI to actually ACCEPT input before pasting.
-        # wait_for_agent_start only proves the process is running — pasting in
-        # the boot gap is swallowed wholesale, with nothing staged for the
-        # lingering-nudge below to detect (live-dogfood finding: workers booted
-        # brief-less twice). Poll for a composed-UI marker; on timeout paste
-        # anyway — the verify-nudge still covers the staged-but-unsubmitted case.
-        local _ready_i=0
+        # wait_for_agent_start only proves the process is running — pasting in the boot
+        # gap is swallowed wholesale, with nothing staged for the lingering-nudge below
+        # to detect (live-dogfood finding: workers booted brief-less twice).
+        local _ready_i=0 _ready=0
         while ((_ready_i < 30)); do
-            if tmux capture-pane -p -t "$pane_id" 2>/dev/null |
-                grep -qE '❯|bypass permissions|for shortcuts'; then
+            if _spawn_input_ready "$pane_id" "$tool_kind"; then
+                _ready=1
                 break
             fi
             sleep 0.5
             _ready_i=$((_ready_i + 1))
         done
-        tmux select-pane -t "$pane_id"
-        # || true: launch paste is fire-and-forget — a slow-booting modeled TUI
-        # whose paste stays staged past the bounded verify-retries now returns
-        # non-zero, and this bare call runs under set -e. The launch must not
-        # abort on an unconfirmed submit (the verify-retry still helped). The
-        # agent-to-agent send path keeps the loud failure; launch swallows it.
-        tmux_paste_submit "$pane_id" "$prompt" || true
-        # A booting TUI can swallow the quick post-paste Enter, leaving the
-        # prompt staged in the input box (live-dogfood find). Verify the text
-        # actually left the input; nudge Enter once more if it lingers.
-        sleep 1.5
-        if tmux capture-pane -p -t "$pane_id" 2>/dev/null | tail -n 6 |
-            grep -qF "${prompt:0:40}"; then
-            tmux send-keys -t "$pane_id" Enter
+        if ((_ready == 0)); then
+            # DO NOT paste into a state we could not confirm idle. The old code polled
+            # for any of '❯|bypass permissions|for shortcuts' and pasted on timeout
+            # regardless — so claude's trust dialog ('❯ 1. Yes, I trust this folder')
+            # read READY and the brief went INTO THE MODAL, where Enter answers the
+            # dialog instead. Then tmux_paste_submit's failure was swallowed by
+            # `|| true`, leaving a launched, brief-less worker and no signal: the
+            # silent-loss class this slice exists to kill, one caller further out
+            # (colead ROUND5 BLOCKER 2). Fail LOUD and leave the pane untouched — the
+            # brief is re-sendable by hand, a clobbered modal is not.
+            echo "ae: ${alias_name}:${spawn_name} — pane $pane_id never reached a confirmed-idle input" >&2
+            echo "ae: brief NOT delivered (input busy, modal, or unreadable). Send it manually:" >&2
+            echo "ae:   ${meta_dir}/send ${alias_name}:${spawn_name} '<the brief>'" >&2
+        else
+            tmux select-pane -t "$pane_id"
+            # Launch paste is best-effort for DELIVERY, but never silent: a slow TUI
+            # whose paste stays staged past the bounded verify-retries returns non-zero
+            # and this runs under set -e, so the status is captured rather than dropped.
+            # The old bare `|| true` discarded exactly the signal that says "your worker
+            # never got its brief".
+            local _paste_rc=0
+            tmux_paste_submit "$pane_id" "$prompt" || _paste_rc=$?
+            if ((_paste_rc != 0)); then
+                echo "ae: ${alias_name}:${spawn_name} — brief submit UNCONFIRMED (rc=$_paste_rc); verify the pane" >&2
+            fi
+        fi
+        if ((_ready == 1)); then
+            # A booting TUI can swallow the quick post-paste Enter, leaving the prompt
+            # staged in the input box (live-dogfood find). Verify the text actually left
+            # the input; nudge Enter once more if it lingers. Only when we actually
+            # pasted — never blind-Enter a pane we deliberately did not touch.
+            sleep 1.5
+            if tmux capture-pane -p -t "$pane_id" 2>/dev/null | tail -n 6 |
+                grep -qF "${prompt:0:40}"; then
+                tmux send-keys -t "$pane_id" Enter
+            fi
         fi
     fi
 
@@ -6905,7 +6957,7 @@ _sgr_parse() {
                         fi
                         ;;
                 esac
-                ((j++))
+                j=$((j + 1))
             done
             continue
         fi
@@ -6943,7 +6995,7 @@ _sgr_parse() {
                 _SGR_TEXT+=("$chunk")
                 _SGR_LINE+=("$line")
             fi
-            ((line++))
+            line=$((line + 1))
         done
         if [[ -n "$text" ]]; then
             _SGR_BOLD+=("$bold")
@@ -6963,8 +7015,8 @@ _sgr_parse() {
 # ornament onward) and _SGR_PROMPT_ORN (which ornament matched, so a multi-ornament tool
 # can strip exactly its own anchor). Returns 1 when no row qualifies -> indeterminate.
 #
-# Style alone was NOT enough (colead NEW BLOCKER 1): once the capture widened to
-# 0..cursor_y the whole transcript came into view, and a wildcard '*›*' over bold-and-
+# Style alone was NOT enough (colead NEW BLOCKER 1): once the capture widened past a
+# fixed look-back the whole transcript came into view, and a wildcard '*›*' over bold-and-
 # not-dim segments matched bold assistant PROSE ($'\e[1mAnalysis › outcome') as a live
 # prompt — a DELIVERED message then read as staged, the sender re-pressed Enter and the
 # F4 duplication class reopened. Structure alone is not enough either: a submitted echo
@@ -7027,6 +7079,33 @@ _input_region_prompt_seg() { # <live_only:0|1> <ornament>... -> 0 + _SGR_PROMPT_
 # that is the ri-3 fleet-wide comms outage. So this bound is load-bearing in BOTH
 # directions — too high clobbers a draft, too low blocks all delivery.
 #
+# Is this row the input box's structural BORDER, as opposed to draft content that merely
+# begins with the same glyph? POSITIVE identification, on two properties measured from
+# real v2.1.209 captures — a border row's printable content is ENTIRELY U+2500, AND it
+# spans the full width of the region (the box is drawn edge to edge, so it is always the
+# widest row; text rows are shorter because tmux strips their trailing blanks).
+#
+# A first-cell glyph test is NOT enough and shipped as a clobber (colead ROUND5 BLOCKER
+# 1): a user pasting '─ user-pasted heading' into a draft truncated the region there, and
+# the unsent body below it read IDLE -> pre-paste safe -> overwrite. On the real rig
+# capture that row is 23 cells of mixed characters against the box's 167 of pure U+2500,
+# so it fails BOTH properties. The welcome box's rows ('╭───', '│', '╰───') fail the
+# morphology test too.
+#
+# Residual, in the SAFE direction: a draft row that is BOTH pure U+2500 AND exactly the
+# full width is indistinguishable from a border — it is a border, morphologically. Also
+# ${#s} counts characters under the fleet's C.UTF-8 but BYTES under LC_ALL=C, where a
+# border (3 bytes/glyph) still measures longest, so the test holds; if it ever did not,
+# no border is found, chrome counts as content, and the read is OCCUPIED -> defer (loud),
+# never a clobber. The locale slice owns the general case.
+_input_region_is_border() { # <row-printable-text> <region-max-width>
+    local row="$1" maxw="$2"
+    [[ -n "$row" ]] || return 1
+    [[ -z "${row//─/}" ]] || return 1 # morphology: nothing but U+2500
+    ((${#row} == maxw)) || return 1   # position: drawn edge to edge
+    return 0
+}
+
 # The boundary is per-tool because the two real layouts differ (live captures,
 # 2026-07-15) — each tool is given the row that actually closes ITS box:
 #   claude ('border') — the box's BOTTOM BORDER sits directly under the input (a row
@@ -7039,19 +7118,28 @@ _input_region_prompt_seg() { # <live_only:0|1> <ornament>... -> 0 + _SGR_PROMPT_
 # from position, and with no footer present it clips the draft's last row instead —
 # the clobber direction, caught by the fixtures.
 _input_region_content_end() { # <prompt_line> <stop_at: border|blank>
-    local pl="$1" stop_at="$2" n=${#_SGR_TEXT[@]} i line lead rest
-    local -a nonblank=()
+    local pl="$1" stop_at="$2" n=${#_SGR_TEXT[@]} i line
+    local -a nonblank=() rowtext=()
     _SGR_CONTENT_END=$((${_SGR_LINE[n - 1]} + 1)) # default: everything below the prompt
+    # Rebuild each row's printable text: a border must be judged on the WHOLE row, never
+    # on its first cell (colead ROUND5 BLOCKER 1 — see _input_region_is_border).
+    local maxw=0 w
+    for ((i = 0; i < n; i++)); do
+        line=${_SGR_LINE[i]}
+        rowtext[line]="${rowtext[line]:-}${_SGR_TEXT[i]}"
+    done
+    for line in "${!rowtext[@]}"; do
+        w=${#rowtext[line]}
+        if ((w > maxw)); then maxw=$w; fi
+    done
     for ((i = 0; i < n; i++)); do
         line=${_SGR_LINE[i]}
         ((line > pl)) || continue
         ((line < _SGR_CONTENT_END)) || continue
         [[ -z "${_SGR_TEXT[i]//[[:space:]]/}" ]] && continue
         nonblank[line]=1
-        if [[ "$stop_at" == "border" ]]; then
-            lead="${_SGR_TEXT[i]}"
-            rest="${lead#"${lead%%[![:space:]]*}"}"
-            [[ "$rest" == '─'* ]] && _SGR_CONTENT_END=$line
+        if [[ "$stop_at" == "border" ]] && _input_region_is_border "${rowtext[line]}" "$maxw"; then
+            _SGR_CONTENT_END=$line
         fi
     done
     if [[ "$stop_at" == "blank" ]]; then
@@ -7151,9 +7239,11 @@ _input_region_occupied() {
             # never a silent clobber. This CLASS rule is also why the two staging shapes
             # need no text matching: claude's '[Pasted text #N +M lines]' token and raw
             # unstyled text (the steward's variant-3 loss) are both just content.
-            # It is also why specimen #5's 'paste again to expand' hint is irrelevant —
-            # it renders THREE ROWS BELOW cursor_y, outside a 0..cy capture entirely,
-            # while the staged token stays on the prompt row where the class rule sees it.
+            # It is also why specimen #5's 'paste again to expand' hint is irrelevant: it
+            # renders below the box's bottom border, so _input_region_content_end drops it
+            # with the rest of the chrome, while the staged token stays on the prompt row
+            # where the class rule sees it. (The hint IS captured now — the capture is the
+            # whole pane; it is the border bound, not capture geometry, that excludes it.)
             local i s
             _sgr_parse "$region"
             _input_region_prompt_seg 0 '❯' '>' '▌' || return 2 # no live prompt in view
@@ -9926,7 +10016,7 @@ LIBPROLOGUE
             ae_preview_text ae_extract_req_id ae_log_append ae_log_read \
             ae_target_tool ae_json_escape ae_emit_event ae_latest_state_for \
             _event_json_str _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
-            ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_content_end _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
+            ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_is_border _input_region_content_end _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
             command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
             ae_meta_get ae_meta_set ae_meta_unset
     } >"${AE_META}/_lib.tmp.$$"
