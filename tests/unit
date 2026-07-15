@@ -4834,10 +4834,25 @@ assert_eq "occ: claude no ornament (mid-gen) -> indeterminate" "indeterminate" "
 _cl_baseline='\033[32mckriech\033[39m \033[34m/home/ckriech/projects/clemens33/ae/.local/claude209-fixture\033[95m (main)\033[39m\n$ \033[34m/home/ckriech/.ae/sessions/irclaude209b/launch.main.sh\033[39m\n\033[38;5;174m ▐\033[48;5;16m▛███▜\033[49m▌\033[39m   \033[1mClaude\033[0m \033[1mCode\033[0m \033[38;5;246mv2.1.209\033[39m\n\033[38;5;174m▝▜\033[48;5;16m█████\033[49m▛▘\033[39m  \033[38;5;246mOpus\033[39m \033[38;5;246m4.8\033[39m \033[38;5;246mwith\033[39m \033[38;5;246mxhigh\033[39m \033[38;5;246meffort\033[39m \033[38;5;246m·\033[39m \033[38;5;246mClaude\033[39m \033[38;5;246mMax\033[39m\n\033[38;5;174m \033[39m \033[38;5;174m▘▘\033[39m \033[38;5;174m▝▝\033[39m    \033[38;5;246m~/projects/clemens33/ae/.local/claude209-fixture\033[39m\n\n\n\033[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m❯\xc2\xa0\n'
 _cl_echo='\033[38;5;174m ▐\033[48;5;16m▛███▜\033[49m▌\033[39m   \033[1mClaude\033[0m \033[1mCode\033[0m \033[38;5;246mv2.1.209\033[39m\n\033[38;5;174m▝▜\033[48;5;16m█████\033[49m▛▘\033[39m  \033[38;5;246mOpus\033[39m \033[38;5;246m4.8\033[39m \033[38;5;246mwith\033[39m \033[38;5;246mxhigh\033[39m \033[38;5;246meffort\033[39m \033[38;5;246m·\033[39m \033[38;5;246mClaude\033[39m \033[38;5;246mMax\033[39m\n\033[38;5;174m \033[39m \033[38;5;174m▘▘\033[39m \033[38;5;174m▝▝\033[39m    \033[38;5;246m~/projects/clemens33/ae/.local/claude209-fixture\033[39m\n\n\n\033[38;5;239m\033[48;5;237m❯\033[39m \033[38;5;231m/clear\033[39m\n\n\033[38;5;239m❯ \033[38;5;231mReply exactly OK.\033[39m\n\n\033[38;5;231m\033[49m●\033[39m [11:46] OK\n\n\033[38;5;246m✻\033[39m \033[38;5;246mWorked for 1s\033[39m\n\n\033[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m❯\xc2\xa0\n'
 _cl_midgen='\033[38;5;174m ▐\033[48;5;16m▛███▜\033[49m▌\033[39m   \033[1mClaude\033[0m \033[1mCode\033[0m \033[38;5;246mv2.1.209\033[39m\n\033[38;5;174m▝▜\033[48;5;16m█████\033[49m▛▘\033[39m  \033[38;5;246mOpus\033[39m \033[38;5;246m4.8\033[39m \033[38;5;246mwith\033[39m \033[38;5;246mxhigh\033[39m \033[38;5;246meffort\033[39m \033[38;5;246m·\033[39m \033[38;5;246mClaude\033[39m \033[38;5;246mMax\033[39m\n\033[38;5;174m \033[39m \033[38;5;174m▘▘\033[39m \033[38;5;174m▝▝\033[39m    \033[38;5;246m~/projects/clemens33/ae/.local/claude209-fixture\033[39m\n\n\n\033[38;5;239m\033[48;5;237m❯\033[39m \033[38;5;231m/clear\033[39m\n\n\033[38;5;239m❯ \033[38;5;231mReply exactly OK.\033[39m\n\n\033[38;5;231m\033[49m●\033[39m [11:46] OK\n\n\033[38;5;246m✻\033[39m \033[38;5;246mWorked for 1s\033[39m\n\n\033[38;5;239m\033[48;5;237m❯ \033[38;5;231mMIDGEN fixture result > threshold. Produce 60 numbered sentences without tools, then END.\033[39m\n\n\033[38;5;174m\033[49m✢\033[39m \033[38;5;174mMull\033[38;5;216ming\033[38;5;174m… \033[39m\n\n\033[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[38;5;246m❯\xc2\xa0\033[39m\n'
-_cl_staged='\n\033[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m❯\xc2\xa0[Pasted text #3 +39 lines]\n'
+_cl_staged='\n\033[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m❯\xc2\xa0[Pasted text #3 +39 lines]\n\033[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m  \033[38;5;246m🧠\033[39m \033[38;5;246mOpus\033[39m \033[38;5;246m4.8\033[39m \033[38;5;246m(xhigh)\033[39m  \033[38;5;246m📁\033[39m \033[38;5;246mclaude209-fixture\033[39m  \033[38;5;246m🌿\033[39m \033[38;5;246mmain\033[39m\n  \033[38;5;246mpaste again to expand\033[39m\n\n'
 _cl_linestart='\033[38;5;231m●\033[39m [11:41] > LINESTART_SENTINEL\n  comparison result > threshold\n\033[38;5;246m  ⎿ \xc2\xa0\033[39m> LINESTART_TOOL\n'
 # (4) live empty baseline: row8 is the prompt; row2's splash logo contains a '▌' that is
 # NOT the row's first cell (the logo starts '▐') — structure alone must reject it.
+# Does the chrome bound exclude every row below the box's border? -> 1 if the hint and
+# status rows fall outside [prompt_line, _SGR_CONTENT_END).
+_cl_end() {  # <region-printf_b> <border|blank> -> 1 if the hint row is excluded
+    local _R hint_line=-1 i
+    _R="$(printf '%b' "$1")"
+    _sgr_parse "$_R"
+    _input_region_prompt_seg 0 '❯' '>' '▌' || { echo "no-prompt"; return 0; }
+    _input_region_content_end "${_SGR_LINE[$_SGR_PROMPT_SEG]}" "$2"
+    for ((i = 0; i < ${#_SGR_TEXT[@]}; i++)); do
+        [[ "${_SGR_TEXT[i]}" == *'paste again to expand'* ]] && hint_line=${_SGR_LINE[i]}
+    done
+    ((hint_line >= 0)) || { echo "no-hint"; return 0; }
+    ((hint_line >= _SGR_CONTENT_END)) && echo 1 || echo 0
+    return 0
+}
 assert_eq "nb2: REAL claude live-empty baseline (v2.1.209) -> idle" "idle" "$(_occ claude "$_cl_baseline")"
 # The splash logo contains a '▌' — colead's explicit warning: an ornament set is only
 # safe BECAUSE selection is structural. Here the logo rows are the whole region (claude
@@ -4869,8 +4884,14 @@ assert_eq "nb2: REAL line-start-'>' attempts BELOW a live empty prompt -> idle" 
 # 'paste again to expand' is THREE ROWS BELOW cursor_y — outside a 0..cy capture entirely.
 # So occupancy must never depend on, or text-match, that hint: it is not reachable.
 assert_eq "nb2: REAL specimen-5 staged token on prompt row -> occupied" "occupied" "$(_occ claude "$_cl_staged")"
-assert_eq "nb2: specimen-5 — the hint is BELOW cursor_y, absent from the region" "1" \
-    "$([[ "$(printf '%b' "$_cl_staged")" != *'paste again to expand'* ]] && echo 1 || echo 0)"
+# The region is the WHOLE pane now, so the hint IS captured (it was not, back when the
+# capture stopped at cursor_y — that bound is gone, see the ROUND4 blocker). It reaching
+# the sensor is exactly why occupancy must not depend on it: the CHROME BOUND drops it
+# with the rest of the below-border rows, so the phrasing can drift freely.
+assert_eq "nb2: specimen-5 — the hint IS in the region (whole-pane capture)" "1" \
+    "$([[ "$(printf '%b' "$_cl_staged")" == *'paste again to expand'* ]] && echo 1 || echo 0)"
+assert_eq "nb2: specimen-5 — hint sits below the border, so it is never content" "1" \
+    "$(_cl_end "$_cl_staged" border)"
 # Detection must not be text-matched to the token either: raw text staged behind the
 # ornament is the steward's variant-3 loss and is caught by the same CLASS rule.
 assert_eq "nb2: REAL prompt row + raw typed text -> occupied" "occupied" \
