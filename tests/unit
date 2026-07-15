@@ -120,6 +120,7 @@ assert_eq "strip-opencode: --continue" \
 assert_eq "kind: claude" "claude" "$(tool_kind_from_cmd "claude --model opus")"
 assert_eq "kind: codex"  "codex"  "$(tool_kind_from_cmd "codex --yolo")"
 assert_eq "kind: opencode" "opencode" "$(tool_kind_from_cmd "opencode")"
+assert_eq "kind: grok" "grok" "$(tool_kind_from_cmd "grok --always-approve -m grok-build")"
 assert_eq "kind: unknown" "unknown" "$(tool_kind_from_cmd "sometool --flag")"
 
 # ── extract_binary_from_cmd ─────────────────────────────────────────
@@ -189,6 +190,7 @@ assert_eq "binary: nested env then sudo" \
 assert_eq "name: claude" "claude code" "$(tool_name_from_cmd "claude --model opus")"
 assert_eq "name: codex"  "codex"       "$(tool_name_from_cmd "codex --yolo")"
 assert_eq "name: opencode" "opencode"  "$(tool_name_from_cmd "opencode")"
+assert_eq "name: grok" "grok build"    "$(tool_name_from_cmd "grok --always-approve -m grok-build")"
 assert_eq "name: unknown passes through" "mytool --flag" "$(tool_name_from_cmd "mytool --flag")"
 
 # ── build_launch_command ────────────────────────────────────────────
@@ -230,6 +232,24 @@ assert_eq "inject: empty session_id returns clean cmd" \
 assert_eq "inject: strips existing before injecting" \
     "claude --model opus --session-id new-uuid" \
     "$(inject_session_id "claude --session-id old-uuid --model opus" "new-uuid")"
+
+# grok accepts an ae-generated UUID at launch (verified live) — claude-class safety:
+# the id is known upfront, so resume is UUID-scoped from cycle one (no launch tokens).
+assert_eq "inject: grok gets --session-id (claude-class, ae-generated UUID)" \
+    "grok -m grok-build --session-id abc-123" \
+    "$(inject_session_id "grok -m grok-build" "abc-123")"
+
+assert_eq "inject: grok strips an existing --session-id before injecting" \
+    "grok -m grok-build --session-id new-uuid" \
+    "$(inject_session_id "grok --session-id old-uuid -m grok-build" "new-uuid")"
+
+assert_eq "inject: grok with pending → clean cmd (no id)" \
+    "grok -m grok-build" \
+    "$(inject_session_id "grok -m grok-build" "pending")"
+
+# grok needs NO launch-token machinery precisely because of the above.
+assert_eq "launch-id: grok does NOT need launch-token capture (upfront UUID)" "1" \
+    "$(tool_kind_supports_launch_id grok && echo 0 || echo 1)"
 
 # ── resume_cmd_from_cmd ─────────────────────────────────────────────
 
@@ -280,6 +300,27 @@ assert_eq "resume: gemini strips old -i flag with quoted value" \
 assert_eq "resume: gemini strips --prompt-interactive" \
     "gemini --yolo --resume latest" \
     "$(resume_cmd_from_cmd "gemini --yolo --prompt-interactive 'old context'")"
+
+# ── grok (Grok Build): claude-shaped session handling — UUID at launch, exact resume ──
+assert_eq "resume: grok with session_id → --resume UUID" \
+    "grok --always-approve -m grok-build --resume abc-123-uuid" \
+    "$(resume_cmd_from_cmd "grok --always-approve -m grok-build" "abc-123-uuid")"
+
+assert_eq "resume: grok without session_id → --continue (CWD fallback)" \
+    "grok --always-approve -m grok-build --continue" \
+    "$(resume_cmd_from_cmd "grok --always-approve -m grok-build")"
+
+assert_eq "resume: grok with pending → --continue (uncaptured id)" \
+    "grok --always-approve -m grok-build --continue" \
+    "$(resume_cmd_from_cmd "grok --always-approve -m grok-build" "pending")"
+
+assert_eq "resume: grok strips the previous --session-id before resuming" \
+    "grok -m grok-build --resume new-uuid" \
+    "$(resume_cmd_from_cmd "grok -m grok-build --session-id old-uuid" "new-uuid")"
+
+assert_eq "resume: grok strips a previous --resume/--continue (no flag stacking)" \
+    "grok -m grok-build --continue" \
+    "$(resume_cmd_from_cmd "grok -m grok-build --resume old-uuid")"
 
 assert_eq "strip: -i not stripped from non-gemini commands" \
     "codex --yolo -i input.txt" \
@@ -391,6 +432,18 @@ assert_eq "ae_context: gemini contains workspace context" \
     "1" \
     "$([[ "$result_gemini" == *"ae multi-agent workspace"* ]] && echo 1 || echo 0)"
 
+# grok: context rides on ARGV (positional [PROMPT]) — its --system-prompt-override
+# REPLACES the agent prompt (breaking grok's own tooling), so ae must never use it.
+result_grok="$(inject_ae_context "grok --always-approve -m grok-build" "/tmp/ae-test" "my-session" "/home/user/project")"
+assert_eq "ae_context: grok gets the context as a POSITIONAL prompt (no flag)" "1" \
+    "$([[ "$result_grok" == "grok --always-approve -m grok-build '"* ]] && echo 1 || echo 0)"
+assert_eq "ae_context: grok NEVER uses --system-prompt-override (would replace grok's own prompt)" "0" \
+    "$([[ "$result_grok" == *"--system-prompt-override"* ]] && echo 1 || echo 0)"
+assert_eq "ae_context: grok contains workspace context" "1" \
+    "$([[ "$result_grok" == *"ae multi-agent workspace"* ]] && echo 1 || echo 0)"
+assert_eq "ae_context: grok carries the context-only suffix (waits for a task)" "1" \
+    "$([[ "$result_grok" == *"This is context only. Do NOT act on it."* ]] && echo 1 || echo 0)"
+
 _meta_dir="$(mktemp -d)"
 printf 'launch_id.worker.0=launch-123\nlaunch_time.worker.0=123\n' > "$_meta_dir/meta"
 result_gemini_slot="$(inject_ae_context "gemini --yolo" "$_meta_dir" "my-session" "/home/user/project" "worker.0")"
@@ -463,6 +516,10 @@ assert_eq "initial_prompt: Go for codex" \
 assert_eq "initial_prompt: empty for gemini" \
     "" \
     "$(initial_prompt_for_cmd "gemini --yolo" "/tmp/ae" "sess" "/home/user")"
+
+assert_eq "initial_prompt: empty for grok (context already on argv)" \
+    "" \
+    "$(initial_prompt_for_cmd "grok --always-approve -m grok-build" "/tmp/ae" "sess" "/home/user")"
 
 result_opencode="$(initial_prompt_for_cmd "opencode" "/tmp/ae" "sess" "/home/user")"
 assert_eq "initial_prompt: opencode gets context" \

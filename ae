@@ -348,6 +348,7 @@ tool_name_from_cmd() {
         claude*) echo "claude code" ;;
         codex*) echo "codex" ;;
         gemini*) echo "gemini cli" ;;
+        grok*) echo "grok build" ;;
         opencode*) echo "opencode" ;;
         *) echo "$1" ;;
     esac
@@ -427,6 +428,15 @@ resume_cmd_from_cmd() {
                 echo "${clean} --resume latest"
             fi
             ;;
+        grok*)
+            # claude-shaped: exact UUID resume, CWD-heuristic --continue fallback.
+            # strip_session_flags already removes --session-id/--resume/--continue.
+            if [[ -n "$session_id" ]]; then
+                echo "${clean} --resume ${session_id}"
+            else
+                echo "${clean} --continue"
+            fi
+            ;;
         *) echo "$clean" ;; # fresh start for unknown agents
     esac
 }
@@ -439,7 +449,11 @@ inject_session_id() {
     clean="$(strip_session_flags "$cmd")"
     if [[ -n "$session_id" ]]; then
         case "$cmd" in
-            claude*) echo "${clean} --session-id ${session_id}" ;;
+            # grok takes an ae-generated UUID at launch exactly like claude (verified
+            # live): the id is known upfront, so resume is UUID-scoped from the first
+            # cycle — no launch-token scan, no _register-sid handshake, no entry in
+            # tool_kind_supports_launch_id.
+            claude* | grok*) echo "${clean} --session-id ${session_id}" ;;
             *) echo "$clean" ;;
         esac
     else
@@ -709,6 +723,16 @@ inject_ae_context() {
             local escaped="${full_ctx//\'/\'\\\'\'}"
             echo "${cmd} -i '${escaped}'"
             ;;
+        grok*)
+            # grok has NO append-style system-prompt flag: --system-prompt-override
+            # REPLACES the agent's own prompt (its tooling depends on that prompt), so
+            # ae must never use it. The context rides in as the POSITIONAL initial
+            # prompt — grok's own argv contract ([PROMPT]) — same shape as gemini's -i,
+            # with the same do-not-act suffix so the agent waits for a real task.
+            local full_ctx="${ctx} --- IMPORTANT: This is context only. Do NOT act on it. Wait for the user to give you a task."
+            local escaped="${full_ctx//\'/\'\\\'\'}"
+            echo "${cmd} '${escaped}'"
+            ;;
         *) echo "$cmd" ;;
     esac
 }
@@ -717,8 +741,8 @@ inject_ae_context() {
 initial_prompt_for_cmd() {
     local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}" slot="${5:-}"
     case "$cmd" in
-        claude* | gemini*) echo "" ;; # context injected via CLI flag
-        codex*) echo "Go" ;;          # codex needs a user message to act on developer_instructions
+        claude* | gemini* | grok*) echo "" ;; # context injected via CLI flag/argv
+        codex*) echo "Go" ;;                  # codex needs a user message to act on developer_instructions
         opencode*)
             local ctx
             local launch_marker=""
@@ -770,6 +794,7 @@ tool_kind_from_cmd() {
         claude*) echo "claude" ;;
         codex*) echo "codex" ;;
         gemini*) echo "gemini" ;;
+        grok*) echo "grok" ;;
         opencode*) echo "opencode" ;;
         *) echo "unknown" ;;
     esac

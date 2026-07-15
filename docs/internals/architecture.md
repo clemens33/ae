@@ -111,6 +111,7 @@ The full helper catalog lives in `workspace.md`, which the prompt points at.
 | Claude Code | ae generates the UUID up-front and passes it via `--session-id UUID`. Immediate. |
 | Codex | No launch-time flag exists. ae instructs Codex via `developer_instructions` to run `_register-sid` as its first action; that helper scans `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filtered by launch token and CWD, writes the UUID into `meta`. |
 | Gemini | Post-launch scan of `~/.gemini/tmp/<project>/chats/session-*.json` by launch token. |
+| Grok Build | ae generates the UUID up-front and passes it via `--session-id UUID`. Immediate — same as Claude Code, no post-launch scan. |
 | OpenCode | Post-launch `opencode session list --format json` filtered by CWD. |
 
 Resume uses the captured UUID for exact conversation restore; falls back to a CWD heuristic if capture failed.
