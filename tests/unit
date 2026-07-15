@@ -4664,6 +4664,24 @@ assert_eq "occ: codex F4 transcript echo (BOLD+DIM prompt, not live) -> indeterm
 # live prompt and detect the paste (widened cursor-back window makes this reachable).
 assert_eq "occ: transcript echo ABOVE + live staged paste -> occupied (anchor steps over echo)" "occupied" "$(_occ codex '\033[1;2m› \033[0mold submitted prompt\n\033[38;5;244m────\033[39m\n\033[1m›\033[0m [Pasted Content 900 chars]')"
 assert_eq "occ: codex placeholder FOCUS-STABLE (inactive == active) -> idle" "idle" "$(_occ codex '\033[1m›\033[0m \033[2mSummarize recent commits\033[0m')"
+# ── occurrence #3 (2026-07-15, caught live in colead's pane): codex CHUNKS a large
+# paste into MULTIPLE ~1KB staging tokens concatenated on ONE row, and the remainder
+# LEAKS as literal inline plaintext after the tokens. Sender logged success; the
+# recipient answered the PREVIOUS message and declared done, never seeing the ask.
+# These pin the CLASS rule (unstyled printable at the cursor row = occupied): the
+# token text is documentation, never the predicate — no literal token match, no token
+# counting, no single-token anchor. Mutating the rule to a token-literal/count check
+# must fail here (multi-token, and token+tail where the tail is arbitrary prose).
+assert_eq "occ: #3 codex MULTI-token chunked paste (one row) -> occupied" "occupied" \
+    "$(_occ codex '\033[1m›\033[0m [Pasted Content 1016 chars][Pasted Content 1014 chars]')"
+assert_eq "occ: #3 codex token(s) + LEAKED tail plaintext -> occupied" "occupied" \
+    "$(_occ codex '\033[1m›\033[0m [Pasted Content 1016 chars][Pasted Content 1014 chars] findings-first as always.')"
+assert_eq "occ: #3 codex SINGLE token + leaked tail -> occupied" "occupied" \
+    "$(_occ codex '\033[1m›\033[0m [Pasted Content 1469 chars] and the tail leaked raw')"
+# Negative controls must survive the #3 widening: a dim placeholder that merely
+# MENTIONS the token text is still idle (styling decides, not substring).
+assert_eq "occ: #3 control — dim placeholder mentioning token text -> idle" "idle" \
+    "$(_occ codex '\033[1m›\033[0m \033[2mtry pasting [Pasted Content 100 chars] here\033[0m')"
 assert_eq "occ: codex unreadable region -> indeterminate" "indeterminate" "$(_occ codex '')"
 assert_eq "occ: claude empty ornament -> idle"            "idle"     "$(_occ claude '❯\xc2\xa0')"
 assert_eq "occ: claude empty w/ box border above -> idle" "idle"     "$(_occ claude '\033[38;5;244m────────\033[39m\n\033[38;5;246m❯\xc2\xa0\033[39m')"
