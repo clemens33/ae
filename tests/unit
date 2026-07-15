@@ -5055,14 +5055,17 @@ assert_eq "b2: spawn readiness no longer greps markers for modeled tools" "1" \
     "$([[ "$AE_SOURCE" == *'_spawn_input_ready "$pane_id" "$tool_kind"'* ]] && echo 1 || echo 0)"
 
 # ── set -e liveness: the sensor is called from `ae`, which runs set -euo pipefail ──
-# These functions were NOT set -e safe and the suite could never have shown it: tests/unit
-# does not enable errexit, the generated helpers do not either, and every production call
-# happened to sit in an `if` condition, where set -e is suspended. So the bug was real and
-# fully masked. `((x++))` yields the OLD value, so at 0 it is a FALSE arithmetic result ->
-# status 1 -> a bare call aborts the caller mid-way. `_cmd_spawn` now calls this tree, and
-# a spawn dying inside the sensor would be the silent-loss class wearing a crash.
-# Drive them BARE (no condition context) under set -euo pipefail — that is the only shape
-# that can catch it.
+# These functions were NOT set -e safe and this suite could never have shown it — not
+# because it lacks errexit (line 7 sets -euo pipefail) but because a failing command only
+# aborts in STATEMENT position: every test reaches the sensor through `$(…)` in an
+# assert_eq argument, and `$(fn)`, `if fn`, `fn && …`, `fn || …` all mask the abort.
+# Production callers sat in `if` conditions for the same reason. So the bug was real,
+# live, and invisible from both sides. `((x++))` yields the OLD value, so at 0 it is a
+# FALSE arithmetic result -> status 1 -> a bare call aborts the caller mid-way.
+# `_cmd_spawn` now calls this tree under `ae`'s errexit, and a spawn dying inside the
+# sensor would be the silent-loss class wearing a crash.
+# So drive them BARE, in statement position, inside a set -euo pipefail subshell — the
+# only shape that can catch it.
 _sete_probe() { # -> ok|ABORT:<stage>
     timeout 10 bash -c '
         set -euo pipefail
