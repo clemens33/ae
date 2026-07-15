@@ -4778,6 +4778,66 @@ assert_eq "occ: claude ghost (content, style unreliable) -> occupied" "occupied"
 assert_eq "occ: claude typed (inactive DIM, still content) -> occupied" "occupied" "$(_occ claude '\033[39m❯\xc2\xa0\033[2mhuman draft while pane inactive\033[0m')"
 assert_eq "occ: claude no ornament (mid-gen) -> indeterminate" "indeterminate" "$(_occ claude '✻ Crunched for 23s')"
 
+# ── colead NEW BLOCKER 2: REAL Claude 2.1.209 fixtures (captured 2026-07-15) ─────
+# EXACT capture-pane -e bytes, pane 141x52, CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0.
+# These are transcribed from colead's memo (topic input-region-fixtures), never
+# synthesized: the whole point of NB2 is that invented transcript shapes prove nothing.
+# The old branch grepped ANY region line for [>❯▌], so a mid-generation '>' or a prior
+# submitted '❯ question' read as the live prompt -> staged -> extra Enters -> F4 dup.
+#
+# Three facts from the fixtures drive the claude rule, and each overturns a guess:
+#  1. Styling CANNOT identify the live prompt. The submitted echo is fg239 on bg237, the
+#     live prompt is default (idle) or fg246 (mid-gen) — neither is SGR-dim. Geometry is
+#     the only robust signal, so claude selects with live_only=0 (unlike codex).
+#  2. Claude DOES draw the live empty prompt WHILE GENERATING, bottom-most and col0 —
+#     so bottom-most-wins holds mid-gen and does not degrade to indeterminate.
+#  3. There is never a border cell before ❯; borders are their own rows. The old sed
+#     carried a speculative '│?' — unsupported by every specimen.
+_cl_baseline='\033[32mckriech\033[39m \033[34m/home/ckriech/projects/clemens33/ae/.local/claude209-fixture\033[95m (main)\033[39m\n$ \033[34m/home/ckriech/.ae/sessions/irclaude209b/launch.main.sh\033[39m\n\033[38;5;174m ▐\033[48;5;16m▛███▜\033[49m▌\033[39m   \033[1mClaude\033[0m \033[1mCode\033[0m \033[38;5;246mv2.1.209\033[39m\n\033[38;5;174m▝▜\033[48;5;16m█████\033[49m▛▘\033[39m  \033[38;5;246mOpus\033[39m \033[38;5;246m4.8\033[39m \033[38;5;246mwith\033[39m \033[38;5;246mxhigh\033[39m \033[38;5;246meffort\033[39m \033[38;5;246m·\033[39m \033[38;5;246mClaude\033[39m \033[38;5;246mMax\033[39m\n\033[38;5;174m \033[39m \033[38;5;174m▘▘\033[39m \033[38;5;174m▝▝\033[39m    \033[38;5;246m~/projects/clemens33/ae/.local/claude209-fixture\033[39m\n\n\n\033[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m❯\xc2\xa0\n'
+_cl_echo='\033[38;5;174m ▐\033[48;5;16m▛███▜\033[49m▌\033[39m   \033[1mClaude\033[0m \033[1mCode\033[0m \033[38;5;246mv2.1.209\033[39m\n\033[38;5;174m▝▜\033[48;5;16m█████\033[49m▛▘\033[39m  \033[38;5;246mOpus\033[39m \033[38;5;246m4.8\033[39m \033[38;5;246mwith\033[39m \033[38;5;246mxhigh\033[39m \033[38;5;246meffort\033[39m \033[38;5;246m·\033[39m \033[38;5;246mClaude\033[39m \033[38;5;246mMax\033[39m\n\033[38;5;174m \033[39m \033[38;5;174m▘▘\033[39m \033[38;5;174m▝▝\033[39m    \033[38;5;246m~/projects/clemens33/ae/.local/claude209-fixture\033[39m\n\n\n\033[38;5;239m\033[48;5;237m❯\033[39m \033[38;5;231m/clear\033[39m\n\n\033[38;5;239m❯ \033[38;5;231mReply exactly OK.\033[39m\n\n\033[38;5;231m\033[49m●\033[39m [11:46] OK\n\n\033[38;5;246m✻\033[39m \033[38;5;246mWorked for 1s\033[39m\n\n\033[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m❯\xc2\xa0\n'
+_cl_midgen='\033[38;5;174m ▐\033[48;5;16m▛███▜\033[49m▌\033[39m   \033[1mClaude\033[0m \033[1mCode\033[0m \033[38;5;246mv2.1.209\033[39m\n\033[38;5;174m▝▜\033[48;5;16m█████\033[49m▛▘\033[39m  \033[38;5;246mOpus\033[39m \033[38;5;246m4.8\033[39m \033[38;5;246mwith\033[39m \033[38;5;246mxhigh\033[39m \033[38;5;246meffort\033[39m \033[38;5;246m·\033[39m \033[38;5;246mClaude\033[39m \033[38;5;246mMax\033[39m\n\033[38;5;174m \033[39m \033[38;5;174m▘▘\033[39m \033[38;5;174m▝▝\033[39m    \033[38;5;246m~/projects/clemens33/ae/.local/claude209-fixture\033[39m\n\n\n\033[38;5;239m\033[48;5;237m❯\033[39m \033[38;5;231m/clear\033[39m\n\n\033[38;5;239m❯ \033[38;5;231mReply exactly OK.\033[39m\n\n\033[38;5;231m\033[49m●\033[39m [11:46] OK\n\n\033[38;5;246m✻\033[39m \033[38;5;246mWorked for 1s\033[39m\n\n\033[38;5;239m\033[48;5;237m❯ \033[38;5;231mMIDGEN fixture result > threshold. Produce 60 numbered sentences without tools, then END.\033[39m\n\n\033[38;5;174m\033[49m✢\033[39m \033[38;5;174mMull\033[38;5;216ming\033[38;5;174m… \033[39m\n\n\033[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[38;5;246m❯\xc2\xa0\033[39m\n'
+_cl_staged='\n\033[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n\033[39m❯\xc2\xa0[Pasted text #3 +39 lines]\n'
+_cl_linestart='\033[38;5;231m●\033[39m [11:41] > LINESTART_SENTINEL\n  comparison result > threshold\n\033[38;5;246m  ⎿ \xc2\xa0\033[39m> LINESTART_TOOL\n'
+# (4) live empty baseline: row8 is the prompt; row2's splash logo contains a '▌' that is
+# NOT the row's first cell (the logo starts '▐') — structure alone must reject it.
+assert_eq "nb2: REAL claude live-empty baseline (v2.1.209) -> idle" "idle" "$(_occ claude "$_cl_baseline")"
+# The splash logo contains a '▌' — colead's explicit warning: an ornament set is only
+# safe BECAUSE selection is structural. Here the logo rows are the whole region (claude
+# starting up, no live prompt yet): every glyph row must be rejected, because a
+# decorative glyph read as a prompt would report OCCUPIED -> post-submit false staged ->
+# a duplicate Enter. This is what lets '▌' stay in the set at all, and it fails the
+# moment a decorative glyph (e.g. the logo's leading '▐') is admitted as an ornament.
+_cl_splash='\033[32mckriech\033[39m \033[34m/home/ckriech/projects/clemens33/ae/.local/claude209-fixture\033[95m (main)\033[39m\n$ \033[34m/home/ckriech/.ae/sessions/irclaude209b/launch.main.sh\033[39m\n\033[38;5;174m ▐\033[48;5;16m▛███▜\033[49m▌\033[39m   \033[1mClaude\033[0m \033[1mCode\033[0m \033[38;5;246mv2.1.209\033[39m\n\033[38;5;174m▝▜\033[48;5;16m█████\033[49m▛▘\033[39m  \033[38;5;246mOpus\033[39m \033[38;5;246m4.8\033[39m \033[38;5;246mwith\033[39m \033[38;5;246mxhigh\033[39m \033[38;5;246meffort\033[39m \033[38;5;246m·\033[39m \033[38;5;246mClaude\033[39m \033[38;5;246mMax\033[39m\n\033[38;5;174m \033[39m \033[38;5;174m▘▘\033[39m \033[38;5;174m▝▝\033[39m    \033[38;5;246m~/projects/clemens33/ae/.local/claude209-fixture\033[39m\n\n\n\033[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\n'
+assert_eq "nb2: REAL splash logo rows ('▌' present, never line-leading) -> indeterminate" "indeterminate" \
+    "$(_occ claude "$_cl_splash")"
+# (1) submitted echo ABOVE live empty: rows 5 and 7 are prompt-SHAPED echoes with content
+# after the ornament; only the bottom-most row 14 is live. Truth is idle — the old
+# any-line scan picked an echo and reported staged, re-Entering a delivered message.
+assert_eq "nb2: REAL submitted echo above live empty -> idle (bottom-most wins)" "idle" "$(_occ claude "$_cl_echo")"
+# (2) mid-generation: row13's echo carries an INLINE '>' ('result > threshold') — the
+# exact shape colead named in NB2. It is not line-leading, and row18's live empty prompt
+# is bottom-most. Truth is idle.
+assert_eq "nb2: REAL mid-gen w/ inline '>' in echo row -> idle (live prompt drawn while generating)" "idle" "$(_occ claude "$_cl_midgen")"
+# (3) colead could NOT induce a transcript row whose FIRST non-blank cell is '>': claude
+# prepends an assistant marker ('●') or a tool-output gutter ('⎿'). So line-start-only is
+# empirically sufficient for the assistant-text and tool-output paths. With no live
+# prompt these rows must yield indeterminate, NOT a false prompt.
+assert_eq "nb2: REAL line-start-'>' attempts are marker-prefixed, no live prompt -> indeterminate" "indeterminate" \
+    "$(_occ claude "$_cl_linestart")"
+assert_eq "nb2: REAL line-start-'>' attempts BELOW a live empty prompt -> idle" "idle" \
+    "$(_occ claude "$_cl_linestart"'\033[39m❯\xc2\xa0\n')"
+# (5) specimen #5 — staging-hint drift. The staged token sits UNSTYLED on the prompt row,
+# so the CLASS rule (any content after the ornament) already reports occupied. The hint
+# 'paste again to expand' is THREE ROWS BELOW cursor_y — outside a 0..cy capture entirely.
+# So occupancy must never depend on, or text-match, that hint: it is not reachable.
+assert_eq "nb2: REAL specimen-5 staged token on prompt row -> occupied" "occupied" "$(_occ claude "$_cl_staged")"
+assert_eq "nb2: specimen-5 — the hint is BELOW cursor_y, absent from the region" "1" \
+    "$([[ "$(printf '%b' "$_cl_staged")" != *'paste again to expand'* ]] && echo 1 || echo 0)"
+# Detection must not be text-matched to the token either: raw text staged behind the
+# ornament is the steward's variant-3 loss and is caught by the same CLASS rule.
+assert_eq "nb2: REAL prompt row + raw typed text -> occupied" "occupied" \
+    "$(_occ claude '\033[39m❯\xc2\xa0Run your sweep now\n')"
+
 # ── consumer 1: _paste_still_staged (post-submit) — OCCUPIED=staged, else CLEAR ──
 _pss() { # <tool> <region-printf_b> -> staged|clear
     local _R
@@ -4801,6 +4861,11 @@ assert_eq "still-staged: claude clear input -> clear (submitted)" "clear" "$(_ps
 # the live ornament), so raw text is caught for free — pinned here so it stays that way.
 assert_eq "still-staged: claude short RAW text staged (no token) -> staged (variant-3)" "staged" \
     "$(_pss claude '❯\xc2\xa0Run your sweep now and report findings-first')"
+# Against colead's REAL 2.1.209 regions (fixture vars defined in the sensor block above):
+# post-submit consumer against the real bytes: a fully-answered submit reads CLEAR (no
+# duplicate Enter), a staged paste reads STAGED (no silent loss).
+assert_eq "nb2: still-staged REAL submitted echo + live empty -> clear (no F4 dup)" "clear" "$(_pss claude "$_cl_echo")"
+assert_eq "nb2: still-staged REAL specimen-5 staged token -> staged (no silent loss)" "staged" "$(_pss claude "$_cl_staged")"
 
 # ── consumer 2: _paste_input_busy (pre-paste) — IDLE=safe, OCCUPIED/INDETERMINATE=unsafe ──
 _pib() { # <tool> <region-printf_b> -> safe|unsafe

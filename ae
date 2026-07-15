@@ -6957,8 +6957,9 @@ _sgr_parse() {
 # only property that separates it from transcript — the ornament is the FIRST
 # non-whitespace cell of its ROW, and the BOTTOM-MOST such row wins (the input box sits
 # below the transcript; the capture stops at the cursor, which is inside the box).
-# Sets _SGR_PROMPT_SEG (segment index) and _SGR_PROMPT_TAIL (that segment's text from
-# the ornament onward). Returns 1 when no row qualifies -> caller reports indeterminate.
+# Sets _SGR_PROMPT_SEG (segment index), _SGR_PROMPT_TAIL (that segment's text from the
+# ornament onward) and _SGR_PROMPT_ORN (which ornament matched, so a multi-ornament tool
+# can strip exactly its own anchor). Returns 1 when no row qualifies -> indeterminate.
 #
 # Style alone was NOT enough (colead NEW BLOCKER 1): once the capture widened to
 # 0..cursor_y the whole transcript came into view, and a wildcard '*›*' over bold-and-
@@ -6975,6 +6976,7 @@ _input_region_prompt_seg() { # <live_only:0|1> <ornament>... -> 0 + _SGR_PROMPT_
     shift
     _SGR_PROMPT_SEG=-1
     _SGR_PROMPT_TAIL=""
+    _SGR_PROMPT_ORN=""
     # Callers always _sgr_parse first, but this is emitted into _lib where a future one
     # might not: subscripting an UNDECLARED array under `set -u` aborts the whole helper
     # (the repo's documented hazard). No segments parsed == no prompt, which is exactly
@@ -7005,6 +7007,7 @@ _input_region_prompt_seg() { # <live_only:0|1> <ornament>... -> 0 + _SGR_PROMPT_
             fi
             _SGR_PROMPT_SEG=$found
             _SGR_PROMPT_TAIL="$rest"
+            _SGR_PROMPT_ORN="$orn"
             return 0
         done
     done
@@ -7066,21 +7069,44 @@ _input_region_occupied() {
             [[ -n "$s" ]] && return 0 || return 1
             ;;
         claude)
-            # Claude styling is NOT focus-invariant (an INACTIVE pane dims typed text
-            # exactly like a ghost — the live-capture confound), so claude is
-            # CONTENT-only: suggestions are disabled at launch
-            # (CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0), so the idle input is a BARE
-            # ornament and ANY content after it = OCCUPIED. If that flag ever fails
-            # and a ghost returns, the ghost reads as content -> OCCUPIED -> we fail
-            # CLOSED (defer/abandon), never a silent clobber. Also subsumes claude's
-            # own '[Pasted text #N +M lines]' staging token (content -> occupied).
-            local s last
-            s="$(sed -E 's/\x1b\[[0-9;]*m//g' <<<"$region")" # strip all SGR (unreliable anyway)
-            s="${s//$'\xc2\xa0'/ }"
-            last="$(grep -nE '[>❯▌]' <<<"$s" | tail -n1 | cut -d: -f2- || true)"
-            [[ -n "$last" ]] || return 2 # no ornament in view (mid-generation / abnormal)
-            last="$(sed -E 's/^[[:space:]]*│?[[:space:]]*[>❯▌]//' <<<"$last")"
-            [[ -n "$(tr -d '[:space:]' <<<"$last")" ]] && return 0 || return 1
+            # STRUCTURE + CONTENT (colead's REAL v2.1.209 fixtures, 2026-07-15).
+            # STRUCTURE, because styling cannot identify claude's live prompt: the
+            # submitted echo is fg239-on-bg237, the live prompt is default when idle and
+            # fg246 mid-generation, and NONE of them is SGR-dim — so unlike codex there
+            # is no live_only style test to apply (hence live_only=0). Geometry is the
+            # robust fact: the live prompt is the BOTTOM-MOST row whose FIRST non-blank
+            # cell is the ornament. The old any-line grep for [>❯▌] instead took the last
+            # row containing one ANYWHERE, so a transcript row could be read as the live
+            # input -> staged -> extra Enters -> F4 duplication (colead NEW BLOCKER 2).
+            # Claude DOES draw the live empty prompt WHILE GENERATING (fixture 2), so
+            # bottom-most-wins holds mid-generation rather than degrading.
+            # No border cell ever precedes ❯ — borders are their own rows — so the old
+            # sed's speculative '│?' is dropped: no specimen supports it.
+            # '▌' stays in the set only BECAUSE selection is structural: the splash logo
+            # contains a '▌', but never as a row's first cell (the logo rows open '▐').
+            #
+            # CONTENT, because suggestions are disabled at launch
+            # (CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0): idle == a bare ornament, so ANY
+            # content after it = OCCUPIED. If that flag ever fails and a ghost returns,
+            # the ghost reads as content -> OCCUPIED -> fail CLOSED (defer/abandon),
+            # never a silent clobber. This CLASS rule is also why the two staging shapes
+            # need no text matching: claude's '[Pasted text #N +M lines]' token and raw
+            # unstyled text (the steward's variant-3 loss) are both just content.
+            # It is also why specimen #5's 'paste again to expand' hint is irrelevant —
+            # it renders THREE ROWS BELOW cursor_y, outside a 0..cy capture entirely,
+            # while the staged token stays on the prompt row where the class rule sees it.
+            local i s
+            _sgr_parse "$region"
+            _input_region_prompt_seg 0 '❯' '>' '▌' || return 2 # no live prompt in view
+            s="${_SGR_PROMPT_TAIL#"$_SGR_PROMPT_ORN"}"
+            # Continuation rows of a multiline input sit between the prompt row and the
+            # cursor; the prompt is bottom-most, so everything after it is input.
+            for ((i = _SGR_PROMPT_SEG + 1; i < ${#_SGR_TEXT[@]}; i++)); do
+                s+="${_SGR_TEXT[i]}"
+            done
+            s="${s//$'\xc2\xa0'/ }" # NBSP (U+00A0) follows ❯ on a real idle row
+            s="$(tr -d '\n\t ' <<<"$s")"
+            [[ -n "$s" ]] && return 0 || return 1
             ;;
         *) return 1 ;; # unmodeled tool -> treat as idle (don't block delivery)
     esac
