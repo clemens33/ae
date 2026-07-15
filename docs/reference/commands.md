@@ -185,6 +185,17 @@ now"* nudge every `AE_WATCHDOG_SWEEP_SEC` seconds (default 300) and never escala
 the steward to a stale `attn:` alert (idle between sweeps is normal for a monitor).
 Workers/spawned agents in the same session keep the normal watchdog.
 
+Sweep nudges are **delivery-checked**. A nudge can fail to land — the target's shell
+is dead (refused), or it stayed busy / a human was typing in it (abandoned after
+`AE_SEND_DEFER_SEC`). A failed nudge is logged as `sweep nudge FAILED` with the
+reason, and is retried after `AE_WATCHDOG_SWEEP_RETRY_SEC` (default 30) rather than
+waiting a full sweep window. After `AE_WATCHDOG_SWEEP_RETRY_MAX` (default 6) fast
+retries the watchdog falls back to the normal cadence and raises one
+`meta-agent unreachable` alert, cleared when a nudge next lands. Delivery is
+**at-least-once**: a nudge that lands but fails to write its event is retried, so the
+steward may occasionally sweep twice — a redundant sweep is cheap, a silently dropped
+one is not.
+
 Liveness is still guarded two ways: the dead/missing-pane checks catch a crashed
 steward, and a **heartbeat** check catches a *live-but-not-sweeping* steward (model
 stall, upstream throttle, wedge) — the steward's sweep helper rewrites

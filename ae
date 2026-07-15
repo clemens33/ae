@@ -8335,6 +8335,18 @@ helper_watchdog_main() {
     # treating idle as stale. 0 falls back to normal watchdog behaviour.
     SWEEP_SECS="${AE_WATCHDOG_SWEEP_SEC:-${AE_LOOP_SWEEP_SEC:-300}}"
     [[ "$SWEEP_SECS" =~ ^[0-9]+$ ]] || SWEEP_SECS=300 # guard non-numeric overrides
+    # A sweep nudge that FAILED to deliver retries after this instead of burning a
+    # full SWEEP_SECS window (see the delivery check in the cadence branch). Allows
+    # up to SWEEP_RETRY_MAX FAST retries; the next failure after that escalates once
+    # and falls back to plain cadence. Retry timing is floor-only — the watchdog
+    # polls on its own interval, so the retry lands on the first poll at or after
+    # SWEEP_RETRY_SECS, never sooner.
+    # Both regexes reject leading zeros: "08" is valid to ^[0-9]+$ but bash
+    # arithmetic reads it as OCTAL and errors out ("value too great for base").
+    SWEEP_RETRY_SECS="${AE_WATCHDOG_SWEEP_RETRY_SEC:-30}"
+    [[ "$SWEEP_RETRY_SECS" =~ ^[1-9][0-9]*$ ]] || SWEEP_RETRY_SECS=30
+    SWEEP_RETRY_MAX="${AE_WATCHDOG_SWEEP_RETRY_MAX:-6}"
+    [[ "$SWEEP_RETRY_MAX" =~ ^(0|[1-9][0-9]*)$ ]] || SWEEP_RETRY_MAX=6
     META_AGENT="$(grep '^meta_agent=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
     # Only the MAIN meta-agent runs the sweep cadence; any workers/spawned agents in a
     # meta session keep the normal watchdog. (alias:name, dropping the session-id.)
@@ -8374,6 +8386,7 @@ helper_watchdog_main() {
     declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing throttle_streak
     # Per-pane last sweep-nudge time, for meta-agent (steward) sweep cadence.
     declare -A last_sweep_nudge first_sweep_nudge meta_wedge_alerted meta_reconciled
+    declare -A sweep_nudge_fails sweep_unreachable_alerted
     # Per-pane quiet baseline for waiting-user/blocked: the pane hash captured when a
     # declaration is first observed (already includes the declaration's own echo), so
     # only a *later* pane change (human reply / agent output) yields the quiet state.
@@ -8507,18 +8520,97 @@ helper_watchdog_main() {
                         _watchdog_log "  ${agent}  meta-agent — WEDGE alert (${wedge_detail})"
                     fi
                 fi
-                # Sweep cadence. Record the FIRST nudge time so the heartbeat guard above
-                # has a reference point even before any state file exists.
+                # Sweep cadence. Record the first DELIVERED nudge time so the heartbeat
+                # guard above has a reference point even before any state file exists.
                 last_sweep="${last_sweep_nudge[$pane]:-0}"
                 if ((now_epoch - last_sweep >= SWEEP_SECS)); then
-                    [[ "${first_sweep_nudge[$pane]:-0}" -eq 0 ]] && first_sweep_nudge["$pane"]="$now_epoch"
-                    env AE_SENDER_OVERRIDE=watchdog \
+                    # Delivery is CHECKED, never fire-and-forget. `send` exits 1 when it
+                    # REFUSES (dead shell) or ABANDONS (target busy / human at the pane
+                    # past AE_SEND_DEFER_SEC). The old `2>/dev/null || true` swallowed
+                    # that, advanced the cadence, and logged "sent" regardless — so a
+                    # failed nudge was invisible and the steward waited another full
+                    # SWEEP_SECS. Shipped exhibit (steward events.jsonl 2026-07-15):
+                    # every nudge 05:00:24Z→06:55:00Z was eaten — 94 minutes, zero nudge
+                    # events, steward never prompted; the 05:20:59Z wedge alert was the
+                    # only signal and was a TRUE positive.
+                    # Keep send's stderr: it names the ACTUAL failure ("REFUSED … has
+                    # DIED" vs "ABANDONED — target stayed busy / human input"), which is
+                    # the one fact a human debugging a missed sweep needs. Flattened to a
+                    # single capped line so the log stays greppable.
+                    # SEMANTIC (deliberate): send's rc is "delivered AND logged", not
+                    # "delivered" — ae_emit_event is its last command, so an event-log
+                    # failure after a successful paste reports nonzero and we retry a
+                    # nudge the steward already got. That is AT-LEAST-ONCE, chosen over
+                    # at-most-once: a duplicate sweep prompt costs one redundant sweep,
+                    # a dropped one costs a 94-minute blind spot. Don't "fix" this by
+                    # trusting a nonzero rc as delivered.
+                    sweep_rc=0
+                    sweep_err="$(env AE_SENDER_OVERRIDE=watchdog \
                         _AE_EVENT_ACTION=nudge \
                         _AE_EVENT_SUMMARY="sweep cadence" \
                         "${META_DIR}/send" "$agent" \
-                        "Run your sweep now: ae list --json, diff your state file, and report ONLY new/changed attention to Clemens via say (stay silent if nothing changed). Stay in 'working'." 2>/dev/null || true
-                    last_sweep_nudge["$pane"]="$now_epoch"
-                    _watchdog_log "  ${agent}  meta-agent — sweep nudge sent (every ${SWEEP_SECS}s)"
+                        "Run your sweep now: ae list --json, diff your state file, and report ONLY new/changed attention to Clemens via say (stay silent if nothing changed). Stay in 'working'." 2>&1 >/dev/null)" || sweep_rc=$?
+                    if ((sweep_rc == 0)); then
+                        # The wedge grace window ticks from the first DELIVERED prompt:
+                        # starting it on an undelivered attempt would alert "not sweeping"
+                        # against a steward we never actually reached.
+                        [[ "${first_sweep_nudge[$pane]:-0}" -eq 0 ]] && first_sweep_nudge["$pane"]="$now_epoch"
+                        unset 'sweep_nudge_fails[$pane]'
+                        last_sweep_nudge["$pane"]="$now_epoch"
+                        _watchdog_log "  ${agent}  meta-agent — sweep nudge sent (every ${SWEEP_SECS}s)"
+                        if [[ -n "${sweep_unreachable_alerted[$pane]:-}" ]]; then
+                            unset 'sweep_unreachable_alerted[$pane]'
+                            # alert-cleared is UNTYPED — _agent_alert_reason treats ANY
+                            # clear as clearing THE alert. Emitting one here while the
+                            # wedge alert is still latched would erase a live "not
+                            # sweeping" from `ae list` while meta_wedge_alerted stays set,
+                            # so it could never re-fire: a wedged steward would go
+                            # invisible. Only clear when no wedge alert is outstanding;
+                            # the wedge owns its own clear (heartbeat-recovery branch
+                            # above, which already ran this cycle).
+                            if [[ -z "${meta_wedge_alerted[$pane]:-}" ]]; then
+                                ae_emit_event "alert-cleared" "$agent" "" "meta-agent reachable again (sweep nudge delivered)"
+                                _watchdog_log "  ${agent}  meta-agent — unreachable cleared (nudge delivered)"
+                            else
+                                _watchdog_log "  ${agent}  meta-agent — reachable again, but wedge alert still active (not clearing)"
+                            fi
+                        fi
+                    else
+                        # Flatten to ONE capped line: newlines/tabs → spaces, then drop the
+                        # remaining control bytes (an ESC sequence must not reach a log a
+                        # human cats). Byte range keeps UTF-8 intact — send's own text has
+                        # em-dashes. _watchdog_log passes this as a printf ARG, not a format.
+                        sweep_err="$(printf '%s' "$sweep_err" | tr '\n\r\t' '   ' | tr -d '\000-\037\177' | cut -c1-140)"
+                        # Re-read the clock: the send above BLOCKS while it defers a busy
+                        # target (AE_SEND_DEFER_SEC, 30s), so now_epoch is stale by exactly
+                        # the interval we are scheduling against — off it, the retry would
+                        # be due the moment send returned.
+                        sweep_now="$(date +%s)"
+                        sweep_fails=$((${sweep_nudge_fails[$pane]:-0} + 1))
+                        sweep_nudge_fails["$pane"]="$sweep_fails"
+                        if ((sweep_fails <= SWEEP_RETRY_MAX)); then
+                            # Don't consume the cadence slot — make the retry due
+                            # SWEEP_RETRY_SECS after THIS failure. Clamped: a retry longer
+                            # than SWEEP_SECS would push last_sweep into the FUTURE and
+                            # delay the next nudge instead of hastening it. Floor, not a
+                            # deadline: it lands on the first watchdog poll at/after that.
+                            sweep_retry="$SWEEP_RETRY_SECS"
+                            ((sweep_retry > SWEEP_SECS)) && sweep_retry="$SWEEP_SECS"
+                            last_sweep_nudge["$pane"]=$((sweep_now - SWEEP_SECS + sweep_retry))
+                            _watchdog_log "  ${agent}  meta-agent — sweep nudge FAILED (rc=${sweep_rc}, retry ${sweep_fails}/${SWEEP_RETRY_MAX}) — due in ~${sweep_retry}s, lands on the next poll${sweep_err:+ — ${sweep_err}}"
+                        else
+                            # Bounded: a persistently unreachable steward degrades to the
+                            # normal cadence and escalates ONCE, rather than retry-spamming.
+                            last_sweep_nudge["$pane"]="$sweep_now"
+                            _watchdog_log "  ${agent}  meta-agent — sweep nudge FAILED (rc=${sweep_rc}) — ${sweep_fails} consecutive, back to ${SWEEP_SECS}s cadence${sweep_err:+ — ${sweep_err}}"
+                            if [[ -z "${sweep_unreachable_alerted[$pane]:-}" ]]; then
+                                sweep_unreachable_alerted["$pane"]=1
+                                cycle_alerts=$((cycle_alerts + 1))
+                                ae_emit_event "alert" "$agent" "" "meta-agent unreachable — ${sweep_fails} sweep nudges undelivered (not sweeping)"
+                                tmux display-message -d 10000 "[ae watchdog] $agent (meta-agent) unreachable — sweep nudges undelivered" 2>/dev/null || true
+                            fi
+                        fi
+                    fi
                 else
                     _watchdog_log "  ${agent}  meta-agent — next sweep in $((SWEEP_SECS - (now_epoch - last_sweep)))s"
                 fi

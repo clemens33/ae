@@ -3559,6 +3559,59 @@ assert_eq "meta: recovery clears via latch AND durable reconcile (survives resta
         && "$AE_SOURCE" == *'throttle-cleared | alert-cleared) return 0'* \
         && "$AE_SOURCE" == *'-z "${meta_reconciled[$pane]:-}"'* \
         && "$AE_SOURCE" == *'_agent_alert_reason "$META_DIR/events.jsonl" "$agent" "$_AE_SESSION"'* ]] && echo 1 || echo 0)"
+# ── sweep-nudge delivery is CHECKED, not fire-and-forget ─────────────
+# Shipped outage (steward events.jsonl, 2026-07-15): the sweep send was
+# `2>/dev/null || true`, then last_sweep_nudge advanced and the log said "sweep
+# nudge sent" UNCONDITIONALLY. But `send` exits 1 when it REFUSES (dead shell) or
+# ABANDONS (target busy / human at the pane past AE_SEND_DEFER_SEC). Every nudge
+# from 05:00:24Z to 06:55:00Z was eaten silently — 94 minutes, ZERO nudge events,
+# the steward never prompted. The wedge alert at 05:20:59Z was the only signal,
+# and it was a TRUE positive. So: capture the status; a failed nudge must be
+# LOUD and must NOT consume the cadence slot.
+assert_eq "meta: sweep nudge captures send exit status (no fire-and-forget)" "1" \
+    "$([[ "$AE_SOURCE" == *'sweep_rc=0'* \
+        && "$AE_SOURCE" == *'|| sweep_rc=$?'* ]] && echo 1 || echo 0)"
+# A failed nudge logs a DISTINCT line (greppable, not the success wording) and
+# reschedules ~SWEEP_RETRY_SECS out instead of burning a full SWEEP_SECS window.
+assert_eq "meta: failed sweep nudge logs FAILED and retries soon (no silent wait)" "1" \
+    "$([[ "$AE_SOURCE" == *'sweep nudge FAILED'* \
+        && "$AE_SOURCE" == *'due in ~${sweep_retry}s, lands on the next poll'* \
+        && "$AE_SOURCE" == *'last_sweep_nudge["$pane"]=$((sweep_now - SWEEP_SECS + sweep_retry))'* ]] && echo 1 || echo 0)"
+# Retry must be BOUNDED: a permanently-unreachable steward degrades to the normal
+# cadence + ONE escalation alert, it does not retry-spam every 30s forever.
+assert_eq "meta: sweep-nudge retry is bounded + escalates once" "1" \
+    "$([[ "$AE_SOURCE" == *'sweep_nudge_fails['* \
+        && "$AE_SOURCE" == *'SWEEP_RETRY_MAX'* \
+        && "$AE_SOURCE" == *'sweep_unreachable_alerted['* ]] && echo 1 || echo 0)"
+# The retry delay must never exceed SWEEP_SECS, else `now - SWEEP_SECS + retry`
+# lands in the FUTURE and the next nudge is delayed by a whole extra window.
+assert_eq "meta: sweep retry delay is clamped to <= SWEEP_SECS" "1" \
+    "$([[ "$AE_SOURCE" == *'((sweep_retry > SWEEP_SECS)) && sweep_retry="$SWEEP_SECS"'* ]] && echo 1 || echo 0)"
+# BLOCKER (codex cross-review): alert-cleared is UNTYPED — _agent_alert_reason
+# returns "no alert" on ANY clear. Clearing 'unreachable' while the wedge alert is
+# still latched would erase a live "not sweeping" from ae list AND leave
+# meta_wedge_alerted set so it could never re-fire — a wedged steward goes
+# invisible. The unreachable-clear must be gated on no wedge being outstanding.
+assert_eq "meta: unreachable-clear must not erase a live wedge alert" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ -z "${meta_wedge_alerted[$pane]:-}" ]]; then'*'ae_emit_event "alert-cleared" "$agent" "" "meta-agent reachable again'* ]] && echo 1 || echo 0)"
+# IMPORTANT (codex): the send BLOCKS up to AE_SEND_DEFER_SEC while deferring a busy
+# target, so now_epoch is stale by exactly the interval being scheduled. The retry
+# must be measured from when the send actually FAILED, not from cycle start.
+assert_eq "meta: retry is scheduled off a clock re-read AFTER the send" "1" \
+    "$([[ "$AE_SOURCE" == *'sweep_now="$(date +%s)"'* \
+        && "$AE_SOURCE" == *'last_sweep_nudge["$pane"]=$((sweep_now - SWEEP_SECS + sweep_retry))'* \
+        && "$AE_SOURCE" != *'last_sweep_nudge["$pane"]=$((now_epoch - SWEEP_SECS + sweep_retry))'* ]] && echo 1 || echo 0)"
+# IMPORTANT (codex): "08" satisfies ^[0-9]+$ but bash arithmetic reads it as OCTAL
+# and errors ("value too great for base"). Both retry knobs reject leading zeros.
+assert_eq "meta: retry knobs reject leading zeros (octal arithmetic trap)" "1" \
+    "$([[ "$AE_SOURCE" == *'[[ "$SWEEP_RETRY_MAX" =~ ^(0|[1-9][0-9]*)$ ]] || SWEEP_RETRY_MAX=6'* \
+        && "$AE_SOURCE" == *'[[ "$SWEEP_RETRY_SECS" =~ ^[1-9][0-9]*$ ]] || SWEEP_RETRY_SECS=30'* ]] && echo 1 || echo 0)"
+# The wedge grace window must tick from the first SUCCESSFUL prompt. If it starts
+# on an attempt we never delivered, we alert "not sweeping" against a steward that
+# was never actually reached — misattributing a delivery outage as a model stall.
+assert_eq "meta: first_sweep_nudge records the first DELIVERED nudge only" "1" \
+    "$([[ "$AE_SOURCE" == *'if ((sweep_rc == 0)); then'* \
+        && "$AE_SOURCE" == *'first_sweep_nudge["$pane"]="$now_epoch"'* ]] && echo 1 || echo 0)"
 # IMPORTANT (codex): the wedge alert must rank HIGH (stale), not be downgraded to
 # throttled by a stray substring — explicit 'not sweeping' case ranks it before
 # *throttl*, and the summary itself avoids the throttl/dead substrings.

@@ -177,5 +177,32 @@ before="$(cat "$WORK/st.json")"
 sweep f_mdkdead.json --now 2 --dry-run >/dev/null
 assert_eq "--dry-run leaves state unchanged" "$before" "$(cat "$WORK/st.json")"
 
+# ── heartbeat: EVERY real sweep refreshes the state file ─────────────
+# The watchdog's live-but-not-sweeping guard (ae: hb_file=…/meta-agent-state.json)
+# treats this file's mtime as the steward's heartbeat. So a sweep that changes
+# NOTHING must still refresh it — otherwise a quiet fleet stales the heartbeat and
+# the watchdog false-alarms "meta-agent not sweeping" at SWEEP_SECS*2+60.
+# These pin the contract the watchdog depends on; they pass today (verified
+# 2026-07-15 — the write is unconditional), and exist so it stays that way.
+rm -f "$WORK/st.json" "$WORK/st.json.lock"
+sweep f_mdkblocked.json --now 1000 --init >/dev/null
+sweep f_mdkblocked.json --now 2000 >/dev/null           # identical input → no report
+assert_eq "no-change sweep still advances last_sweep_at (heartbeat)" "2000" \
+    "$(python3 -c "import json;print(json.load(open('$WORK/st.json'))['last_sweep_at'])")"
+out="$(sweep f_mdkblocked.json --now 3000)"
+assert_eq "no-change sweep is silent (heartbeat is not a report)" "" "$out"
+assert_eq "silent sweep STILL advances last_sweep_at" "3000" \
+    "$(python3 -c "import json;print(json.load(open('$WORK/st.json'))['last_sweep_at'])")"
+# mtime is what the watchdog actually stat()s — assert the file is rewritten, not
+# just that the JSON field moved.
+touch -d '@1' "$WORK/st.json"
+sweep f_mdkblocked.json --now 4000 >/dev/null
+assert_eq "no-change sweep rewrites the file (mtime advances)" "1" \
+    "$([[ "$(stat -c %Y "$WORK/st.json")" -gt 1 ]] && echo 1 || echo 0)"
+# The watchdog stats ${META_DIR}/meta-agent-state.json — aemonitor's default state
+# path MUST resolve to that same basename or the guard watches a file nobody writes.
+assert_contains "default state path matches the watchdog's hb_file basename" \
+    "meta-agent-state.json" "$(command grep -o 'meta-agent-state\.json' "$AM" | head -1)"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [[ "$fail" -eq 0 ]]
