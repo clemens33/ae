@@ -9,6 +9,7 @@
 claude = "claude --permission-mode bypassPermissions --model claude-opus-4-8"
 codex = "codex --yolo -m gpt-5.5 -c model_reasoning_effort=high"
 gemini = "gemini --yolo -m gemini-2.5-pro"
+grokbuild = "grok --always-approve -m grok-build --effort high"
 opencode = "opencode -m google/gemini-3-pro-preview"
 
 [workspace]

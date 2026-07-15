@@ -114,20 +114,22 @@ This makes helper logic unit-testable, shellcheck/shfmt-covered, and greppable. 
 
 ae supports multiple coding agent CLIs. They differ significantly in session handling, resume, and prompt injection. This table documents the actual behavior ae relies on — know it before modifying agent launch/resume code.
 
-| Capability | Claude Code | Codex | Gemini CLI | OpenCode |
-|---|---|---|---|---|
-| **System prompt injection** | `--append-system-prompt 'text'` | `-c developer_instructions='text'` | `-i 'text'` | None — paste as first message via tmux buffer |
-| **Session ID at launch** | `--session-id UUID` (set by ae) | None (no flag exists) | None (launch token only; no launch-time UUID flag) | None (no flag exists) |
-| **Session ID capture** | Immediate (ae generates UUID upfront) | Post-launch via `_register-sid` internal helper plus launch-token/file scan | Post-launch via local chat history scan (`~/.gemini/tmp/.../chats/session-*.json`) | Post-launch via launch-token DB scan or `opencode session list --format json` fallback |
-| **Resume with exact session** | `--resume UUID` | `codex <flags> resume UUID` (`resume` is a subcommand) | `--resume UUID` on current CLI; `ae` falls back to `--resume latest` when uncaptured | `--session ID` (e.g. `ses_...`) |
-| **Resume fallback** | `--continue` (CWD heuristic) | Fresh start (drop `resume UUID`, keep flags) | `--resume latest` | `--continue` (last session) |
-| **Concurrent session safety** | Full — UUID-scoped | Partial — `_register-sid` + launch tokens reduce collisions, but fallback CWD matching is still heuristic | Partial — UUID-scoped once captured; fallback `--resume latest` remains heuristic when uncaptured | Partial — `--session ID` is UUID-scoped once captured; fallback CWD matching remains heuristic |
-| **Config flags preserved on resume** | Yes (flags stay, `--resume` appended) | Yes (flags before `resume` subcommand) | Yes (flags stay, `--resume` appended) | Yes (flags stay, `--session` appended) |
+| Capability | Claude Code | Codex | Gemini CLI | Grok Build | OpenCode |
+|---|---|---|---|---|---|
+| **System prompt injection** | `--append-system-prompt 'text'` | `-c developer_instructions='text'` | `-i 'text'` | None (append-style) — context rides the POSITIONAL `[PROMPT]` argv. `--system-prompt-override` REPLACES grok's own agent prompt (breaks its tooling) — never use it | None — paste as first message via tmux buffer |
+| **Session ID at launch** | `--session-id UUID` (set by ae) | None (no flag exists) | None (launch token only; no launch-time UUID flag) | `--session-id UUID` (set by ae) | None (no flag exists) |
+| **Session ID capture** | Immediate (ae generates UUID upfront) | Post-launch via `_register-sid` internal helper plus launch-token/file scan | Post-launch via local chat history scan (`~/.gemini/tmp/.../chats/session-*.json`) | Immediate (ae generates UUID upfront) — no launch token, no `_register-sid` handshake | Post-launch via launch-token DB scan or `opencode session list --format json` fallback |
+| **Resume with exact session** | `--resume UUID` | `codex <flags> resume UUID` (`resume` is a subcommand) | `--resume UUID` on current CLI; `ae` falls back to `--resume latest` when uncaptured | `--resume UUID` | `--session ID` (e.g. `ses_...`) |
+| **Resume fallback** | `--continue` (CWD heuristic) | Fresh start (drop `resume UUID`, keep flags) | `--resume latest` | `--continue` (CWD heuristic) | `--continue` (last session) |
+| **Concurrent session safety** | Full — UUID-scoped | Partial — `_register-sid` + launch tokens reduce collisions, but fallback CWD matching is still heuristic | Partial — UUID-scoped once captured; fallback `--resume latest` remains heuristic when uncaptured | Full — UUID-scoped | Partial — `--session ID` is UUID-scoped once captured; fallback CWD matching remains heuristic |
+| **Config flags preserved on resume** | Yes (flags stay, `--resume` appended) | Yes (flags before `resume` subcommand) | Yes (flags stay, `--resume` appended) | Yes (flags stay, `--resume`/`--continue` appended) | Yes (flags stay, `--session` appended) |
+| **TUI modelled for delivery** | Yes — input-busy + staged detection | Yes — busy detection (staged detection: see input-region work) | No | No (v1) — sends deliver unprotected: no typed-input protection, no staged detection, no throttle patterns until its TUI is observed live | No |
 
 **Key constraints to know:**
 - Codex has no `--session-name` or `--session-id` flag. The only way to get its UUID is post-launch (from `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filenames). ae works around this by instructing codex via `developer_instructions` to run the internal `_register-sid` helper script as its first action.
 - Gemini persists a local `sessionId` in `~/.gemini/tmp/<project>/chats/session-*.json`, and current Gemini CLI accepts `--resume <UUID>` in addition to `latest`/index. ae now captures that UUID via launch-token scan and uses exact resume when available; fallback remains `--resume latest` if capture fails.
 - OpenCode is TUI-only with no system prompt flag. Context is injected by pasting text into the TUI as the first user message. Session IDs are captured post-launch via `opencode session list --format json` filtered by directory (CWD) matching. Resume uses `--session ID` for exact match or `--continue` as fallback.
+- Grok Build is the cleanest integration after Claude Code: it accepts an ae-generated `--session-id UUID` at launch (verified live), so resume is UUID-scoped from the first cycle with none of the post-launch capture machinery the other tools need. Its only quirk is the system prompt: there is no append-style flag, and `--system-prompt-override` *replaces* the agent's own prompt — so ae passes context as the positional `[PROMPT]` argument (gemini-shaped, with the same "context only, wait for a task" suffix). Its TUI is unmodelled in v1: sends to grok panes get no typed-input protection or staged-paste detection (observed surface so far: footer `Grok Build · always-approve`, boxed `❯` prompt).
 - Agent names in meta use `:` as delimiter (`alias:name:session_id`). Agent names must not contain `:`.
 
 ## Bash hazards (read before editing `ae`)
