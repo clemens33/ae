@@ -118,7 +118,7 @@ assert_eq "strip-opencode: --continue" \
 # ── tool_kind_from_cmd ───────────────────────────────────────────────
 
 assert_eq "kind: claude" "claude" "$(tool_kind_from_cmd "claude --model opus")"
-assert_eq "kind: codex" "codex" "$(tool_kind_from_cmd "codex --yolo")"
+assert_eq "kind: codex"  "codex"  "$(tool_kind_from_cmd "codex --yolo")"
 assert_eq "kind: opencode" "opencode" "$(tool_kind_from_cmd "opencode")"
 assert_eq "kind: unknown" "unknown" "$(tool_kind_from_cmd "sometool --flag")"
 
@@ -187,8 +187,8 @@ assert_eq "binary: nested env then sudo" \
 # ── tool_name_from_cmd ──────────────────────────────────────────────
 
 assert_eq "name: claude" "claude code" "$(tool_name_from_cmd "claude --model opus")"
-assert_eq "name: codex" "codex" "$(tool_name_from_cmd "codex --yolo")"
-assert_eq "name: opencode" "opencode" "$(tool_name_from_cmd "opencode")"
+assert_eq "name: codex"  "codex"       "$(tool_name_from_cmd "codex --yolo")"
+assert_eq "name: opencode" "opencode"  "$(tool_name_from_cmd "opencode")"
 assert_eq "name: unknown passes through" "mytool --flag" "$(tool_name_from_cmd "mytool --flag")"
 
 # ── build_launch_command ────────────────────────────────────────────
@@ -371,7 +371,7 @@ assert_eq "ae_context: codex contains _register-sid instruction" \
 
 # Codex with slot arg
 _meta_dir="$(mktemp -d)"
-printf 'launch_id.worker.0=codex-123\n' >"$_meta_dir/meta"
+printf 'launch_id.worker.0=codex-123\n' > "$_meta_dir/meta"
 result_codex_slot="$(inject_ae_context "codex --yolo" "$_meta_dir" "my-session" "/home/user/project" "worker.0")"
 assert_eq "ae_context: codex slot passed to _register-sid" \
     "1" \
@@ -392,7 +392,7 @@ assert_eq "ae_context: gemini contains workspace context" \
     "$([[ "$result_gemini" == *"ae multi-agent workspace"* ]] && echo 1 || echo 0)"
 
 _meta_dir="$(mktemp -d)"
-printf 'launch_id.worker.0=launch-123\nlaunch_time.worker.0=123\n' >"$_meta_dir/meta"
+printf 'launch_id.worker.0=launch-123\nlaunch_time.worker.0=123\n' > "$_meta_dir/meta"
 result_gemini_slot="$(inject_ae_context "gemini --yolo" "$_meta_dir" "my-session" "/home/user/project" "worker.0")"
 assert_eq "ae_context: gemini slot includes launch marker" \
     "1" \
@@ -403,7 +403,7 @@ assert_eq "read_launch_id_for_slot: generic key" \
 assert_eq "read_launch_time_for_slot: generic key" \
     "123" \
     "$(read_launch_time_for_slot "$_meta_dir" "worker.0")"
-printf 'launch_time.worker.0=bad-value\n' >"$_meta_dir/meta"
+printf 'launch_time.worker.0=bad-value\n' > "$_meta_dir/meta"
 assert_eq "read_launch_time_for_slot: invalid values coerce to zero" \
     "0" \
     "$(read_launch_time_for_slot "$_meta_dir" "worker.0")"
@@ -415,7 +415,7 @@ assert_eq "ae_context: unknown agent is passthrough" \
 
 # inject_ae_context with [prompt] instructions
 _test_config="$(mktemp)"
-printf '[prompt]\ninstructions = "Use Rust. No unsafe."\n' >"$_test_config"
+printf '[prompt]\ninstructions = "Use Rust. No unsafe."\n' > "$_test_config"
 CONFIG_FILE="$_test_config"
 result_instr="$(inject_ae_context "claude --model opus" "/tmp/ae-test" "sess" "/home/user")"
 CONFIG_FILE="/dev/null"
@@ -432,8 +432,8 @@ assert_eq "ae_context: instructions have separator" \
 # inject_ae_context: local config overrides global instructions
 _global_cfg="$(mktemp)"
 _local_cfg="$(mktemp)"
-printf '[prompt]\ninstructions = "global rules"\n' >"$_global_cfg"
-printf '[prompt]\ninstructions = "local rules"\n' >"$_local_cfg"
+printf '[prompt]\ninstructions = "global rules"\n' > "$_global_cfg"
+printf '[prompt]\ninstructions = "local rules"\n' > "$_local_cfg"
 CONFIG_FILE="$_global_cfg"
 AE_LOCAL_CONFIG="$_local_cfg"
 result_override="$(inject_ae_context "claude --model opus" "/tmp/ae-test" "sess" "/home/user")"
@@ -565,7 +565,7 @@ assert_eq "colead: composes with the mode block (local caution present)" "1" "$(
 rm -rf "$_cl_dir"
 
 _meta_dir="$(mktemp -d)"
-printf 'launch_id.worker.0=opencode-123\n' >"$_meta_dir/meta"
+printf 'launch_id.worker.0=opencode-123\n' > "$_meta_dir/meta"
 result_opencode_slot="$(initial_prompt_for_cmd "opencode" "$_meta_dir" "sess" "/home/user" "worker.0")"
 assert_eq "initial_prompt: opencode slot includes launch marker" \
     "1" \
@@ -730,10 +730,7 @@ assert_eq "state: no args + latest state prints formatted line" \
 : >"$_state_evlog"
 assert_eq "state: working emits action=state with ref=value" \
     "state||working|on it" \
-    "$(
-        _run_state working "on it" >/dev/null 2>&1
-        cat "$_state_evlog"
-    )"
+    "$(_run_state working "on it" >/dev/null 2>&1; cat "$_state_evlog")"
 
 : >"$_state_evlog"
 _run_state "done" "all wrapped" >/dev/null 2>&1
@@ -745,25 +742,15 @@ done|||all wrapped" \
 : >"$_state_evlog"
 assert_eq "state: blocked without reason is rejected (rc=2, no event)" \
     "2|" \
-    "$(
-        _run_state blocked >/dev/null 2>&1
-        printf '%s|%s' "$?" "$(cat "$_state_evlog")"
-    )"
+    "$(_run_state blocked >/dev/null 2>&1; printf '%s|%s' "$?" "$(cat "$_state_evlog")")"
 
 assert_eq "state: blocked with reason accepted" \
     "state||blocked|waiting on CI" \
-    "$(
-        : >"$_state_evlog"
-        _run_state blocked "waiting on CI" >/dev/null 2>&1
-        cat "$_state_evlog"
-    )"
+    "$(: >"$_state_evlog"; _run_state blocked "waiting on CI" >/dev/null 2>&1; cat "$_state_evlog")"
 
 assert_eq "state: unknown value rejected with usage (rc=2)" \
     "2" \
-    "$(
-        _run_state bogus >/dev/null 2>&1
-        echo $?
-    )"
+    "$(_run_state bogus >/dev/null 2>&1; echo $?)"
 unset -f ae_current_agent_ref ae_latest_state_for ae_emit_event
 
 assert_eq "state: mark-done is shim over state done (preserves no-arg default summary)" \
@@ -978,19 +965,19 @@ assert_eq "next: read-only default gates the attach behind --attach" \
 # quoted argv element (a session name may contain spaces — never word-split).
 assert_eq "next: --attach revalidates exactly + no-ops in-place + focuses argv-safe" \
     "1" \
-    "$([[ "$_cmdnext_body" == *'tmux list-sessions -F '*'grep -Fxq -- "$best_name"'* &&
-        "$_cmdnext_body" != *'has-session -t "$best_name"'* &&
-        "$_cmdnext_body" == *'disappeared before attach'* &&
-        "$_cmdnext_body" == *'already in'* &&
-        "$_cmdnext_body" == *'tmux "$(_next_focus_verb)" -t "$best_name"'* ]] && echo 1 || echo 0)"
+    "$([[ "$_cmdnext_body" == *'tmux list-sessions -F '*'grep -Fxq -- "$best_name"'* \
+        && "$_cmdnext_body" != *'has-session -t "$best_name"'* \
+        && "$_cmdnext_body" == *'disappeared before attach'* \
+        && "$_cmdnext_body" == *'already in'* \
+        && "$_cmdnext_body" == *'tmux "$(_next_focus_verb)" -t "$best_name"'* ]] && echo 1 || echo 0)"
 unset _cmdnext_body
 
 # Arg handling (codex IMPORTANT): cmd_next parses -h/--help, accepts
 # --attach/--switch, rejects unknown args.
 assert_eq "next: cmd_next handles --help / --attach / unknown args" "1" \
-    "$([[ "$AE_SOURCE" == *'-h | --help)'* && "$AE_SOURCE" == *'--attach | --switch)'* &&
-        "$AE_SOURCE" == *'do_attach=true'* &&
-        "$AE_SOURCE" == *"unknown argument '\$arg'"* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'-h | --help)'* && "$AE_SOURCE" == *'--attach | --switch)'* \
+        && "$AE_SOURCE" == *'do_attach=true'* \
+        && "$AE_SOURCE" == *"unknown argument '\$arg'"* ]] && echo 1 || echo 0)"
 
 # _next_focus_verb: inside tmux → switch-client; outside → attach-session. Returns
 # ONLY the verb (the target is a separate quoted arg, so spaces can't word-split).
@@ -999,56 +986,29 @@ eval "$(awk '/^_next_focus_verb\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 assert_eq "next-focus: inside tmux uses switch-client" "switch-client" \
     "$(TMUX=/tmp/fake,1,0 _next_focus_verb)"
 assert_eq "next-focus: outside tmux uses attach-session" "attach-session" \
-    "$(
-        unset TMUX
-        _next_focus_verb
-    )"
+    "$(unset TMUX; _next_focus_verb)"
 # Argv-safety: the verb is a single bare word (no spaces), so `tmux "$verb" -t
 # "$name"` keeps a space-containing session name as ONE argv element.
 assert_eq "next-focus: verb is a single word (argv-safe with spacey targets)" "1" \
-    "$(
-        v="$(TMUX=x _next_focus_verb)"
-        [[ "$v" != *' '* ]] && echo 1 || echo 0
-    )"
+    "$(v="$(TMUX=x _next_focus_verb)"; [[ "$v" != *' '* ]] && echo 1 || echo 0)"
 
 # _next_better: the deterministic ranking comparison (rank desc, epoch desc,
 # name asc). Behavioural — sourced directly (codex IMPORTANT 2: name tie-break).
 eval "$(awk '/^_next_better\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 assert_eq "next-cmp: higher rank wins" "0" \
-    "$(
-        _next_better 5 100 zeta 3 999 alpha
-        echo $?
-    )"
+    "$(_next_better 5 100 zeta 3 999 alpha; echo $?)"
 assert_eq "next-cmp: lower rank loses" "1" \
-    "$(
-        _next_better 2 999 alpha 3 100 zeta
-        echo $?
-    )"
+    "$(_next_better 2 999 alpha 3 100 zeta; echo $?)"
 assert_eq "next-cmp: equal rank, newer activity wins" "0" \
-    "$(
-        _next_better 3 200 zeta 3 100 alpha
-        echo $?
-    )"
+    "$(_next_better 3 200 zeta 3 100 alpha; echo $?)"
 assert_eq "next-cmp: equal rank, older activity loses" "1" \
-    "$(
-        _next_better 3 100 alpha 3 200 zeta
-        echo $?
-    )"
+    "$(_next_better 3 100 alpha 3 200 zeta; echo $?)"
 assert_eq "next-cmp: equal rank+epoch, name asc wins the tie" "0" \
-    "$(
-        _next_better 3 100 alpha 3 100 beta
-        echo $?
-    )"
+    "$(_next_better 3 100 alpha 3 100 beta; echo $?)"
 assert_eq "next-cmp: equal rank+epoch, later name loses the tie" "1" \
-    "$(
-        _next_better 3 100 beta 3 100 alpha
-        echo $?
-    )"
+    "$(_next_better 3 100 beta 3 100 alpha; echo $?)"
 assert_eq "next-cmp: empty best (first candidate) always wins" "0" \
-    "$(
-        _next_better 1 0 anything 0 0 ''
-        echo $?
-    )"
+    "$(_next_better 1 0 anything 0 0 ''; echo $?)"
 
 # Slice 3: --json digest.
 assert_eq "list: --json flag parsed" \
@@ -1427,10 +1387,8 @@ _wd_avail="$(printf '%s\n%s\n' "$_wd_list" "$_lib_list" | grep -v '^$' | sort -u
 _ae_fns="$(grep -oE '^[a-z_][a-z0-9_]*\(\)' <<<"$AE_SOURCE" | sed 's/()//' | sort -u)"
 # Emitted watchdog fn bodies, full-line comments stripped (a fn name in prose must
 # not read as a call).
-_wd_bodies="$(while IFS= read -r fn; do
-    [[ -n "$fn" ]] || continue
-    awk "/^${fn}\\(\\) \\{/,/^\\}\$/" <<<"$AE_SOURCE"
-done <<<"$_wd_list" | grep -vE '^[[:space:]]*#')"
+_wd_bodies="$(while IFS= read -r fn; do [[ -n "$fn" ]] || continue
+    awk "/^${fn}\\(\\) \\{/,/^\\}\$/" <<<"$AE_SOURCE"; done <<<"$_wd_list" | grep -vE '^[[:space:]]*#')"
 _wd_missing=""
 while IFS= read -r fn; do
     [[ -n "$fn" ]] || continue
@@ -1468,23 +1426,20 @@ _session_states() { printf 'codex:w\tdone\n'; }
 tmux() { printf 'codex:w\tbash\n'; }
 _sr_dir="$(mktemp -d)"
 _sr_old="$(date -u -d '2 hours ago' +%FT%TZ)"
-printf '{"ts":"%s","actor":"claude:lead","action":"ask","target":"codex:w","ref":"r1","summary":"q"}\n' "$_sr_old" >"$_sr_dir/events.jsonl"
+printf '{"ts":"%s","actor":"claude:lead","action":"ask","target":"codex:w","ref":"r1","summary":"q"}\n' "$_sr_old" > "$_sr_dir/events.jsonl"
 _session_attn_rollup s "$_sr_dir" "agent.main=codex:w:x"
 assert_eq "attn: old unreplied ask flags target unanswered (even in done state)" \
     "unanswered|codex:w" "${_AE_ATTN_REASON}|${_AE_ATTN_AGENT}"
-printf '{"ts":"%s","actor":"codex:w","action":"reply","target":"claude:lead","ref":"r1","summary":"a"}\n' "$(date -u +%FT%TZ)" >>"$_sr_dir/events.jsonl"
+printf '{"ts":"%s","actor":"codex:w","action":"reply","target":"claude:lead","ref":"r1","summary":"a"}\n' "$(date -u +%FT%TZ)" >> "$_sr_dir/events.jsonl"
 _session_attn_rollup s "$_sr_dir" "agent.main=codex:w:x"
 assert_eq "attn: replied request clears the flag" "" "$_AE_ATTN_REASON"
-printf '{"ts":"%s","actor":"claude:lead","action":"ask","target":"codex:w","ref":"r2","summary":"q2"}\n' "$(date -u +%FT%TZ)" >>"$_sr_dir/events.jsonl"
+printf '{"ts":"%s","actor":"claude:lead","action":"ask","target":"codex:w","ref":"r2","summary":"q2"}\n' "$(date -u +%FT%TZ)" >> "$_sr_dir/events.jsonl"
 _session_attn_rollup s "$_sr_dir" "agent.main=codex:w:x"
 assert_eq "attn: recent unreplied ask stays silent (threshold)" "" "$_AE_ATTN_REASON"
 # Malformed threshold env degrades to the default instead of aborting.
-printf '{"ts":"%s","actor":"claude:lead","action":"ask","target":"codex:w","ref":"r3","summary":"q3"}\n' "$_sr_old" >>"$_sr_dir/events.jsonl"
+printf '{"ts":"%s","actor":"claude:lead","action":"ask","target":"codex:w","ref":"r3","summary":"q3"}\n' "$_sr_old" >> "$_sr_dir/events.jsonl"
 assert_eq "attn: malformed AE_ATTN_REQUEST_SECS degrades (old ask still flags)" \
-    "unanswered" "$(
-        AE_ATTN_REQUEST_SECS=abc _session_attn_rollup s "$_sr_dir" "agent.main=codex:w:x" 2>/dev/null
-        printf '%s' "$_AE_ATTN_REASON"
-    )"
+    "unanswered" "$(AE_ATTN_REQUEST_SECS=abc _session_attn_rollup s "$_sr_dir" "agent.main=codex:w:x" 2>/dev/null; printf '%s' "$_AE_ATTN_REASON")"
 unset -f _agent_alert_reason _session_states tmux
 
 # ── steward companion autostart ─────────────────────────────────────
@@ -1498,10 +1453,7 @@ assert_eq "autostart: launch flow calls companion beside the bridge autostart" "
 # Behavioural: guards short-circuit without touching tmux/config state.
 eval "$(awk '/^_steward_autostart_if_scaffolded\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 assert_eq "autostart: AE_NO_AUTOSTART=1 skips" "0" \
-    "$(
-        AE_NO_AUTOSTART=1 _steward_autostart_if_scaffolded
-        echo $?
-    )"
+    "$(AE_NO_AUTOSTART=1 _steward_autostart_if_scaffolded; echo $?)"
 assert_eq "autostart: steward's own launch skips (no output)" "" \
     "$(SESSION=steward _steward_autostart_if_scaffolded 2>/dev/null)"
 assert_eq "autostart: no scaffold -> silent no-op" "" \
@@ -1509,8 +1461,7 @@ assert_eq "autostart: no scaffold -> silent no-op" "" \
 # Era-detection parity (codex IMPORTANT): AE_STEWARD_DIR set-but-missing is
 # authoritative → no autostart even when a legacy scaffold exists.
 _as_tmp="$(mktemp -d)"
-mkdir -p "$_as_tmp/meta-hub"
-: >"$_as_tmp/meta-hub/hub.config"
+mkdir -p "$_as_tmp/meta-hub"; : > "$_as_tmp/meta-hub/hub.config"
 assert_eq "autostart: set-but-missing AE_STEWARD_DIR is authoritative (no legacy fallback)" "" \
     "$(SESSION=x CONFIG_DIR="$_as_tmp" AE_STEWARD_DIR="$_as_tmp/nonexistent" _steward_autostart_if_scaffolded 2>/dev/null)"
 # AE_HUB_DIR-only legacy scaffold IS honoured (mirrors the trampoline) — the
@@ -1518,10 +1469,7 @@ assert_eq "autostart: set-but-missing AE_STEWARD_DIR is authoritative (no legacy
 # shellcheck disable=SC2317
 daemon_session_running() { return 0; }
 assert_eq "autostart: AE_HUB_DIR legacy scaffold honoured (reaches running-check)" "0" \
-    "$(
-        SESSION=x CONFIG_DIR="$(mktemp -d)" AE_STEWARD_DIR="" AE_HUB_DIR="$_as_tmp/meta-hub" _steward_autostart_if_scaffolded 2>/dev/null
-        echo $?
-    )"
+    "$(SESSION=x CONFIG_DIR="$(mktemp -d)" AE_STEWARD_DIR="" AE_HUB_DIR="$_as_tmp/meta-hub" _steward_autostart_if_scaffolded 2>/dev/null; echo $?)"
 unset -f daemon_session_running
 
 assert_eq "bash guard: fails fast with brew hint in the file head" "1" \
@@ -1557,6 +1505,7 @@ _sec_helpers="$(grep -oE '^helper_[a-z0-9_]+\(\) \{' <<<"$AE_SOURCE" | sed 's/()
 _emit_helpers="$(tr ' ' '\n' <<<"$_emit_lists" | grep '^helper_' | sort -u)"
 assert_eq "emissions: template helper_* set == emitted helper_* set" \
     "$_sec_helpers" "$_emit_helpers"
+
 
 assert_eq "watchdog: helper script exists in generated source" \
     "1" \
@@ -1626,21 +1575,21 @@ assert_eq "doctor-refresh: restarts a running watchdog in the refresh path" "1" 
 assert_eq "doctor-refresh: gate proves the tmux session is live (exact match)" "1" \
     "$([[ "$_refresh_fn" == *"list-sessions -F '#{session_name}' 2>/dev/null | grep -Fxq -- \"\$session_name\""* ]] && echo 1 || echo 0)"
 assert_eq "doctor-refresh: gate requires a live _watchdog pane" "1" \
-    "$([[ "$_refresh_fn" == *"list-panes -s -t \"\$session_name\" -F '#{@ae_agent}' 2>/dev/null | grep -Fxq -- \"_watchdog\""* &&
-        "$_refresh_fn" == *'"$wd_pane_live" == "yes"'* ]] && echo 1 || echo 0)"
+    "$([[ "$_refresh_fn" == *"list-panes -s -t \"\$session_name\" -F '#{@ae_agent}' 2>/dev/null | grep -Fxq -- \"_watchdog\""* \
+       && "$_refresh_fn" == *'"$wd_pane_live" == "yes"'* ]] && echo 1 || echo 0)"
 assert_eq "doctor-refresh: only stops a genuinely-running watchdog" "1" \
-    "$([[ "$_refresh_fn" == *'"$wd_status" == *"is running"*'* &&
-        "$_refresh_fn" == *'"$wd_helper" stop'* &&
-        "$_refresh_fn" == *'"$wd_helper" start'* ]] && echo 1 || echo 0)"
+    "$([[ "$_refresh_fn" == *'"$wd_status" == *"is running"*'* \
+       && "$_refresh_fn" == *'"$wd_helper" stop'* \
+       && "$_refresh_fn" == *'"$wd_helper" start'* ]] && echo 1 || echo 0)"
 # IMPORTANT verify: poll for the restart, announce success only on confirmation,
 # and re-record watchdog=true (never leave it disabled) on failure.
 assert_eq "doctor-refresh: verifies the restart before claiming success" "1" \
-    "$([[ "$_refresh_fn" == *'wd_up="yes"'* &&
-        "$_refresh_fn" == *'"$wd_helper" status 2>/dev/null || true'* ]] && echo 1 || echo 0)"
+    "$([[ "$_refresh_fn" == *'wd_up="yes"'* \
+       && "$_refresh_fn" == *'"$wd_helper" status 2>/dev/null || true'* ]] && echo 1 || echo 0)"
 assert_eq "doctor-refresh: failed restart re-enables meta + warns, success is conditional" "1" \
-    "$([[ "$_refresh_fn" == *'set_session_meta_value "${meta_dir}/meta" "watchdog" "true"'* &&
-        "$_refresh_fn" == *'Warning: watchdog restart failed for ${session_name}'* &&
-        "$_refresh_fn" == *'restarted watchdog for ${session_name}'* ]] && echo 1 || echo 0)"
+    "$([[ "$_refresh_fn" == *'set_session_meta_value "${meta_dir}/meta" "watchdog" "true"'* \
+       && "$_refresh_fn" == *'Warning: watchdog restart failed for ${session_name}'* \
+       && "$_refresh_fn" == *'restarted watchdog for ${session_name}'* ]] && echo 1 || echo 0)"
 
 # events.jsonl retention: on RESUME only, cap the append-only log to the newest
 # AE_EVENTS_KEEP lines (default 1000), atomically and non-fatally, BEFORE the
@@ -1654,8 +1603,8 @@ assert_eq "events-retention: AE_EVENTS_KEEP is numeric-guarded" "1" \
 # Atomic tail -n N > tmp && mv, every step guarded (never fail a resume), one
 # announce line only when a trim happened.
 assert_eq "events-retention: trims atomically and announces" "1" \
-    "$([[ "$AE_SOURCE" == *'tail -n "$_events_keep" "$_events_file" >"$_events_tmp" 2>/dev/null && mv "$_events_tmp" "$_events_file" 2>/dev/null'* &&
-        "$AE_SOURCE" == *'Trimmed events.jsonl to newest ${_events_keep} lines'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'tail -n "$_events_keep" "$_events_file" >"$_events_tmp" 2>/dev/null && mv "$_events_tmp" "$_events_file" 2>/dev/null'* \
+       && "$AE_SOURCE" == *'Trimmed events.jsonl to newest ${_events_keep} lines'* ]] && echo 1 || echo 0)"
 # Ordering guard: the trim must sit BEFORE the events pane is ensured, else a
 # running tail -f would keep reading the pre-swap inode. Compare grep line numbers
 # — a ${AE_SOURCE#*'…'} strip on the ~380KB source is O(n^2) in bash and hangs the
@@ -2185,10 +2134,7 @@ _key="state|2026-01-01T00:00:00Z|waiting-user|claude:lead|need input"
 # Cycle 1: first sighting of the declaration, current hash B → arm + baseline B.
 _d="$(_quiet_pane_decision "hashB" "$_qbkey" "$_qbhash" "$_key")"
 assert_eq "quiet_seq: cycle1 arms on first declaration sighting" "arm" "$_d"
-[[ "$_d" == "arm" ]] && {
-    _qbkey="$_key"
-    _qbhash="hashB"
-}
+[[ "$_d" == "arm" ]] && { _qbkey="$_key"; _qbhash="hashB"; }
 # Cycle 2: pane still B (agent idle, waiting) → hold (suppress) despite the echo.
 assert_eq "quiet_seq: cycle2 holds while pane stays at the echoed baseline" "hold" \
     "$(_quiet_pane_decision "hashB" "$_qbkey" "$_qbhash" "$_key")"
@@ -2267,8 +2213,7 @@ assert_eq "ae_make_req_id: custom 'review' prefix" "1" \
     "$([[ "$_id" =~ ^review-[0-9]{8}T[0-9]{6}Z-[0-9a-f]+$ ]] && echo 1 || echo 0)"
 
 # Two consecutive ids are unique (same timestamp second, different random suffix).
-_id1="$(ae_make_req_id)"
-_id2="$(ae_make_req_id)"
+_id1="$(ae_make_req_id)"; _id2="$(ae_make_req_id)"
 assert_eq "ae_make_req_id: ids are unique" "1" \
     "$([[ "$_id1" != "$_id2" ]] && echo 1 || echo 0)"
 
@@ -2427,86 +2372,47 @@ eval "$(awk '
 
 # Per-tool detection.
 assert_eq "throttle: claude detects 'Server is temporarily limiting requests'" "0" \
-    "$(
-        _buf_shows_throttle 'API Error: Server is temporarily limiting requests · Rate limited' claude
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'API Error: Server is temporarily limiting requests · Rate limited' claude; echo $?)"
 
 assert_eq "throttle: claude detects 'API Error: Overloaded'" "0" \
-    "$(
-        _buf_shows_throttle '... API Error: Overloaded ...' claude
-        echo $?
-    )"
+    "$(_buf_shows_throttle '... API Error: Overloaded ...' claude; echo $?)"
 
 assert_eq "throttle: codex detects 'Rate limit exceeded'" "0" \
-    "$(
-        _buf_shows_throttle 'Error: Rate limit exceeded for gpt-5.5' codex
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'Error: Rate limit exceeded for gpt-5.5' codex; echo $?)"
 
 assert_eq "throttle: codex detects 'RateLimitError'" "0" \
-    "$(
-        _buf_shows_throttle 'openai.RateLimitError: 429 client error' codex
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'openai.RateLimitError: 429 client error' codex; echo $?)"
 
 assert_eq "throttle: gemini detects RESOURCE_EXHAUSTED" "0" \
-    "$(
-        _buf_shows_throttle 'Error 429: RESOURCE_EXHAUSTED' gemini
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'Error 429: RESOURCE_EXHAUSTED' gemini; echo $?)"
 
 assert_eq "throttle: gemini detects 'Quota exceeded'" "0" \
-    "$(
-        _buf_shows_throttle 'Quota exceeded for project foo' gemini
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'Quota exceeded for project foo' gemini; echo $?)"
 
 assert_eq "throttle: opencode detects union of upstream patterns (claude path)" "0" \
-    "$(
-        _buf_shows_throttle 'API Error: Overloaded' opencode
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'API Error: Overloaded' opencode; echo $?)"
 
 assert_eq "throttle: opencode detects union of upstream patterns (gemini path)" "0" \
-    "$(
-        _buf_shows_throttle 'RESOURCE_EXHAUSTED' opencode
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'RESOURCE_EXHAUSTED' opencode; echo $?)"
 
 # Generic fallbacks fire regardless of agent_bin.
 assert_eq "throttle: generic '429 Too Many Requests' fires for any tool" "0" \
-    "$(
-        _buf_shows_throttle 'HTTP 429 Too Many Requests' someothertool
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'HTTP 429 Too Many Requests' someothertool; echo $?)"
 # Clemens's Claude rate-limit banner is covered by the claude catalog's
 # 'Server is temporarily limiting requests' (the positive above) — a broad bare
 # 'Rate limited' generic is deliberately NOT added: it false-matches prose.
 assert_eq "throttle: bare 'Rate limited' prose does NOT match (no over-broad generic)" "1" \
-    "$(
-        _buf_shows_throttle 'Documenting the Rate limited banner in the test plan.' claude
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'Documenting the Rate limited banner in the test plan.' claude; echo $?)"
 
 # Negatives — must NOT match in normal prose (false positive guard).
 assert_eq "throttle: normal claude prose does not match" "1" \
-    "$(
-        _buf_shows_throttle 'Working on the rate limit feature. Ready to ship.' claude
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'Working on the rate limit feature. Ready to ship.' claude; echo $?)"
 
 assert_eq "throttle: empty buffer returns 1 (no match)" "1" \
-    "$(
-        _buf_shows_throttle '' claude
-        echo $?
-    )"
+    "$(_buf_shows_throttle '' claude; echo $?)"
 
 assert_eq "throttle: cross-tool patterns do not leak (claude buffer + codex bin)" "1" \
-    "$(
-        _buf_shows_throttle 'Server is temporarily limiting requests' codex
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'Server is temporarily limiting requests' codex; echo $?)"
 
 # Structural: the new step is wired into the watchdog body and the pre-check
 # uses the unified pane_buf so detection + streak-clear share one capture.
@@ -2571,40 +2477,22 @@ assert_eq "throttle: opencode pattern set is union via shared arrays (no drift)"
 # signals to update throttle_streak with the up-front clear logic codex flagged).
 assert_eq "throttle: detection toggles correctly across throttle->clear->throttle" "1" \
     "$(
-        r1="$(
-            _buf_shows_throttle 'API Error: Server is temporarily limiting requests' claude
-            echo $?
-        )"
-        r2="$(
-            _buf_shows_throttle 'normal output, working on task' claude
-            echo $?
-        )"
-        r3="$(
-            _buf_shows_throttle 'API Error: Server is temporarily limiting requests' claude
-            echo $?
-        )"
+        r1="$(_buf_shows_throttle 'API Error: Server is temporarily limiting requests' claude; echo $?)"
+        r2="$(_buf_shows_throttle 'normal output, working on task' claude; echo $?)"
+        r3="$(_buf_shows_throttle 'API Error: Server is temporarily limiting requests' claude; echo $?)"
         [[ "$r1" == "0" && "$r2" == "1" && "$r3" == "0" ]] && echo 1 || echo 0
     )"
 
 # Behavioral: opencode union now picks up codex-style errors too (regression
 # guard for the IMPORTANT codex flagged: previously omitted RateLimitError etc).
 assert_eq "throttle: opencode union catches codex RateLimitError" "0" \
-    "$(
-        _buf_shows_throttle 'openai.RateLimitError: 429 client error' opencode
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'openai.RateLimitError: 429 client error' opencode; echo $?)"
 
 assert_eq "throttle: opencode union catches Anthropic API error" "0" \
-    "$(
-        _buf_shows_throttle 'Anthropic API error: connection reset' opencode
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'Anthropic API error: connection reset' opencode; echo $?)"
 
 assert_eq "throttle: opencode union catches gemini Quota exceeded" "0" \
-    "$(
-        _buf_shows_throttle 'Quota exceeded for project foo' opencode
-        echo $?
-    )"
+    "$(_buf_shows_throttle 'Quota exceeded for project foo' opencode; echo $?)"
 
 # ── ae transfer — phase 1 (walking skeleton) ─────────────────────────
 
@@ -2825,32 +2713,14 @@ echo "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$_orch_codex_uuid\",\"cwd
     # Helper-level mocks — skip the SSH-using preflight/path/collision/event helpers
     # so the test focuses on the destructive-action orchestration that the BLOCKER
     # was about. The preflight + collision logic is covered by structural tests.
-    _transfer_ssh_probe() {
-        ORCH_CALL_LOG+=("ssh-probe: $1")
-        return 0
-    }
+    _transfer_ssh_probe() { ORCH_CALL_LOG+=("ssh-probe: $1"); return 0; }
     _transfer_local_rsync_supports_protect_args() { return 0; }
-    _transfer_remote_preflight() {
-        ORCH_CALL_LOG+=("preflight: $1")
-        return 0
-    }
-    _transfer_check_remote_path() {
-        ORCH_CALL_LOG+=("check-path: $1 $2")
-        return 0
-    }
+    _transfer_remote_preflight() { ORCH_CALL_LOG+=("preflight: $1"); return 0; }
+    _transfer_check_remote_path() { ORCH_CALL_LOG+=("check-path: $1 $2"); return 0; }
     _transfer_remote_session_exists() { return 1; }
-    _transfer_emit_destination_event() {
-        ORCH_CALL_LOG+=("emit-event: $1 $2")
-        return 0
-    }
-    _transfer_ensure_stopped_remote() {
-        ORCH_CALL_LOG+=("stop-remote: $1 $2")
-        return 0
-    }
-    cmd_stop() {
-        ORCH_CALL_LOG+=("local-stop: $*")
-        return 0
-    }
+    _transfer_emit_destination_event() { ORCH_CALL_LOG+=("emit-event: $1 $2"); return 0; }
+    _transfer_ensure_stopped_remote() { ORCH_CALL_LOG+=("stop-remote: $1 $2"); return 0; }
+    cmd_stop() { ORCH_CALL_LOG+=("local-stop: $*"); return 0; }
     detect_current_session() { return 1; }
     read_session_meta() {
         local session="$1" key="$2"
@@ -2926,10 +2796,7 @@ assert_eq "transfer-orch: rsync invoked for codex conversation file" "1" "$_orch
 _orch_all_have_protect=1
 for entry in "${ORCH_CALL_LOG[@]}"; do
     [[ "$entry" == "rsync: "* ]] || continue
-    [[ "$entry" == *"--protect-args"* ]] || {
-        _orch_all_have_protect=0
-        break
-    }
+    [[ "$entry" == *"--protect-args"* ]] || { _orch_all_have_protect=0; break; }
 done
 assert_eq "transfer-orch: every rsync invocation includes --protect-args at runtime" "1" "$_orch_all_have_protect"
 
@@ -2958,10 +2825,7 @@ assert_eq "transfer-orch: workdir with spaces does not crash the pipeline" "0" "
 _orch_all_have_protect=1
 for entry in "${ORCH_CALL_LOG[@]}"; do
     [[ "$entry" == "rsync: "* ]] || continue
-    [[ "$entry" == *"--protect-args"* ]] || {
-        _orch_all_have_protect=0
-        break
-    }
+    [[ "$entry" == *"--protect-args"* ]] || { _orch_all_have_protect=0; break; }
 done
 assert_eq "transfer-orch: spaces-variant — rsync still uses --protect-args" "1" "$_orch_all_have_protect"
 # CRITICAL: the path-with-spaces value must be bash-quoted into the stdin
@@ -2978,10 +2842,7 @@ assert_eq "transfer-orch: spaces-variant — path check was reached" "1" "$_orch
 
 # Self-stop guard regression: detect_current_session returns target → exit 2.
 # shellcheck disable=SC2317
-detect_current_session() {
-    echo "$_orch_session"
-    return 0
-}
+detect_current_session() { echo "$_orch_session"; return 0; }
 ORCH_CALL_LOG=()
 HOME="$_orch_home"
 _orch_rc=0
@@ -3012,7 +2873,7 @@ _pull_claude_uuid="22222222-3333-4444-5555-666666666666"
 _pull_codex_uuid="bbbbcccc-dddd-eeee-ffff-000000000000"
 
 mkdir -p "$_pull_home/projects/foo"
-mkdir -p "$_pull_home/.ae/sessions" # parent for local destination
+mkdir -p "$_pull_home/.ae/sessions"  # parent for local destination
 
 # Plant the LOCAL .claude/.codex dirs so the pulled per-agent rsync targets exist.
 mkdir -p "$_pull_home/.claude/projects/proj-pull"
@@ -3032,24 +2893,12 @@ declare -ag ORCH_CALL_LOG=()
         ORCH_CALL_LOG+=("rsync: $*")
         return 0
     }
-    _transfer_ssh_probe() {
-        ORCH_CALL_LOG+=("ssh-probe: $1")
-        return 0
-    }
+    _transfer_ssh_probe() { ORCH_CALL_LOG+=("ssh-probe: $1"); return 0; }
     _transfer_local_rsync_supports_protect_args() { return 0; }
-    _transfer_remote_preflight() {
-        ORCH_CALL_LOG+=("preflight: $1")
-        return 0
-    }
+    _transfer_remote_preflight() { ORCH_CALL_LOG+=("preflight: $1"); return 0; }
     # Pull-specific: source session exists on REMOTE; collision check runs on LOCAL.
-    _transfer_remote_session_exists() {
-        ORCH_CALL_LOG+=("remote-exists: $1 $2")
-        return 0
-    } # source exists
-    _transfer_check_remote_path() {
-        ORCH_CALL_LOG+=("check-path-remote: $1 $2")
-        return 0
-    }
+    _transfer_remote_session_exists() { ORCH_CALL_LOG+=("remote-exists: $1 $2"); return 0; }  # source exists
+    _transfer_check_remote_path() { ORCH_CALL_LOG+=("check-path-remote: $1 $2"); return 0; }
     # Mock remote-meta read to return a synthetic meta with the planted UUIDs.
     _transfer_read_remote_meta_value() {
         case "$3" in
@@ -3063,22 +2912,10 @@ declare -ag ORCH_CALL_LOG=()
     _transfer_find_remote_codex_session_file() {
         echo "/home/ckriech/.codex/sessions/2026/05/26/rollout-20260526T100000-$_pull_codex_uuid.jsonl"
     }
-    _transfer_emit_local_event() {
-        ORCH_CALL_LOG+=("emit-local: $1 $2")
-        return 0
-    }
-    _transfer_emit_destination_event() {
-        ORCH_CALL_LOG+=("emit-remote: $1 $2 $3")
-        return 0
-    }
-    _transfer_ensure_stopped() {
-        ORCH_CALL_LOG+=("local-stop: $1")
-        return 0
-    }
-    _transfer_ensure_stopped_remote() {
-        ORCH_CALL_LOG+=("remote-stop: $1 $2")
-        return 0
-    }
+    _transfer_emit_local_event() { ORCH_CALL_LOG+=("emit-local: $1 $2"); return 0; }
+    _transfer_emit_destination_event() { ORCH_CALL_LOG+=("emit-remote: $1 $2 $3"); return 0; }
+    _transfer_ensure_stopped() { ORCH_CALL_LOG+=("local-stop: $1"); return 0; }
+    _transfer_ensure_stopped_remote() { ORCH_CALL_LOG+=("remote-stop: $1 $2"); return 0; }
     cmd_stop() { return 0; }
     detect_current_session() { return 1; }
     tmux() { return 1; }
@@ -3152,10 +2989,7 @@ assert_eq "transfer-pull: codex file rsync'd remote → local" "1" "$_pull_codex
 _pull_all_have_protect=1
 for entry in "${ORCH_CALL_LOG[@]}"; do
     [[ "$entry" == "rsync: "* ]] || continue
-    [[ "$entry" == *"--protect-args"* ]] || {
-        _pull_all_have_protect=0
-        break
-    }
+    [[ "$entry" == *"--protect-args"* ]] || { _pull_all_have_protect=0; break; }
 done
 assert_eq "transfer-pull: every rsync invocation includes --protect-args" "1" "$_pull_all_have_protect"
 
@@ -3371,11 +3205,11 @@ assert_eq "external-actor: ae_tracked_send exec passes _AE_EVENT_ACTION env to s
 # Structural: cmd_telegram + four subcommand functions exist.
 assert_eq "telegram: cmd_telegram dispatcher defined" "1" \
     "$([[ "$AE_SOURCE" == *'cmd_telegram() {'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: cmd_telegram_setup defined" "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_setup() {'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: cmd_telegram_start defined" "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_start() {'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: cmd_telegram_stop defined" "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_stop() {'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: cmd_telegram_status defined" "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_status() {'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: cmd_telegram_help defined" "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_help() {'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: cmd_telegram_setup defined"   "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_setup() {'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: cmd_telegram_start defined"   "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_start() {'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: cmd_telegram_stop defined"    "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_stop() {'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: cmd_telegram_status defined"  "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_status() {'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: cmd_telegram_help defined"    "1" "$([[ "$AE_SOURCE" == *'cmd_telegram_help() {'* ]] && echo 1 || echo 0)"
 
 # ── telegram: steward is the auto-default target for plain messages ──
 # Behavioral: tg_find_steward picks the running meta_agent session, preferring
@@ -3389,7 +3223,7 @@ _tgs_dir="$(mktemp -d)"
 # shellcheck disable=SC2034
 SESSIONS_DIR="$_tgs_dir"
 mkdir -p "$_tgs_dir/work" "$_tgs_dir/hub" "$_tgs_dir/steward"
-printf 'agent.main=claude:lead:sid1\n' >"$_tgs_dir/work/meta"                        # not a meta-agent
+printf 'agent.main=claude:lead:sid1\n' >"$_tgs_dir/work/meta"                       # not a meta-agent
 printf 'meta_agent=true\nagent.main=claude:meta:sid2\n' >"$_tgs_dir/hub/meta"        # legacy meta-agent
 printf 'meta_agent=true\nagent.main=claude:steward:sid3\n' >"$_tgs_dir/steward/meta" # canonical
 assert_eq "tg_find_steward: prefers canonical 'steward' session + its main agent" \
@@ -3405,8 +3239,8 @@ unset -f daemon_session_running
 
 # Structural: a plain message with no /use override routes to the steward.
 assert_eq "telegram: tg_route_sticky auto-defaults to the steward (no /use needed)" "1" \
-    "$([[ "$AE_SOURCE" == *'No explicit /use override → default to the steward.'* &&
-        "$AE_SOURCE" == *'steward="$(tg_find_steward)"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'No explicit /use override → default to the steward.'* \
+        && "$AE_SOURCE" == *'steward="$(tg_find_steward)"'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: /use override still wins over the steward default" "1" \
     "$([[ "$AE_SOURCE" == *'if [[ -f "$TG_TARGET_FILE" ]]; then'*'tg_dispatch "$from_id" "$sess" "send" "$agent" "$msg"'*'steward="$(tg_find_steward)"'* ]] && echo 1 || echo 0)"
 
@@ -3427,8 +3261,7 @@ assert_eq "telegram: cmd_help advertises 'ae telegram'" "1" \
 # `ae telegram status` with a real ~/-relative token file.
 _t_tok_dir="$HOME/.ae-tg-test-$$"
 mkdir -p "$_t_tok_dir"
-printf 'x\n' >"$_t_tok_dir/tok"
-chmod 600 "$_t_tok_dir/tok"
+printf 'x\n' >"$_t_tok_dir/tok"; chmod 600 "$_t_tok_dir/tok"
 _t_tilde_cfg="$(mktemp)"
 printf '[telegram]\nenabled = false\ntoken_file = "~/.ae-tg-test-%s/tok"\nchat_id = 1\n' "$$" >"$_t_tilde_cfg"
 _t_tilde_out="$(CONFIG_FILE="$_t_tilde_cfg" XDG_RUNTIME_DIR="$(mktemp -d)" /home/ckriech/projects/clemens33/ae/ae telegram status 2>&1)"
@@ -3605,9 +3438,8 @@ assert_eq "telegram: daemon presence check uses grep -Fxq for exact match" "1" \
 # `ae telegram stop` writes enabled=false via _telegram_persist_intent and
 # does not require a token, so it's the cleanest behavioral driver. We run
 # it against crafted configs covering the edge cases codex flagged.
-_t_persist_run() { # <config-content> -> prints resulting config
-    local _cfg
-    _cfg="$(mktemp)"
+_t_persist_run() {  # <config-content> -> prints resulting config
+    local _cfg; _cfg="$(mktemp)"
     printf '%s' "$1" >"$_cfg"
     CONFIG_FILE="$_cfg" XDG_RUNTIME_DIR="$(mktemp -d)" \
         /home/ckriech/projects/clemens33/ae/ae telegram stop >/dev/null 2>&1 || true
@@ -3664,10 +3496,10 @@ assert_eq "telegram: setup refuses to clobber existing [telegram] block" "1" \
 # Behavioral: status reports intent + runtime + deps + token, even with
 # an empty config (no [telegram] block).
 _t_status_out="$(CONFIG_FILE=/dev/null /home/ckriech/projects/clemens33/ae/ae telegram status 2>&1)"
-assert_eq "telegram: status shows intent line" "1" "$([[ "$_t_status_out" == *'intent:'*'enabled='* ]] && echo 1 || echo 0)"
+assert_eq "telegram: status shows intent line"  "1" "$([[ "$_t_status_out" == *'intent:'*'enabled='* ]] && echo 1 || echo 0)"
 assert_eq "telegram: status shows runtime line" "1" "$([[ "$_t_status_out" == *'runtime:'*'tmux session ae-telegram'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: status shows deps line" "1" "$([[ "$_t_status_out" == *'deps:'* ]] && echo 1 || echo 0)"
-assert_eq "telegram: status shows token line" "1" "$([[ "$_t_status_out" == *'token:'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: status shows deps line"    "1" "$([[ "$_t_status_out" == *'deps:'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: status shows token line"   "1" "$([[ "$_t_status_out" == *'token:'* ]] && echo 1 || echo 0)"
 unset _t_status_out
 
 # Behavioral: ae telegram help is self-contained.
@@ -3682,21 +3514,19 @@ unset _t_help_out
 _t_bogus_rc=0
 _t_bogus_out="$(CONFIG_FILE=/dev/null /home/ckriech/projects/clemens33/ae/ae telegram bogus 2>&1)" || _t_bogus_rc=$?
 assert_eq "telegram: unknown subcommand exits non-zero" "2" "$_t_bogus_rc"
-assert_eq "telegram: unknown subcommand prints help" "1" "$([[ "$_t_bogus_out" == *'ae telegram setup'* ]] && echo 1 || echo 0)"
+assert_eq "telegram: unknown subcommand prints help"    "1" "$([[ "$_t_bogus_out" == *'ae telegram setup'* ]] && echo 1 || echo 0)"
 unset _t_bogus_rc _t_bogus_out
 
 # Behavioral: 'telegram _supervise' (the watchdog's revive hook) must be a silent
 # no-op when the feature is disabled — it runs on a timer across sessions, so it
 # must never act, spawn, or chatter when enabled=false. (Uses the ae under test.)
-_t_sup_cfg="$(mktemp)"
-printf '[telegram]\nenabled = false\n' >"$_t_sup_cfg"
+_t_sup_cfg="$(mktemp)"; printf '[telegram]\nenabled = false\n' >"$_t_sup_cfg"
 _t_sup_rc=0
 _t_sup_out="$(CONFIG_FILE="$_t_sup_cfg" XDG_RUNTIME_DIR="$(mktemp -d)" "$(dirname "$0")/../ae" telegram _supervise 2>&1)" || _t_sup_rc=$?
 assert_eq "tg-sup: _supervise exits 0 when telegram disabled" "0" "$_t_sup_rc"
 assert_eq "tg-sup: _supervise is silent when telegram disabled" "1" \
     "$([[ -z "$_t_sup_out" ]] && echo 1 || echo 0)"
-rm -f "$_t_sup_cfg"
-unset _t_sup_cfg _t_sup_rc _t_sup_out
+rm -f "$_t_sup_cfg"; unset _t_sup_cfg _t_sup_rc _t_sup_out
 
 # Behavioral: ae doctor stays silent about telegram when feature is unused.
 # Each invocation gets an isolated XDG_RUNTIME_DIR so get_config's shared
@@ -3718,8 +3548,7 @@ assert_eq "telegram: doctor reports deps line when [telegram] is configured" "1"
     "$([[ "$_t_doc_out_cfg" == *'telegram.deps'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: doctor warns about missing token_file" "1" \
     "$([[ "$_t_doc_out_cfg" == *'telegram.token'* ]] && echo 1 || echo 0)"
-rm -f "$_t_tmp_cfg"
-rm -rf "$_t_cache_b"
+rm -f "$_t_tmp_cfg"; rm -rf "$_t_cache_b"
 unset _t_tmp_cfg _t_doc_out_cfg _t_cache_b
 
 # ── Telegram daemon log file ─────────────────────────────────────────
@@ -3742,9 +3571,9 @@ assert_eq "tg-log: single EXIT handler records exit rc (merged, not clobbered)" 
 # external. Signal traps (HUP/INT/TERM) record which signal terminated the
 # daemon so "exiting (rc=0)" no longer hides the cause. Each re-exits 128+signum.
 assert_eq "tg-diag: daemon traps HUP/INT/TERM and records the signal" "1" \
-    "$([[ "$AE_SOURCE" == *"trap '_daemon_on_signal SIGHUP 129' HUP"* &&
-        "$AE_SOURCE" == *"trap '_daemon_on_signal SIGINT 130' INT"* &&
-        "$AE_SOURCE" == *"trap '_daemon_on_signal SIGTERM 143' TERM"* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *"trap '_daemon_on_signal SIGHUP 129' HUP"* \
+        && "$AE_SOURCE" == *"trap '_daemon_on_signal SIGINT 130' INT"* \
+        && "$AE_SOURCE" == *"trap '_daemon_on_signal SIGTERM 143' TERM"* ]] && echo 1 || echo 0)"
 assert_eq "tg-diag: exit log distinguishes signal vs internal/clean exit" "1" \
     "$([[ "$AE_SOURCE" == *'no signal — internal/clean exit'* ]] && echo 1 || echo 0)"
 
@@ -3797,16 +3626,16 @@ assert_eq "meta: watchdog reads meta_agent from meta" "1" \
 # (so the meta-agent is never flagged stale). It sits AFTER the dead-check (a dead one
 # still alerts).
 assert_eq "meta: sweep-cadence branch is gated + interval-throttled" "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && ((SWEEP_SECS > 0)); then'* &&
-        "$AE_SOURCE" == *'now_epoch - last_sweep >= SWEEP_SECS'* &&
-        "$AE_SOURCE" == *'last_sweep_nudge["$pane"]="$now_epoch"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'if [[ "$META_AGENT" == "true" && "$agent" == "$META_MAIN_AGENT" ]] && ((SWEEP_SECS > 0)); then'* \
+        && "$AE_SOURCE" == *'now_epoch - last_sweep >= SWEEP_SECS'* \
+        && "$AE_SOURCE" == *'last_sweep_nudge["$pane"]="$now_epoch"'* ]] && echo 1 || echo 0)"
 assert_eq "meta: sweep nudge says 'run your sweep now', not the stale state-check" "1" \
     "$([[ "$AE_SOURCE" == *'Run your sweep now: ae list --json'* ]] && echo 1 || echo 0)"
 # IMPORTANT 2 (codex): the cadence targets only the MAIN meta-agent; workers/spawned
 # panes in a meta session keep the normal watchdog. META_MAIN_AGENT is alias:name.
 assert_eq "meta: cadence targets only the main agent (workers keep watchdog)" "1" \
-    "$([[ "$AE_SOURCE" == *"META_MAIN_AGENT=\"\$(grep '^agent.main=' \"\$META_DIR/meta\""* &&
-        "$AE_SOURCE" == *'"$agent" == "$META_MAIN_AGENT"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *"META_MAIN_AGENT=\"\$(grep '^agent.main=' \"\$META_DIR/meta\""* \
+        && "$AE_SOURCE" == *'"$agent" == "$META_MAIN_AGENT"'* ]] && echo 1 || echo 0)"
 # IMPORTANT 1 (codex): live-but-wedged detection — the meta-agent rewrites its state file
 # each real sweep; if that heartbeat stays stale OR ABSENT past the grace window
 # after the first sweep prompt, raise ONE alert. (Absent-file case is the codex
@@ -3815,12 +3644,12 @@ assert_eq "meta: cadence targets only the main agent (workers keep watchdog)" "1
 # (meta-agent-state.json), not the old hand-managed meta-state.json — otherwise
 # wiring the meta-agent to aemonitor makes the wedge check watch a file nobody writes.
 assert_eq "meta: heartbeat watches aemonitor's meta-agent-state.json" "1" \
-    "$([[ "$AE_SOURCE" == *'hb_file="${META_DIR}/meta-agent-state.json"'* &&
-        "$AE_SOURCE" != *'hb_file="${META_DIR}/meta-state.json"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'hb_file="${META_DIR}/meta-agent-state.json"'* \
+        && "$AE_SOURCE" != *'hb_file="${META_DIR}/meta-state.json"'* ]] && echo 1 || echo 0)"
 assert_eq "meta: heartbeat-wedge alert covers stale AND absent heartbeat" "1" \
-    "$([[ "$AE_SOURCE" == *'first_nudge > 0 && now_epoch - first_nudge > wedge_secs'* &&
-        "$AE_SOURCE" == *'never wrote a heartbeat'* &&
-        "$AE_SOURCE" == *'first_sweep_nudge["$pane"]="$now_epoch"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'first_nudge > 0 && now_epoch - first_nudge > wedge_secs'* \
+        && "$AE_SOURCE" == *'never wrote a heartbeat'* \
+        && "$AE_SOURCE" == *'first_sweep_nudge["$pane"]="$now_epoch"'* ]] && echo 1 || echo 0)"
 # IMPORTANT (codex): recovery is watchdog-owned — emit alert-cleared so ae list
 # un-sticks even on a silent sweep; _agent_alert_reason honors it as a clear.
 # And it reconciles the DURABLE event log once per watchdog lifetime, so a restart
@@ -3887,9 +3716,9 @@ assert_eq "meta: first_sweep_nudge records the first DELIVERED nudge only" "1" \
 # throttled by a stray substring — explicit 'not sweeping' case ranks it before
 # *throttl*, and the summary itself avoids the throttl/dead substrings.
 assert_eq "meta: wedge alert classifies as stale (not throttled)" "1" \
-    "$([[ "$AE_SOURCE" == *'*"not sweeping"*) printf '"'"'stale'"'"''* &&
-        "$AE_SOURCE" == *'(may be stuck)'* &&
-        "$AE_SOURCE" != *'may be wedged/throttled'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'*"not sweeping"*) printf '"'"'stale'"'"''* \
+        && "$AE_SOURCE" == *'(may be stuck)'* \
+        && "$AE_SOURCE" != *'may be wedged/throttled'* ]] && echo 1 || echo 0)"
 # NIT (codex): the sweep interval override is numeric-guarded before arithmetic.
 assert_eq "meta: AE_WATCHDOG_SWEEP_SEC/AE_LOOP_SWEEP_SEC value is numeric-guarded" "1" \
     "$([[ "$AE_SOURCE" == *'[[ "$SWEEP_SECS" =~ ^[0-9]+$ ]] || SWEEP_SECS=300'* ]] && echo 1 || echo 0)"
@@ -3940,8 +3769,7 @@ assert_eq "tg-sup: uncached reader reads a plain false" "false" \
 printf '[other]\nx = 1\n' >"$_tgc_cfg"
 assert_eq "tg-sup: uncached reader defaults to false when key absent" "false" \
     "$(CONFIG_FILE="$_tgc_cfg" AE_LOCAL_CONFIG="" _telegram_intent_enabled_uncached)"
-rm -f "$_tgc_cfg"
-unset _tgc_cfg
+rm -f "$_tgc_cfg"; unset _tgc_cfg
 
 # Throttle accumulator is initialized once before the watchdog loop (inside
 # helper_watchdog_main since the declare-f migration, hence the indent).
@@ -4083,28 +3911,27 @@ the question text")" == "alpha	claude:lead" ]] && p=$((p+1)) # 20 header w/ targ
     ' 2>/dev/null
 )"
 assert_eq "tg3: inbound behavioral suite — security + reply + compact grammar (28 checks)" "28" "$_tg3_result"
-rm -rf "$_tg3_home"
-rm -f "$_tg3_daemon"
+rm -rf "$_tg3_home"; rm -f "$_tg3_daemon"
 unset _tg3_daemon _tg3_home _tg3_result
 
 # ── say helper + chat event (agent → Telegram free-text, Option 1) ───
 
 # The helper is generated, executable, sources _lib, and emits a `chat` event.
 assert_eq "say: helper generated, chmod 0700, sources _lib" "1" \
-    "$([[ "$AE_SOURCE" == *'declare -f helper_say_usage helper_say_main'* &&
-        "$AE_SOURCE" == *'mv "${AE_META}/say.tmp.$$" "${AE_META}/say"'* &&
-        "$AE_SOURCE" == *'source "$(cd "$(dirname "$0")" && pwd)/_lib"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'declare -f helper_say_usage helper_say_main'* \
+        && "$AE_SOURCE" == *'mv "${AE_META}/say.tmp.$$" "${AE_META}/say"'* \
+        && "$AE_SOURCE" == *'source "$(cd "$(dirname "$0")" && pwd)/_lib"'* ]] && echo 1 || echo 0)"
 assert_eq "say: helper emits a chat event" "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "chat" "" "" "$text"'* ]] && echo 1 || echo 0)"
 # Accepts args OR piped stdin, rejects empty/whitespace.
 assert_eq "say: reads args or stdin, rejects empty" "1" \
-    "$([[ "$AE_SOURCE" == *'elif [[ ! -t 0 ]]; then'* && "$AE_SOURCE" == *'text="$(cat)"'* &&
-        "$AE_SOURCE" == *'if [[ -z "${text//['* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'elif [[ ! -t 0 ]]; then'* && "$AE_SOURCE" == *'text="$(cat)"'* \
+        && "$AE_SOURCE" == *'if [[ -z "${text//['* ]] && echo 1 || echo 0)"
 
 # ae_emit_event keeps chat rich (newlines + larger cap) but flattens/caps others.
 assert_eq "say: ae_emit_event special-cases chat (3500, no flatten)" "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ "$action" == "chat" ]]; then'* &&
-        "$AE_SOURCE" == *'head -c 3500'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'if [[ "$action" == "chat" ]]; then'* \
+        && "$AE_SOURCE" == *'head -c 3500'* ]] && echo 1 || echo 0)"
 
 # chat in the default include so fresh setups forward agent replies.
 assert_eq "say: chat in TG_INCLUDE_DEFAULT" "1" \
@@ -4112,9 +3939,9 @@ assert_eq "say: chat in TG_INCLUDE_DEFAULT" "1" \
 
 # Discoverability surfaces (a helper agents don't know about is dead weight).
 assert_eq "say: advertised in cmd_help, agent ctx, workspace.md" "1" \
-    "$([[ "$AE_SOURCE" == *'requests, peek, say, spawn'* &&
-        "$AE_SOURCE" == *'(8) ${meta_dir}/say <text>'* &&
-        "$AE_SOURCE" == *'Talking to the human on Telegram'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'requests, peek, say, spawn'* \
+        && "$AE_SOURCE" == *'(8) ${meta_dir}/say <text>'* \
+        && "$AE_SOURCE" == *'Talking to the human on Telegram'* ]] && echo 1 || echo 0)"
 
 # status warns when an explicit include omits chat (silent drop otherwise).
 assert_eq "say: telegram status warns when include omits chat" "1" \
@@ -4148,8 +3975,7 @@ _say_result="$(
     ' 2>/dev/null
 )"
 assert_eq "say: ae_emit_event — chat keeps newlines+>200, others cap/flatten (6 checks)" "6" "$_say_result"
-rm -rf "$_say_home"
-rm -f "$_say_lib"
+rm -rf "$_say_home"; rm -f "$_say_lib"
 unset _say_lib _say_home _say_result
 
 # Behavioral: the daemon's include/exclude filter accepts chat by default,
@@ -4274,15 +4100,9 @@ assert_eq "steward scaffold: never overwrites an existing file" "ORIGINAL" "$(ca
 assert_eq "steward scaffold: created vs skipped reported per file" "skipped (exists): $_stw_t/keep" \
     "$(_steward_scaffold_file "$_stw_t/tpl" "$_stw_t/keep" "__X__" "v" | tr -d '\n' | sed 's/^ *//')"
 assert_eq "steward scaffold: missing template errors (non-zero)" "1" \
-    "$(
-        _steward_scaffold_file "$_stw_t/nope" "$_stw_t/out2" "__X__" "v" >/dev/null 2>&1
-        echo $?
-    )"
+    "$(_steward_scaffold_file "$_stw_t/nope" "$_stw_t/out2" "__X__" "v" >/dev/null 2>&1; echo $?)"
 assert_eq "steward init: rejects STEWARD_DIR containing a quote (INI safety)" "1" \
-    "$(
-        AE_STEWARD_DIR='/bad"dir' cmd_steward_init >/dev/null 2>&1
-        echo $?
-    )"
+    "$(AE_STEWARD_DIR='/bad"dir' cmd_steward_init >/dev/null 2>&1; echo $?)"
 rm -rf "$_stw_t"
 unset _stw_t
 
@@ -4381,8 +4201,8 @@ assert_eq "aesteward charter: trust contract routes proactive talk through §8b 
     "$(grep -q 'ONLY through the §8b gates' "$_aestw_charter" && echo 1 || echo 0)"
 unset _aestw_charter
 assert_eq "steward init: substitutes __HELPERS_DIR__ with the steward session helper dir" "1" \
-    "$([[ "$AE_SOURCE" == *'helpers_dir="$CONFIG_DIR/sessions/steward"'* &&
-        "$AE_SOURCE" == *'"__HELPERS_DIR__" "$helpers_dir"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'helpers_dir="$CONFIG_DIR/sessions/steward"'* \
+        && "$AE_SOURCE" == *'"__HELPERS_DIR__" "$helpers_dir"'* ]] && echo 1 || echo 0)"
 
 # Structural — the dispatcher trampoline must preserve FULL config isolation
 # (codex BLOCKER) and fall through WITHOUT re-exec (no recursion).
@@ -4401,9 +4221,9 @@ assert_eq "steward dispatcher: bare steward is detached by default, --attach opt
 assert_eq "steward dispatcher: no-attach path exits without tmux_attach" "1" \
     "$([[ "$AE_SOURCE" == *'if [[ "$ATTACH_ON_READY" != "true" ]]; then'* && "$AE_SOURCE" == *"Session '\$SESSION' is running."* && "$AE_SOURCE" == *"Session '\$SESSION' started."* ]] && echo 1 || echo 0)"
 assert_eq "steward flag: workspace.steward canonical, hub/meta legacy aliases" "1" \
-    "$([[ "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.steward)"'* &&
-        "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.hub)"'* &&
-        "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.meta)"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.steward)"'* \
+        && "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.hub)"'* \
+        && "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.meta)"'* ]] && echo 1 || echo 0)"
 
 # Hub back-compat (released name): 'ae hub' dispatches into the steward branch;
 # a legacy hub scaffold resolves to hub.config AND keeps the 'hub' session name
@@ -4411,9 +4231,9 @@ assert_eq "steward flag: workspace.steward canonical, hub/meta legacy aliases" "
 assert_eq "steward compat: 'hub' is a dispatch alias of steward" "1" \
     "$([[ "$AE_SOURCE" == *'steward | hub)'* ]] && echo 1 || echo 0)"
 assert_eq "steward compat: legacy scaffold resolution (AE_HUB_DIR + meta-hub/hub.config → session hub)" "1" \
-    "$([[ "$AE_SOURCE" == *'_steward_config="$_steward_dir/hub.config"'* &&
-        "$AE_SOURCE" == *'$CONFIG_DIR/meta-hub/hub.config'* &&
-        "$AE_SOURCE" == *'_steward_session=hub'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_steward_config="$_steward_dir/hub.config"'* \
+        && "$AE_SOURCE" == *'$CONFIG_DIR/meta-hub/hub.config'* \
+        && "$AE_SOURCE" == *'_steward_session=hub'* ]] && echo 1 || echo 0)"
 assert_eq "steward compat: legacy path prints a migration hint" "1" \
     "$([[ "$AE_SOURCE" == *'ae end hub && ae steward --init && ae steward'* ]] && echo 1 || echo 0)"
 
@@ -4421,23 +4241,23 @@ assert_eq "steward compat: legacy path prints a migration hint" "1" \
 # Lets an isolated run keep the real $HOME (so real agent-CLI auth works) while
 # writing ae state elsewhere — without swapping $HOME.
 assert_eq "AE_HOME: CONFIG_DIR derives from AE_HOME, not hardcoded \$HOME/.ae" "1" \
-    "$([[ "$AE_SOURCE" == *'AE_HOME="${AE_HOME:-${HOME}/.ae}"'* &&
-        "$AE_SOURCE" == *'CONFIG_DIR="$AE_HOME"'* &&
-        "$AE_SOURCE" != *'CONFIG_DIR="${HOME}/.ae"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'AE_HOME="${AE_HOME:-${HOME}/.ae}"'* \
+        && "$AE_SOURCE" == *'CONFIG_DIR="$AE_HOME"'* \
+        && "$AE_SOURCE" != *'CONFIG_DIR="${HOME}/.ae"'* ]] && echo 1 || echo 0)"
 # Daemon/steward/session must not escape AE_HOME back to live ~/.ae (codex BLOCKERs):
 assert_eq "AE_HOME: telegram daemon is spawned WITH AE_HOME (no live-~/.ae leak)" "1" \
     "$([[ "$AE_SOURCE" == *'AE_HOME=${q_aehome} CONFIG_FILE='* ]] && echo 1 || echo 0)"
 assert_eq "AE_HOME: steward dir defaults under CONFIG_DIR, not hardcoded \$HOME/.ae" "1" \
-    "$([[ "$AE_SOURCE" == *'AE_STEWARD_DIR:-$CONFIG_DIR/steward'* &&
-        "$AE_SOURCE" != *'AE_STEWARD_DIR:-$HOME/.ae/steward'* &&
-        "$AE_SOURCE" != *'AE_HUB_DIR:-$HOME/.ae/meta-hub'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'AE_STEWARD_DIR:-$CONFIG_DIR/steward'* \
+        && "$AE_SOURCE" != *'AE_STEWARD_DIR:-$HOME/.ae/steward'* \
+        && "$AE_SOURCE" != *'AE_HUB_DIR:-$HOME/.ae/meta-hub'* ]] && echo 1 || echo 0)"
 assert_eq "AE_HOME: pinned into the session env for hidden helpers" "1" \
     "$([[ "$AE_SOURCE" == *'set-environment -t "$SESSION" AE_HOME "$CONFIG_DIR"'* ]] && echo 1 || echo 0)"
 
 # ── ae end: agent conversation-history is KEPT by default (token tracking) ──
 assert_eq "ae end: parses --purge-history / --keep-history" "1" \
-    "$([[ "$AE_SOURCE" == *'--purge-history) purge_cli=true'* &&
-        "$AE_SOURCE" == *'--keep-history) purge_cli=false'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'--purge-history) purge_cli=true'* \
+        && "$AE_SOURCE" == *'--keep-history) purge_cli=false'* ]] && echo 1 || echo 0)"
 assert_eq "ae end: CLI flag is the only global override (config resolved elsewhere)" "1" \
     "$([[ "$AE_SOURCE" == *'_AE_PURGE_HISTORY_CLI="$purge_cli"'* ]] && echo 1 || echo 0)"
 assert_eq "ae end: rejects a second positional (destructive — no silent drop)" "1" \
@@ -4445,9 +4265,9 @@ assert_eq "ae end: rejects a second positional (destructive — no silent drop)"
 # The default must be resolved PER-SESSION from that session's own config (codex
 # IMPORTANT) — not the caller's cwd — so cross-repo ends + `ae end all` are correct.
 assert_eq "ae end: default purge resolved per-session from its meta config" "1" \
-    "$([[ "$AE_SOURCE" == *'_purge="${_AE_PURGE_HISTORY_CLI:-}"'* &&
-        "$AE_SOURCE" == *'_scfg="$(read_session_meta "$session_name" config)"'* &&
-        "$AE_SOURCE" == *'get_config workspace.purge_agent_history'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_purge="${_AE_PURGE_HISTORY_CLI:-}"'* \
+        && "$AE_SOURCE" == *'_scfg="$(read_session_meta "$session_name" config)"'* \
+        && "$AE_SOURCE" == *'get_config workspace.purge_agent_history'* ]] && echo 1 || echo 0)"
 assert_eq "ae end: purge gated on the resolved decision (kept unless true)" "1" \
     "$([[ "$AE_SOURCE" == *'"$_purge" == "true"'*'_cleanup_agent_session_files'* ]] && echo 1 || echo 0)"
 
@@ -4478,7 +4298,7 @@ assert_eq "aewatch-autostart: called once, non-fatal, from the watchdog decision
 # stubbed hook records an aewatch start; exactly one (or none) may fire.
 eval "$(awk '/^_start_session_watchdog\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 assert_eq "watchdog-decision: _start_session_watchdog defined" "yes" "$(declare -F _start_session_watchdog >/dev/null && echo yes || echo no)"
-_sw_run() { # <impl> <enabled> -> "bash" | "aewatch" | "none"
+_sw_run() {  # <impl> <enabled> -> "bash" | "aewatch" | "none"
     local impl="$1" enabled="$2" d
     d="$(mktemp -d)"
     mkdir -p "$d/meta"
@@ -4506,17 +4326,14 @@ assert_eq "watchdog-decision: disabled+default -> NEITHER" "none" "$(_sw_run '' 
 # so the next _supervise revives bash (the free fallback). The bash STOP lives in the aewatch
 # daemon's handoff, NOT in ae.
 eval "$(awk '/^_aewatch_owns_bridge\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-_owns_run() { # <marker: yes|no> <hb: none|fresh|stale> -> yes|no
+_owns_run() {  # <marker: yes|no> <hb: none|fresh|stale> -> yes|no
     local marker="$1" hb="$2" d
     d="$(mktemp -d)"
     mkdir -p "$d/aewatch"
     [[ "$marker" == yes ]] && : >"$d/aewatch/bridge-owner"
     case "$hb" in
         fresh) : >"$d/aewatch/heartbeat" ;;
-        stale)
-            : >"$d/aewatch/heartbeat"
-            touch -d '2 hours ago' "$d/aewatch/heartbeat"
-            ;;
+        stale) : >"$d/aewatch/heartbeat"; touch -d '2 hours ago' "$d/aewatch/heartbeat" ;;
     esac
     if CONFIG_DIR="$d" _aewatch_owns_bridge; then echo yes; else echo no; fi
     rm -rf "$d"
@@ -4547,7 +4364,7 @@ assert_eq "s19: status reports the active backend (marker)" "yes" \
 eval "$(awk '/^_resolve_workers\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 assert_eq "workers-resume: _resolve_workers defined" "yes" "$(declare -F _resolve_workers >/dev/null && echo yes || echo no)"
 _rw_tmp_root="$(mktemp -d)"
-_rw_run() { # <mode: resume|resume-empty|fresh> <config_workers> -> "alias:name,..."
+_rw_run() {  # <mode: resume|resume-empty|fresh> <config_workers> -> "alias:name,..."
     local mode="$1" cfg_workers="$2" i out=""
     # The resume DECISION keys on the meta FILE existing (meta is authoritative
     # including emptiness); the worker ENTRIES still come via read_session_meta.
@@ -4566,10 +4383,7 @@ _rw_run() { # <mode: resume|resume-empty|fresh> <config_workers> -> "alias:name,
         return 0
     }
     # shellcheck disable=SC2317
-    get_config() {
-        case "$1" in agents.*) echo "cmd-for-$1" ;; esac
-        return 0
-    }
+    get_config() { case "$1" in agents.*) echo "cmd-for-$1" ;; esac; return 0; }
     MAIN_NAME="lead" WORKERS_RAW="$cfg_workers" SESSION="s" \
         SESSIONS_DIR="$_rw_tmp_root" WORKTREES_DIR="$_rw_tmp_root/wt" _resolve_workers
     for i in "${!WORKER_ALIASES[@]}"; do out+="${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]},"; done
@@ -4594,10 +4408,7 @@ _rw_wt() {
     # shellcheck disable=SC2317
     read_session_meta() { return 0; } # no workers recorded
     # shellcheck disable=SC2317
-    get_config() {
-        case "$1" in agents.*) echo "cmd" ;; esac
-        return 0
-    }
+    get_config() { case "$1" in agents.*) echo "cmd" ;; esac; return 0; }
     MAIN_NAME="lead" WORKERS_RAW="cfg:w1" SESSION="s" \
         SESSIONS_DIR="$_rw_tmp_root" WORKTREES_DIR="$_rw_tmp_root/wt" _resolve_workers
     echo "${#WORKER_NAMES[@]}"
@@ -4620,10 +4431,7 @@ _rw_resume_missing() {
         return 0
     }
     # shellcheck disable=SC2317
-    get_config() {
-        case "$1" in agents.opus48) echo "cmd" ;; *) echo "" ;; esac
-        return 0
-    }
+    get_config() { case "$1" in agents.opus48) echo "cmd" ;; *) echo "" ;; esac; return 0; }
     MAIN_NAME="lead" WORKERS_RAW="" SESSION="s" \
         SESSIONS_DIR="$_rwm_tmp" WORKTREES_DIR="$_rwm_tmp/wt" _resolve_workers
 }
@@ -4639,20 +4447,14 @@ eval "$(awk '/^_spawned_meta_indices\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_resolve_spawned\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^read_session_meta\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _rs_tmp="$(mktemp -d)"
-_rs_run() { # <session>; meta on stdin -> "idx:alias:name;idx:alias:name;..." (resolved only)
+_rs_run() {  # <session>; meta on stdin -> "idx:alias:name;idx:alias:name;..." (resolved only)
     local sess="$1" metadir="$_rs_tmp/$1" i out=""
     mkdir -p "$metadir"
     cat >"$metadir/meta"
     # shellcheck disable=SC2317  # invoked indirectly by _resolve_spawned
-    get_config() {
-        case "$1" in agents.gone*) echo "" ;; agents.*) echo "cmd-$1" ;; esac
-        return 0
-    }
+    get_config() { case "$1" in agents.gone*) echo "" ;; agents.*) echo "cmd-$1" ;; esac; return 0; }
     # shellcheck disable=SC2317
-    resolve_agent_session_id() {
-        echo "sid"
-        return 0
-    }
+    resolve_agent_session_id() { echo "sid"; return 0; }
     SESSIONS_DIR="$_rs_tmp" WORKTREES_DIR="$_rs_tmp/.wt" SESSION="$sess" _resolve_spawned
     for i in "${!SPAWNED_ALIASES[@]}"; do out+="${SPAWNED_IDX[$i]}:${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]};"; done
     echo "${out%;}"
@@ -4665,37 +4467,29 @@ assert_eq "spawned-indices: gap skipped, numeric order" "1
 # Retire spawned.0 -> survivors keep 1,2 (a renumber would yield 0,1).
 assert_eq "spawned-resume: indices preserved across a retire gap (no renumber)" \
     "1:optimal:builderB;2:codex:builderC" \
-    "$(
-        _rs_run gap <<'META'
+    "$(_rs_run gap <<'META'
 mode=local
 agent.spawned.1=optimal:builderB:uuidb
 agent.spawned.2=codex:builderC:uuidc
 META
-    )"
+)"
 # An unresolved (alias-missing) earlier slot must not renumber the resolved survivor.
 assert_eq "spawned-resume: resolved keeps its index when an earlier slot is unresolved" \
     "2:codex:builderC" \
-    "$(
-        _rs_run mix 2>/dev/null <<'META'
+    "$(_rs_run mix 2>/dev/null <<'META'
 agent.spawned.0=goneAlias:builderA:uuida
 agent.spawned.2=codex:builderC:uuidc
 META
-    )"
+)"
 # Unresolved entries carry their ORIGINAL index in UNRESOLVED_IDX (re-emitted in place).
-_rs_unres_idx() { # runs _resolve_spawned in THIS subshell so UNRESOLVED_IDX is visible
+_rs_unres_idx() {  # runs _resolve_spawned in THIS subshell so UNRESOLVED_IDX is visible
     local metadir="$_rs_tmp/un2"
     mkdir -p "$metadir"
     printf 'agent.spawned.0=goneAlias:builderA:uuida\nagent.spawned.3=codex:builderC:uuidc\n' >"$metadir/meta"
     # shellcheck disable=SC2317
-    get_config() {
-        case "$1" in agents.gone*) echo "" ;; agents.*) echo "cmd-$1" ;; esac
-        return 0
-    }
+    get_config() { case "$1" in agents.gone*) echo "" ;; agents.*) echo "cmd-$1" ;; esac; return 0; }
     # shellcheck disable=SC2317
-    resolve_agent_session_id() {
-        echo "sid"
-        return 0
-    }
+    resolve_agent_session_id() { echo "sid"; return 0; }
     SESSIONS_DIR="$_rs_tmp" WORKTREES_DIR="$_rs_tmp/.wt" SESSION="un2" _resolve_spawned 2>/dev/null
     echo "${UNRESOLVED_IDX[*]:-none}"
 }
@@ -4708,7 +4502,7 @@ assert_eq "spawned-resume: unresolved keeps original index" "0" "$(_rs_unres_idx
 eval "$(awk '/^_valid_slot\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_stamp_live_slots\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _sls_tmp="$(mktemp -d)"
-_sls_run() { # emits "PANE SLOT" per stamped pane
+_sls_run() {  # emits "PANE SLOT" per stamped pane
     local metafile="$_sls_tmp/meta"
     cat >"$metafile" <<'META'
 tmux_server=
@@ -4768,10 +4562,7 @@ _cs_run() {
     # shellcheck disable=SC2317
     ae_current_pane() { echo "%9"; }
     # shellcheck disable=SC2317
-    tmux() {
-        [[ "$1" == display-message ]] && printf '%s' "$_SLOTVAL"
-        return 0
-    }
+    tmux() { [[ "$1" == display-message ]] && printf '%s' "$_SLOTVAL"; return 0; }
     ae_current_slot
 }
 assert_eq "current-slot: valid slot passes through" "worker.2" "$(_SLOTVAL=worker.2 _cs_run)"
@@ -4789,34 +4580,19 @@ assert_eq "reply: slot self-check not guarded by sender_override" "no" "$([[ "$A
 # R1 (lead gate): a slotted request with EMPTY target_session must NOT fail-open — a right-slot
 # pane from ANOTHER tmux session is rejected (defaults to $_AE_SESSION, the request's own session).
 eval "$(awk '/^helper_reply_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-_reply_verify() { # <row> <self_slot> <self_session> <_AE_SESSION> -> exit status (1 = rejected)
+_reply_verify() {  # <row> <self_slot> <self_session> <_AE_SESSION> -> exit status (1 = rejected)
     local _row="$1" _self_slot="$2" _self_session="$3"
     _AE_SESSION="$4"
     # shellcheck disable=SC2317
-    ae_find_request() {
-        printf '%s\n' "$_row"
-        return 0
-    }
+    ae_find_request() { printf '%s\n' "$_row"; return 0; }
     # shellcheck disable=SC2317
-    ae_current_agent_ref() {
-        echo "replier"
-        return 0
-    }
+    ae_current_agent_ref() { echo "replier"; return 0; }
     # shellcheck disable=SC2317
-    ae_current_slot() {
-        printf '%s' "$_self_slot"
-        return 0
-    }
+    ae_current_slot() { printf '%s' "$_self_slot"; return 0; }
     # shellcheck disable=SC2317
-    ae_current_pane() {
-        echo "%1"
-        return 0
-    }
+    ae_current_pane() { echo "%1"; return 0; }
     # shellcheck disable=SC2317
-    tmux() {
-        [[ "$1" == display-message ]] && printf '%s' "$_self_session"
-        return 0
-    }
+    tmux() { [[ "$1" == display-message ]] && printf '%s' "$_self_session"; return 0; }
     helper_reply_main "req-1" "msg"
 }
 _r1_rej=0
@@ -4836,15 +4612,11 @@ _AE_META_DIR="$_AE_META_DIR2" assert_eq "ae_find_request: slotted event -> 7 col
 
 # ae_slot_resolver: session-qualified slot -> the CURRENT agent ref (survives name churn).
 eval "$(awk '/^ae_slot_resolver\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-_slotres_run() { # <want_session> <want_slot> -> resolved ref
+_slotres_run() {  # <want_session> <want_slot> -> resolved ref
     local ws="$1" wslot="$2"
     _AE_SESSION="s1"
     # shellcheck disable=SC2317  # '|' delimiter — matches the resolver's -F
-    tmux() {
-        [[ "$1" == list-panes ]] || return 0
-        printf '%%1|main|claude:lead\n%%2|worker.0|opus48:builder\n'
-        return 0
-    }
+    tmux() { [[ "$1" == list-panes ]] || return 0; printf '%%1|main|claude:lead\n%%2|worker.0|opus48:builder\n'; return 0; }
     ae_slot_resolver "$ws" "$wslot"
 }
 assert_eq "slot-resolver: worker.0 same session -> current agent" "opus48:builder" "$(_slotres_run '' worker.0)"
@@ -4856,11 +4628,7 @@ assert_eq "slot-resolver: unknown slot -> empty (routing falls back to name)" ""
 _slotres_unstamped() {
     _AE_SESSION="s1"
     # shellcheck disable=SC2317  # %3 is unstamped: empty slot field between '|'s
-    tmux() {
-        [[ "$1" == list-panes ]] || return 0
-        printf '%%3||someone:external\n%%2|worker.0|opus48:builder\n'
-        return 0
-    }
+    tmux() { [[ "$1" == list-panes ]] || return 0; printf '%%3||someone:external\n%%2|worker.0|opus48:builder\n'; return 0; }
     ae_slot_resolver '' worker.0
 }
 assert_eq "slot-resolver: unstamped pane present -> still routes to stamped pane" "opus48:builder" "$(_slotres_unstamped)"
@@ -4874,6 +4642,7 @@ assert_eq "slot-resolver: unstamped pane present -> still routes to stamped pane
 # Claude: content-only (style not focus-invariant), bare ornament = idle.
 eval "$(awk '/^_capture_input_region\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_sgr_parse\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_input_region_prompt_seg\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_input_region_occupied\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_paste_still_staged\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_paste_input_busy\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
@@ -4951,7 +4720,58 @@ assert_eq "b3: user-typed '›' after the anchor -> occupied (anchor-only strip)
     "$(_occ codex '\033[1m›\033[0m ›')"
 assert_eq "b3: user-typed text containing '›' -> occupied" "occupied" \
     "$(_occ codex '\033[1m›\033[0m use the › ornament here')"
+# ── colead NEW BLOCKER 1 regressions: STRUCTURAL prompt selection ────────────────
+# Widening the capture to 0..cursor_y (BLOCKER 2's fix) put the whole TRANSCRIPT in
+# view, and the bold&&!dim wildcard '*›*' then matched bold assistant PROSE as a live
+# prompt: 'ESC[1mAnalysis › outcome' + following text read OCCUPIED, so a DELIVERED
+# message looked staged -> extra Enters -> the F4 duplication class reopened.
+# The rule is now structural AND stylistic: the live prompt is the BOTTOM-MOST line
+# whose FIRST non-whitespace cell is the ornament, in bold-and-not-dim state. Bold
+# prose carrying an ornament mid-line is transcript, never a prompt.
+assert_eq "nb1: bold transcript with a mid-line '›', no live prompt -> indeterminate" "indeterminate" \
+    "$(_occ codex '\033[1mAnalysis › outcome\033[0m\nWorked for 2m 45s')"
+assert_eq "nb1: bold transcript '›' ABOVE an EMPTY live prompt -> idle (not shadowed)" "idle" \
+    "$(_occ codex '\033[1mAnalysis › outcome\033[0m\n\033[1m›\033[0m \033[2mExplain this codebase\033[0m')"
+assert_eq "nb1: bold transcript '›' ABOVE a STAGED live prompt -> occupied" "occupied" \
+    "$(_occ codex '\033[1mAnalysis › outcome\033[0m\n\033[1m›\033[0m [Pasted Content 900 chars]')"
+# Mid-generation transcript carrying BOTH shadow shapes and NO live prompt: bold prose
+# with a mid-line ornament AND a line-leading BOLD+DIM submitted echo. Neither is a
+# live prompt, so the read is indeterminate -> post-submit degrades to clear (never a
+# false staged -> never a duplicate Enter).
+assert_eq "nb1: mid-gen — bold prose '›' + line-leading BOLD+DIM echo, no live -> indeterminate" "indeterminate" \
+    "$(_occ codex '\033[1mAnalysis › outcome\033[0m\n\033[1;2m› \033[0mMemo read — superb work\n─ Worked for 2m 45s ─')"
+# BOTTOM-MOST wins, mutation-proof: an EARLIER line-leading live ornament carrying
+# content sits above an EMPTY live prompt. Truth is idle. A first-match/any-match
+# selector reads the upper row and returns occupied -> post-submit false staged.
+assert_eq "nb1: bottom-most line-leading ornament wins over an earlier occupied one" "idle" \
+    "$(_occ codex '\033[1m›\033[0m an earlier prompt row with content\n\033[1m›\033[0m \033[2mExplain this codebase\033[0m')"
 assert_eq "occ: codex unreadable region -> indeterminate" "indeterminate" "$(_occ codex '')"
+# _sgr_parse must ADVANCE on a non-CSI ESC. The old loop matched an empty text run
+# there and spun forever; a hung sensor hangs the send path, so this test is the
+# liveness guard (timeout, not an assertion on the parse). tmux -e reconstructs SGR,
+# so this is defensive — but a hang is unrecoverable, unlike a bad read.
+_sgr_esc_terminates() { # -> ok|HUNG|leaked:<text>
+    local out rc=0
+    out="$(timeout 5 bash -c '
+        eval "$(awk "/^_sgr_parse\(\) \{/,/^\}\$/" "$1")"
+        _sgr_parse "$(printf "%b" "\033(B\0337\033[1m›\033[0m staged")"
+        printf "%s" "${_SGR_TEXT[*]}"
+    ' _ "$(dirname "$0")/../ae" 2>/dev/null)" || rc=$?
+    # 124 is timeout's own "killed" code — the hang this guards. Any other nonzero is
+    # a broken probe, not a hang, and must not masquerade as one.
+    ((rc == 124)) && {
+        echo HUNG
+        return 0
+    }
+    ((rc == 0)) || {
+        echo "probe-broken:rc=$rc"
+        return 0
+    }
+    # the designator's final byte must NOT leak into the text (false OCCUPIED risk)
+    [[ "$out" != *'(B'* && "$out" != *'7'* ]] && echo ok || echo "leaked:$out"
+    return 0
+}
+assert_eq "sgr: non-CSI ESC advances (no infinite loop) and does not leak its bytes" "ok" "$(_sgr_esc_terminates)"
 assert_eq "occ: claude empty ornament -> idle" "idle" "$(_occ claude '❯\xc2\xa0')"
 assert_eq "occ: claude empty w/ box border above -> idle" "idle" "$(_occ claude '\033[38;5;244m────────\033[39m\n\033[38;5;246m❯\xc2\xa0\033[39m')"
 assert_eq "occ: claude ghost (content, style unreliable) -> occupied" "occupied" "$(_occ claude '❯\xc2\xa0Try \"create a util logging.py that...\"')"
@@ -4974,6 +4794,13 @@ assert_eq "still-staged: codex transcript echo (not live input) -> clear (kills 
 assert_eq "still-staged: codex unreadable -> clear (non-regressive)" "clear" "$(_pss codex '')"
 assert_eq "still-staged: claude '[Pasted text]' still in input -> staged" "staged" "$(_pss claude '❯\xc2\xa0[Pasted text #3 +5 lines]')"
 assert_eq "still-staged: claude clear input -> clear (submitted)" "clear" "$(_pss claude '❯\xc2\xa0')"
+# Steward's variant-3 evidence (24 samples, 2026-07-15): sends to IDLE claude panes
+# lost the Enter and the message sat staged as RAW UNSTYLED TEXT — no '[Pasted text #'
+# token at all (short sends are not pasted as a token). A token-shaped detector reads
+# that as clear = the silent-loss class again. The rule is the CLASS (any content after
+# the live ornament), so raw text is caught for free — pinned here so it stays that way.
+assert_eq "still-staged: claude short RAW text staged (no token) -> staged (variant-3)" "staged" \
+    "$(_pss claude '❯\xc2\xa0Run your sweep now and report findings-first')"
 
 # ── consumer 2: _paste_input_busy (pre-paste) — IDLE=safe, OCCUPIED/INDETERMINATE=unsafe ──
 _pib() { # <tool> <region-printf_b> -> safe|unsafe
@@ -5001,9 +4828,16 @@ assert_eq "input-busy: unknown tool -> safe (no predicate, don't regress)" "safe
 # The claude launch DISABLES the input-box ghost suggestion (so idle==bare ornament).
 assert_eq "launch: claude env disables prompt suggestion" "1" \
     "$([[ "$AE_SOURCE" == *'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 ${launch_cmd}'* ]] && echo 1 || echo 0)"
+# Steward variant-3 insurance: claude's paste->Enter settle is 0.3s (the observed
+# Enter-drop is claude-only and client-state dependent), codex stays at 0.1s so its
+# sends don't pay latency for a bug never seen there. The retry loop is the guarantee.
+assert_eq "settle: claude paste->Enter settle bumped to 0.3s, codex unchanged" "1" \
+    "$([[ "$AE_SOURCE" == *'local _settle=0.1'* && "$AE_SOURCE" == *'_settle=0.3'* && "$AE_SOURCE" == *'sleep "$_settle"'* ]] && echo 1 || echo 0)"
 # The shared sensor + region primitive are emitted into the send-path _lib (runtime).
-assert_eq "emission: sensor + SGR parser + predicates in send-path _lib" "1" \
-    "$([[ "$AE_SOURCE" == *'ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_occupied _paste_still_staged'* ]] && echo 1 || echo 0)"
+# _input_region_prompt_seg is load-bearing: unemitted, every codex send would call an
+# undefined function, read indeterminate, and silently stop verifying submits.
+assert_eq "emission: sensor + SGR parser + prompt selector + predicates in send-path _lib" "1" \
+    "$([[ "$AE_SOURCE" == *'ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_occupied _paste_still_staged'* ]] && echo 1 || echo 0)"
 # Geometry: the capture is bounded by #{cursor_y} with NO invented row-count window.
 # The old cy-8 look-back was a fabricated bound (deepest real fixture = 4 rows, a
 # SAMPLE not a limit): a legal 10-row multiline hides its prompt above the window ->
@@ -5016,20 +4850,14 @@ assert_eq "geometry: capture is 0..#{cursor_y}, no fixed look-back window" "1" \
 
 # submit-verification bounded retry + LOUD failure. Stub _paste_still_staged to
 # stay staged for the first N checks; count Enter keystrokes.
-_asp() { # <staged-for-N-checks> -> "rc=? enters=? checks=?"
+_asp() {  # <staged-for-N-checks> -> "rc=? enters=? checks=?"
     local staged_for="$1" checks=0 enters=0 rc
     # shellcheck disable=SC2317
     sleep() { :; }
     # shellcheck disable=SC2317
-    _paste_still_staged() {
-        checks=$((checks + 1))
-        ((checks <= staged_for)) && return 0 || return 1
-    }
+    _paste_still_staged() { checks=$((checks + 1)); ((checks <= staged_for)) && return 0 || return 1; }
     # shellcheck disable=SC2317
-    tmux() {
-        [[ "$1" == send-keys && "$*" == *Enter* ]] && enters=$((enters + 1))
-        return 0
-    }
+    tmux() { [[ "$1" == send-keys && "$*" == *Enter* ]] && enters=$((enters + 1)); return 0; }
     ae_submit_pasted_message "%1" "codex" "buf" "hi" 2>/dev/null
     rc=$?
     echo "rc=$rc enters=$enters checks=$checks"
@@ -5038,7 +4866,7 @@ assert_eq "submit-verify: submits first try -> rc=0, one Enter" "rc=0 enters=1 c
 assert_eq "submit-verify: staged once then clears -> rc=0, retry Enter" "rc=0 enters=2 checks=2" "$(_asp 1)"
 assert_eq "submit-verify: never submits -> rc=1 LOUD after bounded 2 retries" "rc=1 enters=3 checks=3" "$(_asp 9)"
 # The loud failure writes a warning to stderr.
-_asp_loud() { # always-staged -> emits the LOUD warning to stderr
+_asp_loud() {  # always-staged -> emits the LOUD warning to stderr
     # shellcheck disable=SC2317
     sleep() { :; }
     # shellcheck disable=SC2317
@@ -5062,7 +4890,7 @@ assert_eq "send-reorder: unconfirmed submit exits 1 without emitting a send even
 # tmux_paste_submit PROPAGATES — hence the `|| true` guards at the launch sites.
 eval "$(awk '/^pane_current_command\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^tmux_paste_submit\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-_tps_staged() { # modeled tool stays staged -> propagated nonzero
+_tps_staged() {  # modeled tool stays staged -> propagated nonzero
     local rc
     # shellcheck disable=SC2317
     sleep() { :; }
@@ -5071,8 +4899,8 @@ _tps_staged() { # modeled tool stays staged -> propagated nonzero
         case "$1" in
             display-message)
                 case "$*" in
-                    *cursor_y*) printf '5' ;; # cursor row (input-region anchor)
-                    *) printf 'claude' ;;     # pane_current_command
+                    *cursor_y*) printf '5' ;;  # cursor row (input-region anchor)
+                    *) printf 'claude' ;;      # pane_current_command
                 esac
                 ;;
             capture-pane) printf '❯ [Pasted text #2 +7 lines]\n' ;; # staged in the input region
@@ -5094,14 +4922,14 @@ eval "$(awk '/^command_is_shell\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_agent_bin_for_pane\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_pane_has_descendant_named\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_pane_agent_is_dead\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-_pad() {                                          # <pane-foreground-command> <agent_bin> [agent-in-tree: 0=yes 1=no] -> dead|alive
+_pad() {  # <pane-foreground-command> <agent_bin> [agent-in-tree: 0=yes 1=no] -> dead|alive
     local _PROC="$1" _ABIN="$2" _INTREE="${3:-1}" # default 1 = agent NOT in the tree
     # shellcheck disable=SC2317
     tmux() {
         [[ "$1" == display-message ]] || return 0
         case "$*" in
-            *pane_pid*) printf '99999' ;; # numeric pid so the tree walk runs
-            *) printf '%s' "$_PROC" ;;    # pane_current_command
+        *pane_pid*) printf '99999' ;; # numeric pid so the tree walk runs
+        *) printf '%s' "$_PROC" ;;    # pane_current_command
         esac
         return 0
     }
@@ -5126,25 +4954,16 @@ assert_eq "dead-shell: shell foreground BUT agent alive in process tree -> alive
 eval "$(awk '/^_pane_has_descendant_named\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 sleep 30 &
 _ri3_sleep=$!
-assert_eq "descendant-walk: a live child IS found under its parent pid" "0" "$(
-    _pane_has_descendant_named "$$" sleep >/dev/null
-    echo $?
-)"
-assert_eq "descendant-walk: an absent process name -> not found" "1" "$(
-    _pane_has_descendant_named "$$" no_such_proc_ri3xyz >/dev/null
-    echo $?
-)"
-assert_eq "descendant-walk: empty args -> not found (guard)" "1" "$(
-    _pane_has_descendant_named '' claude >/dev/null
-    echo $?
-)"
+assert_eq "descendant-walk: a live child IS found under its parent pid" "0" "$(_pane_has_descendant_named "$$" sleep >/dev/null; echo $?)"
+assert_eq "descendant-walk: an absent process name -> not found" "1" "$(_pane_has_descendant_named "$$" no_such_proc_ri3xyz >/dev/null; echo $?)"
+assert_eq "descendant-walk: empty args -> not found (guard)" "1" "$(_pane_has_descendant_named '' claude >/dev/null; echo $?)"
 kill "$_ri3_sleep" 2>/dev/null || true
 
 # _agent_bin_for_pane reads agent_bin.<slot> from the pane's OWN session meta.
 _abfp_tmp="$(mktemp -d)"
 mkdir -p "$_abfp_tmp/sessX"
 printf 'agent_bin.main=claude\nagent_bin.worker.0=codex\n' >"$_abfp_tmp/sessX/meta"
-_abfp() { # <slot> -> agent_bin
+_abfp() {  # <slot> -> agent_bin
     local _SLOT="$1" _AE_SESSIONS_DIR="$_abfp_tmp"
     # shellcheck disable=SC2317
     tmux() {
@@ -5182,7 +5001,7 @@ assert_eq "send-focus: defer also gates on _pane_recently_viewed" "1" \
     "$([[ "$_sf_send" == *'_paste_input_busy "$target" "$tool" || _pane_recently_viewed "$target"'* ]] && echo 1 || echo 0)"
 # _pane_recently_viewed: client-at-pane with fresh activity -> defer; stale/other -> clear.
 eval "$(awk '/^_pane_recently_viewed\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-_prv() { # <client-pane> <activity-age-s> <target> -> viewed|clear
+_prv() {  # <client-pane> <activity-age-s> <target> -> viewed|clear
     local _CP="$1" _AGE="$2"
     # shellcheck disable=SC2317  # invoked indirectly by _pane_recently_viewed
     date() { printf '1000000'; }
@@ -5213,7 +5032,7 @@ assert_eq "interrupt-guard: message interrupt to a dead-shell pane refuses (same
     "$([[ "$AE_SOURCE" == *'if [[ -n "$msg" ]] && _pane_agent_is_dead "$target"; then'*'interrupt of '*'REFUSED'*'exit 1'* ]] && echo 1 || echo 0)"
 # Behavioral: a message interrupt to a dead real-agent pane exits nonzero and pastes nothing.
 eval "$(awk '/^helper_interrupt_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-_int_dead() { # -> "rc=? pasted=?"
+_int_dead() {  # -> "rc=? pasted=?"
     local rc pasted=0
     # shellcheck disable=SC2317,SC2034  # AE_RESOLVED_AGENT read by helper_interrupt_main
     ae_resolve() {
@@ -5226,10 +5045,7 @@ _int_dead() { # -> "rc=? pasted=?"
     # shellcheck disable=SC2317
     ae_lock_target() { return 0; }
     # shellcheck disable=SC2317
-    ae_submit_pasted_message() {
-        pasted=1
-        return 0
-    }
+    ae_submit_pasted_message() { pasted=1; return 0; }
     # shellcheck disable=SC2317
     ae_unlock_target() { return 0; }
     # shellcheck disable=SC2317
@@ -5238,14 +5054,14 @@ _int_dead() { # -> "rc=? pasted=?"
     tmux() { return 0; }
     # shellcheck disable=SC2317
     sleep() { :; }
-    (helper_interrupt_main claude:ghost "stop and run rm -rf") 2>/dev/null
+    ( helper_interrupt_main claude:ghost "stop and run rm -rf" ) 2>/dev/null
     rc=$?
     echo "rc=$rc pasted=$pasted"
 }
 assert_eq "interrupt-guard: dead-agent message interrupt exits 1, pastes nothing" "rc=1 pasted=0" "$(_int_dead)"
 # codex code-round: a message interrupt whose submit is UNCONFIRMED must exit 1
 # and emit NO interrupt event (the "false delivered" class the send path fixes).
-_int_unconfirmed() { # live target, submit fails -> "rc=? emitted=?"
+_int_unconfirmed() {  # live target, submit fails -> "rc=? emitted=?"
     local rc evfile
     evfile="$(mktemp)" # a FILE survives the subshell fork (a var would not)
     # shellcheck disable=SC2317,SC2034  # AE_RESOLVED_AGENT read by helper_interrupt_main
@@ -5273,7 +5089,7 @@ _int_unconfirmed() { # live target, submit fails -> "rc=? emitted=?"
     tmux() { return 0; }
     # shellcheck disable=SC2317
     sleep() { :; }
-    (helper_interrupt_main claude:live "stop now") 2>/dev/null
+    ( helper_interrupt_main claude:live "stop now" ) 2>/dev/null
     rc=$?
     echo "rc=$rc emitted=$([[ -s "$evfile" ]] && echo 1 || echo 0)"
     rm -f "$evfile"

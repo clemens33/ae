@@ -6852,18 +6852,22 @@ _capture_input_region() {
 }
 
 # Parse a captured region into styled SEGMENTS: parallel arrays _SGR_BOLD/_SGR_DIM/
-# _SGR_TEXT, one entry per run of text sharing an SGR state. Parses SGR *state* —
-# params, grouping and resets — never byte literals: tmux legally serializes the SAME
-# visual state many ways ($'\e[1m›', $'\e[0;1m›', $'\e[2m…\e[1m›'), so an exact-byte
-# anchor is unsound and mis-reads real panes (colead BLOCKER 1, reproduced in isolated
-# tmux). Only intensity matters here: 1 = bold on, 2 = dim on, 0/22 = both off; an
-# extended-colour introducer (38/48) has its arguments skipped so a nested '1'/'2'
+# _SGR_TEXT/_SGR_LINE, one entry per run of text sharing an SGR state. Parses SGR
+# *state* — params, grouping and resets — never byte literals: tmux legally serializes
+# the SAME visual state many ways ($'\e[1m›', $'\e[0;1m›', $'\e[2m…\e[1m›'), so an
+# exact-byte anchor is unsound and mis-reads real panes (colead BLOCKER 1, reproduced in
+# isolated tmux). Only intensity matters here: 1 = bold on, 2 = dim on, 0/22 = both off;
+# an extended-colour introducer (38/48) has its arguments skipped so a nested '1'/'2'
 # parameter is never mistaken for bold/dim.
+# Segments NEVER span a newline: _SGR_LINE[i] is the segment's row in the region, which
+# is what lets the prompt rule be STRUCTURAL (line-leading) and not a wildcard — see
+# _input_region_prompt_seg (colead NEW BLOCKER 1).
 _sgr_parse() {
     _SGR_BOLD=()
     _SGR_DIM=()
     _SGR_TEXT=()
-    local rest="$1" bold=0 dim=0 body seq rem final params text
+    _SGR_LINE=()
+    local rest="$1" bold=0 dim=0 line=0 body seq rem final params text chunk
     local -a ps
     local j v
     while [[ -n "$rest" ]]; do
@@ -6903,15 +6907,108 @@ _sgr_parse() {
             done
             continue
         fi
+        if [[ "$rest" == $'\e'* ]]; then
+            # A non-CSI escape (charset designator $'\e(B', $'\e7'…). tmux -e emits SGR
+            # only, so this is defensive — but it MUST consume bytes: the old loop took
+            # this branch, matched an empty text run and spun FOREVER. Drop the whole
+            # sequence (ESC + intermediates + one final byte) rather than just the ESC,
+            # so a designator's final ('B' of $'\e(B') can't leak into a text run and
+            # read as input content — a false OCCUPIED is the F4 duplication class.
+            rest="${rest:1}"
+            while [[ -n "$rest" ]]; do
+                case "${rest:0:1}" in
+                    ' ' | '!' | '"' | '#' | '$' | '%' | '&' | "'" | '(' | ')' | '*' | '+' | ',' | '-' | '.' | '/')
+                        rest="${rest:1}" # intermediate byte, more to come
+                        ;;
+                    *)
+                        rest="${rest:1}" # final byte: sequence complete
+                        break
+                        ;;
+                esac
+            done
+            continue
+        fi
         text="${rest%%$'\e'*}"
         rest="${rest#"$text"}"
+        [[ -n "$text" ]] || continue
+        # Split the run at newlines so every segment belongs to exactly ONE row.
+        while [[ "$text" == *$'\n'* ]]; do
+            chunk="${text%%$'\n'*}"
+            text="${text#*$'\n'}"
+            if [[ -n "$chunk" ]]; then
+                _SGR_BOLD+=("$bold")
+                _SGR_DIM+=("$dim")
+                _SGR_TEXT+=("$chunk")
+                _SGR_LINE+=("$line")
+            fi
+            ((line++))
+        done
         if [[ -n "$text" ]]; then
             _SGR_BOLD+=("$bold")
             _SGR_DIM+=("$dim")
             _SGR_TEXT+=("$text")
+            _SGR_LINE+=("$line")
         fi
     done
     return 0
+}
+
+# STRUCTURAL prompt selection over a parsed region: find the live input prompt by the
+# only property that separates it from transcript — the ornament is the FIRST
+# non-whitespace cell of its ROW, and the BOTTOM-MOST such row wins (the input box sits
+# below the transcript; the capture stops at the cursor, which is inside the box).
+# Sets _SGR_PROMPT_SEG (segment index) and _SGR_PROMPT_TAIL (that segment's text from
+# the ornament onward). Returns 1 when no row qualifies -> caller reports indeterminate.
+#
+# Style alone was NOT enough (colead NEW BLOCKER 1): once the capture widened to
+# 0..cursor_y the whole transcript came into view, and a wildcard '*›*' over bold-and-
+# not-dim segments matched bold assistant PROSE ($'\e[1mAnalysis › outcome') as a live
+# prompt — a DELIVERED message then read as staged, the sender re-pressed Enter and the
+# F4 duplication class reopened. Structure alone is not enough either: a submitted echo
+# IS line-leading, and is excluded by style (bold AND dim). Both rules, together.
+#
+# live_only=1 requires bold && !dim (codex, whose echo is bold+dim). Ornaments are
+# matched as literal PREFIXES, never a bracket class: '›'/'❯' are multibyte and a
+# bracket expression matches per-byte under LC_ALL=C (the queued locale slice's bug).
+_input_region_prompt_seg() { # <live_only:0|1> <ornament>... -> 0 + _SGR_PROMPT_SEG/_TAIL
+    local live_only="$1"
+    shift
+    _SGR_PROMPT_SEG=-1
+    _SGR_PROMPT_TAIL=""
+    # Callers always _sgr_parse first, but this is emitted into _lib where a future one
+    # might not: subscripting an UNDECLARED array under `set -u` aborts the whole helper
+    # (the repo's documented hazard). No segments parsed == no prompt, which is exactly
+    # what an unparsed region should report.
+    [[ -n "${_SGR_TEXT+x}" ]] || return 1
+    local n=${#_SGR_TEXT[@]}
+    ((n > 0)) || return 1
+    local maxline=${_SGR_LINE[n - 1]}
+    local line i lead rest orn found
+    for ((line = maxline; line >= 0; line--)); do
+        found=-1
+        for ((i = 0; i < n; i++)); do
+            [[ "${_SGR_LINE[i]}" == "$line" ]] || continue
+            # Leading whitespace is not content: tmux legally paints the cells before a
+            # live ornament ($'\e[2m  \e[0;1m›' — colead's isolated-tmux serialization),
+            # so the run holding them is skipped, not treated as text.
+            [[ -z "${_SGR_TEXT[i]//[[:space:]]/}" ]] && continue
+            found=$i
+            break
+        done
+        ((found >= 0)) || continue
+        lead="${_SGR_TEXT[found]}"
+        rest="${lead#"${lead%%[![:space:]]*}"}" # from the row's first non-blank cell
+        for orn in "$@"; do
+            [[ "$rest" == "$orn"* ]] || continue
+            if ((live_only == 1)); then
+                [[ "${_SGR_BOLD[found]}" == 1 && "${_SGR_DIM[found]}" == 0 ]] || continue
+            fi
+            _SGR_PROMPT_SEG=$found
+            _SGR_PROMPT_TAIL="$rest"
+            return 0
+        done
+    done
+    return 1
 }
 
 # Occupancy of the target's live input box, from the cursor-derived region (colead
@@ -6939,27 +7036,22 @@ _input_region_occupied() {
             # stays correct and is what cursor-region isolation now resolves. Live
             # repro: staged '[Pasted Content 1469 chars]' — the old detector returned
             # clear and would have logged a false success = silent loss.)
-            local i live=-1 s
+            local i live s
             _sgr_parse "$region"
-            # The LIVE prompt is the LAST ornament cell in BOLD-and-NOT-DIM state; a
-            # submitted transcript echo is the same ornament in BOLD-AND-DIM state.
-            # State, not bytes: $'\e[2m…\e[1m›' leaves DIM active (an echo) while
-            # $'\e[2m…\e[0;1m›' resets first (live) — visually identical prefixes,
-            # opposite meanings. This is what kills the F4 transcript-echo
-            # false-positive by style+geometry rather than a content grep.
-            for ((i = ${#_SGR_TEXT[@]} - 1; i >= 0; i--)); do
-                if [[ "${_SGR_BOLD[i]}" == 1 && "${_SGR_DIM[i]}" == 0 && "${_SGR_TEXT[i]}" == *'›'* ]]; then
-                    live=$i
-                    break
-                fi
-            done
-            ((live >= 0)) || return 2 # no live prompt (mid-generation / abnormal)
+            # The LIVE prompt is the bottom-most ROW whose first non-blank cell is the
+            # ornament in BOLD-and-NOT-DIM state; a submitted transcript echo is the
+            # same ornament BOLD-AND-DIM, and bold prose carrying a '›' mid-row is
+            # transcript regardless of style. State, not bytes: $'\e[2m…\e[1m›' leaves
+            # DIM active (an echo) while $'\e[2m…\e[0;1m›' resets first (live) —
+            # visually identical prefixes, opposite meanings.
+            _input_region_prompt_seg 1 '›' || return 2 # no live prompt (mid-gen/abnormal)
+            live=$_SGR_PROMPT_SEG
             # Content = everything after the ANCHOR ornament only. Removing every '›'
             # in the region (the old tr -d) made a user-typed ornament vanish, reading
             # real input as idle and permitting a clobber — violating the very class
             # rule this sensor enforces (colead BLOCKER 3). Strip the anchor, keep all
             # printable content that follows it, including further ornaments.
-            s="${_SGR_TEXT[live]#*›}"
+            s="${_SGR_PROMPT_TAIL#*›}"
             for ((i = live + 1; i < ${#_SGR_TEXT[@]}; i++)); do
                 # DIM-state text is the placeholder suggestion — not user content.
                 [[ "${_SGR_DIM[i]}" == 1 ]] && continue
@@ -7125,6 +7217,7 @@ _pane_agent_is_dead() {
 # two paste paths can't drift.
 ae_submit_pasted_message() {
     local pane="$1" tool="$2" buf="$3" msg="$4"
+    local _settle=0.1
     if [[ "$tool" == "codex" ]]; then
         # Codex expects bracketed-paste mode for injected input.
         tmux set-buffer -b "$buf" -- "$msg" \; \
@@ -7132,8 +7225,16 @@ ae_submit_pasted_message() {
     else
         tmux set-buffer -b "$buf" -- "$msg" \; \
             paste-buffer -d -b "$buf" -t "$pane"
+        # Claude only: the steward's 24-sample sweep (2026-07-15) found sends to IDLE
+        # claude panes losing the Enter — the text stayed staged raw — while sends to
+        # BUSY panes queued and delivered. The lead's fresh-pane repro did NOT
+        # reproduce, so this is version/client-state dependent and the root cause is
+        # unproven; a longer settle is cheap insurance for the flow-control hypothesis.
+        # It is NOT the guarantee — the verify-then-retry loop below is. Codex keeps
+        # 0.1s: no evidence of the drop there, and every send would pay the latency.
+        _settle=0.3
     fi
-    sleep 0.1
+    sleep "$_settle"
     tmux send-keys -t "$pane" Enter
 
     local _attempt=0
@@ -9737,7 +9838,7 @@ LIBPROLOGUE
             ae_preview_text ae_extract_req_id ae_log_append ae_log_read \
             ae_target_tool ae_json_escape ae_emit_event ae_latest_state_for \
             _event_json_str _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
-            ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
+            ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
             command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
             ae_meta_get ae_meta_set ae_meta_unset
     } >"${AE_META}/_lib.tmp.$$"
