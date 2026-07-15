@@ -28,7 +28,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_roster_glyph|_roster_label|_roster_compose|_roster_leaf_cmd|_roster_activity_text|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -1664,15 +1664,153 @@ assert_eq "status-bar: left is name-only, right carries path+git+watch (ae-owned
     "$([[ "$AE_SOURCE" == *'_ae_apply_status_bar()'* && "$AE_SOURCE" == *'status-left "[ae ${sess_lit}] "'* && "$AE_SOURCE" == *'status-right "[${paths}#{@ae_branch_status}] #{@ae_watchdog_status}"'* && "$AE_SOURCE" == *'status-right-length 100'* ]] && echo 1 || echo 0)"
 # Second status line: pane borders only render with 2+ panes, so a lone agent in its
 # own window had no visible identity — line 1 shows the active pane's @ae_agent.
-_sb_fmt1="'status-format[1]' '#[align=left] #{@ae_agent}'"
+_sb_fmt1="'status-format[1]' '#[align=left] #{@ae_agent} #{@ae_activity}#[align=right]#{@ae_agents_status} '"
 assert_eq "status-bar: second line shows the focused pane's agent identity" "1" \
     "$([[ "$AE_SOURCE" == *"set-option -t \"\$session\" status 2"* && "$AE_SOURCE" == *"$_sb_fmt1"* ]] && echo 1 || echo 0)"
+# footer-roster: agents live across MULTIPLE WINDOWS but the status bar renders in
+# every one, so a per-agent roster on line 1 gives whole-org visibility from any
+# window. Right-aligned so it never collides with the left-aligned focused identity.
+assert_eq "status-bar: line 1 carries the agent roster, right-aligned" "1" \
+    "$([[ "$AE_SOURCE" == *'#[align=right]#{@ae_agents_status}'* ]] && echo 1 || echo 0)"
 # tmux ARRAY options do not inherit per-index: session-scope status-format[1] alone
 # shadows the whole global array and line 0 (the standard bar) renders EMPTY (live
 # exhibit: first session-shape launch showed two blank green lines). The template
 # must copy the global [0] into the session BEFORE setting [1].
 assert_eq "status-bar: global status-format[0] copied to session scope (array-shadowing fix)" "1" \
     "$([[ "$AE_SOURCE" == *"show-options -gv 'status-format[0]'"* && "$AE_SOURCE" == *"set-option -t \"\$session\" 'status-format[0]' \"\$_fmt0\""* ]] && echo 1 || echo 0)"
+
+# ── footer-roster: per-agent verdict roster ──────────────────────────
+# DESIGN HONESTY (builder-stall incident): the roster shows the WATCHDOG'S VERDICT,
+# never a claim about what an agent is "doing". Pane activity != working — a recap
+# re-render looks identical to progress — so ● means "the watchdog saw this pane
+# advance", not "working". Every glyph maps 1:1 to a branch the loop already decides.
+assert_eq "roster: glyph — active verdict" "●" "$(_roster_glyph active)"
+assert_eq "roster: glyph — done" "✔" "$(_roster_glyph "done")"
+assert_eq "roster: glyph — waiting-user" "⏳" "$(_roster_glyph waiting-user)"
+assert_eq "roster: glyph — blocked" "⛔" "$(_roster_glyph blocked)"
+assert_eq "roster: glyph — stale/nudged" "◌" "$(_roster_glyph stale)"
+assert_eq "roster: glyph — throttled" "⚡" "$(_roster_glyph throttled)"
+assert_eq "roster: glyph — dead" "✖" "$(_roster_glyph dead)"
+# An unknown/unset verdict must NOT borrow a meaningful glyph — showing ● for "we
+# didn't decide" is the exact dishonesty this design forbids.
+assert_eq "roster: glyph — unknown verdict is neutral, never ●" "·" "$(_roster_glyph '')"
+assert_eq "roster: glyph — unrecognised token is neutral" "·" "$(_roster_glyph bogus)"
+# Names render WITHOUT the alias prefix: the roster is about WHO, not which model.
+assert_eq "roster: label drops the alias prefix" "builder" "$(_roster_label 'opus48:builder')"
+assert_eq "roster: label leaves a bare name alone" "lead" "$(_roster_label 'lead')"
+# Agent names are config text reaching a tmux user option. Values interpolate
+# LITERALLY (no format parsing, unlike status-left), so # and % are safe — but a
+# control byte would still corrupt the bar, so strip those.
+# Control bytes are stripped, but note what that does and does NOT mean: the ESC of an
+# ANSI sequence is a control byte and goes, while its PRINTABLE tail ("[31m") survives
+# as literal text. That is the honest outcome — the bar cannot be driven by a name
+# (no colour change, no cursor move), it just shows the leftover characters. Stripping
+# whole ANSI grammars would be a parser we do not need for config-authored names.
+assert_eq "roster: label strips control bytes (ESC dies; its printable tail is inert text)" "build[31mX" \
+    "$(_roster_label "$(printf 'opus48:build\x1b[31mX\x01')")"
+# The property that actually matters: no control byte survives into the bar.
+assert_eq "roster: label leaves NO control byte in the published value" "0" \
+    "$(_roster_label "$(printf 'x:a\x1bb\x07c\x00d')" | command grep -cP '[\x00-\x1f\x7f]' || true)"
+assert_eq "roster: label keeps # and % literal (user options are not re-parsed)" 'a#b%c' "$(_roster_label 'x:a#b%c')"
+# Compose: "name<glyph>" joined by single spaces, input order preserved.
+assert_eq "roster: composes the whole org from verdict rows" "lead● colead✔ builder◌ grok⚡" \
+    "$(printf 'fable5:lead\tactive\ngpt56sol:colead\tdone\nopus48:builder\tstale\ngrokbuild:grok\tthrottled\n' | _roster_compose)"
+# Guard the guard: an ABSENT _roster_compose also prints nothing, so assert the
+# function EXISTS before trusting an empty result to mean "composed to empty".
+assert_eq "roster: empty input composes to empty (bar falls back, no stale roster)" "fn:" \
+    "$(declare -F _roster_compose >/dev/null && printf 'fn:%s' "$(printf '' | _roster_compose)")"
+assert_eq "roster: a row with no verdict renders neutral, not invented" "lead·" \
+    "$(printf 'fable5:lead\t\n' | _roster_compose)"
+# Publisher: same user-option mechanism as @ae_watchdog_status (literal interpolation
+# = injection-safe), pushed each cycle next to the existing status pushes.
+assert_eq "roster: watchdog publishes @ae_agents_status each cycle" "1" \
+    "$([[ "$AE_SOURCE" == *'_watchdog_set_status @ae_agents_status "$roster"'* ]] && echo 1 || echo 0)"
+# Empty roster must UNSET, not publish "" — a stale roster outliving its agents is
+# worse than none.
+assert_eq "roster: empty roster unsets the option rather than publishing empty" "1" \
+    "$([[ "$AE_SOURCE" == *'tmux set-option -t "$_AE_SESSION" -u @ae_agents_status'* ]] && echo 1 || echo 0)"
+# Cleanup parity: the option must be cleared on BOTH the stop path and the EXIT trap,
+# exactly like @ae_branch_status / @ae_watchdog_status — otherwise a stopped watchdog
+# leaves a frozen roster claiming a fleet that may be gone.
+_roster_unsets="$(printf '%s' "$AE_SOURCE" | command grep -c 'set-option -t "\$_AE_SESSION" -u @ae_agents_status' || true)"
+assert_eq "roster: option cleared on watchdog stop AND exit trap (parity with the others)" "1" \
+    "$([[ "$_roster_unsets" -ge 3 ]] && echo 1 || echo 0)"
+# Verdicts come from the branches the loop ALREADY decides — one assignment per
+# branch, no second source of truth, no re-derivation.
+assert_eq "roster: verdict recorded at the dead/quiet/throttled/active/stale branches" "1" \
+    "$([[ "$AE_SOURCE" == *'roster_verdict["$pane"]="dead"'* \
+        && "$AE_SOURCE" == *'roster_verdict["$pane"]="$quiet_reason"'* \
+        && "$AE_SOURCE" == *'roster_verdict["$pane"]="throttled"'* \
+        && "$AE_SOURCE" == *'roster_verdict["$pane"]="active"'* \
+        && "$AE_SOURCE" == *'roster_verdict["$pane"]="stale"'* ]] && echo 1 || echo 0)"
+# v1 EXCLUSION (explicit): the ⏸ staged-input glyph needs round-4's input-region
+# sensor. It must be a documented follow-up in the source, not a silent omission.
+assert_eq "roster: staged-input (⏸) is noted as a post-round-4 follow-up" "1" \
+    "$([[ "$AE_SOURCE" == *'⏸'* && "$AE_SOURCE" == *'round-4'* ]] && echo 1 || echo 0)"
+
+# ── footer-roster addendum: subprocess activity ──────────────────────
+# Pain: a pane looks IDLE while a subshell runs a long test suite. The watchdog's
+# pane-hash heuristic cannot see it — no output, no hash change — so the agent is
+# judged stale (◌) and nudged while it is in fact busy. A live non-shell descendant is
+# MECHANICAL evidence of work the hash misses.
+# Guard the guards: several assertions below expect EMPTY output, which an ABSENT
+# function also produces. Pin existence first so "" means "decided empty", not "no code".
+assert_eq "leaf/activity: the functions under test actually exist" "fn fn" \
+    "$(declare -F _roster_leaf_cmd >/dev/null && printf 'fn'; printf ' '; declare -F _roster_activity_text >/dev/null && printf 'fn')"
+# ps snapshot fixture: "<pid> <ppid> <comm>" — the same shape as `ps -eo pid=,ppid=,comm=`.
+_ps_snap="$(printf '%s\n' \
+    '100 1 tmux' \
+    '200 100 bash' \
+    '300 200 claude' \
+    '400 300 bash' \
+    '500 400 pytest' \
+    '600 1 unrelated')"
+# Deepest/newest NON-shell descendant, excluding the agent binary itself.
+assert_eq "leaf: finds the non-shell descendant under the agent" "pytest" \
+    "$(_roster_leaf_cmd "$_ps_snap" 200 claude)"
+# The agent binary is not "a subprocess" — it is the agent.
+_ps_idle="$(printf '%s\n' '100 1 tmux' '200 100 bash' '300 200 claude')"
+assert_eq "leaf: agent binary alone is NOT subprocess activity" "" \
+    "$(_roster_leaf_cmd "$_ps_idle" 200 claude)"
+# Shells are scaffolding, never the answer.
+_ps_shells="$(printf '%s\n' '100 1 tmux' '200 100 bash' '300 200 claude' '400 300 bash')"
+assert_eq "leaf: bare shell descendants are not activity" "" \
+    "$(_roster_leaf_cmd "$_ps_shells" 200 claude)"
+# Processes outside the pane's tree must never leak in.
+assert_eq "leaf: ignores processes outside the pane subtree" "" \
+    "$(_roster_leaf_cmd "$_ps_snap" 999 claude)"
+assert_eq "leaf: empty pane_pid is empty, not a scan of everything" "" \
+    "$(_roster_leaf_cmd "$_ps_snap" "" claude)"
+# GLYPH PRECEDENCE — the correction that makes this fix its own pain. The stated pain
+# ("pane looks idle") is judged STALE, not active: if ⚙ only replaced ●, the acute case
+# would still render ◌ and the feature would ship without fixing what it was for. So ⚙
+# overrides both hash-INFERRED verdicts (active, stale) — and nothing else. Declared
+# states (done/waiting-user/blocked) and fatal/observed ones (dead/throttled) are
+# stronger evidence than "a child process exists" and must not be masked by it.
+assert_eq "roster: ⚙ overrides the stale verdict (THE pain case)" "⚙" "$(_roster_glyph stale busy)"
+assert_eq "roster: ⚙ overrides the active verdict" "⚙" "$(_roster_glyph active busy)"
+assert_eq "roster: ⚙ never masks dead" "✖" "$(_roster_glyph dead busy)"
+assert_eq "roster: ⚙ never masks a declared done" "✔" "$(_roster_glyph "done" busy)"
+assert_eq "roster: ⚙ never masks a declared blocked" "⛔" "$(_roster_glyph blocked busy)"
+assert_eq "roster: ⚙ never masks a declared waiting-user" "⏳" "$(_roster_glyph waiting-user busy)"
+assert_eq "roster: ⚙ never masks throttled" "⚡" "$(_roster_glyph throttled busy)"
+assert_eq "roster: no subprocess leaves the verdict glyph untouched" "◌" "$(_roster_glyph stale '')"
+# The leaf name is published PER PANE, not per session. A session-scoped option holds
+# ONE value and renders identically in EVERY window — window B would show window A's
+# activity. #{@ae_agent} works only because it is a PANE option tmux resolves per-window
+# against that window's active pane; the activity text must ride the same mechanism.
+assert_eq "roster: activity is a PANE option (per-window correct), not session-scoped" "1" \
+    "$([[ "$AE_SOURCE" == *'set-option -p -t "$pane" @ae_activity'* \
+        && "$AE_SOURCE" != *'@ae_focused_activity'* ]] && echo 1 || echo 0)"
+assert_eq "status-bar: line 1 renders the focused pane's activity after its identity" "1" \
+    "$([[ "$AE_SOURCE" == *'#{@ae_agent} #{@ae_activity}#[align=right]'* ]] && echo 1 || echo 0)"
+# Truncated + control-stripped: it is a bar segment, not a log line.
+assert_eq "roster: activity text is truncated to 40 and control-stripped" "1" \
+    "$([[ "$AE_SOURCE" == *'_roster_activity_text'* ]] && echo 1 || echo 0)"
+assert_eq "activity-text: truncates to 40 chars" "40" \
+    "$(_roster_activity_text "$(printf 'a%.0s' $(seq 1 80))" | wc -c | tr -d ' ')"
+assert_eq "activity-text: strips control bytes" "0" \
+    "$(_roster_activity_text "$(printf 'py\x1btest\x00')" | command grep -cP '[\x00-\x1f\x7f]' || true)"
 
 # session-shape: the SESSION NAME in status-left is user text in a tmux format context —
 # it must go through the format-literal escaper like the path does.

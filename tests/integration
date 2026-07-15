@@ -963,6 +963,78 @@ assert_eq "status-bar: watchdog stop/start leaves status-right byte-identical" \
 "$AE" end -f test-wd-own 2>/dev/null || true
 sleep 0.5
 
+# ── Test 11f: agent roster (@ae_agents_status) with a LIVE watchdog ──
+# The roster must be published by a real cycle (not just composable in a unit), must
+# track a declared state change, and must be UNSET on stop — a frozen roster asserting
+# a fleet that no longer exists is worse than no roster.
+REPO_ROST="$(setup_repo)"
+(cd "$REPO_ROST" && "$AE" --local test-roster &) 2>/dev/null
+wait_for_session "test-roster"
+ROSTD="$HOME/.ae/sessions/test-roster/watchdog"
+wd_poll "$ROSTD" "is running" 20 || true
+# Poll: the option appears once a cycle has judged the panes.
+rost=""
+for _i in $(seq 1 30); do
+    rost="$(tmux show-options -v -t test-roster @ae_agents_status 2>/dev/null || true)"
+    [[ -n "$rost" ]] && break
+    sleep 1
+done
+assert_eq "roster: live watchdog publishes @ae_agents_status" "1" \
+    "$([[ -n "$rost" ]] && echo 1 || echo 0)"
+# Names render WITHOUT the alias prefix, and each carries exactly one verdict glyph.
+assert_eq "roster: entry is '<name><glyph>' with no alias prefix" "1" \
+    "$([[ "$rost" =~ ^[^:]*[●✔⏳⛔◌⚡✖·⚙] ]] && echo 1 || echo 0)"
+assert_eq "roster: no alias prefix leaks into the bar" "1" \
+    "$([[ "$rost" != *:* ]] && echo 1 || echo 0)"
+# A declared 'done' must surface as ✔ — proves the roster reads the SAME verdicts the
+# cycle already reaches, rather than re-deriving state of its own.
+# The declaration must come FROM the agent's pane: `state` resolves its actor via
+# ae_current_agent_ref -> #{@ae_agent} of TMUX_PANE, and _agent_quiet_reason only honours
+# an agent's OWN declaration. Run from this test shell it would log actor=human and be
+# correctly ignored — so set TMUX_PANE to the agent's pane and drive the real helper
+# (no forged event: this is the same code path the agent itself runs).
+ROST_PANE="$(tmux list-panes -s -t test-roster -F '#{pane_id} #{@ae_agent}' 2>/dev/null \
+    | grep -v '_watchdog\|_events' | grep -E ' .+$' | head -1 | cut -d' ' -f1)"
+assert_eq "roster: resolved an agent pane to declare from" "1" \
+    "$([[ -n "$ROST_PANE" ]] && echo 1 || echo 0)"
+# The watchdog cycles every AE_WATCHDOG_INTERVAL_SEC (default 60) and that env does NOT
+# reach a tmux-spawned pane, so waiting for the NEXT cycle would mean a ~60s sleep here.
+# Instead: stop, declare, restart. The verdict is derived from the EVENT LOG (durable),
+# not from in-memory state, so the restarted watchdog's FIRST cycle already sees the
+# declaration — same code path, seconds instead of a minute.
+"$ROSTD" stop >/dev/null 2>&1 || true
+wd_poll "$ROSTD" "not running" 20 || true
+TMUX_PANE="$ROST_PANE" "$HOME/.ae/sessions/test-roster/state" "done" "roster integration probe" >/dev/null 2>&1 || true
+"$ROSTD" start >/dev/null 2>&1 &
+wd_poll "$ROSTD" "is running" 20 || true
+rost_done=""
+for _i in $(seq 1 30); do
+    rost_done="$(tmux show-options -v -t test-roster @ae_agents_status 2>/dev/null || true)"
+    [[ "$rost_done" == *"✔"* ]] && break
+    sleep 1
+done
+assert_eq "roster: a declared done agent renders ✔" "1" \
+    "$([[ "$rost_done" == *"✔"* ]] && echo 1 || echo 0)"
+# status-format[1] carries identity + activity + roster.
+rost_fmt="$(tmux show-options -v -t test-roster 'status-format[1]' 2>/dev/null || true)"
+assert_eq "roster: line 1 wires identity, activity and the roster" "1" \
+    "$([[ "$rost_fmt" == *'#{@ae_agent}'* && "$rost_fmt" == *'#{@ae_activity}'* \
+        && "$rost_fmt" == *'#{@ae_agents_status}'* ]] && echo 1 || echo 0)"
+# Line 0 must still render (array-shadowing regression guard, now with [1] extended).
+rost_line0="$(tmux display-message -p -t test-roster:0 '#{T:status-format[0]}' 2>/dev/null || true)"
+assert_eq "roster: line 0 still renders non-empty alongside the extended line 1" "1" \
+    "$([[ -n "$rost_line0" && "$rost_line0" == *"test-roster"* ]] && echo 1 || echo 0)"
+# Stop clears it — both the session option and the per-pane activity.
+"$ROSTD" stop >/dev/null 2>&1 || true
+wd_poll "$ROSTD" "not running" 20 || true
+sleep 0.5
+assert_eq "roster: @ae_agents_status unset on watchdog stop (no frozen fleet)" "" \
+    "$(tmux show-options -v -t test-roster @ae_agents_status 2>/dev/null || true)"
+assert_eq "roster: per-pane @ae_activity unset on watchdog stop" "" \
+    "$(tmux list-panes -s -t test-roster -F '#{@ae_activity}' 2>/dev/null | tr -d '\n')"
+"$AE" end -f test-roster 2>/dev/null || true
+sleep 0.5
+
 # ── goal helper: set → list → survives resume ────────────────────────
 REPO_GOAL="$(setup_repo)"
 (cd "$REPO_GOAL" && "$AE" --local goaltest &) 2>/dev/null
