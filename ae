@@ -603,7 +603,7 @@ _ae_apply_status_bar() {
     # each cycle, empty/unset when the watchdog is off). Agents live across multiple
     # windows and this bar renders in every one, so the whole org is visible from any
     # window. Right-aligned so it never collides with the left-aligned focused identity.
-    "${_t[@]}" set-option -t "$session" 'status-format[1]' '#[align=left] #{@ae_agent} #{@ae_activity}#[align=right]#{@ae_agents_status} ' 2>/dev/null || true
+    "${_t[@]}" set-option -t "$session" 'status-format[1]' '#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} ' 2>/dev/null || true
 }
 
 # Build ae workspace context string (shared by inject_ae_context and initial prompt fallback)
@@ -7978,16 +7978,7 @@ _watchdog_stop() {
         kill "$pid" 2>/dev/null || true
         rm -f "$PIDFILE"
         # Clear the live status user options so the bars fall back (left → just path).
-        tmux set-option -t "$_AE_SESSION" -u @ae_branch_status 2>/dev/null || true
-        tmux set-option -t "$_AE_SESSION" -u @ae_branch_name 2>/dev/null || true
-        tmux set-option -t "$_AE_SESSION" -u @ae_watchdog_status 2>/dev/null || true
-        tmux set-option -t "$_AE_SESSION" -u @ae_agents_status 2>/dev/null || true
-        # @ae_activity is a PANE option: it outlives the daemon (it dies with the pane),
-        # so a stopped watchdog would freeze a stale "pytest" on every agent pane.
-        while read -r _act_pane; do
-            [[ -n "$_act_pane" ]] || continue
-            tmux set-option -p -t "$_act_pane" -u @ae_activity 2>/dev/null || true
-        done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}' 2>/dev/null || true)
+        _watchdog_clear_bar_options
         # Kill only the _watchdog pane; leave the _events pane and monitor window alive.
         local watchdog_pane
         watchdog_pane="$(_monitor_find_pane _watchdog)"
@@ -8222,6 +8213,18 @@ _watchdog_branch_segment() {
 # Cleared on exit so the bars fall back cleanly (left → just the path).
 _watchdog_set_status() { tmux set-option -t "$_AE_SESSION" "$1" "$2" 2>/dev/null || true; }
 
+# Single owner of "put the bars back": called from BOTH the EXIT trap and `watchdog
+# stop`, so the two paths cannot drift apart (they already listed the session options
+# twice). Verified: bash DOES run an EXIT trap on SIGTERM, so this is the reliable path
+# — `watchdog stop` kills the pid and the dying watchdog clears up after itself.
+_watchdog_clear_bar_options() {
+    local _o
+    for _o in @ae_branch_status @ae_branch_name @ae_watchdog_status @ae_agents_status; do
+        tmux set-option -t "$_AE_SESSION" -u "$_o" 2>/dev/null || true
+    done
+    return 0
+}
+
 # ── Agent roster (@ae_agents_status, status-format[1] right side) ────
 # Agents live across MULTIPLE WINDOWS, but the status bar renders in every one — so a
 # per-agent roster gives whole-org visibility from wherever you happen to be looking.
@@ -8236,25 +8239,17 @@ _watchdog_set_status() { tmux set-option -t "$_AE_SESSION" "$1" "$2" 2>/dev/null
 # input-region sensor (_capture_input_region) is consumed by the watchdog. Deliberately
 # NOT in v1 — the sensor does not exist here yet, and a glyph we cannot source from a
 # real verdict would be exactly the dishonesty this design forbids.
-# $1 = verdict, $2 = non-empty when a live subprocess was detected under the pane.
-# ⚙ OVERRIDES the two verdicts INFERRED from the pane hash (active, stale) and nothing
-# else. That precedence is the whole point: the pain case — a pane running a long test
-# suite — produces NO output, so the hash never moves and the cycle judges it STALE. A
-# ⚙ that only replaced ● would leave exactly that case rendering ◌ and would ship
-# without fixing what it was built for. It must never mask the stronger evidence:
-# declared states (done/waiting-user/blocked) are the agent's own word, and
-# dead/throttled are directly observed — "a child process exists" outranks none of them
-# (a dead agent's orphaned child must not read as ⚙).
+# SUBPROCESS ACTIVITY (⚙) IS DELIBERATELY ABSENT — see the roster memo. The mechanical
+# "is a non-shell descendant alive?" sensor cannot carry the meaning it was meant to.
+# Measured on a live claude pane: uv, npm, python, chrome-devtools, codebase-memory and
+# two MainThread children had all been alive for 4h38m. Those are PERSISTENT MCP
+# services, so the sensor answers "yes" permanently — an agent would render ⚙ forever
+# and could NEVER show ◌, masking exactly the stuck agents this bar exists to surface.
+# Existence of a child is not evidence of work. A real sensor must measure ACTIVITY
+# (e.g. CPU-time delta for the subtree between cycles, which idle MCP servers do not
+# accrue); that is its own slice, not a glyph bolted onto this one.
 _roster_glyph() {
-    local verdict="$1" busy="${2:-}"
-    if [[ -n "$busy" ]]; then
-        case "$verdict" in
-            active | stale)
-                printf '⚙'
-                return 0
-                ;;
-        esac
-    fi
+    local verdict="$1"
     case "$verdict" in
         dead) printf '✖' ;;
         done) printf '✔' ;;
@@ -8267,63 +8262,6 @@ _roster_glyph() {
         # decide" would manufacture a liveness claim out of a gap in our own logic.
         *) printf '·' ;;
     esac
-    return 0
-}
-
-# Newest non-shell descendant of $2 (a pane pid), excluding the agent binary $3 itself.
-# $1 is a `ps -eo pid=,ppid=,comm=` snapshot, passed in so this stays a PURE function
-# over text — one snapshot per cycle, N cheap walks, and unit-testable without spawning
-# processes. Empty when the pane holds only the agent and its shells.
-#
-# "Newest" is approximated by highest pid — a proxy, not a truth (pid wraparound on a
-# long-lived box can invert it). It only decides WHICH child to name when several run;
-# the ⚙ glyph itself only needs "any", so a wrong pick mislabels text, never liveness.
-# Shell-only descendants deliberately yield EMPTY rather than the brief's "shell's
-# newest child cmdline word 0": for `sh -c "sleep 300"` that word is "sh", which tells
-# a reader nothing. The real leaf (sleep/pytest/cargo) is a child of that shell and the
-# tree walk already finds it — so the fallback would only ever fire to print noise.
-_roster_leaf_cmd() {
-    local snap="$1" root="$2" self_bin="${3:-}"
-    [[ -n "$root" ]] || return 0
-    printf '%s\n' "$snap" | awk -v root="$root" -v self="$self_bin" '
-        { pid[$1]=$1; parent[$1]=$2; comm[$1]=$3; order[++n]=$1 }
-        END {
-            desc[root]=1
-            # ps output is not topologically ordered — iterate to a fixpoint so a child
-            # listed before its parent is still reached.
-            changed=1
-            while (changed) {
-                changed=0
-                for (i=1; i<=n; i++) {
-                    p=order[i]
-                    if (!desc[p] && desc[parent[p]]) { desc[p]=1; changed=1 }
-                }
-            }
-            best=""; bestpid=0
-            for (i=1; i<=n; i++) {
-                p=order[i]
-                if (p==root || !desc[p]) continue
-                c=comm[p]
-                if (c=="bash" || c=="sh" || c=="zsh" || c=="fish" || c=="dash") continue
-                if (self != "" && c==self) continue
-                if (best=="" || p+0 > bestpid+0) { best=c; bestpid=p+0 }
-            }
-            if (best != "") printf "%s", best
-        }
-    ' || true
-    return 0
-}
-
-# Bar segment, not a log line: strip control bytes (a pane option interpolates
-# literally, so # and % are safe, but a control byte would corrupt the bar) and cap the
-# width so a long argv cannot push the roster off the right edge.
-_roster_activity_text() {
-    local s
-    s="$(printf '%s' "$1" | tr -d '\000-\037\177')"
-    # Slice with parameter expansion, not `cut` — cut appends a trailing newline, and a
-    # pure function must return exactly its value (callers here use $(), which would
-    # hide it, but the next caller might not).
-    printf '%s' "${s:0:40}"
     return 0
 }
 
@@ -8342,10 +8280,10 @@ _roster_label() {
 # stdin: '<agent>\t<verdict>' rows -> 'lead● colead✔ builder◌'. Input order is the
 # render order, so the roster is stable cycle-to-cycle rather than reshuffling.
 _roster_compose() {
-    local out="" agent verdict busy
-    while IFS=$'\t' read -r agent verdict busy; do
+    local out="" agent verdict
+    while IFS=$'\t' read -r agent verdict; do
         [[ -n "$agent" ]] || continue
-        out+="${out:+ }$(_roster_label "$agent")$(_roster_glyph "$verdict" "$busy")"
+        out+="${out:+ }$(_roster_label "$agent")$(_roster_glyph "$verdict")"
     done
     printf '%s' "$out"
     return 0
@@ -8510,7 +8448,7 @@ helper_watchdog_main() {
     # --- _run: the actual watchdog (runs inside hidden tmux window) ---
 
     echo "$$" >"$PIDFILE"
-    trap 'rm -f "$PIDFILE"; tmux set-option -t "$_AE_SESSION" -u @ae_branch_status 2>/dev/null; tmux set-option -t "$_AE_SESSION" -u @ae_branch_name 2>/dev/null; tmux set-option -t "$_AE_SESSION" -u @ae_watchdog_status 2>/dev/null; tmux set-option -t "$_AE_SESSION" -u @ae_agents_status 2>/dev/null' EXIT
+    trap 'rm -f "$PIDFILE"; _watchdog_clear_bar_options' EXIT
     _watchdog_set_status @ae_watchdog_status "[watch ◌ starting]"
     _watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"
 
@@ -8562,10 +8500,7 @@ helper_watchdog_main() {
         # per pane. Reset every cycle — a verdict is only ever THIS cycle's decision,
         # never a leftover from the previous one.
         declare -A roster_verdict=()
-        declare -A roster_busy=()
         roster_order=()
-        # ONE process snapshot per cycle, walked N times below — not N ps calls.
-        roster_ps="$(ps -eo pid=,ppid=,comm= 2>/dev/null || true)"
         while IFS='|' read -r pane agent proc pane_pid_val; do
             [[ -n "$agent" ]] || continue
             # Skip non-agent panes (no @ae_agent), the watchdog (and legacy monitor panes), and the events pane
@@ -8575,14 +8510,6 @@ helper_watchdog_main() {
             live_agents["$agent"]="$pane"
             roster_order+=("${pane}"$'\t'"${agent}")
             cycle_total=$((cycle_total + 1))
-            # Subprocess activity: a live non-shell descendant is mechanical evidence of
-            # work the pane-hash heuristic cannot see (a test suite prints nothing until
-            # it finishes). Published PER PANE — status-format[1] renders per window and
-            # resolves #{@ae_activity} against THAT window's active pane, so a session
-            # option would show every window the same (wrong) agent's activity.
-            roster_leaf="$(_roster_leaf_cmd "$roster_ps" "$pane_pid_val" "${agent_bins[$agent]:-${agent%%:*}}")"
-            roster_busy["$pane"]="$roster_leaf"
-            tmux set-option -p -t "$pane" @ae_activity "$(_roster_activity_text "$roster_leaf")" 2>/dev/null || true
 
             # Skip already-dead agents
             if [[ -n "${dead_agents[$pane]:-}" ]]; then
@@ -9002,8 +8929,7 @@ helper_watchdog_main() {
         if ((${#roster_order[@]} > 0)); then
             roster="$(
                 for roster_row in "${roster_order[@]}"; do
-                    roster_p="${roster_row%%$'\t'*}"
-                    printf '%s\t%s\t%s\n' "${roster_row#*$'\t'}" "${roster_verdict[$roster_p]:-}" "${roster_busy[$roster_p]:-}"
+                    printf '%s\t%s\n' "${roster_row#*$'\t'}" "${roster_verdict[${roster_row%%$'\t'*}]:-}"
                 done | _roster_compose
             )"
         fi
@@ -9970,8 +9896,8 @@ WDPROLOGUE
             _watchdog_reap_legacy _watchdog_stop _watchdog_status \
             _watchdog_start _last_event_age _latest_relevant_event _agent_quiet_reason \
             _quiet_pane_decision _watchdog_meta_value _watchdog_trim _watchdog_git \
-            _watchdog_branch_segment _watchdog_set_status _watchdog_log _pane_has_descendant_named \
-            _roster_glyph _roster_label _roster_compose _roster_leaf_cmd _roster_activity_text \
+            _watchdog_branch_segment _watchdog_set_status _watchdog_clear_bar_options _watchdog_log _pane_has_descendant_named \
+            _roster_glyph _roster_label _roster_compose \
             _buf_shows_throttle _pane_shows_throttle _load_agent_bins helper_watchdog_main
         printf 'helper_watchdog_main "$@"\n'
     } >"${AE_META}/watchdog.tmp.$$"

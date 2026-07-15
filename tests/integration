@@ -1017,9 +1017,8 @@ assert_eq "roster: a declared done agent renders ✔" "1" \
     "$([[ "$rost_done" == *"✔"* ]] && echo 1 || echo 0)"
 # status-format[1] carries identity + activity + roster.
 rost_fmt="$(tmux show-options -v -t test-roster 'status-format[1]' 2>/dev/null || true)"
-assert_eq "roster: line 1 wires identity, activity and the roster" "1" \
-    "$([[ "$rost_fmt" == *'#{@ae_agent}'* && "$rost_fmt" == *'#{@ae_activity}'* \
-        && "$rost_fmt" == *'#{@ae_agents_status}'* ]] && echo 1 || echo 0)"
+assert_eq "roster: line 1 wires identity and the roster" "1" \
+    "$([[ "$rost_fmt" == *'#{@ae_agent}'* && "$rost_fmt" == *'#{@ae_agents_status}'* ]] && echo 1 || echo 0)"
 # Line 0 must still render (array-shadowing regression guard, now with [1] extended).
 rost_line0="$(tmux display-message -p -t test-roster:0 '#{T:status-format[0]}' 2>/dev/null || true)"
 assert_eq "roster: line 0 still renders non-empty alongside the extended line 1" "1" \
@@ -1030,8 +1029,6 @@ wd_poll "$ROSTD" "not running" 20 || true
 sleep 0.5
 assert_eq "roster: @ae_agents_status unset on watchdog stop (no frozen fleet)" "" \
     "$(tmux show-options -v -t test-roster @ae_agents_status 2>/dev/null || true)"
-assert_eq "roster: per-pane @ae_activity unset on watchdog stop" "" \
-    "$(tmux list-panes -s -t test-roster -F '#{@ae_activity}' 2>/dev/null | tr -d '\n')"
 "$AE" end -f test-roster 2>/dev/null || true
 sleep 0.5
 
