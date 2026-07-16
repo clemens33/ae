@@ -72,10 +72,12 @@ CalVer in `YYYY.MM.BUILD` format. `just release` is the full pipeline:
 Significant changes go through cross-model review before commit. From a Claude Code session in the repo:
 
 ```bash
-codex exec --full-auto -o .local/cross-review.md "Review uncommitted changes critically..."
+codex exec --sandbox read-only -o .local/cross-review.md "Review uncommitted changes critically..."
 ```
 
 Or from Codex, call Claude. The point is that any meaningful diff gets a second pair of eyes from a different model architecture. See `AGENTS.md` for the full protocol.
+
+Review invocations run **read-only** — a `--full-auto` reviewer is a tree mutator (one reverted an in-flight fix while "probing" pre-fix behavior). Reserve write access for explicitly authorized workers in isolated checkouts.
 
 ## Philosophy reminders
 

@@ -1,10 +1,11 @@
 # Design patterns — coordination without a coordinator
 
-Distilled 2026-07-07 by the phase-3 session lead (Fable 5). These are the patterns
-behind the aewatch phase-3 design rulings — how independent processes (bash watchdogs,
-a Python sidecar, tmux sessions, revive hooks) coordinate safely with no central
-broker. Each earned its place by surviving adversarial review; several were carved
-by it. Companion: `gatekeeping.md` (how to review against these).
+Distilled 2026-07-07 by the phase-3 session lead (Fable 5); patterns 11–13 added
+2026-07-16 from the input-region campaign retro. These are the patterns behind ae's
+design rulings — how independent processes (bash watchdogs, a Python sidecar, tmux
+sessions, revive hooks) and agents coordinate safely with no central broker. Each
+earned its place by surviving adversarial review; several were carved by it.
+Companion: `gatekeeping.md` (how to review against these).
 
 ## 1. Ownership is a durable fact, never process state
 
@@ -132,3 +133,70 @@ model. The corollary is the review rule: **a guard that cannot fail is decoratio
 
 Prose doctrine (like this file) is the fallback for what guards can't encode: name the
 principle, cite the lived exhibit, and keep it one-sitting readable.
+
+## 11. The delivery ladder — push beats pull; verify the effect
+
+Inter-agent delivery has no ack in the substrate: a paste can stage unsent while the
+sender's helper reports success. Rank the channels by what can eat them, and never
+treat a send's own report as evidence:
+
+1. **memo** — durable, cannot be eaten. First for anything that matters.
+2. **short pointer via `send`** (<400 chars) — long sends chunk into
+   `[Pasted Content N chars]` tokens and rot; the remainder leaks as literal text.
+3. **`interrupt`** — clears staged junk *and* delivers. The reliable rung when the
+   input already holds debris.
+4. **`say`** — for the human on Telegram; pane output does not reach them.
+
+Verify by `peek`: neither the success event nor the ledger's "pending" is evidence.
+
+But memo-first is not memo-only. **Memos are PULL; sends are PUSH — a pull-only
+handback is invisible.** A worker that memo'd its results, declared done, and never
+sent a pointer left its lead waiting on work that already existed; the human had to
+bridge. A handback is incomplete until a pointer-send is *delivered* — bounded retry,
+else `state blocked: undelivered handback to <agent>`. Never `done` with an
+unacknowledged handback. Observed same-day in two sessions and two model families:
+a model-behavior pattern, not a one-off.
+
+*Exhibit:* five silent-loss occurrences in the 2026-07 campaign, three inside the
+very slice fixing them; the ladder's rung 3 recovered every one.
+
+## 12. One sensor, shared by every caller
+
+Pattern 2's read-side sibling. Pattern 2 puts one guard at the chokepoint N paths
+flow through. When N callers each answer *the same question about the world*, they
+must call one sensor — or they drift and disagree, and the newest caller is the one
+that is wrong.
+
+*Exhibit:* the send path used the structural input-region predicate; `_spawn` kept
+its own `❯|bypass permissions|for shortcuts` marker grep. They disagreed on exactly
+one real state — the trust dialog — and spawn pasted a worker's brief into a modal,
+producing a launched, brief-less worker: the same silent-loss class the sensor
+existed to kill. Fix: `_spawn_input_ready` routes modeled tools through the same
+predicate, so spawn can no longer disagree with it.
+
+*The nuance that makes it honest:* unmodeled tools keep their marker probe — the
+shared sensor calls them safe unconditionally, so routing them through it would mean
+"ready the instant the pane exists", i.e. the boot-gap paste the poll exists to
+prevent. Share the sensor where it *models* the tool; do not share it into a lie.
+
+## 13. A brief is a hypothesis; evidence outranks it
+
+A brief that names a mechanism is the lead's *belief*, not an instruction to make
+that mechanism true. The worker owes the lead evidence, not compliance — and
+disproving a brief is a first-class deliverable.
+
+*Exhibit:* a worker briefed "a no-change sweep skips the state-file write → mtime
+stales → false alert" verified two ways — code (the write is unconditional) and
+empirical (two byte-identical sweeps; mtime advanced) — and disproved it, making no
+fix, because the briefed fix would have *masked real outages*: the "spurious" alert
+was a true positive from the only working detector. Lead ruling: never execute a
+lead's hypothesis against evidence.
+
+*The residue is the point:* the proof lives in the two probes (the code read and the
+empirical mtime check); five regression tests now pin the contract the disproof
+rested on, so it stays true. **A disproof that leaves no guard behind will be
+re-briefed.**
+
+*Corollary — history carries the why.* When evidence kills a feature, ship the build
+and the cut as two commits (`5a2e6a4` feat + `4f63c19` cut), so the history carries
+*why* it died, not just that it is absent.

@@ -45,9 +45,10 @@ days you are tired, rushed, or running on a smaller model.
 
 ## The failure taxonomy
 
-Nine confirmed holes from one slice family (s18/s19), generalized. Use as a diff-read
-checklist — each maps to a question above, and each shipped past a builder *and* a
-reviewer at least once before being caught.
+Confirmed holes from two campaigns — the s18/s19 slice family (phase 3) and the
+2026-07 input-region/spawn campaign — generalized. Use as a diff-read checklist:
+most map to a question in the protocol above, and each shipped past a builder *and*
+a reviewer at least once before being caught.
 
 | Class | The hole | The question that finds it |
 |---|---|---|
@@ -61,6 +62,25 @@ reviewer at least once before being caught.
 | Coupled cadences (B7b) | One wait drives both liveness upkeep and component work; capping one over-drives the other | Which timer drives which concern? Does each component self-gate on its own due time? |
 | Skip-path resets (B8/B9) | Skip/stale/resume paths bypass a safety step or reset a safety counter | Walk every early-return: what safety action does it skip, what state does it wrongly reset? |
 | Default-mode violation (s18) | The unset/default path breaks the non-negotiable while all tests pass | Did *you* prove default zero-diff on a live system, not just in fixtures? |
+| Completion without delivery | The success surface (stdout, event, ledger, report) asserts an outcome no branch proved; the failure branch printed and fell through | For each success line/event/return: which branch *proved* the effect landed? Is "pane created" being reported as "task assigned"? |
+| Wrong-direction bound | A bound/threshold has two error directions; the code fails toward the silent, destructive one | Name **both** error directions for this bound. Which one is silent? Does the code fail toward the loud one? |
+| Marker-grep as state | A substring is treated as evidence of a state; something else renders the same substring | What else can render that marker? Is the state decided by a structural predicate, or by a coincidence of text? |
+| Unrepresentative fixture | The fixture's world does not match the live world; the code is correct about the fixture and wrong about reality | Has this predicate been run against a **real specimen** of what it senses — and does the real one look like the fixture? |
+| Stale fixture | A fixture built for an older contract keeps passing after the contract moved; it now tests only itself | When a primitive's contract changed, which fixtures encode the **old** one? Does each still describe what the code now receives? |
+| Ambient-derived identity | A recorded fact about *who acted* is inferred from ambient context that belongs to someone else | For every fact the code records about an actor, is it from a positively-owned signal, or from whatever the environment happened to hold? |
+| Scope-shadowing override | Setting one index/key at a narrower scope replaces the whole container, silently dropping inherited entries | When you narrow scope to set one element, does the narrow scope **inherit** the container or **replace** it? |
+
+Notes on the 2026-07 rows: *completion without delivery* is distinct from B1 —
+B1 is a caller ignoring a returned failure; here the rc was captured and printed and
+control still fell through to a positive report (helper `send`, watchdog sweep-nudge,
+`_cmd_spawn` fixed `6fee8e4`, and worker memo-only handbacks — four independent
+layers). *Wrong-direction bound* sharpens protocol step 5 for bounds where both
+directions are failures: false IDLE clobbers a human's unsent draft (silent), false
+OCCUPIED defers forever (loud) — three designs were rejected for failing silent.
+*Unrepresentative fixture* is kin to the s18 row but asks whether the fixture's world
+matches reality at all (the `⚙` sensor was green against a dummy-`sleep` fixture;
+real agent subtrees hold persistent MCP services, so it could never go dark — feature
+cut on the evidence, `4f63c19`).
 
 ## Verification mechanics
 
@@ -77,6 +97,14 @@ reviewer at least once before being caught.
 - **Source anchors decay.** `file:NNNN` citations in fixtures/plans are shape-checked
   by machine, semantically checked by nobody. Re-verify anchors by hand after any
   edit to the anchored file.
+- **A green suite is not evidence a probe would pass.** Four times in one campaign a
+  test was green while testing the wrong thing: a fixture built for a superseded
+  contract (`c661b48`), fixtures whose bytes were never real (an encoder had turned
+  spaces into NBSP), source-text asserts that pinned an error string while the
+  function still returned success, and a `set -e` abort masked by every call shape
+  the suite used. When a test asserts *about* the code (source text, a fixture's own
+  content) rather than *driving* it, name that out loud — it pins spelling, not
+  behavior.
 
 ## Verdict discipline
 
