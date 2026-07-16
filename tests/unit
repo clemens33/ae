@@ -28,7 +28,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_roster_glyph|_roster_label|_roster_compose|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -1772,6 +1772,116 @@ assert_eq "roster: ⚙ is never emitted, and the reason is recorded in-source" "
         && "$AE_SOURCE" == *'Existence of a child is not evidence of work'* \
         && "$AE_SOURCE" == *'4h38m'* ]] && echo 1 || echo 0)"
 assert_eq "roster: glyph takes ONE argument (no subprocess override path)" "◌" "$(_roster_glyph stale busy)"
+
+# ── roster-completeness: registered keying, steward, per-window ──────
+# BARE-CALL ERREXIT PROBE (AGENTS.md "only a BARE call proves set -e safety"): every
+# assertion in this file reaches these functions through $(…) inside assert_eq, which
+# MASKS a nonzero return — a fully green suite proves nothing about errexit. The
+# generated watchdog runs `set -uo pipefail`, but `ae` itself runs `set -euo pipefail`
+# and these are ae-level functions, so a bare call under errexit is a real caller shape.
+# Probe each one bare, in that shape, and fail loudly if it aborts.
+_roster_bare_probe() { # -> ok | aborted:<fn>
+    local out rc=0
+    out="$(bash -c '
+        set -euo pipefail
+        eval "$(awk "/^(_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose)\(\) \{/{p=1} p{print} p&&/^\}\$/{p=0}" "$1")"
+        meta="$(mktemp)"; printf "agent.main=a:lead:sid\nagent.worker.0=b:w1:sid\n" > "$meta"
+        # BARE calls — no $(…), no ||, no if. Statement position is the only shape that
+        # lets a nonzero status abort, which is exactly what we are testing for.
+        _roster_glyph active
+        _roster_glyph ""
+        _roster_glyph bogus
+        _roster_label "x:y"
+        _roster_label "nocolon"
+        printf "a:b\tactive\n" | _roster_compose
+        printf "" | _roster_compose
+        _roster_slot_refs "$meta"
+        _roster_slot_refs /nonexistent/meta
+        printf "0\t●\n" | _roster_window_compose
+        printf "" | _roster_window_compose
+        rm -f "$meta"
+        printf ok
+    ' _ "$(dirname "$0")/../ae" 2>&1)" || rc=$?
+    ((rc == 0)) || {
+        printf 'aborted:rc=%s:%s' "$rc" "${out: -40}"
+        return 0
+    }
+    printf 'ok'
+    return 0
+}
+assert_eq "roster: every _roster_* fn survives a BARE call under set -euo pipefail" "ok" \
+    "$(_roster_bare_probe)"
+
+# REGISTERED-AGENT KEYING — the roster is keyed by the agents meta REGISTERS, not by the
+# panes that happen to be alive. A registered agent whose pane is MISSING must render a
+# failure glyph; previously it silently VANISHED from the bar, which reads as "fine".
+_rc_meta="$(mktemp)"
+printf 'session=x\nagent.main=fable5:lead:734f2f3e\nagent.worker.0=gpt56sol:colead:019f5f6f\nagent.worker.1=opus48:builder:1f2539a2\nagent.spawned.0=grokbuild:grok:pending\n' > "$_rc_meta"
+assert_eq "roster: slot refs are read from meta in main→worker→spawned order" \
+    "fable5:lead gpt56sol:colead opus48:builder grokbuild:grok" \
+    "$(_roster_slot_refs "$_rc_meta" | tr '\n' ' ' | sed 's/ $//')"
+# The session id is stripped by FIELD (cut -d: -f1,2), not by suffix: '${v%:*}' on a
+# sid-less 'alias:name' would silently yield just 'alias'.
+_rc_meta2="$(mktemp)"; printf 'agent.main=alias:name\nagent.worker.0=a:b:\n' > "$_rc_meta2"
+assert_eq "roster: a sid-less slot keeps alias:name (field strip, not suffix strip)" \
+    "alias:name a:b" "$(_roster_slot_refs "$_rc_meta2" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "roster: non-agent meta lines are ignored" "1" \
+    "$([[ "$(_roster_slot_refs "$_rc_meta" | command grep -c '^session=' || true)" == "0" ]] && echo 1 || echo 0)"
+assert_eq "roster: a missing meta file yields nothing (not an abort)" "" "$(_roster_slot_refs /nonexistent/meta)"
+rm -f "$_rc_meta2"
+# A registered agent with no live pane renders ✖ — same class the watchdog's own
+# missing-pane alert uses (_agent_alert_reason maps *missing* to the dead rank).
+assert_eq "roster: registered agent with a MISSING pane renders ✖, never vanishes" "✖" "$(_roster_glyph missing)"
+assert_eq "roster: publisher composes from registered slots, not live panes" "1" \
+    "$([[ "$AE_SOURCE" == *'_roster_slot_refs "$META_DIR/meta"'* ]] && echo 1 || echo 0)"
+# The whole point: a 3-agent org where one pane died still shows THREE agents.
+assert_eq "roster: a dead-pane agent still occupies its slot in the line" "lead● colead✖ builder◌" \
+    "$(printf 'fable5:lead\tactive\ngpt56sol:colead\tmissing\nopus48:builder\tstale\n' | _roster_compose)"
+
+# STEWARD GLYPH — the meta-agent cadence branch `continue`d without assigning a verdict,
+# so the steward always rendered '·' (the neutral "we did not decide"). It IS decided:
+# the branch already computes heartbeat freshness against the wedge window.
+# 👁 = swept recently (heartbeat fresh) — an honest reading of the aemonitor state file,
+# not a claim the steward is "working". ◌ = past the grace window without a heartbeat,
+# which is exactly what the existing wedge alert calls "not sweeping". '·' while still
+# inside the grace window with no heartbeat yet: undecided, and we say so.
+assert_eq "roster: steward sweeping (fresh heartbeat) renders 👁" "👁" "$(_roster_glyph meta-sweeping)"
+assert_eq "roster: steward past grace with no heartbeat renders ◌ (matches 'not sweeping')" "◌" \
+    "$(_roster_glyph meta-wedged)"
+assert_eq "roster: steward inside the grace window is neutral, not a liveness claim" "·" \
+    "$(_roster_glyph meta-starting)"
+assert_eq "roster: the cadence branch assigns a verdict (no more silent '·')" "1" \
+    "$([[ "$AE_SOURCE" == *'roster_verdict["$pane"]="meta-sweeping"'* \
+        && "$AE_SOURCE" == *'roster_verdict["$pane"]="meta-wedged"'* \
+        && "$AE_SOURCE" == *'roster_verdict["$pane"]="meta-starting"'* ]] && echo 1 || echo 0)"
+
+# PER-WINDOW GLYPHS — agents map to windows spatially; the window list is where the eye
+# already goes. Glyph order within a window follows PANE order (stable, not re-sorted).
+assert_eq "window: groups glyphs by window index, pane order preserved" \
+    $'0\t●●\n1\t⚙◌\n99\t' \
+    "$(printf '0\t●\n0\t●\n1\t⚙\n1\t◌\n99\t\n' | _roster_window_compose)"
+assert_eq "window: a single-pane window emits its one glyph" $'3\t✔' "$(printf '3\t✔\n' | _roster_window_compose)"
+assert_eq "window: empty input emits nothing" "" "$(printf '' | _roster_window_compose)"
+# Published per WINDOW (-w), so each window's status entry carries its own agents.
+assert_eq "window: publisher sets a window-scoped @ae_window_status" "1" \
+    "$([[ "$AE_SOURCE" == *'set-option -w -t "${_AE_SESSION}:${_w_idx}" @ae_window_status'* ]] && echo 1 || echo 0)"
+# window-status-format is USER-THEMING territory: ae owns it inside its own sessions.
+# #F (the window flags) must survive — dropping them would silently eat tmux's own
+# zoom/activity/current markers.
+assert_eq "window: format keeps #I:#W, the roster option, and #F flags" "1" \
+    "$([[ "$AE_SOURCE" == *"window-status-format '#I:#W#{@ae_window_status}#F'"* \
+        && "$AE_SOURCE" == *"window-status-current-format '#I:#W#{@ae_window_status}#F'"* ]] && echo 1 || echo 0)"
+# Same array-shadowing family as status-format[0]/[1]: these are session-scope writes,
+# so assert they are set on the SESSION, not globally (a global write would leak into
+# the user's other tmux sessions and is exactly the theme collision we must not cause).
+assert_eq "window: formats are session-scoped (never global — no theme leak)" "1" \
+    "$([[ "$AE_SOURCE" == *'set-option -t "$session" window-status-format'* \
+        && "$AE_SOURCE" == *'set-option -t "$session" window-status-current-format'* \
+        && "$AE_SOURCE" != *'set-option -g window-status-format'* ]] && echo 1 || echo 0)"
+# Cleanup: window options are WINDOW-scoped — a session -u never touches them, so a
+# stopped watchdog would freeze glyphs in the window list forever.
+assert_eq "window: @ae_window_status cleared per window by the shared cleanup owner" "1" \
+    "$([[ "$AE_SOURCE" == *'tmux set-option -w -t "${_AE_SESSION}:${_wi}" -u @ae_window_status'* ]] && echo 1 || echo 0)"
 
 # session-shape: the SESSION NAME in status-left is user text in a tmux format context —
 # it must go through the format-literal escaper like the path does.

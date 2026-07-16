@@ -39,11 +39,26 @@ Names show in pane borders and are how agents address each other. Under `lead-pa
 the windows carry role names (`0:leads`, `1:workers`); under `lead-solo` window 0 keeps
 the session name and only window 1 is role-named (`workers`).
 
-The status bar reads `[ae <session>]  0:leads 1:workers 99:ae-monitor  [<path> <git>] [watch …]`
+The status bar reads `[ae <session>]  0:leads●● 1:workers◌ 99:ae-monitor  [<path> <git>] [watch …]`
 — session name left, the window list in the middle, path + git branch + watchdog health
 right. A second status line shows the focused pane's agent identity (pane borders only
 render in windows with two or more panes, so a lone agent would otherwise have no
-visible name).
+visible name), and on its right a roster of every registered agent:
+`lead● colead✔ builder◌ grok⚡`.
+
+The glyphs are the **watchdog's verdict** for each agent — never a claim about what an
+agent is "doing" (it cannot see that): `●` it saw the pane advance, `✔` declared done,
+`⏳` waiting on you, `⛔` blocked, `◌` stale/nudged, `⚡` throttled, `✖` dead or its pane
+is gone, `👁` the steward swept recently, `·` no verdict this cycle. The roster is keyed
+by the agents in session meta, so an agent whose pane vanished still holds its slot as
+`✖` rather than quietly disappearing from the line. The same glyphs appear per window in
+the window list, so attention maps onto the windows you already scan. Everything is
+watchdog-published and disappears when the watchdog is stopped.
+
+> **ae owns `window-status-format` inside its own sessions** (and `status-format[0]`/`[1]`,
+> `status-left`, `status-right`). If you theme tmux, note that ae overrides these at
+> **session scope** for the sessions it creates — your global config is untouched, and
+> tmux's own window flags (`#F`) are preserved. Nothing outside an ae session changes.
 
 ## Copy modes
 

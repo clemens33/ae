@@ -610,6 +610,18 @@ _ae_apply_status_bar() {
     # windows and this bar renders in every one, so the whole org is visible from any
     # window. Right-aligned so it never collides with the left-aligned focused identity.
     "${_t[@]}" set-option -t "$session" 'status-format[1]' '#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} ' 2>/dev/null || true
+    # WINDOW LIST: each window carries its own agents' verdict glyphs, so attention maps
+    # SPATIALLY onto the windows you already scan ('0:leads●● 1:workers⚙◌'). The
+    # right-side roster still answers WHO; this answers WHERE.
+    # @ae_window_status is a WINDOW-scoped user option (watchdog-published each cycle,
+    # empty/unset when it is off), interpolated literally like the others.
+    # OWNERSHIP: window-status-format is user-THEMING territory. ae deliberately owns it
+    # INSIDE its own sessions and writes it at SESSION scope only — a global write would
+    # leak ae's glyphs into every other tmux session the user runs. #F is preserved: it
+    # carries tmux's own zoom/activity/current markers, and dropping it would silently
+    # eat them.
+    "${_t[@]}" set-option -t "$session" window-status-format '#I:#W#{@ae_window_status}#F' 2>/dev/null || true
+    "${_t[@]}" set-option -t "$session" window-status-current-format '#I:#W#{@ae_window_status}#F' 2>/dev/null || true
 }
 
 # Build ae workspace context string (shared by inject_ae_context and initial prompt fallback)
@@ -8659,10 +8671,16 @@ _watchdog_set_status() { tmux set-option -t "$_AE_SESSION" "$1" "$2" 2>/dev/null
 # twice). Verified: bash DOES run an EXIT trap on SIGTERM, so this is the reliable path
 # — `watchdog stop` kills the pid and the dying watchdog clears up after itself.
 _watchdog_clear_bar_options() {
-    local _o
+    local _o _wi
     for _o in @ae_branch_status @ae_branch_name @ae_watchdog_status @ae_agents_status; do
         tmux set-option -t "$_AE_SESSION" -u "$_o" 2>/dev/null || true
     done
+    # @ae_window_status is WINDOW-scoped: a session -u never touches it, so a stopped
+    # watchdog would freeze glyphs in the window list forever. Clear each window.
+    while read -r _wi; do
+        [[ -n "$_wi" ]] || continue
+        tmux set-option -w -t "${_AE_SESSION}:${_wi}" -u @ae_window_status 2>/dev/null || true
+    done < <(tmux list-windows -t "$_AE_SESSION" -F '#{window_index}' 2>/dev/null || true)
     return 0
 }
 
@@ -8693,6 +8711,23 @@ _roster_glyph() {
     local verdict="$1"
     case "$verdict" in
         dead) printf '✖' ;;
+        # A REGISTERED agent with no live pane. Same ✖ class the watchdog's own
+        # missing-pane alert uses (_agent_alert_reason ranks *missing* as dead): both
+        # mean "this agent is not there", and the roster's job is to keep its slot
+        # visible rather than let it vanish into a shorter line that reads as fine.
+        missing) printf '✖' ;;
+        # The steward is a SERVICE: idle between sweeps is normal, so the ordinary
+        # active/stale reading would libel it. Its cadence branch already judges
+        # heartbeat freshness (aemonitor rewrites meta-agent-state.json each real
+        # sweep) — publish THAT, and nothing stronger.
+        #   👁  swept within the wedge window — an honest read of the state file's
+        #       mtime, not a claim that the steward is "working"
+        #   ◌   past the grace window with no fresh heartbeat — the same condition the
+        #       existing wedge alert already words as "not sweeping"
+        #   ·   still inside the grace window, no heartbeat yet: undecided, and we say so
+        meta-sweeping) printf '👁' ;;
+        meta-wedged) printf '◌' ;;
+        meta-starting) printf '·' ;;
         done) printf '✔' ;;
         waiting-user) printf '⏳' ;;
         blocked) printf '⛔' ;;
@@ -8715,6 +8750,47 @@ _roster_glyph() {
 _roster_label() {
     local name="${1##*:}"
     printf '%s' "$name" | tr -d '\000-\037\177'
+    return 0
+}
+
+# Registered agent refs ('alias:name') from a session meta file, in meta order — which
+# ae itself writes as main, then workers, then spawned. Keying the roster on REGISTERED
+# slots rather than live panes is the point: an agent whose pane is gone keeps its slot
+# and renders ✖, instead of vanishing into a shorter line that reads as a healthy org.
+# The session id is dropped by FIELD, not by suffix: '${v%:*}' on a sid-less
+# 'alias:name' would silently yield just 'alias'. Agent names cannot contain ':'.
+_roster_slot_refs() {
+    local meta="$1" line val
+    [[ -f "$meta" ]] || return 0
+    while IFS= read -r line; do
+        case "$line" in
+            agent.main=* | agent.worker.*=* | agent.spawned.*=*) ;;
+            *) continue ;;
+        esac
+        val="${line#*=}"
+        [[ -n "$val" ]] || continue
+        printf '%s\n' "$(printf '%s' "$val" | cut -d: -f1,2)"
+    done <"$meta"
+    return 0
+}
+
+# stdin: '<window_index>\t<glyph>' rows in PANE order -> one '<window_index>\t<glyphs>'
+# row per window. Rows arrive grouped because `list-panes -s` walks window by window;
+# glyph order inside a window therefore mirrors pane order and stays stable between
+# cycles. A window with no agent panes emits an empty glyph run, so its option is
+# published empty rather than left carrying a previous cycle's agents.
+_roster_window_compose() {
+    local cur_idx="" glyphs="" idx g
+    while IFS=$'\t' read -r idx g; do
+        [[ -n "$idx" ]] || continue
+        if [[ "$idx" != "$cur_idx" ]]; then
+            [[ -n "$cur_idx" ]] && printf '%s\t%s\n' "$cur_idx" "$glyphs"
+            cur_idx="$idx"
+            glyphs=""
+        fi
+        glyphs+="$g"
+    done
+    [[ -n "$cur_idx" ]] && printf '%s\t%s\n' "$cur_idx" "$glyphs"
     return 0
 }
 
@@ -9009,6 +9085,20 @@ helper_watchdog_main() {
                 [[ -f "$hb_file" ]] && hb="$(stat -c %Y "$hb_file" 2>/dev/null || echo 0)"
                 wedge_secs=$((SWEEP_SECS * 2 + 60))
                 first_nudge="${first_sweep_nudge[$pane]:-0}"
+                # Roster verdict for the steward, read off the SAME two conditions this
+                # branch already judges below (fresh heartbeat / past-grace wedge) — the
+                # expressions are deliberately identical so the glyph can never disagree
+                # with the alert. It used to `continue` without assigning a verdict at
+                # all, so the steward permanently rendered '·'.
+                if ((hb > 0 && now_epoch - hb <= wedge_secs)); then
+                    roster_verdict["$pane"]="meta-sweeping"
+                elif ((first_nudge > 0 && now_epoch - first_nudge > wedge_secs)); then
+                    roster_verdict["$pane"]="meta-wedged"
+                else
+                    # Inside the grace window with no heartbeat yet — genuinely undecided,
+                    # and '·' says exactly that rather than inventing a liveness claim.
+                    roster_verdict["$pane"]="meta-starting"
+                fi
                 if ((hb > 0 && now_epoch - hb <= wedge_secs)); then
                     # Fresh heartbeat → recovery. The WATCHDOG raised the alert, so the watchdog
                     # clears it (emit alert-cleared so _agent_alert_reason / ae list stops
@@ -9363,17 +9453,23 @@ helper_watchdog_main() {
         fi
         _watchdog_set_status @ae_watchdog_status "[watch ${glyph} ${cycle_active}/${cycle_total}]"
         _watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"
-        # Per-agent roster → status-format[1] right side. Composed ONLY from the
-        # verdicts the branches above already reached this cycle; a pane we somehow
-        # never judged renders neutral rather than borrowing a liveness claim.
-        roster=""
-        if ((${#roster_order[@]} > 0)); then
-            roster="$(
-                for roster_row in "${roster_order[@]}"; do
-                    printf '%s\t%s\n' "${roster_row#*$'\t'}" "${roster_verdict[${roster_row%%$'\t'*}]:-}"
-                done | _roster_compose
-            )"
-        fi
+        # Per-agent roster → status-format[1] right side. Keyed by the agents meta
+        # REGISTERS, not by the panes that happen to be alive: an agent whose pane is
+        # gone keeps its slot and renders ✖ instead of vanishing into a shorter line
+        # that reads as a healthy org. Verdicts are only ever the ones the branches
+        # above already reached this cycle; anything unjudged stays neutral rather than
+        # borrowing a liveness claim.
+        roster="$(
+            while IFS= read -r roster_ref; do
+                [[ -n "$roster_ref" ]] || continue
+                roster_p="${live_agents[$roster_ref]:-}"
+                if [[ -z "$roster_p" ]]; then
+                    printf '%s\t%s\n' "$roster_ref" "missing"
+                else
+                    printf '%s\t%s\n' "$roster_ref" "${roster_verdict[$roster_p]:-}"
+                fi
+            done < <(_roster_slot_refs "$META_DIR/meta") | _roster_compose
+        )"
         if [[ -n "$roster" ]]; then
             _watchdog_set_status @ae_agents_status "$roster"
         else
@@ -9381,6 +9477,33 @@ helper_watchdog_main() {
             # asserting a fleet that no longer exists.
             tmux set-option -t "$_AE_SESSION" -u @ae_agents_status 2>/dev/null || true
         fi
+        # Per-WINDOW glyphs → the window list. Grouped from the SAME per-pane verdicts,
+        # in pane order. Window index comes from its own cheap list-panes call rather
+        # than being added to the main loop's format string — that format is a pinned
+        # parity contract with the aewatch sidecar (tests/aewatch_tests/test_25).
+        while IFS=$'\t' read -r _w_idx _w_glyphs; do
+            [[ -n "$_w_idx" ]] || continue
+            tmux set-option -w -t "${_AE_SESSION}:${_w_idx}" @ae_window_status "$_w_glyphs" 2>/dev/null || true
+        done < <(
+            {
+                while IFS='|' read -r _p _wi _pa; do
+                    [[ -n "$_p" ]] || continue
+                    # Non-agent panes (the watchdog/events panes, or anything unstamped)
+                    # register their WINDOW but contribute NO glyph — the monitor window
+                    # must read '99:ae-monitor', not '99:ae-monitor··'. Emitting the row
+                    # anyway is what lets a window that no longer holds agents be
+                    # published EMPTY instead of keeping last cycle's glyphs. Skip list
+                    # mirrors the cycle's own (see the pane loop).
+                    case "$_pa" in
+                        "" | "(null)" | _watchdog | _shepherd | _loop | _events)
+                            printf '%s\t\n' "$_wi"
+                            continue
+                            ;;
+                    esac
+                    printf '%s\t%s\n' "$_wi" "$(_roster_glyph "${roster_verdict[$_p]:-__none__}")"
+                done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}|#{window_index}|#{@ae_agent}' 2>/dev/null || true)
+            } | _roster_window_compose
+        )
 
         sleep "$INTERVAL"
     done
@@ -10338,7 +10461,7 @@ WDPROLOGUE
             _watchdog_start _last_event_age _latest_relevant_event _agent_quiet_reason \
             _quiet_pane_decision _watchdog_meta_value _watchdog_trim _watchdog_git \
             _watchdog_branch_segment _watchdog_set_status _watchdog_clear_bar_options _watchdog_log _pane_has_descendant_named \
-            _roster_glyph _roster_label _roster_compose \
+            _roster_glyph _roster_label _roster_compose _roster_slot_refs _roster_window_compose \
             _buf_shows_throttle _pane_shows_throttle _load_agent_bins helper_watchdog_main
         printf 'helper_watchdog_main "$@"\n'
     } >"${AE_META}/watchdog.tmp.$$"
