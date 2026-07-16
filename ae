@@ -388,6 +388,44 @@ strip_gemini_prompt_flags() {
         -e 's/  */ /g; s/^ //; s/ $//'
 }
 
+# Strip Grok session/resume flags for clean resume-command reconstruction.
+# Grok (xAI CLI, verified live 0.2.x) session surface:
+#   -s, --session-id <UUID>   VALUE REQUIRED — new-conversation launch id
+#   -r, --resume [<UUID>]     VALUE OPTIONAL — resume by id, or latest if omitted
+#   -c, --continue            no value
+# The optional-value forms are the trap the generic strip_session_flags cannot handle:
+# it misses the short forms entirely, and its greedy `--resume[= ][^ ]*` eats the token
+# AFTER a bare `--resume` (e.g. the `--effort` in `--resume --effort high`), turning a
+# real flag into a positional prompt. Tokenize instead: eat a value ONLY when it does
+# not itself look like a flag, and pass every non-session token through verbatim in
+# order (so --effort, -m MODEL, --always-approve all survive).
+strip_grok_session_flags() {
+    local cmd="$1"
+    local -a toks=() kept=()
+    read -ra toks <<<"$cmd" || true
+    local n=${#toks[@]} i=0
+    while ((i < n)); do
+        case "${toks[i]}" in
+            # attached value (equals form) — drop the single token
+            --session-id=* | --resume=* | -s=* | -r=*) ;;
+            # value-required session flag — drop it AND its value token
+            --session-id | -s)
+                if ((i + 1 < n)); then i=$((i + 1)); fi
+                ;;
+            # optional-value resume — drop it; eat the next token only if it is a value,
+            # never another flag (this is the bare-resume trap the generic strip fails)
+            --resume | -r)
+                if ((i + 1 < n)) && [[ "${toks[i + 1]}" != -* ]]; then i=$((i + 1)); fi
+                ;;
+            # bare continue — no value
+            --continue | -c) ;;
+            *) kept+=("${toks[i]}") ;;
+        esac
+        i=$((i + 1))
+    done
+    echo "${kept[*]}"
+}
+
 # Derive resume command with session-scoped ID (survives multiple concurrent sessions)
 # Falls back to heuristic resume, then fresh start
 resume_cmd_from_cmd() {
@@ -436,7 +474,11 @@ resume_cmd_from_cmd() {
             ;;
         grok*)
             # claude-shaped: exact UUID resume, CWD-heuristic --continue fallback.
-            # strip_session_flags already removes --session-id/--resume/--continue.
+            # Normalize from the ORIGINAL cmd, not $clean: the generic strip_session_flags
+            # ran above misses grok's short forms (-s/-r/-c) and would already have eaten
+            # the token after a bare --resume. strip_grok_session_flags is the complete
+            # normalizer for grok's whole session surface.
+            clean="$(strip_grok_session_flags "$cmd")"
             if [[ -n "$session_id" ]]; then
                 echo "${clean} --resume ${session_id}"
             else
@@ -458,8 +500,11 @@ inject_session_id() {
             # grok takes an ae-generated UUID at launch exactly like claude (verified
             # live): the id is known upfront, so resume is UUID-scoped from the first
             # cycle — no launch-token scan, no _register-sid handshake, no entry in
-            # tool_kind_supports_launch_id.
-            claude* | grok*) echo "${clean} --session-id ${session_id}" ;;
+            # tool_kind_supports_launch_id. Re-normalize from $cmd with the grok-complete
+            # stripper so a pre-existing -s/-r/-c or bare --resume in the config cannot
+            # stack with — or swallow — the launch --session-id.
+            grok*) echo "$(strip_grok_session_flags "$cmd") --session-id ${session_id}" ;;
+            claude*) echo "${clean} --session-id ${session_id}" ;;
             *) echo "$clean" ;;
         esac
     else
@@ -1171,7 +1216,10 @@ resolve_agent_session_id() {
     fi
     if [[ -z "$session_id" ]]; then
         case "$cmd" in
-            claude*) session_id="$(gen_uuid)" ;;
+            # claude and grok both accept an ae-generated --session-id at launch, so their
+            # UUID is known upfront — resume is exact from the first cycle with no
+            # post-launch capture (neither appears in tool_kind_supports_launch_id).
+            claude* | grok*) session_id="$(gen_uuid)" ;;
             *) session_id="pending" ;;
         esac
     fi

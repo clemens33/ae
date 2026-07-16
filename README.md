@@ -8,7 +8,7 @@
 
 **ae** runs AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots. One bash script, zero dependencies.
 
-Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool.
+Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Grok Build](https://github.com/xai-org/grok-build), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool.
 
 ## Why ae
 
@@ -138,6 +138,7 @@ Use `memo` for durable findings, decisions, and handoffs that should survive age
 claude = "claude --permission-mode bypassPermissions --model opus"
 codex = "codex --yolo -m gpt-5.5 -c model_reasoning_effort=high"
 gemini = "gemini --yolo -m gemini-3-pro-preview"
+grokbuild = "grok --always-approve -m grok-build --effort high"
 opencode = "opencode"
 
 # Recommended: capability tiers named by intent, not vendor model —
@@ -252,7 +253,7 @@ once you've opted in (a steward scaffold exists / `[telegram] enabled = true`).
 - bash >= 4.0 (macOS ships 3.2 — `brew install bash` and put brew's bin dir before `/bin` on PATH, e.g. `eval "$(brew shellenv)"`)
 - [tmux](https://github.com/tmux/tmux)
 - [git](https://git-scm.com/)
-- At least one AI coding agent ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool)
+- At least one AI coding agent ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Grok Build](https://github.com/xai-org/grok-build), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool)
 
 After install, run:
 

@@ -28,7 +28,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -321,6 +321,121 @@ assert_eq "resume: grok strips the previous --session-id before resuming" \
 assert_eq "resume: grok strips a previous --resume/--continue (no flag stacking)" \
     "grok -m grok-build --continue" \
     "$(resume_cmd_from_cmd "grok -m grok-build --resume old-uuid")"
+
+# ── strip_grok_session_flags: Grok-complete normalizer (BLOCKER-2) ────────────────────
+# Grok's session surface is -s/--session-id (value), -r/--resume [optional value],
+# -c/--continue (bare). The generic stripper misses short forms and, worse, its greedy
+# --resume[= ][^ ]* eats the token after a BARE --resume. This normalizer must cover
+# long/short + equals/space + optional bare resume, and pass every other token verbatim.
+assert_eq "grok-strip: long --resume with value" \
+    "grok --always-approve -m grok-build --effort high" \
+    "$(strip_grok_session_flags "grok --always-approve -m grok-build --effort high --resume abc-123")"
+assert_eq "grok-strip: long --session-id with value" \
+    "grok -m grok-build" \
+    "$(strip_grok_session_flags "grok --session-id old-uuid -m grok-build")"
+assert_eq "grok-strip: long --continue (bare)" \
+    "grok -m grok-build" \
+    "$(strip_grok_session_flags "grok -m grok-build --continue")"
+assert_eq "grok-strip: short -r with value" \
+    "grok -m grok-build" \
+    "$(strip_grok_session_flags "grok -m grok-build -r old-uuid")"
+assert_eq "grok-strip: short -s with value" \
+    "grok -m grok-build" \
+    "$(strip_grok_session_flags "grok -s old-uuid -m grok-build")"
+assert_eq "grok-strip: short -c (bare)" \
+    "grok -m grok-build" \
+    "$(strip_grok_session_flags "grok -c -m grok-build")"
+assert_eq "grok-strip: equals form --resume=" \
+    "grok -m grok-build" \
+    "$(strip_grok_session_flags "grok --resume=old-uuid -m grok-build")"
+assert_eq "grok-strip: equals form --session-id=" \
+    "grok -m grok-build" \
+    "$(strip_grok_session_flags "grok --session-id=old-uuid -m grok-build")"
+assert_eq "grok-strip: equals form -s=" \
+    "grok -m grok-build" \
+    "$(strip_grok_session_flags "grok -s=old-uuid -m grok-build")"
+assert_eq "grok-strip: equals form -r=" \
+    "grok -m grok-build" \
+    "$(strip_grok_session_flags "grok -r=old-uuid -m grok-build")"
+# THE TRAP: a bare --resume/-r must NOT consume the following flag as its value.
+assert_eq "grok-strip: BARE --resume does not eat the next flag (--effort survives)" \
+    "grok --effort high" \
+    "$(strip_grok_session_flags "grok --resume --effort high")"
+assert_eq "grok-strip: BARE -r does not eat the next flag (--effort survives)" \
+    "grok --effort high" \
+    "$(strip_grok_session_flags "grok -r --effort high")"
+assert_eq "grok-strip: bare --resume mid-command, model + effort survive verbatim" \
+    "grok --always-approve -m grok-build --effort high" \
+    "$(strip_grok_session_flags "grok --always-approve --resume -m grok-build --effort high")"
+assert_eq "grok-strip: stacked -s/-r/-c all removed, one clean command out" \
+    "grok -m grok-build" \
+    "$(strip_grok_session_flags "grok -s a -r b -c -m grok-build")"
+assert_eq "grok-strip: no session flags → unchanged" \
+    "grok --always-approve -m grok-build --effort high" \
+    "$(strip_grok_session_flags "grok --always-approve -m grok-build --effort high")"
+
+# resume_cmd_from_cmd must route grok through the complete normalizer: exactly one
+# session flag after normalization, --effort preserved even across a bare --resume.
+assert_eq "resume: grok strips a stacked SHORT -r before resuming (no duplicate flag)" \
+    "grok -m grok-build --effort high --resume new-uuid" \
+    "$(resume_cmd_from_cmd "grok -m grok-build --effort high -r old-uuid" "new-uuid")"
+assert_eq "resume: grok bare --resume in config does not corrupt --effort on resume" \
+    "grok -m grok-build --effort high --resume new-uuid" \
+    "$(resume_cmd_from_cmd "grok -m grok-build --resume --effort high" "new-uuid")"
+assert_eq "resume: grok --effort preserved verbatim through exact resume" \
+    "grok --always-approve -m grok-build --effort high --resume abc-123-uuid" \
+    "$(resume_cmd_from_cmd "grok --always-approve -m grok-build --effort high" "abc-123-uuid")"
+
+# inject_session_id (launch) also routes grok through the complete normalizer so a
+# pre-existing short/bare session flag in the config cannot stack with --session-id.
+assert_eq "inject: grok strips a stacked SHORT -c before injecting the launch id" \
+    "grok -m grok-build --session-id new-uuid" \
+    "$(inject_session_id "grok -c -m grok-build" "new-uuid")"
+assert_eq "inject: grok bare --resume in config does not eat --effort at launch" \
+    "grok -m grok-build --effort high --session-id new-uuid" \
+    "$(inject_session_id "grok -m grok-build --resume --effort high" "new-uuid")"
+
+# ── resolve_agent_session_id: grok gets an upfront UUID (BLOCKER-1 real chain) ─────────
+# The whole point of BLOCKER-1: grok must resolve to a REAL UUID at launch (not
+# "pending"), because it accepts --session-id upfront and has NO post-launch capture.
+# Test the real launch→meta→resume chain, not inject_session_id with a hand-fed UUID.
+GROK_CMD="grok --always-approve -m grok-build --effort high"
+unset RESUMING SESSION 2>/dev/null || true
+_grok_launch_id="$(resolve_agent_session_id "$GROK_CMD" "main")"
+assert_eq "resolve: grok launch id is a 36-char UUID (not pending)" "1" \
+    "$([[ "$_grok_launch_id" =~ ^[0-9a-fA-F-]{36}$ ]] && echo 1 || echo 0)"
+assert_eq "resolve: grok launch id is not the pending sentinel" "1" \
+    "$([[ "$_grok_launch_id" != "pending" ]] && echo 1 || echo 0)"
+assert_eq "resolve: claude still gets an upfront UUID (no regression)" "1" \
+    "$([[ "$(resolve_agent_session_id "claude -m opus" "main")" =~ ^[0-9a-fA-F-]{36}$ ]] && echo 1 || echo 0)"
+assert_eq "resolve: codex still resolves to pending (post-launch capture path)" "pending" \
+    "$(resolve_agent_session_id "codex --yolo" "main")"
+assert_eq "resolve: opencode still resolves to pending" "pending" \
+    "$(resolve_agent_session_id "opencode -m x" "main")"
+assert_eq "resolve: gemini still resolves to pending" "pending" \
+    "$(resolve_agent_session_id "gemini -m x" "main")"
+
+# Real chain: the resolved launch id lands on the launch command AND survives an
+# ae stop/resume round-trip via meta, then resumes exactly — same id throughout.
+assert_eq "chain: resolved grok id lands on the launch command via inject_session_id" \
+    "$GROK_CMD --session-id $_grok_launch_id" \
+    "$(inject_session_id "$GROK_CMD" "$_grok_launch_id")"
+# Meta round-trip: write the launch id as ae does (agent.main=alias:name:id), then a
+# RESUMING resolve must read that exact id back — proving exact scope across stop/resume,
+# not a fresh UUID and not "pending". Globals are set as a per-command env prefix (the
+# codebase idiom, seen as used by the eval-extracted resolve/read_session_meta).
+_grok_meta_dir="$(mktemp -d)"
+mkdir -p "$_grok_meta_dir/sessions/aedev-grok-chain"
+printf 'mode=local\nagent.main=grokbuild:grok:%s\n' "$_grok_launch_id" \
+    >"$_grok_meta_dir/sessions/aedev-grok-chain/meta"
+assert_eq "chain: resume reads the SAME grok id back from meta (exact scope, not fresh)" \
+    "$_grok_launch_id" \
+    "$(SESSIONS_DIR="$_grok_meta_dir/sessions" WORKTREES_DIR="$_grok_meta_dir/wt" \
+        RESUMING=true SESSION="aedev-grok-chain" resolve_agent_session_id "$GROK_CMD" "main")"
+rm -rf "$_grok_meta_dir"
+assert_eq "chain: grok resumes with exact --resume <captured id>, effort preserved" \
+    "$GROK_CMD --resume $_grok_launch_id" \
+    "$(resume_cmd_from_cmd "$GROK_CMD" "$_grok_launch_id")"
 
 assert_eq "strip: -i not stripped from non-gemini commands" \
     "codex --yolo -i input.txt" \

@@ -22,6 +22,7 @@
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - [Codex](https://github.com/openai/codex)
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+- [Grok Build](https://github.com/xai-org/grok-build)
 - [OpenCode](https://github.com/opencode-ai/opencode)
 - Any CLI agent — point ae at the binary and it works
 

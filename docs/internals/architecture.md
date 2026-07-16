@@ -98,6 +98,7 @@ Every agent gets a workspace context injected into its system prompt at launch:
 - **Claude Code** — `--append-system-prompt 'text'`
 - **Codex** — `-c developer_instructions='text'`
 - **Gemini CLI** — `-i 'text'`
+- **Grok Build** — no append-style flag; ae passes the context as the positional `[PROMPT]` argv (`--system-prompt-override` would *replace* grok's own agent prompt, so ae never uses it)
 - **OpenCode** — no flag; ae pastes the context as the first user message via tmux buffer
 
 The injected text says: session name, working directory, helper directory, and 7 numbered rules (helpers-only communication, exact reply discipline, no-peek-as-reply, mark-done when done, memo for handoff, concurrent collaboration awareness, spawn helper). Helper invocations in the text use absolute paths because the session directory is deliberately not on `PATH`.

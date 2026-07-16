@@ -7,7 +7,7 @@ ae is a single bash script. There's nothing to build and nothing to update excep
 - [tmux](https://github.com/tmux/tmux)
 - [git](https://git-scm.com/)
 - bash ≥ 4.0
-- At least one AI coding agent CLI on `PATH` (Claude Code, Codex, Gemini, OpenCode, or any other)
+- At least one AI coding agent CLI on `PATH` (Claude Code, Codex, Gemini, Grok Build, OpenCode, or any other)
 
 ## One-line install
 
