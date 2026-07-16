@@ -17,6 +17,7 @@ Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex
 - **Everything survives reboots** -- sessions, spawned agents, conversation history. Pick up exactly where you left off.
 - **Nothing touches your repo** -- session state lives in `~/.ae/sessions/`. Your working directory stays clean.
 - **Tiered delegation** -- leads run the strongest model; bounded chores go to cheap spawned workers in their own tmux windows, reviewed and retired. Convention, not machinery ([docs](docs/reference/delegation.md)).
+- **A status bar that answers "who needs me"** -- inside its sessions ae owns the tmux footer: session name, window list, git branch + watchdog health on line one; the focused agent's identity plus a whole-org roster with the watchdog's verdict per agent (`lead● colead✔ builder◌ grok⚡`) on line two. Verdicts, never claims -- the bar shows what the watchdog observed, not what agents say ([docs](docs/getting-started/config.md)).
 - **A chief of staff on your phone** -- the optional steward session watches your whole fleet and reports over Telegram; tell it your objective and it helps you hold it. Both come up automatically with any session launch.
 - **Single bash script** -- no frameworks, no runtimes, no abstractions. Just bash, tmux, and git. (Optional companions live in `contrib/` and are never required -- see below.)
 

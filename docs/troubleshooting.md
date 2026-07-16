@@ -23,7 +23,7 @@ ae stop <name>
 ae <name>
 ```
 
-Resume and session capture for external agent CLIs are best-effort and depend on upstream tool storage formats, which can change. If exact-session resume fails, ae falls back gracefully (e.g. Claude `--continue`, Codex fresh-start with preserved flags, Gemini `--resume latest`).
+Resume and session capture for external agent CLIs are best-effort and depend on upstream tool storage formats, which can change. All four supported tools get exact-session resume once their session id is captured; if capture failed, ae falls back gracefully (Claude `--continue`, Codex fresh-start with preserved flags, Gemini `--resume latest`, OpenCode `--continue`).
 
 ## Helpers feel out of date after upgrading ae
 
