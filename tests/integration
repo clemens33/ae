@@ -1034,9 +1034,12 @@ assert_eq "window: current-format matches (the focused window is not left themel
 # The GLOBAL format must be untouched — ae themes only its own sessions.
 assert_eq "window: the GLOBAL window-status-format is not ae's (no theme leak)" "1" \
     "$([[ "$(tmux show-options -gv window-status-format 2>/dev/null)" != *'@ae_window_status'* ]] && echo 1 || echo 0)"
+# Read back by WINDOW ID (@N), the same key the publisher uses — an index is a position
+# and can renumber, which is exactly why the publisher stopped using it.
+ROST_WID="$(tmux list-windows -t test-roster -F '#{window_id}' 2>/dev/null | head -1)"
 rost_wopt=""
 for _i in $(seq 1 30); do
-    rost_wopt="$(tmux show-options -w -v -t test-roster:0 @ae_window_status 2>/dev/null || true)"
+    rost_wopt="$(tmux show-options -w -v -t "$ROST_WID" @ae_window_status 2>/dev/null || true)"
     [[ -n "$rost_wopt" ]] && break
     sleep 1
 done
@@ -1049,8 +1052,9 @@ assert_eq "window: the window list RENDERS the glyph (not just stores the option
     "$([[ "$rost_wrender" == *"$rost_wopt"* && "$rost_wrender" != *'@ae_window_status'* ]] && echo 1 || echo 0)"
 # The monitor window holds only _watchdog/_events panes: it must render its NAME with no
 # glyphs at all ('99:ae-monitor'), never '99:ae-monitor··'.
+ROST_WID99="$(tmux list-windows -t test-roster -F '#{window_index} #{window_id}' 2>/dev/null | awk '$1==99{print $2}')"
 assert_eq "window: the ae-monitor window carries NO glyphs (non-agent panes contribute none)" "" \
-    "$(tmux show-options -w -v -t test-roster:99 @ae_window_status 2>/dev/null || true)"
+    "$(tmux show-options -w -v -t "${ROST_WID99:-test-roster:99}" @ae_window_status 2>/dev/null || true)"
 # Stop clears it — session option AND every window option.
 "$ROSTD" stop >/dev/null 2>&1 || true
 wd_poll "$ROSTD" "not running" 20 || true
@@ -1058,8 +1062,8 @@ sleep 0.5
 assert_eq "roster: @ae_agents_status unset on watchdog stop (no frozen fleet)" "" \
     "$(tmux show-options -v -t test-roster @ae_agents_status 2>/dev/null || true)"
 assert_eq "window: @ae_window_status unset on stop for EVERY window (no frozen glyphs)" "" \
-    "$(tmux list-windows -t test-roster -F '#{window_index}' 2>/dev/null \
-        | while read -r _wi; do tmux show-options -w -v -t "test-roster:${_wi}" @ae_window_status 2>/dev/null || true; done | tr -d '\n')"
+    "$(tmux list-windows -t test-roster -F '#{window_id}' 2>/dev/null \
+        | while read -r _wi; do tmux show-options -w -v -t "$_wi" @ae_window_status 2>/dev/null || true; done | tr -d '\n')"
 "$AE" end -f test-roster 2>/dev/null || true
 sleep 0.5
 # ── input-region: REAL capture+sensor seam against live tmux (colead BLOCKER 2) ──

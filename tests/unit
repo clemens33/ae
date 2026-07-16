@@ -28,7 +28,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -1675,7 +1675,7 @@ assert_eq "status-bar: left is name-only, right carries path+git+watch (ae-owned
 # own window had no visible identity — line 1 shows the active pane's @ae_agent.
 _sb_fmt1="'status-format[1]' '#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} '"
 assert_eq "status-bar: second line shows the focused pane's agent identity" "1" \
-    "$([[ "$AE_SOURCE" == *"set-option -t \"\$session\" status 2"* && "$AE_SOURCE" == *"$_sb_fmt1"* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'set-option -t "$_st" status 2'* && "$AE_SOURCE" == *"$_sb_fmt1"* ]] && echo 1 || echo 0)"
 # footer-roster: agents live across MULTIPLE WINDOWS but the status bar renders in
 # every one, so a per-agent roster on line 1 gives whole-org visibility from any
 # window. Right-aligned so it never collides with the left-aligned focused identity.
@@ -1686,7 +1686,7 @@ assert_eq "status-bar: line 1 carries the agent roster, right-aligned" "1" \
 # exhibit: first session-shape launch showed two blank green lines). The template
 # must copy the global [0] into the session BEFORE setting [1].
 assert_eq "status-bar: global status-format[0] copied to session scope (array-shadowing fix)" "1" \
-    "$([[ "$AE_SOURCE" == *"show-options -gv 'status-format[0]'"* && "$AE_SOURCE" == *"set-option -t \"\$session\" 'status-format[0]' \"\$_fmt0\""* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *"show-options -gv 'status-format[0]'"* && "$AE_SOURCE" == *"set-option -t \"\$_st\" 'status-format[0]' \"\$_fmt0\""* ]] && echo 1 || echo 0)"
 
 # ── footer-roster: per-agent verdict roster ──────────────────────────
 # DESIGN HONESTY (builder-stall incident): the roster shows the WATCHDOG'S VERDICT,
@@ -1737,7 +1737,7 @@ assert_eq "roster: watchdog publishes @ae_agents_status each cycle" "1" \
 # Empty roster must UNSET, not publish "" — a stale roster outliving its agents is
 # worse than none.
 assert_eq "roster: empty roster unsets the option rather than publishing empty" "1" \
-    "$([[ "$AE_SOURCE" == *'tmux set-option -t "$_AE_SESSION" -u @ae_agents_status'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'tmux set-option -t "$_roster_sid" -u @ae_agents_status'* ]] && echo 1 || echo 0)"
 # Cleanup parity: the option must be cleared on BOTH the stop path and the EXIT trap,
 # exactly like @ae_branch_status / @ae_watchdog_status — otherwise a stopped watchdog
 # leaves a frozen roster claiming a fleet that may be gone.
@@ -1745,8 +1745,9 @@ assert_eq "roster: empty roster unsets the option rather than publishing empty" 
 # paths cannot drift (they previously listed the session options twice). Verified
 # empirically that bash runs an EXIT trap on SIGTERM, so the trap is the reliable path.
 assert_eq "roster: cleanup is a single shared owner (trap + stop both call it)" "1" \
-    "$([[ "$AE_SOURCE" == *"trap 'rm -f \"\$PIDFILE\"; _watchdog_clear_bar_options' EXIT"* \
-        && "$AE_SOURCE" == *'_watchdog_clear_bar_options()'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *"trap '_watchdog_exit_cleanup' EXIT"* \
+        && "$AE_SOURCE" == *'_watchdog_clear_bar_options()'* \
+        && "$AE_SOURCE" == *'_watchdog_exit_cleanup()'* ]] && echo 1 || echo 0)"
 assert_eq "roster: shared cleanup clears @ae_agents_status" "1" \
     "$([[ "$AE_SOURCE" == *'for _o in @ae_branch_status @ae_branch_name @ae_watchdog_status @ae_agents_status; do'* ]] && echo 1 || echo 0)"
 # Verdicts come from the branches the loop ALREADY decides — one assignment per
@@ -1784,7 +1785,7 @@ _roster_bare_probe() { # -> ok | aborted:<fn>
     local out rc=0
     out="$(bash -c '
         set -euo pipefail
-        eval "$(awk "/^(_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose)\(\) \{/{p=1} p{print} p&&/^\}\$/{p=0}" "$1")"
+        eval "$(awk "/^(_roster_session_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose)\(\) \{/{p=1} p{print} p&&/^\}\$/{p=0}" "$1")"
         meta="$(mktemp)"; printf "agent.main=a:lead:sid\nagent.worker.0=b:w1:sid\n" > "$meta"
         # BARE calls — no $(…), no ||, no if. Statement position is the only shape that
         # lets a nonzero status abort, which is exactly what we are testing for.
@@ -1797,6 +1798,16 @@ _roster_bare_probe() { # -> ok | aborted:<fn>
         printf "" | _roster_compose
         _roster_slot_refs "$meta"
         _roster_slot_refs /nonexistent/meta
+        # UNREADABLE-but-existing: -f passes, the OPEN fails. This is the path codex
+        # found and my first probe missed — a green suite plus a passing mutation test
+        # proved the probe had teeth, not that it was COMPLETE.
+        _roster_slot_refs /proc/1/mem
+        # NOTE: this whole probe body is inside a single-quoted bash -c, so every string
+        # here must use DOUBLE quotes — a nested single quote silently ends the outer
+        # quoting and the probe stops testing what it claims to.
+        printf "%s\n" "\$0 s" | _roster_session_id s
+        printf "" | _roster_session_id gone
+        printf "%s\n" "\$0 s" | _roster_session_id ""
         printf "0\t●\n" | _roster_window_compose
         printf "" | _roster_window_compose
         rm -f "$meta"
@@ -1819,12 +1830,12 @@ _rc_meta="$(mktemp)"
 printf 'session=x\nagent.main=fable5:lead:734f2f3e\nagent.worker.0=gpt56sol:colead:019f5f6f\nagent.worker.1=opus48:builder:1f2539a2\nagent.spawned.0=grokbuild:grok:pending\n' > "$_rc_meta"
 assert_eq "roster: slot refs are read from meta in main→worker→spawned order" \
     "fable5:lead gpt56sol:colead opus48:builder grokbuild:grok" \
-    "$(_roster_slot_refs "$_rc_meta" | tr '\n' ' ' | sed 's/ $//')"
+    "$(_roster_slot_refs "$_rc_meta" | cut -f2 | tr '\n' ' ' | sed 's/ $//')"
 # The session id is stripped by FIELD (cut -d: -f1,2), not by suffix: '${v%:*}' on a
 # sid-less 'alias:name' would silently yield just 'alias'.
 _rc_meta2="$(mktemp)"; printf 'agent.main=alias:name\nagent.worker.0=a:b:\n' > "$_rc_meta2"
 assert_eq "roster: a sid-less slot keeps alias:name (field strip, not suffix strip)" \
-    "alias:name a:b" "$(_roster_slot_refs "$_rc_meta2" | tr '\n' ' ' | sed 's/ $//')"
+    "alias:name a:b" "$(_roster_slot_refs "$_rc_meta2" | cut -f2 | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "roster: non-agent meta lines are ignored" "1" \
     "$([[ "$(_roster_slot_refs "$_rc_meta" | command grep -c '^session=' || true)" == "0" ]] && echo 1 || echo 0)"
 assert_eq "roster: a missing meta file yields nothing (not an abort)" "" "$(_roster_slot_refs /nonexistent/meta)"
@@ -1863,8 +1874,8 @@ assert_eq "window: groups glyphs by window index, pane order preserved" \
 assert_eq "window: a single-pane window emits its one glyph" $'3\t✔' "$(printf '3\t✔\n' | _roster_window_compose)"
 assert_eq "window: empty input emits nothing" "" "$(printf '' | _roster_window_compose)"
 # Published per WINDOW (-w), so each window's status entry carries its own agents.
-assert_eq "window: publisher sets a window-scoped @ae_window_status" "1" \
-    "$([[ "$AE_SOURCE" == *'set-option -w -t "${_AE_SESSION}:${_w_idx}" @ae_window_status'* ]] && echo 1 || echo 0)"
+assert_eq "window: publisher sets a window-scoped @ae_window_status (by @N id)" "1" \
+    "$([[ "$AE_SOURCE" == *'tmux set-option -w -t "$_w_id" @ae_window_status "$_w_glyphs"'* ]] && echo 1 || echo 0)"
 # window-status-format is USER-THEMING territory: ae owns it inside its own sessions.
 # #F (the window flags) must survive — dropping them would silently eat tmux's own
 # zoom/activity/current markers.
@@ -1875,13 +1886,115 @@ assert_eq "window: format keeps #I:#W, the roster option, and #F flags" "1" \
 # so assert they are set on the SESSION, not globally (a global write would leak into
 # the user's other tmux sessions and is exactly the theme collision we must not cause).
 assert_eq "window: formats are session-scoped (never global — no theme leak)" "1" \
-    "$([[ "$AE_SOURCE" == *'set-option -t "$session" window-status-format'* \
-        && "$AE_SOURCE" == *'set-option -t "$session" window-status-current-format'* \
+    "$([[ "$AE_SOURCE" == *'set-option -t "$_st" window-status-format'* \
+        && "$AE_SOURCE" == *'set-option -t "$_st" window-status-current-format'* \
         && "$AE_SOURCE" != *'set-option -g window-status-format'* ]] && echo 1 || echo 0)"
 # Cleanup: window options are WINDOW-scoped — a session -u never touches them, so a
 # stopped watchdog would freeze glyphs in the window list forever.
-assert_eq "window: @ae_window_status cleared per window by the shared cleanup owner" "1" \
-    "$([[ "$AE_SOURCE" == *'tmux set-option -w -t "${_AE_SESSION}:${_wi}" -u @ae_window_status'* ]] && echo 1 || echo 0)"
+assert_eq "window: @ae_window_status cleared per window by the shared cleanup owner (by @N id)" "1" \
+    "$([[ "$AE_SOURCE" == *'tmux set-option -w -t "$_wi" -u @ae_window_status'* \
+        && "$AE_SOURCE" == *"list-windows -t \"\$_sid\" -F '#{window_id}'"* ]] && echo 1 || echo 0)"
+
+# ── roster-completeness round 2: codex BLOCKERs (all reproduced) ─────
+# B1 — tmux session targets PREFIX-MATCH. Reproduced live: session 'foobar' held
+# @ae_agents_status; running cleanup for the NON-EXISTENT session 'foo'
+# (set-option -w -t 'foo:0' -u ...) WIPED foobar's options. A user with sessions 'ae' and
+# 'aedev' would lose aedev's bar when ae's watchdog stops. PRE-EXISTING for the session
+# options; this slice widened it to per-window ones.
+#
+# THE FIX IS NOT tmux's '=' PREFIX. Measured on tmux 3.4: '=name' works for has-session
+# but FAILS for show-options/set-option ("no such session: =name") and yields nothing
+# from display-message. An earlier attempt to anchor with '=' LOOKED like it fixed the
+# clobber — the neighbour survived — but only because EVERY write silently failed; it
+# blanked the bar and 14 integration tests caught what my source pins could not. Testing
+# that a fix prevents the bad outcome is not testing that it preserves the good one.
+#
+# And the LOOKUP prefix-matches too: `display-message -t foo '#{session_id}'` returns
+# foobar's id when foo does not exist — so resolving a name through any tmux target
+# reintroduces the bug. Match the name as an exact bash string over a list-sessions dump;
+# the resulting '$N' id is unique and stable, exactly like the '@N' window ids.
+_ls_dump="$(printf '%s\n' '$0 foobar' '$1 ae' '$2 aedev' '$3 has spaces')"
+assert_eq "session-id: exact name match wins (never a prefix)" '$2' "$(printf '%s' "$_ls_dump" | _roster_session_id aedev)"
+assert_eq "session-id: 'ae' resolves to ae, NOT to aedev/foobar" '$1' "$(printf '%s' "$_ls_dump" | _roster_session_id ae)"
+# The whole bug in one assertion: a GONE session must resolve to NOTHING, not to a
+# live neighbour that merely starts with the same letters.
+assert_eq "session-id: a gone session resolves to EMPTY, not to its neighbour" "" "$(printf '%s' "$_ls_dump" | _roster_session_id foo)"
+assert_eq "session-id: session names may contain spaces" '$3' "$(printf '%s' "$_ls_dump" | _roster_session_id 'has spaces')"
+assert_eq "session-id: an id passes through unchanged" '$7' "$(printf '%s' "$_ls_dump" | _roster_session_id '$7')"
+assert_eq "session-id: empty name resolves to empty" "" "$(printf '%s' "$_ls_dump" | _roster_session_id '')"
+# EMPTY MUST MEAN SKIP. A bare '-t ""' resolves to tmux's CURRENT session — i.e. someone
+# else's bar — so every writer guards on a non-empty id before touching anything.
+assert_eq "session-id: writers SKIP when the id is empty (never a bare target)" "1" \
+    "$([[ "$AE_SOURCE" == *'_sid="$(_watchdog_session_id)"'* \
+        && "$AE_SOURCE" == *'[[ -n "$_sid" ]] || return 0'* \
+        && "$AE_SOURCE" == *'tmux set-option -t "$_sid" "$1" "$2"'* \
+        && "$AE_SOURCE" == *'tmux set-option -t "$_sid" -u "$_o"'* ]] && echo 1 || echo 0)"
+# D1: the bar THEMING writes are the same class, resolved through the same tmux command.
+assert_eq "session-id: _ae_apply_status_bar themes by resolved id, and bails if gone" "1" \
+    "$([[ "$AE_SOURCE" == *"list-sessions -F '#{session_id} #{session_name}' 2>/dev/null | _roster_session_id \"\$session\""* \
+        && "$AE_SOURCE" == *'"${_t[@]}" set-option -t "$_st" status-left'* \
+        && "$AE_SOURCE" != *'"${_t[@]}" set-option -t "$session" status-left'* ]] && echo 1 || echo 0)"
+# No name-targeted option write may survive anywhere in the watchdog.
+assert_eq "session-id: no NAME-targeted option write remains in the watchdog" "1" \
+    "$([[ "$AE_SOURCE" != *'tmux set-option -t "$_AE_SESSION"'* \
+        && "$AE_SOURCE" != *'set-option -w -t "${_AE_SESSION}:'* ]] && echo 1 || echo 0)"
+
+# B2 — SLOT-keyed, not ref-keyed. spawn uniquifies only the numeric slot
+# (`while grep -q '^agent.spawned.${next_idx}='`), never alias:name — so two
+# registrations CAN share one display ref. live_agents is keyed by ref, so the last pane
+# wins: both roster entries would show that pane's verdict and killing one pane would
+# NOT render its slot ✖, defeating this slice's whole point. Route by SLOT (the
+# churn-proof key stamped as @ae_slot), display the ref (design-patterns 9).
+_rc2_meta="$(mktemp)"
+printf 'agent.main=fable5:lead:sid1\nagent.worker.0=opus48:dup:sid2\nagent.spawned.0=opus48:dup:sid3\n' > "$_rc2_meta"
+assert_eq "slots: refs are emitted WITH their slot key (duplicate refs stay distinct)" \
+    "main:fable5:lead worker.0:opus48:dup spawned.0:opus48:dup" \
+    "$(_roster_slot_refs "$_rc2_meta" | tr '\t' ':' | tr '\n' ' ' | sed 's/ $//')"
+rm -f "$_rc2_meta"
+assert_eq "slots: publisher routes by @ae_slot, not by display ref" "1" \
+    "$([[ "$AE_SOURCE" == *'live_slots['* && "$AE_SOURCE" == *'#{@ae_slot}'* ]] && echo 1 || echo 0)"
+# Two slots sharing one ref must resolve INDEPENDENTLY: one live, one missing.
+assert_eq "slots: duplicate refs render per-slot — one live, one ✖" "dup● dup✖" \
+    "$(printf 'opus48:dup\tactive\nopus48:dup\tmissing\n' | _roster_compose)"
+
+# I1 — codex caught my probe OVERCLAIMING, and it was right: '[[ -f ]]' passes but the
+# OPEN can still fail (reproduced bare with /proc/1/mem: "Permission denied", the fn
+# aborts BEFORE its return 0). My mutation test proved the probe has TEETH; it did not
+# prove the probe is COMPLETE. Guard the open, and probe the unreadable case too.
+assert_eq "slots: an UNREADABLE meta yields empty, not an abort" "" "$(_roster_slot_refs /proc/1/mem 2>/dev/null)"
+assert_eq "slots: the open is guarded, not just the -f test" "1" \
+    "$([[ "$AE_SOURCE" == *'exec {_slot_fd}<"$meta" 2>/dev/null || return 0'* ]] && echo 1 || echo 0)"
+
+# I2 — spawn writes meta BEFORE stamping @ae_agent/@ae_slot, so a pane snapshot taken
+# early + a meta read taken late makes a NORMAL spawn look registered-but-missing for up
+# to a full interval: a false ✖ AND a durable false missing-alert from step 8. Snapshot
+# the registered slots ONCE at cycle start and feed BOTH consumers from it.
+assert_eq "cycle: registered slots are snapshotted once and shared by both consumers" "1" \
+    "$([[ "$AE_SOURCE" == *'roster_slots_snapshot="$(_roster_slot_refs "$META_DIR/meta")"'* ]] && echo 1 || echo 0)"
+
+# D3 — a stop/start in quick succession can leave the OLD watchdog's EXIT trap running
+# while the NEW one already publishes. Unconditional cleanup would delete the new
+# watchdog's pidfile and wipe its live bar — the dying process vandalising its
+# replacement. Clean up only what is still ours.
+assert_eq "exit: cleanup is ownership-checked (never clobbers a newer watchdog)" "1" \
+    "$([[ "$AE_SOURCE" == *'_watchdog_exit_cleanup()'* \
+        && "$AE_SOURCE" == *'[[ -n "$_owner" && "$_owner" != "$$" ]]'* \
+        && "$AE_SOURCE" == *"trap '_watchdog_exit_cleanup' EXIT"* ]] && echo 1 || echo 0)"
+# D4 — spawn writes meta BEFORE stamping the pane, so a NORMAL spawn is briefly
+# registered-but-unstamped. The cycle-start snapshot narrows that window; it cannot close
+# it. Two consecutive missing cycles before ✖: a late ✖ is honest-ish, a durable false
+# alert is the harm.
+assert_eq "debounce: a first-sighting missing slot is NOT ✖ yet (spawn mid-stamp)" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ -n "${missing_streak[$roster_slot]:-}" ]]; then'* \
+        && "$AE_SOURCE" == *'declare -A missing_streak'* ]] && echo 1 || echo 0)"
+assert_eq "debounce: an unjudged/first-sighting slot renders neutral, never a claim" "lead·" \
+    "$(printf 'fable5:lead\t\n' | _roster_compose)"
+assert_eq "debounce: streak is advanced from the SAME snapshot the roster used" "1" \
+    "$([[ "$AE_SOURCE" == *'done <<<"$roster_slots_snapshot"'* ]] && echo 1 || echo 0)"
+
+# NIT — roster_order became dead once the roster was keyed by registered slots.
+assert_eq "cycle: dead roster_order accumulator is gone" "1" \
+    "$([[ "$AE_SOURCE" != *'roster_order'* ]] && echo 1 || echo 0)"
 
 # session-shape: the SESSION NAME in status-left is user text in a tmux format context —
 # it must go through the format-literal escaper like the path does.
@@ -1935,8 +2048,8 @@ assert_eq "status-bar: watch health via #{@ae_watchdog_status} user option, END 
 # separately and could drift; the roster's @ae_agents_status made that a third copy).
 assert_eq "watchdog: status user options cleared on stop AND exit trap (clean fallback)" "1" \
     "$([[ "$AE_SOURCE" == *'for _o in @ae_branch_status @ae_branch_name @ae_watchdog_status @ae_agents_status; do'* \
-        && "$AE_SOURCE" == *'tmux set-option -t "$_AE_SESSION" -u "$_o"'* \
-        && "$AE_SOURCE" == *"trap 'rm -f \"\$PIDFILE\"; _watchdog_clear_bar_options' EXIT"* \
+        && "$AE_SOURCE" == *'tmux set-option -t "$_sid" -u "$_o"'* \
+        && "$AE_SOURCE" == *"trap '_watchdog_exit_cleanup' EXIT"* \
         && "$AE_SOURCE" == *'# Clear the live status user options so the bars fall back (left → just path).
         _watchdog_clear_bar_options'* ]] && echo 1 || echo 0)"
 assert_eq "status bar: fragile #(cat <path>) directive helpers removed" "1" \

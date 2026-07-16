@@ -570,14 +570,20 @@ _ae_apply_status_bar() {
     local _t=(tmux)
     [[ -n "$server" ]] && _t=(command tmux -L "$server")
     "${_t[@]}" has-session -t "$session" 2>/dev/null || return 0
+    # Target by session ID, resolved by EXACT name match: tmux session targets
+    # prefix-match, so theming 'foo' would silently rewrite live 'foobar' if foo
+    # vanished mid-apply. Resolve through the same tmux command this function uses.
+    local _st
+    _st="$("${_t[@]}" list-sessions -F '#{session_id} #{session_name}' 2>/dev/null | _roster_session_id "$session")"
+    [[ -n "$_st" ]] || return 0
     local paths sess_lit
     paths="$(_ae_tmux_format_literal "$(_ae_status_left_paths "$mode" "$origin" "$work_dir")")"
     # The SESSION NAME is user text entering a tmux FORMAT context — #-escape it like
     # the path (a name with '#' would otherwise open a format/#() directive). With the
     # name in status-left, window 0 is free to carry a role name under lead-pair.
     sess_lit="$(_ae_tmux_format_literal "$session")"
-    "${_t[@]}" set-option -t "$session" status-left "[ae ${sess_lit}] " 2>/dev/null || true
-    "${_t[@]}" set-option -t "$session" status-left-length 40 2>/dev/null || true
+    "${_t[@]}" set-option -t "$_st" status-left "[ae ${sess_lit}] " 2>/dev/null || true
+    "${_t[@]}" set-option -t "$_st" status-left-length 40 2>/dev/null || true
     # status-right is OWNED BY AE, baked once here — the watchdog never rewrites it
     # (it only sets/unsets the user options below, so there is nothing to save,
     # prepend, restore, or dedup). The path is static #-escaped text; the live parts
@@ -586,15 +592,15 @@ _ae_apply_status_bar() {
     # shell metacharacters are harmless (no #() command, no shell):
     #   @ae_branch_status   ' <branch><dirty>' — watchdog, each cycle (empty when off)
     #   @ae_watchdog_status '[watch <glyph> a/t]' — watchdog health (empty when off)
-    "${_t[@]}" set-option -t "$session" status-right "[${paths}#{@ae_branch_status}] #{@ae_watchdog_status}" 2>/dev/null || true
-    "${_t[@]}" set-option -t "$session" status-right-length 100 2>/dev/null || true
-    "${_t[@]}" set-option -t "$session" status-interval 5 2>/dev/null || true
+    "${_t[@]}" set-option -t "$_st" status-right "[${paths}#{@ae_branch_status}] #{@ae_watchdog_status}" 2>/dev/null || true
+    "${_t[@]}" set-option -t "$_st" status-right-length 100 2>/dev/null || true
+    "${_t[@]}" set-option -t "$_st" status-interval 5 2>/dev/null || true
     # SECOND status line: the focused pane's agent identity. tmux renders pane borders
     # (which carry #{@ae_agent}) only in windows with 2+ panes — a lone agent in its own
     # window (lead-solo's lead, a single worker, spawned agents) had NO visible identity.
     # Line 1 shows the active pane's @ae_agent (user option -> interpolated literally,
     # injection-safe) so 'who am I looking at' is always answered, any pane count.
-    "${_t[@]}" set-option -t "$session" status 2 2>/dev/null || true
+    "${_t[@]}" set-option -t "$_st" status 2 2>/dev/null || true
     # tmux ARRAY options do NOT inherit per-index: setting session-scope
     # status-format[1] alone shadows the WHOLE global array, leaving index 0 (the
     # standard bar: status-left + window list + status-right) EMPTY at session scope
@@ -603,13 +609,13 @@ _ae_apply_status_bar() {
     local _fmt0
     _fmt0="$("${_t[@]}" show-options -gv 'status-format[0]' 2>/dev/null || true)"
     if [[ -n "$_fmt0" ]]; then
-        "${_t[@]}" set-option -t "$session" 'status-format[0]' "$_fmt0" 2>/dev/null || true
+        "${_t[@]}" set-option -t "$_st" 'status-format[0]' "$_fmt0" 2>/dev/null || true
     fi
     # Right side of line 1: the per-agent roster (@ae_agents_status, watchdog-published
     # each cycle, empty/unset when the watchdog is off). Agents live across multiple
     # windows and this bar renders in every one, so the whole org is visible from any
     # window. Right-aligned so it never collides with the left-aligned focused identity.
-    "${_t[@]}" set-option -t "$session" 'status-format[1]' '#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} ' 2>/dev/null || true
+    "${_t[@]}" set-option -t "$_st" 'status-format[1]' '#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} ' 2>/dev/null || true
     # WINDOW LIST: each window carries its own agents' verdict glyphs, so attention maps
     # SPATIALLY onto the windows you already scan ('0:leads●● 1:workers⚙◌'). The
     # right-side roster still answers WHO; this answers WHERE.
@@ -620,8 +626,8 @@ _ae_apply_status_bar() {
     # leak ae's glyphs into every other tmux session the user runs. #F is preserved: it
     # carries tmux's own zoom/activity/current markers, and dropping it would silently
     # eat them.
-    "${_t[@]}" set-option -t "$session" window-status-format '#I:#W#{@ae_window_status}#F' 2>/dev/null || true
-    "${_t[@]}" set-option -t "$session" window-status-current-format '#I:#W#{@ae_window_status}#F' 2>/dev/null || true
+    "${_t[@]}" set-option -t "$_st" window-status-format '#I:#W#{@ae_window_status}#F' 2>/dev/null || true
+    "${_t[@]}" set-option -t "$_st" window-status-current-format '#I:#W#{@ae_window_status}#F' 2>/dev/null || true
 }
 
 # Build ae workspace context string (shared by inject_ae_context and initial prompt fallback)
@@ -8636,16 +8642,22 @@ _watchdog_git() {
 # when work_dir is a git repo, else empty. Branch+dirty are the only session facts
 # that change during a run, so they're the only thing recomputed per cycle.
 _watchdog_branch_segment() {
-    local work_dir branch full dirty=""
+    local work_dir branch full dirty="" _bs_sid
     work_dir="$(_watchdog_meta_value work_dir)"
     if [[ -z "$work_dir" ]] || ! _watchdog_git "$work_dir" rev-parse --is-inside-work-tree >/dev/null; then
-        tmux set-option -t "$_AE_SESSION" -u @ae_branch_name 2>/dev/null || true
+        _bs_sid="$(_watchdog_session_id)"
+        if [[ -n "$_bs_sid" ]]; then
+            tmux set-option -t "$_bs_sid" -u @ae_branch_name 2>/dev/null || true
+        fi
         return 0
     fi
     full="$(_watchdog_git "$work_dir" symbolic-ref --quiet --short HEAD || _watchdog_git "$work_dir" rev-parse --short HEAD || true)"
     branch="$(_watchdog_trim "$full" 24)"
     if [[ -z "$branch" ]]; then
-        tmux set-option -t "$_AE_SESSION" -u @ae_branch_name 2>/dev/null || true
+        _bs_sid="$(_watchdog_session_id)"
+        if [[ -n "$_bs_sid" ]]; then
+            tmux set-option -t "$_bs_sid" -u @ae_branch_name 2>/dev/null || true
+        fi
         return 0
     fi
     # Side channel for machine consumers: @ae_branch_name carries the FULL,
@@ -8664,23 +8676,100 @@ _watchdog_branch_segment() {
 # (status-RIGHT health). User-option values are interpolated literally — no shell, no
 # #() parsing — so a branch/path with spaces, ), #, etc. is safe with no escaping.
 # Cleared on exit so the bars fall back cleanly (left → just the path).
-_watchdog_set_status() { tmux set-option -t "$_AE_SESSION" "$1" "$2" 2>/dev/null || true; }
+# EXACT session-id lookup. stdin: '<session_id> <session_name>' rows (a
+# `list-sessions -F '#{session_id} #{session_name}'` dump); $1: the wanted NAME.
+# Prints the matching session id ('$N'), or NOTHING when the session is gone.
+#
+# Why an id, and why matched here in bash rather than by a tmux target:
+#   * tmux session targets PREFIX-MATCH. Reproduced: with 'foo' absent and 'foobar'
+#     alive, `set-option -w -t 'foo:0' -u @probe` WIPED foobar's option — a dead
+#     session's cleanup silently clobbering a live neighbour's bar.
+#   * tmux's documented '=' exact-match prefix is NOT usable here: on tmux 3.4 it works
+#     for `has-session` but FAILS for `show-options`/`set-option` ("no such session:
+#     =name") and returns nothing from `display-message`. An earlier attempt to anchor
+#     with '=' looked like it fixed the clobber only because EVERY write silently failed
+#     — it broke the bar entirely and 14 integration tests caught it.
+#   * `display-message -t foo '#{session_id}'` PREFIX-MATCHES too — it happily returns
+#     foobar's id for a nonexistent 'foo' — so resolving through a tmux target would
+#     reintroduce the bug at the lookup layer.
+# Matching the name as an exact bash string over a list-sessions dump is the only step
+# tmux cannot mis-resolve; the id it yields is unique and stable for the session's life,
+# exactly like the '@N' window ids used for the window options.
+# EMPTY OUT MEANS SKIP THE WRITE: callers must not fall back to a bare target — an empty
+# '-t' would resolve to tmux's *current* session, i.e. someone else's bar.
+_roster_session_id() {
+    local want="$1" id name
+    [[ -n "$want" ]] || return 0
+    # Already an id — pass through.
+    [[ "$want" == '$'* ]] && {
+        printf '%s' "$want"
+        return 0
+    }
+    # `|| [[ -n "$id" ]]`: a final row with no trailing newline makes `read` return
+    # nonzero while still assigning — without this the LAST session in the dump is
+    # silently invisible, which for a lookup means "gone" and skips its cleanup.
+    while read -r id name || [[ -n "$id" ]]; do
+        [[ "$name" == "$want" ]] || continue
+        printf '%s' "$id"
+        return 0
+    done
+    return 0
+}
+
+# The watchdog's own session id, resolved exactly. Cached per call site rather than per
+# cycle: a session id never changes for the life of the session.
+_watchdog_session_id() {
+    tmux list-sessions -F '#{session_id} #{session_name}' 2>/dev/null | _roster_session_id "$_AE_SESSION"
+    return 0
+}
+
+_watchdog_set_status() {
+    local _sid
+    _sid="$(_watchdog_session_id)"
+    # No id => the session is gone. Writing with an empty target would land on tmux's
+    # CURRENT session — another user's bar. Do nothing instead.
+    [[ -n "$_sid" ]] || return 0
+    tmux set-option -t "$_sid" "$1" "$2" 2>/dev/null || true
+    return 0
+}
 
 # Single owner of "put the bars back": called from BOTH the EXIT trap and `watchdog
 # stop`, so the two paths cannot drift apart (they already listed the session options
 # twice). Verified: bash DOES run an EXIT trap on SIGTERM, so this is the reliable path
 # — `watchdog stop` kills the pid and the dying watchdog clears up after itself.
+# EXIT cleanup, OWNERSHIP-CHECKED. A stop/start in quick succession can leave the OLD
+# watchdog's EXIT trap running after the NEW one is already publishing: unconditional
+# cleanup would then delete the new watchdog's pidfile and wipe its live publication —
+# the dying process silently vandalising its replacement. Only clean up what is still
+# ours. (Full stop/start serialization is a separate ticket; this is the cheap guard.)
+_watchdog_exit_cleanup() {
+    local _owner=""
+    [[ -f "$PIDFILE" ]] && _owner="$(cat "$PIDFILE" 2>/dev/null || true)"
+    if [[ -n "$_owner" && "$_owner" != "$$" ]]; then
+        # A newer watchdog owns the pidfile — leave its file AND its bar alone.
+        return 0
+    fi
+    rm -f "$PIDFILE"
+    _watchdog_clear_bar_options
+    return 0
+}
+
 _watchdog_clear_bar_options() {
     local _o _wi
+    local _sid
+    _sid="$(_watchdog_session_id)"
+    [[ -n "$_sid" ]] || return 0
     for _o in @ae_branch_status @ae_branch_name @ae_watchdog_status @ae_agents_status; do
-        tmux set-option -t "$_AE_SESSION" -u "$_o" 2>/dev/null || true
+        tmux set-option -t "$_sid" -u "$_o" 2>/dev/null || true
     done
     # @ae_window_status is WINDOW-scoped: a session -u never touches it, so a stopped
     # watchdog would freeze glyphs in the window list forever. Clear each window.
     while read -r _wi; do
         [[ -n "$_wi" ]] || continue
-        tmux set-option -w -t "${_AE_SESSION}:${_wi}" -u @ae_window_status 2>/dev/null || true
-    done < <(tmux list-windows -t "$_AE_SESSION" -F '#{window_index}' 2>/dev/null || true)
+        # By ID: an index can renumber between listing and clearing, which would skip a
+        # window and leave its glyphs frozen — the precise failure this cleanup prevents.
+        tmux set-option -w -t "$_wi" -u @ae_window_status 2>/dev/null || true
+    done < <(tmux list-windows -t "$_sid" -F '#{window_id}' 2>/dev/null || true)
     return 0
 }
 
@@ -8753,24 +8842,36 @@ _roster_label() {
     return 0
 }
 
-# Registered agent refs ('alias:name') from a session meta file, in meta order — which
-# ae itself writes as main, then workers, then spawned. Keying the roster on REGISTERED
-# slots rather than live panes is the point: an agent whose pane is gone keeps its slot
-# and renders ✖, instead of vanishing into a shorter line that reads as a healthy org.
-# The session id is dropped by FIELD, not by suffix: '${v%:*}' on a sid-less
-# 'alias:name' would silently yield just 'alias'. Agent names cannot contain ':'.
+# Registered agents from a session meta file as '<slot>\t<alias:name>' rows, in meta
+# order (main, then workers, then spawned — the order ae itself writes).
+#
+# SLOT is the routing key, ref is only the label (design-patterns 9: route by key,
+# display by address). Keying on the ref alone was wrong: `spawn` uniquifies only the
+# numeric slot (`while grep -q '^agent.spawned.${next_idx}='`), never alias:name, so two
+# registrations CAN share one display ref. With live panes also keyed by ref the last
+# pane would win — both entries showing that pane's verdict, and killing one pane would
+# NOT render its slot ✖, defeating the point of registered keying.
+#
+# The session id is dropped by FIELD (cut -d: -f1,2), not by suffix: '${v%:*}' on a
+# sid-less 'alias:name' would silently yield just 'alias'. Agent names cannot contain ':'.
 _roster_slot_refs() {
-    local meta="$1" line val
-    [[ -f "$meta" ]] || return 0
-    while IFS= read -r line; do
+    local meta="$1" line slot val _slot_fd
+    # '[[ -f ]]' is not enough: the file can exist and still fail to OPEN (permissions,
+    # a /proc oddity), and under a BARE call with errexit that redirect aborts the
+    # function before its `return 0`. Verified with /proc/1/mem. Open under a guard.
+    exec {_slot_fd}<"$meta" 2>/dev/null || return 0
+    while IFS= read -r line <&"$_slot_fd"; do
         case "$line" in
             agent.main=* | agent.worker.*=* | agent.spawned.*=*) ;;
             *) continue ;;
         esac
+        slot="${line%%=*}"
+        slot="${slot#agent.}"
         val="${line#*=}"
         [[ -n "$val" ]] || continue
-        printf '%s\n' "$(printf '%s' "$val" | cut -d: -f1,2)"
-    done <"$meta"
+        printf '%s\t%s\n' "$slot" "$(printf '%s' "$val" | cut -d: -f1,2)"
+    done
+    exec {_slot_fd}<&-
     return 0
 }
 
@@ -8965,7 +9066,7 @@ helper_watchdog_main() {
     # --- _run: the actual watchdog (runs inside hidden tmux window) ---
 
     echo "$$" >"$PIDFILE"
-    trap 'rm -f "$PIDFILE"; _watchdog_clear_bar_options' EXIT
+    trap '_watchdog_exit_cleanup' EXIT
     _watchdog_set_status @ae_watchdog_status "[watch ◌ starting]"
     _watchdog_set_status @ae_branch_status "$(_watchdog_branch_segment)"
 
@@ -8982,6 +9083,8 @@ helper_watchdog_main() {
     # Per-pane last sweep-nudge time, for meta-agent (steward) sweep cadence.
     declare -A last_sweep_nudge first_sweep_nudge meta_wedge_alerted meta_reconciled
     declare -A sweep_nudge_fails sweep_unreachable_alerted
+    # Cross-cycle: consecutive cycles a registered slot has had no live pane (D4).
+    declare -A missing_streak
     # Per-pane quiet baseline for waiting-user/blocked: the pane hash captured when a
     # declaration is first observed (already includes the declaration's own echo), so
     # only a *later* pane change (human reply / agent output) yields the quiet state.
@@ -9017,7 +9120,21 @@ helper_watchdog_main() {
         # per pane. Reset every cycle — a verdict is only ever THIS cycle's decision,
         # never a leftover from the previous one.
         declare -A roster_verdict=()
-        roster_order=()
+        # Live panes keyed by SLOT (@ae_slot), the churn-proof key — a display ref can be
+        # duplicated by `spawn`, a slot cannot.
+        declare -A live_slots=()
+        # D4 debounce: `spawn` writes meta BEFORE stamping the pane, so a NORMAL spawn is
+        # briefly registered-but-unstamped. The cycle-start snapshot narrows that window
+        # but cannot close it (the stamp may land mid-cycle). A slot must therefore be
+        # seen missing on TWO consecutive cycles before it renders ✖. A <=1-cycle late ✖
+        # is honest-ish; a durable false alert is the real harm, and this kills it.
+        # I2: snapshot the registered slots ONCE, here, and feed BOTH consumers (roster
+        # composition AND missing-pane detection) from this same snapshot. `spawn` writes
+        # meta BEFORE it stamps @ae_agent/@ae_slot on the pane, so a pane snapshot taken
+        # early plus a meta read taken late makes a NORMAL spawn look registered-but-gone
+        # for up to a full interval — a false ✖ on the bar and, worse, a durable false
+        # missing-alert. One read, one truth, no window between them.
+        roster_slots_snapshot="$(_roster_slot_refs "$META_DIR/meta")"
         while IFS='|' read -r pane agent proc pane_pid_val; do
             [[ -n "$agent" ]] || continue
             # Skip non-agent panes (no @ae_agent), the watchdog (and legacy monitor panes), and the events pane
@@ -9025,7 +9142,8 @@ helper_watchdog_main() {
                 "" | "(null)" | _watchdog | _shepherd | _loop | _events) continue ;; # legacy pre-rename watchdog panes (transition)
             esac
             live_agents["$agent"]="$pane"
-            roster_order+=("${pane}"$'\t'"${agent}")
+            pane_slot="$(tmux display-message -p -t "$pane" '#{@ae_slot}' 2>/dev/null || true)"
+            [[ -n "$pane_slot" ]] && live_slots["$pane_slot"]="$pane"
             cycle_total=$((cycle_total + 1))
 
             # Skip already-dead agents
@@ -9460,33 +9578,64 @@ helper_watchdog_main() {
         # above already reached this cycle; anything unjudged stays neutral rather than
         # borrowing a liveness claim.
         roster="$(
-            while IFS= read -r roster_ref; do
-                [[ -n "$roster_ref" ]] || continue
-                roster_p="${live_agents[$roster_ref]:-}"
+            while IFS=$'\t' read -r roster_slot roster_ref; do
+                [[ -n "$roster_slot" ]] || continue
+                # Route by SLOT, label by ref: two slots may legitimately share a display
+                # ref (spawn never uniquifies the name), and they must resolve to their
+                # OWN panes — otherwise one live pane would speak for both and a dead
+                # one would never show ✖.
+                roster_p="${live_slots[$roster_slot]:-}"
                 if [[ -z "$roster_p" ]]; then
-                    printf '%s\t%s\n' "$roster_ref" "missing"
+                    # Debounced: only a slot missing for TWO consecutive cycles is ✖.
+                    # A first sighting is '·' (undecided) — a spawn mid-stamp is not a
+                    # failure, and saying so would be the same manufactured claim the
+                    # roster exists to avoid.
+                    if [[ -n "${missing_streak[$roster_slot]:-}" ]]; then
+                        printf '%s\t%s\n' "$roster_ref" "missing"
+                    else
+                        printf '%s\t%s\n' "$roster_ref" ""
+                    fi
                 else
                     printf '%s\t%s\n' "$roster_ref" "${roster_verdict[$roster_p]:-}"
                 fi
-            done < <(_roster_slot_refs "$META_DIR/meta") | _roster_compose
+            done <<<"$roster_slots_snapshot" | _roster_compose
         )"
+        # Advance/reset the debounce from the SAME snapshot the roster was composed from.
+        while IFS=$'\t' read -r _ms_slot _ms_ref; do
+            [[ -n "$_ms_slot" ]] || continue
+            if [[ -n "${live_slots[$_ms_slot]:-}" ]]; then
+                unset 'missing_streak[$_ms_slot]'
+            else
+                missing_streak["$_ms_slot"]=1
+            fi
+        done <<<"$roster_slots_snapshot"
         if [[ -n "$roster" ]]; then
             _watchdog_set_status @ae_agents_status "$roster"
         else
             # UNSET, never publish "" — a roster outliving its agents would keep
             # asserting a fleet that no longer exists.
-            tmux set-option -t "$_AE_SESSION" -u @ae_agents_status 2>/dev/null || true
+            _roster_sid="$(_watchdog_session_id)"
+            if [[ -n "$_roster_sid" ]]; then
+                tmux set-option -t "$_roster_sid" -u @ae_agents_status 2>/dev/null || true
+            fi
         fi
         # Per-WINDOW glyphs → the window list. Grouped from the SAME per-pane verdicts,
         # in pane order. Window index comes from its own cheap list-panes call rather
         # than being added to the main loop's format string — that format is a pinned
         # parity contract with the aewatch sidecar (tests/aewatch_tests/test_25).
-        while IFS=$'\t' read -r _w_idx _w_glyphs; do
-            [[ -n "$_w_idx" ]] || continue
-            tmux set-option -w -t "${_AE_SESSION}:${_w_idx}" @ae_window_status "$_w_glyphs" 2>/dev/null || true
+        while IFS=$'\t' read -r _w_id _w_glyphs; do
+            [[ -n "$_w_id" ]] || continue
+            # Target by WINDOW ID (@N), never by index. An index is a POSITION: closing a
+            # window can renumber the ones after it (tmux's renumber-windows), so glyphs
+            # published against an index can land on the wrong window, and — worse — stop
+            # cleanup can MISS a renumbered window and leave exactly the frozen glyphs the
+            # cleanup exists to prevent. @N is server-global unique and stable for the
+            # window's life, which also means the target carries no session name at all
+            # and so sidesteps the prefix-match hazard entirely.
+            tmux set-option -w -t "$_w_id" @ae_window_status "$_w_glyphs" 2>/dev/null || true
         done < <(
             {
-                while IFS='|' read -r _p _wi _pa; do
+                while IFS='|' read -r _p _w_id_p _pa; do
                     [[ -n "$_p" ]] || continue
                     # Non-agent panes (the watchdog/events panes, or anything unstamped)
                     # register their WINDOW but contribute NO glyph — the monitor window
@@ -9496,12 +9645,12 @@ helper_watchdog_main() {
                     # mirrors the cycle's own (see the pane loop).
                     case "$_pa" in
                         "" | "(null)" | _watchdog | _shepherd | _loop | _events)
-                            printf '%s\t\n' "$_wi"
+                            printf '%s\t\n' "$_w_id_p"
                             continue
                             ;;
                     esac
-                    printf '%s\t%s\n' "$_wi" "$(_roster_glyph "${roster_verdict[$_p]:-__none__}")"
-                done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}|#{window_index}|#{@ae_agent}' 2>/dev/null || true)
+                    printf '%s\t%s\n' "$_w_id_p" "$(_roster_glyph "${roster_verdict[$_p]:-__none__}")"
+                done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}|#{window_id}|#{@ae_agent}' 2>/dev/null || true)
             } | _roster_window_compose
         )
 
@@ -10461,7 +10610,7 @@ WDPROLOGUE
             _watchdog_start _last_event_age _latest_relevant_event _agent_quiet_reason \
             _quiet_pane_decision _watchdog_meta_value _watchdog_trim _watchdog_git \
             _watchdog_branch_segment _watchdog_set_status _watchdog_clear_bar_options _watchdog_log _pane_has_descendant_named \
-            _roster_glyph _roster_label _roster_compose _roster_slot_refs _roster_window_compose \
+            _watchdog_exit_cleanup _roster_session_id _watchdog_session_id _roster_glyph _roster_label _roster_compose _roster_slot_refs _roster_window_compose \
             _buf_shows_throttle _pane_shows_throttle _load_agent_bins helper_watchdog_main
         printf 'helper_watchdog_main "$@"\n'
     } >"${AE_META}/watchdog.tmp.$$"
