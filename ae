@@ -2647,6 +2647,10 @@ cmd_stop() {
 # original elif conditions), so it classifies as not-found.
 _end_target_class() {
     local target="$1"
+    # Empty is never a valid target — and would otherwise match `${SESSIONS_DIR}/` (a
+    # real dir) and misclassify as 'stopped'. cmd_end already rejects an empty target
+    # upstream; this keeps the classifier correct on its own too.
+    [[ -n "$target" ]] || return 0
     if tmux has-session -t "$target" 2>/dev/null; then
         printf 'live'
         return 0

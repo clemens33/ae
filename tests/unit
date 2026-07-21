@@ -4731,6 +4731,9 @@ assert_eq "end class: a worktree dir with no session dir → worktree" "worktree
     "$(SESSIONS_DIR="$_end_sdir" WORKTREES_DIR="$_end_wdir" _end_target_class wt-one)"
 assert_eq "end class: an unknown name → empty (caller errors, no prompt)" "" \
     "$(SESSIONS_DIR="$_end_sdir" WORKTREES_DIR="$_end_wdir" _end_target_class ghost)"
+# Empty target must NOT match "${SESSIONS_DIR}/" (a real dir) and misclassify as stopped.
+assert_eq "end class: empty target → empty, never 'stopped' (guard)" "" \
+    "$(SESSIONS_DIR="$_end_sdir" WORKTREES_DIR="$_end_wdir" _end_target_class "")"
 # Path-traversal guard preserved from the original elif conditions: a name with '/'
 # is never a valid session/worktree dir, so it classifies as not-found (no prompt).
 mkdir -p "$_end_sdir/sub/evil"
