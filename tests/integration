@@ -830,11 +830,19 @@ assert_contains "doctor: prints summary" "Summary: 0 failure(s)" "$doctor_output
 REPO10B="$(setup_repo)"
 (cd "$REPO10B" && "$AE" --local test-orphan &) 2>/dev/null
 wait_for_session "test-orphan"
-tmux kill-session -t test-orphan 2>/dev/null || true  # dir remains → orphan
-# Poll until the kill actually propagates — a fixed sleep is a race under load, and the
-# orphan check verifies liveness on the session's own server, so a lingering session
-# would be (correctly) skipped and the test would flake.
-for _i in $(seq 1 20); do tmux has-session -t "=test-orphan" 2>/dev/null || break; sleep 0.3; done
+# Wait for the META/dir to be written before killing: the tmux session comes up first,
+# and killing in that window can race the launch into leaving no dir (no orphan) — the
+# same setup race as the named-server probe.
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/test-orphan/meta" ]] && break; sleep 0.3; done
+# Kill and confirm both invariants of a stopped orphan: tmux dead AND dir present. Retry
+# the kill until it takes (contention can drop the first one).
+for _i in $(seq 1 20); do
+    tmux has-session -t "=test-orphan" 2>/dev/null || break
+    tmux kill-session -t test-orphan 2>/dev/null || true
+    sleep 0.3
+done
+assert_eq "doctor orphan: test-orphan is a confirmed stopped orphan (dead + dir present)" "1" \
+    "$([[ -d "$HOME/.ae/sessions/test-orphan" ]] && ! tmux has-session -t "=test-orphan" 2>/dev/null && echo 1 || echo 0)"
 (cd "$REPO10B" && "$AE" doctor > "$TMPDIR/doctor-orphan.out" 2>/dev/null)
 doctor_orphan_out="$(cat "$TMPDIR/doctor-orphan.out")"
 assert_contains "doctor orphan: warns about the orphaned dir by name" "test-orphan" "$doctor_orphan_out"
