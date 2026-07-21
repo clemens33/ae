@@ -379,7 +379,10 @@ assert_eq "end prefix: 'lifepro' errors, no prompt (exact match required)" "1" \
 assert_eq "end prefix: the live neighbour 'lifeproj' is STILL ALIVE (not prefix-killed)" "1" \
     "$(tmux has-session -t '=lifeproj' 2>/dev/null && echo 1 || echo 0)"
 "$AE" end -f lifeproj 2>/dev/null || true
-sleep 0.3
+# Poll until fully torn down — a leaked lifeproj dir surfaces as an orphan in the
+# doctor-orphan test far below (teardown can lag under full-suite contention).
+for _i in $(seq 1 20); do tmux has-session -t "=lifeproj" 2>/dev/null || break; sleep 0.3; done
+"$AE" end -f lifeproj 2>/dev/null || true
 
 # ── P1: truthful prompt + stopped-dir end-by-name regression ─────────
 # test-state is a LOCAL, now-STOPPED session. Ending it removes leftover state with NO
@@ -768,7 +771,10 @@ REPO10B="$(setup_repo)"
 (cd "$REPO10B" && "$AE" --local test-orphan &) 2>/dev/null
 wait_for_session "test-orphan"
 tmux kill-session -t test-orphan 2>/dev/null || true  # dir remains → orphan
-sleep 0.5
+# Poll until the kill actually propagates — a fixed sleep is a race under load, and the
+# orphan check verifies liveness on the session's own server, so a lingering session
+# would be (correctly) skipped and the test would flake.
+for _i in $(seq 1 20); do tmux has-session -t "=test-orphan" 2>/dev/null || break; sleep 0.3; done
 (cd "$REPO10B" && "$AE" doctor > "$TMPDIR/doctor-orphan.out" 2>/dev/null)
 doctor_orphan_out="$(cat "$TMPDIR/doctor-orphan.out")"
 assert_contains "doctor orphan: warns about the orphaned dir by name" "test-orphan" "$doctor_orphan_out"
