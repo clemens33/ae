@@ -28,7 +28,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_history_lines|_ae_session_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -4770,6 +4770,31 @@ assert_eq "end prompt (B3): --purge-history discloses DELETION for 'all' too" "1
 assert_eq "end prompt: --keep-history says KEEPS (both single and all)" "1" \
     "$([[ "$(_end_confirm_body proj live "" false)" == *"KEEPS"* \
         && "$(_end_confirm_body all all "" false)" == *"KEEPS"* ]] && echo 1 || echo 0)"
+# review IMPORTANT: sanitize_branch_name already returns 'ae/<name>', so the push line
+# must NOT re-prefix 'ae/' (it printed 'ae/ae/proj'). Assert the exact branch fragment.
+assert_eq "end prompt: branch is 'ae/proj', never double-prefixed 'ae/ae/proj'" "1" \
+    "$([[ "$(_end_confirm_body proj live yes "")" == *"the ae/proj branch"* \
+        && "$(_end_confirm_body proj live yes "")" != *"ae/ae/"* ]] && echo 1 || echo 0)"
+# review IMPORTANT: the 'all' line must not overclaim a bare unconditional 'push first'.
+assert_eq "end prompt (all): push is qualified, not an unconditional 'push first'" "1" \
+    "$([[ "$(_end_confirm_body all all "" "")" == *"any unpushed commits"* \
+        && "$(_end_confirm_body all all "" "")" != *"push first"* ]] && echo 1 || echo 0)"
+# review BLOCKER B1: the end path resolves liveness on the target's OWN server
+# (_end_live_id reads meta tmux_server), not just the ambient one — a plain-shell end of
+# a NAMED-server session must not be misclassified as stopped (delete state, orphan it).
+assert_eq "end (B1): classifier + end resolve via the server-aware _end_live_id" "1" \
+    "$([[ "$AE_SOURCE" == *'if [[ -n "$(_end_live_id "$target")" ]]; then'* \
+        && "$AE_SOURCE" == *'read_session_meta "$1" tmux_server'* \
+        && "$AE_SOURCE" == *'_es_srv="$(_end_target_server "$session_name")"'* ]] && echo 1 || echo 0)"
+# review BLOCKER B2: cleanup_session must NOT rediscover live data by raw name after the
+# kill (a prefix-neighbor's mode bleeds in → the target's worktree leaks). It takes
+# mode/origin captured exactly by end_session and reads only on-disk meta otherwise.
+assert_eq "end (B2): cleanup_session takes captured mode/origin, no raw-name tmux read" "1" \
+    "$([[ "$AE_SOURCE" == *'cleanup_session() {'*'local session_name="$1" mode="${2:-}" origin="${3:-}"'* \
+        && "$AE_SOURCE" == *'cleanup_session "$session_name" "$mode" "$origin"'* ]] && echo 1 || echo 0)"
+_cs_body="$(awk "/^cleanup_session\\(\\) \\{/{p=1} p{print} p&&/^\\}\\$/{p=0}" ae 2>/dev/null || awk "/^cleanup_session\\(\\) \\{/{p=1} p{print} p&&/^\\}\\$/{p=0}" "$(dirname "$0")/../ae")"
+assert_eq "end (B2): cleanup_session has zero raw-name tmux show-environment reads" "0" \
+    "$(printf '%s' "$_cs_body" | grep -c 'tmux show-environment -t "\$session_name"' || true)"
 
 # ── _aewatch_autostart_if_available (s18: companion-autostart seam) ──
 # Structural guards: mirrors the steward hook — AE_NO_AUTOSTART guard, an

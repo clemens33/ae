@@ -1574,19 +1574,16 @@ _cleanup_agent_session_files() {
 }
 
 cleanup_session() {
-    local session_name="$1"
+    local session_name="$1" mode="${2:-}" origin="${3:-}"
     local wt="${WORKTREES_DIR}/${session_name}"
 
-    # Read mode and origin from tmux env (running sessions) then on-disk meta (stopped)
-    local mode origin
-    mode="$(tmux show-environment -t "$session_name" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
-    origin="$(tmux show-environment -t "$session_name" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || true)"
-    if [[ -z "$mode" ]]; then
-        mode="$(read_session_meta "$session_name" mode)"
-    fi
-    if [[ -z "$origin" ]]; then
-        origin="$(read_session_meta "$session_name" origin)"
-    fi
+    # mode/origin are passed by end_session, captured EXACTLY (by session id on the
+    # target's own server) BEFORE the kill. NEVER re-read live tmux by raw name here:
+    # this runs AFTER the kill, so `-t <name>` prefix-matches a live NEIGHBOR whose mode
+    # bleeds in — a git target then reads a local neighbor's mode and its worktree LEAKS
+    # (B2). Fall back to the target's on-disk meta only.
+    [[ -z "$mode" ]] && mode="$(read_session_meta "$session_name" mode)"
+    [[ -z "$origin" ]] && origin="$(read_session_meta "$session_name" origin)"
 
     # The underlying agent CLI conversation files (claude/codex jsonl) are KEPT by
     # default — they're the only local per-session record of token usage, retained
@@ -1692,20 +1689,25 @@ resolve_session_workdir() {
 end_session() {
     local session_name="$1"
 
-    # Resolve the EXACT session id once and target live tmux by it — never by the raw
-    # name, which prefix-matches (killing `project` while ending `project2`). Empty when
-    # the session is not live (stopped/orphan), in which case every live-tmux op below is
-    # skipped and the on-disk meta paths take over.
-    local _es_sid
-    _es_sid="$(_ae_session_id "$session_name")"
+    # Resolve the target on ITS OWN tmux server (from meta), by EXACT id — never by the
+    # raw name (prefix-matches: killing `project` while ending `proj`), and never on just
+    # the ambient server (a plain-shell end of a NAMED-server session would miss it,
+    # delete state, and orphan it alive). Empty id = not live there, so the live-tmux ops
+    # are skipped and the on-disk meta paths take over.
+    local _es_srv _es_sid
+    _es_srv="$(_end_target_server "$session_name")"
+    local -a _es_t=(tmux)
+    [[ -n "$_es_srv" ]] && _es_t=(command tmux -L "$_es_srv")
+    _es_sid="$("${_es_t[@]}" list-sessions -F '#{session_id} #{session_name}' 2>/dev/null | _roster_session_id "$session_name")"
 
     # Resolve mode and origin. Initialize to "" — under set -u a stopped session leaves
     # _es_sid empty, so the tmux reads below are skipped and `[[ -z "$mode" ]]` would
-    # otherwise abort on an unset var.
+    # otherwise abort on an unset var. These are captured EXACTLY here and passed into
+    # cleanup_session so it never rediscovers live data by raw name after the kill.
     local mode="" origin="" wdir=""
     if [[ -n "$_es_sid" ]]; then
-        mode="$(tmux show-environment -t "$_es_sid" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
-        origin="$(tmux show-environment -t "$_es_sid" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || true)"
+        mode="$("${_es_t[@]}" show-environment -t "$_es_sid" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
+        origin="$("${_es_t[@]}" show-environment -t "$_es_sid" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || true)"
     fi
     if [[ -z "$mode" ]]; then
         mode="$(read_session_meta "$session_name" mode)"
@@ -1718,9 +1720,9 @@ end_session() {
     # Local mode: just clean up (no work to preserve — files are in original dir)
     if [[ "$mode" == "local" ]]; then
         if [[ -n "$_es_sid" ]]; then
-            tmux kill-session -t "$_es_sid" 2>/dev/null || true
+            "${_es_t[@]}" kill-session -t "$_es_sid" 2>/dev/null || true
         fi
-        cleanup_session "$session_name"
+        cleanup_session "$session_name" "$mode" "$origin"
         echo "Ended local session $session_name"
         return 0
     fi
@@ -1783,9 +1785,9 @@ end_session() {
 
     # All good — clean up (kill by exact id; empty means it was not live)
     if [[ -n "$_es_sid" ]]; then
-        tmux kill-session -t "$_es_sid" 2>/dev/null || true
+        "${_es_t[@]}" kill-session -t "$_es_sid" 2>/dev/null || true
     fi
-    cleanup_session "$session_name"
+    cleanup_session "$session_name" "$mode" "$origin"
     echo "Ended $session_name"
     return 0
 }
@@ -2661,6 +2663,31 @@ cmd_stop() {
 # 'all' is handled by the caller and never passed here. A name containing '/' can
 # never be a valid session/worktree basename (path-traversal guard, preserved from the
 # original elif conditions), so it classifies as not-found.
+# The tmux server a target session lives on (its own meta `tmux_server`), or empty for
+# the ambient/default server. The `ae end` path must target the session's OWN server:
+# `_ae_session_id` lists the AMBIENT server, so a plain-shell `ae end X` for an X live on
+# a NAMED server misses it, misclassifies X as stopped, deletes its state, and leaves X
+# running (orphaned). The doctor orphan check already reads per-session tmux_server; the
+# end path must too. (The prefix-match class's other axis: wrong SERVER, not just a name
+# prefix — sweep every consumer of the target name on the end path.)
+_end_target_server() {
+    read_session_meta "$1" tmux_server 2>/dev/null
+    return 0
+}
+
+# Exact live-session id for a target on ITS OWN server. Server-correct variant of
+# _ae_session_id for the end path; empty when the target is not live there.
+_end_live_id() {
+    local target="$1" srv
+    srv="$(_end_target_server "$target")"
+    if [[ -n "$srv" ]]; then
+        command tmux -L "$srv" list-sessions -F '#{session_id} #{session_name}' 2>/dev/null | _roster_session_id "$target"
+    else
+        _ae_session_id "$target"
+    fi
+    return 0
+}
+
 _end_target_class() {
     local target="$1"
     # Reject empty and path components BEFORE any filesystem or tmux lookup. Empty would
@@ -2674,7 +2701,7 @@ _end_target_class() {
     # so `ae end proj` would classify as live and downstream could kill `project`.
     # Resolve the EXACT session id instead — a mere prefix of a live session does not
     # resolve, so it correctly falls through to the on-disk checks (or not-found).
-    if [[ -n "$(_ae_session_id "$target")" ]]; then
+    if [[ -n "$(_end_live_id "$target")" ]]; then
         printf 'live'
         return 0
     fi
@@ -2693,10 +2720,13 @@ _end_target_class() {
 # prompt cannot over-promise: local mode never pushes; git/full pushes only when a real
 # git worktree is present. Echoes 'yes' or nothing.
 _end_will_push() {
-    local target="$1" mode="" wdir _sid
-    _sid="$(_ae_session_id "$target")"
+    local target="$1" mode="" wdir _sid _srv
+    _srv="$(_end_target_server "$target")"
+    _sid="$(_end_live_id "$target")"
     if [[ -n "$_sid" ]]; then
-        mode="$(tmux show-environment -t "$_sid" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
+        local -a _wp_t=(tmux)
+        [[ -n "$_srv" ]] && _wp_t=(command tmux -L "$_srv")
+        mode="$("${_wp_t[@]}" show-environment -t "$_sid" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
     fi
     [[ -z "$mode" ]] && mode="$(read_session_meta "$target" mode 2>/dev/null)"
     [[ "$mode" == "local" ]] && return 0
@@ -2718,7 +2748,7 @@ _end_confirm_body() {
     case "$class" in
         all)
             printf "End ALL ae sessions?\n"
-            printf "  - Ends every running and stopped session (git/full ones commit any work + push first).\n"
+            printf "  - Ends every running and stopped session (git/full ones commit any work, then push any unpushed commits).\n"
             ;;
         stopped) printf "End stopped session '%s'?\n" "$target" ;;
         worktree) printf "Remove leftover worktree '%s'?\n" "$target" ;;
@@ -2729,7 +2759,9 @@ _end_confirm_body() {
         # target is not always a valid branch ref). end_session commits any uncommitted
         # work first, then pushes if there are unpushed commits.
         if [[ "$will_push" == "yes" ]]; then
-            printf "  - Commits any uncommitted work, then pushes any unpushed commits to the ae/%s branch.\n" "$(sanitize_branch_name "$target")"
+            # sanitize_branch_name already returns 'ae/<name>' — do NOT re-prefix 'ae/'
+            # (that printed 'ae/ae/<name>').
+            printf "  - Commits any uncommitted work, then pushes any unpushed commits to the %s branch.\n" "$(sanitize_branch_name "$target")"
         fi
         printf "  - Removes ae state at ~/.ae/sessions/%s/.\n" "$target"
     fi

@@ -403,6 +403,53 @@ assert_not_exists "end stopped local: session dir removed" "$HOME/.ae/sessions/t
 "$AE" end -f test-state 2>/dev/null || true
 sleep 0.5
 
+# ── P1 review B1: end a session on a DIFFERENT tmux server (named-server) ──
+# `_ae_session_id` lists only the AMBIENT server. A session live on a NAMED server, ended
+# from a shell whose ambient server is different, was misclassified as stopped: rc0, its
+# state deleted, the agent left ALIVE (orphaned). The end path must resolve the target's
+# OWN server from meta and target its exact id there. Server B here is the harness ambient
+# ("$AE_TMUX_SERVER"); server A is a distinct one the session actually runs on.
+SRV_A="ae-nsrv-$$"
+REPO_NS="$(setup_repo)"
+(cd "$REPO_NS" && AE_TMUX_SERVER="$SRV_A" "$AE" --local nsrv &) 2>/dev/null
+for _i in $(seq 1 25); do command tmux -L "$SRV_A" has-session -t nsrv 2>/dev/null && break; sleep 0.4; done
+assert_eq "end named-server: session came up on server A" "1" \
+    "$(command tmux -L "$SRV_A" has-session -t "=nsrv" 2>/dev/null && echo 1 || echo 0)"
+# End from the harness ambient server (B, != A). Must resolve A from meta and kill there.
+"$AE" end -f nsrv 2>/dev/null || true
+for _i in $(seq 1 20); do command tmux -L "$SRV_A" has-session -t "=nsrv" 2>/dev/null || break; sleep 0.3; done
+assert_eq "end named-server: the agent is KILLED on its own server (not orphaned)" "1" \
+    "$(command tmux -L "$SRV_A" has-session -t "=nsrv" 2>/dev/null && echo 0 || echo 1)"
+assert_not_exists "end named-server: state removed" "$HOME/.ae/sessions/nsrv"
+command tmux -L "$SRV_A" kill-server 2>/dev/null || true
+
+# ── P1 review B2: cleanup must not read a prefix-neighbor's mode after the kill ──
+# cleanup_session used to re-read AE_MODE by RAW NAME post-kill. With a git target and a
+# LOCAL prefix-neighbor live, `-t <git-target>` prefix-matched the neighbor, read mode
+# local, skipped the worktree removal → the target's worktree LEAKED and it lied "Cleaned
+# up local session". end_session now passes the exact captured mode/origin.
+REPO_B2="$(setup_repo)"
+REMOTE_B2="$TMPDIR/remote-b2.git"
+git -C "$REPO_B2" clone -q --bare "$REPO_B2" "$REMOTE_B2" 2>/dev/null
+git -C "$REPO_B2" remote add origin "$REMOTE_B2" 2>/dev/null || git -C "$REPO_B2" remote set-url origin "$REMOTE_B2"
+(cd "$REPO_B2" && "$AE" --worktree wtend &) 2>/dev/null       # git/worktree target
+wait_for_session "wtend"
+(cd "$REPO_B2" && "$AE" --local wtendlocal &) 2>/dev/null      # LOCAL prefix-neighbor (wtend is a prefix)
+wait_for_session "wtendlocal"
+wtend_wt="$(grep '^work_dir=' "$HOME/.ae/sessions/wtend/meta" | cut -d= -f2-)"
+if [[ -n "$wtend_wt" ]]; then
+    git -C "$wtend_wt" config user.email "test@test" 2>/dev/null || true
+    git -C "$wtend_wt" config user.name "test" 2>/dev/null || true
+fi
+"$AE" end -f wtend 2>/dev/null || true
+sleep 0.5
+assert_eq "end (B2): the git target's worktree is REMOVED (not leaked via a local neighbor)" "1" \
+    "$([[ -n "$wtend_wt" && ! -d "$wtend_wt" ]] && echo 1 || echo 0)"
+assert_eq "end (B2): the local prefix-neighbor is UNTOUCHED and still live" "1" \
+    "$(tmux has-session -t "=wtendlocal" 2>/dev/null && echo 1 || echo 0)"
+"$AE" end -f wtendlocal 2>/dev/null || true
+sleep 0.3
+
 # ── Test 3c: derived rollup surfaces a watchdog alert (slice 2) ──────
 # An agent with no declared state but a max-nudges alert from the watchdog must
 # raise attn:stale — the rollup reuses the watchdog's own alert events.
