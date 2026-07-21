@@ -329,7 +329,49 @@ if command -v python3 >/dev/null 2>&1; then
         "$("$AE" list --all --json 2>/dev/null | python3 -c 'import json,sys; json.load(sys.stdin); print("ok")' 2>/dev/null || echo "invalid")"
 fi
 
-# Clean up
+# ── P1: `ae end` resolves the target BEFORE the destructive prompt ───
+# Bug (Clemens 2026-07-21): `ae end <bogus>` PROMPTED the destructive confirm, then
+# said "not found" after y. A nonexistent target must error with NO prompt. This is a
+# CALLER PROBE (round-6 lesson: source text cannot prove a runtime order). Feed 'y' so
+# that a lingering prompt WOULD consume it and proceed — a correct impl errors first.
+# Capture output+rc WITHOUT aborting: these commands are EXPECTED to exit nonzero, and
+# `x="$(cmd)"` under the suite's `set -euo pipefail` would take that nonzero and abort
+# the whole run (AGENTS.md set-e hazard). The if/else keeps errexit from firing.
+if end_bogus_out="$(printf 'y\n' | "$AE" end this-name-does-not-exist-xyz 2>&1)"; then
+    end_bogus_rc=0
+else
+    end_bogus_rc=$?
+fi
+assert_eq "end bogus: exits nonzero" "1" "$([[ $end_bogus_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "end bogus: reports not found" "not found" "$end_bogus_out"
+assert_eq "end bogus: does NOT prompt before resolving" "1" \
+    "$([[ "$end_bogus_out" != *"Continue?"* && "$end_bogus_out" != *"Commits + pushes"* \
+        && "$end_bogus_out" != *"Removes ae state"* ]] && echo 1 || echo 0)"
+# Slash-bearing name → same not-found path, no prompt (traversal guard preserved).
+if end_slash_out="$(printf 'y\n' | "$AE" end ../evil 2>&1)"; then
+    end_slash_rc=0
+else
+    end_slash_rc=$?
+fi
+assert_eq "end slashed name: nonzero and no prompt" "1" \
+    "$([[ $end_slash_rc -ne 0 && "$end_slash_out" != *"Continue?"* ]] && echo 1 || echo 0)"
+
+# ── P1: truthful prompt + stopped-dir end-by-name regression ─────────
+# test-state is a LOCAL, now-STOPPED session. Ending it removes leftover state with NO
+# commit/push (local never pushes) — the prompt must not claim otherwise, and the
+# stopped-dir path must still end it (the elif we hoist resolution past).
+if end_stopped_out="$(printf 'y\n' | "$AE" end test-state 2>&1)"; then
+    end_stopped_rc=0
+else
+    end_stopped_rc=$?
+fi
+assert_eq "end stopped local: succeeds (stopped-dir path preserved through the hoist)" "1" \
+    "$([[ $end_stopped_rc -eq 0 ]] && echo 1 || echo 0)"
+assert_eq "end stopped local: prompt does NOT claim a push (local never pushes)" "1" \
+    "$([[ "$end_stopped_out" != *"Commits + pushes"* ]] && echo 1 || echo 0)"
+assert_not_exists "end stopped local: session dir removed" "$HOME/.ae/sessions/test-state"
+
+# Clean up (already ended above; harmless if so)
 "$AE" end -f test-state 2>/dev/null || true
 sleep 0.5
 

@@ -28,7 +28,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -4714,6 +4714,42 @@ assert_eq "ae end: default purge resolved per-session from its meta config" "1" 
         && "$AE_SOURCE" == *'get_config workspace.purge_agent_history'* ]] && echo 1 || echo 0)"
 assert_eq "ae end: purge gated on the resolved decision (kept unless true)" "1" \
     "$([[ "$AE_SOURCE" == *'"$_purge" == "true"'*'_cleanup_agent_session_files'* ]] && echo 1 || echo 0)"
+
+# ── ae end: resolve BEFORE the destructive prompt (Clemens 2026-07-21) ──
+# `ae end <bogus>` used to PROMPT the destructive confirm, then error "not found"
+# after y. The classifier resolves the target up front; not-found returns empty so
+# the caller errors WITHOUT prompting. (Ordering itself is pinned by an integration
+# CALLER PROBE — round-6 lesson: source text cannot prove a runtime order. These
+# unit checks pin the classifier's decisions.)
+_end_sdir="$(mktemp -d)"; _end_wdir="$(mktemp -d)"
+# shellcheck disable=SC2317  # invoked indirectly by _end_target_class
+tmux() { return 1; }  # no live sessions in this unit context
+mkdir -p "$_end_sdir/stopped-one" "$_end_wdir/wt-one"
+assert_eq "end class: a session dir → stopped" "stopped" \
+    "$(SESSIONS_DIR="$_end_sdir" WORKTREES_DIR="$_end_wdir" _end_target_class stopped-one)"
+assert_eq "end class: a worktree dir with no session dir → worktree" "worktree" \
+    "$(SESSIONS_DIR="$_end_sdir" WORKTREES_DIR="$_end_wdir" _end_target_class wt-one)"
+assert_eq "end class: an unknown name → empty (caller errors, no prompt)" "" \
+    "$(SESSIONS_DIR="$_end_sdir" WORKTREES_DIR="$_end_wdir" _end_target_class ghost)"
+# Path-traversal guard preserved from the original elif conditions: a name with '/'
+# is never a valid session/worktree dir, so it classifies as not-found (no prompt).
+mkdir -p "$_end_sdir/sub/evil"
+assert_eq "end class: a slash-bearing name is never resolved (traversal guard)" "" \
+    "$(SESSIONS_DIR="$_end_sdir" WORKTREES_DIR="$_end_wdir" _end_target_class sub/evil)"
+unset -f tmux; rm -rf "$_end_sdir" "$_end_wdir"
+# Truthful prompt body (pure, no read): "Commits + pushes" appears ONLY when the end
+# will actually push. A local session (the default) never pushes, so it must not claim
+# to — the old prompt said "Commits + pushes to ae/<name> branch" unconditionally.
+assert_eq "end prompt: pushing target shows the commit+push line" "1" \
+    "$([[ "$(_end_confirm_body proj live yes "")" == *"Commits + pushes to ae/proj branch"* ]] && echo 1 || echo 0)"
+assert_eq "end prompt: a NON-pushing (local) target omits the push claim" "1" \
+    "$([[ "$(_end_confirm_body proj live "" "")" != *"Commits + pushes"* ]] && echo 1 || echo 0)"
+assert_eq "end prompt: every class states it removes ae state" "1" \
+    "$([[ "$(_end_confirm_body proj stopped "" "")" == *"Removes ae state"* ]] && echo 1 || echo 0)"
+assert_eq "end prompt: a stopped target is named as stopped (truthful header)" "1" \
+    "$([[ "$(_end_confirm_body proj stopped "" "")" == *"stopped session 'proj'"* ]] && echo 1 || echo 0)"
+assert_eq "end prompt: a worktree-only target says it removes leftover worktree" "1" \
+    "$([[ "$(_end_confirm_body proj worktree "" "")" == *"leftover worktree 'proj'"* ]] && echo 1 || echo 0)"
 
 # ── _aewatch_autostart_if_available (s18: companion-autostart seam) ──
 # Structural guards: mirrors the steward hook — AE_NO_AUTOSTART guard, an
