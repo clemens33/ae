@@ -673,7 +673,10 @@ assert_eq "initial_prompt: opencode gets helpers path" \
 
 # ── lead-default Part 1: DEFAULT_CONFIG — model-named aliases, strict pins, opus48:lead ──
 # Extract the DEFAULT_CONFIG string from source, parse it with the real get_config.
-eval "$(awk "/^DEFAULT_CONFIG='/{p=1} p{print} p&&/watchdog = true'/{exit}" <<<"$AE_SOURCE")"
+# End on the FIRST line ending in a single quote (the closing quote), not a content
+# sentinel — the value grew a trailing [prompt] section, and a fixed last-line marker
+# would silently over-capture into ae's code if the layout shifts again.
+eval "$(awk '/^DEFAULT_CONFIG=\047/{p=1} p{print} p&&/\047$/{exit}' <<<"$AE_SOURCE")"
 _dc_cfg="$(mktemp)"
 printf '%s\n' "$DEFAULT_CONFIG" >"$_dc_cfg"
 _dc_xdg="$(mktemp -d)"
@@ -694,7 +697,20 @@ assert_eq "default-config: no alias uses --model best (strict pins only)" "0" "$
 # Old tier-named aliases retired.
 assert_eq "default-config: tier alias 'optimal' retired" "" "$(_dc_get agents.optimal)"
 assert_eq "default-config: tier alias 'fast' retired" "" "$(_dc_get agents.fast)"
+# Self-documenting default (P3): the [prompt] section is COMMENTED, so it documents the
+# hook without setting it — no instructions injected by default.
+assert_eq "default-config: [prompt] instructions stays UNSET (commented example only)" "" "$(_dc_get prompt.instructions)"
 rm -f "$_dc_cfg"
+
+# ── config.sample parity: the repo-visible sample IS the embedded default, byte-for-byte ──
+# One source of truth (DEFAULT_CONFIG) enforced by TEST, not discipline — the emission-list
+# pattern. install can't read a repo file (it must stay curl|bash-standalone), so config.sample
+# is a committed copy; this guard is what keeps the copy honest. ae writes the default with
+# `printf '%s\n'`, so the on-disk sample = the value + exactly one trailing newline.
+_cs_sample="$(dirname "$0")/../config.sample"
+assert_eq "config-sample: exists at repo root" "1" "$([[ -f "$_cs_sample" ]] && echo 1 || echo 0)"
+assert_eq "config-sample: byte-identical to the embedded DEFAULT_CONFIG (edit ae:DEFAULT_CONFIG, regen the sample)" "1" \
+    "$(diff <(printf '%s\n' "$DEFAULT_CONFIG") "$_cs_sample" >/dev/null 2>&1 && echo 1 || echo 0)"
 
 # ── get_config: NO disk cache — every call parses fresh (cache races removed) ──────
 # The old UID-global cache file (a) served same-second config rewrites STALE (mtime

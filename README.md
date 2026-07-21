@@ -136,24 +136,20 @@ Use `memo` for durable findings, decisions, and handoffs that should survive age
 ```toml
 [agents]
 claude = "claude --permission-mode bypassPermissions --model opus"
-codex = "codex --yolo -m gpt-5.5 -c model_reasoning_effort=high"
-gemini = "gemini --yolo -m gemini-3-pro-preview"
-grokbuild = "grok --always-approve -m grok-build --effort high"
-opencode = "opencode"
-
-# Recommended: capability tiers named by intent, not vendor model —
-# leads on optimal/best, chores/tests/scouts on fast, scoped work on standard.
-# Full block + role guidance: docs/getting-started/config.md
-fast = "claude --permission-mode bypassPermissions --model sonnet --effort low"
-best = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
+codex = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=high"
+grok = "grok --always-approve -m grok-build --effort high"
+agy = "agy --dangerously-skip-permissions"   # any CLI works — agy (Antigravity) has no special ae integration
 
 [workspace]
 main = claude:lead
+workers = codex:reviewer
 layout = vertical
 
 [prompt]
 instructions = "Always write tests. Prefer TypeScript."
 ```
+
+The block above is the minimal shape. The default `~/.ae/config` that ae writes on first run — mirrored in the repo as [`config.sample`](config.sample) — is an opinionated lead-pair setup with model-named, strictly-pinned aliases. Full lineup + role guidance: [docs/getting-started/config.md](docs/getting-started/config.md).
 
 **`[agents]`** -- register any CLI tool as an agent alias. The value is the shell command to launch it.
 
@@ -331,7 +327,7 @@ just format           # auto-format with shfmt
 just release          # full release: check → test → CalVer bump → changelog → tag → gh release
 ```
 
-Releases use CalVer in `YYYY.MM.BUILD` format.
+`just release` bumps the version to CalVer (`YYYY.MM.BUILD`) via `just bump`, then tags and cuts a GitHub release.
 
 Dev tooling:
 

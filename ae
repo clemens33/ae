@@ -45,7 +45,15 @@ fi
 #   Manifest:   regenerate_manifest, sync_session_assets
 #   Launch:     send_agent_cmd, capture_codex_session_id
 
-DEFAULT_CONFIG='[agents]
+DEFAULT_CONFIG='# ae config — auto-created on first run, yours to edit. Also mirrored in the repo as
+# config.sample. INI-style: [section] headers, key = value, "#" starts a comment.
+# To APPLY a change, stop + resume the session (ae stop <name>; ae <name>) — running agents
+# keep the command and system prompt they launched with. (ae doctor --refresh regenerates the
+# session helper scripts + workspace.md after you upgrade ae; it does NOT relaunch agents or
+# re-inject config.)
+
+[agents]
+# Register any CLI tool as an alias: alias = "the shell command that launches it".
 # Model-named aliases: the prefix names the model + major, so the running model is legible at
 # a glance. STRICT pins (never --model best) — a model-named alias must not silently run a
 # different model; that would make the name lie and blind the model-drift alarm.
@@ -59,6 +67,8 @@ gpt56luna = "codex -m gpt-5.6-luna -c model_reasoning_effort=low -a never"
 opencode = "opencode"
 
 [workspace]
+# main = the primary agent (alias:name). workers = comma-separated agents launched at start.
+# layout = vertical | horizontal | lead-pair. watchdog = true nudges stale/idle agents.
 # The lead delegates by rule (see docs/reference/delegation.md — spawn sonnet5:* / gpt56luna:*
 # for chores). Distinct worker role names avoid the duplicate-name dedup churn. Worker ORDER
 # matters under lead-pair: the FIRST worker (worker.0) is the COLEAD seat — a cross-model
@@ -66,7 +76,14 @@ opencode = "opencode"
 main = fable5:lead
 workers = gpt56sol:colead, opus48:builder
 layout = lead-pair
-watchdog = true'
+watchdog = true
+
+[prompt]
+# ae already injects the full workspace protocol into every agent — the roster, the helper
+# commands (send/ask/spawn/…), the delegation and comms rules — see the generated
+# ~/.ae/sessions/<name>/workspace.md. Anything set here is APPENDED on top of that; per-project
+# .ae/config overrides the global one. Uncomment to add your own house rules:
+# instructions = "Always write tests. Prefer TypeScript."'
 
 # Create default config if missing
 if [[ ! -f "$CONFIG_FILE" ]]; then
