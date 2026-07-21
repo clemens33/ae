@@ -413,11 +413,20 @@ SRV_A="ae-nsrv-$$"
 REPO_NS="$(setup_repo)"
 (cd "$REPO_NS" && AE_TMUX_SERVER="$SRV_A" "$AE" --local nsrv &) 2>/dev/null
 for _i in $(seq 1 25); do command tmux -L "$SRV_A" has-session -t nsrv 2>/dev/null && break; sleep 0.4; done
-assert_eq "end named-server: session came up on server A" "1" \
-    "$(command tmux -L "$SRV_A" has-session -t "=nsrv" 2>/dev/null && echo 1 || echo 0)"
+# Wait for the META too, not just the tmux session: the session comes up on server A
+# before its dir/meta (with tmux_server=A) is written, and `ae end` resolves the target
+# server FROM meta — ending in that window would (correctly) fail to find it. This is a
+# test-setup race, not the behavior under test.
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/nsrv/meta" ]] && break; sleep 0.3; done
+assert_eq "end named-server: session came up on server A with meta" "1" \
+    "$([[ -f "$HOME/.ae/sessions/nsrv/meta" ]] && command tmux -L "$SRV_A" has-session -t "=nsrv" 2>/dev/null && echo 1 || echo 0)"
 # End from the harness ambient server (B, != A). Must resolve A from meta and kill there.
-"$AE" end -f nsrv 2>/dev/null || true
-for _i in $(seq 1 20); do command tmux -L "$SRV_A" has-session -t "=nsrv" 2>/dev/null || break; sleep 0.3; done
+# Poll: retry the end until the agent is actually gone (teardown can lag under load).
+for _i in $(seq 1 20); do
+    command tmux -L "$SRV_A" has-session -t "=nsrv" 2>/dev/null || break
+    "$AE" end -f nsrv 2>/dev/null || true
+    sleep 0.4
+done
 assert_eq "end named-server: the agent is KILLED on its own server (not orphaned)" "1" \
     "$(command tmux -L "$SRV_A" has-session -t "=nsrv" 2>/dev/null && echo 0 || echo 1)"
 assert_not_exists "end named-server: state removed" "$HOME/.ae/sessions/nsrv"
@@ -436,13 +445,17 @@ git -C "$REPO_B2" remote add origin "$REMOTE_B2" 2>/dev/null || git -C "$REPO_B2
 wait_for_session "wtend"
 (cd "$REPO_B2" && "$AE" --local wtendlocal &) 2>/dev/null      # LOCAL prefix-neighbor (wtend is a prefix)
 wait_for_session "wtendlocal"
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/wtend/meta" ]] && break; sleep 0.3; done
 wtend_wt="$(grep '^work_dir=' "$HOME/.ae/sessions/wtend/meta" | cut -d= -f2-)"
 if [[ -n "$wtend_wt" ]]; then
     git -C "$wtend_wt" config user.email "test@test" 2>/dev/null || true
     git -C "$wtend_wt" config user.name "test" 2>/dev/null || true
 fi
-"$AE" end -f wtend 2>/dev/null || true
-sleep 0.5
+for _i in $(seq 1 20); do
+    tmux has-session -t "=wtend" 2>/dev/null || break
+    "$AE" end -f wtend 2>/dev/null || true
+    sleep 0.4
+done
 assert_eq "end (B2): the git target's worktree is REMOVED (not leaked via a local neighbor)" "1" \
     "$([[ -n "$wtend_wt" && ! -d "$wtend_wt" ]] && echo 1 || echo 0)"
 assert_eq "end (B2): the local prefix-neighbor is UNTOUCHED and still live" "1" \
