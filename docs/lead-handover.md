@@ -158,6 +158,16 @@ knowledge: what to trust, what to distrust, where to look first.
   `state=working`, watchdog quiet. Caught twice only by the lead reconciling
   worktrees against reports. A worker's silence after a long build is not evidence
   of work in progress.
+- **A wind-down ENDS with `ae end`; a done-declaration is not a wind-down.** The same
+  declared-vs-completed gap as "reconcile the tree": AIASSIST-115's lead declared the
+  wind-down (its own `events.jsonl` records done/"fully closed" on 2026-07-18) but never
+  ran `ae end` — the tmux session died while the session dir *and* worktree were left
+  behind, and every `--running`-scoped sensor (the default `ae list`, the steward's
+  charter) was structurally blind to it, so 115 sat half-dead for three days. Marking
+  `done` closes the *report*; `ae end` closes the *session* (commits/pushes if git,
+  removes the dir + worktree). Until the second runs, the work is an orphan. `ae doctor`
+  now surfaces the orphan population (17 worktrees vs 6 running when this was found), but
+  the discipline is the fix: a wind-down is not finished until `ae end` has run.
 - **Seat handoff on context exhaustion**: retire the agent into a fresh instance
   with a written standing summary; memos make the seat replaceable (a successor ran
   a gate round cold from memos and landed it).

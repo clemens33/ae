@@ -734,6 +734,31 @@ assert_contains "doctor: checks git" "OK    git" "$doctor_output"
 assert_contains "doctor: checks dummy agent" "OK    agent:dummy" "$doctor_output"
 assert_contains "doctor: prints summary" "Summary: 0 failure(s)" "$doctor_output"
 
+# ── Test 10b: ae doctor orphan check (P2a — lifecycle blindness) ──────
+# A session dir left behind after tmux dies (wind-down declared done but never
+# `ae end`ed) is invisible to every --running-scoped sensor. doctor reads on-disk
+# state, so it must surface the orphan by name. WARN, not FAIL — a stopped session
+# is legitimately here too. Assert by NAME (not count): HOME is shared across tests.
+REPO10B="$(setup_repo)"
+(cd "$REPO10B" && "$AE" --local test-orphan &) 2>/dev/null
+wait_for_session "test-orphan"
+tmux kill-session -t test-orphan 2>/dev/null || true  # dir remains → orphan
+sleep 0.5
+(cd "$REPO10B" && "$AE" doctor > "$TMPDIR/doctor-orphan.out" 2>/dev/null)
+doctor_orphan_out="$(cat "$TMPDIR/doctor-orphan.out")"
+assert_contains "doctor orphan: warns about the orphaned dir by name" "test-orphan" "$doctor_orphan_out"
+assert_eq "doctor orphan: the orphan line is a WARN" "1" \
+    "$(echo "$doctor_orphan_out" | grep -E 'WARN.*orphans' | grep -c 'test-orphan')"
+assert_contains "doctor orphan: hints resume-or-end" "finish teardown with 'ae end" "$doctor_orphan_out"
+assert_contains "doctor orphan: an orphan is a WARN, not a FAIL (summary still 0 failures)" \
+    "Summary: 0 failure(s)" "$doctor_orphan_out"
+"$AE" end -f test-orphan 2>/dev/null || true
+# With it ended, doctor no longer lists it (the orphan cleared).
+(cd "$REPO10B" && "$AE" doctor > "$TMPDIR/doctor-cleared.out" 2>/dev/null)
+assert_eq "doctor orphan: cleared after ae end (not listed once teardown finishes)" "0" \
+    "$(grep -c 'test-orphan' "$TMPDIR/doctor-cleared.out" 2>/dev/null || true)"
+sleep 0.3
+
 # ── Test 11: ae doctor --refresh ─────────────────────────────────────
 
 REPO11="$(setup_repo)"

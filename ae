@@ -3224,6 +3224,27 @@ cmd_doctor() {
     doctor_report "OK" "sessions" "$SESSIONS_DIR"
     doctor_report "OK" "worktrees" "$WORKTREES_DIR"
 
+    # Orphan check: session dirs / worktrees with no matching RUNNING session. These
+    # accumulate when a wind-down DECLARES done but never runs `ae end` — the dir +
+    # worktree are left behind, and every --running-scoped sensor (ae list default, the
+    # steward's charter) is structurally blind to them (the AIASSIST-115 class:
+    # half-dead for days, 17 worktrees vs 6 running). doctor is the one lane that reads
+    # on-disk state, so it surfaces the count + names and the human resumes (`ae <name>`)
+    # or finishes the teardown (`ae end <name>`). WARN, not FAIL: a deliberately stopped
+    # session is legitimately here too, and doctor cannot read intent.
+    local _orphan_n=0 _orphan_list="" _oname
+    while IFS= read -r _oname; do
+        [[ -z "$_oname" ]] && continue
+        _orphan_n=$((_orphan_n + 1))
+        _orphan_list="${_orphan_list}${_orphan_list:+, }${_oname}"
+    done < <(iter_stopped_sessions)
+    if ((_orphan_n == 0)); then
+        doctor_report "OK" "orphans" "no stopped or orphaned session dirs"
+    else
+        doctor_report "WARN" "orphans" "${_orphan_n} session dir(s)/worktree(s) with no running session: ${_orphan_list}"
+        doctor_report "WARN" "orphans-hint" "resume with 'ae <name>' or finish teardown with 'ae end <name>'"
+    fi
+
     local workspace_main
     workspace_main="$(get_config workspace.main)"
     if [[ -n "$workspace_main" ]]; then
