@@ -1668,9 +1668,14 @@ sanitize_branch_name() {
 # Resolve work directory for a session (running or stopped)
 resolve_session_workdir() {
     local session_name="$1"
-    local wdir=""
-    # Try tmux env first (running session)
-    wdir="$(tmux show-environment -t "$session_name" AE_DIR 2>/dev/null | sed 's/^AE_DIR=//' || true)"
+    local wdir="" _sid
+    # Try tmux env first (running session) — by EXACT id, never the raw name: a
+    # `-t project` read would prefix-match a live `project2` and hand back the wrong
+    # workdir. Empty id → not live → fall through to on-disk meta.
+    _sid="$(_ae_session_id "$session_name")"
+    if [[ -n "$_sid" ]]; then
+        wdir="$(tmux show-environment -t "$_sid" AE_DIR 2>/dev/null | sed 's/^AE_DIR=//' || true)"
+    fi
     if [[ -z "$wdir" ]] || [[ ! -d "$wdir" ]]; then
         # Try on-disk meta (stopped session)
         wdir="$(read_session_meta "$session_name" work_dir)"
@@ -1687,10 +1692,21 @@ resolve_session_workdir() {
 end_session() {
     local session_name="$1"
 
-    # Resolve mode and origin
-    local mode origin wdir
-    mode="$(tmux show-environment -t "$session_name" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
-    origin="$(tmux show-environment -t "$session_name" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || true)"
+    # Resolve the EXACT session id once and target live tmux by it — never by the raw
+    # name, which prefix-matches (killing `project` while ending `project2`). Empty when
+    # the session is not live (stopped/orphan), in which case every live-tmux op below is
+    # skipped and the on-disk meta paths take over.
+    local _es_sid
+    _es_sid="$(_ae_session_id "$session_name")"
+
+    # Resolve mode and origin. Initialize to "" — under set -u a stopped session leaves
+    # _es_sid empty, so the tmux reads below are skipped and `[[ -z "$mode" ]]` would
+    # otherwise abort on an unset var.
+    local mode="" origin="" wdir=""
+    if [[ -n "$_es_sid" ]]; then
+        mode="$(tmux show-environment -t "$_es_sid" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
+        origin="$(tmux show-environment -t "$_es_sid" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || true)"
+    fi
     if [[ -z "$mode" ]]; then
         mode="$(read_session_meta "$session_name" mode)"
     fi
@@ -1701,8 +1717,8 @@ end_session() {
 
     # Local mode: just clean up (no work to preserve — files are in original dir)
     if [[ "$mode" == "local" ]]; then
-        if tmux has-session -t "$session_name" 2>/dev/null; then
-            tmux kill-session -t "$session_name"
+        if [[ -n "$_es_sid" ]]; then
+            tmux kill-session -t "$_es_sid" 2>/dev/null || true
         fi
         cleanup_session "$session_name"
         echo "Ended local session $session_name"
@@ -1765,9 +1781,9 @@ end_session() {
         return 1
     fi
 
-    # All good — clean up
-    if tmux has-session -t "$session_name" 2>/dev/null; then
-        tmux kill-session -t "$session_name"
+    # All good — clean up (kill by exact id; empty means it was not live)
+    if [[ -n "$_es_sid" ]]; then
+        tmux kill-session -t "$_es_sid" 2>/dev/null || true
     fi
     cleanup_session "$session_name"
     echo "Ended $session_name"
@@ -2647,15 +2663,21 @@ cmd_stop() {
 # original elif conditions), so it classifies as not-found.
 _end_target_class() {
     local target="$1"
-    # Empty is never a valid target — and would otherwise match `${SESSIONS_DIR}/` (a
-    # real dir) and misclassify as 'stopped'. cmd_end already rejects an empty target
-    # upstream; this keeps the classifier correct on its own too.
-    [[ -n "$target" ]] || return 0
-    if tmux has-session -t "$target" 2>/dev/null; then
+    # Reject empty and path components BEFORE any filesystem or tmux lookup. Empty would
+    # match `${SESSIONS_DIR}/` (a real dir); '.' and '..' resolve to SESSIONS_DIR itself
+    # and its parent (`ae end ..` prompted on `sessions/../`); any '/' is traversal.
+    # None can be a valid session basename. (B2)
+    case "$target" in
+        "" | . | .. | */*) return 0 ;;
+    esac
+    # Exact live match (B1): `tmux has-session -t proj` PREFIX-MATCHES a live `project`,
+    # so `ae end proj` would classify as live and downstream could kill `project`.
+    # Resolve the EXACT session id instead — a mere prefix of a live session does not
+    # resolve, so it correctly falls through to the on-disk checks (or not-found).
+    if [[ -n "$(_ae_session_id "$target")" ]]; then
         printf 'live'
         return 0
     fi
-    [[ "$target" =~ [/] ]] && return 0
     if [[ -d "${SESSIONS_DIR}/${target}" ]]; then
         printf 'stopped'
         return 0
@@ -2671,8 +2693,11 @@ _end_target_class() {
 # prompt cannot over-promise: local mode never pushes; git/full pushes only when a real
 # git worktree is present. Echoes 'yes' or nothing.
 _end_will_push() {
-    local target="$1" mode wdir
-    mode="$(tmux show-environment -t "$target" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
+    local target="$1" mode="" wdir _sid
+    _sid="$(_ae_session_id "$target")"
+    if [[ -n "$_sid" ]]; then
+        mode="$(tmux show-environment -t "$_sid" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
+    fi
     [[ -z "$mode" ]] && mode="$(read_session_meta "$target" mode 2>/dev/null)"
     [[ "$mode" == "local" ]] && return 0
     wdir="$(resolve_session_workdir "$target")"
@@ -2693,25 +2718,30 @@ _end_confirm_body() {
     case "$class" in
         all)
             printf "End ALL ae sessions?\n"
-            printf "  - Ends every running and stopped session (git/full ones commit + push first).\n"
-            printf "  (Use 'ae stop' to resume later; it also preserves history.)\n"
-            return 0
+            printf "  - Ends every running and stopped session (git/full ones commit any work + push first).\n"
             ;;
         stopped) printf "End stopped session '%s'?\n" "$target" ;;
         worktree) printf "Remove leftover worktree '%s'?\n" "$target" ;;
         *) printf "End session '%s'?\n" "$target" ;;
     esac
-    if [[ "$will_push" == "yes" ]]; then
-        printf "  - Commits + pushes to ae/%s branch.\n" "$target"
+    if [[ "$class" != all ]]; then
+        # Only claim a push when one will happen, and name the SANITIZED branch (the raw
+        # target is not always a valid branch ref). end_session commits any uncommitted
+        # work first, then pushes if there are unpushed commits.
+        if [[ "$will_push" == "yes" ]]; then
+            printf "  - Commits any uncommitted work, then pushes any unpushed commits to the ae/%s branch.\n" "$(sanitize_branch_name "$target")"
+        fi
+        printf "  - Removes ae state at ~/.ae/sessions/%s/.\n" "$target"
     fi
-    printf "  - Removes ae state at ~/.ae/sessions/%s/.\n" "$target"
+    # Purge disclosure applies to EVERY class, `all` included: `ae end --purge-history all`
+    # must say it deletes conversation files — the old `all` early-return hid this (B3).
     if [[ "$purge" == true ]]; then
-        printf "  - DELETES this session's claude/codex conversation files (--purge-history).\n"
+        printf "  - DELETES claude/codex conversation files (--purge-history).\n"
     elif [[ "$purge" == false ]]; then
-        printf "  - KEEPS this session's claude/codex conversation files (--keep-history).\n"
+        printf "  - KEEPS claude/codex conversation files (--keep-history).\n"
     else
-        printf "  - KEEPS the claude/codex conversation files unless the session's own\n"
-        printf "    [workspace] purge_agent_history is set (kept = token/usage history).\n"
+        printf "  - KEEPS conversation files unless a session's own [workspace]\n"
+        printf "    purge_agent_history is set (kept = token/usage history).\n"
     fi
     printf "  (Use 'ae stop' to resume later; it also preserves history.)\n"
     return 0
@@ -3236,9 +3266,17 @@ cmd_doctor() {
     # on-disk state, so it surfaces the count + names and the human resumes (`ae <name>`)
     # or finishes the teardown (`ae end <name>`). WARN, not FAIL: a deliberately stopped
     # session is legitimately here too, and doctor cannot read intent.
-    local _orphan_n=0 _orphan_list="" _oname
+    local _orphan_n=0 _orphan_list="" _oname _osrv
     while IFS= read -r _oname; do
         [[ -z "$_oname" ]] && continue
+        # iter_stopped_sessions checks the AMBIENT tmux server. A session created on a
+        # NAMED server (tmux_server in its meta) is live but invisible there, so it would
+        # be a false orphan. Re-check the candidate against its OWN server (exact match)
+        # before counting it. (I1)
+        _osrv="$(read_session_meta "$_oname" tmux_server)"
+        if [[ -n "$_osrv" ]] && command tmux -L "$_osrv" has-session -t "=${_oname}" 2>/dev/null; then
+            continue
+        fi
         _orphan_n=$((_orphan_n + 1))
         _orphan_list="${_orphan_list}${_orphan_list:+, }${_oname}"
     done < <(iter_stopped_sessions)
@@ -8911,10 +8949,21 @@ _roster_session_id() {
     return 0
 }
 
-# The watchdog's own session id, resolved exactly. Cached per call site rather than per
-# cycle: a session id never changes for the life of the session.
+# Exact session id for an arbitrary NAME on the current tmux server ('' when no session
+# of exactly that name is live). The ONE shared "name → exact id" resolver — tmux
+# targets PREFIX-MATCH (`has-session -t proj` hits a live `project`), so any liveness or
+# live-session operation must resolve here and then target by id, never by the raw name.
+# (Third occurrence of the prefix-match class after display-message lookups and option
+# writes; _roster_session_id is the shared string-matcher underneath.)
+_ae_session_id() {
+    tmux list-sessions -F '#{session_id} #{session_name}' 2>/dev/null | _roster_session_id "$1"
+    return 0
+}
+
+# The watchdog's own session id, resolved exactly — now a thin call to the shared
+# resolver above (one resolver, not a sibling copy).
 _watchdog_session_id() {
-    tmux list-sessions -F '#{session_id} #{session_name}' 2>/dev/null | _roster_session_id "$_AE_SESSION"
+    _ae_session_id "$_AE_SESSION"
     return 0
 }
 
@@ -10805,7 +10854,7 @@ WDPROLOGUE
             _watchdog_start _last_event_age _latest_relevant_event _agent_quiet_reason \
             _quiet_pane_decision _watchdog_meta_value _watchdog_trim _watchdog_git \
             _watchdog_branch_segment _watchdog_set_status _watchdog_clear_bar_options _watchdog_log _pane_has_descendant_named \
-            _watchdog_exit_cleanup _roster_session_id _watchdog_session_id _roster_glyph _roster_label _roster_compose _roster_slot_refs _roster_window_compose \
+            _watchdog_exit_cleanup _roster_session_id _ae_session_id _watchdog_session_id _roster_glyph _roster_label _roster_compose _roster_slot_refs _roster_window_compose \
             _buf_shows_throttle _pane_shows_throttle _load_agent_bins helper_watchdog_main
         printf 'helper_watchdog_main "$@"\n'
     } >"${AE_META}/watchdog.tmp.$$"

@@ -356,6 +356,31 @@ fi
 assert_eq "end slashed name: nonzero and no prompt" "1" \
     "$([[ $end_slash_rc -ne 0 && "$end_slash_out" != *"Continue?"* ]] && echo 1 || echo 0)"
 
+# ── P1 review B2: dot-component targets are rejected before any prompt ─
+# `.` and `..` have no '/', so the slash guard alone accepted them and `ae end ..`
+# prompted on `sessions/../` (a real dir → classified 'stopped'). Reject dot
+# components at the same guard.
+for dotname in . ..; do
+    if end_dot_out="$(printf 'y\n' | "$AE" end "$dotname" 2>&1)"; then dot_rc=0; else dot_rc=$?; fi
+    assert_eq "end '$dotname': nonzero and NO prompt (dot-component rejected)" "1" \
+        "$([[ $dot_rc -ne 0 && "$end_dot_out" != *"Continue?"* && "$end_dot_out" != *"Removes ae state"* ]] && echo 1 || echo 0)"
+done
+
+# ── P1 review B1: `ae end <prefix>` must not touch a live neighbour ───
+# tmux -t PREFIX-MATCHES: with `lifeproj` live, `ae end lifepro` used to classify live
+# (has-session -t lifepro matched lifeproj), prompt, and could kill lifeproj. Resolve
+# the EXACT session id; a prefix that is not an exact session/dir is not-found.
+REPO_B1="$(setup_repo)"
+(cd "$REPO_B1" && "$AE" --local lifeproj &) 2>/dev/null
+wait_for_session "lifeproj"
+if end_pfx_out="$(printf 'y\n' | "$AE" end lifepro 2>&1)"; then end_pfx_rc=0; else end_pfx_rc=$?; fi
+assert_eq "end prefix: 'lifepro' errors, no prompt (exact match required)" "1" \
+    "$([[ $end_pfx_rc -ne 0 && "$end_pfx_out" != *"Continue?"* ]] && echo 1 || echo 0)"
+assert_eq "end prefix: the live neighbour 'lifeproj' is STILL ALIVE (not prefix-killed)" "1" \
+    "$(tmux has-session -t '=lifeproj' 2>/dev/null && echo 1 || echo 0)"
+"$AE" end -f lifeproj 2>/dev/null || true
+sleep 0.3
+
 # ── P1: truthful prompt + stopped-dir end-by-name regression ─────────
 # test-state is a LOCAL, now-STOPPED session. Ending it removes leftover state with NO
 # commit/push (local never pushes) — the prompt must not claim otherwise, and the
@@ -757,6 +782,29 @@ assert_contains "doctor orphan: an orphan is a WARN, not a FAIL (summary still 0
 (cd "$REPO10B" && "$AE" doctor > "$TMPDIR/doctor-cleared.out" 2>/dev/null)
 assert_eq "doctor orphan: cleared after ae end (not listed once teardown finishes)" "0" \
     "$(grep -c 'test-orphan' "$TMPDIR/doctor-cleared.out" 2>/dev/null || true)"
+sleep 0.3
+
+# I1 (review): a session dir whose meta names a DIFFERENT tmux server, live on THAT
+# server, must NOT be false-orphaned. iter_stopped_sessions checks only the ambient
+# server, so the orphan loop re-checks each candidate against its own tmux_server.
+OTHER_SRV="ae-other-$$"
+command tmux -L "$OTHER_SRV" new-session -d -s onother 2>/dev/null || true
+mkdir -p "$HOME/.ae/sessions/onother"
+cat > "$HOME/.ae/sessions/onother/meta" <<META
+session=onother
+mode=local
+tmux_server=$OTHER_SRV
+META
+(cd "$REPO10B" && "$AE" doctor > "$TMPDIR/doctor-i1.out" 2>/dev/null)
+assert_eq "doctor orphan (I1): a session live on its OWN named server is NOT false-orphaned" "0" \
+    "$(grep -E 'WARN.*orphans' "$TMPDIR/doctor-i1.out" 2>/dev/null | grep -c 'onother' || true)"
+command tmux -L "$OTHER_SRV" kill-server 2>/dev/null || true
+# With that server gone, the same dir now IS an orphan (proves the check is live-gated,
+# not just always-skipping anything with a tmux_server line).
+(cd "$REPO10B" && "$AE" doctor > "$TMPDIR/doctor-i1b.out" 2>/dev/null)
+assert_contains "doctor orphan (I1): once its server is gone, the dir IS an orphan" "onother" \
+    "$(grep -E 'WARN.*orphans' "$TMPDIR/doctor-i1b.out" 2>/dev/null || true)"
+rm -rf "$HOME/.ae/sessions/onother"
 sleep 0.3
 
 # ── Test 11: ae doctor --refresh ─────────────────────────────────────
