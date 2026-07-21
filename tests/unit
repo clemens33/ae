@@ -357,6 +357,14 @@ assert_eq "grok-strip: equals form -s=" \
 assert_eq "grok-strip: equals form -r=" \
     "grok -m grok-build" \
     "$(strip_grok_session_flags "grok -r=old-uuid -m grok-build")"
+# clap attached short value (no '='): live Grok 0.2.106 accepts -sUUID / -rUUID.
+# These MUST strip; otherwise inject/resume append a second long form and Grok rc=2.
+assert_eq "grok-strip: ATTACHED short -sVALUE (no equals, no space)" \
+    "grok -m grok-build --effort high" \
+    "$(strip_grok_session_flags "grok -sold-uuid -m grok-build --effort high")"
+assert_eq "grok-strip: ATTACHED short -rVALUE (no equals, no space)" \
+    "grok -m grok-build --effort high" \
+    "$(strip_grok_session_flags "grok -rold-uuid -m grok-build --effort high")"
 # THE TRAP: a bare --resume/-r must NOT consume the following flag as its value.
 assert_eq "grok-strip: BARE --resume does not eat the next flag (--effort survives)" \
     "grok --effort high" \
@@ -394,6 +402,24 @@ assert_eq "inject: grok strips a stacked SHORT -c before injecting the launch id
 assert_eq "inject: grok bare --resume in config does not eat --effort at launch" \
     "grok -m grok-build --effort high --session-id new-uuid" \
     "$(inject_session_id "grok -m grok-build --resume --effort high" "new-uuid")"
+# LAUNCH consumer regression (colead B2): attached -sOLD must not survive next to --session-id NEW.
+# Exactly one session option; --effort preserved. Mutation: drop the -s?* arm → this goes red.
+assert_eq "inject: ATTACHED -sOLD stripped; launch appends exactly one --session-id; effort preserved" \
+    "grok -m grok-build --effort high --session-id new-uuid" \
+    "$(inject_session_id "grok -sold-uuid -m grok-build --effort high" "new-uuid")"
+# Token-boundary check: no short -s* token remains (long --session-id is fine; *-s* would false-match it).
+assert_eq "inject: ATTACHED -sOLD leaves zero short -s* tokens" "0" \
+    "$(inject_session_id "grok -sold-uuid -m grok-build" "new-uuid" | tr ' ' '\n' | grep -c '^-s' || true)"
+assert_eq "inject: ATTACHED path yields exactly one --session-id" "1" \
+    "$(inject_session_id "grok -sold-uuid -m grok-build" "new-uuid" | tr ' ' '\n' | grep -c '^--session-id$' || true)"
+# RESUME consumer regression (colead B2): attached -rOLD must not stack with --resume NEW.
+assert_eq "resume: ATTACHED -rOLD stripped; resume appends exactly one --resume; effort preserved" \
+    "grok -m grok-build --effort high --resume new-uuid" \
+    "$(resume_cmd_from_cmd "grok -rold-uuid -m grok-build --effort high" "new-uuid")"
+assert_eq "resume: ATTACHED -rOLD leaves zero short -r* tokens" "0" \
+    "$(resume_cmd_from_cmd "grok -rold-uuid -m grok-build" "new-uuid" | tr ' ' '\n' | grep -c '^-r' || true)"
+assert_eq "resume: ATTACHED path yields exactly one --resume" "1" \
+    "$(resume_cmd_from_cmd "grok -rold-uuid -m grok-build" "new-uuid" | tr ' ' '\n' | grep -c '^--resume$' || true)"
 
 # ── resolve_agent_session_id: grok gets an upfront UUID (BLOCKER-1 real chain) ─────────
 # The whole point of BLOCKER-1: grok must resolve to a REAL UUID at launch (not

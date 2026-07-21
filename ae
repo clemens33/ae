@@ -408,6 +408,11 @@ strip_grok_session_flags() {
         case "${toks[i]}" in
             # attached value (equals form) — drop the single token
             --session-id=* | --resume=* | -s=* | -r=*) ;;
+            # clap-style attached short value (-sUUID / -rUUID, no '='): Grok 0.2.106
+            # accepts these. Without this branch, inject/resume append a second long
+            # session flag and live Grok rejects rc=2 (option used multiple times).
+            # Pattern is -s?* / -r?* so bare -s / -r fall through to the exact arms.
+            -s?* | -r?*) ;;
             # value-required session flag — drop it AND its value token
             --session-id | -s)
                 if ((i + 1 < n)); then i=$((i + 1)); fi
