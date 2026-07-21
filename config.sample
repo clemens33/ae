@@ -1,9 +1,10 @@
 # ae config — auto-created on first run, yours to edit. Also mirrored in the repo as
 # config.sample. INI-style: [section] headers, key = value, "#" starts a comment.
-# To APPLY a change, stop + resume the session (ae stop <name>; ae <name>) — running agents
-# keep the command and system prompt they launched with. (ae doctor --refresh regenerates the
-# session helper scripts + workspace.md after you upgrade ae; it does NOT relaunch agents or
-# re-inject config.)
+# New sessions read this whole file. Stopping + resuming an existing session (ae stop <name>;
+# ae <name>) relaunches its preserved agents with their CURRENT command + [prompt] — but the
+# roster (main/workers), layout, and watchdog stay pinned in session meta, so edits to those
+# take effect for NEW sessions only. (ae doctor --refresh regenerates the on-disk session
+# helpers + workspace.md after you upgrade ae; it changes neither running agents nor config.)
 
 [agents]
 # Register any CLI tool as an alias: alias = "the shell command that launches it".
