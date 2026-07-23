@@ -432,6 +432,30 @@ assert_eq "end named-server: the agent is KILLED on its own server (not orphaned
 assert_not_exists "end named-server: state removed" "$HOME/.ae/sessions/nsrv"
 command tmux -L "$SRV_A" kill-server 2>/dev/null || true
 
+# ── 2nd-delta B1 MIRROR: DEFAULT-server target, ended from a NAMED-ambient shell ──
+# The symmetric case: a session on the DEFAULT server (empty meta tmux_server) ended from
+# a shell whose ambient AE_TMUX_SERVER is a NAMED server. Empty server must select
+# `command tmux` (default), NEVER the ambient shim — otherwise the target is missed on the
+# named server, its state is deleted, and it is orphaned alive.
+REPO_DEF="$(setup_repo)"
+(cd "$REPO_DEF" && env -u AE_TMUX_SERVER "$AE" --local dsrv &) 2>/dev/null
+for _i in $(seq 1 25); do command tmux has-session -t dsrv 2>/dev/null && break; sleep 0.4; done
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/dsrv/meta" ]] && break; sleep 0.3; done
+assert_eq "end default-server: came up on the DEFAULT server with empty meta server" "1" \
+    "$([[ "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/dsrv/meta")" == "" ]] \
+        && command tmux has-session -t "=dsrv" 2>/dev/null && echo 1 || echo 0)"
+# End from a NAMED-ambient shell (AE_TMUX_SERVER set, != default). Must resolve the
+# default server and kill there. Poll: teardown can lag under load.
+for _i in $(seq 1 20); do
+    command tmux has-session -t "=dsrv" 2>/dev/null || break
+    AE_TMUX_SERVER="ae-mirror-$$" "$AE" end -f dsrv 2>/dev/null || true
+    sleep 0.4
+done
+assert_eq "end default-server (mirror): killed on the DEFAULT server, not orphaned" "1" \
+    "$(command tmux has-session -t "=dsrv" 2>/dev/null && echo 0 || echo 1)"
+assert_not_exists "end default-server (mirror): state removed" "$HOME/.ae/sessions/dsrv"
+command tmux kill-session -t dsrv 2>/dev/null || true
+
 # ── P1 review B2: cleanup must not read a prefix-neighbor's mode after the kill ──
 # cleanup_session used to re-read AE_MODE by RAW NAME post-kill. With a git target and a
 # LOCAL prefix-neighbor live, `-t <git-target>` prefix-matched the neighbor, read mode
