@@ -463,6 +463,67 @@ assert_eq "end default-mock (mirror): killed on the PINNED default, ambient+\$TM
 assert_not_exists "end default-mock (mirror): state removed" "$HOME/.ae/sessions/dsrv"
 command tmux -L "$DEFMOCK" kill-server 2>/dev/null || true
 
+# ── 4th review B1: launch INSIDE a foreign tmux pane records the REAL server ──
+# AE_TMUX_SERVER unset + $TMUX inherited → the session lands on the pane's server; meta
+# must record THAT server, not "" (which every exact-server consumer reads as default).
+FOREIGN="ae-foreign-$$"
+REPO_FOR="$(setup_repo)"
+command tmux -L "$FOREIGN" new-session -d -s host 2>/dev/null
+command tmux -L "$FOREIGN" send-keys -t host \
+    "cd '$REPO_FOR' && env -u AE_TMUX_SERVER HOME='$HOME' AE_HOME='$HOME/.ae' '$AE' --local insidesess >/dev/null 2>&1" Enter
+for _i in $(seq 1 30); do command tmux -L "$FOREIGN" has-session -t "=insidesess" 2>/dev/null && break; sleep 0.4; done
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/insidesess/meta" ]] && break; sleep 0.3; done
+assert_eq "launch-inside (4th B1): session landed on the FOREIGN server" "1" \
+    "$(command tmux -L "$FOREIGN" has-session -t "=insidesess" 2>/dev/null && echo 1 || echo 0)"
+assert_eq "launch-inside (4th B1): meta records the FOREIGN server, not empty" "$FOREIGN" \
+    "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/insidesess/meta" 2>/dev/null)"
+# ...and an end from a PLAIN shell finds it there (the full round trip the lie broke).
+for _i in $(seq 1 15); do
+    command tmux -L "$FOREIGN" has-session -t "=insidesess" 2>/dev/null || break
+    env -u AE_TMUX_SERVER "$AE" end -f insidesess >/dev/null 2>&1 || true
+    sleep 0.4
+done
+assert_eq "launch-inside (4th B1): plain-shell end kills it on the foreign server" "1" \
+    "$(command tmux -L "$FOREIGN" has-session -t "=insidesess" 2>/dev/null && echo 0 || echo 1)"
+assert_not_exists "launch-inside (4th B1): state removed" "$HOME/.ae/sessions/insidesess"
+command tmux -L "$FOREIGN" kill-server 2>/dev/null || true
+
+# ── 4th review B2: unreachable server → CANNOT VERIFY → state preserved, rc!=0 ──
+UNRV="ae-unreach-$$"
+REPO_UNR="$(setup_repo)"
+(cd "$REPO_UNR" && AE_TMUX_SERVER="$UNRV" "$AE" --local unrsess &) 2>/dev/null
+for _i in $(seq 1 25); do command tmux -L "$UNRV" has-session -t "=unrsess" 2>/dev/null && break; sleep 0.4; done
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/unrsess/meta" ]] && break; sleep 0.3; done
+chmod 000 "/tmp/tmux-$(id -u)/$UNRV"
+if unr_out="$(AE_TMUX_SERVER="$UNRV" "$AE" end -f unrsess 2>&1)"; then unr_rc=0; else unr_rc=$?; fi
+chmod 700 "/tmp/tmux-$(id -u)/$UNRV"
+assert_eq "unreachable (4th B2): end fails loudly instead of faking success" "1" \
+    "$([[ $unr_rc -ne 0 && "$unr_out" == *"cannot verify"* ]] && echo 1 || echo 0)"
+assert_eq "unreachable (4th B2): state PRESERVED while unverifiable" "1" \
+    "$([[ -d "$HOME/.ae/sessions/unrsess" ]] && echo 1 || echo 0)"
+assert_eq "unreachable (4th B2): session still alive after socket restore (nothing was faked)" "1" \
+    "$(command tmux -L "$UNRV" has-session -t "=unrsess" 2>/dev/null && echo 1 || echo 0)"
+"$AE" end -f unrsess >/dev/null 2>&1 || true
+command tmux -L "$UNRV" kill-server 2>/dev/null || true
+
+# ── 4th review B3-probe: no-remote worktree end preserves dir + commit reachable ──
+REPO_NR="$(setup_repo)"
+(cd "$REPO_NR" && AE_TMUX_SERVER="ae-nr-$$" "$AE" --worktree nrsess &) 2>/dev/null
+for _i in $(seq 1 25); do command tmux -L "ae-nr-$$" has-session -t "=nrsess" 2>/dev/null && break; sleep 0.4; done
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/nrsess/meta" ]] && break; sleep 0.3; done
+NR_WT="$(sed -n 's/^work_dir=//p' "$HOME/.ae/sessions/nrsess/meta")"
+echo "unpushable work" > "$NR_WT/nr-file.txt" 2>/dev/null || true
+if nr_out="$(AE_TMUX_SERVER="ae-nr-$$" "$AE" end -f nrsess 2>&1)"; then nr_rc=0; else nr_rc=$?; fi
+assert_eq "no-remote (4th): end succeeds and announces preservation" "1" \
+    "$([[ $nr_rc -eq 0 && "$nr_out" == *"Directory preserved"* ]] && echo 1 || echo 0)"
+assert_eq "no-remote (4th): NO contradictory removal claim in the output" "0" \
+    "$(printf '%s' "$nr_out" | grep -cE "Removed worktree|Cleaned up local session" || true)"
+assert_eq "no-remote (4th): the working dir SURVIVES with the commit reachable" "1" \
+    "$([[ -d "$NR_WT" ]] && git -C "$NR_WT" log --oneline -1 2>/dev/null | grep -q "ae: end session" && echo 1 || echo 0)"
+assert_not_exists "no-remote (4th): ae session state removed" "$HOME/.ae/sessions/nrsess"
+rm -rf "$NR_WT" 2>/dev/null || true
+command tmux -L "ae-nr-$$" kill-server 2>/dev/null || true
+
 # ── P1 review B2: cleanup must not read a prefix-neighbor's mode after the kill ──
 # cleanup_session used to re-read AE_MODE by RAW NAME post-kill. With a git target and a
 # LOCAL prefix-neighbor live, `-t <git-target>` prefix-matched the neighbor, read mode

@@ -1637,7 +1637,11 @@ cleanup_session() {
     fi
 
     if [[ "$mode" == "local" ]]; then
-        echo "Cleaned up local session $session_name"
+        if [[ "$preserve" == preserve ]]; then
+            echo "Removed ae session state for $session_name (working directory preserved)"
+        else
+            echo "Cleaned up local session $session_name"
+        fi
         return 0
     fi
 
@@ -1653,7 +1657,9 @@ cleanup_session() {
             rm -rf "$wt"
         fi
     fi
-    echo "Removed worktree for $session_name"
+    if [[ "$preserve" != preserve ]]; then
+        echo "Removed worktree for $session_name"
+    fi
 }
 
 # Sanitize session name to valid git branch name
@@ -1700,8 +1706,22 @@ end_session() {
     # are skipped and the on-disk meta paths take over.
     # Resolve the exact id on the target's OWN server through the centralized helpers —
     # no duplicate server logic here.
-    local _es_sid _es_preserve_workdir=false
+    local _es_sid _es_preserve_workdir=false _es_vg
     _es_sid="$(_end_live_id "$session_name")"
+    # An EMPTY id can mean "not live" — or "the query failed" (_end_live_id masks list
+    # failures by contract). Before treating empty as not-live and walking into cleanup,
+    # verify the server is actually reachable-or-cleanly-absent: an unreachable server
+    # must preserve state and fail loudly, not fake a stopped-session teardown. (The
+    # kill-site guard alone missed this — with a broken socket the resolution ITSELF
+    # returns empty and the kill block never runs. Caught by the 4th-fold caller probe.)
+    if [[ -z "$_es_sid" ]]; then
+        _es_vg=0
+        _end_verify_gone "$session_name" || _es_vg=$?
+        if ((_es_vg != 0)); then
+            echo "Error: cannot verify session '$session_name' state (its tmux server is unreachable) — state preserved." >&2
+            return 1
+        fi
+    fi
 
     # Resolve mode and origin. Initialize to "" — under set -u a stopped session leaves
     # _es_sid empty, so the tmux reads below are skipped and `[[ -z "$mode" ]]` would
@@ -1724,12 +1744,16 @@ end_session() {
     if [[ "$mode" == "local" ]]; then
         if [[ -n "$_es_sid" ]]; then
             _end_tmux "$session_name" kill-session -t "$_es_sid" 2>/dev/null || true
-            # VERIFY the kill took before destroying state: a swallowed kill failure
-            # followed by cleanup is the live-orphan/state-deleted outcome this slice
-            # exists to prevent. Verification (re-resolve, must be gone) is stronger
-            # than the kill's exit code.
-            if [[ -n "$(_end_live_id "$session_name")" ]]; then
-                echo "Error: could not kill session '$session_name' — state preserved. Retry 'ae end $session_name'." >&2
+            # VERIFY the kill before destroying state — and distinguish "verified gone"
+            # from "cannot verify": an unreachable server makes every query look empty,
+            # which the old check read as gone (4th review, B2).
+            _es_vg=0
+            _end_verify_gone "$session_name" || _es_vg=$?
+            if ((_es_vg == 1)); then
+                echo "Error: could not kill session '$session_name' — still alive; state preserved. Retry 'ae end $session_name'." >&2
+                return 1
+            elif ((_es_vg != 0)); then
+                echo "Error: cannot verify '$session_name' was killed (its tmux server is unreachable) — state preserved." >&2
                 return 1
             fi
         fi
@@ -1798,8 +1822,13 @@ end_session() {
     # All good — clean up (kill by exact id; empty means it was not live)
     if [[ -n "$_es_sid" ]]; then
         _end_tmux "$session_name" kill-session -t "$_es_sid" 2>/dev/null || true
-        if [[ -n "$(_end_live_id "$session_name")" ]]; then
-            echo "Error: could not kill session '$session_name' — state preserved. Retry 'ae end $session_name'." >&2
+        _es_vg=0
+        _end_verify_gone "$session_name" || _es_vg=$?
+        if ((_es_vg == 1)); then
+            echo "Error: could not kill session '$session_name' — still alive; state preserved. Retry 'ae end $session_name'." >&2
+            return 1
+        elif ((_es_vg != 0)); then
+            echo "Error: cannot verify '$session_name' was killed (its tmux server is unreachable) — state preserved." >&2
             return 1
         fi
     fi
@@ -2710,6 +2739,28 @@ _end_target_server() {
 # ending a default-server target from a named-server shell (or the reverse) would operate
 # on the wrong server, miss the live session, delete its state, and orphan it alive.
 # Every end-path tmux read AND the kill go through here — one resolver, no duplicates.
+# The tmux server a launch ACTUALLY lands on, resolved at write time — meta must
+# record the truth, not the raw env var. Bare tmux follows: AE_TMUX_SERVER (our shim),
+# else an inherited $TMUX (its socket), else the default socket. Recording only
+# AE_TMUX_SERVER meant a launch from inside a foreign tmux pane landed on THAT pane's
+# server while meta said "" (= default) — and every later exact-server consumer (end,
+# doctor) faithfully read the lie (4th review, B1). Inside the default server's own
+# panes the socket basename IS "default", which maps back to "" (meta stays canonical).
+resolve_launch_tmux_server() {
+    if [[ -n "${AE_TMUX_SERVER:-}" ]]; then
+        printf '%s' "$AE_TMUX_SERVER"
+        return 0
+    fi
+    if [[ -n "${TMUX:-}" ]]; then
+        local _sock="${TMUX%%,*}" _name
+        _name="$(basename "$_sock")"
+        if [[ "$_name" != "${AE_TMUX_DEFAULT_SOCKET:-default}" ]]; then
+            printf '%s' "$_name"
+        fi
+    fi
+    return 0
+}
+
 _end_tmux() {
     local target="$1"
     shift
@@ -2732,6 +2783,32 @@ _end_tmux() {
 # Exact session id for TARGET on its own server ('' when not live there). `|| true` keeps
 # this a return-0 query even when the recorded server is DOWN — a failed `list-sessions`
 # under pipefail must not set-e-abort a bare caller (AGENTS.md query-function contract).
+# Was TARGET's session VERIFIABLY killed? Tri-state, because "empty query result"
+# proves nothing when the query itself failed (4th review, B2: chmod the socket and
+# kill+list both fail — the old empty-means-gone check then cleaned up a LIVE session).
+#   0 — verified gone: a SUCCESSFUL listing lacks the name, or tmux says
+#       "no server running" (killing the last session exits the server; its stale
+#       socket file remains, so socket-absence is NOT the signal — the stderr is)
+#   1 — verified alive: a successful listing still contains the name
+#   2 — cannot verify: the server is unreachable (connect error) — callers must
+#       PRESERVE state and fail loudly rather than guess
+# Callers capture rc via `vg=0; _end_verify_gone t || vg=$?` (a bare call would
+# errexit-abort on 1/2 — AGENTS.md).
+_end_verify_gone() {
+    local target="$1" out rc=0
+    out="$(_end_tmux "$target" list-sessions -F '#{session_name}' 2>&1)" || rc=$?
+    if ((rc == 0)); then
+        if printf '%s\n' "$out" | grep -Fxq -- "$target"; then
+            return 1
+        fi
+        return 0
+    fi
+    case "$out" in
+        *"no server running"*) return 0 ;;
+        *) return 2 ;;
+    esac
+}
+
 _end_live_id() {
     _end_tmux "$1" list-sessions -F '#{session_id} #{session_name}' 2>/dev/null | _roster_session_id "$1" || true
     return 0
@@ -10588,7 +10665,7 @@ config=${CONFIG_FILE}
 main_pane=${PANE_IDS[0]}
 ae_path=${AE_PATH}
 ae_version=${AE_VERSION}
-tmux_server=${AE_TMUX_SERVER:-}
+tmux_server=$(resolve_launch_tmux_server)
 agent.main=${MAIN_ALIAS}:${MAIN_NAME}:${MAIN_SESSION_ID}
 agent_bin.main=$(extract_binary_from_cmd "$MAIN_CMD")
 EOF

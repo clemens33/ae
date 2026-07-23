@@ -28,7 +28,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -2210,6 +2210,53 @@ assert_eq "debounce: streak is advanced from the SAME snapshot the roster used" 
 # NIT — roster_order became dead once the roster was keyed by registered slots.
 assert_eq "cycle: dead roster_order accumulator is gone" "1" \
     "$([[ "$AE_SOURCE" != *'roster_order'* ]] && echo 1 || echo 0)"
+
+# ── 4th review: authoritative launch server + tri-state kill verify ──
+# B1: meta must record where the launch ACTUALLY lands. Bare tmux follows
+# AE_TMUX_SERVER, else inherited $TMUX, else default — recording the raw env var made
+# a foreign-pane launch write "" while living on the named server; every exact-server
+# consumer then faithfully read the lie.
+assert_eq "launch server: AE_TMUX_SERVER wins" "srv-a" \
+    "$(AE_TMUX_SERVER=srv-a TMUX='/tmp/tmux-1/other,1,0' resolve_launch_tmux_server)"
+assert_eq "launch server: inherited \$TMUX socket basename when shim unset" "othersrv" \
+    "$(AE_TMUX_SERVER='' TMUX='/tmp/tmux-1000/othersrv,123,0' resolve_launch_tmux_server)"
+assert_eq "launch server: inside the DEFAULT server's own pane → canonical empty" "" \
+    "$(AE_TMUX_SERVER='' TMUX='/tmp/tmux-1000/default,123,0' resolve_launch_tmux_server)"
+assert_eq "launch server: no tmux context at all → empty (true default)" "" \
+    "$(AE_TMUX_SERVER='' TMUX='' resolve_launch_tmux_server)"
+assert_eq "launch server: meta writer uses the resolver, not the raw env var" "1" \
+    "$([[ "$AE_SOURCE" == *'tmux_server=$(resolve_launch_tmux_server)'* \
+        && "$AE_SOURCE" != *'tmux_server=${AE_TMUX_SERVER:-}'* ]] && echo 1 || echo 0)"
+# B2: empty-query-result proves nothing when the QUERY failed. Tri-state:
+# 0 verified-gone / 1 verified-alive / 2 cannot-verify. Stub _end_tmux per case.
+_evg() { # fixture-mode _end_verify_gone: $1 = stub behavior
+    local mode="$1"
+    # shellcheck disable=SC2317
+    _end_tmux() {
+        case "$mode" in
+            alive) printf 'victim\nother\n'; return 0 ;;
+            gone) printf 'other\n'; return 0 ;;
+            noserver) printf 'no server running on /tmp/tmux-1000/x\n'; return 1 ;;
+            unreachable) printf 'error connecting to /tmp/tmux-1000/x (Permission denied)\n'; return 1 ;;
+        esac
+    }
+    local rc=0
+    _end_verify_gone victim || rc=$?
+    printf '%s' "$rc"
+    unset -f _end_tmux
+    return 0
+}
+assert_eq "verify-gone: successful listing WITH the name → 1 (verified alive)" "1" "$(_evg alive)"
+assert_eq "verify-gone: successful listing WITHOUT the name → 0 (verified gone)" "0" "$(_evg gone)"
+assert_eq "verify-gone: 'no server running' → 0 (last-session kill exits the server; stale socket remains, stderr is the signal)" "0" "$(_evg noserver)"
+assert_eq "verify-gone: connect error → 2 (CANNOT VERIFY — callers preserve state)" "2" "$(_evg unreachable)"
+assert_eq "verify-gone: both kill sites branch on the tri-state (alive vs unverifiable)" "1" \
+    "$([[ "$AE_SOURCE" == *'still alive; state preserved'* \
+        && "$AE_SOURCE" == *'cannot verify'*'server is unreachable'* ]] && echo 1 || echo 0)"
+# IMPORTANT A: preserve mode must not claim removal — the contradictory
+# Removed+Preserved pair was the 4th review's messaging finding.
+assert_eq "preserve: cleanup never claims 'Cleaned up'/'Removed worktree' when preserving" "1" \
+    "$([[ "$AE_SOURCE" == *'Removed ae session state for $session_name (working directory preserved)'* ]] && echo 1 || echo 0)"
 
 # session-shape: the SESSION NAME in status-left is user text in a tmux format context —
 # it must go through the format-literal escaper like the path does.
