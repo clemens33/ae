@@ -26,9 +26,11 @@ opencode = "opencode"
 # The lead delegates by rule (see docs/reference/delegation.md — spawn sonnet5:* / gpt56luna:*
 # for chores). Distinct worker role names avoid the duplicate-name dedup churn. Worker ORDER
 # matters under lead-pair: the FIRST worker (worker.0) is the COLEAD seat — a cross-model
-# judgment partner sharing the leads window (0:leads); builders live in 1:workers.
+# judgment partner sharing the leads window (0:leads); builders live in 1:workers. The
+# dedicated reviewer seat (gpt56sol:reviewer, xhigh) keeps cross-model review always on
+# hand — reviews go to a seat that is NOT the colead, so judgment and review stay separate.
 main = fable5:lead
-workers = gpt56sol:colead, opus48:builder
+workers = gpt56sol:colead, opus48:builder, gpt56sol:reviewer
 layout = lead-pair
 watchdog = true
 

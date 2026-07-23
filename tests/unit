@@ -683,7 +683,8 @@ _dc_xdg="$(mktemp -d)"
 _dc_get() { CONFIG_FILE="$_dc_cfg" AE_LOCAL_CONFIG="" XDG_RUNTIME_DIR="$_dc_xdg" get_config "$1"; }
 # SPEC: Opus is the everyday default lead (Fable left the plans); distinct worker role names.
 assert_eq "default-config: main = fable5:lead (frontier lead, cross-model colead beside it)" "fable5:lead" "$(_dc_get workspace.main)"
-assert_eq "default-config: workers = colead (worker.0 seat) + builder" "gpt56sol:colead, opus48:builder" "$(_dc_get workspace.workers)"
+assert_eq "default-config: workers = colead (worker.0 seat) + builder + dedicated reviewer" \
+    "gpt56sol:colead, opus48:builder, gpt56sol:reviewer" "$(_dc_get workspace.workers)"
 assert_eq "default-config: layout = lead-pair" "lead-pair" "$(_dc_get workspace.layout)"
 # STRICT model pins — a model-named alias must never silently run another model.
 assert_eq "default-config: opus48 pins --model opus" "1" "$([[ "$(_dc_get agents.opus48)" == *'--model opus'* ]] && echo 1 || echo 0)"
