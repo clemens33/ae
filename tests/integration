@@ -446,7 +446,7 @@ REPO_DEF="$(setup_repo)"
 (cd "$REPO_DEF" && AE_TMUX_SERVER="$DEFMOCK" "$AE" --local dsrv &) 2>/dev/null
 for _i in $(seq 1 25); do command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && break; sleep 0.4; done
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/dsrv/meta" ]] && break; sleep 0.3; done
-sed -i 's/^tmux_server=.*/tmux_server=/' "$HOME/.ae/sessions/dsrv/meta"
+sed -i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/dsrv/meta"
 assert_eq "end default-mock: session live on the mock-default with EMPTY meta server" "1" \
     "$([[ "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/dsrv/meta")" == "" ]] \
         && command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && echo 1 || echo 0)"
@@ -475,9 +475,9 @@ for _i in $(seq 1 30); do command tmux -L "$FOREIGN" has-session -t "=insidesess
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/insidesess/meta" ]] && break; sleep 0.3; done
 assert_eq "launch-inside (4th B1): session landed on the FOREIGN server" "1" \
     "$(command tmux -L "$FOREIGN" has-session -t "=insidesess" 2>/dev/null && echo 1 || echo 0)"
-assert_eq "launch-inside (4th B1): meta records the FOREIGN socket PATH, typed S:" \
-    "S:/tmp/tmux-$(id -u)/$FOREIGN" \
-    "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/insidesess/meta" 2>/dev/null)"
+assert_eq "launch-inside (4th B1): meta records the FOREIGN socket PATH + kind=socket" \
+    "/tmp/tmux-$(id -u)/$FOREIGN|socket" \
+    "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/insidesess/meta" 2>/dev/null)|$(sed -n 's/^tmux_server_kind=//p' "$HOME/.ae/sessions/insidesess/meta" 2>/dev/null)"
 # ...and an end from a PLAIN shell finds it there (the full round trip the lie broke).
 for _i in $(seq 1 15); do
     command tmux -L "$FOREIGN" has-session -t "=insidesess" 2>/dev/null || break
@@ -502,8 +502,8 @@ command tmux -S "$SC_PATH" send-keys -t schost \
     "cd '$REPO_SC' && env -u AE_TMUX_SERVER HOME='$HOME' AE_HOME='$HOME/.ae' '$AE' --local scoll >/dev/null 2>&1" Enter
 for _i in $(seq 1 30); do command tmux -S "$SC_PATH" has-session -t "=scoll" 2>/dev/null && break; sleep 0.4; done
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/scoll/meta" ]] && break; sleep 0.3; done
-assert_eq "S-collision (5th B1): meta records the typed -S socket PATH" "S:$SC_PATH" \
-    "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/scoll/meta" 2>/dev/null)"
+assert_eq "S-collision (5th B1): meta records the -S socket PATH + kind=socket" "$SC_PATH|socket" \
+    "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/scoll/meta" 2>/dev/null)|$(sed -n 's/^tmux_server_kind=//p' "$HOME/.ae/sessions/scoll/meta" 2>/dev/null)"
 for _i in $(seq 1 15); do
     command tmux -S "$SC_PATH" has-session -t "=scoll" 2>/dev/null || break
     env -u AE_TMUX_SERVER "$AE" end -f scoll >/dev/null 2>&1 || true
@@ -524,17 +524,17 @@ REPO_LEG="$(setup_repo)"
 (cd "$REPO_LEG" && AE_TMUX_SERVER="$LEG" "$AE" --local legsess &) 2>/dev/null
 for _i in $(seq 1 25); do command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null && break; sleep 0.4; done
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/legsess/meta" ]] && break; sleep 0.3; done
-sed -i 's/^tmux_server=.*/tmux_server=/' "$HOME/.ae/sessions/legsess/meta"   # legacy sim
+sed -i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/legsess/meta"   # legacy sim
 if leg_out="$(AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" end -f legsess 2>&1)"; then leg_rc=0; else leg_rc=$?; fi
-assert_eq "legacy-empty (6th B2): end FAILS CLOSED unconditionally, naming the found server" "1" \
-    "$([[ $leg_rc -ne 0 && "$leg_out" == *"pre-fix meta with no recorded tmux server"* \
-        && "$leg_out" == *"IS live on enumerable server"* && "$leg_out" == *"$LEG"* ]] && echo 1 || echo 0)"
+assert_eq "legacy-empty (7th): end fails closed, naming the found server (live case refuses even --assume-stopped)" "1" \
+    "$([[ $leg_rc -ne 0 && "$leg_out" == *"unresolved server record AND is LIVE on enumerable server"* \
+        && "$leg_out" == *"$LEG"* ]] && echo 1 || echo 0)"
 assert_eq "legacy-empty (5th B2): state preserved + session still alive" "1" \
     "$([[ -d "$HOME/.ae/sessions/legsess" ]] && command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null && echo 1 || echo 0)"
 AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" doctor --refresh legsess >/dev/null 2>&1 || true
-assert_eq "legacy-empty (5th B2): doctor --refresh migrates to the located socket PATH, typed" \
-    "S:/tmp/tmux-$(id -u)/$LEG" \
-    "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/legsess/meta" 2>/dev/null)"
+assert_eq "legacy-empty (5th B2): doctor --refresh migrates value + kind=socket" \
+    "/tmp/tmux-$(id -u)/$LEG|socket" \
+    "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/legsess/meta" 2>/dev/null)|$(sed -n 's/^tmux_server_kind=//p' "$HOME/.ae/sessions/legsess/meta" 2>/dev/null)"
 for _i in $(seq 1 15); do
     command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null || break
     AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" end -f legsess >/dev/null 2>&1 || true
@@ -544,6 +544,25 @@ assert_eq "legacy-empty (5th B2): post-migration end succeeds on the right serve
     "$(command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null && echo 0 || echo 1)"
 command tmux -L "$LEG" kill-server 2>/dev/null || true
 command tmux -L "$DEFB" kill-server 2>/dev/null || true
+
+# ── 7th review B3: zero-hit stays empty; --assume-stopped is the explicit teardown ──
+AS="ae-as-$$"
+REPO_AS="$(setup_repo)"
+(cd "$REPO_AS" && AE_TMUX_SERVER="$AS" "$AE" --local assess &) 2>/dev/null
+for _i in $(seq 1 25); do command tmux -L "$AS" has-session -t "=assess" 2>/dev/null && break; sleep 0.4; done
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/assess/meta" ]] && break; sleep 0.3; done
+command tmux -L "$AS" kill-server 2>/dev/null || true   # genuinely stopped now
+sed -i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/assess/meta"   # legacy sim
+"$AE" doctor --refresh assess >/dev/null 2>&1 || true
+assert_eq "assume-stopped (7th B3): zero-hit doctor leaves the record EMPTY (no default guess)" "" \
+    "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/assess/meta" 2>/dev/null)"
+if as_out="$(printf 'y\n' | "$AE" end -f assess 2>&1)"; then as_rc=0; else as_rc=$?; fi
+assert_eq "assume-stopped (7th B3): plain end still fails closed on the legacy record" "1" \
+    "$([[ $as_rc -ne 0 && "$as_out" == *"--assume-stopped"* ]] && echo 1 || echo 0)"
+if printf 'y\n' | "$AE" end -f --assume-stopped assess >/dev/null 2>&1; then as2_rc=0; else as2_rc=$?; fi
+assert_eq "assume-stopped (7th B3): explicit acknowledgement ends the stopped session" "1" \
+    "$([[ $as2_rc -eq 0 ]] && echo 1 || echo 0)"
+assert_not_exists "assume-stopped (7th B3): state removed" "$HOME/.ae/sessions/assess"
 
 # ── 4th review B2: unreachable server → CANNOT VERIFY → state preserved, rc!=0 ──
 UNRV="ae-unreach-$$"

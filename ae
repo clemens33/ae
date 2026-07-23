@@ -32,14 +32,18 @@ AE_LOCAL_CONFIG=""
 
 # Optional: isolated tmux server (for testing or multi-instance use)
 if [[ -n "${AE_TMUX_SERVER:-}" ]]; then
-    # Typed: S:/L: prefixes (recorded meta values re-exported on resume) and legacy
-    # shapes (absolute path → -S, name → -L) all dispatch correctly.
-    case "$AE_TMUX_SERVER" in
-        S:*) tmux() { command tmux -S "${AE_TMUX_SERVER#S:}" "$@"; } ;;
-        L:*) tmux() { command tmux -L "${AE_TMUX_SERVER#L:}" "$@"; } ;;
-        /*) tmux() { command tmux -S "$AE_TMUX_SERVER" "$@"; } ;;
-        *) tmux() { command tmux -L "$AE_TMUX_SERVER" "$@"; } ;;
-    esac
+    # Dispatch by the exported KIND when present (resume re-exports meta's pair);
+    # otherwise legacy shape (absolute path → -S, name → -L). A literal name that merely
+    # LOOKS typed ("S:x") is safe: the kind key decides, never the value prefix.
+    if [[ "${AE_TMUX_SERVER_KIND:-}" == "socket" ]]; then
+        tmux() { command tmux -S "$AE_TMUX_SERVER" "$@"; }
+    elif [[ "${AE_TMUX_SERVER_KIND:-}" == "name" ]]; then
+        tmux() { command tmux -L "$AE_TMUX_SERVER" "$@"; }
+    elif [[ "$AE_TMUX_SERVER" == /* ]]; then
+        tmux() { command tmux -S "$AE_TMUX_SERVER" "$@"; }
+    else
+        tmux() { command tmux -L "$AE_TMUX_SERVER" "$@"; }
+    fi
 fi
 
 # --- Function index ---
@@ -657,11 +661,11 @@ _ae_tmux_format_literal() {
 #   middle = tmux's native window list (role-named windows under lead-pair/lead-solo)
 #   right  = [<path><git>] [watch …]  (path static; git + watch via user options)
 _ae_apply_status_bar() {
-    local session="$1" mode="$2" origin="$3" work_dir="$4" server="${5:-}"
+    local session="$1" mode="$2" origin="$3" work_dir="$4" server="${5:-}" server_kind="${6:-}"
     local _t=(tmux)
     if [[ -n "$server" ]]; then
         local -a _sel_t=()
-        mapfile -t _sel_t < <(_srv_tmux_args "$server")
+        mapfile -t _sel_t < <(_srv_tmux_args "${server_kind:-}" "$server")
         _t=(command tmux "${_sel_t[@]}")
     fi
     "${_t[@]}" has-session -t "$session" 2>/dev/null || return 0
@@ -1738,16 +1742,28 @@ end_session() {
         # NOTHING. Fail closed until the record is positively migrated (doctor
         # --refresh) or explicitly overridden (AE_END_SERVER=<name|/path|S:...|L:...>,
         # honored by _end_target_server only for legacy-empty records).
-        if [[ -z "$(_end_target_server "$session_name")" ]]; then
+        local _es_kind
+        _es_kind="$(_end_target_kind "$session_name")"
+        if [[ -z "$(_end_target_server "$session_name")" || "$_es_kind" == "ambiguous" ]]; then
             local _es_found
             _es_found="$(_end_sweep_servers "$session_name")"
-            echo "Error: session '$session_name' has a pre-fix meta with no recorded tmux server — it may be live on a server ae cannot enumerate." >&2
             if [[ -n "$_es_found" ]]; then
-                echo "  (It IS live on enumerable server '$_es_found'.)" >&2
+                # Live on an enumerable server: NEVER endable blind, not even with
+                # --assume-stopped — the assumption is provably false.
+                echo "Error: session '$session_name' has an unresolved server record AND is LIVE on enumerable server '$_es_found'." >&2
+                echo "  Resolve: 'ae doctor --refresh $session_name', or end explicitly: AE_END_SERVER='<name|/socket/path>' ae end $session_name" >&2
+                echo "  State preserved." >&2
+                return 1
             fi
-            echo "  Resolve: 'ae doctor --refresh $session_name' (migrates the record), or end explicitly: AE_END_SERVER='<name|/socket/path>' ae end $session_name" >&2
-            echo "  State preserved." >&2
-            return 1
+            if [[ "${_AE_END_ASSUME_STOPPED:-}" != true ]]; then
+                echo "Error: session '$session_name' has a pre-fix/ambiguous server record — it may be live on a server ae cannot enumerate (-S sockets, foreign TMUX_TMPDIR)." >&2
+                echo "  Resolve: 'ae doctor --refresh $session_name' (migrates a locatable record)," >&2
+                echo "  end explicitly: AE_END_SERVER='<name|/socket/path>' ae end $session_name," >&2
+                echo "  or acknowledge it is stopped: ae end --assume-stopped $session_name" >&2
+                echo "  State preserved." >&2
+                return 1
+            fi
+            echo "Proceeding on explicit --assume-stopped acknowledgement (no live session found on any enumerable server)."
         fi
     fi
 
@@ -2753,25 +2769,23 @@ cmd_stop() {
 # running (orphaned). The doctor orphan check already reads per-session tmux_server; the
 # end path must too. (The prefix-match class's other axis: wrong SERVER, not just a name
 # prefix — sweep every consumer of the target name on the end path.)
-# Print "-S <path>" / "-L <name>" argv words for a stored server VALUE. Typed values
-# (S:/L: — every post-fix writer) dispatch explicitly; untyped legacy values fall back
-# to shape (absolute path → -S, name → -L). Empty in, empty out.
+# Print "-S <path>" / "-L <name>" argv words for a (KIND, VALUE) pair. The kind is a
+# SEPARATE stored key (tmux_server_kind) — never inferred from a value prefix, because
+# a legacy -L server may literally be named "S:x" (7th review B2). Legacy metas have no
+# kind: a non-empty legacy value is a NAME (-L; released ae never wrote paths); empty or
+# kind=ambiguous prints NOTHING — callers must fail closed, never guess a server.
 _srv_tmux_args() {
-    local v="$1"
-    case "$v" in
-        S:*) printf -- '-S\n%s\n' "${v#S:}" ;;
-        L:*) printf -- '-L\n%s\n' "${v#L:}" ;;
-        /*) printf -- '-S\n%s\n' "$v" ;;
-        ?*) printf -- '-L\n%s\n' "$v" ;;
+    local kind="$1" v="$2"
+    case "$kind" in
+        socket) [[ -n "$v" ]] && printf -- '-S\n%s\n' "$v" ;;
+        name) [[ -n "$v" ]] && printf -- '-L\n%s\n' "$v" ;;
+        ambiguous) : ;;
+        *) [[ -n "$v" ]] && printf -- '-L\n%s\n' "$v" ;;
     esac
     return 0
 }
 
 _end_target_server() {
-    # Validated explicit override — consumed ONLY when the durable record is
-    # legacy-empty (6th review I1: the advertised recovery command was ignored).
-    # AE_END_SERVER, not AE_TMUX_SERVER: the latter is ambient machinery and must
-    # never bleed into target resolution.
     local _m
     _m="$(read_session_meta "$1" tmux_server 2>/dev/null || true)"
     if [[ -z "$_m" && -n "${AE_END_SERVER:-}" ]]; then
@@ -2779,6 +2793,21 @@ _end_target_server() {
         return 0
     fi
     printf '%s' "$_m"
+    return 0
+}
+
+# The stored kind for a target ('' for legacy metas). The AE_END_SERVER override types
+# itself by shape (an explicit human assertion), and only applies when the durable
+# record is legacy-empty — mirroring _end_target_server.
+_end_target_kind() {
+    local _k _m
+    _m="$(read_session_meta "$1" tmux_server 2>/dev/null || true)"
+    if [[ -z "$_m" && -n "${AE_END_SERVER:-}" ]]; then
+        if [[ "$AE_END_SERVER" == /* ]]; then printf 'socket'; else printf 'name'; fi
+        return 0
+    fi
+    _k="$(read_session_meta "$1" tmux_server_kind 2>/dev/null || true)"
+    printf '%s' "$_k"
     return 0
 }
 
@@ -2791,41 +2820,56 @@ _end_target_server() {
 # ending a default-server target from a named-server shell (or the reverse) would operate
 # on the wrong server, miss the live session, delete its state, and orphan it alive.
 # Every end-path tmux read AND the kill go through here — one resolver, no duplicates.
-# The socket the launch ACTUALLY landed on, asked of tmux ITSELF (#{socket_path})
-# through the same channel that created the session — authoritative regardless of how
-# we got there (shim -L, inherited $TMUX incl. -S sockets and TMUX_TMPDIR, or the true
-# default). A basename is NOT a socket identity (5th review B1: a `-S /path/x` target
-# collided with an unrelated `-L x` server), so the PATH is the durable ownership fact.
-# Consumers dispatch by shape: /абс path → `tmux -S`, bare name → legacy `-L`, and an
-# EMPTY value now occurs only in PRE-FIX metas — readers must treat it as AMBIGUOUS
-# (fail closed / migrate), never silently as "default".
-# Fallback when the query fails mid-launch: the env-derived best guess (old behavior).
+# The server the launch ACTUALLY landed on, as a TYPED PAIR in two globals:
+#   _LAUNCH_SRV_KIND  = socket | name | ambiguous | ''   (separate KEY, never a value
+#                       prefix — a legacy -L server may literally be named "S:x")
+#   _LAUNCH_SRV_VALUE = the raw socket path / server name
+# Identity of a socket is proven by a PID ROUND-TRIP, never by cwd guessing: a
+# candidate absolute path is accepted only if the server at that path answers with the
+# SAME #{pid} (7th review B1: readlink -f in the CALLER's cwd recorded a same-named
+# decoy in another directory). Unverifiable → kind=ambiguous → every reader fails
+# closed, exactly like legacy-empty.
 resolve_launch_tmux_server() {
-    local _sp
+    _LAUNCH_SRV_KIND=""
+    _LAUNCH_SRV_VALUE=""
+    local _sp _pid _cand _cpid
     _sp="$(tmux display-message -p '#{socket_path}' 2>/dev/null || true)"
     if [[ -n "$_sp" ]]; then
-        # #{socket_path} is reported as the server was STARTED with — `tmux -S rel.sock`
-        # reports the RELATIVE path (6th review B1), and shape-dispatch would misread it
-        # as an -L name. Canonicalize when it resolves to a real socket; either way the
-        # selector TYPE is stored explicitly (S:) so no reader ever has to guess.
-        if [[ "$_sp" != /* ]]; then
-            local _abs
-            _abs="$(readlink -f -- "$_sp" 2>/dev/null || true)"
-            [[ -n "$_abs" && -S "$_abs" ]] && _sp="$_abs"
+        if [[ "$_sp" == /* ]]; then
+            _LAUNCH_SRV_KIND="socket"
+            _LAUNCH_SRV_VALUE="$_sp"
+            return 0
         fi
-        printf 'S:%s' "$_sp"
+        _pid="$(tmux display-message -p '#{pid}' 2>/dev/null || true)"
+        _cand="$(readlink -f -- "$_sp" 2>/dev/null || true)"
+        if [[ -n "$_pid" && -n "$_cand" && -S "$_cand" ]]; then
+            _cpid="$(command tmux -S "$_cand" display-message -p '#{pid}' 2>/dev/null || true)"
+            if [[ -n "$_cpid" && "$_cpid" == "$_pid" ]]; then
+                _LAUNCH_SRV_KIND="socket"
+                _LAUNCH_SRV_VALUE="$_cand"
+                return 0
+            fi
+        fi
+        _LAUNCH_SRV_KIND="ambiguous"
+        _LAUNCH_SRV_VALUE="$_sp"
         return 0
     fi
     if [[ -n "${AE_TMUX_SERVER:-}" ]]; then
-        if [[ "$AE_TMUX_SERVER" == /* ]]; then
-            printf 'S:%s' "$AE_TMUX_SERVER"
+        # Strip an accidentally re-exported typed prefix (7th review I1: the old
+        # fallback double-prefixed), then type by shape.
+        local _v="${AE_TMUX_SERVER#S:}"
+        [[ "$_v" == "$AE_TMUX_SERVER" ]] && _v="${AE_TMUX_SERVER#L:}"
+        if [[ "$_v" == /* ]]; then
+            _LAUNCH_SRV_KIND="socket"
         else
-            printf 'L:%s' "$AE_TMUX_SERVER"
+            _LAUNCH_SRV_KIND="name"
         fi
+        _LAUNCH_SRV_VALUE="$_v"
         return 0
     fi
     if [[ -n "${TMUX:-}" ]]; then
-        printf 'S:%s' "${TMUX%%,*}"
+        _LAUNCH_SRV_KIND="socket"
+        _LAUNCH_SRV_VALUE="${TMUX%%,*}"
     fi
     return 0
 }
@@ -2833,22 +2877,19 @@ resolve_launch_tmux_server() {
 _end_tmux() {
     local target="$1"
     shift
-    local srv
+    local srv kind
     srv="$(_end_target_server "$target")"
+    kind="$(_end_target_kind "$target")"
+    if [[ "$kind" == "ambiguous" ]]; then
+        # An ambiguous record must never pick a server — the caller's fail-closed
+        # guards handle it; running anything here would be a guess.
+        return 1
+    fi
     if [[ -n "$srv" ]]; then
-        # Typed selector (S:/L:) or legacy shape — one dispatcher, no guessing
-        # (6th review B1: #{socket_path} can be RELATIVE, so shape alone lies).
         local -a _sel=()
-        mapfile -t _sel < <(_srv_tmux_args "$srv")
+        mapfile -t _sel < <(_srv_tmux_args "$kind" "$srv")
         command tmux "${_sel[@]}" "$@"
     else
-        # EMPTY meta server = the DEFAULT socket — pinned EXPLICITLY. A bare
-        # `command tmux` follows an inherited $TMUX first (verified: from a named pane
-        # it lists the NAMED server's sessions), so from inside any tmux pane the
-        # "default" branch would silently target the CALLER's server instead. -L beats
-        # $TMUX, and clearing TMUX belts the braces. AE_TMUX_DEFAULT_SOCKET is a test
-        # seam ONLY (fixtures point "default" at an isolated socket — probing this
-        # branch against the real default server is how the fleet got killed once).
         TMUX='' command tmux -L "${AE_TMUX_DEFAULT_SOCKET:-default}" "$@"
     fi
 }
@@ -3012,14 +3053,15 @@ _end_confirm_body() {
 }
 
 cmd_end() {
-    local target="" force=false purge_cli="" a
+    local target="" force=false purge_cli="" assume_stopped=false a
     for a in "$@"; do
         case "$a" in
             -f | --force) force=true ;;
+            --assume-stopped) assume_stopped=true ;;
             --purge-history) purge_cli=true ;;
             --keep-history) purge_cli=false ;;
             --*)
-                echo "Error: unknown flag '$a'. Use -f, --purge-history, --keep-history." >&2
+                echo "Error: unknown flag '$a'. Use -f, --purge-history, --keep-history, --assume-stopped." >&2
                 return 1
                 ;;
             *)
@@ -3045,6 +3087,20 @@ cmd_end() {
     # session from an unrelated cwd, or `ae end all`, honors each session's policy,
     # not the caller's. Empty = no CLI override.
     _AE_PURGE_HISTORY_CLI="$purge_cli"
+    # The stopped acknowledgement is PER-TARGET destructive intent — never valid for
+    # 'all'. Same for the AE_END_SERVER override: process-global env would apply to
+    # EVERY session in the loop (7th review I2) — refuse the combination loudly.
+    _AE_END_ASSUME_STOPPED="$assume_stopped"
+    if [[ "$target" == "all" ]]; then
+        if [[ "$assume_stopped" == true ]]; then
+            echo "Error: --assume-stopped is per-target only — not valid with 'all'." >&2
+            return 1
+        fi
+        if [[ -n "${AE_END_SERVER:-}" ]]; then
+            echo "Error: AE_END_SERVER is a single-target override — unset it for 'ae end all'." >&2
+            return 1
+        fi
+    fi
 
     # RESOLVE BEFORE PROMPTING. A destructive confirm must never fire on an unresolved
     # target: `ae end <bogus>` used to prompt, read 'y', THEN error "not found". Classify
@@ -3172,32 +3228,26 @@ sync_existing_session_assets() {
         if ((_mig_n == 1)); then
             if {
                 flock -w 5 201 || exit 1
-                awk -F= -v v="S:${_mig_hits}" '
+                awk -F= -v v="${_mig_hits}" '
                     $1 == "tmux_server" { print "tmux_server=" v; next }
+                    $1 == "tmux_server_kind" { next }
                     { print }
+                    END { print "tmux_server_kind=socket" }
                 ' "$meta" >"${meta}.tmp.$$" && mv "${meta}.tmp.$$" "$meta"
             } 201>"${meta_dir}/meta.lock"; then
-                echo "  migrated tmux_server: '' → S:${_mig_hits} (positively located)"
+                echo "  migrated tmux_server: '' → ${_mig_hits} (kind=socket, positively located)"
             else
                 echo "  WARN: tmux_server migration SKIPPED — could not lock meta (another writer active); record unchanged" >&2
             fi
         elif ((_mig_n > 1)); then
             echo "  WARN: '${session_name}' is live on ${_mig_n} servers — tmux_server left legacy-empty (ambiguous); end will fail closed" >&2
         else
-            # Zero enumerable hits + default checked: this deliberate, human-invoked
-            # doctor run is the positive act that resolves the legacy ambiguity — record
-            # the default claim so a genuinely stopped session becomes endable again.
-            if {
-                flock -w 5 201 || exit 1
-                awk -F= -v v="L:${AE_TMUX_DEFAULT_SOCKET:-default}" '
-                    $1 == "tmux_server" { print "tmux_server=" v; next }
-                    { print }
-                ' "$meta" >"${meta}.tmp.$$" && mv "${meta}.tmp.$$" "$meta"
-            } 201>"${meta_dir}/meta.lock"; then
-                echo "  migrated tmux_server: '' → L:${AE_TMUX_DEFAULT_SOCKET:-default} (not live on any enumerable server — presumed stopped/default)"
-            else
-                echo "  WARN: tmux_server migration SKIPPED — could not lock meta (another writer active); record unchanged" >&2
-            fi
+            # ZERO hits: NOT a positive location — recording any server here would be a
+            # guess (7th review B3: an arbitrary -S target made the old default-claim
+            # migrate-then-delete a live session). The record stays legacy-empty; a
+            # genuinely stopped session is ended with the explicit per-target
+            # acknowledgement: ae end --assume-stopped <name>.
+            echo "  '${session_name}' not live on any enumerable server — record left as-is; if it is genuinely stopped: ae end --assume-stopped ${session_name}"
         fi
     fi
     work_dir="$(read_session_meta "$session_name" work_dir)"
@@ -3218,7 +3268,8 @@ sync_existing_session_assets() {
     # session isn't running. Targets the session's own tmux server (from meta).
     local server
     server="$(read_session_meta "$session_name" tmux_server)"
-    _ae_apply_status_bar "$session_name" "$mode" "$origin" "$work_dir" "$server"
+    server_kind="$(read_session_meta "$session_name" tmux_server_kind)"
+    _ae_apply_status_bar "$session_name" "$mode" "$origin" "$work_dir" "$server" "$server_kind"
 
     # Cycle a RUNNING watchdog so refreshed helper code actually goes live. The
     # running watchdog keeps its already-loaded body until restarted (refresh only
@@ -3236,7 +3287,7 @@ sync_existing_session_assets() {
     local _wt=(tmux)
     if [[ -n "$server" ]]; then
         local -a _sel_wt=()
-        mapfile -t _sel_wt < <(_srv_tmux_args "$server")
+        mapfile -t _sel_wt < <(_srv_tmux_args "${server_kind:-}" "$server")
         _wt=(command tmux "${_sel_wt[@]}")
     fi
     local sess_live="" wd_pane_live=""
@@ -7230,9 +7281,11 @@ _stamp_live_slots() {
     [[ -f "$meta_file" ]] || return 0
     local _srv
     _srv="$(grep '^tmux_server=' "$meta_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    local _srvk
+    _srvk="$(grep '^tmux_server_kind=' "$meta_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
     local -a _st=(tmux) _sel=()
     if [[ -n "$_srv" ]]; then
-        mapfile -t _sel < <(_srv_tmux_args "$_srv")
+        mapfile -t _sel < <(_srv_tmux_args "$_srvk" "$_srv")
         _st=(command tmux "${_sel[@]}")
     fi
     # Reverse map: alias:name (display, :uuid stripped) -> slot, from meta.
@@ -8658,6 +8711,8 @@ helper_spawn_main() {
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
     _ts="$(grep '^tmux_server=' "$META_DIR/meta" | cut -d= -f2-)"
     [[ -n "$_ts" ]] && export AE_TMUX_SERVER="$_ts"
+    _tsk="$(grep '^tmux_server_kind=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+    [[ -n "$_tsk" ]] && export AE_TMUX_SERVER_KIND="$_tsk"
     AE_PATH="$(grep '^ae_path=' "$META_DIR/meta" | cut -d= -f2-)"
     if [[ ! -x "$AE_PATH" ]]; then
         AE_PATH="$(command -v ae 2>/dev/null || true)"
@@ -8678,6 +8733,8 @@ helper_retire_main() {
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
     _ts="$(grep '^tmux_server=' "$META_DIR/meta" | cut -d= -f2-)"
     [[ -n "$_ts" ]] && export AE_TMUX_SERVER="$_ts"
+    _tsk="$(grep '^tmux_server_kind=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+    [[ -n "$_tsk" ]] && export AE_TMUX_SERVER_KIND="$_tsk"
     AE_PATH="$(grep '^ae_path=' "$META_DIR/meta" | cut -d= -f2-)"
     if [[ ! -x "$AE_PATH" ]]; then
         AE_PATH="$(command -v ae 2>/dev/null || true)"
@@ -10804,6 +10861,7 @@ fi
 # regardless of name collisions across machines.
 SESSION_ID="${PRESERVED_SESSION_ID:-$(gen_uuid)}"
 
+resolve_launch_tmux_server
 cat >"${AE_META}/meta" <<EOF
 mode=${META_MODE}
 origin=${META_ORIGIN}
@@ -10815,7 +10873,8 @@ config=${CONFIG_FILE}
 main_pane=${PANE_IDS[0]}
 ae_path=${AE_PATH}
 ae_version=${AE_VERSION}
-tmux_server=$(resolve_launch_tmux_server)
+tmux_server=${_LAUNCH_SRV_VALUE}
+tmux_server_kind=${_LAUNCH_SRV_KIND}
 agent.main=${MAIN_ALIAS}:${MAIN_NAME}:${MAIN_SESSION_ID}
 agent_bin.main=$(extract_binary_from_cmd "$MAIN_CMD")
 EOF
@@ -10897,12 +10956,16 @@ sync_session_assets() {
 # tmux server shim
 _AE_META_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _ts="$(grep '^tmux_server=' "$_AE_META_DIR/meta" | cut -d= -f2-)"
-case "$_ts" in
-    S:*) tmux() { command tmux -S "${_ts#S:}" "$@"; } ;;
-    L:*) tmux() { command tmux -L "${_ts#L:}" "$@"; } ;;
-    /*) tmux() { command tmux -S "$_ts" "$@"; } ;;
-    ?*) tmux() { command tmux -L "$_ts" "$@"; } ;;
-esac
+_tk="$(grep '^tmux_server_kind=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+if [[ "$_tk" == "socket" ]]; then
+    tmux() { command tmux -S "$_ts" "$@"; }
+elif [[ "$_tk" == "name" ]]; then
+    tmux() { command tmux -L "$_ts" "$@"; }
+elif [[ "$_ts" == /* ]]; then
+    tmux() { command tmux -S "$_ts" "$@"; }
+elif [[ -n "$_ts" ]]; then
+    tmux() { command tmux -L "$_ts" "$@"; }
+fi
 _AE_SESSION="$(grep '^session=' "$_AE_META_DIR/meta" | cut -d= -f2-)"
 _AE_SESSIONS_DIR="$(dirname "$_AE_META_DIR")"
 LIBPROLOGUE

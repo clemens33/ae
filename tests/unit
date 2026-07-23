@@ -28,7 +28,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|_end_target_kind|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -2216,39 +2216,41 @@ assert_eq "cycle: dead roster_order accumulator is gone" "1" \
 # AE_TMUX_SERVER, else inherited $TMUX, else default — recording the raw env var made
 # a foreign-pane launch write "" while living on the named server; every exact-server
 # consumer then faithfully read the lie.
-# The resolver asks tmux ITSELF for #{socket_path} first (authoritative — a basename
-# is not a socket identity; -S /path/x and -L x are different servers). Env fallbacks
-# only when the query fails. Stub the query per case.
-_rls() { # $1 = query answer ('' = query fails), then env
-    local ans="$1"; shift
+# The resolver asks tmux ITSELF for #{socket_path} + #{pid}; identity of a relative
+# socket is proven by a PID ROUND-TRIP (7th review B1: readlink in the caller's cwd
+# recorded a same-named decoy). Result is a TYPED PAIR in globals: kind|value.
+_rls() { # $1 = query answer ('' = query fails), env via _RLS_*
+    local ans="$1"
     # shellcheck disable=SC2317
     tmux() { [[ -n "$ans" ]] && printf '%s' "$ans"; [[ -n "$ans" ]]; }
-    local out
-    out="$(AE_TMUX_SERVER="${_RLS_SHIM:-}" TMUX="${_RLS_TMUX:-}" resolve_launch_tmux_server)"
+    AE_TMUX_SERVER="${_RLS_SHIM:-}" TMUX="${_RLS_TMUX:-}" resolve_launch_tmux_server
     unset -f tmux
-    printf '%s' "$out"
+    printf '%s|%s' "$_LAUNCH_SRV_KIND" "$_LAUNCH_SRV_VALUE"
     return 0
 }
-assert_eq "launch server: tmux's own #{socket_path} wins over everything (typed S:)" "S:/tmp/tmux-1000/actual" \
+assert_eq "launch server: absolute #{socket_path} → kind=socket + path" "socket|/tmp/tmux-1000/actual" \
     "$(_RLS_SHIM=ignored _RLS_TMUX=/also/ignored,1,0 _rls /tmp/tmux-1000/actual)"
-assert_eq "launch server: query failed → AE_TMUX_SERVER name (typed L:)" "L:srv-a" \
+assert_eq "launch server: RELATIVE #{socket_path} without pid-verification → kind=ambiguous (fail closed)" "ambiguous|rel.sock" \
+    "$(_rls rel.sock)"
+assert_eq "launch server: query failed → AE_TMUX_SERVER name → kind=name" "name|srv-a" \
     "$(_RLS_SHIM=srv-a _RLS_TMUX='' _rls '')"
-assert_eq "launch server: query failed → inherited \$TMUX FULL socket path, typed S:" "S:/tmp/tmux-1000/othersrv" \
+assert_eq "launch server: re-exported typed prefix is STRIPPED, never doubled (7th I1)" "socket|/tmp/x" \
+    "$(_RLS_SHIM='S:/tmp/x' _RLS_TMUX='' _rls '')"
+assert_eq "launch server: query failed → inherited \$TMUX path → kind=socket" "socket|/tmp/tmux-1000/othersrv" \
     "$(_RLS_SHIM='' _RLS_TMUX='/tmp/tmux-1000/othersrv,123,0' _rls '')"
-assert_eq "launch server: default pane records its PATH, typed S: (empty = legacy-only)" "S:/tmp/tmux-1000/default" \
-    "$(_RLS_SHIM='' _RLS_TMUX='/tmp/tmux-1000/default,123,0' _rls '')"
-assert_eq "launch server: no context at all → empty (the legacy marker, never written by choice)" "" \
+assert_eq "launch server: no context → empty pair (legacy marker)" "|" \
     "$(_RLS_SHIM='' _RLS_TMUX='' _rls '')"
-assert_eq "launch server: meta writer uses the resolver, not the raw env var" "1" \
-    "$([[ "$AE_SOURCE" == *'tmux_server=$(resolve_launch_tmux_server)'* \
-        && "$AE_SOURCE" != *'tmux_server=${AE_TMUX_SERVER:-}'* ]] && echo 1 || echo 0)"
-# 6th review B1: selector TYPE is stored, never guessed — #{socket_path} can be
-# RELATIVE (`tmux -S rel.sock` reports `rel.sock`), which shape-dispatch misread as -L.
-assert_eq "srv-args: S: dispatches -S with the raw value" "-S|rel.sock" "$(_srv_tmux_args 'S:rel.sock' | tr '\n' '|' | sed 's/|$//')"
-assert_eq "srv-args: L: dispatches -L" "-L|name" "$(_srv_tmux_args 'L:name' | tr '\n' '|' | sed 's/|$//')"
-assert_eq "srv-args: legacy absolute path → -S" "-S|/a/b" "$(_srv_tmux_args '/a/b' | tr '\n' '|' | sed 's/|$//')"
-assert_eq "srv-args: legacy bare name → -L" "-L|old" "$(_srv_tmux_args 'old' | tr '\n' '|' | sed 's/|$//')"
-assert_eq "srv-args: empty → empty (no argv words)" "" "$(_srv_tmux_args '')"
+assert_eq "launch server: meta writer records BOTH keys from the globals" "1" \
+    "$([[ "$AE_SOURCE" == *'tmux_server=${_LAUNCH_SRV_VALUE}'* \
+        && "$AE_SOURCE" == *'tmux_server_kind=${_LAUNCH_SRV_KIND}'* ]] && echo 1 || echo 0)"
+# 7th review B2: the kind is a SEPARATE KEY — a legacy -L server may literally be
+# NAMED "S:x"; value-prefix parsing selected such decoys. Kind decides, value is raw.
+assert_eq "srv-args: kind=socket → -S raw" "-S|/a b/x" "$(_srv_tmux_args socket '/a b/x' | tr '\n' '|' | sed 's/|$//')"
+assert_eq "srv-args: kind=name → -L raw" "-L|n" "$(_srv_tmux_args name 'n' | tr '\n' '|' | sed 's/|$//')"
+assert_eq "srv-args: LEGACY name that merely looks typed stays a NAME" "-L|S:evil" \
+    "$(_srv_tmux_args '' 'S:evil' | tr '\n' '|' | sed 's/|$//')"
+assert_eq "srv-args: kind=ambiguous → NOTHING (callers fail closed)" "" "$(_srv_tmux_args ambiguous '/x')"
+assert_eq "srv-args: empty pair → nothing" "" "$(_srv_tmux_args '' '')"
 # 6th review I1: the advertised recovery override is REAL — AE_END_SERVER is consumed
 # by _end_target_server, and ONLY for a legacy-empty record (never over a typed one).
 _eot() { # $1 = stubbed meta value, then env-passed AE_END_SERVER
@@ -2263,16 +2265,36 @@ assert_eq "end override: AE_END_SERVER honored for a legacy-empty record" "L:res
     "$(AE_END_SERVER='L:rescue' _eot '')"
 assert_eq "end override: AE_END_SERVER ignored when meta has a typed record" "S:/real" \
     "$(AE_END_SERVER='L:rescue' _eot 'S:/real')"
+_eok() { local mv="$1" kv="$2"
+    # shellcheck disable=SC2317
+    read_session_meta() { case "$2" in tmux_server) printf '%s' "$mv" ;; tmux_server_kind) printf '%s' "$kv" ;; esac; }
+    _end_target_kind ghost; unset -f read_session_meta; return 0
+}
+assert_eq "end override kind: /path override types socket" "socket" "$(AE_END_SERVER='/p' _eok '' '')"
+assert_eq "end override kind: name override types name" "name" "$(AE_END_SERVER='srv' _eok '' '')"
+assert_eq "end override kind: stored kind wins when meta value present" "name" "$(AE_END_SERVER='/p' _eok 'real' 'name')"
 # 6th review B2/I2: legacy-empty fails closed UNCONDITIONALLY; doctor migration writes
 # under the lock or not at all, and a zero-hit sweep records the positive default claim.
-assert_eq "legacy-empty: end fails closed unconditionally (no proceed-on-clean-sweep)" "1" \
-    "$([[ "$AE_SOURCE" == *'pre-fix meta with no recorded tmux server'* \
-        && "$AE_SOURCE" == *"AE_END_SERVER='<name|/socket/path>' ae end"* ]] && echo 1 || echo 0)"
+assert_eq "legacy-empty/ambiguous: end fails closed unconditionally" "1" \
+    "$([[ "$AE_SOURCE" == *'pre-fix/ambiguous server record'* \
+        && "$AE_SOURCE" == *"AE_END_SERVER='<name|/socket/path>' ae end"* \
+        && "$AE_SOURCE" == *'ae end --assume-stopped'* ]] && echo 1 || echo 0)"
 assert_eq "migration: locked write or SKIPPED (never unlocked fall-through)" "1" \
     "$([[ "$AE_SOURCE" == *'migration SKIPPED — could not lock meta'* \
         && "$AE_SOURCE" != *'flock -w 5 201 || true'* ]] && echo 1 || echo 0)"
-assert_eq "migration: zero-hit sweep records the positive default claim (L:)" "1" \
-    "$([[ "$AE_SOURCE" == *'presumed stopped/default'* ]] && echo 1 || echo 0)"
+# 7th review B3: zero-hit is NOT a positive location — the record stays untouched and
+# the stopped teardown needs the explicit per-target acknowledgement flag.
+assert_eq "migration: zero-hit leaves the record and points at --assume-stopped" "1" \
+    "$([[ "$AE_SOURCE" == *'record left as-is; if it is genuinely stopped: ae end --assume-stopped'* \
+        && "$AE_SOURCE" != *'presumed stopped/default'* ]] && echo 1 || echo 0)"
+assert_eq "migration: single-hit writes BOTH keys (kind=socket)" "1" \
+    "$([[ "$AE_SOURCE" == *'END { print "tmux_server_kind=socket" }'* ]] && echo 1 || echo 0)"
+assert_eq "end: --assume-stopped parsed, per-target only, refused for all" "1" \
+    "$([[ "$AE_SOURCE" == *'--assume-stopped) assume_stopped=true'* \
+        && "$AE_SOURCE" == *'--assume-stopped is per-target only'* \
+        && "$AE_SOURCE" == *'AE_END_SERVER is a single-target override'* ]] && echo 1 || echo 0)"
+assert_eq "end: enumerably-LIVE target refuses even --assume-stopped" "1" \
+    "$([[ "$AE_SOURCE" == *'unresolved server record AND is LIVE on enumerable server'* ]] && echo 1 || echo 0)"
 
 # B2: empty-query-result proves nothing when the QUERY failed. Tri-state:
 # 0 verified-gone / 1 verified-alive / 2 cannot-verify. Stub _end_tmux per case.
@@ -4894,7 +4916,7 @@ assert_eq "end (B1): classifier + end resolve via the server-aware _end_live_id"
 # server (empty tmux_server → the DEFAULT server via `command tmux`, never the ambient
 # shim), used for every end-path read AND the kill. No duplicated `command tmux -L` logic.
 assert_eq "end (2nd-delta B1): tmux runs on the target's own server via centralized _end_tmux" "1" \
-    "$([[ "$AE_SOURCE" == *'mapfile -t _sel < <(_srv_tmux_args "$srv")'* \
+    "$([[ "$AE_SOURCE" == *'mapfile -t _sel < <(_srv_tmux_args "$kind" "$srv")'* \
         && "$AE_SOURCE" == *'TMUX='"'"''"'"' command tmux -L "${AE_TMUX_DEFAULT_SOCKET:-default}" "$@"'* \
         && "$AE_SOURCE" != *$'\n        command tmux "$@"\n'* \
         && "$AE_SOURCE" == *'_end_tmux "$session_name" kill-session -t "$_es_sid"'* ]] && echo 1 || echo 0)"
