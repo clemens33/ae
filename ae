@@ -10956,7 +10956,7 @@ sync_session_assets() {
 # tmux server shim
 _AE_META_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _ts="$(grep '^tmux_server=' "$_AE_META_DIR/meta" | cut -d= -f2-)"
-_tk="$(grep '^tmux_server_kind=' "$META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+_tk="$(grep '^tmux_server_kind=' "$_AE_META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
 if [[ "$_tk" == "socket" ]]; then
     tmux() { command tmux -S "$_ts" "$@"; }
 elif [[ "$_tk" == "name" ]]; then

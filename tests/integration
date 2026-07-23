@@ -553,13 +553,14 @@ for _i in $(seq 1 25); do command tmux -L "$AS" has-session -t "=assess" 2>/dev/
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/assess/meta" ]] && break; sleep 0.3; done
 command tmux -L "$AS" kill-server 2>/dev/null || true   # genuinely stopped now
 sed -i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/assess/meta"   # legacy sim
-"$AE" doctor --refresh assess >/dev/null 2>&1 || true
+AE_TMUX_DEFAULT_SOCKET="ae-asdef-$$" "$AE" doctor --refresh assess >/dev/null 2>&1 || true
 assert_eq "assume-stopped (7th B3): zero-hit doctor leaves the record EMPTY (no default guess)" "" \
     "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/assess/meta" 2>/dev/null)"
-if as_out="$(printf 'y\n' | "$AE" end -f assess 2>&1)"; then as_rc=0; else as_rc=$?; fi
+ASDEF="ae-asdef-$$"
+if as_out="$(printf 'y\n' | AE_TMUX_DEFAULT_SOCKET="$ASDEF" "$AE" end -f assess 2>&1)"; then as_rc=0; else as_rc=$?; fi
 assert_eq "assume-stopped (7th B3): plain end still fails closed on the legacy record" "1" \
     "$([[ $as_rc -ne 0 && "$as_out" == *"--assume-stopped"* ]] && echo 1 || echo 0)"
-if printf 'y\n' | "$AE" end -f --assume-stopped assess >/dev/null 2>&1; then as2_rc=0; else as2_rc=$?; fi
+if printf 'y\n' | AE_TMUX_DEFAULT_SOCKET="$ASDEF" "$AE" end -f --assume-stopped assess >/dev/null 2>&1; then as2_rc=0; else as2_rc=$?; fi
 assert_eq "assume-stopped (7th B3): explicit acknowledgement ends the stopped session" "1" \
     "$([[ $as2_rc -eq 0 ]] && echo 1 || echo 0)"
 assert_not_exists "assume-stopped (7th B3): state removed" "$HOME/.ae/sessions/assess"
