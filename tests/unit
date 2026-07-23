@@ -2216,14 +2216,29 @@ assert_eq "cycle: dead roster_order accumulator is gone" "1" \
 # AE_TMUX_SERVER, else inherited $TMUX, else default — recording the raw env var made
 # a foreign-pane launch write "" while living on the named server; every exact-server
 # consumer then faithfully read the lie.
-assert_eq "launch server: AE_TMUX_SERVER wins" "srv-a" \
-    "$(AE_TMUX_SERVER=srv-a TMUX='/tmp/tmux-1/other,1,0' resolve_launch_tmux_server)"
-assert_eq "launch server: inherited \$TMUX socket basename when shim unset" "othersrv" \
-    "$(AE_TMUX_SERVER='' TMUX='/tmp/tmux-1000/othersrv,123,0' resolve_launch_tmux_server)"
-assert_eq "launch server: inside the DEFAULT server's own pane → canonical empty" "" \
-    "$(AE_TMUX_SERVER='' TMUX='/tmp/tmux-1000/default,123,0' resolve_launch_tmux_server)"
-assert_eq "launch server: no tmux context at all → empty (true default)" "" \
-    "$(AE_TMUX_SERVER='' TMUX='' resolve_launch_tmux_server)"
+# The resolver asks tmux ITSELF for #{socket_path} first (authoritative — a basename
+# is not a socket identity; -S /path/x and -L x are different servers). Env fallbacks
+# only when the query fails. Stub the query per case.
+_rls() { # $1 = query answer ('' = query fails), then env
+    local ans="$1"; shift
+    # shellcheck disable=SC2317
+    tmux() { [[ -n "$ans" ]] && printf '%s' "$ans"; [[ -n "$ans" ]]; }
+    local out
+    out="$(AE_TMUX_SERVER="${_RLS_SHIM:-}" TMUX="${_RLS_TMUX:-}" resolve_launch_tmux_server)"
+    unset -f tmux
+    printf '%s' "$out"
+    return 0
+}
+assert_eq "launch server: tmux's own #{socket_path} wins over everything" "/tmp/tmux-1000/actual" \
+    "$(_RLS_SHIM=ignored _RLS_TMUX=/also/ignored,1,0 _rls /tmp/tmux-1000/actual)"
+assert_eq "launch server: query failed → AE_TMUX_SERVER name (legacy -L semantics)" "srv-a" \
+    "$(_RLS_SHIM=srv-a _RLS_TMUX='' _rls '')"
+assert_eq "launch server: query failed → inherited \$TMUX FULL socket path (never a basename)" "/tmp/tmux-1000/othersrv" \
+    "$(_RLS_SHIM='' _RLS_TMUX='/tmp/tmux-1000/othersrv,123,0' _rls '')"
+assert_eq "launch server: default pane records the default PATH explicitly (empty = legacy-only)" "/tmp/tmux-1000/default" \
+    "$(_RLS_SHIM='' _RLS_TMUX='/tmp/tmux-1000/default,123,0' _rls '')"
+assert_eq "launch server: no context at all → empty (the legacy marker, never written by choice)" "" \
+    "$(_RLS_SHIM='' _RLS_TMUX='' _rls '')"
 assert_eq "launch server: meta writer uses the resolver, not the raw env var" "1" \
     "$([[ "$AE_SOURCE" == *'tmux_server=$(resolve_launch_tmux_server)'* \
         && "$AE_SOURCE" != *'tmux_server=${AE_TMUX_SERVER:-}'* ]] && echo 1 || echo 0)"
