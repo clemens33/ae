@@ -475,8 +475,8 @@ for _i in $(seq 1 30); do command tmux -L "$FOREIGN" has-session -t "=insidesess
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/insidesess/meta" ]] && break; sleep 0.3; done
 assert_eq "launch-inside (4th B1): session landed on the FOREIGN server" "1" \
     "$(command tmux -L "$FOREIGN" has-session -t "=insidesess" 2>/dev/null && echo 1 || echo 0)"
-assert_eq "launch-inside (4th B1): meta records the FOREIGN socket PATH (authoritative identity)" \
-    "/tmp/tmux-$(id -u)/$FOREIGN" \
+assert_eq "launch-inside (4th B1): meta records the FOREIGN socket PATH, typed S:" \
+    "S:/tmp/tmux-$(id -u)/$FOREIGN" \
     "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/insidesess/meta" 2>/dev/null)"
 # ...and an end from a PLAIN shell finds it there (the full round trip the lie broke).
 for _i in $(seq 1 15); do
@@ -493,15 +493,16 @@ command tmux -L "$FOREIGN" kill-server 2>/dev/null || true
 # A `-S /path/collide.sock` server and a `-L collide.sock` server are DIFFERENT servers
 # sharing a basename. The recorded identity must be the PATH: end the -S target, decoy
 # on -L untouched — the old basename record killed the wrong-server lookup.
-SC_DIR="$TMPDIR/sprobe-$$"; mkdir -p "$SC_DIR"; SC_PATH="$SC_DIR/collide.sock"
+SC_NAME="ae-scollide-$$-$RANDOM.sock"
+SC_DIR="$TMPDIR/sprobe-$$"; mkdir -p "$SC_DIR"; SC_PATH="$SC_DIR/$SC_NAME"
 command tmux -S "$SC_PATH" new-session -d -s schost 2>/dev/null
-command tmux -L "collide.sock" new-session -d -s decoyhost 2>/dev/null
+command tmux -L "$SC_NAME" new-session -d -s decoyhost 2>/dev/null
 REPO_SC="$(setup_repo)"
 command tmux -S "$SC_PATH" send-keys -t schost \
     "cd '$REPO_SC' && env -u AE_TMUX_SERVER HOME='$HOME' AE_HOME='$HOME/.ae' '$AE' --local scoll >/dev/null 2>&1" Enter
 for _i in $(seq 1 30); do command tmux -S "$SC_PATH" has-session -t "=scoll" 2>/dev/null && break; sleep 0.4; done
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/scoll/meta" ]] && break; sleep 0.3; done
-assert_eq "S-collision (5th B1): meta records the -S socket PATH, not a basename" "$SC_PATH" \
+assert_eq "S-collision (5th B1): meta records the typed -S socket PATH" "S:$SC_PATH" \
     "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/scoll/meta" 2>/dev/null)"
 for _i in $(seq 1 15); do
     command tmux -S "$SC_PATH" has-session -t "=scoll" 2>/dev/null || break
@@ -511,10 +512,10 @@ done
 assert_eq "S-collision (5th B1): target killed on ITS -S server" "1" \
     "$(command tmux -S "$SC_PATH" has-session -t "=scoll" 2>/dev/null && echo 0 || echo 1)"
 assert_eq "S-collision (5th B1): the same-basename -L decoy is UNTOUCHED" "1" \
-    "$(command tmux -L "collide.sock" has-session -t "=decoyhost" 2>/dev/null && echo 1 || echo 0)"
+    "$(command tmux -L "$SC_NAME" has-session -t "=decoyhost" 2>/dev/null && echo 1 || echo 0)"
 assert_not_exists "S-collision (5th B1): state removed" "$HOME/.ae/sessions/scoll"
 command tmux -S "$SC_PATH" kill-server 2>/dev/null || true
-command tmux -L "collide.sock" kill-server 2>/dev/null || true
+command tmux -L "$SC_NAME" kill-server 2>/dev/null || true
 
 # ── 5th review B2: legacy-empty meta upgrade — fail closed, then migrate, then end ──
 LEG="ae-leg-$$"; DEFB="ae-defb-$$"
@@ -525,13 +526,14 @@ for _i in $(seq 1 25); do command tmux -L "$LEG" has-session -t "=legsess" 2>/de
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/legsess/meta" ]] && break; sleep 0.3; done
 sed -i 's/^tmux_server=.*/tmux_server=/' "$HOME/.ae/sessions/legsess/meta"   # legacy sim
 if leg_out="$(AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" end -f legsess 2>&1)"; then leg_rc=0; else leg_rc=$?; fi
-assert_eq "legacy-empty (5th B2): end FAILS CLOSED while live elsewhere (default reachable)" "1" \
-    "$([[ $leg_rc -ne 0 && "$leg_out" == *"LIVE on tmux server"* && "$leg_out" == *"$LEG"* ]] && echo 1 || echo 0)"
+assert_eq "legacy-empty (6th B2): end FAILS CLOSED unconditionally, naming the found server" "1" \
+    "$([[ $leg_rc -ne 0 && "$leg_out" == *"pre-fix meta with no recorded tmux server"* \
+        && "$leg_out" == *"IS live on enumerable server"* && "$leg_out" == *"$LEG"* ]] && echo 1 || echo 0)"
 assert_eq "legacy-empty (5th B2): state preserved + session still alive" "1" \
     "$([[ -d "$HOME/.ae/sessions/legsess" ]] && command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null && echo 1 || echo 0)"
 AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" doctor --refresh legsess >/dev/null 2>&1 || true
-assert_eq "legacy-empty (5th B2): doctor --refresh migrates to the located socket PATH" \
-    "/tmp/tmux-$(id -u)/$LEG" \
+assert_eq "legacy-empty (5th B2): doctor --refresh migrates to the located socket PATH, typed" \
+    "S:/tmp/tmux-$(id -u)/$LEG" \
     "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/legsess/meta" 2>/dev/null)"
 for _i in $(seq 1 15); do
     command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null || break
@@ -580,7 +582,7 @@ assert_eq "no-remote (4th): the working dir SURVIVES with the commit reachable" 
 # persists, name its contents so a ghost (events.jsonl-only) is distinguishable from a
 # real cleanup failure.
 for _i in $(seq 1 10); do [[ -d "$HOME/.ae/sessions/nrsess" ]] || break; sleep 0.4; done
-assert_eq "no-remote (4th): ae session state removed (contents if not: $(ls -A "$HOME/.ae/sessions/nrsess" 2>/dev/null | tr '\n' ' '))" "1" \
+assert_eq "no-remote (4th): ae session state removed (contents if not: $(find "$HOME/.ae/sessions/nrsess" -mindepth 1 -maxdepth 1 -printf '%f ' 2>/dev/null))" "1" \
     "$([[ ! -d "$HOME/.ae/sessions/nrsess" ]] && echo 1 || echo 0)"
 rm -rf "$NR_WT" 2>/dev/null || true
 command tmux -L "ae-nr-$$" kill-server 2>/dev/null || true
