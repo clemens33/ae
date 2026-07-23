@@ -28,7 +28,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|_end_target_kind|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|_end_target_kind|_tmux_err_is_clean_dead|_ae_install_tmux_shim|_end_sweep_servers|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -2297,6 +2297,61 @@ assert_eq "end: --assume-stopped parsed, per-target only, refused for all" "1" \
     "$([[ "$AE_SOURCE" == *'--assume-stopped) assume_stopped=true'* \
         && "$AE_SOURCE" == *'--assume-stopped is per-target only'* \
         && "$AE_SOURCE" == *'AE_END_SERVER is a single-target override'* ]] && echo 1 || echo 0)"
+# 10th review B2: clean-dead detection is ANCHORED to tmux's exact diagnostic shapes.
+# The adversarial case: a server literally NAMED "no server running" — its permission
+# error CONTAINS the magic words but must NOT read as clean-dead.
+assert_eq "clean-dead: stale-socket shape accepted" "0" \
+    "$(_tmux_err_is_clean_dead 'no server running on /tmp/tmux-1000/x'; echo $?)"
+assert_eq "clean-dead: no-socket ENOENT shape accepted" "0" \
+    "$(_tmux_err_is_clean_dead 'error connecting to /tmp/tmux-1000/x (No such file or directory)'; echo $?)"
+assert_eq "clean-dead: permission error is NOT clean-dead" "1" \
+    "$(_tmux_err_is_clean_dead 'error connecting to /tmp/tmux-1000/x (Permission denied)'; echo $?)"
+assert_eq "clean-dead: ADVERSARIAL 'no server running'-named socket's perm error refused" "1" \
+    "$(_tmux_err_is_clean_dead 'error connecting to /tmp/tmux-1000/no server running (Permission denied)'; echo $?)"
+assert_eq "clean-dead: both verify-gone and the sweep share the ONE classifier" "2" \
+    "$(printf '%s' "$AE_SOURCE" | command grep -c '_tmux_err_is_clean_dead "$_out"\|_tmux_err_is_clean_dead "$out"' || true)"
+# 10th review B1: the sweep reports via GLOBALS and is called BARE — a $(…) subshell
+# swallowed _SWEEP_UNSURE and the acknowledgement deleted state past a hidden socket.
+assert_eq "sweep (10th B1): end_session calls the sweep BARE and reads the globals" "1" \
+    "$([[ "$AE_SOURCE" == *'_end_sweep_servers "$session_name"'$'\n'*'[[ -n "$_SWEEP_FOUND" ]]'* \
+        && "$AE_SOURCE" != *'"$(_end_sweep_servers'* ]] && echo 1 || echo 0)"
+# Behavioral: a stubbed unreachable socket sets _SWEEP_UNSURE in THIS shell.
+_swp() {
+    local mode="$1"
+    # shellcheck disable=SC2317
+    command() { # intercept `command tmux -S ...`
+        if [[ "$mode" == unreachable ]]; then
+            printf 'error connecting to /tmp/x (Permission denied)\n'; return 1
+        fi
+        printf 'other\n'; return 0
+    }
+    TMUX_TMPDIR="$_swp_dir_parent" _end_sweep_servers ghost
+    printf '%s|%s' "$_SWEEP_FOUND" "$_SWEEP_UNSURE"
+    unset -f command
+    return 0
+}
+_swp_dir_parent="$(mktemp -d)"; mkdir -p "$_swp_dir_parent/tmux-$(id -u)"
+: > "$_swp_dir_parent/tmux-$(id -u)/sockA"  # plain file, not a socket → skipped
+python3 - "$_swp_dir_parent/tmux-$(id -u)/sockB" <<'PYEOF' 2>/dev/null || true
+import socket, sys
+s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])
+PYEOF
+assert_eq "sweep (10th B1): unverifiable enumerable socket lands in _SWEEP_UNSURE (this shell)" "|sockB" \
+    "$(_swp unreachable)"
+rm -rf "$_swp_dir_parent"
+# 10th review B3: the shim classifies KIND before the value gate — blank value +
+# ambiguous kind still installs the REFUSING shim (behavioral, not source text).
+_shim_probe() {
+    AE_TMUX_SERVER="$1" AE_TMUX_SERVER_KIND="$2" _ae_install_tmux_shim
+    local rc=0 out
+    out="$(tmux list-sessions 2>&1)" || rc=$?
+    unset -f tmux 2>/dev/null
+    printf '%s|%s' "$rc" "${out:0:20}"
+    return 0
+}
+assert_eq "shim (10th B3): BLANK value + ambiguous kind → refusal installed, rc1" "1|ae: refusing tmux op" \
+    "$(_shim_probe '' ambiguous)"
+
 # 9th review B1: the sweep is TRI-STATE — an enumerable socket that exists but does not
 # answer is CANNOT-VERIFY, and the acknowledgement path refuses while one stands (a
 # swallowed list failure had let --assume-stopped delete state past a chmod-000 socket).

@@ -31,19 +31,21 @@ AE_LOCAL_CONFIG=""
 [[ -f ".ae/config" ]] && AE_LOCAL_CONFIG="$(pwd)/.ae/config"
 
 # Optional: isolated tmux server (for testing or multi-instance use)
-if [[ -n "${AE_TMUX_SERVER:-}" ]]; then
-    # Dispatch by the exported KIND when present (resume re-exports meta's pair);
-    # otherwise legacy shape (absolute path → -S, name → -L). A literal name that merely
-    # LOOKS typed ("S:x") is safe: the kind key decides, never the value prefix.
+# Install the ambient tmux() shim from AE_TMUX_SERVER(+_KIND). A FUNCTION so the
+# selection is unit-testable behaviorally, and KIND-FIRST so an ambiguous record
+# refuses even when the VALUE is blank — the old nesting under a non-empty value let
+# blank+ambiguous skip the shim entirely and inherited $TMUX won (10th review B3:
+# a retire killed a pane cross-server through exactly that gap).
+_ae_install_tmux_shim() {
     if [[ "${AE_TMUX_SERVER_KIND:-}" == "ambiguous" ]]; then
-        # Central classification (9th review B3): an ambiguous record must produce NO
-        # tmux command anywhere — operational helpers (retire/spawn/watchdog) fail
-        # closed loudly instead of dispatching by value shape onto the wrong server.
         tmux() {
             echo "ae: refusing tmux operation — this session's server record is ambiguous; run 'ae doctor --refresh' first." >&2
             return 1
         }
-    elif [[ "${AE_TMUX_SERVER_KIND:-}" == "socket" ]]; then
+        return 0
+    fi
+    [[ -n "${AE_TMUX_SERVER:-}" ]] || return 0
+    if [[ "${AE_TMUX_SERVER_KIND:-}" == "socket" ]]; then
         tmux() { command tmux -S "$AE_TMUX_SERVER" "$@"; }
     elif [[ "${AE_TMUX_SERVER_KIND:-}" == "name" ]]; then
         tmux() { command tmux -L "$AE_TMUX_SERVER" "$@"; }
@@ -52,7 +54,9 @@ if [[ -n "${AE_TMUX_SERVER:-}" ]]; then
     else
         tmux() { command tmux -L "$AE_TMUX_SERVER" "$@"; }
     fi
-fi
+    return 0
+}
+_ae_install_tmux_shim
 
 # --- Function index ---
 #   Config:     parse_config, get_config
@@ -1756,10 +1760,11 @@ end_session() {
         # No positive ownership record. The ONLY teardown path is the explicit
         # per-target acknowledgement — and even that refuses when the name is live
         # anywhere enumerable (the assumption would be provably false).
-        local _es_found
-        _es_found="$(_end_sweep_servers "$session_name")"
-        if [[ -n "$_es_found" ]]; then
-            echo "Error: session '$session_name' has no positive server record AND is LIVE on enumerable server '$_es_found'." >&2
+        # BARE call — the sweep reports via globals, and a $(…) subshell would swallow
+        # them (10th review B1).
+        _end_sweep_servers "$session_name"
+        if [[ -n "$_SWEEP_FOUND" ]]; then
+            echo "Error: session '$session_name' has no positive server record AND is LIVE on enumerable server '$_SWEEP_FOUND'." >&2
             echo "  Establish ownership first: 'ae doctor --refresh $session_name', or end explicitly: AE_END_SERVER='<name|/socket/path>' ae end $session_name" >&2
             echo "  State preserved." >&2
             return 1
@@ -2945,6 +2950,20 @@ _end_tmux() {
 # Prints the first matching server name, else nothing. -S sockets at arbitrary paths
 # are inherently unenumerable — this narrows the legacy-empty ambiguity, it cannot
 # close it; the residual risk is documented at the call site.
+# Is a failed tmux invocation's stderr a CLEAN-DEAD server (safe to treat the session
+# as gone) — as opposed to unreachable/unverifiable? ANCHORED to tmux's exact diagnostic
+# shapes, never substring matching (10th review B2: a server literally NAMED
+# "no server running" made its permission error contain the magic words):
+#   clean-dead:  "no server running on <path>"                       (stale socket)
+#                "error connecting to <path> (No such file or directory)"  (no socket)
+#   anything else — permission denied, refused, unknown — is NOT clean-dead.
+# Predicate: nonzero return is a QUERY result; every caller guards it (AGENTS.md).
+_tmux_err_is_clean_dead() {
+    [[ "$1" == "no server running on "* ]] && return 0
+    [[ "$1" == "error connecting to "* && "$1" == *" (No such file or directory)" ]] && return 0
+    return 1
+}
+
 _end_sweep_servers() {
     # Tri-state via globals (9th review B1: a swallowed list failure made the sweep
     # "prove" absence past an unreadable socket — --assume-stopped then deleted state
@@ -2952,8 +2971,9 @@ _end_sweep_servers() {
     #   _SWEEP_FOUND   = server name hosting the target ('' if none found)
     #   _SWEEP_UNSURE  = first enumerable socket that EXISTS but could not be verified
     #                    ('' if every socket answered or was cleanly dead)
-    # Stdout stays the found-server name for existing callers; the ack path must ALSO
-    # require _SWEEP_UNSURE to be empty — an unverifiable socket may hide the target.
+    # RESULTS VIA GLOBALS ONLY — never stdout: a $(…) caller runs this in a SUBSHELL
+    # and the globals evaporate (10th review B1: exactly that swallowed _SWEEP_UNSURE
+    # and let the acknowledgement delete state past a chmod-000 socket). Call BARE.
     _SWEEP_FOUND=""
     _SWEEP_UNSURE=""
     local name="$1" _dir _sock _srv _out _rc
@@ -2964,17 +2984,14 @@ _end_sweep_servers() {
         _rc=0
         _out="$(command tmux -S "$_sock" list-sessions -F '#{session_name}' 2>&1)" || _rc=$?
         if ((_rc != 0)); then
-            case "$_out" in
-                *"no server running"*) continue ;;
-                *)
-                    [[ -z "$_SWEEP_UNSURE" ]] && _SWEEP_UNSURE="$_srv"
-                    continue
-                    ;;
-            esac
+            if _tmux_err_is_clean_dead "$_out"; then
+                continue
+            fi
+            [[ -z "$_SWEEP_UNSURE" ]] && _SWEEP_UNSURE="$_srv"
+            continue
         fi
         if printf '%s\n' "$_out" | grep -Fxq -- "$name"; then
             _SWEEP_FOUND="$_srv"
-            printf '%s' "$_srv"
             return 0
         fi
     done
@@ -2990,10 +3007,10 @@ _end_verify_gone() {
         fi
         return 0
     fi
-    case "$out" in
-        *"no server running"*) return 0 ;;
-        *) return 2 ;;
-    esac
+    if _tmux_err_is_clean_dead "$out"; then
+        return 0
+    fi
+    return 2
 }
 
 _end_live_id() {

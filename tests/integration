@@ -570,6 +570,25 @@ assert_eq "assume-stopped (7th B3): explicit acknowledgement ends the stopped se
     "$([[ $as2_rc -eq 0 ]] && echo 1 || echo 0)"
 assert_not_exists "assume-stopped (7th B3): state removed" "$HOME/.ae/sessions/assess"
 
+# ── 10th review B1 behavioral: an unverifiable enumerable socket BLOCKS the ack ──
+AS2="ae-as2-$$"; HID="ae-hid-$$"
+REPO_AS2="$(setup_repo)"
+(cd "$REPO_AS2" && AE_TMUX_SERVER="$AS2" "$AE" --local assess2 &) 2>/dev/null
+for _i in $(seq 1 25); do command tmux -L "$AS2" has-session -t "=assess2" 2>/dev/null && break; sleep 0.4; done
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/assess2/meta" ]] && break; sleep 0.3; done
+command tmux -L "$AS2" kill-server 2>/dev/null || true
+sed -i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/assess2/meta"
+command tmux -L "$HID" new-session -d -s hider 2>/dev/null   # an unrelated live server...
+chmod 000 "/tmp/tmux-$(id -u)/$HID"                          # ...made unverifiable
+if hid_out="$(printf 'y\n' | AE_TMUX_DEFAULT_SOCKET="ae-asdef2-$$" "$AE" end -f --assume-stopped assess2 2>&1)"; then hid_rc=0; else hid_rc=$?; fi
+assert_eq "ack-block (10th B1): unverifiable socket refuses --assume-stopped, state preserved" "1" \
+    "$([[ $hid_rc -ne 0 && "$hid_out" == *"cannot verify enumerable tmux server"* && -d "$HOME/.ae/sessions/assess2" ]] && echo 1 || echo 0)"
+chmod 700 "/tmp/tmux-$(id -u)/$HID"
+command tmux -L "$HID" kill-server 2>/dev/null || true
+if printf 'y\n' | AE_TMUX_DEFAULT_SOCKET="ae-asdef2-$$" "$AE" end -f --assume-stopped assess2 >/dev/null 2>&1; then hid2_rc=0; else hid2_rc=$?; fi
+assert_eq "ack-block (10th B1): once every socket verifies, the acknowledgement proceeds" "0" "$hid2_rc"
+assert_not_exists "ack-block (10th B1): state removed after the clean ack" "$HOME/.ae/sessions/assess2"
+
 # ── 4th review B2: unreachable server → CANNOT VERIFY → state preserved, rc!=0 ──
 UNRV="ae-unreach-$$"
 REPO_UNR="$(setup_repo)"
