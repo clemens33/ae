@@ -433,28 +433,35 @@ assert_not_exists "end named-server: state removed" "$HOME/.ae/sessions/nsrv"
 command tmux -L "$SRV_A" kill-server 2>/dev/null || true
 
 # ── 2nd-delta B1 MIRROR: DEFAULT-server target, ended from a NAMED-ambient shell ──
-# The symmetric case: a session on the DEFAULT server (empty meta tmux_server) ended from
-# a shell whose ambient AE_TMUX_SERVER is a NAMED server. Empty server must select
-# `command tmux` (default), NEVER the ambient shim — otherwise the target is missed on the
-# named server, its state is deleted, and it is orphaned alive.
+# The symmetric case: a session whose meta records an EMPTY tmux_server (= the default
+# socket) ended from a shell with a NAMED ambient AE_TMUX_SERVER. Empty must resolve the
+# pinned default socket, never the ambient shim and never inherited $TMUX.
+# ISOLATION (3rd review B4): the REAL default server must never be touched — probing it
+# live is how the fleet died once. AE_TMUX_DEFAULT_SOCKET points "default" at a mock
+# socket; the session is launched on that mock via AE_TMUX_SERVER, then its meta's
+# tmux_server line is BLANKED (fixture surgery: this is exactly what a default-server
+# session's meta looks like), so the end path must resolve empty → the mock default.
+DEFMOCK="ae-defmock-$$"
 REPO_DEF="$(setup_repo)"
-(cd "$REPO_DEF" && env -u AE_TMUX_SERVER "$AE" --local dsrv &) 2>/dev/null
-for _i in $(seq 1 25); do command tmux has-session -t dsrv 2>/dev/null && break; sleep 0.4; done
+(cd "$REPO_DEF" && AE_TMUX_SERVER="$DEFMOCK" "$AE" --local dsrv &) 2>/dev/null
+for _i in $(seq 1 25); do command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && break; sleep 0.4; done
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/dsrv/meta" ]] && break; sleep 0.3; done
-assert_eq "end default-server: came up on the DEFAULT server with empty meta server" "1" \
+sed -i 's/^tmux_server=.*/tmux_server=/' "$HOME/.ae/sessions/dsrv/meta"
+assert_eq "end default-mock: session live on the mock-default with EMPTY meta server" "1" \
     "$([[ "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/dsrv/meta")" == "" ]] \
-        && command tmux has-session -t "=dsrv" 2>/dev/null && echo 1 || echo 0)"
-# End from a NAMED-ambient shell (AE_TMUX_SERVER set, != default). Must resolve the
-# default server and kill there. Poll: teardown can lag under load.
+        && command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && echo 1 || echo 0)"
+# End from a NAMED-ambient shell, with an inherited $TMUX pointing at ANOTHER server
+# (the 3rd review's B1: bare `command tmux` follows $TMUX — both traps armed at once).
 for _i in $(seq 1 20); do
-    command tmux has-session -t "=dsrv" 2>/dev/null || break
-    AE_TMUX_SERVER="ae-mirror-$$" "$AE" end -f dsrv 2>/dev/null || true
+    command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null || break
+    TMUX="/tmp/tmux-$(id -u)/ae-elsewhere-$$,999,0" AE_TMUX_SERVER="ae-mirror-$$" \
+        AE_TMUX_DEFAULT_SOCKET="$DEFMOCK" "$AE" end -f dsrv 2>/dev/null || true
     sleep 0.4
 done
-assert_eq "end default-server (mirror): killed on the DEFAULT server, not orphaned" "1" \
-    "$(command tmux has-session -t "=dsrv" 2>/dev/null && echo 0 || echo 1)"
-assert_not_exists "end default-server (mirror): state removed" "$HOME/.ae/sessions/dsrv"
-command tmux kill-session -t dsrv 2>/dev/null || true
+assert_eq "end default-mock (mirror): killed on the PINNED default, ambient+\$TMUX ignored" "1" \
+    "$(command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && echo 0 || echo 1)"
+assert_not_exists "end default-mock (mirror): state removed" "$HOME/.ae/sessions/dsrv"
+command tmux -L "$DEFMOCK" kill-server 2>/dev/null || true
 
 # ── P1 review B2: cleanup must not read a prefix-neighbor's mode after the kill ──
 # cleanup_session used to re-read AE_MODE by RAW NAME post-kill. With a git target and a

@@ -1574,7 +1574,7 @@ _cleanup_agent_session_files() {
 }
 
 cleanup_session() {
-    local session_name="$1" mode="${2:-}" origin="${3:-}"
+    local session_name="$1" mode="${2:-}" origin="${3:-}" preserve="${4:-}"
     local wt="${WORKTREES_DIR}/${session_name}"
 
     # mode/origin are passed by end_session, captured EXACTLY (by session id on the
@@ -1644,10 +1644,14 @@ cleanup_session() {
     [[ -d "$wt" ]] || return 0
 
     if [[ "$mode" == "git" ]] && [[ -n "$origin" ]]; then
-        git -C "$origin" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+        if [[ "$preserve" != preserve ]]; then
+            git -C "$origin" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+        fi
         git -C "$origin" worktree prune 2>/dev/null || true
     else
-        rm -rf "$wt"
+        if [[ "$preserve" != preserve ]]; then
+            rm -rf "$wt"
+        fi
     fi
     echo "Removed worktree for $session_name"
 }
@@ -1696,7 +1700,7 @@ end_session() {
     # are skipped and the on-disk meta paths take over.
     # Resolve the exact id on the target's OWN server through the centralized helpers —
     # no duplicate server logic here.
-    local _es_sid
+    local _es_sid _es_preserve_workdir=false
     _es_sid="$(_end_live_id "$session_name")"
 
     # Resolve mode and origin. Initialize to "" — under set -u a stopped session leaves
@@ -1720,6 +1724,14 @@ end_session() {
     if [[ "$mode" == "local" ]]; then
         if [[ -n "$_es_sid" ]]; then
             _end_tmux "$session_name" kill-session -t "$_es_sid" 2>/dev/null || true
+            # VERIFY the kill took before destroying state: a swallowed kill failure
+            # followed by cleanup is the live-orphan/state-deleted outcome this slice
+            # exists to prevent. Verification (re-resolve, must be gone) is stronger
+            # than the kill's exit code.
+            if [[ -n "$(_end_live_id "$session_name")" ]]; then
+                echo "Error: could not kill session '$session_name' — state preserved. Retry 'ae end $session_name'." >&2
+                return 1
+            fi
         fi
         cleanup_session "$session_name" "$mode" "$origin"
         echo "Ended local session $session_name"
@@ -1772,6 +1784,7 @@ end_session() {
         else
             if ! git -C "$wdir" remote get-url origin >/dev/null 2>&1; then
                 echo "No remote 'origin' — skipping push."
+                _es_preserve_workdir=true
             else
                 echo "No new commits to push."
             fi
@@ -1785,6 +1798,20 @@ end_session() {
     # All good — clean up (kill by exact id; empty means it was not live)
     if [[ -n "$_es_sid" ]]; then
         _end_tmux "$session_name" kill-session -t "$_es_sid" 2>/dev/null || true
+        if [[ -n "$(_end_live_id "$session_name")" ]]; then
+            echo "Error: could not kill session '$session_name' — state preserved. Retry 'ae end $session_name'." >&2
+            return 1
+        fi
+    fi
+    # B3 durability: a no-remote git target just COMMITTED work that exists ONLY in this
+    # directory (a copy holds its sole repo; a detached-HEAD worktree's commit dies with
+    # the worktree). Removing it would silently destroy the work the prompt promised to
+    # keep — preserve the directory, remove only ae's session state.
+    if [[ "$_es_preserve_workdir" == true ]]; then
+        cleanup_session "$session_name" "$mode" "$origin" preserve
+        echo "Ended $session_name — work committed locally (no origin remote to push to)."
+        echo "  Directory preserved: $wdir"
+        return 0
     fi
     cleanup_session "$session_name" "$mode" "$origin"
     echo "Ended $session_name"
@@ -2691,7 +2718,14 @@ _end_tmux() {
     if [[ -n "$srv" ]]; then
         command tmux -L "$srv" "$@"
     else
-        command tmux "$@"
+        # EMPTY meta server = the DEFAULT socket — pinned EXPLICITLY. A bare
+        # `command tmux` follows an inherited $TMUX first (verified: from a named pane
+        # it lists the NAMED server's sessions), so from inside any tmux pane the
+        # "default" branch would silently target the CALLER's server instead. -L beats
+        # $TMUX, and clearing TMUX belts the braces. AE_TMUX_DEFAULT_SOCKET is a test
+        # seam ONLY (fixtures point "default" at an isolated socket — probing this
+        # branch against the real default server is how the fleet got killed once).
+        TMUX='' command tmux -L "${AE_TMUX_DEFAULT_SOCKET:-default}" "$@"
     fi
 }
 
@@ -2783,7 +2817,8 @@ _end_confirm_body() {
         # origin remote, in which case it commits and skips the push (say so; claiming
         # the push there was the review's overclaim finding).
         if [[ "$will_push" == "commit" ]]; then
-            printf "  - Commits any uncommitted work locally (no origin remote — nothing is pushed).\n"
+            printf "  - Commits any uncommitted work locally (no origin remote — nothing is pushed;\n"
+            printf "    the working directory is PRESERVED so the commit stays reachable).\n"
         elif [[ "$will_push" == "push" ]]; then
             # sanitize_branch_name already returns 'ae/<name>' — do NOT re-prefix 'ae/'
             # (that printed 'ae/ae/<name>').
@@ -3331,8 +3366,11 @@ cmd_doctor() {
         # NAMED server (tmux_server in its meta) is live but invisible there, so it would
         # be a false orphan. Re-check the candidate against its OWN server (exact match)
         # before counting it. (I1)
-        _osrv="$(read_session_meta "$_oname" tmux_server)"
-        if [[ -n "$_osrv" ]] && command tmux -L "$_osrv" has-session -t "=${_oname}" 2>/dev/null; then
+        # Symmetric liveness re-check on the candidate's OWN server via the shared
+        # resolver: a NAMED server for a named candidate, the pinned DEFAULT socket for
+        # an empty one. The old named-only check false-orphaned default-server sessions
+        # when doctor ran from a named-ambient shell (3rd review, I1).
+        if _end_tmux "$_oname" has-session -t "=${_oname}" 2>/dev/null; then
             continue
         fi
         _orphan_n=$((_orphan_n + 1))

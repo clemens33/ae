@@ -4801,8 +4801,28 @@ assert_eq "end (B1): classifier + end resolve via the server-aware _end_live_id"
 # shim), used for every end-path read AND the kill. No duplicated `command tmux -L` logic.
 assert_eq "end (2nd-delta B1): tmux runs on the target's own server via centralized _end_tmux" "1" \
     "$([[ "$AE_SOURCE" == *'command tmux -L "$srv" "$@"'* \
-        && "$AE_SOURCE" == *'command tmux "$@"'* \
+        && "$AE_SOURCE" == *'TMUX='"'"''"'"' command tmux -L "${AE_TMUX_DEFAULT_SOCKET:-default}" "$@"'* \
+        && "$AE_SOURCE" != *$'\n        command tmux "$@"\n'* \
         && "$AE_SOURCE" == *'_end_tmux "$session_name" kill-session -t "$_es_sid"'* ]] && echo 1 || echo 0)"
+# 3rd review B1: the empty/default branch must PIN the default socket — a bare
+# `command tmux` follows an inherited $TMUX (verified live: from a named pane it lists
+# the NAMED server), so from inside any pane "default" silently meant "caller's server".
+# 3rd review B2: every kill is VERIFIED before cleanup — a swallowed kill + cleanup is
+# the live-orphan/state-deleted outcome.
+assert_eq "end (3rd B2): kill verified gone before cleanup, state preserved on failure" "1" \
+    "$([[ "$AE_SOURCE" == *'could not kill session'* \
+        && "$AE_SOURCE" == *'state preserved'* ]] && echo 1 || echo 0)"
+# 3rd review B3: a no-remote git end preserves the WORK dir (a copy holds its only repo;
+# a detached worktree's commit dies with the dir) — cleanup takes a preserve flag.
+assert_eq "end (3rd B3): no-remote commit preserves the working directory" "1" \
+    "$([[ "$AE_SOURCE" == *'_es_preserve_workdir=true'* \
+        && "$AE_SOURCE" == *'cleanup_session "$session_name" "$mode" "$origin" preserve'* \
+        && "$AE_SOURCE" == *'Directory preserved:'* \
+        && "$AE_SOURCE" == *'preserve="${4:-}"'* ]] && echo 1 || echo 0)"
+# 3rd review I1: doctor's orphan recheck routes through _end_tmux — symmetric for named
+# AND empty (default) servers; the named-only check false-orphaned default sessions.
+assert_eq "end (3rd I1): doctor orphan recheck uses _end_tmux (symmetric)" "1" \
+    "$([[ "$AE_SOURCE" == *'if _end_tmux "$_oname" has-session -t "=${_oname}"'* ]] && echo 1 || echo 0)"
 # review BLOCKER B2: cleanup_session must NOT rediscover live data by raw name after the
 # kill (a prefix-neighbor's mode bleeds in → the target's worktree leaks). It takes
 # mode/origin captured exactly by end_session and reads only on-disk meta otherwise.
