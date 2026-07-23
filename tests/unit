@@ -2297,6 +2297,27 @@ assert_eq "end: --assume-stopped parsed, per-target only, refused for all" "1" \
     "$([[ "$AE_SOURCE" == *'--assume-stopped) assume_stopped=true'* \
         && "$AE_SOURCE" == *'--assume-stopped is per-target only'* \
         && "$AE_SOURCE" == *'AE_END_SERVER is a single-target override'* ]] && echo 1 || echo 0)"
+# 9th review B1: the sweep is TRI-STATE — an enumerable socket that exists but does not
+# answer is CANNOT-VERIFY, and the acknowledgement path refuses while one stands (a
+# swallowed list failure had let --assume-stopped delete state past a chmod-000 socket).
+assert_eq "sweep (9th B1): unverifiable enumerable socket blocks the acknowledgement" "1" \
+    "$([[ "$AE_SOURCE" == *'_SWEEP_UNSURE'* \
+        && "$AE_SOURCE" == *'socket exists but did not answer'* \
+        && "$AE_SOURCE" == *'Fix that server (permissions/staleness), then retry. State preserved.'* ]] && echo 1 || echo 0)"
+# 9th review B2 → clause (c), an EXPLICIT invariant amendment (flagged for the gate):
+# a POSITIVE record whose server verifiably lacks the session is verified-stopped —
+# the ordinary stop-now-end-later flow needs no acknowledgement.
+assert_eq "invariant (9th B2): clause (c) verified-stopped-on-own-server is codified" "1" \
+    "$([[ "$AE_SOURCE" == *'clause (c) added at the 9th review'* \
+        && "$AE_SOURCE" == *'stop-now-end-later flow'* ]] && echo 1 || echo 0)"
+# 9th review B3: kind=ambiguous is centrally classified — BOTH shims fail closed loudly
+# (operational helpers like retire must not dispatch by value shape), and the display
+# sites (stamp, status params) no-op rather than falling to the ambient server.
+assert_eq "ambiguous (9th B3): both shims refuse with guidance" "2" \
+    "$(printf '%s' "$AE_SOURCE" | command grep -c "refusing tmux operation — this session's server record is ambiguous" || true)"
+_amb_noops=$(( $(printf '%s' "$AE_SOURCE" | command grep -c '\[\[ "$_srvk" == "ambiguous" \]\] && return 0' || true) \
+    + $(printf '%s' "$AE_SOURCE" | command grep -c 'if \[\[ "${server_kind:-}" == "ambiguous" \]\]; then' || true) ))
+assert_eq "ambiguous (9th B3): display sites no-op (stamp + both status params)" "3" "$_amb_noops"
 assert_eq "invariant: enumerably-LIVE target refuses even --assume-stopped" "1" \
     "$([[ "$AE_SOURCE" == *'no positive server record AND is LIVE on enumerable server'* ]] && echo 1 || echo 0)"
 

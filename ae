@@ -35,7 +35,15 @@ if [[ -n "${AE_TMUX_SERVER:-}" ]]; then
     # Dispatch by the exported KIND when present (resume re-exports meta's pair);
     # otherwise legacy shape (absolute path → -S, name → -L). A literal name that merely
     # LOOKS typed ("S:x") is safe: the kind key decides, never the value prefix.
-    if [[ "${AE_TMUX_SERVER_KIND:-}" == "socket" ]]; then
+    if [[ "${AE_TMUX_SERVER_KIND:-}" == "ambiguous" ]]; then
+        # Central classification (9th review B3): an ambiguous record must produce NO
+        # tmux command anywhere — operational helpers (retire/spawn/watchdog) fail
+        # closed loudly instead of dispatching by value shape onto the wrong server.
+        tmux() {
+            echo "ae: refusing tmux operation — this session's server record is ambiguous; run 'ae doctor --refresh' first." >&2
+            return 1
+        }
+    elif [[ "${AE_TMUX_SERVER_KIND:-}" == "socket" ]]; then
         tmux() { command tmux -S "$AE_TMUX_SERVER" "$@"; }
     elif [[ "${AE_TMUX_SERVER_KIND:-}" == "name" ]]; then
         tmux() { command tmux -L "$AE_TMUX_SERVER" "$@"; }
@@ -663,6 +671,10 @@ _ae_tmux_format_literal() {
 _ae_apply_status_bar() {
     local session="$1" mode="$2" origin="$3" work_dir="$4" server="${5:-}" server_kind="${6:-}"
     local _t=(tmux)
+    if [[ "${server_kind:-}" == "ambiguous" ]]; then
+        # Ambiguous record → display no-op, never the ambient server.
+        return 0
+    fi
     if [[ -n "$server" ]]; then
         local -a _sel_t=()
         mapfile -t _sel_t < <(_srv_tmux_args "${server_kind:-}" "$server")
@@ -1722,11 +1734,17 @@ end_session() {
     # Resolve the exact id on the target's OWN server through the centralized helpers —
     # no duplicate server logic here.
     local _es_sid _es_preserve_workdir=false _es_vg
-    # ══ THE INVARIANT (Option B, Clemens-ruled): ae NEVER deletes session state unless
+    # ══ THE INVARIANT (Option B, Clemens-ruled; clause (c) added at the 9th review's
+    #    explicit invitation — flagged for the gate): ae NEVER deletes session state unless
     #    (a) the target was positively identified on ITS OWN recorded server and its
     #        kill was verified, or
-    #    (b) the human passed --assume-stopped for THIS single target and no
-    #        enumerable server (default included) hosts the name.
+    #    (b) the human passed --assume-stopped for THIS single target, and the full
+    #        enumerable sweep (default included) found nothing AND left no
+    #        unverifiable socket standing, or
+    #    (c) the target's POSITIVE record names a server that verifiably lacks the
+    #        session (server answered without it, or is cleanly absent) — the ordinary
+    #        stop-now-end-later flow; requiring an acknowledgement here would make
+    #        every normal stopped-session end interactive.
     # Classification comes FIRST — before ANY server query — so a blank/ambiguous
     # record can never aim a lookup (or a kill) at a server it does not own. This
     # closes the entire wrong-server family by construction: every destruction traces
@@ -1744,6 +1762,11 @@ end_session() {
             echo "Error: session '$session_name' has no positive server record AND is LIVE on enumerable server '$_es_found'." >&2
             echo "  Establish ownership first: 'ae doctor --refresh $session_name', or end explicitly: AE_END_SERVER='<name|/socket/path>' ae end $session_name" >&2
             echo "  State preserved." >&2
+            return 1
+        fi
+        if [[ -n "${_SWEEP_UNSURE:-}" ]]; then
+            echo "Error: cannot verify enumerable tmux server '$_SWEEP_UNSURE' (socket exists but did not answer) — session '$session_name' could be hiding behind it." >&2
+            echo "  Fix that server (permissions/staleness), then retry. State preserved." >&2
             return 1
         fi
         if [[ "${_AE_END_ASSUME_STOPPED:-}" != true ]]; then
@@ -2923,13 +2946,34 @@ _end_tmux() {
 # are inherently unenumerable — this narrows the legacy-empty ambiguity, it cannot
 # close it; the residual risk is documented at the call site.
 _end_sweep_servers() {
-    local name="$1" _dir _sock _srv _out
+    # Tri-state via globals (9th review B1: a swallowed list failure made the sweep
+    # "prove" absence past an unreadable socket — --assume-stopped then deleted state
+    # while the target lived behind it):
+    #   _SWEEP_FOUND   = server name hosting the target ('' if none found)
+    #   _SWEEP_UNSURE  = first enumerable socket that EXISTS but could not be verified
+    #                    ('' if every socket answered or was cleanly dead)
+    # Stdout stays the found-server name for existing callers; the ack path must ALSO
+    # require _SWEEP_UNSURE to be empty — an unverifiable socket may hide the target.
+    _SWEEP_FOUND=""
+    _SWEEP_UNSURE=""
+    local name="$1" _dir _sock _srv _out _rc
     _dir="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
     for _sock in "$_dir"/*; do
         [[ -S "$_sock" ]] || continue
         _srv="$(basename "$_sock")"
-        _out="$(command tmux -S "$_sock" list-sessions -F '#{session_name}' 2>/dev/null || true)"
+        _rc=0
+        _out="$(command tmux -S "$_sock" list-sessions -F '#{session_name}' 2>&1)" || _rc=$?
+        if ((_rc != 0)); then
+            case "$_out" in
+                *"no server running"*) continue ;;
+                *)
+                    [[ -z "$_SWEEP_UNSURE" ]] && _SWEEP_UNSURE="$_srv"
+                    continue
+                    ;;
+            esac
+        fi
         if printf '%s\n' "$_out" | grep -Fxq -- "$name"; then
+            _SWEEP_FOUND="$_srv"
             printf '%s' "$_srv"
             return 0
         fi
@@ -3303,6 +3347,10 @@ sync_existing_session_assets() {
     # AND a pane still carries @ae_agent=_watchdog. Only then trust the status text.
     local wd_helper="${meta_dir}/watchdog"
     local _wt=(tmux)
+    if [[ "${server_kind:-}" == "ambiguous" ]]; then
+        # Ambiguous record → display no-op, never the ambient server.
+        return 0
+    fi
     if [[ -n "$server" ]]; then
         local -a _sel_wt=()
         mapfile -t _sel_wt < <(_srv_tmux_args "${server_kind:-}" "$server")
@@ -7301,6 +7349,8 @@ _stamp_live_slots() {
     _srv="$(grep '^tmux_server=' "$meta_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
     local _srvk
     _srvk="$(grep '^tmux_server_kind=' "$meta_file" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+    # Ambiguous record → display no-op (never fall to the ambient server).
+    [[ "$_srvk" == "ambiguous" ]] && return 0
     local -a _st=(tmux) _sel=()
     if [[ -n "$_srv" ]]; then
         mapfile -t _sel < <(_srv_tmux_args "$_srvk" "$_srv")
@@ -10975,7 +11025,12 @@ sync_session_assets() {
 _AE_META_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _ts="$(grep '^tmux_server=' "$_AE_META_DIR/meta" | cut -d= -f2-)"
 _tk="$(grep '^tmux_server_kind=' "$_AE_META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
-if [[ "$_tk" == "socket" ]]; then
+if [[ "$_tk" == "ambiguous" ]]; then
+    tmux() {
+        echo "ae: refusing tmux operation — this session's server record is ambiguous; run 'ae doctor --refresh' first." >&2
+        return 1
+    }
+elif [[ "$_tk" == "socket" ]]; then
     tmux() { command tmux -S "$_ts" "$@"; }
 elif [[ "$_tk" == "name" ]]; then
     tmux() { command tmux -L "$_ts" "$@"; }
