@@ -450,17 +450,22 @@ sed -i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.a
 assert_eq "end default-mock: session live on the mock-default with EMPTY meta server" "1" \
     "$([[ "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/dsrv/meta")" == "" ]] \
         && command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && echo 1 || echo 0)"
-# End from a NAMED-ambient shell, with an inherited $TMUX pointing at ANOTHER server
-# (the 3rd review's B1: bare `command tmux` follows $TMUX — both traps armed at once).
+# Option-B invariant: a BLANK record never queries any server — not even the pinned
+# default. Plain end fails closed; the explicit AE_END_SERVER override (typed by shape,
+# a name here) is the resolution, and it must ignore ambient + inherited $TMUX.
+if TMUX="/tmp/tmux-$(id -u)/ae-elsewhere-$$,999,0" AE_TMUX_SERVER="ae-mirror-$$" \
+    AE_TMUX_DEFAULT_SOCKET="$DEFMOCK" "$AE" end -f dsrv >/dev/null 2>&1; then dm_rc=0; else dm_rc=$?; fi
+assert_eq "end default-mock (invariant): blank record fails closed — default is NOT queried" "1" \
+    "$([[ $dm_rc -ne 0 ]] && command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && echo 1 || echo 0)"
 for _i in $(seq 1 20); do
     command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null || break
     TMUX="/tmp/tmux-$(id -u)/ae-elsewhere-$$,999,0" AE_TMUX_SERVER="ae-mirror-$$" \
-        AE_TMUX_DEFAULT_SOCKET="$DEFMOCK" "$AE" end -f dsrv 2>/dev/null || true
+        AE_END_SERVER="$DEFMOCK" "$AE" end -f dsrv 2>/dev/null || true
     sleep 0.4
 done
-assert_eq "end default-mock (mirror): killed on the PINNED default, ambient+\$TMUX ignored" "1" \
+assert_eq "end default-mock (invariant): AE_END_SERVER override ends it on the RIGHT server" "1" \
     "$(command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && echo 0 || echo 1)"
-assert_not_exists "end default-mock (mirror): state removed" "$HOME/.ae/sessions/dsrv"
+assert_not_exists "end default-mock (invariant): state removed" "$HOME/.ae/sessions/dsrv"
 command tmux -L "$DEFMOCK" kill-server 2>/dev/null || true
 
 # ── 4th review B1: launch INSIDE a foreign tmux pane records the REAL server ──
@@ -527,7 +532,7 @@ for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/legsess/meta" ]] && break; s
 sed -i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/legsess/meta"   # legacy sim
 if leg_out="$(AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" end -f legsess 2>&1)"; then leg_rc=0; else leg_rc=$?; fi
 assert_eq "legacy-empty (7th): end fails closed, naming the found server (live case refuses even --assume-stopped)" "1" \
-    "$([[ $leg_rc -ne 0 && "$leg_out" == *"unresolved server record AND is LIVE on enumerable server"* \
+    "$([[ $leg_rc -ne 0 && "$leg_out" == *"no positive server record AND is LIVE on enumerable server"* \
         && "$leg_out" == *"$LEG"* ]] && echo 1 || echo 0)"
 assert_eq "legacy-empty (5th B2): state preserved + session still alive" "1" \
     "$([[ -d "$HOME/.ae/sessions/legsess" ]] && command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null && echo 1 || echo 0)"

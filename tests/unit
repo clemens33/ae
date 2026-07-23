@@ -2234,8 +2234,12 @@ assert_eq "launch server: RELATIVE #{socket_path} without pid-verification → k
     "$(_rls rel.sock)"
 assert_eq "launch server: query failed → AE_TMUX_SERVER name → kind=name" "name|srv-a" \
     "$(_RLS_SHIM=srv-a _RLS_TMUX='' _rls '')"
-assert_eq "launch server: re-exported typed prefix is STRIPPED, never doubled (7th I1)" "socket|/tmp/x" \
-    "$(_RLS_SHIM='S:/tmp/x' _RLS_TMUX='' _rls '')"
+# 8th review I2: values are NEVER rewritten — a literal legacy name "S:evil" survives
+# as-is (kind=name by shape); the re-export path carries the kind SEPARATELY.
+assert_eq "launch server: literal 'S:evil' name survives untouched (kind=name)" "name|S:evil" \
+    "$(_RLS_SHIM='S:evil' _RLS_TMUX='' _rls '')"
+assert_eq "launch server: re-export kind env wins (no value rewriting)" "socket|/tmp/x" \
+    "$(AE_TMUX_SERVER_KIND=socket _RLS_SHIM='/tmp/x' _RLS_TMUX='' _rls '')"
 assert_eq "launch server: query failed → inherited \$TMUX path → kind=socket" "socket|/tmp/tmux-1000/othersrv" \
     "$(_RLS_SHIM='' _RLS_TMUX='/tmp/tmux-1000/othersrv,123,0' _rls '')"
 assert_eq "launch server: no context → empty pair (legacy marker)" "|" \
@@ -2275,8 +2279,8 @@ assert_eq "end override kind: name override types name" "name" "$(AE_END_SERVER=
 assert_eq "end override kind: stored kind wins when meta value present" "name" "$(AE_END_SERVER='/p' _eok 'real' 'name')"
 # 6th review B2/I2: legacy-empty fails closed UNCONDITIONALLY; doctor migration writes
 # under the lock or not at all, and a zero-hit sweep records the positive default claim.
-assert_eq "legacy-empty/ambiguous: end fails closed unconditionally" "1" \
-    "$([[ "$AE_SOURCE" == *'pre-fix/ambiguous server record'* \
+assert_eq "invariant: no positive record → fail closed with the three resolutions" "1" \
+    "$([[ "$AE_SOURCE" == *'no positive server record (pre-fix or ambiguous meta)'* \
         && "$AE_SOURCE" == *"AE_END_SERVER='<name|/socket/path>' ae end"* \
         && "$AE_SOURCE" == *'ae end --assume-stopped'* ]] && echo 1 || echo 0)"
 assert_eq "migration: locked write or SKIPPED (never unlocked fall-through)" "1" \
@@ -2293,8 +2297,8 @@ assert_eq "end: --assume-stopped parsed, per-target only, refused for all" "1" \
     "$([[ "$AE_SOURCE" == *'--assume-stopped) assume_stopped=true'* \
         && "$AE_SOURCE" == *'--assume-stopped is per-target only'* \
         && "$AE_SOURCE" == *'AE_END_SERVER is a single-target override'* ]] && echo 1 || echo 0)"
-assert_eq "end: enumerably-LIVE target refuses even --assume-stopped" "1" \
-    "$([[ "$AE_SOURCE" == *'unresolved server record AND is LIVE on enumerable server'* ]] && echo 1 || echo 0)"
+assert_eq "invariant: enumerably-LIVE target refuses even --assume-stopped" "1" \
+    "$([[ "$AE_SOURCE" == *'no positive server record AND is LIVE on enumerable server'* ]] && echo 1 || echo 0)"
 
 # B2: empty-query-result proves nothing when the QUERY failed. Tri-state:
 # 0 verified-gone / 1 verified-alive / 2 cannot-verify. Stub _end_tmux per case.
@@ -4844,6 +4848,12 @@ _end_sdir="$(mktemp -d)"; _end_wdir="$(mktemp -d)"
 # 'livese' must NOT match (review B1: exact id, never a prefix).
 # shellcheck disable=SC2317  # invoked indirectly by _end_target_class
 _end_live_id() { [[ "$1" == livesess ]] && printf '$0'; return 0; }
+# Under the Option-B invariant the classifier consults the RECORD first: only a
+# positive record earns a live probe; blank/ambiguous classifies from dirs alone.
+# shellcheck disable=SC2317  # invoked indirectly by _end_target_class
+_end_target_server() { [[ "$1" == livesess || "$1" == livese ]] && printf 'somesrv'; return 0; }
+# shellcheck disable=SC2317  # invoked indirectly by _end_target_class
+_end_target_kind() { [[ "$1" == livesess || "$1" == livese ]] && printf 'name'; return 0; }
 mkdir -p "$_end_sdir/stopped-one" "$_end_wdir/wt-one"
 _ec() { SESSIONS_DIR="$_end_sdir" WORKTREES_DIR="$_end_wdir" _end_target_class "$1"; }
 # B1 — exact live-session match, never a prefix.
@@ -4860,7 +4870,8 @@ assert_eq "end class: '..' → empty (dot-component rejected, review B2)" "" "$(
 # Path-traversal guard: a name with '/' is never a valid session/worktree basename.
 mkdir -p "$_end_sdir/sub/evil"
 assert_eq "end class: a slash-bearing name is never resolved (traversal guard)" "" "$(_ec sub/evil)"
-unset -f tmux _ec; rm -rf "$_end_sdir" "$_end_wdir"
+unset -f tmux _ec _end_live_id _end_target_server _end_target_kind
+rm -rf "$_end_sdir" "$_end_wdir"
 # Truthful prompt body (pure, no read): "pushes" appears ONLY when the end will push.
 # Local sessions (the default) never push. I2: the branch shown is SANITIZED (matches
 # end_session's sanitize_branch_name), and the wording no longer overclaims an
@@ -4917,8 +4928,7 @@ assert_eq "end (B1): classifier + end resolve via the server-aware _end_live_id"
 # shim), used for every end-path read AND the kill. No duplicated `command tmux -L` logic.
 assert_eq "end (2nd-delta B1): tmux runs on the target's own server via centralized _end_tmux" "1" \
     "$([[ "$AE_SOURCE" == *'mapfile -t _sel < <(_srv_tmux_args "$kind" "$srv")'* \
-        && "$AE_SOURCE" == *'TMUX='"'"''"'"' command tmux -L "${AE_TMUX_DEFAULT_SOCKET:-default}" "$@"'* \
-        && "$AE_SOURCE" != *$'\n        command tmux "$@"\n'* \
+        && "$AE_SOURCE" != *'TMUX='"'"''"'"' command tmux -L "${AE_TMUX_DEFAULT_SOCKET:-default}" "$@"'* \
         && "$AE_SOURCE" == *'_end_tmux "$session_name" kill-session -t "$_es_sid"'* ]] && echo 1 || echo 0)"
 # 3rd review B1: the empty/default branch must PIN the default socket — a bare
 # `command tmux` follows an inherited $TMUX (verified live: from a named pane it lists

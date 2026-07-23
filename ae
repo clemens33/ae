@@ -1722,48 +1722,51 @@ end_session() {
     # Resolve the exact id on the target's OWN server through the centralized helpers —
     # no duplicate server logic here.
     local _es_sid _es_preserve_workdir=false _es_vg
-    _es_sid="$(_end_live_id "$session_name")"
-    # An EMPTY id can mean "not live" — or "the query failed" (_end_live_id masks list
-    # failures by contract). Before treating empty as not-live and walking into cleanup,
-    # verify the server is actually reachable-or-cleanly-absent: an unreachable server
-    # must preserve state and fail loudly, not fake a stopped-session teardown. (The
-    # kill-site guard alone missed this — with a broken socket the resolution ITSELF
-    # returns empty and the kill block never runs. Caught by the 4th-fold caller probe.)
-    if [[ -z "$_es_sid" ]]; then
-        _es_vg=0
-        _end_verify_gone "$session_name" || _es_vg=$?
-        if ((_es_vg != 0)); then
-            echo "Error: cannot verify session '$session_name' state (its tmux server is unreachable) — state preserved." >&2
+    # ══ THE INVARIANT (Option B, Clemens-ruled): ae NEVER deletes session state unless
+    #    (a) the target was positively identified on ITS OWN recorded server and its
+    #        kill was verified, or
+    #    (b) the human passed --assume-stopped for THIS single target and no
+    #        enumerable server (default included) hosts the name.
+    # Classification comes FIRST — before ANY server query — so a blank/ambiguous
+    # record can never aim a lookup (or a kill) at a server it does not own. This
+    # closes the entire wrong-server family by construction: every destruction traces
+    # to a verified identity or an explicit human acknowledgement.
+    local _es_srv _es_kind
+    _es_srv="$(_end_target_server "$session_name")"
+    _es_kind="$(_end_target_kind "$session_name")"
+    if [[ -z "$_es_srv" || "$_es_kind" == "ambiguous" ]]; then
+        # No positive ownership record. The ONLY teardown path is the explicit
+        # per-target acknowledgement — and even that refuses when the name is live
+        # anywhere enumerable (the assumption would be provably false).
+        local _es_found
+        _es_found="$(_end_sweep_servers "$session_name")"
+        if [[ -n "$_es_found" ]]; then
+            echo "Error: session '$session_name' has no positive server record AND is LIVE on enumerable server '$_es_found'." >&2
+            echo "  Establish ownership first: 'ae doctor --refresh $session_name', or end explicitly: AE_END_SERVER='<name|/socket/path>' ae end $session_name" >&2
+            echo "  State preserved." >&2
             return 1
         fi
-        # LEGACY-EMPTY is AMBIGUOUS, unconditionally (6th review B2): pre-fix metas
-        # recorded "" for sessions living ANYWHERE — and -S sockets at arbitrary paths
-        # or under a different TMUX_TMPDIR are unenumerable, so a clean sweep proves
-        # NOTHING. Fail closed until the record is positively migrated (doctor
-        # --refresh) or explicitly overridden (AE_END_SERVER=<name|/path|S:...|L:...>,
-        # honored by _end_target_server only for legacy-empty records).
-        local _es_kind
-        _es_kind="$(_end_target_kind "$session_name")"
-        if [[ -z "$(_end_target_server "$session_name")" || "$_es_kind" == "ambiguous" ]]; then
-            local _es_found
-            _es_found="$(_end_sweep_servers "$session_name")"
-            if [[ -n "$_es_found" ]]; then
-                # Live on an enumerable server: NEVER endable blind, not even with
-                # --assume-stopped — the assumption is provably false.
-                echo "Error: session '$session_name' has an unresolved server record AND is LIVE on enumerable server '$_es_found'." >&2
-                echo "  Resolve: 'ae doctor --refresh $session_name', or end explicitly: AE_END_SERVER='<name|/socket/path>' ae end $session_name" >&2
-                echo "  State preserved." >&2
+        if [[ "${_AE_END_ASSUME_STOPPED:-}" != true ]]; then
+            echo "Error: session '$session_name' has no positive server record (pre-fix or ambiguous meta) — it may be live somewhere ae cannot enumerate." >&2
+            echo "  Resolve: 'ae doctor --refresh $session_name', AE_END_SERVER='<name|/socket/path>' ae end $session_name," >&2
+            echo "  or acknowledge it is stopped: ae end --assume-stopped $session_name" >&2
+            echo "  State preserved." >&2
+            return 1
+        fi
+        echo "Proceeding on explicit --assume-stopped acknowledgement (not live on any enumerable server, default included)."
+        _es_sid=""
+    else
+        # Positive record: resolve the exact id on THAT server only.
+        _es_sid="$(_end_live_id "$session_name")"
+        if [[ -z "$_es_sid" ]]; then
+            # Not live on its own server — verify the server itself was reachable (or
+            # cleanly absent) before treating this as a stopped session.
+            _es_vg=0
+            _end_verify_gone "$session_name" || _es_vg=$?
+            if ((_es_vg == 2)); then
+                echo "Error: cannot verify session '$session_name' state (its recorded tmux server is unreachable) — state preserved." >&2
                 return 1
             fi
-            if [[ "${_AE_END_ASSUME_STOPPED:-}" != true ]]; then
-                echo "Error: session '$session_name' has a pre-fix/ambiguous server record — it may be live on a server ae cannot enumerate (-S sockets, foreign TMUX_TMPDIR)." >&2
-                echo "  Resolve: 'ae doctor --refresh $session_name' (migrates a locatable record)," >&2
-                echo "  end explicitly: AE_END_SERVER='<name|/socket/path>' ae end $session_name," >&2
-                echo "  or acknowledge it is stopped: ae end --assume-stopped $session_name" >&2
-                echo "  State preserved." >&2
-                return 1
-            fi
-            echo "Proceeding on explicit --assume-stopped acknowledgement (no live session found on any enumerable server)."
         fi
     fi
 
@@ -2786,9 +2789,12 @@ _srv_tmux_args() {
 }
 
 _end_target_server() {
-    local _m
+    local _m _k
     _m="$(read_session_meta "$1" tmux_server 2>/dev/null || true)"
-    if [[ -z "$_m" && -n "${AE_END_SERVER:-}" ]]; then
+    _k="$(read_session_meta "$1" tmux_server_kind 2>/dev/null || true)"
+    # The explicit override applies whenever the durable record is NOT positive —
+    # legacy-empty OR kind=ambiguous (8th review I1).
+    if [[ -n "${AE_END_SERVER:-}" ]] && [[ -z "$_m" || "$_k" == "ambiguous" ]]; then
         printf '%s' "$AE_END_SERVER"
         return 0
     fi
@@ -2802,11 +2808,11 @@ _end_target_server() {
 _end_target_kind() {
     local _k _m
     _m="$(read_session_meta "$1" tmux_server 2>/dev/null || true)"
-    if [[ -z "$_m" && -n "${AE_END_SERVER:-}" ]]; then
+    _k="$(read_session_meta "$1" tmux_server_kind 2>/dev/null || true)"
+    if [[ -n "${AE_END_SERVER:-}" ]] && [[ -z "$_m" || "$_k" == "ambiguous" ]]; then
         if [[ "$AE_END_SERVER" == /* ]]; then printf 'socket'; else printf 'name'; fi
         return 0
     fi
-    _k="$(read_session_meta "$1" tmux_server_kind 2>/dev/null || true)"
     printf '%s' "$_k"
     return 0
 }
@@ -2855,16 +2861,17 @@ resolve_launch_tmux_server() {
         return 0
     fi
     if [[ -n "${AE_TMUX_SERVER:-}" ]]; then
-        # Strip an accidentally re-exported typed prefix (7th review I1: the old
-        # fallback double-prefixed), then type by shape.
-        local _v="${AE_TMUX_SERVER#S:}"
-        [[ "$_v" == "$AE_TMUX_SERVER" ]] && _v="${AE_TMUX_SERVER#L:}"
-        if [[ "$_v" == /* ]]; then
+        # The re-export path carries the kind SEPARATELY (AE_TMUX_SERVER_KIND) — use it
+        # when present; otherwise type by shape. Never strip prefixes from the value:
+        # a legacy -L server may literally be named "S:evil" (8th review I2).
+        if [[ "${AE_TMUX_SERVER_KIND:-}" == "socket" || "${AE_TMUX_SERVER_KIND:-}" == "name" ]]; then
+            _LAUNCH_SRV_KIND="$AE_TMUX_SERVER_KIND"
+        elif [[ "$AE_TMUX_SERVER" == /* ]]; then
             _LAUNCH_SRV_KIND="socket"
         else
             _LAUNCH_SRV_KIND="name"
         fi
-        _LAUNCH_SRV_VALUE="$_v"
+        _LAUNCH_SRV_VALUE="$AE_TMUX_SERVER"
         return 0
     fi
     if [[ -n "${TMUX:-}" ]]; then
@@ -2885,13 +2892,15 @@ _end_tmux() {
         # guards handle it; running anything here would be a guess.
         return 1
     fi
-    if [[ -n "$srv" ]]; then
-        local -a _sel=()
-        mapfile -t _sel < <(_srv_tmux_args "$kind" "$srv")
-        command tmux "${_sel[@]}" "$@"
-    else
-        TMUX='' command tmux -L "${AE_TMUX_DEFAULT_SOCKET:-default}" "$@"
+    if [[ -z "$srv" ]]; then
+        # No positive record: under the invariant nothing on the end path may aim a
+        # command at a guessed server — the blank/ambiguous branch in end_session is
+        # the only consumer of that state and it never reaches here.
+        return 1
     fi
+    local -a _sel=()
+    mapfile -t _sel < <(_srv_tmux_args "$kind" "$srv")
+    command tmux "${_sel[@]}" "$@"
 }
 
 # Exact session id for TARGET on its own server ('' when not live there). `|| true` keeps
@@ -2919,7 +2928,6 @@ _end_sweep_servers() {
     for _sock in "$_dir"/*; do
         [[ -S "$_sock" ]] || continue
         _srv="$(basename "$_sock")"
-        [[ "$_srv" == "${AE_TMUX_DEFAULT_SOCKET:-default}" ]] && continue
         _out="$(command tmux -S "$_sock" list-sessions -F '#{session_name}' 2>/dev/null || true)"
         if printf '%s\n' "$_out" | grep -Fxq -- "$name"; then
             printf '%s' "$_srv"
@@ -2958,10 +2966,20 @@ _end_target_class() {
     case "$target" in
         "" | . | .. | */*) return 0 ;;
     esac
-    # Exact live match (B1): `tmux has-session -t proj` PREFIX-MATCHES a live `project`,
-    # so `ae end proj` would classify as live and downstream could kill `project`.
-    # Resolve the EXACT session id instead — a mere prefix of a live session does not
-    # resolve, so it correctly falls through to the on-disk checks (or not-found).
+    # Blank/ambiguous record: no live probe at all (the invariant — nothing may query
+    # a guessed server). Dirs alone classify; end_session applies the ack rule.
+    local _tc_srv _tc_kind
+    _tc_srv="$(_end_target_server "$target")"
+    _tc_kind="$(_end_target_kind "$target")"
+    if [[ -z "$_tc_srv" || "$_tc_kind" == "ambiguous" ]]; then
+        if [[ -d "${SESSIONS_DIR}/${target}" ]]; then
+            printf 'stopped'
+        elif [[ -d "${WORKTREES_DIR}/${target}" ]]; then
+            printf 'worktree'
+        fi
+        return 0
+    fi
+    # Positive record: exact live check on ITS OWN server only.
     if [[ -n "$(_end_live_id "$target")" ]]; then
         printf 'live'
         return 0
