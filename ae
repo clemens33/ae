@@ -80,8 +80,10 @@ DEFAULT_CONFIG='# ae config — auto-created on first run, yours to edit. Also m
 # Register any CLI tool as an alias: alias = "the shell command that launches it".
 # Model-named aliases: the prefix names the model + major, so the running model is legible at
 # a glance. STRICT pins (never --model best) — a model-named alias must not silently run a
-# different model; that would make the name lie and blind the model-drift alarm.
-opus48 = "claude --permission-mode bypassPermissions --model opus --effort xhigh"
+# different model; that would make the name lie and blind the model-drift alarm. Exact IDs
+# beat family aliases where they would drift: --model opus moved to Opus 5 the day it shipped.
+# opus5 = everyday builder tier (xhigh is a deliberate opt-up; Opus 5 defaults to high).
+opus5 = "claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh"
 # fable5 = frontier lead tier (the default session lead; pair it with a cross-model colead).
 fable5 = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
 sonnet5 = "claude --permission-mode bypassPermissions --model sonnet --effort low"
@@ -100,7 +102,7 @@ opencode = "opencode"
 # dedicated reviewer seat (gpt56sol:reviewer, xhigh) keeps cross-model review always on
 # hand — reviews go to a seat that is NOT the colead, so judgment and review stay separate.
 main = fable5:lead
-workers = gpt56sol:colead, opus48:builder, gpt56sol:reviewer
+workers = gpt56sol:colead, opus5:builder, gpt56sol:reviewer
 layout = lead-pair
 watchdog = true
 
@@ -6923,9 +6925,9 @@ remain fine for fast same-harness reads whose result you consume
 immediately.
 
 Conventions:
-- Alias = the model (\`opus48\`/\`fable5\`/\`sonnet5\`/\`gpt56sol\`/\`gpt56luna\`…
+- Alias = the model (\`opus5\`/\`fable5\`/\`sonnet5\`/\`gpt56sol\`/\`gpt56luna\`…
   — whatever ~/.ae/config defines); name = role. Good: \`sonnet5:tests\`,
-  \`gpt56luna:callers\`, \`opus48:docs-sync\`. Bad: \`worker\`, \`helper-3\`.
+  \`gpt56luna:callers\`, \`opus5:docs-sync\`. Bad: \`worker\`, \`helper-3\`.
 - Brief contract: objective, allowed scope/files, verification command,
   expected reply shape, whether edits are allowed.
 - Result contract (worker replies with): Outcome / Changed / Verified (command
@@ -9580,7 +9582,7 @@ _roster_glyph() {
     return 0
 }
 
-# 'opus48:builder' -> 'builder'. The roster is about WHO, not which model backs them
+# 'opus5:builder' -> 'builder'. The roster is about WHO, not which model backs them
 # (the alias is already visible in the pane border / @ae_agent line). Agent names
 # cannot contain ':' (see AGENTS.md), so a suffix strip is unambiguous.
 # The value lands in a tmux USER OPTION, which interpolates LITERALLY — no format

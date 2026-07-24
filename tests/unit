@@ -671,7 +671,7 @@ assert_eq "initial_prompt: opencode gets helpers path" \
     "1" \
     "$([[ "$result_opencode" == *"Helper scripts in /tmp/ae/"* ]] && echo 1 || echo 0)"
 
-# ── lead-default Part 1: DEFAULT_CONFIG — model-named aliases, strict pins, opus48:lead ──
+# ── lead-default Part 1: DEFAULT_CONFIG — model-named aliases, strict pins ──
 # Extract the DEFAULT_CONFIG string from source, parse it with the real get_config.
 # End on the FIRST line ending in a single quote (the closing quote), not a content
 # sentinel — the value grew a trailing [prompt] section, and a fixed last-line marker
@@ -684,10 +684,10 @@ _dc_get() { CONFIG_FILE="$_dc_cfg" AE_LOCAL_CONFIG="" XDG_RUNTIME_DIR="$_dc_xdg"
 # SPEC: Opus is the everyday default lead (Fable left the plans); distinct worker role names.
 assert_eq "default-config: main = fable5:lead (frontier lead, cross-model colead beside it)" "fable5:lead" "$(_dc_get workspace.main)"
 assert_eq "default-config: workers = colead (worker.0 seat) + builder + dedicated reviewer" \
-    "gpt56sol:colead, opus48:builder, gpt56sol:reviewer" "$(_dc_get workspace.workers)"
+    "gpt56sol:colead, opus5:builder, gpt56sol:reviewer" "$(_dc_get workspace.workers)"
 assert_eq "default-config: layout = lead-pair" "lead-pair" "$(_dc_get workspace.layout)"
 # STRICT model pins — a model-named alias must never silently run another model.
-assert_eq "default-config: opus48 pins --model opus" "1" "$([[ "$(_dc_get agents.opus48)" == *'--model opus'* ]] && echo 1 || echo 0)"
+assert_eq "default-config: opus5 pins exact --model claude-opus-5 (family alias would drift)" "1" "$([[ "$(_dc_get agents.opus5)" == *'--model claude-opus-5'* ]] && echo 1 || echo 0)"
 assert_eq "default-config: fable5 defined + pins --model fable (premium tier)" "1" "$([[ "$(_dc_get agents.fable5)" == *'--model fable'* ]] && echo 1 || echo 0)"
 assert_eq "default-config: sonnet5 pins --model sonnet" "1" "$([[ "$(_dc_get agents.sonnet5)" == *'--model sonnet'* ]] && echo 1 || echo 0)"
 assert_eq "default-config: gpt56sol pins gpt-5.6-sol" "1" "$([[ "$(_dc_get agents.gpt56sol)" == *'gpt-5.6-sol'* ]] && echo 1 || echo 0)"

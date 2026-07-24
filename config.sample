@@ -10,8 +10,10 @@
 # Register any CLI tool as an alias: alias = "the shell command that launches it".
 # Model-named aliases: the prefix names the model + major, so the running model is legible at
 # a glance. STRICT pins (never --model best) — a model-named alias must not silently run a
-# different model; that would make the name lie and blind the model-drift alarm.
-opus48 = "claude --permission-mode bypassPermissions --model opus --effort xhigh"
+# different model; that would make the name lie and blind the model-drift alarm. Exact IDs
+# beat family aliases where they would drift: --model opus moved to Opus 5 the day it shipped.
+# opus5 = everyday builder tier (xhigh is a deliberate opt-up; Opus 5 defaults to high).
+opus5 = "claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh"
 # fable5 = frontier lead tier (the default session lead; pair it with a cross-model colead).
 fable5 = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
 sonnet5 = "claude --permission-mode bypassPermissions --model sonnet --effort low"
@@ -30,7 +32,7 @@ opencode = "opencode"
 # dedicated reviewer seat (gpt56sol:reviewer, xhigh) keeps cross-model review always on
 # hand — reviews go to a seat that is NOT the colead, so judgment and review stay separate.
 main = fable5:lead
-workers = gpt56sol:colead, opus48:builder, gpt56sol:reviewer
+workers = gpt56sol:colead, opus5:builder, gpt56sol:reviewer
 layout = lead-pair
 watchdog = true
 
