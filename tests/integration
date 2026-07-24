@@ -100,6 +100,17 @@ wait_for_session() {
             return 1
         fi
     done
+    # Also wait for META: the write lands after tmux creation, and under load the gap
+    # exceeds every fixed post-wait sleep in this suite — dozens of tests then race a
+    # missing meta (the suite's documented flake class, now closed at the one helper
+    # every launch goes through). Callers that never read meta lose ~nothing.
+    i=0
+    while [[ ! -f "$HOME/.ae/sessions/$name/meta" ]]; do
+        if (( i >= 30 )); then break; fi   # metaless launches exist (failed launches under test)
+        sleep 0.4
+        i=$((i + 1))
+    done
+    return 0
 }
 
 # ── Test 1: Lifecycle — create, list, end ────────────────────────
@@ -1886,7 +1897,9 @@ assert_contains "ae end: a purge=true cwd does NOT override the target's keep de
 REPO_C="$(setup_repo)"
 (cd "$REPO_C" && "$AE" --local end-noconfig &) 2>/dev/null
 wait_for_session "end-noconfig"
-sleep 1
+# Poll for META, not just the tmux session — the write lands after creation and a
+# fixed sleep races under load (the suite's own documented flake class).
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/end-noconfig/meta" ]] && break; sleep 0.4; done
 sed -i 's|^config=.*|config=/nonexistent/ae/config|' "$HOME/.ae/sessions/end-noconfig/meta"
 noconfig_out="$(cd "$PURGE_CWD" && "$AE" end -f end-noconfig 2>&1)"
 assert_contains "ae end: session with no usable stored config KEEPS (no cwd fallback)" \

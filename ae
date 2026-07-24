@@ -1739,9 +1739,13 @@ end_session() {
     local _lc_lock="${SESSIONS_DIR}/.lifecycle.${session_name}.lock"
     mkdir -p "$SESSIONS_DIR"
     {
-        if ! flock -w 15 9; then
-            echo "Error: another lifecycle operation (start/resume/end) is in progress for '$session_name' — retry shortly. State preserved." >&2
-            return 1
+        if command -v flock >/dev/null 2>&1; then
+            if ! flock -w 15 9; then
+                echo "Error: another lifecycle operation (start/resume/end) is in progress for '$session_name' — retry shortly. State preserved." >&2
+                return 1
+            fi
+        else
+            echo "note: flock not found — lifecycle locking degraded (start/end races unguarded)" >&2
         fi
         _end_session_locked "$session_name"
     } 9>"$_lc_lock"
@@ -3712,6 +3716,15 @@ cmd_doctor() {
         doctor_report "OK" "git" "$(git --version 2>/dev/null || command -v git)"
     else
         doctor_report "FAIL" "git" "git not found in PATH"
+    fi
+
+    # flock is OPTIONAL (util-linux; absent on stock macOS): lifecycle locking
+    # degrades gracefully without it, so WARN — never FAIL (the bash+tmux+git
+    # hard-dependency contract stands).
+    if command -v flock >/dev/null 2>&1; then
+        doctor_report "OK" "flock" "$(command -v flock)"
+    else
+        doctor_report "WARN" "flock" "not found — start/end lifecycle locking degraded"
     fi
 
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -10781,16 +10794,23 @@ PANE_IDS=()
 # meta finalization and released explicitly before attach (an exec'd attach would
 # otherwise hold it for the whole interactive session).
 mkdir -p "$SESSIONS_DIR"
-exec 9>"${SESSIONS_DIR}/.lifecycle.${SESSION}.lock"
-if ! flock -w 15 9; then
-    echo "Error: another lifecycle operation (end) is in progress for '$SESSION' — retry shortly." >&2
-    exit 1
+# fd 8 (fd 9 belongs to the helper library's target lock). flock is util-linux, not
+# part of ae's bash+tmux+git hard-dependency contract (12th review I2) — when absent,
+# degrade to unlocked with a one-line note instead of breaking core commands.
+exec 8>"${SESSIONS_DIR}/.lifecycle.${SESSION}.lock"
+if command -v flock >/dev/null 2>&1; then
+    if ! flock -w 15 8; then
+        echo "Error: another lifecycle operation (end) is in progress for '$SESSION' — retry shortly." >&2
+        exit 1
+    fi
+else
+    echo "note: flock not found — lifecycle locking degraded (start/end races unguarded)" >&2
 fi
 # 9>&- : the FIRST client call auto-starts the tmux SERVER, a daemon that would
 # inherit fd 9 — and flock lives on the open file DESCRIPTION, so the server would
 # hold this session's lifecycle lock for its whole life (every later `ae end`
 # refused; found by the suite, reproduced in a rig). Close the fd for this child.
-tmux new-session -d -s "$SESSION" -c "$WORK_DIR" 9>&-
+tmux new-session -d -s "$SESSION" -c "$WORK_DIR" 8>&-
 # Unset env vars that prevent Claude Code from starting inside tmux
 tmux set-environment -t "$SESSION" -u CLAUDECODE
 tmux set-environment -t "$SESSION" -u CLAUDE_CODE_SESSION
@@ -11004,6 +11024,11 @@ EOF
 # Converge on the canonical 'watchdog' key (value preserved from 'watchdog=' or
 # legacy 'loop=' key — see PRESERVED_WATCHDOG above).
 [[ -n "$PRESERVED_WATCHDOG" ]] && echo "watchdog=${PRESERVED_WATCHDOG}" >>"${AE_META}/meta"
+# Release the lifecycle lock HERE — session + meta are final, which is all the lock
+# protects against `ae end`. Releasing before the agent launches also means the async
+# SID-capture children (capture_session_id … &) inherit NO lock fd (12th review I1:
+# they held it until capture finished, and an immediate end falsely timed out).
+exec 8>&-
 # Preserve the session goal (set via the 'goal' helper) across resume.
 [[ -n "$PRESERVED_GOAL" ]] && echo "goal=${PRESERVED_GOAL}" >>"${AE_META}/meta"
 # Config-driven (re-read every start/resume): mark the meta-agent (steward) so its watchdog
@@ -11530,11 +11555,6 @@ _telegram_autostart_if_enabled 2>/dev/null || true
 # existing scaffold — see _steward_autostart_if_scaffolded). Same non-fatal
 # contract as the bridge above.
 _steward_autostart_if_scaffolded 2>/dev/null || true
-
-# Release the lifecycle lock BEFORE attach: session creation + meta are final, and an
-# exec'd/blocking attach would otherwise hold the lock for the whole interactive
-# session, deadlocking any `ae end` from another terminal.
-exec 9>&-
 
 # Focus main pane and attach
 tmux select-pane -t "${PANE_IDS[0]}"

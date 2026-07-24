@@ -2319,9 +2319,14 @@ assert_eq "lifecycle-lock (11th B2): end wraps its whole body under the per-sess
     "$([[ "$AE_SOURCE" == *'.lifecycle.${session_name}.lock'* \
         && "$AE_SOURCE" == *'_end_session_locked "$session_name"'* \
         && "$AE_SOURCE" == *'another lifecycle operation (start/resume/end) is in progress'* ]] && echo 1 || echo 0)"
-assert_eq "lifecycle-lock (11th B2): launch/resume acquires the same lock pre-creation, releases pre-attach" "1" \
+assert_eq "lifecycle-lock (12th I1): launch acquires on fd 8, releases right after meta — async SID-capture children inherit NO lock" "1" \
     "$([[ "$AE_SOURCE" == *'.lifecycle.${SESSION}.lock'* \
-        && "$AE_SOURCE" == *'exec 9>&-'* ]] && echo 1 || echo 0)"
+        && "$AE_SOURCE" == *'exec 8>&-'* \
+        && "$AE_SOURCE" == *'capture_session_id … &) inherit NO lock fd'* ]] && echo 1 || echo 0)"
+# 12th I2: flock is optional — both acquisitions degrade with a note, doctor WARNs.
+assert_eq "lifecycle-lock (12th I2): flock-missing degrades gracefully at BOTH sites + doctor WARN" "1" \
+    "$([[ "$(printf '%s' "$AE_SOURCE" | command grep -c 'flock not found — lifecycle locking degraded' || true)" == "2" \
+        && "$AE_SOURCE" == *'doctor_report "WARN" "flock"'* ]] && echo 1 || echo 0)"
 # 10th review B1: the sweep reports via GLOBALS and is called BARE — a $(…) subshell
 # swallowed _SWEEP_UNSURE and the acknowledgement deleted state past a hidden socket.
 assert_eq "sweep (10th B1): end_session calls the sweep BARE and reads the globals" "1" \
