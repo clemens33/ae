@@ -2302,7 +2302,9 @@ assert_eq "end: --assume-stopped parsed, per-target only, refused for all" "1" \
 # error CONTAINS the magic words but must NOT read as clean-dead.
 assert_eq "clean-dead: stale-socket shape accepted" "0" \
     "$(_tmux_err_is_clean_dead 'no server running on /tmp/tmux-1000/x'; echo $?)"
-assert_eq "clean-dead: no-socket ENOENT shape accepted" "0" \
+# 11th review B1: ENOENT is NOT clean-dead — unlinking a LIVE server's socket produces
+# this exact error while the server and its sessions keep running.
+assert_eq "clean-dead: ENOENT is CANNOT-VERIFY (live-unlinked regression)" "1" \
     "$(_tmux_err_is_clean_dead 'error connecting to /tmp/tmux-1000/x (No such file or directory)'; echo $?)"
 assert_eq "clean-dead: permission error is NOT clean-dead" "1" \
     "$(_tmux_err_is_clean_dead 'error connecting to /tmp/tmux-1000/x (Permission denied)'; echo $?)"
@@ -2310,6 +2312,16 @@ assert_eq "clean-dead: ADVERSARIAL 'no server running'-named socket's perm error
     "$(_tmux_err_is_clean_dead 'error connecting to /tmp/tmux-1000/no server running (Permission denied)'; echo $?)"
 assert_eq "clean-dead: both verify-gone and the sweep share the ONE classifier" "2" \
     "$(printf '%s' "$AE_SOURCE" | command grep -c '_tmux_err_is_clean_dead "$_out"\|_tmux_err_is_clean_dead "$out"' || true)"
+# 11th review B2: the lifecycle lock spans proof→cleanup in end AND guards
+# launch/resume's creation — the clause-(c) proof otherwise decays across the
+# commit/fetch/push window (a start in that window put a live session under cleanup).
+assert_eq "lifecycle-lock (11th B2): end wraps its whole body under the per-session lock" "1" \
+    "$([[ "$AE_SOURCE" == *'.lifecycle.${session_name}.lock'* \
+        && "$AE_SOURCE" == *'_end_session_locked "$session_name"'* \
+        && "$AE_SOURCE" == *'another lifecycle operation (start/resume/end) is in progress'* ]] && echo 1 || echo 0)"
+assert_eq "lifecycle-lock (11th B2): launch/resume acquires the same lock pre-creation, releases pre-attach" "1" \
+    "$([[ "$AE_SOURCE" == *'.lifecycle.${SESSION}.lock'* \
+        && "$AE_SOURCE" == *'exec 9>&-'* ]] && echo 1 || echo 0)"
 # 10th review B1: the sweep reports via GLOBALS and is called BARE — a $(…) subshell
 # swallowed _SWEEP_UNSURE and the acknowledgement deleted state past a hidden socket.
 assert_eq "sweep (10th B1): end_session calls the sweep BARE and reads the globals" "1" \

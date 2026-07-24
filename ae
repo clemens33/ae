@@ -1727,7 +1727,27 @@ resolve_session_workdir() {
 
 # End a session: commit dirty state, push to ae/<branch>, then clean up
 # Returns non-zero on failure (session is preserved on failure)
+#
+# LIFECYCLE LOCK (11th review B2): the clause-(c) stopped-proof decays — the window
+# between the entry proof and cleanup spans commit/fetch/push, and a start/resume in
+# that window made cleanup delete state under a freshly LIVE session. end holds the
+# per-session lifecycle lock from proof through cleanup; launch/resume acquire the
+# same lock around session creation, so the two can never interleave. A final
+# recheck alone would still race — the lock is the fix, not another look.
 end_session() {
+    local session_name="$1"
+    local _lc_lock="${SESSIONS_DIR}/.lifecycle.${session_name}.lock"
+    mkdir -p "$SESSIONS_DIR"
+    {
+        if ! flock -w 15 9; then
+            echo "Error: another lifecycle operation (start/resume/end) is in progress for '$session_name' — retry shortly. State preserved." >&2
+            return 1
+        fi
+        _end_session_locked "$session_name"
+    } 9>"$_lc_lock"
+}
+
+_end_session_locked() {
     local session_name="$1"
 
     # Resolve the target on ITS OWN tmux server (from meta), by EXACT id — never by the
@@ -2959,8 +2979,12 @@ _end_tmux() {
 #   anything else — permission denied, refused, unknown — is NOT clean-dead.
 # Predicate: nonzero return is a QUERY result; every caller guards it (AGENTS.md).
 _tmux_err_is_clean_dead() {
+    # ONLY the stale-socket shape is clean-dead: tmux leaves the socket file behind
+    # when the server exits, so "no server running on <path>" proves a clean exit.
+    # ENOENT does NOT (11th review B1): unlinking a LIVE server's socket yields the
+    # same connect error while the server and its sessions keep running — treating it
+    # as dead deleted state under a live target. ENOENT = cannot-verify, fail closed.
     [[ "$1" == "no server running on "* ]] && return 0
-    [[ "$1" == "error connecting to "* && "$1" == *" (No such file or directory)" ]] && return 0
     return 1
 }
 
@@ -10752,7 +10776,21 @@ fi
 
 # --- Create tmux session in the worktree ---
 PANE_IDS=()
-tmux new-session -d -s "$SESSION" -c "$WORK_DIR"
+# LIFECYCLE LOCK (11th review B2): mutual exclusion with `ae end` — creation/resume
+# must not interleave with an end's proof-through-cleanup window. Held on fd 9 through
+# meta finalization and released explicitly before attach (an exec'd attach would
+# otherwise hold it for the whole interactive session).
+mkdir -p "$SESSIONS_DIR"
+exec 9>"${SESSIONS_DIR}/.lifecycle.${SESSION}.lock"
+if ! flock -w 15 9; then
+    echo "Error: another lifecycle operation (end) is in progress for '$SESSION' — retry shortly." >&2
+    exit 1
+fi
+# 9>&- : the FIRST client call auto-starts the tmux SERVER, a daemon that would
+# inherit fd 9 — and flock lives on the open file DESCRIPTION, so the server would
+# hold this session's lifecycle lock for its whole life (every later `ae end`
+# refused; found by the suite, reproduced in a rig). Close the fd for this child.
+tmux new-session -d -s "$SESSION" -c "$WORK_DIR" 9>&-
 # Unset env vars that prevent Claude Code from starting inside tmux
 tmux set-environment -t "$SESSION" -u CLAUDECODE
 tmux set-environment -t "$SESSION" -u CLAUDE_CODE_SESSION
@@ -11492,6 +11530,11 @@ _telegram_autostart_if_enabled 2>/dev/null || true
 # existing scaffold — see _steward_autostart_if_scaffolded). Same non-fatal
 # contract as the bridge above.
 _steward_autostart_if_scaffolded 2>/dev/null || true
+
+# Release the lifecycle lock BEFORE attach: session creation + meta are final, and an
+# exec'd/blocking attach would otherwise hold the lock for the whole interactive
+# session, deadlocking any `ae end` from another terminal.
+exec 9>&-
 
 # Focus main pane and attach
 tmux select-pane -t "${PANE_IDS[0]}"

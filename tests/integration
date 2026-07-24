@@ -589,6 +589,46 @@ if printf 'y\n' | AE_TMUX_DEFAULT_SOCKET="ae-asdef2-$$" "$AE" end -f --assume-st
 assert_eq "ack-block (10th B1): once every socket verifies, the acknowledgement proceeds" "0" "$hid2_rc"
 assert_not_exists "ack-block (10th B1): state removed after the clean ack" "$HOME/.ae/sessions/assess2"
 
+# ── 11th review B1: unlinked-but-LIVE server must be CANNOT-VERIFY, never clean-dead ──
+UL="ae-ul-$$"
+REPO_UL="$(setup_repo)"
+(cd "$REPO_UL" && AE_TMUX_SERVER="$UL" "$AE" --local ulsess &) 2>/dev/null
+for _i in $(seq 1 25); do command tmux -L "$UL" has-session -t "=ulsess" 2>/dev/null && break; sleep 0.4; done
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/ulsess/meta" ]] && break; sleep 0.3; done
+UL_PID="$(command tmux -L "$UL" display-message -p '#{pid}' 2>/dev/null)"
+rm -f "/tmp/tmux-$(id -u)/$UL"                    # unlink the LIVE server's socket
+if "$AE" end -f ulsess >/dev/null 2>&1; then ul_rc=0; else ul_rc=$?; fi
+assert_eq "live-unlinked (11th B1): end refuses (ENOENT is cannot-verify), state preserved" "1" \
+    "$([[ $ul_rc -ne 0 && -d "$HOME/.ae/sessions/ulsess" ]] && echo 1 || echo 0)"
+assert_eq "live-unlinked (11th B1): the server survived (it was NEVER dead)" "1" \
+    "$([[ -n "$UL_PID" ]] && kill -0 "$UL_PID" 2>/dev/null && echo 1 || echo 0)"
+kill "$UL_PID" 2>/dev/null || true; sleep 0.3
+printf 'y\n' | "$AE" end -f --assume-stopped ulsess >/dev/null 2>&1 || true
+rm -rf "$HOME/.ae/sessions/ulsess" 2>/dev/null || true
+
+# ── 11th review B2: the lifecycle lock excludes end vs start/resume ──
+LK="ae-lk-$$"
+REPO_LK="$(setup_repo)"
+(cd "$REPO_LK" && AE_TMUX_SERVER="$LK" "$AE" --local lksess &) 2>/dev/null
+for _i in $(seq 1 25); do command tmux -L "$LK" has-session -t "=lksess" 2>/dev/null && break; sleep 0.4; done
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/lksess/meta" ]] && break; sleep 0.3; done
+# hold the lock externally; end must refuse within its 15s wait (we hold for 20s)
+( exec 9>"$HOME/.ae/sessions/.lifecycle.lksess.lock"; flock 9; sleep 20 ) &
+LK_HOLDER=$!
+sleep 0.5
+if lk_out="$(AE_TMUX_SERVER="$LK" timeout 25 "$AE" end -f lksess 2>&1)"; then lk_rc=0; else lk_rc=$?; fi
+assert_eq "lifecycle-lock (11th B2): end refuses while the lock is held, state preserved" "1" \
+    "$([[ $lk_rc -ne 0 && "$lk_out" == *"lifecycle operation"* && -d "$HOME/.ae/sessions/lksess" ]] && echo 1 || echo 0)"
+kill "$LK_HOLDER" 2>/dev/null || true; wait "$LK_HOLDER" 2>/dev/null || true
+for _i in $(seq 1 15); do
+    command tmux -L "$LK" has-session -t "=lksess" 2>/dev/null || break
+    AE_TMUX_SERVER="$LK" "$AE" end -f lksess >/dev/null 2>&1 || true
+    sleep 0.4
+done
+assert_eq "lifecycle-lock (11th B2): released lock → end proceeds normally" "1" \
+    "$(command tmux -L "$LK" has-session -t "=lksess" 2>/dev/null && echo 0 || echo 1)"
+command tmux -L "$LK" kill-server 2>/dev/null || true
+
 # ── 4th review B2: unreachable server → CANNOT VERIFY → state preserved, rc!=0 ──
 UNRV="ae-unreach-$$"
 REPO_UNR="$(setup_repo)"
