@@ -559,6 +559,37 @@ done
 assert_eq "legacy-empty (5th B2): post-migration end succeeds on the right server" "1" \
     "$(command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null && echo 0 || echo 1)"
 command tmux -L "$LEG" kill-server 2>/dev/null || true
+
+# ── missing-line legacy meta (pre-tmux_server era): migration must ADD, not just replace ──
+# Replace-only wrote kind=socket with NO value line — a malformed record (-S "") the
+# migration exists to prevent. Caught live: the empty-value sim above raced a not-yet-
+# written meta and produced exactly this shape. Fixture is HAND-BUILT (review: a live
+# launch as fixture races the launcher's own locked meta rewrites, and a fixed session
+# name collides across concurrent suite runs — migration enumerates the shared socket
+# dir). PID+RANDOM-qualified name, no launcher, no waits: fully deterministic.
+LEGM="legm-$$-$RANDOM"; LEGMSRV="ae-legm-$$-$RANDOM"
+mkdir -p "$HOME/.ae/sessions/$LEGM"
+cat >"$HOME/.ae/sessions/$LEGM/meta" <<LEGMEOF
+mode=local
+origin=$TMPDIR
+session=$LEGM
+session_id=legm-fixture
+work_dir=$TMPDIR
+layout=vertical
+config=$HOME/.ae/config
+main_pane=%0
+ae_path=$AE
+ae_version=test
+agent.main=dummy:lead:legm-fixture
+agent_bin.main=bash
+LEGMEOF
+command tmux -L "$LEGMSRV" new-session -d -s "$LEGM" 2>/dev/null
+AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" doctor --refresh "$LEGM" >/dev/null 2>&1 || true
+assert_eq "legacy missing-line: migration ADDS tmux_server value + kind" \
+    "/tmp/tmux-$(id -u)/$LEGMSRV|socket" \
+    "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/$LEGM/meta" 2>/dev/null)|$(sed -n 's/^tmux_server_kind=//p' "$HOME/.ae/sessions/$LEGM/meta" 2>/dev/null)"
+command tmux -L "$LEGMSRV" kill-server 2>/dev/null || true
+rm -rf "$HOME/.ae/sessions/$LEGM"
 command tmux -L "$DEFB" kill-server 2>/dev/null || true
 
 # ── 7th review B3: zero-hit stays empty; --assume-stopped is the explicit teardown ──

@@ -2291,8 +2291,21 @@ assert_eq "migration: locked write or SKIPPED (never unlocked fall-through)" "1"
 assert_eq "migration: zero-hit leaves the record and points at --assume-stopped" "1" \
     "$([[ "$AE_SOURCE" == *'record left as-is; if it is genuinely stopped: ae end --assume-stopped'* \
         && "$AE_SOURCE" != *'presumed stopped/default'* ]] && echo 1 || echo 0)"
-assert_eq "migration: single-hit writes BOTH keys (kind=socket)" "1" \
-    "$([[ "$AE_SOURCE" == *'END { print "tmux_server_kind=socket" }'* ]] && echo 1 || echo 0)"
+assert_eq "migration: single-hit writes BOTH keys, ADDING tmux_server when the line is absent" "1" \
+    "$([[ "$AE_SOURCE" == *'if (!seen) print "tmux_server=" v'* \
+        && "$AE_SOURCE" == *'print "tmux_server_kind=socket"'* ]] && echo 1 || echo 0)"
+# Launch meta atomicity: the ENTIRE initial meta — identities, roster, launch IDs —
+# lands via ONE mv, so the first observable canonical meta is the complete one. No
+# launch write may append to the canonical path, the roster/launch-ID writes target
+# the temp, and the lifecycle lock releases only AFTER the mv.
+assert_eq "launch meta: no append ever targets the canonical path (temp + one mv only)" "1" \
+    "$([[ "$AE_SOURCE" != *'>>"${AE_META}/meta"'* ]] && echo 1 || echo 0)"
+assert_eq "launch meta: roster + launch IDs written into the atomic temp" "1" \
+    "$([[ "$AE_SOURCE" == *'agent.worker.${i}=${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]}:${WORKER_SESSION_IDS[$i]}" >>"${AE_META}/meta.tmp.$$"'* \
+        && "$AE_SOURCE" == *'launch_id.worker.${i}=${WORKER_LAUNCH_IDS[$i]}" >>"${AE_META}/meta.tmp.$$"'* ]] && echo 1 || echo 0)"
+assert_eq "launch meta: mv lands the complete meta BEFORE the lifecycle lock releases" "1" \
+    "$([[ "$AE_SOURCE" == *'mv "${AE_META}/meta.tmp.$$" "${AE_META}/meta"
+# Release the lifecycle lock AFTER the mv'* ]] && echo 1 || echo 0)"
 assert_eq "end: --assume-stopped parsed, per-target only, refused for all" "1" \
     "$([[ "$AE_SOURCE" == *'--assume-stopped) assume_stopped=true'* \
         && "$AE_SOURCE" == *'--assume-stopped is per-target only'* \
@@ -4271,8 +4284,8 @@ assert_eq "tg-sup: step 10 propagates AE_TMUX_SERVER from meta" "1" \
 # meta as meta_agent=true (config-driven, re-read every start/resume).
 assert_eq "meta: [workspace] meta is read into META_AGENT_CFG" "1" \
     "$([[ "$AE_SOURCE" == *'META_AGENT_CFG="$(get_config workspace.meta)"'* ]] && echo 1 || echo 0)"
-assert_eq "meta: truthy config writes meta_agent=true to session meta" "1" \
-    "$([[ "$AE_SOURCE" == *'case "$META_AGENT_CFG" in'*'true | 1 | yes | on)'*'echo "meta_agent=true" >>"${AE_META}/meta"'* ]] && echo 1 || echo 0)"
+assert_eq "meta: truthy config writes meta_agent=true to session meta (via the atomic temp)" "1" \
+    "$([[ "$AE_SOURCE" == *'case "$META_AGENT_CFG" in'*'true | 1 | yes | on)'*'echo "meta_agent=true" >>"${AE_META}/meta.tmp.$$"'* ]] && echo 1 || echo 0)"
 # The watchdog defines the sweep-cadence knob and reads meta_agent from meta.
 assert_eq "meta: watchdog defines SWEEP_SECS (AE_WATCHDOG_SWEEP_SEC with legacy fallback)" "1" \
     "$([[ "$AE_SOURCE" == *'SWEEP_SECS="${AE_WATCHDOG_SWEEP_SEC:-${AE_LOOP_SWEEP_SEC:-300}}"'* ]] && echo 1 || echo 0)"

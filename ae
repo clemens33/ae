@@ -3342,10 +3342,16 @@ sync_existing_session_assets() {
             if {
                 flock -w 5 201 || exit 1
                 awk -F= -v v="${_mig_hits}" '
-                    $1 == "tmux_server" { print "tmux_server=" v; next }
+                    $1 == "tmux_server" { print "tmux_server=" v; seen = 1; next }
                     $1 == "tmux_server_kind" { next }
                     { print }
-                    END { print "tmux_server_kind=socket" }
+                    END {
+                        # Pre-tmux_server-era metas lack the key entirely — replace-only
+                        # here wrote kind=socket with NO value line, a malformed record
+                        # (-S "") this migration exists to prevent. Add, not just replace.
+                        if (!seen) print "tmux_server=" v
+                        print "tmux_server_kind=socket"
+                    }
                 ' "$meta" >"${meta}.tmp.$$" && mv "${meta}.tmp.$$" "$meta"
             } 201>"${meta_dir}/meta.lock"; then
                 echo "  migrated tmux_server: '' → ${_mig_hits} (kind=socket, positively located)"
@@ -11011,7 +11017,14 @@ fi
 SESSION_ID="${PRESERVED_SESSION_ID:-$(gen_uuid)}"
 
 resolve_launch_tmux_server
-cat >"${AE_META}/meta" <<EOF
+# Atomic: build the ENTIRE initial meta — identities, roster, launch IDs — in a temp
+# file, then ONE mv. A direct `cat > meta` left the file visible EMPTY between open()
+# and the write, and post-mv appends left the roster observable half-built; either way
+# meta existence was not a readiness fact. rename(2) makes the first observable
+# canonical meta the complete one. Stale temp from a crashed launch is cleared first —
+# safe, launches serialize on the lifecycle lock.
+rm -f "${AE_META}/meta.tmp."*
+cat >"${AE_META}/meta.tmp.$$" <<EOF
 mode=${META_MODE}
 origin=${META_ORIGIN}
 session=${SESSION}
@@ -11029,26 +11042,21 @@ agent_bin.main=$(extract_binary_from_cmd "$MAIN_CMD")
 EOF
 # Converge on the canonical 'watchdog' key (value preserved from 'watchdog=' or
 # legacy 'loop=' key — see PRESERVED_WATCHDOG above).
-[[ -n "$PRESERVED_WATCHDOG" ]] && echo "watchdog=${PRESERVED_WATCHDOG}" >>"${AE_META}/meta"
-# Release the lifecycle lock HERE — session + meta are final, which is all the lock
-# protects against `ae end`. Releasing before the agent launches also means the async
-# SID-capture children (capture_session_id … &) inherit NO lock fd (12th review I1:
-# they held it until capture finished, and an immediate end falsely timed out).
-exec 8>&-
+[[ -n "$PRESERVED_WATCHDOG" ]] && echo "watchdog=${PRESERVED_WATCHDOG}" >>"${AE_META}/meta.tmp.$$"
 # Preserve the session goal (set via the 'goal' helper) across resume.
-[[ -n "$PRESERVED_GOAL" ]] && echo "goal=${PRESERVED_GOAL}" >>"${AE_META}/meta"
+[[ -n "$PRESERVED_GOAL" ]] && echo "goal=${PRESERVED_GOAL}" >>"${AE_META}/meta.tmp.$$"
 # Config-driven (re-read every start/resume): mark the meta-agent (steward) so its watchdog
 # runs the sweep-cadence instead of the stale-nudge watchdog.
 case "$META_AGENT_CFG" in
-    true | 1 | yes | on) echo "meta_agent=true" >>"${AE_META}/meta" ;;
+    true | 1 | yes | on) echo "meta_agent=true" >>"${AE_META}/meta.tmp.$$" ;;
 esac
 for i in "${!WORKER_CMDS[@]}"; do
-    echo "agent.worker.${i}=${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]}:${WORKER_SESSION_IDS[$i]}" >>"${AE_META}/meta"
-    echo "agent_bin.worker.${i}=$(extract_binary_from_cmd "${WORKER_CMDS[$i]}")" >>"${AE_META}/meta"
+    echo "agent.worker.${i}=${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]}:${WORKER_SESSION_IDS[$i]}" >>"${AE_META}/meta.tmp.$$"
+    echo "agent_bin.worker.${i}=$(extract_binary_from_cmd "${WORKER_CMDS[$i]}")" >>"${AE_META}/meta.tmp.$$"
 done
 for i in "${!SPAWNED_ALIASES[@]}"; do
-    echo "agent.spawned.${SPAWNED_IDX[$i]}=${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}:${SPAWNED_SESSION_IDS[$i]}" >>"${AE_META}/meta"
-    echo "agent_bin.spawned.${SPAWNED_IDX[$i]}=$(extract_binary_from_cmd "${SPAWNED_CMDS[$i]}")" >>"${AE_META}/meta"
+    echo "agent.spawned.${SPAWNED_IDX[$i]}=${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}:${SPAWNED_SESSION_IDS[$i]}" >>"${AE_META}/meta.tmp.$$"
+    echo "agent_bin.spawned.${SPAWNED_IDX[$i]}=$(extract_binary_from_cmd "${SPAWNED_CMDS[$i]}")" >>"${AE_META}/meta.tmp.$$"
 done
 # Unresolved spawned entries (alias missing on this machine) survive the
 # rewrite verbatim AT THEIR ORIGINAL INDEX — a later resume with the alias
@@ -11056,12 +11064,19 @@ done
 # and then silently deleted right here). Preserving the original index keeps the
 # slot key stable and can't collide with a resolved entry (distinct meta keys).
 for i in "${!UNRESOLVED_SPAWNED[@]}"; do
-    echo "agent.spawned.${UNRESOLVED_IDX[$i]}=${UNRESOLVED_SPAWNED[$i]}" >>"${AE_META}/meta"
+    echo "agent.spawned.${UNRESOLVED_IDX[$i]}=${UNRESOLVED_SPAWNED[$i]}" >>"${AE_META}/meta.tmp.$$"
 done
-[[ -n "$MAIN_LAUNCH_ID" ]] && echo "launch_id.main=${MAIN_LAUNCH_ID}" >>"${AE_META}/meta"
+[[ -n "$MAIN_LAUNCH_ID" ]] && echo "launch_id.main=${MAIN_LAUNCH_ID}" >>"${AE_META}/meta.tmp.$$"
 for i in "${!WORKER_LAUNCH_IDS[@]}"; do
-    [[ -n "${WORKER_LAUNCH_IDS[$i]}" ]] && echo "launch_id.worker.${i}=${WORKER_LAUNCH_IDS[$i]}" >>"${AE_META}/meta"
+    [[ -n "${WORKER_LAUNCH_IDS[$i]}" ]] && echo "launch_id.worker.${i}=${WORKER_LAUNCH_IDS[$i]}" >>"${AE_META}/meta.tmp.$$"
 done
+mv "${AE_META}/meta.tmp.$$" "${AE_META}/meta"
+# Release the lifecycle lock AFTER the mv — the complete initial meta is final, which
+# is all the lock protects against `ae end`. Releasing before the agent launches also
+# means the async SID-capture children (capture_session_id … &) inherit NO lock fd
+# (12th review I1: they held it until capture finished, and an immediate end falsely
+# timed out).
+exec 8>&-
 
 sync_session_assets() {
     local session_name="$1" meta_dir="$2" work_dir="$3" origin="$4" mode="$5" main_pane="$6" config_file="${7:-$CONFIG_FILE}"
