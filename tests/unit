@@ -2376,11 +2376,11 @@ assert_eq "sweep (9th B1): unverifiable enumerable socket blocks the acknowledge
     "$([[ "$AE_SOURCE" == *'_SWEEP_UNSURE'* \
         && "$AE_SOURCE" == *'socket exists but did not answer'* \
         && "$AE_SOURCE" == *'Fix that server (permissions/staleness), then retry. State preserved.'* ]] && echo 1 || echo 0)"
-# 9th review B2 → clause (c), an EXPLICIT invariant amendment (flagged for the gate):
-# a POSITIVE record whose server verifiably lacks the session is verified-stopped —
-# the ordinary stop-now-end-later flow needs no acknowledgement.
+# 9th review B2 → clause (c), an EXPLICIT invariant amendment (ratified at the
+# 2026-07-24 merge gate): a POSITIVE record whose server verifiably lacks the session
+# is verified-stopped — the ordinary stop-now-end-later flow needs no acknowledgement.
 assert_eq "invariant (9th B2): clause (c) verified-stopped-on-own-server is codified" "1" \
-    "$([[ "$AE_SOURCE" == *'clause (c) added at the 9th review'* \
+    "$([[ "$AE_SOURCE" == *'clause (c) ratified at the merge'* \
         && "$AE_SOURCE" == *'stop-now-end-later flow'* ]] && echo 1 || echo 0)"
 # 9th review B3: kind=ambiguous is centrally classified — BOTH shims fail closed loudly
 # (operational helpers like retire must not dispatch by value shape), and the display

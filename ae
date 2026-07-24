@@ -1762,8 +1762,8 @@ _end_session_locked() {
     # Resolve the exact id on the target's OWN server through the centralized helpers —
     # no duplicate server logic here.
     local _es_sid _es_preserve_workdir=false _es_vg
-    # ══ THE INVARIANT (Option B, Clemens-ruled; clause (c) added at the 9th review's
-    #    explicit invitation — flagged for the gate): ae NEVER deletes session state unless
+    # ══ THE INVARIANT (Option B, Clemens-ruled; clause (c) ratified at the merge
+    #    gate 2026-07-24): ae NEVER deletes session state unless
     #    (a) the target was positively identified on ITS OWN recorded server and its
     #        kill was verified, or
     #    (b) the human passed --assume-stopped for THIS single target, and the full
@@ -1777,6 +1777,10 @@ _end_session_locked() {
     # record can never aim a lookup (or a kill) at a server it does not own. This
     # closes the entire wrong-server family by construction: every destruction traces
     # to a verified identity or an explicit human acknowledgement.
+    # ACCEPTED RESIDUAL (ruled at the merge gate, declined as out of threat model):
+    # a NEW tmux server deliberately re-created on the recorded socket path is
+    # trusted as the recorded server — server GENERATION is not tracked, only its
+    # address. Single-user tool; becomes its own slice if the threat model changes.
     local _es_srv _es_kind
     _es_srv="$(_end_target_server "$session_name")"
     _es_kind="$(_end_target_kind "$session_name")"
