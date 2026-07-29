@@ -4442,6 +4442,48 @@ assert_eq "say: daemon event_action_allowed — chat default/blockable/exclude (
 rm -f "$_sayd_daemon"
 unset _sayd_daemon _sayd_result
 
+# ── B (telegram-integrity): say is HONEST — SPOOLED, not "sent" ──────────────────
+# `say` only writes a chat event to the session log; a SEPARATE machine-global bridge
+# daemon delivers to Telegram asynchronously, and it can be down or hours-backlogged (it
+# HUP-exits on any tmux teardown — 35x on the incident day, delaying a confirm to
+# uselessness). "Sent to Telegram bridge" over-attests. Contract: exit MUST stay 0 on a
+# successful spool — aemonitor advances `notified` ONLY on say exit 0, and the daemon will
+# still deliver, so a non-zero here would re-notify → duplicate to the operator phone.
+# The bridge rewrites state.tsv every poll (~1s), so a stale/missing state.tsv == the
+# bridge is not delivering; surface that so the sender sees late-delivery risk.
+_sayb_lib="$(mktemp)"
+_build_lib_from_source "$(dirname "$0")/../ae" "$_sayb_lib"
+_sayb_run() { # <age-secs|none> -> "rc=? out=<combined stdout>"
+    AE_SRC_F="$(dirname "$0")/../ae" LIBF="$_sayb_lib" AGE="$1" bash -c '
+        set -uo pipefail
+        source "$LIBF" 2>/dev/null || true
+        eval "$(awk "/^helper_say_usage\(\) \{/,/^\}\$/" "$AE_SRC_F")"
+        eval "$(awk "/^helper_say_main\(\) \{/,/^\}\$/" "$AE_SRC_F")"
+        home="$(mktemp -d)"
+        _AE_META_DIR="$home/sessions/s1"; _AE_SESSIONS_DIR="$home/sessions"
+        mkdir -p "$_AE_META_DIR"
+        if [[ "$AGE" != none ]]; then
+            mkdir -p "$home/telegram"; : >"$home/telegram/state.tsv"
+            touch -d "@$(( $(date +%s) - AGE ))" "$home/telegram/state.tsv"
+        fi
+        out="$(helper_say_main "hello world" 2>&1)"; rc=$?
+        rm -rf "$home"
+        printf "rc=%s out=%s" "$rc" "$out"
+    '
+}
+_sayb_fresh="$(_sayb_run 2)"
+assert_eq "b-say: fresh bridge -> exit 0 (aemonitor contract preserved)" "1" "$([[ "$_sayb_fresh" == rc=0* ]] && echo 1 || echo 0)"
+assert_eq "b-say: never over-attests 'Sent to Telegram bridge'" "1" "$([[ "$_sayb_fresh" != *'Sent to Telegram bridge'* ]] && echo 1 || echo 0)"
+assert_eq "b-say: says SPOOLED + delivery pending" "1" "$([[ "$_sayb_fresh" == *Spooled* && "$_sayb_fresh" == *pending* ]] && echo 1 || echo 0)"
+assert_eq "b-say: fresh bridge -> no down/idle warning" "1" "$([[ "$_sayb_fresh" != *WARNING* && "$_sayb_fresh" != *'no bridge running'* ]] && echo 1 || echo 0)"
+_sayb_none="$(_sayb_run none)"
+assert_eq "b-say: no bridge -> still exit 0 (spool succeeded)" "1" "$([[ "$_sayb_none" == rc=0* ]] && echo 1 || echo 0)"
+assert_eq "b-say: no bridge -> warns 'no bridge running'" "1" "$([[ "$_sayb_none" == *'no bridge running'* ]] && echo 1 || echo 0)"
+_sayb_stale="$(_sayb_run 300)"
+assert_eq "b-say: stale bridge -> warns idle/delayed" "1" "$([[ "$_sayb_stale" == *WARNING* ]] && echo 1 || echo 0)"
+rm -f "$_sayb_lib"
+unset _sayb_lib _sayb_fresh _sayb_none _sayb_stale
+
 # ── Telegram reply-to-routing (inbound UX, slice 1) ──────────────────
 # Reply to a forwarded event → routes to that agent, no /session typing.
 

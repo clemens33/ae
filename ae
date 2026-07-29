@@ -7975,7 +7975,26 @@ helper_say_main() {
     fi
 
     ae_emit_event "chat" "" "" "$text"
-    printf 'Sent to Telegram bridge (chat): %.60s%s\n' "$text" "$([[ ${#text} -gt 60 ]] && printf '…')"
+
+    # HONEST status: `say` only SPOOLS a chat event to this session's event log. A
+    # separate, machine-global bridge daemon delivers it to Telegram asynchronously — and
+    # that daemon can be down or hours-backlogged (it HUP-exits on any tmux teardown), so
+    # "sent" would over-attest. Exit stays 0 on a successful spool: the daemon will still
+    # deliver, and aemonitor advances `notified` only on say's exit 0 — a non-zero here
+    # would re-notify and double-send to the operator's phone.
+    # The bridge rewrites its state.tsv every poll (~1s), so a stale/missing state.tsv
+    # means it is not currently delivering — surface that so the sender sees the risk.
+    local _preview _tg_state _hint="" _age _mt
+    _preview="$(printf '%.60s%s' "$text" "$([[ ${#text} -gt 60 ]] && printf '…')")"
+    _tg_state="$(dirname "$_AE_SESSIONS_DIR")/telegram/state.tsv"
+    if [[ ! -f "$_tg_state" ]]; then
+        _hint=" — NOTE: no bridge running; it delivers once one starts"
+    else
+        _mt="$(stat -c %Y "$_tg_state" 2>/dev/null || echo 0)"
+        _age=$(($(date +%s) - _mt))
+        ((_age > 30)) && _hint=" — WARNING: bridge idle ${_age}s; delivery delayed"
+    fi
+    printf 'Spooled to the Telegram bridge (chat), delivery pending: %s%s\n' "$_preview" "$_hint"
 }
 
 # memo:
