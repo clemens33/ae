@@ -69,6 +69,7 @@ a reviewer at least once before being caught.
 | Stale fixture | A fixture built for an older contract keeps passing after the contract moved; it now tests only itself | When a primitive's contract changed, which fixtures encode the **old** one? Does each still describe what the code now receives? |
 | Ambient-derived identity | A recorded fact about *who acted* is inferred from ambient context that belongs to someone else | For every fact the code records about an actor, is it from a positively-owned signal, or from whatever the environment happened to hold? |
 | Scope-shadowing override | Setting one index/key at a narrower scope replaces the whole container, silently dropping inherited entries | When you narrow scope to set one element, does the narrow scope **inherit** the container or **replace** it? |
+| Display-form comparison | An identity is matched via its abbreviated or rendered form; distinct identities share that rendering, or the canonical spelling differs from what gets displayed | Is the comparison on the full canonical form — or on what a UI or emitter happens to print? |
 
 Notes on the 2026-07 rows: *completion without delivery* is distinct from B1 —
 B1 is a caller ignoring a returned failure; here the rc was captured and printed and
@@ -82,6 +83,24 @@ matches reality at all (the `⚙` sensor was green against a dummy-`sleep` fixtu
 real agent subtrees hold persistent MCP services, so it could never go dark — feature
 cut on the evidence, `4f63c19`).
 
+Notes from the 2026-07-30 portability campaign: *display-form comparison* nearly
+shipped three times in one afternoon — a session-id check that would have compared
+UUIDv7 ids by their 8-char `ae list` rendering (same-second launches share the
+prefix, so it would have false-passed a real cross-wiring and false-alarmed on the
+fix), a shim-presence probe grepping `name()` where `declare -f` emits `name () `,
+and two independently-written guards whose comment filter matched the `#!` line —
+one of them reading a comment *describing* the absence of `source _lib` as evidence
+of its presence (this row and marker-grep intersect there). *Ambient-derived
+identity* gained its severity framing: both codex agents' registration fallback
+captured the id of the human's own session running in the same cwd — a resume would
+have replayed a private conversation into an agent context. Identity from ambient
+signals is a **confidentiality** failure, not a bookkeeping bug. And for
+detector/lint bounds, the loud direction is the false positive: a pinned, labelled
+false positive is reviewable in the suite; an exemption list is fail-open (one
+over-broad date exemption suppressed semantically-divergent fallbacks). Prefer
+excluding forms *by construction* — a pattern that cannot match the BSD spelling
+needs no allow-list at all.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
@@ -91,7 +110,19 @@ cut on the evidence, `4f63c19`).
 - **Artifact-map completeness claims.** "20/20 done" is verified by naming, for each
   Done-criterion, a file/test on main that satisfies it — not by trusting the count.
 - **Mutation-proof every guard.** A guard or coverage check that cannot fail is
-  decoration. Delete the thing it protects; the gate must go red.
+  decoration. Delete the thing it protects; the gate must go red — against *every
+  branch* of the guarded artifact: one behavioural guard stayed green under
+  shim-deletion because its fixture only reached the branch that never called the
+  shim (today's partition vs yesterday's).
+- **A gate never observed to fail is not a gate — and gate tooling is code too.**
+  One audit script shipped four independent fail-open defects (a stale line-window
+  anchor, classification from an export list without checking the artifact sources
+  it, a comment matched as evidence, an extraction regex that read every function
+  body as empty) — each one reported CLEAN, and together they would have passed the
+  exact bug the script was adopted to catch. Standing procedure: break the guarded
+  thing and require red *immediately before* trusting any green; if the self-test's
+  mutation pattern no longer matches the code, the gate reports INCONCLUSIVE and
+  fails — it never silently skips.
 - **A flake-tainted gate run doesn't count.** Rerun the failed leg alone on a quiet
   machine; "it was probably contention" is a hypothesis, and hypotheses get tested.
 - **Source anchors decay.** `file:NNNN` citations in fixtures/plans are shape-checked
