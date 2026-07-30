@@ -100,7 +100,20 @@ Primary development target. `ae doctor` is your friend.
 
 ## On macOS / non-Ubuntu Linux
 
-Best-effort. ae uses some GNU coreutils-isms (`tac`, `date -d`, `stat -c %Y`). On macOS you'll likely need `coreutils` from Homebrew (then `gtac`, `gdate`, `gstat`). Resume / session-id capture for external CLIs depends on their local storage formats which differ across platforms.
+Supported. ae routes every GNU/BSD-divergent coreutil (`tac`, `stat`, `date -d`,
+`sed -i`, `grep -oP`) through a portability shim, so Homebrew `coreutils` is
+**not** required. `ae doctor` reports which userland it detected.
+
+Two extra binaries are worth installing anyway (`brew install flock coreutils`):
+
+- **`flock`** — core commands degrade gracefully without it, but the *generated
+  session helpers* do not: they lock unguarded, so `state`/`goal` writes fail and
+  a `send` can deliver and then report failure (inviting a duplicate retry).
+  Install it before relying on multi-agent messaging.
+- **`timeout`** — without it, the watchdog's git probes are unbounded, so a wedged git stalls a status refresh.
+
+Resume / session-id capture for external CLIs still depends on each tool's local
+storage format, which differs across platforms.
 
 ## Where to look when things break
 

@@ -112,11 +112,20 @@ release:
     VERSION=$(just bump)
     echo "Releasing v$VERSION"
 
-    # Update version in script
-    sed -i "s/^AE_VERSION=\".*\"/AE_VERSION=\"$VERSION\"/" ae
-
-    # Update version badge in README
-    sed -E -i "s/release-[0-9]+\\.[0-9]+\\.[0-9]+/release-$VERSION/" README.md 2>/dev/null || true
+    # Update version in script + README badge. `sed -i EXPR FILE` is GNU-only
+    # (BSD reads EXPR as the backup suffix) — temp + mv works on both. `cp -p`
+    # first so the temp inherits the target's mode: a bare redirect would create
+    # it at the ambient umask and the rename would strip ae's 0755 exec bit,
+    # which `git add -u` then stages into the release.
+    sed_i() {
+        local f="$1"; shift
+        cp -p "$f" "$f.tmp.$$" || return 1
+        sed "$@" "$f" > "$f.tmp.$$" && mv "$f.tmp.$$" "$f" || { rm -f "$f.tmp.$$"; return 1; }
+    }
+    sed_i ae "s/^AE_VERSION=\".*\"/AE_VERSION=\"$VERSION\"/"
+    sed_i README.md -E "s/release-[0-9]+\\.[0-9]+\\.[0-9]+/release-$VERSION/" 2>/dev/null || true
+    # Guard the guard: a release must never publish ae without its exec bit.
+    [ -x ae ] || { echo "Error: ae lost its executable bit during version bump" >&2; exit 1; }
 
     # Generate changelog
     TAG="v$VERSION"

@@ -8,6 +8,21 @@ AE_VERSION="0.2.1"
 # function bodies at definition time, so a later guard never runs; 3.2 would
 # die with a cryptic parse error instead.
 if ((BASH_VERSINFO[0] < 4)); then
+    # Re-exec under a modern bash before giving up. macOS ships 3.2 as /bin/bash,
+    # and a LOGIN shell's path_helper rebuilds PATH with /bin ahead of Homebrew —
+    # so `env bash` picks 3.2 even on a machine with 5.x installed. That is the
+    # normal state inside a macOS tmux pane, where it made ae refuse to start.
+    # Everything here must parse under 3.2: no bash-4 syntax above this point.
+    if [ -z "${AE_BASH_REEXEC:-}" ]; then
+        for _ae_bash in /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash; do
+            # shellcheck disable=SC2016 # single quotes are the point: the
+            # expression must be evaluated by the CANDIDATE bash, not this one.
+            if [ -x "$_ae_bash" ] &&
+                "$_ae_bash" -c 'exit $((BASH_VERSINFO[0] < 4))' 2>/dev/null; then
+                AE_BASH_REEXEC=1 exec "$_ae_bash" "$0" "$@"
+            fi
+        done
+    fi
     echo "Error: ae requires bash >= 4.0 (found ${BASH_VERSION})." >&2
     echo "macOS: brew install bash, and make sure brew's bin dir precedes /bin on PATH (eval \"\$(brew shellenv)\")." >&2
     exit 1
@@ -58,7 +73,125 @@ _ae_install_tmux_shim() {
 }
 _ae_install_tmux_shim
 
+# --- Portability shims (GNU coreutils vs BSD/macOS userland) -------------
+# ae runs on Linux (GNU) and macOS (BSD). Four utilities differ, and each one
+# fails SILENTLY through the `|| default` idiom the call sites use: a missing
+# `tac` yields nothing (newest-first scans read empty), `stat -c` yields the
+# fallback (every mtime reads 0), `date -d` yields 0, `sed -i EXPR FILE` eats
+# EXPR as a backup suffix. All four shipped as macOS bugs. Never call the raw
+# tool — route through these.
+#
+# Each shim tries the GNU form FIRST and falls back to BSD, so no platform
+# detection is needed and a macOS box with brew coreutils on PATH keeps taking
+# the GNU path. These are shared bodies: ae calls them directly AND they are
+# emitted into the generated helpers via the _lib declare -f list.
+
+# Reverse a file (or stdin) line-wise. GNU: tac. BSD: tail -r.
+_ae_tac() {
+    if command -v tac >/dev/null 2>&1; then
+        tac "$@"
+    else
+        tail -r "$@"
+    fi
+}
+
+# stat(1) field lookup. GNU spells it -c FORMAT, BSD -f FORMAT, with different
+# specifiers. Keys are GNU-flavoured. Prints the value; returns non-zero when
+# BOTH forms fail (file gone/unreadable) so callers can still branch on it —
+# the ones that want a default keep their `|| echo 0`.
+_ae_stat() {
+    local key="$1" file="$2"
+    case "$key" in
+        mtime) stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null ;;
+        size) stat -c %s "$file" 2>/dev/null || stat -f %z "$file" 2>/dev/null ;;
+        inode) stat -c %i "$file" 2>/dev/null || stat -f %i "$file" 2>/dev/null ;;
+        uid) stat -c %u "$file" 2>/dev/null || stat -f %u "$file" 2>/dev/null ;;
+        mode) stat -c %a "$file" 2>/dev/null || stat -f %Lp "$file" 2>/dev/null ;;
+        # GNU %y is "YYYY-MM-DD HH:MM:SS.nnnnnnnnn +ZZZZ" and callers cut at the
+        # dot, so the BSD form emits that same prefix with no fraction.
+        mtime-human)
+            stat -c %y "$file" 2>/dev/null ||
+                stat -f %Sm -t '%Y-%m-%d %H:%M:%S' "$file" 2>/dev/null
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# ISO-8601 UTC (the ae_now_utc format: %Y-%m-%dT%H:%M:%SZ) -> epoch seconds.
+# GNU: date -d. BSD: date -j -f. Prints 0 for an absent or unparseable stamp.
+_ae_epoch() {
+    local ts="${1:-}"
+    if [[ -z "$ts" ]]; then
+        printf '0'
+        return 0
+    fi
+    date -d "$ts" +%s 2>/dev/null ||
+        date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$ts" +%s 2>/dev/null ||
+        printf '0'
+    return 0
+}
+
+# In-place sed. `sed -i EXPR FILE` is GNU-only — BSD reads EXPR as the backup
+# suffix and then treats FILE as the script. Temp + rename instead of branching
+# on platform: identical on both, and the target is never observable
+# half-written (GNU -i does the same thing internally).
+_ae_sed_inplace() {
+    local expr="$1" file="$2" tmp
+    tmp="${file}.sedtmp.$$"
+    # `cp -p` FIRST, then truncate-and-write into that temp: a plain redirect
+    # would create the temp at the ambient umask, so the rename would silently
+    # rewrite the target's mode/owner (GNU `sed -i` preserves them). Copying the
+    # metadata across and writing in place keeps the rename faithful.
+    cp -p "$file" "$tmp" 2>/dev/null || {
+        rm -f "$tmp"
+        return 1
+    }
+    if sed "$expr" "$file" >"$tmp" && mv "$tmp" "$file"; then
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+# md5sum is GNU; macOS ships `md5` (and `md5 -q` for the bare digest). Used for
+# short content/path hashes only — never for security.
+_ae_md5() {
+    if command -v md5sum >/dev/null 2>&1; then
+        md5sum
+    else
+        md5 -q
+    fi
+}
+
+# First JSON string value for KEY, read from stdin. Replaces the GNU-only
+# `grep -oP '"key"\s*:\s*"\K…'` idiom — BSD grep has neither -P nor \K, so on
+# macOS every one of those returned empty and the agent session-ID capture that
+# depends on them never fired. grep -oE emits matches in source order, so
+# head -1 preserves grep -oP's first-match semantics. VCLASS is a bracket
+# expression for the value characters (default: anything but a quote).
+# A QUERY function: the result is stdout, the status is incidental. It must end
+# `return 0` — no match makes grep exit 1, and `head -1` closing the pipe early
+# on a many-match input can hand grep a SIGPIPE (141); under errexit either would
+# abort a bare caller (AGENTS.md, "only a BARE call proves set -e safety").
+_ae_json_first() {
+    local key="$1" vclass="${2:-[^\"]}"
+    grep -oE "\"${key}\"[[:space:]]*:[[:space:]]*\"${vclass}*\"" |
+        head -1 |
+        sed -e "s/^\"${key}\"[[:space:]]*:[[:space:]]*\"//" -e 's/"$//' || true
+    return 0
+}
+
+# Same, for an unquoted numeric value. Same query contract.
+_ae_json_first_num() {
+    local key="$1"
+    grep -oE "\"${key}\"[[:space:]]*:[[:space:]]*[0-9]+" |
+        head -1 |
+        sed -e "s/^\"${key}\"[[:space:]]*:[[:space:]]*//" || true
+    return 0
+}
+
 # --- Function index ---
+#   Portability: _ae_tac, _ae_stat, _ae_epoch, _ae_sed_inplace, _ae_json_first, _ae_json_first_num, _ae_md5
 #   Config:     parse_config, get_config
 #   Helpers:    tool_name_from_cmd, tool_kind_from_cmd, default_session_name, tmux_attach, gen_uuid, detect_current_session
 #   Resume:     strip_session_flags, resume_cmd_from_cmd, inject_session_id, inject_ae_context, resolve_agent_session_id
@@ -406,22 +539,25 @@ tool_name_from_cmd() {
 }
 
 # Strip session/resume flags from a command (whole-token matching to avoid mangling e.g. --continue-on-error)
+# sed -E (ERE) throughout: BRE alternation `\|` is a GNU extension that BSD/macOS
+# sed does not implement — there it matched nothing and the flags survived,
+# so a resume re-appended --resume onto a command that still carried one.
 strip_session_flags() {
-    echo "$1" | sed \
-        -e 's/\(^\|  *\)--session-id[= ][^ ]*/\1/g' \
-        -e 's/\(^\|  *\)--resume[= ][^ ]*/\1/g' \
-        -e 's/\(^\|  *\)--continue\(  *\|$\)/\1\2/g' \
-        -e 's/  */ /g; s/^ //; s/ $//'
+    echo "$1" | sed -E \
+        -e 's/(^| +)--session-id[= ][^ ]*/\1/g' \
+        -e 's/(^| +)--resume[= ][^ ]*/\1/g' \
+        -e 's/(^| +)--continue( +|$)/\1\2/g' \
+        -e 's/ +/ /g; s/^ //; s/ $//'
 }
 
 # Strip opencode-specific session/resume flags (--session ID, -s ID, -c, --continue)
 strip_opencode_session_flags() {
-    echo "$1" | sed \
-        -e 's/\(^\|  *\)--session[= ][^ ]*/\1/g' \
-        -e 's/\(^\|  *\)-s[= ][^ ]*/\1/g' \
-        -e 's/\(^\|  *\)--continue\(  *\|$\)/\1\2/g' \
-        -e 's/\(^\|  *\)-c\(  *\|$\)/\1\2/g' \
-        -e 's/  */ /g; s/^ //; s/ $//'
+    echo "$1" | sed -E \
+        -e 's/(^| +)--session[= ][^ ]*/\1/g' \
+        -e 's/(^| +)-s[= ][^ ]*/\1/g' \
+        -e 's/(^| +)--continue( +|$)/\1\2/g' \
+        -e 's/(^| +)-c( +|$)/\1\2/g' \
+        -e 's/ +/ /g; s/^ //; s/ $//'
 }
 
 # Strip gemini prompt injection flags (-i '...' / --prompt-interactive '...')
@@ -898,7 +1034,10 @@ gen_uuid() {
     if [[ -f /proc/sys/kernel/random/uuid ]]; then
         cat /proc/sys/kernel/random/uuid
     elif command -v uuidgen >/dev/null 2>&1; then
-        uuidgen
+        # macOS uuidgen emits UPPERCASE. Every consumer expects lowercase —
+        # _transfer_validate_uuid rejects anything else, and agent session
+        # filenames are lowercase — so normalise here, at the one source.
+        uuidgen | tr '[:upper:]' '[:lower:]'
     else
         echo "ae: no UUID generator available (need /proc/sys/kernel/random/uuid or uuidgen)" >&2
         echo "ae: install util-linux or uuid-runtime, or ensure /proc is mounted" >&2
@@ -947,14 +1086,14 @@ find_codex_session_by_launch_id() {
         for f in "$dir"/*.jsonl; do
             [[ -f "$f" ]] || continue
             local mtime
-            mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+            mtime="$(_ae_stat mtime "$f" || echo 0)"
             ((mtime < launch_time)) && continue
             grep -Fq "AE_CODEX_LAUNCH_ID=${launch_id}" "$f" 2>/dev/null || continue
             if ((mtime > best_mtime)); then
                 local first_line file_id
                 first_line="$(head -1 "$f" 2>/dev/null || true)"
                 [[ -z "$first_line" ]] && continue
-                file_id="$(echo "$first_line" | grep -oP '"id"\s*:\s*"\K[0-9a-f-]+' 2>/dev/null || true)"
+                file_id="$(echo "$first_line" | _ae_json_first id '[0-9a-f-]' 2>/dev/null || true)"
                 if [[ -n "$file_id" ]]; then
                     best_id="$file_id"
                     best_mtime="$mtime"
@@ -985,20 +1124,20 @@ find_codex_session_by_cwd() {
             [[ -f "$f" ]] || continue
             # Skip files older than launch_time
             local mtime
-            mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+            mtime="$(_ae_stat mtime "$f" || echo 0)"
             ((mtime < launch_time)) && continue
             # Parse first line: extract payload.cwd and payload.id
             local first_line file_cwd file_id
             first_line="$(head -1 "$f" 2>/dev/null || true)"
             [[ -z "$first_line" ]] && continue
-            file_cwd="$(echo "$first_line" | grep -oP '"cwd"\s*:\s*"\K[^"]*' 2>/dev/null || true)"
+            file_cwd="$(echo "$first_line" | _ae_json_first cwd 2>/dev/null || true)"
             [[ -z "$file_cwd" ]] && continue
             # Normalize file CWD
             file_cwd="$(realpath "$file_cwd" 2>/dev/null || echo "$file_cwd")"
             [[ "$file_cwd" != "$target_cwd" ]] && continue
             # CWD matches — pick newest by mtime
             if ((mtime > best_mtime)); then
-                file_id="$(echo "$first_line" | grep -oP '"id"\s*:\s*"\K[0-9a-f-]+' 2>/dev/null || true)"
+                file_id="$(echo "$first_line" | _ae_json_first id '[0-9a-f-]' 2>/dev/null || true)"
                 if [[ -n "$file_id" ]]; then
                     best_id="$file_id"
                     best_mtime="$mtime"
@@ -1040,13 +1179,14 @@ capture_codex_session_id() {
     fi
     # D) Fallback: scrape TUI output (legacy, least reliable)
     if [[ -z "$captured" ]]; then
-        captured="$(tmux capture-pane -t "$pane" -p 2>/dev/null | grep -oP 'session id: \K[0-9a-f-]+' | head -1 || true)"
+        captured="$(tmux capture-pane -t "$pane" -p 2>/dev/null |
+            grep -oE 'session id: [0-9a-f-]+' | head -1 | sed 's/^session id: //' || true)"
     fi
     if [[ -n "$captured" ]]; then
         (
             flock -w 5 200 || exit 1
             local escaped_slot="${slot//./\\.}"
-            sed -i "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
+            _ae_sed_inplace "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
         ) 200>"$meta_dir/meta.lock"
     fi
 }
@@ -1092,10 +1232,10 @@ find_gemini_session_by_launch_id() {
         [[ -d "$chats_dir" ]] || continue
         for f in "$chats_dir"/session-*.json; do
             [[ -f "$f" ]] || continue
-            mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+            mtime="$(_ae_stat mtime "$f" || echo 0)"
             ((mtime < launch_time)) && continue
             grep -Fq "AE_GEMINI_LAUNCH_ID=${launch_id}" "$f" 2>/dev/null || continue
-            session_id="$(grep -oP '"sessionId"\s*:\s*"\K[^"]+' "$f" 2>/dev/null | head -1 || true)"
+            session_id="$(_ae_json_first sessionId <"$f" 2>/dev/null || true)"
             [[ -z "$session_id" ]] && continue
             if ((mtime > best_mtime)); then
                 best_id="$session_id"
@@ -1125,9 +1265,9 @@ find_gemini_session_by_cwd() {
         [[ -d "$chats_dir" ]] || continue
         for f in "$chats_dir"/session-*.json; do
             [[ -f "$f" ]] || continue
-            mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+            mtime="$(_ae_stat mtime "$f" || echo 0)"
             ((mtime < launch_time)) && continue
-            session_id="$(grep -oP '"sessionId"\s*:\s*"\K[^"]+' "$f" 2>/dev/null | head -1 || true)"
+            session_id="$(_ae_json_first sessionId <"$f" 2>/dev/null || true)"
             [[ -z "$session_id" ]] && continue
             if ((mtime > best_mtime)); then
                 best_id="$session_id"
@@ -1155,15 +1295,21 @@ find_opencode_session_by_cwd() {
     local best_id="" best_updated=0
     # Compact JSON to single-line-per-object, then parse with grep
     local compact
-    compact="$(echo "$json" | tr -d '\n' | sed 's/}\s*,\s*{/}\n{/g')"
+    # `\s` and a `\n` REPLACEMENT are BOTH GNU sed extensions — BSD reads them
+    # literally, so the split never happened, the whole array stayed on one line,
+    # and only the FIRST session was ever examined. POSIX class + a control-byte
+    # separator (inserted by bash, so sed never has to interpret an escape).
+    local _sep=$'\001'
+    compact="$(printf '%s' "$json" | tr -d '\n' |
+        sed -E "s/\}[[:space:]]*,[[:space:]]*\{/}${_sep}{/g" | tr "$_sep" '\n')"
     local sid dir updated
     while IFS= read -r entry; do
         [[ -z "$entry" ]] && continue
-        sid="$(echo "$entry" | grep -oP '"id"\s*:\s*"\K[^"]+' 2>/dev/null || true)"
+        sid="$(echo "$entry" | _ae_json_first id 2>/dev/null || true)"
         [[ -z "$sid" ]] && continue
-        dir="$(echo "$entry" | grep -oP '"directory"\s*:\s*"\K[^"]+' 2>/dev/null || true)"
+        dir="$(echo "$entry" | _ae_json_first directory 2>/dev/null || true)"
         [[ -z "$dir" ]] && continue
-        updated="$(echo "$entry" | grep -oP '"updated"\s*:\s*\K[0-9]+' 2>/dev/null || true)"
+        updated="$(echo "$entry" | _ae_json_first_num updated 2>/dev/null || true)"
         [[ -z "$updated" ]] && continue
         ((updated < launch_time_ms)) && continue
         dir="$(realpath "$dir" 2>/dev/null || echo "$dir")"
@@ -1201,7 +1347,7 @@ capture_opencode_session_id() {
         (
             flock -w 5 200 || exit 1
             local escaped_slot="${slot//./\\.}"
-            sed -i "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
+            _ae_sed_inplace "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
         ) 200>"$meta_dir/meta.lock"
     fi
 }
@@ -1230,7 +1376,7 @@ capture_gemini_session_id() {
         (
             flock -w 5 200 || exit 1
             local escaped_slot="${slot//./\\.}"
-            sed -i "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
+            _ae_sed_inplace "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
         ) 200>"$meta_dir/meta.lock"
     fi
 }
@@ -1288,7 +1434,7 @@ resolve_agent_session_id() {
 default_session_name() {
     local dir="${PWD/#$HOME\//}"
     local hash
-    hash="$(printf '%s' "$PWD" | md5sum | cut -c1-6)"
+    hash="$(printf '%s' "$PWD" | _ae_md5 | cut -c1-6)"
     dir="${dir//\//-}"
     dir="${dir//./_}"
     echo "ae-${dir}-${hash}"
@@ -1900,7 +2046,8 @@ _end_session_locked() {
 
             # Show what we're pushing (count files changed across all unpushed commits)
             local file_count
-            file_count="$(git -C "$wdir" diff --name-only "$(git -C "$wdir" merge-base HEAD origin/HEAD 2>/dev/null || echo HEAD~1)" HEAD 2>/dev/null | wc -l || echo "?")"
+            # tr: BSD wc pads its count with leading spaces, GNU does not.
+            file_count="$(git -C "$wdir" diff --name-only "$(git -C "$wdir" merge-base HEAD origin/HEAD 2>/dev/null || echo HEAD~1)" HEAD 2>/dev/null | wc -l | tr -d '[:space:]' || echo "?")"
             echo "  ${file_count} file(s) changed"
 
             if ! git -C "$wdir" push -u origin "HEAD:refs/heads/${branch}"; then
@@ -2022,12 +2169,12 @@ _goal_set_epoch() {
         [[ "$(_event_json_str "$line" action)" == "goal" ]] || continue
         ts="$(_event_json_str "$line" ts)"
         break
-    done < <(tac "$events" 2>/dev/null || true)
+    done < <(_ae_tac "$events" 2>/dev/null || true)
     [[ -n "$ts" ]] || {
         printf '0'
         return 0
     }
-    date -d "$ts" +%s 2>/dev/null || printf '0'
+    _ae_epoch "$ts"
     return 0
 }
 
@@ -2123,7 +2270,7 @@ _session_states() {
         [[ -n "$st" ]] || continue
         _seen["$actor"]="$st"
         printf '%s\t%s\n' "$actor" "$st"
-    done < <(grep -aE '"action":"(state|done)"' "$events" 2>/dev/null | tac || true)
+    done < <(grep -aE '"action":"(state|done)"' "$events" 2>/dev/null | _ae_tac || true)
 }
 
 # Active alert/throttle reason for an agent, or empty. Reuses the watchdog
@@ -2172,7 +2319,7 @@ _agent_alert_reason() {
                 [[ "$actor" == "$agent" ]] && return 0
                 ;;
         esac
-    done < <(tac "$events" 2>/dev/null || true)
+    done < <(_ae_tac "$events" 2>/dev/null || true)
     # No decisive alert/recovery found → no active alert. Return success
     # explicitly: the result is the emitted string, not the exit status. Without
     # this the function inherits the loop's status (non-zero when the last
@@ -2255,7 +2402,7 @@ _session_attn_rollup() {
                     _ptgt="$(_event_json_str "$_pl" target)"
                     _pts="$(_event_json_str "$_pl" ts)"
                     _page=0
-                    [[ -n "$_pts" ]] && _page="$(date -d "$_pts" +%s 2>/dev/null || echo 0)"
+                    [[ -n "$_pts" ]] && _page="$(_ae_epoch "$_pts")"
                     if ((_pnow > 0 && _page > 0 && _pnow - _page >= _request_secs)); then
                         _preq[$_pref]="$_ptgt"
                     else
@@ -2267,7 +2414,7 @@ _session_attn_rollup() {
                     [[ -n "$_pref" ]] && _preq[$_pref]=""
                     ;;
             esac
-        done < <(tac "$events" 2>/dev/null || true)
+        done < <(_ae_tac "$events" 2>/dev/null || true)
         local _pt
         for _pref in "${!_preq[@]}"; do
             _pt="${_preq[$_pref]}"
@@ -2439,7 +2586,7 @@ _session_active_epoch() {
     }
     for f in "${sess_dir}/events.jsonl" "${sess_dir}/workspace.md" "${sess_dir}/meta"; do
         if [[ -f "$f" ]]; then
-            ts="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+            ts="$(_ae_stat mtime "$f" || echo 0)"
             [[ "$ts" != "0" ]] && break
         fi
     done
@@ -2751,7 +2898,10 @@ cmd_status() {
         [[ -n "$ae_agent" ]] || continue
         found=true
         echo "── ${ae_agent} (${pane_id}) ──"
-        tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -v '^$' | tail -15
+        # || true: an EMPTY pane makes grep exit 1, and under `set -e` +
+        # pipefail that aborted cmd_status mid-document — the caller saw a
+        # truncated status AND a non-zero exit. A blank pane is not an error.
+        tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -v '^$' | tail -15 || true
         echo ""
     done < <(tmux list-panes -s -t "$target" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
     if [[ "$found" == false ]]; then
@@ -2770,7 +2920,9 @@ kill_heartbeat() {
     # Validate PID still belongs to our heartbeat before killing
     if kill -0 "$hb_pid" 2>/dev/null; then
         local cmdline
-        cmdline="$(tr '\0' ' ' </proc/"$hb_pid"/cmdline 2>/dev/null || true)"
+        # ps, not /proc: /proc is Linux-only, so on macOS this read always came
+        # back empty and a legacy heartbeat was never actually reaped.
+        cmdline="$(ps -o command= -p "$hb_pid" 2>/dev/null || true)"
         if [[ "$cmdline" == *heartbeat* ]]; then
             kill "$hb_pid" 2>/dev/null || true
         fi
@@ -2905,7 +3057,10 @@ resolve_launch_tmux_server() {
             return 0
         fi
         _pid="$(tmux display-message -p '#{pid}' 2>/dev/null || true)"
-        _cand="$(readlink -f -- "$_sp" 2>/dev/null || true)"
+        # realpath fallback: `readlink -f` is GNU (macOS only grew it in 12.3),
+        # and without a canonical path a relative socket reads as ambiguous and
+        # forces every lifecycle operation on that session to fail closed.
+        _cand="$(readlink -f -- "$_sp" 2>/dev/null || realpath "$_sp" 2>/dev/null || true)"
         if [[ -n "$_pid" && -n "$_cand" && -S "$_cand" ]]; then
             _cpid="$(command tmux -S "$_cand" display-message -p '#{pid}' 2>/dev/null || true)"
             if [[ -n "$_cpid" && "$_cpid" == "$_pid" ]]; then
@@ -3499,7 +3654,7 @@ doctor_try_capture_session_id() {
         if [[ "$current_id" != "pending" ]]; then
             exit 2
         fi
-        sed -i "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
+        _ae_sed_inplace "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
         exit 0
     ) 200>"$meta_dir/meta.lock"
     rc=$?
@@ -3736,7 +3891,26 @@ cmd_doctor() {
     if command -v flock >/dev/null 2>&1; then
         doctor_report "OK" "flock" "$(command -v flock)"
     else
-        doctor_report "WARN" "flock" "not found — start/end lifecycle locking degraded"
+        doctor_report "WARN" "flock" "not found — lifecycle locking degraded AND session helpers (send/ask/state/goal) lock unguarded"
+    fi
+
+    # Userland flavour. ae routes every divergent coreutil through a shim
+    # (_ae_tac/_ae_stat/_ae_epoch/_ae_sed_inplace), so BSD is fully supported —
+    # this row just makes the active path visible when something looks off.
+    if command -v tac >/dev/null 2>&1; then
+        doctor_report "OK" "userland" "GNU coreutils"
+    elif tail -r /dev/null >/dev/null 2>&1; then
+        doctor_report "OK" "userland" "BSD/macOS (portability shims active)"
+    else
+        doctor_report "FAIL" "userland" "neither 'tac' nor 'tail -r' works — cannot read event logs newest-first"
+    fi
+
+    # timeout is OPTIONAL (coreutils; absent on stock macOS). Without it the
+    # watchdog's git probes run unbounded — a wedged git stalls a status refresh.
+    if command -v timeout >/dev/null 2>&1; then
+        doctor_report "OK" "timeout" "$(command -v timeout)"
+    else
+        doctor_report "WARN" "timeout" "not found — watchdog git probes run unbounded (brew install coreutils)"
     fi
 
     if [[ -f "$CONFIG_FILE" ]]; then
@@ -4031,12 +4205,12 @@ _telegram_validate_token_file() {
         return 1
     }
     local owner mode
-    owner="$(stat -c %u "$resolved" 2>/dev/null || echo -1)"
+    owner="$(_ae_stat uid "$resolved" || echo -1)"
     [[ "$owner" == "${UID:-$(id -u)}" ]] || {
         echo "token file not owned by you: $resolved"
         return 1
     }
-    mode="$(stat -c %a "$resolved" 2>/dev/null || echo 000)"
+    mode="$(_ae_stat mode "$resolved" || echo 000)"
     case "$mode" in
         400 | 600) ;;
         *)
@@ -4076,12 +4250,26 @@ POLL_INTERVAL="${AE_TELEGRAM_POLL_INTERVAL:-1}"
 
 mkdir -p "$STATE_DIR"
 
+# Portability shim — the daemon is a standalone script, so it carries its own
+# copy of ae's _ae_stat (GNU `stat -c` vs BSD/macOS `stat -f`). Distinct name:
+# the emission guards count col-0 `_ae_stat() {` definitions in ae's source and
+# a second one here would read as a duplicate. Only the keys used here.
+_stat_field() {
+    local key="$1" file="$2"
+    case "$key" in
+        mtime) stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null ;;
+        size) stat -c %s "$file" 2>/dev/null || stat -f %z "$file" 2>/dev/null ;;
+        inode) stat -c %i "$file" 2>/dev/null || stat -f %i "$file" 2>/dev/null ;;
+        *) return 1 ;;
+    esac
+}
+
 # Persist ALL daemon output to a log file. This is stderr+stdout, not just the
 # _log lines, so an uncaught crash (e.g. the bash "unbound variable" message
 # under set -u that closes the tmux session) lands in the log and the death is
 # diagnosable after the session is gone — the pane-only output we had before
 # vanished with the session. Rotate once at startup if the log grew large.
-if [[ -f "$LOG_FILE" ]] && (($(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0) > LOG_MAX_BYTES)); then
+if [[ -f "$LOG_FILE" ]] && (($(_stat_field size "$LOG_FILE" || echo 0) > LOG_MAX_BYTES)); then
     mv -f "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null && chmod 600 "$LOG_FILE.1" 2>/dev/null || true
 fi
 # Owner-only: the log captures chat ids, session names, sender ids and raw
@@ -4422,7 +4610,7 @@ tg_cmd_list() {
         sid="$(grep '^session_id=' "$meta" 2>/dev/null | head -1 | cut -d= -f2-)"
         ev="$dir/events.jsonl"
         if [[ -f "$ev" ]]; then
-            local mt; mt=$(stat -c %Y "$ev" 2>/dev/null || echo 0)
+            local mt; mt=$(_stat_field mtime "$ev" || echo 0)
             local d=$((now - mt))
             if (( d < 90 )); then age="just now"
             elif (( d < 3600 )); then age="$((d/60))m ago"
@@ -4847,8 +5035,8 @@ process_session() {
     local cur_inode="${STATE_INODE[$sid]:-}"
     local cur_offset="${STATE_OFFSET[$sid]:-0}"
     local file_inode file_size
-    file_inode=$(stat -c %i "$events_file" 2>/dev/null) || return 0
-    file_size=$(stat -c %s "$events_file" 2>/dev/null) || return 0
+    file_inode=$(_stat_field inode "$events_file") || return 0
+    file_size=$(_stat_field size "$events_file") || return 0
 
     # Unknown session_id OR inode change: jump to EOF, persist, and skip
     # this iteration. This is the codex-flagged "don't replay history"
@@ -5107,7 +5295,7 @@ _aewatch_autostart_if_available() {
     # heartbeat_max_age); a stale/absent heartbeat falls through to `up` for a restart.
     local _hb="$CONFIG_DIR/aewatch/heartbeat"
     if daemon_session_running ae-aewatch && [[ -f "$_hb" ]]; then
-        local _age=$(($(date +%s) - $(stat -c %Y "$_hb" 2>/dev/null || echo 0)))
+        local _age=$(($(date +%s) - $(_ae_stat mtime "$_hb" || echo 0)))
         ((_age >= 0 && _age <= 90)) && return 0
     fi
     echo "Starting aewatch companion daemon in the background (AE_NO_AUTOSTART=1 skips)."
@@ -5145,7 +5333,7 @@ _aewatch_owns_bridge() {
     [[ -f "$CONFIG_DIR/aewatch/bridge-owner" ]] || return 1
     local _hb="$CONFIG_DIR/aewatch/heartbeat"
     [[ -f "$_hb" ]] || return 1
-    local _age=$(($(date +%s) - $(stat -c %Y "$_hb" 2>/dev/null || echo 0)))
+    local _age=$(($(date +%s) - $(_ae_stat mtime "$_hb" || echo 0)))
     ((_age >= 0 && _age <= 90))
 }
 
@@ -5470,7 +5658,7 @@ _transfer_find_codex_session_file() {
         [[ -f "$f" ]] || continue
         first_line="$(head -1 "$f" 2>/dev/null || true)"
         [[ -z "$first_line" ]] && continue
-        file_id="$(echo "$first_line" | grep -oP '"id"\s*:\s*"\K[0-9a-f-]+' 2>/dev/null || true)"
+        file_id="$(echo "$first_line" | _ae_json_first id '[0-9a-f-]' 2>/dev/null || true)"
         [[ "$file_id" == "$uuid" ]] && candidates+=("$f")
     done
     case "${#candidates[@]}" in
@@ -5637,7 +5825,7 @@ _transfer_session_summary() {
     }
     local session_name last_active agents=()
     session_name="$(grep '^session=' "$meta" | cut -d= -f2-)"
-    last_active="$(stat -c %y "$meta" 2>/dev/null | cut -d. -f1)"
+    last_active="$(_ae_stat mtime-human "$meta" | cut -d. -f1)"
     local k v
     while IFS='=' read -r k v; do
         [[ "$k" =~ ^agent\. ]] && agents+=("${v%:*}")
@@ -5725,7 +5913,9 @@ for f in "\$HOME"/.codex/sessions/*/*/*/*"\${uuid}"*.jsonl; do
     [[ -f "\$f" ]] || continue
     first_line="\$(head -1 "\$f" 2>/dev/null || true)"
     [[ -z "\$first_line" ]] && continue
-    file_id="\$(echo "\$first_line" | grep -oP '"id"\\s*:\\s*"\\K[0-9a-f-]+' 2>/dev/null || true)"
+    file_id="\$(echo "\$first_line" |
+        grep -oE '"id"[[:space:]]*:[[:space:]]*"[0-9a-f-]*"' | head -1 |
+        sed -e 's/^"id"[[:space:]]*:[[:space:]]*"//' -e 's/"\$//' 2>/dev/null || true)"
     [[ "\$file_id" == "\$uuid" ]] && candidates+=("\$f")
 done
 case "\${#candidates[@]}" in
@@ -5947,7 +6137,8 @@ session=$(_transfer_bash_quote "$session")
 meta="\$HOME/.ae/sessions/\$session/meta"
 [[ -f "\$meta" ]] || { echo "(no meta)"; exit 0; }
 session_name="\$(grep '^session=' "\$meta" | cut -d= -f2-)"
-last_active="\$(stat -c %y "\$meta" 2>/dev/null | cut -d. -f1)"
+last_active="\$(stat -c %y "\$meta" 2>/dev/null || stat -f %Sm -t '%Y-%m-%d %H:%M:%S' "\$meta" 2>/dev/null)"
+last_active="\${last_active%%.*}"
 agents=()
 while IFS='=' read -r k v; do
     [[ "\$k" =~ ^agent\\. ]] && agents+=("\${v%:*}")
@@ -6224,7 +6415,7 @@ cmd_rename() {
 
     # 3. Update session= in meta file
     if [[ -f "${new_meta}/meta" ]]; then
-        sed -i "s/^session=.*/session=${new_name}/" "${new_meta}/meta"
+        _ae_sed_inplace "s/^session=.*/session=${new_name}/" "${new_meta}/meta"
     fi
 
     # 4. Regenerate workspace.md (contains session name)
@@ -7590,7 +7781,7 @@ ae_latest_state_for() {
                 return 0
                 ;;
         esac
-    done < <(tac "$events" 2>/dev/null || true)
+    done < <(_ae_tac "$events" 2>/dev/null || true)
 }
 
 # Generate a request id like "<prefix>-YYYYMMDDTHHMMSSZ-<rand>"
@@ -7598,7 +7789,10 @@ ae_make_req_id() {
     local prefix="${1:-ae}"
     local req_suffix
     req_suffix="$(cut -d- -f1 /proc/sys/kernel/random/uuid 2>/dev/null || true)"
-    [[ -n "$req_suffix" ]] || req_suffix="$$-$RANDOM"
+    # No /proc (macOS): uuidgen gives the same 8-hex-digit shape. The last
+    # resort must stay dash-free — the request id is parsed on '-'.
+    [[ -n "$req_suffix" ]] || req_suffix="$(uuidgen 2>/dev/null | cut -d- -f1 | tr '[:upper:]' '[:lower:]' || true)"
+    [[ -n "$req_suffix" ]] || req_suffix="$(printf '%04x%04x' "$$" "$RANDOM")"
     printf '%s-%s-%s' "$prefix" "$(date -u +%Y%m%dT%H%M%SZ)" "$req_suffix"
 }
 
@@ -7682,7 +7876,7 @@ ae_find_request() {
             fi
             return 0
         fi
-    done < <(tac "$events_file" 2>/dev/null || true)
+    done < <(_ae_tac "$events_file" 2>/dev/null || true)
     return 1
 }
 
@@ -8545,7 +8739,7 @@ helper_requests_main() {
                     reply_ts["$ref"]="$(_event_json_str "$line" ts)"
                     ;;
             esac
-        done < <(tac "$events_file" 2>/dev/null || true)
+        done < <(_ae_tac "$events_file" 2>/dev/null || true)
     fi
 
     printf "%-8s %-8s %-28s %-20s %-20s %s\n" "STATUS" "TYPE" "ID" "FROM" "TO" "SUMMARY"
@@ -8914,7 +9108,7 @@ helper_register_sid_main() {
         [ -d "$dir" ] || continue
         for f in "$dir"/*.jsonl; do
             [ -f "$f" ] || continue
-            mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+            mtime="$(_ae_stat mtime "$f" || echo 0)"
             [ "$mtime" -lt "$LAUNCH_TIME" ] && continue
             if [ -n "$LAUNCH_ID" ]; then
                 grep -Fq "AE_CODEX_LAUNCH_ID=${LAUNCH_ID}" "$f" 2>/dev/null || continue
@@ -8922,7 +9116,7 @@ helper_register_sid_main() {
             first_line="$(head -1 "$f" 2>/dev/null || true)"
             [ -z "$first_line" ] && continue
             if [ "$mtime" -gt "$best_mtime" ]; then
-                file_id="$(echo "$first_line" | grep -oP '"id"\s*:\s*"\K[0-9a-f-]+' 2>/dev/null || true)"
+                file_id="$(echo "$first_line" | _ae_json_first id '[0-9a-f-]' 2>/dev/null || true)"
                 if [ -n "$file_id" ]; then
                     best_id="$file_id"
                     best_mtime="$mtime"
@@ -8937,16 +9131,16 @@ helper_register_sid_main() {
             [ -d "$dir" ] || continue
             for f in "$dir"/*.jsonl; do
                 [ -f "$f" ] || continue
-                mtime="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+                mtime="$(_ae_stat mtime "$f" || echo 0)"
                 [ "$mtime" -lt "$LAUNCH_TIME" ] && continue
                 first_line="$(head -1 "$f" 2>/dev/null || true)"
                 [ -z "$first_line" ] && continue
-                file_cwd="$(echo "$first_line" | grep -oP '"cwd"\s*:\s*"\K[^"]*' 2>/dev/null || true)"
+                file_cwd="$(echo "$first_line" | _ae_json_first cwd 2>/dev/null || true)"
                 [ -z "$file_cwd" ] && continue
                 file_cwd="$(realpath "$file_cwd" 2>/dev/null || echo "$file_cwd")"
                 [ "$file_cwd" != "$TARGET_CWD" ] && continue
                 if [ "$mtime" -gt "$best_mtime" ]; then
-                    file_id="$(echo "$first_line" | grep -oP '"id"\s*:\s*"\K[0-9a-f-]+' 2>/dev/null || true)"
+                    file_id="$(echo "$first_line" | _ae_json_first id '[0-9a-f-]' 2>/dev/null || true)"
                     if [ -n "$file_id" ]; then
                         best_id="$file_id"
                         best_mtime="$mtime"
@@ -9258,7 +9452,7 @@ _last_event_age() {
         return
     fi
     local last_epoch now_epoch
-    last_epoch="$(date -d "$last_ts" +%s 2>/dev/null || echo 0)"
+    last_epoch="$(_ae_epoch "$last_ts")"
     now_epoch="$(date +%s)"
     echo $((now_epoch - last_epoch))
 }
@@ -9288,7 +9482,7 @@ _latest_relevant_event() {
             printf '%s\t%s\t%s\t%s\t%s\n' "$action" "$ts" "$ref" "$actor" "$summary"
             return 0
         fi
-    done < <(tac "$events_file" 2>/dev/null || true)
+    done < <(_ae_tac "$events_file" 2>/dev/null || true)
 }
 
 # The agent's current self-declared quiet state, or empty. Quiet states tell the
@@ -9686,7 +9880,10 @@ _pane_has_descendant_named() {
             if [[ "$cur" == "$pane_pid" ]]; then
                 return 0
             fi
-            cur="$(awk '{print $4}' "/proc/${cur}/stat" 2>/dev/null || true)"
+            # ps, not /proc: /proc is Linux-only (on macOS the walk stopped at
+            # the first hop and EVERY live agent read as dead), and field 4 of
+            # /proc/<pid>/stat shifts whenever the comm contains a space.
+            cur="$(ps -o ppid= -p "$cur" 2>/dev/null | tr -d '[:space:]' || true)"
         done
     done
     return 1
@@ -9958,7 +10155,7 @@ helper_watchdog_main() {
                 # the wedge check watches a file nobody writes and false-alarms.
                 hb_file="${META_DIR}/meta-agent-state.json"
                 hb=0
-                [[ -f "$hb_file" ]] && hb="$(stat -c %Y "$hb_file" 2>/dev/null || echo 0)"
+                [[ -f "$hb_file" ]] && hb="$(_ae_stat mtime "$hb_file" || echo 0)"
                 wedge_secs=$((SWEEP_SECS * 2 + 60))
                 first_nudge="${first_sweep_nudge[$pane]:-0}"
                 # Roster verdict for the steward, read off the SAME two conditions this
@@ -10117,7 +10314,7 @@ helper_watchdog_main() {
             # before the pane-hash early-continues mask them visually.
             now_epoch="$(date +%s)"
             pane_buf="$(tmux capture-pane -p -J -S -40 -E - -t "$pane" 2>/dev/null || true)"
-            hash="$(printf '%s' "$pane_buf" | md5sum | cut -d' ' -f1)"
+            hash="$(printf '%s' "$pane_buf" | _ae_md5 | cut -d' ' -f1)"
             quiet_row="$(_agent_quiet_reason "$agent")"
             # Throttle detection AND streak clear up front: streak resets on every
             # non-throttled cycle regardless of which branch the agent exits on.
@@ -11150,7 +11347,8 @@ LIBPROLOGUE
             _event_json_str _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
             ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_is_border _input_region_content_end _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
             command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
-            ae_meta_get ae_meta_set ae_meta_unset
+            ae_meta_get ae_meta_set ae_meta_unset \
+            _ae_tac _ae_stat _ae_epoch _ae_json_first _ae_md5
     } >"${AE_META}/_lib.tmp.$$"
     chmod 0700 "${AE_META}/_lib.tmp.$$"
     mv "${AE_META}/_lib.tmp.$$" "${AE_META}/_lib"
@@ -11384,7 +11582,9 @@ RETIREPROLOGUE
 #!/usr/bin/env bash
 # Find codex session matching current launch marker or CWD and write its UUID to codex.<slot>.sid
 REGISTER_SIDPROLOGUE
-        declare -f helper_register_sid_main
+        # _register-sid does NOT source _lib (it runs before the session is
+        # fully wired), so the shims it calls must be emitted alongside it.
+        declare -f _ae_stat _ae_json_first helper_register_sid_main
         printf 'helper_register_sid_main "$@"\n'
     } >"${AE_META}/_register-sid.tmp.$$"
     chmod 0700 "${AE_META}/_register-sid.tmp.$$"
@@ -11474,7 +11674,10 @@ if [[ "$RESUMING" == true ]]; then
     if [[ -f "$_events_file" ]]; then
         (
             flock -w 5 9 || exit 0
+            # BSD wc pads with leading spaces; strip so the numeric guard below
+            # accepts it (otherwise the count reads as junk and the trim is skipped).
             _events_lines="$(wc -l <"$_events_file" 2>/dev/null || echo 0)"
+            _events_lines="${_events_lines//[^0-9]/}"
             [[ "$_events_lines" =~ ^[0-9]+$ ]] || _events_lines=0
             if ((_events_lines > _events_keep)); then
                 _events_tmp="${AE_META}/events.jsonl.trim.$$"

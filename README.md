@@ -166,6 +166,21 @@ That last one is deliberate honesty rather than scope creep: the long-running da
 - [tmux](https://github.com/tmux/tmux) and [git](https://git-scm.com/)
 - At least one AI coding agent CLI (see *Works with*, above)
 
+Linux (GNU userland) and macOS (BSD userland) are both first-class: ae routes
+every divergent coreutil through a portability shim, so no GNU *coreutils*
+package is required. Two extra binaries are worth installing on macOS
+(`brew install flock coreutils`):
+
+- **`flock`** — `ae list`, `ae <name>` and friends work without it, but the
+  generated session helpers (`send`, `ask`, `state`, `goal`, the event log) lock
+  unguarded, so a missing `flock` degrades them: `state`/`goal` writes fail, and
+  a `send` can deliver its message and *then* report failure, inviting a
+  duplicate retry. Install it if you use multi-agent messaging.
+- **`timeout`** — bounds the watchdog's git probes; without it a wedged git
+  stalls a status refresh.
+
+`ae doctor` reports both, plus which userland it detected.
+
 `ae` runs under bash, but your interactive shell can be anything (fish, zsh, …). Run **`ae doctor`** after installing ae or upgrading any agent CLI -- it checks bash/tmux/git, your config, and whether configured agents are on `PATH`. Resume/session capture for external CLIs is best-effort and depends on each tool's upstream behavior; `ae doctor` is your first stop when something looks off. More: **[docs/troubleshooting.md](docs/troubleshooting.md)**.
 
 ## Development

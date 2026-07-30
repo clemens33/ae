@@ -195,10 +195,11 @@ assert_eq "silent sweep STILL advances last_sweep_at" "3000" \
     "$(python3 -c "import json;print(json.load(open('$WORK/st.json'))['last_sweep_at'])")"
 # mtime is what the watchdog actually stat()s — assert the file is rewritten, not
 # just that the JSON field moved.
-touch -d '@1' "$WORK/st.json"
+# `touch -d @EPOCH` is GNU-only; -t [[CC]YY]MMDDhhmm[.SS] works on both.
+touch -t "$(date -d '@1' +%Y%m%d%H%M.%S 2>/dev/null || date -r 1 +%Y%m%d%H%M.%S)" "$WORK/st.json"
 sweep f_mdkblocked.json --now 4000 >/dev/null
 assert_eq "no-change sweep rewrites the file (mtime advances)" "1" \
-    "$([[ "$(stat -c %Y "$WORK/st.json")" -gt 1 ]] && echo 1 || echo 0)"
+    "$([[ "$(stat -c %Y "$WORK/st.json" 2>/dev/null || stat -f %m "$WORK/st.json")" -gt 1 ]] && echo 1 || echo 0)"
 # The watchdog stats ${META_DIR}/meta-agent-state.json — aemonitor's default state
 # path MUST resolve to that same basename or the guard watches a file nobody writes.
 assert_contains "default state path matches the watchdog's hb_file basename" \

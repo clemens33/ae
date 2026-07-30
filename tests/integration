@@ -11,22 +11,34 @@ AE="$(cd "$(dirname "$0")/.." && pwd)/ae"
 
 # Isolated environment
 TMPDIR="$(mktemp -d)"
+# Unix socket paths must fit sun_path (104 bytes on macOS, 108 on Linux) and
+# macOS mktemp hands out /var/folders/<20 chars>/T/tmp.XXXXXXXX — long enough to
+# blow the limit on its own. Socket-path tests get this short dir instead.
+SOCK_DIR="/tmp/ae-itest-$$"
+mkdir -p "$SOCK_DIR"
 export AE_TMUX_SERVER="ae-test-$$"
 # Tripwire (2026-07-02 incident: the REAL ~/.ae/config was clobbered with a
 # test fixture during a test window): fingerprint the real user's config
 # BEFORE overriding HOME; cleanup screams and exits non-zero if it changed.
-REAL_HOME="$(getent passwd "$(id -u)" | cut -d: -f6)"
+# Resolve the real home from the account DB, not $HOME (a nested run may already
+# have overridden it). getent is glibc-only; macOS answers via dscl. $HOME is the
+# last resort — still correct here, since this runs before the override below.
+REAL_HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6 || true)"
+[[ -n "$REAL_HOME" ]] || REAL_HOME="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+[[ -n "$REAL_HOME" ]] || REAL_HOME="$HOME"
 REAL_AE_CONFIG="${REAL_HOME}/.ae/config"
-if [[ -f "$REAL_AE_CONFIG" ]]; then REAL_CONFIG_FPR="$(md5sum <"$REAL_AE_CONFIG")"; else REAL_CONFIG_FPR="absent"; fi
+# Content fingerprint — GNU has md5sum, macOS md5; cksum is the POSIX floor.
+_fpr() { md5sum 2>/dev/null || md5 2>/dev/null || cksum; }
+if [[ -f "$REAL_AE_CONFIG" ]]; then REAL_CONFIG_FPR="$(_fpr <"$REAL_AE_CONFIG")"; else REAL_CONFIG_FPR="absent"; fi
 export HOME="$TMPDIR/home"
 export AE_HOME="$HOME/.ae"
 mkdir -p "$HOME/.ae"
 
 cleanup() {
     command tmux -L "$AE_TMUX_SERVER" kill-server 2>/dev/null || true
-    rm -rf "$TMPDIR"
+    rm -rf "$TMPDIR" "$SOCK_DIR"
     local now_fpr
-    if [[ -f "$REAL_AE_CONFIG" ]]; then now_fpr="$(md5sum <"$REAL_AE_CONFIG")"; else now_fpr="absent"; fi
+    if [[ -f "$REAL_AE_CONFIG" ]]; then now_fpr="$(_fpr <"$REAL_AE_CONFIG")"; else now_fpr="absent"; fi
     if [[ "$now_fpr" != "$REAL_CONFIG_FPR" ]]; then
         echo "" >&2
         echo "FATAL: the REAL user config ($REAL_AE_CONFIG) CHANGED during this test run." >&2
@@ -37,6 +49,56 @@ cleanup() {
 trap cleanup EXIT
 
 tmux() { command tmux -L "$AE_TMUX_SERVER" "$@"; }
+
+# Portability for the harness itself (ae's own code uses its _ae_* shims).
+# BSD/macOS has no tac; tail -r is the equivalent.
+command -v tac >/dev/null 2>&1 || tac() { tail -r "$@"; }
+# `sed -i EXPR FILE` is GNU-only — BSD reads EXPR as the backup suffix.
+# Usage: _sed_i [-e EXPR]... FILE
+_sed_i() {
+    local file="${!#}" tmp
+    local -a args=("${@:1:$#-1}")
+    tmp="${file}.sedtmp.$$"
+    sed "${args[@]}" "$file" >"$tmp" && mv "$tmp" "$file"
+}
+# `touch -d <human date>` is GNU-only; `touch -t [[CC]YY]MMDDhhmm[.SS]` is not.
+_touch_epoch() {
+    local epoch="$1" stamp
+    shift
+    stamp="$(date -d "@$epoch" +%Y%m%d%H%M.%S 2>/dev/null || date -r "$epoch" +%Y%m%d%H%M.%S)"
+    touch -t "$stamp" "$@"
+}
+_touch_ago() {
+    local secs="$1"
+    shift
+    _touch_epoch "$(($(date +%s) - secs))" "$@"
+}
+# `timeout` is coreutils — absent on stock macOS. Same contract: 124 on expiry.
+_timeout() {
+    local secs="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" "$@"
+        return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$secs" "$@"
+        return $?
+    fi
+    "$@" &
+    local pid=$! i=0
+    while ((i < secs * 10)); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+        i=$((i + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -TERM "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+        return 124
+    fi
+    wait "$pid"
+}
 
 # Dummy agent config (bash as agent — no real AI tool needed)
 cat > "$HOME/.ae/config" <<'EOF'
@@ -227,7 +289,7 @@ assert_contains "active: --busy alias works" "test-active" \
 # unfiltered list still shows it (it's still running).
 ACTIVE_EVENTS="$HOME/.ae/sessions/test-active/events.jsonl"
 touch "$ACTIVE_EVENTS" 2>/dev/null || true
-touch -d "1 hour ago" "$ACTIVE_EVENTS" "$HOME/.ae/sessions/test-active/workspace.md" \
+_touch_ago 3600 "$ACTIVE_EVENTS" "$HOME/.ae/sessions/test-active/workspace.md" \
     "$HOME/.ae/sessions/test-active/meta" 2>/dev/null || true
 assert_eq "active: stale session dropped from --active" "0" \
     "$("$AE" list --active 2>/dev/null | grep -c 'test-active')"
@@ -457,7 +519,7 @@ REPO_DEF="$(setup_repo)"
 (cd "$REPO_DEF" && AE_TMUX_SERVER="$DEFMOCK" "$AE" --local dsrv &) 2>/dev/null
 for _i in $(seq 1 25); do command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && break; sleep 0.4; done
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/dsrv/meta" ]] && break; sleep 0.3; done
-sed -i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/dsrv/meta"
+_sed_i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/dsrv/meta"
 assert_eq "end default-mock: session live on the mock-default with EMPTY meta server" "1" \
     "$([[ "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/dsrv/meta")" == "" ]] \
         && command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && echo 1 || echo 0)"
@@ -491,8 +553,10 @@ for _i in $(seq 1 30); do command tmux -L "$FOREIGN" has-session -t "=insidesess
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/insidesess/meta" ]] && break; sleep 0.3; done
 assert_eq "launch-inside (4th B1): session landed on the FOREIGN server" "1" \
     "$(command tmux -L "$FOREIGN" has-session -t "=insidesess" 2>/dev/null && echo 1 || echo 0)"
+# Resolved path: macOS /tmp is a symlink to /private/tmp, and ae records the
+# socket path exactly as tmux reports it in $TMUX (already resolved).
 assert_eq "launch-inside (4th B1): meta records the FOREIGN socket PATH + kind=socket" \
-    "/tmp/tmux-$(id -u)/$FOREIGN|socket" \
+    "$(cd "/tmp/tmux-$(id -u)" && pwd -P)/$FOREIGN|socket" \
     "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/insidesess/meta" 2>/dev/null)|$(sed -n 's/^tmux_server_kind=//p' "$HOME/.ae/sessions/insidesess/meta" 2>/dev/null)"
 # ...and an end from a PLAIN shell finds it there (the full round trip the lie broke).
 for _i in $(seq 1 15); do
@@ -509,8 +573,8 @@ command tmux -L "$FOREIGN" kill-server 2>/dev/null || true
 # A `-S /path/collide.sock` server and a `-L collide.sock` server are DIFFERENT servers
 # sharing a basename. The recorded identity must be the PATH: end the -S target, decoy
 # on -L untouched — the old basename record killed the wrong-server lookup.
-SC_NAME="ae-scollide-$$-$RANDOM.sock"
-SC_DIR="$TMPDIR/sprobe-$$"; mkdir -p "$SC_DIR"; SC_PATH="$SC_DIR/$SC_NAME"
+SC_NAME="aesc-$$-$RANDOM.sock"
+SC_DIR="$SOCK_DIR/sprobe"; mkdir -p "$SC_DIR"; SC_PATH="$SC_DIR/$SC_NAME"
 command tmux -S "$SC_PATH" new-session -d -s schost 2>/dev/null
 command tmux -L "$SC_NAME" new-session -d -s decoyhost 2>/dev/null
 REPO_SC="$(setup_repo)"
@@ -540,7 +604,7 @@ REPO_LEG="$(setup_repo)"
 (cd "$REPO_LEG" && AE_TMUX_SERVER="$LEG" "$AE" --local legsess &) 2>/dev/null
 for _i in $(seq 1 25); do command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null && break; sleep 0.4; done
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/legsess/meta" ]] && break; sleep 0.3; done
-sed -i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/legsess/meta"   # legacy sim
+_sed_i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/legsess/meta"   # legacy sim
 if leg_out="$(AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" end -f legsess 2>&1)"; then leg_rc=0; else leg_rc=$?; fi
 assert_eq "legacy-empty (7th): end fails closed, naming the found server (live case refuses even --assume-stopped)" "1" \
     "$([[ $leg_rc -ne 0 && "$leg_out" == *"no positive server record AND is LIVE on enumerable server"* \
@@ -599,7 +663,7 @@ REPO_AS="$(setup_repo)"
 for _i in $(seq 1 25); do command tmux -L "$AS" has-session -t "=assess" 2>/dev/null && break; sleep 0.4; done
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/assess/meta" ]] && break; sleep 0.3; done
 command tmux -L "$AS" kill-server 2>/dev/null || true   # genuinely stopped now
-sed -i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/assess/meta"   # legacy sim
+_sed_i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/assess/meta"   # legacy sim
 AE_TMUX_DEFAULT_SOCKET="ae-asdef-$$" "$AE" doctor --refresh assess >/dev/null 2>&1 || true
 assert_eq "assume-stopped (7th B3): zero-hit doctor leaves the record EMPTY (no default guess)" "" \
     "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/assess/meta" 2>/dev/null)"
@@ -619,7 +683,7 @@ REPO_AS2="$(setup_repo)"
 for _i in $(seq 1 25); do command tmux -L "$AS2" has-session -t "=assess2" 2>/dev/null && break; sleep 0.4; done
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/assess2/meta" ]] && break; sleep 0.3; done
 command tmux -L "$AS2" kill-server 2>/dev/null || true
-sed -i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/assess2/meta"
+_sed_i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/assess2/meta"
 command tmux -L "$HID" new-session -d -s hider 2>/dev/null   # an unrelated live server...
 chmod 000 "/tmp/tmux-$(id -u)/$HID"                          # ...made unverifiable
 if hid_out="$(printf 'y\n' | AE_TMUX_DEFAULT_SOCKET="ae-asdef2-$$" "$AE" end -f --assume-stopped assess2 2>&1)"; then hid_rc=0; else hid_rc=$?; fi
@@ -658,7 +722,7 @@ for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/lksess/meta" ]] && break; sl
 ( exec 9>"$HOME/.ae/sessions/.lifecycle.lksess.lock"; flock 9; sleep 20 ) &
 LK_HOLDER=$!
 sleep 0.5
-if lk_out="$(AE_TMUX_SERVER="$LK" timeout 25 "$AE" end -f lksess 2>&1)"; then lk_rc=0; else lk_rc=$?; fi
+if lk_out="$(AE_TMUX_SERVER="$LK" _timeout 25 "$AE" end -f lksess 2>&1)"; then lk_rc=0; else lk_rc=$?; fi
 assert_eq "lifecycle-lock (11th B2): end refuses while the lock is held, state preserved" "1" \
     "$([[ $lk_rc -ne 0 && "$lk_out" == *"lifecycle operation"* && -d "$HOME/.ae/sessions/lksess" ]] && echo 1 || echo 0)"
 kill "$LK_HOLDER" 2>/dev/null || true; wait "$LK_HOLDER" 2>/dev/null || true
@@ -1085,7 +1149,10 @@ sleep 1
 
 # Verify the tmux session's pane CWD is the ORIGINAL directory, not the new one
 pane_cwd="$(tmux display-message -t test-cwd -p '#{pane_current_path}' 2>/dev/null)"
-assert_eq "cwd-resume: pane CWD restored to original" "$REPO9" "$pane_cwd"
+# Compare RESOLVED paths: on macOS $TMPDIR lives under /var, a symlink to
+# /private/var, and tmux reports the resolved form while mktemp reports the link.
+assert_eq "cwd-resume: pane CWD restored to original" \
+    "$(cd "$REPO9" && pwd -P)" "$(cd "$pane_cwd" 2>/dev/null && pwd -P)"
 
 # Clean up
 "$AE" end -f test-cwd 2>/dev/null || true
@@ -1839,7 +1906,7 @@ assert_eq "steward --init: scaffolds steward.config + CHARTER.md" "1" \
 assert_contains "steward --init: config marks steward = true" "steward = true" \
     "$(cat "$STW_DIR/steward.config" 2>/dev/null)"
 # Swap in the dummy agent so the session can actually launch in the harness.
-sed -i 's|^claude = .*|claude = "bash"|' "$STW_DIR/steward.config"
+_sed_i 's|^claude = .*|claude = "bash"|' "$STW_DIR/steward.config"
 stw_launch_out="$(AE_STEWARD_DIR="$STW_DIR" "$AE" steward 2>&1)"
 wait_for_session "steward"
 sleep 1
@@ -1931,7 +1998,7 @@ wait_for_session "end-noconfig"
 # Poll for META, not just the tmux session — the write lands after creation and a
 # fixed sleep races under load (the suite's own documented flake class).
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/end-noconfig/meta" ]] && break; sleep 0.4; done
-sed -i 's|^config=.*|config=/nonexistent/ae/config|' "$HOME/.ae/sessions/end-noconfig/meta"
+_sed_i 's|^config=.*|config=/nonexistent/ae/config|' "$HOME/.ae/sessions/end-noconfig/meta"
 noconfig_out="$(cd "$PURGE_CWD" && "$AE" end -f end-noconfig 2>&1)"
 assert_contains "ae end: session with no usable stored config KEEPS (no cwd fallback)" \
     "kept agent conversation files" "$noconfig_out"
@@ -2020,7 +2087,13 @@ sleep 0.5
 # $0 dir (records its `up` argv), a stubbed daemon_session_running, and a controlled
 # heartbeat. Proves start / silent no-op / existing-session fast path / STALE-restart.
 _AW_HOOK="$TMPDIR/aw-hook.sh"
-awk '/^_aewatch_autostart_if_available\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "$AE" > "$_AW_HOOK"
+{
+    # _ae_stat too: the fresh-heartbeat fast path reads the heartbeat's mtime
+    # through it, and a missing definition breaks the age arithmetic — the hook
+    # then starts a SECOND daemon on top of a live one.
+    awk '/^_ae_stat\(\) \{/,/^\}$/' "$AE"
+    awk '/^_aewatch_autostart_if_available\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "$AE"
+} >"$_AW_HOOK"
 
 # _aw_run <running_rc> <heartbeat: none|fresh|stale> <no_autostart> [no_sidecar] [impl]
 # echoes "invoked:<recorded argv>" or "noop". impl defaults to uv (the opt-in that ARMS
@@ -2040,7 +2113,7 @@ FAKE
     fi
     case "$hb" in
         fresh) : > "$d/home/aewatch/heartbeat" ;;
-        stale) : > "$d/home/aewatch/heartbeat"; touch -d '2 hours ago' "$d/home/aewatch/heartbeat" ;;
+        stale) : > "$d/home/aewatch/heartbeat"; _touch_ago 7200 "$d/home/aewatch/heartbeat" ;;
     esac
     cat > "$d/wrapper" <<WRAP
 #!/usr/bin/env bash
@@ -2051,8 +2124,14 @@ daemon_session_running() { return $running_rc; }
 source "$_AW_HOOK"
 _aewatch_autostart_if_available
 WRAP
-    bash "$d/wrapper" >/dev/null 2>&1
-    sleep 0.3
+    "${BASH:-bash}" "$d/wrapper" >/dev/null 2>&1
+    # Poll, don't sleep-and-hope: the hook backgrounds `uv run`, whose first-run
+    # bootstrap can exceed a fixed 0.3s (measured ~0.4s on macOS) — a flake that
+    # reads as "the hook never fired".
+    for _i in $(seq 1 25); do
+        [[ -f "$d/contrib/aewatch/aewatch.rec" ]] && break
+        sleep 0.2
+    done
     if [[ -f "$d/contrib/aewatch/aewatch.rec" ]]; then
         echo "invoked:$(cat "$d/contrib/aewatch/aewatch.rec")"
     else
@@ -2082,6 +2161,10 @@ assert_eq "aewatch-autostart: no-op when AE_WATCHDOG_IMPL unset/empty" "noop" "$
 # (Stopping a RUNNING bash bridge is the aewatch daemon's handoff, tested aewatch-side.)
 _TG_FNS="$TMPDIR/tg-fns.sh"
 {
+    # _ae_stat too: _aewatch_owns_bridge calls it for the heartbeat mtime, and a
+    # missing definition makes the age arithmetic fail -> "not owned" -> a bash
+    # bridge spawns under a live aewatch.
+    awk '/^_ae_stat\(\) \{/,/^\}$/' "$AE"
     awk '/^_aewatch_owns_bridge\(\) \{/,/^\}$/' "$AE"
     awk '/^_telegram_autostart_if_enabled\(\) \{/,/^\}$/' "$AE"
 } >"$_TG_FNS"
@@ -2094,7 +2177,7 @@ _tg_run() {
     [[ "$marker" == yes ]] && : >"$d/aewatch/bridge-owner"
     case "$hb" in
         fresh) : >"$d/aewatch/heartbeat" ;;
-        stale) : >"$d/aewatch/heartbeat"; touch -d '2 hours ago' "$d/aewatch/heartbeat" ;;
+        stale) : >"$d/aewatch/heartbeat"; _touch_ago 7200 "$d/aewatch/heartbeat" ;;
     esac
     cat >"$d/wrapper" <<WRAP
 #!/usr/bin/env bash
@@ -2111,7 +2194,7 @@ get_config() { :; }
 source "$_TG_FNS"
 _telegram_autostart_if_enabled
 WRAP
-    bash "$d/wrapper" >/dev/null 2>&1
+    "${BASH:-bash}" "$d/wrapper" >/dev/null 2>&1
     { [[ -f "$d/spawned" ]] && echo spawned; } || echo nospawn
     rm -rf "$d"
 }

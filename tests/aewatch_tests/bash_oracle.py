@@ -47,7 +47,7 @@ def _write_meta(meta_dir, meta):
 
 def _write_heartbeat(session_dir, epoch, age):
     """Ensure session_dir/meta-agent-state.json exists with mtime = INTEGER
-    epoch - age, so the watchdog's `stat -c %Y` reads the intended age."""
+    epoch - age, so the watchdog's `_ae_stat mtime` reads the intended age."""
     hb = Path(session_dir) / "meta-agent-state.json"
     hb.write_text("{}", encoding="utf-8")
     mtime = int(epoch) - int(age)

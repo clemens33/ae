@@ -153,6 +153,41 @@ Anything user- or agent-controlled (session names, goals, messages, pane text, c
 
 - **Single-statement export expansion** — `export HOME="$TMP/home" AE_HOME="$HOME/.ae"` binds `AE_HOME` to the *OLD* (real!) home: bash expands all words before any assignment. This clobbered the real `~/.ae/config` twice (2026-07-02/03). Always separate statements: `export HOME=…; export AE_HOME="$HOME/.ae"` — or better, assign both from the literal temp path. Ad-hoc debug scripts must copy `tests/integration`'s isolation preamble verbatim; the harness tripwire only protects suite runs, not one-offs.
 
+### GNU vs BSD userland
+
+ae runs on Linux (GNU coreutils) and macOS (BSD). The divergences below all
+**fail silently** through the `|| fallback` idiom — the command errors, the
+fallback value lands, and the feature reads as "nothing found" instead of
+"broken". Every row shipped as a macOS bug. Never call the raw tool; use the
+shim (top of `ae`, and emitted into generated helpers via the `_lib`
+`declare -f` list).
+
+| Raw (GNU-only) | Shim | BSD form |
+|---|---|---|
+| `tac` | `_ae_tac` | `tail -r` |
+| `stat -c %Y/%s/%i/%u/%a/%y` | `_ae_stat mtime\|size\|inode\|uid\|mode\|mtime-human` | `stat -f %m/%z/%i/%u/%Lp/%Sm` |
+| `date -d <iso>` | `_ae_epoch` | `date -u -j -f <fmt>` |
+| `sed -i EXPR FILE` | `_ae_sed_inplace` | BSD reads EXPR as the backup suffix — temp + rename instead |
+| `grep -oP '"k"\s*:\s*"\K…'` | `_ae_json_first` / `_ae_json_first_num` | no `-P`, no `\K` — `grep -oE` + `head -1` + `sed` |
+
+Not shimmed, but the same class — check by hand:
+
+- **`sed` BRE alternation `\(a\|b\)` is a GNU extension.** BSD matches nothing.
+  Use `sed -E` with `(a|b)`; `-E` is portable.
+- **`wc` pads its count with leading spaces on BSD.** Anything that string-compares
+  or regex-guards the result (`[[ $n =~ ^[0-9]+$ ]]`) breaks. Strip: `| tr -d '[:space:]'`.
+- **`uuidgen` is UPPERCASE on macOS.** `_transfer_validate_uuid` and agent session
+  filenames are lowercase-only. `gen_uuid` normalises — don't call `uuidgen` directly.
+- **`/proc` does not exist.** Walk process parents with `ps -o ppid= -p <pid>`,
+  not `/proc/<pid>/stat` (which also field-shifts on a comm containing a space).
+- **`timeout`, `flock` are absent by default.** Both are optional in ae: guard with
+  `command -v` and degrade, never hard-require.
+- **Unix socket paths must fit `sun_path`** — 104 bytes on macOS, 108 on Linux.
+  macOS `mktemp -d` alone eats ~48 of them, so a socket under `$TMPDIR` can exceed
+  the limit; tests use a short `/tmp/...` dir.
+- **`getent` is glibc-only.** macOS answers passwd lookups via `dscl`.
+- **`touch -d <human date>` is GNU-only.** `touch -t [[CC]YY]MMDDhhmm[.SS]` works on both.
+
 ### `set -e` footguns
 
 The script runs under `set -euo pipefail` (line 3). Exit codes you didn't think about become aborts.

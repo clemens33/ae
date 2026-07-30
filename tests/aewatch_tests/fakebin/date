@@ -4,7 +4,6 @@ fixture tick. Implements the forms the watchdog + ae_emit_event use: `+%s`,
 `-u +%FT%TZ` (event timestamps), `+%H:%M:%S`, and `-d <ts> +%s` (delegated)."""
 import json
 import os
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,13 +19,27 @@ def cur_epoch():
 
 
 args = sys.argv[1:]
-# `date -d <ts> +%s` — delegate to real date for parity (the watchdog uses it to
-# convert stored event timestamps back to epochs).
+# Timestamp -> epoch. ae's _ae_epoch tries the GNU form (`date -d <ts> +%s`)
+# first and falls back to the BSD form (`date -u -j -f <fmt> <ts> +%s`), so the
+# fake must answer BOTH — parsed here rather than delegated, so the oracle
+# behaves identically on a GNU and a BSD host.
 if args and args[0] == "-d":
-    r = subprocess.run(["/usr/bin/date", *args], capture_output=True, text=True)
-    sys.stdout.write(r.stdout)
-    sys.stderr.write(r.stderr)
-    sys.exit(r.returncode)
+    ts = args[1] if len(args) > 1 else ""
+    try:
+        print(int(datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()))
+    except ValueError:
+        sys.stderr.write(f"date: invalid date '{ts}'\n")
+        sys.exit(1)
+    sys.exit(0)
+if "-j" in args:
+    fmt_ts = args[args.index("-f") + 1] if "-f" in args else "%Y-%m-%dT%H:%M:%SZ"
+    ts = args[args.index("-f") + 2] if "-f" in args else ""
+    try:
+        print(int(datetime.strptime(ts, fmt_ts).replace(tzinfo=timezone.utc).timestamp()))
+    except (ValueError, IndexError):
+        sys.stderr.write(f"date: invalid date '{ts}'\n")
+        sys.exit(1)
+    sys.exit(0)
 
 if args and args[0] == "-u":
     args = args[1:]  # our epoch is already UTC
