@@ -1767,7 +1767,21 @@ unset -f daemon_session_running
 assert_eq "bash guard: fails fast with brew hint in the file head" "1" \
     "$([[ "${AE_SOURCE:0:2200}" == *'requires bash >= 4.0'* && "${AE_SOURCE:0:2200}" == *'brew install bash'* ]] && echo 1 || echo 0)"
 assert_eq "bash guard: re-execs under a modern bash before refusing" "1" \
-    "$([[ "${AE_SOURCE:0:2200}" == *'AE_BASH_REEXEC=1 exec "$_ae_bash" "$0" "$@"'* ]] && echo 1 || echo 0)"
+    "$([[ "${AE_SOURCE:0:2200}" == *'exec "$_ae_bash" "$0" "$@"'* ]] && echo 1 || echo 0)"
+# Loop safety must be a bounded COUNT, not a boolean. A boolean is inherited by
+# any descendant that re-invokes ae through ae's PATH-resolved shebang; on a
+# hostile PATH that child lands on 3.2, sees the marker, and refuses instead of
+# re-execing — silently, when its stderr is discarded (steward autostart).
+assert_eq "bash guard: re-exec marker is a bounded counter, not a boolean" "1" \
+    "$([[ "${AE_SOURCE:0:2200}" == *'AE_BASH_REEXEC=$((_ae_tries + 1))'* &&
+        "${AE_SOURCE:0:2200}" == *'-lt 2'* ]] && echo 1 || echo 0)"
+# ...and the marker must not survive into the environment of anything ae runs.
+assert_eq "bash guard: marker is unset once the running shell is >= 4" "1" \
+    "$([[ "${AE_SOURCE:0:3000}" == *'unset AE_BASH_REEXEC'* ]] && echo 1 || echo 0)"
+# The steward autostart child discards stderr, so it must not depend on ae's
+# shebang resolving to a modern bash.
+assert_eq "autostart: steward child is launched through the resolved bash" "1" \
+    "$([[ "$AE_SOURCE" == *'(AE_NO_AUTOSTART=1 "${BASH:-bash}" "$0" steward'* ]] && echo 1 || echo 0)"
 
 # Generalized emission-completeness guards — ALL declare-f emissions, not just
 # the watchdog (same failure class: a name silently dropped from a declare -f
@@ -1826,21 +1840,225 @@ _port_flag() { # <label> <bad-pattern> [allowed-when-line-also-matches]
     [[ -n "$hits" ]] && _port_bad+="$1 "
     return 0
 }
-_port_flag stat-c 'stat -c ' 'stat -f '
-_port_flag date-d 'date -d ' 'date -u -j'
-_port_flag tac '(^|[ (|])tac[ "]' 'command -v tac'
-_port_flag sed-i 'sed -i '
-_port_flag grep-oP 'grep -oP'
-_port_flag md5sum '(^|[ (|])md5sum([ |]|$)' 'command -v md5sum'
-# /proc/sys/kernel/random/uuid is the one allowed read: existence-guarded, with
-# a uuidgen fallback. Any OTHER /proc path is Linux-only and silently empty.
-_port_flag proc '/proc/' '/proc/sys/kernel/random/uuid'
-_port_flag readlink-f 'readlink -f' 'realpath'
-_port_flag find-printf 'find .* -printf'
-grep -qF '\(^\|' <<<"$_port_src" && _port_bad+="sed-BRE-alternation "
-# GNU-only sed regex/replacement escapes (\s \+ \? \b \w, and \n on the RHS).
-grep -qE 'sed [^|]*\\[snbw+?]' <<<"$_port_src" && _port_bad+="sed-GNU-escape "
+# Options are ORDER-INDEPENDENT: `date -u -d` and `sed -E -i` are the same
+# GNU-only calls as `date -d` / `sed -i`, and patterns anchored to the canonical
+# order let them through unflagged. `([[:space:]]+-[^[:space:]]+)*` skips any
+# leading option run. Every rule lives in this ONE function so the mutation
+# tests below exercise the patterns the real check uses, not a copy that rots.
+# CMD followed by any option words, where some option word is a short-option
+# cluster containing FLAG. What may follow FLAG is PER COMMAND — a single
+# word-final rule is wrong in both directions:
+#
+#   arg       the flag takes an argument, which GNU allows ATTACHED:
+#             `stat -c%Y`, `stat -Lc%Y`, `date -dyesterday`, `date -udyesterday`.
+#             Nothing may be required after the letter.
+#   noarg     the flag takes NO argument, so cluster letters may legally FOLLOW
+#             it: `grep -Po`, `grep -Pz` as well as `grep -oP`.
+#   wordfinal the argument must be separate — but `-i''` and `-i""` DO count,
+#             because the shell strips the quotes and what reaches sed is a bare
+#             `-i`, which is the GNU-only spelling that breaks BSD. `-i.bak`
+#             stays deliberately quiet (accepted risk: narrowing it trades a
+#             false negative for false positives on forms like `grep -e`).
+#
+# The leading group is a shell TOKEN start, not an identifier boundary. An
+# identifier boundary ([^[:alnum:]_]) treats `-` and `.` as separators, so
+# `iso-date -d`, `not.date -d`, `unused-sed -i` and `pcre-grep -Po` all matched
+# the command name inside a LONGER name. A command token begins at start of
+# line or after whitespace or a shell operator, and may carry a PATH prefix —
+# so `/usr/bin/date -d` is still caught (the prefix must end in `/`, which no
+# suffix-named command does).
+_port_optflag() { # <cmd> <flag> <arg|noarg|wordfinal> -> ERE
+    local tail
+    case "$3" in
+        arg) tail='' ;;
+        noarg) tail='[a-zA-Z]*([[:space:]]|$)' ;;
+        wordfinal) tail="([[:space:]]|\$|''|\"\")" ;;
+        *)
+            echo "_port_optflag: bad mode '$3'" >&2
+            return 1
+            ;;
+    esac
+    # token start | optional path prefix ending in / | command | option words
+    printf '(^|[[:space:]]|[|&;(`])([^[:space:]|&;(`]*/)?%s([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[a-zA-Z]*%s%s' \
+        "$1" "$2" "$tail"
+}
+_port_run_flags() {
+    # Inline exemption marker, dropped HERE rather than in the _port_src
+    # pipeline so the mutation harness below exercises this rule too — a filter
+    # that only the real run passes through is a rule no test can falsify.
+    # Applied to the already-joined line, so one marker covers one logical line.
+    # Unlike a pattern-shaped allow, a marker cannot accidentally cover a
+    # DIFFERENT violation that merely shares the line: it is a reviewed
+    # statement about that line, and the count is pinned above.
+    local _raw="$_port_src"
+    local _port_src
+    _port_src="$(grep -v 'port-ok:' <<<"$_raw" || true)"
+    # No pair-shape exemption. A generic `GNU || BSD` allow could not tell an
+    # EQUIVALENT pair from a mismatched one (`stat -c %Y fileA || stat -f %z
+    # fileB` passed), one valid pair on a line suppressed every OTHER hit on
+    # that line, and `mystat -f` counted as a fallback. Exemption is now an
+    # explicit reviewed marker on the line itself (see _port_src).
+    _port_flag stat-c "$(_port_optflag stat c arg)"
+    # NO allow-list. The only legitimate GNU/BSD date pair in ae lives behind
+    # _ae_yesterday (inside the shim region, excluded below). An exemption here
+    # would have to be wide enough to also pass NON-equivalent pairs such as
+    # `date -u -d '2 days ago' || date -u -v-1d`, whose branches disagree.
+    _port_flag date-d "$(_port_optflag date d arg)"
+    _port_flag tac '(^|[ (|])tac[ "]' 'command -v tac'
+    _port_flag sed-i "$(_port_optflag sed i wordfinal)"
+    _port_flag grep-oP "$(_port_optflag grep P noarg)"
+    _port_flag md5sum '(^|[ (|])md5sum([ |]|$)' 'command -v md5sum'
+    # /proc/sys/kernel/random/uuid is the one allowed read: existence-guarded,
+    # with a uuidgen fallback. Any OTHER /proc path is Linux-only and silently empty.
+    _port_flag proc '/proc/' '/proc/sys/kernel/random/uuid'
+    _port_flag readlink-f 'readlink -f' 'realpath'
+    _port_flag find-printf 'find .* -printf'
+    grep -qF '\(^\|' <<<"$_port_src" && _port_bad+="sed-BRE-alternation "
+    # GNU-only sed regex/replacement escapes (\s \+ \? \b \w, and \n on the RHS).
+    grep -qE 'sed [^|]*\\[snbw+?]' <<<"$_port_src" && _port_bad+="sed-GNU-escape "
+    return 0
+}
+_port_run_flags
 assert_eq "portability: no raw GNU-only coreutils outside the shims" "" "$_port_bad"
+
+# Marker budget. Each `port-ok:` is a reviewed, irreducible exception; the ONE
+# in ae is the ssh heredoc that executes on the REMOTE host, where _ae_stat does
+# not exist, so it must inline both forms. Pinning the count means a new marker
+# cannot be added quietly to silence a violation someone did not want to fix —
+# it turns this red until reviewed and the number is bumped deliberately.
+assert_eq "portability: inline exemption markers pinned to the reviewed set" "1" \
+    "$(grep -c 'port-ok:' <<<"$AE_SOURCE" || true)"
+assert_eq "portability: the exemption marker states its reason" "1" \
+    "$([[ "$AE_SOURCE" == *'# port-ok: remote-host — no shim across ssh'* ]] && echo 1 || echo 0)"
+
+# ── mutation tests: the guard must FIRE, not merely pass ────────────
+# A rule that matches nothing is indistinguishable from a clean tree. Each case
+# feeds ONE offending line through the real rule set. The `-u -d` / `-E -i` /
+# `-L -c` cases are the regression: pre-fix they returned "" (silently unflagged).
+# `local` gives _port_run_flags its scratch copies via dynamic scoping.
+_port_mutation() { # <line> -> flag labels tripped
+    local _port_src="$1" _port_bad=""
+    _port_run_flags
+    printf '%s' "${_port_bad% }"
+}
+assert_eq "portability guard fires: date -d" "date-d" \
+    "$(_port_mutation 'ts="$(date -d "$x" +%s)"')"
+assert_eq "portability guard fires: date -u -d (option-ordered)" "date-d" \
+    "$(_port_mutation 'ts="$(date -u -d "2 hours ago" +%FT%TZ)"')"
+assert_eq "portability guard fires: sed -i" "sed-i" \
+    "$(_port_mutation 'sed -i "s/a/b/" "$f"')"
+assert_eq "portability guard fires: sed -E -i (option-ordered)" "sed-i" \
+    "$(_port_mutation 'sed -E -i "s/(a)/b/" "$f"')"
+assert_eq "portability guard fires: stat -c" "stat-c" \
+    "$(_port_mutation 'm="$(stat -c %Y "$f")"')"
+assert_eq "portability guard fires: stat -L -c (option-ordered)" "stat-c" \
+    "$(_port_mutation 'm="$(stat -L -c %Y "$f")"')"
+assert_eq "portability guard fires: tac" "tac" \
+    "$(_port_mutation 'done < <(tac "$events")')"
+assert_eq "portability guard fires: grep -oP" "grep-oP" \
+    "$(_port_mutation 'id="$(grep -oP "\"id\":\"\K[^\"]+" "$f")"')"
+# CLUSTERED short options — the same calls, spelled without the separating
+# space. An option-run-only regex misses all three: each was mutation-probed
+# and came back UNFLAGGED before _port_optflag anchored the flag to the end of
+# the cluster.
+assert_eq "portability guard fires: stat -Lc (clustered)" "stat-c" \
+    "$(_port_mutation 'm="$(stat -Lc %Y "$f")"')"
+assert_eq "portability guard fires: date -ud (clustered)" "date-d" \
+    "$(_port_mutation 'ts="$(date -ud "yesterday" +%F)"')"
+assert_eq "portability guard fires: sed -Ei (clustered)" "sed-i" \
+    "$(_port_mutation 'sed -Ei "s/(a)/b/" "$f"')"
+# ATTACHED arguments. GNU takes the operand joined to the flag, so nothing may
+# be required after the letter — the word-final rule missed every one of these.
+assert_eq "portability guard fires: stat -c%Y (attached arg)" "stat-c" \
+    "$(_port_mutation 'm="$(stat -c%Y "$f")"')"
+assert_eq "portability guard fires: stat -Lc%Y (clustered + attached)" "stat-c" \
+    "$(_port_mutation 'm="$(stat -Lc%Y "$f")"')"
+assert_eq "portability guard fires: date -dyesterday (attached arg)" "date-d" \
+    "$(_port_mutation 'd="$(date -dyesterday +%F)"')"
+assert_eq "portability guard fires: date -udyesterday (clustered + attached)" "date-d" \
+    "$(_port_mutation 'd="$(date -udyesterday +%F)"')"
+# -P takes NO argument, so cluster letters may legally follow it.
+assert_eq "portability guard fires: grep -Po (flag before cluster letters)" "grep-oP" \
+    "$(_port_mutation 'id="$(grep -Po "x" "$f")"')"
+assert_eq "portability guard fires: grep -Pz (flag before cluster letters)" "grep-oP" \
+    "$(_port_mutation 'grep -Pz "x" "$f"')"
+# COMMAND-TOKEN BOUNDARY. These are ordinary words that END in a command name;
+# without the boundary "validate -d" matches `date -d` and "unused -i" matches
+# `sed -i`, so the detector flags innocent code and gets switched off.
+assert_eq "portability guard quiet: validate -d (not the date command)" "" \
+    "$(_port_mutation 'validate -d "$arg"')"
+assert_eq "portability guard quiet: unused -i (not the sed command)" "" \
+    "$(_port_mutation 'unused -i "$arg"')"
+assert_eq "portability guard quiet: _update -c (not the stat command)" "" \
+    "$(_port_mutation '_update -c "$arg"')"
+# KNOWN FALSE POSITIVE, pinned deliberately so it is reviewable rather than
+# latent: `date -Iseconds` trips date-d, because the attached-argument rule
+# cannot lexically tell the `d` inside "seconds" from the `d` of `-dyesterday`
+# — the two have identical shape. Distinguishing them needs a per-command
+# known-flag alphabet, which would buy this at the cost of FALSE NEGATIVES when
+# the alphabet is incomplete. For a lint, over-flagging is the safe direction:
+# a false positive is loud and fixed in one line, a false negative ships a
+# silent BSD break. ae does not use `date -I`; if it ever does, shim it.
+assert_eq "portability guard: date -Iseconds is a known false positive" "date-d" \
+    "$(_port_mutation 'ts="$(date -Iseconds)"')"
+# The pair-shape exemption is GONE — these are the cases that killed it. A
+# `GNU || BSD` pattern cannot verify the two halves are EQUIVALENT, and it
+# suppressed per-LINE rather than per-hit.
+assert_eq "portability guard fires: mismatched field/operand pair" "stat-c" \
+    "$(_port_mutation 'm="$(stat -c %Y "$fileA" || stat -f %z "$fileB")"')"
+assert_eq "portability guard fires: a valid pair does not cover a second bad hit" "stat-c" \
+    "$(_port_mutation 'a="$(stat -c %Y "$f" || stat -f %m "$f")"; b="$(stat -c %s "$g")"')"
+assert_eq "portability guard fires: stat -c with the BSD form only in a comment" "stat-c" \
+    "$(_port_mutation 'm="$(stat -c %Y "$f")"  # on BSD use stat -f instead')"
+assert_eq "portability guard fires: 'mystat -f' is not a fallback" "stat-c" \
+    "$(_port_mutation 'm="$(stat -c %Y "$f" || mystat -f %m "$f")"')"
+assert_eq "portability guard fires: stat -c with no fallback at all" "stat-c" \
+    "$(_port_mutation 'm="$(stat -c %Y "$f")"')"
+# ...and the marker is what exempts now, per line, with a stated reason.
+assert_eq "portability guard quiet: a port-ok marked line is exempt" "" \
+    "$(_port_mutation 'm="$(stat -c %y "$f" || stat -f %Sm "$f")" # port-ok: remote-host — no shim across ssh')"
+
+# ── command-token boundary: suffix-named commands are not the command ──
+# An identifier boundary treats `-` and `.` as separators, so each of these
+# matched the real command name inside a LONGER one.
+assert_eq "portability guard quiet: iso-date -d (suffix-named command)" "" \
+    "$(_port_mutation 'iso-date -d "$x"')"
+assert_eq "portability guard quiet: not.date -d (dot-separated name)" "" \
+    "$(_port_mutation 'not.date -d "$x"')"
+assert_eq "portability guard quiet: unused-sed -i (suffix-named command)" "" \
+    "$(_port_mutation 'unused-sed -i "s/a/b/"')"
+assert_eq "portability guard quiet: pcre-grep -Po (suffix-named command)" "" \
+    "$(_port_mutation 'pcre-grep -Po "x"')"
+# A PATH-qualified invocation is still the command — the prefix ends in `/`,
+# which is exactly what a suffix-named command never does.
+assert_eq "portability guard fires: /usr/bin/date -d (path-qualified)" "date-d" \
+    "$(_port_mutation 'ts="$(/usr/bin/date -d "$x" +%s)"')"
+assert_eq "portability guard fires: /usr/bin/stat -c (path-qualified)" "stat-c" \
+    "$(_port_mutation 'm="$(/usr/bin/stat -c %Y "$f")"')"
+
+# ── sed -i with an EMPTY quoted argument ──
+# The shell strips the quotes, so sed receives a bare `-i` — the GNU spelling,
+# which BSD rejects. `-i.bak` stays quiet (accepted risk, unchanged).
+assert_eq "portability guard fires: sed -i'' (empty single-quoted arg)" "sed-i" \
+    "$(_port_mutation "sed -i'' -e 's/a/b/' \"\$f\"")"
+assert_eq "portability guard fires: sed -i\"\" (empty double-quoted arg)" "sed-i" \
+    "$(_port_mutation 'sed -i"" -e "s/a/b/" "$f"')"
+assert_eq "portability guard quiet: sed -i.bak (accepted risk, unchanged)" "" \
+    "$(_port_mutation 'sed -i.bak "s/a/b/" "$f"')"
+# Negative controls: the BSD-safe forms the shims actually use must stay quiet,
+# or the guard would flag its own fix and get disabled.
+assert_eq "portability guard quiet: stat -f (BSD form)" "" \
+    "$(_port_mutation 'm="$(stat -f %m "$f")"')"
+assert_eq "portability guard quiet: date -u -j -f (BSD form)" "" \
+    "$(_port_mutation 'date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s')"
+# The BSD adjust form must stay quiet WITHOUT an allow-list: [a-zA-Z]* cannot
+# cross the `-` in `-v-1d`, so the trailing `d` never anchors. This is what lets
+# the date exemption be deleted rather than narrowed.
+assert_eq "portability guard quiet: date -u -v-1d (BSD adjust form)" "" \
+    "$(_port_mutation 'date -u -v-1d +%Y/%m/%d')"
+# And the shimmed call site itself must read clean.
+assert_eq "portability guard quiet: _ae_yesterday call site" "" \
+    "$(_port_mutation 'for day in "$(date -u +%Y/%m/%d)" "$(_ae_yesterday)"; do')"
 
 # The shims must reach the generated helpers too — the template library calls
 # them, and an emitted helper missing one degrades silently (the watchdog runs
@@ -1868,6 +2086,18 @@ _sb_region="$(awk '/^    # SYNC_SESSION_ASSETS_BODY_START$/{f=1} f{print} /^    
 assert_eq "helpers: no PATH-resolved shebang emitted inside the marker region" "0" \
     "$(grep -vE '^[[:space:]]*#[^!]' <<<"$_sb_region" | grep -v 'local _ae_sb=' |
         grep -c '/usr/bin/env bash' || true)"
+
+# Artifacts emitted OUTSIDE the marker region are invisible to the check above.
+# The telegram daemon has its own writer and is chmod +x, so running it directly
+# under a macOS login PATH lands on /bin/bash 3.2, which cannot parse its bash-4
+# bodies. The comment above used to claim this was "checked separately" — it was
+# not, and the daemon kept `#!/usr/bin/env bash` through the whole sweep.
+_tg_daemon_body="$(awk "/<<'TELEGRAM_DAEMON_EOF'/{f=1;next} /^TELEGRAM_DAEMON_EOF\$/{f=0} f" <<<"$AE_SOURCE")"
+assert_eq "telegram daemon: no PATH-resolved shebang inside the emitted body" "0" \
+    "$(grep -c '/usr/bin/env bash' <<<"$_tg_daemon_body" || true)"
+assert_eq "telegram daemon: emission pins the interpreter from \$BASH" "1" \
+    "$(awk "/<<'TELEGRAM_DAEMON_EOF'/{print prev} {prev=\$0}" <<<"$AE_SOURCE" |
+        grep -c 'BASH:-/usr/bin/env bash' || true)"
 
 
 assert_eq "watchdog: helper script exists in generated source" \
@@ -3134,6 +3364,56 @@ _build_helper_from_source() {
 }
 _build_helper_from_source "$(dirname "$0")/../ae" REQUESTS "$_req_helper_dir/requests"
 chmod +x "$_req_helper_dir/_lib" "$_req_helper_dir/requests"
+
+# ── _register-sid: referenced-implies-available, enforced by EXECUTION ──
+# This helper is emitted with `declare -f _ae_stat _ae_json_first
+# _ae_yesterday helper_register_sid_main` and does NOT source _lib, so a name dropped from
+# that list leaves its call sites undefined. The failure is SILENT: _ae_stat
+# missing -> `|| echo 0` -> mtime 0 -> `[ 0 -lt $LAUNCH_TIME ]` skips EVERY
+# candidate -> "no codex session found", exit 1. Codex agents then fall back to
+# CWD-heuristic resume, which on 2026-07-30 wrote a HUMAN's session id into two
+# agent slots. A structural assertion on the declare -f list drifts as the list
+# moves; running the artifact cannot. Built through the same builder as the
+# real emission, so dropping a shim breaks this test the way it breaks prod.
+_rsid_dir="$(mktemp -d)"
+_build_helper_from_source "$(dirname "$0")/../ae" REGISTER_SID "$_rsid_dir/_register-sid"
+printf 'launch_time.main=1\nlaunch_id.main=RSIDTOK\nagent.main=codex:x:pending\n' >"$_rsid_dir/meta"
+_rsid_home="$(mktemp -d)"
+_rsid_day="$_rsid_home/.codex/sessions/$(date -u +%Y/%m/%d)"
+mkdir -p "$_rsid_day"
+printf '{"id":"abcd1234-5678-90ab-cdef-1234567890ab","cwd":"%s"}\nAE_CODEX_LAUNCH_ID=RSIDTOK\n' \
+    "$PWD" >"$_rsid_day/rollout-test.jsonl"
+_rsid_out="$(HOME="$_rsid_home" "${BASH:-bash}" "$_rsid_dir/_register-sid" main 2>&1 || true)"
+assert_eq "_register-sid: launch-token match writes the sid (shims reachable)" \
+    "abcd1234-5678-90ab-cdef-1234567890ab" \
+    "$(cat "$_rsid_dir/codex.main.sid" 2>/dev/null || echo "NO SID WRITTEN — helper said: $_rsid_out")"
+# The shims must be IN the artifact, not merely resolvable in the test's shell.
+# Accept both spellings: `declare -f` emits `name () ` (space before the parens)
+# while the builder copies the source form `name() {`. Matching only one silently
+# passes — the same class as grepping a generated _lib for `_ae_tac()`.
+assert_eq "_register-sid: emitted artifact defines the shims it calls" "3" \
+    "$(grep -cE '^_ae_(stat|json_first|yesterday) ?\(\)' "$_rsid_dir/_register-sid" || true)"
+# Second case, on YESTERDAY's partition. The helper scans today AND yesterday
+# (a codex session started before midnight resumes after it), and only this
+# branch reaches _ae_yesterday — the today-only fixture above still passes with
+# that shim missing, so without this case the behavioural guard has a hole and
+# only the structural assertion above would catch a dropped name.
+_rsid_dir2="$(mktemp -d)"
+_build_helper_from_source "$(dirname "$0")/../ae" REGISTER_SID "$_rsid_dir2/_register-sid"
+printf 'launch_time.main=1\nlaunch_id.main=RSIDYDAY\nagent.main=codex:x:pending\n' >"$_rsid_dir2/meta"
+_rsid_home2="$(mktemp -d)"
+# Resolve yesterday the same portable way ae does, so this test does not itself
+# hard-code a GNU-only date call.
+_rsid_yday="$(date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d)"
+mkdir -p "$_rsid_home2/.codex/sessions/$_rsid_yday"
+printf '{"id":"99990000-1111-2222-3333-444455556666","cwd":"%s"}\nAE_CODEX_LAUNCH_ID=RSIDYDAY\n' \
+    "$PWD" >"$_rsid_home2/.codex/sessions/$_rsid_yday/rollout-yday.jsonl"
+_rsid_out2="$(HOME="$_rsid_home2" "${BASH:-bash}" "$_rsid_dir2/_register-sid" main 2>&1 || true)"
+assert_eq "_register-sid: yesterday's partition is scanned (_ae_yesterday reachable)" \
+    "99990000-1111-2222-3333-444455556666" \
+    "$(cat "$_rsid_dir2/codex.main.sid" 2>/dev/null || echo "NO SID WRITTEN — helper said: $_rsid_out2")"
+rm -rf "$_rsid_dir2" "$_rsid_home2"
+rm -rf "$_rsid_dir" "$_rsid_home"
 
 # Replied case: reply actor=target, reply target=sender → status=replied
 cat >"$_req_helper_dir/events.jsonl" <<'EVENTS'
@@ -4655,7 +4935,7 @@ _tg3_daemon="$(mktemp)"
 # Strip the top-level lines that have side effects when SOURCED (vs run as the
 # real daemon): `main "$@"` and the `exec >>"$LOG_FILE" 2>&1` log redirect —
 # the latter would hijack this test's own stdout into a log file.
-awk "/cat >\"\\\$dest\" <<'TELEGRAM_DAEMON_EOF'/{f=1;next} /^TELEGRAM_DAEMON_EOF\$/{f=0} f" \
+awk "/<<'TELEGRAM_DAEMON_EOF'/{f=1;next} /^TELEGRAM_DAEMON_EOF\$/{f=0} f" \
     "$(dirname "$0")/../ae" | sed -e '/^main "\$@"$/d' -e '/^exec >>"\$LOG_FILE" 2>&1$/d' >"$_tg3_daemon"
 _tg3_home="$(mktemp -d)"
 _tg3_result="$(
@@ -4793,7 +5073,7 @@ unset _say_lib _say_home _say_result
 # Behavioral: the daemon's include/exclude filter accepts chat by default,
 # is blockable, and exclude still wins. Pure-bash (no jq) so it stays dep-free.
 _sayd_daemon="$(mktemp)"
-awk "/cat >\"\\\$dest\" <<'TELEGRAM_DAEMON_EOF'/{f=1;next} /^TELEGRAM_DAEMON_EOF\$/{f=0} f" \
+awk "/<<'TELEGRAM_DAEMON_EOF'/{f=1;next} /^TELEGRAM_DAEMON_EOF\$/{f=0} f" \
     "$(dirname "$0")/../ae" | sed -e '/^main "\$@"$/d' -e '/^exec >>"\$LOG_FILE" 2>&1$/d' >"$_sayd_daemon"
 _sayd_result="$(
     "${BASH:-bash}" -c '

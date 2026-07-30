@@ -13,13 +13,23 @@ if ((BASH_VERSINFO[0] < 4)); then
     # so `env bash` picks 3.2 even on a machine with 5.x installed. That is the
     # normal state inside a macOS tmux pane, where it made ae refuse to start.
     # Everything here must parse under 3.2: no bash-4 syntax above this point.
-    if [ -z "${AE_BASH_REEXEC:-}" ]; then
+    # Loop safety is a bounded ATTEMPT COUNT, not a boolean. We only ever exec a
+    # bash we have already PROVEN is >= 4, so the marker can only be set
+    # legitimately on a >= 4 shell — its presence HERE, on a < 4 shell, is always
+    # stale (inherited by a descendant that re-invoked ae through ae's own
+    # PATH-resolved shebang). A boolean made that descendant refuse instead of
+    # re-execing, and the steward autostart child discards stderr, so it died in
+    # silence. Counting recovers from a poisoned marker while still capping
+    # recursion. Must parse under 3.2: no arithmetic-if, no [[ ]].
+    _ae_tries="${AE_BASH_REEXEC:-0}"
+    case "$_ae_tries" in '' | *[!0-9]*) _ae_tries=0 ;; esac
+    if [ "$_ae_tries" -lt 2 ]; then
         for _ae_bash in /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash; do
             # shellcheck disable=SC2016 # single quotes are the point: the
             # expression must be evaluated by the CANDIDATE bash, not this one.
             if [ -x "$_ae_bash" ] &&
                 "$_ae_bash" -c 'exit $((BASH_VERSINFO[0] < 4))' 2>/dev/null; then
-                AE_BASH_REEXEC=1 exec "$_ae_bash" "$0" "$@"
+                AE_BASH_REEXEC=$((_ae_tries + 1)) exec "$_ae_bash" "$0" "$@"
             fi
         done
     fi
@@ -27,6 +37,14 @@ if ((BASH_VERSINFO[0] < 4)); then
     echo "macOS: brew install bash, and make sure brew's bin dir precedes /bin on PATH (eval \"\$(brew shellenv)\")." >&2
     exit 1
 fi
+# The marker's job ended the moment we got here: this shell IS >= 4. Leaving it
+# EXPORTED poisons every descendant that re-invokes ae through ae's own
+# PATH-resolved shebang — on a hostile PATH the child lands on 3.2, sees the
+# marker, skips the re-exec that would have saved it, and refuses. The steward
+# autostart child is spawned with stderr to /dev/null, so it died in SILENCE.
+# Loop safety does not need the marker to persist: the candidate loop only execs
+# a bash it has already proven is >= 4, so a re-exec can never recurse.
+unset AE_BASH_REEXEC _ae_tries
 
 # AE_HOME relocates ALL ae state (config, sessions, worktrees) without swapping
 # $HOME — so an isolated run (tests, e2e) can keep the real $HOME (and real
@@ -190,8 +208,23 @@ _ae_json_first_num() {
     return 0
 }
 
+# Yesterday, as YYYY/MM/DD in UTC — the day-partitioned layout codex and gemini
+# use for their session logs. GNU spells the offset `-d yesterday`, BSD `-v-1d`,
+# and the two are NOT interchangeable in general: `-d` takes a free-form English
+# phrase, `-v` a fixed adjustment. Inlining the pair at each call site forced the
+# portability detector to carry a `date` allow-list, and any allow-list wide
+# enough to permit these lines also permits a NON-equivalent pair (`-d '2 days
+# ago' || -v-1d`) whose two branches silently disagree. One chokepoint instead:
+# the detector then needs no date exemption at all. Empty if neither form works.
+_ae_yesterday() {
+    date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null ||
+        date -u -v-1d +%Y/%m/%d 2>/dev/null ||
+        true
+    return 0
+}
+
 # --- Function index ---
-#   Portability: _ae_tac, _ae_stat, _ae_epoch, _ae_sed_inplace, _ae_json_first, _ae_json_first_num, _ae_md5
+#   Portability: _ae_tac, _ae_stat, _ae_epoch, _ae_sed_inplace, _ae_yesterday, _ae_json_first, _ae_json_first_num, _ae_md5
 #   Config:     parse_config, get_config
 #   Helpers:    tool_name_from_cmd, tool_kind_from_cmd, default_session_name, tmux_attach, gen_uuid, detect_current_session
 #   Resume:     strip_session_flags, resume_cmd_from_cmd, inject_session_id, inject_ae_context, resolve_agent_session_id
@@ -1083,7 +1116,7 @@ find_codex_session_by_launch_id() {
     local launch_id="$1" launch_time="${2:-0}"
     local best_id="" best_mtime=0
     local day
-    for day in "$(date -u +%Y/%m/%d)" "$(date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d 2>/dev/null || true)"; do
+    for day in "$(date -u +%Y/%m/%d)" "$(_ae_yesterday)"; do
         [[ -z "$day" ]] && continue
         local dir="$HOME/.codex/sessions/${day}"
         [[ -d "$dir" ]] || continue
@@ -1120,7 +1153,7 @@ find_codex_session_by_cwd() {
     local best_id="" best_mtime=0
     # Scan today and yesterday (handles UTC midnight rollover)
     local day
-    for day in "$(date -u +%Y/%m/%d)" "$(date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d 2>/dev/null || true)"; do
+    for day in "$(date -u +%Y/%m/%d)" "$(_ae_yesterday)"; do
         [[ -z "$day" ]] && continue
         local dir="$HOME/.codex/sessions/${day}"
         [[ -d "$dir" ]] || continue
@@ -4231,8 +4264,14 @@ _telegram_validate_token_file() {
 _telegram_write_daemon() {
     local dest="$CONFIG_DIR/telegram-daemon"
     mkdir -p "$CONFIG_DIR/telegram"
-    cat >"$dest" <<'TELEGRAM_DAEMON_EOF'
-#!/usr/bin/env bash
+    # Name the interpreter instead of resolving it through PATH. The artifact is
+    # chmod +x, so a direct invocation under a macOS login PATH lands on
+    # /bin/bash 3.2, which cannot even PARSE the bash-4 bodies below.
+    # _telegram_spawn_daemon passes an explicit interpreter too; this covers the
+    # file being run on its own. Emitted at generation time, like the helpers.
+    {
+        printf '%s\n' "#!${BASH:-/usr/bin/env bash}"
+        cat <<'TELEGRAM_DAEMON_EOF'
 # ae-telegram daemon — auto-generated by `ae telegram start`.
 # Tails events.jsonl across every ae session on this machine and
 # forwards filtered events to one Telegram chat. Single instance per
@@ -5175,6 +5214,7 @@ main() {
 
 main "$@"
 TELEGRAM_DAEMON_EOF
+    } >"$dest"
     chmod +x "$dest"
 }
 
@@ -5268,7 +5308,11 @@ _steward_autostart_if_scaffolded() {
         return 0
     fi
     echo "Starting steward companion session in the background (AE_NO_AUTOSTART=1 skips)."
-    (AE_NO_AUTOSTART=1 "$0" steward >/dev/null 2>&1 &)
+    # Launch through the interpreter we are already running under, not through
+    # ae's PATH-resolved shebang: this child's stderr goes to /dev/null, so a
+    # wrong-bash refusal would be invisible. Belt and braces with the
+    # `unset AE_BASH_REEXEC` at the top of the file.
+    (AE_NO_AUTOSTART=1 "${BASH:-bash}" "$0" steward >/dev/null 2>&1 &)
     return 0
 }
 
@@ -6147,7 +6191,7 @@ session=$(_transfer_bash_quote "$session")
 meta="\$HOME/.ae/sessions/\$session/meta"
 [[ -f "\$meta" ]] || { echo "(no meta)"; exit 0; }
 session_name="\$(grep '^session=' "\$meta" | cut -d= -f2-)"
-last_active="\$(stat -c %y "\$meta" 2>/dev/null || stat -f %Sm -t '%Y-%m-%d %H:%M:%S' "\$meta" 2>/dev/null)"
+last_active="\$(stat -c %y "\$meta" 2>/dev/null || stat -f %Sm -t '%Y-%m-%d %H:%M:%S' "\$meta" 2>/dev/null)" # port-ok: remote-host — no shim across ssh
 last_active="\${last_active%%.*}"
 agents=()
 while IFS='=' read -r k v; do
@@ -9112,7 +9156,7 @@ helper_register_sid_main() {
     fi
     best_id="" best_mtime=0
     # Scan today and yesterday (handles UTC midnight rollover)
-    for day in "$(date -u +%Y/%m/%d)" "$(date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d 2>/dev/null || true)"; do
+    for day in "$(date -u +%Y/%m/%d)" "$(_ae_yesterday)"; do
         [ -z "$day" ] && continue
         dir="$HOME/.codex/sessions/${day}"
         [ -d "$dir" ] || continue
@@ -9135,7 +9179,7 @@ helper_register_sid_main() {
         done
     done
     if [ -z "$best_id" ]; then
-        for day in "$(date -u +%Y/%m/%d)" "$(date -u -d 'yesterday' +%Y/%m/%d 2>/dev/null || date -u -v-1d +%Y/%m/%d 2>/dev/null || true)"; do
+        for day in "$(date -u +%Y/%m/%d)" "$(_ae_yesterday)"; do
             [ -z "$day" ] && continue
             dir="$HOME/.codex/sessions/${day}"
             [ -d "$dir" ] || continue
@@ -11605,8 +11649,10 @@ RETIREPROLOGUE
 # Find codex session matching current launch marker or CWD and write its UUID to codex.<slot>.sid
 REGISTER_SIDPROLOGUE
         # _register-sid does NOT source _lib (it runs before the session is
-        # fully wired), so the shims it calls must be emitted alongside it.
-        declare -f _ae_stat _ae_json_first helper_register_sid_main
+        # fully wired), so the shims it calls must be emitted alongside it:
+        # _ae_stat and _ae_json_first for the scan, _ae_yesterday for the
+        # pre-midnight partition.
+        declare -f _ae_stat _ae_json_first _ae_yesterday helper_register_sid_main
         printf 'helper_register_sid_main "$@"\n'
     } >"${AE_META}/_register-sid.tmp.$$"
     chmod 0700 "${AE_META}/_register-sid.tmp.$$"

@@ -214,6 +214,30 @@ for _sb in "$HOME/.ae/sessions/test-life"/*; do
 done
 assert_eq "helpers: every shebang names a bash >= 4 that can parse the helper" "" "$_sb_bad"
 
+# ── hostile PATH: ae must survive its own re-exec marker ──────────────
+# On a macOS login shell path_helper puts /bin first, so ae's own
+# `#!/usr/bin/env bash` resolves to 3.2 and ae re-execs itself under a modern
+# bash. Anything ae then spawns that re-invokes ae through that same shebang
+# INHERITS the marker. While the marker was a boolean, the child saw it, skipped
+# the re-exec that would have saved it, and refused — and the steward autostart
+# child discards stderr, so it died in silence and the steward never came up.
+# The absolute-path ladder is what makes this recoverable: brew's bash is found
+# even though it is not on PATH here.
+_hostile_path="/usr/bin:/bin:/usr/sbin:/sbin"
+assert_eq "hostile PATH: ae runs with no marker" "0" \
+    "$(PATH="$_hostile_path" "$AE" --version >/dev/null 2>&1; echo $?)"
+assert_eq "hostile PATH: ae runs when a STALE re-exec marker is inherited" "0" \
+    "$(PATH="$_hostile_path" AE_BASH_REEXEC=1 "$AE" --version >/dev/null 2>&1; echo $?)"
+# Loop safety survives the recovery: a runaway count still refuses, loudly.
+assert_eq "hostile PATH: runaway re-exec count still refuses" "1" \
+    "$(PATH="$_hostile_path" AE_BASH_REEXEC=9 "$AE" --version >/dev/null 2>&1; echo $?)"
+assert_contains "hostile PATH: the refusal names the fix" "brew install bash" \
+    "$(PATH="$_hostile_path" AE_BASH_REEXEC=9 "$AE" --version 2>&1 || true)"
+# Non-leakage into children is asserted structurally in tests/unit (`unset
+# AE_BASH_REEXEC`); its BEHAVIOURAL proof is the steward autostart block below,
+# which spawns exactly such a child — run this suite under a hostile PATH and
+# that block exercises the real path end to end.
+
 # End should clean up
 "$AE" end -f test-life 2>/dev/null || true
 sleep 0.5
