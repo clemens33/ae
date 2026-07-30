@@ -484,9 +484,14 @@ write_launch_script() {
     local meta_dir="$1" slot="$2" launch_cmd="$3"
     local safe_slot="${slot//[^A-Za-z0-9._-]/_}"
     local script="${meta_dir}/launch.${safe_slot}.sh"
+    # Name the interpreter explicitly (see the shebang rewrite in
+    # sync_session_assets): `#!/usr/bin/env bash` resolves via PATH, and under a
+    # macOS login shell that is /bin/bash 3.2. Launch scripts are written AFTER
+    # sync_session_assets, so they are not covered by its rewrite pass.
+    local _sh="${BASH:-/usr/bin/env bash}"
     cat >"$script" <<EOF
-#!/usr/bin/env bash
-exec bash -lc $(shell_quote "$launch_cmd")
+#!${_sh}
+exec ${_sh} -lc $(shell_quote "$launch_cmd")
 EOF
     chmod 0700 "$script"
     printf '%s' "$script"
@@ -5222,8 +5227,13 @@ _telegram_spawn_daemon() {
     # Pass AE_HOME too: the daemon defaults AE_HOME to $HOME/.ae, so without this
     # an isolated (AE_HOME=...) run would spawn a daemon tailing the LIVE ~/.ae.
     q_aehome="$(printf '%q' "$CONFIG_DIR")"
+    # Name the interpreter: a bare `bash` here resolves through the tmux pane's
+    # PATH, which on macOS is /bin/bash 3.2 — it cannot run the daemon's bash-4
+    # constructs, so the bridge died on start with no useful message.
+    local q_bash
+    q_bash="$(printf '%q' "${BASH:-bash}")"
     tmux new-session -d -s "$_TELEGRAM_TMUX_SESSION" -c "$HOME" \
-        "AE_HOME=${q_aehome} CONFIG_FILE=${q_cfg} exec bash ${q_daemon}" 2>/dev/null
+        "AE_HOME=${q_aehome} CONFIG_FILE=${q_cfg} exec ${q_bash} ${q_daemon}" 2>/dev/null
     tmux set-option -t "$_TELEGRAM_TMUX_SESSION" status off 2>/dev/null || true
     tmux rename-window -t "$_TELEGRAM_TMUX_SESSION" "ae-telegram" 2>/dev/null || true
 }
@@ -11302,6 +11312,14 @@ sync_session_assets() {
     local MAIN_PANE="$main_pane"
 
     # SYNC_SESSION_ASSETS_BODY_START
+    # Shebang for every generated helper. NOT `#!/usr/bin/env bash`: that
+    # resolves through PATH, and under a macOS LOGIN shell path_helper puts /bin
+    # first — /bin/bash is 3.2 and cannot even PARSE the bash-4 bodies
+    # `declare -f` emits, so the helper dies with a bare
+    # "syntax error near unexpected token `;;'". ae itself is guaranteed >= 4 by
+    # the guard at the top of this file, so name that interpreter. Regenerated
+    # every launch/refresh, so an upgraded or moved bash self-heals.
+    local _ae_sb="#!${BASH:-/usr/bin/env bash}"
     # Remove orphan files from previous ae versions before regenerating helpers.
     # Helpers are unconditionally rewritten below; this list is only for things
     # whose *name* has been removed (renamed/deleted) so their old artifact
@@ -11355,8 +11373,8 @@ LIBPROLOGUE
 
     # Helper: send <target> <message> — focuses pane, pastes text, submits
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'SENDPROLOGUE'
-#!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 SENDPROLOGUE
         declare -f helper_send_main
@@ -11367,8 +11385,8 @@ SENDPROLOGUE
 
     # Helper: ask <target> <question> — structured send with reply-to metadata
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'ASKPROLOGUE'
-#!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 ASKPROLOGUE
         declare -f helper_ask_main
@@ -11379,8 +11397,8 @@ ASKPROLOGUE
 
     # Helper: review <target> <request> — ask for a critical review with structured findings
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'REVIEWPROLOGUE'
-#!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 REVIEWPROLOGUE
         declare -f helper_review_main
@@ -11391,8 +11409,8 @@ REVIEWPROLOGUE
 
     # Helper: reply <request-id> <message> — reply to a logged request by id
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'REPLYPROLOGUE'
-#!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 REPLYPROLOGUE
         declare -f helper_reply_main
@@ -11403,8 +11421,8 @@ REPLYPROLOGUE
 
     # Helper: requests [mine|inbox|all] — inspect request state from session logs
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'REQUESTSPROLOGUE'
-#!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 REQUESTSPROLOGUE
         declare -f helper_requests_main
@@ -11429,7 +11447,7 @@ REQUESTSPROLOGUE
     # generator bug (missing/renamed template fn) aborting mid-write under
     # set -e must never leave a truncated helper behind.
     {
-        printf '#!/usr/bin/env bash\n'
+        printf '%s\n' "$_ae_sb"
         # shellcheck disable=SC2016  # literal $(...) belongs to the generated file
         printf 'source "$(cd "$(dirname "$0")" && pwd)/_lib"\n'
         declare -f helper_state_usage helper_state_main
@@ -11440,12 +11458,14 @@ REQUESTSPROLOGUE
 
     # Helper: mark-done [message] — shim over `state done`. Preserved so existing
     # agent muscle memory and workspace.md guidance keep working unchanged.
-    cat >"${AE_META}/mark-done" <<'DONEEOF'
-#!/usr/bin/env bash
+    {
+        printf '%s\n' "$_ae_sb"
+        cat <<'DONEEOF'
 # Preserve the pre-state-helper default: `mark-done` with no args writes an
 # event whose summary is the literal string "done".
 exec "$(dirname "$0")/state" done "${@:-done}"
 DONEEOF
+    } >"${AE_META}/mark-done"
     chmod 0700 "${AE_META}/mark-done"
 
     # Helper: say <text> — push a free-text line to the Telegram bridge (if the
@@ -11456,8 +11476,8 @@ DONEEOF
     # replies). This is the agent's deliberate way to answer the human on
     # Telegram — there is no automatic forwarding of pane output.
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'SAYPROLOGUE'
-#!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 
 SAYPROLOGUE
@@ -11469,8 +11489,8 @@ SAYPROLOGUE
 
     # Helper: memo add/read/tail — shared append-only session memory
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'MEMOPROLOGUE'
-#!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 MEMOPROLOGUE
         declare -f helper_memo_usage helper_memo_render helper_memo_main
@@ -11484,8 +11504,8 @@ MEMOPROLOGUE
     # block), shown in 'ae list' (table sub-line + JSON), and quoted by the
     # watchdog's stale nudge so idle agents are reminded what the session is FOR.
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'GOALPROLOGUE'
-#!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 
 GOALPROLOGUE
@@ -11497,8 +11517,8 @@ GOALPROLOGUE
 
     # Helper: peek <target> [lines] — capture recent output from another agent's pane
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'PEEKPROLOGUE'
-#!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 PEEKPROLOGUE
         declare -f helper_peek_main
@@ -11508,16 +11528,18 @@ PEEKPROLOGUE
     mv "${AE_META}/peek.tmp.$$" "${AE_META}/peek"
 
     # Common typo alias: peak -> peek
-    cat >"${AE_META}/peak" <<'PEAKOF'
-#!/usr/bin/env bash
+    {
+        printf '%s\n' "$_ae_sb"
+        cat <<'PEAKOF'
 exec "$(cd "$(dirname "$0")" && pwd)/peek" "$@"
 PEAKOF
+    } >"${AE_META}/peak"
     chmod 0700 "${AE_META}/peak"
 
     # Helper: agents — list all agents in the session
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'AGENTSPROLOGUE'
-#!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 
 AGENTSPROLOGUE
@@ -11529,8 +11551,8 @@ AGENTSPROLOGUE
 
     # Helper: focus <target> — switch to another agent's pane by name
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'FOCUSPROLOGUE'
-#!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 FOCUSPROLOGUE
         declare -f helper_focus_main
@@ -11541,8 +11563,8 @@ FOCUSPROLOGUE
 
     # Helper: interrupt <target> [message] — cancel current generation, optionally redirect
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'INTERRUPTPROLOGUE'
-#!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 INTERRUPTPROLOGUE
         declare -f helper_interrupt_main
@@ -11553,8 +11575,8 @@ INTERRUPTPROLOGUE
 
     # Helper: spawn <alias> [prompt] — thin wrapper that calls ae _spawn
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'SPAWNPROLOGUE'
-#!/usr/bin/env bash
 set -euo pipefail
 SPAWNPROLOGUE
         declare -f helper_spawn_main
@@ -11565,8 +11587,8 @@ SPAWNPROLOGUE
 
     # Helper: retire <agent> — remove a spawned agent from the session
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'RETIREPROLOGUE'
-#!/usr/bin/env bash
 set -euo pipefail
 RETIREPROLOGUE
         declare -f helper_retire_main
@@ -11578,8 +11600,8 @@ RETIREPROLOGUE
     # Helper: _register-sid — internal; codex agents run this once on launch to
     # self-register their session ID so ae can resume the exact conversation later.
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'REGISTER_SIDPROLOGUE'
-#!/usr/bin/env bash
 # Find codex session matching current launch marker or CWD and write its UUID to codex.<slot>.sid
 REGISTER_SIDPROLOGUE
         # _register-sid does NOT source _lib (it runs before the session is
@@ -11592,8 +11614,8 @@ REGISTER_SIDPROLOGUE
 
     # Helper: events-tail — read-only formatted tail of events.jsonl for the monitor pane
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'EVENTS_TAILPROLOGUE'
-#!/usr/bin/env bash
 set -uo pipefail
 EVENTS_TAILPROLOGUE
         declare -f helper_events_tail_extract_json_str helper_events_tail_format_event helper_events_tail_main
@@ -11608,8 +11630,8 @@ EVENTS_TAILPROLOGUE
     # a RUNNING watchdog keeps its loaded body until stop/start — refresh
     # only replaces the on-disk script.
     {
+        printf '%s\n' "$_ae_sb"
         cat <<'WDPROLOGUE'
-#!/usr/bin/env bash
 set -uo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 WDPROLOGUE
@@ -11630,11 +11652,13 @@ WDPROLOGUE
     # old direct path (~/.ae/sessions/<name>/loop start|stop|status) working for
     # muscle memory, old docs, and shell history. Regenerated every sync, so it is
     # not an orphan. Remove once the legacy name is fully retired.
-    cat >"${AE_META}/loop" <<'LOOPSHIMEOF'
-#!/usr/bin/env bash
+    {
+        printf '%s\n' "$_ae_sb"
+        cat <<'LOOPSHIMEOF'
 # Deprecated alias for the 'watchdog' helper (feature renamed loop -> watchdog).
 exec "$(cd "$(dirname "$0")" && pwd)/watchdog" "$@"
 LOOPSHIMEOF
+    } >"${AE_META}/loop"
     chmod 0700 "${AE_META}/loop"
 
     # Generate initial workspace.md from live pane state

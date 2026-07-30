@@ -193,6 +193,27 @@ assert_contains "lifecycle: list shows running status" "running" "$list_output"
 # Meta should exist
 assert_eq "lifecycle: meta exists" "1" "$([[ -f "$HOME/.ae/sessions/test-life/meta" ]] && echo 1 || echo 0)"
 
+# Every generated helper must be RUNNABLE by its own shebang. `#!/usr/bin/env bash`
+# picks /bin/bash 3.2 under a macOS login shell, and 3.2 cannot parse the bash-4
+# bodies declare -f emits — the helper then dies with a bare "syntax error near
+# unexpected token `;;'". Assert the interpreter exists, is bash >= 4, and that
+# each helper actually parses under it.
+_sb_bad=""
+for _sb in "$HOME/.ae/sessions/test-life"/*; do
+    [[ -f "$_sb" && -x "$_sb" ]] || continue
+    IFS= read -r _sb_line <"$_sb" || continue
+    [[ "$_sb_line" == '#!'* ]] || continue
+    _sb_interp="${_sb_line#\#!}"
+    _sb_interp="${_sb_interp%% *}"
+    [[ -x "$_sb_interp" ]] || { _sb_bad+="$(basename "$_sb"):no-interp "; continue; }
+    # shellcheck disable=SC2016 # single quotes are the point: the expression is
+    # evaluated by the HELPER'S interpreter, not by this shell.
+    "$_sb_interp" -c 'exit $((BASH_VERSINFO[0] < 4))' 2>/dev/null ||
+        { _sb_bad+="$(basename "$_sb"):bash<4 "; continue; }
+    "$_sb_interp" -n "$_sb" 2>/dev/null || _sb_bad+="$(basename "$_sb"):parse "
+done
+assert_eq "helpers: every shebang names a bash >= 4 that can parse the helper" "" "$_sb_bad"
+
 # End should clean up
 "$AE" end -f test-life 2>/dev/null || true
 sleep 0.5

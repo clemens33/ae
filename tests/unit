@@ -1852,6 +1852,23 @@ done
 assert_eq "portability: shims used by helpers are in the _lib declare -f list" \
     "" "$_port_lib_missing"
 
+# Generated helpers must not be left on `#!/usr/bin/env bash`: under a macOS
+# login shell that resolves to /bin/bash 3.2, which cannot PARSE the bash-4
+# bodies declare -f emits. The rewrite must live INSIDE the marker region so
+# `doctor --refresh` performs it too.
+assert_eq "helpers: shebang names \$BASH, resolved inside the marker region" "1" \
+    "$([[ "$AE_SOURCE" == *'SYNC_SESSION_ASSETS_BODY_START'*'local _ae_sb="#!${BASH:-/usr/bin/env bash}"'*'SYNC_SESSION_ASSETS_BODY_END'* ]] && echo 1 || echo 0)"
+# No emitted helper may keep the PATH-resolved shebang: every prologue heredoc
+# must be preceded by the printf of $_ae_sb. (ae's own line 1 and the telegram
+# daemon are emitted outside the marker region and checked separately.)
+_sb_region="$(awk '/^    # SYNC_SESSION_ASSETS_BODY_START$/{f=1} f{print} /^    # SYNC_SESSION_ASSETS_BODY_END$/{f=0}' <<<"$AE_SOURCE")"
+# Catch BOTH emission shapes: a bare heredoc line, and a printf of the literal
+# (the `state` helper used the printf form and slipped through a line-anchored
+# check — the generated artifact is the oracle, so match either).
+assert_eq "helpers: no PATH-resolved shebang emitted inside the marker region" "0" \
+    "$(grep -vE '^[[:space:]]*#[^!]' <<<"$_sb_region" | grep -v 'local _ae_sb=' |
+        grep -c '/usr/bin/env bash' || true)"
+
 
 assert_eq "watchdog: helper script exists in generated source" \
     "1" \
@@ -4169,7 +4186,7 @@ assert_eq "telegram: STATE_LOADED set only after load_state" "1" \
 # Plus AE_HOME (later BLOCKER): the daemon must inherit the isolated AE_HOME too,
 # else an AE_HOME run spawns a daemon tailing the live ~/.ae.
 assert_eq "telegram: spawn passes resolved AE_HOME + CONFIG_FILE into the daemon env" "1" \
-    "$([[ "$AE_SOURCE" == *'"AE_HOME=${q_aehome} CONFIG_FILE=${q_cfg} exec bash ${q_daemon}"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'"AE_HOME=${q_aehome} CONFIG_FILE=${q_cfg} exec ${q_bash} ${q_daemon}"'* ]] && echo 1 || echo 0)"
 assert_eq "telegram: spawn %q-quotes both config + daemon path" "1" \
     "$([[ "$AE_SOURCE" == *'q_cfg="$(printf '"'"'%q'"'"' "$CONFIG_FILE")"'* && "$AE_SOURCE" == *'q_daemon="$(printf '"'"'%q'"'"' "$CONFIG_DIR/telegram-daemon")"'* ]] && echo 1 || echo 0)"
 
