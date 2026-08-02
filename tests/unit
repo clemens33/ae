@@ -1208,9 +1208,18 @@ assert_eq "rollup: flags a missing pane as dead" \
     "1" \
     "$([[ "$AE_SOURCE" == *'if [[ -z "${_al[$a]+x}" ]]; then'*'r="dead"'* ]] && echo 1 || echo 0)"
 
-assert_eq "rollup: consults _agent_alert_reason then falls back to state" \
+# The rollup now reads the alert reason out of the map filled by ONE reversed
+# pass (_agents_alert_reasons) instead of forking _agent_alert_reason per agent;
+# the fallback-to-declared-state ordering is unchanged and still asserted.
+assert_eq "rollup: consults the alert map then falls back to state" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'r="$(_agent_alert_reason "$events" "$a" "$name")"'* && "$AE_SOURCE" == *'[[ -n "$r" ]] || r="${_s[$a]:-}"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_agents_alert_reasons "$events" "$name" ${_live[@]+"${_live[@]}"}'* \
+        && "$AE_SOURCE" == *'r="${_AE_ALERT[$a]:-}"'* \
+        && "$AE_SOURCE" == *'[[ -n "$r" ]] || r="${_s[$a]:-}"'* ]] && echo 1 || echo 0)"
+
+# The per-agent rescan must not come back: one call site, outside the agent loop.
+assert_eq "rollup: alert resolution is ONE pass, not one per agent" "1" \
+    "$([[ "$AE_SOURCE" != *'"$(_agent_alert_reason "$events" "$a" "$name")"'* ]] && echo 1 || echo 0)"
 
 assert_eq "rollup: picks highest-severity reason via _attn_rank" \
     "1" \
@@ -1419,6 +1428,10 @@ assert_eq "session_states: state event with empty ref is skipped" "" \
     "$(_session_states "$_ss_dir")"
 
 # ── _agent_alert_reason + _attn_rank (slice 2: derived rollup) ──────
+# _agent_alert_reason is now a thin wrapper over the plural resolver, so the
+# resolver has to come along or every single-agent assertion below dies with
+# "command not found" — the referenced-implies-available class again.
+eval "$(awk '/^_agents_alert_reasons\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_agent_alert_reason\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_attn_rank\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 
@@ -1504,7 +1517,198 @@ assert_eq "alert_reason: matches @session:agent target" "stale" \
 assert_eq "alert_reason: no events file returns empty" "" \
     "$(_agent_alert_reason "$_ss_dir/nope.jsonl" "claude:lead" "sess")"
 
+# ── one-pass alert resolution (perf slice) ──────────────────────────
+# The plural resolver is the single source of alert semantics; the singular
+# form delegates to it. These assertions pin the two properties that make the
+# rewrite safe: it agrees with per-agent resolution, and its early exit is
+# EXACT (driven by "every agent decided") rather than a scan-depth cap.
+
+# Three agents, three different verdicts, decided at different depths, with a
+# deep tail above the oldest one so any scan-depth cap loses it.
+#
+# The filler must SURVIVE the grep prefilter, or this fixture proves nothing:
+# a first version used action=send filler, which the prefilter strips before the
+# loop ever sees it — a 200-line "deep" log that arrived at the scan 3 lines
+# long, and a tail-window mutation stayed green against it. These filler lines
+# are alerts about an agent nobody asked about: they pass the prefilter, reach
+# the loop, and settle nothing.
+{
+    printf '{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"alert","target":"claude:old","summary":"agent process dead"}\n'
+    for i in $(seq 1 200); do
+        printf '{"ts":"2026-05-29T11:00:00Z","actor":"watchdog","action":"alert","target":"claude:bystander","summary":"filler %s"}\n' "$i"
+    done
+    printf '{"ts":"2026-05-29T12:00:00Z","actor":"watchdog","action":"throttled","target":"claude:thr","summary":"throttled for 60s"}\n'
+    printf '{"ts":"2026-05-29T13:00:00Z","actor":"claude:fine","action":"state","target":"","ref":"working"}\n'
+} >"$_ss_dir/events.jsonl"
+
+declare -A _AE_ALERT=()
+_agents_alert_reasons "$_ss_dir/events.jsonl" "sess" "claude:old" "claude:thr" "claude:fine"
+assert_eq "alert_pass: ancient alert under a 200-line quiet tail is still found" "dead" \
+    "${_AE_ALERT[claude:old]:-}"
+assert_eq "alert_pass: throttle resolved in the same pass" "throttled" \
+    "${_AE_ALERT[claude:thr]:-}"
+assert_eq "alert_pass: own activity means no alert" "" \
+    "${_AE_ALERT[claude:fine]:-}"
+
+# Equivalence with the per-agent form it replaced — same log, same answers.
+assert_eq "alert_pass: agrees with single-agent resolution (old)" \
+    "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:old" "sess")" \
+    "${_AE_ALERT[claude:old]:-}"
+assert_eq "alert_pass: agrees with single-agent resolution (thr)" \
+    "$(_agent_alert_reason "$_ss_dir/events.jsonl" "claude:thr" "sess")" \
+    "${_AE_ALERT[claude:thr]:-}"
+
+# An agent that never appears at all resolves to "" rather than being skipped.
+declare -A _AE_ALERT=()
+_agents_alert_reasons "$_ss_dir/events.jsonl" "sess" "claude:ghost"
+assert_eq "alert_pass: unmentioned agent gets an explicit empty verdict" "1" \
+    "$([[ -n "${_AE_ALERT[claude:ghost]+x}" && -z "${_AE_ALERT[claude:ghost]}" ]] && echo 1 || echo 0)"
+
+# No agents → no scan, no crash (empty-array expansion under set -u).
+declare -A _AE_ALERT=()
+_agents_alert_reasons "$_ss_dir/events.jsonl" "sess"
+assert_eq "alert_pass: zero agents is a no-op" "0" "${#_AE_ALERT[@]}"
+
+# ---- agent names are DATA: quote / backslash roles ----------------------
+# Only ':' is rejected in a name, so these are legal — and events.jsonl stores
+# them JSON-ESCAPED. Every raw-text filter (the grep -F patterns and the cheap
+# substring reject) must therefore be built from the escaped spelling; built
+# from the raw name they never match the agent's own events and the alert
+# disappears with no error anywhere.
+printf '{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"alert","target":"claude:q\\"uote","summary":"max nudges reached"}\n' \
+    >"$_ss_dir/events.jsonl"
+declare -A _AE_ALERT=()
+_agents_alert_reasons "$_ss_dir/events.jsonl" "sess" 'claude:q"uote'
+assert_eq "alert_pass: role containing a quote still resolves" "stale" \
+    "${_AE_ALERT[claude:q\"uote]:-}"
+assert_eq "alert_pass: quote role agrees with single-agent form" "stale" \
+    "$(_agent_alert_reason "$_ss_dir/events.jsonl" 'claude:q"uote' "sess")"
+
+printf '{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"alert","target":"claude:back\\\\slash","summary":"agent process dead"}\n' \
+    >"$_ss_dir/events.jsonl"
+declare -A _AE_ALERT=()
+_agents_alert_reasons "$_ss_dir/events.jsonl" "sess" 'claude:back\slash'
+assert_eq "alert_pass: role containing a backslash still resolves" "dead" \
+    "${_AE_ALERT[claude:back\\slash]:-}"
+
+# An escapable name as the ACTOR (the recovery rule) must match too.
+printf '{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"alert","target":"claude:q\\"uote","summary":"max nudges reached"}\n{"ts":"2026-05-29T11:00:00Z","actor":"claude:q\\"uote","action":"state","ref":"working"}\n' \
+    >"$_ss_dir/events.jsonl"
+declare -A _AE_ALERT=()
+_agents_alert_reasons "$_ss_dir/events.jsonl" "sess" 'claude:q"uote'
+assert_eq "alert_pass: quote role's own activity clears its alert" "" \
+    "${_AE_ALERT[claude:q\"uote]:-}"
+
+# The escape is delegated, not reimplemented — one escape implementation only.
+assert_eq "alert_pass: filter escaping delegates to ae_json_escape" "1" \
+    "$([[ "$AE_SOURCE" == *'_esc="$(ae_json_escape "$a")"'* ]] && echo 1 || echo 0)"
+
+# The grep prefilter must be a SUPERSET of what the loop can act on. If it ever
+# stops passing the decisive actions through, alerts silently stop being seen —
+# so pin that all four decisive actions and the actor form are in the pattern list.
+assert_eq "alert_pass: prefilter passes every decisive action" "1" \
+    "$([[ "$AE_SOURCE" == *'_pf+=(-e '"'"'"action":"alert"'"'"' -e '"'"'"action":"throttled"'"'"')'* \
+        && "$AE_SOURCE" == *'_pf+=(-e '"'"'"action":"throttle-cleared"'"'"' -e '"'"'"action":"alert-cleared"'"'"')'* \
+        && "$AE_SOURCE" == *'_pf+=(-e "\"actor\":\"${_esc}\"")'* ]] && echo 1 || echo 0)"
+
+# -F, not -E: agent names are data and would otherwise need regex escaping.
+assert_eq "alert_pass: prefilter matches fixed strings, not regexes" "1" \
+    "$([[ "$AE_SOURCE" == *'grep -aF "${_pf[@]}" "$events"'* ]] && echo 1 || echo 0)"
+
+# ── _session_states early exit is exact, not a window ───────────────
+# Same fixture discipline as above: the filler is state events by OTHER actors,
+# so it survives this scan's own '"action":"(state|done)"' prefilter and makes
+# the log genuinely deep at the point the loop reads it.
+{
+    printf '{"ts":"2026-05-29T09:00:00Z","actor":"claude:old","action":"state","ref":"blocked"}\n'
+    for i in $(seq 1 200); do
+        printf '{"ts":"2026-05-29T10:00:00Z","actor":"claude:filler%s","action":"state","ref":"working"}\n' "$i"
+    done
+    printf '{"ts":"2026-05-29T11:00:00Z","actor":"claude:new","action":"state","ref":"working"}\n'
+} >"$_ss_dir/events.jsonl"
+
+assert_eq "session_states: ancient state under a long tail is still found" "blocked" \
+    "$(_session_states "$_ss_dir" "claude:old" "claude:new" | awk -F'\t' '$1=="claude:old"{print $2}')"
+
+# Naming the agents must not change WHAT is reported for them, only how soon
+# the scan can stop. Both sides are filtered to the two named agents: the
+# unnamed call also reports the 200 filler actors, which is not the property
+# under test.
+assert_eq "session_states: naming agents does not change their reported state" \
+    "$(_session_states "$_ss_dir" | awk -F'\t' '$1=="claude:old"||$1=="claude:new"{print}')" \
+    "$(_session_states "$_ss_dir" "claude:old" "claude:new" | awk -F'\t' '$1=="claude:old"||$1=="claude:new"{print}')"
+
 rm -rf "$_ss_dir"
+
+# ── the forks must not come back ────────────────────────────────────
+# Every extraction site was converted to the global-returning form. A single
+# reintroduced command substitution silently restores the per-call fork that
+# made `ae list` take 3s, and nothing else in the suite would notice.
+assert_eq "perf: no command substitution around _event_json_str" "0" \
+    "$(grep -c '\$(_event_json_str' <<<"$AE_SOURCE" || true)"
+
+assert_eq "perf: no process substitution around _parse_agent_entry" "0" \
+    "$(grep -c '<(_parse_agent_entry' <<<"$AE_SOURCE" || true)"
+
+# The meta-field reader replaced the echo-into-sed idiom, which cost two
+# processes per field on a blob already in memory.
+assert_eq "perf: no echo|sed meta field reads remain" "0" \
+    "$(grep -cE 'echo "\$(meta_)?blob" \| sed -n' <<<"$AE_SOURCE" || true)"
+
+# The three AE_* values come from ONE tmux round-trip per session, not three.
+assert_eq "perf: session env read in a single tmux call" "1" \
+    "$([[ "$AE_SOURCE" == *'_session_env_map "$name"'* \
+        && "$AE_SOURCE" != *'tmux show-environment -t "$name" AE_ORIGIN'* \
+        && "$AE_SOURCE" != *'tmux show-environment -t "$name" AE_MODE'* \
+        && "$AE_SOURCE" != *'tmux show-environment -t "$name" AE_DIR'* ]] && echo 1 || echo 0)"
+
+# cmd_list and the rollup need the same pane map; the rollup reuses the caller's
+# rather than paying a second list-panes per session. This one is PERF-ONLY —
+# the fallback branch is behaviourally identical (a mutation forcing the rebuild
+# stays green on behaviour, which is exactly why it needs a source-shape pin).
+assert_eq "perf: rollup reuses the caller's pane map when present" "1" \
+    "$([[ "$AE_SOURCE" == *'if declare -p _alive >/dev/null 2>&1; then'* \
+        && "$AE_SOURCE" == *'_al["$ag"]="${_alive[$ag]}"'* ]] && echo 1 || echo 0)"
+
+# ...and the fallback must still exist, for callers (cmd_next) that have no map.
+assert_eq "perf: pane-map fallback survives for map-less callers" "1" \
+    "$([[ "$AE_SOURCE" == *'done < <(tmux list-panes -s -t "$name" -F '"'"'#{@ae_agent}	#{pane_current_command}'"'"' 2>/dev/null)'* ]] && echo 1 || echo 0)"
+
+# "now" is resolved once per process, not once per session.
+assert_eq "perf: rollup does not fork date per session" "1" \
+    "$([[ "$AE_SOURCE" == *'[[ -n "${_AE_NOW:-}" ]] || _AE_NOW="$(date +%s 2>/dev/null || echo 0)"'* ]] && echo 1 || echo 0)"
+
+# ── _parse_agent_entry / _meta_field return via globals ─────────────
+eval "$(awk '/^_meta_field\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_parse_agent_entry\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+
+_parse_agent_entry "claude:lead:abcdef1234567890"
+assert_eq "parse_agent_entry: ref via global" "claude:lead" "$_AGENT_REF"
+assert_eq "parse_agent_entry: short sid via global" "abcdef12" "$_AGENT_SID"
+
+_parse_agent_entry "codex:worker:pending"
+assert_eq "parse_agent_entry: pending sid renders as dash" "-" "$_AGENT_SID"
+
+_parse_agent_entry "codex:worker:"
+assert_eq "parse_agent_entry: empty sid renders as dash" "-" "$_AGENT_SID"
+
+_meta_field "$(printf 'session=s\norigin=/tmp/x\nmode=local\n')" origin
+assert_eq "meta_field: reads a value" "/tmp/x" "$_META_VAL"
+
+_meta_field "$(printf 'session=s\nmode=local\n')" origin
+assert_eq "meta_field: missing key yields empty" "" "$_META_VAL"
+
+# Values containing '=' survive intact (work_dir under a path with '=' is legal).
+_meta_field "$(printf 'work_dir=/tmp/a=b\n')" work_dir
+assert_eq "meta_field: value keeps embedded '='" "/tmp/a=b" "$_META_VAL"
+
+# First match wins, matching the old `sed -n 's/^k=//p' | head -1` behaviour.
+_meta_field "$(printf 'goal=first\ngoal=second\n')" goal
+assert_eq "meta_field: first match wins" "first" "$_META_VAL"
+
+# A key that is a PREFIX of another must not be confused for it.
+_meta_field "$(printf 'work_dir=/w\ndir=/d\n')" dir
+assert_eq "meta_field: prefix keys do not collide" "/d" "$_META_VAL"
 
 assert_eq "events: memo emits event" \
     "1" \
@@ -1813,6 +2017,317 @@ _sec_helpers="$(grep -oE '^helper_[a-z0-9_]+\(\) \{' <<<"$AE_SOURCE" | sed 's/()
 _emit_helpers="$(tr ' ' '\n' <<<"$_emit_lists" | grep '^helper_' | sort -u)"
 assert_eq "emissions: template helper_* set == emitted helper_* set" \
     "$_sec_helpers" "$_emit_helpers"
+
+# 4. TRANSITIVE CLOSURE — referenced implies available, for EVERY artifact.
+#
+# The failure this kills has now shipped three times (register-sid's missing
+# shims, _ae_yesterday, _agents_alert_reasons): a function is emitted into an
+# artifact, it calls a second ae function, and nothing emits THAT one. The
+# artifact still generates, still runs, and the missing call yields "command not
+# found" on stderr the helper discards — an empty string and rc 0. Guards that
+# only check emitted-names-are-defined cannot see it; the previous guard checked
+# it for the watchdog alone.
+#
+# For each generated artifact: available = its own declare -f list + _lib's list
+# when its prologue sources _lib + any function its prologue defines outright.
+# Then walk the call graph from its own list to a FIXPOINT — every function that
+# can run inside the artifact must have all of ITS callees available too.
+# ── EMISSION CLOSURE: analysed on the GENERATED ARTIFACTS ────────────
+# Every function an artifact can run must be defined in that artifact.
+#
+# This guard used to reconstruct the generated files by re-lexing ae's
+# GENERATOR source — inferring heredoc bodies, printf payloads, group
+# boundaries and prologue definitions. That is a bash-emulator problem with an
+# unbounded adversarial surface, and it produced eleven distinct under-reads:
+# truncated lists, boundary-mismatched patterns, a dropped final line,
+# generator text taken for generated text, first-match specimens, unbounded
+# group scope, greedy literals, skipped shims, stolen group starts, invented
+# line boundaries, and non-heredoc-aware prologue parsing. Each fix was correct
+# and the next seed found another hole, because the specimen was wrong.
+#
+# So the specimen changed. ae's REAL generator now writes REAL artifacts into an
+# isolated home, and every question is answered from the bytes that actually
+# run, by bash itself:
+#   syntax          -> bash -n on the generated file
+#   what is defined -> source it in a sandbox, ask declare -F
+#   what it calls   -> lex declare -f canonical re-prints, never raw source
+#   does it get _lib -> it sourced _lib or it did not; declare -F shows the
+#                       result, so the grant is observed rather than inferred
+# Reconstruction, grouping and printf semantics are gone from the guard.
+_gen_root="$(mktemp -d /tmp/aeclosure.XXXXXX)"
+# Isolation: HOME and AE_HOME are assigned in SEPARATE statements from the
+# literal temp path. `export HOME=x AE_HOME="$HOME/.ae"` expands $HOME BEFORE
+# assigning it and writes to the REAL ~/.ae (AGENTS.md, shipped twice).
+_gen_home="$_gen_root/home"
+_gen_dir="$_gen_home/.ae/sessions/closure"
+mkdir -p "$_gen_dir"
+cat >"$_gen_dir/meta" <<'CLOSUREMETA'
+session=closure
+dir=/tmp
+mode=local
+created=2026-08-02T00:00:00Z
+tmux_server=
+agent.main=claude:lead:00000000-0000-0000-0000-000000000001
+agent.worker.0=codex:builder:00000000-0000-0000-0000-000000000002
+CLOSUREMETA
+# AE_CLOSURE_BIN is a probe seam: it lets this block be run standalone against
+# a seeded copy of ae, which is how the seed battery reads the DETECTOR'S own
+# verdict rather than the suite's exit code (some seeds are runtime-fatal and
+# kill the suite before it ever reaches this guard).
+env HOME="$_gen_home" AE_HOME="$_gen_home/.ae" \
+    "${AE_CLOSURE_BIN:-$(dirname "$0")/../ae}" doctor --refresh closure \
+    >"$_gen_root/refresh.log" 2>&1 && _refresh_rc=0 || _refresh_rc=$?
+
+# Generation completeness. rc is RECORDED, not asserted zero: `doctor` also
+# reports unrelated liveness findings for a session that is not on any tmux
+# server, so rc 1 is normal here. What must hold is that the refresh step
+# itself succeeded and produced the EXACT artifact set — an aborted refresh
+# leaves a plausible-looking partial directory, and a ">= N" check passes over
+# it happily.
+#
+# Note for anyone seeding this: injecting a bare `false` into the generator
+# does NOT truncate generation. sync runs as an if-condition, so errexit is
+# suppressed for the whole call, and the last artifact (watchdog) has already
+# landed by then anyway. To seed incomplete generation, stop an artifact from
+# landing at all — then the exact-manifest assertion is what catches it.
+assert_eq "closure: the refresh step reported success" "1" \
+    "$(grep -q 'refreshed session helpers' "$_gen_root/refresh.log" && echo 1 || echo 0)"
+assert_eq "closure: refresh rc is recorded (0 or the known liveness-warning 1)" "1" \
+    "$([[ "$_refresh_rc" == 0 || "$_refresh_rc" == 1 ]] && echo 1 || echo 0)"
+_manifest_want="_lib _register-sid agents ask events-tail focus goal interrupt loop mark-done memo peak peek reply requests retire review say send spawn state watchdog"
+_manifest_got="$(
+    cd "$_gen_dir" || exit 0
+    for _mf in *; do
+        case "$_mf" in meta | meta.lock | workspace.md) continue ;; esac
+        printf '%s\n' "$_mf"
+    done | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//'
+)"
+assert_eq "closure: generator produced the EXACT artifact manifest" \
+    "$_manifest_want" "$_manifest_got"
+
+# Grants read off the ground truth: the generated file either carries the
+# source line or it does not. _register-sid deliberately does not (AGENTS.md).
+assert_eq "closure: a helper really sources _lib in the generated file" "1" \
+    "$(grep -qxF 'source "$(cd "$(dirname "$0")" && pwd)/_lib"' "$_gen_dir/send" && echo 1 || echo 0)"
+assert_eq "closure: _register-sid really does not source _lib" "0" \
+    "$(grep -qxF 'source "$(cd "$(dirname "$0")" && pwd)/_lib"' "$_gen_dir/_register-sid" && echo 1 || echo 0)"
+
+# The ONLY artifacts allowed to define nothing. Anything else that defines
+# nothing is a broken emission, not a shim — a `send` emitted with a no-op
+# dispatch would otherwise read perfectly clean.
+_closure_shims="loop mark-done peak"
+
+# Per-probe bound, only where the tool exists. `timeout` is optional in ae
+# (absent on macOS by default, and absent on this box) — guarded with
+# command -v and degraded rather than hard-required, per AGENTS.md.
+_closure_tmo=()
+if command -v timeout >/dev/null 2>&1; then _closure_tmo=(timeout 30); fi
+
+# ── callee lexer: END-OF-LIFE, DO NOT EXTEND ────────────────────────
+# Recorded ruling (2026-08-02): this hand-written lexer over canonical
+# `declare -f` output is the last hand-rolled parser in the guard, and it is
+# where the final three defects of the night lived. Its remaining failures are
+# a QUOTE-AWARENESS dimension — a quoted operand that merely LOOKS like shell
+# syntax arms the matcher — and that dimension is unbounded, so the next patch
+# would be #14 of the same class. The component is therefore frozen: its
+# replacement (a real parser) is queued as a DESIGN DECISION, because a parser
+# means shfmt-AST or a python-tier walker and tests/unit's "bash, no deps"
+# contract is not ours to amend.
+#
+# DO NOT PATCH THESE. The two known specimens are pinned as assertions below,
+# deliberately asserting the WRONG-BUT-CURRENT behaviour so they turn hard-red
+# the day a quote-aware replacement lands:
+#     A. a quoted operand that looks like an opener:  command echo "<<FAKE_H"
+#     B. a fake and a real opener on one line:        command echo "<<FAKE_H" <<REAL
+#
+# Everything else in this guard is generated-artifact ground truth; this is the
+# one remaining place that reads shell text as text.
+_closure_strip_heredocs() {
+    awk '
+        nq > 0 {
+            t = $0
+            if (dash[qi]) { sub(/^\t+/, "", t) }
+            if (t == q[qi]) { qi++; if (qi > nq) { nq = 0; qi = 1 } }
+            next
+        }
+        {
+            rest = $0
+            # Neutralise herestrings FIRST. `match()` scans forward, so on
+            # `<<< "$s"` it starts at the SECOND `<`, reads `<< "$s"` as a
+            # heredoc opener, and arms the filter with a delimiter that never
+            # arrives — swallowing every remaining line of every body. ae is
+            # full of `<<<`, so this silently emptied the whole analysis.
+            gsub(/<<</, "@@@", rest)
+            nq = 0; qi = 1
+            while (match(rest, /<<-?[ \t]*("[^"]*"|\047[^\047]*\047|[A-Za-z_][A-Za-z0-9_.-]*)/)) {
+                tok = substr(rest, RSTART, RLENGTH)
+                d = (tok ~ /^<<-/) ? 1 : 0
+                sub(/^<<-?[ \t]*/, "", tok)
+                gsub(/^["\047]|["\047]$/, "", tok)
+                nq++; q[nq] = tok; dash[nq] = d
+                rest = substr(rest, RSTART + RLENGTH)
+            }
+            print
+        }'
+}
+
+# Command position over canonical re-prints: plain, $( ), backtick, and both
+# directions of process substitution.
+_closure_tokens() {
+    local _b
+    _b="$(cat)"
+    {
+        grep -oE '\$\([a-z_][a-zA-Z0-9_]*' <<<"$_b" || true
+        grep -oE '[<>]\([a-z_][a-zA-Z0-9_]*' <<<"$_b" || true
+        grep -oE '`[a-z_][a-zA-Z0-9_]*' <<<"$_b" || true
+        grep -oE '(^|[ \t;&|(])[a-z_][a-zA-Z0-9_]*([ \t;&]|$)' <<<"$_b" || true
+    } | sed -E 's/^[^a-zA-Z_]+//; s/[^a-zA-Z0-9_]+$//' | sort -u || true
+}
+
+# ── PINNED KNOWN EDGES of the end-of-life lexer ─────────────────────
+# These assert the WRONG-BUT-CURRENT behaviour on purpose. They are the visible
+# form of the limitation — a quote-unaware filter drops every line after a
+# quoted operand that merely looks like a heredoc opener, so a real call there
+# goes unreported. Pinning them means the edge is documented and bounded rather
+# than silently fail-open, AND that the day a quote-aware replacement lands
+# these turn hard-red and force their own removal. Do not "fix" the lexer to
+# make them pass; that is the patch the ruling forbids.
+printf 'NOTE: closure lexer carries 2 PINNED known edges (quote-awareness). The\n' >&2
+printf '      component is end-of-life; its replacement is a queued design\n' >&2
+printf '      decision (shfmt-AST / python walker / amend the no-deps line).\n' >&2
+printf '      See "closure lexer KNOWN EDGE" assertions in tests/unit.\n' >&2
+
+_spec_a='    command echo "<<FAKE_H";
+    real_call_a;'
+assert_eq "closure lexer KNOWN EDGE A [END-OF-LIFE, do not patch]: a quoted \"<<TAG\" operand swallows the rest of the function" \
+    "command" \
+    "$(printf '%s\n' "$_spec_a" | _closure_strip_heredocs | _closure_tokens | tr '\n' ' ' | sed 's/ *$//')"
+
+_spec_b='    command echo "<<FAKE_H" <<REAL;
+payload_line;
+REAL
+    real_call_b;'
+assert_eq "closure lexer KNOWN EDGE B [END-OF-LIFE, do not patch]: a fake opener alongside a real one loses the real terminator" \
+    "command" \
+    "$(printf '%s\n' "$_spec_b" | _closure_strip_heredocs | _closure_tokens | tr '\n' ' ' | sed 's/ *$//')"
+
+# Control: the pins above must not be satisfiable by the filter simply doing
+# nothing, or by it eating everything. A genuine heredoc still yields the call
+# that follows it.
+_spec_c='    command cat <<REAL;
+payload_line;
+REAL
+    real_call_c;'
+assert_eq "closure lexer control: a REAL heredoc still yields the call after its terminator" \
+    "command real_call_c" \
+    "$(printf '%s\n' "$_spec_c" | _closure_strip_heredocs | _closure_tokens | tr '\n' ' ' | sed 's/ *$//')"
+
+_closure_missing=""
+_gen_bad=""
+_gen_seen=0
+for _af in "$_gen_dir"/*; do
+    [[ -f "$_af" ]] || continue
+    _an="$(basename "$_af")"
+    case "$_an" in
+        meta | meta.lock | workspace.md | *.lock | *.jsonl | *.tsv | *.sid) continue ;;
+    esac
+    # bash is the syntax authority for a file bash will run.
+    if ! "${BASH:-bash}" -n "$_af" 2>/dev/null; then
+        _gen_bad+="${_an}:syntax "
+        continue
+    fi
+    # `declare -f` re-prints a definition as `name () ` at column 0.
+    if ! grep -qE '^[a-z_][a-zA-Z0-9_]* \(\) $' "$_af"; then
+        case " $_closure_shims " in
+            *" $_an "*) continue ;;
+            *)
+                _gen_bad+="${_an}:defines-nothing "
+                continue
+                ;;
+        esac
+    fi
+    # Strip the trailing dispatch call so sourcing DEFINES without RUNNING —
+    # and REMEMBER the name, because stripping it is exactly what would hide a
+    # dispatch that calls something the artifact never defines.
+    _tail="$(tail -1 "$_af")"
+    _tailfn=""
+    if [[ "$_tail" =~ ^([a-z_][a-zA-Z0-9_]*)\ \"\$@\"$ ]]; then
+        _tailfn="${BASH_REMATCH[1]}"
+        sed '$d' "$_af" >"$_gen_dir/.closure_src"
+    elif [[ "$_an" == "_lib" ]]; then
+        cp "$_af" "$_gen_dir/.closure_src" # a library: no dispatch tail by design
+    else
+        _gen_bad+="${_an}:unknown-tail "
+        continue
+    fi
+    _gen_seen=$((_gen_seen + 1))
+    # Ask bash what this artifact defines and what those definitions contain.
+    # Sourcing reproduces the real availability set INCLUDING whatever _lib the
+    # artifact chose to source — the grant is a consequence, not an inference.
+    #
+    # TRUST BOUNDARY, stated deliberately: the input here is ae's OWN generated
+    # output, and the threat model is an ACCIDENTAL shape in trusted code (a
+    # helper that shadows a name, a definition that vanishes), not hostile code.
+    # So this is env -i plus `builtin`-prefixed introspection — enough that a
+    # shadowed `declare` cannot poison the primitives the probe reads with — and
+    # deliberately NOT a sandbox: no primitive-rejection list, no fs or network
+    # jail. Those would be the wrong cost for this threat model, and would rot.
+    _probe="$(
+        cd "$_gen_dir" && "${_closure_tmo[@]}" env -i \
+            PATH="$PATH" HOME="$_gen_home" AE_HOME="$_gen_home/.ae" \
+            "${BASH:-bash}" -c '
+            builtin set +eu
+            # $0 IS the artifact path — a helper resolves its own _lib via
+            # dirname "$0", so probing with bash'"'"'s own $0 made every artifact
+            # look for _lib next to the bash binary and silently define nothing
+            # from it. This is how a real invocation sees itself.
+            #
+            # EVERY primitive the probe reads with is qualified — builtin for
+            # shell builtins, command for externals. Half-qualifying is not a
+            # weaker version of this, it is a hole: an awk() shadow that
+            # delegates to `command awk` and appends one extra name makes
+            # declare -F report a definition that does not exist, and a real
+            # missing callee then reads as available.
+            # shellcheck disable=SC1090
+            builtin source "$0" >/dev/null 2>&1
+            _fns="$(builtin declare -F | command awk "{print \$3}")"
+            builtin printf "===DEFS===\n%s\n===BODIES===\n" "$_fns"
+            for _f in $_fns; do builtin declare -f "$_f"; done
+        ' "$_gen_dir/.closure_src" </dev/null 2>/dev/null
+    )"
+    _defs="$(awk '/^===DEFS===$/{f=1;next} /^===BODIES===$/{exit} f' <<<"$_probe")"
+    if [[ -z "$_defs" ]]; then
+        _gen_bad+="${_an}:no-definitions "
+        continue
+    fi
+    # The dispatch target must actually exist, and be THIS artifact's main.
+    if [[ -n "$_tailfn" ]]; then
+        grep -qxF "$_tailfn" <<<"$_defs" ||
+            _gen_bad+="${_an}:dispatch-undefined(${_tailfn}) "
+        _expect="helper_$(printf '%s' "${_an#_}" | tr '-' '_')_main"
+        [[ "$_tailfn" == "$_expect" ]] ||
+            _gen_bad+="${_an}:dispatch-name(${_tailfn}!=${_expect}) "
+    fi
+    # Canonical bodies, with heredoc PAYLOADS dropped: `declare -f` re-prints a
+    # heredoc verbatim, and its data lines are not code — lexing them reports
+    # calls that cannot happen. The opener line itself is kept (it can carry a
+    # real call before the <<).
+    _bodies="$(awk '/^===BODIES===$/{f=1;next} f' <<<"$_probe" |
+        _closure_strip_heredocs | grep -vE '^[[:space:]]*#' || true)"
+    _toks="$(_closure_tokens <<<"$_bodies")"
+    while IFS= read -r _cal; do
+        [[ -n "$_cal" ]] || continue
+        grep -qxF "$_cal" <<<"$_defs" && continue
+        _closure_missing+="${_an}->${_cal} "
+    done < <(comm -12 <(printf '%s\n' "$_toks") <(printf '%s\n' "$_ae_fns") || true)
+done
+rm -rf "$_gen_root"
+
+assert_eq "closure: every generated artifact analysed cleanly" "" "$_gen_bad"
+assert_eq "closure: every non-shim artifact was analysed" "19" "$_gen_seen"
+assert_eq "closure: every function a generated artifact can run is defined in it" \
+    "" "$_closure_missing"
+
 
 # ── portability: no raw GNU-only coreutils outside the shims ─────────
 # Each form below fails SILENTLY on BSD/macOS — the command errors, the
@@ -3007,21 +3522,65 @@ _done_test_dir="$(mktemp -d)"
 META_DIR="$_done_test_dir"
 _AE_SESSION="testsess"
 
+# _event_json_str returns through the global _EV, not stdout (the fork it used
+# to cost per call was ~60x the extraction itself). This shim is the ONLY place
+# the calling convention is spelled out, so the assertions stay readable.
+_ejs() {
+    _event_json_str "$1" "$2"
+    printf '%s' "$_EV"
+}
+
 # _event_json_str: extract simple string field
 assert_eq "event_json_str: extract action" "done" \
-    "$(_event_json_str '{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}' action)"
+    "$(_ejs '{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}' action)"
 
 assert_eq "event_json_str: extract actor" "claude:lead" \
-    "$(_event_json_str '{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}' actor)"
+    "$(_ejs '{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done","target":""}' actor)"
 
 assert_eq "event_json_str: missing field returns empty" "" \
-    "$(_event_json_str '{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done"}' summary)"
+    "$(_ejs '{"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"done"}' summary)"
 
 assert_eq "event_json_str: escaped quote in summary" 'hello "world"' \
-    "$(_event_json_str '{"actor":"x","summary":"hello \"world\""}' summary)"
+    "$(_ejs '{"actor":"x","summary":"hello \"world\""}' summary)"
 
 assert_eq "event_json_str: escaped backslash in summary" 'a\b' \
-    "$(_event_json_str '{"actor":"x","summary":"a\\b"}' summary)"
+    "$(_ejs '{"actor":"x","summary":"a\\b"}' summary)"
+
+# ---- fast path vs escape path -------------------------------------------
+# The extractor now short-circuits values with no backslash to a single
+# parameter expansion. The two paths must agree everywhere, and above all the
+# fast path must NOT be taken when an escaped quote hides the real terminator:
+# a naive "${rest%%\"*}" would truncate `a\"b` to `a\`.
+assert_eq "event_json_str: escaped quote does NOT take the fast path" 'a"b' \
+    "$(_ejs '{"summary":"a\"b","actor":"x"}' summary)"
+
+assert_eq "event_json_str: value ending in an escaped quote" 'say "hi"' \
+    "$(_ejs '{"summary":"say \"hi\"","actor":"x"}' summary)"
+
+assert_eq "event_json_str: empty value" "" \
+    "$(_ejs '{"summary":"","actor":"x"}' summary)"
+
+assert_eq "event_json_str: unescaped value keeps every inner character" \
+    'a b/c-d.e:f,g' \
+    "$(_ejs '{"summary":"a b/c-d.e:f,g","actor":"x"}' summary)"
+
+assert_eq "event_json_str: escaped newline becomes a space" 'a b' \
+    "$(_ejs '{"summary":"a\nb","actor":"x"}' summary)"
+
+assert_eq "event_json_str: escaped tab becomes a space" 'a b' \
+    "$(_ejs '{"summary":"a\tb","actor":"x"}' summary)"
+
+assert_eq "event_json_str: escaped CR is dropped" 'ab' \
+    "$(_ejs '{"summary":"a\rb","actor":"x"}' summary)"
+
+# Last field in the object — no trailing comma/quote to lean on.
+assert_eq "event_json_str: value is the final field" 'tail-value' \
+    "$(_ejs '{"actor":"x","summary":"tail-value"}' summary)"
+
+# A backslash LATER in the line must not drag an earlier clean value onto the
+# slow path with a different answer — both paths must produce the same string.
+assert_eq "event_json_str: clean value preceding an escaped one" 'plain' \
+    "$(_ejs '{"actor":"plain","summary":"esc \"q\""}' actor)"
 
 # _latest_relevant_event emits 5 fields: action<TAB>ts<TAB>ref<TAB>actor<TAB>summary
 # (ref/summary may be empty).
@@ -3346,6 +3905,46 @@ assert_eq "_lib builder: mirrors the emission list (no helper_* leakage, non-emp
     "0|1" \
     "$(printf '%s|%s' "$(grep -c '^helper_' "$_req_helper_dir/_lib")" \
         "$(grep -q '^ae_meta_unset() {' "$_req_helper_dir/_lib" && echo 1 || echo 0)")"
+
+# EXECUTION proof for the alert path, run against the ACTUAL generated _lib.
+# The structural closure guard above says the callee is emitted; this says the
+# emitted artifact RESOLVES A WEDGE ALERT when run. Both are needed — the
+# omission this replaces produced "command not found" on a discarded stderr,
+# an empty reason and rc 0, so every structural signal downstream looked fine.
+# The fixture is the meta-agent wedge summary, whose "not sweeping" branch must
+# rank as stale (the watchdog's post-restart reconciliation depends on it).
+_wedge_dir="$(mktemp -d)"
+mkdir -p "$_wedge_dir/m"
+printf 'session=wedgesess\n' >"$_wedge_dir/m/meta"
+printf '{"ts":"2026-05-29T10:00:00Z","actor":"watchdog","action":"alert","target":"claude:lead","summary":"meta-agent not sweeping (may be stuck)"}\n' \
+    >"$_wedge_dir/events.jsonl"
+_wedge_out="$(
+    _AE_META_DIR="$_wedge_dir/m" AE_LIB="$_req_helper_dir/_lib" AE_EV="$_wedge_dir/events.jsonl" \
+        "${BASH:-bash}" -c '
+        set -uo pipefail
+        # shellcheck disable=SC1090
+        source "$AE_LIB"
+        _agent_alert_reason "$AE_EV" "claude:lead" "wedgesess"
+    ' 2>&1
+)"
+assert_eq "_lib execution: generated _lib resolves a wedge alert to stale" \
+    "stale" "$_wedge_out"
+
+# Same artifact, the plural entry point the singular delegates to.
+_wedge_plural="$(
+    _AE_META_DIR="$_wedge_dir/m" AE_LIB="$_req_helper_dir/_lib" AE_EV="$_wedge_dir/events.jsonl" \
+        "${BASH:-bash}" -c '
+        set -uo pipefail
+        # shellcheck disable=SC1090
+        source "$AE_LIB"
+        declare -A _AE_ALERT=()
+        _agents_alert_reasons "$AE_EV" "wedgesess" "claude:lead"
+        printf "%s" "${_AE_ALERT[claude:lead]:-}"
+    ' 2>&1
+)"
+assert_eq "_lib execution: generated _lib exposes the plural resolver too" \
+    "stale" "$_wedge_plural"
+rm -rf "$_wedge_dir"
 # Build a runnable generated helper from the declare-f layout: the helper's
 # emitted <TAG>PROLOGUE heredoc + the fn bodies named by its declare -f line +
 # the main-call tail — mirroring the real emission exactly.
@@ -4748,7 +5347,7 @@ assert_eq "meta: heartbeat-wedge alert covers stale AND absent heartbeat" "1" \
 # that lost the in-memory latch still clears the old alert.
 assert_eq "meta: recovery clears via latch AND durable reconcile (survives restart)" "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "alert-cleared" "$agent"'* \
-        && "$AE_SOURCE" == *'throttle-cleared | alert-cleared) return 0'* \
+        && "$AE_SOURCE" == *'throttle-cleared | alert-cleared) verdict="" ;;'* \
         && "$AE_SOURCE" == *'-z "${meta_reconciled[$pane]:-}"'* \
         && "$AE_SOURCE" == *'_agent_alert_reason "$META_DIR/events.jsonl" "$agent" "$_AE_SESSION"'* ]] && echo 1 || echo 0)"
 # ── sweep-nudge delivery is CHECKED, not fire-and-forget ─────────────
@@ -4808,7 +5407,7 @@ assert_eq "meta: first_sweep_nudge records the first DELIVERED nudge only" "1" \
 # throttled by a stray substring — explicit 'not sweeping' case ranks it before
 # *throttl*, and the summary itself avoids the throttl/dead substrings.
 assert_eq "meta: wedge alert classifies as stale (not throttled)" "1" \
-    "$([[ "$AE_SOURCE" == *'*"not sweeping"*) printf '"'"'stale'"'"''* \
+    "$([[ "$AE_SOURCE" == *'*"not sweeping"*) verdict="stale"'* \
         && "$AE_SOURCE" == *'(may be stuck)'* \
         && "$AE_SOURCE" != *'may be wedged/throttled'* ]] && echo 1 || echo 0)"
 # NIT (codex): the sweep interval override is numeric-guarded before arithmetic.

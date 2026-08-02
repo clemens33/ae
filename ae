@@ -1711,10 +1711,13 @@ sync_session_assets() {
 
 # List all ae sessions (tagged with AE_SESSION env var)
 list_ae_sessions() {
-    local sessions=""
+    local sessions="" _env
     while IFS= read -r name; do
         [[ -z "$name" ]] && continue
-        if tmux show-environment -t "$name" AE_SESSION 2>/dev/null | grep -q '^AE_SESSION='; then
+        # Bash prefix test rather than `| grep -q`: the pipe cost a second
+        # process per session on a listing that already runs once per session.
+        _env="$(tmux show-environment -t "$name" AE_SESSION 2>/dev/null || true)"
+        if [[ "$_env" == AE_SESSION=* ]]; then
             sessions="${sessions}${name}\n"
         fi
     done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
@@ -2139,7 +2142,15 @@ _end_session_locked() {
 
 # --- Subcommands ---
 
-# Parse agent entry (alias:name:session_id) and print "alias:name short_sid"
+# Parse agent entry (alias:name:session_id) into two globals:
+#   _AGENT_REF = "alias:name"
+#   _AGENT_SID = 8-char short session id, or "-" when absent/pending
+#
+# Globals rather than stdout for the same reason as _event_json_str: every call
+# site consumed this through `< <(...)`, which forks a process-substitution
+# subshell — once per agent per session, on a function that does nothing but
+# slice a string. ae-internal only (not emitted into any helper), so the four
+# call sites below are the complete set.
 _parse_agent_entry() {
     local val="$1"
     # Format: alias:name:session_id
@@ -2147,9 +2158,44 @@ _parse_agent_entry() {
     local rest="${val#*:}"
     local name="${rest%%:*}"
     local sid="${rest#*:}"
-    local short="-"
-    [[ -n "$sid" && "$sid" != "pending" ]] && short="${sid:0:8}"
-    printf '%s:%s\t%s\n' "$alias" "$name" "$short"
+    _AGENT_SID="-"
+    [[ -n "$sid" && "$sid" != "pending" ]] && _AGENT_SID="${sid:0:8}"
+    _AGENT_REF="${alias}:${name}"
+    return 0
+}
+
+# First `key=` value in a meta blob, into the global _META_VAL ("" if absent).
+#
+# Replaces the old echo-the-blob-into-sed idiom, which cost two processes per
+# field (the command-substitution subshell plus sed) and ran up to six times per
+# session in `ae list` — on a blob already sitting in memory. The unit suite
+# forbids that idiom returning; this comment states it in prose rather than
+# spelling the pattern, so the guard cannot be silenced by its own rationale.
+_meta_field() {
+    local blob="$1" key="$2" line
+    _META_VAL=""
+    while IFS= read -r line; do
+        if [[ "$line" == "${key}="* ]]; then
+            _META_VAL="${line#"${key}="}"
+            return 0
+        fi
+    done <<<"$blob"
+    return 0
+}
+
+# Every AE_* variable of a session's tmux environment in ONE tmux call, into the
+# caller-declared map _envmap (dynamic scope, same convention as _areason).
+# `ae list` used to spend three separate ~3ms show-environment calls per session
+# to read AE_ORIGIN, AE_MODE and AE_DIR.
+# shellcheck disable=SC2154 # _envmap is caller-declared (dynamic scope)
+_session_env_map() {
+    local name="$1" line
+    while IFS= read -r line; do
+        case "$line" in
+            AE_*=*) _envmap["${line%%=*}"]="${line#*=}" ;;
+        esac
+    done < <(tmux show-environment -t "$name" 2>/dev/null || true)
+    return 0
 }
 
 # Resolve the session's actual meta directory, checking the new path first and
@@ -2204,8 +2250,10 @@ _goal_set_epoch() {
     }
     while IFS= read -r line; do
         [[ "$line" == \{* ]] || continue
-        [[ "$(_event_json_str "$line" action)" == "goal" ]] || continue
-        ts="$(_event_json_str "$line" ts)"
+        _event_json_str "$line" action
+        [[ "$_EV" == "goal" ]] || continue
+        _event_json_str "$line" ts
+        ts="$_EV"
         break
     done < <(_ae_tac "$events" 2>/dev/null || true)
     [[ -n "$ts" ]] || {
@@ -2219,9 +2267,11 @@ _goal_set_epoch() {
 _print_session_meta_line() {
     local blob="$1" sess_dir="$2" attn="${3:-}" branch="${4:-}"
     local ae_ver active_ts active_str goal goal_prefix="" branch_seg=""
-    ae_ver="$(echo "$blob" | sed -n 's/^ae_version=//p')"
+    _meta_field "$blob" ae_version
+    ae_ver="$_META_VAL"
     ae_ver="${ae_ver:-?}"
-    goal="$(echo "$blob" | sed -n 's/^goal=//p' | head -1)"
+    _meta_field "$blob" goal
+    goal="$_META_VAL"
     if [[ -n "$goal" ]]; then
         ((${#goal} > 60)) && goal="${goal:0:59}…"
         # Age makes a stale goal visibly stale instead of silently lying.
@@ -2242,15 +2292,45 @@ _print_session_meta_line() {
     fi
 }
 
-# Extract a flat-JSON string value. Single source: used directly by ae's own
-# code (cmd_list/_session_states) AND emitted by name into every generated
-# _lib via declare -f. The old byte-identical _lib mirror is gone; the unit
-# suite asserts exactly one copy exists.
+# Extract a flat-JSON string value into the global _EV — NOT stdout. Single
+# source: used directly by ae's own code (cmd_list/_session_states) and
+# emitted by name into every generated _lib via declare -f. The byte-identical
+# mirror is gone; the unit suite asserts exactly one definition of THIS NAME
+# exists. (That guard is name-keyed, so it does not see
+# helper_events_tail_extract_json_str, which is still a hand-copy of this body —
+# pre-existing, out of scope here, reported for its own slice.)
+#
+# WHY A GLOBAL INSTEAD OF PRINTING: every call site used to be "$(...)", and a
+# command substitution forks a subshell. `ae list` performed 3,288 of them on a
+# 182-line log — measured at ~2.0s of pure fork overhead against ~0.03s for the
+# same extractions in-process. Writing a global costs one assignment.
+#
+# The stdout contract is gone deliberately rather than kept as a wrapper: a
+# wrapper lets a forking call site survive unnoticed forever. Instead the unit
+# suite forbids calling this function inside a command substitution anywhere in
+# this file, so a re-introduced fork is a test failure rather than a silent 60x
+# regression. (That guard is a literal string search — this comment deliberately
+# does not spell the pattern out, because a comment that matches its own guard
+# is how a detector gets silenced by prose. Shipped precedent: the emission
+# audit whose source-check matched a comment saying "does NOT source _lib".)
+# Callers read _EV immediately; nothing may intervene between call and read.
 _event_json_str() {
     local line="$1" key="$2"
+    _EV=""
     local prefix="\"${key}\":\""
     local rest="${line#*"${prefix}"}"
-    [[ "$rest" == "$line" ]] && return
+    [[ "$rest" == "$line" ]] && return 0
+    # FAST PATH: if nothing before the first quote is a backslash, then that
+    # quote is the real terminator and the value has nothing to unescape — one
+    # parameter expansion replaces the per-character loop below. This is the
+    # term that scaled with log BYTES (the reported WSL slowdown); real event
+    # values take this path overwhelmingly. A backslash anywhere in the head
+    # falls through to the loop, because an escaped \" would hide the true end.
+    local head="${rest%%\"*}"
+    if [[ "$head" != *\\* ]]; then
+        _EV="$head"
+        return 0
+    fi
     local result="" i=0 n=${#rest}
     local c next
     while ((i < n)); do
@@ -2273,7 +2353,8 @@ _event_json_str() {
             i=$((i + 1))
         fi
     done
-    printf '%s' "$result"
+    _EV="$result"
+    return 0
 }
 
 # Print 'agent<TAB>state' for every actor that has declared a work state in this
@@ -2282,87 +2363,210 @@ _event_json_str() {
 # Scope: state/done events only — this is NOT a full attention signal (pending
 # asks, dead agents, alerts are deliberately out of scope here; that belongs in
 # a future `ae watch`). Callers must treat the result as state display only.
+#
+# Optional trailing arguments name the agents the caller actually cares about.
+# Given them, the scan STOPS as soon as every one has been resolved — an exact
+# early exit, not a tail window: an agent whose newest state is ancient is still
+# found, because the scan only ends when there is nothing left to look for. With
+# no agent names the full log is scanned and every actor reported (back-compat
+# for any caller that wants the complete picture).
 _session_states() {
     local sess_dir="$1"
     [[ -n "$sess_dir" ]] || return 0
+    shift
     local events="${sess_dir}/events.jsonl"
     [[ -f "$events" ]] || return 0
     declare -A _seen=()
+    declare -A _want=()
+    local _a
+    for _a in "$@"; do
+        _want["$_a"]=1
+    done
+    local remaining="${#_want[@]}"
     local line actor action st
     # grep-prefilter to relevant events before the per-char parser runs.
     while IFS= read -r line; do
+        # Early exit: only when the caller named agents (remaining>0 initially)
+        # and all of them have now been resolved.
+        ((${#_want[@]} > 0 && remaining <= 0)) && break
         [[ "$line" == \{* ]] || continue
-        action="$(_event_json_str "$line" action)"
+        _event_json_str "$line" action
+        action="$_EV"
         case "$action" in
             state | done) ;;
             *) continue ;;
         esac
-        actor="$(_event_json_str "$line" actor)"
+        _event_json_str "$line" actor
+        actor="$_EV"
         [[ -n "$actor" ]] || continue
         [[ -n "${_seen[$actor]:-}" ]] && continue
         if [[ "$action" == "done" ]]; then
             st="done"
         else
-            st="$(_event_json_str "$line" ref)"
+            _event_json_str "$line" ref
+            st="$_EV"
         fi
         [[ -n "$st" ]] || continue
         _seen["$actor"]="$st"
+        [[ -n "${_want[$actor]:-}" ]] && remaining=$((remaining - 1))
         printf '%s\t%s\n' "$actor" "$st"
     done < <(grep -aE '"action":"(state|done)"' "$events" 2>/dev/null | _ae_tac || true)
+    # Explicit: the result is stdout, not the exit status. Without this the
+    # function inherits the loop's status, which is non-zero whenever the last
+    # scanned line hit a `continue` — and a bare call under `set -e` would abort.
+    return 0
 }
 
-# Active alert/throttle reason for an agent, or empty. Reuses the watchdog
-# watchdog's own alert/throttled events as the attention signal (max-nudges,
-# missing pane, persistent throttle) instead of re-deriving them. An alert is
-# "active" only while it is the newest event mentioning the agent — any newer
-# activity (state/send/nudge) or an explicit clear (throttle-cleared /
-# alert-cleared) supersedes it. Returns a short reason: dead | stale | throttled | "".
+# Active alert/throttle reasons for MANY agents, resolved in ONE reversed pass.
+# Reuses the watchdog's own alert/throttled events as the attention signal
+# (max-nudges, missing pane, persistent throttle) instead of re-deriving them.
+# An alert is "active" only while it is the newest event mentioning the agent —
+# any newer activity (state/send/nudge) or an explicit clear (throttle-cleared /
+# alert-cleared) supersedes it. Reasons: dead | stale | throttled | "".
+#
+# WHY PLURAL: cmd_list resolved this one agent at a time, and every call
+# re-scanned the entire event log — O(agents x lines) reads with the actor and
+# target fields re-extracted once per agent per line. This pass extracts each
+# line's fields ONCE, settles every still-undecided agent against it, and stops
+# the moment the last agent has a verdict. That early exit is exact, not a tail
+# window: an old alert with a long quiet log after it is still found, because
+# scanning only stops when there is nothing left to decide.
+#
+# Outputs via a caller-scope map (dynamic scope, same convention as _areason in
+# _session_attn_rollup) rather than stdout, so no subshell is needed:
+#   fills: _AE_ALERT["<agent>"]=<dead|stale|throttled|"">   for every agent given
+# shellcheck disable=SC2154 # _AE_ALERT is caller-declared (dynamic scope)
+_agents_alert_reasons() {
+    local events="$1" session="$2"
+    shift 2
+    # Defensive: assigning into an UNDECLARED associative array under `set -u`
+    # evaluates the subscript arithmetically and aborts (AGENTS.md, set -u +
+    # associative arrays). Degrade to a local map instead of killing the caller.
+    declare -p _AE_ALERT >/dev/null 2>&1 || declare -A _AE_ALERT=()
+    local a
+    declare -A _pending=()
+    for a in "$@"; do
+        _AE_ALERT["$a"]=""
+        _pending["$a"]=1
+    done
+    local remaining="${#_pending[@]}"
+    ((remaining > 0)) || return 0
+    [[ -f "$events" ]] || return 0
+    # Prefilter to the only lines that can DECIDE anything, and let grep do the
+    # O(lines) walk in C instead of bash. A line settles agent A only if either
+    #   - its actor IS A          (any action — that is the recovery rule), or
+    #   - its action is one of the four decisive alert/clear actions
+    #     (those are the ones that also count when A appears merely as target).
+    # Every other line hits `continue` in the loop below, so dropping it here is
+    # exactly semantics-preserving — this is a superset filter, not a cap, and
+    # an ancient alert under a long quiet log is still reached.
+    # -F (fixed strings, one -e per pattern) rather than -E: agent names would
+    # otherwise need regex escaping, and an unescaped name is a silent-miss bug.
+    #
+    # BOTH raw-text filters must be built from the JSON-ESCAPED spelling of the
+    # name. Agent names are DATA — only ':' is rejected — so a role may legally
+    # contain a quote or a backslash, and events.jsonl stores those escaped. A
+    # filter built from the raw name never matches its own agent's events, and
+    # the alert vanishes silently. Escaping is delegated to ae_json_escape so
+    # there is exactly one escape implementation; the overwhelmingly common case
+    # has nothing to escape and skips the call entirely.
+    local -a _pf=()
+    declare -A _esc_of=()
+    local _esc
+    for a in "${!_pending[@]}"; do
+        if [[ "$a" == *'"'* || "$a" == *\\* || "$a" == *$'\n'* || "$a" == *$'\t'* || "$a" == *$'\r'* ]]; then
+            _esc="$(ae_json_escape "$a")"
+        else
+            _esc="$a"
+        fi
+        _esc_of["$a"]="$_esc"
+        _pf+=(-e "\"actor\":\"${_esc}\"")
+    done
+    _pf+=(-e '"action":"alert"' -e '"action":"throttled"')
+    _pf+=(-e '"action":"throttle-cleared"' -e '"action":"alert-cleared"')
+    local line actor target action summary verdict
+    local hit
+    while IFS= read -r line; do
+        ((remaining > 0)) || break
+        [[ "$line" == \{* ]] || continue
+        # Cheap reject before any parsing: a line whose raw text does not even
+        # contain a pending agent's name cannot be about that agent. In a
+        # multi-agent session most lines are about somebody else, and a
+        # substring match on the raw line costs far less than two field
+        # extractions. Purely a filter — every surviving line is still decided
+        # by the exact actor/target comparison below. Matches the ESCAPED name
+        # for the same reason as the grep patterns: $line is raw JSON here.
+        hit=0
+        for a in "${!_pending[@]}"; do
+            if [[ "$line" == *"${_esc_of[$a]}"* ]]; then
+                hit=1
+                break
+            fi
+        done
+        ((hit)) || continue
+        _event_json_str "$line" actor
+        actor="$_EV"
+        _event_json_str "$line" target
+        target="$_EV"
+        # action is extracted lazily and at most once per line — most lines
+        # mention none of the pending agents at all.
+        action=""
+        for a in "${!_pending[@]}"; do
+            [[ "$actor" == "$a" || "$target" == "$a" || "$target" == "@${session}:${a}" ]] || continue
+            if [[ -z "$action" ]]; then
+                _event_json_str "$line" action
+                action="${_EV:--}" # sentinel: a missing action is generic activity
+            fi
+            verdict=""
+            case "$action" in
+                alert)
+                    _event_json_str "$line" summary
+                    summary="$_EV"
+                    # Summaries come from the watchdog (see ae_emit_event
+                    # "alert" sites): "agent process dead — dropped to shell",
+                    # "pane missing …", "max nudges reached …", "throttled for …",
+                    # "meta-agent not sweeping …". The meta-agent wedge alert is
+                    # matched FIRST and mapped to high-severity stale — its summary text
+                    # must not be downgraded to throttled by a stray substring match.
+                    case "$summary" in
+                        *"not sweeping"*) verdict="stale" ;;
+                        *dead* | *dropped* | *missing* | *MISSING*) verdict="dead" ;;
+                        *throttl*) verdict="throttled" ;;
+                        *) verdict="stale" ;; # max-nudges and any other alert
+                    esac
+                    ;;
+                throttled) verdict="throttled" ;;
+                throttle-cleared | alert-cleared) verdict="" ;; # explicit watchdog-owned clears
+                *)
+                    # The agent's OWN activity (state/send/reply/…) means it
+                    # recovered → clears any alert. A target-only event (a watchdog
+                    # nudge or an inbound send/ask addressed TO the agent) is NOT
+                    # recovery — leave the agent pending and keep scanning back.
+                    [[ "$actor" == "$a" ]] || continue
+                    verdict=""
+                    ;;
+            esac
+            _AE_ALERT["$a"]="$verdict"
+            unset '_pending[$a]'
+            remaining=$((remaining - 1))
+        done
+    done < <(grep -aF "${_pf[@]}" "$events" 2>/dev/null | _ae_tac || true)
+    # Agents still pending saw no decisive alert/recovery → no active alert,
+    # which is the "" they were initialised with. Return success explicitly: the
+    # result is the map, not the exit status, and the loop's own status is
+    # non-zero whenever the last scanned line hit a `continue`.
+    return 0
+}
+
+# Single-agent form of the above, kept for callers that want a plain string
+# (the watchdog, and every generated helper that gets this by declare -f). It
+# delegates so the alert semantics exist in exactly ONE place — the plural
+# resolver — and cannot drift between the list path and the watchdog path.
 _agent_alert_reason() {
     local events="$1" agent="$2" session="$3"
-    [[ -f "$events" ]] || return 0
-    local line actor target action summary
-    while IFS= read -r line; do
-        [[ "$line" == \{* ]] || continue
-        actor="$(_event_json_str "$line" actor)"
-        target="$(_event_json_str "$line" target)"
-        [[ "$actor" == "$agent" || "$target" == "$agent" || "$target" == "@${session}:${agent}" ]] || continue
-        action="$(_event_json_str "$line" action)"
-        case "$action" in
-            alert)
-                summary="$(_event_json_str "$line" summary)"
-                # Summaries come from the watchdog (see ae_emit_event
-                # "alert" sites): "agent process dead — dropped to shell",
-                # "pane missing …", "max nudges reached …", "throttled for …",
-                # "meta-agent not sweeping …". The meta-agent wedge alert is
-                # matched FIRST and mapped to high-severity stale — its summary text
-                # must not be downgraded to throttled by a stray substring match.
-                case "$summary" in
-                    *"not sweeping"*) printf 'stale' ;;
-                    *dead* | *dropped* | *missing* | *MISSING*) printf 'dead' ;;
-                    *throttl*) printf 'throttled' ;;
-                    *) printf 'stale' ;; # max-nudges and any other alert
-                esac
-                return 0
-                ;;
-            throttled)
-                printf 'throttled'
-                return 0
-                ;;
-            throttle-cleared | alert-cleared) return 0 ;; # explicit watchdog-owned clears
-            *)
-                # The agent's OWN activity (state/send/reply/…) means it
-                # recovered → clears any alert. A target-only event (a watchdog
-                # nudge or an inbound send/ask addressed TO the agent) is NOT
-                # recovery — skip it and keep scanning back for a live alert.
-                [[ "$actor" == "$agent" ]] && return 0
-                ;;
-        esac
-    done < <(_ae_tac "$events" 2>/dev/null || true)
-    # No decisive alert/recovery found → no active alert. Return success
-    # explicitly: the result is the emitted string, not the exit status. Without
-    # this the function inherits the loop's status (non-zero when the last
-    # scanned line hit the target-only `*)` path), and a caller doing
-    # `r="$(_agent_alert_reason …)"` under `set -e` would abort mid-command.
+    declare -A _AE_ALERT=()
+    _agents_alert_reasons "$events" "$session" "$agent"
+    printf '%s' "${_AE_ALERT[$agent]:-}"
     return 0
 }
 
@@ -2401,21 +2605,35 @@ _session_attn_rollup() {
     _AE_ATTN_AGENT=""
     declare -A _s=() _c=() _al=()
     local sa sv mk mv _an _as ag pc
-    while IFS=$'\t' read -r sa sv; do
-        [[ -n "$sa" ]] && _s["$sa"]="$sv"
-    done < <(_session_states "$sess_dir")
+    # Current agents FIRST: the states scan below takes them as its early-exit
+    # target, and only agents in meta can raise attention anyway.
     while IFS='=' read -r mk mv; do
         [[ "$mk" == agent.* ]] || continue
-        IFS=$'\t' read -r _an _as < <(_parse_agent_entry "$mv")
+        _parse_agent_entry "$mv"
+        _an="$_AGENT_REF"
+        _as="$_AGENT_SID"
         [[ -n "$_an" ]] && _c["$_an"]=1
     done <<<"$meta_blob"
-    while IFS=$'\t' read -r ag pc; do
-        [[ -n "$ag" ]] || continue
-        case "$pc" in
-            bash | fish | zsh | sh | dash) _al["$ag"]="!" ;;
-            *) _al["$ag"]="" ;;
-        esac
-    done < <(tmux list-panes -s -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
+    while IFS=$'\t' read -r sa sv; do
+        [[ -n "$sa" ]] && _s["$sa"]="$sv"
+    done < <(_session_states "$sess_dir" ${_c[@]+"${!_c[@]}"})
+    # Live-pane map. cmd_list has already built exactly this map (_alive, same
+    # keys and same "!"-for-shell encoding) before calling us, so reuse it
+    # rather than paying a second ~3ms tmux round-trip per session. Callers
+    # without one (cmd_next) still get their own.
+    if declare -p _alive >/dev/null 2>&1; then
+        for ag in "${!_alive[@]}"; do
+            _al["$ag"]="${_alive[$ag]}"
+        done
+    else
+        while IFS=$'\t' read -r ag pc; do
+            [[ -n "$ag" ]] || continue
+            case "$pc" in
+                bash | fish | zsh | sh | dash) _al["$ag"]="!" ;;
+                *) _al["$ag"]="" ;;
+            esac
+        done < <(tmux list-panes -s -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
+    fi
     # Stale-request pass: an ask/review whose ref never got a reply and is
     # older than AE_ATTN_REQUEST_SECS (default 30min) marks its TARGET agent
     # 'unanswered' — the lowest-rank attention reason. Requests between the
@@ -2429,16 +2647,27 @@ _session_attn_rollup() {
         # malformed env value aborts (( )) under nounset instead of degrading).
         _request_secs="${AE_ATTN_REQUEST_SECS:-1800}"
         [[ "$_request_secs" =~ ^[0-9]+$ ]] || _request_secs=1800
-        _pnow="$(date +%s 2>/dev/null || echo 0)"
+        # "now" is constant for one ae invocation, and this rollup runs once per
+        # session — compute it once per process instead of forking date 9 times.
+        [[ -n "${_AE_NOW:-}" ]] || _AE_NOW="$(date +%s 2>/dev/null || echo 0)"
+        _pnow="$_AE_NOW"
+        # The read below is grep-prefiltered to the only three actions this pass
+        # reacts to, so the parser never runs on the sends/nudges/state changes
+        # that make up most of a log. Same idiom as _session_states; newest-first
+        # order is preserved because the filter runs upstream of _ae_tac.
         while IFS= read -r _pl; do
             [[ "$_pl" == \{* ]] || continue
-            _pact="$(_event_json_str "$_pl" action)"
+            _event_json_str "$_pl" action
+            _pact="$_EV"
             case "$_pact" in
                 ask | review)
-                    _pref="$(_event_json_str "$_pl" ref)"
+                    _event_json_str "$_pl" ref
+                    _pref="$_EV"
                     [[ -n "$_pref" && -z "${_preq[$_pref]+x}" ]] || continue
-                    _ptgt="$(_event_json_str "$_pl" target)"
-                    _pts="$(_event_json_str "$_pl" ts)"
+                    _event_json_str "$_pl" target
+                    _ptgt="$_EV"
+                    _event_json_str "$_pl" ts
+                    _pts="$_EV"
                     _page=0
                     [[ -n "$_pts" ]] && _page="$(_ae_epoch "$_pts")"
                     if ((_pnow > 0 && _page > 0 && _pnow - _page >= _request_secs)); then
@@ -2448,11 +2677,12 @@ _session_attn_rollup() {
                     fi
                     ;;
                 reply)
-                    _pref="$(_event_json_str "$_pl" ref)"
+                    _event_json_str "$_pl" ref
+                    _pref="$_EV"
                     [[ -n "$_pref" ]] && _preq[$_pref]=""
                     ;;
             esac
-        done < <(_ae_tac "$events" 2>/dev/null || true)
+        done < <(grep -aE '"action":"(ask|review|reply)"' "$events" 2>/dev/null | _ae_tac || true)
         local _pt
         for _pref in "${!_preq[@]}"; do
             _pt="${_preq[$_pref]}"
@@ -2461,11 +2691,24 @@ _session_attn_rollup() {
         done
     fi
     local a r
+    # One reversed pass resolves the alert reason for every agent that still has
+    # a pane. Agents without one are already 'dead' and need no scan, so they
+    # are left out — that also lets the pass exit earlier.
+    local -a _live=()
+    for a in "${!_c[@]}"; do
+        if [[ -n "${_al[$a]+x}" ]]; then
+            _live+=("$a")
+        fi
+    done
+    declare -A _AE_ALERT=()
+    # ${arr[@]+"${arr[@]}"}: an empty array expansion is an unset-variable error
+    # under `set -u` on bash 4.x — this is the portable no-agents-is-fine form.
+    _agents_alert_reasons "$events" "$name" ${_live[@]+"${_live[@]}"}
     for a in "${!_c[@]}"; do
         if [[ -z "${_al[$a]+x}" ]]; then
             r="dead"
         else
-            r="$(_agent_alert_reason "$events" "$a" "$name")"
+            r="${_AE_ALERT[$a]:-}"
             [[ -n "$r" ]] || r="${_s[$a]:-}"
         fi
         case "$r" in waiting-user | blocked | dead | stale | throttled | unanswered) ;; *) r="" ;; esac
@@ -2648,7 +2891,8 @@ _list_session_json() {
     fi
     # Session goal (set via the 'goal' helper) — additive field; null when unset.
     local goal gj="null"
-    goal="$(echo "$blob" | sed -n 's/^goal=//p' | head -1)"
+    _meta_field "$blob" goal
+    goal="$_META_VAL"
     [[ -n "$goal" ]] && gj="\"$(_json_escape "$goal")\""
     # Context fields: when the goal was set (age for staleness) + git branch.
     local gse="null"
@@ -2665,7 +2909,9 @@ _list_session_json() {
     local _afirst=true mk mv ref sid alive st rs
     while IFS='=' read -r mk mv; do
         [[ "$mk" == agent.* ]] || continue
-        IFS=$'\t' read -r ref sid < <(_parse_agent_entry "$mv")
+        _parse_agent_entry "$mv"
+        ref="$_AGENT_REF"
+        sid="$_AGENT_SID"
         [[ -n "$ref" ]] || continue
         $_afirst || printf ','
         _afirst=false
@@ -2779,20 +3025,41 @@ LISTHELP
             local meta_blob=""
             [[ -n "$sess_dir" && -f "${sess_dir}/meta" ]] && meta_blob="$(<"${sess_dir}/meta")"
             local origin mode workdir
-            origin="$(tmux show-environment -t "$name" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || true)"
-            [[ -z "$origin" ]] && origin="$(echo "$meta_blob" | sed -n 's/^origin=//p')"
+            # One tmux round-trip for all three AE_* values, then meta as
+            # fallback — parsed in-process instead of via echo|sed per field.
+            declare -A _envmap=()
+            _session_env_map "$name"
+            origin="${_envmap[AE_ORIGIN]:-}"
+            if [[ -z "$origin" ]]; then
+                _meta_field "$meta_blob" origin
+                origin="$_META_VAL"
+            fi
             origin="${origin:-?}"
-            mode="$(tmux show-environment -t "$name" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
-            [[ -z "$mode" ]] && mode="$(echo "$meta_blob" | sed -n 's/^mode=//p')"
+            mode="${_envmap[AE_MODE]:-}"
+            if [[ -z "$mode" ]]; then
+                _meta_field "$meta_blob" mode
+                mode="$_META_VAL"
+            fi
             mode="${mode:-?}"
-            workdir="$(tmux show-environment -t "$name" AE_DIR 2>/dev/null | sed 's/^AE_DIR=//' || true)"
-            [[ -z "$workdir" ]] && workdir="$(echo "$meta_blob" | sed -n 's/^work_dir=//p')"
-            # Per-agent declared states (single events.jsonl scan).
+            workdir="${_envmap[AE_DIR]:-}"
+            if [[ -z "$workdir" ]]; then
+                _meta_field "$meta_blob" work_dir
+                workdir="$_META_VAL"
+            fi
+            # Per-agent declared states (single events.jsonl scan). The agent
+            # names come from meta so the scan can stop as soon as all of them
+            # are resolved instead of walking the whole log.
+            local -a _magents=()
+            while IFS='=' read -r mk mv; do
+                [[ "$mk" == agent.* ]] || continue
+                _parse_agent_entry "$mv"
+                [[ -n "$_AGENT_REF" ]] && _magents+=("$_AGENT_REF")
+            done <<<"$meta_blob"
             declare -A _state=()
             while IFS=$'\t' read -r sa sv; do
                 [[ -n "$sa" ]] || continue
                 _state["$sa"]="$sv"
-            done < <(_session_states "$sess_dir")
+            done < <(_session_states "$sess_dir" ${_magents[@]+"${_magents[@]}"})
             # Build alive map from tmux panes (one tmux call) for the agent-row
             # display markers below. (The attention rollup builds its own maps.)
             declare -A _alive=()
@@ -2845,7 +3112,9 @@ LISTHELP
             while IFS='=' read -r mk mv; do
                 [[ "$mk" == agent.* ]] || continue
                 local aname asid
-                IFS=$'\t' read -r aname asid < <(_parse_agent_entry "$mv")
+                _parse_agent_entry "$mv"
+                aname="$_AGENT_REF"
+                asid="$_AGENT_SID"
                 local marker="${_alive[$aname]:-}"
                 printf "  %-22s  %-8s  %-12s  %s\n" "$aname" "$asid" "${_state[$aname]:--}" "$marker"
             done <<<"$meta_blob"
@@ -2860,11 +3129,14 @@ LISTHELP
             local meta_blob=""
             [[ -n "$sess_dir" && -f "${sess_dir}/meta" ]] && meta_blob="$(<"${sess_dir}/meta")"
             local mode origin workdir
-            mode="$(echo "$meta_blob" | sed -n 's/^mode=//p')"
+            _meta_field "$meta_blob" mode
+            mode="$_META_VAL"
             mode="${mode:-?}"
-            origin="$(echo "$meta_blob" | sed -n 's/^origin=//p')"
+            _meta_field "$meta_blob" origin
+            origin="$_META_VAL"
             origin="${origin:--}"
-            workdir="$(echo "$meta_blob" | sed -n 's/^work_dir=//p')"
+            _meta_field "$meta_blob" work_dir
+            workdir="$_META_VAL"
             if $as_json; then
                 # Stopped: no live state/attn. Declare EMPTY maps so the agent
                 # lookups in _list_session_json resolve associatively — under
@@ -2886,7 +3158,9 @@ LISTHELP
             while IFS='=' read -r mk mv; do
                 [[ "$mk" == agent.* ]] || continue
                 local aname asid
-                IFS=$'\t' read -r aname asid < <(_parse_agent_entry "$mv")
+                _parse_agent_entry "$mv"
+                aname="$_AGENT_REF"
+                asid="$_AGENT_SID"
                 printf "  %-22s  %s\n" "$aname" "$asid"
             done <<<"$meta_blob"
         done < <(iter_stopped_sessions)
@@ -7817,20 +8091,27 @@ ae_latest_state_for() {
     local line actor action st reason ts
     while IFS= read -r line; do
         [[ "$line" == \{* ]] || continue
-        actor="$(_event_json_str "$line" actor)"
+        _event_json_str "$line" actor
+        actor="$_EV"
         [[ "$actor" == "$agent" ]] || continue
-        action="$(_event_json_str "$line" action)"
+        _event_json_str "$line" action
+        action="$_EV"
         case "$action" in
             state)
-                st="$(_event_json_str "$line" ref)"
-                reason="$(_event_json_str "$line" summary)"
-                ts="$(_event_json_str "$line" ts)"
+                _event_json_str "$line" ref
+                st="$_EV"
+                _event_json_str "$line" summary
+                reason="$_EV"
+                _event_json_str "$line" ts
+                ts="$_EV"
                 printf '%s\t%s\t%s\n' "$st" "$reason" "$ts"
                 return 0
                 ;;
             done)
-                reason="$(_event_json_str "$line" summary)"
-                ts="$(_event_json_str "$line" ts)"
+                _event_json_str "$line" summary
+                reason="$_EV"
+                _event_json_str "$line" ts
+                ts="$_EV"
                 printf '%s\t%s\t%s\n' "done" "$reason" "$ts"
                 return 0
                 ;;
@@ -7909,17 +8190,25 @@ ae_find_request() {
     local line ref action actor target
     while IFS= read -r line; do
         [[ "$line" == \{* ]] || continue
-        ref="$(_event_json_str "$line" ref)"
+        _event_json_str "$line" ref
+        ref="$_EV"
         [[ "$ref" == "$req_id" ]] || continue
-        action="$(_event_json_str "$line" action)"
+        _event_json_str "$line" action
+        action="$_EV"
         if [[ "$action" == "ask" || "$action" == "review" ]]; then
-            actor="$(_event_json_str "$line" actor)"
-            target="$(_event_json_str "$line" target)"
+            _event_json_str "$line" actor
+            actor="$_EV"
+            _event_json_str "$line" target
+            target="$_EV"
             local a_slot a_sess t_slot t_sess
-            a_slot="$(_event_json_str "$line" actor_slot)"
-            a_sess="$(_event_json_str "$line" actor_session)"
-            t_slot="$(_event_json_str "$line" target_slot)"
-            t_sess="$(_event_json_str "$line" target_session)"
+            _event_json_str "$line" actor_slot
+            a_slot="$_EV"
+            _event_json_str "$line" actor_session
+            a_sess="$_EV"
+            _event_json_str "$line" target_slot
+            t_slot="$_EV"
+            _event_json_str "$line" target_session
+            t_sess="$_EV"
             # Backward-compatible: emit the extended (slot) row ONLY when slots are present;
             # a pre-migration event keeps the original 3-column output. Consumers read
             # tab-safe (missing slot fields -> empty -> name-match fallback).
@@ -8762,35 +9051,53 @@ helper_requests_main() {
     if [[ -f "$events_file" ]]; then
         while IFS= read -r line; do
             [[ "$line" == \{* ]] || continue
-            ref="$(_event_json_str "$line" ref)"
+            _event_json_str "$line" ref
+            ref="$_EV"
             [[ -n "$ref" ]] || continue
-            action="$(_event_json_str "$line" action)"
+            _event_json_str "$line" action
+            action="$_EV"
             case "$action" in
                 ask | review)
                     [[ -n "${req_kind[$ref]:-}" ]] && continue
                     req_kind["$ref"]="$action"
-                    req_sender["$ref"]="$(_event_json_str "$line" actor)"
-                    req_target["$ref"]="$(_event_json_str "$line" target)"
-                    req_actor_slot["$ref"]="$(_event_json_str "$line" actor_slot)"
-                    req_target_slot["$ref"]="$(_event_json_str "$line" target_slot)"
-                    req_actor_session["$ref"]="$(_event_json_str "$line" actor_session)"
-                    req_target_session["$ref"]="$(_event_json_str "$line" target_session)"
-                    req_summary["$ref"]="$(_event_json_str "$line" summary)"
+                    _event_json_str "$line" actor
+                    req_sender["$ref"]="$_EV"
+                    _event_json_str "$line" target
+                    req_target["$ref"]="$_EV"
+                    _event_json_str "$line" actor_slot
+                    req_actor_slot["$ref"]="$_EV"
+                    _event_json_str "$line" target_slot
+                    req_target_slot["$ref"]="$_EV"
+                    _event_json_str "$line" actor_session
+                    req_actor_session["$ref"]="$_EV"
+                    _event_json_str "$line" target_session
+                    req_target_session["$ref"]="$_EV"
+                    _event_json_str "$line" summary
+                    req_summary["$ref"]="$_EV"
+                    _event_json_str "$line" ts
                     # shellcheck disable=SC2034  # populated for symmetry; not read yet
-                    req_ts["$ref"]="$(_event_json_str "$line" ts)"
+                    req_ts["$ref"]="$_EV"
                     order+=("$ref")
                     ;;
                 reply)
                     [[ -n "${reply_summary[$ref]:-}" ]] && continue
-                    reply_summary["$ref"]="$(_event_json_str "$line" summary)"
-                    reply_actor["$ref"]="$(_event_json_str "$line" actor)"
-                    reply_target["$ref"]="$(_event_json_str "$line" target)"
-                    reply_actor_slot["$ref"]="$(_event_json_str "$line" actor_slot)"
-                    reply_target_slot["$ref"]="$(_event_json_str "$line" target_slot)"
-                    reply_actor_session["$ref"]="$(_event_json_str "$line" actor_session)"
-                    reply_target_session["$ref"]="$(_event_json_str "$line" target_session)"
+                    _event_json_str "$line" summary
+                    reply_summary["$ref"]="$_EV"
+                    _event_json_str "$line" actor
+                    reply_actor["$ref"]="$_EV"
+                    _event_json_str "$line" target
+                    reply_target["$ref"]="$_EV"
+                    _event_json_str "$line" actor_slot
+                    reply_actor_slot["$ref"]="$_EV"
+                    _event_json_str "$line" target_slot
+                    reply_target_slot["$ref"]="$_EV"
+                    _event_json_str "$line" actor_session
+                    reply_actor_session["$ref"]="$_EV"
+                    _event_json_str "$line" target_session
+                    reply_target_session["$ref"]="$_EV"
+                    _event_json_str "$line" ts
                     # shellcheck disable=SC2034  # populated for symmetry; not read yet
-                    reply_ts["$ref"]="$(_event_json_str "$line" ts)"
+                    reply_ts["$ref"]="$_EV"
                     ;;
             esac
         done < <(_ae_tac "$events_file" 2>/dev/null || true)
@@ -9526,13 +9833,19 @@ _latest_relevant_event() {
     # ae_emit_event strips tabs/newlines from summary, so it is safe last.
     while IFS= read -r line; do
         [[ "$line" == \{* ]] || continue
-        actor="$(_event_json_str "$line" actor)"
-        target="$(_event_json_str "$line" target)"
+        _event_json_str "$line" actor
+        actor="$_EV"
+        _event_json_str "$line" target
+        target="$_EV"
         if [[ "$actor" == "$agent" || "$target" == "$agent" || "$target" == "@${_AE_SESSION}:${agent}" ]]; then
-            action="$(_event_json_str "$line" action)"
-            ts="$(_event_json_str "$line" ts)"
-            ref="$(_event_json_str "$line" ref)"
-            summary="$(_event_json_str "$line" summary)"
+            _event_json_str "$line" action
+            action="$_EV"
+            _event_json_str "$line" ts
+            ts="$_EV"
+            _event_json_str "$line" ref
+            ref="$_EV"
+            _event_json_str "$line" summary
+            summary="$_EV"
             printf '%s\t%s\t%s\t%s\t%s\n' "$action" "$ts" "$ref" "$actor" "$summary"
             return 0
         fi
@@ -11406,7 +11719,7 @@ LIBPROLOGUE
             ae_current_pane ae_current_agent ae_current_agent_ref ae_current_slot _valid_slot ae_slot_resolver \
             ae_preview_text ae_extract_req_id ae_log_append ae_log_read \
             ae_target_tool ae_json_escape ae_emit_event ae_latest_state_for \
-            _event_json_str _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
+            _event_json_str _agents_alert_reasons _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
             ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_is_border _input_region_content_end _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
             command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
             ae_meta_get ae_meta_set ae_meta_unset \
