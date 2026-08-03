@@ -1824,9 +1824,12 @@ assert_eq "events: focus emits event" \
 # The spawn path has ONE event writer (_spawn_emit_event) and the action is its
 # parameter, so success/failure cannot drift apart. That it actually emits — and which
 # action — is proved by the _cmd_spawn caller probe further down, not by source text.
+# (The summary argument moved from an inline `$(printf '%.200s' … | tr)` to the
+# shared ae_cap_summary — issue #7 round 2 — so the shape is pinned on the call,
+# not on the old idiom. The single-writer invariant is unchanged.)
 assert_eq "events: spawn path has a single event writer" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'_spawn_emit_event() {'* && "$AE_SOURCE" == *'"spawn" "$(printf'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_spawn_emit_event() {'* && "$AE_SOURCE" == *'"spawn" "$_EV_SUMMARY"'* ]] && echo 1 || echo 0)"
 
 assert_eq "events: retire emits event" \
     "1" \
@@ -2143,7 +2146,12 @@ if command -v timeout >/dev/null 2>&1; then _closure_tmo=(timeout 30); fi
 # Everything else in this guard is generated-artifact ground truth; this is the
 # one remaining place that reads shell text as text.
 _closure_strip_heredocs() {
-    awk '
+    # LC_ALL=C: `declare -f` re-prints ae_sanitize_utf8's 0x80-0xFF bracket
+    # literals as RAW bytes, and a multibyte-aware awk refuses them
+    # ("towc: multibyte conversion failure"), truncating the body stream at that
+    # function. Every canonical-body stage runs in byte semantics for that
+    # reason — see the doctrine note at the closure guard.
+    LC_ALL=C awk '
         nq > 0 {
             t = $0
             if (dash[qi]) { sub(/^\t+/, "", t) }
@@ -2174,14 +2182,39 @@ _closure_strip_heredocs() {
 # Command position over canonical re-prints: plain, $( ), backtick, and both
 # directions of process substitution.
 _closure_tokens() {
-    local _b
+    # STATUS, not a flag. The previous version set _CLOSURE_LEX_ERR from inside
+    # `{ ... } | sed` — the left side of a pipeline is a SUBSHELL — and this
+    # function is itself called through $( ), another subshell. The write could
+    # never reach the reader, so a real grep rc=2 arrived as rc 0 with an empty
+    # flag. Who writes it, who reads it, same process? It was not.
+    # Each stage now runs in THIS shell with its status inspected, and the
+    # function RETURNS non-zero so the caller can see the failure.
+    local _b _one _rc _st=0 _out="" _pat _norm
     _b="$(cat)"
-    {
-        grep -oE '\$\([a-z_][a-zA-Z0-9_]*' <<<"$_b" || true
-        grep -oE '[<>]\([a-z_][a-zA-Z0-9_]*' <<<"$_b" || true
-        grep -oE '`[a-z_][a-zA-Z0-9_]*' <<<"$_b" || true
-        grep -oE '(^|[ \t;&|(])[a-z_][a-zA-Z0-9_]*([ \t;&]|$)' <<<"$_b" || true
-    } | sed -E 's/^[^a-zA-Z_]+//; s/[^a-zA-Z0-9_]+$//' | sort -u || true
+    for _pat in \
+        '\$\([a-z_][a-zA-Z0-9_]*' \
+        '[<>]\([a-z_][a-zA-Z0-9_]*' \
+        '`[a-z_][a-zA-Z0-9_]*' \
+        '(^|[ \t;&|(])[a-z_][a-zA-Z0-9_]*([ \t;&]|$)'; do
+        # Declaration and assignment are split on purpose: `local x="$(cmd)"`
+        # reports the status of `local`, never of cmd.
+        # `x="$(cmd)"` is a FAILING COMMAND under set -e: the shell aborts
+        # before $? is ever read, so the status can only be captured from a
+        # context where errexit is suspended. An `if` condition is such a
+        # context; a bare assignment is not.
+        if _one="$(LC_ALL=C grep -oE "$_pat" <<<"$_b")"; then
+            _rc=0
+        else
+            _rc=$?
+        fi
+        # grep: 0 matched, 1 no match (legitimate), 2+ a real error.
+        ((_rc <= 1)) || _st=1
+        [[ -n "$_one" ]] && _out+="$_one"$'\n'
+    done
+    ((_st == 0)) || return 2
+    _norm="$(LC_ALL=C sed -E 's/^[^a-zA-Z_]+//; s/[^a-zA-Z0-9_]+$//' <<<"$_out")" || return 2
+    LC_ALL=C sort -u <<<"$_norm" || return 2
+    return 0
 }
 
 # ── PINNED KNOWN EDGES of the end-of-life lexer ─────────────────────
@@ -2225,6 +2258,7 @@ assert_eq "closure lexer control: a REAL heredoc still yields the call after its
 _closure_missing=""
 _gen_bad=""
 _gen_seen=0
+_CLOSURE_LEX_ERR=""
 for _af in "$_gen_dir"/*; do
     [[ -f "$_af" ]] || continue
     _an="$(basename "$_af")"
@@ -2295,7 +2329,8 @@ for _af in "$_gen_dir"/*; do
             for _f in $_fns; do builtin declare -f "$_f"; done
         ' "$_gen_dir/.closure_src" </dev/null 2>/dev/null
     )"
-    _defs="$(awk '/^===DEFS===$/{f=1;next} /^===BODIES===$/{exit} f' <<<"$_probe")"
+    _defs="$(LC_ALL=C awk '/^===DEFS===$/{f=1;next} /^===BODIES===$/{exit} f' <<<"$_probe")" ||
+        _CLOSURE_LEX_ERR="defs-extract"
     if [[ -z "$_defs" ]]; then
         _gen_bad+="${_an}:no-definitions "
         continue
@@ -2312,17 +2347,49 @@ for _af in "$_gen_dir"/*; do
     # heredoc verbatim, and its data lines are not code — lexing them reports
     # calls that cannot happen. The opener line itself is kept (it can carry a
     # real call before the <<).
-    _bodies="$(awk '/^===BODIES===$/{f=1;next} f' <<<"$_probe" |
-        _closure_strip_heredocs | grep -vE '^[[:space:]]*#' || true)"
-    _toks="$(_closure_tokens <<<"$_bodies")"
+    # No `|| true` in guard plumbing: a stage that fails must be an ERROR, not an
+    # empty body that reads as "calls nothing". Comment-stripping uses awk rather
+    # than grep -v precisely so that "no lines left" is not a non-zero exit.
+    _bodies="$(LC_ALL=C awk '/^===BODIES===$/{f=1;next} f' <<<"$_probe")" ||
+        _CLOSURE_LEX_ERR="bodies-extract"
+    _bodies="$(_closure_strip_heredocs <<<"$_bodies")" ||
+        _CLOSURE_LEX_ERR="heredoc-strip"
+    _bodies="$(LC_ALL=C awk '!/^[[:space:]]*#/' <<<"$_bodies")" ||
+        _CLOSURE_LEX_ERR="comment-strip"
+    if _toks="$(_closure_tokens <<<"$_bodies")"; then
+        _tok_rc=0
+    else
+        _tok_rc=$?
+    fi
+    ((_tok_rc == 0)) || _CLOSURE_LEX_ERR="tokens rc=${_tok_rc} (${_an})"
+    # comm's status is captured by MATERIALISING its output first. Reading the
+    # loop straight from `< <(comm ...)` discarded that status entirely, so a
+    # comm error was indistinguishable from "no functions in common". The two
+    # inputs remain process substitutions — they are printf of in-memory
+    # strings; the CHECKED command is comm itself.
+    if _pairs="$(LC_ALL=C comm -12 <(printf '%s\n' "$_toks") <(printf '%s\n' "$_ae_fns"))"; then
+        _comm_rc=0
+    else
+        _comm_rc=$?
+    fi
+    ((_comm_rc == 0)) || _CLOSURE_LEX_ERR="comm rc=${_comm_rc} (${_an})"
     while IFS= read -r _cal; do
         [[ -n "$_cal" ]] || continue
-        grep -qxF "$_cal" <<<"$_defs" && continue
+        LC_ALL=C grep -qxF "$_cal" <<<"$_defs" && continue
         _closure_missing+="${_an}->${_cal} "
-    done < <(comm -12 <(printf '%s\n' "$_toks") <(printf '%s\n' "$_ae_fns") || true)
+    done <<<"$_pairs"
 done
 rm -rf "$_gen_root"
 
+# DOCTRINE: stderr noise in a GREEN run is signal. This guard used to print
+# "awk: towc: multibyte conversion failure" fifteen times per run while
+# reporting a clean closure — the body stream was truncating at
+# ae_sanitize_utf8 and three functions went unanalysed. Behaviourally: a
+# violation seeded inside ae_sanitize_utf8 was CAUGHT under ambient LC_ALL=C and
+# reported CLEAN under ambient en_US.UTF-8. A lexer stage that fails is now an
+# asserted error, never an empty body.
+assert_eq "closure: no lexer stage failed (an error is not an empty body)" \
+    "" "$_CLOSURE_LEX_ERR"
 assert_eq "closure: every generated artifact analysed cleanly" "" "$_gen_bad"
 assert_eq "closure: every non-shim artifact was analysed" "19" "$_gen_seen"
 assert_eq "closure: every function a generated artifact can run is defined in it" \
@@ -5620,9 +5687,285 @@ assert_eq "say: reads args or stdin, rejects empty" "1" \
         && "$AE_SOURCE" == *'if [[ -z "${text//['* ]] && echo 1 || echo 0)"
 
 # ae_emit_event keeps chat rich (newlines + larger cap) but flattens/caps others.
+# The cap moved from `head -c N | tr` to ae_cap_summary — byte-count truncation
+# split multibyte characters and killed BSD tr under a UTF-8 locale (issue #7) —
+# so the shape is pinned on the new call, and on the ASYMMETRY that is the real
+# invariant: chat is capped WITHOUT flattening, everything else is flattened.
 assert_eq "say: ae_emit_event special-cases chat (3500, no flatten)" "1" \
     "$([[ "$AE_SOURCE" == *'if [[ "$action" == "chat" ]]; then'* \
-        && "$AE_SOURCE" == *'head -c 3500'* ]] && echo 1 || echo 0)"
+        && "$AE_SOURCE" == *'ae_cap_summary "$summary" 3500'* \
+        && "$AE_SOURCE" == *'ae_cap_summary "$summary" 200'* ]] && echo 1 || echo 0)"
+
+# The flattening lives ONLY on the non-chat branch: chat newlines are the point
+# of the chat path (a human reply bound for Telegram), and a cap helper that
+# flattened unconditionally would silently destroy them.
+assert_eq "say: only the non-chat branch flattens newlines" "1" \
+    "$(awk '/if \[\[ "\$action" == "chat" \]\]; then/{c=1} c&&/^    else$/{e=1} c&&!e&&/summary\/\/\$.\\n./{bad=1} END{print (bad?0:1)}' <<<"$AE_SOURCE")"
+
+# ── ae_cap_summary: multibyte-safe truncation (issue #7) ────────────
+# The shipped bug: `head -c 200 | tr` cut at a BYTE boundary, and when an
+# em-dash (3 bytes) straddled it the partial sequence reached BSD tr under a
+# UTF-8 locale — "Illegal byte sequence", rc 1, and the whole ask failed with no
+# delivery and no event. Alignment-dependent, so the same text one byte over
+# worked. These exercise the real function, at every straddling offset.
+eval "$(awk '/^ae_cap_summary\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^ae_sanitize_utf8\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# Locale probes must run in a shell we control, so the function goes to a file
+# rather than being re-extracted inside each locale — awk itself fails to read
+# ae under SJIS/GB18030, which would make those probes pass vacuously.
+_cap_fn_file="$(mktemp)"
+awk '/^ae_cap_summary\(\) \{/,/^\}$/' <<<"$AE_SOURCE" >"$_cap_fn_file"
+
+_cap_emdash=$'\xe2\x80\x94'
+
+# Every alignment where a 3-byte character crosses the cap: the call must
+# succeed AND the result must never end in a partial sequence.
+_cap_bad=""
+for _off in 197 198 199 200; do
+    _cap_in="$(printf "%${_off}s" "" | tr ' ' 'x')${_cap_emdash}tail"
+    ae_cap_summary "$_cap_in" 200 || _cap_bad+="rc@${_off} "
+    # A partial em-dash would leave a trailing 0xE2 or 0xE2 0x80.
+    case "$_EV_SUMMARY" in
+        *$'\xe2' | *$'\xe2\x80') _cap_bad+="partial@${_off} " ;;
+    esac
+done
+assert_eq "cap_summary: no straddling offset yields a partial character" "" "$_cap_bad"
+
+# A character positioned before the cut survives WHOLE — present in the result,
+# not as a fragment. This one is CHARACTER-COUNTING dependent: under LC_ALL=C the
+# cap is 200 BYTES, the em-dash sits past it, and its absence is correct rather
+# than a bug. Assert it in a shell whose locale we chose, not the ambient one.
+_cap_utf8_locale="$(locale -a 2>/dev/null | grep -iE '^(en_US\.)?(utf-?8|UTF-?8)$|^en_US\.UTF-8$' | head -1)"
+[[ -n "$_cap_utf8_locale" ]] || _cap_utf8_locale="en_US.UTF-8"
+assert_eq "cap_summary: under a UTF-8 locale a character before the cut is kept intact" "1" \
+    "$(LC_ALL="$_cap_utf8_locale" "${BASH:-bash}" -c '
+        source "$1"
+        em=$'"'"'\xe2\x80\x94'"'"'
+        ae_cap_summary "$(printf "%197s" "" | tr " " "x")${em}tail" 200
+        [[ "$_EV_SUMMARY" == *"$em"* ]] && echo 1 || echo 0
+    ' _ "$_cap_fn_file" 2>/dev/null)"
+
+# Short input is returned untouched (no cap, no flattening in this function).
+ae_cap_summary "plain summary" 200
+assert_eq "cap_summary: under the cap is passed through" "plain summary" "$_EV_SUMMARY"
+
+# Capping is by the stated limit.
+ae_cap_summary "$(printf '%500s' '' | tr ' ' 'y')" 200
+assert_eq "cap_summary: caps at the requested length" "200" "${#_EV_SUMMARY}"
+
+# ── locale matrix: the cap must not leak a partial sequence ANYWHERE ──
+# "not UTF-8 character aware" does not mean "counting bytes": SJIS, GB18030 and
+# eucKR are multibyte too (the em-dash probe measures 2 there), so bash slices in
+# THEIR characters while a UTF-8 byte walk-back reasons about something else.
+# Measured, not assumed: before the fix, LC_ALL=ja_JP.SJIS at offset 199 emitted
+# a tail of 78 78 e2 80 — a partial em-dash escaping into events.jsonl.
+#
+# The check is on the OUTPUT BYTES via od. A `case` glob evaluated INSIDE the
+# locale under test is not reliable — that is what hid this the first time.
+# The probe runs from a FILE, not an inline -c string. The inline form needed
+# three levels of quote nesting to carry a $'\xe2\x80\x94' literal into a child
+# shell, and it silently produced an empty result instead of a partial — a
+# locale matrix that could not fail. A file has one level of quoting.
+_cap_probe="$(mktemp)"
+cat >"$_cap_probe" <<'CAPPROBE'
+#!/usr/bin/env bash
+# argv: <fn-file> <offset>   prints the last 6 hex digits of the capped output
+source "$1"
+em=$'\xe2\x80\x94'
+pad="$(printf "%$2s" "" | tr ' ' 'x')"
+ae_cap_summary "${pad}${em}tail" 200
+printf '%s' "$_EV_SUMMARY" | od -An -tx1 | tr -d ' \n' | tail -c 6
+CAPPROBE
+chmod +x "$_cap_probe"
+
+_cap_locale_bad=""
+_cap_probe_out=""
+# Availability is read ONCE into a variable, and matched with a herestring.
+# `locale -a | grep -q` looks obvious and is wrong under `set -o pipefail`:
+# grep -q exits at the first match, locale takes SIGPIPE, and the PIPELINE
+# reports failure — so a locale that IS present tested as absent and every
+# probe was skipped. The matrix then reported "no partials" having measured
+# nothing.
+_cap_locales_avail="$(locale -a 2>/dev/null || true)"
+for _cl in en_US.UTF-8 C ja_JP.SJIS zh_CN.GB18030 ko_KR.eucKR; do
+    if [[ "$_cl" != "C" ]] && ! grep -qxiF "$_cl" <<<"$_cap_locales_avail"; then
+        _cap_skipped+="$_cl "
+        continue
+    fi
+    for _co in 197 198 199 200; do
+        _cap_tail="$(LC_ALL="$_cl" "${BASH:-bash}" "$_cap_probe" "$_cap_fn_file" "$_co" 2>/dev/null || true)"
+        _cap_probe_out+="${_cl}@${_co}=${_cap_tail} "
+        # A partial em-dash ends the output with e280, or with a bare e2.
+        case "$_cap_tail" in
+            *e280 | *e2) _cap_locale_bad+="${_cl}@${_co}(${_cap_tail}) " ;;
+        esac
+    done
+done
+rm -f "$_cap_probe"
+# A matrix that produced no output would report "no partials" forever. Count the
+# probes that actually returned something; the raw results ride along so a
+# failure says WHAT was measured, not just that something was wrong.
+_cap_probe_ran="$(printf '%s' "$_cap_probe_out" | tr ' ' '\n' | grep -c '=[0-9a-f]' || true)"
+assert_eq "cap_summary: the locale matrix actually ran" "1" \
+    "$([[ "${_cap_probe_ran:-0}" -ge 8 ]] && echo 1 || echo 0)"
+assert_eq "cap_summary: no locale leaks a partial sequence" "" "$_cap_locale_bad"
+# A skip must be visible, never silent.
+[[ -z "${_cap_skipped:-}" ]] ||
+    printf 'NOTE: cap_summary locale matrix skipped absent locales: %s\n' "$_cap_skipped" >&2
+
+# ── the cap is ENFORCED, not just boundary-safe ──────────────────────
+# Separate property from "never leaks a partial": the earlier matrix appended
+# "tail" to every fixture, which forced the truncating branch and only ever
+# asserted how the output ENDED. A string that ends exactly ON the boundary took
+# the other path — and because the length decision ran in the AMBIENT locale
+# before the fallback set LC_ALL=C, SJIS/GB18030 measured 198 ASCII + one
+# multibyte char as 200 "characters", skipped the fallback entirely, and emitted
+# 202 BYTES with the cap silently unenforced. These fixtures carry NO tail and
+# assert OUTPUT BYTE LENGTH.
+_cap_len_probe="$(mktemp)"
+cat >"$_cap_len_probe" <<'CAPLENPROBE'
+#!/usr/bin/env bash
+# argv: <fn-file> <emdash|emoji> <pad>   prints the byte length of the output
+source "$1"
+case "$2" in
+    emdash) ch=$'\xe2\x80\x94' ;;
+    emoji) ch=$'\xf0\x9f\x98\x80' ;;
+esac
+pad="$(printf "%$3s" "" | tr ' ' 'x')"
+ae_cap_summary "${pad}${ch}" 200
+printf '%s' "$_EV_SUMMARY" | wc -c | tr -d ' '
+CAPLENPROBE
+chmod +x "$_cap_len_probe"
+
+_cap_len_bad=""
+_cap_len_ran=0
+for _cl in en_US.UTF-8 C ja_JP.SJIS zh_CN.GB18030 ko_KR.eucKR; do
+    if [[ "$_cl" != "C" ]] && ! grep -qxiF "$_cl" <<<"$_cap_locales_avail"; then
+        continue
+    fi
+    for _cc in emdash emoji; do
+        _cap_len="$(LC_ALL="$_cl" "${BASH:-bash}" "$_cap_len_probe" "$_cap_fn_file" "$_cc" 198 2>/dev/null || true)"
+        [[ "$_cap_len" =~ ^[0-9]+$ ]] || {
+            _cap_len_bad+="${_cl}/${_cc}(no-result) "
+            continue
+        }
+        _cap_len_ran=$((_cap_len_ran + 1))
+        if [[ "$_cl" == en_US.UTF-8 ]]; then
+            # Character-aware: 199 characters is under the cap, so the input is
+            # returned whole — 201 bytes for a 3-byte char, 202 for a 4-byte one.
+            case "${_cc}:${_cap_len}" in
+                emdash:201 | emoji:202) ;;
+                *) _cap_len_bad+="${_cl}/${_cc}=${_cap_len} " ;;
+            esac
+        else
+            # Byte semantics: the 200-byte cut lands inside the trailing
+            # character, which is then dropped whole -> 198 bytes. Never > 200.
+            [[ "$_cap_len" == "198" ]] || _cap_len_bad+="${_cl}/${_cc}=${_cap_len} "
+        fi
+    done
+done
+rm -f "$_cap_len_probe"
+assert_eq "cap_summary: the byte-length matrix actually ran" "1" \
+    "$([[ "$_cap_len_ran" -ge 4 ]] && echo 1 || echo 0)"
+assert_eq "cap_summary: the cap is enforced in every locale (no tail)" "" "$_cap_len_bad"
+
+# ── ae_sanitize_utf8: malformed input is DATA, cleaned, not an error ──
+# Summary text is agent/user controlled and can arrive already invalid — the cap
+# is not the only way a bad byte reaches events.jsonl. rc stays 0.
+_san_case() { # <label> <printf-fmt-for-input> <expected-hex>
+    # The format string IS the fixture: every call site passes a literal with
+    # \xNN escapes, which is the only way to write these byte sequences inline.
+    # shellcheck disable=SC2059  # deliberate: $2 is a literal format from this file
+    ae_sanitize_utf8 "$(printf "$2")"
+    assert_eq "sanitize: $1" "$3" \
+        "$(printf '%s' "$_EV_CLEAN" | od -An -tx1 | tr -d ' \n')"
+}
+_san_case "reviewer specimen abc\\x80def loses the stray byte" 'abc\x80def' '616263646566'
+_san_case "a valid em-dash is preserved" 'a\xe2\x80\x94b' '61e2809462'
+_san_case "a truncated 3-byte lead is dropped" 'a\xe2\x80b' '6162'
+_san_case "a lone lead byte at the end is dropped" 'ab\xe2' '6162'
+_san_case "an overlong C0 80 is dropped" 'a\xc0\x80b' '6162'
+_san_case "a UTF-16 surrogate ED A0 80 is dropped" 'a\xed\xa0\x80b' '6162'
+_san_case "a 4-byte emoji is preserved" 'a\xf0\x9f\x98\x80b' '61f09f988062'
+_san_case "an impossible F5 lead is dropped" 'a\xf5\x80\x80\x80b' '6162'
+_san_case "pure ASCII is returned untouched" 'hello world' '68656c6c6f20776f726c64'
+
+ae_sanitize_utf8 "$(printf 'abc\x80def')"
+assert_eq "sanitize: cleaning is not an error (rc 0)" "0" "$?"
+
+# ── the spawn path uses the same cap (issue #7 round 2, item 3) ──
+# This site kept the original idiom and reproduced the abort verbatim; a second
+# copy of a fixed bug is still the bug.
+assert_eq "spawn: event summary goes through ae_cap_summary, not printf|tr" "1" \
+    "$([[ "$AE_SOURCE" == *'ae_cap_summary "$_sp_sum" 200'* \
+        && "$AE_SOURCE" != *"printf '%.200s' \"\${user_prompt:-}\" | tr"* ]] && echo 1 || echo 0)"
+
+# No byte-count truncation feeding tr may return anywhere in ae: that pairing IS
+# the bug (byte cut -> partial sequence -> BSD tr aborts under a UTF-8 locale).
+#
+# THREAT MODEL, stated because it decides how far this goes: accidental
+# reintroduction — a copy-paste of the old idiom, or a new site written in the
+# old habit. Not adversarial evasion. After three rounds of chasing spellings
+# the honest position is that a regex over shell text will always have another
+# spelling, so this is a cheap tripwire and NOT what makes the invariant true.
+# What makes it true is behavioural: ae_cap_summary is exercised across five
+# locales for boundary safety AND enforced byte length, and the emit path is
+# driven end-to-end through a regenerated _lib. If this guard and those tests
+# ever disagree, the tests are right.
+#
+# COVERED, each mutation-pinned:
+#   count  : head -c N | head -c "$v" | head -c $v | head -cN (attached)
+#            printf '%.Ns' and printf "%.Ns"
+#   sink   : tr | command tr | /usr/bin/tr (any path prefix), piped DIRECTLY
+#            from the truncation
+#   layout : one line, split after |, split after \, comment-only lines
+#            interleaved in the continuation
+# NOT COVERED, deliberately, and the claim does not pretend otherwise:
+#   - an INTERVENING pipeline stage between the cut and tr (head -c200 | cat | tr)
+#   - a truncation whose result reaches tr through an intermediate VARIABLE
+#   - indirection (eval, aliases, a wrapper function under another name)
+# The spelling space is provably unbounded, so coverage is settled by
+# SUBTRACTION: the assertion below claims the direct pipe and nothing more.
+#
+# Continuations are joined first, comment-only lines dropped as they are joined:
+# a pipeline broken after `|` or `\` is one logical line to the shell, and a
+# comment sitting inside it does not end the pipeline.
+_bc_src="$(LC_ALL=C awk '
+    {
+        line = $0
+        while (line ~ /\\[[:space:]]*$/ || line ~ /\|[[:space:]]*$/) {
+            sub(/\\[[:space:]]*$/, "", line)
+            if ((getline nxt) <= 0) break
+            sub(/^[[:space:]]+/, "", nxt)
+            if (nxt ~ /^#/) continue
+            line = line " " nxt
+        }
+        print line
+    }' <<<"$AE_SOURCE")"
+_bc_cut='(head[[:space:]]+-c[[:space:]]*["'"'"']?\$?\{?[A-Za-z0-9_]+\}?["'"'"']?|printf[[:space:]]+["'"'"']%\.[0-9]+s["'"'"'])'
+_bc_tr='(command[[:space:]]+)?([A-Za-z0-9_./-]*/)?tr[[:space:]]'
+assert_eq "no byte-count truncation pipes DIRECTLY into tr (count literal/var/attached; tr bare/command/path; continued lines; intervening stages NOT claimed)" "0" \
+    "$(LC_ALL=C grep -cE "${_bc_cut}[^|]*\|[[:space:]]*${_bc_tr}" <<<"$_bc_src" || true)"
+
+# ── both emit boundaries sanitize ──
+# Scoped to ae_emit_event's OWN body: _spawn_emit_event carries a byte-identical
+# sanitise line, so a whole-file substring match is satisfied by the other site
+# and cannot see this one being removed.
+assert_eq "emit: ae_emit_event sanitizes before capping" "1" \
+    "$(awk '/^ae_emit_event\(\)/{f=1} f&&/ae_sanitize_utf8/{print 1; exit} f&&/^\}$/{print 0; exit}' <<<"$AE_SOURCE")"
+assert_eq "emit: _spawn_emit_event sanitizes too" "1" \
+    "$(awk '/^_spawn_emit_event\(\)/{f=1} f&&/ae_sanitize_utf8/{print 1; exit} f&&/^\}$/{print 0; exit}' <<<"$AE_SOURCE")"
+
+# The end-to-end shape that actually failed: the capped value must survive the
+# JSON escaper and come back out of the parser unchanged — that is the path
+# into events.jsonl.
+eval "$(awk '/^ae_json_escape\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+ae_cap_summary "$(printf '%198s' '' | tr ' ' 'x')${_cap_emdash}tail" 200
+_cap_line="{\"summary\":\"$(ae_json_escape "$_EV_SUMMARY")\"}"
+_event_json_str "$_cap_line" summary
+assert_eq "cap_summary: capped value round-trips through escape+parse" \
+    "$_EV_SUMMARY" "$_EV"
+
 
 # chat in the default include so fresh setups forward agent replies.
 assert_eq "say: chat in TG_INCLUDE_DEFAULT" "1" \

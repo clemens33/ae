@@ -2844,6 +2844,140 @@ USAGE
 # into every generated _lib via declare -f AND used directly by ae's own code
 # (`ae list --json` needs no jq). The old byte-identical _lib mirror is gone —
 # _json_escape below is a thin alias for ae's historical internal call sites.
+# Flatten an event summary to one line and cap its length, into _EV_SUMMARY.
+# Emitted into every generated _lib alongside ae_emit_event, its only caller.
+#
+# This replaces a `head -c N | tr` pipeline that cut at a BYTE count. When the
+# boundary landed mid-character (an em-dash is 3 bytes), the partial sequence
+# reached BSD tr under a UTF-8 locale, which refuses it — "Illegal byte
+# sequence", rc 1 — and the whole ask/send failed: no delivery, no event. It was
+# alignment-dependent, so the same text one byte over worked fine. Shipped and
+# hit live 2026-08-02. The portability campaign covered tool ABSENCE; this is
+# locale STRICTNESS, the same silent-failure family on a new axis.
+#
+# Two properties, both required: the cap must never abort (no tr, no fork at
+# all now), and it must never emit an invalid byte into events.jsonl.
+# Drop malformed UTF-8 from text bound for events.jsonl, into _EV_CLEAN.
+#
+# Summary text is agent- and user-controlled, so it can already be invalid
+# before ae ever truncates it — `abc\x80def` passed straight through and left a
+# line no UTF-8 reader will accept. AGENTS.md already names events.jsonl a
+# sanitising boundary (control bytes are stripped at write time); this extends
+# that same chokepoint to malformed sequences. It is DATA, not protocol: the
+# event still emits, rc stays 0, the summary is just clean.
+#
+# Pure bash on purpose — no iconv dependency — and the common case is O(1): a
+# summary with no high bytes is returned untouched without scanning.
+ae_sanitize_utf8() {
+    local s="$1"
+    local LC_ALL=C
+    if [[ "$s" != *[$'\x80'-$'\xff']* ]]; then
+        _EV_CLEAN="$s"
+        return 0
+    fi
+    local out="" i=0 n=${#s} b c1 c2 c3 need lo hi ok
+    while ((i < n)); do
+        printf -v b '%d' "'${s:i:1}"
+        if ((b < 0x80)); then
+            out+="${s:i:1}"
+            i=$((i + 1))
+            continue
+        fi
+        # Lead byte -> how many continuations, and the legal range of the FIRST
+        # one. The narrowed first-continuation ranges are what reject overlong
+        # encodings (C0/C1, E0 80) and UTF-16 surrogates (ED A0), which a plain
+        # 80-BF check would let through and iconv would still refuse.
+        need=0
+        lo=0x80
+        hi=0xbf
+        if ((b >= 0xc2 && b <= 0xdf)); then
+            need=1
+        elif ((b == 0xe0)); then
+            need=2
+            lo=0xa0
+        elif ((b >= 0xe1 && b <= 0xec)); then
+            need=2
+        elif ((b == 0xed)); then
+            need=2
+            hi=0x9f
+        elif ((b >= 0xee && b <= 0xef)); then
+            need=2
+        elif ((b == 0xf0)); then
+            need=3
+            lo=0x90
+        elif ((b >= 0xf1 && b <= 0xf3)); then
+            need=3
+        elif ((b == 0xf4)); then
+            need=3
+            hi=0x8f
+        else
+            i=$((i + 1)) # bare continuation byte, or an impossible lead
+            continue
+        fi
+        ok=1
+        ((i + need < n)) || ok=0
+        if ((ok)); then
+            printf -v c1 '%d' "'${s:i+1:1}"
+            ((c1 >= lo && c1 <= hi)) || ok=0
+            if ((ok && need >= 2)); then
+                printf -v c2 '%d' "'${s:i+2:1}"
+                ((c2 >= 0x80 && c2 <= 0xbf)) || ok=0
+            fi
+            if ((ok && need >= 3)); then
+                printf -v c3 '%d' "'${s:i+3:1}"
+                ((c3 >= 0x80 && c3 <= 0xbf)) || ok=0
+            fi
+        fi
+        if ((ok)); then
+            out+="${s:i:need+1}"
+            i=$((i + need + 1))
+        else
+            i=$((i + 1)) # truncated or illegal sequence: drop the lead byte
+        fi
+    done
+    _EV_CLEAN="$out"
+    return 0
+}
+
+ae_cap_summary() {
+    local s="$1" max="$2"
+    # One em-dash, spelled as its UTF-8 bytes so this works on bash 4.0 (the
+    # \u escape is 4.2+). Length 1 => bash is counting characters.
+    local _mb=$'\xe2\x80\x94'
+    # The locale must be decided BEFORE any length reasoning. An outer
+    # length test would run in the AMBIENT locale, and under SJIS/GB18030 a
+    # 198-ASCII + emoji string measures 200 "characters" — so the cap looked
+    # satisfied, the fallback never ran, and 202 bytes were emitted with the cap
+    # silently UNENFORCED. Each branch now owns its own comparison.
+    if ((${#_mb} == 1)); then
+        # Bash is UTF-8 character aware: ${#s} and the slice count CHARACTERS,
+        # so the cut lands on a character boundary by construction and there is
+        # nothing to repair. The cap is in characters here, by design.
+        if ((${#s} > max)); then
+            s="${s:0:max}"
+        fi
+    else
+        # NOT UTF-8 character aware — which does NOT mean "counting bytes".
+        # ja_JP.SJIS, zh_CN.GB18030 and ko_KR.eucKR are multibyte too: the probe
+        # measures 2 there, and bash would both MEASURE and slice in THOSE
+        # characters while the walk-back below reasons about UTF-8 bytes. Force
+        # real byte semantics for the whole fallback — comparison, slice and
+        # walk — with a FUNCTION-LOCAL LC_ALL, restored on return.
+        local LC_ALL=C
+        if ((${#s} > max)); then
+            s="${s:0:max}"
+            # Drop a trailing incomplete UTF-8 sequence: continuation bytes
+            # (0x80-BF) first, then a dangling lead byte (0xC0-F7).
+            while [[ -n "$s" && "${s: -1}" == [$'\x80'-$'\xbf'] ]]; do
+                s="${s%?}"
+            done
+            [[ -n "$s" && "${s: -1}" == [$'\xc0'-$'\xf7'] ]] && s="${s%?}"
+        fi
+    fi
+    _EV_SUMMARY="$s"
+    return 0
+}
+
 ae_json_escape() {
     local s="$1"
     s="${s//\\/\\\\}"
@@ -7063,8 +7197,15 @@ _cmd_spawn() {
     fi
 
     echo "Spawned ${alias_name}:${spawn_name} in pane $pane_id"
+    # Same capping path as ae_emit_event. This site kept the original
+    # `printf '%.200s' | tr` idiom and reproduced the issue-#7 abort verbatim on
+    # a straddling prompt — a second copy of a fixed bug is still the bug.
+    local _sp_sum="${user_prompt:-}"
+    _sp_sum="${_sp_sum//$'\n'/ }"
+    _sp_sum="${_sp_sum//$'\t'/ }"
+    ae_cap_summary "$_sp_sum" 200
     _spawn_emit_event "$meta_dir" "${caller_agent:-human}" "${alias_name}:${spawn_name}" \
-        "spawn" "$(printf '%.200s' "${user_prompt:-}" | tr '\n\t' '  ')"
+        "spawn" "$_EV_SUMMARY"
     return 0
 }
 
@@ -7083,6 +7224,8 @@ _spawn_emit_event() { # <meta_dir> <actor> <target> <action> <summary>
         s="${s//$'\r'/\\r}"
         printf '%s' "$s"
     }
+    ae_sanitize_utf8 "$summary"
+    summary="$_EV_CLEAN"
     _actor="$(_esc "$actor")"
     _target="$(_esc "$target")"
     _summary="$(_esc "$summary")"
@@ -8060,10 +8203,25 @@ ae_emit_event() {
     # newline into a literal \n, so events.jsonl stays one JSON object per line
     # — the invariant every line-oriented consumer (cmd_list, the watchdog
     # watchdog, the telegram tail) depends on.
+    # Sanitising boundary: drop malformed UTF-8 before anything downstream sees
+    # it. Agent/user text can arrive already invalid — truncation is not the only
+    # way a bad byte reaches events.jsonl.
+    ae_sanitize_utf8 "$summary"
+    summary="$_EV_CLEAN"
     if [[ "$action" == "chat" ]]; then
-        summary="$(printf '%s' "$summary" | head -c 3500)"
+        # chat KEEPS its newlines and tabs — it is a human reply bound for
+        # Telegram, and ae_json_escape turns them into literal \n / \t further
+        # down, so the one-object-per-line invariant still holds. Capping is
+        # therefore the only transformation here.
+        ae_cap_summary "$summary" 3500
+        summary="$_EV_SUMMARY"
     else
-        summary="$(printf '%s' "$summary" | head -c 200 | tr '\n\t' '  ')"
+        # Flatten first, then cap. Both substitutions are one character for
+        # one, so the cut point is identical either way.
+        summary="${summary//$'\n'/ }"
+        summary="${summary//$'\t'/ }"
+        ae_cap_summary "$summary" 200
+        summary="$_EV_SUMMARY"
     fi
     local json
     json="$(printf '{"ts":"%s","actor":"%s","action":"%s"' \
@@ -11718,7 +11876,7 @@ LIBPROLOGUE
         declare -f ae_resolve ae_lock_target ae_unlock_target ae_now_utc \
             ae_current_pane ae_current_agent ae_current_agent_ref ae_current_slot _valid_slot ae_slot_resolver \
             ae_preview_text ae_extract_req_id ae_log_append ae_log_read \
-            ae_target_tool ae_json_escape ae_emit_event ae_latest_state_for \
+            ae_target_tool ae_json_escape ae_sanitize_utf8 ae_cap_summary ae_emit_event ae_latest_state_for \
             _event_json_str _agents_alert_reasons _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
             ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_is_border _input_region_content_end _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
             command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
