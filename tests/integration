@@ -629,7 +629,20 @@ for _i in $(seq 1 30); do command tmux -S "$SC_PATH" has-session -t "=scoll" 2>/
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/scoll/meta" ]] && break; sleep 0.3; done
 assert_eq "S-collision (5th B1): meta records the -S socket PATH + kind=socket" "$SC_PATH|socket" \
     "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/scoll/meta" 2>/dev/null)|$(sed -n 's/^tmux_server_kind=//p' "$HOME/.ae/sessions/scoll/meta" 2>/dev/null)"
-for _i in $(seq 1 15); do
+# Retry budget cut 15 -> 3 on evidence (issue #4). This loop is the FOSSIL the
+# issue cites: someone met the lifecycle race here and bounded it by calling
+# `end` again until the tmux session went away. That mitigation covered tmux
+# TEARDOWN but never asset GENERATION, which is why the session assertion below
+# passed while the DIRECTORY assertion still failed intermittently.
+#
+# With the lock now held through session creation, this was measured at exactly
+# ONE attempt on a loaded box (12 live sessions). The remaining budget is not
+# for the race — that is fixed, and separately pinned by the race (#4) block
+# below. What it still covers: `end` legitimately returning non-zero when it
+# cannot take the lifecycle lock within flock's 15s, and tmux teardown latency
+# on the foreign -S server. Three attempts is headroom for those; fifteen was
+# headroom for a bug.
+for _i in $(seq 1 3); do
     command tmux -S "$SC_PATH" has-session -t "=scoll" 2>/dev/null || break
     env -u AE_TMUX_SERVER "$AE" end -f scoll >/dev/null 2>&1 || true
     sleep 0.4
@@ -641,6 +654,161 @@ assert_eq "S-collision (5th B1): the same-basename -L decoy is UNTOUCHED" "1" \
 assert_not_exists "S-collision (5th B1): state removed" "$HOME/.ae/sessions/scoll"
 command tmux -S "$SC_PATH" kill-server 2>/dev/null || true
 command tmux -L "$SC_NAME" kill-server 2>/dev/null || true
+
+# ── issue #4 BLOCKER: prompt-delivery children must not inherit fd 8 ──
+# send_agent_cmd's codex-resume and opencode branches spawn a subshell with `&`
+# that sleeps 3s before pasting. A child INHERITS open descriptors, so while the
+# lifecycle lock is held across agent launch those children kept it alive: the
+# parent's `exec 8>&-` closes only its own copy, and a competing `ae end` blocked
+# on a launch that had already finished.
+#
+# This is an EXECUTION probe, deliberately. The ordering assertions in
+# tests/unit pin WHERE the release sits among the top-level call sites, and they
+# pass the violating shape without complaint — position cannot see descriptor
+# inheritance. Measured before the fix: competitor waited 3016ms (codex) and
+# 3006ms (opencode); after: 4ms both.
+if command -v flock >/dev/null 2>&1; then
+    for _fdb in codex opencode; do
+        _FD_ROOT="$(mktemp -d "$TMPDIR/aefd.XXXXXX")"
+        _FD_LOCK="$_FD_ROOT/lock"
+        : >"$_FD_LOCK"
+        # Scope to send_agent_cmd FIRST: ae has two `codex*resume*)` branches and
+        # the other (resume_cmd_from_cmd) has no subshell at all. Extracting that
+        # one made an earlier version of this probe pass against unfixed ae.
+        awk -v b="$_fdb" '
+            /^send_agent_cmd\(\) \{/ { infn = 1 }
+            infn && $0 ~ ("^        " b ".*\\)$") { inb = 1 }
+            infn && inb { print }
+            infn && inb && /^            ;;$/ { exit }
+        ' "$AE" >"$_FD_ROOT/branch.sh"
+        assert_eq "fd8 probe ($_fdb): extracted a backgrounded subshell to test" "1" \
+            "$(command grep -qF ') &' "$_FD_ROOT/branch.sh" && echo 1 || echo 0)"
+        # Drop the case label and terminator so the fragment runs standalone.
+        command sed -e '1d' -e '$d' "$_FD_ROOT/branch.sh" >"$_FD_ROOT/body.sh"
+        # Quoted heredoc: the branch body must NOT be expanded while writing this.
+        cat >"$_FD_ROOT/run.sh" <<'FDSTUB'
+set -uo pipefail
+pane_current_command() { printf '%s' "$BRANCHNAME"; }
+tmux() { :; }
+tmux_paste_submit() { :; }
+pane="p"; prompt="x"
+exec 8>"$LOCKPATH"
+flock -n 8 || exit 2
+source "$BODYFILE"
+exec 8>&-
+FDSTUB
+        BRANCHNAME="$_fdb" LOCKPATH="$_FD_LOCK" BODYFILE="$_FD_ROOT/body.sh" \
+            "${BASH:-bash}" "$_FD_ROOT/run.sh" >/dev/null 2>&1
+        # The FACT is blocked-vs-immediate; the millisecond count was
+        # ornamentation. EPOCHREALTIME is Bash 5 only and ae's floor is 4.0,
+        # where under set -u reading it aborts unbound — so a short flock
+        # timeout carries the whole assertion. The child sleeps 3s, so a
+        # half-second budget cleanly separates "already free" from "still held".
+        if flock -w 0.5 "$_FD_LOCK" true 2>/dev/null; then
+            _FD_FREE=1
+        else
+            _FD_FREE=0
+        fi
+        assert_eq "fd8 ($_fdb): lock is free once send_agent_cmd returns (child closed fd 8)" "1" \
+            "$_FD_FREE"
+        rm -rf "$_FD_ROOT"
+    done
+else
+    printf 'NOTE: fd8 inheritance probe SKIPPED — flock not available.\n' >&2
+fi
+
+# ── issue #4: `ae end` racing a launch must not leave a recreated session ──
+# The lifecycle lock used to be released immediately after the meta mv, while
+# ~20 helpers, the loop shim, workspace.md and launch.<slot>.sh were still being
+# written. A concurrent `ae end` rm -rf'd the directory mid-generation and the
+# next atomic temp+mv RECREATED it, so end returned 0 having left a partial
+# session on disk. Proven by timestamp ordering before the fix: end-rm-begin
+# landed 1.7s before the last asset write, and the directory came back carrying
+# 22 artifacts.
+#
+# This DRIVES the race rather than waiting for it: launch in the background,
+# wait only until meta exists — precisely as far as the old lock protected — and
+# end at that instant. With the lock held through session creation, end blocks
+# until the session is complete and then removes it.
+#
+# REPEATED on purpose. A single attempt is FLAKY: the first version of this test
+# passed against unfixed ae, and only started failing when an unrelated debug
+# line shifted the timing by a few milliseconds. One attempt proves nothing on a
+# miss, so the assertion is over ALL attempts — every one of them must leave
+# nothing behind, and on unfixed ae it takes only one hit to go red.
+RACE_SURVIVORS=""
+RACE_META_MISSES=0
+RACE_INCONCLUSIVE=""
+RACE_END_RC=0
+for _rn in 1 2 3; do
+    RACE_SESS="racefix-$$-${_rn}"
+    RACE_WORK="$TMPDIR/racework-$$-${_rn}"
+    mkdir -p "$RACE_WORK"
+    (cd "$RACE_WORK" && AE_NO_AUTOSTART=1 "$AE" --local "$RACE_SESS" >/dev/null 2>&1) &
+    RACE_LAUNCH_PID=$!
+    for _i in $(seq 1 200); do
+        [[ -f "$HOME/.ae/sessions/$RACE_SESS/meta" ]] && break
+        sleep 0.05
+    done
+    [[ -f "$HOME/.ae/sessions/$RACE_SESS/meta" ]] || RACE_META_MISSES=$((RACE_META_MISSES + 1))
+    # end's rc is LOAD-BEARING and must not be discarded. If post-meta work
+    # outruns flock's 15s, end times out and PRESERVES the session by contract —
+    # a correct refusal, not a race survivor. Treating those alike would make a
+    # slow CI runner (issue #10's ubuntu box) indistinguishable from a
+    # regression: the directory is legitimately still there, and a resurrection
+    # check would call it a failure.
+    # An if-condition, not a bare call: under the suite's set -e a nonzero `end`
+    # aborts BEFORE the assignment, so RACE_END_RC is never set and the NOTE,
+    # the cleanup and the all-inconclusive assertion below are all unreachable
+    # on exactly the path they exist to handle. Same shape as the lexer status
+    # capture — errexit is only suspended in a condition.
+    if "$AE" end -f "$RACE_SESS" >/dev/null 2>&1; then
+        RACE_END_RC=0
+    else
+        RACE_END_RC=$?
+    fi
+    wait "$RACE_LAUNCH_PID" 2>/dev/null || true
+    # Grace for any generation still in flight to recreate the directory.
+    # Before the fix it needed none — the writes were already running.
+    sleep 1
+    if ((RACE_END_RC != 0)); then
+        # end declined (almost certainly the lock timeout). The session SHOULD
+        # still exist — that is the state-preserving contract — so this attempt
+        # proves nothing either way. Recorded as inconclusive, never counted as
+        # a survivor and never silently passed.
+        RACE_INCONCLUSIVE+="${_rn}:rc=${RACE_END_RC} "
+    elif [[ -d "$HOME/.ae/sessions/$RACE_SESS" ]]; then
+        _race_left=""
+        for _rf in "$HOME/.ae/sessions/$RACE_SESS"/*; do
+            [[ -e "$_rf" ]] || continue
+            _race_left+="$(basename "$_rf") "
+        done
+        RACE_SURVIVORS+="${_rn}:[${_race_left}] "
+    fi
+    # Thorough teardown: this test deliberately launches real sessions, so an
+    # incompletely-reaped one leaves the harness's own temp HOME non-empty and
+    # its final rm -rf complains AFTER the summary line — green suite, noisy
+    # exit. Kill the tmux session, let it die, then clear any residue.
+    "$AE" end -f "$RACE_SESS" >/dev/null 2>&1 || true
+    command tmux kill-session -t "=$RACE_SESS" 2>/dev/null || true
+    for _k in 1 2 3 4 5; do
+        command tmux has-session -t "=$RACE_SESS" 2>/dev/null || break
+        sleep 0.2
+    done
+    rm -rf "$RACE_WORK" "$HOME/.ae/sessions/$RACE_SESS" 2>/dev/null || true
+done
+# Liveness: if the launch never reached meta, the race was never driven and a
+# clean result would mean nothing.
+assert_eq "race (#4): every attempt reached the meta write" "0" "$RACE_META_MISSES"
+assert_eq "race (#4): no attempt leaves a session directory behind after a SUCCESSFUL end" \
+    "" "$RACE_SURVIVORS"
+# Inconclusive attempts are surfaced, not swallowed: if every attempt timed out
+# the suite would otherwise report a clean race test having tested nothing.
+[[ -z "$RACE_INCONCLUSIVE" ]] ||
+    printf 'NOTE: race (#4) attempts inconclusive (end declined, session preserved by contract): %s\n' \
+        "$RACE_INCONCLUSIVE" >&2
+assert_eq "race (#4): at least one attempt actually completed an end" "1" \
+    "$([[ "$(printf '%s' "$RACE_INCONCLUSIVE" | wc -w | tr -d ' ')" -lt 3 ]] && echo 1 || echo 0)"
 
 # ── 5th review B2: legacy-empty meta upgrade — fail closed, then migrate, then end ──
 LEG="ae-leg-$$"; DEFB="ae-defb-$$"

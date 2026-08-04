@@ -3257,9 +3257,20 @@ assert_eq "launch meta: no append ever targets the canonical path (temp + one mv
 assert_eq "launch meta: roster + launch IDs written into the atomic temp" "1" \
     "$([[ "$AE_SOURCE" == *'agent.worker.${i}=${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]}:${WORKER_SESSION_IDS[$i]}" >>"${AE_META}/meta.tmp.$$"'* \
         && "$AE_SOURCE" == *'launch_id.worker.${i}=${WORKER_LAUNCH_IDS[$i]}" >>"${AE_META}/meta.tmp.$$"'* ]] && echo 1 || echo 0)"
-assert_eq "launch meta: mv lands the complete meta BEFORE the lifecycle lock releases" "1" \
-    "$([[ "$AE_SOURCE" == *'mv "${AE_META}/meta.tmp.$$" "${AE_META}/meta"
-# Release the lifecycle lock AFTER the mv'* ]] && echo 1 || echo 0)"
+# The lock release moved (issue #4): it used to sit immediately after the meta
+# mv, which left asset generation and the launch-script writes UNPROTECTED. The
+# invariant these assertions defend was never "release right after meta" — it is
+# an ORDERING, so it is now asserted as one rather than as text adjacency.
+_ll_meta_mv="$(command grep -n 'mv "${AE_META}/meta.tmp' <<<"$AE_SOURCE" | head -1 | cut -d: -f1)"
+_ll_release="$(command grep -n '^exec 8>&-' <<<"$AE_SOURCE" | head -1 | cut -d: -f1)"
+# Scoped to the top-level launch flow: the function DEFINITIONS of
+# send_agent_cmd / start_capture_session_id sit far above the meta mv, so
+# restricting to lines after it leaves exactly the launch-flow call sites.
+_ll_send="$(command grep -n 'send_agent_cmd "' <<<"$AE_SOURCE" | awk -F: -v m="$_ll_meta_mv" '$1>m{print $1; exit}')"
+_ll_cap="$(command grep -n 'start_capture_session_id "' <<<"$AE_SOURCE" | awk -F: -v m="$_ll_meta_mv" '$1>m{print $1; exit}')"
+
+assert_eq "launch meta: the complete meta lands BEFORE the lock is released" "1" \
+    "$([[ -n "$_ll_meta_mv" && -n "$_ll_release" && "$_ll_meta_mv" -lt "$_ll_release" ]] && echo 1 || echo 0)"
 assert_eq "end: --assume-stopped parsed, per-target only, refused for all" "1" \
     "$([[ "$AE_SOURCE" == *'--assume-stopped) assume_stopped=true'* \
         && "$AE_SOURCE" == *'--assume-stopped is per-target only'* \
@@ -3286,10 +3297,21 @@ assert_eq "lifecycle-lock (11th B2): end wraps its whole body under the per-sess
     "$([[ "$AE_SOURCE" == *'.lifecycle.${session_name}.lock'* \
         && "$AE_SOURCE" == *'_end_session_locked "$session_name"'* \
         && "$AE_SOURCE" == *'another lifecycle operation (start/resume/end) is in progress'* ]] && echo 1 || echo 0)"
-assert_eq "lifecycle-lock (12th I1): launch acquires on fd 8, releases right after meta — async SID-capture children inherit NO lock" "1" \
+# The release point is bounded on BOTH sides, and both bounds are load-bearing:
+#   - AFTER the agent launches, because send_agent_cmd writes launch.<slot>.sh
+#     into the session dir; releasing earlier let `ae end` delete the directory
+#     mid-write and the next atomic mv recreated it (issue #4);
+#   - BEFORE the SID-capture children, because those are spawned with `&` and
+#     would inherit fd 8, holding the lock until capture finished and making an
+#     immediate `ae end` falsely time out (12th review I1).
+# Asserting only one bound would let the fix for either regress into the other.
+assert_eq "lifecycle-lock: fd 8 acquired per session and released exactly once" "1" \
     "$([[ "$AE_SOURCE" == *'.lifecycle.${SESSION}.lock'* \
-        && "$AE_SOURCE" == *'exec 8>&-'* \
-        && "$AE_SOURCE" == *'capture_session_id … &) inherit NO lock fd'* ]] && echo 1 || echo 0)"
+        && "$(command grep -c '^exec 8>&-' <<<"$AE_SOURCE")" == "1" ]] && echo 1 || echo 0)"
+assert_eq "lifecycle-lock (#4): the lock is held THROUGH agent launch (release is after send_agent_cmd)" "1" \
+    "$([[ -n "$_ll_send" && -n "$_ll_release" && "$_ll_send" -lt "$_ll_release" ]] && echo 1 || echo 0)"
+assert_eq "lifecycle-lock (12th I1): released BEFORE the async SID-capture children inherit fd 8" "1" \
+    "$([[ -n "$_ll_cap" && -n "$_ll_release" && "$_ll_release" -lt "$_ll_cap" ]] && echo 1 || echo 0)"
 # 12th I2: flock is optional — both acquisitions degrade with a note, doctor WARNs.
 assert_eq "lifecycle-lock (12th I2): flock-missing degrades gracefully at BOTH sites + doctor WARN" "1" \
     "$([[ "$(printf '%s' "$AE_SOURCE" | command grep -c 'flock not found — lifecycle locking degraded' || true)" == "2" \

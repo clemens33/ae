@@ -7659,6 +7659,17 @@ send_agent_cmd() {
             # codex resume doesn't accept inline prompts — send it after the UI comes back.
             if [[ -n "$prompt" ]]; then
                 (
+                    # fd 8 is the caller's LIFECYCLE LOCK. This subshell
+                    # outlives send_agent_cmd by ~3s and a child INHERITS the
+                    # descriptor, so the parent's `exec 8>&-` closes only its
+                    # own copy and the lock stays held until this prompt lands —
+                    # a competing `ae end` then blocks on a launch that already
+                    # finished. Close it here; nothing in here needs it. (Same
+                    # class as 12th review I1, where SID-capture children held
+                    # it; that one was solved by releasing before the spawn,
+                    # which is not available now that the lock must cover the
+                    # launch-script writes these very branches follow.)
+                    exec 8>&-
                     sleep 3 &&
                         if [[ "$(pane_current_command "$pane")" == "codex" ]]; then
                             tmux select-pane -t "$pane"
@@ -7671,6 +7682,8 @@ send_agent_cmd() {
             # OpenCode has no system prompt flag — launch TUI, then paste context as first message.
             if [[ -n "$prompt" ]]; then
                 (
+                    # Same lifecycle-lock inheritance as the codex branch above.
+                    exec 8>&-
                     sleep 3 &&
                         if [[ "$(pane_current_command "$pane")" == "opencode" ]]; then
                             tmux select-pane -t "$pane"
@@ -11793,12 +11806,16 @@ for i in "${!WORKER_LAUNCH_IDS[@]}"; do
     [[ -n "${WORKER_LAUNCH_IDS[$i]}" ]] && echo "launch_id.worker.${i}=${WORKER_LAUNCH_IDS[$i]}" >>"${AE_META}/meta.tmp.$$"
 done
 mv "${AE_META}/meta.tmp.$$" "${AE_META}/meta"
-# Release the lifecycle lock AFTER the mv — the complete initial meta is final, which
-# is all the lock protects against `ae end`. Releasing before the agent launches also
-# means the async SID-capture children (capture_session_id … &) inherit NO lock fd
-# (12th review I1: they held it until capture finished, and an immediate end falsely
-# timed out).
-exec 8>&-
+# The lifecycle lock is NOT released here. The complete initial meta is final at
+# this point, but the SESSION is not: sync_session_assets still has ~20 helpers,
+# the loop shim and workspace.md to write, and send_agent_cmd writes
+# launch.<slot>.sh after that. Releasing here let a concurrent `ae end` rm -rf the
+# session directory mid-generation — and because every helper lands via an atomic
+# temp+mv, the very next write RECREATED the directory, so `end` returned 0 having
+# left a partial session behind (issue #4). Proven by ordering, not inferred: on a
+# loaded box end-rm-begin landed 1.7s before the last asset write, and the
+# directory came back carrying 22 artifacts. The release now happens once the
+# session is fully built; see the note at that site for why it cannot move later.
 
 sync_session_assets() {
     local session_name="$1" meta_dir="$2" work_dir="$3" origin="$4" mode="$5" main_pane="$6" config_file="${7:-$CONFIG_FILE}"
@@ -12265,6 +12282,18 @@ else
         send_agent_cmd "${PANE_IDS[$idx]}" "$SCOPED_WORKER" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")" "$AE_META" "worker.${i}"
     done
 fi
+
+# Release the lifecycle lock — the session is now fully on disk (meta, helpers,
+# workspace.md, launch scripts) and `ae end` may safely delete it.
+#
+# This point is bounded on BOTH sides and cannot move:
+#   - not EARLIER, or `end` deletes the directory while generation is still
+#     writing into it and the next atomic mv recreates it (issue #4);
+#   - not LATER, because the SID-capture children below are spawned with `&` and
+#     would INHERIT this fd, holding the lock until capture finished — which made
+#     an immediate `ae end` falsely time out (12th review I1).
+# `end` waits up to 15s for this lock; a full launch is well inside that.
+exec 8>&-
 
 # Capture agent session IDs in background (runs after launch, doesn't delay attach).
 # On fresh start: always capture. On resume: re-capture only for slots whose session ID
