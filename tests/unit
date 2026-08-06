@@ -275,6 +275,94 @@ assert_eq "launch: codex resume keeps fresh-start fallback" \
     "codex --yolo resume abc-123 || codex --yolo" \
     "$(build_launch_command "codex --yolo resume abc-123" "Go")"
 
+# ── launch_rerun_command + re-runnable launch scripts (#27) ──────────
+# launch.<slot>.sh bakes `--session-id UUID` — CREATE-once semantics — so its
+# second run dies with "Session ID <uuid> is already in use". The re-run form is
+# the same command with --resume, keeping every ae context flag.
+assert_eq "rerun: claude's --session-id becomes --resume, all else intact" \
+    "env -u CLAUDECODE claude --model opus --resume abc-123 --append-system-prompt 'ctx'" \
+    "$(launch_rerun_command "env -u CLAUDECODE claude --model opus --session-id abc-123 --append-system-prompt 'ctx'")"
+assert_eq "rerun: grok keeps its POSITIONAL context argument" \
+    "grok --always-approve --resume abc-123 'ctx'" \
+    "$(launch_rerun_command "grok --always-approve --session-id abc-123 'ctx'")"
+assert_eq "rerun: codex takes no launch-time id -> nothing to re-run differently" "" \
+    "$(launch_rerun_command "codex --yolo")"
+assert_eq "rerun: a resume launch (already --resume) -> empty" "" \
+    "$(launch_rerun_command "claude --model opus --resume abc-123")"
+# The tool is the EXTRACTED BINARY, matched exactly. A substring test would
+# rewrite all three of these into a --resume they do not implement — and break
+# the contract that a no-launch-id tool's launch script stays byte-identical.
+assert_eq "rerun: 'claude' appearing AFTER --session-id does not qualify" "" \
+    "$(launch_rerun_command "mytool --session-id abc-123 --model claude")"
+assert_eq "rerun: 'claude' as a PRECEDING argument value does not qualify" "" \
+    "$(launch_rerun_command "mytool --model claude --session-id abc-123")"
+assert_eq "rerun: a binary whose NAME merely ends in the tool does not qualify" "" \
+    "$(launch_rerun_command "/opt/bin/notgrok --session-id abc-123")"
+assert_eq "rerun: ...nor one whose name merely starts with it" "" \
+    "$(launch_rerun_command "claudex --session-id abc-123")"
+# ...while the real binary is still seen through a path and an env wrapper.
+assert_eq "rerun: absolute path to the real claude still qualifies" \
+    "/usr/local/bin/claude --resume abc-123" \
+    "$(launch_rerun_command "/usr/local/bin/claude --session-id abc-123")"
+assert_eq "rerun: seen through env -u FLAGS and VAR=val assignments" \
+    "env -u CLAUDECODE CLAUDE_X=0 claude --resume abc-123" \
+    "$(launch_rerun_command "env -u CLAUDECODE CLAUDE_X=0 claude --session-id abc-123")"
+# The real shape: a multi-kilobyte injected context trails the flag, carries glob
+# metacharacters, and even quotes the flag's own name. The verdict comes from
+# word one regardless, and no filesystem walk happens on the way to it.
+assert_eq "rerun: a trailing injected context with globs is not consulted" \
+    "claude --resume abc-123 --append-system-prompt 'see */*/* and --session-id docs'" \
+    "$(launch_rerun_command "claude --session-id abc-123 --append-system-prompt 'see */*/* and --session-id docs'")"
+
+_wls_dir="$(mktemp -d)"
+mkdir -p "$_wls_dir/bin"
+cat >"$_wls_dir/bin/claude" <<'WLSSTUB'
+#!/bin/bash
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --session-id) echo "CREATE $2"; shift 2 ;;
+        --resume) echo "RESUME $2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+WLSSTUB
+chmod 0755 "$_wls_dir/bin/claude"
+# Top-level, not a per-subshell prefix: the scripts resolve `claude` by NAME
+# (that prefix is what makes ae inject an upfront UUID at all), and a subshell
+# PATH would be invisible to shellcheck's flow analysis.
+_wls_oldpath="$PATH"
+PATH="$_wls_dir/bin:$PATH"
+_wls_script="$(write_launch_script "$_wls_dir" main "claude --session-id abc-123")"
+assert_eq "launch-script: a fresh script has no run marker yet" "1" \
+    "$([[ ! -e "$_wls_dir/launch.main.started" ]] && echo 1 || echo 0)"
+assert_eq "launch-script: run 1 creates, every later run resumes the SAME id" \
+    "CREATE abc-123|RESUME abc-123|RESUME abc-123" \
+    "$(r1="$("$_wls_script" 2>/dev/null)"
+       r2="$("$_wls_script" 2>/dev/null)"
+       r3="$("$_wls_script" 2>/dev/null)"
+       printf '%s|%s|%s' "$r1" "$r2" "$r3")"
+assert_eq "launch-script: the re-run says so on stderr, not silently" "1" \
+    "$(e="$("$_wls_script" 2>&1 >/dev/null)"
+       [[ "$e" == *'re-run'*'resuming this agent'* ]] && echo 1 || echo 0)"
+# A rewritten script has never run: ae must clear the previous cycle's marker,
+# or the FIRST launch of a brand-new session would try to resume a session that
+# does not exist yet.
+assert_eq "launch-script: rewriting clears the stale marker (next launch creates)" "CREATE abc-123" \
+    "$(write_launch_script "$_wls_dir" main "claude --session-id abc-123" >/dev/null
+       "$_wls_script" 2>/dev/null)"
+# Tools with no launch-time id keep the plain two-line form, byte for byte.
+_wls_codex="$(write_launch_script "$_wls_dir" worker.0 "codex --yolo")"
+assert_eq "launch-script: non-collision tools keep the plain 2-line exec form" "2" \
+    "$(wc -l <"$_wls_codex" | tr -d '[:space:]')"
+# Interpreter pinning (eec7c6a) holds on BOTH branches: `#!/usr/bin/env bash`
+# would resolve through PATH to /bin/bash 3.2 under a macOS login shell.
+assert_eq "launch-script: both branches pin the interpreter explicitly" "1" \
+    "$(_b="$(<"$_wls_script")"
+       [[ "$_b" == "#!${BASH}"* && "$(command grep -cF "exec ${BASH} -lc " <<<"$_b")" == "2" ]] && echo 1 || echo 0)"
+PATH="$_wls_oldpath"
+rm -rf "$_wls_dir"
+unset _wls_dir _wls_script _wls_codex _wls_oldpath
+
 # ── inject_session_id ───────────────────────────────────────────────
 
 assert_eq "inject: claude gets --session-id" \
@@ -2028,7 +2116,97 @@ unset -f _agent_alert_reason _session_states tmux
 # ── steward companion autostart ─────────────────────────────────────
 
 assert_eq "autostart: steward companion fn exists with all four guards" "1" \
-    "$([[ "$AE_SOURCE" == *'_steward_autostart_if_scaffolded() {'* && "$AE_SOURCE" == *'AE_NO_AUTOSTART'* && "$AE_SOURCE" == *'steward | hub) return 0'* && "$AE_SOURCE" == *'daemon_session_running steward || daemon_session_running hub'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_steward_autostart_if_scaffolded() {'* && "$AE_SOURCE" == *'AE_NO_AUTOSTART'* && "$AE_SOURCE" == *'steward | hub) return 0'* && "$AE_SOURCE" == *'daemon_session_running steward || _st_rc=$?'* ]] && echo 1 || echo 0)"
+
+# ── daemon_session_running: error is not absence (#28) ───────────────
+# The old body was `tmux list-sessions 2>/dev/null | grep -Fxq`, so ANY tmux
+# failure came back as a plain false. One transient client error then read as
+# "no steward running" and fired an autostart whose backgrounded duplicate died
+# silently. Tri-state now: 0 running / 1 verifiably absent / 2 unknown.
+# ABSENCE IS PROVEN, NEVER INFERRED. The classifier is the SHARED
+# _tmux_err_is_clean_dead (stale socket only) — see its own assertions below for
+# the anchoring and the adversarial socket name. It deliberately refuses ENOENT,
+# and that refusal matters more here than at its original call sites: there,
+# reading an unlinked-but-LIVE server as dead deletes state; here it would
+# create a SECOND SERVER on that socket path, and the two never see each other.
+# shellcheck disable=SC2317
+_dsr_tmux_ok() { tmux() { printf 'aedev\nsteward\nsteward-old\n'; }; }
+assert_eq "dsr: running session -> 0" "0" \
+    "$(_dsr_tmux_ok; daemon_session_running steward; echo $?)"
+assert_eq "dsr: exact match only (prefix must not count)" "1" \
+    "$(_dsr_tmux_ok; daemon_session_running stew; echo $?)"
+assert_eq "dsr: successful listing without the name -> absent" "1" \
+    "$(_dsr_tmux_ok; daemon_session_running hub; echo $?)"
+assert_eq "dsr: server exited cleanly (stale socket) -> absent, autostart may proceed" "1" \
+    "$(tmux() { echo 'no server running on /tmp/tmux-501/default' >&2; return 1; }; daemon_session_running steward; echo $?)"
+# THE LIVE-UNLINKED CASE (round-2 BLOCKER). Unlinking a running server's socket
+# yields ENOENT while the server and its sessions keep running. Treating that as
+# absence is what starts a second server — so it is UNKNOWN, and nothing fires.
+assert_eq "dsr: ENOENT is UNKNOWN, not absence (unlinked LIVE server)" "2" \
+    "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (No such file or directory)' >&2; return 1; }; daemon_session_running steward; echo $?)"
+assert_eq "dsr: permission error -> UNKNOWN" "2" \
+    "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (Permission denied)' >&2; return 1; }; daemon_session_running steward; echo $?)"
+assert_eq "dsr: tmux failed for any other reason -> UNKNOWN, not absent" "2" \
+    "$(tmux() { echo 'lost server' >&2; return 1; }; daemon_session_running steward; echo $?)"
+# ...and the consequence, end to end: an unlinked LIVE server must not produce a
+# second one. (The steward caller's own note is asserted further down.)
+assert_eq "dsr: ENOENT never reaches the create path" "no-launch" \
+    "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (No such file or directory)' >&2; return 1; }
+       _rc=0; daemon_session_running steward || _rc=$?
+       if ((_rc == 1)); then echo "WOULD-LAUNCH"; else echo "no-launch"; fi)"
+# One immediate retry (no sleep — the observed failure is first-call-only, and a
+# delay would tax the launch path on every genuinely broken tmux).
+# The counter lives in a FILE: each `$(tmux …)` inside daemon_session_running is
+# its own subshell, so a shell variable would reset between the two attempts and
+# the test would prove nothing.
+_dsr_ctr="$(mktemp)"
+assert_eq "dsr: retries once, so a first-call-only failure still answers" "0" \
+    "$(tmux() {
+           printf 'x' >>"$_dsr_ctr"
+           if [[ "$(<"$_dsr_ctr")" == 'x' ]]; then
+               echo 'lost server' >&2
+               return 1
+           fi
+           printf 'steward\n'
+       }
+       daemon_session_running steward
+       echo $?)"
+assert_eq "dsr: ...and that took exactly two tmux calls" "2" \
+    "$(_c="$(<"$_dsr_ctr")"; echo "${#_c}")"
+rm -f "$_dsr_ctr"
+unset _dsr_ctr
+unset -f _dsr_tmux_ok
+
+# Autostart consequence: UNKNOWN must skip, and say why. Fail toward doing
+# nothing — a duplicate steward's launch dies with its stderr on /dev/null.
+_as_sc="$(mktemp -d)"
+mkdir -p "$_as_sc/steward"
+: >"$_as_sc/steward/steward.config"
+eval "$(awk '/^_steward_autostart_if_scaffolded\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# shellcheck disable=SC2317
+daemon_session_running() { return "${_AS_RC:-1}"; }
+assert_eq "autostart: tmux UNKNOWN -> no launch, legible note" "skipped" \
+    "$(_AS_RC=2
+       out="$(SESSION=x CONFIG_DIR="$_as_sc" AE_STEWARD_DIR="" _steward_autostart_if_scaffolded 2>&1)"
+       case "$out" in
+           *'Starting steward companion'*) echo "STARTED" ;;
+           *'autostart skipped'*'cannot be ruled out'*) echo "skipped" ;;
+           *) echo "silent:$out" ;;
+       esac)"
+assert_eq "autostart: verified absence still starts the companion" "started" \
+    "$(_AS_RC=1
+       out="$(SESSION=x CONFIG_DIR="$_as_sc" AE_STEWARD_DIR="" _steward_autostart_if_scaffolded 2>&1)"
+       case "$out" in
+           *'Starting steward companion'*) echo "started" ;;
+           *) echo "not-started:$out" ;;
+       esac)"
+assert_eq "autostart: steward already running -> silent no-op" "" \
+    "$(_AS_RC=0 SESSION=x CONFIG_DIR="$_as_sc" AE_STEWARD_DIR="" _steward_autostart_if_scaffolded 2>&1)"
+# Restore the REAL definition — later blocks install their own stubs, but the
+# extraction list now provides this one and nothing should silently lose it.
+eval "$(awk '/^daemon_session_running\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+rm -rf "$_as_sc"
+unset _as_sc
 
 assert_eq "autostart: launch flow calls companion beside the bridge autostart" "1" \
     "$([[ "$AE_SOURCE" == *'_telegram_autostart_if_enabled 2>/dev/null || true'*'_steward_autostart_if_scaffolded 2>/dev/null || true'* ]] && echo 1 || echo 0)"
@@ -3376,8 +3554,416 @@ assert_eq "clean-dead: permission error is NOT clean-dead" "1" \
     "$(_tmux_err_is_clean_dead 'error connecting to /tmp/tmux-1000/x (Permission denied)'; echo $?)"
 assert_eq "clean-dead: ADVERSARIAL 'no server running'-named socket's perm error refused" "1" \
     "$(_tmux_err_is_clean_dead 'error connecting to /tmp/tmux-1000/no server running (Permission denied)'; echo $?)"
-assert_eq "clean-dead: both verify-gone and the sweep share the ONE classifier" "2" \
+# #28 joined as the third consumer: the daemon presence probe proves absence with
+# the SAME predicate, so ENOENT cannot mean "absent" on one path and "dead" on
+# another. A second classifier here was the round-2 BLOCKER.
+assert_eq "clean-dead: verify-gone, the sweep AND the daemon probe share the ONE classifier" "3" \
     "$(printf '%s' "$AE_SOURCE" | command grep -c '_tmux_err_is_clean_dead "$_out"\|_tmux_err_is_clean_dead "$out"' || true)"
+assert_eq "clean-dead: no rival classifier was introduced alongside it" "0" \
+    "$(printf '%s' "$AE_SOURCE" | command grep -c '_tmux_err_is_no_server' || true)"
+# Round-3 BLOCKER: the probe must have exactly ONE definition. It used to have
+# one — inside the telegram daemon's heredoc — while ae's own top-level callers
+# invoked it as an undefined command. A second copy reintroduces the drift; a
+# zero count means it moved somewhere the callers cannot see.
+assert_eq "dsr: exactly one definition of the probe exists in ae" "1" \
+    "$(printf '%s' "$AE_SOURCE" | command grep -c '^daemon_session_running() {' || true)"
+assert_eq "dsr: the daemon artifact receives it by declare -f, not by a copy" "1" \
+    "$([[ "$AE_SOURCE" == *'declare -f _tmux_err_is_clean_dead daemon_session_running'* \
+        && "$AE_SOURCE" == *"printf '%s\\n' 'main \"\$@\"'"* ]] && echo 1 || echo 0)"
+
+# ── CHOKEPOINT: one door for publishing executable artifacts ─────────
+# This replaces an INVENTORY of writers, which was fail-open in three ways at
+# once: it recognised two exact chmod spellings, `sort -u` collapsed a second
+# writer that happened to share the variable name $dest, and `chmod 700`,
+# `install -m 755` and `u+x` were invisible to it entirely. A registry is a
+# parallel structure that drifts away from the thing it describes; a chokepoint
+# cannot drift, because a new writer has to enter it in order to exist.
+#
+# THE INVARIANT: in COMMAND position, the only executable-mode chmod/install in
+# ae is the chokepoint's own. Everything else is either a non-executable mode or
+# a session-helper temp file. The session helpers are exempted BY SHAPE —
+# "${AE_META}/<name>.tmp.$$" and nothing else — not by name: they already
+# publish temp + chmod + mv, and they have their own guard family (emission
+# completeness, template-vs-emitted parity, the doctor --refresh canary), so
+# churning those 20+ emission sites would disturb exactly the artifacts that
+# family protects for no behavioural gain. Their three former direct writes
+# (mark-done, peak, loop) were converted to the same temp+mv shape rather than
+# exempted, so the sentence above is true of ALL of them.
+#
+# SPELLINGS COVERED: bare `chmod`, `command chmod`, an absolute path
+# (/bin/chmod, /usr/bin/chmod), a `--` separator, and `install [-m]`, in command
+# position — line start, after ; && ||, after `!`, or first inside a `{` group.
+# NOT COVERED, stated rather than implied: an executable bit acquired without a
+# mode word — `cp -p` from an executable source, a permissive umask, `install`
+# with no -m, a wrapper function that chmods on its caller's behalf, or an
+# artifact that chmods itself at run time. Those are outside the pattern this
+# guard can see; the chokepoint remains the contract, this is its enforcement.
+_pub_raw="$(printf '%s' "$AE_SOURCE" \
+    | command grep -nE '(^[[:space:]]*|[;&|{][[:space:]]*|![[:space:]]*)((command|/usr/bin/|/bin/)[[:space:]]*)?(chmod|install)([[:space:]]+--)?([[:space:]]+-m)?[[:space:]]+([0-7]{3,4}|[augo]*[+=][rwxXst]+|"\$mode")' \
+    | command grep -v '^[0-9]*:[[:space:]]*#' \
+    | command grep -vE 'chmod 0?6[0-7][0-7] ' \
+    | command grep -vE 'chmod 0700 "\$AE_META"$' || true)"
+# The session-helper exemption is DESTINATION-checked and BLOCK-LOCAL. Two holes
+# closed here, both the same same-name-collapse class:
+#   - operand-checked: an AE_META temp chmod'd here and mv'd to a machine-global
+#     path there was exempted on the strength of the chmod alone;
+#   - globally matched: a NEW writer borrowing an existing helper's name
+#     (send.tmp.$$, mv to $CONFIG_DIR) was exempted by the LEGITIMATE send
+#     helper's mv somewhere else in the file.
+# So the matching mv must be the very NEXT LINE — which is the shape every real
+# helper emission already has — and it must land the same <name> back under
+# ${AE_META}. Line numbers are carried through the pipeline for exactly this.
+_pub_left=""
+while IFS= read -r _pl; do
+    [[ -n "$_pl" ]] || continue
+    _pnum="${_pl%%:*}"
+    _ptext="${_pl#*:}"
+    _ptext="${_ptext#"${_ptext%%[![:space:]]*}"}"
+    if [[ "$_ptext" =~ ^chmod\ 0700\ \"\$\{AE_META\}/([A-Za-z0-9._-]+)\.tmp\.\$\$\"$ ]]; then
+        _pn="${BASH_REMATCH[1]}"
+        _pnext="$(printf '%s' "$AE_SOURCE" | sed -n "$((_pnum + 1))p")"
+        _pnext="${_pnext#"${_pnext%%[![:space:]]*}"}"
+        if [[ "$_pnext" == "mv \"\${AE_META}/${_pn}.tmp.\$\$\" \"\${AE_META}/${_pn}\"" ]]; then
+            continue
+        fi
+    fi
+    _pub_left+="${_ptext}"$'\n'
+done <<<"$_pub_raw"
+assert_eq "chokepoint: the only raw executable-mode chmod left in ae is its own" \
+    'if ! chmod "$mode" "$tmp"; then' "${_pub_left%$'\n'}"
+unset _pub_raw _pub_left _pl _pn _pnum _ptext _pnext
+assert_eq "chokepoint: one definition, and both non-session artifact writers enter it" "1|2" \
+    "$(_d="$(printf '%s' "$AE_SOURCE" | command grep -c '^_publish_executable_artifact() {' || true)"
+       _u="$(printf '%s' "$AE_SOURCE" | command grep -c '_publish_executable_artifact "' || true)"
+       printf '%s|%s' "$_d" "$_u")"
+
+# Behavioural: atomicity BY CONSTRUCTION (#31). The generator is passed as a
+# command, not piped in, precisely so its failure is visible before anything is
+# renamed — a pipeline producer can die after emitting a prefix, and a `cat`
+# downstream would publish that prefix over a live artifact.
+_pub_dir="$(mktemp -d)"
+# shellcheck disable=SC2317
+_pub_good() { printf '%s\n' '#!/bin/sh' 'echo NEW'; }
+# shellcheck disable=SC2317
+_pub_partial() { printf '%s\n' '#!/bin/sh' 'echo HALF'; return 1; }
+printf '%s\n' '#!/bin/sh' 'echo OLD' >"$_pub_dir/art"
+chmod 0700 "$_pub_dir/art"
+assert_eq "chokepoint: a good generator publishes, at the requested mode, no temp left" "NEW|700|0" \
+    "$(_publish_executable_artifact "$_pub_dir/art" 0700 _pub_good
+       _body="$(tail -1 "$_pub_dir/art")"
+       _perm="$(_ae_stat mode "$_pub_dir/art")"
+       _left="$(find "$_pub_dir" -name 'art.tmp.*' | wc -l | tr -d '[:space:]')"
+       printf '%s|%s|%s' "${_body#echo }" "$_perm" "$_left")"
+assert_eq "chokepoint: a generator that dies mid-write leaves the LIVE artifact whole" "NEW|1|0" \
+    "$(_rc=0; _publish_executable_artifact "$_pub_dir/art" 0700 _pub_partial 2>/dev/null || _rc=$?
+       _body="$(tail -1 "$_pub_dir/art")"
+       _left="$(find "$_pub_dir" -name 'art.tmp.*' | wc -l | tr -d '[:space:]')"
+       printf '%s|%s|%s' "${_body#echo }" "$_rc" "$_left")"
+# ...and the daemon's emitter refuses rather than publishing a probe-less daemon.
+assert_eq "chokepoint: the telegram emitter refuses when an emitted name is missing" "1" \
+    "$([[ "$AE_SOURCE" == *'declare -F _tmux_err_is_clean_dead daemon_session_running >/dev/null || return 1'* ]] && echo 1 || echo 0)"
+rm -rf "$_pub_dir"
+unset _pub_dir
+unset -f _pub_good _pub_partial
+
+# ── CALLER LEVEL: the primitive refusing is not the same as the caller
+# ── honouring the refusal (completion-without-delivery) ──────────────
+# write_launch_script used to call the chokepoint BARE, then delete the #27
+# re-run marker and print the path unconditionally. A generator that dies after
+# a partial write therefore reported success on a script that was never written,
+# AND cleared the marker — reclassifying the SURVIVING resume script as
+# never-run, so its next run would create and collide. The #27 bug resurrected
+# by the caller of its own fix.
+_wcl_dir="$(mktemp -d)"
+# shellcheck disable=SC2317
+_emit_launch_script() { # stub: emit a prefix, then die (the dangerous shape)
+    printf '%s\n' '#!/bin/sh' 'echo PARTIAL'
+    return 1
+}
+printf '%s\n' '#!/bin/sh' 'echo PREVIOUS' >"$_wcl_dir/launch.main.sh"
+: >"$_wcl_dir/launch.main.started"
+assert_eq "caller: a failed publish leaves the marker INTACT, fails, and prints no path" \
+    "rc=1|marker=present|stdout=|body=echo PREVIOUS" \
+    "$(_rc=0
+       _out="$(write_launch_script "$_wcl_dir" main "claude --session-id abc-123" 2>/dev/null)" || _rc=$?
+       _mk=absent; [[ -e "$_wcl_dir/launch.main.started" ]] && _mk=present
+       printf 'rc=%s|marker=%s|stdout=%s|body=%s' \
+           "$_rc" "$_mk" "$_out" "$(tail -1 "$_wcl_dir/launch.main.sh")"
+       )" 2>/dev/null
+# Restore the real emitter and prove the success path still clears the marker.
+eval "$(awk '/^_emit_launch_script\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "caller: a good publish clears the marker and reports the path" \
+    "rc=0|marker=absent|named=1" \
+    "$(_rc=0
+       _out="$(write_launch_script "$_wcl_dir" main "claude --session-id abc-123")" || _rc=$?
+       _mk=absent; [[ -e "$_wcl_dir/launch.main.started" ]] && _mk=present
+       printf 'rc=%s|marker=%s|named=%s' "$_rc" "$_mk" \
+           "$([[ "$_out" == "$_wcl_dir/launch.main.sh" ]] && echo 1 || echo 0)")"
+rm -rf "$_wcl_dir"
+unset _wcl_dir
+
+# ── SESSION NAME IS A DIRECTORY NAME (rollback round 2) ─────────────
+# tmux accepts '../victim', 'a/b' and '-x'. ae concatenates $SESSION into
+# ${SESSIONS_DIR}/${SESSION}, and since the launch rollback landed that path is
+# also DELETED — so `ae ../../.ssh` reached an rm -rf outside the sessions root
+# on a publication failure. One chokepoint at launch entry, before any side
+# effect, plus a structural containment test as the belt.
+# ALLOWLIST, both directions. The blacklist this replaces was path-safe but not
+# TARGET-safe: '.dotproject' passed it, tmux CREATED the session, and ae then
+# could not address it ("can't find pane: dotproject") — an orphan session plus a
+# stranded lock file, with the failure landing before the rollback exists.
+assert_eq "session-name: every real name in the wild is accepted" \
+    "ACCEPT|ACCEPT|ACCEPT|ACCEPT|ACCEPT|ACCEPT|ACCEPT" \
+    "$(for _n in '38' '157' 'aedev' 'AIASSIST-133' 'ae-projects-mic-ai-93a1c5' \
+        'ae-projects-mic-ai-mcp-jenkins-outcome-review2_f4c36345-79a3d6' 'my_session-2'; do
+           if _validate_session_name "$_n" 2>/dev/null; then printf 'ACCEPT|'; else printf 'REJECT|'; fi
+       done | sed 's/|$//')"
+# One row per class the blacklist missed, plus the classes it did catch.
+assert_eq "session-name: every hostile class refused by the grammar" \
+    "REJECT|REJECT|REJECT|REJECT|REJECT|REJECT|REJECT|REJECT|REJECT|REJECT|REJECT|REJECT|REJECT|REJECT|REJECT|REJECT|REJECT|REJECT" \
+    "$(for _n in '../victim' '../../.ssh' 'a/b' '/abs' '..' '.' '-rf' 'a:b' '' \
+        '.dotproject' '.lifecycle.foo.lock' 'a\b' '$HOME' '%s' '@x' 'a;rm -rf /' '#{pane_id}' 'has space'; do
+           if _validate_session_name "$_n" 2>/dev/null; then printf 'ACCEPT|'; else printf 'REJECT|'; fi
+       done | sed 's/|$//')"
+# Control bytes were previously rejected only AFTER the lock file existed.
+assert_eq "session-name: ASCII controls refused (newline, tab, CR)" "REJECT|REJECT|REJECT" \
+    "$(for _n in $'a\nb' $'a\tb' $'a\rb'; do
+           if _validate_session_name "$_n" 2>/dev/null; then printf 'ACCEPT|'; else printf 'REJECT|'; fi
+       done | sed 's/|$//')"
+# Length is bounded, and the bound was measured against real derived names: the
+# longest default_session_name produces across 177 real project directories is
+# 62, so a 63 cap would have sat one character from breaking a legitimate launch.
+assert_eq "session-name: bounded at 128, and the measured 62-char derived name fits" \
+    "ACCEPT|ACCEPT|ACCEPT|REJECT" \
+    "$(_n62="$(printf 'a%.0s' {1..62})"
+       _n128="$(printf 'a%.0s' {1..128})"
+       _n129="$(printf 'a%.0s' {1..129})"
+       for _n in "$_n62" "$_n128" 'a' "$_n129"; do
+           if _validate_session_name "$_n" 2>/dev/null; then printf 'ACCEPT|'; else printf 'REJECT|'; fi
+       done | sed 's/|$//')"
+# The grammar is stated in exactly one place, and the error shows it.
+assert_eq "session-name: the error message echoes the grammar verbatim" "1" \
+    "$(_e="$(_validate_session_name '.dotproject' 2>&1 >/dev/null)"
+       [[ "$_e" == *'^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'* ]] && echo 1 || echo 0)"
+
+# default_session_name GUARANTEES the grammar — a contract, not an aspiration.
+# The old version rewrote only '/' and '.', so a no-name `ae` in 'My Project',
+# café or a deep tree produced a name its own validator refuses: the validator
+# would have broken ordinary launches in exactly those directories.
+_dsn_root="$(mktemp -d)"
+assert_eq "default-name: hostile working directories all yield valid names" \
+    "OK|OK|OK|OK|OK|OK|OK" \
+    "$(for _d in 'My Project' 'café' 'foo+bar' 'a b(c)d' '.hidden' 'ümlaut-Ünd' \
+        "$(printf 'deep/%.0s' {1..40})leaf"; do
+           mkdir -p "$_dsn_root/$_d" 2>/dev/null || { printf 'SKIP|'; continue; }
+           _n="$(cd "$_dsn_root/$_d" && default_session_name)"
+           if _validate_session_name "$_n" 2>/dev/null; then printf 'OK|'; else printf 'REFUSED|'; fi
+       done | sed 's/|$//')"
+# The BODY is capped, never the hash: two long sibling paths differ only in the
+# hash, so truncating it would collide sessions instead of shortening a name.
+assert_eq "default-name: deep paths cap at 128 and KEEP their distinguishing hash" "1|1|1" \
+    "$(mkdir -p "$_dsn_root/$(printf 'deep/%.0s' {1..40})one" "$_dsn_root/$(printf 'deep/%.0s' {1..40})two"
+       _a="$(cd "$_dsn_root/$(printf 'deep/%.0s' {1..40})one" && default_session_name)"
+       _b="$(cd "$_dsn_root/$(printf 'deep/%.0s' {1..40})two" && default_session_name)"
+       printf '%s|%s|%s' \
+           "$([[ ${#_a} -le 128 ]] && echo 1 || echo 0)" \
+           "$([[ "$_a" != "$_b" ]] && echo 1 || echo 0)" \
+           "$([[ "${_a##*-}" != "${_b##*-}" ]] && echo 1 || echo 0)")"
+rm -rf "$_dsn_root"
+unset _dsn_root
+
+# ── MIGRATION: legacy names stay usable as SOURCES, never as traversal ───
+_snu_root="$(mktemp -d)"
+_snu_outside="$(mktemp -d)"
+mkdir -p "$_snu_root/legacy.name" "$_snu_root/victim"
+: >"$_snu_outside/CANARY"
+ln -s "$_snu_outside" "$_snu_root/symlinked.name"
+assert_eq "usable: grammar ok / PHYSICAL legacy dir ok / traversal, phantom and SYMLINK refused" \
+    "OK|OK|NO|NO|NO|NO" \
+    "$(SESSIONS_DIR="$_snu_root"
+       for _n in 'good-name' 'legacy.name' '../victim' 'a/b' 'never.existed' 'symlinked.name'; do
+           if _session_name_usable "$_n" 2>/dev/null; then printf 'OK|'; else printf 'NO|'; fi
+       done | sed 's/|$//')"
+# `-d` alone accepts a direct-child SYMLINK, and a symlink is an escape wearing a
+# compliant name: rsync -a --delete onto it follows the link out of the root.
+assert_eq "usable: the existence arm demands a physical directory, not just -d" "1" \
+    "$([[ "$AE_SOURCE" == *'[[ -d "${SESSIONS_DIR}/${name}" && ! -L "${SESSIONS_DIR}/${name}" ]]'* ]] && echo 1 || echo 0)"
+# ...but that arm is UNREACHABLE for a grammar-valid name, because the function
+# returns on a grammar accept. The path question therefore has its own answer,
+# asked independently of the name — every specimen below is grammar-VALID, so
+# only the path property is under test.
+_sp_root="$(mktemp -d)"
+_sp_out="$(mktemp -d)"
+mkdir -p "$_sp_root/real-dir"
+: >"$_sp_out/CANARY"
+ln -s "$_sp_out" "$_sp_root/valid-name"
+ln -s "$_sp_out/nope" "$_sp_root/dangling-name"
+: >"$_sp_root/a-file"
+assert_eq "path-safe: physical dir and absent OK; grammatical symlink, dangling symlink, file, escape NOT" \
+    "OK|OK|NO|NO|NO|NO" \
+    "$(SESSIONS_DIR="$_sp_root"
+       for _n in 'real-dir' 'absent-name' 'valid-name' 'dangling-name' 'a-file' '../escape'; do
+           if _session_path_is_safe "$_n" 2>/dev/null; then printf 'OK|'; else printf 'NO|'; fi
+       done | sed 's/|$//')"
+# A dangling symlink is NOT -e, so an -e-first test calls it absent. What rsync
+# does with one varies by implementation, so the classification does not rest on
+# that: a symlink of any kind is unsafe regardless.
+assert_eq "path-safe: -L is tested before -e, so a dangling symlink cannot slip past" "1" \
+    "$([[ "$AE_SOURCE" == *'[[ -L "$p" ]] && return 1'*'[[ -e "$p" ]] || return 0'* ]] && echo 1 || echo 0)"
+# Every existing-session boundary asks the PATH question, not only the name one.
+assert_eq "path-safe: all four boundaries consult it (launch, transfer, rename source+target)" "4" \
+    "$(printf '%s' "$AE_SOURCE" | command grep -c '_require_session_path_safe ' || true)"
+rm -rf "$_sp_root" "$_sp_out"
+unset _sp_root _sp_out
+# Canonicalization: places, not spellings.
+_cd_root="$(mktemp -d)"
+mkdir -p "$_cd_root/real"
+ln -s "$_cd_root/real" "$_cd_root/alias"
+assert_eq "canonical: alias and trailing slash resolve equal; a gone path resolves to nothing" "1|1|1" \
+    "$(printf '%s|%s|%s' \
+        "$([[ "$(_canonical_dir "$_cd_root/alias")" == "$(_canonical_dir "$_cd_root/real")" ]] && echo 1 || echo 0)" \
+        "$([[ "$(_canonical_dir "$_cd_root/real/")" == "$(_canonical_dir "$_cd_root/real")" ]] && echo 1 || echo 0)" \
+        "$([[ -z "$(_canonical_dir "$_cd_root/gone" 2>/dev/null || true)" ]] && echo 1 || echo 0)")"
+# Scoped to THIS function's body: ae uses `readlink -f` elsewhere, but always
+# behind a `|| realpath` fallback. The canonicalizer must not need one at all.
+assert_eq "canonical: portable (cd + pwd -P) inside its own body, no readlink" "1|0" \
+    "$(_cb="$(awk '/^_canonical_dir\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       printf '%s|%s' \
+        "$([[ "$_cb" == *'(cd -- "$p" 2>/dev/null && pwd -P)'* ]] && echo 1 || echo 0)" \
+        "$(command grep -c 'readlink' <<<"$_cb" || true)")"
+rm -rf "$_cd_root"
+unset _cd_root
+rm -rf "$_snu_root" "$_snu_outside"
+unset _snu_root _snu_outside
+# Transfer is a CREATION boundary on its destination in BOTH directions (pull
+# builds sessions/<name>/ locally, push builds it on the peer), so a same-name
+# copy cannot migrate a name into compliance — it takes the strict grammar and
+# has no legacy arm at all. The escape survives only where a session is consumed
+# IN PLACE: the rename source.
+assert_eq "boundaries: transfer strict both ways; rename target strict, source migratable" "1" \
+    "$([[ "$AE_SOURCE" == *'_validate_session_name "$session" || return 1'* \
+        && "$AE_SOURCE" != *'_session_name_usable "$session"'* \
+        && "$AE_SOURCE" == *'_validate_session_name "$new_name" || return 1'* \
+        && "$AE_SOURCE" == *'_session_name_usable "$old_name" || return 1'* \
+        && "$AE_SOURCE" != *"cannot contain '/', ':', or '.'"* ]] && echo 1 || echo 0)"
+
+# ── DERIVED NAMES: lossy body, hash over the RAW path ────────────────
+# The body reduces 'A ~"B' and 'A#==B' to the same 'A-B'. The hash is the only
+# thing keeping them apart, so it is taken over the raw $PWD BEFORE sanitizing —
+# hashing the sanitized body would make the two names identical.
+_dn_root="$(mktemp -d)"
+mkdir -p "$_dn_root/projects/A ~\"B" "$_dn_root/projects/A#==B"
+assert_eq "derived: lossy-body twins get the same body but DIFFERENT names" "1|1|1" \
+    "$(_a="$(cd "$_dn_root/projects/A ~\"B" && HOME="$_dn_root" default_session_name)"
+       _b="$(cd "$_dn_root/projects/A#==B" && HOME="$_dn_root" default_session_name)"
+       printf '%s|%s|%s' \
+           "$([[ "${_a%-*}" == "${_b%-*}" ]] && echo 1 || echo 0)" \
+           "$([[ "$_a" != "$_b" ]] && echo 1 || echo 0)" \
+           "$([[ "${_a##*-}" != "${_b##*-}" ]] && echo 1 || echo 0)")"
+# The disambiguated retry widens the SAME hash over the SAME path — it is not a
+# different derivation — and still fits the bound.
+assert_eq "derived: the 12-hex retry keeps the body, extends the hash, stays <=128" "1|1|1" \
+    "$(cd "$_dn_root/projects/A#==B" || exit
+       _s="$(HOME="$_dn_root" default_session_name)"
+       _l="$(HOME="$_dn_root" default_session_name 12)"
+       printf '%s|%s|%s' \
+           "$([[ "${_s%-*}" == "${_l%-*}" ]] && echo 1 || echo 0)" \
+           "$([[ "${_l##*-}" == "${_s##*-}"* ]] && echo 1 || echo 0)" \
+           "$([[ ${#_l} -le 128 ]] && echo 1 || echo 0)")"
+rm -rf "$_dn_root"
+unset _dn_root
+# Reuse of a DERIVED name is ownership-checked; a name the user TYPED is not
+# (attaching from anywhere is the point of naming one).
+assert_eq "derived: only a derived name is ownership-checked, and it offers the retry" "1" \
+    "$([[ "$AE_SOURCE" == *'SESSION_DERIVED=true'* \
+        && "$AE_SOURCE" == *'if [[ "$SESSION_DERIVED" == true && -f "${SESSIONS_DIR}/${SESSION}/meta" ]]; then'* \
+        && "$AE_SOURCE" == *'ae $(default_session_name 12)'* ]] && echo 1 || echo 0)"
+# Structural, not realpath-based: `readlink -f` is GNU-only, and this is the
+# stricter test — it refuses parent/a/b as well as parent/../x.
+assert_eq "containment: only a true direct child qualifies" "YES|NO|NO|NO|NO|NO|NO" \
+    "$(for _c in "/s/x" "/s/../x" "/s/a/b" "/s/." "/s/.." "/s" "/other/x"; do
+           if _path_is_direct_child /s "$_c"; then printf 'YES|'; else printf 'NO|'; fi
+       done | sed 's/|$//')"
+# The chokepoint runs BEFORE the first tmux call and before any path is built.
+assert_eq "session-name: validated at entry, ahead of every side effect" "1" \
+    "$([[ "$AE_SOURCE" == *'_validate_session_name "$SESSION" || exit 1'*'if tmux has-session -t "$SESSION"'* ]] && echo 1 || echo 0)"
+# Deletion is keyed on an ownership FACT recorded at the mkdir, never on RESUMING
+# (a half-written dir with no meta reads as "fresh" and would have been deleted).
+assert_eq "rollback: deletion keyed on the mkdir-time ownership flag, not RESUMING" "1" \
+    "$([[ "$AE_SOURCE" == *'_AE_SESSION_DIR_CREATED=0'*'[[ -d "$AE_META" ]] || _AE_SESSION_DIR_CREATED=1'* \
+        && "$AE_SOURCE" == *'if ((${_AE_SESSION_DIR_CREATED:-0} != 1)); then'* \
+        && "$AE_SOURCE" == *'elif ! _path_is_direct_child "$SESSIONS_DIR" "${AE_META:-}"; then'* ]] && echo 1 || echo 0)"
+
+# ── SPAWN ROLLBACK MUST NOT REWRITE META UNLOCKED ────────────────────
+# The rewrite is read-modify-WRITE of a file concurrent spawns and retires append
+# to. The old `flock -w 5 200 || true` walked straight into it on timeout, so a
+# rollback cleaning up ITS agent could stamp a stale copy over somebody else's
+# registration. On timeout it now skips the rewrite and says so.
+if command -v flock >/dev/null 2>&1; then
+    _sr_dir="$(mktemp -d)"
+    printf '%s\n' 'session=x' 'agent.spawned.0=dummy:ours:sid1' 'agent_bin.spawned.0=dummy' \
+        'agent.spawned.1=dummy:theirs:sid2' >"$_sr_dir/meta"
+    _sr_before="$(cksum <"$_sr_dir/meta")"
+    # shellcheck disable=SC2317
+    tmux() { return 0; }
+    # shellcheck disable=SC2317
+    regenerate_manifest() { return 0; }
+    # A sentinel holds meta.lock for longer than the rollback is willing to wait.
+    (flock 201; sleep 8) 201>"$_sr_dir/meta.lock" &
+    _sr_pid=$!
+    sleep 0.5
+    assert_eq "spawn-rollback: a lock it cannot take leaves meta byte-identical, and says so" \
+        "same|noted|sentinel-alive" \
+        "$(_sr_note="$(_spawn_rollback "$_sr_dir" spawned.0 %9 sess /tmp /tmp local %0 2>&1 >/dev/null)"
+           _sr_after="$(cksum <"$_sr_dir/meta")"
+           printf '%s|%s|%s' \
+               "$([[ "$_sr_after" == "$_sr_before" ]] && echo same || echo REWRITTEN)" \
+               "$([[ "$_sr_note" == *'could not lock meta'* ]] && echo noted || echo silent)" \
+               "$(kill -0 "$_sr_pid" 2>/dev/null && echo sentinel-alive || echo sentinel-gone)")"
+    wait "$_sr_pid" 2>/dev/null || true
+    # ...and with the lock free it really does strip only its own slot.
+    assert_eq "spawn-rollback: with the lock free it strips ONLY its own slot" "0|1" \
+        "$(_spawn_rollback "$_sr_dir" spawned.0 %9 sess /tmp /tmp local %0 2>/dev/null
+           printf '%s|%s' \
+               "$(command grep -c '^agent\.spawned\.0=' "$_sr_dir/meta" || true)" \
+               "$(command grep -c '^agent\.spawned\.1=' "$_sr_dir/meta" || true)")"
+    unset -f tmux regenerate_manifest
+    rm -rf "$_sr_dir"
+    unset _sr_dir _sr_before _sr_pid
+fi
+# The caller's status is the spawn's, never the best-effort cleanup's.
+assert_eq "spawn-rollback: the caller returns its own failure, not the cleanup's" "1" \
+    "$([[ "$AE_SOURCE" == *'_spawn_rollback "$meta_dir" "$slot" "$pane_id" "$session" "$work_dir" "$origin" "$mode" "$main_pane"'*'return 1'* ]] && echo 1 || echo 0)"
+
+# send_agent_cmd must not paste an empty capture into the pane: the assignment is
+# a checked if-condition, so a write failure stops the launch loudly.
+assert_eq "caller: send_agent_cmd checks the write_launch_script assignment" "1" \
+    "$([[ "$AE_SOURCE" == *'if ! launch_script="$(write_launch_script "$meta_dir" "$slot" "$launch_cmd")"; then'* \
+        && "$AE_SOURCE" == *'agent not started'* ]] && echo 1 || echo 0)"
+
+# The bridge: a failed write or a failed new-session must reach the caller, whose
+# "autostart failed" warning was unreachable while a cosmetic `|| true` tail
+# forced rc 0.
+eval "$(awk '/^_telegram_spawn_daemon\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# shellcheck disable=SC2317
+_telegram_write_daemon() { return 1; }
+assert_eq "caller: spawn returns non-zero when the daemon artifact cannot be written" "1" \
+    "$(CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
+# shellcheck disable=SC2317
+_telegram_write_daemon() { return 0; }
+# shellcheck disable=SC2317
+tmux() { case "$*" in new-session*) return 1 ;; *) return 0 ;; esac; }
+assert_eq "caller: spawn returns non-zero when tmux refuses the session" "1" \
+    "$(_TELEGRAM_TMUX_SESSION=ae-telegram CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
+# ...and with both healthy it still reports success, cosmetic tmux calls or not.
+# shellcheck disable=SC2317
+tmux() { case "$*" in set-option* | rename-window*) return 1 ;; *) return 0 ;; esac; }
+assert_eq "caller: cosmetic tmux failures do NOT make a started bridge look failed" "0" \
+    "$(_TELEGRAM_TMUX_SESSION=ae-telegram CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
+unset -f tmux _telegram_write_daemon _telegram_spawn_daemon
+# And the autostart warning the above unblocks is really on that branch.
+assert_eq "caller: the autostart warning is gated on the spawn's status" "1" \
+    "$([[ "$AE_SOURCE" == *'if ! _telegram_spawn_daemon 2>/dev/null; then'*'autostart failed (continuing without bridge)'* ]] && echo 1 || echo 0)"
 # 11th review B2: the lifecycle lock spans proof→cleanup in end AND guards
 # launch/resume's creation — the clause-(c) proof otherwise decays across the
 # commit/fetch/push window (a start in that window put a live session under cleanup).

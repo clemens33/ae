@@ -2358,6 +2358,11 @@ assert_eq "aewatch-autostart: passes up --ae-home + --runner" "yes" "$(grep -qE 
 assert_eq "aewatch-autostart: silent no-op when sidecar script absent" "noop" "$(_aw_run 1 none 0 nosidecar)"
 assert_eq "aewatch-autostart: no-op when running + FRESH heartbeat (fast path)" "noop" "$(_aw_run 0 fresh 0)"
 assert_eq "aewatch-autostart: RESTARTS when running + STALE heartbeat (blocker guard)" "yes" "$([[ "$(_aw_run 0 stale 0)" == invoked:* ]] && echo yes || echo no)"
+# #28: rc 2 is UNKNOWN, not absent. `up` kills and recreates the daemon session,
+# so a tmux that could not answer must produce NO launch at all — the same
+# fail-toward-nothing rule the steward autostart follows.
+assert_eq "aewatch-autostart: UNKNOWN tmux (rc 2) never launches (#28)" "noop" "$(_aw_run 2 none 0)"
+assert_eq "aewatch-autostart: UNKNOWN tmux does not restart on a stale heartbeat either" "noop" "$(_aw_run 2 stale 0)"
 assert_eq "aewatch-autostart: AE_NO_AUTOSTART=1 skips" "noop" "$(_aw_run 1 none 1)"
 # Exclusivity opt-in gate: WITHOUT AE_WATCHDOG_IMPL=uv the daemon must NOT start, even
 # fully available + not running (default = bash watchdog only, no live double-run).
@@ -2531,6 +2536,578 @@ assert_eq "lead-pair rename: status-left refreshed to the new session name" "[ae
 "$AE" end -f test-leadpair2 >/dev/null 2>&1 || true
 "$AE" end -f test-leadpair >/dev/null 2>&1 || true
 mv "$HOME/.ae/config.ls-bak" "$HOME/.ae/config"
+
+# ── #27: launch.<slot>.sh survives being re-run ──────────────────────
+# The human /exits the TUI (to pick up a globally-updated MCP config, say) and
+# arrow-ups the launch script. It bakes `--session-id UUID` — creation semantics
+# — so before the fix every re-run died with "Session ID <uuid> is already in
+# use" and the conversation was unreachable. Stand-in for claude: --session-id
+# is create-once and COLLIDES on a second create, --resume replays. The command
+# must literally begin with "claude" — that prefix is what makes ae inject an
+# upfront UUID at all — so it goes on PATH rather than being named absolutely.
+RR_BIN="$TMPDIR/bin27"
+mkdir -p "$RR_BIN" "$TMPDIR/rr-state"
+: >"$TMPDIR/rr.log"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'log=%q\n' "$TMPDIR/rr.log"
+    printf 'state=%q\n' "$TMPDIR/rr-state"
+    cat <<'RRSTUB'
+mode=""; id=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --session-id) mode=create; id="$2"; shift 2 ;;
+        --resume) mode=resume; id="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+case "$mode" in
+    create)
+        if [[ -e "$state/$id" ]]; then
+            printf 'COLLIDE %s\n' "$id" >>"$log"
+            echo "Error: Session ID $id is already in use." >&2
+            exit 1
+        fi
+        : >"$state/$id"
+        printf 'CREATE %s\n' "$id" >>"$log"
+        ;;
+    resume) printf 'RESUME %s\n' "$id" >>"$log" ;;
+    *) printf 'NOID\n' >>"$log" ;;
+esac
+RRSTUB
+} >"$RR_BIN/claude"
+chmod 0755 "$RR_BIN/claude"
+RR_REPO="$(setup_repo)"
+mkdir -p "$RR_REPO/.ae"
+cat >"$RR_REPO/.ae/config" <<'EOF'
+[agents]
+stubclaude = "claude --model stub"
+
+[workspace]
+main = stubclaude
+layout = vertical
+EOF
+(cd "$RR_REPO" && PATH="$RR_BIN:$PATH" "$AE" --local rerun27 >/dev/null 2>&1 || true)
+wait_for_session "rerun27"
+sleep 2
+RR_UUID="$(grep '^agent.main=' "$HOME/.ae/sessions/rerun27/meta" 2>/dev/null | head -1 | cut -d: -f3-)"
+RR_SCRIPT="$HOME/.ae/sessions/rerun27/launch.main.sh"
+assert_eq "#27: launch baked an upfront session id into meta" "1" \
+    "$([[ "$RR_UUID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] && echo 1 || echo 0)"
+assert_eq "#27: the pane's own first launch CREATED that session" "CREATE $RR_UUID" \
+    "$(head -1 "$TMPDIR/rr.log" 2>/dev/null || true)"
+# Re-run it exactly as the human would.
+RR_ERR="$(PATH="$RR_BIN:$PATH" "$RR_SCRIPT" 2>&1 >/dev/null || true)"
+assert_eq "#27: re-running the script RESUMES the ORIGINAL id" "RESUME $RR_UUID" \
+    "$(tail -1 "$TMPDIR/rr.log" 2>/dev/null || true)"
+assert_eq "#27: ...and a second re-run still resumes it" "RESUME $RR_UUID" \
+    "$(PATH="$RR_BIN:$PATH" "$RR_SCRIPT" >/dev/null 2>&1 || true
+       tail -1 "$TMPDIR/rr.log" 2>/dev/null || true)"
+assert_eq "#27: the collision was never hit" "0" \
+    "$(command grep -c '^COLLIDE ' "$TMPDIR/rr.log" 2>/dev/null || true)"
+assert_contains "#27: the fallback announces itself" "re-run" "$RR_ERR"
+"$AE" end -f rerun27 >/dev/null 2>&1 || true
+unset RR_BIN RR_REPO RR_UUID RR_SCRIPT RR_ERR
+
+# ── #28 boundary: ONE definition, BOTH runtimes ──────────────────────
+# Round-3 BLOCKER. daemon_session_running lived ONLY inside the telegram daemon's
+# single-quoted heredoc, so ae's own top-level callers
+# (_steward_autostart_if_scaffolded, _aewatch_autostart_if_available) invoked an
+# UNDEFINED command: rc 127, swallowed by their `2>/dev/null`, which is neither
+# "running" nor "unknown" and therefore fell straight through to CREATE — the
+# fix for #28 never ran on the live attach path at all. The reverse hole came
+# with it: the generated daemon had the probe but not the classifier it calls.
+# Neither is visible to a test that awk-extracts the text and evals it, because
+# that specimen is a THIRD thing existing in no runtime. So both boundaries are
+# checked by SOURCING real bytes and asking bash's own function table.
+TGB="$TMPDIR/tgboundary"
+mkdir -p "$TGB/out" "$TGB/aehome" "$TGB/fakehome/.ae"
+cat >"$TGB/trap.sh" <<'TRAPEOF'
+{
+    for f in daemon_session_running _tmux_err_is_clean_dead; do
+        if declare -F "$f" >/dev/null 2>&1; then echo "top:PRESENT $f"; else echo "top:MISSING $f"; fi
+    done
+    CONFIG_DIR="$TGB_OUT" _telegram_write_daemon 2>/dev/null || echo "top:WRITE-FAILED"
+    # #31 on the REAL artifact: a generator that dies mid-write must leave the
+    # live daemon whole, and leave no temp behind.
+    _tg_art="$TGB_OUT/telegram-daemon"
+    _tg_before="$(cksum <"$_tg_art")"
+    _publish_executable_artifact "$_tg_art" 0700 false 2>/dev/null || echo "top:REFUSED"
+    if [[ "$(cksum <"$_tg_art")" == "$_tg_before" ]]; then echo "top:INTACT"; else echo "top:CLOBBERED"; fi
+    echo "top:temps=$(find "$TGB_OUT" -name 'telegram-daemon.tmp.*' | wc -l | tr -d '[:space:]')"
+} >&9
+TRAPEOF
+# ae runs on source, so the probe rides an EXIT trap (which fires on ae's own
+# exit, with every top-level definition in scope) and reports on a saved fd —
+# the daemon body re-points fd 1 and 2 at its log.
+# shellcheck disable=SC2016  # $1/$2 are the INNER shell's positional args, by design
+tg_top="$(TGB_OUT="$TGB/out" HOME="$TGB/fakehome" AE_HOME="$TGB/fakehome/.ae" "${BASH:-bash}" -c '
+    exec 9>&1
+    trap ". $2" EXIT
+    source "$1" version >/dev/null 2>&1
+' _ "$AE" "$TGB/trap.sh")"
+assert_eq "#28 boundary: ae's OWN top level defines the probe its autostarts call" "1" \
+    "$([[ "$tg_top" == *'top:PRESENT daemon_session_running'* ]] && echo 1 || echo 0)"
+assert_eq "#28 boundary: ...and the classifier that probe depends on" "1" \
+    "$([[ "$tg_top" == *'top:PRESENT _tmux_err_is_clean_dead'* ]] && echo 1 || echo 0)"
+TGD="$TGB/out/telegram-daemon"
+assert_eq "#28 boundary: the machine-global daemon artifact was generated" "1" \
+    "$([[ -f "$TGD" ]] && echo 1 || echo 0)"
+# #31: publication goes through the chokepoint, so atomicity is by construction.
+assert_eq "#31: a failed regeneration refuses, leaves the live daemon whole, no temp" \
+    "REFUSED|INTACT|temps=0" \
+    "$(printf '%s\n' "$tg_top" | command grep -oE 'top:(REFUSED|INTACT|CLOBBERED|temps=[0-9]+)' \
+        | sed 's/^top://' | paste -sd'|' -)"
+assert_eq "#31: the published artifact is executable by its owner" "1" \
+    "$([[ -x "$TGD" ]] && echo 1 || echo 0)"
+assert_eq "#28 boundary: the artifact parses" "0" \
+    "$("${BASH:-bash}" -n "$TGD" 2>/dev/null; echo $?)"
+# The execution seam: the artifact's final line is the single main invocation,
+# emitted by ae itself. Asserting it before dropping it keeps the seam honest —
+# if the tail ever changes shape, this fails instead of silently slicing wrong.
+assert_eq "#28 boundary: the declare-f tail ends at exactly one main call" 'main "$@"' \
+    "$(tail -1 "$TGD")"
+sed '$d' "$TGD" >"$TGB/nomain.sh"
+# shellcheck disable=SC2016  # $1 is the INNER shell's positional arg, by design
+tg_run="$(AE_HOME="$TGB/aehome" HOME="$TGB/fakehome" "${BASH:-bash}" -c '
+    exec 9>&1
+    source "$1"
+    {
+        for f in daemon_session_running _tmux_err_is_clean_dead; do
+            if declare -F "$f" >/dev/null 2>&1; then echo "gen:PRESENT $f"; else echo "gen:MISSING $f"; fi
+        done
+        tmux() { printf "aedev\nsteward\n"; }
+        daemon_session_running steward; echo "running=$?"
+        daemon_session_running hub;     echo "absent=$?"
+        tmux() { echo "no server running on /tmp/x" >&2; return 1; }
+        daemon_session_running steward; echo "stale=$?"
+        tmux() { echo "error connecting to /tmp/x (No such file or directory)" >&2; return 1; }
+        daemon_session_running steward; echo "enoent=$?"
+    } >&9
+' _ "$TGB/nomain.sh")"
+assert_eq "#28 boundary: the generated daemon carries BOTH reviewed functions" "1" \
+    "$([[ "$tg_run" == *'gen:PRESENT daemon_session_running'* && "$tg_run" == *'gen:PRESENT _tmux_err_is_clean_dead'* ]] && echo 1 || echo 0)"
+# ...and the tri-state actually answers INSIDE the artifact, both error directions.
+assert_eq "#28 boundary: tri-state answers inside the artifact (stale=absent, ENOENT=unknown)" \
+    "running=0|absent=1|stale=1|enoent=2" \
+    "$(printf '%s\n' "$tg_run" | command grep -E '^(running|absent|stale|enoent)=' | paste -sd'|' -)"
+rm -rf "$TGB"
+unset TGB TGD tg_top tg_run
+
+# ── ROLLBACK: a failed launch must not leave debris behind ───────────
+# Driven through the REAL bare callers, not a stand-in: a `chmod` earlier on
+# PATH fails ONLY for a launch script's temp, so the chokepoint refuses, the
+# publish fails, and send_agent_cmd returns non-zero exactly where it would in
+# the field. Everything before that point — tmux session, panes, meta, every
+# helper — is built for real, which is the state the rollback has to undo.
+RB_BIN="$TMPDIR/binrb"
+mkdir -p "$RB_BIN"
+cat >"$RB_BIN/chmod" <<'RBCHMOD'
+#!/bin/bash
+for a in "$@"; do
+    case "$a" in */launch.*.tmp.*) exit 1 ;; esac
+done
+exec /bin/chmod "$@"
+RBCHMOD
+chmod 0755 "$RB_BIN/chmod"
+
+# (a) FRESH launch: nothing here has history worth keeping, and anything left
+# behind reclassifies the next `ae <name>` as a resume of debris — or lets the
+# existing-session fast path attach to a session whose agent never started.
+RB_REPO="$(setup_repo)"
+rb_rc=0
+rb_out="$( (cd "$RB_REPO" && PATH="$RB_BIN:$PATH" _timeout 90 "$AE" --local rbfresh) 2>&1 )" || rb_rc=$?
+assert_eq "rollback (fresh): ae exits non-zero" "1" "$([[ $rb_rc -ne 0 ]] && echo 1 || echo 0)"
+# LIVENESS: absence assertions pass for free if the launch died somewhere else
+# entirely, so pin that the rollback ITSELF ran and took the fresh-launch branch.
+assert_eq "rollback (fresh): the rollback ran and took the FRESH branch" "1" \
+    "$([[ "$rb_out" == *"rolling back 'rbfresh'"* && "$rb_out" == *"session state removed"* ]] && echo 1 || echo 0)"
+assert_eq "rollback (fresh): the tmux session is gone" "1" \
+    "$(tmux has-session -t rbfresh 2>/dev/null && echo 0 || echo 1)"
+assert_not_exists "rollback (fresh): on-disk session state removed" "$HOME/.ae/sessions/rbfresh"
+assert_eq "rollback (fresh): the lifecycle lock is free afterwards" "0" \
+    "$(if command -v flock >/dev/null 2>&1; then
+           (flock -n 7 || exit 1) 7>"$HOME/.ae/sessions/.lifecycle.rbfresh.lock"
+           echo $?
+       else echo 0; fi)"
+
+# (b) RESUME: the tmux session goes, the session DIRECTORY stays — that
+# conversation history belongs to the user, and the next attempt must resume it
+# rather than silently start a fresh one.
+RB_REPO2="$(setup_repo)"
+(cd "$RB_REPO2" && "$AE" --local rbresume &) 2>/dev/null
+wait_for_session "rbresume"
+sleep 1
+"$AE" stop rbresume >/dev/null 2>&1 || true
+sleep 0.5
+rb2_rc=0
+rb2_out="$( (cd "$RB_REPO2" && PATH="$RB_BIN:$PATH" _timeout 90 "$AE" rbresume) 2>&1 )" || rb2_rc=$?
+assert_eq "rollback (resume): ae exits non-zero" "1" "$([[ $rb2_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "rollback (resume): the rollback ran and took the RESUME branch" "1" \
+    "$([[ "$rb2_out" == *"rolling back 'rbresume'"* && "$rb2_out" == *"state KEPT"* ]] && echo 1 || echo 0)"
+assert_eq "rollback (resume): the tmux session is gone" "1" \
+    "$(tmux has-session -t rbresume 2>/dev/null && echo 0 || echo 1)"
+assert_eq "rollback (resume): on-disk state PRESERVED (history is the user's)" "1" \
+    "$([[ -f "$HOME/.ae/sessions/rbresume/meta" ]] && echo 1 || echo 0)"
+assert_eq "rollback (resume): the lifecycle lock is free afterwards" "0" \
+    "$(if command -v flock >/dev/null 2>&1; then
+           (flock -n 7 || exit 1) 7>"$HOME/.ae/sessions/.lifecycle.rbresume.lock"
+           echo $?
+       else echo 0; fi)"
+"$AE" end -f rbresume >/dev/null 2>&1 || true
+
+# (c) SPAWN: the window/pane and the meta registration both precede the launch,
+# so a failure that simply returned would leave a roster entry with an empty
+# pane — addressable by every helper, retirable only by hand.
+RB_REPO3="$(setup_repo)"
+(cd "$RB_REPO3" && "$AE" --local rbspawn &) 2>/dev/null
+wait_for_session "rbspawn"
+sleep 1
+rb3_rc=0
+rb3_out="$(PATH="$RB_BIN:$PATH" _timeout 90 "$HOME/.ae/sessions/rbspawn/spawn" dummy2 "brief" 2>&1)" || rb3_rc=$?
+assert_eq "rollback (spawn): the spawn reports failure" "1" "$([[ $rb3_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "rollback (spawn): the rollback ran and said so" "1" \
+    "$([[ "$rb3_out" == *"spawn rolled back"* ]] && echo 1 || echo 0)"
+assert_eq "rollback (spawn): no phantom agent registered in meta" "0" \
+    "$(command grep -c '^agent\.spawned\.' "$HOME/.ae/sessions/rbspawn/meta" 2>/dev/null || true)"
+assert_eq "rollback (spawn): no orphan agent pane left in the session" "1" \
+    "$(tmux list-panes -s -t rbspawn -F '#{@ae_agent}' 2>/dev/null | command grep -c ':' || true)"
+assert_not_exists "rollback (spawn): launch artifacts removed" \
+    "$HOME/.ae/sessions/rbspawn/launch.spawned.0.sh"
+"$AE" end -f rbspawn >/dev/null 2>&1 || true
+
+# (d) THE DELETION BOUNDARY. $SESSION becomes a directory name, and since the
+# rollback landed that directory is also removed — so a name tmux happily accepts
+# ('../victim', '../../.ssh') aimed an rm -rf outside the sessions root. Run with
+# the failing chmod on PATH, i.e. under exactly the conditions that fire the
+# rollback: the sentinel must be untouched either way.
+mkdir -p "$HOME/.ae/rbvictim"
+: >"$HOME/.ae/rbvictim/CANARY"
+RB_REPO4="$(setup_repo)"
+rb4_rc=0
+rb4_out="$( (cd "$RB_REPO4" && PATH="$RB_BIN:$PATH" _timeout 90 "$AE" --local ../rbvictim) 2>&1 )" || rb4_rc=$?
+assert_eq "deletion boundary: a traversal name is refused" "1" "$([[ $rb4_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "deletion boundary: refused as a NAME, before any side effect" "1" \
+    "$([[ "$rb4_out" == *"invalid session name"* ]] && echo 1 || echo 0)"
+assert_eq "deletion boundary: the sentinel OUTSIDE the sessions root survives" "1" \
+    "$([[ -f "$HOME/.ae/rbvictim/CANARY" ]] && echo 1 || echo 0)"
+assert_eq "deletion boundary: no tmux session was created for it" "1" \
+    "$(tmux has-session -t ../rbvictim 2>/dev/null && echo 0 || echo 1)"
+rm -rf "$HOME/.ae/rbvictim"
+
+# (d2) TARGET-safety, not just path-safety. '.dotproject' passed the old
+# blacklist: tmux CREATED the session, ae could not then address it ("can't find
+# pane: dotproject"), and the failure landed BEFORE the rollback exists — a live
+# orphan session plus a stranded .lifecycle..dotproject.lock. The allowlist must
+# refuse before EITHER artifact is made, so both absences are asserted.
+RB_REPO6="$(setup_repo)"
+# shellcheck disable=SC2016  # these are hostile LITERALS, expansion is the point of refusing them
+for _bad in '.dotproject' 'a;rm' 'has space' '#{pane_id}' '$HOME'; do
+    _brc=0
+    _bout="$( (cd "$RB_REPO6" && PATH="$RB_BIN:$PATH" _timeout 60 "$AE" --local "$_bad") 2>&1 )" || _brc=$?
+    assert_eq "target-safety [$_bad]: refused, no tmux session, no lock file" "1|1|1|1" \
+        "$(printf '%s|%s|%s|%s' \
+            "$([[ $_brc -ne 0 ]] && echo 1 || echo 0)" \
+            "$([[ "$_bout" == *'invalid session name'* ]] && echo 1 || echo 0)" \
+            "$(tmux has-session -t "$_bad" 2>/dev/null && echo 0 || echo 1)" \
+            "$([[ ! -e "$HOME/.ae/sessions/.lifecycle.${_bad}.lock" ]] && echo 1 || echo 0)")"
+done
+# Nothing malformed was left in the sessions root by any of them. The NAME
+# portion is what must satisfy the grammar — the surrounding ".lifecycle." and
+# ".lock" carry dots of their own, so the whole filename never can.
+assert_eq "target-safety: every lock file in the sessions root has a well-formed name" "0" \
+    "$(_n=0
+       for _lf in "$HOME/.ae/sessions"/.lifecycle.*.lock; do
+           [[ -e "$_lf" ]] || continue
+           _b="${_lf##*/}"
+           _b="${_b#.lifecycle.}"
+           _b="${_b%.lock}"
+           [[ "$_b" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$ ]] || _n=$((_n + 1))
+       done
+       echo "$_n")"
+unset _bad _brc _bout
+
+# (d3) THE REGRESSION THE VALIDATOR WOULD HAVE CAUSED. A no-name `ae` in a
+# directory with a space used to derive a name its own validator refuses. Real
+# launch, real derivation, no stubs.
+NM_DIR="$TMPDIR/My Project (v2)"
+mkdir -p "$NM_DIR"
+git -C "$NM_DIR" init -q
+git -C "$NM_DIR" config user.email "test@test"
+git -C "$NM_DIR" config user.name "test"
+git -C "$NM_DIR" commit -q --allow-empty -m init
+(cd "$NM_DIR" && "$AE" --local &) 2>/dev/null
+sleep 4
+nm_name="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | command grep -E '^ae-.*My-Project' | head -1 || true)"
+assert_eq "no-name launch: a space-bearing directory still launches" "1" \
+    "$([[ -n "$nm_name" ]] && echo 1 || echo 0)"
+assert_eq "no-name launch: ...under a name the validator itself accepts" "1" \
+    "$([[ "$nm_name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$ ]] && echo 1 || echo 0)"
+assert_eq "no-name launch: and its session directory exists under the root" "1" \
+    "$([[ -n "$nm_name" && -d "$HOME/.ae/sessions/$nm_name" ]] && echo 1 || echo 0)"
+[[ -n "$nm_name" ]] && "$AE" end -f "$nm_name" >/dev/null 2>&1
+unset NM_DIR nm_name
+
+# (d4) TRANSFER is a path boundary in both directions: $session lands in
+# "…/${session}" locally AND remotely, the pull path runs mkdir -p + rsync
+# --delete against it. Stubs record any ssh/rsync invocation; an invalid name
+# must produce none.
+TB="$TMPDIR/bin-transfer"
+mkdir -p "$TB"
+for _t in ssh rsync; do
+    {
+        printf '#!/bin/bash\n'
+        # shellcheck disable=SC2016  # $0/$* belong to the generated stub, not to us
+        printf 'echo "$0 $*" >>%q\n' "$TMPDIR/transfer-calls.log"
+        printf 'exit 0\n'
+    } >"$TB/$_t"
+    chmod 0755 "$TB/$_t"
+done
+: >"$TMPDIR/transfer-calls.log"
+for _dir in "" "--pull"; do
+    for _bad in '../victim' 'has space' '.dotproject'; do
+        _trc=0
+        # shellcheck disable=SC2086
+        _tout="$(PATH="$TB:$PATH" _timeout 30 "$AE" transfer $_dir "$_bad" user@host 2>&1)" || _trc=$?
+        assert_eq "transfer [${_dir:-push} $_bad]: refused by name, before anything ran" "1|1" \
+            "$(printf '%s|%s' \
+                "$([[ $_trc -ne 0 ]] && echo 1 || echo 0)" \
+                "$([[ "$_tout" == *'invalid session name'* ]] && echo 1 || echo 0)")"
+    done
+done
+assert_eq "transfer: no ssh and no rsync ever ran for an invalid name" "0" \
+    "$(wc -l <"$TMPDIR/transfer-calls.log" | tr -d '[:space:]')"
+assert_eq "transfer: no session directory was created for one either" "0" \
+    "$(find "$HOME/.ae/sessions" -maxdepth 1 -name 'victim' -o -maxdepth 1 -name '.dotproject' 2>/dev/null | wc -l | tr -d '[:space:]')"
+
+# (d4b) THE PATH OBJECT, checked INDEPENDENTLY of the name. Every specimen here
+# is GRAMMAR-VALID on purpose: the previous version of this block used dotted
+# names, so the grammar refused them before the symlink property was ever
+# reached — the pins passed while a symlink named 'valid-name' walked through
+# every boundary and rsync --delete followed it out of the sessions root. A pin
+# must fail when ONLY the property under test is broken; these do.
+mkdir -p "$TMPDIR/outside-canary"
+: >"$TMPDIR/outside-canary/CANARY"
+# The symlink target is SESSION-SHAPED on purpose: without a meta, push exits on
+# the local existence check and the pin would pass without the path guard doing
+# anything. Measured — with no meta the push specimen makes zero calls either way.
+printf 'session=valid-name\nmode=local\norigin=%s\nwork_dir=%s\nagent.main=dummy:main:\n' \
+    "$TMPDIR" "$TMPDIR" >"$TMPDIR/outside-canary/meta"
+mkdir -p "$HOME/.ae/sessions/real-dir"                          # physical: allowed
+ln -s "$TMPDIR/outside-canary" "$HOME/.ae/sessions/valid-name"  # GRAMMATICAL symlink
+ln -s "$TMPDIR/outside-canary/nope" "$HOME/.ae/sessions/dangling-name"
+: >"$HOME/.ae/sessions/a-file"
+: >"$TMPDIR/transfer-calls.log"
+for _dir in "" "--pull"; do
+    for _bad in 'valid-name' 'dangling-name' 'a-file'; do
+        _trc=0
+        # shellcheck disable=SC2086
+        _tout="$(PATH="$TB:$PATH" _timeout 30 "$AE" transfer $_dir "$_bad" user@host 2>&1)" || _trc=$?
+        assert_eq "transfer [${_dir:-push} $_bad]: grammar-valid, refused on the PATH" "1|1" \
+            "$(printf '%s|%s' \
+                "$([[ $_trc -ne 0 ]] && echo 1 || echo 0)" \
+                "$([[ "$_tout" == *'not a plain directory'* ]] && echo 1 || echo 0)")"
+    done
+done
+assert_eq "transfer: zero ssh/rsync calls across all six path specimens" "0" \
+    "$(wc -l <"$TMPDIR/transfer-calls.log" | tr -d '[:space:]')"
+assert_eq "transfer: the canary behind the grammatical symlink is untouched" "1" \
+    "$([[ -f "$TMPDIR/outside-canary/CANARY" ]] && echo 1 || echo 0)"
+# RENAME source and target, same grammatical symlink.
+assert_eq "rename: a grammar-valid SYMLINK is refused as source and as target" "1|1" \
+    "$(_o1="$("$AE" rename 'valid-name' migrated1 2>&1)" || true
+       _o2="$("$AE" rename 'real-dir' 'valid-name' 2>&1)" || true
+       printf '%s|%s' \
+           "$([[ "$_o1" == *'not a plain directory'* ]] && echo 1 || echo 0)" \
+           "$([[ "$_o2" == *'not a plain directory'* ]] && echo 1 || echo 0)")"
+# LAUNCH's existing-state path: same symlink, reached by an explicit name so the
+# ownership check cannot be what refuses it.
+LP_REPO="$(setup_repo)"
+lp_rc=0
+lp_out="$( (cd "$LP_REPO" && _timeout 60 "$AE" --local valid-name) 2>&1 )" || lp_rc=$?
+assert_eq "launch: a symlinked session directory is refused before anything runs" "1|1|1" \
+    "$(printf '%s|%s|%s' \
+        "$([[ $lp_rc -ne 0 ]] && echo 1 || echo 0)" \
+        "$([[ "$lp_out" == *'not a plain directory'* ]] && echo 1 || echo 0)" \
+        "$(tmux has-session -t valid-name 2>/dev/null && echo 0 || echo 1)")"
+assert_eq "launch: ...and the canary behind it is still there" "1" \
+    "$([[ -f "$TMPDIR/outside-canary/CANARY" ]] && echo 1 || echo 0)"
+# The control: a PHYSICAL directory of the same grammatical shape is accepted, so
+# these pins cannot be passing merely because everything is refused.
+assert_eq "control: a physical session directory is NOT refused on the path check" "0" \
+    "$(_c="$(PATH="$TB:$PATH" _timeout 30 "$AE" transfer real-dir user@host 2>&1)" || true
+       [[ "$_c" == *'not a plain directory'* ]] && echo 1 || echo 0)"
+rm -rf "$HOME/.ae/sessions/real-dir" "$TMPDIR/outside-canary" "$LP_REPO"
+rm -f "$HOME/.ae/sessions/valid-name" "$HOME/.ae/sessions/dangling-name" "$HOME/.ae/sessions/a-file"
+rm -rf "$TB" "$TMPDIR/transfer-calls.log"
+unset TB _t _dir _bad _trc _tout _o1 _o2 _c LP_REPO lp_rc lp_out
+
+# (d4c) DERIVED-NAME OWNERSHIP. A typed name means "that session, wherever I am";
+# a DERIVED one means "the session for this directory", and the body is lossy
+# ('A ~"B' and 'A#==B' both reduce to 'A-B'). The reviewer's pair, end to end:
+# the second directory must NOT attach to the first one's session.
+DN_ROOT="$TMPDIR/dnpair"
+mkdir -p "$DN_ROOT/A ~\"B" "$DN_ROOT/A#==B"
+for _d in "$DN_ROOT/A ~\"B" "$DN_ROOT/A#==B"; do
+    git -C "$_d" init -q
+    git -C "$_d" config user.email "test@test"
+    git -C "$_d" config user.name "test"
+    git -C "$_d" commit -q --allow-empty -m init
+done
+(cd "$DN_ROOT/A ~\"B" && "$AE" --local &) 2>/dev/null
+sleep 4
+dn1="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | command grep -E '^ae-.*A-B' | head -1 || true)"
+(cd "$DN_ROOT/A#==B" && "$AE" --local &) 2>/dev/null
+sleep 4
+dn_all="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | command grep -cE '^ae-.*A-B' | tr -d '[:space:]' || true)"
+dn2="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | command grep -E '^ae-.*A-B' | command grep -v "^${dn1}\$" | head -1 || true)"
+assert_eq "derived pair: both directories launch, into DISTINCT sessions" "1|2|1" \
+    "$(printf '%s|%s|%s' \
+        "$([[ -n "$dn1" ]] && echo 1 || echo 0)" "$dn_all" \
+        "$([[ -n "$dn2" && "$dn2" != "$dn1" ]] && echo 1 || echo 0)")"
+"$AE" end -f "$dn1" >/dev/null 2>&1 || true
+[[ -n "$dn2" ]] && "$AE" end -f "$dn2" >/dev/null 2>&1
+# THE GUARD ITSELF. Plant a session under the name the second directory derives,
+# owned by somewhere else — the state a real collision would produce — and prove
+# a NO-NAME launch there refuses instead of silently joining it.
+mkdir -p "$DN_ROOT/foreign" "$HOME/.ae/sessions/$dn2"
+printf 'session=%s\norigin=%s\nwork_dir=%s\nmode=local\n' "$dn2" "$DN_ROOT/foreign" "$DN_ROOT/foreign" \
+    >"$HOME/.ae/sessions/$dn2/meta"
+dn_rc=0
+dn_out="$( (cd "$DN_ROOT/A#==B" && _timeout 60 "$AE" --local) 2>&1 )" || dn_rc=$?
+assert_eq "derived ownership: a foreign-owned derived name is REFUSED, with the 12-hex retry" "1|1|1" \
+    "$(_retry="$(printf '%s\n' "$dn_out" | command grep -oE 'ae ae-[A-Za-z0-9_-]+' | head -1 | cut -d' ' -f2 || true)"
+       printf '%s|%s|%s' \
+        "$([[ $dn_rc -ne 0 ]] && echo 1 || echo 0)" \
+        "$([[ "$dn_out" == *'derived name of a DIFFERENT directory'* ]] && echo 1 || echo 0)" \
+        "$([[ "${_retry%-*}" == "${dn2%-*}" && ${#_retry} -eq $((${#dn2} + 6)) ]] && echo 1 || echo 0)")"
+assert_eq "derived ownership: it did not attach — no session was created" "1" \
+    "$(tmux has-session -t "$dn2" 2>/dev/null && echo 0 || echo 1)"
+# A TYPED name is deliberately NOT ownership-checked: attaching from anywhere is
+# the entire point of naming a session.
+dn3_out="$( (cd "$DN_ROOT/A#==B" && _timeout 60 "$AE" --local "$dn2" >/dev/null) 2>&1 )" || true
+assert_eq "derived ownership: a TYPED name is not ownership-checked" "0" \
+    "$([[ "$dn3_out" == *'derived name of a DIFFERENT directory'* ]] && echo 1 || echo 0)"
+"$AE" end -f "$dn2" >/dev/null 2>&1 || true
+rm -rf "$HOME/.ae/sessions/$dn2"
+
+# (d4d) OWNERSHIP COMPARES PLACES, NOT SPELLINGS. On macOS $TMPDIR already lives
+# under a symlink (/var -> /private/var), so a stored origin written in canonical
+# form and a $PWD written in the symlinked form are the same directory spelled two
+# ways. A raw string compare refuses the RIGHTFUL owner and sends it to a
+# duplicate; canonicalizing both sides is the fix, and these two pins fail if
+# either side stops being canonicalized.
+CN_DIR="$TMPDIR/canonproj"
+mkdir -p "$CN_DIR"
+git -C "$CN_DIR" init -q
+git -C "$CN_DIR" config user.email "test@test"
+git -C "$CN_DIR" config user.name "test"
+git -C "$CN_DIR" commit -q --allow-empty -m init
+(cd "$CN_DIR" && "$AE" --local &) 2>/dev/null
+sleep 4
+cn_name="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | command grep -E 'canonproj' | head -1 || true)"
+cn_meta="$HOME/.ae/sessions/${cn_name}/meta"
+"$AE" stop "$cn_name" >/dev/null 2>&1 || true
+sleep 0.5
+# Spelling 1: the fully resolved path (what `pwd -P` gives).
+cn_phys="$(cd "$CN_DIR" && pwd -P)"
+_sed_i -e "s|^origin=.*|origin=${cn_phys}|" "$cn_meta"
+cn_out1="$( (cd "$CN_DIR" && _timeout 60 "$AE" --local) 2>&1 )" || true
+# Spelling 2: a trailing slash.
+"$AE" stop "$cn_name" >/dev/null 2>&1 || true
+sleep 0.5
+_sed_i -e "s|^origin=.*|origin=${cn_phys}/|" "$cn_meta"
+cn_out2="$( (cd "$CN_DIR" && _timeout 60 "$AE" --local) 2>&1 )" || true
+assert_eq "ownership: a resolved-path origin and a trailing slash both still OWN it" "0|0" \
+    "$(printf '%s|%s' \
+        "$([[ "$cn_out1" == *'DIFFERENT directory'* ]] && echo 1 || echo 0)" \
+        "$([[ "$cn_out2" == *'DIFFERENT directory'* ]] && echo 1 || echo 0)")"
+# Control: a genuinely different place still refuses, so the pins above cannot be
+# passing because the check was simply removed.
+"$AE" stop "$cn_name" >/dev/null 2>&1 || true
+sleep 0.5
+mkdir -p "$TMPDIR/elsewhere"
+_sed_i -e "s|^origin=.*|origin=$TMPDIR/elsewhere|" "$cn_meta"
+cn_out3="$( (cd "$CN_DIR" && _timeout 60 "$AE" --local) 2>&1 )" || true
+assert_eq "ownership control: a genuinely different origin is still refused" "1" \
+    "$([[ "$cn_out3" == *'DIFFERENT directory'* ]] && echo 1 || echo 0)"
+# (d4e) A RECORDED ORIGIN THAT NO LONGER RESOLVES FAILS CLOSED. The "a collision
+# needs two live directories" argument holds only AT CREATION: the owner's
+# directory can be deleted afterwards while its session state and conversation
+# history persist, and a colliding live directory then lands exactly here.
+# Assuming "moved" would resume a FOREIGN conversation. Refusing strands nothing,
+# because the typed name is the deliberate bypass — pinned in both directions.
+"$AE" stop "$cn_name" >/dev/null 2>&1 || true
+sleep 0.5
+_sed_i -e "s|^origin=.*|origin=$TMPDIR/vanished-owner|" "$cn_meta"
+cn_out4="$( (cd "$CN_DIR" && _timeout 60 "$AE" --local) 2>&1 )" || true
+assert_eq "ownership: an unresolvable recorded origin REFUSES the no-name launch" "1|1|1" \
+    "$(printf '%s|%s|%s' \
+        "$([[ "$cn_out4" == *'no longer exists'* ]] && echo 1 || echo 0)" \
+        "$([[ "$cn_out4" == *"ae ${cn_name}"* ]] && echo 1 || echo 0)" \
+        "$(tmux has-session -t "$cn_name" 2>/dev/null && echo 0 || echo 1)")"
+# ...and the override the message names actually works: the SAME name, TYPED.
+(cd "$CN_DIR" && "$AE" --local "$cn_name" &) 2>/dev/null
+sleep 4
+assert_eq "ownership: the typed name named in that message is a real bypass" "1" \
+    "$(tmux has-session -t "$cn_name" 2>/dev/null && echo 1 || echo 0)"
+# An EMPTY origin keeps the historical proceed-with-note: a pre-tracking session
+# never recorded a claim there is anything to violate.
+"$AE" stop "$cn_name" >/dev/null 2>&1 || true
+sleep 0.5
+_sed_i -e "/^origin=/d" "$cn_meta"
+cn_out5="$( (cd "$CN_DIR" && _timeout 60 "$AE" --local) 2>&1 )" || true
+assert_eq "ownership: a MISSING origin still proceeds, with the note" "1|0" \
+    "$(printf '%s|%s' \
+        "$([[ "$cn_out5" == *'pre-dates ownership tracking'* ]] && echo 1 || echo 0)" \
+        "$([[ "$cn_out5" == *'no longer exists'* ]] && echo 1 || echo 0)")"
+"$AE" end -f "$cn_name" >/dev/null 2>&1 || true
+rm -rf "$CN_DIR" "$TMPDIR/elsewhere"
+unset CN_DIR cn_name cn_meta cn_phys cn_out1 cn_out2 cn_out3 cn_out4 cn_out5
+rm -rf "$DN_ROOT"
+unset DN_ROOT dn1 dn2 dn_all dn_rc dn_out dn3_out _d
+
+# (d5) RENAME is a CREATION boundary. Its old blacklist accepted 'has space' and
+# returned 0, persisting a session that launch and resume then refused.
+RN_REPO="$(setup_repo)"
+(cd "$RN_REPO" && "$AE" --local rntest &) 2>/dev/null
+wait_for_session "rntest"
+sleep 1
+rn_rc=0
+rn_out="$("$AE" rename rntest 'has space' 2>&1)" || rn_rc=$?
+assert_eq "rename: a target the launcher would refuse is refused here too" "1|1" \
+    "$(printf '%s|%s' \
+        "$([[ $rn_rc -ne 0 ]] && echo 1 || echo 0)" \
+        "$([[ "$rn_out" == *'invalid session name'* ]] && echo 1 || echo 0)")"
+assert_eq "rename: the original session is untouched by the refusal" "1" \
+    "$(tmux has-session -t rntest 2>/dev/null && echo 1 || echo 0)"
+assert_eq "rename: no directory was created for the refused name" "1" \
+    "$([[ ! -d "$HOME/.ae/sessions/has space" ]] && echo 1 || echo 0)"
+# ...and a valid rename still works.
+"$AE" rename rntest rntest2 >/dev/null 2>&1 || true
+assert_eq "rename: a grammatical target still renames" "1" \
+    "$(tmux has-session -t rntest2 2>/dev/null && echo 1 || echo 0)"
+"$AE" end -f rntest2 >/dev/null 2>&1 || true
+"$AE" end -f rntest >/dev/null 2>&1 || true
+unset RN_REPO rn_rc rn_out
+
+# (e) OWNERSHIP, not RESUMING. A directory left by an earlier attempt that died
+# before writing meta reads as a "fresh" launch — the old proxy would have
+# deleted a directory this attempt never created.
+mkdir -p "$HOME/.ae/sessions/rbpre"
+: >"$HOME/.ae/sessions/rbpre/PREEXISTING"
+RB_REPO5="$(setup_repo)"
+rb5_rc=0
+rb5_out="$( (cd "$RB_REPO5" && PATH="$RB_BIN:$PATH" _timeout 90 "$AE" --local rbpre) 2>&1 )" || rb5_rc=$?
+assert_eq "ownership: the launch still fails" "1" "$([[ $rb5_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "ownership: a pre-existing directory is classified NOT ours and kept" "1" \
+    "$([[ -f "$HOME/.ae/sessions/rbpre/PREEXISTING" ]] && echo 1 || echo 0)"
+assert_eq "ownership: ...and the rollback said so rather than deleting" "1" \
+    "$([[ "$rb5_out" == *"state KEPT"* && "$rb5_out" == *"predates this attempt"* ]] && echo 1 || echo 0)"
+"$AE" end -f rbpre >/dev/null 2>&1 || true
+rm -rf "$HOME/.ae/sessions/rbpre"
+unset RB_BIN RB_REPO RB_REPO2 RB_REPO3 RB_REPO4 RB_REPO5 \
+    rb_rc rb2_rc rb3_rc rb4_rc rb5_rc rb_out rb2_out rb3_out rb4_out rb5_out
 
 # ── Results ──────────────────────────────────────────────────────────
 
