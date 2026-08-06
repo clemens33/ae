@@ -92,7 +92,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(_ae_tac|_ae_stat|_ae_epoch|_ae_sed_inplace|_ae_json_first|_ae_json_first_num|_ae_md5|parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|_end_target_kind|_tmux_err_is_clean_dead|_ae_install_tmux_shim|_end_sweep_servers|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(_ae_tac|_ae_stat|_ae_epoch|_ae_sed_inplace|_ae_json_first|_ae_json_first_num|_ae_md5|_ae_inside_tmux|daemon_session_running|launch_rerun_command|write_launch_script|_publish_executable_artifact|_emit_launch_script|_validate_session_name|_session_name_usable|_session_path_is_safe|_require_session_path_safe|_transfer_remote_path_is_safe|_canonical_dir|_path_is_direct_child|_spawn_rollback|parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|_end_target_kind|_tmux_err_is_clean_dead|_ae_install_tmux_shim|_end_sweep_servers|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -1279,6 +1279,94 @@ assert_eq "next-focus: outside tmux uses attach-session" "attach-session" \
 # "$name"` keeps a space-containing session name as ONE argv element.
 assert_eq "next-focus: verb is a single word (argv-safe with spacey targets)" "1" \
     "$(v="$(TMUX=x _next_focus_verb)"; [[ "$v" != *' '* ]] && echo 1 || echo 0)"
+
+# ── _ae_inside_tmux: is $TMUX trustworthy? (#29) ─────────────────────
+# $TMUX is a plain env var: a GUI terminal launched from a pane hands it to every
+# tab shell, and those shells are NOT tmux clients. Truth test = our controlling
+# tty must be a PANE tty on that server. Stubs: `ps` reports our tty, `tmux`
+# reports the server's pane ttys. (Deliberately NOT client ttys — a client's tty
+# is the terminal EMULATOR's, never the pane pty a shell sits on, so matching
+# there would call every genuine in-pane shell stale.)
+# Globals, not locals: the stubs outlive the call that installs them.
+_IT_TTY=""
+_IT_PANES=""
+_IT_SESSION="stub-session"
+# shellcheck disable=SC2317
+ps() { printf '  %s\n' "$_IT_TTY"; } # leading blanks: BSD ps pads its columns
+# shellcheck disable=SC2317
+tmux() {
+    case "$*" in
+        *list-panes*)
+            [[ -n "$_IT_PANES" ]] || return 1
+            # shellcheck disable=SC2086
+            printf '%s\n' $_IT_PANES
+            ;;
+        *display-message*) printf '%s\n' "$_IT_SESSION" ;;
+        *) return 1 ;;
+    esac
+}
+_it_stub() { # $1 = our tty as ps prints it, rest = the server's pane ttys
+    _IT_TTY="$1"
+    shift
+    _IT_PANES="$*"
+}
+assert_eq "inside-tmux: no \$TMUX at all -> outside" "1" \
+    "$(unset TMUX; _ae_inside_tmux; echo $?)"
+assert_eq "inside-tmux: our tty IS a pane tty -> inside" "0" \
+    "$(_it_stub ttys039 /dev/ttys039 /dev/ttys040; TMUX=/tmp/s,1,0 _ae_inside_tmux 2>/dev/null; echo $?)"
+# procps prints "pts/3", BSD ps "ttys039"; a ps that spelled the full path must
+# not make every genuine pane look stale.
+assert_eq "inside-tmux: linux-shaped tty (pts/N) matches its pane" "0" \
+    "$(_it_stub pts/3 /dev/pts/3 /dev/pts/9; TMUX=/tmp/s,1,0 _ae_inside_tmux 2>/dev/null; echo $?)"
+assert_eq "inside-tmux: a ps that prints /dev/... still matches" "0" \
+    "$(_it_stub /dev/ttys039 /dev/ttys039; TMUX=/tmp/s,1,0 _ae_inside_tmux 2>/dev/null; echo $?)"
+assert_eq "inside-tmux: our tty is NOT a pane tty -> stale, treated as outside" "1" \
+    "$(_it_stub ttys999 /dev/ttys039 /dev/ttys040; TMUX=/tmp/s,1,0 _ae_inside_tmux 2>/dev/null; echo $?)"
+assert_eq "inside-tmux: stale says so on stderr, exactly once" "1" \
+    "$(_it_stub ttys999 /dev/ttys039
+       export TMUX=/tmp/s,1,0
+       out="$({ _ae_inside_tmux || true
+                _ae_inside_tmux || true; } 2>&1 >/dev/null)"
+       command grep -c 'stale \$TMUX inherited' <<<"$out" || true)"
+# Unanswerable stays TRUE — the guard fires on PROVEN mismatch only. Agents' own
+# children have no controlling tty ("?"/"??"/"-" by ps flavour); a tmux that
+# cannot answer proves nothing either.
+assert_eq "inside-tmux: no controlling tty (??) -> trust \$TMUX (historical)" "0" \
+    "$(_it_stub '??' /dev/ttys039; TMUX=/tmp/s,1,0 _ae_inside_tmux 2>/dev/null; echo $?)"
+assert_eq "inside-tmux: no controlling tty (?) -> trust \$TMUX" "0" \
+    "$(_it_stub '?' /dev/ttys039; TMUX=/tmp/s,1,0 _ae_inside_tmux 2>/dev/null; echo $?)"
+assert_eq "inside-tmux: tmux cannot answer -> trust \$TMUX" "0" \
+    "$(_it_stub ttys999; TMUX=/tmp/s,1,0 _ae_inside_tmux 2>/dev/null; echo $?)"
+# The client-semantics branches route through it. detect_current_session is the
+# sharp one: under a stale $TMUX, display-message answers for the ORIGINAL pane,
+# so `ae end` with no name used to resolve to somebody else's session.
+_it_sessdir="$(mktemp -d)"
+mkdir -p "$_it_sessdir/stub-session"
+# Sourced ad-hoc (not in the global extraction list): later blocks install their
+# own detect_current_session stubs, so this definition must not outlive the block.
+eval "$(awk '/^detect_current_session\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "inside-tmux: _next_focus_verb picks attach-session under a stale \$TMUX" "attach-session" \
+    "$(_it_stub ttys999 /dev/ttys039; TMUX=/tmp/s,1,0 _next_focus_verb 2>/dev/null)"
+assert_eq "inside-tmux: detect_current_session still resolves from a genuine pane" "stub-session" \
+    "$(_it_stub ttys039 /dev/ttys039; SESSIONS_DIR="$_it_sessdir" TMUX=/tmp/s,1,0 detect_current_session 2>/dev/null || true)"
+assert_eq "inside-tmux: detect_current_session claims nothing under a stale \$TMUX" "" \
+    "$(_it_stub ttys999 /dev/ttys039; SESSIONS_DIR="$_it_sessdir" TMUX=/tmp/s,1,0 detect_current_session 2>/dev/null || true)"
+rm -rf "$_it_sessdir"
+unset _it_sessdir
+unset -f detect_current_session
+# Completeness invariant rather than text adjacency: exactly the four
+# client-semantics branches consult the guard, and exactly ONE bare ${TMUX:-}
+# read survives outside the helper — resolve_launch_tmux_server, which reads the
+# SOCKET PATH, not our client status (an inherited $TMUX still names the very
+# server that spawned the terminal, which is the right one to talk to). In both
+# directions so a new branch cannot be added unguarded, and so a future sweep
+# cannot "finish the job" and break end/stop targeting.
+assert_eq "inside-tmux: 4 client branches guarded, 1 deliberate bare read left" "4|1" \
+    "$(_g="$(command grep -c '^ *if _ae_inside_tmux; then' <<<"$AE_SOURCE" || true)"
+       _b="$(command grep -c '^ *if \[\[ -n "\${TMUX:-}" \]\]; then' <<<"$AE_SOURCE" || true)"
+       printf '%s|%s' "$_g" "$_b")"
+unset -f _it_stub ps tmux
+unset _IT_TTY _IT_PANES _IT_SESSION
 
 # _next_better: the deterministic ranking comparison (rank desc, epoch desc,
 # name asc). Behavioural — sourced directly (codex IMPORTANT 2: name tie-break).
