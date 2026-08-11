@@ -26,6 +26,37 @@ instructions = "Always write tests. Prefer TypeScript."
 
 Register any CLI tool as an agent alias. The value is the shell command to launch it. ae extracts the executable name from the command and verifies it's on `PATH` during `ae doctor`.
 
+### Multiple identities of one CLI
+
+One binary can serve several logins/subscriptions — Claude Code selects its
+identity via `CLAUDE_CONFIG_DIR`, so an env prefix in the alias command is all
+it takes:
+
+```toml
+[agents]
+fable5   = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
+fablemic = "CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude --permission-mode bypassPermissions --model fable --effort xhigh"
+claude2  = "CLAUDE_CONFIG_DIR=$HOME/.claude2 claude --permission-mode bypassPermissions --model opus --effort xhigh"
+```
+
+Each alias gets its own login (macOS keychain entries are keyed by the config
+dir), its own usage pool, and its own history — so one workspace can mix a work
+subscription and a personal one seat by seat. `/login` once per identity.
+
+Two traps:
+
+- **Inline the env var — don't rely on a shell function.** A fish/zsh wrapper
+  like `claude-mic` doesn't exist in the bash that launches agent panes.
+- **Don't create wrapper binaries** (`claude2`, `claude-mic` on `PATH`): ae's
+  session machinery keys on the exact executable name, and a renamed binary is
+  deliberately treated as an unknown tool — no session IDs, no exact resume.
+
+Current limitation: env-prefixed commands are classified by a raw prefix match
+today, so the identity aliases launch fine but degrade to generic-tool handling
+(no `--session-id`, heuristic resume) until
+[#32](https://github.com/clemens33/ae/issues/32) lands. Track that issue if you
+adopt this pattern.
+
 ## `[workspace]`
 
 | Key       | Description                                          | Default       |

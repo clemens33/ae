@@ -129,7 +129,7 @@ layout = vertical
 instructions = "Always write tests. Prefer TypeScript."
 ```
 
-Register any CLI tool under `[agents]`; `[workspace]` sets the layout; `[prompt]` injects custom instructions into every agent's system prompt. The default ae writes on first run -- mirrored in the repo as [`config.sample`](config.sample) -- is a documented lead-pair setup. Choose how agents see your code with a working-directory mode:
+Register any CLI tool under `[agents]`; `[workspace]` sets the layout; `[prompt]` injects custom instructions into every agent's system prompt. One binary can serve several logins — e.g. `CLAUDE_CONFIG_DIR=$HOME/.claude-work claude ...` as its own alias gives a seat its own subscription, login, and history ([details and caveats](docs/getting-started/config.md#multiple-identities-of-one-cli)). The default ae writes on first run -- mirrored in the repo as [`config.sample`](config.sample) -- is a documented lead-pair setup. Choose how agents see your code with a working-directory mode:
 
 | Mode | Flag | What it does |
 |------|------|------|
