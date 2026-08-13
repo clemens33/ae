@@ -55,7 +55,7 @@ result the lead consumes immediately.
 
 ## The contracts
 
-**Naming**: alias = tier, name = role. `fast:tests`, `codexfast:callers`,
+**Naming**: alias = tier, name = role. `chore:tests`, `chore:callers`, `dev:docs-sync`, `review:slice7`,
 `standard:docs-sync` — never `worker`, `helper-3`.
 
 **Brief** (what the lead sends): objective, allowed scope/files, verification

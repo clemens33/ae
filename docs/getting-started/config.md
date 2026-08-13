@@ -139,13 +139,15 @@ generations:
 # tiers (Claude Code) — workers MUST be non-interactive: an approval prompt
 # stalls an unattended pane forever. bypassPermissions is the trusting default
 # (matches ae's own examples); acceptEdits is the cautious alternative.
-fast     = "claude --permission-mode bypassPermissions --model sonnet --effort low"    # chores, tests, CI, scouts
-standard = "claude --permission-mode bypassPermissions --model sonnet"                 # scoped features (default effort: high)
-optimal  = "claude --permission-mode bypassPermissions --model opus --effort xhigh"    # leads
-best     = "claude --permission-mode bypassPermissions --model fable --effort xhigh"   # leads, steward, hardest work
-# codex
-codex     = "codex -m gpt-5.5 -c model_reasoning_effort=xhigh"
-codexfast = "codex -m gpt-5.4-mini -c model_reasoning_effort=low -a never"
+# chores at FULL effort on a cheap model — cheap comes from the model, not from
+# thinking less: tests, CI runs, caller/usage scans, log triage, scouts
+chore  = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
+# dev work: implementation slices, doc syncs — builder-grade
+dev    = "claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh"
+# cross-model review seat (spawned per slice, retired after)
+review = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
+# leads / steward / hardest work
+best   = "claude --permission-mode bypassPermissions --model fable --effort xhigh"
 
 [workspace]
 main = best:lead

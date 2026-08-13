@@ -285,7 +285,83 @@ Pause a session for later resume. Detaches all agents and kills the tmux session
 
 Use this when you're done for the day, switching contexts, or moving to another machine via `ae transfer`.
 
-## `ae end` / `ae rm`
+**What "stopped" means.** `ae stop` resolves the session on the tmux server its own
+meta records — never whichever server happens to be ambient — addresses it by exact
+session id rather than by name, and verifies it is gone before saying so. If the kill
+cannot be verified (the recorded server is unreachable), it fails loudly and changes
+nothing rather than reporting success. `ae stop` never deletes anything: state, working
+tree and agent conversation files are all preserved either way.
+
+Addressing by exact id is not pedantry — `tmux kill-session -t proj` prefix-matches, so
+a name-based stop for a session that does not exist could kill `project` instead.
+
+### Stopping the session you are inside
+
+`ae stop` with no name, or naming the session you are currently in, cannot be done by
+the process inside it — killing the session would kill the caller mid-operation, before
+it verified anything or recorded the outcome. So ae confirms, then hands the work to a
+short-lived supervisor outside the pane:
+
+```console
+$ ae stop            # from inside the session
+Stop 'myproject'? This kills the session you are working in.
+  Agents may be mid-turn: active writes and partial turns can be interrupted.
+  Your ae state, working tree and provider conversation files are PRESERVED —
+  the guarantee is recoverability (resume from the provider's own checkpoint),
+  not mid-write atomicity.
+Continue? [y/N] y
+Stopping 'myproject' out of pane; this pane will close.
+  The outcome is recorded durably in ~/.ae/sessions/myproject/events.jsonl (action: stop-result).
+```
+
+Your pane disappears with the session, so the outcome is written to the session's event
+log rather than to a terminal you can no longer see. After reattaching elsewhere:
+
+```bash
+grep '"action":"stop-result"' ~/.ae/sessions/myproject/events.jsonl | tail -1
+```
+
+Add `-y` to skip the confirmation (required when there is no terminal to ask on, e.g.
+from a script running inside the session).
+
+### Recipe: a confirm-before stop key in tmux
+
+ae deliberately ships no keybinding — the trigger belongs in *your* tmux config, so it
+never fights your prefix or your muscle memory. ae owns the semantics; you own the key.
+
+```tmux
+# ~/.tmux.conf — prefix + S: stop the current ae session, with tmux's own confirmation.
+bind-key S confirm-before -p "stop this ae session? (y/n)" \
+  "run-shell 'ae stop -y --self --pane=#{pane_id}'"
+```
+
+Note what the command does **not** contain: a session name. `#{session_name}` is a
+tmux format expanded by tmux and pasted into a shell string, and the binding is global —
+so a session named with a quote or a `$(…)` would reach the shell, from any session, ae
+or not. The no-name form sidesteps that entirely: ae resolves the target itself, and no
+tmux-controlled text ever enters a shell program.
+
+`confirm-before` does the asking, which is why the inner command passes `-y`.
+
+`--self` is required because a `run-shell` child has no controlling terminal, so ae
+cannot use its usual proof that you are in the pane. The flag waives **that one check**
+and nothing else — ae still proves your server is the session's recorded server and that
+the pane is that session.
+
+`--pane=#{pane_id}` is required because `$TMUX_PANE` lies here: a `run-shell` child
+inherits it from the tmux server's own environment, so it names some other pane
+entirely (measured — a child targeted at one pane received the id of another). Only a
+format the server expands for the target is trustworthy. Unlike `#{session_name}`, a
+pane id is tmux-generated and shape-checked (`%3`), so nothing attacker-influenced
+enters the command. The stop itself still runs out of pane, so it completes and records its
+result even though `run-shell`'s own child would not survive the session it kills.
+
+If a stop refuses, it names the check that failed rather than only saying no — e.g.
+`refusing: C4 — pane %0 is in 'alpha', not 'beta'`. The identity checks are: you are
+inside tmux with a pane id (C1), your tmux server answers for itself (C2), it is the
+session's recorded server (C3), your pane is in that session (C4), and your controlling
+terminal is that pane's (C5, the one `--self` waives). The named fact tells you which
+one to fix.
 
 End a session for good. Removes ae's own state; **keeps the agent conversation
 history by default**. If you want to resume later, use `ae stop` instead.
