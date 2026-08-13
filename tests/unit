@@ -4073,8 +4073,37 @@ assert_eq "kill-verified: stop's call site" "1" \
 assert_eq "kill-verified: end's LOCAL-mode branch calls it" "1" \
     "$([[ "$AE_SOURCE" == *'        cleanup_session "$session_name" "$mode" "$origin"'* \
         && "$AE_SOURCE" == *'_lifecycle_kill_verified "$session_name" end "$_es_sid" || return 1'$'\n''        fi'$'\n''        cleanup_session'* ]] && echo 1 || echo 0)"
+# (#34 MOVED this call: the git/full branch now kills BEFORE it snapshots, so the
+# old spelling — the kill sitting under "All good — clean up" after the push — is
+# gone by design. What is pinned instead is the ORDER, below.)
 assert_eq "kill-verified: end's git/full branch calls it" "1" \
-    "$([[ "$AE_SOURCE" == *'    # All good — clean up (kill by exact id; empty means it was not live)'$'\n''    if [[ -n "$_es_sid" ]]; then'$'\n''        _lifecycle_kill_verified "$session_name" end "$_es_sid" || return 1'* ]] && echo 1 || echo 0)"
+    "$(_e="$(awk '/^_end_session_locked\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_e" == *'# STOP FIRST'*'_lifecycle_kill_verified "$session_name" end "$_es_sid" || return 1'* ]] \
+        && echo 1 || echo 0)"
+# ── #34: end STOPS BEFORE IT SNAPSHOTS ───────────────────────────────
+# end used to add/commit/fetch/push with the agents still live, then kill. A write
+# landing after the snapshot and before the kill was neither committed nor left on
+# disk — cleanup deleted the directory it lived in. Kill verification protects
+# identity and teardown; it says nothing about the content having stopped moving.
+_e34="$(awk '/^_end_session_locked\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "#34: the verified kill precedes the snapshot, not the other way round" "1" \
+    "$(_pre="${_e34%%git -C \"\$wdir\" add -A*}"
+       [[ "$_pre" == *'_lifecycle_kill_verified "$session_name" end "$_es_sid" || return 1'* ]] \
+        && echo 1 || echo 0)"
+# ...and the repo precondition is checked BEFORE the kill: refusing there leaves the
+# session running, and there is no reason to stop one for a failure we can see coming.
+assert_eq "#34: the not-a-git-repo refusal happens before anything is stopped" "1" \
+    "$(_pre2="${_e34%%# STOP FIRST*}"
+       [[ "$_pre2" == *'is not a git repo — cannot preserve work'* ]] && echo 1 || echo 0)"
+# ...and BOTH snapshot failures now say the session is STOPPED and name the resume.
+# "Session preserved" was true while the kill came last; after the reorder it reads
+# as "still running, go back to it", which is exactly backwards.
+assert_eq "#34: commit and push failures say STOPPED, name the resume, and drop the old claim" "1" \
+    "$(_code="$(command grep -v '^ *#' <<<"$_e34" || true)"
+       [[ "$(printf '%s' "$_e34" | command grep -c 'session is STOPPED; nothing was deleted' || true)" == "2" \
+        && "$(printf '%s' "$_e34" | command grep -c 'Or pick the session back up: ae ${session_name}' || true)" == "2" \
+        && "$_code" != *'Session preserved'* ]] && echo 1 || echo 0)"
+unset _e34
 assert_eq "kill-verified: exactly three scoped call sites, no more" "3" \
     "$(printf '%s' "$AE_SOURCE" | command grep -c '_lifecycle_kill_verified "' || true)"
 

@@ -3711,6 +3711,109 @@ assert_eq "no-tty (I3): no prompt is printed when there is no one to prompt" "1"
 rm -f "$tt_out"
 unset TT_R tt_out
 
+# ── #34: end STOPS before it SNAPSHOTS ───────────────────────────────
+# end used to add/commit/fetch/push while the agents were still live and only then
+# kill, so a write landing after the snapshot and before the kill was neither
+# committed nor left on disk — cleanup removed the directory it lived in.
+#
+# The seed asks the ORDER question directly rather than racing a writer into the
+# window: a post-commit hook records whether the tmux session was still ALIVE at the
+# moment end took its snapshot. Alive means agents could still be writing into a tree
+# ae is about to commit and then delete. Deterministic — the hook fires on end's own
+# commit, every run, with no timing assumption at all.
+#
+# WORKTREE mode, deliberately: --local never commits at all ("files are in the
+# original dir"), so a local specimen never reaches the snapshot path and the seed
+# would go red for the wrong reason. It did exactly that on the first red run.
+E34_R="$(setup_repo)"
+E34_REMOTE="$TMPDIR/e34-remote.git"
+git -C "$E34_R" clone -q --bare "$E34_R" "$E34_REMOTE" 2>/dev/null
+git -C "$E34_R" remote add origin "$E34_REMOTE" 2>/dev/null || git -C "$E34_R" remote set-url origin "$E34_REMOTE"
+(cd "$E34_R" && "$AE" --worktree e34order &) 2>/dev/null
+wait_for_session "e34order" || true
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/e34order/meta" ]] && break; sleep 0.3; done
+e34_wd="$(command grep '^work_dir=' "$HOME/.ae/sessions/e34order/meta" 2>/dev/null | cut -d= -f2-)"
+assert_eq "end-order (#34): the worktree specimen launched" "1" \
+    "$([[ -n "$e34_wd" && -d "$e34_wd" ]] && echo 1 || echo 0)"
+if [[ -n "$e34_wd" && -d "$e34_wd" ]]; then
+    git -C "$e34_wd" config user.email "test@test"
+    git -C "$e34_wd" config user.name "test"
+    e34_probe="$TMPDIR/e34-alive-at-snapshot"
+    e34_hooks="$(git -C "$e34_wd" rev-parse --git-path hooks 2>/dev/null)"
+    mkdir -p "$e34_hooks"
+    cat >"$e34_hooks/post-commit" <<HOOK
+#!/bin/sh
+if tmux -L "$AE_TMUX_SERVER" has-session -t "=e34order" 2>/dev/null; then
+    echo alive >"$e34_probe"
+else
+    echo gone >"$e34_probe"
+fi
+HOOK
+    chmod +x "$e34_hooks/post-commit"
+    # Ordinary work, so end has something to commit and the hook is reached at all.
+    printf 'work\n' >"$e34_wd/agent-work.txt"
+    "$AE" end -f e34order >/dev/null 2>&1 || true
+    sleep 1
+    # THE PROPERTY: at snapshot time the session is already gone, so nothing can
+    # still be writing into the tree being committed. Red on the old order.
+    assert_eq "end-order (#34): the session is already STOPPED when end takes its snapshot" "gone" \
+        "$(cat "$e34_probe" 2>/dev/null || echo "hook-never-ran")"
+    # ...control, so the seed cannot pass by the commit never happening.
+    assert_eq "end-order (#34): the work reached the remote (the probe is live)" "1" \
+        "$(git -C "$E34_REMOTE" log -1 --name-only --format= "ae/e34order" 2>/dev/null | command grep -qx 'agent-work.txt' && echo 1 || echo 0)"
+    rm -f "$e34_probe"
+fi
+"$AE" end -f --assume-stopped e34order >/dev/null 2>&1 || true
+rm -rf "$HOME/.ae/sessions/e34order" "$E34_REMOTE"
+unset E34_R E34_REMOTE e34_wd e34_probe e34_hooks _i
+
+# ── #34: a failed push leaves everything, and SAYS the session is stopped ──
+# Before the reorder, "Session preserved" was accurate — the kill had not happened
+# yet. After it, the same path leaves the session STOPPED, and "preserved" reads as
+# "still running, go back to it". The message has to say which.
+E34_R2="$(setup_repo)"
+E34_REMOTE2="$TMPDIR/e34-remote2.git"
+git -C "$E34_R2" clone -q --bare "$E34_R2" "$E34_REMOTE2" 2>/dev/null
+git -C "$E34_R2" remote add origin "$E34_REMOTE2" 2>/dev/null || git -C "$E34_R2" remote set-url origin "$E34_REMOTE2"
+# Refuse every push, deterministically — the same shape as a real pre-receive gate.
+mkdir -p "$E34_REMOTE2/hooks"
+printf '#!/bin/sh\necho "refused by policy" >&2\nexit 1\n' >"$E34_REMOTE2/hooks/pre-receive"
+chmod +x "$E34_REMOTE2/hooks/pre-receive"
+(cd "$E34_R2" && "$AE" --worktree e34push &) 2>/dev/null
+wait_for_session "e34push" || true
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/e34push/meta" ]] && break; sleep 0.3; done
+e34_wd2="$(command grep '^work_dir=' "$HOME/.ae/sessions/e34push/meta" 2>/dev/null | cut -d= -f2-)"
+assert_eq "end-push (#34): the worktree specimen launched" "1" \
+    "$([[ -n "$e34_wd2" && -d "$e34_wd2" ]] && echo 1 || echo 0)"
+if [[ -n "$e34_wd2" && -d "$e34_wd2" ]]; then
+    git -C "$e34_wd2" config user.email "test@test"
+    git -C "$e34_wd2" config user.name "test"
+    printf 'work\n' >"$e34_wd2/agent-work.txt"
+    if e34_out="$("$AE" end -f e34push 2>&1)"; then e34_rc=0; else e34_rc=$?; fi
+    sleep 1
+    assert_eq "end-push (#34): a refused push fails loudly" "1" \
+        "$([[ "$e34_rc" -ne 0 ]] && echo 1 || echo 0)"
+    # NOTHING is deleted: ae state and the working tree both survive.
+    assert_eq "end-push (#34): ae state and the working tree are both preserved" "1|1" \
+        "$(printf '%s|%s' \
+            "$([[ -d "$HOME/.ae/sessions/e34push" ]] && echo 1 || echo 0)" \
+            "$([[ -d "$e34_wd2" ]] && echo 1 || echo 0)")"
+    # ...and the commit really is safe locally, which is what the message claims.
+    assert_eq "end-push (#34): the work is committed locally despite the failed push" "1" \
+        "$(git -C "$e34_wd2" log -1 --name-only --format= 2>/dev/null | command grep -qx 'agent-work.txt' && echo 1 || echo 0)"
+    # THE MESSAGE: it must say STOPPED, must not claim the session is preserved as
+    # if still running, and must name the resume path.
+    assert_eq "end-push (#34): the message says STOPPED and names the resume" "1" \
+        "$([[ "$e34_out" == *"session is STOPPED"* && "$e34_out" == *"nothing was deleted"* \
+            && "$e34_out" == *"ae e34push"* && "$e34_out" != *"Session preserved"* ]] && echo 1 || echo 0)"
+    # ...and it is telling the truth: the session really is gone.
+    assert_eq "end-push (#34): the session really is stopped, not still running" "1" \
+        "$(tmux has-session -t "=e34push" 2>/dev/null && echo 0 || echo 1)"
+fi
+"$AE" end -f --assume-stopped e34push >/dev/null 2>&1 || true
+rm -rf "$HOME/.ae/sessions/e34push" "$E34_REMOTE2"
+unset E34_R2 E34_REMOTE2 e34_wd2 e34_out e34_rc _i
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

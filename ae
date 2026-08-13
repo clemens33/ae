@@ -2408,68 +2408,88 @@ _end_session_locked() {
         return 0
     fi
 
-    # git/full mode: commit + push if in a git repo
-    if [[ -d "$wdir" ]] && git -C "$wdir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        # Check for uncommitted changes
-        if ! git -C "$wdir" diff --quiet 2>/dev/null || ! git -C "$wdir" diff --cached --quiet 2>/dev/null ||
-            [[ -n "$(git -C "$wdir" ls-files --others --exclude-standard 2>/dev/null)" ]]; then
-            echo "Committing changes in $session_name..."
-            git -C "$wdir" add -A
-            local ts
-            ts="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-            if ! git -C "$wdir" commit -m "ae: end session ${session_name}" -m "Ended: ${ts}"; then
-                echo "Error: commit failed. Session preserved — fix manually and retry." >&2
-                echo "  Working directory: $wdir" >&2
-                return 1
-            fi
-        fi
-
-        # Check if there's anything to push (HEAD not already on a remote branch)
-        local needs_push=false
-        if git -C "$wdir" remote get-url origin >/dev/null 2>&1; then
-            # Fetch silently to check against remote state
-            git -C "$wdir" fetch origin --quiet 2>/dev/null || true
-            if ! git -C "$wdir" branch -r --contains HEAD 2>/dev/null | grep -q .; then
-                needs_push=true
-            fi
-        fi
-
-        if [[ "$needs_push" == true ]]; then
-            local branch
-            branch="$(sanitize_branch_name "$session_name")"
-            echo "Pushing to origin/${branch}..."
-
-            # Show what we're pushing (count files changed across all unpushed commits)
-            local file_count
-            # tr: BSD wc pads its count with leading spaces, GNU does not.
-            file_count="$(git -C "$wdir" diff --name-only "$(git -C "$wdir" merge-base HEAD origin/HEAD 2>/dev/null || echo HEAD~1)" HEAD 2>/dev/null | wc -l | tr -d '[:space:]' || echo "?")"
-            echo "  ${file_count} file(s) changed"
-
-            if ! git -C "$wdir" push -u origin "HEAD:refs/heads/${branch}"; then
-                echo "Error: push failed. Session preserved — fix manually and retry." >&2
-                echo "  Working directory: $wdir" >&2
-                echo "  To retry: cd $wdir && git push -u origin HEAD:refs/heads/${branch}" >&2
-                return 1
-            fi
-            echo "Pushed to origin/${branch}"
-        else
-            if ! git -C "$wdir" remote get-url origin >/dev/null 2>&1; then
-                echo "No remote 'origin' — skipping push."
-                _es_preserve_workdir=true
-            else
-                echo "No new commits to push."
-            fi
-        fi
-    else
+    # git/full mode. THE ORDER IS THE FIX: verified stop, THEN snapshot.
+    #
+    # end used to add/commit/fetch/push while the agents were STILL LIVE, and only
+    # then kill. A write landing after the snapshot and before the kill was neither
+    # committed nor left on disk — cleanup deleted the directory it lived in. Kill
+    # verification protects identity and teardown; it says nothing about whether the
+    # content stopped moving. Proven deterministically with a post-commit hook firing
+    # inside that window: the late write was in neither the commit nor the tree.
+    #
+    # The repo precondition is checked BEFORE the stop, deliberately: refusing here
+    # leaves the session running, and there is no reason to stop a session for a
+    # failure we can see coming.
+    if ! { [[ -d "$wdir" ]] && git -C "$wdir" rev-parse --is-inside-work-tree >/dev/null 2>&1; }; then
         echo "Error: working directory is not a git repo — cannot preserve work." >&2
-        echo "  Use 'ae end $session_name' to end the session." >&2
+        echo "  Nothing was stopped and nothing was deleted; the session is still running." >&2
+        echo "  Working directory: $wdir" >&2
         return 1
     fi
-
-    # All good — clean up (kill by exact id; empty means it was not live)
+    # STOP FIRST — and verify it. Everything below this line snapshots a tree nothing
+    # is writing to any more. A kill that cannot be verified returns before the
+    # snapshot, so an unverifiable session is never committed on top of.
     if [[ -n "$_es_sid" ]]; then
         _lifecycle_kill_verified "$session_name" end "$_es_sid" || return 1
+        _es_sid=""
     fi
+    # Check for uncommitted changes
+    if ! git -C "$wdir" diff --quiet 2>/dev/null || ! git -C "$wdir" diff --cached --quiet 2>/dev/null ||
+        [[ -n "$(git -C "$wdir" ls-files --others --exclude-standard 2>/dev/null)" ]]; then
+        echo "Committing changes in $session_name..."
+        git -C "$wdir" add -A
+        local ts
+        ts="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+        if ! git -C "$wdir" commit -m "ae: end session ${session_name}" -m "Ended: ${ts}"; then
+            echo "Error: commit failed. The session is STOPPED; nothing was deleted." >&2
+            echo "  Your work, ae state and agent conversation files are all preserved." >&2
+            echo "  Working directory: $wdir" >&2
+            echo "  Fix the commit there, then re-run: ae end ${session_name}" >&2
+            echo "  Or pick the session back up: ae ${session_name}" >&2
+            return 1
+        fi
+    fi
+
+    # Check if there's anything to push (HEAD not already on a remote branch)
+    local needs_push=false
+    if git -C "$wdir" remote get-url origin >/dev/null 2>&1; then
+        # Fetch silently to check against remote state
+        git -C "$wdir" fetch origin --quiet 2>/dev/null || true
+        if ! git -C "$wdir" branch -r --contains HEAD 2>/dev/null | grep -q .; then
+            needs_push=true
+        fi
+    fi
+
+    if [[ "$needs_push" == true ]]; then
+        local branch
+        branch="$(sanitize_branch_name "$session_name")"
+        echo "Pushing to origin/${branch}..."
+
+        # Show what we're pushing (count files changed across all unpushed commits)
+        local file_count
+        # tr: BSD wc pads its count with leading spaces, GNU does not.
+        file_count="$(git -C "$wdir" diff --name-only "$(git -C "$wdir" merge-base HEAD origin/HEAD 2>/dev/null || echo HEAD~1)" HEAD 2>/dev/null | wc -l | tr -d '[:space:]' || echo "?")"
+        echo "  ${file_count} file(s) changed"
+
+        if ! git -C "$wdir" push -u origin "HEAD:refs/heads/${branch}"; then
+            echo "Error: push failed. The session is STOPPED; nothing was deleted." >&2
+            echo "  The commit is safe locally — ae state and the working tree are preserved." >&2
+            echo "  Working directory: $wdir" >&2
+            echo "  To retry the push: cd $wdir && git push -u origin HEAD:refs/heads/${branch}" >&2
+            echo "  Then finish up:    ae end ${session_name}" >&2
+            echo "  Or pick the session back up: ae ${session_name}" >&2
+            return 1
+        fi
+        echo "Pushed to origin/${branch}"
+    else
+        if ! git -C "$wdir" remote get-url origin >/dev/null 2>&1; then
+            echo "No remote 'origin' — skipping push."
+            _es_preserve_workdir=true
+        else
+            echo "No new commits to push."
+        fi
+    fi
+
     # B3 durability: a no-remote git target just COMMITTED work that exists ONLY in this
     # directory (a copy holds its sole repo; a detached-HEAD worktree's commit dies with
     # the worktree). Removing it would silently destroy the work the prompt promised to
