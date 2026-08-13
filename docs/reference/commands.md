@@ -324,6 +324,67 @@ grep '"action":"stop-result"' ~/.ae/sessions/myproject/events.jsonl | tail -1
 Add `-y` to skip the confirmation (required when there is no terminal to ask on, e.g.
 from a script running inside the session).
 
+### Stopping every session (`ae stop all`)
+
+`ae stop all` stops every session **ae's own metadata owns** — not whatever happens to be
+running on the ambient tmux server, which `AE_TMUX_SERVER` can redirect.
+
+The loop always runs *outside* the calling process, whether or not the caller is one of
+the targets:
+
+```console
+$ ae stop all
+Stop ALL 3 ae session(s)?
+  Agents may be mid-turn: active writes and partial turns can be interrupted.
+  ae state, working trees and provider conversation files are PRESERVED.
+Continue? [y/N] y
+Stopping 3 session(s) out of process; this pane may be one of them.
+  Each outcome is recorded durably in its own
+  ~/.ae/sessions/<name>/events.jsonl (action: stop-result).
+```
+
+There is no flag to make it run in-process, and it never asks whether *you* are one of
+the targets. That question cannot be answered honestly: a caller whose `$TMUX` and
+`$TMUX_PANE` have been sanitised away is still physically in the pane that dies, and
+`--pane=…` merely *selects* a pane — any process can pass any valid id, so it is not
+evidence of where the caller lives. Instead of inferring the answer, ae puts the loop
+somewhere nothing it kills can be running it. (`--self` and `--pane` stay meaningful for
+the singular self-stop above, where the caller *is* the named target by construction.)
+
+Two consequences worth knowing:
+
+- **You still get a real exit status.** Every outcome is written to its own session's event
+  log, and after the handoff the caller waits for those records — bounded, about 30 seconds —
+  then folds them into its exit code, so a script driving `ae stop all` can branch on the
+  result. If the caller was itself one of the targets it simply disappears mid-wait, having
+  already printed everything it could honestly know; nothing is lost, because the records
+  outlive it. If the wait times out, ae says `results pending` and keeps the handoff status
+  rather than reporting a still-working supervisor as a failure. Read the records directly
+  any time with:
+
+  ```bash
+  for f in ~/.ae/sessions/*/events.jsonl; do grep '"action":"stop-result"' "$f" | tail -1; done
+  ```
+
+- **A session ae cannot verify is still a target.** If a session's recorded tmux server is
+  unreachable, ae does not know whether it is stopped — so it is carried into the fleet and
+  its stop fails loudly in its own log, rather than being silently counted as already gone.
+
+The set you confirm is the set that gets stopped. ae works out the fleet, shows you the
+count, and then hands that exact list over — it does not look again afterwards, so a session
+started while you were deciding is left alone rather than swept up in an operation nobody
+approved it for. That promise is about *sessions*, not names: each entry carries the identity
+of the session it named at the moment you confirmed, so ending a session and starting a new
+one under the same name in the meantime leaves the newcomer running, with a recorded failure
+explaining that the name changed hands. Each run also carries its own operation id, which
+appears in the events it writes (`[op <uuid>]`), so two `ae stop all` runs happening at once
+can each tell its own results apart from the other's.
+
+An ae-tagged session that is visible on the current tmux server but absent from ae's
+metadata is named and **not** stopped — ae will not kill something it has no record of
+owning. That makes the run a partial failure (non-zero exit), and the message gives you
+both ways out: adopt it with `ae doctor --refresh <name>`, or stop it explicitly by name.
+
 ### Recipe: a confirm-before stop key in tmux
 
 ae deliberately ships no keybinding — the trigger belongs in *your* tmux config, so it
@@ -395,5 +456,11 @@ The following are internal helpers ae invokes itself, prefixed with `_`. Don't c
 - `_spawn`, `_retire` — pane lifecycle (called via `spawn` / `retire` session helpers).
 - `_recover-pending` — re-attempt post-launch session ID capture (called by the watchdog).
 - `_register-sid` — Codex first-task to self-register its session UUID (injected via `developer_instructions`).
+- `_stop-supervisor <name>`, `_stop-fleet-supervisor <op-id> <name> <session-id>…` — the
+  detached workers behind `ae stop` (self) and `ae stop all`. They exist so the kill runs in a
+  process the kill cannot take down with it. The fleet worker is handed its targets explicitly
+  and looks for no others, which is why the list is an argument rather than something it works
+  out itself; each target is named as a *pair*, so the worker stops the session that was
+  confirmed rather than whatever holds the name by the time it gets there.
 
 They're listed only for transparency — your interface is the public commands above.

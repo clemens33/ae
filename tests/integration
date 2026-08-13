@@ -3109,6 +3109,608 @@ rm -rf "$HOME/.ae/sessions/rbpre"
 unset RB_BIN RB_REPO RB_REPO2 RB_REPO3 RB_REPO4 RB_REPO5 \
     rb_rc rb2_rc rb3_rc rb4_rc rb5_rc rb_out rb2_out rb3_out rb4_out rb5_out
 
+# ── #33: stop targets the RECORDED server by EXACT id, and verifies ──
+# Measured on main before the fix: `ae stop <prefix>` returned rc=0, printed
+# "Stopped <prefix>", and killed the LONGER-named session — tmux -t <name>
+# prefix-matches. Each seed below is written so that ONLY its own property can
+# make it pass.
+
+# (a) PREFIX SIBLING. 'stopsib-project' is live; nothing named 'stopsib-proj'
+# exists. The wrong-kill is the failure mode, so the sibling's survival is the
+# assertion — not merely the exit code.
+SS_REPO="$(setup_repo)"
+(cd "$SS_REPO" && "$AE" --local stopsib-project &) 2>/dev/null
+wait_for_session "stopsib-project"
+sleep 1
+ss_rc=0
+ss_out="$("$AE" stop stopsib-proj 2>&1)" || ss_rc=$?
+assert_eq "stop (a) prefix sibling: refused, and the LONGER-named session survives" "1|1" \
+    "$(printf '%s|%s' \
+        "$([[ $ss_rc -ne 0 ]] && echo 1 || echo 0)" \
+        "$(tmux has-session -t "=stopsib-project" 2>/dev/null && echo 1 || echo 0)")"
+assert_eq "stop (a): and it never claimed success" "0" \
+    "$([[ "$ss_out" == *"Stopped"* ]] && echo 1 || echo 0)"
+
+# (b) RECORDED SERVER, not the ambient one. The session lives on the suite's
+# private server; stop is invoked with AE_TMUX_SERVER unset, so an ambient-server
+# implementation cannot see it (pre-fix it said "is not running" and orphaned it).
+ss2_rc=0
+ss2_out="$(env -u AE_TMUX_SERVER "$AE" stop stopsib-project 2>&1)" || ss2_rc=$?
+assert_eq "stop (b) recorded server: found and stopped from a foreign ambient server" "0|1|1" \
+    "$(printf '%s|%s|%s' "$ss2_rc" \
+        "$([[ "$ss2_out" == *"Stopped stopsib-project"* ]] && echo 1 || echo 0)" \
+        "$(tmux has-session -t "=stopsib-project" 2>/dev/null && echo 0 || echo 1)")"
+assert_eq "stop (b): session STATE preserved — stop destroys nothing" "1" \
+    "$([[ -f "$HOME/.ae/sessions/stopsib-project/meta" ]] && echo 1 || echo 0)"
+"$AE" end -f stopsib-project >/dev/null 2>&1 || true
+
+# (c) UNVERIFIED KILL must never print "Stopped". The recorded socket is made
+# unreadable, so the server can neither confirm nor deny — the tri-state's third
+# arm. Same technique the ack-block seeds use.
+SS_REPO3="$(setup_repo)"
+SS_SRV="ae-stopunv-$$"
+(cd "$SS_REPO3" && AE_TMUX_SERVER="$SS_SRV" "$AE" --local stopunv &) 2>/dev/null
+for _i in $(seq 1 25); do command tmux -L "$SS_SRV" has-session -t "=stopunv" 2>/dev/null && break; sleep 0.4; done
+sleep 1
+chmod 000 "/tmp/tmux-$(id -u)/$SS_SRV" 2>/dev/null || true
+ss3_rc=0
+ss3_out="$("$AE" stop stopunv 2>&1)" || ss3_rc=$?
+chmod 700 "/tmp/tmux-$(id -u)/$SS_SRV" 2>/dev/null || true
+# NOTE what this actually reaches: with the socket unreadable the id lookup fails
+# FIRST, so this is the PRE-kill unreachable branch. The post-kill arm of
+# _lifecycle_kill_verified is unreachable from here without racing a server into
+# unreachability mid-operation — it is pinned deterministically in tests/unit.
+assert_eq "stop (c) unverifiable server (pre-kill branch): fails loudly, never prints Stopped" "1|1|0" \
+    "$(printf '%s|%s|%s' \
+        "$([[ $ss3_rc -ne 0 ]] && echo 1 || echo 0)" \
+        "$([[ "$ss3_out" == *"cannot verify"* || "$ss3_out" == *"no positive server record"* ]] && echo 1 || echo 0)" \
+        "$([[ "$ss3_out" == *"Stopped"* ]] && echo 1 || echo 0)")"
+assert_eq "stop (c): everything preserved after the refusal" "1" \
+    "$([[ -f "$HOME/.ae/sessions/stopunv/meta" ]] && echo 1 || echo 0)"
+command tmux -L "$SS_SRV" kill-server 2>/dev/null || true
+rm -rf "$HOME/.ae/sessions/stopunv"
+
+# (d) SELF-STOP: the initiator pane dies with the session, so the supervisor —
+# not the caller — must finish the job and record it. NOTE the limit of this seed,
+# measured: it does NOT discriminate on detachment (it passes with nohup removed,
+# because the post-kill window is milliseconds). Detachment is pinned structurally
+# in tests/unit; this proves the FLOW end to end.
+SS_REPO4="$(setup_repo)"
+(cd "$SS_REPO4" && "$AE" --local stopself &) 2>/dev/null
+wait_for_session "stopself"
+sleep 2
+ss_pane="$(tmux list-panes -t stopself -F '#{pane_id}' 2>/dev/null | head -1)"
+tmux send-keys -t "$ss_pane" "AE_HOME=$AE_HOME $AE stop stopself -y" Enter
+for _i in $(seq 1 50); do tmux has-session -t "=stopself" 2>/dev/null || break; sleep 0.4; done
+sleep 2
+ss_ev="$HOME/.ae/sessions/stopself/events.jsonl"
+assert_eq "stop (d) self-stop: session gone, both events durable, state preserved" "1|1|1|1" \
+    "$(printf '%s|%s|%s|%s' \
+        "$(tmux has-session -t "=stopself" 2>/dev/null && echo 0 || echo 1)" \
+        "$(command grep -c '"action":"stop-request"' "$ss_ev" 2>/dev/null || echo 0)" \
+        "$(command grep -c '"action":"stop-result"' "$ss_ev" 2>/dev/null || echo 0)" \
+        "$([[ -f "$HOME/.ae/sessions/stopself/meta" ]] && echo 1 || echo 0)")"
+assert_eq "stop (d): the recorded outcome is a VERIFIED kill, not an assumed one" "1" \
+    "$(command grep '"action":"stop-result"' "$ss_ev" 2>/dev/null | tail -1 | command grep -qF 'verified gone' && echo 1 || echo 0)"
+"$AE" end -f stopself >/dev/null 2>&1 || true
+unset SS_REPO SS_REPO3 SS_REPO4 SS_SRV ss_rc ss_out ss2_rc ss2_out ss3_rc ss3_out ss_pane ss_ev
+
+# (e) `ae stop all` FROM INSIDE one of the sessions, at fleet size 3. Rounds 2-6
+# read this as an ORDERING (finish the others, kill this pane last); round 7's F4
+# moved the loop out of the caller entirely, so what it proves now is COMPLETION
+# and ACCOUNTING with no ordering claim at all — every target stopped, and every
+# outcome durable, including the two the dying pane never got to report.
+SA_REPO="$(setup_repo)"
+for _n in sa0self sa1 sa2; do
+    (cd "$SA_REPO" && "$AE" --local "$_n" &) 2>/dev/null
+    wait_for_session "$_n"
+done
+sleep 2
+sa_pane="$(tmux list-panes -t sa0self -F '#{pane_id}' 2>/dev/null | head -1)"
+sa_out="$TMPDIR/stopall.out"
+tmux send-keys -t "$sa_pane" "AE_HOME=$AE_HOME $AE stop all -y > $sa_out 2>&1" Enter
+for _i in $(seq 1 60); do tmux has-session -t "=sa0self" 2>/dev/null || break; sleep 0.5; done
+sleep 3
+assert_eq "stop all (from inside): every session stopped, none abandoned" "0" \
+    "$(tmux list-sessions -F '#{session_name}' 2>/dev/null | command grep -c '^sa' | tr -d '[:space:]')"
+# The caller prints NO per-target result — it cannot have verified one, since the
+# loop is not running in it. It says it handed off, and says where to read the
+# outcomes. (The retired assertion here counted 'Stopped sa1'/'Stopped sa2' in the
+# caller's own output; that text is gone with the in-caller loop, and the fact it
+# was protecting — the other targets are not abandoned — is carried by the
+# assertion above plus the durability one below, at full fleet size.)
+assert_eq "stop all (from inside): the caller reports a handoff, not per-target results" "1" \
+    "$(_sa_txt="$(cat "$sa_out" 2>/dev/null || true)"
+       [[ "$_sa_txt" == *"out of process"* && "$_sa_txt" != *"Stopped sa"* ]] && echo 1 || echo 0)"
+# ...and EVERY outcome is durable, including the two the dying pane never reported.
+assert_eq "stop all (from inside): all three outcomes recorded durably" "1|1|1" \
+    "$(printf '%s|%s|%s' \
+        "$(command grep -c '"action":"stop-result"' "$HOME/.ae/sessions/sa0self/events.jsonl" 2>/dev/null | tr -d '[:space:]')" \
+        "$(command grep -c '"action":"stop-result"' "$HOME/.ae/sessions/sa1/events.jsonl" 2>/dev/null | tr -d '[:space:]')" \
+        "$(command grep -c '"action":"stop-result"' "$HOME/.ae/sessions/sa2/events.jsonl" 2>/dev/null | tr -d '[:space:]')")"
+for _n in sa0self sa1 sa2; do "$AE" end -f "$_n" >/dev/null 2>&1 || true; done
+rm -f "$sa_out"
+unset SA_REPO sa_pane sa_out _n _i
+
+# (f) I4 — THE DOCUMENTED RECIPE, EXECUTED. The round-5 target-resolution fix was
+# covered only by source-shape assertions, which is precisely the shape that let
+# the ambient-oracle bug pass structural review while the real recipe refused in
+# practice. This runs the command docs/reference/commands.md tells users to bind,
+# verbatim, against TWO sessions — the configuration where an ambient resolution
+# names the WRONG one. alpha must die, beta must live, and success must be durable.
+PD_R1="$(setup_repo)"; PD_R2="$(setup_repo)"
+(cd "$PD_R1" && "$AE" --local pdalpha &) 2>/dev/null
+wait_for_session "pdalpha"
+(cd "$PD_R2" && "$AE" --local pdbeta &) 2>/dev/null
+wait_for_session "pdbeta"
+sleep 1
+# run-shell -t names the TARGET pane; #{pane_id} is expanded by the SERVER for it
+# ($TMUX_PANE inside the child is inherited and names a foreign pane).
+tmux run-shell -t pdalpha \
+    "env HOME='$HOME' AE_HOME='$AE_HOME' '$AE' stop -y --self --pane=#{pane_id} >'$TMPDIR/pd.out' 2>&1" || true
+for _i in $(seq 1 60); do tmux has-session -t "=pdalpha" 2>/dev/null || break; sleep 0.5; done
+sleep 2
+assert_eq "stop --self --pane (documented recipe): the NAMED pane's session is gone" "0" \
+    "$(tmux has-session -t "=pdalpha" 2>/dev/null && echo 1 || echo 0)"
+assert_eq "stop --self --pane (documented recipe): the OTHER session is untouched" "1" \
+    "$(tmux has-session -t "=pdbeta" 2>/dev/null && echo 1 || echo 0)"
+assert_eq "stop --self --pane (documented recipe): success recorded durably" "1" \
+    "$(command grep -c '"action":"stop-result"' "$HOME/.ae/sessions/pdalpha/events.jsonl" 2>/dev/null | tr -d '[:space:]')"
+for _n in pdalpha pdbeta; do "$AE" end -f "$_n" >/dev/null 2>&1 || true; done
+rm -f "$TMPDIR/pd.out"
+unset PD_R1 PD_R2 _n _i
+
+# (g) B1/F5 — an ambient ae-tagged session ae's metadata does NOT own is a
+# FAILURE, not a note. Measured before: rc 0, the orphan still live, and
+# "NOT stopped" printed in the same breath as "No running ae sessions."
+UM_SRV="ae-unmanaged-$$"
+command tmux -L "$UM_SRV" new-session -d -s umorphan 'while :; do sleep 5; done' 2>/dev/null
+command tmux -L "$UM_SRV" set-environment -t umorphan AE_SESSION umorphan 2>/dev/null
+um_rc=0
+um_out="$(AE_TMUX_SERVER="$UM_SRV" "$AE" stop all -y 2>&1)" || um_rc=$?
+assert_eq "stop all: an unmanaged ae-tagged session makes the fleet op FAIL" "1" "$um_rc"
+assert_eq "stop all: that session is named as NOT stopped" "1" \
+    "$([[ "$um_out" == *"umorphan"* && "$um_out" == *"NOT stopped"* ]] && echo 1 || echo 0)"
+assert_eq "stop all: and the success-shaped summary is suppressed" "0" \
+    "$([[ "$um_out" == *"No running ae sessions"* ]] && echo 1 || echo 0)"
+assert_eq "stop all: it is left running, not silently killed" "1" \
+    "$(command tmux -L "$UM_SRV" has-session -t "=umorphan" 2>/dev/null && echo 1 || echo 0)"
+command tmux -L "$UM_SRV" kill-server 2>/dev/null || true
+unset UM_SRV um_rc um_out
+
+# (h) F4 — THE CALLER IS ONE OF THE FLEET TARGETS, and the fleet completes anyway.
+# Rounds 4-6 tried to IDENTIFY the caller among the targets and stop it last; the
+# reviewer refuted the premise twice (a child with $TMUX/$TMUX_PANE sanitised away
+# is still physically in the pane that dies, and --pane only SELECTS a target).
+# Round 7 moved the loop out of the caller, so the property is no longer an
+# ORDERING but an OUTCOME: run the plain documented command from inside one of the
+# targets — no --pane, no --self, nothing asserting identity — and both targets
+# end up stopped with both outcomes recorded.
+#
+# Deliberately dependency-free. The round-6 version of this seed forced the
+# interleave by holding the other target's lifecycle lock, and awarded its two
+# passes UNEXECUTED when flock was absent (a supported shape: macOS without brew
+# flock), so the regression it existed to catch was a false green there.
+FO_R1="$(setup_repo)"; FO_R2="$(setup_repo)"
+(cd "$FO_R1" && "$AE" --local foalpha &) 2>/dev/null
+wait_for_session "foalpha"
+(cd "$FO_R2" && "$AE" --local fozeta &) 2>/dev/null
+wait_for_session "fozeta"
+sleep 1
+# `run-shell` propagates the child's exit status; under the suite's set -e an
+# unguarded call aborts the whole run on any non-zero fleet rc.
+tmux run-shell -t foalpha \
+    "env HOME='$HOME' AE_HOME='$AE_HOME' '$AE' stop all -y >'$TMPDIR/fo.out' 2>&1" || true
+for _i in $(seq 1 90); do
+    if ! tmux has-session -t "=foalpha" 2>/dev/null && ! tmux has-session -t "=fozeta" 2>/dev/null; then break; fi
+    sleep 0.5
+done
+sleep 2
+assert_eq "stop all (caller is a target): the caller's own session is stopped" "1" \
+    "$(tmux has-session -t "=foalpha" 2>/dev/null && echo 0 || echo 1)"
+assert_eq "stop all (caller is a target): the OTHER target is NOT abandoned" "1" \
+    "$(tmux has-session -t "=fozeta" 2>/dev/null && echo 0 || echo 1)"
+# ...and both outcomes are readable AFTERWARDS, which is the whole point of
+# detaching: the pane that asked is gone, so the record is the only witness left.
+assert_eq "stop all (caller is a target): both outcomes recorded durably" "1|1" \
+    "$(printf '%s|%s' \
+        "$(command grep -c '"action":"stop-result"' "$HOME/.ae/sessions/foalpha/events.jsonl" 2>/dev/null | tr -d '[:space:]')" \
+        "$(command grep -c '"action":"stop-result"' "$HOME/.ae/sessions/fozeta/events.jsonl" 2>/dev/null | tr -d '[:space:]')")"
+# ...and the caller says it HANDED OFF rather than printing a per-target result it
+# cannot possibly have verified.
+assert_eq "stop all (caller is a target): the caller reports the handoff, not a result" "1" \
+    "$([[ "$(cat "$TMPDIR/fo.out" 2>/dev/null || true)" == *"out of process"* ]] && echo 1 || echo 0)"
+for _n in foalpha fozeta; do "$AE" end -f "$_n" >/dev/null 2>&1 || true; done
+rm -f "$TMPDIR/fo.out"
+unset FO_R1 FO_R2 _n _i
+
+# (i) F6 — AN UNREACHABLE RECORDED SERVER IS UNKNOWN, NOT ABSENT. Enumerating the
+# fleet by "has a resolvable live id" DROPPED such a target and answered with the
+# success-shaped "No running ae sessions." for a session that singular `stop`
+# correctly refuses with "cannot verify" — a ghost, silently written off. Built
+# the same way as the 11th-review B1 seed: unlink a LIVE server's socket, so the
+# error is ENOENT (cannot-verify) and not the clean "no server running" shape.
+GH="ae-gh-$$"
+REPO_GH="$(setup_repo)"
+(cd "$REPO_GH" && AE_TMUX_SERVER="$GH" "$AE" --local ghsess &) 2>/dev/null
+for _i in $(seq 1 25); do command tmux -L "$GH" has-session -t "=ghsess" 2>/dev/null && break; sleep 0.4; done
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/ghsess/meta" ]] && break; sleep 0.3; done
+GH_PID="$(command tmux -L "$GH" display-message -p '#{pid}' 2>/dev/null || true)"
+rm -f "/tmp/tmux-$(id -u)/$GH" # unlink the LIVE server's socket
+# Singular stop already answers this correctly; the ASYMMETRY between the two
+# routes was the defect, so pin the reference behaviour alongside the fleet one.
+gh_single="$("$AE" stop ghsess -y 2>&1 || true)"
+assert_eq "ghost (F6): singular stop refuses — cannot verify, state preserved" "1" \
+    "$([[ "$gh_single" == *"cannot verify"* ]] && echo 1 || echo 0)"
+if gh_out="$("$AE" stop all -y 2>&1)"; then gh_rc=0; else gh_rc=$?; fi
+assert_eq "ghost (F6): 'stop all' does NOT write the target off as absent" "1" \
+    "$([[ "$gh_out" != *"No running ae sessions."* ]] && echo 1 || echo 0)"
+assert_eq "ghost (F6): the unverifiable target is carried into the fleet" "1" \
+    "$([[ "$gh_out" == *"out of process"* ]] && echo 1 || echo 0)"
+# F7, FAILURE DIRECTION — this caller is OUTSIDE the fleet, so it survives the
+# handoff and owes a real exit code. Before the amendment its rc covered only the
+# handoff, and a script driving `ae stop all` could not tell this apart from a
+# clean run. It waits on the durable record, so the failure reaches it.
+assert_eq "outside caller (F7): a target that could not be stopped makes the rc non-zero" "1" \
+    "$([[ "$gh_rc" -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "outside caller (F7): and the failing session is NAMED, not just counted" "1" \
+    "$([[ "$gh_out" == *"stop failed for:"*"ghsess"* ]] && echo 1 || echo 0)"
+assert_eq "ghost (F6): its failure is recorded durably, not swallowed" "1" \
+    "$(_gh_ev="$HOME/.ae/sessions/ghsess/events.jsonl"
+       [[ -f "$_gh_ev" ]] && command grep -q '"action":"stop-result"' "$_gh_ev" 2>/dev/null \
+        && command grep -q 'FAILED' "$_gh_ev" 2>/dev/null && echo 1 || echo 0)"
+kill "$GH_PID" 2>/dev/null || true; sleep 0.3
+printf 'y\n' | "$AE" end -f --assume-stopped ghsess >/dev/null 2>&1 || true
+rm -rf "$HOME/.ae/sessions/ghsess" 2>/dev/null || true
+unset GH REPO_GH GH_PID gh_out gh_rc gh_single _i
+
+# (j) F7, SUCCESS DIRECTION — the outside caller's rc must be able to be ZERO. The
+# ghost seed above only pins the failure direction, so on its own a mutant that
+# always returns non-zero survives it; this is the other half of the vice.
+# ISOLATED AE_HOME on purpose: the fleet must be exactly these two specimens, or
+# the rc would depend on whatever metadata earlier seeds happened to leave behind
+# rather than on the property under test. The tmux server is still the suite's.
+OK_HOME="$TMPDIR/okhome"
+mkdir -p "$OK_HOME"
+command cp "$HOME/.ae/config" "$OK_HOME/config" 2>/dev/null || true
+OK_R1="$(setup_repo)"; OK_R2="$(setup_repo)"
+(cd "$OK_R1" && AE_HOME="$OK_HOME" "$AE" --local okone &) 2>/dev/null
+wait_for_session "okone"
+(cd "$OK_R2" && AE_HOME="$OK_HOME" "$AE" --local oktwo &) 2>/dev/null
+wait_for_session "oktwo"
+sleep 1
+# Verify the SPECIMEN before trusting what it reports: an isolated home that
+# silently picked up extra sessions would make the rc mean something else.
+assert_eq "outside caller (F7): the isolated fleet is exactly the two specimens" "2" \
+    "$(command ls -1 "$OK_HOME/sessions" 2>/dev/null | command grep -c '^ok' | tr -d '[:space:]')"
+if ok_out="$(AE_HOME="$OK_HOME" "$AE" stop all -y 2>&1)"; then ok_rc=0; else ok_rc=$?; fi
+assert_eq "outside caller (F7): every target stopped cleanly -> rc 0" "0" "$ok_rc"
+# It WAITED: no pending note, no error, and the sessions are actually gone by the
+# time it returned — which is the difference between folding outcomes and merely
+# announcing a handoff.
+assert_eq "outside caller (F7): it waited for the outcomes rather than only announcing" "1" \
+    "$([[ "$ok_out" == *"out of process"* && "$ok_out" != *"still pending"* && "$ok_out" != *"Error:"* ]] && echo 1 || echo 0)"
+assert_eq "outside caller (F7): both sessions are gone when the caller returns" "0" \
+    "$(tmux list-sessions -F '#{session_name}' 2>/dev/null | command grep -c '^ok' | tr -d '[:space:]')"
+for _n in okone oktwo; do AE_HOME="$OK_HOME" "$AE" end -f "$_n" >/dev/null 2>&1 || true; done
+rm -rf "$OK_HOME"
+unset OK_HOME OK_R1 OK_R2 ok_out ok_rc _n
+
+# (k) F9 — WHAT WAS CONFIRMED IS WHAT GETS ACTED ON. The supervisor used to
+# re-enumerate metadata after the handoff, so a session created in the gap was
+# killed without ever having been confirmed. The gap is a RACE, and racing it would
+# pin a property only on machines that happen to lose — so this drives the
+# supervisor DIRECTLY with a frozen one-name list while a second session sits right
+# beside it in the same metadata. Under the old code that second session was found
+# by enumeration and died; under F9 the argv list is the whole world.
+FZ_R1="$(setup_repo)"; FZ_R2="$(setup_repo)"
+(cd "$FZ_R1" && "$AE" --local fzone &) 2>/dev/null
+wait_for_session "fzone" || true
+(cd "$FZ_R2" && "$AE" --local fztwo &) 2>/dev/null
+wait_for_session "fztwo" || true
+sleep 1
+# Verify the SPECIMEN: both sessions really are in ae's metadata, so enumeration
+# WOULD have found the bystander. Without this the seed could pass vacuously.
+assert_eq "frozen set (F9): both sessions are enumerable before the stop" "1|1" \
+    "$(printf '%s|%s' \
+        "$([[ -f "$HOME/.ae/sessions/fzone/meta" ]] && echo 1 || echo 0)" \
+        "$([[ -f "$HOME/.ae/sessions/fztwo/meta" ]] && echo 1 || echo 0)")"
+fz_op="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+# The payload is (name, instance) pairs since round 9 — a bare name is a truncated
+# payload and is refused outright, which is its own pin further down.
+fz_sid="$(command grep '^session_id=' "$HOME/.ae/sessions/fzone/meta" 2>/dev/null | head -1 | cut -d= -f2-)"
+"$AE" _stop-fleet-supervisor "$fz_op" fzone "$fz_sid" >/dev/null 2>&1 || true
+for _i in $(seq 1 40); do tmux has-session -t "=fzone" 2>/dev/null || break; sleep 0.5; done
+sleep 1
+assert_eq "frozen set (F9): the named target is stopped" "1" \
+    "$(tmux has-session -t "=fzone" 2>/dev/null && echo 0 || echo 1)"
+assert_eq "frozen set (F9): the UNCONFIRMED bystander is untouched" "1" \
+    "$(tmux has-session -t "=fztwo" 2>/dev/null && echo 1 || echo 0)"
+# ...and the bystander has no stop event at all — not merely a surviving session,
+# but an operation that never reached for it. Asked as a BOOLEAN: `grep -c` on a
+# file that does not exist prints nothing rather than 0, so the counting spelling
+# of this pin failed on correct behaviour.
+assert_eq "frozen set (F9): the bystander was never even requested" "1" \
+    "$(command grep -q 'stop-request' "$HOME/.ae/sessions/fztwo/events.jsonl" 2>/dev/null && echo 0 || echo 1)"
+# F8/N4 — the durable record carries THIS operation's id, and says what actually
+# happened: a fleet stop, not the self-stop the shared worker used to claim.
+assert_eq "provenance (F8): the result is stamped with the operation id" "1" \
+    "$(command grep '"action":"stop-result"' "$HOME/.ae/sessions/fzone/events.jsonl" 2>/dev/null \
+        | command grep -Fq "[op ${fz_op}]" && echo 1 || echo 0)"
+assert_eq "audit (N4): a fleet request is recorded as a fleet request, not a self-stop" "1" \
+    "$(_fz_req="$(command grep '"action":"stop-request"' "$HOME/.ae/sessions/fzone/events.jsonl" 2>/dev/null | tail -1)"
+       [[ "$_fz_req" == *"fleet stop requested"* && "$_fz_req" != *"from inside the session"* ]] && echo 1 || echo 0)"
+# A malformed operation id is refused at the entrypoint — it reaches an event
+# summary, so the boundary is entered here rather than trusted from the caller.
+fz_sid2="$(command grep '^session_id=' "$HOME/.ae/sessions/fztwo/meta" 2>/dev/null | head -1 | cut -d= -f2-)"
+"$AE" _stop-fleet-supervisor "not-a-uuid" fztwo "$fz_sid2" >/dev/null 2>&1 || true
+sleep 1
+assert_eq "provenance (F8): a malformed operation id stops nothing" "1" \
+    "$(tmux has-session -t "=fztwo" 2>/dev/null && echo 1 || echo 0)"
+# ...and an UNPAIRED payload is refused outright rather than half-acted on: a list
+# that does not pair is not a payload any part of which we may honour.
+"$AE" _stop-fleet-supervisor "$fz_op" fztwo >/dev/null 2>&1 || true
+sleep 1
+assert_eq "frozen set (F9): a truncated (unpaired) payload stops nothing" "1" \
+    "$(tmux has-session -t "=fztwo" 2>/dev/null && echo 1 || echo 0)"
+for _n in fzone fztwo; do "$AE" end -f "$_n" >/dev/null 2>&1 || true; done
+unset FZ_R1 FZ_R2 fz_op fz_sid fz_sid2 _n _i
+
+# (m) F10 — A NAME IS A SLOT, NOT A THING. Freezing the SET (F9) still froze NAMES,
+# and a name can be handed to a different session between confirmation and kill:
+# end the original completely, launch a fresh one under the same name, and the
+# frozen payload authorized killing the REPLACEMENT — with success recorded, and in
+# flat contradiction of what the docs promise about a session started while you are
+# deciding. Fully deterministic: no race, the substitution is performed outright.
+AB_R1="$(setup_repo)"
+(cd "$AB_R1" && "$AE" --local abasame &) 2>/dev/null
+wait_for_session "abasame" || true
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/abasame/meta" ]] && break; sleep 0.3; done
+ab_old="$(command grep '^session_id=' "$HOME/.ae/sessions/abasame/meta" 2>/dev/null | head -1 | cut -d= -f2-)"
+# The payload is frozen HERE, against the ORIGINAL instance.
+"$AE" end -f abasame >/dev/null 2>&1 || true
+AB_R2="$(setup_repo)"
+(cd "$AB_R2" && "$AE" --local abasame &) 2>/dev/null
+wait_for_session "abasame" || true
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/abasame/meta" ]] && break; sleep 0.3; done
+ab_new="$(command grep '^session_id=' "$HOME/.ae/sessions/abasame/meta" 2>/dev/null | head -1 | cut -d= -f2-)"
+# SPECIMEN PRECONDITION: the name really was reused by a DIFFERENT instance. Without
+# this the seed would pass just as happily if ae had reused the same id.
+assert_eq "ABA (F10): the same name now carries a different instance" "1" \
+    "$([[ -n "$ab_old" && -n "$ab_new" && "$ab_old" != "$ab_new" ]] && echo 1 || echo 0)"
+ab_op="bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+"$AE" _stop-fleet-supervisor "$ab_op" abasame "$ab_old" >/dev/null 2>&1 || true
+sleep 2
+assert_eq "ABA (F10): the REPLACEMENT is left running" "1" \
+    "$(tmux has-session -t "=abasame" 2>/dev/null && echo 1 || echo 0)"
+# ...and the refusal is durable and diagnosable: stamped with the operation, marked
+# FAILED, naming both instances. A silent survivor would be indistinguishable from
+# a stop that simply had not happened yet.
+assert_eq "ABA (F10): the refusal is recorded, stamped, and names both instances" "1" \
+    "$(_ab_ev="$HOME/.ae/sessions/abasame/events.jsonl"
+       _ab_res="$(command grep '"action":"stop-result"' "$_ab_ev" 2>/dev/null | command grep -F "[op ${ab_op}]" | tail -1)"
+       [[ "$_ab_res" == *FAILED* && "$_ab_res" == *"not the session that was confirmed"* \
+        && "$_ab_res" == *"$ab_new"* && "$_ab_res" == *"$ab_old"* ]] && echo 1 || echo 0)"
+# ...while the CURRENT instance is still stoppable by a payload that names it —
+# the guard must refuse a stale authorization, not the session itself.
+"$AE" _stop-fleet-supervisor "$ab_op" abasame "$ab_new" >/dev/null 2>&1 || true
+for _i in $(seq 1 40); do tmux has-session -t "=abasame" 2>/dev/null || break; sleep 0.5; done
+assert_eq "ABA (F10): the CURRENT instance is still stoppable when correctly named" "1" \
+    "$(tmux has-session -t "=abasame" 2>/dev/null && echo 0 || echo 1)"
+"$AE" end -f abasame >/dev/null 2>&1 || true
+unset AB_R1 AB_R2 ab_old ab_new ab_op _i
+
+# (n) F11 — A COMPLETE PAIR MUST NOT BE ACTED ON BEFORE THE PAYLOAD IS ACCEPTED.
+# The shape check used to run AFTER the loop, so a payload of one good pair plus a
+# dangling tail killed the good target and recorded it verified-gone, and only THEN
+# returned non-zero. Round 9's seed passed over this because a single bare name is
+# ZERO complete pairs — there was nothing for the loop to act on, so the specimen
+# never reached the property it was supposed to protect.
+OD_R="$(setup_repo)"
+(cd "$OD_R" && "$AE" --local oddone &) 2>/dev/null
+wait_for_session "oddone" || true
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/oddone/meta" ]] && break; sleep 0.3; done
+od_sid="$(command grep '^session_id=' "$HOME/.ae/sessions/oddone/meta" 2>/dev/null | head -1 | cut -d= -f2-)"
+od_op="cccccccc-dddd-eeee-ffff-000000000000"
+# SPECIMEN PRECONDITION: the pair really is complete and valid, so the ONLY defect
+# in this payload is the dangling tail. Without this the seed could refuse for the
+# wrong reason and still look green.
+assert_eq "odd payload (F11): the leading pair is itself well-formed" "1" \
+    "$([[ -n "$od_sid" ]] && echo 1 || echo 0)"
+"$AE" _stop-fleet-supervisor "$od_op" oddone "$od_sid" dangling >/dev/null 2>&1 || true
+sleep 2
+assert_eq "odd payload (F11): the complete pair is NOT acted on" "1" \
+    "$(tmux has-session -t "=oddone" 2>/dev/null && echo 1 || echo 0)"
+# (Round 10 asserted the target was never even REQUESTED. Round 11 ruled the
+# opposite for the record: a refused payload must leave a durable stamped failure,
+# or a dead worker reads as pending success. Both facts survive — nothing is
+# STOPPED, and the refusal is TOLD. The pin follows the ruling.)
+assert_eq "odd payload (F11): the refusal is recorded, and it is a refusal" "1" \
+    "$(_od_res="$(command grep '"action":"stop-result"' "$HOME/.ae/sessions/oddone/events.jsonl" 2>/dev/null | command grep -F "[op ${od_op}]" | tail -1)"
+       [[ "$_od_res" == *FAILED* && "$_od_res" == *"malformed"* ]] && echo 1 || echo 0)"
+assert_eq "odd payload (F11): and no stop-request was ever issued for it" "1" \
+    "$(command grep -q '"action":"stop-request"' "$HOME/.ae/sessions/oddone/events.jsonl" 2>/dev/null && echo 0 || echo 1)"
+# ...and the same pair WITHOUT the tail still works, so the refusal is about the
+# payload's shape and not about this target.
+"$AE" _stop-fleet-supervisor "$od_op" oddone "$od_sid" >/dev/null 2>&1 || true
+for _i in $(seq 1 40); do tmux has-session -t "=oddone" 2>/dev/null || break; sleep 0.5; done
+assert_eq "odd payload (F11): the same pair alone is honoured" "1" \
+    "$(tmux has-session -t "=oddone" 2>/dev/null && echo 0 || echo 1)"
+"$AE" end -f oddone >/dev/null 2>&1 || true
+unset OD_R od_sid od_op _i
+
+# (o) F10(a)/F10(b) — A SENTINEL IS NOT AN IDENTITY. Two pre-feature sessions both
+# freeze as "-", so ending one and renaming another into its name satisfied the
+# frozen comparison exactly and killed the replacement with rc 0. `ae rename`
+# preserves a missing session_id, which is what made the two indistinguishable.
+# Legacy state is built by STRIPPING session_id from a real session's meta — the
+# honest way to get a pre-feature specimen out of a current ae.
+#
+# ISOLATED AE_HOME, because this seed runs `stop all`: against the shared test home
+# its exit status would depend on whatever metadata earlier seeds left behind rather
+# than on the property under test.
+LG_HOME="$TMPDIR/lghome"
+mkdir -p "$LG_HOME"
+command cp "$HOME/.ae/config" "$LG_HOME/config" 2>/dev/null || true
+LG_R1="$(setup_repo)"; LG_R2="$(setup_repo)"
+(cd "$LG_R1" && AE_HOME="$LG_HOME" "$AE" --local oldslot &) 2>/dev/null
+wait_for_session "oldslot" || true
+(cd "$LG_R2" && AE_HOME="$LG_HOME" "$AE" --local replacement &) 2>/dev/null
+wait_for_session "replacement" || true
+for _n in oldslot replacement; do
+    for _i in $(seq 1 25); do [[ -f "$LG_HOME/sessions/$_n/meta" ]] && break; sleep 0.3; done
+done
+# A launch that never came up must FAIL here, loudly, rather than abort the suite at
+# a bare wait_for_session — the "no FAIL lines = vacuous" trap, from the seed side.
+assert_eq "legacy ABA (F10): both specimens launched" "1|1" \
+    "$(printf '%s|%s' \
+        "$([[ -f "$LG_HOME/sessions/oldslot/meta" ]] && echo 1 || echo 0)" \
+        "$([[ -f "$LG_HOME/sessions/replacement/meta" ]] && echo 1 || echo 0)")"
+for _n in oldslot replacement; do
+    if [[ -f "$LG_HOME/sessions/$_n/meta" ]]; then
+        command grep -v '^session_id=' "$LG_HOME/sessions/$_n/meta" >"$TMPDIR/lgm" 2>/dev/null || true
+        command mv -f "$TMPDIR/lgm" "$LG_HOME/sessions/$_n/meta" 2>/dev/null || true
+    fi
+done
+# Asked as BOOLEANS. `grep -c` prints "0" AND exits 1 on no-match, so the obvious
+# `... | tr -d '[:space:]' || echo 0` spelling emits "00" — the same counting trap
+# that bit the round-8 bystander pin, one spelling over. Counts from grep are a
+# false friend here; presence is the actual question.
+assert_eq "legacy ABA (F10): both specimens really are pre-feature (no session_id)" "1|1" \
+    "$(printf '%s|%s' \
+        "$(command grep -q '^session_id=' "$LG_HOME/sessions/oldslot/meta" 2>/dev/null && echo 0 || echo 1)" \
+        "$(command grep -q '^session_id=' "$LG_HOME/sessions/replacement/meta" 2>/dev/null && echo 0 || echo 1)")"
+lg_op="dddddddd-eeee-ffff-0000-111111111111"
+# The reviewer's exact sequence, driven with the STALE dash payload a pre-mint ae
+# would have frozen: end the original, move the other into its name.
+AE_HOME="$LG_HOME" "$AE" end -f oldslot >/dev/null 2>&1 || true
+AE_HOME="$LG_HOME" "$AE" rename replacement oldslot >/dev/null 2>&1 || true
+sleep 1
+AE_HOME="$LG_HOME" "$AE" _stop-fleet-supervisor "$lg_op" oldslot - >/dev/null 2>&1 || true
+sleep 2
+assert_eq "legacy ABA (F10b): a frozen dash does not authorize the renamed session" "1" \
+    "$(tmux has-session -t "=oldslot" 2>/dev/null && echo 1 || echo 0)"
+assert_eq "legacy ABA (F10b): the refusal is durable, stamped, and names the fact" "1" \
+    "$(_lg_res="$(command grep '"action":"stop-result"' "$LG_HOME/sessions/oldslot/events.jsonl" 2>/dev/null | command grep -F "[op ${lg_op}]" | tail -1)"
+       [[ "$_lg_res" == *FAILED* && "$_lg_res" == *"no instance identity was frozen"* && "$_lg_res" == *"(F10)"* ]] && echo 1 || echo 0)"
+# (a) MINT ON TOUCH: the same pre-feature session, taken through a real fleet
+# confirmation, ACQUIRES an identity — and keeps it. From here it is defensible.
+lg_before="$(command grep -q '^session_id=' "$LG_HOME/sessions/oldslot/meta" 2>/dev/null && echo 1 || echo 0)"
+# lg_out captures the command's output only to keep it out of the suite log; the
+# assertions below read lg_rc and the meta file.
+# shellcheck disable=SC2034
+if lg_out="$(AE_HOME="$LG_HOME" "$AE" stop all -y 2>&1)"; then lg_rc=0; else lg_rc=$?; fi
+lg_after="$(command grep '^session_id=' "$LG_HOME/sessions/oldslot/meta" 2>/dev/null | head -1 | cut -d= -f2-)"
+assert_eq "mint-at-freeze (F10a): a pre-feature session gains an identity on fleet contact" "0|1" \
+    "$(printf '%s|%s' "$lg_before" "$([[ -n "$lg_after" ]] && echo 1 || echo 0)")"
+assert_eq "mint-at-freeze (F10a): and the stop it was minted for then succeeds" "0|1" \
+    "$(printf '%s|%s' "$lg_rc" "$(tmux has-session -t "=oldslot" 2>/dev/null && echo 0 || echo 1)")"
+# ...and the minted identity SURVIVES a resume, which is what makes it an identity
+# rather than a per-operation nonce.
+(cd "$LG_R2" && AE_HOME="$LG_HOME" "$AE" oldslot &) 2>/dev/null
+wait_for_session "oldslot" || true
+sleep 1
+assert_eq "mint-at-freeze (F10a): the minted identity survives stop and resume" "1" \
+    "$(_lg_now="$(command grep '^session_id=' "$LG_HOME/sessions/oldslot/meta" 2>/dev/null | head -1 | cut -d= -f2-)"
+       [[ -n "$lg_after" && "$_lg_now" == "$lg_after" ]] && echo 1 || echo 0)"
+AE_HOME="$LG_HOME" "$AE" end -f oldslot >/dev/null 2>&1 || true
+rm -rf "$LG_HOME"
+unset LG_HOME LG_R1 LG_R2 lg_op lg_before lg_after lg_out lg_rc _n _i
+
+# (p) ROUND 11 — RENAME IS A LIFECYCLE OPERATION. It took no lifecycle lock, so a
+# rename landing between a freeze and its lock rebuilt the F10 kill exactly. The
+# interleave is FORCED rather than raced: hold the target's lifecycle lock from
+# outside and assert the rename WAITS for it instead of walking through.
+RN_HOME="$TMPDIR/rnhome"
+mkdir -p "$RN_HOME"
+command cp "$HOME/.ae/config" "$RN_HOME/config" 2>/dev/null || true
+RN_R="$(setup_repo)"
+(cd "$RN_R" && AE_HOME="$RN_HOME" "$AE" --local rnsrc &) 2>/dev/null
+wait_for_session "rnsrc" || true
+for _i in $(seq 1 25); do [[ -f "$RN_HOME/sessions/rnsrc/meta" ]] && break; sleep 0.3; done
+assert_eq "rename lock: the specimen launched" "1" \
+    "$([[ -f "$RN_HOME/sessions/rnsrc/meta" ]] && echo 1 || echo 0)"
+if command -v flock >/dev/null 2>&1; then
+    # Hold the TARGET name's lock — the one a concurrent freeze/stop would hold.
+    mkdir -p "$RN_HOME/sessions"
+    # HOLD LONGER THAN THE WAITER. rename waits 15s; a 12s hold meant it waited,
+    # the holder released, and the rename legitimately succeeded — the seed was
+    # measuring its own sleep rather than the lock. The lksess seed already had this
+    # right (hold 20 against a 15s wait); this one now matches it.
+    ( exec 9>"$RN_HOME/sessions/.lifecycle.rndst.lock"; flock 9; sleep 25 ) &
+    rn_holder=$!
+    sleep 1
+    if rn_out="$(AE_HOME="$RN_HOME" _timeout 25 "$AE" rename rnsrc rndst 2>&1)"; then rn_rc=0; else rn_rc=$?; fi
+    assert_eq "rename lock: rename REFUSES while a lifecycle lock is held, and renames nothing" "1" \
+        "$([[ "$rn_rc" -ne 0 && "$rn_out" == *"lifecycle operation"* ]] && echo 1 || echo 0)"
+    assert_eq "rename lock: the source session is untouched by the refusal" "1" \
+        "$(tmux has-session -t "=rnsrc" 2>/dev/null && echo 1 || echo 0)"
+    kill "$rn_holder" 2>/dev/null || true; wait "$rn_holder" 2>/dev/null || true
+    sleep 0.5
+else
+    # NEVER count unexecuted assertions as passes — the round-7 lesson. A supported
+    # shape without flock reports the skip out loud instead.
+    printf 'NOTE: rename lifecycle-lock interleave SKIPPED — flock not available (2 assertions not executed).\n' >&2
+fi
+# ...and with nothing held, the same rename succeeds: the lock is a gate, not a wall.
+if AE_HOME="$RN_HOME" "$AE" rename rnsrc rndst >/dev/null 2>&1; then rn_rc2=0; else rn_rc2=$?; fi
+assert_eq "rename lock: an uncontended rename still succeeds" "0|1" \
+    "$(printf '%s|%s' "$rn_rc2" "$(tmux has-session -t "=rndst" 2>/dev/null && echo 1 || echo 0)")"
+AE_HOME="$RN_HOME" "$AE" end -f rndst >/dev/null 2>&1 || true
+AE_HOME="$RN_HOME" "$AE" end -f rnsrc >/dev/null 2>&1 || true
+rm -rf "$RN_HOME"
+unset RN_HOME RN_R rn_holder rn_out rn_rc rn_rc2 _i
+
+# (q) I4 — A DEAD WORKER MUST NOT READ AS PENDING SUCCESS. A malformed payload made
+# the child return before emitting anything, while the parent had already announced
+# the handoff and settled in to wait 30s for results no living process would write.
+# Driven at the CHILD, which is where the silence was.
+DW_R="$(setup_repo)"
+(cd "$DW_R" && "$AE" --local deadw &) 2>/dev/null
+wait_for_session "deadw" || true
+for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/deadw/meta" ]] && break; sleep 0.3; done
+assert_eq "dead worker (I4): the specimen launched" "1" \
+    "$([[ -f "$HOME/.ae/sessions/deadw/meta" ]] && echo 1 || echo 0)"
+dw_op="eeeeeeee-ffff-0000-1111-222222222222"
+"$AE" _stop-fleet-supervisor "$dw_op" deadw not-a-uuid >/dev/null 2>&1 || true
+sleep 2
+assert_eq "dead worker (I4): the malformed payload stops nothing" "1" \
+    "$(tmux has-session -t "=deadw" 2>/dev/null && echo 1 || echo 0)"
+# The refusal is DURABLE and op-stamped, which is the only thing that lets the
+# caller's wait tell a refusal apart from a result that has not arrived yet.
+assert_eq "dead worker (I4): the refusal is recorded against the named target" "1" \
+    "$(_dw="$(command grep '"action":"stop-result"' "$HOME/.ae/sessions/deadw/events.jsonl" 2>/dev/null | command grep -F "[op ${dw_op}]" | tail -1)"
+       [[ "$_dw" == *FAILED* && "$_dw" == *"malformed"* && "$_dw" == *"(F11)"* ]] && echo 1 || echo 0)"
+"$AE" end -f deadw >/dev/null 2>&1 || true
+unset DW_R dw_op _i
+
+# (l) I3 — THE NO-TTY REFUSAL MUST ACTUALLY PRINT ITS RETRY LINE. `[[ -r /dev/tty ]]`
+# is TRUE on macOS inside a process with no controlling terminal while the OPEN
+# fails with "Device not configured" — measured on this box under run-shell: -r
+# TRUE, open FAILS. So the refusal branch never ran: the caller got the prompt, a
+# shell diagnostic and "Not stopped", and never the one line it needed. `run-shell`
+# is the seam because its child genuinely has no controlling terminal; a redirect
+# would not reproduce it, since a controlling tty is a process property, not an fd.
+TT_R="$(setup_repo)"
+(cd "$TT_R" && "$AE" --local ttysess &) 2>/dev/null
+wait_for_session "ttysess"
+sleep 1
+tt_out="$TMPDIR/tty.out"
+tmux run-shell -t ttysess \
+    "env HOME='$HOME' AE_HOME='$AE_HOME' '$AE' stop all >'$tt_out' 2>&1" || true
+sleep 2
+assert_eq "no-tty (I3): the refusal names the exact retry flag" "1" \
+    "$([[ "$(cat "$tt_out" 2>/dev/null || true)" == *"Re-run with -y: ae stop all -y"* ]] && echo 1 || echo 0)"
+# ...and it refused: an un-confirmable destructive fleet stop must not proceed.
+assert_eq "no-tty (I3): nothing was stopped without a confirmation" "1" \
+    "$(tmux has-session -t "=ttysess" 2>/dev/null && echo 1 || echo 0)"
+# ...and it did not ask a question it could not receive an answer to.
+assert_eq "no-tty (I3): no prompt is printed when there is no one to prompt" "1" \
+    "$([[ "$(cat "$tt_out" 2>/dev/null || true)" != *"Continue?"* ]] && echo 1 || echo 0)"
+"$AE" end -f ttysess >/dev/null 2>&1 || true
+rm -f "$tt_out"
+unset TT_R tt_out
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

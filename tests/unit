@@ -3814,8 +3814,24 @@ assert_eq "path-safe: physical dir and absent OK; grammatical symlink, dangling 
 assert_eq "path-safe: -L is tested before -e, so a dangling symlink cannot slip past" "1" \
     "$([[ "$AE_SOURCE" == *'[[ -L "$p" ]] && return 1'*'[[ -e "$p" ]] || return 0'* ]] && echo 1 || echo 0)"
 # Every existing-session boundary asks the PATH question, not only the name one.
-assert_eq "path-safe: all four boundaries consult it (launch, transfer, rename source+target)" "4" \
+# EIGHT now: launch, transfer, rename source+target, and #33's FOUR stop boundaries
+# — the public dispatch (_stop_dispatch, which must validate before self-detection
+# because the self branch promises a durable path), the two internal ones
+# (_stop_one_session and the directly-callable _stop-supervisor), and round 10's
+# _stop_refuse_unidentified, which writes events into a session directory and so
+# builds a path from a name like any other. A new entrypoint does not INHERIT a
+# boundary — it must ENTER it, and this count is what makes forgetting fail loudly.
+# It did exactly that when the eighth arrived.
+assert_eq "path-safe: all eight boundaries consult it (launch, transfer, rename x2, stop x4)" "8" \
     "$(printf '%s' "$AE_SOURCE" | command grep -c '_require_session_path_safe ' || true)"
+# ...and the two stop entrypoints ask BOTH questions, in the right order: before
+# any lock, meta or event path is built from the name.
+assert_eq "stop: both entrypoints validate name AND path before touching anything" "1|1" \
+    "$(_o="$(awk '/^_stop_one_session\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       _v="$(awk '/^_cmd_stop_supervisor\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       printf '%s|%s' \
+        "$([[ "$_o" == *'_session_name_usable "$name" || return 1'*'_require_session_path_safe "$name" || return 1'*'_lc_lock='* ]] && echo 1 || echo 0)" \
+        "$([[ "$_v" == *'_session_name_usable "$name" || return 1'*'_require_session_path_safe "$name" || return 1'*'meta_dir='* ]] && echo 1 || echo 0)")"
 rm -rf "$_sp_root" "$_sp_out"
 unset _sp_root _sp_out
 # Canonicalization: places, not spellings.
@@ -3990,9 +4006,836 @@ assert_eq "lifecycle-lock (#4): the lock is held THROUGH agent launch (release i
 assert_eq "lifecycle-lock (12th I1): released BEFORE the async SID-capture children inherit fd 8" "1" \
     "$([[ -n "$_ll_cap" && -n "$_ll_release" && "$_ll_release" -lt "$_ll_cap" ]] && echo 1 || echo 0)"
 # 12th I2: flock is optional — both acquisitions degrade with a note, doctor WARNs.
-assert_eq "lifecycle-lock (12th I2): flock-missing degrades gracefully at BOTH sites + doctor WARN" "1" \
-    "$([[ "$(printf '%s' "$AE_SOURCE" | command grep -c 'flock not found — lifecycle locking degraded' || true)" == "2" \
+# ── #33 _lifecycle_kill_verified: all THREE arms, deterministically ──
+# The integration seed for an unreachable server exercises the PRE-kill branch
+# (the id lookup fails first), so it cannot see this function's post-kill arm —
+# measured: collapsing "cannot verify" into success left the whole integration
+# suite green. Stubbing the verifier is the only way to reach all three arms
+# without racing a server into unreachability between the kill and the check.
+eval "$(awk '/^_lifecycle_kill_verified\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# shellcheck disable=SC2317
+_end_tmux() { return 0; }
+assert_eq "kill-verified: gone -> 0 silently; alive -> 1 loudly; unverifiable -> 1 loudly" \
+    "0|1|1" \
+    "$(_r=""
+       for _vg in 0 1 2; do
+           # shellcheck disable=SC2317
+           eval "_end_verify_gone() { return $_vg; }"
+           _rc=0
+           _lifecycle_kill_verified sess stop '$3' >/dev/null 2>&1 || _rc=$?
+           _r+="${_rc}|"
+       done
+       printf '%s' "${_r%|}")"
+# The two failure arms must be DISTINGUISHABLE — "still alive" and "cannot tell"
+# call for different human action, and collapsing them is how an unverified kill
+# starts reading as success.
+assert_eq "kill-verified: the two failures say different things" "1|1" \
+    "$(# shellcheck disable=SC2317
+       _end_verify_gone() { return 1; }
+       _alive="$(_lifecycle_kill_verified sess stop '$3' 2>&1 >/dev/null)"
+       # shellcheck disable=SC2317
+       _end_verify_gone() { return 2; }
+       _unsure="$(_lifecycle_kill_verified sess stop '$3' 2>&1 >/dev/null)"
+       printf '%s|%s' \
+           "$([[ "$_alive" == *'still alive'* ]] && echo 1 || echo 0)" \
+           "$([[ "$_unsure" == *'cannot verify'* ]] && echo 1 || echo 0)")"
+unset -f _end_tmux _end_verify_gone
+# Restore the real ones for anything downstream.
+eval "$(awk '/^_end_verify_gone\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_end_tmux\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+
+# ── #33 stop targets the RECORDED server by EXACT id, never ambient ──
+# MEASURED on main 2026-08-11: `ae stop proj` with only `project` live returned
+# rc=0, printed "Stopped proj", and killed `project` — tmux -t <name>
+# prefix-matches. So the locked body must reach tmux ONLY through the verified
+# primitive; a bare has-session/kill-session there is the bug returning.
+assert_eq "stop: the locked body kills via the verified primitive, with no ambient tmux call" "1" \
+    "$(_b="$(awk '/^_stop_session_locked\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_b" == *'_lifecycle_kill_verified "$name" stop "$sid"'* \
+        && "$_b" == *'_end_live_id "$name"'* \
+        && "$_b" == *'_end_target_server "$name"'* \
+        && "$_b" != *'tmux kill-session'* \
+        && "$_b" != *'tmux has-session'* ]] && echo 1 || echo 0)"
+# ...and cmd_stop itself no longer touches tmux directly at all — `all` is a loop
+# over full stops, not a cheaper bulk path.
+assert_eq "stop: cmd_stop delegates every target, touching tmux nowhere itself" "1" \
+    "$(_c="$(awk '/^cmd_stop\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_c" == *'_stop_dispatch'* \
+        && "$_c" != *'tmux kill-session'* && "$_c" != *'tmux has-session'* ]] && echo 1 || echo 0)"
+# The shared primitive is what keeps stop and end from ever disagreeing about
+# "is it gone". A COUNT is not enough: `>= 2` stayed green when end's local-mode
+# call was deleted, because stop plus end's other call still summed to two — the
+# same count-collapse class as the executable-writer inventory. So pin all THREE
+# scoped call sites INDIVIDUALLY, each in its own branch.
+assert_eq "kill-verified: stop's call site" "1" \
+    "$(_b="$(awk '/^_stop_session_locked\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_b" == *'_lifecycle_kill_verified "$name" stop "$sid"'* ]] && echo 1 || echo 0)"
+assert_eq "kill-verified: end's LOCAL-mode branch calls it" "1" \
+    "$([[ "$AE_SOURCE" == *'        cleanup_session "$session_name" "$mode" "$origin"'* \
+        && "$AE_SOURCE" == *'_lifecycle_kill_verified "$session_name" end "$_es_sid" || return 1'$'\n''        fi'$'\n''        cleanup_session'* ]] && echo 1 || echo 0)"
+assert_eq "kill-verified: end's git/full branch calls it" "1" \
+    "$([[ "$AE_SOURCE" == *'    # All good — clean up (kill by exact id; empty means it was not live)'$'\n''    if [[ -n "$_es_sid" ]]; then'$'\n''        _lifecycle_kill_verified "$session_name" end "$_es_sid" || return 1'* ]] && echo 1 || echo 0)"
+assert_eq "kill-verified: exactly three scoped call sites, no more" "3" \
+    "$(printf '%s' "$AE_SOURCE" | command grep -c '_lifecycle_kill_verified "' || true)"
+
+# ── #33 self-detection reuses #29's PROVEN mechanism ─────────────────
+# Resolving $TMUX_PANE on $TMUX's socket proves THE PANE EXISTS, not that WE ARE
+# IN IT — both are inherited, so an outside process handed a foreign socket +
+# pane-id answered "yes" (reproduced: tty=??, round-1 tree said I AM THAT
+# SESSION). #29 already owns the truth test — our controlling tty must BE that
+# pane's tty — so reuse it rather than invent a second, weaker one.
+assert_eq "self-detect: compares our CONTROLLING TTY against the pane's tty" "1" \
+    "$(_f="$(awk '/^_stop_is_self\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_f" == *'ps -o tty= -p $$'* \
+        && "$_f" == *"'#{pane_tty}'"* \
+        && "$_f" == *'"${_panetty#/dev/}" != "${_mytty#/dev/}"'* ]] && echo 1 || echo 0)"
+# No controlling tty means NOT self — the opposite default from _ae_inside_tmux,
+# and deliberately so: there, unanswerable means "behave as before"; here it
+# would mean "assert an identity we cannot prove".
+assert_eq "self-detect: a process with no controlling tty is never self" "1" \
+    "$(_f="$(awk '/^_stop_is_self\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_f" == *"case \"\$_mytty\" in"* && "$_f" == *"\"\" | '?' | '??' | '-')"* ]] && echo 1 || echo 0)"
+# The no-tty escape is a FLAG, never an env var: env is inheritable, and
+# "inherited env asserted our identity" is the bug itself.
+assert_eq "self-detect: the trusted override is a CLI flag, not the environment" "1|0" \
+    "$(printf '%s|%s' \
+        "$([[ "$AE_SOURCE" == *'--self) _AE_STOP_SELF_FLAG=true ;;'* ]] && echo 1 || echo 0)" \
+        "$(printf '%s' "$AE_SOURCE" | command grep -c 'AE_STOP_SELF=\|AE_SELF_STOP=' || true)")"
+
+# ── #33 THE IDENTITY CONTRACT, PINNED FACT BY FACT ───────────────────
+# Four rounds each found a different incomplete facet of one proof, so the proof
+# is now STATED in ae (see "THE SELF/TARGET IDENTITY CONTRACT") and these pins
+# mirror it fact-by-fact. A missing fact must fail its OWN pin, so the next gap
+# is visible as a named hole rather than discovered as a fifth facet.
+_ctc="$(awk '/^_stop_current_target_proven\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_sis="$(awk '/^_stop_is_self\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "contract: is stated in one block, with proof + refusal per fact" "1" \
+    "$([[ "$AE_SOURCE" == *'THE SELF/TARGET IDENTITY CONTRACT'* \
+        && "$AE_SOURCE" == *'UNPROVABLE ->'* \
+        && "$AE_SOURCE" == *'a REFUSAL, never a gap'* ]] && echo 1 || echo 0)"
+assert_eq "C1: inside tmux at all (env is a precondition, never evidence)" "1" \
+    "$([[ "$_ctc" == *'if [[ -z "${TMUX:-}" || -z "$_pane" ]]; then'* ]] && echo 1 || echo 0)"
+assert_eq "C2: our server answers for ITSELF (socket+pid round-trip vs \$TMUX)" "1" \
+    "$([[ "$_ctc" == *"command tmux -S \"\$_sock\" display-message -p '#{socket_path} #{pid}'"* \
+        && "$_ctc" == *'if [[ "$_ours" != "${_sock} ${_pid}" ]]; then'* ]] && echo 1 || echo 0)"
+assert_eq "C3: our server IS the target's RECORDED server (asked, not string-compared)" "1" \
+    "$([[ "$_ctc" == *"_end_tmux \"\$name\" display-message -p '#{socket_path} #{pid}'"* \
+        && "$_ctc" == *'if [[ "$_theirs" != "$_ours" ]]; then'* ]] && echo 1 || echo 0)"
+assert_eq "C4: our pane resolves ON that server to the target, by id AND name" "1" \
+    "$([[ "$_ctc" == *"'#{session_id} #{session_name}'"* \
+        && "$_ctc" == *'_want_id="$(_end_live_id "$name")"'* \
+        && "$_ctc" == *'if [[ "$_pane_sess" != "${_want_id} ${name}" ]]; then'* ]] && echo 1 || echo 0)"
+assert_eq "C4: the pane id comes from --pane when given (\$TMUX_PANE lies under run-shell)" "1" \
+    "$([[ "$_ctc" == *'local _pane="${_AE_STOP_PANE:-${TMUX_PANE:-}}"'* \
+        && "$AE_SOURCE" == *'^%[0-9]+$'* ]] && echo 1 || echo 0)"
+assert_eq "C5: controlling tty == pane tty, and it is the ONLY fact --self bypasses" "1" \
+    "$([[ "$_sis" == *'_stop_current_target_proven "$name" || return 1'* \
+        && "$_sis" == *'[[ "${_AE_STOP_SELF_FLAG:-}" == true ]] && return 0'* \
+        && "$_sis" == *'ps -o tty= -p $$'* ]] && echo 1 || echo 0)"
+# The bypass must sit AFTER the shared proof, never before it — that ordering is
+# the whole difference between "waives a mechanism" and "supplies a conclusion".
+assert_eq "C5: the bypass is downstream of C1..C4, not a short-circuit" "1" \
+    "$(_pre="${_sis%%_AE_STOP_SELF_FLAG*}"
+       [[ "$_pre" == *'_stop_current_target_proven'* ]] && echo 1 || echo 0)"
+assert_eq "F1: the fleet is enumerated from METADATA, not the ambient server" "1" \
+    "$(_c="$(awk '/^cmd_stop\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_c" == *'sessions="$(_stop_fleet_freeze)"'* && "$_c" != *'sessions="$(list_ae_sessions)"'* ]] \
+        && echo 1 || echo 0)"
+# (Round 9 changed only the SHAPE of what it is handed: the frozen list is now
+# (name, instance) pairs, and this report asks a NAME-shaped question, so it is
+# given names. The fact is unchanged.)
+assert_eq "F2: ae-tagged sessions outside metadata are named, not silently handled" "1" \
+    "$([[ "$AE_SOURCE" == *'_stop_report_unmanaged "$(_stop_fleet_names "$sessions")"'* \
+        && "$AE_SOURCE" == *'metadata does not own'* && "$AE_SOURCE" == *'NOT stopped'* ]] && echo 1 || echo 0)"
+# ── F4/F5/F6: THE INTERACTION FACTS (caller IS one of the fleet targets) ─
+# C1..C5, D1..D5 and F1..F3 each held in isolation; every round-6 and round-7
+# blocker lived in what none of them said. The contract now states the
+# interaction, and these pins mirror it.
+# The contract says what it defends against, so a future reader triages a finding
+# instead of assuming everything belongs inline.
+assert_eq "contract: states its THREAT MODEL (accidental misuse, not adversarial processes)" "1" \
+    "$([[ "$AE_SOURCE" == *'THREAT MODEL'* && "$AE_SOURCE" == *'ACCIDENTAL MISUSE'* \
+        && "$AE_SOURCE" == *'does NOT defend against adversarial'* \
+        && "$AE_SOURCE" == *'filed as issues, not fixed inline'* ]] && echo 1 || echo 0)"
+assert_eq "contract: states the caller-is-a-target interaction (F4/F5/F6)" "1" \
+    "$([[ "$AE_SOURCE" == *'INTERACTION FACTS (the caller IS one of the fleet targets)'* \
+        && "$AE_SOURCE" == *'THE FLEET LOOP NEVER RUNS IN A PROCESS THE FLEET LOOP CAN KILL'* \
+        && "$AE_SOURCE" == *'A TARGET AE DOES NOT OWN IS A FAILURE, NOT A NOTE'* \
+        && "$AE_SOURCE" == *'OWNERSHIP AND LIVENESS ARE SEPARATE QUESTIONS'* ]] && echo 1 || echo 0)"
+_call="$(awk '/^cmd_stop\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_allb="$(awk '/if \[\[ "\$target" == "all" \]\]; then/,/return "\$_all_rc"/' <<<"$_call")"
+# F4 — THE KILL LOOP IS NOT IN THE CALLER. Rounds 4-6 tried to IDENTIFY the
+# caller among the targets and stop it last; the reviewer refuted that premise
+# twice (a child with $TMUX/$TMUX_PANE sanitised away is still physically in the
+# pane that dies, and --pane is an argv SELECTOR any process can supply, not
+# evidence of where the caller lives). So the property is now structural rather
+# than inferential: the `all` branch iterates nothing and kills nothing.
+assert_eq "F4: the 'all' branch contains no kill loop and no dispatch" "1" \
+    "$([[ "$_allb" != *'while IFS= read -r s'* && "$_allb" != *'_stop_dispatch'* \
+        && "$_allb" != *'_stop_one_session'* ]] && echo 1 || echo 0)"
+# ...and it asks NO caller-identity question. Deferral-by-identity is gone, so
+# the machinery that fed it must be gone from here too — leaving a proof call in
+# place would re-open the exact inference the contract now refuses to make.
+assert_eq "F4: the 'all' branch asks no caller-identity question" "1" \
+    "$([[ "$_allb" != *'_stop_self_target_from_pane'* && "$_allb" != *'_stop_current_target_proven'* \
+        && "$_allb" != *'_stop_is_self'* && "$_allb" != *'_AE_STOP_PANE'* ]] && echo 1 || echo 0)"
+# ...the whole loop is handed to a DETACHED supervisor, in the same spawn shape
+# the singular self-stop uses (measured: nohup + all three stdio streams off the
+# pane's tty is what survives the kill; a plain backgrounded child does not).
+assert_eq "F4: 'all' hands the loop to the detached fleet supervisor" "1" \
+    "$([[ "$_allb" == *'_stop_fleet_supervised'* ]] && echo 1 || echo 0)"
+assert_eq "F4: the fleet supervisor is spawned nohup with ALL THREE stdio detached" "1" \
+    "$(_sp="$(printf '%s' "$AE_SOURCE" | command grep -F 'nohup "$_ae_self" "$0" _stop-fleet-supervisor' || true)"
+       [[ "$_sp" == *nohup* && "$_sp" == *'</dev/null'* && "$_sp" == *'>/dev/null'* && "$_sp" == *'2>&1'* ]] \
+        && echo 1 || echo 0)"
+# ...and it is REACHABLE. An unrouted internal subcommand is a supervisor that
+# never runs, which would fail as "nothing was stopped" rather than as an error.
+assert_eq "F4: the fleet supervisor has a dispatcher arm" "1" \
+    "$([[ "$AE_SOURCE" == *'_stop-fleet-supervisor)'*'_cmd_stop_fleet_supervisor'* ]] && echo 1 || echo 0)"
+# ...the detached side owns the loop and calls the LOCKED per-session path, never
+# the dispatcher — the same non-recursion rule the singular supervisor obeys.
+# (The LOOP's spelling changed in round 8 — F9 made the fleet an argv list, so it
+# iterates "$@" rather than a here-string. The fact pinned is unchanged: the
+# detached side owns the loop and calls the LOCKED per-session path, never the
+# dispatcher, which would recurse into self-detection.)
+assert_eq "F4: the detached side loops and never re-enters the dispatcher" "1" \
+    "$(_fs="$(awk '/^_cmd_stop_fleet_supervisor\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_fs" == *'while (($# >= 2)); do'* && "$_fs" == *'_cmd_stop_supervisor "$s"'* \
+        && "$_fs" != *'_stop_dispatch'* ]] && echo 1 || echo 0)"
+# ...and no flag may buy the old deferral back: --self stays refused with 'all'.
+assert_eq "F4: no flag widening — --self still refused with 'all'" "1" \
+    "$([[ "$_call" == *'--self applies only to'* ]] && echo 1 || echo 0)"
+# ...while the C5/--pane machinery it replaced STAYS for singular self-stop,
+# where the caller IS the named target by construction and the tty proof really
+# holds. Deleting it along with the fleet deferral would be over-deletion.
+assert_eq "F4: the singular self-stop keeps its --pane/C5 proof" "1" \
+    "$(_sis2="$(awk '/^_stop_is_self\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_sis2" == *'_stop_current_target_proven "$name" || return 1'* \
+        && "$_sis2" == *'_AE_STOP_SELF_FLAG'* && "$_sis2" == *'_AE_STOP_PANE'* \
+        && "$_sis2" == *'C5 —'* ]] && echo 1 || echo 0)"
+# F5 — the unmanaged report is a VERDICT: non-zero rc, folded in, and it
+# suppresses the success-shaped summary. It KILLS NOTHING, which is why it stays
+# with the caller (where its rc is directly useful) while F4 exiles the loop.
+_sru="$(awk '/^_stop_report_unmanaged\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "F5: the unmanaged report returns non-zero when it found one" "1" \
+    "$([[ "$_sru" == *'rc=1'* && "$_sru" == *'return "$rc"'* ]] && echo 1 || echo 0)"
+assert_eq "F5: the fleet folds it into the rc and suppresses 'No running'" "1" \
+    "$([[ "$_allb" == *'if ! _stop_report_unmanaged "$(_stop_fleet_names "$sessions")"; then'* \
+        && "$_allb" == *'_all_rc=1'* && "$_allb" == *'found=true'* ]] && echo 1 || echo 0)"
+# F6 — OWNERSHIP is enumerated from metadata; LIVENESS is a separate, TRI-STATE
+# question asked afterwards. Enumerating by "has a resolvable live id" silently
+# DROPPED every target whose recorded server was unreachable, conflating it with
+# verified-stopped: `stop all` answered rc 0 "No running ae sessions." for a
+# session singular `stop` correctly refused with "cannot verify".
+_sfm="$(awk '/^_stop_fleet_freeze\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "F6: ownership comes from metadata, not from a live-id lookup" "1" \
+    "$([[ "$_sfm" == *'"$SESSIONS_DIR"/*/meta'* && "$_sfm" != *'_end_live_id'* ]] && echo 1 || echo 0)"
+# ...tri-state: the verdict's STATUS is captured, not merely its success.
+assert_eq "F6: liveness is captured tri-state from _end_verify_gone" "1" \
+    "$([[ "$_sfm" == *'_end_verify_gone "$name"'*'|| _vg=$?'* ]] && echo 1 || echo 0)"
+# ...and ONLY a verified-gone target is skipped. Any truthiness test — `((_vg))`,
+# `!= 1`, `-ne 1` — drops the cannot-verify case straight back into the old bug,
+# so the pin is on the exact comparison rather than on "there is a skip".
+assert_eq "F6: skip requires VERIFIED GONE — unknown is carried, not dropped" "1" \
+    "$([[ "$_sfm" == *'if ((_vg == 0)); then'*'continue'* ]] && echo 1 || echo 0)"
+# F7 — HANDING OFF THE LOOP MUST NOT COST THE CALLER ITS EXIT CODE. F4 put the
+# kills out of process; an rc covering only the HANDOFF then starved every OUTSIDE
+# caller, and rc honesty is exactly what F5 exists for. The caller waits on the
+# RECORD instead of on the loop, bounded, and folds the outcomes in.
+assert_eq "contract: states the handoff-must-not-cost-the-rc fact (F7)" "1" \
+    "$([[ "$AE_SOURCE" == *'HANDING OFF THE LOOP MUST NOT COST THE CALLER ITS EXIT CODE'* \
+        && "$AE_SOURCE" == *"the caller's SURVIVAL, which is never asked as a question"* ]] && echo 1 || echo 0)"
+# BASELINE PINS RETIRED — SUPERSEDED BY F8. Round 7 pinned "the baseline is taken
+# BEFORE the spawn", which protected a real hazard under the question round 7 was
+# asking. F8 deleted the question: a count delta cannot carry provenance at all, so
+# there is no baseline left to take early or late. What the retired pins protected —
+# a result that is not this operation's must never satisfy this operation — is
+# carried below, and carried absolutely rather than by ordering.
+# ...the wait happens ONLY on a successful handoff (a declined confirm or a no-tty
+# refusal must not then sit there polling for results nobody asked for), and both
+# halves of the payload travel to both halves of the operation.
+assert_eq "F7: the caller awaits the outcomes and folds them into the rc" "1" \
+    "$([[ "$_allb" == *'elif _stop_fleet_supervised "$_opid" "$sessions" "$_n"; then'*'_stop_fleet_await "$_opid" "$sessions" 30 || _all_rc=1'* ]] \
+        && echo 1 || echo 0)"
+_sfa="$(awk '/^_stop_fleet_await\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# THE DISCRIMINATOR IS SURVIVAL, NOT IDENTITY. This is the one place F4's abolished
+# caller-identity proof could creep back in wearing a different hat, so the wait is
+# pinned to ask no such question at all.
+assert_eq "F7: the wait asks no caller-identity question (F4 stays abolished)" "1" \
+    "$([[ "$_sfa" != *'_stop_is_self'* && "$_sfa" != *'_stop_current_target_proven'* \
+        && "$_sfa" != *'_AE_STOP_PANE'* && "$_sfa" != *'TMUX_PANE'* ]] && echo 1 || echo 0)"
+# ...bounded, and a timeout is NOT a verdict on the sessions: the handoff rc stands
+# and the read-back is named. Returning 1 here would report a still-working
+# supervisor as a failed stop.
+# SCOPED TO THE PENDING BRANCH, not to the function. The first spelling of this
+# pin asked whether 'still pending after' was followed ANYWHERE by 'return 0' —
+# and the function's own final `return 0` satisfied that, so flipping the timeout
+# to `return 1` survived it. Glob slack, the same class as the `>=` inventory pin
+# one spelling over. Mutation is what found it; reading it did not.
+assert_eq "F7: the wait is bounded and a timeout keeps the handoff rc" "1" \
+    "$(_sfa_pend="$(awk '/if \(\(pending > 0\)\); then/,/^    fi$/' <<<"$_sfa")"
+       [[ "$_sfa" == *'if ((SECONDS - _start >= budget)); then break; fi'* \
+        && "$_sfa_pend" == *'still pending after'* \
+        && "$_sfa_pend" == *'return 0'* && "$_sfa_pend" != *'return 1'* ]] && echo 1 || echo 0)"
+# ...and a target is satisfied only by a result carrying THIS operation's id — see
+# the F8 block below, which replaced the count-delta this pin used to assert.
+assert_eq "F8: the wait is satisfied per target by an OP-MATCHED result" "1" \
+    "$([[ "$_sfa" == *'_stop_result_for_op "$name" "$opid"'* && "$_sfa" != *'cur > base'* ]] && echo 1 || echo 0)"
+# The errexit footgun this loop invites, spelled out because it is invisible when
+# the suite reaches the function through $(…): `((cond)) && break` as a loop body's
+# last statement returns 1 when the condition is false and aborts the whole command.
+# CODE ONLY — the function's own comment warns about the footgun by NAME, and the
+# first spelling of this pin matched that comment and failed on correct code.
+assert_eq "F7: the poll loop uses if/then, never the '((cond)) && break' footgun" "1" \
+    "$(_sfa_code="$(command grep -v '^ *#' <<<"$_sfa" || true)"
+       [[ "$_sfa_code" != *'&& break'* && "$_sfa_code" == *'; then break; fi'* ]] && echo 1 || echo 0)"
+# Success is matched POSITIVELY, so an outcome whose wording we do not recognise
+# counts as a failure. Matching FAILED instead would silently flip to "success" the
+# day the failure message is reworded.
+_sro="$(awk '/^_stop_result_ok\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "F7: the outcome test is fail-closed (positive success match, no FAILED test)" "1" \
+    "$([[ "$_sro" == *'"stopped: verified gone"'* && "$_sro" != *FAILED* ]] && echo 1 || echo 0)"
+# ── F8/F9: WHICH OPERATION, OVER WHICH SET ──────────────────────────
+# Two blockers, one payload. Both are questions the round-7 handoff simply did not
+# carry: WHICH operation produced a result, and WHICH set was approved.
+assert_eq "contract: states the provenance and frozen-set facts (F8/F9)" "1" \
+    "$([[ "$AE_SOURCE" == *'AN OPERATION AWAITS ITS OWN RESULTS, NOT RESULTS IN GENERAL'* \
+        && "$AE_SOURCE" == *'THE SET IS FROZEN AT'* && "$AE_SOURCE" == *'CONFIRMATION'* ]] && echo 1 || echo 0)"
+# F8 — ONE FUNCTION OWNS THE STAMP. Writer and reader both go through _stop_op_tag,
+# so the two ends cannot drift into a filter that silently matches nothing.
+assert_eq "F8: the op stamp has exactly one definition, used by writer AND reader" "1" \
+    "$(_lit="$(printf '%s' "$AE_SOURCE" | command grep -c "\\[op " || true)"
+       _def="$(printf '%s' "$AE_SOURCE" | command grep -c "^_stop_op_tag() {" || true)"
+       [[ "$_def" == 1 && "$_lit" == 1 ]] && echo 1 || echo 0)"
+_css="$(awk '/^_cmd_stop_supervisor\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# ...and BOTH events carry it. A request without the stamp leaves the operation's
+# intent unattributable; a result without it is unawaitable.
+assert_eq "F8: stop-request AND stop-result are both stamped with the operation" "1" \
+    "$([[ "$_css" == *'"${tag}${reason}"'* && "$_css" == *'"${tag}stopped: verified gone'* \
+        && "$_css" == *'"${tag}FAILED (rc ${rc})'* ]] && echo 1 || echo 0)"
+# ...the caller refuses to proceed with no id at all: no provenance means the wait
+# could be satisfied by somebody else's result, which is the bug itself.
+assert_eq "F8: an unmintable operation id is a refusal, not a blank" "1" \
+    "$([[ "$_allb" == *'_opid="$(gen_uuid)"'*'cannot mint an operation id'* ]] && echo 1 || echo 0)"
+# ...validated where it ARRIVES, not only where it is made: the supervisor is
+# directly callable and the id reaches an event summary, a JSON sink.
+assert_eq "F8: the detached entrypoint validates the operation id for itself" "1" \
+    "$(_cfs="$(awk '/^_cmd_stop_fleet_supervisor\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_cfs" == *'_stop_opid_valid "$opid" || return 1'* ]] && echo 1 || echo 0)"
+# ...and the FILTER fails closed on an empty PATTERN. `grep -F ""` matches every
+# line, so a blank restores the provenance-free question while still looking like a
+# filter — the most dangerous shape a guard can take. The guard is on the value grep
+# actually receives, not on its input: a tag function returning "" for a valid id
+# would slip straight past a check on $opid.
+assert_eq "F8: the result filter refuses an empty pattern instead of matching all" "1" \
+    "$(_srfo="$(awk '/^_stop_result_for_op\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_srfo" == *'tag="$(_stop_op_tag "$opid")"'* && "$_srfo" == *'[[ -n "$tag" ]] || return 1'* \
+        && "$_srfo" == *'command grep -F "$tag"'* ]] && echo 1 || echo 0)"
+# ...and the count-delta machinery is GONE, not merely unused: a live
+# _stop_fleet_baseline would be an invitation to answer the old question again.
+assert_eq "F8: the baseline/count-delta helpers are deleted, not orphaned" "1" \
+    "$([[ "$AE_SOURCE" != *'_stop_fleet_baseline'* && "$AE_SOURCE" != *'_stop_result_count'* ]] && echo 1 || echo 0)"
+# F9 — THE SUPERVISOR ENUMERATES NOTHING. Re-deriving the fleet downstream of the
+# confirmation is what killed a session the human never approved.
+assert_eq "F9: the detached supervisor never re-enumerates the fleet" "1" \
+    "$(_cfs="$(awk '/^_cmd_stop_fleet_supervisor\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_cfs" != *'_stop_fleet_freeze'* && "$_cfs" == *'while (($# >= 2)); do'* ]] && echo 1 || echo 0)"
+# ...and the enumeration happens EXACTLY ONCE, on the caller's side of the handoff.
+assert_eq "F9: the fleet is enumerated once, by the caller" "1" \
+    "$([[ "$(printf '%s' "$AE_SOURCE" | command grep -c 'sessions="$(_stop_fleet_freeze)"' || true)" == "1" ]] \
+        && echo 1 || echo 0)"
+# ...the frozen list travels as ARGV — an explicit set the supervisor may shrink
+# (a name that fails its own checks is skipped) but can never grow.
+assert_eq "F9: the confirmed set is handed over as an explicit argv list" "1" \
+    "$(_sfs="$(awk '/^_stop_fleet_supervised\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_sfs" == *'nohup "$_ae_self" "$0" _stop-fleet-supervisor "$opid" "${_pairs[@]}"'* ]] && echo 1 || echo 0)"
+assert_eq "F9: the dispatcher forwards the whole payload, not just the id" "1" \
+    "$([[ "$AE_SOURCE" == *'_stop-fleet-supervisor)'*'_cmd_stop_fleet_supervisor "${@:2}"'* ]] && echo 1 || echo 0)"
+# ── F10: A NAME IS A SLOT, NOT A THING ───────────────────────────────
+# F9 froze the SET, but a set of NAMES is not a set of sessions — classic ABA.
+# Measured: end a session completely, launch a fresh one under the same name, act
+# on the frozen payload, and the REPLACEMENT died with success recorded. The window
+# is exactly as long as a human stands at the prompt.
+assert_eq "contract: states the instance-not-name fact (F10)" "1" \
+    "$([[ "$AE_SOURCE" == *'A FROZEN NAME AUTHORIZES KILLING THE INSTANCE THAT CARRIED IT AT'* \
+        && "$AE_SOURCE" == *'NEVER WHATEVER CARRIES THE NAME AT KILL TIME'* ]] && echo 1 || echo 0)"
+# The instance is read in the SAME pass that decides ownership — one coherent
+# observation, not two lookups with a gap between them.
+# (Asserted as three plain substrings rather than one glob containing the emitted
+# tab escape — quoting a backslash inside a [[ ]] pattern is its own hazard, and a
+# pin should not be harder to read than the line it protects.)
+assert_eq "F10: the freeze records (name, instance) pairs, read with ownership" "1" \
+    "$([[ "$_sfm" == *'_sid="$(_stop_freeze_instance "$name")"'* \
+        && "$_sfm" == *'[[ -n "$_sid" ]] || _sid="-"'* \
+        && "$_sfm" == *'"${_sid}"'* ]] && echo 1 || echo 0)"
+# ...and the pairs reach the supervisor as argv, alongside the operation id.
+assert_eq "F10: the frozen instances travel with the frozen names" "1" \
+    "$(_sfs="$(awk '/^_stop_fleet_supervised\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_sfs" == *'_pairs+=("$_n" "${_sid:--}")'* \
+        && "$_sfs" == *'_stop-fleet-supervisor "$opid" "${_pairs[@]}"'* ]] && echo 1 || echo 0)"
+# THE COMPARISON IS INSIDE THE LOCK. This is the whole fix and the reviewer's
+# explicit caution: a check taken before the lock is acquired leaves the identical
+# race, because a launch can complete between the check and the kill. So the pin is
+# TWO-SIDED — present in the locked body, absent from the unlocked wrapper.
+_ssl="$(awk '/^_stop_session_locked\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_sos="$(awk '/^_stop_one_session\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "F10: the instance is verified INSIDE the lifecycle lock, never before it" "1" \
+    "$([[ "$_ssl" == *'_stop_instance_matches "$name" "$2" || return 1'* \
+        && "$_sos" != *'_stop_instance_matches'* ]] && echo 1 || echo 0)"
+# ...and the refusal precedes every destructive step, so a mismatch cannot half-act.
+assert_eq "F10: the mismatch returns BEFORE the resolve and the kill" "1" \
+    "$(_head="${_ssl%%kill_heartbeat*}"
+       [[ "$_head" == *'_stop_instance_matches "$name" "$2" || return 1'* \
+        && "$_head" != *'_lifecycle_kill_verified'* ]] && echo 1 || echo 0)"
+# ...it names BOTH instances: a durable "was X, now Y" is what makes the refusal
+# diagnosable once the panes are gone.
+assert_eq "F10: the refusal names both instances and says nothing was stopped" "1" \
+    "$(_sim="$(awk '/^_stop_instance_matches\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_sim" == *'recorded instance is now ${cur}, was ${expect}'* \
+        && "$_sim" == *'was NOT stopped'* ]] && echo 1 || echo 0)"
+# PRESENCE, not a default value, distinguishes "no expectation" (the singular path,
+# which must stay unaffected) from "expected no recorded id" (a pre-feature session).
+# A default of "" would collapse those two into one and silently skip the check.
+assert_eq "F10: the expectation is signalled by ARITY, so the singular path is untouched" "1" \
+    "$([[ "$_sos" == *'if (($# >= 2)); then'*'expect_set=true'* \
+        && "$_ssl" == *'if (($# >= 2)); then'* \
+        && "$_sos" == *'_stop_session_locked "$name" "$expect_sid"'* \
+        && "$_sos" == *'_stop_session_locked "$name"'* ]] && echo 1 || echo 0)"
+# The wire token is validated where it ARRIVES — it reaches an event summary and a
+# comparison — and an unpaired tail is refused outright rather than half-acted on.
+# (Round 10 moved BOTH checks out of the loop and in front of it — see the F11
+# block below. Validating each token as its pair came up was what let a complete
+# pair be acted on before the payload as a whole had been accepted.)
+assert_eq "F10: the detached worker consumes argv pairs" "1" \
+    "$(_cfs="$(awk '/^_cmd_stop_fleet_supervisor\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_cfs" == *'while (($# >= 2)); do'* && "$_cfs" == *'shift 2'* ]] && echo 1 || echo 0)"
+# BEHAVIOURAL: the comparison itself, driven over a meta file that changes the way
+# an end-and-relaunch changes it. "-" is a VALUE that must match, not a licence to
+# skip the comparison — so a legacy session is still refused when its replacement
+# has an id, which every launch by this ae mints.
+_aba_root="$(mktemp -d)"
+mkdir -p "$_aba_root/sessions/aba"
+_aba_old="451d0000-1111-2222-3333-444444444444"
+_aba_new="d6e70000-1111-2222-3333-444444444444"
+# Drives AE'S OWN comparison, not a copy of it. The first spelling of these pins
+# reimplemented the two-line test inline — which would have passed happily against
+# a mutant that skips the comparison whenever the frozen value is "-", because the
+# mutant lives in ae and the assertion lived here. A behavioural pin has to reach
+# the real function or it is only checking itself.
+_aba() ( # <recorded-now> <frozen> -> allow|refuse
+    # Both are read by read_session_meta, which arrives via eval below — shellcheck
+    # cannot see that use, hence the directives rather than a silenced whole file.
+    # shellcheck disable=SC2030
+    SESSIONS_DIR="$_aba_root/sessions"
+    # shellcheck disable=SC2034
+    WORKTREES_DIR="$_aba_root/wt"
+    eval "$(awk '/^read_session_meta\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^_stop_instance_matches\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    if [[ "$1" == "-" ]]; then printf 'session=aba\n' >"$SESSIONS_DIR/aba/meta"; else
+        printf 'session=aba\nsession_id=%s\n' "$1" >"$SESSIONS_DIR/aba/meta"; fi
+    if _stop_instance_matches aba "$2" 2>/dev/null; then echo allow; else echo refuse; fi
+)
+assert_eq "F10 (behavioural): the same instance is still authorized" "allow" "$(_aba "$_aba_old" "$_aba_old")"
+assert_eq "F10 (behavioural): a REPLACEMENT under the same name is refused" "refuse" "$(_aba "$_aba_new" "$_aba_old")"
+assert_eq "F10 (behavioural): a pre-feature session matches itself" "allow" "$(_aba "-" "-")"
+assert_eq "F10 (behavioural): a pre-feature session replacing a known one is refused" "refuse" "$(_aba "-" "$_aba_old")"
+assert_eq "F10 (behavioural): a modern session replacing a pre-feature one is refused" "refuse" "$(_aba "$_aba_new" "-")"
+# ── F10(a)/F10(b)/F11: A SENTINEL IS NOT AN IDENTITY ─────────────────
+# Round 9 compared "-" as a value. It is SHARED, and equality is not identity when
+# the value is shared: two pre-feature sessions both froze "-", so ending one and
+# renaming another into its name (rename preserves a missing id) satisfied the
+# comparison exactly and the replacement died with rc 0.
+assert_eq "contract: states both layers of the sentinel fact and the whole-payload fact" "1" \
+    "$([[ "$AE_SOURCE" == *'"-" IS NEVER COMPARED AS IDENTITY'* \
+        && "$AE_SOURCE" == *'MINT AT FREEZE'* && "$AE_SOURCE" == *'REFUSE A FROZEN "-"'* \
+        && "$AE_SOURCE" == *'A PAYLOAD IS ACCEPTED WHOLE, OR NOT AT ALL'* ]] && echo 1 || echo 0)"
+# (a) The freeze MINTS for a session that has no identity — and does it under that
+# session's own lifecycle lock, re-reading inside it, because a launch holding that
+# lock rewrites the whole meta by temp+mv and would drop an appended line.
+_sfi="$(awk '/^_stop_freeze_instance\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "F10a: a missing identity is minted at freeze, under the session's lock" "1" \
+    "$([[ "$_sfi" == *'.lifecycle.${name}.lock'* && "$_sfi" == *'flock -w 5 7'* \
+        && "$_sfi" == *'gen_uuid'* \
+        && "$_sfi" == *'set_session_meta_value "${SESSIONS_DIR}/${name}/meta" session_id "$_new"'* ]] && echo 1 || echo 0)"
+# ...re-read INSIDE the lock: the value checked before taking it may be stale by the
+# time we hold it, which is the whole reason for holding it.
+assert_eq "F10a: the identity is re-read inside the lock before minting" "1" \
+    "$(_in="${_sfi#*7>}"
+       _body="${_sfi%%\} 7>*}"
+       [[ "$_body" == *'flock -w 5 7'*'read_session_meta "$name" session_id'*'gen_uuid'* ]] && echo 1 || echo 0)"
+# ...and if the lock cannot be had we mint NOTHING: a guessed identity is worse than
+# an admitted absence, which (b) then refuses out loud.
+# THE INITIAL VALUE IS THE PROPERTY. Initialised true, a box WITHOUT flock never
+# entered the acquisition branch, never cleared the flag, and minted UNLOCKED — the
+# fail-open class in one variable's starting value. The previous spelling of this pin
+# could not see it: the `|| _have_lock=false` assignment it looked for was still
+# there, on a line that only runs when flock EXISTS and fails. "Have I got the lock"
+# must start as NO, and only an acquisition may answer yes.
+assert_eq "F10a: no lock means no mint — the flag STARTS false" "1" \
+    "$([[ "$_sfi" == *'local _have_lock=false'* \
+        && "$_sfi" == *'if flock -w 5 7; then _have_lock=true; fi'* \
+        && "$_sfi" == *'if [[ "$_have_lock" == true ]]; then'* \
+        && "$_sfi" == *'[[ -n "$sid" ]] || sid="-"'* ]] && echo 1 || echo 0)"
+# ...and the durable write goes through THE COMMON LOCKED PATH, not a private one.
+# The bespoke copy+rename it replaced was ATOMIC but took no ${meta}.lock, so a
+# concurrent `goal` write was silently discarded — a lost update that looks like
+# nothing having happened. Atomic is not the same as serialized, and the pin that
+# only asked for temp+mv was satisfied by the unserialized version.
+assert_eq "F10a: the mint writes through set_session_meta_value, not a private writer" "1" \
+    "$([[ "$AE_SOURCE" != *'_stop_meta_add_session_id'* \
+        && "$_sfi" == *'set_session_meta_value'* ]] && echo 1 || echo 0)"
+# ...and THE ONE GLOBAL LOCK ORDER is stated where the outer lock is taken, because
+# that is where a future reader decides what may be nested inside it.
+assert_eq "F10a: the lifecycle-outside / meta-inside order is documented at the acquisition" "1" \
+    "$([[ "$_sfi" == *'THE ONE GLOBAL LOCK ORDER'* && "$_sfi" == *'meta.lock (fd 200'* ]] && echo 1 || echo 0)"
+# (b) A frozen "-" reaching the supervisor is REFUSED, never compared — and the
+# refusal is stamped into that session's own log, because silence is
+# indistinguishable from a stop that has not happened yet.
+_cfs2="$(awk '/^_cmd_stop_fleet_supervisor\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "F10b: a frozen dash is refused before any comparison" "1" \
+    "$([[ "$_cfs2" == *'if [[ "$sid" == "-" ]]; then'*'_stop_refuse_unidentified "$s" "$opid"'* ]] \
+        && echo 1 || echo 0)"
+assert_eq "F10b: the refusal is durable, stamped, names F10, and returns non-zero" "1" \
+    "$(_ru="$(awk '/^_stop_refuse_unidentified\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_ru" == *'"${tag}FAILED (rc 1): no instance identity was frozen'* \
+        && "$_ru" == *'(F10)'* && "$_ru" == *'stop-result'* \
+        && "${_ru%%\}*}" == *'return 1'* ]] && echo 1 || echo 0)"
+# ...and the emission must be UNCONDITIONAL. A mutant that kept the whole string
+# and prefixed the call with a command that always succeeds (`: … || _spawn_emit…`)
+# survived the text-only pin: the words were there, the event was not. So the pin is
+# now on STATEMENT POSITION — each emission begins its own line — which is the
+# property "it runs" reduced to something source can actually see. The behavioural
+# proof lives in tests/integration seed (o), where a real refusal is read back out
+# of the session's own events.jsonl; a unit-level version would have to stand up the
+# whole event emitter and its sanitiser, and would be testing the harness.
+assert_eq "F10b: both refusal events are emitted UNCONDITIONALLY (statement position)" "2" \
+    "$(printf '%s' "$AE_SOURCE" \
+        | awk '/^_stop_refuse_unidentified\(\) \{/,/^\}$/' \
+        | command grep -c '^    _spawn_emit_event ' || true)"
+# F11 — THE PREFLIGHT RUNS BEFORE THE LOOP, not after it. Validating the tail after
+# the loop meant `opid oddone <id> dangling` killed oddone and recorded it
+# verified-gone, and THEN refused. The pin is ORDER, because that is the defect.
+assert_eq "F11: the whole payload is validated BEFORE the first pair is acted on" "1" \
+    "$(_pre="${_cfs2%%while ((\$# >= 2))*}"
+       [[ "$_pre" == *'if ! _stop_fleet_payload_valid "$@"; then'* \
+        && "$_cfs2" != *'if (($# != 0)); then return 1; fi'* ]] && echo 1 || echo 0)"
+# ...and the refusal is DURABLE. Returning silently made a dead worker read as 30
+# seconds of pending success on the caller's side: the payload was refused, nothing
+# was written, and the wait had no way to learn the difference.
+# ($_pre is recomputed here: the previous pin built it inside its own $( ), so it
+# never existed in this shell. A pin that reads a variable from a sibling subshell
+# tests an empty string and passes for the wrong reason — this one failed instead,
+# which is the only reason I looked.)
+assert_eq "I4: a refused payload is recorded, not merely rejected" "1" \
+    "$(_p="${_cfs2%%while ((\$# >= 2))*}"
+       [[ "$_p" == *'_stop_refuse_payload "$opid" "$@"'* ]] && echo 1 || echo 0)"
+# ...and the PARENT preflights the exact argv BEFORE the handoff is announced, so a
+# payload the child will refuse never becomes a promise to wait on.
+# CODE ONLY, and I am now treating that as the default for any `!=` on source text:
+# this function's own comment quotes the "out of process" message while explaining
+# the bug, so the first spelling matched the documentation of the defect rather than
+# the defect. THIRD sighting in four rounds — the file explains its hazards by name,
+# so the string you are forbidding is the string your comments contain.
+assert_eq "I4: the parent validates the exact argv before nohup and before announcing" "1" \
+    "$(_sfs2="$(awk '/^_stop_fleet_supervised\(\) \{/,/^\}$/' <<<"$AE_SOURCE" | command grep -v '^ *#' || true)"
+       _head="${_sfs2%%nohup*}"
+       [[ "$_head" == *'if ! _stop_fleet_payload_valid "${_pairs[@]}"; then'*'return 1'* \
+        && "$_head" != *'out of process'* ]] && echo 1 || echo 0)"
+# ...and a STORED token is untrusted input to that payload: validated at the freeze,
+# and a corrupt one is refused rather than silently overwritten (which would destroy
+# the only evidence of how it got that way).
+assert_eq "I4: a stored instance token is validated at freeze time" "1" \
+    "$([[ "$_sfi" == *'_stop_uuid_token_valid "$sid"'* && "$_sfi" == *"printf '%s' \"-\""* ]] && echo 1 || echo 0)"
+# BEHAVIOURAL, against ae's own preflight: an odd tail condemns a payload whose
+# pairs are individually perfect. The round-9 seed missed this because one bare name
+# is ZERO complete pairs — the specimen never reached the property, which is the
+# pin-craft lesson, not just the bug.
+_pv() (
+    eval "$(awk '/^_validate_session_name\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^_path_is_direct_child\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^_session_name_usable\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^_stop_uuid_token_valid\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^_stop_instance_token_valid\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^_stop_fleet_payload_valid\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    # shellcheck disable=SC2031
+    SESSIONS_DIR="${SESSIONS_DIR:-/nonexistent}"
+    if _stop_fleet_payload_valid "$@" 2>/dev/null; then echo accept; else echo refuse; fi
+)
+_pv_u="aaaaaaaa-1111-2222-3333-444444444444"
+assert_eq "F11 (behavioural): a well-formed single pair is accepted" "accept" "$(_pv one "$_pv_u")"
+assert_eq "F11 (behavioural): well-formed pairs plus a DANGLING tail are refused whole" "refuse" \
+    "$(_pv one "$_pv_u" dangling)"
+assert_eq "F11 (behavioural): a bad token anywhere condemns the whole payload" "refuse" \
+    "$(_pv one "$_pv_u" two zzz)"
+assert_eq "F11 (behavioural): an unusable name anywhere condemns the whole payload" "refuse" \
+    "$(_pv one "$_pv_u" ../escape "$_pv_u")"
+assert_eq "F11 (behavioural): an empty payload is refused, not treated as 'nothing to do'" "refuse" "$(_pv)"
+unset _sfi _sma _cfs2 _pv_u
+unset -f _pv
+rm -rf "$_aba_root"
+unset _ssl _sos _sim _aba_root _aba_old _aba_new
+unset -f _aba
+# N4 — THE REQUEST REASON IS PASSED, NEVER ASSUMED. One worker serves two callers;
+# the hardcoded self-stop wording made every fleet result a false audit line.
+assert_eq "N4: the stop-request reason is a parameter, and the fleet passes its own" "1" \
+    "$(_cfs="$(awk '/^_cmd_stop_fleet_supervisor\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_css" == *'local reason="${2:-self-stop requested from inside the session}"'* \
+        && "$_cfs" == *'"fleet stop requested (ae stop all)"'* ]] && echo 1 || echo 0)"
+# I3 — `-r` IS AN INCIDENTAL PREDICATE: it answers a permission question, and on
+# macOS it says TRUE for /dev/tty in a process with no controlling terminal while
+# the OPEN fails. Reproduced on this box under `tmux run-shell`: `-r` TRUE, open
+# FAILS. The refusal therefore never ran and its retry line was never printed.
+# CODE ONLY. The function's own comment quotes the broken predicate by name to
+# explain it, and the first spelling of this pin matched that comment and failed on
+# correct code — the SECOND time this round that a source-text pin read a comment
+# warning about the very thing it was pinning. Source-shaped pins strip comments.
+assert_eq "I3: tty availability is probed by OPENING, never by -r" "1" \
+    "$(_code="$(command grep -v '^ *#' <<<"$AE_SOURCE" || true)"
+       _stu="$(awk '/^_stop_tty_usable\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_stu" == *'(: </dev/tty)'* && "$_code" != *'-r /dev/tty'* ]] && echo 1 || echo 0)"
+# ...in BOTH confirm paths, and BEFORE the prompt in each: a caller with no
+# terminal gets one clean error naming the flag, not a question it cannot answer.
+assert_eq "I3: both supervisors probe the tty, and do it before prompting" "1" \
+    "$(_ok=1
+       for _fn in _stop_fleet_supervised _stop_self_supervised; do
+           _b="$(awk -v f="^${_fn}\\\\(\\\\) \\\\{" '$0 ~ f,/^\}$/' <<<"$AE_SOURCE")"
+           _head="${_b%%read -r -p*}"
+           [[ "$_head" == *'if ! _stop_tty_usable; then'*'Re-run with -y'* ]] || _ok=0
+           [[ "${_head%%_stop_tty_usable*}" != *'Continue?'* ]] || _ok=0
+       done
+       echo "$_ok")"
+# BEHAVIOURAL, not source-shaped: drive the real wait against real event files.
+# A result from a DIFFERENT operation must not satisfy this one — that is the whole
+# of B2, and it is invisible to any pin that only reads the source.
+_ov_dir="$(mktemp -d)"
+mkdir -p "$_ov_dir/sessions/ovs"
+_ov_A="aaaaaaaa-1111-2222-3333-444444444444"
+_ov_B="bbbbbbbb-1111-2222-3333-444444444444"
+_ov() (
+    SESSIONS_DIR="$_ov_dir/sessions"
+    eval "$(awk '/^_stop_op_tag\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^_stop_result_for_op\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^_stop_result_ok\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    eval "$(awk '/^_stop_fleet_await\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    local _rc=0 _out
+    _out="$(_stop_fleet_await "$1" ovs 1 2>&1)" || _rc=$?
+    printf '%s|%s' "$_rc" "$([[ "$_out" == *"still pending"* ]] && echo pending || echo settled)"
+)
+printf '{"action":"stop-result","summary":"[op %s] stopped: verified gone on its recorded server"}\n' \
+    "$_ov_B" >"$_ov_dir/sessions/ovs/events.jsonl"
+assert_eq "F8 (behavioural): another operation's SUCCESS does not satisfy this wait" "0|pending" "$(_ov "$_ov_A")"
+printf '{"action":"stop-result","summary":"[op %s] stopped: verified gone on its recorded server"}\n' \
+    "$_ov_A" >>"$_ov_dir/sessions/ovs/events.jsonl"
+assert_eq "F8 (behavioural): this operation's own SUCCESS settles it, rc 0" "0|settled" "$(_ov "$_ov_A")"
+printf '{"action":"stop-result","summary":"[op %s] FAILED (rc 1): cannot verify"}\n' \
+    "$_ov_A" >>"$_ov_dir/sessions/ovs/events.jsonl"
+assert_eq "F8 (behavioural): this operation's own FAILURE folds to rc 1" "1|settled" "$(_ov "$_ov_A")"
+# An UNSTAMPED result — every stop-result written before this change — must not
+# satisfy a stamped wait either, or the fix would be retroactively fooled by history.
+printf '{"action":"stop-result","summary":"stopped: verified gone on its recorded server"}\n' \
+    >"$_ov_dir/sessions/ovs/events.jsonl"
+assert_eq "F8 (behavioural): a legacy UNSTAMPED result does not satisfy it" "0|pending" "$(_ov "$_ov_A")"
+rm -rf "$_ov_dir"
+unset _ctc _sis _call _allb _sru _sfm _sfa _sro _css _ov_dir _ov_A _ov_B
+unset -f _ov
+
+# ── #33 round 3: a FLAG PROVES INTENT, NOT IDENTITY ──────────────────
+# --self exists because a run-shell child has no tty to prove with. But "the
+# caller asserts this is self" is the same unearned claim as "the inherited
+# environment says so" — one spelling over. It buys a bypass of the TTY proof
+# only; the identity is still earned structurally.
+# (The round-3 pins for _stop_self_flag_proven are FOLDED, not dropped: that
+# function merged into the shared C1..C4 proof, so its two facts — "the bypass
+# calls a structural proof" and "the proof round-trips socket AND pid on both
+# sides" — are now carried by the C2/C3/C5 pins above, which is where the code
+# went. Retiring a pin is only safe when you can name its successor.)
+assert_eq "self-flag: no orphaned proof helper left behind by the fold" "0" \
+    "$(printf '%s' "$AE_SOURCE" | command grep -c '_stop_self_flag_proven' || true)"
+# The proof is a socket+server-PID ROUND TRIP on both sides — our server must
+# answer for itself, and the target's RECORDED server must be that same server.
+# Asked through _end_tmux rather than string-compared, so a -L name and an -S
+# path describing one server still match.
+# --self is an assertion about the session we are IN, so it is meaningless with a
+# target someone else named. `ae stop all -y --self` classified every candidate as
+# self, kept the last, and left the rest live with rc 0.
+assert_eq "self-flag: refused with an explicit target or with 'all'" "1" \
+    "$(_c="$(awk '/^cmd_stop\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_c" == *'if [[ "$_AE_STOP_SELF_FLAG" == true && "$_target_explicit" == true ]]; then'* \
+        && "$_c" == *'--self applies only'* ]] && echo 1 || echo 0)"
+# And the implicit route means "the session I am in" — a name is how we say it,
+# not what we mean. Without proven identity it REFUSES rather than falling through
+# to stop whatever else carries the name on another server.
+assert_eq "implicit route: no identity proof means refuse, never a name fall-through" "1" \
+    "$(_c="$(awk '/^cmd_stop\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_c" == *'if [[ "$_target_explicit" != true ]] && ! _stop_is_self "$target"; then'* \
+        && "$_c" == *'cannot confirm'* && "$_c" == *'return 1'* ]] && echo 1 || echo 0)"
+# The public boundary sits BEFORE self-detection: the self branch builds and tests
+# the meta path and PROMISES a durable result at it, so a traversal target got a
+# rc-0 acceptance and an advertised events.jsonl that was never valid.
+assert_eq "stop: the PUBLIC dispatch validates before self-detection" "1" \
+    "$(_d="$(awk '/^_stop_dispatch\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_d" == *'_session_name_usable "$name" || return 1'*'_require_session_path_safe "$name" || return 1'*'if _stop_is_self "$name"; then'* ]] \
+        && echo 1 || echo 0)"
+
+# ── EVERY IDENTITY REFUSAL NAMES ITS FACT ────────────────────────────
+# If C1..C5 are complete, every refusal on this path is attributable to exactly
+# ONE named fact. An unattributable refusal means either the contract is missing
+# a fact or the code refuses somewhere the contract does not describe — the alpha
+# fixture hit the SECOND of those, and named it in one line the moment refusals
+# started carrying their cause. These pins assert the CAUSE, so a refusal that
+# drifts to a different fact fails here instead of passing as "still refuses".
+_idfns="$(awk '/^_stop_current_target_proven\(\) \{/,/^\}$/' <<<"$AE_SOURCE"
+    awk '/^_stop_is_self\(\) \{/,/^\}$/' <<<"$AE_SOURCE"
+    awk '/^_stop_self_target_from_pane\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+# Every `return 1` in the identity functions is preceded by an assignment naming
+# the fact — counted, so a new unattributed refusal path fails this pin.
+# EXACTLY equal, not ">=": with a floor, dropping one name still passes while
+# slack remains — measured, a mutant that stripped C3's name survived the >=
+# form. `^ *return 1$` counts standalone refusals only; the one delegating
+# `... || return 1` is excluded by shape, since there the CALLEE set the fact.
+_ret1="$(grep -c '^ *return 1$' <<<"$_idfns" || true)"
+_named="$(grep -c '_STOP_UNPROVEN="C[1-5] —' <<<"$_idfns" || true)"
+# LITERAL on BOTH sides. Equality alone is the >= slack class in disguise:
+# deleting a whole fact assignment TOGETHER WITH its return branch yields 14==14
+# and stays green, so the pin agrees a refusal vanished. The literal makes
+# removing a refusal path a deliberate, visible edit to this number.
+assert_eq "identity: refusal inventory is exactly 15 named / 15 refusals" "15/15" \
+    "${_named}/${_ret1}"
+assert_eq "identity: every refusal names its fact (no unattributed return 1)" "yes" \
+    "$([[ "$_ret1" -gt 0 && "$_named" -eq "$_ret1" ]] && echo yes || echo "no (${_named} named vs ${_ret1} refusals)")"
+# ...and the only unnamed refusal shape stays the delegation itself, so a new
+# `|| return 1` cannot quietly join the exempt set.
+assert_eq "identity: the only unnamed refusal is the delegation to the shared proof" "1" \
+    "$(_d="$(grep '|| return 1$' <<<"$_idfns" || true)"
+       [[ "$(grep -c . <<<"$_d")" == "1" && "$_d" == *'_stop_current_target_proven "$name" || return 1'* ]] && echo 1 || echo 0)"
+assert_eq "identity: the refusal message PRINTS the named fact" "1" \
+    "$([[ "$AE_SOURCE" == *'refusing: ${_STOP_UNPROVEN:-'* ]] && echo 1 || echo 0)"
+assert_eq "identity: an unattributed refusal is reported as a contract gap, not blanked" "1" \
+    "$([[ "$AE_SOURCE" == *'<unattributed — this is a contract gap, please report>'* ]] && echo 1 || echo 0)"
+
+# ── C4 IS CONSTRUCTIVE ON THE IMPLICIT ROUTE ─────────────────────────
+# The implicit route means THE SESSION I AM IN, so the name is derived FROM the
+# proven pane. Asking `display-message` without -t answers with the SERVER's
+# current session — measured: under `run-shell -t alpha` it resolved 'beta', and
+# C4 then correctly refused a target that was wrong before C4 ever saw it. A
+# filter cannot repair a name; only derivation can.
+_sstfp="$(awk '/^_stop_self_target_from_pane\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "C4-constructive: the implicit target is derived from the pane" "1" \
+    "$([[ "$_sstfp" == *'display-message -p -t "$_pane"'*'#{session_name}'* ]] && echo 1 || echo 0)"
+assert_eq "C4-constructive: derivation proves C2 before trusting the pane answer" "1" \
+    "$([[ "$_sstfp" == *'#{socket_path} #{pid}'* ]] && echo 1 || echo 0)"
+assert_eq "C4-constructive: derivation still asks ae whether it owns that name" "1" \
+    "$([[ "$_sstfp" == *'${SESSIONS_DIR}/${_nm}'* ]] && echo 1 || echo 0)"
+# Scoped to cmd_stop FIRST: `if [[ -z "$target" ]]` appears in several commands,
+# and an awk range over the whole file starts at the earliest one — a different
+# function entirely.
+_csrc="$(awk '/^cmd_stop\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_notarget="$(awk '/^    if \[\[ -z "\$target" \]\]; then/,/^    fi$/' <<<"$_csrc")"
+assert_eq "C4-constructive: pane derivation is TRIED BEFORE the ambient oracle" "1" \
+    "$(_a="$(grep -n '_stop_self_target_from_pane' <<<"$_notarget" | head -1 | cut -d: -f1 || true)"
+       _b="$(grep -n 'detect_current_session' <<<"$_notarget" | head -1 | cut -d: -f1 || true)"
+       [[ -n "$_a" && -n "$_b" && "$_a" -lt "$_b" ]] && echo 1 || echo 0)"
+
+# ── #33 `stop all` from inside: RETIRED, SUPERSEDED BY F4 ────────────
+# Rounds 2-6 pinned "the caller is deferred OUT of the loop and stopped LAST".
+# Round 7 deleted the thing that pin described: there is no in-caller loop left
+# to defer out of. Retired here rather than dropped silently, per the round-4
+# rule that a pin may only be retired when you can point at what carries its
+# fact now — the safety property (a fleet stop cannot be killed halfway by its
+# own caller) is carried by the F4 pins above, and carried STRONGER: ordering
+# only ever helped when the caller could be IDENTIFIED, which is precisely the
+# premise the reviewer refuted. A detached supervisor needs no identification.
+# What survives unchanged is the accounting: every target's rc is folded into
+# one exit status, so a partial failure can never read as a clean fleet stop.
+assert_eq "stop all: the caller-side rc is accumulated and returned" "1" \
+    "$(_c="$(awk '/^cmd_stop\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_c" == *'_all_rc=1'* && "$_c" == *'return "$_all_rc"'* ]] && echo 1 || echo 0)"
+# ...and on the detached side too, where the outcomes actually happen: each
+# target's result lands durably in ITS OWN events.jsonl (that is the only place a
+# human whose pane vanished can read them), and one failure fails the loop.
+assert_eq "stop all: the detached loop accumulates rc per target" "1" \
+    "$(_fs="$(awk '/^_cmd_stop_fleet_supervisor\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_fs" == *'|| rc=1'* && "$_fs" == *'return "$rc"'* ]] && echo 1 || echo 0)"
+
+# ── #33 self-stop supervisor: the spawn SHAPE is the property ────────
+# MEASURED 2026-08-11 (isolated tmux server, delay after the kill so the outcome
+# is not a race): a plain backgrounded child of a pane DIES when the session is
+# killed; a `nohup` child with all stdio detached SURVIVES. Confirms colead's
+# probe, and `setsid` is not macOS-core so it cannot be the mechanism.
+#
+# This pin exists because the END-TO-END seed cannot discriminate: the
+# supervisor's post-kill window (verify + write the result) is milliseconds, so a
+# NON-detached child usually finishes before SIGHUP lands — measured, the e2e
+# probe passes with nohup removed. The property therefore lives here, where
+# breaking it fails deterministically.
+assert_eq "self-stop: supervisor spawned via nohup with ALL THREE stdio streams detached" "1" \
+    "$(_sp="$(printf '%s' "$AE_SOURCE" | command grep -F 'nohup "$_ae_self" "$0" _stop-supervisor' || true)"
+       [[ "$_sp" == *nohup* && "$_sp" == *'</dev/null'* && "$_sp" == *'>/dev/null'* && "$_sp" == *'2>&1'* ]] \
+        && echo 1 || echo 0)"
+# The caller must hold NO lifecycle fd when it spawns (c1fd622: a backgrounded
+# child inherits the open description and keeps the lock held after the parent
+# exits). Guaranteed here by ORDERING — self-detection and the spawn both happen
+# in _stop_dispatch, BEFORE _stop_one_session opens anything — so the pin is that
+# the dispatcher never wraps the spawn in a lock.
+assert_eq "self-stop: the spawn happens before any lifecycle lock is acquired" "1" \
+    "$(_d="$(awk '/^_stop_dispatch\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_d" == *'_stop_self_supervised'* && "$_d" != *'flock'* && "$_d" != *'_lc_lock'* ]] && echo 1 || echo 0)"
+# The supervisor calls the LOCKED path directly, never the dispatcher: it inherits
+# $TMUX from the pane that spawned it, so routing back through self-detection
+# would recurse.
+assert_eq "self-stop: the supervisor cannot recurse into self-detection" "1" \
+    "$(_v="$(awk '/^_cmd_stop_supervisor\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_v" == *'_stop_one_session "$name"'* && "$_v" != *'_stop_dispatch'* ]] && echo 1 || echo 0)"
+# Intent AND outcome are both recorded, so a human whose pane vanished can find
+# out what happened from the preserved events log.
+assert_eq "self-stop: both stop-request and stop-result are emitted durably" "1" \
+    "$([[ "$AE_SOURCE" == *'stop-request'* && "$AE_SOURCE" == *'stop-result'* ]] && echo 1 || echo 0)"
+
+# THREE lifecycle-lock sites now: launch/resume, end, and stop (#33). The count is
+# the invariant — a new site that forgets the degradation notice must fail here
+# rather than silently acquire nothing on a flock-less box.
+# FOUR sites now: #33 round 11 brought RENAME under lifecycle serialization, closing
+# a gap that pre-dates this issue (rename raced end and launch too) and that #33 made
+# concrete — a rename between a freeze and its lock rebuilt the F10 kill exactly.
+assert_eq "lifecycle-lock (12th I2): flock-missing degrades gracefully at ALL FOUR sites + doctor WARN" "1" \
+    "$([[ "$(printf '%s' "$AE_SOURCE" | command grep -c 'flock not found — lifecycle locking degraded' || true)" == "4" \
         && "$AE_SOURCE" == *'doctor_report "WARN" "flock"'* ]] && echo 1 || echo 0)"
+# ...and each notice sits on a real lock acquisition, in one of the TWO shapes the
+# codebase uses: end and stop scope theirs to a brace group (`} 9>"$_lc_lock"`),
+# while launch holds fd 8 open across the whole launch and closes it explicitly
+# once the session is fully on disk (c1fd622 — it cannot be block-scoped there).
+# ── #33 round 11: RENAME IS A LIFECYCLE OPERATION ────────────────────
+# It never took a lifecycle lock — a gap that pre-dates #33 (it raced end and launch
+# too) and that #33 made concrete: pause a freezer before it locks `oldslot`, end
+# oldslot, rename a live identity-less session INTO that name, release, and the
+# freezer mints into the REPLACEMENT, freezes that id, and the supervisor kills it
+# reporting "verified gone". F10 rebuilt through a door nobody had locked.
+_crn="$(awk '/^cmd_rename\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "rename: serialized across BOTH lifecycle locks" "1" \
+    "$([[ "$_crn" == *'} 9>"${SESSIONS_DIR}/.lifecycle.${_rn_first}.lock" 10>"${SESSIONS_DIR}/.lifecycle.${_rn_second}.lock"'* \
+        && "$_crn" == *'flock -w 15 9'* && "$_crn" == *'flock -w 15 10'* ]] && echo 1 || echo 0)"
+# ...in NAME-SORTED order. Two renames touching the same pair from opposite ends
+# would otherwise each hold one lock and wait for the other — the deadlock this
+# ordering exists to prevent, and the reason the order must be a FUNCTION of the
+# names rather than of which argument came first.
+assert_eq "rename: the two locks are taken in name-sorted order (deadlock avoidance)" "1" \
+    "$([[ "$_crn" == *'if [[ "$old_name" < "$new_name" ]]; then'*'_rn_first="$old_name"'*'_rn_second="$new_name"'* \
+        && "$_crn" == *'_rn_first="$new_name"'*'_rn_second="$old_name"'* ]] && echo 1 || echo 0)"
+# ...and every check that READS state the rename then mutates sits INSIDE the lock.
+# Validation of the names themselves stays outside — it has to, the lock paths are
+# built from them — but existence and collision are exactly the facts a concurrent
+# lifecycle operation invalidates.
+assert_eq "rename: the existence and collision checks moved inside the locked body" "1" \
+    "$(_crl="$(awk '/^_cmd_rename_locked\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_crl" == *'is not running.'* && "$_crl" == *'already exists.'* \
+        && "$_crn" != *'is not running.'* \
+        && "$_crn" == *'_validate_session_name "$new_name" || return 1'* ]] && echo 1 || echo 0)"
+unset _crn
+
+assert_eq "lifecycle-lock: two block-scoped acquisitions (end, stop) + one held-open (launch)" "2|1" \
+    "$(printf '%s|%s' \
+        "$(printf '%s' "$AE_SOURCE" | command grep -c '^    } 9>"\$_lc_lock"' || true)" \
+        "$(printf '%s' "$AE_SOURCE" | command grep -c '^exec 8>"\${SESSIONS_DIR}/\.lifecycle\.' || true)")"
 # 10th review B1: the sweep reports via GLOBALS and is called BARE — a $(…) subshell
 # swallowed _SWEEP_UNSURE and the acknowledgement deleted state past a hidden socket.
 assert_eq "sweep (10th B1): end_session calls the sweep BARE and reads the globals" "1" \
@@ -7095,10 +7938,16 @@ assert_eq "end (B1): classifier + end resolve via the server-aware _end_live_id"
 # 2nd-delta BLOCKER: server resolution is CENTRALIZED in _end_tmux — the target's own
 # server (empty tmux_server → the DEFAULT server via `command tmux`, never the ambient
 # shim), used for every end-path read AND the kill. No duplicated `command tmux -L` logic.
+# The kill itself now lives in the shared _lifecycle_kill_verified (#33) rather
+# than inline in end — the INVARIANT is unchanged and follows it there: the kill
+# runs on the TARGET'S OWN server through centralized _end_tmux, addressed by
+# exact id, never by raw name and never on the ambient server.
+_kv="$(awk '/^_lifecycle_kill_verified\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 assert_eq "end (2nd-delta B1): tmux runs on the target's own server via centralized _end_tmux" "1" \
     "$([[ "$AE_SOURCE" == *'mapfile -t _sel < <(_srv_tmux_args "$kind" "$srv")'* \
         && "$AE_SOURCE" != *'TMUX='"'"''"'"' command tmux -L "${AE_TMUX_DEFAULT_SOCKET:-default}" "$@"'* \
-        && "$AE_SOURCE" == *'_end_tmux "$session_name" kill-session -t "$_es_sid"'* ]] && echo 1 || echo 0)"
+        && "$_kv" == *'_end_tmux "$name" kill-session -t "$sid"'* ]] && echo 1 || echo 0)"
+unset _kv
 # 3rd review B1: the empty/default branch must PIN the default socket — a bare
 # `command tmux` follows an inherited $TMUX (verified live: from a named pane it lists
 # the NAMED server), so from inside any pane "default" silently meant "caller's server".

@@ -2398,19 +2398,10 @@ _end_session_locked() {
     # Local mode: just clean up (no work to preserve — files are in original dir)
     if [[ "$mode" == "local" ]]; then
         if [[ -n "$_es_sid" ]]; then
-            _end_tmux "$session_name" kill-session -t "$_es_sid" 2>/dev/null || true
-            # VERIFY the kill before destroying state — and distinguish "verified gone"
-            # from "cannot verify": an unreachable server makes every query look empty,
-            # which the old check read as gone (4th review, B2).
-            _es_vg=0
-            _end_verify_gone "$session_name" || _es_vg=$?
-            if ((_es_vg == 1)); then
-                echo "Error: could not kill session '$session_name' — still alive; state preserved. Retry 'ae end $session_name'." >&2
-                return 1
-            elif ((_es_vg != 0)); then
-                echo "Error: cannot verify '$session_name' was killed (its tmux server is unreachable) — state preserved." >&2
-                return 1
-            fi
+            # VERIFY the kill before destroying state — and distinguish "verified
+            # gone" from "cannot verify": an unreachable server makes every query
+            # look empty, which the old check read as gone (4th review, B2).
+            _lifecycle_kill_verified "$session_name" end "$_es_sid" || return 1
         fi
         cleanup_session "$session_name" "$mode" "$origin"
         echo "Ended local session $session_name"
@@ -2477,16 +2468,7 @@ _end_session_locked() {
 
     # All good — clean up (kill by exact id; empty means it was not live)
     if [[ -n "$_es_sid" ]]; then
-        _end_tmux "$session_name" kill-session -t "$_es_sid" 2>/dev/null || true
-        _es_vg=0
-        _end_verify_gone "$session_name" || _es_vg=$?
-        if ((_es_vg == 1)); then
-            echo "Error: could not kill session '$session_name' — still alive; state preserved. Retry 'ae end $session_name'." >&2
-            return 1
-        elif ((_es_vg != 0)); then
-            echo "Error: cannot verify '$session_name' was killed (its tmux server is unreachable) — state preserved." >&2
-            return 1
-        fi
+        _lifecycle_kill_verified "$session_name" end "$_es_sid" || return 1
     fi
     # B3 durability: a no-remote git target just COMMITTED work that exists ONLY in this
     # directory (a copy holds its sole repo; a detached-HEAD worktree's commit dies with
@@ -3744,41 +3726,1060 @@ kill_heartbeat() {
 }
 
 cmd_stop() {
-    local target="${1:-}"
+    local target="" arg
+    _AE_STOP_YES=false
+    _AE_STOP_SELF_FLAG=false
+    _AE_STOP_PANE=""
+    local _target_explicit=false
+    for arg in "$@"; do
+        case "$arg" in
+            -y | --yes) _AE_STOP_YES=true ;;
+            # For a route that genuinely IS the session but has no controlling
+            # terminal to prove it (a tmux run-shell binding). Explicit and
+            # non-inheritable by construction — an env var would be neither.
+            --self) _AE_STOP_SELF_FLAG=true ;;
+            --pane=*)
+                _AE_STOP_PANE="${arg#--pane=}"
+                if [[ ! "$_AE_STOP_PANE" =~ ^%[0-9]+$ ]]; then
+                    echo "Error: --pane expects a tmux pane id like %3 (use --pane=#{pane_id})." >&2
+                    return 1
+                fi
+                ;;
+            -*)
+                echo "Error: unknown flag '$arg'. Use -y/--yes, --self or --pane=%N." >&2
+                return 1
+                ;;
+            *)
+                if [[ -z "$target" ]]; then
+                    target="$arg"
+                    _target_explicit=true
+                fi
+                ;;
+        esac
+    done
+    # --self asserts "the session I am in", so it only means anything on the route
+    # that RESOLVES that session. With an explicit target — including `all` — it is
+    # a claim about someone else, and `ae stop all -y --self` classified EVERY
+    # candidate as self, kept only the last, and left the rest live with rc 0.
+    if [[ "$_AE_STOP_SELF_FLAG" == true && "$_target_explicit" == true ]]; then
+        echo "Error: --self applies only to 'ae stop' with no target (the session you are in)." >&2
+        echo "  It asserts an identity, so it cannot be combined with a named target or 'all'." >&2
+        return 1
+    fi
     if [[ -z "$target" ]]; then
-        target="$(detect_current_session 2>/dev/null)" || {
-            echo "Usage: ae stop [session-name]" >&2
-            echo "       ae stop all" >&2
-            echo "(Run inside an ae tmux session to stop it without specifying the name.)" >&2
-            return 1
-        }
+        # Pane-derived first (C4 constructive); the ambient oracle only as fallback
+        # for shapes where the pane cannot be proven. A wrong ambient name is still
+        # caught by the identity gate below — this just makes the RIGHT name
+        # reachable on the run-shell route, where ambient resolution names a
+        # different session entirely.
+        target="$(_stop_self_target_from_pane 2>/dev/null)" || target=""
+        if [[ -z "$target" ]]; then
+            target="$(detect_current_session 2>/dev/null)" || {
+                echo "Usage: ae stop [session-name] [-y]" >&2
+                echo "       ae stop all" >&2
+                echo "(Run inside an ae tmux session to stop it without specifying the name.)" >&2
+                return 1
+            }
+        fi
     fi
     if [[ "$target" == "all" ]]; then
-        local found=false
+        local found=false _all_rc=0
         local sessions
-        sessions="$(list_ae_sessions)"
+        sessions="$(_stop_fleet_freeze)"
+        # F2/F5 — anything ambiently visible and AE-tagged that ae's metadata does
+        # not own is named, and naming it is a FAILURE: it is still running. This
+        # KILLS NOTHING, so it stays here where its rc is directly useful; F4
+        # governs only the loop that kills.
+        if ! _stop_report_unmanaged "$(_stop_fleet_names "$sessions")"; then
+            _all_rc=1
+            found=true
+        fi
         if [[ -n "$sessions" ]]; then
-            while IFS= read -r s; do
-                [[ -z "$s" ]] && continue
-                found=true
-                kill_heartbeat "$s"
-                tmux kill-session -t "$s" 2>/dev/null || true
-                echo "Stopped $s"
-            done <<<"$sessions"
+            found=true
+            # F4 — THE LOOP LEAVES THIS PROCESS. Rounds 4-6 tried to identify the
+            # caller among the targets and stop it last; that cannot be done in
+            # general (a caller with no provable identity is still in the pane
+            # that dies, and --pane selects a target rather than proving one). So
+            # nothing here iterates: a detached supervisor owns the whole loop,
+            # and no session it kills can be running it.
+            local _n _opid
+            _n="$(printf '%s' "$sessions" | command grep -c . | tr -d '[:space:]')"
+            # F8/F9 — ONE PAYLOAD, minted before the human is asked: an operation
+            # id, and the EXACT fleet being confirmed. `$sessions` is not re-derived
+            # after this point by anyone.
+            _opid="$(gen_uuid)" || _opid=""
+            if [[ -z "$_opid" ]]; then
+                # No id means no provenance, and no provenance means the wait could
+                # be satisfied by somebody else's result. Refuse rather than guess.
+                echo "Error: cannot mint an operation id (no UUID generator) — nothing was stopped." >&2
+                _all_rc=1
+            elif _stop_fleet_supervised "$_opid" "$sessions" "$_n"; then
+                # F7 — wait on the RECORD, not on the loop. If this caller was one
+                # of the targets it dies in here; that is the intended shape, not a
+                # loss (everything it could report, it already reported).
+                _stop_fleet_await "$_opid" "$sessions" 30 || _all_rc=1
+            else
+                _all_rc=1
+            fi
         fi
         if [[ "$found" == false ]]; then
             echo "No running ae sessions."
         fi
-    else
-        if tmux has-session -t "$target" 2>/dev/null; then
-            kill_heartbeat "$target"
-            tmux kill-session -t "$target"
-            echo "Stopped $target"
-        else
-            echo "Session '$target' is not running." >&2
+        return "$_all_rc"
+    fi
+    # THE IMPLICIT ROUTE MEANS "THE SESSION I AM IN" — a name is how we say it, not
+    # what we mean. If that identity cannot be proven, refusing is the only safe
+    # answer: falling through to an ordinary stop targets whatever else carries the
+    # name. Measured — inside a FOREIGN server whose session was also called
+    # 'proj', detect_current_session resolved 'proj' from that server while the
+    # RECORDED proj lived on another, and the fall-through killed the recorded one
+    # while telling the user this pane would close. Both halves false.
+    if [[ "$_target_explicit" != true ]] && ! _stop_is_self "$target"; then
+        echo "Error: cannot confirm '$target' is the session you are in." >&2
+        echo "  refusing: ${_STOP_UNPROVEN:-<unattributed — this is a contract gap, please report>}" >&2
+        echo "  ae resolved that name from your current tmux server, but could not prove" >&2
+        echo "  it is the session ae has recorded under it — stopping it could kill a" >&2
+        echo "  different session of the same name on another server." >&2
+        echo "  Name it explicitly if that is what you want: ae stop $target" >&2
+        return 1
+    fi
+    _stop_dispatch "$target"
+}
+
+# The user-facing decision: stopping the session you are INSIDE cannot be done by
+# the process inside it, so that case is handed to a supervisor. Everything else
+# runs inline under the lock. The supervisor calls _stop_one_session directly and
+# never comes back through here, so this cannot recurse.
+_stop_dispatch() {
+    local name="$1"
+    # THE PUBLIC BOUNDARY, and it has to be here — before self-detection, not only
+    # inside the paths it leads to. _stop_self_supervised builds and tests the meta
+    # path and PROMISES a durable result at it, so `ae stop ../victim -y --self`
+    # returned 0 and advertised sessions/../victim/events.jsonl; the child later
+    # refused, leaving a promise made for a path that was never valid. The inner
+    # guards stay exactly where they are — three independent checks on the way to a
+    # destructive act is the shape the rollback round settled on.
+    _session_name_usable "$name" || return 1
+    _require_session_path_safe "$name" || return 1
+    if _stop_is_self "$name"; then
+        _stop_self_supervised "$name"
+        return $?
+    fi
+    _stop_one_session "$name"
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+# THE SELF/TARGET IDENTITY CONTRACT
+#
+# THREAT MODEL. Everything below defends against ACCIDENTAL MISUSE by this tool's
+# single human and the agents acting on their behalf — a stale payload, a name
+# reused between two operations, a lifecycle op landing mid-freeze, a pane that is
+# not the session it appears to be. It does NOT defend against adversarial
+# processes on the same machine: anything that can forge argv, write ae's metadata
+# or hold its locks has already won by easier routes. Findings outside this model
+# are filed as issues, not fixed inline — the contract is here to keep ordinary use
+# from destroying work, not to survive an attacker who already owns the box.
+#
+# The question every stop must answer is "may THIS process stop THAT session".
+# It decomposes differently per route:
+#
+#   NAMED ROUTE  (`ae stop <name>`) — the human named a target. Self-ness is
+#     irrelevant; stopping a session from anywhere is legitimate. It needs only
+#     the destruction facts D1..D5. It must merely never be MISCLASSIFIED as
+#     self, which would route it through the supervisor and tell the user their
+#     pane is closing when it is not.
+#
+#   IDENTITY ROUTE (`ae stop` with no name, or a target that IS us) — the kill
+#     would destroy the caller mid-operation, so C1..C5 must ALL hold before the
+#     work may be handed to the supervisor.
+#
+# This block exists because four review rounds each found a different INCOMPLETE
+# FACET of the same proof (tty-but-not-server, server-but-not-target,
+# target-but-not-enumeration) — a design being derived by adversarial iteration
+# instead of stated. Every fact below names what PROVES it and what happens when
+# it cannot be proven. A fact with no proof mechanism is a REFUSAL, never a gap
+# to be filled later.
+#
+# ── CURRENT-TARGET FACTS (identity route; ALL required) ───────────────────
+#   C1  We are inside tmux at all.
+#       PROVEN BY: $TMUX and $TMUX_PANE both set.
+#       UNPROVABLE -> not self. Env is a PRECONDITION, never evidence: every one
+#       of these variables is inherited and can be handed to us.
+#   C2  Our ambient server answers for ITSELF.
+#       PROVEN BY: socket_path + server pid, round-tripped from that socket,
+#       equal to the fields we were handed in $TMUX.
+#       UNPROVABLE -> not self. Catches a stale $TMUX (server restarted) and a
+#       forged one.
+#   C3  Our ambient server IS the target's RECORDED server.
+#       PROVEN BY: the same socket_path + pid pair asked of the target's recorded
+#       server via _end_tmux — compared as an ANSWER, not as strings, so a -L
+#       name and an -S path naming one server still match.
+#       UNPROVABLE -> not self. Missing this killed a recorded session on server
+#       A from an identically-named interactive pane on server B.
+#   C4  Our PANE resolves, on that server, to the target session itself.
+#       PROVEN BY: our pane id -> '#{session_id} #{session_name}' on that socket,
+#       both equal to the target's exact live id and its name.
+#       WHICH PANE ID: $TMUX_PANE for an interactive shell. NOT for a run-shell
+#       child — MEASURED 2026-08-11: `run-shell -t probe` hands the child
+#       TMUX_PANE=%60 (inherited from the server's own environment) while the
+#       target pane is %0. The variable is not merely absent there, it is WRONG,
+#       and trusting it is exactly why `run-shell -t alpha` resolved and killed
+#       BETA. A run-shell child therefore learns its pane the only way tmux
+#       offers: a FORMAT the server expands for the target, passed as --pane
+#       #{pane_id} and validated as ^%[0-9]+$ before use. That token is
+#       tmux-generated and shape-checked, unlike #{session_name}, which is
+#       attacker-influenced text and stays out of the recipe.
+#       UNPROVABLE -> not self.
+#   C5  Our CONTROLLING TTY is that pane's tty.
+#       PROVEN BY: ps -o tty= of this process == '#{pane_tty}'.
+#       UNPROVABLE -> not self, EXCEPT under --self, which bypasses THIS FACT AND
+#       ONLY THIS FACT, because a tmux run-shell child legitimately has no
+#       controlling terminal. The flag buys the bypass of a proof MECHANISM; it
+#       never supplies the CONCLUSION, and C1..C4 still have to hold.
+#
+# ── DESTRUCTION FACTS (both routes; ALL required) ─────────────────────────
+#   D1  Name usable AND on-disk path a physical direct child, checked at EVERY
+#       entrypoint (public dispatch + both internal). A boundary is entered,
+#       never inherited. UNPROVABLE -> refuse, nothing touched.
+#   D2  A POSITIVE recorded server. UNPROVABLE -> refuse; ae never guesses a
+#       server, and since stop destroys nothing there is nothing to acknowledge
+#       one's way past.
+#   D3  Addressed by EXACT session id on that server, never by name (`-t <name>`
+#       prefix-matches).
+#   D4  The kill is VERIFIED gone, tri-state: alive and unverifiable are BOTH
+#       failures and neither may print "Stopped".
+#   D5  The lifecycle lock is held across identity -> kill -> verify.
+#
+# ── FLEET FACTS (`ae stop all`) ───────────────────────────────────────────
+#   F1  The fleet is what ae's METADATA owns; enumerate the RECORDED servers.
+#       Ambient enumeration is a redirectable heuristic — AE_TMUX_SERVER redirects
+#       it, and using it stopped server A's session while reporting on B's.
+#   F2  An AE_SESSION-tagged session seen ambiently but ABSENT from metadata is
+#       reported LOUDLY as unmanaged: never silently stopped, never silently
+#       ignored.
+#   F3  Any mismatch or per-target failure is a loud PARTIAL FAILURE, never
+#       counted as success.
+#
+# ── INTERACTION FACTS (the caller IS one of the fleet targets) ────────────
+# C1..C5, D1..D5 and F1..F3 each hold in isolation. Both round-6 blockers lived
+# in what none of them said: what happens when the session being enumerated is
+# the session doing the enumerating. Stating the interaction is the fix.
+#   F4  THE FLEET LOOP NEVER RUNS IN A PROCESS THE FLEET LOOP CAN KILL.
+#       Rounds 4-6 tried to IDENTIFY the caller among the targets and stop it
+#       last. That rests on a false premise: "cannot prove a caller" is not
+#       "there is no caller". A child with $TMUX/$TMUX_PANE sanitised away is
+#       still PHYSICALLY IN THE PANE that dies — measured: C1 unprovable, so the
+#       caller was classed as no-one, killed inline first, and the remaining
+#       target was abandoned. And --pane is an ARGV SELECTOR, not evidence of
+#       where the caller lives: any process can pass any valid id, so without C5
+#       the wrong target gets deferred while the real caller stays inline-killable.
+#       No-tty caller attestation is impossible IN GENERAL, so ae stops attempting
+#       it: `stop all` ALWAYS hands the loop to a DETACHED supervisor.
+#       PROVEN BY: construction, not inference — the supervisor is nohup'd with
+#       all stdio detached and holds no lifecycle fd, so no session it kills can
+#       be running it. Ordering is then a nicety, never a safety property, and no
+#       flag or pane id is consulted for `all` at all.
+#       (C5/--pane machinery stays for SINGULAR self-stop, where the caller IS
+#       the named target by construction and the tty proof genuinely holds.)
+#   F5  A TARGET AE DOES NOT OWN IS A FAILURE, NOT A NOTE. An unmanaged
+#       ae-tagged session found and left running means the fleet operation did
+#       NOT do what `stop all` says. It contributes a non-zero rc, and the
+#       success-shaped summary ("No running ae sessions.") is suppressed whenever
+#       anything was found. This check KILLS NOTHING, so it stays with the caller
+#       where its rc is directly useful; F4 governs the loop that kills.
+#   F6  OWNERSHIP AND LIVENESS ARE SEPARATE QUESTIONS, and liveness is TRI-STATE.
+#       Enumerating the fleet by "has a resolvable live id" silently DROPPED every
+#       target whose recorded server was UNREACHABLE, conflating it with verified-
+#       stopped: `stop all` answered rc 0 "No running ae sessions." for a session
+#       that singular `stop` correctly refused with "cannot verify". Enumerate
+#       OWNERSHIP from metadata; then skip a target only when it is VERIFIED GONE.
+#       UNKNOWN is carried into the fleet and folded as FAILURE, never dropped.
+#   F7  HANDING OFF THE LOOP MUST NOT COST THE CALLER ITS EXIT CODE. F4 moved the
+#       kills out of process; an rc that then covered only the HANDOFF would starve
+#       every OUTSIDE caller — a script running `ae stop all` deserves a real exit
+#       status, which is F5's rc-honesty one level up. So the caller WAITS ON THE
+#       RECORD instead of on the loop: bounded (~30s) polling of each target's
+#       durable stop-result, then the outcomes fold into the rc alongside F5.
+#       PROVEN BY: the caller's SURVIVAL, which is never asked as a question — F4's
+#       abolished identity proof does not come back in disguise. A caller that WAS
+#       a target dies mid-wait having already reported all it could honestly know;
+#       a caller that was not stays and reports. Timeout is not a verdict on the
+#       sessions: the handoff rc stands, "results pending" is said out loud, and
+#       the read-back one-liner is named.
+#   F8  AN OPERATION AWAITS ITS OWN RESULTS, NOT RESULTS IN GENERAL. F7 asked "is
+#       there a stop-result newer than my baseline" — a COUNT DELTA, and a count
+#       delta carries no provenance. Measured: two concurrent `ae stop all -y` over
+#       one session, and the FIRST child's single result satisfied BOTH callers
+#       (rc 0 twice) while the second child found an empty fleet and emitted
+#       nothing. PROVEN BY: an OPERATION ID minted per invocation, stamped into
+#       BOTH stop-request and stop-result, with the poll filtering on it. One
+#       function owns the stamp so writer and reader cannot drift.
+#   F9  WHAT WAS CONFIRMED IS WHAT GETS ACTED ON — THE SET IS FROZEN AT
+#       CONFIRMATION. The supervisor re-enumerated metadata after the handoff, so
+#       the fleet it KILLED was not the fleet the human APPROVED: a session created
+#       in that gap died unconfirmed, and unawaited (measured — both died, caller
+#       rc 0). A destructive scope must never be re-derived downstream of its own
+#       confirmation. PROVEN BY: the caller freezes the list and passes it as argv;
+#       the supervisor enumerates NOTHING and may only shrink that set, never grow
+#       it. F8's id and F9's list are one payload: they are minted together, travel
+#       together, and answer the same question — WHICH operation, over WHICH set.
+#   F10 A FROZEN NAME AUTHORIZES KILLING THE INSTANCE THAT CARRIED IT AT
+#       CONFIRMATION, NEVER WHATEVER CARRIES THE NAME AT KILL TIME. F9 froze the
+#       SET but the set was made of NAMES, and a name is a slot, not a thing —
+#       classic ABA. Measured: create a session, `ae end` it completely, launch a
+#       FRESH one under the same name, then act on the frozen payload; the
+#       REPLACEMENT died and success was recorded. The window is exactly as long as
+#       a human stands at the confirmation prompt, and it falsified the promise the
+#       docs make — that a session started while you were deciding is left alone.
+#       PROVEN BY: freezing (name, session_id) pairs — the instance token ae already
+#       records, minted per launch and preserved across stop/resume, rename and
+#       transfer — and comparing the frozen value to what meta records RIGHT NOW,
+#       INSIDE the per-name lifecycle lock, immediately before the server is
+#       resolved and the kill issued. Inside is the whole fix: a check taken before
+#       the lock is acquired leaves the identical race, since a launch can complete
+#       between the check and the kill. A mismatch is a STAMPED FAILURE naming both
+#       instances, and the replacement is left running.
+#       "-" IS NEVER COMPARED AS IDENTITY. Treating it as a value that must match
+#       was still wrong, because it is a SHARED sentinel and equality is not
+#       identity when the value is shared: two pre-feature sessions both froze "-",
+#       so ending one and `ae rename`-ing another into its name (rename preserves a
+#       missing id) satisfied the comparison exactly, and the replacement died with
+#       rc 0. Two layers, and they compose:
+#         (a) MINT AT FREEZE. A session entering a fleet confirmation without an
+#             identity is GIVEN one there — under its own lifecycle lock, written
+#             durably (migration-on-touch, as with the doctor migrations and the
+#             legacy-name arm). From its first fleet contact it has a real token:
+#             stop/resume preserves it, and rename then moves something that
+#             actually denotes a session.
+#         (b) REFUSE A FROZEN "-". After (a) a dash can only be a stale or forged
+#             payload, so it is refused outright and stamped, naming this fact.
+#             Nothing is ever authorized by a sentinel two sessions can share.
+#   F11 A PAYLOAD IS ACCEPTED WHOLE, OR NOT AT ALL. The first shape check validated
+#       the odd tail AFTER the loop, so `opid oddone <id> dangling` KILLED oddone
+#       and recorded it verified-gone before returning 1 — a refusal issued after
+#       the destruction it existed to prevent. The committed seed missed it because
+#       one bare name is ZERO complete pairs: the specimen never reached the
+#       property. PROVEN BY: a preflight over the entire payload — count, every
+#       name, every token — that must pass before the first pair is acted on. This
+#       is the round-3 validate-before-act law, moved from the single target to the
+#       batch.
+# ══════════════════════════════════════════════════════════════════════════
+
+# C1..C4 — the shared current-target proof. BOTH routes into self-ness use this;
+# the tty branch then adds C5, and --self bypasses C5 alone.
+# C4, CONSTRUCTIVE FORM. The implicit route means THE SESSION I AM IN, so the
+# name is EVIDENCE, not input: derive it from the proven pane instead of asking
+# the server what is "current" and then filtering with C4.
+#
+# `display-message -p '#{session_name}'` WITHOUT -t answers with the SERVER's own
+# current session, which under `run-shell -t alpha` is not the target pane's
+# session at all (measured: it resolved 'beta', the other session on that server,
+# and C4 then correctly refused "pane %0 is in 'alpha', not 'beta'"). Filtering an
+# ambiently-resolved name can only ever refuse the sanctioned recipe; deriving it
+# from the pane is what C4 already knows.
+#
+# On the `all` route the name comes from metadata enumeration instead, and there
+# C4 keeps its filter role — that is the question being asked there.
+_stop_self_target_from_pane() {
+    _STOP_UNPROVEN=""
+    local _pane="${_AE_STOP_PANE:-${TMUX_PANE:-}}"
+    if [[ -z "${TMUX:-}" || -z "$_pane" ]]; then
+        _STOP_UNPROVEN="C1 — not inside tmux (need \$TMUX and a pane id; use --pane=#{pane_id} from run-shell)"
+        return 1
+    fi
+    local _sock="${TMUX%%,*}" _rest="${TMUX#*,}"
+    local _pid="${_rest%%,*}"
+    if [[ -z "$_sock" || -z "$_pid" ]]; then
+        _STOP_UNPROVEN="C1 — \$TMUX is malformed (expected <socket>,<pid>,<session>)"
+        return 1
+    fi
+    # C2 before we trust anything this server tells us about the pane.
+    local _ours
+    _ours="$(command tmux -S "$_sock" display-message -p '#{socket_path} #{pid}' 2>/dev/null || true)"
+    if [[ "$_ours" != "${_sock} ${_pid}" ]]; then
+        _STOP_UNPROVEN="C2 — our tmux server did not answer for itself (\$TMUX is stale or forged)"
+        return 1
+    fi
+    local _nm
+    _nm="$(command tmux -S "$_sock" display-message -p -t "$_pane" '#{session_name}' 2>/dev/null || true)"
+    if [[ -z "$_nm" ]]; then
+        _STOP_UNPROVEN="C4 — pane ${_pane} did not resolve on our tmux server"
+        return 1
+    fi
+    # Ownership is still ae's to answer, exactly as detect_current_session asks it.
+    if [[ ! -d "${SESSIONS_DIR}/${_nm}" ]]; then
+        _STOP_UNPROVEN="C4 — pane ${_pane} is in '${_nm}', which ae has no session directory for"
+        return 1
+    fi
+    printf '%s\n' "$_nm"
+    return 0
+}
+
+_stop_current_target_proven() {
+    local name="$1"
+    # Every refusal NAMES ITS FACT. If the contract is complete, each one maps to
+    # exactly one C-fact — so an unattributable refusal is evidence the contract
+    # is missing a fact or the code refuses somewhere it does not describe. This
+    # also means a human sees what to fix, and a pin can assert the CAUSE rather
+    # than merely "it still refuses".
+    _STOP_UNPROVEN=""
+    # C1. --pane wins over $TMUX_PANE: in a run-shell child the variable is
+    # inherited and names a FOREIGN pane (measured), so an explicitly expanded
+    # #{pane_id} is the only trustworthy answer there.
+    local _pane="${_AE_STOP_PANE:-${TMUX_PANE:-}}"
+    if [[ -z "${TMUX:-}" || -z "$_pane" ]]; then
+        _STOP_UNPROVEN="C1 — not inside tmux (need \$TMUX and a pane id; use --pane=#{pane_id} from run-shell)"
+        return 1
+    fi
+    local _sock="${TMUX%%,*}" _rest="${TMUX#*,}"
+    local _pid="${_rest%%,*}"
+    if [[ -z "$_sock" || -z "$_pid" ]]; then
+        _STOP_UNPROVEN="C1 — \$TMUX is malformed (expected <socket>,<pid>,<session>)"
+        return 1
+    fi
+    # C2
+    local _ours
+    _ours="$(command tmux -S "$_sock" display-message -p '#{socket_path} #{pid}' 2>/dev/null || true)"
+    if [[ "$_ours" != "${_sock} ${_pid}" ]]; then
+        _STOP_UNPROVEN="C2 — our tmux server did not answer for itself (\$TMUX is stale or forged)"
+        return 1
+    fi
+    # C3
+    local _theirs
+    _theirs="$(_end_tmux "$name" display-message -p '#{socket_path} #{pid}' 2>/dev/null || true)"
+    if [[ -z "$_theirs" ]]; then
+        _STOP_UNPROVEN="C3 — the session's recorded tmux server did not answer"
+        return 1
+    fi
+    if [[ "$_theirs" != "$_ours" ]]; then
+        _STOP_UNPROVEN="C3 — our tmux server is not '${name}'s recorded server"
+        return 1
+    fi
+    # C4
+    local _pane_sess _want_id
+    _pane_sess="$(command tmux -S "$_sock" display-message -p -t "$_pane" '#{session_id} #{session_name}' 2>/dev/null || true)"
+    _want_id="$(_end_live_id "$name")"
+    if [[ -z "$_want_id" ]]; then
+        _STOP_UNPROVEN="C4 — '${name}' is not live on its recorded server"
+        return 1
+    fi
+    if [[ -z "$_pane_sess" ]]; then
+        _STOP_UNPROVEN="C4 — pane ${_pane} did not resolve on that server"
+        return 1
+    fi
+    if [[ "$_pane_sess" != "${_want_id} ${name}" ]]; then
+        _STOP_UNPROVEN="C4 — pane ${_pane} is in '${_pane_sess#* }', not '${name}'"
+        return 1
+    fi
+    return 0
+}
+
+# C1..C5. The ONE question "is the target the session I am running in".
+_stop_is_self() {
+    local name="$1"
+    _stop_current_target_proven "$name" || return 1
+    # C5, and only C5, is what --self may bypass.
+    [[ "${_AE_STOP_SELF_FLAG:-}" == true ]] && return 0
+    local _mytty _panetty
+    _mytty="$(ps -o tty= -p $$ 2>/dev/null | tr -d '[:space:]')" || _mytty=""
+    case "$_mytty" in
+        "" | '?' | '??' | '-')
+            _STOP_UNPROVEN="C5 — this process has no controlling terminal (pass --self if it genuinely is the session, e.g. from run-shell)"
+            return 1
+            ;;
+    esac
+    _panetty="$(command tmux -S "${TMUX%%,*}" display-message -p -t "${_AE_STOP_PANE:-${TMUX_PANE:-}}" '#{pane_tty}' 2>/dev/null || true)"
+    if [[ -z "$_panetty" || "${_panetty#/dev/}" != "${_mytty#/dev/}" ]]; then
+        _STOP_UNPROVEN="C5 — our controlling tty (${_mytty}) is not that pane's tty (${_panetty:-unknown})"
+        return 1
+    fi
+    return 0
+}
+
+# Self-stop: hand the operation to a process that will OUTLIVE the pane.
+#
+# Probe-verified by colead 2026-08-11: a plain `run-shell` child dies together
+# with the server before it can write its post-kill result, so the result of the
+# stop would be lost exactly when it matters; a `nohup` child survives; `setsid`
+# is not macOS-core and cannot be relied on. Hence nohup with every stdio stream
+# detached — a surviving process still holding the pane's tty would take SIGHUP's
+# cousins on the way down.
+#
+# The caller holds NO lifecycle fd at this point, by ORDERING rather than by
+# closing one: self-detection runs BEFORE _stop_one_session acquires anything, so
+# there is no descriptor for the child to inherit (c1fd622 — a backgrounded child
+# inherits the open description and keeps the lock held after the parent exits).
+# The SUPERVISOR acquires the lock itself.
+#
+# Deliberately NOT detach-then-stop: detaching first would leave a live session
+# and a human with no pane if the supervisor never started. Spawn, then let the
+# supervisor do the whole operation under its own lock.
+# I3 — `-r` IS AN INCIDENTAL PREDICATE HERE: it asks a PERMISSION-shaped question,
+# not an OPENABILITY one. On macOS `[[ -r /dev/tty ]]` is TRUE inside a process with
+# no controlling terminal — the node is there and readable — while the open then
+# fails with "Device not configured". Measured consequence: the no-tty refusal never
+# ran, so a non-PTY caller got the prompt, a shell diagnostic and "Not stopped", and
+# never the one line it needed (the `-y` retry). The only honest probe is the open
+# itself; the subshell keeps the descriptor from outliving the question.
+_stop_tty_usable() {
+    (: </dev/tty) 2>/dev/null || return 1
+    return 0
+}
+
+_stop_self_supervised() {
+    local name="$1"
+    local meta_dir="${SESSIONS_DIR}/${name}"
+    if [[ ! -d "$meta_dir" ]]; then
+        echo "Error: no session state for '$name' — refusing to self-stop something ae does not own." >&2
+        return 1
+    fi
+    if [[ "${_AE_STOP_YES:-}" != true ]]; then
+        # Ask whether we can ask, BEFORE asking — same order as the fleet path, so a
+        # caller with no terminal gets one clean error naming the flag instead of a
+        # prompt it cannot answer followed by a diagnostic.
+        if ! _stop_tty_usable; then
+            # Non-interactive caller inside the session: there is no one to ask,
+            # and silently proceeding to kill the session would be worse than
+            # refusing. Say exactly which flag makes the intent explicit.
+            echo "Error: '$name' is the session you are in, and there is no terminal to confirm on." >&2
+            echo "  Re-run with -y to stop it non-interactively: ae stop $name -y" >&2
             return 1
         fi
+        echo "Stop '$name'? This kills the session you are working in."
+        echo "  Agents may be mid-turn: active writes and partial turns can be interrupted."
+        echo "  Your ae state, working tree and provider conversation files are PRESERVED —"
+        echo "  the guarantee is recoverability (resume from the provider's own checkpoint),"
+        echo "  not mid-write atomicity."
+        local _reply=""
+        read -r -p "Continue? [y/N] " _reply </dev/tty || _reply=""
+        case "$_reply" in
+            y | Y | yes | YES) ;;
+            *)
+                echo "Not stopped."
+                return 1
+                ;;
+        esac
     fi
+    local _ae_self="${BASH:-bash}"
+    # stdin from /dev/null and both outputs discarded: the supervisor must own no
+    # end of the dying pane's tty.
+    nohup "$_ae_self" "$0" _stop-supervisor "$name" </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    echo "Stopping '$name' out of pane; this pane will close."
+    echo "  The outcome is recorded durably in ${meta_dir}/events.jsonl (action: stop-result)."
+    return 0
+}
+
+# The detached worker. It — not the dying caller — owns the lock, the identity
+# lookup, the kill and the verification, and it records BOTH intent and outcome so
+# a human whose pane vanished can still find out what happened.
+# F4. The caller hands the whole kill loop to a detached supervisor and keeps
+# nothing that can die mid-loop. Mirrors _stop_self_supervised's detachment
+# exactly: nohup, all stdio off the pane's tty, no lifecycle fd held at spawn.
+_stop_fleet_supervised() {
+    local opid="$1" names="$2" count="$3"
+    if [[ "${_AE_STOP_YES:-}" != true ]]; then
+        # ASK WHETHER WE CAN ASK, BEFORE ASKING. A caller with no terminal gets one
+        # clean error naming the flag, not a prompt it cannot answer.
+        if ! _stop_tty_usable; then
+            echo "Error: no terminal to confirm on. Re-run with -y: ae stop all -y" >&2
+            return 1
+        fi
+        echo "Stop ALL ${count} ae session(s)?"
+        echo "  Agents may be mid-turn: active writes and partial turns can be interrupted."
+        echo "  ae state, working trees and provider conversation files are PRESERVED."
+        local _reply=""
+        read -r -p "Continue? [y/N] " _reply </dev/tty || _reply=""
+        case "$_reply" in
+            y | Y | yes | YES) ;;
+            *)
+                echo "Not stopped."
+                return 1
+                ;;
+        esac
+    fi
+    # F9 — WHAT WAS CONFIRMED IS WHAT GETS ACTED ON. The supervisor used to
+    # RE-ENUMERATE metadata after the handoff, so a session created in the gap
+    # between the count and the enumeration was killed WITHOUT ever having been
+    # confirmed, and without the caller awaiting it (reviewer probed exactly that:
+    # both died, caller rc 0). The set is frozen here, at confirmation, and travels
+    # to the supervisor as an explicit argv list it may not add to.
+    local -a _pairs=()
+    local _n="" _sid=""
+    while IFS=$'\t' read -r _n _sid; do
+        if [[ -n "$_n" ]]; then _pairs+=("$_n" "${_sid:--}"); fi
+    done <<<"$names"
+    if ((${#_pairs[@]} == 0)); then return 1; fi
+    # PREFLIGHT THE EXACT ARGV, HERE, BEFORE THE HANDOFF IS ANNOUNCED. The child
+    # refuses a malformed payload and exits — correctly — but it did so silently,
+    # while this side had already printed "stopping N out of process" and settled in
+    # to wait 30s for results no living process would ever write. A dead worker read
+    # as pending success. The parent validates the same bytes it is about to pass, so
+    # the refusal happens where someone is still listening.
+    if ! _stop_fleet_payload_valid "${_pairs[@]}"; then
+        echo "Error: refusing to hand over a malformed stop payload — nothing was stopped." >&2
+        echo "  This is an ae bug: please report it with ${SESSIONS_DIR}/<name>/meta attached." >&2
+        return 1
+    fi
+    local _ae_self="${BASH:-bash}"
+    nohup "$_ae_self" "$0" _stop-fleet-supervisor "$opid" "${_pairs[@]}" </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    echo "Stopping ${count} session(s) out of process; this pane may be one of them."
+    echo "  Each outcome is recorded durably in its own"
+    echo "  ${SESSIONS_DIR}/<name>/events.jsonl (action: stop-result)."
+    return 0
+}
+
+# F7 — THE CALLER STILL OWES AN HONEST EXIT CODE, and it collects it by WAITING ON
+# THE RECORD rather than by running the loop. Handing the loop off (F4) must not
+# cost an outside caller its outcome signal: `ae stop all` in a script deserves a
+# real rc, which is F5's whole point one level up. So after the handoff the caller
+# polls each target's durable stop-result, BOUNDED, and folds the outcomes in.
+#
+# THE CALLER'S SURVIVAL IS THE DISCRIMINATOR, and — this is the part that keeps F4
+# intact — it is never asked as a question. A caller that WAS one of the targets
+# simply dies mid-poll, having already printed everything it could honestly know;
+# a caller that was not stays and reports. Both are right without anyone
+# attempting the caller-identity proof F4 abolished.
+#
+# F8 — AN OPERATION AWAITS ITS OWN RESULTS, NOT RESULTS IN GENERAL. Round 7 asked
+# "is there a stop-result newer than my baseline", which is a COUNT DELTA and count
+# deltas cannot carry provenance: two concurrent `ae stop all -y` over one session
+# were both satisfied by the FIRST child's single result (rc 0 twice), while the
+# second child found an empty fleet and emitted nothing at all. So every handoff
+# now mints an OPERATION ID, both events carry it, and the poll filters on it.
+# Baselines are gone with the question they answered.
+_stop_opid_valid() {
+    [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] && return 0
+    return 1
+}
+
+# The wire form of a frozen instance: a UUID as ae records it, or "-" for meta that
+# records none. Case-insensitive because session_id predates gen_uuid's lowercase
+# normalisation and legacy metas hold uppercase — the comparison is exact-string
+# either way, so accepting both here does not weaken it.
+_stop_uuid_token_valid() {
+    [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] && return 0
+    return 1
+}
+
+# The WIRE form additionally admits "-", which the stored form never may.
+_stop_instance_token_valid() {
+    [[ "$1" == "-" ]] && return 0
+    _stop_uuid_token_valid "$1"
+}
+
+# THE COMPARISON ITSELF, as its own function — so the tests can drive the REAL one
+# instead of reimplementing it. A behavioural test that re-writes the logic it is
+# checking tests the copy, not the product: it would survive the very mutation it
+# exists to catch (skipping the comparison when the frozen value is "-").
+# Callers must invoke this only with the per-name lifecycle lock held.
+_stop_instance_matches() {
+    local name="$1" expect="$2" cur
+    cur="$(read_session_meta "$name" session_id 2>/dev/null || true)"
+    [[ -n "$cur" ]] || cur="-"
+    if [[ "$cur" != "$expect" ]]; then
+        echo "Error: '$name' is not the session that was confirmed — its recorded instance is now ${cur}, was ${expect}." >&2
+        echo "  The name was reused by a different session after confirmation; that session was NOT stopped, and nothing was changed." >&2
+        return 1
+    fi
+    return 0
+}
+
+# The one place that knows how an operation stamps its events. Both the writer
+# (_cmd_stop_supervisor) and the reader (the poll) go through it, so the stamp
+# cannot drift apart at the two ends.
+_stop_op_tag() {
+    local opid="$1"
+    if [[ -n "$opid" ]]; then printf '[op %s] ' "$opid"; fi
+    return 0
+}
+
+_stop_result_for_op() {
+    local name="$1" opid="$2" tag line=""
+    tag="$(_stop_op_tag "$opid")"
+    # FAIL CLOSED ON AN EMPTY PATTERN. `grep -F ""` matches EVERY line, so a blank
+    # here silently restores exactly the provenance-free question F8 exists to
+    # abolish — and does it while still looking like a filter. Guard the PATTERN,
+    # not its input: a tag function that returned "" for a valid id would slip past
+    # a check on $opid, and the dangerous value is the one grep receives.
+    [[ -n "$tag" ]] || return 1
+    line="$(command grep '"action":"stop-result"' "${SESSIONS_DIR}/${name}/events.jsonl" 2>/dev/null |
+        command grep -F "$tag" | tail -1)" || line=""
+    [[ -n "$line" ]] || return 1
+    printf '%s' "$line"
+    return 0
+}
+
+# FAIL CLOSED on the message: match the success phrase POSITIVELY, so an outcome
+# whose wording we do not recognise counts as a failure rather than as success.
+_stop_result_ok() {
+    local name="$1" opid="$2" line=""
+    line="$(_stop_result_for_op "$name" "$opid")" || return 1
+    [[ "$line" == *"stopped: verified gone"* ]] && return 0
+    return 1
+}
+
+_stop_fleet_await() {
+    local opid="$1" names="$2" budget="${3:-30}"
+    local _start=$SECONDS
+    local name pending=0 failed=""
+    while :; do
+        pending=0
+        while IFS=$'\t' read -r name _; do
+            [[ -n "$name" ]] || continue
+            _stop_result_for_op "$name" "$opid" >/dev/null || pending=$((pending + 1))
+        done <<<"$names"
+        if ((pending == 0)); then break; fi
+        # NOT `((...)) && break` — that is the errexit footgun: as a loop body's
+        # last statement a false test returns 1 and aborts the whole command.
+        if ((SECONDS - _start >= budget)); then break; fi
+        sleep 0.5
+    done
+    if ((pending > 0)); then
+        # Timeout is NOT a verdict on the sessions — the supervisor is still
+        # working. Say so, keep the handoff rc, and name the read-back.
+        echo "note: ${pending} result(s) still pending after ${budget}s — the stop continues out of process." >&2
+        echo "      Read them back with:" >&2
+        echo "      for f in ${SESSIONS_DIR}/*/events.jsonl; do grep '\"action\":\"stop-result\"' \"\$f\" | tail -1; done" >&2
+        return 0
+    fi
+    while IFS=$'\t' read -r name _; do
+        [[ -n "$name" ]] || continue
+        _stop_result_ok "$name" "$opid" || failed="${failed} ${name}"
+    done <<<"$names"
+    if [[ -n "$failed" ]]; then
+        echo "Error: stop failed for:${failed}" >&2
+        echo "  Details in each session's ${SESSIONS_DIR}/<name>/events.jsonl (action: stop-result)." >&2
+        return 1
+    fi
+    return 0
+}
+
+# The detached side. Nothing it kills can be running it, so it needs no identity
+# proof, no pane id and no ordering — F4 by construction.
+#
+# F9 — IT ENUMERATES NOTHING. The fleet arrives as argv, frozen at the moment the
+# human confirmed it; re-deriving it here is what let an unconfirmed session be
+# killed. Names come from ae's own metadata scan and are grammar-checked there, and
+# _cmd_stop_supervisor re-checks each one anyway (a new entrypoint does not inherit
+# a boundary, it must enter it) — which is also why the opid is validated here
+# rather than trusted: it reaches an event summary, a JSON sink.
+_cmd_stop_fleet_supervisor() {
+    local opid="${1:-}"
+    shift || true
+    _stop_opid_valid "$opid" || return 1
+    # F11 — THE WHOLE PAYLOAD IS ACCEPTED BEFORE ANY OF IT IS ACTED ON. The first
+    # version validated the odd tail AFTER the loop, so `opid oddone <id> dangling`
+    # killed oddone and recorded it verified-gone, and THEN returned 1 — a refusal
+    # issued after the destruction it was meant to prevent.
+    if ! _stop_fleet_payload_valid "$@"; then
+        # F11 still holds — nothing is STOPPED. But silence is what made a dead
+        # worker read as 30 seconds of pending success, so the refusal is recorded
+        # for every target we can name safely, stamped with the operation, and the
+        # caller's wait folds it as the failure it is.
+        _stop_refuse_payload "$opid" "$@"
+        return 1
+    fi
+    local rc=0 s sid
+    while (($# >= 2)); do
+        s="$1"
+        sid="$2"
+        shift 2
+        # F10(b) — a frozen "-" is REFUSED, never compared. Post-mint it can only be
+        # stale or hand-built, and it is a SHARED SENTINEL: comparing it as identity
+        # is how two different pre-feature sessions came to look like one.
+        if [[ "$sid" == "-" ]]; then
+            _stop_refuse_unidentified "$s" "$opid" || rc=1
+            continue
+        fi
+        _cmd_stop_supervisor "$s" "fleet stop requested (ae stop all)" "$opid" "$sid" >/dev/null 2>&1 || rc=1
+    done
+    return "$rc"
+}
+
+# SHAPE ONLY, and every element of it, before the caller acts on any element. An
+# odd count, an unusable name or an unrecognisable token condemns the WHOLE payload
+# — the same validate-before-act law the round-3 dispatch finding established, moved
+# up from the single target to the batch.
+_stop_fleet_payload_valid() {
+    (($# > 0)) || return 1
+    (($# % 2 == 0)) || return 1
+    while (($# >= 2)); do
+        _session_name_usable "$1" 2>/dev/null || return 1
+        _stop_instance_token_valid "$2" || return 1
+        shift 2
+    done
+    return 0
+}
+
+# Records a whole-payload refusal against every target it can safely name. The
+# payload is KNOWN BAD here, so each name is re-validated before a path is built
+# from it — this walks attacker-shaped input by construction, and a name that fails
+# is skipped rather than trusted. Emits only; stops nothing.
+_stop_refuse_payload() {
+    local opid="$1" name tag
+    shift || true
+    _stop_opid_valid "$opid" || return 0
+    tag="$(_stop_op_tag "$opid")"
+    # Every argument, not every other one: the payload is malformed, so its pairing
+    # is exactly the thing we cannot rely on. A token never names a session
+    # directory, so it drops out of the -d test on its own — which is a fact about
+    # the filesystem rather than about a structure we have just declared untrustworthy.
+    for name in "$@"; do
+        _session_name_usable "$name" 2>/dev/null || continue
+        _session_path_is_safe "$name" || continue
+        [[ -d "${SESSIONS_DIR}/${name}" ]] || continue
+        _spawn_emit_event "${SESSIONS_DIR}/${name}" human "$name" stop-result \
+            "${tag}FAILED (rc 1): the stop payload was malformed and was refused whole (F11) — nothing was stopped" 2>/dev/null || true
+    done
+    return 0
+}
+
+# A target we cannot authorize still owes the human an ANSWER. Silence here would be
+# indistinguishable from a stop that simply had not happened yet, so the refusal is
+# emitted into that session's own log, stamped with the operation, and returns
+# non-zero so the caller's wait folds it in.
+_stop_refuse_unidentified() {
+    local name="$1" opid="$2" tag meta_dir
+    _session_name_usable "$name" || return 1
+    _require_session_path_safe "$name" || return 1
+    meta_dir="${SESSIONS_DIR}/${name}"
+    [[ -d "$meta_dir" ]] || return 1
+    tag="$(_stop_op_tag "$opid")"
+    _spawn_emit_event "$meta_dir" human "$name" stop-request \
+        "${tag}fleet stop requested (ae stop all)" 2>/dev/null || true
+    _spawn_emit_event "$meta_dir" human "$name" stop-result \
+        "${tag}FAILED (rc 1): no instance identity was frozen for '${name}' (F10) — the payload is stale or a lifecycle operation held the lock at freeze time; nothing was stopped" 2>/dev/null || true
+    return 1
+}
+
+_cmd_stop_supervisor() {
+    local name="$1"
+    # N4 — THE REQUEST REASON IS PASSED, NEVER ASSUMED. This worker serves both the
+    # singular self-stop and the fleet, and hardcoding "requested from inside the
+    # session" wrote a FALSE audit line for every fleet target: an external
+    # `ae stop all` is not a self-stop, and once the panes are gone this log is the
+    # only account a human has.
+    local reason="${2:-self-stop requested from inside the session}"
+    # F8 — the operation id, empty on the singular path (nobody polls for it there,
+    # and its absence keeps those results byte-identical to before).
+    local opid="${3:-}"
+    # F10 — the frozen instance, wire-encoded ("-" = meta recorded none). Absent on
+    # the singular path, where the caller IS the target and no freeze happened.
+    local expect_set=false expect_sid=""
+    if (($# >= 4)); then
+        expect_set=true
+        expect_sid="$4"
+    fi
+    local tag
+    tag="$(_stop_op_tag "$opid")"
+    # BEFORE any event, lock or meta path is built. `ae _stop-supervisor` is
+    # directly callable, and the un-validated version appended stop-request and
+    # stop-result to victim/events.jsonl OUTSIDE the sessions root via
+    # '../victim' — the `[[ -d ]]` check below passed happily, because a
+    # traversal target IS a directory. Validation first, existence second.
+    _session_name_usable "$name" || return 1
+    _require_session_path_safe "$name" || return 1
+    local meta_dir="${SESSIONS_DIR}/${name}"
+    [[ -d "$meta_dir" ]] || return 1
+    _spawn_emit_event "$meta_dir" human "$name" stop-request \
+        "${tag}${reason}" 2>/dev/null || true
+    local out="" rc=0
+    # _stop_one_session, never the dispatcher: the supervisor inherits $TMUX from
+    # the pane that spawned it, so routing through self-detection again would
+    # recurse. Calling the locked path directly makes that impossible by shape.
+    if [[ "$expect_set" == true ]]; then
+        out="$(_stop_one_session "$name" "$expect_sid" 2>&1)" || rc=$?
+    else
+        out="$(_stop_one_session "$name" 2>&1)" || rc=$?
+    fi
+    if ((rc == 0)); then
+        _spawn_emit_event "$meta_dir" human "$name" stop-result \
+            "${tag}stopped: verified gone on its recorded server" 2>/dev/null || true
+    else
+        _spawn_emit_event "$meta_dir" human "$name" stop-result \
+            "${tag}FAILED (rc ${rc}): ${out}" 2>/dev/null || true
+    fi
+    return "$rc"
+}
+
+# F1 — the fleet is what ae's METADATA owns. `list_ae_sessions` enumerates the
+# AMBIENT server, which AE_TMUX_SERVER redirects: `AE_TMUX_SERVER=B ae stop all`
+# enumerated B, dispatched each NAME to its recorded server, stopped server A's
+# session and reported on B's, rc 0. ae's own state is the positively owned
+# ownership record; ambient enumeration is a heuristic anyone can redirect.
+#
+# Live-ness is decided on each session's OWN recorded server, so a merely-stopped
+# session is skipped rather than counted as a failure.
+# F6. OWNERSHIP first — liveness is a separate, TRI-STATE question. Filtering on
+# "has a resolvable live id" dropped every target whose recorded server was
+# unreachable and called it absent, so `stop all` said "No running ae sessions."
+# (rc 0) about a session singular `stop` refused with "cannot verify". A target
+# is skipped ONLY when it is VERIFIED GONE; UNKNOWN is carried and fails later.
+# F10(a) — MIGRATION ON TOUCH. A pre-feature session has no session_id, and "-" is
+# a SHARED sentinel: two of them compare equal, which is how `ae rename` moved a
+# replacement into an ended session's name and satisfied a frozen "-" exactly.
+# Equality is not identity when the value is shared. So a session that enters a
+# fleet confirmation without an identity is GIVEN one, here, durably — the same
+# migrate-when-you-touch-it precedent as the doctor migrations and the legacy-name
+# arm. From its first fleet contact onward it has a real token: stop/resume
+# preserves it, and rename now moves something that actually denotes.
+#
+# Under that session's OWN lifecycle lock, and re-read inside it: a launch holding
+# the lock is exactly the writer we must not interleave with (it rewrites the whole
+# meta by temp+mv, which would silently drop an appended line). If the lock cannot
+# be had, we mint NOTHING and freeze "-" — the supervisor then refuses that target
+# with a stamped failure, which is the honest outcome rather than a guessed one.
+_stop_freeze_instance() {
+    local name="$1" sid=""
+    sid="$(read_session_meta "$name" session_id 2>/dev/null || true)"
+    if [[ -n "$sid" ]]; then
+        # A STORED TOKEN IS UNTRUSTED INPUT TO THE PAYLOAD. Whatever is on disk goes
+        # into an argv the supervisor must accept, so it is validated HERE, at the
+        # freeze, not merely where it lands. A corrupt value freezes as "-" and is
+        # refused out loud; it is NOT overwritten, because minting over something we
+        # do not understand destroys the only evidence of what went wrong.
+        if _stop_uuid_token_valid "$sid"; then
+            printf '%s' "$sid"
+        else
+            printf '%s' "-"
+        fi
+        return 0
+    fi
+    local _lc_lock="${SESSIONS_DIR}/.lifecycle.${name}.lock" _new=""
+    {
+        # INITIALISED FALSE. Initialised true, a box WITHOUT flock never entered the
+        # acquisition branch, never cleared the flag, and minted unlocked — the
+        # exact opposite of the rule this block exists to state, produced by one
+        # variable's starting value. "Have I got the lock" must start as no.
+        local _have_lock=false
+        if command -v flock >/dev/null 2>&1; then
+            if flock -w 5 7; then _have_lock=true; fi
+        fi
+        if [[ "$_have_lock" == true ]]; then
+            sid="$(read_session_meta "$name" session_id 2>/dev/null || true)"
+            if [[ -z "$sid" ]]; then
+                _new="$(gen_uuid 2>/dev/null || true)"
+                # THE ONE GLOBAL LOCK ORDER: lifecycle lock (fd 7 here) OUTSIDE,
+                # meta.lock (fd 200, taken by set_session_meta_value) INSIDE. Audited
+                # 2026-08-13: no meta.lock holder anywhere in ae acquires a lifecycle
+                # lock, so this nesting is the only direction that exists and cannot
+                # deadlock against another site. Any future site that needs both must
+                # take them in this order.
+                if [[ -n "$_new" ]] &&
+                    set_session_meta_value "${SESSIONS_DIR}/${name}/meta" session_id "$_new"; then
+                    sid="$_new"
+                fi
+            fi
+        fi
+    } 7>"$_lc_lock"
+    [[ -n "$sid" ]] || sid="-"
+    printf '%s' "$sid"
+    return 0
+}
+
+# Enumerate ownership AND freeze identity in one pass. Named for what it does: this
+# is no longer a pure query — it MINTS for sessions that lack an identity (F10a), so
+# calling it is an act, not a look.
+_stop_fleet_freeze() {
+    local meta name out="" _vg _sid
+    for meta in "$SESSIONS_DIR"/*/meta; do
+        [[ -f "$meta" ]] || continue
+        name="${meta%/meta}"
+        name="${name##*/}"
+        _session_name_usable "$name" 2>/dev/null || continue
+        _session_path_is_safe "$name" || continue
+        _vg=0
+        _end_verify_gone "$name" >/dev/null 2>&1 || _vg=$?
+        # 0 = proven gone (skip). 1 = alive, 2 = cannot verify — both are ours.
+        if ((_vg == 0)); then
+            continue
+        fi
+        # F10 — the INSTANCE identity is read in the SAME pass that decides
+        # ownership, so name and instance are one coherent observation rather than
+        # two lookups with a gap between them. `-` means "meta records no
+        # session_id" (pre-feature state), which is a VALUE to compare, not an
+        # excuse to skip the comparison.
+        _sid="$(_stop_freeze_instance "$name")"
+        [[ -n "$_sid" ]] || _sid="-"
+        out="${out}${name}"$'\t'"${_sid}"$'\n'
+    done
+    printf '%s' "$out"
+    return 0
+}
+
+# The frozen payload is (name, instance) pairs; these two read it. Names alone go to
+# the unmanaged report, which asks a name-shaped question (what is ambiently visible
+# that we do not own) and must not be handed tabs.
+_stop_fleet_names() {
+    local frozen="$1" n s
+    while IFS=$'\t' read -r n s; do
+        if [[ -n "$n" ]]; then printf '%s\n' "$n"; fi
+    done <<<"$frozen"
+    return 0
+}
+
+# F2 — an AE_SESSION-tagged session visible on the ambient server that ae's
+# metadata does not own. Stopping it would act outside our ownership record;
+# ignoring it silently would hide a real orphan. So name it and do neither.
+# F5. Returns 1 when anything was found-but-not-stopped, so the caller can fold
+# it into the fleet rc. Reporting an unmanaged session and then exiting 0 says
+# "stop all" succeeded while something ae named is still running.
+_stop_report_unmanaged() {
+    local managed="$1" amb name rc=0
+    amb="$(list_ae_sessions 2>/dev/null || true)"
+    [[ -n "$amb" ]] || return 0
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        if ! printf '%s\n' "$managed" | command grep -Fxq -- "$name"; then
+            echo "note: '$name' is an ae-tagged session on the current tmux server that ae's metadata does not own — NOT stopped." >&2
+            echo "      Adopt it ('ae doctor --refresh $name') or stop it explicitly: ae stop $name" >&2
+            rc=1
+        fi
+    done <<<"$amb"
+    return "$rc"
+}
+
+# Lock wrapper, the same shape end_session uses: the lifecycle lock is held across
+# identity resolution, the kill, and the verification, so a concurrent
+# start/resume/end cannot interleave with any of the three (c1fd622's rule — a
+# recheck alone still races; the lock is the fix).
+_stop_one_session() {
+    local name="$1"
+    # F10 — the expectation is carried THROUGH the lock, never checked before it.
+    # Presence is the signal: the singular path passes nothing and is unaffected;
+    # the fleet always passes something, "-" included. $# distinguishes "no
+    # expectation" from "expected no recorded id", which a default value could not.
+    local expect_set=false expect_sid=""
+    if (($# >= 2)); then
+        expect_set=true
+        expect_sid="$2"
+    fi
+    # A NEW ENTRYPOINT DOES NOT INHERIT A BOUNDARY — IT MUST ENTER IT. This is
+    # internal and directly callable, so it validates for itself rather than
+    # trusting whoever called it. Both questions, independently (a6fabe0): the
+    # NAME grammar (with the legacy-existing-name arm), and the PATH OBJECT, since
+    # a grammar-valid direct-child symlink satisfies the first and still escapes.
+    _session_name_usable "$name" || return 1
+    _require_session_path_safe "$name" || return 1
+    local _lc_lock="${SESSIONS_DIR}/.lifecycle.${name}.lock"
+    mkdir -p "$SESSIONS_DIR"
+    {
+        if command -v flock >/dev/null 2>&1; then
+            if ! flock -w 15 9; then
+                echo "Error: another lifecycle operation (start/resume/end) is in progress for '$name' — retry shortly. Nothing was stopped." >&2
+                return 1
+            fi
+        else
+            echo "note: flock not found — lifecycle locking degraded (start/stop races unguarded)" >&2
+        fi
+        if [[ "$expect_set" == true ]]; then
+            _stop_session_locked "$name" "$expect_sid"
+        else
+            _stop_session_locked "$name"
+        fi
+    } 9>"$_lc_lock"
 }
 
 # Classify an `ae end` target BEFORE any destructive prompt. Echoes:
@@ -4088,6 +5089,79 @@ _end_verify_gone() {
 
 _end_live_id() {
     _end_tmux "$1" list-sessions -F '#{session_id} #{session_name}' 2>/dev/null | _roster_session_id "$1" || true
+    return 0
+}
+
+# Kill an EXACTLY-identified session on its recorded server and VERIFY it died.
+# The one answer to "is it gone", shared by `ae stop` and `ae end` so the two can
+# never drift into disagreeing — an unverified kill must look identical to both.
+#   0 — verified gone
+#   1 — still alive, or the server could not be reached to say: the caller must
+#       treat this as failure, preserve everything, and say so.
+# Diagnoses on stderr in the caller's own words via $2 (the verb: stop / end).
+# Caller MUST already hold the per-session lifecycle lock and MUST have resolved
+# $3 through _end_live_id — passing a raw NAME here would reintroduce the prefix
+# match this exists to prevent.
+_lifecycle_kill_verified() {
+    local name="$1" verb="$2" sid="$3"
+    _end_tmux "$name" kill-session -t "$sid" 2>/dev/null || true
+    local vg=0
+    _end_verify_gone "$name" || vg=$?
+    if ((vg == 1)); then
+        echo "Error: could not kill session '$name' — still alive; state preserved. Retry 'ae ${verb} $name'." >&2
+        return 1
+    elif ((vg != 0)); then
+        echo "Error: cannot verify '$name' was killed (its tmux server is unreachable) — state preserved." >&2
+        return 1
+    fi
+    return 0
+}
+
+# The stop half of the lifecycle contract. Unlike end, stop DESTROYS NOTHING, so
+# it carries none of end's --assume-stopped acknowledgement machinery: with no
+# positive ownership record there is nothing to acknowledge, only a guess to
+# refuse. Everything else is end's invariant, unchanged — the recorded server is
+# the identity source, never the ambient one, and the target is addressed by
+# EXACT id, never by name (`tmux kill-session -t proj` prefix-matches and killed
+# `project` while reporting "Stopped proj", rc 0; measured on main 2026-08-11).
+# Caller MUST hold the per-session lifecycle lock.
+_stop_session_locked() {
+    local name="$1"
+    # F10 — INSTANCE, NOT NAME, AND THE COMPARISON HAPPENS IN HERE. This body runs
+    # only with the per-name lifecycle lock held, which is the whole point:
+    # verifying before acquiring the lock leaves exactly the race it exists to
+    # close, because a launch can complete between the check and the kill. The
+    # frozen value is compared to what meta records RIGHT NOW, under the lock,
+    # immediately before the server is resolved and the kill is issued.
+    if (($# >= 2)); then
+        _stop_instance_matches "$name" "$2" || return 1
+    fi
+    local srv kind
+    srv="$(_end_target_server "$name")"
+    kind="$(_end_target_kind "$name")"
+    if [[ -z "$srv" || "$kind" == "ambiguous" ]]; then
+        echo "Error: session '$name' has no positive server record — ae cannot tell which tmux server owns it, and will not guess." >&2
+        echo "  Resolve: 'ae doctor --refresh $name', or AE_END_SERVER='<name|/socket/path>' ae stop $name" >&2
+        echo "  Nothing was stopped; state preserved." >&2
+        return 1
+    fi
+    local sid
+    sid="$(_end_live_id "$name")"
+    if [[ -z "$sid" ]]; then
+        # Not live on its OWN server — but "empty answer" and "server unreachable"
+        # look identical from here, and only one of them means stopped.
+        local vg=0
+        _end_verify_gone "$name" || vg=$?
+        if ((vg == 2)); then
+            echo "Error: cannot verify session '$name' (its recorded tmux server is unreachable) — nothing was stopped, state preserved." >&2
+            return 1
+        fi
+        echo "Session '$name' is not running." >&2
+        return 1
+    fi
+    kill_heartbeat "$name"
+    _lifecycle_kill_verified "$name" stop "$sid" || return 1
+    echo "Stopped $name"
     return 0
 }
 
@@ -7385,6 +8459,45 @@ cmd_rename() {
     # check further down.
     _require_session_path_safe "$old_name" || return 1
     _require_session_path_safe "$new_name" || return 1
+    # LIFECYCLE SERIALIZATION, BOTH NAMES. Rename has always run outside lifecycle
+    # locking — a PRE-EXISTING gap against end and launch, not something #33
+    # introduced — and #33 made its cost concrete: pause a freezer before it locks
+    # `oldslot`, end oldslot, rename a live identity-less session INTO that name,
+    # release, and the freezer mints into the REPLACEMENT, freezes that id, and the
+    # supervisor kills it reporting "verified gone". Every check below reads state
+    # the rename then mutates, so they belong inside the lock, not in front of it.
+    #
+    # TWO locks, taken in NAME-SORTED order — the standard deadlock avoidance: two
+    # concurrent renames touching the same pair acquire them in the same sequence, so
+    # one waits instead of both holding half. Consistent with the one global order
+    # (lifecycle outside, meta.lock inside); nothing here takes meta.lock first.
+    local _rn_first _rn_second
+    if [[ "$old_name" < "$new_name" ]]; then
+        _rn_first="$old_name"
+        _rn_second="$new_name"
+    else
+        _rn_first="$new_name"
+        _rn_second="$old_name"
+    fi
+    mkdir -p "$SESSIONS_DIR"
+    {
+        if command -v flock >/dev/null 2>&1; then
+            if ! flock -w 15 9 || ! flock -w 15 10; then
+                echo "Error: another lifecycle operation (start/resume/stop/end) is in progress for '${old_name}' or '${new_name}' — retry shortly. Nothing was renamed." >&2
+                return 1
+            fi
+        else
+            echo "note: flock not found — lifecycle locking degraded (start/stop races unguarded)" >&2
+        fi
+        _cmd_rename_locked "$old_name" "$new_name"
+    } 9>"${SESSIONS_DIR}/.lifecycle.${_rn_first}.lock" 10>"${SESSIONS_DIR}/.lifecycle.${_rn_second}.lock"
+}
+
+# Everything that READS state the rename then mutates, plus the mutation itself.
+# Split out so the locked region is a single call rather than a long braced block —
+# the same shape _stop_one_session/_stop_session_locked use, and for the same reason.
+_cmd_rename_locked() {
+    local old_name="$1" new_name="$2"
     # Check old session exists
     if ! tmux has-session -t "$old_name" 2>/dev/null; then
         echo "Error: session '${old_name}' is not running." >&2
@@ -11774,7 +12887,18 @@ case "${1:-}" in
         exit $?
         ;;
     stop)
-        cmd_stop "${2:-}"
+        cmd_stop "${@:2}"
+        exit $?
+        ;;
+    # Internal: the detached self-stop worker (spawned by _stop_self_supervised via
+    # nohup). Not part of the user surface — like _spawn / _retire / _register-sid.
+    _stop-supervisor)
+        _cmd_stop_supervisor "${2:-}"
+        exit $?
+        ;;
+    _stop-fleet-supervisor)
+        # <opid> <name>... — the fleet is argv, frozen at confirmation (F9).
+        _cmd_stop_fleet_supervisor "${@:2}"
         exit $?
         ;;
     rename)
