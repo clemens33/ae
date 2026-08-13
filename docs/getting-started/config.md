@@ -14,7 +14,7 @@ opencode = "opencode -m google/gemini-3-pro-preview"
 
 [workspace]
 main = claude:lead
-workers = codex:colead, claude:builder, codex:reviewer
+workers = codex:colead
 layout = lead-pair
 watchdog = true
 
@@ -62,7 +62,7 @@ adopt this pattern.
 | Key       | Description                                          | Default       |
 |-----------|------------------------------------------------------|---------------|
 | `main`    | `alias:name` for the primary agent                   | `fable5:lead` |
-| `workers` | Comma-separated agents launched at startup. Under `lead-pair` the FIRST worker is the colead seat | `gpt56sol:colead, opus48:builder` |
+| `workers` | Comma-separated agents launched at startup. Under `lead-pair` the FIRST worker is the colead seat. Recommended default: the colead ONLY — builders/reviewers are spawned on demand per slice and retired when done | `gpt56sol:colead` |
 | `layout`  | `lead-pair` (lead + colead share window 0, other workers in window 1), `lead-solo` (lead alone in window 0, workers in window 1), `vertical` (side-by-side splits), `horizontal` (stacked splits) | `lead-pair`   |
 | `copy`    | Working directory mode (see below)                   | `local`       |
 | `watchdog`    | Auto-start the watchdog (`true` / `false`)            | `true`        |
