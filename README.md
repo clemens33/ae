@@ -117,7 +117,7 @@ Agents call these automatically when you ask them to collaborate. Full helper ca
 [agents]
 claude = "claude --permission-mode bypassPermissions --model opus"
 codex = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=high"
-grok = "grok --always-approve -m grok-build --effort high"
+grok = "grok --always-approve -m grok-4.6 --effort high"
 agy = "agy --dangerously-skip-permissions"   # any CLI works — agy has no special ae integration
 
 [workspace]

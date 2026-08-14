@@ -9,7 +9,7 @@
 claude = "claude --permission-mode bypassPermissions --model claude-opus-4-8"
 codex = "codex --yolo -m gpt-5.5 -c model_reasoning_effort=high"
 gemini = "gemini --yolo -m gemini-2.5-pro"
-grokbuild = "grok --always-approve -m grok-build --effort high"
+grokbuild = "grok --always-approve -m grok-4.6 --effort high"
 opencode = "opencode -m google/gemini-3-pro-preview"
 
 [workspace]
@@ -142,8 +142,10 @@ generations:
 # chores at FULL effort on a cheap model — cheap comes from the model, not from
 # thinking less: tests, CI runs, caller/usage scans, log triage, scouts
 chore  = "codex -m gpt-5.6-luna -c model_reasoning_effort=xhigh -a never"
-# dev work: implementation slices, doc syncs — builder-grade
+# dev work: implementation slices, doc syncs — builder-grade. Two peers, pick per
+# slice or alternate for cross-vendor diversity on builder seats:
 dev    = "claude --permission-mode bypassPermissions --model claude-opus-5 --effort xhigh"
+devx   = "grok --always-approve -m grok-4.6 --effort high"
 # cross-model review seat (spawned per slice, retired after)
 review = "codex --yolo -m gpt-5.6-sol -c model_reasoning_effort=xhigh"
 # leads / steward / hardest work

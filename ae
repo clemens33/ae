@@ -9284,7 +9284,9 @@ immediately.
 Conventions:
 - Alias = the model (\`opus5\`/\`fable5\`/\`sonnet5\`/\`gpt56sol\`/\`gpt56luna\`…
   — whatever ~/.ae/config defines); name = role. Good: \`gpt56luna:tests\`,
-  \`gpt56luna:callers\`, \`opus5:docs-sync\`. Bad: \`worker\`, \`helper-3\`.
+  \`gpt56luna:callers\`, \`opus5:docs-sync\`, \`grok46:builder\` (grok-4.6 high —
+  a dev-tier peer of opus5; alternate them for cross-vendor builder seats).
+  Bad: \`worker\`, \`helper-3\`.
 - Brief contract: objective, allowed scope/files, verification command,
   expected reply shape, whether edits are allowed.
 - Result contract (worker replies with): Outcome / Changed / Verified (command
