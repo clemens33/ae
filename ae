@@ -12044,8 +12044,20 @@ _last_event_age() {
     echo $((now_epoch - last_epoch))
 }
 
+# <agent> [skip_watchdog_nudges] — with the flag, ONE reverse pass consumes any
+# consecutive watchdog nudges and returns the relevant event underneath them, setting
+# _LRE_SKIPPED_NUDGE=1 when it did.
+#
+# BY POSITION, NEVER BY TIMESTAMP. The first version bounded the look-back with
+# `ts < before_ts`, and events.jsonl timestamps are 1-second — so a declaration and
+# the nudge that answered it, written in the same second, compared equal and the
+# bound skipped the DECLARATION too. Append order is the truth here; the timestamp is
+# its lossy rendering, and reasoning about order from a display form is the same
+# family as reading state out of rendered text.
 _latest_relevant_event() {
-    local agent="$1"
+    local agent="$1" skip_nudges="${2:-}"
+    _LRE_SKIPPED_NUDGE=0
+    _LRE_ROW=""
     local events_file="${META_DIR}/events.jsonl"
     [[ -f "$events_file" ]] || return 0
     local line actor target action ts ref summary
@@ -12068,11 +12080,18 @@ _latest_relevant_event() {
             action="$_EV"
             _event_json_str "$line" ts
             ts="$_EV"
+            # Walk PAST the watchdog's own nudges — however many are stacked up, and
+            # whatever second they were written in.
+            if [[ -n "$skip_nudges" && "$actor" == "watchdog" && "$action" == "nudge" ]]; then
+                _LRE_SKIPPED_NUDGE=1
+                continue
+            fi
             _event_json_str "$line" ref
             ref="$_EV"
             _event_json_str "$line" summary
             summary="$_EV"
-            printf '%s\t%s\t%s\t%s\t%s\n' "$action" "$ts" "$ref" "$actor" "$summary"
+            _LRE_ROW="$(printf '%s\t%s\t%s\t%s\t%s' "$action" "$ts" "$ref" "$actor" "$summary")"
+            printf '%s\n' "$_LRE_ROW"
             return 0
         fi
     done < <(_ae_tac "$events_file" 2>/dev/null || true)
@@ -12088,8 +12107,14 @@ _latest_relevant_event() {
 _agent_quiet_reason() {
     local agent="$1"
     local row action ts ref actor summary rest
-    row="$(_latest_relevant_event "$agent")"
+    # One pass that already looks past the watchdog's own nudges (by position).
+    # CALLED BARE. The pass reports whether it skipped a nudge through a global, and a
+    # $( ) capture is a subshell that swallows exactly that — the hazard the sweep
+    # path already carries a note about. Read the row from the global too.
+    _latest_relevant_event "$agent" skip >/dev/null
+    row="${_LRE_ROW:-}"
     [[ -n "$row" ]] || return 0
+    local _looked_past="${_LRE_SKIPPED_NUDGE:-0}"
     # Manual tab split — `IFS=$'\t' read` collapses the empty ref field (tab is
     # whitespace-IFS), which would shift fields left and corrupt actor.
     action="${row%%$'\t'*}"
@@ -12101,8 +12126,17 @@ _agent_quiet_reason() {
     actor="${rest%%$'\t'*}"
     summary="${rest#*$'\t'}"
     # Only the agent's OWN declaration is a quiet state. If the newest relevant
-    # event is inbound (actor != agent — a send/ask/nudge targeting it), the
-    # prior quiet state is invalidated and the agent is no longer quiet.
+    # event is inbound (actor != agent — a send/ask targeting it), the prior quiet
+    # state is invalidated and the agent is no longer quiet.
+    #
+    # EXCEPT the watchdog's own nudge. Measured 2026-08-02 and reproduced by driving
+    # these functions: the nudge is an inbound event, so it invalidated the very
+    # state it was asking about — one nudge and the agent stopped being quiet no
+    # matter what the pane said. The watchdog then nudged again, and again. A quiet
+    # state must be broken by NEWS, and the watchdog asking "are you still waiting?"
+    # is not news; a human or a peer writing to the agent is.
+    # Inbound events other than our own nudges still invalidate: a human or a peer
+    # writing to the agent is news, and news ends a quiet state.
     [[ "$actor" == "$agent" ]] || return 0
     local reason=""
     case "$action" in
@@ -12114,6 +12148,14 @@ _agent_quiet_reason() {
             ;;
     esac
     [[ -n "$reason" ]] || return 0
+    # The look-past is scoped to the states #8 is about. done is EVENT-ONLY quiet and
+    # its documented contract is "honoured until a newer MESSAGE arrives" — a nudge is
+    # a message, and clearing done on one is deliberate, pinned behaviour. It is also
+    # unreachable in practice (the watchdog skips done agents before it would nudge),
+    # so widening the exception there would change a documented rule to fix nothing.
+    if ((_looked_past == 1)) && [[ "$reason" == "done" ]]; then
+        return 0
+    fi
     # Emit 'reason<TAB>key'. The key is the full declaration tuple so the
     # watchdog's baseline re-arms on a genuinely new declaration even when two
     # land in the same (second-resolution) timestamp — as long as any field
@@ -12132,6 +12174,79 @@ _agent_quiet_reason() {
 # fresh declaration re-arms even within the same second.
 # Args: cur_hash armed_key armed_hash decl_key
 # Prints: arm | hold | yield
+# The pane view the quiet-state baseline is hashed from, with the watchdog's OWN
+# footprints removed:
+#   - its nudge, identified by the origin envelope the helper stamps on it (#39) and
+#     by the nudge's own sentence, so a wrapped render still loses its first line
+#   - the state helper's echo, which is what a bare re-declaration puts on screen
+# Everything else — the human's reply, the agent's real output — stays in the hash.
+_watchdog_quiet_hash() {
+    local buf="$1"
+    # THE SPECIMEN MUST COME FROM THE LAYER THE CODE READS. This hashes what the TUI
+    # RENDERS, so the shapes below are captured renderings, not the delivered text —
+    # an earlier version matched the bytes ae sends and filtered nothing at all,
+    # because no modeled TUI shows a message the way it arrives.
+    #
+    # CAPTURED 2026-08-15 with the watchdog's own `capture-pane -p -J`, a real nudge
+    # delivered through ae's paste primitive:
+    #
+    #   codex   › ⟦ae:msg from watchdog⟧
+    #             Status check: if you have more work, continue. Otherwise declare …
+    #             user|blocked|done> "<reason>"
+    #   claude  ❯ ⟦ae:msg from watchdog⟧
+    #             Status check: if you have more work, continue. Otherwise declare …
+    #             <waiting-user|blocked|done> "<reason>"
+    #
+    # Same structure in both: a SUBMIT ORNAMENT plus the envelope alone on its line,
+    # then two-space-indented continuations wrapped at whatever width the pane had.
+    # The wrap point is not stable, so the body is consumed as a BLOCK rather than
+    # matched — the header is the discriminator, and it is short enough never to wrap.
+    #
+    # That header is also what separates a watchdog nudge from an agent QUOTING one:
+    # quoted text renders as ordinary prose with no submit ornament and no envelope
+    # above it, so it survives into the hash and still wakes the watchdog.
+    #
+    # Echoes, likewise captured:
+    #   codex     └ Marked gpt56sol:reviewer done: …
+    #   claude  ⏺ [21:28] Done — output: Marked opus5:builder waiting-user: …
+    #   raw     Marked opus5:builder waiting-user: …        (unmodeled pane, no TUI)
+    printf '%s' "$buf" | awk '
+        function submit_hdr(l) { return l ~ /^[[:space:]]*[›❯][[:space:]]+⟦ae:msg from watchdog⟧[[:space:]]*$/ }
+        function indented(l)   { return l ~ /^[[:space:]][[:space:]]/ }
+        function raw_nudge(l) {
+            return l ~ /^(Session goal: .*\. )?Status check: if you have more work, continue\. Otherwise declare your state so I stop nudging: .*\/state <waiting-user\|blocked\|done> "<reason>"[[:space:]]*$/
+        }
+        function raw_env(l)  { return l ~ /^⟦ae:msg from watchdog⟧[[:space:]]*$/ }
+        function is_echo(l) {
+            if (l ~ /^[[:space:]]*└[[:space:]]+Marked [^ ]+ (working|waiting-user|blocked|done)([:.].*)?$/) return 1
+            # The CAPTURED status grammar, not "anything mentioning output:". The loose
+            # version swallowed ordinary assistant prose that happened to contain
+            # "output: Marked …" — deaf in the yield direction, which is the failure
+            # this filter must never introduce. Bytes from the capture:
+            #   ⏺ SP [HH:MM] SP Done SP U+2014 SP output: SP Marked …
+            if (l ~ /^⏺ \[[0-9][0-9]:[0-9][0-9]\] Done — output: Marked [^ ]+ (working|waiting-user|blocked|done)([:.].*)?$/) return 1
+            if (l ~ /^Marked [^ ]+ (working|waiting-user|blocked|done)([:.].*)?$/) return 1
+            return 0
+        }
+        {
+            # Inside a rendered nudge block: swallow its indented body.
+            if (in_block) { if (indented($0)) next; in_block = 0 }
+            # A held raw envelope is only dropped when the raw nudge follows it.
+            if (held != "") {
+                if (raw_nudge($0)) { held = ""; next }
+                print held; held = ""
+            }
+            if (submit_hdr($0)) { in_block = 1; next }   # rendered, both modeled TUIs
+            if (raw_env($0))    { held = $0; next }      # unmodeled pane: pair form
+            if (raw_nudge($0))  next                     # unmodeled / legacy watchdog
+            if (is_echo($0))    next
+            print
+        }
+        END { if (held != "") print held }
+    ' | _ae_md5 | cut -d' ' -f1
+    return 0
+}
+
 _quiet_pane_decision() {
     local cur="$1" armed_key="$2" armed_hash="$3" decl_key="$4"
     if [[ "$armed_key" != "$decl_key" ]]; then
@@ -12907,7 +13022,14 @@ helper_watchdog_main() {
             # before the pane-hash early-continues mask them visually.
             now_epoch="$(date +%s)"
             pane_buf="$(tmux capture-pane -p -J -S -40 -E - -t "$pane" 2>/dev/null || true)"
-            hash="$(printf '%s' "$pane_buf" | _ae_md5 | cut -d' ' -f1)"
+            # The quiet-state baseline hashes a FILTERED view: the watchdog must not
+            # count its own footprints as human activity. Its nudge lands in the pane,
+            # and the agent's answer to it is usually a bare state re-declaration whose
+            # echo lands too — so a waiting-user hold was broken by the very exchange
+            # it provoked, every cycle, on any agent responsive enough to reply.
+            # Anything the human or the agent actually writes is still in the hash, so
+            # a real reply still resumes nudging.
+            hash="$(_watchdog_quiet_hash "$pane_buf")"
             quiet_row="$(_agent_quiet_reason "$agent")"
             # Throttle detection AND streak clear up front: streak resets on every
             # non-throttled cycle regardless of which branch the agent exits on.
@@ -14320,7 +14442,7 @@ WDPROLOGUE
             _monitor_find_pane _monitor_ensure_events_pane _watchdog_ensure_monitor _watchdog_reap_legacy_one \
             _watchdog_reap_legacy _watchdog_stop _watchdog_status \
             _watchdog_start _last_event_age _latest_relevant_event _agent_quiet_reason \
-            _quiet_pane_decision _watchdog_meta_value _watchdog_trim _watchdog_git \
+            _quiet_pane_decision _watchdog_quiet_hash _watchdog_meta_value _watchdog_trim _watchdog_git \
             _watchdog_branch_segment _watchdog_set_status _watchdog_clear_bar_options _watchdog_log _pane_has_descendant_named \
             _watchdog_exit_cleanup _roster_session_id _ae_session_id _watchdog_session_id _roster_glyph _roster_label _roster_compose _roster_slot_refs _roster_window_compose \
             _buf_shows_throttle _pane_shows_throttle _load_agent_bins helper_watchdog_main

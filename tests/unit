@@ -8813,6 +8813,204 @@ assert_eq "#38: pane selection survives only for titles and the focus helper" "1
        _bad="$(printf '%s' "$_code" | command grep 'select-pane' | command grep -vc -- '-T \|-d \|AE_RESOLVED_PANE\|PANE_IDS' || true)"
        [[ "$_bad" == "0" ]] && echo 1 || echo 0)"
 
+# ── #8: THE WATCHDOG MUST NOT COUNT ITS OWN FOOTPRINTS ───────────────
+# waiting-user/blocked are honoured "until the pane changes" — but the watchdog's
+# nudge IS a pane change, and the answer it provokes (a bare state re-declaration)
+# is another. Observed 3x live 2026-08-02: the quiet state could not hold on any
+# agent responsive enough to reply, and the lead fell back to `done`.
+#
+# Driving the REAL decision functions through a scripted cycle showed TWO footprints,
+# in sequence — the second only reachable once the first is fixed:
+#   1. the nudge EVENT is inbound, so _agent_quiet_reason treated it as news and
+#      dropped the very state it was asking about
+#   2. the re-declaration's ECHO changed the pane hash after the baseline armed
+# This is that cycle, committed.
+eval "$(awk '/^_latest_relevant_event\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_agent_quiet_reason\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_watchdog_quiet_hash\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_nudge_cycle() ( # -> the decision at each step, comma-separated
+    local META_DIR _AE_SESSION=aedev AG=opus5:builder BK="" BH="" PANE="" out=""
+    META_DIR="$(mktemp -d)"
+    _ev() { printf '{"ts":"%s","actor":"%s","action":"%s","target":"%s","ref":"%s","summary":"%s"}\n' \
+        "$1" "$2" "$3" "$4" "$5" "$6" >>"$META_DIR/events.jsonl"; }
+    _step() {
+        local q key dec h
+        q="$(_agent_quiet_reason "$AG")"
+        if [[ -z "$q" ]]; then out="${out}${out:+,}NOTQUIET"; return; fi
+        key="${q#*$'\t'}"
+        h="$(_watchdog_quiet_hash "$PANE")"
+        dec="$(_quiet_pane_decision "$h" "$BK" "$BH" "$key")"
+        [[ "$dec" == arm ]] && { BK="$key"; BH="$h"; }
+        out="${out}${out:+,}${dec}"
+    }
+    _ev 2026-08-02T10:00:00Z "$AG" state "" waiting-user "asked the human"
+    PANE="work output"$'\n'"Marked opus5:builder waiting-user: asked the human"
+    _step                                   # arm
+    _step                                   # hold (pane untouched)
+    _ev 2026-08-02T10:01:00Z watchdog nudge "$AG" "" "idle 5m"
+    _step                                   # the nudge EVENT must not break it
+    PANE="${PANE}"$'\n'"⟦ae:msg from watchdog⟧"$'\n'"Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: /x/state <waiting-user|blocked|done> \"<reason>\""
+    _step                                   # the nudge TEXT must not break it
+    _ev 2026-08-02T10:02:00Z "$AG" state "" waiting-user "asked the human"
+    _step                                   # re-declaration re-arms
+    PANE="${PANE}"$'\n'"Marked opus5:builder waiting-user: asked the human"
+    _step                                   # its echo must not break it
+    PANE="${PANE}"$'\n'"please also check the deploy logs"
+    _step                                   # THE HUMAN typed — nudging must resume
+    printf '%s' "$out"
+    rm -rf "$META_DIR"
+)
+assert_eq "#8: waiting-user survives the watchdog's own nudge and a re-declaration; a human reply still yields" \
+    "arm,hold,hold,hold,arm,hold,yield" "$(_nudge_cycle)"
+unset -f _nudge_cycle
+# The nudge is not NEWS. A quiet state must be broken by something from outside —
+# a human or a peer writing to the agent — never by the watchdog asking whether the
+# agent is still waiting.
+_qr="$(awk '/^_agent_quiet_reason\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "#8: only the watchdog's own nudge is looked past, and only to the declaration under it" "1" \
+    "$(_lre2="$(awk '/^_latest_relevant_event\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_lre2" == *'"$actor" == "watchdog" && "$action" == "nudge"'* \
+        && "$_qr" == *'_latest_relevant_event "$agent" skip >/dev/null'* \
+        && "$_qr" == *'[[ "$actor" == "$agent" ]] || return 0'* ]] && echo 1 || echo 0)"
+# ...and the pass is called BARE, because it reports through a global and a $( )
+# capture is a subshell that swallows it — the hazard the sweep path documents, and
+# the one this change walked straight into on the first attempt.
+assert_eq "#8: the look-back pass is called bare so its flag survives" "1" \
+    "$([[ "$_qr" != *'row="$(_latest_relevant_event'* && "$_qr" == *'row="${_LRE_ROW:-}"'* ]] && echo 1 || echo 0)"
+# ...and a PEER's message still invalidates it, which is the half that must not break.
+_peer() (
+    local META_DIR _AE_SESSION=aedev
+    META_DIR="$(mktemp -d)"
+    printf '{"ts":"2026-08-02T10:00:00Z","actor":"opus5:builder","action":"state","target":"","ref":"waiting-user","summary":"asked"}\n' >"$META_DIR/events.jsonl"
+    printf '{"ts":"2026-08-02T10:01:00Z","actor":"fable5:lead","action":"send","target":"opus5:builder","ref":"","summary":"new brief"}\n' >>"$META_DIR/events.jsonl"
+    _agent_quiet_reason opus5:builder | head -c 1
+    rm -rf "$META_DIR"
+)
+assert_eq "#8: a PEER message still invalidates a quiet state" "" "$(_peer)"
+# ...and DONE keeps its own documented contract: "honoured until a newer MESSAGE
+# arrives", a nudge included. Scoping the look-past to waiting-user/blocked is
+# deliberate — an existing pin caught the wider version as scope creep, and widening
+# it would change a documented rule to fix a case the watchdog cannot reach (it skips
+# done agents before it would nudge them).
+_done_nudged() (
+    local META_DIR _AE_SESSION=aedev
+    META_DIR="$(mktemp -d)"
+    printf '{"ts":"2026-08-02T10:00:00Z","actor":"opus5:builder","action":"state","target":"","ref":"done","summary":"shipped"}\n' >"$META_DIR/events.jsonl"
+    printf '{"ts":"2026-08-02T10:01:00Z","actor":"watchdog","action":"nudge","target":"opus5:builder","ref":"","summary":"idle"}\n' >>"$META_DIR/events.jsonl"
+    _agent_quiet_reason opus5:builder | head -c 1
+    rm -rf "$META_DIR"
+)
+assert_eq "#8: a nudge still clears DONE (unchanged contract, scoped fix)" "" "$(_done_nudged)"
+unset -f _done_nudged
+# POSITION, NOT TIMESTAMP. The first version bounded the look-back with
+# `ts < before_ts`, and events.jsonl timestamps are 1-second — so a declaration and
+# the nudge answering it, written in the SAME second, compared equal and the bound
+# skipped the declaration too. Append order is the truth; the timestamp is its lossy
+# rendering, and deriving order from a display form is the same family as reading
+# state out of rendered text.
+_ev_case() ( # <events…> -> the quiet reason, or empty
+    local META_DIR _AE_SESSION=aedev
+    META_DIR="$(mktemp -d)"
+    printf '%s\n' "$@" >"$META_DIR/events.jsonl"
+    _agent_quiet_reason opus5:builder | cut -f1
+    rm -rf "$META_DIR"
+)
+_D='{"ts":"2026-08-02T10:00:00Z","actor":"opus5:builder","action":"state","target":"","ref":"waiting-user","summary":"asked"}'
+_N='{"ts":"2026-08-02T10:00:00Z","actor":"watchdog","action":"nudge","target":"opus5:builder","ref":"","summary":"idle"}'
+_N2='{"ts":"2026-08-02T10:00:01Z","actor":"watchdog","action":"nudge","target":"opus5:builder","ref":"","summary":"idle"}'
+_P='{"ts":"2026-08-02T10:00:09Z","actor":"fable5:lead","action":"send","target":"opus5:builder","ref":"","summary":"brief"}'
+assert_eq "#8: a SAME-SECOND declaration+nudge pair still reads waiting-user" "waiting-user" \
+    "$(_ev_case "$_D" "$_N")"
+assert_eq "#8: several stacked nudges are all walked past" "waiting-user" \
+    "$(_ev_case "$_D" "$_N" "$_N2")"
+assert_eq "#8: a peer message AFTER the nudges still invalidates" "" \
+    "$(_ev_case "$_D" "$_N" "$_P")"
+unset -f _ev_case
+unset _D _N _N2 _P
+# ...and the look-back carries no timestamp comparison at all, so this cannot creep
+# back in as an optimisation.
+assert_eq "#8: the look-back is positional — no timestamp bound in the walk" "1" \
+    "$(_lre="$(awk '/^_latest_relevant_event\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_lre" == *'_LRE_SKIPPED_NUDGE=1'* && "$_lre" != *'before_ts'* ]] && echo 1 || echo 0)"
+
+# THE FILTER IS SHAPE- AND SEQUENCE-AWARE, and the false-positive controls matter as
+# much as the filtering. The first version deleted any line CONTAINING the envelope or
+# the nudge sentence, so an agent QUOTING either vanished from the hash — a pane full
+# of quoted discussion read as no activity, leaving the watchdog deaf in the yield
+# direction. These transcripts quote both constantly; a filter people's own writing
+# trips is a filter that gets disabled.
+_wq_base="$(_watchdog_quiet_hash "real work output")"
+_wq() { _watchdog_quiet_hash "real work output"$'\n'"$1"; }
+_wq_pair() { _watchdog_quiet_hash "real work output"$'\n'"$1"$'\n'"$2"; }
+_NUDGE='Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: /x/state <waiting-user|blocked|done> "<reason>"'
+_WDENV='⟦ae:msg from watchdog⟧'
+assert_eq "#8: the envelope+nudge PAIR is filtered" "1" \
+    "$([[ "$(_wq_pair "$_WDENV" "$_NUDGE")" == "$_wq_base" ]] && echo 1 || echo 0)"
+assert_eq "#8: a legacy bare nudge line is filtered" "1" \
+    "$([[ "$(_wq "$_NUDGE")" == "$_wq_base" ]] && echo 1 || echo 0)"
+assert_eq "#8: a nudge carrying the session-goal prefix is filtered" "1" \
+    "$([[ "$(_wq_pair "$_WDENV" "Session goal: ship it. $_NUDGE")" == "$_wq_base" ]] && echo 1 || echo 0)"
+assert_eq "#8: the state helper's echo is filtered" "1" \
+    "$([[ "$(_wq 'Marked opus5:builder waiting-user: asked the human')" == "$_wq_base" ]] && echo 1 || echo 0)"
+# The controls — each of these is REAL activity and must wake the watchdog.
+assert_eq "#8 (control): an agent QUOTING the nudge sentence still changes the hash" "1" \
+    "$([[ "$(_wq "I was told to declare your state so I stop nudging: which is odd")" != "$_wq_base" ]] && echo 1 || echo 0)"
+assert_eq "#8 (control): an agent QUOTING the envelope still changes the hash" "1" \
+    "$([[ "$(_wq "the header reads ⟦ae:msg from watchdog⟧ in that transcript")" != "$_wq_base" ]] && echo 1 || echo 0)"
+assert_eq "#8 (control): a LONE envelope with no nudge under it still changes the hash" "1" \
+    "$([[ "$(_wq "$_WDENV")" != "$_wq_base" ]] && echo 1 || echo 0)"
+assert_eq "#8 (control): prose mentioning a Marked line still changes the hash" "1" \
+    "$([[ "$(_wq 'we saw Marked opus5:builder waiting-user: in the log, note it')" != "$_wq_base" ]] && echo 1 || echo 0)"
+assert_eq "#8 (control): a human's ordinary reply still changes the hash" "1" \
+    "$([[ "$(_wq 'please also check the deploy logs')" != "$_wq_base" ]] && echo 1 || echo 0)"
+unset -f _wq _wq_pair
+unset _wq_base _NUDGE _WDENV
+unset -f _peer
+unset _qr
+# ── #8: THE SPECIMEN MUST COME FROM THE LAYER THE CODE READS ─────────
+# The filter matches what the TUI RENDERS, because that is what the watchdog hashes.
+# An earlier version matched the bytes ae SENDS and therefore filtered nothing at all
+# in a real pane — the unit cycle fed it delivered shapes and structurally could not
+# see that. Source vs generated, raw vs rendered, delivered vs displayed: one rule.
+#
+# These fixtures are CAPTURED, not transcribed — taken from `capture-pane -p -J` over
+# real panes after a real nudge went through ae's own paste primitive (2026-08-15).
+_wq_r() { _watchdog_quiet_hash "real work output"$'\n'"$1"; }
+_wq_rbase="$(_watchdog_quiet_hash "real work output")"
+assert_eq "#8: the CODEX rendered nudge block is filtered (captured)" "1" \
+    "$([[ "$(_wq_r '› ⟦ae:msg from watchdog⟧
+  Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: /x/state <waiting-
+  user|blocked|done> "<reason>"')" == "$_wq_rbase" ]] && echo 1 || echo 0)"
+assert_eq "#8: the CLAUDE rendered nudge block is filtered (captured)" "1" \
+    "$([[ "$(_wq_r '❯ ⟦ae:msg from watchdog⟧                                                                                                
+  Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: /x/state               
+  <waiting-user|blocked|done> "<reason>"')" == "$_wq_rbase" ]] && echo 1 || echo 0)"
+assert_eq "#8: the CODEX state echo is filtered (captured)" "1" \
+    "$([[ "$(_wq_r '  └ Marked gpt56sol:reviewer done: review #36 replied: one BLOCKER and one IMPORTANT')" == "$_wq_rbase" ]] && echo 1 || echo 0)"
+assert_eq "#8: the CLAUDE state echo is filtered (captured)" "1" \
+    "$([[ "$(_wq_r '⏺ [21:28] Done — output: Marked opus5:builder waiting-user: asked the human')" == "$_wq_rbase" ]] && echo 1 || echo 0)"
+# The controls, in their RENDERED forms. A quoted nudge renders as ordinary prose with
+# no submit ornament and no envelope above it — that difference is the discriminator,
+# and it is why quoting the text cannot silence the watchdog.
+assert_eq "#8 (control, rendered): prose quoting the nudge sentence still changes the hash" "1" \
+    "$([[ "$(_wq_r '  I was told to declare your state so I stop nudging: odd')" != "$_wq_rbase" ]] && echo 1 || echo 0)"
+assert_eq "#8 (control, rendered): prose quoting the envelope still changes the hash" "1" \
+    "$([[ "$(_wq_r '  the header reads ⟦ae:msg from watchdog⟧ there')" != "$_wq_rbase" ]] && echo 1 || echo 0)"
+assert_eq "#8 (control, rendered): the agent's OWN submitted message still changes the hash" "1" \
+    "$([[ "$(_wq_r '› here is my report on the deploy')" != "$_wq_rbase" ]] && echo 1 || echo 0)"
+assert_eq "#8 (control, rendered): an indented human reply still changes the hash" "1" \
+    "$([[ "$(_wq_r '  please also check the deploy logs')" != "$_wq_rbase" ]] && echo 1 || echo 0)"
+assert_eq "#8 (control, rendered): prose mentioning a Marked line still changes the hash" "1" \
+    "$([[ "$(_wq_r '  we saw Marked opus5:builder waiting-user: in the log')" != "$_wq_rbase" ]] && echo 1 || echo 0)"
+# Control 6: an ASSISTANT LINE that merely discusses state output. The first claude
+# matcher accepted any "⏺ … output: Marked <word> <state>", so this vanished as
+# footprint — deaf in the yield direction, where a hold would survive real activity.
+# Narrowed to the captured status grammar: ⏺ [HH:MM] Done — output: Marked …
+assert_eq "#8 (control, rendered): assistant prose containing 'output: Marked' still changes the hash" "1" \
+    "$([[ "$(_wq_r '⏺ Ordinary analysis — output: Marked deployment working: this is prose, not a helper echo')" != "$_wq_rbase" ]] && echo 1 || echo 0)"
+unset -f _wq_r
+unset _wq_rbase
+
 # ── the sensor, per-tool, against the REAL fixtures (active + inactive parity) ──
 assert_eq "occ: codex empty placeholder (dim) -> idle" "idle" "$(_occ codex '\033[1m›\033[0m \033[2mExplain this codebase\033[0m')"
 assert_eq "occ: codex short typed (unstyled) -> occupied" "occupied" "$(_occ codex '\033[1m›\033[0m human draft')"
