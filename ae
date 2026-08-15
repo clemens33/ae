@@ -8640,8 +8640,75 @@ cmd_help() {
 # predicate — _paste_input_busy reports them safe unconditionally, which would mean
 # "ready" the instant the pane exists, i.e. the boot-gap paste this poll exists to
 # prevent. They keep the marker, which is weaker but is what they had before.
+# AN IDLE INPUT BOX IS NOT AN INITIALIZED APPLICATION. The input predicate answers
+# "is there room to type"; a TUI that renders its box during startup answers YES
+# while it is still bringing itself up. MEASURED 2026-08-15, codex v0.147.0, cold
+# start, real MCP config, isolated socket:
+#
+#     t=0.0  (blank)                                        -> not ready
+#     t=0.5  header reads "model:       loading"            -> input box ALREADY drawn
+#     t=1.0  "• Starting MCP servers (0/7): …"              -> still coming up
+#     t=2.5  "• Starting MCP servers (4/7): …"
+#     t=3.0  settled (or "⚠ MCP startup interrupted …")
+#
+# _spawn_input_ready answered READY from t=0.5 onward — so the bounded wait built to
+# protect the paste succeeded on its FIRST poll and never waited at all.
+#
+# These are NEGATIVE markers: evidence that the tool is provably still starting. Their
+# ABSENCE is not treated as proof of readiness, and the idle-input test still governs.
+# Requiring a positive banner instead would fail every spawn the day codex stops
+# printing one — a predicate that breaks closed on a cosmetic change is worse than the
+# gap it closes.
+_tool_initializing() { # <pane> <tool_kind> -> 0 = PROVABLY still starting up
+    local pane="$1" tool="$2" cap
+    case "$tool" in
+        codex) ;;
+        *) return 1 ;; # no modelled start-up markers -> nothing provable here
+    esac
+    cap="$(tmux capture-pane -p -t "$pane" 2>/dev/null)" || return 1
+    [[ -n "$cap" ]] || return 1
+    # SHAPE, NOT SUBSTRING. These patterns are matched as the ROWS the TUI draws, not
+    # as text appearing anywhere on screen — because a settled pane whose TRANSCRIPT
+    # merely mentions a marker would otherwise read "initializing" forever and refuse
+    # after the full 45s wait. That is not hypothetical: these very strings are quoted
+    # in AGENTS.md's capability matrix and in every discussion of this feature, so a
+    # substring scan fires on an agent reading the docs in its own pane.
+    #
+    # COLUMN 0, no leading-whitespace tolerance — and that is a MEASURED property, not
+    # a guess. Codex renders a copied start-up frame inside a message as INDENTED
+    # continuation rows; measured 2026-08-15 by pasting the exact rows into a settled
+    # pane:
+    #
+    #     │ model:       gpt-5.6-luna xhigh   /model to change │   <- chrome, column 0
+    #       • Starting MCP servers (0/7): assistant-all-tools…    <- quote, indented
+    #       │ model:       loading   /model to change │            <- quote, indented
+    #
+    # So the column separates the TUI's own chrome from any quotation of it. Allowing
+    # leading whitespace re-opened the whole transcript case: an exact copied row read
+    # INITIALIZING and cost a 45s false refusal — and these rows get quoted constantly,
+    # including in this project's own discussions of this very feature.
+    #
+    # The progress row: the bullet the TUI draws starts the line. The counter is what
+    # makes it a class ("servers still starting"), not any particular server list.
+    if grep -qE '^•[[:space:]]+Starting MCP servers \([0-9]+/[0-9]+\)' <<<"$cap"; then
+        return 0
+    fi
+    # The header row: inside the box (│ … │, the U+2502 the TUI draws — NOT an ASCII
+    # pipe, which would match a markdown table row and put AGENTS.md's own matrix back
+    # in scope), carrying the live "/model to change" affordance beside the value.
+    if grep -qE '^│[[:space:]]*model:[[:space:]]+loading([[:space:]].*)?/model to change' <<<"$cap"; then
+        return 0
+    fi
+    return 1
+}
+
 _spawn_input_ready() { # <pane> <tool_kind>
     local pane="$1" tool_kind="$2"
+    # Ask the START-UP question first and for every tool: a tool that is provably
+    # still initializing is not ready no matter how idle its input box looks.
+    if _tool_initializing "$pane" "$tool_kind"; then
+        return 1
+    fi
     case "$tool_kind" in
         claude | codex)
             if _paste_input_busy "$pane" "$tool_kind"; then
@@ -8655,6 +8722,21 @@ _spawn_input_ready() { # <pane> <tool_kind>
             return 0
             ;;
     esac
+}
+
+# ONE bounded readiness wait, used by both delivery moments. Extracted because the
+# spawn path had it inline and the launch path had nothing at all — the same question
+# deserves the same answer wherever it is asked.
+_wait_input_ready() { # <pane> <tool_kind> [polls] -> 0 ready, 1 timed out
+    local pane="$1" tool_kind="$2" polls="${3:-30}" i=0
+    while ((i < polls)); do
+        if _spawn_input_ready "$pane" "$tool_kind"; then
+            return 0
+        fi
+        sleep 0.5
+        i=$((i + 1))
+    done
+    return 1
 }
 
 _cmd_spawn() {
@@ -8804,15 +8886,8 @@ _cmd_spawn() {
         # wait_for_agent_start only proves the process is running — pasting in the boot
         # gap is swallowed wholesale, with nothing staged for the lingering-nudge below
         # to detect (live-dogfood finding: workers booted brief-less twice).
-        local _ready_i=0 _ready=0
-        while ((_ready_i < 30)); do
-            if _spawn_input_ready "$pane_id" "$tool_kind"; then
-                _ready=1
-                break
-            fi
-            sleep 0.5
-            _ready_i=$((_ready_i + 1))
-        done
+        local _ready=0
+        _wait_input_ready "$pane_id" "$tool_kind" 30 && _ready=1
         if ((_ready == 0)); then
             # DO NOT paste into a state we could not confirm idle. The old code polled
             # for any of '❯|bypass permissions|for shortcuts' and pasted on timeout
@@ -9397,7 +9472,7 @@ send_agent_cmd() {
             if [[ -n "$prompt" ]]; then
                 (
                     # fd 8 is the caller's LIFECYCLE LOCK. This subshell
-                    # outlives send_agent_cmd by ~3s and a child INHERITS the
+                    # outlives send_agent_cmd and a child INHERITS the
                     # descriptor, so the parent's `exec 8>&-` closes only its
                     # own copy and the lock stays held until this prompt lands —
                     # a competing `ae end` then blocks on a launch that already
@@ -9407,11 +9482,7 @@ send_agent_cmd() {
                     # which is not available now that the lock must cover the
                     # launch-script writes these very branches follow.)
                     exec 8>&-
-                    sleep 3 &&
-                        if [[ "$(pane_current_command "$pane")" == "codex" ]]; then
-                            tmux select-pane -t "$pane"
-                            tmux_paste_submit "$pane" "$prompt" || true # fire-and-forget launch paste
-                        fi
+                    _deliver_launch_prompt "$pane" codex "$prompt" "$meta_dir" "$slot"
                 ) &
             fi
             ;;
@@ -9421,15 +9492,67 @@ send_agent_cmd() {
                 (
                     # Same lifecycle-lock inheritance as the codex branch above.
                     exec 8>&-
-                    sleep 3 &&
-                        if [[ "$(pane_current_command "$pane")" == "opencode" ]]; then
-                            tmux select-pane -t "$pane"
-                            tmux_paste_submit "$pane" "$prompt" || true # fire-and-forget launch paste
-                        fi
+                    _deliver_launch_prompt "$pane" opencode "$prompt" "$meta_dir" "$slot"
                 ) &
             fi
             ;;
     esac
+}
+
+# LAUNCH-TIME DELIVERY, GATED. This branch used to be `sleep 3 && if
+# pane_current_command == <tool>; then paste || true`: a fixed delay guessing at
+# start-up, a PROCESS-NAME check that says the binary is running rather than that it
+# can accept input, and fire-and-forget on failure. A 3-second guess against a
+# 30-second MCP cold start is not close, and nothing recorded the miss.
+#
+# It is not hypothetical. On 2026-08-15 the watchdog RECOVERED a wedged codex worker
+# through exactly this path; the task landed only because the resumed session could
+# reconstruct it from its own conversation history. Delivery was never confirmed —
+# it was lucky.
+#
+# Same bounded readiness wait as the spawn path, and the same rule on timeout: do NOT
+# paste into a state we could not confirm, and never fail silently. This runs
+# detached from the launching shell, so "loud" has to mean DURABLE — stderr here goes
+# to a pane nobody is reading. The text is written next to the session and an event is
+# emitted, mirroring the spawn path's undelivered-brief contract.
+_deliver_launch_prompt() { # <pane> <tool_kind> <prompt> <meta_dir> <slot>
+    local pane="$1" tool_kind="$2" prompt="$3" meta_dir="$4" slot="$5"
+    local _rc=0 _reason=""
+    # 45s, not 30: codex's own per-server startup_timeout_sec is 30, so a 30s window
+    # expires at exactly the moment the tool gives up and settles. Wait past its
+    # deadline, not up to it.
+    if _wait_input_ready "$pane" "$tool_kind" 90; then
+        # NO select-pane. It was BARE under the detached subshell's inherited errexit,
+        # so a pane vanishing between readiness and selection — normal once the
+        # lifecycle fd closes: a stop, an end, the tool exiting — aborted the function
+        # BEFORE the rc, the preserved text and the launch-delivery-failed event. The
+        # failure reporter dying silently is the exact class this slice exists to kill.
+        # DELETED rather than status-captured, because it should never have been here:
+        # paste-buffer -t / send-keys -t write to the NAMED pane, focus is not part of
+        # any TUI's submission contract, and selecting mid-send routes the human's
+        # in-flight keystrokes into the target — acute under lead-pair, where lead and
+        # colead share window 0. Only the `focus` helper may select panes.
+        tmux_paste_submit "$pane" "$prompt" || _rc=$?
+        if ((_rc != 0)); then
+            _reason="submit UNCONFIRMED (tmux_paste_submit rc=${_rc}) — it may be staged unsent"
+        fi
+    else
+        _rc=1
+        _reason="input never reached a confirmed-ready state within 45s (still initializing, busy, modal, or unreadable)"
+    fi
+    if ((_rc == 0)); then
+        return 0
+    fi
+    local _file="${meta_dir}/undelivered.launch-${slot}.txt"
+    printf '%s' "$prompt" >"$_file" 2>/dev/null || _file=""
+    [[ -n "$_file" ]] && chmod 600 "$_file" 2>/dev/null
+    _spawn_emit_event "$meta_dir" ae "$slot" launch-delivery-failed \
+        "launch prompt NOT delivered to ${slot} (${tool_kind}, pane ${pane}): ${_reason}" 2>/dev/null || true
+    echo "ae: LAUNCH PROMPT NOT DELIVERED to ${slot} (pane ${pane}): ${_reason}" >&2
+    if [[ -n "$_file" ]]; then
+        echo "ae: the text is preserved at ${_file}" >&2
+    fi
+    return 1
 }
 
 # --- ae steward: meta-agent launcher (deprecated alias: ae hub) ---

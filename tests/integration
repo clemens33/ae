@@ -3814,6 +3814,85 @@ fi
 rm -rf "$HOME/.ae/sessions/e34push" "$E34_REMOTE2"
 unset E34_R2 E34_REMOTE2 e34_wd2 e34_out e34_rc _i
 
+# ── #36: launch-time delivery waits for READINESS, not for a clock ──────
+# codex draws its input box before it can act on input — measured cold 2026-08-15:
+# box at t=0.5s while the header still reads "model: loading", MCP servers still
+# starting to t=2.5s, settled t=3.0s. The old readiness predicate answered READY from
+# t=0.5s, so the bounded wait meant to protect the paste succeeded on its first poll.
+#
+# The seed uses a STUB tool that reproduces that shape deterministically and with no
+# network: print a codex-shaped start-up screen, hold it, then settle. Asking the real
+# predicate against a real pane is the point — a stubbed predicate would only test the
+# stub.
+r36_stub="$TMPDIR/slowtool.sh"
+cat >"$r36_stub" <<'STUB'
+#!/bin/sh
+# Codex-shaped cold start, byte-faithful where it matters. The LIVE PROMPT is present
+# in EVERY phase — bold U+203A then a DIM placeholder, exactly as captured from
+# codex v0.147.0 — because that is the whole point: the input box looks ready the
+# entire time, and only the START-UP markers tell the phases apart. A stub that drew
+# a plain ASCII '>' proved nothing; the sensor found no live prompt and said
+# indeterminate, which was the sensor being right about an unfaithful specimen.
+prompt() {
+    printf '\033[1m\342\200\272\033[0m \033[2mWrite tests for @filename\033[0m\n'
+    printf '\n  \033[2mstub-model xhigh \302\267 /tmp\033[0m\n'
+}
+printf '\033[2J\033[H'
+printf '\342\224\202 >_ OpenAI Codex (v0.147.0)              \342\224\202\n'
+printf '\342\224\202 model:       loading   /model to change \342\224\202\n\n'
+prompt
+sleep 3
+printf '\033[2J\033[H'
+printf '\342\224\202 model:       stub-model xhigh   /model to change \342\224\202\n\n'
+printf '\342\200\242 Starting MCP servers (0/7): alpha, beta\n\n'
+prompt
+sleep 3
+printf '\033[2J\033[H'
+printf '\342\224\202 model:       stub-model xhigh   /model to change \342\224\202\n\n'
+prompt
+while :; do sleep 5; done
+STUB
+chmod +x "$r36_stub"
+tmux new-window -d -t "$AE_TMUX_SERVER:" -n r36 "$r36_stub" 2>/dev/null ||
+    tmux new-session -d -s r36probe "$r36_stub" 2>/dev/null
+r36_pane="$(tmux list-panes -a -F '#{pane_id} #{window_name}' 2>/dev/null | awk '$2=="r36"{print $1; exit}')"
+if [[ -z "$r36_pane" ]]; then
+    r36_pane="$(tmux list-panes -t r36probe -F '#{pane_id}' 2>/dev/null | head -1)"
+fi
+assert_eq "readiness (#36): the delayed-start stub pane exists" "1" \
+    "$([[ -n "$r36_pane" ]] && echo 1 || echo 0)"
+if [[ -n "$r36_pane" ]]; then
+    # Drive ae's REAL predicate. Sampled across the stub's three phases; the verdict
+    # must be NOT-READY while a start-up marker is on screen and READY once it clears.
+    # The predicate is eval'd from ae rather than reached through a new subcommand:
+    # adding `ae _readiness-probe` would be product surface existing only for this
+    # test. What integration contributes over the unit fixtures is a REAL pane and a
+    # REAL capture-pane — the suite's own tmux() already targets the test server, so
+    # the sensor reads exactly what ae would read.
+    r36_src="$(cat "$AE")"
+    for _f in _capture_input_region _sgr_parse _input_region_prompt_seg \
+        _input_region_is_border _input_region_content_end _input_region_occupied \
+        _paste_input_busy _tool_initializing _spawn_input_ready; do
+        eval "$(awk -v f="^${_f}\\(\\)" '$0 ~ f,/^\}$/' <<<"$r36_src")"
+    done
+    r36_probe() {
+        if _spawn_input_ready "$1" codex; then echo READY; else echo NOTREADY; fi
+    }
+    sleep 1
+    r36_early="$(r36_probe "$r36_pane")"
+    sleep 3.5
+    r36_mid="$(r36_probe "$r36_pane")"
+    sleep 3.5
+    r36_late="$(r36_probe "$r36_pane")"
+    assert_eq "readiness (#36): 'model: loading' is NOT ready" "NOTREADY" "$r36_early"
+    assert_eq "readiness (#36): an MCP start-up progress line is NOT ready" "NOTREADY" "$r36_mid"
+    assert_eq "readiness (#36): the settled screen IS ready" "READY" "$r36_late"
+    tmux kill-pane -t "$r36_pane" 2>/dev/null || true
+fi
+tmux kill-session -t r36probe 2>/dev/null || true
+rm -f "$r36_stub"
+unset r36_stub r36_pane r36_early r36_mid r36_late r36_src _f
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

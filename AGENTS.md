@@ -126,9 +126,25 @@ ae supports multiple coding agent CLIs. They differ significantly in session han
 | **Concurrent session safety** | Full — UUID-scoped | Partial — `_register-sid` + launch tokens reduce collisions, but fallback CWD matching is still heuristic | Partial — UUID-scoped once captured; fallback `--resume latest` remains heuristic when uncaptured | Full — UUID-scoped | Partial — `--session ID` is UUID-scoped once captured; fallback CWD matching remains heuristic |
 | **Config flags preserved on resume** | Yes (flags stay, `--resume` appended) | Yes (flags before `resume` subcommand) | Yes (flags stay, `--resume` appended) | Yes (flags stay, `--resume`/`--continue` appended) | Yes (flags stay, `--session` appended) |
 | **TUI modelled for delivery** | Yes — input-busy + staged detection | Yes — busy detection (staged detection: see input-region work) | No | No (v1) — sends deliver unprotected: no typed-input protection, no staged detection, no throttle patterns until its TUI is observed live | No |
+| **Launch-time input-ready detection** | Idle-input sensor; no separate start-up marker observed | `model: loading` header **and** `Starting MCP servers (n/m)` progress line are NOT-ready markers (measured 2026-08-15, v0.147.0: input box drawn at t=0.5s, settled t=3.0s) | None — falls back to the composed-UI grep | **EXEMPT — no readiness detection.** Its TUI is unmodelled, so launch delivery is ungated and a slow start can land a paste into an unready pane. Accepted risk, not a pretend gate | None — falls back to the composed-UI grep |
 | **`launch.<slot>.sh` re-run** | Resumes — first run creates, later runs `--resume` the same UUID | Starts FRESH (no id to bake, so nothing collides — the conversation is simply lost) | Starts FRESH | Resumes — same as claude | Starts FRESH |
 
 **Key constraints to know:**
+- **An idle input box is not an initialized application.** Every tool whose task rides a *paste*
+  has a launch window where the box is drawn but the tool cannot yet act on input, and a fixed
+  post-launch delay is a guess at its width. ae gates both delivery moments — the spawn task and
+  the launch/resume prompt — on `_spawn_input_ready`, which asks `_tool_initializing` FIRST: a
+  tool that is provably still starting is not ready however idle its box looks. Codex measured
+  cold (2026-08-15, real MCP config): `model: loading` at t=0.5s with the box already drawn,
+  `Starting MCP servers (0/7 … 4/7)` to t=2.5s, settled at t=3.0s — the old predicate answered
+  READY from t=0.5s, so the bounded wait succeeded on its first poll and never waited.
+  The markers are NEGATIVE: their absence is not proof of readiness, because a predicate that
+  demands a positive banner breaks every spawn the day a tool stops printing one.
+  Timeout is a LOUD, DURABLE failure — the text is preserved next to the session and an event is
+  emitted — because launch delivery runs detached, where stderr reaches a pane nobody reads.
+  NOT evidence: codex's `⚠ MCP startup interrupted` banner appears on its own (measured at t=3.0s
+  in a run where no key was ever sent). It is a terminal state, not a sign of interrupted input.
+
 - Codex has no `--session-name` or `--session-id` flag. The only way to get its UUID is post-launch (from `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filenames). ae works around this by instructing codex via `developer_instructions` to run the internal `_register-sid` helper script as its first action.
 - Gemini persists a local `sessionId` in `~/.gemini/tmp/<project>/chats/session-*.json`, and current Gemini CLI accepts `--resume <UUID>` in addition to `latest`/index. ae now captures that UUID via launch-token scan and uses exact resume when available; fallback remains `--resume latest` if capture fails.
 - OpenCode is TUI-only with no system prompt flag. Context is injected by pasting text into the TUI as the first user message. Session IDs are captured post-launch via `opencode session list --format json` filtered by directory (CWD) matching. Resume uses `--session ID` for exact match or `--continue` as fallback.

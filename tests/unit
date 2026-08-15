@@ -2079,8 +2079,10 @@ assert_eq "watchdog emission: every referenced ae fn is available (emitted or in
 # through the structural predicate — the marker grep survives only for unmodeled TUIs,
 # which have no predicate; the readiness BEHAVIOUR is proved by the _cmd_spawn caller
 # probe, not by this source match.
+# (#36 extracted the poll loop into _wait_input_ready so the launch path could share
+# it; the fact pinned is unchanged — spawn waits for readiness before it pastes.)
 assert_eq "spawn: polls for TUI readiness before pasting the prompt" "1" \
-    "$([[ "$AE_SOURCE" == *'Wait for the TUI to actually ACCEPT input'* && "$AE_SOURCE" == *'_spawn_input_ready "$pane_id" "$tool_kind"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'Wait for the TUI to actually ACCEPT input'* && "$AE_SOURCE" == *'_wait_input_ready "$pane_id" "$tool_kind" 30'* ]] && echo 1 || echo 0)"
 
 # ── stale-request attention (unanswered) ────────────────────────────
 
@@ -8393,6 +8395,200 @@ _occ() { # <tool> <region-printf_b> -> occupied|idle|indeterminate
     _input_region_occupied "%1" "$1"
     case $? in 0) echo occupied ;; 1) echo idle ;; *) echo indeterminate ;; esac
 }
+# ── #36: AN IDLE INPUT BOX IS NOT AN INITIALIZED APPLICATION ─────────
+# MEASURED 2026-08-15 (codex v0.147.0, cold start, real MCP config, isolated socket):
+# codex draws its input box — with a DIM placeholder the sensor correctly skips — a
+# HALF SECOND after launch, while the header still reads "model: loading" and the MCP
+# servers are still coming up. _spawn_input_ready therefore answered READY from t=0.5,
+# so the bounded wait built to protect the paste succeeded on its FIRST poll and never
+# waited. Frames below are verbatim from that capture.
+#
+# These are NEGATIVE markers. Their ABSENCE is not proof of readiness — the idle-input
+# test still governs — because a predicate that demands a positive banner breaks every
+# spawn the day the tool stops printing one.
+eval "$(awk '/^_tool_initializing\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_ti() { # <captured-pane-text> -> initializing|settled
+    local _C="$1"
+    # shellcheck disable=SC2317  # invoked through _tool_initializing below
+    tmux() { printf '%s' "$_C"; }
+    if _tool_initializing "%1" codex; then echo initializing; else echo settled; fi
+    unset -f tmux
+}
+assert_eq "#36: 'model: loading' in the header is NOT ready (t=0.5 frame)" "initializing" \
+    "$(_ti '│ >_ OpenAI Codex (v0.147.0)              │
+│ model:       loading   /model to change │
+│ directory:   ~/projects/clemens33/ae    │
+› Write tests for @filename')"
+assert_eq "#36: an MCP start-up progress line is NOT ready (t=1.0 frame)" "initializing" \
+    "$(_ti '│ model:       gpt-5.6-luna xhigh   /model to change │
+• Starting MCP servers (0/7): assistant-all-tools, assistant-all-tools-test
+› Write tests for @filename')"
+# The counter is the CLASS, not any particular server list — 4/7 reads the same as 0/7.
+assert_eq "#36: the progress line is matched by its COUNTER, not its server names" "initializing" \
+    "$(_ti '• Starting MCP servers (4/7): assistant-all-tools-test, codex_apps, serena')"
+# The settled frame, including the terminal "interrupted" banner — which is a FINISHED
+# state, not a busy one. It appeared at t=3.0 in a run where NO key was ever sent, so
+# it is not evidence of an interrupted keypress and must not read as not-ready.
+assert_eq "#36: the settled frame is ready (t=3.0, model resolved, no progress line)" "settled" \
+    "$(_ti '│ model:       gpt-5.6-luna xhigh   /model to change │
+⚠ MCP startup interrupted. The following servers were not initialized: codex_apps, serena
+› Write tests for @filename')"
+# MARKER-GREP-AS-STATE. A settled pane whose TRANSCRIPT merely mentions a marker must
+# read READY: these strings are quoted in AGENTS.md's own matrix and in every
+# discussion of this feature, so a substring scan fires on an agent reading the docs
+# in its own pane and refuses for the full 45s wait. The patterns are matched as the
+# ROWS the TUI draws — bullet at line start, box character around the header.
+# The rows are copied EXACTLY as codex renders a quoted start-up frame — two-space
+# indented continuation rows, measured 2026-08-15 by pasting them into a settled pane.
+# The first version of this fixture PARAPHRASED the markers into prose, which made it
+# a fixture that misrepresented the THREAT: an exact copy still read INITIALIZING and
+# would have cost a 45s false refusal.
+assert_eq "#36: a settled transcript quoting the EXACT start-up rows is still ready" "settled" \
+    "$(_ti '│ model:       stub-model xhigh   /model to change │
+› here is the frame I captured:
+  • Starting MCP servers (0/7): assistant-all-tools, assistant-all-tools-test
+  │ model:       loading   /model to change │
+› Write tests for @filename')"
+# ...and prose mentions, which is the softer version of the same case.
+assert_eq "#36: a settled transcript merely MENTIONING the markers is ready" "settled" \
+    "$(_ti 'OLD TRANSCRIPT: model: loading was discussed here
+we also talked about "Starting MCP servers (0/7)" in that thread
+│ model:       stub-model xhigh   /model to change │
+› Write tests for @filename')"
+# ...and an ASCII-pipe row does NOT count as the header box, because a markdown table
+# row would otherwise put the capability matrix itself back in scope.
+assert_eq "#36: an ASCII-pipe table row is not the header box" "settled" \
+    "$(_ti '| model:       loading   /model to change |
+› Write tests for @filename')"
+# A tool with no modelled start-up markers must not be blocked by this sensor at all.
+assert_eq "#36: an unmodelled tool is never 'provably initializing'" "1" \
+    "$(_C='• Starting MCP servers (0/7): whatever'
+       tmux() { printf '%s' "$_C"; }
+       _tool_initializing "%1" grok && echo 0 || echo 1
+       unset -f tmux)"
+unset -f _ti
+# The start-up question is asked FIRST and for EVERY tool: an unmodelled tool falls
+# through to its own readiness test, but a modelled one cannot be waved past by an
+# idle-looking box.
+# (Anchored on the two lines rather than on a prefix slice: the obvious spelling
+# nested double quotes inside the command substitution — ${_r%%case "$tool_kind"*} —
+# which killed the subshell and produced an empty result, not a failure.)
+assert_eq "#36: readiness asks the start-up question before the input question" "1" \
+    "$(_r="$(awk '/^_spawn_input_ready\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       _first="$(command grep -n 'if _tool_initializing' <<<"$_r" | head -1 | cut -d: -f1)"
+       _case="$(command grep -n 'case ' <<<"$_r" | head -1 | cut -d: -f1)"
+       [[ -n "$_first" && -n "$_case" && "$_first" -lt "$_case" ]] && echo 1 || echo 0)"
+# ONE bounded wait, shared by both delivery moments. The spawn path had it inline and
+# the launch path had nothing; the same question deserves the same answer wherever it
+# is asked.
+assert_eq "#36: the bounded wait is shared, not duplicated per caller" "1" \
+    "$([[ "$AE_SOURCE" == *'_wait_input_ready "$pane_id" "$tool_kind" 30'* \
+        && "$AE_SOURCE" == *'_wait_input_ready "$pane" "$tool_kind" 90'* \
+        && "$(printf '%s' "$AE_SOURCE" | command grep -c 'while ((i < polls)); do' || true)" == "1" ]] \
+        && echo 1 || echo 0)"
+# LAUNCH-TIME DELIVERY IS GATED. It used to be `sleep 3` + a PROCESS-NAME check +
+# `|| true`: a fixed guess, a test that the binary is running rather than that it can
+# accept input, and no record of a miss. The watchdog's 2026-08-15 recovery rode this
+# exact branch.
+_sac="$(awk '/^send_agent_cmd\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "#36: launch delivery no longer sleeps-and-hopes" "1" \
+    "$(_code="$(command grep -v '^ *#' <<<"$_sac" || true)"
+       [[ "$_code" != *'sleep 3 &&'* && "$_code" != *'pane_current_command "$pane")" == "codex"'* \
+        && "$_code" == *'_deliver_launch_prompt "$pane" codex "$prompt" "$meta_dir" "$slot"'* \
+        && "$_code" == *'_deliver_launch_prompt "$pane" opencode "$prompt" "$meta_dir" "$slot"'* ]] \
+        && echo 1 || echo 0)"
+# BEHAVIOURAL, driving the REAL _deliver_launch_prompt. The integration block
+# evaluates readiness FRAMES only — a specimen-scope gap the reviewer named: it never
+# executed the reporter itself. This runs it under `set -e`, the way the detached
+# subshell inherits errexit, with the pane GONE by the time delivery is attempted.
+# The old body had a BARE `tmux select-pane` here, so a vanished pane — normal after
+# a stop, an end, or the tool exiting — aborted before the rc, the preserved text and
+# the event. The failure reporter dying silently is the class this slice exists to
+# kill, one layer up.
+# THE CALL MUST BE BARE, IN ITS OWN PROCESS. The first version of this seed ran
+# `_deliver_launch_prompt … || _rc=$?` — an OR-list, which SUSPENDS errexit inside the
+# function. So the seed written to enforce the errexit hazard was written in the one
+# shape AGENTS.md says cannot show it ("Only a BARE call proves set -e safety — a
+# failing command aborts ONLY in statement position; fn || … masks it"). Reviewer
+# proved the gap by injecting a bare `false` into the function: the seed still passed.
+#
+# The real function is therefore run BARE in a fresh `bash -e`, and the PROCESS status
+# is read from outside. The `|| _rc=$?` below is on the CHILD PROCESS, which is exactly
+# where masking is harmless — the errexit under test lives inside it.
+_dlp() { # <submit_rc> -> rc|file|event
+    local _md _rc=0
+    _md="$(mktemp -d)"
+    cat >"${_md}/probe.sh" <<'PROBE'
+set -euo pipefail
+eval "$(awk '/^_deliver_launch_prompt\(\) \{/,/^\}$/' "$AE_BIN")"
+_wait_input_ready() { return 0; }
+tmux() { return 1; }                      # the pane is gone: every tmux call fails
+tmux_paste_submit() { return "$WANT"; }
+_spawn_emit_event() { printf 'EVENT %s\n' "$4" >>"${MD}/events"; return 0; }
+_deliver_launch_prompt "%9" codex "the brief" "$MD" worker.0 >/dev/null 2>&1
+PROBE
+    AE_BIN="$AE_BIN" MD="$_md" WANT="$1" "${BASH:-bash}" "${_md}/probe.sh" || _rc=$?
+    printf 'rc=%s|file=%s|event=%s' "$_rc" \
+        "$([[ -s "${_md}/undelivered.launch-worker.0.txt" ]] && echo 1 || echo 0)" \
+        "$(command grep -c 'launch-delivery-failed' "${_md}/events" 2>/dev/null | tr -d '[:space:]' || echo 0)"
+    rm -rf "$_md"
+}
+assert_eq "#36: a failed submit is reported durably, and does NOT abort under errexit" "rc=1|file=1|event=1" \
+    "$(_dlp 1)"
+# ...and the happy path stays silent: no file, no event, rc 0. Without this the seed
+# could pass by failing for any reason at all.
+assert_eq "#36: a delivered launch prompt writes nothing and reports success" "rc=0|file=0|event=0" \
+    "$(_dlp 0)"
+# MUTATION-GUARD, in the same bare shape: a bare failing command anywhere before the
+# reporting must now surface as a lost report, which is what the masked version could
+# not see.
+# MUTATION GUARD — and the discriminator is the REPORT, not the status. The first
+# spelling asked only "did it exit non-zero", which a normal `return 1` satisfies too,
+# so it passed without proving anything. An abort loses the preserved text and the
+# event; a handled failure keeps both. That difference is the whole point of the bare
+# shape, and it is what the masked version could not see.
+assert_eq "#36: an injected bare failure LOSES the report (proves the shape can see it)" "injected=1|file=0|event=0" \
+    "$(_md2="$(mktemp -d)"
+       cat >"${_md2}/p.sh" <<'PROBE'
+set -euo pipefail
+eval "$(awk '/^_deliver_launch_prompt\(\) \{/,/^\}$/' "$AE_BIN")"
+_wait_input_ready() { return 0; }
+tmux() { return 1; }
+tmux_paste_submit() { return 1; }
+_spawn_emit_event() { printf 'EVENT %s\n' "$4" >>"${MD}/events"; return 0; }
+# Inject a bare failing command where the reporting would follow. NO leading-space
+# anchor: declare -f re-indents, so an anchored pattern silently matches nothing and
+# the "mutant" runs unmutated — which is exactly how this pin first passed for the
+# wrong reason. Whether it LANDED is reported, not assumed.
+_mutated="$(declare -f _deliver_launch_prompt | sed 's|_reason="submit UNCONFIRMED.*|&\n false|')"
+case "$_mutated" in *$'\n false'*) printf 'injected=1' >"${MD}/injected" ;; *) printf 'injected=0' >"${MD}/injected" ;; esac
+eval "$_mutated"
+_deliver_launch_prompt "%9" codex "b" "$MD" worker.0 >/dev/null 2>&1
+PROBE
+       AE_BIN="$AE_BIN" MD="$_md2" "${BASH:-bash}" "${_md2}/p.sh" >/dev/null 2>&1 || true
+       printf '%s|file=%s|event=%s' \
+        "$(cat "${_md2}/injected" 2>/dev/null || echo injected=0)" \
+        "$([[ -s "${_md2}/undelivered.launch-worker.0.txt" ]] && echo 1 || echo 0)" \
+        "$(command grep -c 'launch-delivery-failed' "${_md2}/events" 2>/dev/null | tr -d '[:space:]' || echo 0)"
+       rm -rf "$_md2")"
+unset -f _dlp
+# The selection is GONE rather than status-captured: it should never have been here.
+# paste-buffer -t / send-keys -t write to the NAMED pane, focus is not part of any
+# TUI's submission contract, and selecting mid-send routes the human's in-flight
+# keystrokes into the target — acute under lead-pair, where two agents share window 0.
+assert_eq "#36: launch delivery selects no pane (deletion, not capture)" "1" \
+    "$(_d="$(awk '/^_deliver_launch_prompt\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       _code="$(command grep -v '^ *#' <<<"$_d" || true)"
+       [[ "$_code" != *'select-pane'* ]] && echo 1 || echo 0)"
+# ...and a failure is DURABLE, because this runs detached from the launching shell:
+# stderr there goes to a pane nobody reads. Text preserved + an event, mirroring the
+# spawn path's undelivered-brief contract.
+assert_eq "#36: an undelivered launch prompt is preserved and recorded, never silent" "1" \
+    "$(_d="$(awk '/^_deliver_launch_prompt\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_d" == *'undelivered.launch-${slot}.txt'* && "$_d" == *'launch-delivery-failed'* \
+        && "$_d" == *'chmod 600'* && "$_d" == *'return 1'* ]] && echo 1 || echo 0)"
+unset _sac
+
 # ── the sensor, per-tool, against the REAL fixtures (active + inactive parity) ──
 assert_eq "occ: codex empty placeholder (dim) -> idle" "idle" "$(_occ codex '\033[1m›\033[0m \033[2mExplain this codebase\033[0m')"
 assert_eq "occ: codex short typed (unstyled) -> occupied" "occupied" "$(_occ codex '\033[1m›\033[0m human draft')"
@@ -8780,8 +8976,11 @@ assert_eq "b2: spawn paste status is captured, not swallowed by '|| true'" "1" \
     "$([[ "$AE_SOURCE" == *'tmux_paste_submit "$pane_id" "$prompt" || _paste_rc=$?'* \
         && "$AE_SOURCE" == *'brief submit UNCONFIRMED'* \
         && "$AE_SOURCE" != *'tmux_paste_submit "$pane_id" "$prompt" || true'* ]] && echo 1 || echo 0)"
+# (#36 routes this through the shared bounded wait; the fact is unchanged — the spawn
+# path asks the readiness PREDICATE rather than grepping markers itself.)
 assert_eq "b2: spawn readiness no longer greps markers for modeled tools" "1" \
-    "$([[ "$AE_SOURCE" == *'_spawn_input_ready "$pane_id" "$tool_kind"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'_wait_input_ready "$pane_id" "$tool_kind" 30'* \
+        && "$AE_SOURCE" == *'_spawn_input_ready "$pane" "$tool_kind"'* ]] && echo 1 || echo 0)"
 
 # ── set -e liveness: the sensor is called from `ae`, which runs set -euo pipefail ──
 # These functions were NOT set -e safe and this suite could never have shown it — not
@@ -8869,6 +9068,11 @@ _spawn_probe() { # <ready:1|0> <paste_rc> -> "rc=? spawned=? task_event=? failed
         # the two states under test, injected where the real code asks them:
         # shellcheck disable=SC2317,SC2031
         _spawn_input_ready() { [[ "${_READY:-0}" == 1 ]]; }
+        # #36 put a bounded WAIT between the spawn path and the predicate. Stubbed
+        # rather than eval'd so the not-ready arm stays instant: the real one polls
+        # 30 times at 0.5s, which would add 15s per not-ready case for no extra fact.
+        # shellcheck disable=SC2317,SC2031
+        _wait_input_ready() { _spawn_input_ready "$1" "$2"; }
         # shellcheck disable=SC2317,SC2031
         tmux_paste_submit() { return "${_PRC:-0}"; }
         _READY="$_ready" _PRC="$_prc" _cmd_spawn "$md" "sonnet5:probe" "run the sweep and report findings-first"
@@ -8927,6 +9131,11 @@ _spawn_probe_pastes() { # <ready:1|0> -> "paste_calls=N"
         tmux() { [[ "$1" == new-window ]] && printf '%%9'; return 0; }
         # shellcheck disable=SC2317,SC2031
         _spawn_input_ready() { [[ "${_READY:-0}" == 1 ]]; }
+        # #36 put a bounded WAIT between the spawn path and the predicate. Stubbed
+        # rather than eval'd so the not-ready arm stays instant: the real one polls
+        # 30 times at 0.5s, which would add 15s per not-ready case for no extra fact.
+        # shellcheck disable=SC2317,SC2031
+        _wait_input_ready() { _spawn_input_ready "$1" "$2"; }
         # shellcheck disable=SC2317,SC2031
         tmux_paste_submit() { printf 'x' >>"${_MD}/pastes"; return 0; }
         _READY="$_ready" _MD="$md" _cmd_spawn "$md" "sonnet5:probe" "brief" >/dev/null 2>&1 || true
