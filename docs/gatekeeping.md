@@ -101,6 +101,24 @@ over-broad date exemption suppressed semantically-divergent fallbacks). Prefer
 excluding forms *by construction* — a pattern that cannot match the BSD spelling
 needs no allow-list at all.
 
+Notes from the 2026-08 watchdog-footprint slice (#8, `d5275de`): the
+*unrepresentative fixture* row has a general statement — **the specimen must come
+from the layer the code reads**. Four instances in one session, same rule in a
+different costume each time: a guard parsing *source* when the product is the
+*generated* artifact (declare-f emission closure); a pane filter matching the bytes
+ae *delivers* when the watchdog hashes what the TUI *renders* (it filtered nothing
+at all in a live pane — every fixture passed); a filed root cause blaming a banner
+that was merely *displayed* near the failure (#36 — refuted by a two-arm
+experiment); and an identity check answered by a stub that was never asked about
+the server in question (#39 C3). Capture the specimen with the same primitive the
+code uses (`capture-pane` for pane readers, run-the-artifact for generated code) —
+extracted, never retyped, so fixtures cannot drift from reality. And a process
+corollary from the same slice, after a "be more specific" fix tightened the two
+patterns the finding named while a third pattern in the same change stayed loose:
+**a review finds instances; the builder owes the class**. When a finding's remedy
+is a discipline, apply it to every sibling in the change, not only the named
+exhibit.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
