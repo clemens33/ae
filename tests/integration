@@ -2524,6 +2524,49 @@ assert_eq "send-focus: active pane is the lead after send to the same-window sea
 lp_colead_pane="$(tmux list-panes -s -t test-leadpair -F '#{@ae_agent} #{pane_id}' 2>/dev/null | awk '$1=="dummy2:colead"{print $2}')"
 lp_colead_content="$(tmux capture-pane -p -t "$lp_colead_pane" 2>/dev/null | tr -d '\n')"
 assert_eq "send-focus: inactive seat-mate RECEIVED the paste" "1" "$([[ "$lp_colead_content" == *focus-regression-ping* ]] && echo 1 || echo 0)"
+# #35: an EMPTY body is refused loudly at the helper — the shape that lost a verdict.
+lp_empty_rc=0
+"$HOME/.ae/sessions/test-leadpair/send" colead "" >/dev/null 2>&1 || lp_empty_rc=$?
+assert_eq "empty-body (#35): send refuses an empty body instead of delivering a header" "1" \
+    "$([[ "$lp_empty_rc" -ne 0 ]] && echo 1 || echo 0)"
+lp_ws_rc=0
+"$HOME/.ae/sessions/test-leadpair/send" colead "   " >/dev/null 2>&1 || lp_ws_rc=$?
+assert_eq "empty-body (#35): whitespace-only is refused too" "1" \
+    "$([[ "$lp_ws_rc" -ne 0 ]] && echo 1 || echo 0)"
+# #35: a body far past the OLD argv ceiling (set-buffer carried 16000 and failed at
+# 32000) is delivered and RECOVERABLE. Arrival is asserted at the sidecar rather than
+# in the pane: these test panes run a shell, whose line discipline caps a single
+# unbroken line — a real agent TUI reads raw and takes the whole thing (measured:
+# 60004 chars staged exactly by codex).
+lp_big="$(head -c 40000 </dev/zero | tr '\0' 'B')"
+lp_big_rc=0
+"$HOME/.ae/sessions/test-leadpair/send" colead "BIGSTART${lp_big}BIGEND" >/dev/null 2>&1 || lp_big_rc=$?
+sleep 1
+# `|| true`: this is an ASSIGNMENT FROM A PIPELINE, and a failing pipeline here
+# aborts the whole suite under set -e instead of failing the assertion below — no
+# summary, no FAIL line, no information. A seed must fail loudly, never vanish.
+lp_big_file="$(command ls -t "$HOME/.ae/sessions/test-leadpair/messages"/*.txt 2>/dev/null | head -1 || true)"
+assert_eq "large-body (#35): a 40KB message is delivered, not silently dropped" "0" "$lp_big_rc"
+assert_eq "large-body (#35): the full body is recoverable from the session" "1" \
+    "$(_n="$(wc -c <"${lp_big_file:-/nonexistent}" 2>/dev/null | tr -d ' ')"
+       [[ -n "$_n" && "$_n" -ge 40000 ]] && echo 1 || echo 0)"
+# #35: a request and its reply keep SEPARATE recovery artifacts. They share a request
+# id by design, so a ref-named file let the reply overwrite the ask — and the ask's
+# pointer then resolved to the reply's body.
+lp_msgs="$HOME/.ae/sessions/test-leadpair/messages"
+lp_before="$(command ls "$lp_msgs" 2>/dev/null | wc -l | tr -d ' ' || true)"
+"$HOME/.ae/sessions/test-leadpair/send" colead "FIRST-DELIVERY-BODY" >/dev/null 2>&1 || true
+"$HOME/.ae/sessions/test-leadpair/send" colead "SECOND-DELIVERY-BODY" >/dev/null 2>&1 || true
+sleep 1
+lp_after="$(command ls "$lp_msgs" 2>/dev/null | wc -l | tr -d ' ' || true)"
+assert_eq "recovery (#35): each delivery gets its own artifact, none overwritten" "1" \
+    "$([[ -n "$lp_before" && -n "$lp_after" && "$lp_after" -ge $((lp_before + 2)) ]] && echo 1 || echo 0)"
+assert_eq "recovery (#35): both bodies survive side by side" "1|1" \
+    "$(printf '%s|%s' \
+        "$(command grep -rlq 'FIRST-DELIVERY-BODY' "$lp_msgs" 2>/dev/null && echo 1 || echo 0)" \
+        "$(command grep -rlq 'SECOND-DELIVERY-BODY' "$lp_msgs" 2>/dev/null && echo 1 || echo 0)")"
+unset lp_msgs lp_before lp_after
+unset lp_empty_rc lp_ws_rc lp_big lp_big_rc lp_big_file
 # Rename regression (codex): under lead-pair the window-0 role name must SURVIVE a
 # session rename (layout fact decides — even the nastiest case, a session named 'lead'),
 # and status-left must refresh to the new name (it carries the session name now).

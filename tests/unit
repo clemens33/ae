@@ -8589,6 +8589,95 @@ assert_eq "#36: an undelivered launch prompt is preserved and recorded, never si
         && "$_d" == *'chmod 600'* && "$_d" == *'return 1'* ]] && echo 1 || echo 0)"
 unset _sac
 
+# ── #35 MESSAGE RELIABILITY: measured, not assumed ───────────────────
+# The filed symptom was "recipients get a 200-char truncation". MEASURED 2026-08-15
+# and it is NOT size-truncation: ae's helpers pass the body through in full, tmux
+# transport is byte-exact, and a real codex TUI staged 3020 of 3020 chars. Two other
+# mechanisms were found instead, and both were SILENT.
+#
+# (1) The body travelled in ARGV. `set-buffer -- "$msg"` carried 16000 bytes and
+#     FAILED at 32000 (load-buffer from stdin carried 131000). The compound's status
+#     was discarded, so a failed paste left an EMPTY input box — and the staged-check
+#     reads "empty" as "delivered". Over the limit the sender was told DELIVERED and
+#     the recipient never received anything.
+_asp="$(awk '/^ae_submit_pasted_message\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "#35: the body is staged from STDIN, never as a tmux command argument" "1" \
+    "$(_code="$(command grep -v '^ *#' <<<"$_asp" || true)"
+       [[ "$_code" == *'printf '"'"'%s'"'"' "$msg" | tmux load-buffer -b "$buf" -'* \
+        && "$_code" != *'set-buffer'* ]] && echo 1 || echo 0)"
+# ...and a transport failure is LOUD. Silence here is what made an oversized body
+# report success: nothing pasted, empty box, "delivered".
+assert_eq "#35: both transport steps are status-checked and fail loudly" "1" \
+    "$([[ "$_asp" == *'paste transport FAILED'*'return 1'* \
+        && "$(printf '%s' "$_asp" | command grep -c 'paste FAILED into pane' || true)" == "2" ]] && echo 1 || echo 0)"
+unset _asp
+# (2) An EMPTY body was accepted with rc 0 — the reviewer lost a whole verdict that
+#     way. Whitespace-only counts as empty; a body of spaces says as much as none.
+_arb() ( # <body> -> ok|refused
+    eval "$(awk '/^ae_require_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    if ae_require_body probe "$1" 2>/dev/null; then echo ok; else echo refused; fi
+)
+assert_eq "#35: a normal body is accepted" "ok" "$(_arb 'a real message')"
+assert_eq "#35: an empty body is refused" "refused" "$(_arb '')"
+assert_eq "#35: a whitespace-only body is refused" "refused" "$(_arb '   ')"
+assert_eq "#35: a newline/tab-only body is refused" "refused" "$(_arb "$(printf '\n\t ')")"
+unset -f _arb
+# ...at EVERY delivery helper. reply needs its own check because the text it hands to
+# send is "[req-id] <body>", which is never empty even when the reply is — and that is
+# precisely the path that lost the verdict.
+assert_eq "#35: send, the tracked sends, and reply each guard their own body" "1" \
+    "$([[ "$AE_SOURCE" == *'ae_require_body "$action" "$body" || exit 1'* \
+        && "$AE_SOURCE" == *'ae_require_body send "$msg" || exit 1'* \
+        && "$AE_SOURCE" == *'ae_require_body reply "$message" || exit 1'* ]] && echo 1 || echo 0)"
+# (3) RECOVERABILITY. events.jsonl caps summaries at 200 chars BY DESIGN, so a lost
+#     body cannot be reconstructed from the log — which is what turned both incidents
+#     into "please resend verbatim". The full text is kept beside the session, 600, and
+#     the event points at it.
+_sto() ( # -> file-contents|mode
+    eval "$(awk '/^ae_store_message_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    _AE_META_DIR="$(mktemp -d)"
+    ae_store_message_body "ae-20260815T000000Z-abc" ask "the whole body"
+    printf '%s|%s' "$(cat "$_AE_LAST_BODY_FILE" 2>/dev/null)" \
+        "$(_ae_stat mode "$_AE_LAST_BODY_FILE" 2>/dev/null || echo '?')"
+    rm -rf "$_AE_META_DIR"
+)
+assert_eq "#35: the full body is stored beside the session, 600" "the whole body|600" "$(_sto)"
+# ONE ARTIFACT PER DELIVERY, not per REF. ask and reply SHARE a request id by design,
+# so a ref-named file let the reply TRUNCATE the ask's body — and the ask event's
+# pointer then resolved to the reply's text. A recovery record that a later delivery
+# can overwrite is not a record.
+_sto3() ( # -> distinct?|first-contents
+    eval "$(awk '/^ae_store_message_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    _AE_META_DIR="$(mktemp -d)"
+    ae_store_message_body "ae-REQ-1" ask "THE ASK BODY";  local a="$_AE_LAST_BODY_FILE"
+    ae_store_message_body "ae-REQ-1" reply "THE REPLY BODY"; local b="$_AE_LAST_BODY_FILE"
+    printf '%s|%s' "$([[ "$a" != "$b" ]] && echo distinct || echo SAME)" "$(cat "$a" 2>/dev/null)"
+    rm -rf "$_AE_META_DIR"
+)
+assert_eq "#35: a reply does not overwrite the ask it answers" "distinct|THE ASK BODY" "$(_sto3)"
+# ...and the ref stays in the name, so a request and its answer still correlate.
+_sto4() (
+    eval "$(awk '/^ae_store_message_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    _AE_META_DIR="$(mktemp -d)"
+    ae_store_message_body "ae-REQ-1" ask "b"
+    printf '%s' "$(basename "$_AE_LAST_BODY_FILE")"
+    rm -rf "$_AE_META_DIR"
+)
+assert_eq "#35: the artifact name still carries its request id and role" "1" \
+    "$(_n="$(_sto4)"; [[ "$_n" == ae-REQ-1.ask.* ]] && echo 1 || echo 0)"
+unset -f _sto3 _sto4
+# ...and a hostile ref cannot steer the write out of the messages directory.
+_sto2() ( # <ref> -> the basename actually written
+    eval "$(awk '/^ae_store_message_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    _AE_META_DIR="$(mktemp -d)"
+    ae_store_message_body "$1" send "body"
+    printf '%s' "$(command ls "${_AE_META_DIR}/messages" 2>/dev/null | head -1)"
+    rm -rf "$_AE_META_DIR"
+)
+assert_eq "#35: a traversal-shaped ref falls back to a generated name" "1" \
+    "$(_n="$(_sto2 '../../escape')"; [[ "$_n" == msg-* ]] && echo 1 || echo 0)"
+unset -f _sto _sto2
+
 # ── the sensor, per-tool, against the REAL fixtures (active + inactive parity) ──
 assert_eq "occ: codex empty placeholder (dim) -> idle" "idle" "$(_occ codex '\033[1m›\033[0m \033[2mExplain this codebase\033[0m')"
 assert_eq "occ: codex short typed (unstyled) -> occupied" "occupied" "$(_occ codex '\033[1m›\033[0m human draft')"

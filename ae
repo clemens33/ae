@@ -10107,6 +10107,8 @@ ae_emit_event() {
     [[ -n "${_AE_EVENT_TARGET_SLOT:-}" ]] && json+="$(printf ',"target_slot":"%s"' "$(ae_json_escape "$_AE_EVENT_TARGET_SLOT")")"
     [[ -n "${_AE_EVENT_TARGET_SESSION:-}" ]] && json+="$(printf ',"target_session":"%s"' "$(ae_json_escape "$_AE_EVENT_TARGET_SESSION")")"
     [[ -n "$summary" ]] && json+="$(printf ',"summary":"%s"' "$(ae_json_escape "$summary")")"
+    # The summary is capped; this is where the whole thing lives.
+    [[ -n "${_AE_LAST_BODY_FILE:-}" ]] && json+="$(printf ',"body_file":"%s"' "$(ae_json_escape "$_AE_LAST_BODY_FILE")")"
     json+="}"
     ae_log_append "${_AE_META_DIR}/events.jsonl" "$json"
 }
@@ -10166,10 +10168,68 @@ ae_make_req_id() {
 # message (with optional instructions block + uniform reply contract footer),
 # and execs into send with the appropriate _AE_EVENT_* env vars set.
 # Args: action req_prefix header instructions reply_label target body...
+# AN EMPTY BODY IS A LOST MESSAGE, NOT A MESSAGE. `reply "$req" ""` was accepted
+# with rc 0: the sender believed a verdict was delivered, the recipient received a
+# header with nothing under it, and the event recorded a blank summary — the reviewer
+# lost an entire verdict to this. Whitespace-only counts as empty: a body of spaces
+# and newlines carries exactly as much as none.
+# Keeps the FULL delivered text where the recipient can find it. Named by request id
+# when there is one (so `reply`/`requests` line up), otherwise by timestamp. Mode 600:
+# it is the same material as the pane content, not world-readable metadata.
+ae_store_message_body() { # <ref-or-empty> <action> <body>
+    local ref="$1" action="$2" body="$3" dir="${_AE_META_DIR}/messages" stem
+    [[ -n "$body" ]] || return 0
+    mkdir -p "$dir" 2>/dev/null || return 0
+    # ONE ARTIFACT PER DELIVERY, never per REF. ask and reply share a request id BY
+    # DESIGN, so a ref-named file meant the reply TRUNCATED the ask's body — and the
+    # ask event's pointer then resolved to the reply's text, silently. The recovery
+    # record has to be immutable or it is not a record. The ref stays in the NAME so
+    # a request and its answer still correlate; mktemp supplies uniqueness atomically
+    # rather than by a timestamp two deliveries can share.
+    if [[ "$ref" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        stem="$ref"
+    else
+        stem="msg-$(date -u +%Y%m%dT%H%M%SZ)"
+    fi
+    [[ "$action" =~ ^[A-Za-z0-9._-]+$ ]] || action="send"
+    # mktemp for atomic uniqueness; the .txt is added by RENAME because a portable
+    # template must END in XXXXXX (BSD mktemp has no --suffix, and this file runs on
+    # both userlands). The rename target inherits mktemp's uniqueness, so it cannot
+    # collide either.
+    local _tmp
+    _tmp="$(mktemp "${dir}/${stem}.${action}.XXXXXX" 2>/dev/null)" || {
+        _AE_LAST_BODY_FILE=""
+        return 0
+    }
+    if command mv -f "$_tmp" "${_tmp}.txt" 2>/dev/null; then
+        _AE_LAST_BODY_FILE="${_tmp}.txt"
+    else
+        _AE_LAST_BODY_FILE="$_tmp"
+    fi
+    printf '%s' "$body" >"$_AE_LAST_BODY_FILE" 2>/dev/null || {
+        rm -f "$_AE_LAST_BODY_FILE" 2>/dev/null || true
+        _AE_LAST_BODY_FILE=""
+        return 0
+    }
+    chmod 600 "$_AE_LAST_BODY_FILE" 2>/dev/null || true
+    return 0
+}
+
+ae_require_body() { # <helper-name> <body>
+    local what="$1" body="$2"
+    if [[ -z "${body//[[:space:]]/}" ]]; then
+        echo "ae: ${what} REFUSED — the message body is empty (or only whitespace). Nothing was sent." >&2
+        echo "ae: a delivered header with no body reads as a message that was received and said nothing." >&2
+        return 1
+    fi
+    return 0
+}
+
 ae_tracked_send() {
     local action="$1" req_prefix="$2" header="$3" instructions="$4" reply_label="$5" target_name="$6"
     shift 6
     local body="$*"
+    ae_require_body "$action" "$body" || exit 1
     # External actors (chat bridges, webhooks) identify themselves via
     # AE_SENDER_OVERRIDE — they have no @ae_agent pane to detect. Respect
     # the override before falling back to pane-based detection.
@@ -10776,13 +10836,32 @@ _pane_agent_is_dead() {
 ae_submit_pasted_message() {
     local pane="$1" tool="$2" buf="$3" msg="$4"
     local _settle=0.1
+    # THE BODY GOES IN ON STDIN, NOT IN ARGV, AND THE STATUS IS CHECKED.
+    #
+    # `set-buffer -- "$msg"` passes the whole message as a tmux COMMAND ARGUMENT, and
+    # that has a ceiling. MEASURED 2026-08-15 on this box: set-buffer carries 16000
+    # bytes and FAILS at 32000, while load-buffer from stdin carried 131000 without
+    # complaint. Worse than the ceiling was the silence — the compound's exit status
+    # was discarded, so a failed set-buffer pasted NOTHING, left the input box empty,
+    # and the staged-check then read "empty" as "the message went through". A body
+    # over the limit was reported DELIVERED to the sender and never existed for the
+    # recipient. Both halves are fixed here: stdin removes the ceiling, and the status
+    # is honoured so a transport failure is loud instead of invisible.
+    if ! printf '%s' "$msg" | tmux load-buffer -b "$buf" - 2>/dev/null; then
+        echo "ae: paste transport FAILED for pane ${pane} (${tool}) — could not stage ${#msg} bytes. Nothing was sent." >&2
+        return 1
+    fi
     if [[ "$tool" == "codex" ]]; then
         # Codex expects bracketed-paste mode for injected input.
-        tmux set-buffer -b "$buf" -- "$msg" \; \
-            paste-buffer -d -p -b "$buf" -t "$pane"
+        if ! tmux paste-buffer -d -p -b "$buf" -t "$pane" 2>/dev/null; then
+            echo "ae: paste FAILED into pane ${pane} (${tool}) — nothing was sent." >&2
+            return 1
+        fi
     else
-        tmux set-buffer -b "$buf" -- "$msg" \; \
-            paste-buffer -d -b "$buf" -t "$pane"
+        if ! tmux paste-buffer -d -b "$buf" -t "$pane" 2>/dev/null; then
+            echo "ae: paste FAILED into pane ${pane} (${tool}) — nothing was sent." >&2
+            return 1
+        fi
         # Claude only: the steward's 24-sample sweep (2026-07-15) found sends to IDLE
         # claude panes losing the Enter — the text stayed staged raw — while sends to
         # BUSY panes queued and delivered. The lead's fresh-pane repro did NOT
@@ -10866,6 +10945,7 @@ helper_send_main() {
     target_ref="$1"
     shift
     msg="$*"
+    ae_require_body send "$msg" || exit 1
     sender="${AE_SENDER_OVERRIDE:-}"
     if [[ -z "$sender" ]]; then
         sender="$(ae_current_agent_ref)"
@@ -10898,6 +10978,16 @@ helper_send_main() {
         exit 1
     fi
 
+    # #39 ORIGIN ENVELOPE. One terse line, emitted BY THE HELPER from the pane's own
+    # stamp — never composed from the sender's prose, which is the whole point: a
+    # sender cannot mark its own message as coming from someone else by writing a
+    # header, because the header it would have to forge is added here, after it.
+    #
+    # Added AFTER the request-id extraction above and AFTER the telegram/discord
+    # early-exit: req-id parsing keeps seeing the message it has always seen, and the
+    # human's chat stays unmarked. That asymmetry is deliberate and load-bearing —
+    # the human types raw and never marks anything, so ABSENCE of the envelope is how
+    # an agent recognises them.
     ae_lock_target "$target"
 
     tool="$(ae_target_tool "$target")"
@@ -10939,6 +11029,13 @@ helper_send_main() {
         exit 1
     fi
     ae_unlock_target
+    # RECOVERABLE BY THE RECIPIENT, not just by the sender's memory. events.jsonl caps
+    # summaries at 200 characters by design, so a message that does not survive
+    # delivery cannot be reconstructed from the log — which is what turned two
+    # incidents into "please resend verbatim" instead of "let me go read it". The full
+    # delivered text is kept beside the session and the event points at it, so the
+    # recipient can recover the body themselves.
+    ae_store_message_body "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_ACTION:-send}" "$msg"
     ae_emit_event "${_AE_EVENT_ACTION:-send}" "$logged_target" "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_SUMMARY:-$msg}"
 }
 
@@ -10991,6 +11088,10 @@ helper_reply_main() {
     req_id="$1"
     shift
     message="$*"
+    # Checked HERE, on the body itself: the message handed to `send` is
+    # "[${req_id}] ${message}", which is never empty even when the reply is — so the
+    # send-level guard cannot see this case. It is the case that lost a whole verdict.
+    ae_require_body reply "$message" || exit 1
     self="$(ae_current_agent_ref)"
     self_slot="$(ae_current_slot)"
     self_session="$(tmux display-message -p -t "$(ae_current_pane)" '#S' 2>/dev/null || true)"
@@ -13844,6 +13945,7 @@ LIBPROLOGUE
             ae_preview_text ae_extract_req_id ae_log_append ae_log_read \
             ae_target_tool ae_json_escape ae_sanitize_utf8 ae_cap_summary ae_emit_event ae_latest_state_for \
             _event_json_str _agents_alert_reasons _agent_alert_reason ae_make_req_id ae_tracked_send ae_find_request \
+            ae_require_body ae_store_message_body \
             ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_is_border _input_region_content_end _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
             command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
             ae_meta_get ae_meta_set ae_meta_unset \
