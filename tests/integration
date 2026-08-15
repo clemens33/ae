@@ -2524,6 +2524,24 @@ assert_eq "send-focus: active pane is the lead after send to the same-window sea
 lp_colead_pane="$(tmux list-panes -s -t test-leadpair -F '#{@ae_agent} #{pane_id}' 2>/dev/null | awk '$1=="dummy2:colead"{print $2}')"
 lp_colead_content="$(tmux capture-pane -p -t "$lp_colead_pane" 2>/dev/null | tr -d '\n')"
 assert_eq "send-focus: inactive seat-mate RECEIVED the paste" "1" "$([[ "$lp_colead_content" == *focus-regression-ping* ]] && echo 1 || echo 0)"
+# #39: an unbindable caller is MARKED UNVERIFIED, never left bare and never given
+# somebody else's name. The send above ran from the suite's own shell, which cannot be
+# positively bound to a stamped pane — previously that resolved to "human" (bare), which
+# is the accidental authority grant the envelope exists to prevent.
+assert_eq "envelope (#39): an unbindable sender is marked unverified, not bare" "1" \
+    "$([[ "$lp_colead_content" == *"⟦ae:msg from unverified⟧"* ]] && echo 1 || echo 0)"
+# ...and a send issued FROM an agent pane is marked with that agent. Driven through
+# the pane so the sender is resolved the way it is in real use, from the stamp.
+tmux send-keys -t "$lp_lead_pane" "$HOME/.ae/sessions/test-leadpair/send colead envelope-probe-body" Enter 2>/dev/null || true
+sleep 3
+lp_env_content="$(tmux capture-pane -p -t "$lp_colead_pane" 2>/dev/null | tr -d '\n')"
+assert_eq "envelope (#39): a send FROM an agent pane carries that agent as sender" "1" \
+    "$([[ "$lp_env_content" == *"⟦ae:msg from dummy:lead⟧"* ]] && echo 1 || echo 0)"
+# ...and it LEADS the message rather than hiding behind the body.
+assert_eq "envelope (#39): it leads the message, ahead of the body" "1" \
+    "$(_pre="${lp_env_content%%⟦ae:msg from*}"
+       [[ "$_pre" != *envelope-probe-body* ]] && echo 1 || echo 0)"
+unset lp_env_content
 # #35: an EMPTY body is refused loudly at the helper — the shape that lost a verdict.
 lp_empty_rc=0
 "$HOME/.ae/sessions/test-leadpair/send" colead "" >/dev/null 2>&1 || lp_empty_rc=$?
