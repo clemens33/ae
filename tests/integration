@@ -1136,6 +1136,33 @@ assert_contains "spawn: worker window named after its role" "helper-0" \
     "$(tmux list-windows -t test-spawn -F '#{window_name}' 2>/dev/null)"
 
 # Alias-only helper resolution should target the unique spawned agent
+# #38: a spawn must deliver its brief WITHOUT taking focus — under lead-pair a spawn
+# firing while the human types routes their in-flight keystrokes into the new worker.
+sp_active_before="$(tmux list-panes -s -t test-spawn -F '#{pane_active} #{pane_id}' 2>/dev/null | awk '$1==1{print $2}' | head -1)"
+sp_rc=0
+"$HOME/.ae/sessions/test-spawn/spawn" dummy2:focusprobe "brief for the focus probe" >/dev/null 2>&1 || sp_rc=$?
+sleep 2
+# LIVENESS BEFORE THE BEHAVIOURAL CLAIM: "the active pane did not change" is trivially
+# true when nothing was spawned. The liveness that makes the focus claim meaningful is
+# that a PANE WAS CREATED — if none was, focus could not have moved.
+#
+# rc is deliberately NOT asserted to be 0 here, and the reason is worth recording: the
+# test tool is `bash`, which has no readiness marker, so _spawn_input_ready can never
+# confirm it idle and the brief is correctly NOT pasted — spawn reports SPAWN
+# INCOMPLETE (rc 1) with the pane live. That is ae refusing to paste into a pane it
+# cannot confirm, which is the behaviour #36 built. Demanding rc 0 would encode an
+# expectation that is wrong for every dummy-tool spawn in this suite.
+assert_eq "spawn-focus (#38): a worker pane really was created (claim is not vacuous)" "1" \
+    "$(tmux list-panes -s -t test-spawn -F '#{@ae_agent}' 2>/dev/null | command grep -qx 'dummy2:focusprobe' && echo 1 || echo 0)"
+# ...and the status is still inspected rather than swallowed: a dummy spawn is expected
+# to be 0 (delivered) or 1 (pane live, brief unconfirmed) — anything else is a real
+# regression, and `|| true` alone would hide all three cases alike.
+assert_eq "spawn-focus (#38): spawn's status is one of the two known outcomes" "1" \
+    "$([[ "$sp_rc" == "0" || "$sp_rc" == "1" ]] && echo 1 || echo 0)"
+sp_active_after="$(tmux list-panes -s -t test-spawn -F '#{pane_active} #{pane_id}' 2>/dev/null | awk '$1==1{print $2}' | head -1)"
+assert_eq "spawn-focus (#38): spawning does not change the active pane" "$sp_active_before" "$sp_active_after"
+"$HOME/.ae/sessions/test-spawn/retire" focusprobe >/dev/null 2>&1 || true
+unset sp_active_before sp_active_after sp_rc
 "$HOME/.ae/sessions/test-spawn/send" dummy2 "printf 'alias-hit\n'" 2>/dev/null || true
 sleep 0.5
 spawn_output="$("$HOME/.ae/sessions/test-spawn/peek" dummy2 20 2>/dev/null || true)"

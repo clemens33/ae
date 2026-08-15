@@ -8901,7 +8901,15 @@ _cmd_spawn() {
             _delivered=0
             _fail_reason="input never reached a confirmed-idle state (busy, modal, or unreadable)"
         else
-            tmux select-pane -t "$pane_id"
+            # #38: NO select-pane. Same deletion as #36's launch path, same reviewed
+            # doctrine — "focus is not part of any TUI's submission contract;
+            # select-pane here changed the window's active pane, routing the human's
+            # in-flight keystrokes into the TARGET mid-send — acute under lead-pair,
+            # where lead and colead share window 0." A spawn firing while the human
+            # types did exactly that. paste-buffer -t / send-keys -t reach the named
+            # pane without it, and it was also a bare call under errexit that could
+            # abort before the delivery reporting below. If jump-to-new-worker is
+            # wanted it belongs in the explicit focus helper, AFTER delivery.
             # Launch paste is best-effort for DELIVERY, but never silent: a slow TUI
             # whose paste stays staged past the bounded verify-retries returns non-zero
             # and this runs under set -e, so the status is captured rather than dropped.

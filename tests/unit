@@ -8799,6 +8799,20 @@ assert_eq "#39: the injected protocol carries the authority rule, both direction
         && "$AE_SOURCE" == *'the human outranks every agent'* \
         && "$AE_SOURCE" == *'ABSENCE of the envelope is their signature'* ]] && echo 1 || echo 0)"
 
+# ── #38: spawn delivers without stealing focus ───────────────────────
+# Same doctrine and same deletion as #36's launch path: focus is not part of any
+# TUI's submission contract, and selecting mid-send routes the human's in-flight
+# keystrokes into the target — acute under lead-pair, where two agents share window 0.
+assert_eq "#38: the spawn delivery path selects no pane" "1" \
+    "$(_cs="$(awk '/^_cmd_spawn\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       _code="$(command grep -v '^ *#' <<<"$_cs" || true)"
+       [[ "$_code" != *'select-pane -t "$pane_id"'$'\n'* ]] && echo 1 || echo 0)"
+# ...and NO delivery path anywhere selects a pane. Only the explicit focus helper may.
+assert_eq "#38: pane selection survives only for titles and the focus helper" "1" \
+    "$(_code="$(command grep -v '^ *#' <<<"$AE_SOURCE" || true)"
+       _bad="$(printf '%s' "$_code" | command grep 'select-pane' | command grep -vc -- '-T \|-d \|AE_RESOLVED_PANE\|PANE_IDS' || true)"
+       [[ "$_bad" == "0" ]] && echo 1 || echo 0)"
+
 # ── the sensor, per-tool, against the REAL fixtures (active + inactive parity) ──
 assert_eq "occ: codex empty placeholder (dim) -> idle" "idle" "$(_occ codex '\033[1m›\033[0m \033[2mExplain this codebase\033[0m')"
 assert_eq "occ: codex short typed (unstyled) -> occupied" "occupied" "$(_occ codex '\033[1m›\033[0m human draft')"
