@@ -455,17 +455,150 @@ format_relative_time() {
     fi
 }
 
+# The injection boundary is TRANSPORTED, not searched for. inject_ae_context only ever
+# APPENDS (`${cmd} --append-system-prompt '<ctx>'` and friends), so the pre-injection
+# command is a literal PREFIX of the built one and the caller that injected knows it
+# exactly. A marker search cannot: a configured command may legitimately contain the
+# same flag — `codex -c developer_instructions=custom --yolo` — and splitting at the
+# FIRST occurrence returned just "codex", losing the resume token and with it the
+# fail-safe, for valid configs only.
+#
+# Everything before the boundary is the command ae composed itself. Everything after is
+# multi-kilobyte agent-facing prose containing the words "resume", "--session-id", flag
+# names, whatever the docs say next. Classification and string surgery may only ever
+# look at the head; the tail is copied, never edited.
+#
+# Empty result means "cannot classify" — the caller then changes nothing at all.
+_launch_injected_head() { # <built-cmd> <pre-injection-cmd>
+    local cmd="$1" pre="$2"
+    [[ -n "$pre" && "$cmd" == "$pre"* ]] || return 0
+    printf '%s' "$pre"
+    return 0
+}
+
+# An id is probeable only if ae recorded one AND it looks like an id. The charset
+# is conservative because the value is interpolated into a command the PANE runs:
+# anything else is treated as "no id", which costs a conversation, never a pane.
+_launch_id_probeable() { # <id>
+    local id="$1"
+    [[ -n "$id" && "$id" != pending ]] || return 1
+    [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+    return 0
+}
+
+# A shell TEST, evaluated in the pane at launch, that answers "is this conversation
+# actually resumable". Claude keeps transcripts at
+# ~/.claude/projects/<cwd with / turned into ->/<uuid>.jsonl (verified against this
+# session's own store), so the file's existence IS the answer. $PWD is read at run
+# time rather than baked: the launch script runs in the work dir, and a stale baked
+# path would silently choose the fallback forever.
+_launch_probe_claude() { # <uuid> -> a `test` expression, or empty for "no probe"
+    local uuid="$1"
+    _launch_id_probeable "$uuid" || return 0
+    # shellcheck disable=SC2016  # deliberate: the PANE expands these, not us.
+    printf 'test -f "$HOME/.claude/projects/$(printf %%s "$PWD" | tr / -)/%s.jsonl"' "$uuid"
+    return 0
+}
+
+# Codex records sessions under ~/.codex/sessions/YYYY/MM/DD/<...><uuid>.jsonl — dated
+# directories, so the id is searched for rather than composed. `find -name` with a
+# depth bound keeps it cheap; anything found means resume has something to open.
+_launch_probe_codex() { # <uuid> -> a `test` expression, or empty
+    local uuid="$1"
+    _launch_id_probeable "$uuid" || return 0
+    # The pattern is QUOTED in the emitted command. Unquoted, the PANE's shell
+    # globs it against the work directory before find ever sees it, so a file
+    # named to match turns a real miss into a hit (measured: dropping
+    # <id>.jsonl into the workdir flipped the probe).
+    # shellcheck disable=SC2016  # same: expanded by the pane at launch, not here.
+    printf 'test -n "$(find "$HOME/.codex/sessions" -maxdepth 4 -name "%s" -print -quit 2>/dev/null)"' "*${uuid}*.jsonl"
+    return 0
+}
+
+# Both branches EXEC, so whichever runs replaces the shell and the pane reports the
+# TOOL. With no probe available the fallback is chosen outright — never a chain.
+#
+# FAIL-SAFE DIRECTION: a wrong probe costs a conversation, never a pane. Guessing
+# "not resumable" starts fresh/continue, which is recoverable; the old chain's own
+# failure mode — resume dies, bash lingers — is what disabled the send path.
+_launch_resume_decider() { # <probe-expr-or-empty> <resume-cmd> <fallback-cmd>
+    local probe="$1" resume="$2" fallback="$3"
+    if [[ -z "$probe" ]]; then
+        printf 'exec %s' "$fallback"
+        return 0
+    fi
+    printf 'if %s; then exec %s; else exec %s; fi' "$probe" "$resume" "$fallback"
+    return 0
+}
+
+# <cmd> <prompt> [resume-id]
+#
+# The id is TRANSPORTED, never re-parsed out of $cmd. By this point the command
+# carries the whole injected workspace context — 5.8KB of prose on the real
+# shipped shape — and ae's own codex context contains the words "Enable session
+# resume by running", so a `.* resume ` match yielded "by" and every codex resume
+# probed for a conversation named "by", missed, and silently started FRESH. The
+# caller already holds the id it built the command from; it hands it over.
+# THE resume predicate. One question, one answer, from TRANSPORTED facts only — used
+# by command construction AND by delivery-mode selection. Two classifiers answering
+# "is this a resume?" from different evidence is what shipped: build_launch_command
+# fell through correctly for a fresh codex (appending its prompt inline) while
+# send_agent_cmd matched `codex*resume*` against the injected prose and ALSO delivered
+# the prompt deferred, so a fresh agent acted on the same instruction twice.
+_launch_is_resume() { # <built-cmd> <resume-id> <pre-injection-cmd>
+    local cmd="$1" id="$2" pre="$3" head token
+    _launch_id_probeable "$id" || return 1
+    head="$(_launch_injected_head "$cmd" "$pre")"
+    [[ -n "$head" ]] || return 1
+    # The tool is read off the HEAD, which is ae's own composition — never off the
+    # tail, which is prose.
+    case "$head" in
+        codex*) token=" resume ${id}" ;;
+        claude*) token=" --resume ${id}" ;;
+        *) return 1 ;;
+    esac
+    [[ "$head" == *"$token"* ]] || return 1
+    return 0
+}
+
 build_launch_command() {
-    local cmd="$1" prompt="$2"
+    local cmd="$1" prompt="$2" resume_id="${3:-}" pre_injection_cmd="${4:-}"
     local launch_cmd="$cmd"
 
     case "$cmd" in
-        codex*resume*)
-            local codex_fallback
-            # shellcheck disable=SC2001
-            codex_fallback="$(echo "$cmd" | sed 's/ *resume [^ ]*//')"
-            printf '%s || %s' "$cmd" "$codex_fallback"
-            return 0
+        codex*)
+            # RESUME vs FRESH is decided by a TRANSPORTED FACT plus the command HEAD,
+            # never by a glob over the whole string. ae's own injected codex context
+            # says "Enable session resume by running: <meta>/_register-sid" — so
+            # `codex*resume*` matched every FRESH command too, and the fallback's
+            # `sed 's/ *resume [^ ]*//'` rewrote that instruction to "Enable session
+            # running". Under the old `||` chain the original command ran first and the
+            # corrupted fallback was never reached; exec'ing the fallback directly would
+            # have shipped it. resume_cmd_from_cmd emits `resume <id>` only when an id
+            # was captured, so the id IS the classifier.
+            # A FRESH command ends this arm and falls through to the generic tail
+            # byte-for-byte. (Not `break`: outside a loop bash rejects it, prints to
+            # stderr and CARRIES ON into the code below — measured, it prefixed every
+            # fresh launch with `exec `.)
+            if _launch_is_resume "$cmd" "$resume_id" "$pre_injection_cmd"; then
+                local codex_head codex_fallback codex_uuid
+                codex_head="$(_launch_injected_head "$cmd" "$pre_injection_cmd")"
+                # Head only, EXACT token — the injected tail is appended untouched.
+                codex_fallback="${codex_head/ resume ${resume_id}/}${cmd:${#codex_head}}"
+                codex_uuid="$resume_id"
+                # DECIDE BEFORE EXEC, never `A || B`. MEASURED 2026-08-15 on this box:
+                #   bash -lc 'sleep 300'             -> pane_current_command = sleep
+                #   bash -lc 'sleep 300 || sleep 300' -> pane_current_command = BASH
+                #   bash -lc 'exec sleep 300'        -> sleep
+                # A fallback tail keeps bash as the pane process to evaluate the `||`, so
+                # the pane reports "bash" and the send path's whole TUI model — typed-input
+                # protection, busy defer, staged detection — silently switches off on every
+                # resumed agent. Protections that exist but never engage.
+                # Each branch execs a SINGLE command, so the tool replaces the shell either
+                # way; the probe only chooses WHICH.
+                printf '%s' "$(_launch_resume_decider "$(_launch_probe_codex "$codex_uuid")" "$cmd" "$codex_fallback")"
+                return 0
+            fi
             ;;
         opencode*)
             printf '%s' "$cmd"
@@ -484,19 +617,34 @@ build_launch_command() {
         launch_cmd="env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 ${launch_cmd}"
     fi
 
-    # Resilient resume: if claude --resume UUID fails, fall back to --continue.
-    if [[ "$cmd" == claude*" --resume "* ]]; then
-        local fallback_continue
-        # shellcheck disable=SC2001
-        fallback_continue="$(echo "$launch_cmd" | sed 's/--resume [^ ]*/--continue/')"
-        launch_cmd="${launch_cmd} || ${fallback_continue}"
+    # Resilient resume, DECIDED BEFORE EXEC rather than by a `||` tail — see the codex
+    # branch above for the measurement. The old chain left bash as the pane process on
+    # every resumed claude, which is exactly where typed-input protection matters most.
+    # A decided resume is a COMPOUND command, so the prompt has to ride each arm:
+    # appended after the decision it would land outside the `fi` — a syntax error, and
+    # a pane dead at launch is the one outcome the fail-safe direction forbids. The old
+    # `A || B` chain took the same argument and quietly gave it to the FALLBACK arm
+    # alone. No caller reaches this today (claude's initial message travels by flag, so
+    # its prompt is empty), which is why neither shape was ever noticed; both arms are
+    # correct for whoever arrives next.
+    local prompt_suffix=""
+    if [[ -n "$prompt" ]]; then
+        prompt_suffix=" $(shell_quote "$prompt")"
     fi
 
-    if [[ -n "$prompt" ]]; then
-        printf '%s %s' "$launch_cmd" "$(shell_quote "$prompt")"
-    else
-        printf '%s' "$launch_cmd"
+    # Same classification rule as codex above. Claude's injected context carries no
+    # " --resume " today, so this branch was not yet mis-firing — but it read the same
+    # 5.8KB string to decide and its sed edited the same string, which is the defect
+    # one doc edit away. Head only, and only when an id was actually transported.
+    if _launch_is_resume "$cmd" "$resume_id" "$pre_injection_cmd"; then
+        local fallback_continue
+        fallback_continue="${launch_cmd/ --resume ${resume_id}/ --continue}"
+        printf '%s' "$(_launch_resume_decider "$(_launch_probe_claude "$resume_id")" \
+            "${launch_cmd}${prompt_suffix}" "${fallback_continue}${prompt_suffix}")"
+        return 0
     fi
+
+    printf '%s%s' "$launch_cmd" "$prompt_suffix"
 }
 
 # Extract the binary name from a command string, skipping leading env-var
@@ -8854,8 +9002,9 @@ _cmd_spawn() {
     sleep 0.3
 
     # Launch agent with session-scoped ID and ae workspace context
-    local scoped_cmd initial_msg
+    local scoped_cmd scoped_pre initial_msg
     scoped_cmd="$(inject_session_id "$cmd" "$session_id")"
+    scoped_pre="$scoped_cmd"
     scoped_cmd="$(inject_ae_context "$scoped_cmd" "$meta_dir" "$session" "$work_dir" "$slot")"
     # For agents without system prompt injection, combine workspace context + spawn prompt
     initial_msg="$(initial_prompt_for_cmd "$cmd" "$meta_dir" "$session" "$work_dir" "$slot")"
@@ -8866,7 +9015,7 @@ _cmd_spawn() {
     # (agent.<slot>, agent_bin.<slot>, launch_id.<slot>). A failed launch that
     # simply returned would leave a phantom: a roster entry with an empty pane,
     # visible to `ae list`, addressable by every helper, retirable only by hand.
-    if ! send_agent_cmd "$pane_id" "$scoped_cmd" "$initial_msg" "$meta_dir" "$slot"; then
+    if ! send_agent_cmd "$pane_id" "$scoped_cmd" "$initial_msg" "$meta_dir" "$slot" "$session_id" "$scoped_pre"; then
         _spawn_rollback "$meta_dir" "$slot" "$pane_id" "$session" "$work_dir" "$origin" "$mode" "$main_pane"
         echo "Error: '${alias_name}:${spawn_name}' could not be launched — spawn rolled back." >&2
         return 1
@@ -9452,12 +9601,13 @@ _spawn_rollback() {
 }
 
 # --- Agent launch helper (must be defined before dispatcher for _spawn) ---
+# <pane> <cmd> <prompt> <meta-dir> <slot> [resume-id] [pre-injection-cmd]
 send_agent_cmd() {
-    local pane="$1" cmd="$2" prompt="$3" meta_dir="$4" slot="$5"
+    local pane="$1" cmd="$2" prompt="$3" meta_dir="$4" slot="$5" resume_id="${6:-}" pre_injection_cmd="${7:-}"
     local tool_kind launch_cmd launch_script launch_exec current
 
     tool_kind="$(tool_kind_from_cmd "$cmd")"
-    launch_cmd="$(build_launch_command "$cmd" "$prompt")"
+    launch_cmd="$(build_launch_command "$cmd" "$prompt" "$resume_id" "$pre_injection_cmd")"
     # Checked assignment, not a bare one: `x="$(fn)"` swallows the failure
     # wherever errexit is suspended (any caller reached through if/&&/||), and
     # the empty capture would then be pasted into the pane as a command. An
@@ -9475,26 +9625,32 @@ send_agent_cmd() {
     # Brief wait to confirm launch started (don't block attach on slow agent init)
     wait_for_agent_start "$pane" "$tool_kind" 10 || true
 
+    # DELIVERY MODE ASKS THE SAME PREDICATE, not a second glob. codex resume does not
+    # accept an inline prompt, so build_launch_command leaves it off and it is delivered
+    # once the UI returns; a FRESH codex carries it inline and must NOT also get it
+    # deferred. Both halves now read one answer computed from the transported id and the
+    # transported boundary.
+    if _launch_is_resume "$cmd" "$resume_id" "$pre_injection_cmd" && [[ "$cmd" == codex* ]]; then
+        if [[ -n "$prompt" ]]; then
+            (
+                # fd 8 is the caller's LIFECYCLE LOCK. This subshell
+                # outlives send_agent_cmd and a child INHERITS the
+                # descriptor, so the parent's `exec 8>&-` closes only its
+                # own copy and the lock stays held until this prompt lands —
+                # a competing `ae end` then blocks on a launch that already
+                # finished. Close it here; nothing in here needs it. (Same
+                # class as 12th review I1, where SID-capture children held
+                # it; that one was solved by releasing before the spawn,
+                # which is not available now that the lock must cover the
+                # launch-script writes these very branches follow.)
+                exec 8>&-
+                _deliver_launch_prompt "$pane" codex "$prompt" "$meta_dir" "$slot"
+            ) &
+        fi
+        return 0
+    fi
+
     case "$cmd" in
-        codex*resume*)
-            # codex resume doesn't accept inline prompts — send it after the UI comes back.
-            if [[ -n "$prompt" ]]; then
-                (
-                    # fd 8 is the caller's LIFECYCLE LOCK. This subshell
-                    # outlives send_agent_cmd and a child INHERITS the
-                    # descriptor, so the parent's `exec 8>&-` closes only its
-                    # own copy and the lock stays held until this prompt lands —
-                    # a competing `ae end` then blocks on a launch that already
-                    # finished. Close it here; nothing in here needs it. (Same
-                    # class as 12th review I1, where SID-capture children held
-                    # it; that one was solved by releasing before the spawn,
-                    # which is not available now that the lock must cover the
-                    # launch-script writes these very branches follow.)
-                    exec 8>&-
-                    _deliver_launch_prompt "$pane" codex "$prompt" "$meta_dir" "$slot"
-                ) &
-            fi
-            ;;
         opencode*)
             # OpenCode has no system prompt flag — launch TUI, then paste context as first message.
             if [[ -n "$prompt" ]]; then
@@ -14585,13 +14741,16 @@ _send_or_rollback() {
 if [[ "$RESUMING" == true ]]; then
     # Resume: use session-scoped resume commands (exact conversation, not CWD heuristic)
     MAIN_RESUME="$(resume_cmd_from_cmd "$MAIN_CMD" "$MAIN_SESSION_ID")"
+    # The injection boundary, captured where it is KNOWN rather than searched for later.
+    MAIN_RESUME_PRE="$MAIN_RESUME"
     MAIN_RESUME="$(inject_ae_context "$MAIN_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "main")"
-    _send_or_rollback "${PANE_IDS[0]}" "$MAIN_RESUME" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR" "main")" "$AE_META" "main"
+    _send_or_rollback "${PANE_IDS[0]}" "$MAIN_RESUME" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR" "main")" "$AE_META" "main" "$MAIN_SESSION_ID" "$MAIN_RESUME_PRE"
     for i in "${!WORKER_CMDS[@]}"; do
         idx=$((i + 1))
         WORKER_RESUME="$(resume_cmd_from_cmd "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
+        WORKER_RESUME_PRE="$WORKER_RESUME"
         WORKER_RESUME="$(inject_ae_context "$WORKER_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")"
-        _send_or_rollback "${PANE_IDS[$idx]}" "$WORKER_RESUME" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")" "$AE_META" "worker.${i}"
+        _send_or_rollback "${PANE_IDS[$idx]}" "$WORKER_RESUME" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")" "$AE_META" "worker.${i}" "${WORKER_SESSION_IDS[$i]:-}" "$WORKER_RESUME_PRE"
     done
     # Resume spawned agents. The PANE_IDS position is array-order (sidx); the
     # slot string carries the PRESERVED original index (SPAWNED_IDX) so context
@@ -14600,8 +14759,9 @@ if [[ "$RESUMING" == true ]]; then
         sidx=$((${#WORKER_CMDS[@]} + i + 1))
         _sp_slot="spawned.${SPAWNED_IDX[$i]}"
         SPAWNED_RESUME="$(resume_cmd_from_cmd "${SPAWNED_CMDS[$i]}" "${SPAWNED_SESSION_IDS[$i]:-}")"
+        SPAWNED_RESUME_PRE="$SPAWNED_RESUME"
         SPAWNED_RESUME="$(inject_ae_context "$SPAWNED_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "$_sp_slot")"
-        _send_or_rollback "${PANE_IDS[$sidx]}" "$SPAWNED_RESUME" "$(initial_prompt_for_cmd "${SPAWNED_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR" "$_sp_slot")" "$AE_META" "$_sp_slot"
+        _send_or_rollback "${PANE_IDS[$sidx]}" "$SPAWNED_RESUME" "$(initial_prompt_for_cmd "${SPAWNED_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR" "$_sp_slot")" "$AE_META" "$_sp_slot" "${SPAWNED_SESSION_IDS[$i]:-}" "$SPAWNED_RESUME_PRE"
     done
 else
     # Fresh start with session-scoped IDs (enables targeted resume later)

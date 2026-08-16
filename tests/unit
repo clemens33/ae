@@ -92,7 +92,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(_ae_tac|_ae_stat|_ae_epoch|_ae_sed_inplace|_ae_json_first|_ae_json_first_num|_ae_md5|_ae_inside_tmux|daemon_session_running|launch_rerun_command|write_launch_script|_publish_executable_artifact|_emit_launch_script|_validate_session_name|_session_name_usable|_session_path_is_safe|_require_session_path_safe|_transfer_remote_path_is_safe|_canonical_dir|_path_is_direct_child|_spawn_rollback|parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|_end_target_kind|_tmux_err_is_clean_dead|_ae_install_tmux_shim|_end_sweep_servers|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(_ae_tac|_ae_stat|_ae_epoch|_ae_sed_inplace|_ae_json_first|_ae_json_first_num|_ae_md5|_ae_inside_tmux|daemon_session_running|launch_rerun_command|write_launch_script|_publish_executable_artifact|_emit_launch_script|_validate_session_name|_session_name_usable|_session_path_is_safe|_require_session_path_safe|_transfer_remote_path_is_safe|_canonical_dir|_path_is_direct_child|_spawn_rollback|parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|_end_target_kind|_tmux_err_is_clean_dead|_ae_install_tmux_shim|_end_sweep_servers|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|_launch_injected_head|_launch_is_resume|_launch_id_probeable|_launch_probe_claude|_launch_probe_codex|_launch_resume_decider|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -263,17 +263,22 @@ assert_eq "launch: claude fresh adds nested-session guard + suggestion-off" \
     "env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 claude --model opus" \
     "$(build_launch_command "claude --model opus" "")"
 
-assert_eq "launch: claude resume keeps continue fallback" \
-    "env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 claude --model opus --resume abc-123 || env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 claude --model opus --continue" \
-    "$(build_launch_command "claude --model opus --resume abc-123" "")"
+# #30: the `||` tail is GONE — it left bash as the pane process, so every resumed
+# claude reported "bash" and the send path's TUI modelling silently switched off.
+# Both arms exec, so the tool replaces the shell whichever way the probe goes.
+assert_eq "launch: claude resume decides before exec, no fallback chain" "1" \
+    "$(_c="$(build_launch_command "claude --model opus --resume abc-123" "" abc-123 "claude --model opus --resume abc-123")"
+       [[ "$_c" == "if test -f"*"abc-123.jsonl\"; then exec "*"--resume abc-123"*"; else exec "*"--continue"*"; fi" \
+        && "$_c" != *"||"* ]] && echo 1 || echo 0)"
 
 assert_eq "launch: prompt is shell-quoted once" \
     "env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 claude --model opus don\\'t\\ break" \
     "$(build_launch_command "claude --model opus" "don't break")"
 
-assert_eq "launch: codex resume keeps fresh-start fallback" \
-    "codex --yolo resume abc-123 || codex --yolo" \
-    "$(build_launch_command "codex --yolo resume abc-123" "Go")"
+assert_eq "launch: codex resume decides before exec, no fallback chain" "1" \
+    "$(_c="$(build_launch_command "codex --yolo resume abc-123" "Go" abc-123 "codex --yolo resume abc-123")"
+       [[ "$_c" == "if test -n"*"abc-123"*"; then exec codex --yolo resume abc-123"*"; else exec codex --yolo"*"; fi" \
+        && "$_c" != *"||"* ]] && echo 1 || echo 0)"
 
 # ── launch_rerun_command + re-runnable launch scripts (#27) ──────────
 # launch.<slot>.sh bakes `--session-id UUID` — CREATE-once semantics — so its
@@ -9010,6 +9015,241 @@ assert_eq "#8 (control, rendered): assistant prose containing 'output: Marked' s
     "$([[ "$(_wq_r '⏺ Ordinary analysis — output: Marked deployment working: this is prose, not a helper echo')" != "$_wq_rbase" ]] && echo 1 || echo 0)"
 unset -f _wq_r
 unset _wq_rbase
+
+# ── #30: A RESUMED PANE MUST REPORT THE TOOL, NOT bash ───────────────
+# MEASURED 2026-08-15, isolated tmux, no ae involved:
+#   bash -lc 'sleep 300'              -> pane_current_command = sleep
+#   bash -lc 'sleep 300 || sleep 300' -> pane_current_command = BASH
+#   bash -lc 'exec sleep 300'         -> sleep
+# A fallback tail keeps bash alive to evaluate the `||`, so every resumed agent
+# reported "bash" and the send path's TUI model — typed-input protection, busy defer,
+# staged detection — silently switched off exactly where it matters most.
+eval "$(awk '/^_launch_injected_head\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_launch_is_resume\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_launch_id_probeable\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_launch_probe_claude\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_launch_probe_codex\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^_launch_resume_decider\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+
+# THE ID IS TRANSPORTED, NEVER RE-PARSED. This pin drives the REAL pipeline —
+# build_ae_context -> inject_ae_context -> build_launch_command — because the
+# defect only exists at full size: the shipped codex command carries ae's own
+# injected context, which says "Enable session resume by running", so a
+# `.* resume ` match returned "by" and every codex resume probed for a
+# conversation named "by", missed, and silently started fresh. A hand-written
+# `codex --yolo resume UUID -c foo=bar` fixture never reaches that shape.
+_r30_meta="$(mktemp -d)"
+_r30_id="019a1111-2222-3333-4444-555566667777"
+_r30_full="$(inject_ae_context "codex --yolo resume ${_r30_id}" "$_r30_meta" aedev /tmp/w builder)"
+# The specimen must actually BE the hazard: assert the collision is present.
+assert_eq "#30: the shipped codex command really does contain a second ' resume '" "2" \
+    "$(command grep -o ' resume ' <<<"$_r30_full" | wc -l | tr -d '[:space:]')"
+assert_eq "#30: the id survives the full context-injected pipeline" "1" \
+    "$(_c="$(build_launch_command "$_r30_full" "" "$_r30_id" "codex --yolo resume ${_r30_id}")"
+       [[ "$_c" == *"${_r30_id}"* && "$_c" != *'"by"'* && "$_c" != *'*by*'* ]] && echo 1 || echo 0)"
+# ...and with the id withheld the command is not classified as a resume at all: no
+# probe, no surgery, passed through untouched. Unreachable in production — the id that
+# builds a `resume <id>` command is the id the caller transports, one source — but the
+# honest answer to "I cannot classify this" is to change nothing, not to guess an arm.
+assert_eq "#30: no transported id -> no probe and no rewrite, passed through" "1" \
+    "$(_c="$(build_launch_command "$_r30_full" "" "")"
+       [[ "$_c" == "$_r30_full" && "$_c" != *'find '* && "$_c" != *'if test'* ]] && echo 1 || echo 0)"
+rm -rf "$_r30_meta"
+
+# A FRESH command must come out BYTE-FOR-BYTE. `codex*resume*` classified the whole
+# 5.8KB string, and ae's own injected context says "Enable session resume by
+# running: <meta>/_register-sid" — so every fresh codex matched the resume branch and
+# the fallback sed rewrote that instruction to "Enable session running". The old
+# `||` chain ran the original first and never reached the corrupted fallback; exec'ing
+# the fallback directly ships it. Byte equality is the assertion because "close
+# enough" is how a mangled instruction survives review.
+_r30_meta2="$(mktemp -d)"
+_r30_fresh="$(inject_ae_context "codex --yolo" "$_r30_meta2" aedev /tmp/w builder)"
+assert_eq "#30: the fresh codex specimen really carries the _register-sid instruction" "1" \
+    "$(command grep -c 'Enable session resume by running' <<<"$_r30_fresh" | tr -d '[:space:]')"
+assert_eq "#30: a FRESH codex command passes through byte-for-byte" "1" \
+    "$(_c="$(build_launch_command "$_r30_fresh" "" "")"
+       [[ "$_c" == "$_r30_fresh" ]] && echo 1 || echo 0)"
+assert_eq "#30: ...with its _register-sid instruction intact and no probe attached" "1|0|0" \
+    "$(_c="$(build_launch_command "$_r30_fresh" "" "")"
+       printf '%s|%s|%s' \
+        "$(command grep -c 'Enable session resume by running' <<<"$_c" | tr -d '[:space:]')" \
+        "$(command grep -c 'Enable session running' <<<"$_c" | tr -d '[:space:]')" \
+        "$(command grep -c 'if test' <<<"$_c" | tr -d '[:space:]')")"
+# `break` is not a case-arm exit: outside a loop bash rejects it, writes to stderr and
+# CARRIES ON into the arm below (measured — it prefixed every fresh launch with "exec ").
+assert_eq "#30: the fresh path emits no stderr and no stray exec prefix" "1" \
+    "$(_c="$(build_launch_command "$_r30_fresh" "" "" 2>&1)"
+       [[ "$_c" != *break* && "$_c" != exec\ * ]] && echo 1 || echo 0)"
+# The resume arm keeps working, and its fallback edits the HEAD ONLY: the token goes,
+# the injected context survives untouched.
+_r30_res="$(inject_ae_context "codex --yolo resume ${_r30_id}" "$_r30_meta2" aedev /tmp/w builder)"
+assert_eq "#30: the resume fallback drops the token and keeps the context" "1" \
+    "$(_c="$(build_launch_command "$_r30_res" "" "$_r30_id" "codex --yolo resume ${_r30_id}")"
+       _fb="${_c#*else exec }"
+       [[ "$_fb" != *" resume ${_r30_id}"* \
+        && "$(command grep -c 'Enable session resume by running' <<<"$_fb" | tr -d '[:space:]')" == 1 ]] && echo 1 || echo 0)"
+rm -rf "$_r30_meta2"
+
+# THE INJECTION BOUNDARY IS TRANSPORTED TOO. A configured command may legitimately
+# contain ae's own injection flag — `codex -c developer_instructions=custom --yolo` is
+# a valid [agents] entry — and searching for the FIRST occurrence returned just
+# "codex": the resume token fell outside the head, the branch was skipped, and the raw
+# resume ran with no fallback at all. An absent or stale store then EXITS THE PANE,
+# which is the fail-safe inverted, and only for people with custom configs.
+_r30_meta3="$(mktemp -d)"
+for _r30_pre in "codex -c developer_instructions=custom --yolo resume ${_r30_id}" \
+    "claude --append-system-prompt custom --model opus --resume ${_r30_id}"; do
+    _r30_built="$(inject_ae_context "$_r30_pre" "$_r30_meta3" aedev /tmp/w builder)"
+    assert_eq "#30: repeated-flag config (${_r30_pre%% *}) still reaches the decider" "1" \
+        "$(_c="$(build_launch_command "$_r30_built" "" "$_r30_id" "$_r30_pre")"
+           [[ "$_c" == if\ test* && "$_c" == *"; else exec "* ]] && echo 1 || echo 0)"
+    # ...and the user's own flag value survives into both arms untouched.
+    assert_eq "#30: repeated-flag config (${_r30_pre%% *}) keeps the custom flag in both arms" "2" \
+        "$(_c="$(build_launch_command "$_r30_built" "" "$_r30_id" "$_r30_pre")"
+           command grep -o 'instructions=custom\|prompt custom' <<<"$_c" | wc -l | tr -d '[:space:]')"
+done
+# A head that is not a prefix of the built command is not a boundary — refuse to
+# classify rather than trust it.
+assert_eq "#30: a non-prefix head is rejected, not trusted" "" \
+    "$(_launch_injected_head 'codex --yolo resume x -c developer_instructions=ctx' 'grok --whatever')"
+assert_eq "#30: no injection at all -> the head is the whole command" "codex --yolo resume x" \
+    "$(_launch_injected_head 'codex --yolo resume x' 'codex --yolo resume x')"
+rm -rf "$_r30_meta3"
+
+# ONE PREDICATE, TWO CONSUMERS — driven through the REAL send_agent_cmd, because this
+# defect lives in the INTERACTION: build_launch_command correctly fell through for a
+# fresh codex and appended the prompt inline, while send_agent_cmd separately matched
+# `codex*resume*` against the injected prose and ALSO delivered it deferred. Each half
+# was defensible alone; together a fresh agent acted on the same instruction twice.
+# Source-shaped assertions cannot see that, so this runs the sender for real and counts
+# deliveries: inline XOR deferred, never both, never neither.
+_r30_send() { # <pre-cmd> <resume-id> <prompt> [claimed-pre] -> inline=<n>|deferred=<n>
+    # The 4th argument is what the CALLER hands the sender, which is normally the same
+    # command it injected into. Passing a different one is how the refusal path is
+    # reached: a claimed boundary that is not a prefix of the built command.
+    local _md _pre="$1" _id="$2" _prompt="$3" _claim="${4:-$1}"
+    _md="$(mktemp -d)"
+    cat >"${_md}/probe.sh" <<'PROBE'
+set -uo pipefail
+AE_SOURCE="$(cat "$AE_BIN")"
+for fn in shell_quote build_ae_context inject_ae_context read_launch_id_for_slot \
+    read_launch_time_for_slot tool_kind_supports_launch_id _launch_id_probeable \
+    _launch_injected_head _launch_is_resume _launch_probe_codex _launch_probe_claude \
+    _launch_resume_decider build_launch_command send_agent_cmd; do
+    eval "$(awk "/^${fn}\(\) \{/,/^\}\$/" <<<"$AE_SOURCE")"
+done
+get_config() { printf ''; }
+tool_kind_from_cmd() { printf 'codex'; }
+write_launch_script() { printf '%s' "$3" >"${MD}/built"; printf '%s/launch.sh' "$MD"; }
+tmux_paste_submit() { return 0; }
+wait_for_agent_start() { return 0; }
+_deliver_launch_prompt() { printf '%s\n' "$3" >>"${MD}/deferred"; return 0; }
+exec 8>"${MD}/lock"          # the real lifecycle fd the deferred subshell closes
+cmd="$(inject_ae_context "$PRE" "$MD" aedev /tmp/w builder)"
+send_agent_cmd '%0' "$cmd" "$PROMPT" "$MD" builder "$ID" "$CLAIM" >/dev/null 2>&1
+wait
+PROBE
+    AE_BIN="$AE_BIN" MD="$_md" PRE="$_pre" CLAIM="$_claim" ID="$_id" PROMPT="$_prompt" \
+        "${BASH:-bash}" "${_md}/probe.sh" >/dev/null 2>&1 || true
+    local _in _def
+    _in="$(command grep -c -- "$_prompt" "${_md}/built" 2>/dev/null | tr -d '[:space:]')"
+    _def="$(command grep -c -- "$_prompt" "${_md}/deferred" 2>/dev/null | tr -d '[:space:]')"
+    printf 'inline=%s|deferred=%s' "${_in:-0}" "${_def:-0}"
+    rm -rf "$_md"
+}
+# FRESH: inline once, never also deferred. This is the regression the r3/r4 fixes armed
+# — before them the early resume arm swallowed the inline prompt, so the double never
+# showed.
+assert_eq "#30: a FRESH codex launch delivers its prompt exactly ONCE (inline)" "inline=1|deferred=0" \
+    "$(_r30_send 'codex --yolo' '' 'R30GO')"
+# RESUME: deferred exactly once, and NOT inline — codex resume rejects an inline prompt,
+# which is why the deferral exists at all.
+assert_eq "#30: a RESUME codex launch delivers its prompt exactly ONCE (deferred)" "inline=0|deferred=1" \
+    "$(_r30_send "codex --yolo resume ${_r30_id}" "$_r30_id" 'R30GO')"
+# REFUSAL, through the real sender rather than the helper: a head that is not a prefix
+# cannot be trusted, both halves must reach the SAME conclusion, and the count must
+# still be one.
+assert_eq "#30: a REFUSED boundary still delivers exactly once, both halves agreeing" "inline=1|deferred=0" \
+    "$(_r30_send "codex --yolo resume ${_r30_id}" "$_r30_id" 'R30GO' 'grok --not-a-prefix')"
+
+# ── GUARD: close the CLASS, so the next member is caught here and not at round 5 ──
+# Any `*resume*`-shaped glob over a BUILT command is the bug this slice kept re-growing:
+# the built command carries ae's own prose ("Enable session resume by running") plus the
+# operator's config. Classification comes from the transported id + boundary or not at
+# all. Comments are stripped first — this file's own explanations say the words.
+_r30_launch_region="$(printf '%s\n%s' \
+    "$(awk '/^build_launch_command\(\) \{/,/^\}$/' <<<"$AE_SOURCE")" \
+    "$(awk '/^send_agent_cmd\(\) \{/,/^\}$/' <<<"$AE_SOURCE")")"
+assert_eq "#30 GUARD: launch+delivery never classify a built command by a *resume* glob" "0" \
+    "$(_code="$(command grep -v '^ *#' <<<"$_r30_launch_region" || true)"
+       _n="$(command grep -cE '\*resume\*|" --resume "\*|" resume "\*' <<<"$_code" | tr -d '[:space:]')"
+       printf '%s' "${_n:-0}")"
+
+# The id is interpolated into a command the PANE runs, so its shape is guarded.
+assert_eq "#30: only id-shaped values are probeable" "1|1|0|0|0|0" \
+    "$(printf '%s|%s|%s|%s|%s|%s' \
+        "$(_launch_id_probeable "$_r30_id" && echo 1 || echo 0)" \
+        "$(_launch_id_probeable 'ses_01ABC.def-2' && echo 1 || echo 0)" \
+        "$(_launch_id_probeable '' && echo 1 || echo 0)" \
+        "$(_launch_id_probeable pending && echo 1 || echo 0)" \
+        "$(_launch_id_probeable 'x; rm -rf /' && echo 1 || echo 0)" \
+        "$(_launch_id_probeable '$(id)' && echo 1 || echo 0)")"
+# BOTH branches exec, so whichever runs replaces the shell.
+assert_eq "#30: the decider execs on both arms and builds no chain" "1" \
+    "$(_d="$(_launch_resume_decider 'test -f /tmp/x' 'RESUME' 'FALLBACK')"
+       [[ "$_d" == 'if test -f /tmp/x; then exec RESUME; else exec FALLBACK; fi' && "$_d" != *'||'* ]] && echo 1 || echo 0)"
+# No probe available -> the fallback outright, still exec'd, still no chain.
+assert_eq "#30: with no id to probe, the fallback is exec'd directly" "exec FALLBACK" \
+    "$(_launch_resume_decider '' 'RESUME' 'FALLBACK')"
+# The probes read the tool's OWN session store. Claude composes the path (verified
+# against this machine's store); codex searches its dated directories.
+assert_eq "#30: the claude probe tests its transcript, with \$PWD read at run time" "1" \
+    "$(_p="$(_launch_probe_claude UUID-A)"
+       [[ "$_p" == *'.claude/projects/'* && "$_p" == *'tr / -'* && "$_p" == *'UUID-A.jsonl'* \
+        && "$_p" == *'$PWD'* ]] && echo 1 || echo 0)"
+assert_eq "#30: the codex probe searches its dated session store" "1" \
+    "$(_p="$(_launch_probe_codex UUID-B)"
+       [[ "$_p" == *'.codex/sessions'* && "$_p" == *'UUID-B'* && "$_p" == *-quit* ]] && echo 1 || echo 0)"
+# QUOTED in the emitted text: unquoted, the pane's shell globs the pattern against
+# the work directory before find runs, so a colliding filename turns a miss into a
+# hit. Behavioural control below, not just a shape check.
+assert_eq "#30: the emitted find pattern is quoted against workdir globbing" "1" \
+    "$(_p="$(_launch_probe_codex UUID-B)"
+       [[ "$_p" == *'-name "*UUID-B*.jsonl"'* ]] && echo 1 || echo 0)"
+# The hazard runs HIT -> MISS, not miss -> hit (measured): the workdir glob expands
+# to the collider's name, find then searches the store for THAT name, fails to find
+# the real session file, and a resumable conversation silently starts fresh. So the
+# control needs a REAL store to lose — an empty-store version passes on the broken
+# code and proves nothing (it did; that draft was thrown away).
+assert_eq "#30: a colliding workdir file cannot turn a real session into a fresh start" "hit" \
+    "$(_d="$(mktemp -d)"; _w="$(mktemp -d)"
+       mkdir -p "${_d}/.codex/sessions/2026/08/16"
+       : >"${_d}/.codex/sessions/2026/08/16/rollout-2026-08-16T00-00-00-UUID-B.jsonl"
+       : >"${_w}/xUUID-Bx.jsonl"
+       _p="$(_launch_probe_codex UUID-B)"
+       _out="$(cd "$_w" && HOME="$_d" eval "$_p" && echo hit || echo miss)"
+       rm -rf "$_d" "$_w"
+       printf '%s' "$_out")"
+# A decided resume is a COMPOUND command: an argument appended after it lands outside
+# the `fi` and the pane dies at launch. Verified by PARSING what ae actually builds —
+# a shape assertion would not have caught it. Red before green: with the prompt
+# appended after the decision instead, `bash -n` rejects the result.
+assert_eq "#30: a resumed launch WITH a prompt still PARSES (a quote-bearing one)" "1" \
+    "$(_c="$(build_launch_command 'claude --model opus --resume abc-123' "don't break" abc-123 'claude --model opus --resume abc-123')"
+       _f="$TMPDIR/r30-parse.$$"; printf '%s\n' "$_c" >"$_f"
+       _ok=0; command bash -n "$_f" 2>/dev/null && _ok=1; rm -f "$_f"
+       echo "$_ok")"
+# Counted with a token that survives quoting — shell_quote escapes, so the prompt's own
+# text is not literal in the output (the first cut of this pin got that wrong).
+assert_eq "#30: BOTH arms carry the prompt, not the fallback alone" "2" \
+    "$(_c="$(build_launch_command 'claude --model opus --resume abc-123' 'R30TOKEN' abc-123 'claude --model opus --resume abc-123')"
+       command grep -o 'R30TOKEN' <<<"$_c" | wc -l | tr -d '[:space:]')"
+# ...and NEITHER resume path may reintroduce a fallback chain in the built command.
+assert_eq "#30: no resume path builds a '||' chain any more" "1" \
+    "$(_b="$(awk '/^build_launch_command\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       _code="$(command grep -v '^ *#' <<<"$_b" || true)"
+       [[ "$_code" != *'|| %s'* && "$_code" != *'} || ${'* && "$_code" == *'_launch_resume_decider'* ]] && echo 1 || echo 0)"
 
 # ── the sensor, per-tool, against the REAL fixtures (active + inactive parity) ──
 assert_eq "occ: codex empty placeholder (dim) -> idle" "idle" "$(_occ codex '\033[1m›\033[0m \033[2mExplain this codebase\033[0m')"

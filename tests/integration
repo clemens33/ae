@@ -672,45 +672,69 @@ if command -v flock >/dev/null 2>&1; then
         _FD_ROOT="$(mktemp -d "$TMPDIR/aefd.XXXXXX")"
         _FD_LOCK="$_FD_ROOT/lock"
         : >"$_FD_LOCK"
-        # Scope to send_agent_cmd FIRST: ae has two `codex*resume*)` branches and
-        # the other (resume_cmd_from_cmd) has no subshell at all. Extracting that
-        # one made an earlier version of this probe pass against unfixed ae.
+        # Scope to send_agent_cmd FIRST: ae mentions codex resume in more than one
+        # place and the others have no subshell at all. Extracting one of those made an
+        # earlier version of this probe pass against unfixed ae.
+        #
+        # ANCHORED ON THE DELIVERY CALL, not on a `case` label. The first version
+        # matched the arm `        codex*resume*)`; when that classification moved into
+        # an `if` — the built command can no longer be trusted to classify itself — the
+        # extractor silently produced an EMPTY fragment, so the probe stopped testing
+        # anything and took the suite down with it. What this probe is about is the
+        # backgrounded subshell around _deliver_launch_prompt, so that is what it finds:
+        # the enclosing `if [[ -n "$prompt" ]]` block, whatever encloses THAT.
         awk -v b="$_fdb" '
             /^send_agent_cmd\(\) \{/ { infn = 1 }
-            infn && $0 ~ ("^        " b ".*\\)$") { inb = 1 }
-            infn && inb { print }
-            infn && inb && /^            ;;$/ { exit }
+            infn && /if \[\[ -n "\$prompt" \]\]; then/ { buf = $0 "\n"; cap = 1; want = 0; next }
+            infn && cap { buf = buf $0 "\n" }
+            infn && cap && $0 ~ ("_deliver_launch_prompt \"\\$pane\" " b) { want = 1 }
+            infn && cap && /^ *fi$/ { if (want) { printf "%s", buf; exit } cap = 0 }
         ' "$AE" >"$_FD_ROOT/branch.sh"
         assert_eq "fd8 probe ($_fdb): extracted a backgrounded subshell to test" "1" \
             "$(command grep -qF ') &' "$_FD_ROOT/branch.sh" && echo 1 || echo 0)"
-        # Drop the case label and terminator so the fragment runs standalone.
-        command sed -e '1d' -e '$d' "$_FD_ROOT/branch.sh" >"$_FD_ROOT/body.sh"
+        # The fragment is already a complete `if … fi`, so it runs as extracted.
+        command cp "$_FD_ROOT/branch.sh" "$_FD_ROOT/body.sh"
         # Quoted heredoc: the branch body must NOT be expanded while writing this.
+        #
+        # THE CHILD MUST STAY ALIVE while containment is measured. Delivery is what
+        # keeps it alive in production (a bounded readiness wait, then a paste); here it
+        # blocks. Without meta_dir/slot defined and _deliver_launch_prompt stubbed, the
+        # fragment aborted on the first unbound expansion under `set -u` — so the lock
+        # came free because the child DIED, not because it closed fd 8, and this leg was
+        # green against a product with `exec 8>&-` deleted. The control below is the
+        # only reason we know it is not green like that again.
         cat >"$_FD_ROOT/run.sh" <<'FDSTUB'
 set -uo pipefail
 pane_current_command() { printf '%s' "$BRANCHNAME"; }
 tmux() { :; }
 tmux_paste_submit() { :; }
-pane="p"; prompt="x"
+_deliver_launch_prompt() { sleep 3; }
+pane="p"; prompt="x"; meta_dir="$FD_META"; slot="probe"
 exec 8>"$LOCKPATH"
 flock -n 8 || exit 2
 source "$BODYFILE"
 exec 8>&-
 FDSTUB
-        BRANCHNAME="$_fdb" LOCKPATH="$_FD_LOCK" BODYFILE="$_FD_ROOT/body.sh" \
-            "${BASH:-bash}" "$_FD_ROOT/run.sh" >/dev/null 2>&1
         # The FACT is blocked-vs-immediate; the millisecond count was
         # ornamentation. EPOCHREALTIME is Bash 5 only and ae's floor is 4.0,
         # where under set -u reading it aborts unbound — so a short flock
         # timeout carries the whole assertion. The child sleeps 3s, so a
         # half-second budget cleanly separates "already free" from "still held".
-        if flock -w 0.5 "$_FD_LOCK" true 2>/dev/null; then
-            _FD_FREE=1
-        else
-            _FD_FREE=0
-        fi
+        _fd_free() { # <body-file> <lock-file> -> 1 = free within the budget
+            : >"$2"
+            BRANCHNAME="$_fdb" LOCKPATH="$2" BODYFILE="$1" FD_META="$_FD_ROOT" \
+                "${BASH:-bash}" "$_FD_ROOT/run.sh" >/dev/null 2>&1
+            if flock -w 0.5 "$2" true 2>/dev/null; then echo 1; else echo 0; fi
+        }
         assert_eq "fd8 ($_fdb): lock is free once send_agent_cmd returns (child closed fd 8)" "1" \
-            "$_FD_FREE"
+            "$(_fd_free "$_FD_ROOT/body.sh" "$_FD_ROOT/lock.real")"
+        # MUTATION CONTROL, in the suite rather than in someone's head: strip the close
+        # and the same probe must go RED. A guard never observed to fail is not a guard.
+        command grep -v '^ *exec 8>&-$' "$_FD_ROOT/body.sh" >"$_FD_ROOT/body.mutant.sh"
+        assert_eq "fd8 ($_fdb): the control fragment really lost its close" "1" \
+            "$(command cmp -s "$_FD_ROOT/body.sh" "$_FD_ROOT/body.mutant.sh" && echo 0 || echo 1)"
+        assert_eq "fd8 ($_fdb) CONTROL: without exec 8>&- the child holds the lock" "0" \
+            "$(_fd_free "$_FD_ROOT/body.mutant.sh" "$_FD_ROOT/lock.mutant")"
         rm -rf "$_FD_ROOT"
     done
 else
@@ -3980,6 +4004,43 @@ fi
 tmux kill-session -t r36probe 2>/dev/null || true
 rm -f "$r36_stub"
 unset r36_stub r36_pane r36_early r36_mid r36_late r36_src _f
+
+# ── #30: a resumed pane reports the TOOL, not bash ───────────────────
+# The acceptance measurement from the issue, run against real panes with a stub
+# "tool" so no agent is involved — the question is process shape, not behaviour.
+R30_SRV="ae-r30-$$"
+# The suite's own interpreter, absolute. A hardcoded /opt/homebrew/bin/bash cannot
+# run on the Linux/WSL half of ae's supported ground.
+R30_SH="$BASH"
+mkdir -p "$TMPDIR/r30" && : >"$TMPDIR/r30/present"
+r30_dec() { # <probe> -> the decider command, built by ae's OWN function
+    # shellcheck disable=SC2016  # deliberate: $1/$2 are the INNER shell's positional
+    # args (ae's path and the probe), passed after the `_` below — not ours to expand.
+    "$R30_SH" -c 'eval "$(awk "/^_launch_resume_decider\(\) \{/,/^\}\$/" "$1")"
+        _launch_resume_decider "$2" "sleep 300" "sleep 301"' _ "$AE" "$1"
+}
+r30_hit="$(r30_dec "test -f $TMPDIR/r30/present")"
+r30_miss="$(r30_dec "test -f $TMPDIR/r30/absent")"
+command tmux -L "$R30_SRV" new-session -d -s s -n boot "$R30_SH -lc 'sleep 300'" 2>/dev/null
+# default-shell is AMBIENT — inherited from whoever started the server (fish on this
+# box) — and tmux runs each window's command through it. A shell that does not
+# exec-optimise reports ITSELF for every window, hit miss and chain alike, and the
+# control stops discriminating without failing. Pin it to the suite's bash.
+command tmux -L "$R30_SRV" set-option -g default-shell "$R30_SH" >/dev/null 2>&1 || true
+command tmux -L "$R30_SRV" new-window -d -t s -n hit "$R30_SH -lc $(printf %q "$r30_hit")" 2>/dev/null
+command tmux -L "$R30_SRV" new-window -d -t s -n miss "$R30_SH -lc $(printf %q "$r30_miss")" 2>/dev/null
+command tmux -L "$R30_SRV" new-window -d -t s -n chain "$R30_SH -lc 'sleep 300 || sleep 301'" 2>/dev/null
+sleep 3
+r30_read() { command tmux -L "$R30_SRV" list-panes -a -F '#{window_name} #{pane_current_command}' 2>/dev/null | awk -v w="$1" '$1==w{print $2; exit}'; }
+# PRECONDITION, asserted before anything is concluded from the two arms: this is the
+# defect's own signature. If a chain does NOT report bash here, the environment cannot
+# tell the shapes apart and green below would mean nothing.
+assert_eq "resume (#30) PRECONDITION: a '||' chain reports bash in this environment" "bash" "$(r30_read chain)"
+assert_eq "resume (#30): the probe-HIT branch reports the tool, not bash" "sleep" "$(r30_read hit)"
+assert_eq "resume (#30): the probe-MISS branch reports the tool, not bash" "sleep" "$(r30_read miss)"
+command tmux -L "$R30_SRV" kill-server 2>/dev/null || true
+rm -rf "$TMPDIR/r30"
+unset R30_SRV R30_SH r30_hit r30_miss
 
 # ── Results ──────────────────────────────────────────────────────────
 
