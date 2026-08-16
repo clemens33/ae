@@ -119,6 +119,28 @@ patterns the finding named while a third pattern in the same change stayed loose
 is a discipline, apply it to every sibling in the change, not only the named
 exhibit.
 
+Notes from the #30 resume-exec slice (`32719f5`), which closed a class across six
+rounds: **a fact built upstream is transported, never re-parsed out of the
+artifact it was baked into.** Four instances in one issue, all demonstrated on the
+real pipeline: an id re-parsed from a context-injected command extracted the word
+"by" from ae's own prose; a `codex*resume*` glob classified every fresh command as
+a resume because the injected context contains the word "resume"; a marker search
+for the injection boundary found the *user's* copy of the flag instead of ae's;
+and a second, independent classifier in the delivery path answered the same
+question from different evidence, double-delivering the initial prompt. The built
+command is downstream data — hostile input, not a source of truth. When one fact
+must drive two decisions (construction and delivery), one predicate answers both;
+two classifiers over the same string will eventually disagree. And close a class
+with a *guard*, not a sweep — the sweep missed the delivery-path member; the unit
+guard that now forbids the glob spelling would have caught it. Two companion
+rules from the same slice: **untouched is not unaffected** — a change that alters
+which arm executes arms every latent defect in the newly-reachable arm, and the
+diff shows nothing because the defect was already there; and **extraction
+correctness is not probe correctness** — a probe whose fixture-extractor was
+verified to pull the right lines can still be incapable of failing (the extracted
+child aborted under `set -u` and process death impersonated descriptor closure);
+the only property that makes a guard real is a demonstrated red.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
