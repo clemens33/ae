@@ -5356,7 +5356,7 @@ assert_eq "default_session_name: deterministic (same PWD = same name)" \
 # functions since the declare-f migration (emitted into the generated
 # watchdog via declare -f).
 eval "$(awk '
-    /^(_event_json_str|_latest_relevant_event|_agent_quiet_reason|_quiet_pane_decision)\(\) \{/ { printing=1 }
+    /^(_event_json_str|_latest_relevant_event|_agent_quiet_reason|_quiet_pane_decision|_watchdog_capture_pane|_quiet_stabilize|_quiet_stabilize_allowed|_quiet_cursor_advance|_quiet_cycle_begin|_quiet_cycle_step|_quiet_cycle_end|_nudge_should_attempt|_nudge_delivery_verdict)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -5558,6 +5558,8 @@ assert_eq "quiet_decision: different declaration key re-arms" "arm" \
 assert_eq "quiet_decision: pane unchanged since baseline holds" "hold" \
     "$(_quiet_pane_decision "hashB" "$KEY1" "hashB" "$KEY1")"
 # Armed for this declaration BUT pane changed → yield (human reply / agent work).
+# There is no cross-cycle grace: the baseline is settled inside the arming cycle, so a
+# later change is never the declaration's own echo.
 assert_eq "quiet_decision: pane changed since baseline yields" "yield" \
     "$(_quiet_pane_decision "hashC" "$KEY1" "hashB" "$KEY1")"
 
@@ -5582,10 +5584,295 @@ assert_eq "quiet_seq: cycle1 arms on first declaration sighting" "arm" "$_d"
 # Cycle 2: pane still B (agent idle, waiting) → hold (suppress) despite the echo.
 assert_eq "quiet_seq: cycle2 holds while pane stays at the echoed baseline" "hold" \
     "$(_quiet_pane_decision "hashB" "$_qbkey" "$_qbhash" "$_key")"
-# Cycle 3: human replies in-pane → hash C → yield → watchdog falls through.
+# Cycle 3: human replies in-pane → hash C → yield → watchdog falls through. The
+# budget was spent by the HOLD in cycle 2, which is what makes this a real event
+# rather than more of the declaration's own output (#47).
 assert_eq "quiet_seq: cycle3 yields once the human changes the pane" "yield" \
     "$(_quiet_pane_decision "hashC" "$_qbkey" "$_qbhash" "$_key")"
 unset _qbkey _qbhash _key _d
+
+# ── #47: the declaration's OWN trailing output must not break its hold ───────────
+# An agent declares state with a TOOL CALL and emits its final message AFTER — every
+# harness ends the turn with the text. Measured live: waiting-user at 09:05:55Z, no
+# events for 90m, nudged at 10:36:43Z through a branch reachable only after the quiet
+# branch had yielded.
+#
+# The gap is SECONDS, so it is closed inside the arming cycle rather than across 60s
+# cycles. _quiet_stabilize samples until two consecutive samples match; the settled hash
+# is the baseline, and every later change yields exactly as before #47.
+#
+# Driven against the REAL function with a scripted pane: each call to the stubbed
+# capture returns the next line of a fixture, so "what the pane did" is explicit.
+_stab() { # <hashes the pane shows, in order> -> settled hash, or "UNSETTLED"
+    local out
+    out="$(EXPECT_ARGS="$_stab_expect" CAPTURE_FAILS="${_stab_fails:-}" _timeout 20 "${BASH:-bash}" -c '
+        set -uo pipefail
+        eval "$(awk "/^_quiet_stabilize\(\) \{/,/^\}$/" "$1")"
+        # The real hasher digests EMPTY input to a NON-EMPTY value (md5 of "" is
+        # d41d8cd9...), which is the whole reason a failed capture could settle: two
+        # empty captures hash equal and non-empty. An identity stub returns "" and hides
+        # exactly that, so it keeps the property that matters.
+        _watchdog_quiet_hash() {
+            if [[ -z "$1" ]]; then printf "EMPTYHASH"; else printf "%s" "$1"; fi
+        }
+        D="$2"   # captured HERE: inside tmux() the positionals belong to the FUNCTION
+        printf "%s\n" "${@:3}" >"$D/frames"
+        eval "$(awk "/^_watchdog_capture_pane\(\) \{/,/^\}$/" "$1")"
+        # ARGUMENT-AWARE. The frames are keyed on the capture arguments, so a caller
+        # asking for a different RANGE gets different bytes — which is exactly the
+        # defect a stub that ignores its arguments cannot see: two ranges over one pane
+        # hash differently, so a baseline from one never matches a hash from the other.
+        # The args are also recorded, so a pin can compare what was actually requested.
+        tmux() {
+            local n args="$*"
+            printf "%s\n" "$args" >>"$D/args"
+            if [[ -n "${CAPTURE_FAILS:-}" ]]; then return 1; fi
+            if [[ "$args" != "$EXPECT_ARGS" ]]; then
+                printf "OTHER-RANGE-%s\n" "$args"   # deliberately unequal bytes
+                return 0
+            fi
+            n="$(cat "$D/idx" 2>/dev/null || echo 1)"
+            command sed -n "${n}p" "$D/frames"
+            if command sed -n "$((n + 1))p" "$D/frames" | command grep -q .; then
+                echo $((n + 1)) >"$D/idx"
+            fi
+            return 0
+        }
+        sleep() { :; }   # the beat is real in production; the suite does not wait for it
+        _quiet_stabilize "%0" 1 3
+    ' _ "$AE_BIN" "$_stab_dir" "$@" 2>/dev/null)"
+    printf '%s' "${out:-UNSETTLED}"
+}
+_stab_dir="$(mktemp -d)"
+# The range the product asks for, taken FROM the product's single definition. The stub
+# serves scripted frames only for these exact arguments.
+_stab_expect="capture-pane -p -J -S -40 -E - -t %0"
+# Declaration echo lands, then the pane holds still → that settled hash is the baseline.
+assert_eq "#47: a pane that settles inside the budget baselines the SETTLED hash" "hashB" \
+    "$(rm -f "$_stab_dir/idx"; _stab hashA hashB hashB hashB)"
+# THE RULING'S CASE: a human typing during stabilization keeps the pane moving, so it
+# never settles — and an unsettled pane is NOT quiet. It falls through to the normal
+# branches, which is what keeps a wedged agent that owes the human a reply nudgeable.
+# A cross-cycle re-arm absorbed exactly this input and held quiet forever.
+assert_eq "#47: input DURING stabilization never settles, so the pane is not quiet" "UNSETTLED" \
+    "$(rm -f "$_stab_dir/idx"; _stab hashA hashB hashC hashD)"
+# An agent still streaming its answer is working, not waiting — same outcome.
+assert_eq "#47: a pane still emitting at the bound is not quiet either" "UNSETTLED" \
+    "$(rm -f "$_stab_dir/idx"; _stab hashA hashB hashC hashD hashE)"
+# Already quiet when the declaration is first seen: settles immediately.
+assert_eq "#47: an already-still pane settles on the first beat" "hashA" \
+    "$(rm -f "$_stab_dir/idx"; _stab hashA hashA hashA)"
+# B2, THE KNOWN LIMITATION — PINNED AS-IS, NOT AS CORRECTNESS. A submitted human reply
+# changes the pane ONCE and then stalls, which is byte-identical to the agent's own
+# final message landing: A->B->B either way. Hash equality cannot separate them without
+# origin evidence, so the stabilizer settles and the pane is treated as quiet even when
+# the human is owed an answer.
+#
+# This asserts what the code DOES today, deliberately. Reaching it needs the human to
+# submit inside the ~4s window AND the agent's final message to never land afterwards
+# (if it lands the pane moves again and the pane is not quiet) — narrow and bounded,
+# against the ~120s exposure of the rejected cross-cycle design. Origin evidence would
+# mean TUI modelling that helps two tools and carries its own false positives; it is
+# filed as a follow-up rather than smuggled in here. If this pin ever changes, the
+# limitation is what changed.
+assert_eq "#47 KNOWN LIMITATION: a submitted human reply is indistinguishable from the agent's own last message" "hashB" \
+    "$(rm -f "$_stab_dir/idx" "$_stab_dir/args"; _stab hashA hashB hashB)"
+
+# I3: a capture that FAILS is not a still pane. Two failed samples used to produce two
+# empty strings, hash equal, and hand back a settled hash for an unreadable or dying
+# pane — quiet by accident.
+assert_eq "#47: a failing capture yields UNSETTLED, never a settled hash" "UNSETTLED" \
+    "$(rm -f "$_stab_dir/idx" "$_stab_dir/args"; _stab_fails=1 _stab hashA hashA hashA)"
+
+# I4: the beat is paid per CYCLE, not per pane — an unsettled declaration stores no
+# baseline, so it re-pays every beat on every cycle; 23 such panes would add 92s to a
+# 60s cycle. But a budget alone is BOUNDED WITHOUT BEING FAIR: the traversal order is
+# stable, so the first two permanently-unsettled panes took both slots every cycle and
+# panes 3+ were never attempted at all — they aged out of their active/recent windows
+# and got nudged while holding a valid declaration. #47 again, displaced.
+#
+# Driven as cycles over a 4-pane session where p1 and p2 NEVER settle and p3/p4 always
+# would, using the real predicate and the real wrap rule. Both properties are asserted
+# in ONE pin so neither can regress alone: every cycle attempts at most the budget, AND
+# every pane is reached within a bounded number of cycles.
+# It drives the PRODUCT'S OWN cycle step — begin / step / end — rather than advancing a
+# private cursor of its own. The earlier version called the two helpers but re-created
+# the wiring between them, so deleting the product's cursor write or its wrap left this
+# walker passing while the watchdog starved every pane. Driving the parts is not driving
+# the machine.
+_fair() { # <cycles> -> "<attempts per cycle> | first cycle that reached p3"
+    local cycles="$1" c i per="" reached="" paid
+    _QS_CURSOR=0
+    _QS_SPENT=0
+    _QS_MAX=2
+    for ((c = 1; c <= cycles; c++)); do
+        _quiet_cycle_begin
+        paid=0
+        for ((i = 1; i <= 4; i++)); do
+            if _quiet_cycle_step "$i"; then
+                paid=$((paid + 1))
+                if ((i == 3)) && [[ -z "$reached" ]]; then reached="$c"; fi
+            fi
+        done
+        per="${per}${per:+ }${paid}"
+        _quiet_cycle_end 4
+    done
+    printf '%s | p3 first reached in cycle %s' "$per" "${reached:-NEVER}"
+}
+assert_eq "#47: the cap is FAIR — at most 2 per cycle, and later panes are still reached" \
+    "2 2 2 2 2 2 | p3 first reached in cycle 2" "$(_fair 6)"
+unset -f _fair
+unset _QS_CURSOR _QS_SPENT _QS_MAX
+# The single-cycle bound on its own, at scale.
+assert_eq "#47: only the budgeted number of panes stabilize in one cycle" "2 of 23 panes paid" \
+    "$(_spent=0
+       _max=2
+       _paid=0
+       for _p in $(seq 1 23); do
+           if _quiet_stabilize_allowed "$_spent" "$_max" "$_p" 0; then
+               _spent=$((_spent + 1))
+               _paid=$((_paid + 1))
+           fi
+       done
+       printf '%s of 23 panes paid' "$_paid")"
+# The wrap rule itself: sweep finished under budget, or cursor past the last pane.
+assert_eq "#47: the cursor wraps when the sweep ends, and holds otherwise" "0|0|3" \
+    "$(printf '%s|%s|%s' \
+        "$(_quiet_cursor_advance 3 1 2 4)" \
+        "$(_quiet_cursor_advance 5 2 2 4)" \
+        "$(_quiet_cursor_advance 3 2 2 4)")"
+# #43's lesson on the new query.
+assert_eq "#47: the cursor query survives a bare call under errexit" "0 ok" \
+    "$(_timeout 10 "${BASH:-bash}" -c '
+        set -euo pipefail
+        eval "$(awk "/^_quiet_cursor_advance\(\) \{/,/^\}$/" "$1")"
+        _quiet_cursor_advance 3 1 2 4
+        printf " ok"
+    ' _ "$AE_BIN" 2>/dev/null)"
+# #43's lesson, on the new predicate.
+assert_eq "#47: the budget predicate survives a bare call under errexit" "ok" \
+    "$(_timeout 10 "${BASH:-bash}" -c '
+        set -euo pipefail
+        eval "$(awk "/^_quiet_stabilize_allowed\(\) \{/,/^\}$/" "$1")"
+        if ! _quiet_stabilize_allowed 9 2; then printf "ok"; fi
+    ' _ "$AE_BIN" 2>/dev/null)"
+
+# ── the two capture sites must ask for the SAME range ────────────────────────────
+# The stabilizer and the main loop hash the same pane, so they must capture the same
+# bytes. They did not: `-p -J` versus `-p -J -S -40 -E -` diverged on 8 of 12 live
+# panes here, so the settled baseline could never equal the next cycle's hash and the
+# quiet state died one cycle after arming — with every suite green, because a stub that
+# ignores its arguments serves both callers the same frames.
+assert_eq "#47: the stabilizer captures with the product's own single definition" "$_stab_expect" \
+    "$(rm -f "$_stab_dir/idx" "$_stab_dir/args"; _stab hashA hashA hashA >/dev/null
+       command sort -u "$_stab_dir/args" 2>/dev/null | command head -1)"
+# ...and it asked for nothing else: one range, not two.
+assert_eq "#47: the stabilizer asks for exactly ONE capture range" "1" \
+    "$(command sort -u "$_stab_dir/args" 2>/dev/null | command grep -c . | tr -d '[:space:]')"
+# The loop consumes the same definition rather than spelling the flags a second time.
+assert_eq "#47: the main loop hashes what _watchdog_capture_pane returns" "1" \
+    "$([[ "$AE_SOURCE" == *'pane_buf="$(_watchdog_capture_pane "$pane" || true)"'* ]] && echo 1 || echo 0)"
+# ...and the hashing path holds exactly one capture-flag spelling: the definition.
+assert_eq "#47: only ONE place spells the hashing capture flags" "1" \
+    "$(_defs="$(awk '/^_watchdog_capture_pane\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       [[ "$_defs" == *'capture-pane -p -J -S -40 -E -'* ]] && echo 1 || echo 0)"
+rm -rf "$_stab_dir"
+unset -f _stab
+unset _stab_dir _stab_expect
+
+# ── #44: the counter counts DELIVERIES, not attempts ────────────────────────────
+# send's rc was discarded, so a refused (dead pane) or abandoned (busy / human typing)
+# nudge still bumped the counter, logged "nudged (n/2)" and fed the max-nudges alert.
+# The event log was already correct — helper_send_main exits before ae_emit_event on
+# those paths, so no nudge event is written — which is why only the ACCOUNTING lied.
+assert_eq "#44: rc 0 is the only outcome that counts as a nudge" "delivered" \
+    "$(_nudge_delivery_verdict 0 0 3)"
+assert_eq "#44: a refused send is an undelivered attempt, not a nudge" "undelivered" \
+    "$(_nudge_delivery_verdict 1 0 3)"
+# The bound raises a DISTINCT alert: "unreachable/occupied" is a different problem from
+# "delivered and ignored", which is what max-nudges means.
+assert_eq "#44: the attempt that reaches the bound raises the unreachable alert" "undelivered-alert" \
+    "$(_nudge_delivery_verdict 1 2 3)"
+assert_eq "#44: a delivered nudge at the bound is still just delivered" "delivered" \
+    "$(_nudge_delivery_verdict 0 2 3)"
+# Attempts are bounded too, not only alerts: each send can hold the loop ~30s on a
+# defer, so an unreachable pane must stop costing cycles.
+assert_eq "#44: attempts stop at the bound, not just the alert" "yes yes no no" \
+    "$(_o=""
+       for _s in 0 2 3 4; do
+           if _nudge_should_attempt "$_s" 3; then _o="${_o}${_o:+ }yes"; else _o="${_o}${_o:+ }no"; fi
+       done
+       printf '%s' "$_o")"
+# #43's lesson: driven BARE, in statement position, under errexit — a query that aborts
+# instead of answering is invisible through $( ), and the predicate is only safe while
+# every call site is a condition (it is: `if ! _nudge_should_attempt …`).
+# I1: THE BOUND MUST NOT OUTLIVE THE CONDITION. Only a delivery used to clear the
+# streak, so three transient busy/refused sends disabled nudging for that pane
+# permanently — `3 < 3` stays false forever — while the pane-changed branch reset
+# nudge_count on the very same line, making the pane look freshly attended. A moving
+# pane is positive evidence that whatever blocked delivery is gone, so it re-arms
+# attempts. Walked as the full sequence the finding names.
+_i1() { # -> attempt/stop verdicts across fail x3 -> alert -> activity -> stale
+    local max=3 streak=0 out="" step
+    for step in fail fail fail stale activity stale; do
+        case "$step" in
+            fail)
+                if _nudge_should_attempt "$streak" "$max"; then
+                    streak=$((streak + 1))
+                    out="${out}${out:+ }attempt"
+                else
+                    out="${out}${out:+ }stopped"
+                fi
+                ;;
+            stale)
+                if _nudge_should_attempt "$streak" "$max"; then
+                    out="${out}${out:+ }attempt"
+                else
+                    out="${out}${out:+ }stopped"
+                fi
+                ;;
+            activity) streak=0 ;; # the pane-hash-changed branch clears it
+        esac
+    done
+    printf '%s' "$out"
+}
+assert_eq "#44: an unreachable pane stops, then RE-ARMS on observed activity" \
+    "attempt attempt attempt stopped attempt" "$(_i1)"
+unset -f _i1
+# The reset is where the evidence is, next to the nudge_count reset that used to be
+# the only thing that branch cleared.
+assert_eq "#44: the pane-changed branch clears the undelivered streak too" "1" \
+    "$(_blk="$(awk '/pane hash changed/{found=1} found' <<<"$AE_SOURCE" | head -20)"
+       _pre="$(awk '/if \[\[ "\$hash" != "\${prev_hash\[\$pane\]:-}" \]\]/,/^ *fi$/' <<<"$AE_SOURCE" | head -20)"
+       [[ "$_pre" == *'undelivered_streak["$pane"]=0'* && "$_pre" == *'nudge_count["$pane"]=0'* ]] && echo 1 || echo 0)"
+
+# I2: BOTH new tunables are validated BEFORE arithmetic. A non-numeric value in an
+# arithmetic context terminates the set -u watchdog; a non-numeric loop bound would
+# silently empty the stabilizer and quiet holding would just stop working. The pattern
+# follows SWEEP_RETRY_SECS three functions up, including its rejection of leading zeros
+# ("08" is the octal trap this codebase documents).
+assert_eq "#44/#47: the new numeric tunables reject junk, leading zeros, zero and negatives" "3|3|3|3|4|4|4|1" \
+    "$(_v() { # <value> <pattern-default> -> what the watchdog would use
+           local val="$1" def="$2"
+           [[ "$val" =~ ^[1-9][0-9]*$ ]] || val="$def"
+           printf '%s' "$val"
+       }
+       printf '%s|%s|%s|%s|%s|%s|%s|%s' \
+        "$(_v abc 3)" "$(_v 08 3)" "$(_v 0 3)" "$(_v -1 3)" \
+        "$(_v '' 4)" "$(_v '2x' 4)" "$(_v ' 5' 4)" "$(_v 1 4)")"
+# ...and the guards are actually present on all three, in ae, before any arithmetic use.
+assert_eq "#44/#47: every new tunable carries its validation line" "3" \
+    "$(command grep -cE '^ *\[\[ "\$(QUIET_SETTLE_BEAT|QUIET_SETTLE_TRIES|UNDELIVERED_MAX)" =~ \^\[1-9\]' <<<"$AE_SOURCE" | tr -d '[:space:]')"
+
+assert_eq "#44: the accounting query survives a bare call under errexit" "verdict ok" \
+    "$(_timeout 10 "${BASH:-bash}" -c '
+        set -euo pipefail
+        eval "$(awk "/^_nudge_delivery_verdict\(\) \{/,/^\}\$/" "$1")"
+        eval "$(awk "/^_nudge_should_attempt\(\) \{/,/^\}\$/" "$1")"
+        _nudge_delivery_verdict 1 0 3 >/dev/null
+        printf "verdict "
+        if ! _nudge_should_attempt 9 3; then printf "ok"; fi
+    ' _ "$AE_BIN" 2>/dev/null)"
 
 rm -rf "$_done_test_dir"
 unset META_DIR _AE_SESSION _done_test_dir
@@ -5982,8 +6269,12 @@ assert_eq "quiet: branch entered on any declared quiet state ([[ -n \$quiet_row 
 assert_eq "quiet: done sub-branch is event-only (no pane-hash check)" "1" \
     "$([[ "$_done_block" == *'if [[ "$quiet_reason" == "done" ]]; then'* ]] && echo 1 || echo 0)"
 # waiting-user/blocked yield to pane activity via the _quiet_pane_decision baseline.
+# The verdict is still the three-way baseline decision, but what gets baselined is the
+# SETTLED hash from _quiet_stabilize, not whatever was on screen at arm time (#47).
 assert_eq "quiet: waiting-user/blocked use baseline arm/hold/yield decision" "1" \
-    "$([[ "$_done_block" == *'_quiet_pane_decision "$hash"'* && "$_done_block" == *'quiet_base_hash["$pane"]="$hash"'* ]] && echo 1 || echo 0)"
+    "$([[ "$_done_block" == *'_quiet_pane_decision "$hash"'* \
+        && "$_done_block" == *'_quiet_stabilize "$pane"'* \
+        && "$_done_block" == *'quiet_base_hash["$pane"]="$settled_hash"'* ]] && echo 1 || echo 0)"
 unset _done_block
 
 assert_eq "throttle: throttle_streak state tracked in declare -A" "1" \

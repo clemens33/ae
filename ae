@@ -12433,6 +12433,25 @@ _watchdog_quiet_hash() {
     return 0
 }
 
+# <cur-hash> <armed-key> <armed-hash> <decl-key> [settles] [settle-max]
+#
+# ARM ON THE FIRST *STABLE* PANE. An agent declares its state with a TOOL CALL and
+# emits its final message AFTER — every harness works that way, the final text is what
+# ends the turn. So the pane is guaranteed to change once more right after the
+# declaration, and baselining the first observed pane meant the agent broke its own
+# hold: measured live, a waiting-user declaration at 09:05:55Z was nudged at 10:36:43Z
+# through branch 5, which is reachable only after the quiet branch had YIELDED.
+#
+# The gap is the SECONDS between the tool call and the message; a 60s cycle is a
+# terrible unit for measuring it. So the baseline is settled WITHIN the arming cycle
+# (see _quiet_stabilize) and the verdict stays the crisp three it always was: a change
+# in any LATER cycle is unambiguously not the declaration's own echo and yields, which
+# is what keeps a human's in-pane reply — an event that exists nowhere else — audible.
+#
+# A cross-cycle "re-arm on change" was tried and rejected: it cannot tell the agent's
+# echo from a human reply that lands in the same window, so a wedged agent owing the
+# human an answer would have looked quiet forever. That is a worse failure than the bug
+# it fixed, and the direction matters more than the count.
 _quiet_pane_decision() {
     local cur="$1" armed_key="$2" armed_hash="$3" decl_key="$4"
     if [[ "$armed_key" != "$decl_key" ]]; then
@@ -12442,6 +12461,145 @@ _quiet_pane_decision() {
     else
         printf 'yield'
     fi
+    return 0
+}
+
+# ONE definition of how a pane is captured FOR HASHING. The stabilizer and the main
+# loop must see identical bytes: two capture ranges over the same pane produce two
+# different hashes, so a baseline taken by one can never equal a hash taken by the
+# other. Measured on this session's own panes — `-p -J` against `-p -J -S -40 -E -`
+# diverged on 8 of 12 live panes (%224: 35 lines vs 36, two different hashes), which
+# meant a quiet state held for exactly its arming cycle and then yielded into the
+# stale timer. Same class as the facts #30/#43 stopped re-deriving: two sites
+# computing one thing, kept in step by hand.
+#
+# (_pane_shows_throttle captures its own -S -15 window deliberately: it greps a tail
+# for error text and never feeds a hash, so it is not a second definition of this.)
+# Status is PRESERVED: `|| true` here turned a failed capture into empty output, and
+# two empty samples hash equal — so an unreadable or dying pane settled instantly and
+# was classified QUIET. Callers that genuinely tolerate failure say so at their own
+# call site; the stabilizer must not.
+_watchdog_capture_pane() { # <pane>
+    tmux capture-pane -p -J -S -40 -E - -t "$1" 2>/dev/null
+}
+
+# How many panes may pay the stabilization beat in a single cycle, AND WHICH ONES.
+# The budget alone is bounded but not fair: list-panes is traversed in the same order
+# every cycle and an unsettled attempt stores no baseline, so the first two permanently
+# unsettled panes consumed both slots forever and panes 3+ were NEVER attempted — they
+# aged out of their active/recent windows and got nudged while holding a perfectly good
+# waiting-user declaration. That is the very bug this slice exists to fix, displaced
+# onto later panes.
+#
+# So eligibility is budget AND position: a rotating cursor remembers where the cycle
+# stopped and the next one resumes there. Less state than per-pane backoff, and it
+# cannot itself starve — every pane is reached within one full rotation.
+_quiet_stabilize_allowed() { # <spent-this-cycle> <per-cycle-max> [pane-index] [cursor]
+    local spent="$1" max="$2" idx="${3:-0}" cursor="${4:-0}"
+    ((spent < max)) || return 1
+    ((idx >= cursor))
+}
+
+# Where the next cycle starts. Wrap when this cycle did not spend its budget (everyone
+# reachable was offered a turn) or when the cursor has run past the last pane.
+_quiet_cursor_advance() { # <cursor> <spent> <max> <panes-seen> -> next cursor
+    local cursor="$1" spent="$2" max="$3" seen="$4"
+    if ((spent < max)) || ((cursor > seen)); then
+        printf '0'
+    else
+        printf '%s' "$cursor"
+    fi
+    return 0
+}
+
+# THE CYCLE STEP — the wiring between the budget predicate and the wrap rule, owned in
+# ONE place and called by both the watchdog loop and its tests. Driving the two helpers
+# separately is not the same as driving the machine: a test that advances its own cursor
+# and calls the wrap itself passes even when the product does neither, which is exactly
+# how the fairness fix ended up with no regression protection at all. Same medicine as
+# the capture range — one definition, both callers — so divergence is impossible rather
+# than merely detectable.
+#
+# State rides globals because bash returns one value and this step answers "may this
+# pane stabilize?" while also advancing the cursor. (Precedent: _event_json_str returns
+# through _EV for the same reason.)
+_quiet_cycle_begin() { # start of a watchdog cycle
+    _QS_SPENT=0
+    return 0
+}
+
+_quiet_cycle_step() { # <pane-index> -> 0 if this pane may stabilize now
+    local idx="$1"
+    _quiet_stabilize_allowed "$_QS_SPENT" "$_QS_MAX" "$idx" "$_QS_CURSOR" || return 1
+    _QS_SPENT=$((_QS_SPENT + 1))
+    _QS_CURSOR=$((idx + 1)) # the next cycle resumes after this pane
+    return 0
+}
+
+_quiet_cycle_end() { # <panes-seen> — rotate for the next cycle
+    _QS_CURSOR="$(_quiet_cursor_advance "$_QS_CURSOR" "$_QS_SPENT" "$_QS_MAX" "$1")"
+    return 0
+}
+
+# Settle the pane WITHIN the arming cycle: sample, wait a beat, sample again, until two
+# consecutive samples match or the budget runs out. Returns the settled hash, or EMPTY
+# if the pane never held still — which means the agent is still emitting, i.e. working
+# rather than waiting, and the caller must fall through to the normal branches.
+#
+# It is tool-agnostic: no TUI modelling, so unmodeled tools get the same protection.
+#
+# COST IS BOUNDED PER CYCLE, not per declaration. An earlier comment here claimed this
+# runs once per declaration — false for a pane that never settles, because no baseline
+# is stored on failure, so it pays every beat again on every cycle. With 23 panes
+# arming that is 23s; with 23 unsettled panes it is 92s on top of the unconditional
+# 60s sleep, i.e. a ~152s cycle before any other work — the coupled-cadences failure.
+# _quiet_stabilize_allowed caps how many panes may stabilize in one cycle; the rest
+# simply are not quiet yet and get their turn next cycle.
+_quiet_stabilize() { # <pane> <beat-secs> <tries> -> settled hash, or empty
+    local pane="$1" beat="$2" tries="$3"
+    local prev cur raw i
+    # A capture that FAILS is not a still pane. Unreadable or dying panes used to
+    # settle immediately here, because two failures both produced empty output and
+    # hashed the same.
+    raw="$(_watchdog_capture_pane "$pane")" || return 0
+    prev="$(_watchdog_quiet_hash "$raw")"
+    for ((i = 0; i < tries; i++)); do
+        sleep "$beat"
+        raw="$(_watchdog_capture_pane "$pane")" || return 0
+        cur="$(_watchdog_quiet_hash "$raw")"
+        if [[ "$cur" == "$prev" ]]; then
+            printf '%s' "$cur"
+            return 0
+        fi
+        prev="$cur"
+    done
+    return 0
+}
+
+# Nudge delivery accounting (#44). Two small answers, kept out of the loop so they can
+# be driven directly: a counter that is wrong is invisible in a log nobody diffs.
+#
+# _nudge_should_attempt: an unreachable pane must stop costing cycles. Each send can
+# hold the watchdog ~30s on a defer, so the streak bounds ATTEMPTS, not just alerts.
+_nudge_should_attempt() { # <streak> <max>
+    local streak="$1" max="$2"
+    ((streak < max))
+}
+
+# _nudge_delivery_verdict: what an attempt's rc means for the books. rc 0 is the only
+# thing that counts as a nudge; everything else is an undelivered attempt, and the one
+# that reaches the bound raises the DISTINCT unreachable alert (not the max-nudges one,
+# which means "delivered and ignored" — a different problem with a different fix).
+_nudge_delivery_verdict() { # <send-rc> <streak> <max>
+    local rc="$1" streak="$2" max="$3"
+    if ((rc == 0)); then
+        printf 'delivered'
+    elif ((streak + 1 >= max)); then
+        printf 'undelivered-alert'
+    else
+        printf 'undelivered'
+    fi
+    return 0
 }
 
 _watchdog_meta_value() {
@@ -12869,6 +13027,21 @@ helper_watchdog_main() {
     INTERVAL="${AE_WATCHDOG_INTERVAL_SEC:-${AE_LOOP_INTERVAL_SEC:-60}}"
     STALE_MIN="${AE_WATCHDOG_STALE_MIN:-${AE_LOOP_STALE_MIN:-15}}"
     MAX_NUDGES="${AE_WATCHDOG_MAX_NUDGES:-${AE_LOOP_MAX_NUDGES:-2}}"
+    # Same-cycle stabilization budget for a fresh quiet declaration (#47) and the
+    # undelivered-nudge bound (#44). VALIDATED BEFORE ARITHMETIC, like SWEEP_RETRY_SECS
+    # three functions up: under set -u an unset-but-referenced arithmetic operand is one
+    # thing, but `((streak < abc))` with a non-numeric value TERMINATES the watchdog, and
+    # a non-numeric settle budget silently empties the stabilizer's loop bound — quiet
+    # holding would just stop working with nothing in the log. The pattern rejects
+    # leading zeros deliberately: "08" is the documented octal trap.
+    QUIET_SETTLE_BEAT="${AE_WATCHDOG_QUIET_SETTLE_BEAT:-1}"
+    [[ "$QUIET_SETTLE_BEAT" =~ ^[1-9][0-9]*$ ]] || QUIET_SETTLE_BEAT=1
+    QUIET_SETTLE_TRIES="${AE_WATCHDOG_QUIET_SETTLE:-4}"
+    [[ "$QUIET_SETTLE_TRIES" =~ ^[1-9][0-9]*$ ]] || QUIET_SETTLE_TRIES=4
+    QUIET_STABILIZE_PER_CYCLE="${AE_WATCHDOG_QUIET_STABILIZE_PER_CYCLE:-2}"
+    [[ "$QUIET_STABILIZE_PER_CYCLE" =~ ^[1-9][0-9]*$ ]] || QUIET_STABILIZE_PER_CYCLE=2
+    UNDELIVERED_MAX="${AE_WATCHDOG_UNDELIVERED_MAX:-3}"
+    [[ "$UNDELIVERED_MAX" =~ ^[1-9][0-9]*$ ]] || UNDELIVERED_MAX=3
     STALE_SECS=$((STALE_MIN * 60))
     # Cycles of continuous throttle detection before escalating to alert (~5min default).
     THROTTLE_ALERT_CYCLES="${AE_WATCHDOG_THROTTLE_ALERT_CYCLES:-${AE_LOOP_THROTTLE_ALERT_CYCLES:-5}}"
@@ -12929,6 +13102,13 @@ helper_watchdog_main() {
     printf '\033[0m\n'
 
     declare -A prev_hash last_hash_change nudge_count dead_agents alerted_missing throttle_streak
+    # Per-pane undelivered-nudge streak (#44) — see step 7. (The quiet baseline needs
+    # no per-cycle state: it settles inside the arming cycle.)
+    declare -A undelivered_streak
+    # Fairness state for the stabilization rotation (#47), owned by the cycle step.
+    _QS_CURSOR=0
+    _QS_SPENT=0
+    _QS_MAX="$QUIET_STABILIZE_PER_CYCLE"
     # Per-pane last sweep-nudge time, for meta-agent (steward) sweep cadence.
     declare -A last_sweep_nudge first_sweep_nudge meta_wedge_alerted meta_reconciled
     declare -A sweep_nudge_fails sweep_unreachable_alerted
@@ -12961,6 +13141,11 @@ helper_watchdog_main() {
         cycle_stale=0
         cycle_dead=0
         cycle_alerts=0
+        # Per-cycle stabilization budget (#47). The CURSOR is deliberately NOT reset —
+        # it is what carries "whose turn is next" across cycles, and the cycle step
+        # wraps it after the sweep.
+        _quiet_cycle_begin
+        pane_idx=0
         _load_agent_bins
 
         # Collect live panes into an associative array for missing-pane detection
@@ -12990,6 +13175,7 @@ helper_watchdog_main() {
             case "$agent" in
                 "" | "(null)" | _watchdog | _shepherd | _loop | _events) continue ;; # legacy pre-rename watchdog panes (transition)
             esac
+            pane_idx=$((pane_idx + 1)) # position in this cycle's traversal, for the cursor
             live_agents["$agent"]="$pane"
             pane_slot="$(tmux display-message -p -t "$pane" '#{@ae_slot}' 2>/dev/null || true)"
             [[ -n "$pane_slot" ]] && live_slots["$pane_slot"]="$pane"
@@ -13207,7 +13393,7 @@ helper_watchdog_main() {
             # state up front so the priority branches (done, throttled) can react
             # before the pane-hash early-continues mask them visually.
             now_epoch="$(date +%s)"
-            pane_buf="$(tmux capture-pane -p -J -S -40 -E - -t "$pane" 2>/dev/null || true)"
+            pane_buf="$(_watchdog_capture_pane "$pane" || true)"
             # The quiet-state baseline hashes a FILTERED view: the watchdog must not
             # count its own footprints as human activity. Its nudge lands in the pane,
             # and the agent's answer to it is usually a bare state re-declaration whose
@@ -13258,15 +13444,34 @@ helper_watchdog_main() {
                 quiet_decision="$(_quiet_pane_decision "$hash" "${quiet_base_key[$pane]:-}" "${quiet_base_hash[$pane]:-}" "$quiet_key")"
                 case "$quiet_decision" in
                     arm)
-                        # First cycle observing this declaration — baseline the pane
-                        # (echo included) and honour the quiet state.
-                        quiet_base_key["$pane"]="$quiet_key"
-                        quiet_base_hash["$pane"]="$hash"
-                        cycle_active=$((cycle_active + 1))
-                        nudge_count["$pane"]=0
-                        roster_verdict["$pane"]="$quiet_reason"
-                        _watchdog_log "  ${agent}  ${quiet_reason} (declared) — skip"
-                        continue
+                        # First cycle observing this declaration. The agent's final
+                        # message has NOT necessarily landed — it is emitted after the
+                        # state tool call — so settle the pane here, in seconds, rather
+                        # than baselining whatever happens to be on screen right now.
+                        if _quiet_cycle_step "$pane_idx"; then
+                            settled_hash="$(_quiet_stabilize "$pane" "$QUIET_SETTLE_BEAT" "$QUIET_SETTLE_TRIES")"
+                        else
+                            settled_hash="" # budget spent this cycle — try again next one
+                        fi
+                        if [[ -n "$settled_hash" ]]; then
+                            quiet_base_key["$pane"]="$quiet_key"
+                            quiet_base_hash["$pane"]="$settled_hash"
+                            # Downstream bookkeeping (prev_hash / last_hash_change) must
+                            # record what we BASELINED, not the pre-settle sample — and
+                            # since both captures now come from _watchdog_capture_pane,
+                            # this value is directly comparable to the next cycle's.
+                            hash="$settled_hash"
+                            cycle_active=$((cycle_active + 1))
+                            nudge_count["$pane"]=0
+                            roster_verdict["$pane"]="$quiet_reason"
+                            _watchdog_log "  ${agent}  ${quiet_reason} (declared) — skip"
+                            continue
+                        fi
+                        # Never held still inside the budget: someone is typing or the
+                        # agent is still emitting. Either way this is not a quiet pane —
+                        # fall through to the normal branches this cycle and try again
+                        # on the next one.
+                        _watchdog_log "  ${agent}  ${quiet_reason} (declared) — pane still moving, not quiet yet"
                         ;;
                     hold)
                         cycle_active=$((cycle_active + 1))
@@ -13312,6 +13517,13 @@ helper_watchdog_main() {
                 prev_hash["$pane"]="$hash"
                 last_hash_change["$pane"]="$now_epoch"
                 nudge_count["$pane"]=0
+                # The undelivered bound stops attempts to an UNCHANGED unreachable pane;
+                # it must not outlive the condition. Only a delivery used to clear it,
+                # so three transient busy/refused sends disabled nudging for that pane
+                # permanently — while nudge_count reset on this very line, making the
+                # pane look freshly attended. A moving pane is positive evidence that
+                # whatever blocked delivery is gone, so the attempts re-arm here.
+                undelivered_streak["$pane"]=0
                 cycle_active=$((cycle_active + 1))
                 roster_verdict["$pane"]="active"
                 _watchdog_log "  ${agent}  active (pane hash changed)"
@@ -13347,18 +13559,52 @@ helper_watchdog_main() {
             else
                 stale_display="idle ${stale_min_num}m"
             fi
-            if ((count < MAX_NUDGES)); then
+            # THE COUNTER COUNTS DELIVERIES, NOT ATTEMPTS. send's rc was discarded
+            # here, so a nudge that was refused (dead pane) or abandoned (busy, or the
+            # human mid-type) still bumped nudge_count, printed "nudged (n/2)" and fed
+            # the max-nudges alert — the watchdog reporting asks that never landed.
+            # The event log was already honest: helper_send_main exits BEFORE
+            # ae_emit_event on those paths, so no nudge event is written. Only the
+            # counter, the log line and the alert reason lied.
+            #
+            # An undelivered attempt gets its OWN bounded streak and its own alert,
+            # because "unreachable/occupied" is a different problem from "ignoring me",
+            # and it is bounded rather than retried forever: each send can hold this
+            # loop ~30s on a defer, so an unreachable pane must stop costing cycles.
+            undelivered="${undelivered_streak[$pane]:-0}"
+            if ! _nudge_should_attempt "$undelivered" "$UNDELIVERED_MAX"; then
+                _watchdog_log "  ${agent}  STALE — nudge undeliverable (${undelivered} attempts, alerted) — not retrying"
+            elif ((count < MAX_NUDGES)); then
                 # Quote the session goal (if set) so an idle agent is reminded what
                 # the session is FOR, not just that it went quiet.
                 goal_line="$(_watchdog_meta_value goal)"
                 [[ -n "$goal_line" ]] && goal_line="Session goal: ${goal_line}. "
+                nudge_rc=0
                 env AE_SENDER_OVERRIDE=watchdog \
                     _AE_EVENT_ACTION=nudge \
                     _AE_EVENT_SUMMARY="${stale_display}, no recent ae activity" \
                     "${META_DIR}/send" "$agent" \
-                    "${goal_line}Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: ${META_DIR}/state <waiting-user|blocked|done> \"<reason>\"" 2>/dev/null || true
-                nudge_count["$pane"]=$((count + 1))
-                _watchdog_log "  ${agent}  STALE (${stale_display}) — nudged ($((count + 1))/${MAX_NUDGES})"
+                    "${goal_line}Status check: if you have more work, continue. Otherwise declare your state so I stop nudging: ${META_DIR}/state <waiting-user|blocked|done> \"<reason>\"" 2>/dev/null || nudge_rc=$?
+                case "$(_nudge_delivery_verdict "$nudge_rc" "$undelivered" "$UNDELIVERED_MAX")" in
+                    delivered)
+                        undelivered_streak["$pane"]=0
+                        nudge_count["$pane"]=$((count + 1))
+                        _watchdog_log "  ${agent}  STALE (${stale_display}) — nudged ($((count + 1))/${MAX_NUDGES})"
+                        ;;
+                    undelivered)
+                        undelivered=$((undelivered + 1))
+                        undelivered_streak["$pane"]="$undelivered"
+                        _watchdog_log "  ${agent}  STALE (${stale_display}) — nudge NOT delivered (rc=${nudge_rc}, ${undelivered}/${UNDELIVERED_MAX})"
+                        ;;
+                    undelivered-alert)
+                        undelivered=$((undelivered + 1))
+                        undelivered_streak["$pane"]="$undelivered"
+                        ae_emit_event "alert" "$agent" "" "nudge unreachable/occupied — ${undelivered} undelivered attempts (${stale_display})"
+                        tmux display-message -d 10000 "[ae watchdog] $agent unreachable — ${undelivered} nudges could not be delivered" 2>/dev/null || true
+                        cycle_alerts=$((cycle_alerts + 1))
+                        _watchdog_log "  ${agent}  STALE (${stale_display}) — nudge NOT delivered (rc=${nudge_rc}, ${undelivered}/${UNDELIVERED_MAX}) — alert raised"
+                        ;;
+                esac
             elif ((count == MAX_NUDGES)); then
                 ae_emit_event "alert" "$agent" "" "max nudges reached (${stale_display}), needs attention"
                 tmux display-message -d 10000 "[ae watchdog] $agent may need attention — stale after ${MAX_NUDGES} nudges" 2>/dev/null || true
@@ -13370,6 +13616,9 @@ helper_watchdog_main() {
             fi
 
         done < <(tmux list-panes -s -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}' 2>/dev/null)
+        # Rotate: next cycle starts where this one stopped, so a pane that never settles
+        # cannot hold the budget against every pane behind it.
+        _quiet_cycle_end "$pane_idx"
 
         # 8. Missing pane check — registered agents whose panes no longer exist
         while IFS='=' read -r key val; do
@@ -14628,7 +14877,10 @@ WDPROLOGUE
             _monitor_find_pane _monitor_ensure_events_pane _watchdog_ensure_monitor _watchdog_reap_legacy_one \
             _watchdog_reap_legacy _watchdog_stop _watchdog_status \
             _watchdog_start _last_event_age _latest_relevant_event _agent_quiet_reason \
-            _quiet_pane_decision _watchdog_quiet_hash _watchdog_meta_value _watchdog_trim _watchdog_git \
+            _quiet_pane_decision _watchdog_capture_pane _quiet_stabilize _quiet_stabilize_allowed _quiet_cursor_advance \
+            _quiet_cycle_begin _quiet_cycle_step _quiet_cycle_end \
+            _nudge_should_attempt _nudge_delivery_verdict \
+            _watchdog_quiet_hash _watchdog_meta_value _watchdog_trim _watchdog_git \
             _watchdog_branch_segment _watchdog_set_status _watchdog_clear_bar_options _watchdog_log _pane_has_descendant_named \
             _watchdog_exit_cleanup _roster_session_id _ae_session_id _watchdog_session_id _roster_glyph _roster_label _roster_compose _roster_slot_refs _roster_window_compose \
             _buf_shows_throttle _pane_shows_throttle _load_agent_bins helper_watchdog_main
