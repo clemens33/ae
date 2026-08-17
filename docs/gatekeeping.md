@@ -141,6 +141,25 @@ verified to pull the right lines can still be incapable of failing (the extracte
 child aborted under `set -u` and process death impersonated descriptor closure);
 the only property that makes a guard real is a demonstrated red.
 
+Notes from #43 (`2601bc0`), which closed that class in the re-run path and spent
+three of its four rounds on the guards rather than the code: **a refusal path is a
+guard and owes the same proof of failure.** The arm that was supposed to answer
+"cannot classify → no re-run form" was written as a `grep … | wc -l` assignment,
+so under `pipefail` a no-match exited 1 in statement position and the function
+*aborted* instead of refusing — turning an intended cosmetic degradation into a
+failed launch. Its pin was green because `assert_eq "$(fn …)"` masks the abort,
+which is the shape AGENTS.md already names as the only one that cannot see it.
+Three companion rules earned the same way: **derive an enumeration, never recall
+it** — the list of refusal arms missed a real one until a pin counted the
+function's `return` sites and asserted the number, so the next arm cannot be added
+silently; **feed every detector a hostile line before trusting it** — an exclusion
+filter for definition lines was walked past by a trailing `# comment () {`, and a
+`[^|&]*` exemption treated `pred | cat` as guarded although a lone pipeline aborts
+under `pipefail` exactly like a bare call; and **a "count more things" fix needs a
+false-positive control**, or it can pass by counting everything. State a textual
+guard's honest limit in place (this one cannot see `eval`, wrappers, or indirect
+invocation) rather than implying a completeness it does not have.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
