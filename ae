@@ -748,22 +748,51 @@ extract_binary_from_cmd() {
 # already walks past env/sudo/nice wrappers and their argument-taking flags and
 # strips the directory, so it sees `claude` through the launch command's
 # `env -u CLAUDECODE … claude` prefix. Pure → unit-tested.
+# <launch-cmd> <session-id> <pre-injection-cmd>
+#
+# LAST MEMBER OF THE #30 CLASS. This used to recover BOTH facts from the built
+# command: the boundary, by slicing at the first " --session-id ", and the flag's
+# position, by rewriting the first occurrence of that flag. Both were safe only by
+# two accidents in other functions — inject_session_id strips session flags out of
+# the operator's config, and inject_ae_context appends — neither of which this code
+# checked or owned. The caller knows both facts; it hands them over.
 launch_rerun_command() {
-    local cmd="$1"
-    case "$cmd" in
-        *" --session-id "*) ;;
-        *) return 0 ;;
-    esac
-    # Only the head up to the flag: extract_binary_from_cmd splits with an
-    # UNQUOTED `for w in $cmd`, so it also glob-expands every word. The binary is
-    # word one either way, but the injected system prompt trailing this command
-    # is multi-kilobyte and can carry glob metacharacters — no reason to walk the
-    # filesystem for an answer that is already decided by the first word.
-    case "$(extract_binary_from_cmd "${cmd%%" --session-id "*}")" in
+    local launch_cmd="$1" id="${2:-}" pre="${3:-}"
+    local token rerun_pre rest
+    _launch_id_probeable "$id" || return 0
+    [[ -n "$pre" ]] || return 0
+    token=" --session-id ${id}"
+    # The tool is read off ae's OWN composition. The old slice existed to keep the
+    # injected prose away from extract_binary_from_cmd's UNQUOTED `for w in $cmd`
+    # word split (which glob-expands every word); the pre-injection command has no
+    # prose in it to keep away.
+    case "$(extract_binary_from_cmd "$pre")" in
         claude | grok) ;;
         *) return 0 ;;
     esac
-    printf '%s' "${cmd/ --session-id / --resume }"
+    # No transported flag means no re-run form — the id may be "pending", or the
+    # tool may not take one. Refuse rather than guess: the cost is a second run
+    # colliding loudly on "Session ID already in use", never a wrong conversation.
+    [[ "$pre" == *"$token"* ]] || return 0
+    # THE EDIT HAPPENS INSIDE THE HEAD, then the head is spliced back over its own
+    # span. So the flag's position in the built command is never guessed, and the
+    # injected tail cannot be touched even when it mentions the same flag itself.
+    # (The head is not a PREFIX here — build_launch_command puts claude's env
+    # wrapper in front of it — so #30's prefix test becomes a containment test,
+    # with the same refuse-never-trust direction.)
+    rerun_pre="${pre/${token}/ --resume ${id}}"
+    # Containment and uniqueness in PURE BASH. This was a `grep -oF … | wc -l`, and
+    # under pipefail grep's "no match" made the whole pipeline exit 1 — in statement
+    # position, so the refusal arm did not refuse, it ABORTED the function. Through
+    # write_launch_script's split assignment (which re-arms errexit) that turned the
+    # intended degradation — launch fine, no re-run form — into a FAILED LAUNCH. The
+    # suite could not see it: every test called this through `$( )`, where an abort is
+    # masked and empty stdout reads as a clean refusal (AGENTS.md: only a BARE call
+    # proves set -e safety). No subprocess, no pipefail surface, exact match.
+    rest="${launch_cmd#*"$pre"}"
+    [[ "$rest" != "$launch_cmd" ]] || return 0 # the head is not in there at all
+    [[ "$rest" != *"$pre"* ]] || return 0      # …or is in there more than once
+    printf '%s' "${launch_cmd/"$pre"/"$rerun_pre"}"
     # Query contract (AGENTS.md): the result is stdout, so the status must be a
     # deliberate 0 — `x="$(launch_rerun_command …)"` under errexit would abort on
     # anything else.
@@ -834,8 +863,9 @@ EOF
     fi
 }
 
+# <meta-dir> <slot> <launch-cmd> [session-id] [pre-injection-cmd]
 write_launch_script() {
-    local meta_dir="$1" slot="$2" launch_cmd="$3"
+    local meta_dir="$1" slot="$2" launch_cmd="$3" session_id="${4:-}" pre_injection_cmd="${5:-}"
     local safe_slot="${slot//[^A-Za-z0-9._-]/_}"
     local script="${meta_dir}/launch.${safe_slot}.sh"
     local started="${meta_dir}/launch.${safe_slot}.started"
@@ -845,7 +875,7 @@ write_launch_script() {
     # sync_session_assets, so they are not covered by its rewrite pass.
     local _sh="${BASH:-/usr/bin/env bash}"
     local rerun_cmd
-    rerun_cmd="$(launch_rerun_command "$launch_cmd")"
+    rerun_cmd="$(launch_rerun_command "$launch_cmd" "$session_id" "$pre_injection_cmd")"
     # Checked, and checked BEFORE the marker is touched. A failed publish leaves
     # the PREVIOUS script in place; clearing the marker anyway would reclassify
     # that survivor as never-run, so a resume script would go back to creating
@@ -9612,7 +9642,7 @@ send_agent_cmd() {
     # wherever errexit is suspended (any caller reached through if/&&/||), and
     # the empty capture would then be pasted into the pane as a command. An
     # agent we cannot write a launch script for does not get started quietly.
-    if ! launch_script="$(write_launch_script "$meta_dir" "$slot" "$launch_cmd")"; then
+    if ! launch_script="$(write_launch_script "$meta_dir" "$slot" "$launch_cmd" "$resume_id" "$pre_injection_cmd")"; then
         echo "ae: could not write the launch script for '${slot}' — agent not started" >&2
         return 1
     fi
@@ -14766,13 +14796,17 @@ if [[ "$RESUMING" == true ]]; then
 else
     # Fresh start with session-scoped IDs (enables targeted resume later)
     SCOPED_MAIN="$(inject_session_id "$MAIN_CMD" "$MAIN_SESSION_ID")"
+    # The injection boundary, captured where it is known. A FRESH launch needs it as
+    # much as a resume does: launch.<slot>.sh's re-run form is built from it.
+    SCOPED_MAIN_PRE="$SCOPED_MAIN"
     SCOPED_MAIN="$(inject_ae_context "$SCOPED_MAIN" "$AE_META" "$SESSION" "$WORK_DIR" "main")"
-    _send_or_rollback "${PANE_IDS[0]}" "$SCOPED_MAIN" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR" "main")" "$AE_META" "main"
+    _send_or_rollback "${PANE_IDS[0]}" "$SCOPED_MAIN" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR" "main")" "$AE_META" "main" "$MAIN_SESSION_ID" "$SCOPED_MAIN_PRE"
     for i in "${!WORKER_CMDS[@]}"; do
         idx=$((i + 1))
         SCOPED_WORKER="$(inject_session_id "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
+        SCOPED_WORKER_PRE="$SCOPED_WORKER"
         SCOPED_WORKER="$(inject_ae_context "$SCOPED_WORKER" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")"
-        _send_or_rollback "${PANE_IDS[$idx]}" "$SCOPED_WORKER" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")" "$AE_META" "worker.${i}"
+        _send_or_rollback "${PANE_IDS[$idx]}" "$SCOPED_WORKER" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")" "$AE_META" "worker.${i}" "${WORKER_SESSION_IDS[$i]:-}" "$SCOPED_WORKER_PRE"
     done
 fi
 

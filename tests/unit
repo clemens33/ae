@@ -286,38 +286,236 @@ assert_eq "launch: codex resume decides before exec, no fallback chain" "1" \
 # the same command with --resume, keeping every ae context flag.
 assert_eq "rerun: claude's --session-id becomes --resume, all else intact" \
     "env -u CLAUDECODE claude --model opus --resume abc-123 --append-system-prompt 'ctx'" \
-    "$(launch_rerun_command "env -u CLAUDECODE claude --model opus --session-id abc-123 --append-system-prompt 'ctx'")"
+    "$(launch_rerun_command "env -u CLAUDECODE claude --model opus --session-id abc-123 --append-system-prompt 'ctx'" abc-123 "claude --model opus --session-id abc-123")"
 assert_eq "rerun: grok keeps its POSITIONAL context argument" \
     "grok --always-approve --resume abc-123 'ctx'" \
-    "$(launch_rerun_command "grok --always-approve --session-id abc-123 'ctx'")"
+    "$(launch_rerun_command "grok --always-approve --session-id abc-123 'ctx'" abc-123 "grok --always-approve --session-id abc-123")"
 assert_eq "rerun: codex takes no launch-time id -> nothing to re-run differently" "" \
-    "$(launch_rerun_command "codex --yolo")"
+    "$(launch_rerun_command "codex --yolo" abc-123 "codex --yolo")"
 assert_eq "rerun: a resume launch (already --resume) -> empty" "" \
-    "$(launch_rerun_command "claude --model opus --resume abc-123")"
+    "$(launch_rerun_command "claude --model opus --resume abc-123" abc-123 "claude --model opus --resume abc-123")"
 # The tool is the EXTRACTED BINARY, matched exactly. A substring test would
 # rewrite all three of these into a --resume they do not implement — and break
 # the contract that a no-launch-id tool's launch script stays byte-identical.
 assert_eq "rerun: 'claude' appearing AFTER --session-id does not qualify" "" \
-    "$(launch_rerun_command "mytool --session-id abc-123 --model claude")"
+    "$(launch_rerun_command "mytool --session-id abc-123 --model claude" abc-123 "mytool --session-id abc-123 --model claude")"
 assert_eq "rerun: 'claude' as a PRECEDING argument value does not qualify" "" \
-    "$(launch_rerun_command "mytool --model claude --session-id abc-123")"
+    "$(launch_rerun_command "mytool --model claude --session-id abc-123" abc-123 "mytool --model claude --session-id abc-123")"
 assert_eq "rerun: a binary whose NAME merely ends in the tool does not qualify" "" \
-    "$(launch_rerun_command "/opt/bin/notgrok --session-id abc-123")"
+    "$(launch_rerun_command "/opt/bin/notgrok --session-id abc-123" abc-123 "/opt/bin/notgrok --session-id abc-123")"
 assert_eq "rerun: ...nor one whose name merely starts with it" "" \
-    "$(launch_rerun_command "claudex --session-id abc-123")"
+    "$(launch_rerun_command "claudex --session-id abc-123" abc-123 "claudex --session-id abc-123")"
 # ...while the real binary is still seen through a path and an env wrapper.
 assert_eq "rerun: absolute path to the real claude still qualifies" \
     "/usr/local/bin/claude --resume abc-123" \
-    "$(launch_rerun_command "/usr/local/bin/claude --session-id abc-123")"
+    "$(launch_rerun_command "/usr/local/bin/claude --session-id abc-123" abc-123 "/usr/local/bin/claude --session-id abc-123")"
 assert_eq "rerun: seen through env -u FLAGS and VAR=val assignments" \
     "env -u CLAUDECODE CLAUDE_X=0 claude --resume abc-123" \
-    "$(launch_rerun_command "env -u CLAUDECODE CLAUDE_X=0 claude --session-id abc-123")"
+    "$(launch_rerun_command "env -u CLAUDECODE CLAUDE_X=0 claude --session-id abc-123" abc-123 "env -u CLAUDECODE CLAUDE_X=0 claude --session-id abc-123")"
 # The real shape: a multi-kilobyte injected context trails the flag, carries glob
 # metacharacters, and even quotes the flag's own name. The verdict comes from
 # word one regardless, and no filesystem walk happens on the way to it.
 assert_eq "rerun: a trailing injected context with globs is not consulted" \
     "claude --resume abc-123 --append-system-prompt 'see */*/* and --session-id docs'" \
-    "$(launch_rerun_command "claude --session-id abc-123 --append-system-prompt 'see */*/* and --session-id docs'")"
+    "$(launch_rerun_command "claude --session-id abc-123 --append-system-prompt 'see */*/* and --session-id docs'" \
+        abc-123 "claude --session-id abc-123")"
+
+# ── #43: the rerun form is built from TRANSPORTED facts, through the real writer ──
+# The last member of the class #30 closed. This function used to slice the built
+# command at the first " --session-id " to find the boundary, and rewrite the first
+# occurrence of that flag to find the position. Both were correct only because
+# inject_session_id happens to strip the operator's session flags and inject_ae_context
+# happens to append — two accidents owned by other functions, checked by nobody.
+_r43_meta="$(mktemp -d)"
+_r43_id="019b2222-3333-4444-5555-666677778888"
+_r43_script() { # <config-cmd> -> the launch script the REAL writer emits
+    local cfg="$1" pre built
+    pre="$(inject_session_id "$cfg" "$_r43_id")"
+    built="$(inject_ae_context "$pre" "$_r43_meta" aedev /tmp/w main)"
+    built="$(build_launch_command "$built" "" "$_r43_id" "$pre")"
+    write_launch_script "$_r43_meta" r43 "$built" "$_r43_id" "$pre" >/dev/null 2>&1
+    command cat "${_r43_meta}/launch.r43.sh"
+}
+# PIPELINE 1 — the operator's config carries its OWN --session-id, driven through the
+# REAL writer. The emitted script is shell-quoted (spaces become `\ `), so the
+# backslashes come out before matching; what is asserted is the emitted product.
+_r43_s1="$(_r43_script "claude --model opus --session-id OPERATORS-OWN")"
+_r43_f1="${_r43_s1//\\/}"
+assert_eq "#43: the re-run branch resumes AE's id, the create branch still bakes it" "1" \
+    "$(_re="$(command grep -F -- '--resume' <<<"$_r43_f1" || true)"
+       _cr="$(command grep -F -- '--session-id' <<<"$_r43_f1" || true)"
+       [[ "$_re" == *"--resume ${_r43_id}"* && "$_cr" == *"--session-id ${_r43_id}"* ]] && echo 1 || echo 0)"
+# The operator's own id never reaches the script at all — inject_session_id strips
+# session flags out of the config. That is one of the two accidents the old code
+# leaned on; it is pinned here as a FACT this code no longer depends on.
+assert_eq "#43: the operator's own session id does not survive into the script" "0" \
+    "$(command grep -c 'OPERATORS-OWN' <<<"$_r43_s1" | tr -d '[:space:]')"
+# ...and the same stripper is why an earlier occurrence cannot come from config.
+assert_eq "#43: a config-supplied --session-id is stripped before ae appends its own" "1" \
+    "$(_p="$(inject_session_id "claude --model opus --session-id DECOY" "$_r43_id")"
+       [[ "$_p" != *DECOY* && "$_p" == *" --session-id ${_r43_id}"* ]] && echo 1 || echo 0)"
+# PIPELINE 2 — the INJECTED TAIL quotes the very same token. This is the case the old
+# code survived only because injection appends; the edit is now made inside the
+# transported head and spliced over its own span, so the tail cannot be touched.
+_r43_pre="claude --model opus --session-id ${_r43_id}"
+_r43_built="${_r43_pre} --append-system-prompt 'docs say --session-id ${_r43_id} is baked'"
+assert_eq "#43: a tail quoting the SAME token is left alone; only the head is rewritten" \
+    "claude --model opus --resume ${_r43_id} --append-system-prompt 'docs say --session-id ${_r43_id} is baked'" \
+    "$(launch_rerun_command "$_r43_built" "$_r43_id" "$_r43_pre")"
+# ...and through the real writer, that tail still reads --session-id in BOTH branches.
+_r43_s2="$(write_launch_script "$_r43_meta" r43b "$_r43_built" "$_r43_id" "$_r43_pre" >/dev/null 2>&1
+           command cat "${_r43_meta}/launch.r43b.sh")"
+_r43_f2="${_r43_s2//\\/}"
+assert_eq "#43: the emitted script rewrites the head and preserves the tail's mention" "1|2" \
+    "$(printf '%s|%s' \
+        "$(command grep -c -- "--resume ${_r43_id}" <<<"$_r43_f2" | tr -d '[:space:]')" \
+        "$(command grep -c -- "docs say --session-id ${_r43_id} is baked" <<<"$_r43_f2" | tr -d '[:space:]')")"
+# ── EVERY REFUSAL ARM, CALLED BARE UNDER ERRExIT ────────────────────────────────
+# A refusal that ABORTS is not a refusal. This function's containment check was
+# `grep -oF … | wc -l`; grep exits 1 on no match, pipefail makes the pipeline exit 1,
+# and in statement position that killed the function instead of returning empty. In
+# production it reaches write_launch_script's SPLIT assignment, which re-arms errexit,
+# so the intended degradation (launch fine, no re-run form) became a FAILED LAUNCH —
+# "could not write the launch script — agent not started".
+#
+# Every pin above is blind to it: they all call through `$( )` in an assert_eq
+# argument, where the abort is masked and the empty stdout reads as a clean refusal.
+# AGENTS.md says it plainly — only a BARE call proves set -e safety, a green suite does
+# not — so each arm is driven BARE, in statement position, in its own errexit shell,
+# and what is asserted is that the CALLER IS STILL ALIVE afterwards.
+_r43_bare() { # -> every arm's marker, or a short list ending where it died
+    _timeout 10 "${BASH:-bash}" -c '
+        set -euo pipefail
+        for fn in _launch_id_probeable extract_binary_from_cmd launch_rerun_command; do
+            eval "$(awk "/^${fn}\(\) \{/,/^\}\$/" "$1")"
+        done
+        launch_rerun_command "claude --session-id i1 --append x" i1 "claude --session-id i1" >/dev/null
+        printf "rewrote "
+        launch_rerun_command "claude --session-id i1" i1 "grok --other --session-id i1" >/dev/null
+        printf "uncontained "
+        launch_rerun_command "claude --session-id i1 x claude --session-id i1" i1 "claude --session-id i1" >/dev/null
+        printf "twice "
+        launch_rerun_command "claude --session-id i1" "" "claude --session-id i1" >/dev/null
+        printf "no-id "
+        launch_rerun_command "claude --session-id i1" i1 "" >/dev/null
+        printf "no-pre "
+        launch_rerun_command "claude --session-id pending" pending "claude --session-id pending" >/dev/null
+        printf "pending "
+        launch_rerun_command "mytool --session-id i1" i1 "mytool --session-id i1" >/dev/null
+        printf "wrong-binary "
+        launch_rerun_command "claude --model opus" i1 "claude --model opus" >/dev/null
+        printf "no-token"
+    ' _ "$AE_BIN" 2>/dev/null
+}
+assert_eq "#43: every refusal arm RETURNS under errexit when called bare" \
+    "rewrote uncontained twice no-id no-pre pending wrong-binary no-token" "$(_r43_bare)"
+# ...and the list is an ENUMERATION, not a sample: it is derived from the function's
+# `return 0` sites, so adding an arm without a bare call for it fails HERE. (It was a
+# sample: "no-id" and "pending" both land on the id check, and the valid-id/empty-pre
+# arm — a return site of its own — had no case at all.)
+assert_eq "#43: the bare-call list still covers every return site in the function" "7" \
+    "$(_body="$(awk '/^launch_rerun_command\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       _code="$(command grep -vE '^[[:space:]]*#' <<<"$_body" || true)"
+       command grep -c 'return 0' <<<"$_code" | tr -d '[:space:]')"
+
+# The rest of the slice, same shape. These four are QUERIES — their answer is stdout,
+# so their status must be a deliberate 0 on every path, including the refusing ones.
+# (They pass today; the pin exists because the one that did not also passed every
+# `$( )` test in the file.)
+_r43_bare_queries() {
+    _timeout 10 "${BASH:-bash}" -c '
+        set -euo pipefail
+        for fn in _launch_id_probeable _launch_injected_head _launch_is_resume \
+            _launch_probe_claude _launch_probe_codex _launch_resume_decider; do
+            eval "$(awk "/^${fn}\(\) \{/,/^\}\$/" "$1")"
+        done
+        _launch_injected_head "codex x" "" >/dev/null;   printf "head "
+        _launch_probe_claude "" >/dev/null;              printf "claude "
+        _launch_probe_codex "bad;id" >/dev/null;         printf "codex "
+        _launch_resume_decider "" A B >/dev/null;        printf "decider"
+    ' _ "$AE_BIN" 2>/dev/null
+}
+assert_eq "#43: the slice's query functions all RETURN when they refuse (bare, errexit)" \
+    "head claude codex decider" "$(_r43_bare_queries)"
+# Predicate calls sitting in STATEMENT position, where returning 1 would abort the
+# caller under errexit. Factored out so the detector can be pointed at a seed rather
+# than only at ae — a filter nobody ever fed a hostile line is not a filter.
+_r43_stmt_calls() { # <source-text> -> count
+    local hits
+    # Only genuine CONDITIONAL operators are exempt. The first version exempted any
+    # line containing `|` or `&`, which let a LONE PIPELINE through — and a pipeline is
+    # statement position: under pipefail `pred | cat` aborts at rc=1 for precisely the
+    # reason this guard exists. `|&` is a pipeline too. So the exemption is `||` and
+    # `&&`, spelled out, and everything else counts.
+    hits="$(command grep -vE '^[[:space:]]*#' <<<"$1" \
+        | command grep -E '^[[:space:]]*(_launch_id_probeable|_launch_is_resume)[[:space:]]' \
+        | command grep -vE '(\|\||&&)' \
+        | command grep -vE '^(_launch_id_probeable|_launch_is_resume)\(\) \{' || true)"
+    [[ -n "$hits" ]] || {
+        printf '0'
+        return 0
+    }
+    printf '%s' "$(command grep -c . <<<"$hits" | tr -d '[:space:]')"
+    return 0
+}
+
+# The two PREDICATES are the deliberate exception: they return 1 to mean "no", so a
+# bare call SHOULD abort — which is safe only while every call site is a condition.
+# That is the fact pinned here, since the day one moves to statement position it
+# becomes the same bug in a function nobody would think to probe.
+assert_eq "#43: the resume predicates are only ever called in condition position" "0" \
+    "$(_r43_stmt_calls "$AE_SOURCE")"
+# The exclusion is anchored to the definition SHAPE — name at column 0 followed by
+# "() {" — not to "the line contains () {" anywhere. The loose version dropped any
+# matched line mentioning that text, so a real bare call wearing it as a trailing
+# comment was filtered out and the detector reported a clean zero. Pinned with that
+# exact disguise, because a detector is only as good as what it refuses to ignore.
+assert_eq "#43: a bare predicate call disguised by a trailing '() {' comment is still counted" "1" \
+    "$(_r43_stmt_calls '    _launch_id_probeable "$id" # predicate contract () {')"
+assert_eq "#43: a predicate in a LONE PIPELINE is statement position, and is counted" "1" \
+    "$(_r43_stmt_calls '    _launch_id_probeable "$id" | cat')"
+assert_eq "#43: ...and bash's |& pipeline counts too" "1" \
+    "$(_r43_stmt_calls '    _launch_is_resume "$c" "$i" "$p" |& cat')"
+# False-positive control: the guard must still recognise the shapes that ARE safe,
+# or it would just count every call and pass by accident.
+assert_eq "#43: real conditional call sites remain exempt" "0" \
+    "$(_r43_stmt_calls "$(printf '%s\n%s\n%s' \
+        '    _launch_id_probeable "$id" || return 0' \
+        '    if _launch_is_resume "$c" "$i" "$p"; then' \
+        '    _launch_is_resume "$c" "$i" "$p" && do_thing')")"
+assert_eq "#43: ...while the real definition lines are still not counted" "0" \
+    "$(_r43_stmt_calls "$(printf '%s\n%s' '_launch_id_probeable() { # <id>' '_launch_is_resume() { # <cmd>')")"
+
+# THE ACCIDENTS, MADE VISIBLE. Nothing ae builds today puts the flag's text BEFORE
+# ae's own copy — inject_session_id strips it out of the config and injection appends —
+# so with the old first-occurrence rewrite the product happened to be correct. That is
+# a dependency on two other functions' behaviour, held by nobody. This specimen is what
+# the old code would get wrong the day either accident lapses: an operator's env prefix
+# whose VALUE contains the flag text. It is the pin that goes red when the search comes
+# back, and it is deliberately not reachable from today's product.
+_r43_pre3="claude --model opus --session-id ${_r43_id}"
+_r43_built3="env WRAP='x --session-id decoy' ${_r43_pre3} --append-system-prompt 'ctx'"
+assert_eq "#43: a flag-shaped value BEFORE ae's own copy cannot steal the rewrite" \
+    "env WRAP='x --session-id decoy' claude --model opus --resume ${_r43_id} --append-system-prompt 'ctx'" \
+    "$(launch_rerun_command "$_r43_built3" "$_r43_id" "$_r43_pre3")"
+
+# Refusal, same direction as #30: a head that is not in the built command is not a
+# boundary. The cost of refusing is a loud "already in use" on a second run.
+assert_eq "#43: a head that is not part of the built command is refused, not trusted" "" \
+    "$(launch_rerun_command "claude --model opus --session-id ${_r43_id}" "$_r43_id" "grok --not-this --session-id ${_r43_id}")"
+assert_eq "#43: no transported id -> no re-run form invented" "" \
+    "$(launch_rerun_command "claude --model opus --session-id ${_r43_id}" "" "claude --model opus --session-id ${_r43_id}")"
+assert_eq "#43: a 'pending' id is not an id" "" \
+    "$(launch_rerun_command "claude --model opus --session-id pending" pending "claude --model opus --session-id pending")"
+# #30's invariant survives: each branch execs a SINGLE command, which is what keeps
+# pane_current_command reporting the tool instead of bash. (The `: > marker || true`
+# line is not an exec and is not part of that count.)
+assert_eq "#43: the emitted script still execs a single command per branch (#30)" "2|0" \
+    "$(_ex="$(command grep -F 'exec ' <<<"$_r43_s1" || true)"
+       printf '%s|%s' \
+        "$(command grep -c -- ' -lc ' <<<"$_ex" | tr -d '[:space:]')" \
+        "$(command grep -c -- '||' <<<"$_ex" | tr -d '[:space:]')")"
+rm -rf "$_r43_meta"
 
 _wls_dir="$(mktemp -d)"
 mkdir -p "$_wls_dir/bin"
@@ -337,7 +535,7 @@ chmod 0755 "$_wls_dir/bin/claude"
 # PATH would be invisible to shellcheck's flow analysis.
 _wls_oldpath="$PATH"
 PATH="$_wls_dir/bin:$PATH"
-_wls_script="$(write_launch_script "$_wls_dir" main "claude --session-id abc-123")"
+_wls_script="$(write_launch_script "$_wls_dir" main "claude --session-id abc-123" abc-123 "claude --session-id abc-123")"
 assert_eq "launch-script: a fresh script has no run marker yet" "1" \
     "$([[ ! -e "$_wls_dir/launch.main.started" ]] && echo 1 || echo 0)"
 assert_eq "launch-script: run 1 creates, every later run resumes the SAME id" \
@@ -353,7 +551,7 @@ assert_eq "launch-script: the re-run says so on stderr, not silently" "1" \
 # or the FIRST launch of a brand-new session would try to resume a session that
 # does not exist yet.
 assert_eq "launch-script: rewriting clears the stale marker (next launch creates)" "CREATE abc-123" \
-    "$(write_launch_script "$_wls_dir" main "claude --session-id abc-123" >/dev/null
+    "$(write_launch_script "$_wls_dir" main "claude --session-id abc-123" abc-123 "claude --session-id abc-123" >/dev/null
        "$_wls_script" 2>/dev/null)"
 # Tools with no launch-time id keep the plain two-line form, byte for byte.
 _wls_codex="$(write_launch_script "$_wls_dir" worker.0 "codex --yolo")"
@@ -3964,7 +4162,7 @@ assert_eq "spawn-rollback: the caller returns its own failure, not the cleanup's
 # send_agent_cmd must not paste an empty capture into the pane: the assignment is
 # a checked if-condition, so a write failure stops the launch loudly.
 assert_eq "caller: send_agent_cmd checks the write_launch_script assignment" "1" \
-    "$([[ "$AE_SOURCE" == *'if ! launch_script="$(write_launch_script "$meta_dir" "$slot" "$launch_cmd")"; then'* \
+    "$([[ "$AE_SOURCE" == *'if ! launch_script="$(write_launch_script "$meta_dir" "$slot" "$launch_cmd" "$resume_id" "$pre_injection_cmd")"; then'* \
         && "$AE_SOURCE" == *'agent not started'* ]] && echo 1 || echo 0)"
 
 # The bridge: a failed write or a failed new-session must reach the caller, whose
@@ -9181,6 +9379,17 @@ assert_eq "#30: a REFUSED boundary still delivers exactly once, both halves agre
 _r30_launch_region="$(printf '%s\n%s' \
     "$(awk '/^build_launch_command\(\) \{/,/^\}$/' <<<"$AE_SOURCE")" \
     "$(awk '/^send_agent_cmd\(\) \{/,/^\}$/' <<<"$AE_SOURCE")")"
+# The same guard for #43's half of the class: the re-run form is built from
+# transported facts, so neither the boundary nor the flag's position may be recovered
+# from the built command again. Both shipped spellings are recognisable.
+_r43_guard_region="$(printf '%s\n%s' \
+    "$(awk '/^launch_rerun_command\(\) \{/,/^\}$/' <<<"$AE_SOURCE")" \
+    "$(awk '/^write_launch_script\(\) \{/,/^\}$/' <<<"$AE_SOURCE")")"
+assert_eq "#43 GUARD: the re-run path never re-derives the boundary or the flag position" "0" \
+    "$(_code="$(command grep -v '^ *#' <<<"$_r43_guard_region" || true)"
+       _n="$(command grep -cE '%%" --session-id "|/ --session-id / --resume ' <<<"$_code" | tr -d '[:space:]')"
+       printf '%s' "${_n:-0}")"
+
 assert_eq "#30 GUARD: launch+delivery never classify a built command by a *resume* glob" "0" \
     "$(_code="$(command grep -v '^ *#' <<<"$_r30_launch_region" || true)"
        _n="$(command grep -cE '\*resume\*|" --resume "\*|" resume "\*' <<<"$_code" | tr -d '[:space:]')"
