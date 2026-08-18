@@ -9105,7 +9105,14 @@ assert_eq "reply-event: actor_session from current pane, not \$_AE_SESSION" "yes
 # sensor itself — the single definition the archive digest reads too.)
 assert_eq "requests: filter session-qualified (mine)" "yes" "$([[ "$AE_SOURCE" == *'[[ "$actor_slot" == "$self_slot" ]] && [[ "$actor_session" == "$self_session" ]]'* ]] && echo yes || echo no)"
 assert_eq "requests: filter session-qualified (inbox)" "yes" "$([[ "$AE_SOURCE" == *'[[ "$target_slot" == "$self_slot" ]] && [[ "$target_session" == "$self_session" ]]'* ]] && echo yes || echo no)"
-assert_eq "requests: replied-match session-qualified" "yes" "$([[ "$AE_SOURCE" == *'"${rep_actor_session[$ref]:-}" == "${req_target_session[$ref]:-}"'* ]] && echo yes || echo no)"
+# (The spelling moved when validation began running over every retained candidate rather
+# than over whichever terminal event happened to be newest; the invariant did not. Pin
+# BOTH halves of the session qualification, so a fix that drops one is not green.)
+assert_eq "requests: replied-match session-qualified" "yes" \
+    "$([[ "$AE_SOURCE" == *'"$c_asess" == "${req_target_session[$ref]:-}"'* \
+        && "$AE_SOURCE" == *'"$c_tsess" == "${req_actor_session[$ref]:-}"'* ]] && echo yes || echo no)"
+assert_eq "requests: cancel-match session-qualified on the actor half" "yes" \
+    "$([[ "$AE_SOURCE" == *'"$c_asess" == "${req_actor_session[$ref]:-}"'* ]] && echo yes || echo no)"
 # codex BLOCKER: --as no longer gates the slot self-check (it runs unconditionally for slotted).
 assert_eq "reply: slot self-check not guarded by sender_override" "no" "$([[ "$AE_SOURCE" == *'if [[ -z "$sender_override" ]]; then
             if [[ "$self_slot" != "$target_slot"'* ]] && echo yes || echo no)"
@@ -11618,6 +11625,198 @@ assert_eq "preview: it names its own volatility (pending / preview-not-run)" "1|
         "$(grep -c '^- Push outcome: preview-not-run$' <<<"$_ar48_prev" | tr -d '[:space:]')")"
 assert_eq "preview: it says it is a preview, so a digest cannot claim an end that never happened" "1" \
     "$(grep -c '^- Snapshot: preview$' <<<"$_ar48_prev" | tr -d '[:space:]')"
+
+# ── the shared request sensor learns a THIRD terminal state ──────────────────────
+# `cancelled` is how a WITHDRAWN request stops reading as outstanding work. It is
+# identity-checked exactly as `replied` is, because a state that closes a request is as
+# consequential when it closes it without an answer as with one. This sensor is shared by
+# construction between the `requests` helper (live in every session) and the archive
+# digest, so each rule below is asserted on the one definition both of them read.
+_ar48_cancel_fixture() { # <lines...> -> events file path
+    local f="$_ar48_root/cancel.$RANDOM.jsonl"
+    printf '%s\n' "$@" >"$f"
+    printf '%s' "$f"
+}
+_ar48_status_of() { # <events-file> <ref>
+    _ar_request_states "$1" | command grep -F "$2" | cut -d$'\x1f' -f1
+}
+_ar48_summary_of() { # <events-file> <ref>
+    _ar_request_states "$1" | command grep -F "$2" | cut -d$'\x1f' -f12
+}
+
+_ar48_c_own="$(_ar48_cancel_fixture \
+    '{"ts":"1","actor":"ae:compact:op1","action":"ask","ref":"c-own","target":"c:main","summary":"hand over"}' \
+    '{"ts":"2","actor":"ae:compact:op1","action":"cancel","ref":"c-own","summary":"digest-only"}')"
+assert_eq "sensor-cancel: the request's OWN sender may withdraw it" "cancelled" "$(_ar48_status_of "$_ar48_c_own" c-own)"
+assert_eq "sensor-cancel: and the row carries the withdrawal's own text" "digest-only" "$(_ar48_summary_of "$_ar48_c_own" c-own)"
+
+_ar48_c_other="$(_ar48_cancel_fixture \
+    '{"ts":"1","actor":"ae:compact:op1","action":"ask","ref":"c-other","target":"c:main","summary":"hand over"}' \
+    '{"ts":"2","actor":"someone:else","action":"cancel","ref":"c-other","summary":"not yours to withdraw"}')"
+assert_eq "sensor-cancel: a cancel from anyone ELSE leaves the request pending" "pending" \
+    "$(_ar48_status_of "$_ar48_c_other" c-other)"
+
+# RECENCY AMONG THE VALID ONES, both directions — an invalid newer event must not mask a
+# valid older one.
+# CROSS-KIND: an older invalid cancel alongside a newer valid reply. (This fixture used
+# to carry the label of the SAME-KIND masking case below while never building it — the
+# invalid event was older than the valid one, so it could not have masked anything.)
+_ar48_c_repwins="$(_ar48_cancel_fixture \
+    '{"ts":"1","actor":"a:one","action":"ask","ref":"c-repwins","target":"b:two","summary":"q"}' \
+    '{"ts":"2","actor":"nobody","action":"cancel","ref":"c-repwins","summary":"bogus"}' \
+    '{"ts":"3","actor":"b:two","action":"reply","ref":"c-repwins","target":"a:one","summary":"the answer"}')"
+assert_eq "sensor-cancel: an older invalid cancel does not disturb a newer valid reply" "replied" \
+    "$(_ar48_status_of "$_ar48_c_repwins" c-repwins)"
+
+# SAME-KIND MASKING, both directions. Keeping only the NEWEST RAW event of each kind and
+# validating it afterwards let an invalid newer event bury a valid older one — measured
+# in both kinds before the fix, and the reason validity is now decided over EVERY
+# retained candidate rather than over whichever happened to be newest.
+_ar48_c_cancelmask="$(_ar48_cancel_fixture \
+    '{"ts":"1","actor":"a:one","action":"ask","ref":"c-cancelmask","target":"b:two","summary":"q"}' \
+    '{"ts":"2","actor":"a:one","action":"cancel","ref":"c-cancelmask","summary":"valid withdrawal"}' \
+    '{"ts":"3","actor":"stranger","action":"cancel","ref":"c-cancelmask","summary":"not yours"}')"
+assert_eq "sensor-cancel: a NEWER INVALID cancel cannot bury an older VALID cancel" "cancelled" \
+    "$(_ar48_status_of "$_ar48_c_cancelmask" c-cancelmask)"
+assert_eq "sensor-cancel: and the valid withdrawal's own text is what the row carries" "valid withdrawal" \
+    "$(_ar48_summary_of "$_ar48_c_cancelmask" c-cancelmask)"
+_ar48_c_replymask="$(_ar48_cancel_fixture \
+    '{"ts":"1","actor":"a:one","action":"ask","ref":"c-replymask","target":"b:two","summary":"q"}' \
+    '{"ts":"2","actor":"b:two","action":"reply","ref":"c-replymask","target":"a:one","summary":"the answer"}' \
+    '{"ts":"3","actor":"stranger","action":"reply","ref":"c-replymask","target":"nobody","summary":"noise"}')"
+assert_eq "sensor-cancel: a NEWER INVALID reply cannot bury an older VALID reply either" "replied" \
+    "$(_ar48_status_of "$_ar48_c_replymask" c-replymask)"
+assert_eq "sensor-cancel: and the answer that counted is the one shown" "the answer" \
+    "$(_ar48_summary_of "$_ar48_c_replymask" c-replymask)"
+# Slot-qualified, same shape: an older wrong-session cancel then a newer right-session one.
+_ar48_c_slotmask="$(_ar48_cancel_fixture \
+    '{"ts":"1","actor":"a:one","action":"ask","ref":"c-slotmask","target":"b:two","actor_slot":"main","target_slot":"worker.0","actor_session":"S","target_session":"S","summary":"q"}' \
+    '{"ts":"2","actor":"a:one","action":"cancel","ref":"c-slotmask","actor_slot":"main","actor_session":"OTHER","summary":"wrong session"}' \
+    '{"ts":"3","actor":"a:one","action":"cancel","ref":"c-slotmask","actor_slot":"main","actor_session":"S","summary":"right session"}')"
+assert_eq "sensor-cancel: the newest VALID candidate wins under slot qualification too" "right session" \
+    "$(_ar48_summary_of "$_ar48_c_slotmask" c-slotmask)"
+_ar48_c_canwins="$(_ar48_cancel_fixture \
+    '{"ts":"1","actor":"a:one","action":"ask","ref":"c-canwins","target":"b:two","summary":"q"}' \
+    '{"ts":"2","actor":"b:two","action":"reply","ref":"c-canwins","target":"a:one","summary":"answered"}' \
+    '{"ts":"3","actor":"a:one","action":"cancel","ref":"c-canwins","summary":"withdrawn after all"}')"
+assert_eq "sensor-cancel: a valid cancel NEWER than a valid reply is the terminal state" "cancelled" \
+    "$(_ar48_status_of "$_ar48_c_canwins" c-canwins)"
+_ar48_c_newrep="$(_ar48_cancel_fixture \
+    '{"ts":"1","actor":"a:one","action":"ask","ref":"c-newrep","target":"b:two","summary":"q"}' \
+    '{"ts":"2","actor":"a:one","action":"cancel","ref":"c-newrep","summary":"withdrawn"}' \
+    '{"ts":"3","actor":"b:two","action":"reply","ref":"c-newrep","target":"a:one","summary":"answered anyway"}')"
+assert_eq "sensor-cancel: and a valid reply NEWER than a valid cancel wins the other way" "replied" \
+    "$(_ar48_status_of "$_ar48_c_newrep" c-newrep)"
+
+# Slot-qualified, like every other identity decision in this sensor.
+_ar48_c_wrongsess="$(_ar48_cancel_fixture \
+    '{"ts":"1","actor":"a:one","action":"ask","ref":"c-wrongsess","target":"b:two","actor_slot":"main","target_slot":"worker.0","actor_session":"S","target_session":"S","summary":"q"}' \
+    '{"ts":"2","actor":"a:one","action":"cancel","ref":"c-wrongsess","actor_slot":"main","actor_session":"OTHER","summary":"x"}')"
+assert_eq "sensor-cancel: the right slot in the WRONG session cannot withdraw it" "pending" \
+    "$(_ar48_status_of "$_ar48_c_wrongsess" c-wrongsess)"
+_ar48_c_rightsess="$(_ar48_cancel_fixture \
+    '{"ts":"1","actor":"a:one","action":"ask","ref":"c-rightsess","target":"b:two","actor_slot":"main","target_slot":"worker.0","actor_session":"S","target_session":"S","summary":"q"}' \
+    '{"ts":"2","actor":"a:one","action":"cancel","ref":"c-rightsess","actor_slot":"main","actor_session":"S","summary":"x"}')"
+assert_eq "sensor-cancel: the right slot in the right session can" "cancelled" \
+    "$(_ar48_status_of "$_ar48_c_rightsess" c-rightsess)"
+_ar48_c_multi="$(_ar48_cancel_fixture \
+    '{"ts":"1","actor":"a:one","action":"ask","ref":"c-multi","target":"b:two","summary":"q"}' \
+    '{"ts":"2","actor":"a:one","action":"cancel","ref":"c-multi","summary":"first withdrawal"}' \
+    '{"ts":"3","actor":"a:one","action":"cancel","ref":"c-multi","summary":"second withdrawal"}')"
+assert_eq "sensor-cancel: the NEWEST cancel is the one that speaks" "second withdrawal" \
+    "$(_ar48_summary_of "$_ar48_c_multi" c-multi)"
+
+# A WITHDRAWN REQUEST IS NOT OUTSTANDING WORK — which is the whole reason this state
+# exists: without it every archive taken after a --digest-only compact would report an
+# open request nobody is waiting on.
+_ar48_c_dir="$_ar48_root/cancelsession"
+mkdir -p "$_ar48_c_dir/messages"
+printf 'session=c\nsession_id=cccccccc-1111-2222-3333-444444444444\nagent.main=a:one:sid\n' >"$_ar48_c_dir/meta"
+: >"$_ar48_c_dir/memo.tsv"
+{
+    printf '%s\n' '{"ts":"1","actor":"a:one","action":"ask","ref":"c-open","target":"b:two","summary":"still open"}'
+    printf '%s\n' '{"ts":"2","actor":"ae:compact:op9","action":"ask","ref":"c-gone","target":"a:one","summary":"handover please"}'
+    printf '%s\n' '{"ts":"3","actor":"ae:compact:op9","action":"cancel","ref":"c-gone","summary":"digest-only"}'
+} >"$_ar48_c_dir/events.jsonl"
+IFS=$'\t' read -r _ _ _ _ _ _ar48_c_pending < <(_ar_facts_row "$_ar48_c_dir")
+assert_eq "sensor-cancel: a cancelled request is not counted as pending" "1" "$_ar48_c_pending"
+_ar48_c_meta="$_ar48_root/cancel.ameta"
+_ar_compose_meta "$_ar48_c_dir" cccccccc-1111-2222-3333-444444444444 at - - - - not-managed - - >"$_ar48_c_meta"
+_ar48_c_digest="$(_ar_render_digest "$_ar48_c_meta" "$_ar48_c_dir/memo.tsv" "$_ar48_c_dir/events.jsonl" "$_ar48_c_dir/messages" archived)"
+assert_eq "sensor-cancel: the digest lists the open request" "1" \
+    "$(grep -c 'c-open' <<<"$_ar48_c_digest" | tr -d '[:space:]')"
+assert_eq "sensor-cancel: and does NOT list the withdrawn one as unresolved" "0" \
+    "$(grep -c 'c-gone' <<<"$_ar48_c_digest" | tr -d '[:space:]')"
+assert_eq "sensor-cancel: the digest's count agrees" "1" \
+    "$(grep -c '^## Unresolved requests (1)$' <<<"$_ar48_c_digest" | tr -d '[:space:]')"
+
+# ── the emission list is what keeps a LIVE helper working ────────────────────────
+# `requests` runs in every session right now. It carries no copy of the pending
+# invariant any more — it is emitted WITH _ar_request_states beside it — so a name
+# missing from that `declare -f` list breaks the helper AT RUNTIME while the unit suite
+# stays green, because the suite calls the function straight out of ae. This block proves
+# three things in order: the list names it, the omission is SILENT rather than loud, and
+# the guard that forbids the omission actually fails on it.
+assert_eq "requests emission: the list names the shared sensor before the helper's main" "1" \
+    "$([[ "$AE_SOURCE" == *'declare -f _ar_request_states helper_requests_main'* ]] && echo 1 || echo 0)"
+
+# Build the artifact BOTH ways and run each against a real event log. The omission does
+# not crash and does not warn — it prints a header and no rows, which reads exactly like
+# "no requests" and is why a structural guard is the only defence.
+_ar48_emit_dir="$_ar48_root/emitcheck"
+mkdir -p "$_ar48_emit_dir"
+{
+    printf '%s\n' '{"ts":"1","actor":"a:one","action":"ask","ref":"emit-1","target":"b:two","summary":"a question"}'
+} >"$_ar48_emit_dir/events.jsonl"
+_ar48_emit_build() { # <with|without> -> path to a runnable helper
+    # SEPARATE statements: `local a="$1" b="…$a"` expands every word before assigning
+    # any of them, so $a is unset in b — the same shape AGENTS.md records for
+    # `export HOME=… AE_HOME="$HOME/.ae"`, and what SC2318 flags in ae itself.
+    local mode="$1"
+    local out="$_ar48_emit_dir/requests.$mode"
+    {
+        printf '%s\n' "#!${BASH}"
+        printf 'META_DIR="%s"\n' "$_ar48_emit_dir"
+        # the pieces _lib would have supplied
+        declare -f _event_json_str _ae_tac
+        printf 'ae_current_agent_ref() { printf %s; }\n' "''"
+        printf 'ae_current_slot() { printf %s; }\n' "''"
+        printf 'ae_current_pane() { printf %s; }\n' "''"
+        printf 'tmux() { return 1; }\n'
+        [[ "$mode" == with ]] && declare -f _ar_request_states
+        declare -f helper_requests_main
+        printf 'helper_requests_main all\n'
+    } >"$out"
+    chmod 0700 "$out"
+    printf '%s' "$out"
+}
+eval "$(awk '/^helper_requests_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_ar48_emit_with="$(_ar48_emit_build with)"
+_ar48_emit_without="$(_ar48_emit_build without)"
+assert_eq "requests emission: WITH the sensor, the helper renders its rows" "1" \
+    "$("$_ar48_emit_with" 2>/dev/null | grep -c 'emit-1' | tr -d '[:space:]')"
+assert_eq "requests emission: WITHOUT it, the helper prints a header and NO rows" "0" \
+    "$("$_ar48_emit_without" 2>/dev/null | grep -c 'emit-1' | tr -d '[:space:]')"
+assert_eq "requests emission: and it still prints the header, so the failure is SILENT" "1" \
+    "$("$_ar48_emit_without" 2>/dev/null | grep -c 'STATUS' | tr -d '[:space:]')"
+# THE GUARD ITSELF, mutation-checked: the transitive-closure rule is "every function an
+# artifact can run must be defined in that artifact". Applied to these two specimens it
+# must accept the complete one and REJECT the incomplete one — otherwise the guard that
+# protects a live helper is decoration.
+_ar48_emit_closure() { # <artifact> -> missing callees, if any
+    local art="$1" defined called fn
+    defined="$("${BASH}" -c "source '$art' >/dev/null 2>&1; declare -F" 2>/dev/null | awk '{print $3}' | LC_ALL=C sort -u)"
+    called="$("${BASH}" -c "source '$art' >/dev/null 2>&1; declare -f helper_requests_main" 2>/dev/null |
+        command grep -oE '\b_ar_[a-z_]+\b' | LC_ALL=C sort -u)"
+    for fn in $called; do
+        grep -qx -- "$fn" <<<"$defined" || printf '%s ' "$fn"
+    done
+    return 0
+}
+assert_eq "requests emission (mutation): the closure rule accepts the complete artifact" "" \
+    "$(_ar48_emit_closure "$_ar48_emit_with")"
+assert_eq "requests emission (mutation): and REJECTS the one missing the sensor" "_ar_request_states " \
+    "$(_ar48_emit_closure "$_ar48_emit_without")"
 
 # ── the deletion path makes every proof the write path makes ─────────────────────
 # Review found purge making NONE of them. Each probe below is one of the destructive

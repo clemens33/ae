@@ -4299,6 +4299,25 @@ _ar_memo_topics() { # <memo.tsv> -> topic<TAB>count<TAB>last_ts, first-seen orde
 # target is the request's SENDER — matched by slot+session when both are recorded and by
 # name otherwise — so a stray reply carrying the right ref leaves the request pending.
 #
+# THREE terminal states, not two. `cancelled` is how a request that was legitimately
+# WITHDRAWN stops reading as outstanding work: an operation that asked for something and
+# then no longer needs the answer (compact's handover ask when --digest-only is given)
+# must be able to say so, or every archive from then on reports an open request nobody is
+# waiting on. It is identity-checked the same way `replied` is — only the request's own
+# SENDER may withdraw it, matched by slot+session when both are recorded and by name
+# otherwise — because a state that closes a request is exactly as consequential whether
+# it closes it with an answer or without one.
+#
+# Precedence between terminal events for one ref is by RECENCY among the VALID ones, and
+# that is a claim about EVERY candidate, not just the newest raw one of each kind. Keeping
+# only the newest raw reply (or cancel) and validating it afterwards means an INVALID
+# newer event discards a VALID older one of the same kind — measured: ask, valid
+# withdrawal, then a stranger's cancel rendered `pending`, and the same shape with two
+# replies did too. So every candidate is RETAINED during the scan and validity is decided
+# afterwards, when the request's own identity is finally known (the ask is the OLDEST
+# record, so a newest-first scan reaches it last). The scan runs newest-first, so the
+# smaller encounter index is the newer event.
+#
 # Emits one row per request, chronological, fields separated by US (\x1f) and SUMMARY
 # LAST. NOT tabs: tab is an IFS *whitespace* character, so `IFS=$'\t' read` collapses a
 # run of them into one delimiter and an EMPTY field silently shifts every later field
@@ -4314,10 +4333,15 @@ _ar_request_states() { # <events.jsonl>
     [[ -f "$file" ]] || return 0
     declare -A req_kind req_sender req_target req_summary req_ts req_body
     declare -A req_actor_slot req_target_slot req_actor_session req_target_session
-    declare -A rep_actor rep_target rep_actor_slot rep_target_slot rep_actor_session rep_target_session rep_seen rep_summary
+    # Candidate lists, newest-first, one record per terminal event: fields separated by
+    # US (\x1f) and records by RS (\x1e). Control bytes are stripped at event-write time,
+    # so neither can occur inside the values.
+    declare -A cand_reply cand_cancel
     local -a order=()
+    local scan=0
     while IFS= read -r line; do
         [[ "$line" == \{* ]] || continue
+        scan=$((scan + 1))
         _event_json_str "$line" ref
         ref="$_EV"
         [[ -n "$ref" ]] || continue
@@ -4352,49 +4376,121 @@ _ar_request_states() { # <events.jsonl>
                 req_body["$ref"]="$_EV"
                 order+=("$ref")
                 ;;
-            reply)
-                [[ -n "${rep_seen[$ref]:-}" ]] && continue
-                rep_seen["$ref"]=1
+            cancel)
+                # RETAIN, do not decide. Whether this one counts depends on the request's
+                # identity, which lives in the OLDEST record for this ref.
                 _event_json_str "$line" summary
-                rep_summary["$ref"]="${_EV//$'\n'/ }"
+                _c_sum="${_EV//$'\n'/ }"
                 _event_json_str "$line" actor
-                rep_actor["$ref"]="$_EV"
-                _event_json_str "$line" target
-                rep_target["$ref"]="$_EV"
+                _c_actor="$_EV"
                 _event_json_str "$line" actor_slot
-                rep_actor_slot["$ref"]="$_EV"
-                _event_json_str "$line" target_slot
-                rep_target_slot["$ref"]="$_EV"
+                _c_aslot="$_EV"
                 _event_json_str "$line" actor_session
-                rep_actor_session["$ref"]="$_EV"
+                _c_asess="$_EV"
+                cand_cancel["$ref"]="${cand_cancel[$ref]:-}${scan}"$'\x1f'"${_c_actor}"$'\x1f'"${_c_aslot}"$'\x1f'"${_c_asess}"$'\x1f'"${_c_sum}"$'\x1e'
+                ;;
+            reply)
+                _event_json_str "$line" summary
+                _r_sum="${_EV//$'\n'/ }"
+                _event_json_str "$line" actor
+                _r_actor="$_EV"
+                _event_json_str "$line" target
+                _r_target="$_EV"
+                _event_json_str "$line" actor_slot
+                _r_aslot="$_EV"
+                _event_json_str "$line" target_slot
+                _r_tslot="$_EV"
+                _event_json_str "$line" actor_session
+                _r_asess="$_EV"
                 _event_json_str "$line" target_session
-                rep_target_session["$ref"]="$_EV"
+                _r_tsess="$_EV"
+                cand_reply["$ref"]="${cand_reply[$ref]:-}${scan}"$'\x1f'"${_r_actor}"$'\x1f'"${_r_target}"$'\x1f'"${_r_aslot}"$'\x1f'"${_r_tslot}"$'\x1f'"${_r_asess}"$'\x1f'"${_r_tsess}"$'\x1f'"${_r_sum}"$'\x1e'
                 ;;
         esac
     done < <(_ae_tac "$file" 2>/dev/null || true)
     local i status summary
+    local -a cands=()
+    local cand idx c_actor c_target c_aslot c_tslot c_asess c_tsess c_sum
+    local rep_ok rep_idx rep_text can_ok can_idx can_text
     for ((i = ${#order[@]} - 1; i >= 0; i--)); do
         ref="${order[$i]}"
         status="pending"
         summary="${req_summary[$ref]}"
-        if [[ -n "${rep_seen[$ref]:-}" ]]; then
-            # BOTH ENDS, not just the actor: a reply that happens to carry the right ref
-            # and comes from the right agent but is addressed elsewhere does not close
-            # the request. (The digest's extracted copy checked only the actor end and
-            # would have closed such a reply — the drift this fold exists to prevent.)
-            if [[ -n "${req_target_slot[$ref]:-}" && -n "${rep_actor_slot[$ref]:-}" ]]; then
-                if [[ "${rep_actor_slot[$ref]}" == "${req_target_slot[$ref]}" &&
-                    "${rep_actor_session[$ref]:-}" == "${req_target_session[$ref]:-}" &&
-                    "${rep_target_slot[$ref]:-}" == "${req_actor_slot[$ref]:-}" &&
-                    "${rep_target_session[$ref]:-}" == "${req_actor_session[$ref]:-}" ]]; then
-                    status="replied"
-                    summary="${rep_summary[$ref]:-}"
+        # THE NEWEST *VALID* REPLY. Candidates were appended newest-first, so the first
+        # one that passes is the newest that counts; an invalid newer reply is simply not
+        # a candidate and cannot bury an older valid one.
+        rep_ok=false
+        rep_idx=0
+        rep_text=""
+        if [[ -n "${cand_reply[$ref]:-}" ]]; then
+            IFS=$'\x1e' read -ra cands <<<"${cand_reply[$ref]}"
+            for cand in "${cands[@]}"; do
+                [[ -n "$cand" ]] || continue
+                IFS=$'\x1f' read -r idx c_actor c_target c_aslot c_tslot c_asess c_tsess c_sum <<<"$cand"
+                # BOTH ENDS, not just the actor: a reply that carries the right ref from
+                # the right agent but is addressed elsewhere does not close the request.
+                if [[ -n "${req_target_slot[$ref]:-}" && -n "$c_aslot" ]]; then
+                    if [[ "$c_aslot" == "${req_target_slot[$ref]}" &&
+                        "$c_asess" == "${req_target_session[$ref]:-}" &&
+                        "$c_tslot" == "${req_actor_slot[$ref]:-}" &&
+                        "$c_tsess" == "${req_actor_session[$ref]:-}" ]]; then
+                        rep_ok=true
+                        rep_idx="$idx"
+                        rep_text="$c_sum"
+                        break
+                    fi
+                elif [[ "$c_actor" == "${req_target[$ref]}" && "$c_target" == "${req_sender[$ref]}" ]]; then
+                    rep_ok=true
+                    rep_idx="$idx"
+                    rep_text="$c_sum"
+                    break
                 fi
-            elif [[ "${rep_actor[$ref]:-}" == "${req_target[$ref]}" &&
-                "${rep_target[$ref]:-}" == "${req_sender[$ref]}" ]]; then
+            done
+        fi
+        # THE NEWEST *VALID* WITHDRAWAL. Only the request's own SENDER may withdraw it;
+        # a cancel has no target side to verify, so this is the actor half of the same
+        # question the reply asks.
+        can_ok=false
+        can_idx=0
+        can_text=""
+        if [[ -n "${cand_cancel[$ref]:-}" ]]; then
+            IFS=$'\x1e' read -ra cands <<<"${cand_cancel[$ref]}"
+            for cand in "${cands[@]}"; do
+                [[ -n "$cand" ]] || continue
+                IFS=$'\x1f' read -r idx c_actor c_aslot c_asess c_sum <<<"$cand"
+                if [[ -n "${req_actor_slot[$ref]:-}" && -n "$c_aslot" ]]; then
+                    if [[ "$c_aslot" == "${req_actor_slot[$ref]}" &&
+                        "$c_asess" == "${req_actor_session[$ref]:-}" ]]; then
+                        can_ok=true
+                        can_idx="$idx"
+                        can_text="$c_sum"
+                        break
+                    fi
+                elif [[ -n "$c_actor" && "$c_actor" == "${req_sender[$ref]}" ]]; then
+                    can_ok=true
+                    can_idx="$idx"
+                    can_text="$c_sum"
+                    break
+                fi
+            done
+        fi
+        # RECENCY AMONG THE VALID ONES — now a true statement about both kinds, because
+        # each side already picked its newest VALID candidate rather than validating
+        # whichever happened to be newest.
+        if [[ "$can_ok" == true && "$rep_ok" == true ]]; then
+            if ((can_idx < rep_idx)); then
+                status="cancelled"
+                summary="$can_text"
+            else
                 status="replied"
-                summary="${rep_summary[$ref]:-}"
+                summary="$rep_text"
             fi
+        elif [[ "$can_ok" == true ]]; then
+            status="cancelled"
+            summary="$can_text"
+        elif [[ "$rep_ok" == true ]]; then
+            status="replied"
+            summary="$rep_text"
         fi
         printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
             "$status" "${req_kind[$ref]}" "$ref" "${req_sender[$ref]}" "${req_target[$ref]}" \

@@ -1602,7 +1602,20 @@ assert_contains "doctor-refresh: regenerated requests keeps an unanswered ask pe
     "pending  ask      canary-open" "$req_canary"
 assert_contains "doctor-refresh: regenerated requests closes a properly replied one" \
     "replied  ask      canary-done" "$req_canary"
-unset REQ_HELPER req_canary
+# The sensor's third terminal state, through the REGENERATED helper: a request its own
+# sender withdrew reads as cancelled, and one withdrawn by anyone else does not.
+cat >>"$HOME/.ae/sessions/test-sync/events.jsonl" <<'CANEV'
+{"ts":"2026-08-01T00:03:00Z","actor":"ae:compact:op1","action":"ask","ref":"canary-withdrawn","target":"a:one","summary":"handover please"}
+{"ts":"2026-08-01T00:04:00Z","actor":"ae:compact:op1","action":"cancel","ref":"canary-withdrawn","summary":"digest-only"}
+{"ts":"2026-08-01T00:05:00Z","actor":"ae:compact:op2","action":"ask","ref":"canary-notyours","target":"a:one","summary":"still open"}
+{"ts":"2026-08-01T00:06:00Z","actor":"someone:else","action":"cancel","ref":"canary-notyours","summary":"not yours"}
+CANEV
+req_canary2="$("$REQ_HELPER" all 2>&1 || true)"
+assert_contains "doctor-refresh: the regenerated helper knows the cancelled state" \
+    "cancelled ask      canary-withdrawn" "$req_canary2"
+assert_contains "doctor-refresh: and a cancel from anyone else leaves the request pending" \
+    "pending  ask      canary-notyours" "$req_canary2"
+unset REQ_HELPER req_canary req_canary2
 # watchdog is declare-f generated too. A RUNNING watchdog keeps its loaded body
 # until restarted — so smoke the regenerated artifact through a full
 # stop → status → start → status cycle (real _lib, real panes). wd_poll/WD_HELPER
