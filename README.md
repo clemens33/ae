@@ -78,10 +78,23 @@ watch -n 10 'ae list'          # live dashboard
 **Finish up:**
 ```bash
 ae stop my-feature             # pause, keep state — resume later with 'ae my-feature'
-ae end my-feature              # commit + push to ae/my-feature, remove ae state
-                               #   (keeps conversation files; --purge-history deletes them)
+ae end my-feature              # commit + push to ae/my-feature, archive the session's
+                               #   memory to ~/.ae/archive/<uuid>/, remove ae state
+                               #   (keeps conversation files; --purge-history deletes them
+                               #    and writes no archive)
 ae transfer my-feature vm.host # move a stopped session + conversations to another machine
 ```
+
+**Continue where a finished session left off:**
+```bash
+ae archive preview my-feature  # what an end would keep (read-only, writes nothing)
+ae my-feature-2 --from <uuid>  # a NEW session that explicitly continues an archived one
+```
+
+Ending a session used to be the moment everything it knew stopped existing. An archive is
+that memory kept — goal, memo, event log, request payloads — as an inert, immutable,
+UUID-keyed snapshot with no executable file in it. `--from` is the only way to inherit
+one: lineage is explicit, never inferred from a name that happens to match.
 
 Full command reference: **[docs/reference/commands.md](docs/reference/commands.md)**.
 

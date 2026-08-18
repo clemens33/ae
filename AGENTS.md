@@ -16,7 +16,9 @@ Single bash script. No dependencies beyond bash and tmux. Keep it that way.
 - `ae` must remain a single bash script. No compiled languages, no runtimes. *(A decision, not dogma — see "Revisit triggers" below.)*
 - Config is INI-style with a simple regex parser. Don't add TOML/YAML/JSON parsing.
 - Core ae requires only `bash >= 4.0`, `tmux`, and `git`. Optional features may declare their own hard dependencies (e.g. `ae telegram` needs `jq` + `curl`), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them.
-- Session state lives in `~/.ae/sessions/`. Working directories stay clean.
+- Session state lives in `~/.ae/sessions/`; archived session memory lives in
+  `~/.ae/archive/<session-uuid>/` and is INERT — data only, never an executable file.
+  Working directories stay clean.
 - No AI tool attribution in commits.
 - Keep the script lean. If it's getting bloated, cut, don't add.
 
@@ -72,7 +74,13 @@ How this project is built and reviewed, distilled from lived sessions — load t
 5. Launches agents with workspace context injected into their system prompts
 6. Attaches
 
-`ae end` (or `ae rm`) commits + pushes to `ae/<session>` branch, then cleans up.
+`ae end` (or `ae rm`) commits + pushes to `ae/<session>` branch, archives the session's
+memory to `~/.ae/archive/<session-uuid>/`, then cleans up. The archive is MANDATORY on a
+keep: capture happens after the verified stop and after git, and before any live state is
+removed, so a failed archive fails the end with the whole session still on disk.
+`--purge-history` inverts it — no archive is written and any existing one for that UUID is
+deleted. `ae <new> --from <uuid>` starts a session that explicitly continues an archive;
+lineage is never inferred from a name. See docs/internals/architecture.md.
 
 ## Session helpers
 
@@ -175,6 +183,25 @@ Anything user- or agent-controlled (session names, goals, messages, pane text, c
 ### Isolation footguns (test/debug scripts)
 
 - **Single-statement export expansion** — `export HOME="$TMP/home" AE_HOME="$HOME/.ae"` binds `AE_HOME` to the *OLD* (real!) home: bash expands all words before any assignment. This clobbered the real `~/.ae/config` twice (2026-07-02/03). Always separate statements: `export HOME=…; export AE_HOME="$HOME/.ae"` — or better, assign both from the literal temp path. Ad-hoc debug scripts must copy `tests/integration`'s isolation preamble verbatim; the harness tripwire only protects suite runs, not one-offs.
+
+### TSV framing: an empty field vanishes
+
+`IFS=$'\t' read -r a b c` does NOT split on every tab. Tab is an **IFS whitespace**
+character, so a RUN of tabs is one delimiter and leading/trailing ones are stripped — an
+empty field silently disappears and every field after it shifts left. Measured in #48: a
+request row whose `body_file` was empty rendered its roster slot as the payload path and
+its summary as blank, and the row still looked structurally fine.
+
+- Any record that can carry an empty field needs a **non-whitespace** separator
+  (`$'\x1f'` — each occurrence delimits exactly once), or a `-` placeholder in every
+  slot.
+- Put free text **last**, so a separator-free remainder lands intact in the final
+  variable.
+- Fold newlines out of that last field at the producer (`${v//$'\n'/ }`): a newline in
+  the final field ends the record and turns its remainder into a phantom row.
+- End every fixed-arity row with `\n`. `read` returns 1 at EOF-without-delimiter, so a
+  BARE `read … < <(producer)` under `set -e` aborts — invisible while every call site
+  sits behind `$( )`, `||` or `if` (see the bare-call rule below).
 
 ### GNU vs BSD userland
 

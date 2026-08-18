@@ -1583,6 +1583,26 @@ assert_contains "doctor-refresh: regenerated state declares state" \
     "working: declare-f smoke" "$state_smoke_out"
 assert_contains "doctor-refresh: regenerated state emitted a real event" \
     '"action":"state"' "$(tail -1 "$HOME/.ae/sessions/test-sync/events.jsonl")"
+# #48: `requests` no longer carries its own copy of the pending invariant — it is
+# emitted WITH _ar_request_states, the sensor the archive digest reads. A name missing
+# from that declare -f list is invisible to the unit suite (which calls the function
+# straight out of ae) and shows up only as an empty table at runtime, so run the
+# regenerated artifact against real events.
+REQ_HELPER="$HOME/.ae/sessions/test-sync/requests"
+assert_contains "doctor-refresh: requests helper carries the shared request sensor" \
+    "_ar_request_states ()" "$(cat "$REQ_HELPER")"
+cat >>"$HOME/.ae/sessions/test-sync/events.jsonl" <<'REQEV'
+{"ts":"2026-08-01T00:00:00Z","actor":"a:one","action":"ask","ref":"canary-open","target":"b:two","summary":"still open"}
+{"ts":"2026-08-01T00:01:00Z","actor":"a:one","action":"ask","ref":"canary-done","target":"b:two","summary":"answered"}
+{"ts":"2026-08-01T00:02:00Z","actor":"b:two","action":"reply","ref":"canary-done","target":"a:one","summary":"the answer"}
+REQEV
+req_canary="$("$REQ_HELPER" all 2>&1 || true)"
+assert_contains "doctor-refresh: regenerated requests renders its table" "STATUS" "$req_canary"
+assert_contains "doctor-refresh: regenerated requests keeps an unanswered ask pending" \
+    "pending  ask      canary-open" "$req_canary"
+assert_contains "doctor-refresh: regenerated requests closes a properly replied one" \
+    "replied  ask      canary-done" "$req_canary"
+unset REQ_HELPER req_canary
 # watchdog is declare-f generated too. A RUNNING watchdog keeps its loaded body
 # until restarted — so smoke the regenerated artifact through a full
 # stop → status → start → status cycle (real _lib, real panes). wd_poll/WD_HELPER
@@ -4047,6 +4067,645 @@ assert_eq "resume (#30): the probe-MISS branch reports the tool, not bash" "slee
 command tmux -L "$R30_SRV" kill-server 2>/dev/null || true
 rm -rf "$TMPDIR/r30"
 unset R30_SRV R30_SH r30_hit r30_miss
+
+# ── #48: session archives, end to end ────────────────────────────────
+# The unit suite proves the pieces against fixtures. This proves the LIFECYCLE: that a
+# real session, ended for real, leaves an archive that validates — and that when it
+# cannot, the session is still there.
+A48_REPO="$(setup_repo)"
+(cd "$A48_REPO" && "$AE" --local arch-keep &) 2>/dev/null
+wait_for_session "arch-keep" 20
+sleep 1
+A48_META="$HOME/.ae/sessions/arch-keep"
+A48_UUID="$(grep '^session_id=' "$A48_META/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+"$A48_META/goal" "ship the archive" >/dev/null 2>&1 || true
+"$A48_META/memo" add --topic handover "the next agent should read this" >/dev/null 2>&1 || true
+"$A48_META/memo" add --topic arch "we chose the mkdir claim" >/dev/null 2>&1 || true
+mkdir -p "$A48_META/messages"
+printf 'the stored body of a request\n' >"$A48_META/messages/ae-48.ask.txt"
+# A pending request and a replied one, written as the helpers write them.
+cat >>"$A48_META/events.jsonl" <<EOF
+{"ts":"2026-08-01T00:00:00Z","actor":"dummy:dummy","action":"ask","ref":"ae-48-open","target":"dummy:other","actor_slot":"main","target_slot":"worker.0","actor_session":"arch-keep","target_session":"arch-keep","summary":"still open","body_file":"$A48_META/messages/ae-48.ask.txt"}
+{"ts":"2026-08-01T00:01:00Z","actor":"dummy:dummy","action":"ask","ref":"ae-48-done","target":"dummy:other","actor_slot":"main","target_slot":"worker.0","actor_session":"arch-keep","target_session":"arch-keep","summary":"answered one"}
+{"ts":"2026-08-01T00:02:00Z","actor":"dummy:other","action":"reply","ref":"ae-48-done","target":"dummy:dummy","actor_slot":"worker.0","target_slot":"main","actor_session":"arch-keep","target_session":"arch-keep","summary":"here is the answer"}
+EOF
+
+# PREVIEW FIRST, on the LIVE session: it must change nothing.
+a48_tree_before="$(cd "$A48_META" && find . | LC_ALL=C sort)"
+a48_prev_out="$("$AE" archive preview arch-keep 2>"$TMPDIR/a48.err")"
+assert_contains "archive-preview: stdout is the digest" "# ae session archive" "$a48_prev_out"
+assert_contains "archive-preview: it renders the live session's goal" "ship the archive" "$a48_prev_out"
+assert_contains "archive-preview: stderr says PREVIEW ONLY" \
+    "PREVIEW ONLY — nothing was written and nothing was stopped." "$(cat "$TMPDIR/a48.err")"
+assert_contains "archive-preview: stderr reports what would be archived, not the digest's size" \
+    "selected files:" "$(cat "$TMPDIR/a48.err")"
+assert_contains "archive-preview: stderr names the canonical archive id" "$A48_UUID" "$(cat "$TMPDIR/a48.err")"
+assert_eq "archive-preview: it wrote nothing into the live session" "$a48_tree_before" "$(cd "$A48_META" && find . | LC_ALL=C sort)"
+assert_not_exists "archive-preview: it published no archive for this session" "$HOME/.ae/archive/$A48_UUID"
+assert_eq "archive-preview: and took no publisher claim" "0" \
+    "$(find "$HOME/.ae/archive" -maxdepth 1 -name '.publishing.*' 2>/dev/null | grep -c . | tr -d '[:space:]')"
+assert_eq "archive-preview: the session is still running" "0" "$(tmux has-session -t arch-keep 2>/dev/null; echo $?)"
+
+# A FRESH AE_HOME is where the read-only contract is actually testable: ae publishes a
+# default config on a config-less home, and that notice used to land on STDOUT — in front
+# of the digest, for a command whose stdout IS the contract.
+A48_FRESH="$TMPDIR/a48-freshhome"
+mkdir -p "$A48_FRESH/sessions/pv/messages"
+cat >"$A48_FRESH/sessions/pv/meta" <<EOF
+mode=local
+origin=$TMPDIR
+session=pv
+session_id=aaaabbbb-cccc-dddd-eeee-ffff00001111
+work_dir=$TMPDIR
+layout=vertical
+agent.main=dummy:dummy:pending
+agent_bin.main=bash
+EOF
+: >"$A48_FRESH/sessions/pv/memo.tsv"
+: >"$A48_FRESH/sessions/pv/events.jsonl"
+a48_fresh_out="$(AE_HOME="$A48_FRESH" "$AE" archive preview pv 2>"$TMPDIR/a48-fresh.err")"
+assert_eq "archive-preview: on a config-less home, stdout still starts with the digest" \
+    "# ae session archive" "$(printf '%s\n' "$a48_fresh_out" | head -1)"
+assert_eq "archive-preview: and the bootstrap notice is NOT on stdout" "0" \
+    "$(printf '%s\n' "$a48_fresh_out" | grep -c 'Created default config' | tr -d '[:space:]')"
+assert_contains "archive-preview: it went to stderr, where diagnostics belong" \
+    "Created default config" "$(cat "$TMPDIR/a48-fresh.err")"
+# An invalid --from against that same fresh home: no session, no worktree, no tmux.
+a48_fresh_rc=0
+(cd "$A48_REPO" && AE_HOME="$A48_FRESH" _timeout 30 "$AE" --local freshchild --from deadbeef-dead-beef-dead-beefdeadbeef) >/dev/null 2>&1 || a48_fresh_rc=$?
+assert_eq "lineage: an invalid --from on a fresh home refuses" "1" \
+    "$([[ $a48_fresh_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_not_exists "lineage: and creates no session state there" "$A48_FRESH/sessions/freshchild"
+assert_not_exists "lineage: and no worktree" "$A48_FRESH/worktrees/freshchild"
+assert_eq "lineage: and no tmux session" "1" \
+    "$(tmux has-session -t freshchild 2>/dev/null && echo 0 || echo 1)"
+unset a48_fresh_out a48_fresh_rc
+
+# END, keeping history: the archive is mandatory and must land.
+a48_end="$("$AE" end -f --keep-history arch-keep 2>&1)"
+A48_ARCH="$HOME/.ae/archive/$A48_UUID"
+assert_contains "archive-end: the outcome names the canonical UUID" "Archived $A48_UUID" "$a48_end"
+assert_contains "archive-end: and the absolute path" "$A48_ARCH" "$a48_end"
+assert_contains "archive-end: and the file count and byte total" "file(s)," "$a48_end"
+assert_eq "archive-end: the live session state is gone" "0" "$([[ -d "$A48_META" ]] && echo 1 || echo 0)"
+assert_eq "archive-end: the archive holds exactly the whitelisted tree" \
+"digest.md
+events.jsonl
+memo.tsv
+messages
+messages/ae-48.ask.txt
+meta" "$(cd "$A48_ARCH" && find . -mindepth 1 | sed 's|^\./||' | LC_ALL=C sort)"
+# The forbidden set, named rather than implied: helpers, launch scripts, provider SID
+# scratch files, locks and the generated manifest are all EXECUTABLE or RUNTIME state.
+a48_forbidden=""
+for a48_f in send ask review reply requests state memo goal peek agents focus interrupt spawn retire _lib watchdog workspace.md meta.lock; do
+    [[ -e "$A48_ARCH/$a48_f" ]] && a48_forbidden+="$a48_f "
+done
+[[ -n "$(find "$A48_ARCH" -name 'launch.*' -o -name '*.sid' -o -name '*.lock' 2>/dev/null)" ]] && a48_forbidden+="launch/sid/lock "
+assert_eq "archive-end: no helper, launch script, SID or lock is in the archive" "" "$a48_forbidden"
+a48_exec=""
+while IFS= read -r a48_p; do
+    a48_m="$(stat -f '%Lp' "$a48_p" 2>/dev/null || stat -c '%a' "$a48_p" 2>/dev/null)"
+    if [[ -d "$a48_p" ]]; then [[ "$a48_m" == 700 ]] || a48_exec+="$a48_p=$a48_m "; else [[ "$a48_m" == 600 ]] || a48_exec+="$a48_p=$a48_m "; fi
+done < <(find "$A48_ARCH" -mindepth 1)
+assert_eq "archive-end: dirs 0700, files 0600 — nothing in an archive is executable" "" "$a48_exec"
+assert_eq "archive-end: the archive root itself is 0700" "700" "$(stat -f '%Lp' "$HOME/.ae/archive" 2>/dev/null || stat -c '%a' "$HOME/.ae/archive")"
+assert_eq "archive-end: no publisher claim is left behind" "0" \
+    "$(find "$HOME/.ae/archive" -maxdepth 1 -name '.publishing.*' | grep -c . | tr -d '[:space:]')"
+assert_contains "archive-end: meta records the source session name" "source_session=arch-keep" "$(cat "$A48_ARCH/meta")"
+assert_contains "archive-end: local mode records git as not-managed" "git_push_outcome=not-managed" "$(cat "$A48_ARCH/meta")"
+assert_eq "archive-end: the provider conversation UUID is NOT in the archive meta" "0" \
+    "$(grep -c 'agent\.main=.*:.*:' "$A48_ARCH/meta" | tr -d '[:space:]')"
+assert_contains "archive-end: the digest carries the handover memo verbatim" "the next agent should read this" "$(cat "$A48_ARCH/digest.md")"
+assert_contains "archive-end: the digest lists the ledger-open request" "ae-48-open" "$(cat "$A48_ARCH/digest.md")"
+assert_eq "archive-end: the answered request is NOT listed as unresolved" "0" \
+    "$(grep -c 'ae-48-done' "$A48_ARCH/digest.md" | tr -d '[:space:]')"
+assert_contains "archive-end: the payload link is archive-relative, not the dead live path" \
+    "Payload: messages/ae-48.ask.txt" "$(cat "$A48_ARCH/digest.md")"
+assert_contains "archive-end: counts agree between meta and digest" "handover_count=1" "$(cat "$A48_ARCH/meta")"
+
+# A second session that would publish the SAME id must refuse, and must not delete.
+mkdir -p "$HOME/.ae/sessions/arch-dup"
+cp "$A48_ARCH/meta" "$TMPDIR/a48-arch-meta.bak"
+(cd "$A48_REPO" && "$AE" --local arch-dup &) 2>/dev/null
+wait_for_session "arch-dup" 20
+sleep 1
+_sed_i -e "s|^session_id=.*|session_id=$A48_UUID|" "$HOME/.ae/sessions/arch-dup/meta"
+a48_dup_rc=0
+a48_dup="$("$AE" end -f --keep-history arch-dup 2>&1)" || a48_dup_rc=$?
+assert_eq "archive-collision: publishing an id that already exists FAILS the end" "1" \
+    "$([[ $a48_dup_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "archive-collision: and says so in terms of immutability" "already exists" "$a48_dup"
+assert_contains "archive-collision: and says the session was NOT deleted" "NOTHING was deleted" "$a48_dup"
+assert_eq "archive-collision: the session state really is still there" "1" \
+    "$([[ -f "$HOME/.ae/sessions/arch-dup/meta" ]] && echo 1 || echo 0)"
+assert_eq "archive-collision: the existing archive was not modified" "0" \
+    "$(cmp -s "$TMPDIR/a48-arch-meta.bak" "$A48_ARCH/meta"; echo $?)"
+# A standing claim is a REFUSAL, never a self-clean: it may belong to a live publisher.
+# The session gets its OWN id for this arm — an earlier draft left a claim standing on
+# the id arch-keep's archive uses, and the --from preflight below then correctly refused
+# to inherit from an archive that looked mid-publication. A test fixture that leaves a
+# claim behind is a fixture that lies to every later test.
+_sed_i -e "s|^session_id=.*|session_id=11111111-2222-3333-4444-555555555555|" "$HOME/.ae/sessions/arch-dup/meta"
+mkdir -p "$HOME/.ae/archive/.publishing.11111111-2222-3333-4444-555555555555"
+a48_claim_rc=0
+a48_claim="$("$AE" end -f --keep-history arch-dup 2>&1)" || a48_claim_rc=$?
+assert_eq "archive-claim: a standing claim FAILS the end rather than being cleaned up" "1" \
+    "$([[ $a48_claim_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "archive-claim: and names the claim path" ".publishing.11111111-2222-3333-4444-555555555555" "$a48_claim"
+assert_eq "archive-claim: the claim is still standing after the refusal" "1" \
+    "$([[ -d "$HOME/.ae/archive/.publishing.11111111-2222-3333-4444-555555555555" ]] && echo 1 || echo 0)"
+assert_eq "archive-claim: and the session survived it" "1" \
+    "$([[ -f "$HOME/.ae/sessions/arch-dup/meta" ]] && echo 1 || echo 0)"
+rm -rf "$HOME/.ae/archive/.publishing.11111111-2222-3333-4444-555555555555"
+"$AE" end -f --keep-history arch-dup >/dev/null 2>&1 || true
+
+# ── purge: no archive written, and an existing one removed ───────────
+(cd "$A48_REPO" && "$AE" --local arch-purge &) 2>/dev/null
+wait_for_session "arch-purge" 20
+sleep 1
+A48_PUUID="$(grep '^session_id=' "$HOME/.ae/sessions/arch-purge/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+# The archive this purge deletes is a REAL one — published by ae, and therefore one the
+# validator accepts. A hand-written stub would only have proved that purge deletes
+# whatever sits at the path, which is exactly the behaviour that was wrong.
+"$AE" end -f --keep-history arch-purge >/dev/null 2>&1
+assert_eq "archive-purge: (setup) a real archive exists for that session" "1" \
+    "$([[ -f "$HOME/.ae/archive/$A48_PUUID/digest.md" ]] && echo 1 || echo 0)"
+# The same session name comes back — as it would after a resume-and-end cycle — pointed
+# at the archive that already exists for it.
+(cd "$A48_REPO" && "$AE" --local arch-purge &) 2>/dev/null
+wait_for_session "arch-purge" 20
+sleep 1
+_sed_i -e "s|^session_id=.*|session_id=$A48_PUUID|" "$HOME/.ae/sessions/arch-purge/meta"
+a48_purge="$("$AE" end -f --purge-history arch-purge 2>&1)"
+assert_contains "archive-purge: the end reports the purge" "Purged archive $A48_PUUID" "$a48_purge"
+assert_not_exists "archive-purge: the archive for that source UUID is gone" "$HOME/.ae/archive/$A48_PUUID"
+assert_eq "archive-purge: and no new archive was written in its place" "0" \
+    "$([[ -d "$HOME/.ae/archive/$A48_PUUID" ]] && echo 1 || echo 0)"
+assert_eq "archive-purge: an unrelated archive is untouched" "1" \
+    "$([[ -f "$A48_ARCH/meta" ]] && echo 1 || echo 0)"
+assert_eq "archive-purge: the session itself still ended" "0" \
+    "$([[ -d "$HOME/.ae/sessions/arch-purge" ]] && echo 1 || echo 0)"
+# A tree ae cannot validate is a tree ae cannot claim to own: the purge REFUSES it (and
+# the end fails with it) rather than rm -rf'ing something it cannot identify.
+(cd "$A48_REPO" && "$AE" --local arch-purge2 &) 2>/dev/null
+wait_for_session "arch-purge2" 20
+sleep 1
+A48_P2UUID="$(grep '^session_id=' "$HOME/.ae/sessions/arch-purge2/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+mkdir -p "$HOME/.ae/archive/$A48_P2UUID"
+printf 'archive_version=1\narchive_id=%s\nsource_session=arch-purge2\n' "$A48_P2UUID" >"$HOME/.ae/archive/$A48_P2UUID/meta"
+a48_p2_rc=0
+a48_p2="$("$AE" end -f --purge-history arch-purge2 2>&1)" || a48_p2_rc=$?
+assert_eq "archive-purge: an unvalidatable tree is refused, and the end fails with it" "1" \
+    "$([[ $a48_p2_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "archive-purge: and it says what it refused" "does not validate as an ae archive" "$a48_p2"
+assert_eq "archive-purge: the thing it refused to delete is still there" "1" \
+    "$([[ -f "$HOME/.ae/archive/$A48_P2UUID/meta" ]] && echo 1 || echo 0)"
+assert_eq "archive-purge: and the session survived the refusal" "1" \
+    "$([[ -f "$HOME/.ae/sessions/arch-purge2/meta" ]] && echo 1 || echo 0)"
+rm -rf "$HOME/.ae/archive/$A48_P2UUID"
+"$AE" end -f --purge-history arch-purge2 >/dev/null 2>&1 || true
+unset A48_P2UUID a48_p2 a48_p2_rc
+
+# A session directory that still holds MEMORY but has lost its meta cannot be identified
+# — so the end refuses instead of letting cleanup delete that memory unread.
+(cd "$A48_REPO" && "$AE" --local arch-nometa &) 2>/dev/null
+wait_for_session "arch-nometa" 20
+sleep 1
+"$AE" stop arch-nometa >/dev/null 2>&1 || true
+sleep 1
+rm -f "$HOME/.ae/sessions/arch-nometa/meta"
+printf '2026-08-01T00:00:00Z\tdummy:dummy\thandover\tthe memory that must not be lost\n' >"$HOME/.ae/sessions/arch-nometa/memo.tsv"
+a48_nm_rc=0
+a48_nm="$("$AE" end -f --assume-stopped arch-nometa 2>&1)" || a48_nm_rc=$?
+assert_eq "archive-nometa: a meta-less session that still holds memory is NOT ended silently" "1" \
+    "$([[ $a48_nm_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "archive-nometa: and says why it cannot identify it" "its meta is missing" "$a48_nm"
+assert_contains "archive-nometa: refused BEFORE anything was stopped, so the reason is the real one" \
+    "Nothing was stopped and NOTHING was deleted" "$a48_nm"
+assert_eq "archive-nometa: the memo is still on disk" "1" \
+    "$([[ -s "$HOME/.ae/sessions/arch-nometa/memo.tsv" ]] && echo 1 || echo 0)"
+rm -rf "$HOME/.ae/sessions/arch-nometa"
+unset a48_nm a48_nm_rc
+
+# ── explicit lineage ─────────────────────────────────────────────────
+# PRECONDITION, asserted rather than assumed: no claim is standing anywhere. The lineage
+# preflight refuses an archive that is mid-publication, so a claim leaked by an earlier
+# arm would make every assertion below fail for a reason that has nothing to do with
+# lineage — which is exactly what happened once.
+assert_eq "lineage PRECONDITION: no publisher claim was left standing by an earlier test" "0" \
+    "$(find "$HOME/.ae/archive" -maxdepth 1 -name '.publishing.*' 2>/dev/null | grep -c . | tr -d '[:space:]')"
+(cd "$A48_REPO" && "$AE" --local arch-child --from "$A48_UUID" &) 2>/dev/null
+wait_for_session "arch-child" 20
+sleep 1
+A48_CMETA="$HOME/.ae/sessions/arch-child"
+assert_contains "lineage: the child records its parent archive id" "parent_archive_id=$A48_UUID" "$(cat "$A48_CMETA/meta")"
+assert_contains "lineage: and the parent's handover count" "parent_archive_handover_count=1" "$(cat "$A48_CMETA/meta")"
+assert_contains "lineage: and the parent's pending count" "parent_archive_pending_count=1" "$(cat "$A48_CMETA/meta")"
+assert_eq "lineage: the child has its OWN session id, not the parent's" "1" \
+    "$([[ "$(grep '^session_id=' "$A48_CMETA/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')" != "$A48_UUID" ]] && echo 1 || echo 0)"
+assert_contains "lineage: workspace.md points EVERY agent at the digest" \
+    "- Digest: $HOME/.ae/archive/$A48_UUID/digest.md" "$(cat "$A48_CMETA/workspace.md")"
+assert_contains "lineage: and says it is historical data" \
+    "Historical data only; the main agent was instructed to read the digest before work." "$(cat "$A48_CMETA/workspace.md")"
+assert_eq "lineage: no archive CONTENT was copied into the session" "0" \
+    "$(grep -c 'the next agent should read this' "$A48_CMETA/workspace.md" | tr -d '[:space:]')"
+# Lineage is decided at birth and PRESERVED, not re-derived: stop the child, resume it,
+# and the parent keys are still there (every resume rewrites the whole meta by temp+mv,
+# which is exactly how a launch fact gets silently dropped).
+"$AE" stop arch-child >/dev/null 2>&1 || true
+sleep 1
+(cd "$A48_REPO" && "$AE" --local arch-child &) 2>/dev/null
+wait_for_session "arch-child" 20
+sleep 1
+assert_contains "lineage: the parent survives a stop and resume" \
+    "parent_archive_id=$A48_UUID" "$(cat "$A48_CMETA/meta")"
+assert_eq "lineage: and workspace.md still carries the pointer" "1" \
+    "$(command grep -c '^## Parent archive' "$A48_CMETA/workspace.md" | tr -d '[:space:]')"
+# A parent deleted AFTER the child exists is a warning, never a refusal — the lineage
+# fact is still true, and the workspace says the digest cannot be read.
+"$AE" stop arch-child >/dev/null 2>&1 || true
+sleep 1
+mv "$HOME/.ae/archive/$A48_UUID" "$TMPDIR/a48-parent-moved"
+(cd "$A48_REPO" && "$AE" --local arch-child &) 2>/dev/null
+wait_for_session "arch-child" 20
+sleep 1
+assert_contains "lineage: a vanished parent leaves the lineage recorded" \
+    "parent_archive_id=$A48_UUID" "$(cat "$A48_CMETA/meta")"
+assert_contains "lineage: and workspace.md says the digest is no longer there" \
+    "no longer on this machine" "$(cat "$A48_CMETA/workspace.md")"
+mv "$TMPDIR/a48-parent-moved" "$HOME/.ae/archive/$A48_UUID"
+"$AE" end -f --keep-history arch-child >/dev/null 2>&1 || true
+
+# A session launched under the same name WITHOUT --from inherits nothing: lineage is
+# explicit or absent, never inferred from a name that happens to match.
+(cd "$A48_REPO" && "$AE" --local arch-child &) 2>/dev/null
+wait_for_session "arch-child" 20
+sleep 1
+assert_eq "lineage: the same name without --from records NO parent" "0" \
+    "$(grep -c '^parent_archive_id=' "$HOME/.ae/sessions/arch-child/meta" | tr -d '[:space:]')"
+assert_eq "lineage: and workspace.md advertises no parent archive" "0" \
+    "$(grep -c '^## Parent archive' "$HOME/.ae/sessions/arch-child/workspace.md" | tr -d '[:space:]')"
+"$AE" end -f --keep-history arch-child >/dev/null 2>&1 || true
+
+# An invalid --from leaves ZERO side effects — no tmux session, no state, no worktree.
+a48_bad_rc=0
+a48_bad="$( (cd "$A48_REPO" && _timeout 30 "$AE" --local arch-bad --from deadbeef-dead-beef-dead-beefdeadbeef) 2>&1 )" || a48_bad_rc=$?
+assert_eq "lineage: an archive that is not there refuses the launch" "1" \
+    "$([[ $a48_bad_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "lineage: and says which archive it could not find" "no archive deadbeef-dead-beef-dead-beefdeadbeef" "$a48_bad"
+assert_eq "lineage: the refused launch created no tmux session" "1" \
+    "$(tmux has-session -t arch-bad 2>/dev/null && echo 0 || echo 1)"
+assert_not_exists "lineage: and no session state" "$HOME/.ae/sessions/arch-bad"
+assert_not_exists "lineage: and no worktree" "$HOME/.ae/worktrees/arch-bad"
+(cd "$A48_REPO" && "$AE" --local arch-existing &) 2>/dev/null
+wait_for_session "arch-existing" 20
+sleep 1
+a48_ex2_rc=0
+a48_ex2="$( (cd "$A48_REPO" && _timeout 30 "$AE" --local arch-existing --from "$A48_UUID") 2>&1 )" || a48_ex2_rc=$?
+assert_eq "lineage: --from onto an EXISTING session refuses instead of attaching" "1" \
+    "$([[ $a48_ex2_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "lineage: and explains that inheritance has no meaning there" "only valid for a NEW session" "$a48_ex2"
+"$AE" end -f --keep-history arch-existing >/dev/null 2>&1 || true
+
+# ── git mode: the commit range is recorded, and the push outcome is the one that ran ──
+A48_ORIGIN="$TMPDIR/a48-origin.git"
+git init -q --bare "$A48_ORIGIN"
+A48_GREPO="$(setup_repo)"
+git -C "$A48_GREPO" remote add origin "$A48_ORIGIN"
+git -C "$A48_GREPO" push -q -u origin HEAD:refs/heads/main 2>/dev/null || true
+(cd "$A48_GREPO" && "$AE" --worktree arch-git &) 2>/dev/null
+wait_for_session "arch-git" 20
+sleep 2
+A48_GUUID="$(grep '^session_id=' "$HOME/.ae/sessions/arch-git/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+A48_GBASE="$(grep '^git_base_commit=' "$HOME/.ae/sessions/arch-git/meta" | cut -d= -f2-)"
+assert_eq "archive-git: a fresh worktree launch records git_base_commit" "1" \
+    "$([[ "$A48_GBASE" =~ ^[0-9a-f]{40}$ ]] && echo 1 || echo 0)"
+A48_GWORK="$HOME/.ae/worktrees/arch-git"
+# RECORDED ONCE. Move HEAD, then resume: a base that was re-derived on resume would now
+# read as the new HEAD, and every commit range the archive reports would be wrong.
+printf 'zero\n' >"$A48_GWORK/f0.txt"
+git -C "$A48_GWORK" add -A && git -C "$A48_GWORK" commit -q -m "moves HEAD"
+"$AE" stop arch-git >/dev/null 2>&1 || true
+sleep 1
+(cd "$A48_GREPO" && "$AE" --worktree arch-git &) 2>/dev/null
+wait_for_session "arch-git" 20
+sleep 2
+assert_eq "archive-git: the base recorded at launch survives a resume that moved HEAD" "$A48_GBASE" \
+    "$(command grep '^git_base_commit=' "$HOME/.ae/sessions/arch-git/meta" | cut -d= -f2-)"
+printf 'one\n' >"$A48_GWORK/f1.txt"
+git -C "$A48_GWORK" add -A && git -C "$A48_GWORK" commit -q -m "work one"
+printf 'two\n' >"$A48_GWORK/f2.txt"
+"$AE" end -f --keep-history arch-git >/dev/null 2>&1
+A48_GARCH="$HOME/.ae/archive/$A48_GUUID"
+assert_contains "archive-git: the recorded base survives into the archive" "git_base_commit=$A48_GBASE" "$(cat "$A48_GARCH/meta")"
+assert_contains "archive-git: the push outcome is the branch that actually ran" "git_push_outcome=pushed" "$(cat "$A48_GARCH/meta")"
+assert_contains "archive-git: and names the ref it pushed" "git_push_ref=origin/ae/arch-git" "$(cat "$A48_GARCH/meta")"
+assert_eq "archive-git: the commit count spans base..final (HEAD-mover, work commit, end commit)" "3" \
+    "$(grep '^git_commit_count=' "$A48_GARCH/meta" | cut -d= -f2-)"
+assert_eq "archive-git: the range is base..final" "1" \
+    "$(grep -c "^git_commit_range=${A48_GBASE}\.\." "$A48_GARCH/meta" | tr -d '[:space:]')"
+
+# A git session with NO origin: the outcome is no-origin and the work dir is preserved
+# — and the archive records exactly that, rather than claiming a push.
+A48_NREPO="$(setup_repo)"
+(cd "$A48_NREPO" && "$AE" --worktree arch-noorigin &) 2>/dev/null
+wait_for_session "arch-noorigin" 20
+sleep 2
+A48_NUUID="$(grep '^session_id=' "$HOME/.ae/sessions/arch-noorigin/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+printf 'x\n' >"$HOME/.ae/worktrees/arch-noorigin/f.txt"
+"$AE" end -f --keep-history arch-noorigin >/dev/null 2>&1
+assert_contains "archive-git: no remote is recorded as no-origin, not as a push" \
+    "git_push_outcome=no-origin" "$(cat "$HOME/.ae/archive/$A48_NUUID/meta")"
+assert_contains "archive-git: and the preserved work dir is recorded" \
+    "preserved_work_dir=$HOME/.ae/worktrees/arch-noorigin" "$(cat "$HOME/.ae/archive/$A48_NUUID/meta")"
+
+# A session that predates session ids: `end` MINTS one under the lock it already holds
+# (migrate-when-you-touch-it), archives under it, and marks it as minted so nothing
+# downstream mistakes it for an id the session actually ran under.
+(cd "$A48_REPO" && "$AE" --local arch-legacy &) 2>/dev/null
+wait_for_session "arch-legacy" 20
+sleep 1
+_sed_i -e "/^session_id=/d" "$HOME/.ae/sessions/arch-legacy/meta"
+a48_leg="$("$AE" end -f --keep-history arch-legacy 2>&1)"
+assert_contains "archive-legacy: a pre-session-id session is minted one rather than stranded" \
+    "Minted a session id for 'arch-legacy'" "$a48_leg"
+A48_LUUID="$(printf '%s' "$a48_leg" | command grep -o 'Archived [0-9a-f-]*' | head -1 | cut -d' ' -f2)"
+assert_eq "archive-legacy: and it really was archived" "1" \
+    "$([[ -n "$A48_LUUID" && -f "$HOME/.ae/archive/$A48_LUUID/meta" ]] && echo 1 || echo 0)"
+assert_contains "archive-legacy: the archive marks the id as minted at archive time" \
+    "archive_id_origin=minted-at-end" "$(cat "$HOME/.ae/archive/$A48_LUUID/meta")"
+assert_contains "archive-legacy: and does not claim the session ran under it" \
+    "source_session_id=-" "$(cat "$HOME/.ae/archive/$A48_LUUID/meta")"
+# The other arm: a session_id ae cannot parse is EVIDENCE — refuse, keep everything.
+(cd "$A48_REPO" && "$AE" --local arch-badid &) 2>/dev/null
+wait_for_session "arch-badid" 20
+sleep 1
+_sed_i -e "s|^session_id=.*|session_id=not-a-uuid|" "$HOME/.ae/sessions/arch-badid/meta"
+a48_badid_rc=0
+a48_badid="$("$AE" end -f --keep-history arch-badid 2>&1)" || a48_badid_rc=$?
+assert_eq "archive-badid: an unparseable session_id FAILS the end" "1" \
+    "$([[ $a48_badid_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "archive-badid: and says it will not overwrite the value" "will not overwrite a value it cannot parse" "$a48_badid"
+assert_eq "archive-badid: the session state is still there" "1" \
+    "$([[ -f "$HOME/.ae/sessions/arch-badid/meta" ]] && echo 1 || echo 0)"
+assert_eq "archive-badid: and its session_id is untouched" "not-a-uuid" \
+    "$(command grep '^session_id=' "$HOME/.ae/sessions/arch-badid/meta" | cut -d= -f2-)"
+_sed_i -e "s|^session_id=.*|session_id=22222222-3333-4444-5555-666666666666|" "$HOME/.ae/sessions/arch-badid/meta"
+"$AE" end -f --keep-history arch-badid >/dev/null 2>&1 || true
+unset A48_LUUID a48_leg a48_badid a48_badid_rc
+
+# ── review round 2: the destructive path, through the product ────────────────────
+# Every arm below drives the real `ae end` route that was wrong, not a nearby one.
+
+# (B1) A corrupt session_id refuses under --purge-history too. This route reported "this
+# session never had an id", wrote nothing, and DELETED the source.
+(cd "$A48_REPO" && "$AE" --local arch-badpurge &) 2>/dev/null
+wait_for_session "arch-badpurge" 20
+sleep 1
+_sed_i -e "s|^session_id=.*|session_id=not-a-uuid|" "$HOME/.ae/sessions/arch-badpurge/meta"
+a48_bp_rc=0
+a48_bp="$("$AE" end -f --purge-history arch-badpurge 2>&1)" || a48_bp_rc=$?
+assert_eq "archive-badid: --purge-history on an unparseable id FAILS (not just --keep-history)" "1" \
+    "$([[ $a48_bp_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "archive-badid: and refuses for the right reason" "will not overwrite a value it cannot parse" "$a48_bp"
+assert_eq "archive-badid: the source session survives the purge route" "1" \
+    "$([[ -f "$HOME/.ae/sessions/arch-badpurge/meta" ]] && echo 1 || echo 0)"
+_sed_i -e "s|^session_id=.*|session_id=33333333-4444-5555-6666-777777777777|" "$HOME/.ae/sessions/arch-badpurge/meta"
+"$AE" end -f --purge-history arch-badpurge >/dev/null 2>&1 || true
+unset a48_bp a48_bp_rc
+
+# (B2) A human who confirms KEEP must not receive PURGE. The prompt is fed through a
+# FIFO so the session's own config can be flipped while it waits — the ABA shape, in the
+# confirmation gap rather than in stop.
+A48_FREPO="$(setup_repo)"
+mkdir -p "$A48_FREPO/.ae"
+printf '[workspace]\npurge_agent_history = false\n' >"$A48_FREPO/.ae/config"
+(cd "$A48_FREPO" && "$AE" --local arch-flip &) 2>/dev/null
+wait_for_session "arch-flip" 20
+sleep 1
+A48_FUUID="$(grep '^session_id=' "$HOME/.ae/sessions/arch-flip/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+A48_FIFO="$TMPDIR/a48-flip.fifo"
+rm -f "$A48_FIFO"
+mkfifo "$A48_FIFO"
+(
+    exec 3>"$A48_FIFO"
+    sleep 5 # the prompt is on screen by now, showing KEEP
+    printf '[workspace]\npurge_agent_history = true\n' >"$A48_FREPO/.ae/config"
+    printf 'y' >&3
+    exec 3>&-
+) &
+a48_flip_rc=0
+a48_flip="$("$AE" end arch-flip <"$A48_FIFO" 2>&1)" || a48_flip_rc=$?
+# `|| true`: if ae exits before the writer's `y` lands, the writer takes SIGPIPE and a
+# bare `wait` would abort the whole suite under set -e.
+wait || true
+rm -f "$A48_FIFO"
+assert_eq "end-freeze: a confirmed KEEP is not carried out as a PURGE" "1" \
+    "$([[ $a48_flip_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "end-freeze: and it says the question changed under the answer" \
+    "changed between the confirmation and now" "$a48_flip"
+assert_contains "end-freeze: naming what was confirmed" "Confirmed: keep" "$a48_flip"
+assert_eq "end-freeze: the session is still on disk" "1" \
+    "$([[ -f "$HOME/.ae/sessions/arch-flip/meta" ]] && echo 1 || echo 0)"
+assert_contains "end-freeze: and it was caught BEFORE the stop, not after it" \
+    "Nothing was stopped and nothing was deleted" "$a48_flip"
+assert_eq "end-freeze: so the session is still running" "0" \
+    "$(tmux has-session -t arch-flip 2>/dev/null; echo $?)"
+assert_not_exists "end-freeze: and nothing was archived under the flipped plan" "$HOME/.ae/archive/$A48_FUUID"
+printf '[workspace]\npurge_agent_history = false\n' >"$A48_FREPO/.ae/config"
+"$AE" end -f --keep-history arch-flip >/dev/null 2>&1 || true
+unset a48_flip a48_flip_rc A48_FIFO
+
+# (B3) An archive that names no session is not purgeable by whoever happens to share its
+# UUID: empty is absence of proof, not a wildcard.
+(cd "$A48_REPO" && "$AE" --local arch-owner &) 2>/dev/null
+wait_for_session "arch-owner" 20
+sleep 1
+A48_OUUID="$(grep '^session_id=' "$HOME/.ae/sessions/arch-owner/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+"$AE" end -f --keep-history arch-owner >/dev/null 2>&1
+_sed_i -e "s|^source_session=.*|source_session=|" "$HOME/.ae/archive/$A48_OUUID/meta"
+(cd "$A48_REPO" && "$AE" --local arch-thief &) 2>/dev/null
+wait_for_session "arch-thief" 20
+sleep 1
+_sed_i -e "s|^session_id=.*|session_id=$A48_OUUID|" "$HOME/.ae/sessions/arch-thief/meta"
+a48_thief_rc=0
+a48_thief="$("$AE" end -f --purge-history arch-thief 2>&1)" || a48_thief_rc=$?
+assert_eq "archive-owner: a different session cannot purge an archive that names no owner" "1" \
+    "$([[ $a48_thief_rc -ne 0 ]] && echo 1 || echo 0)"
+# An archive naming no session fails the SCHEMA before the owner check is even reached —
+# two gates, and this fixture proves the earlier one. The owner gate itself is proved
+# below, with an archive that validates and simply belongs to someone else.
+assert_contains "archive-owner: an archive naming no session is malformed, and says so" \
+    "does not validate as an ae archive" "$a48_thief"
+assert_eq "archive-owner: the archive is still there" "1" \
+    "$([[ -f "$HOME/.ae/archive/$A48_OUUID/meta" ]] && echo 1 || echo 0)"
+a48_owner_from="$( (cd "$A48_REPO" && _timeout 30 "$AE" --local arch-heir --from "$A48_OUUID") 2>&1 || true)"
+assert_contains "archive-owner: and lineage refuses that malformed archive too" "did not validate" "$a48_owner_from"
+rm -rf "$HOME/.ae/archive/$A48_OUUID"
+# THE OWNER GATE ITSELF: a perfectly valid archive that belongs to another session is not
+# deletable by whoever happens to carry its UUID.
+(cd "$A48_REPO" && "$AE" --local arch-owner2 &) 2>/dev/null
+wait_for_session "arch-owner2" 20
+sleep 1
+A48_O2UUID="$(grep '^session_id=' "$HOME/.ae/sessions/arch-owner2/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+"$AE" end -f --keep-history arch-owner2 >/dev/null 2>&1
+_sed_i -e "s|^session_id=.*|session_id=$A48_O2UUID|" "$HOME/.ae/sessions/arch-thief/meta"
+a48_thief2_rc=0
+a48_thief2="$("$AE" end -f --purge-history arch-thief 2>&1)" || a48_thief2_rc=$?
+assert_eq "archive-owner: a VALID archive belonging to another session is not purged either" "1" \
+    "$([[ $a48_thief2_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "archive-owner: and the refusal names both sessions" \
+    "is not provably this session's" "$a48_thief2"
+assert_eq "archive-owner: arch-owner2's archive survived arch-thief's purge" "1" \
+    "$([[ -f "$HOME/.ae/archive/$A48_O2UUID/digest.md" ]] && echo 1 || echo 0)"
+rm -rf "$HOME/.ae/archive/$A48_O2UUID"
+_sed_i -e "s|^session_id=.*|session_id=44444444-5555-6666-7777-888888888888|" "$HOME/.ae/sessions/arch-thief/meta"
+"$AE" end -f --purge-history arch-thief >/dev/null 2>&1 || true
+unset a48_thief a48_thief_rc a48_owner_from a48_thief2 a48_thief2_rc A48_O2UUID
+
+# (I1) The mint fact is recorded where it is created, so a RETRY after a failed
+# publication cannot read a present id and call it launch-assigned.
+(cd "$A48_REPO" && "$AE" --local arch-retry &) 2>/dev/null
+wait_for_session "arch-retry" 20
+sleep 1
+_sed_i -e "/^session_id=/d" "$HOME/.ae/sessions/arch-retry/meta"
+mkdir -p "$HOME/.ae/archive"
+a48_retry_rc=0
+# A standing claim on whatever id gets minted is impossible to pre-create, so fail the
+# publication the other way: make the archive root unwritable for one attempt.
+chmod 500 "$HOME/.ae/archive"
+"$AE" end -f --keep-history arch-retry >/dev/null 2>&1 || a48_retry_rc=$?
+chmod 700 "$HOME/.ae/archive"
+assert_eq "archive-retry: the first attempt failed" "1" "$([[ $a48_retry_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "archive-retry: but the mint was recorded in the live meta" \
+    "session_id_origin=minted-at-end" "$(cat "$HOME/.ae/sessions/arch-retry/meta")"
+A48_RUUID="$(grep '^session_id=' "$HOME/.ae/sessions/arch-retry/meta" | cut -d= -f2-)"
+"$AE" end -f --keep-history arch-retry >/dev/null 2>&1 || true
+assert_contains "archive-retry: so the RETRY still says the id was minted, not launch-assigned" \
+    "archive_id_origin=minted-at-end" "$(cat "$HOME/.ae/archive/$A48_RUUID/meta" 2>/dev/null || echo MISSING)"
+assert_contains "archive-retry: and does not claim the session ran under it" \
+    "source_session_id=-" "$(cat "$HOME/.ae/archive/$A48_RUUID/meta" 2>/dev/null || echo MISSING)"
+unset a48_retry_rc A48_RUUID
+
+# (I2) A session with no agents is still a session: its memo and events are worth
+# keeping, so it archives with an empty roster rather than being refused.
+(cd "$A48_REPO" && "$AE" --local arch-lonely &) 2>/dev/null
+wait_for_session "arch-lonely" 20
+sleep 1
+"$HOME/.ae/sessions/arch-lonely/memo" add --topic handover "kept even with no roster" >/dev/null 2>&1 || true
+A48_LOUUID="$(grep '^session_id=' "$HOME/.ae/sessions/arch-lonely/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+_sed_i -e "/^agent\./d" -e "/^agent_bin\./d" "$HOME/.ae/sessions/arch-lonely/meta"
+a48_lonely_rc=0
+"$AE" end -f --keep-history arch-lonely >/dev/null 2>&1 || a48_lonely_rc=$?
+assert_eq "archive-lonely: a session with no agents is archived, not refused" "0" "$a48_lonely_rc"
+assert_eq "archive-lonely: its archive exists" "1" \
+    "$([[ -f "$HOME/.ae/archive/$A48_LOUUID/digest.md" ]] && echo 1 || echo 0)"
+assert_contains "archive-lonely: and its memo went with it" "kept even with no roster" \
+    "$(cat "$HOME/.ae/archive/$A48_LOUUID/digest.md")"
+assert_eq "archive-lonely: the roster section is simply empty" "0" \
+    "$(grep -c '^- main — ' "$HOME/.ae/archive/$A48_LOUUID/digest.md" | tr -d '[:space:]')"
+unset a48_lonely_rc A48_LOUUID A48_FREPO A48_FUUID A48_OUUID
+
+# ── end all: every target resolved on ITS OWN policy ─────────────────────────────
+# The purge default is per-session, read from the session's own config — so `end all`
+# must archive one target and purge the other in the same run. This is also why the
+# confirmation lists every target: one sentence about "all sessions" would be true of
+# neither.
+A48_KREPO="$(setup_repo)"
+A48_PREPO="$(setup_repo)"
+mkdir -p "$A48_PREPO/.ae"
+printf '[workspace]\npurge_agent_history = true\n' >"$A48_PREPO/.ae/config"
+(cd "$A48_KREPO" && "$AE" --local allkeep &) 2>/dev/null
+wait_for_session "allkeep" 20
+(cd "$A48_PREPO" && "$AE" --local allpurge &) 2>/dev/null
+wait_for_session "allpurge" 20
+sleep 1
+A48_KUUID="$(command grep '^session_id=' "$HOME/.ae/sessions/allkeep/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+A48_PUUID2="$(command grep '^session_id=' "$HOME/.ae/sessions/allpurge/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+# The archive already on disk for the purge target is a REAL one — published by ae, so
+# the validator accepts it. (A hand-written stub is refused now, which is the point: a
+# purge only deletes what it can prove is an ae archive. Third time this fixture shape
+# has had to be a specimen rather than a sketch.) --keep-history overrides that session's
+# own purge default just long enough to publish it.
+"$AE" end -f --keep-history allpurge >/dev/null 2>&1
+assert_eq "end-all: (setup) the purge target has a REAL archive to lose" "1" \
+    "$([[ -f "$HOME/.ae/archive/$A48_PUUID2/digest.md" ]] && echo 1 || echo 0)"
+(cd "$A48_PREPO" && "$AE" --local allpurge &) 2>/dev/null
+wait_for_session "allpurge" 20
+sleep 1
+_sed_i -e "s|^session_id=.*|session_id=$A48_PUUID2|" "$HOME/.ae/sessions/allpurge/meta"
+"$AE" end -f all >/dev/null 2>&1 || true
+assert_eq "end-all: the keep target was archived" "1" \
+    "$([[ -f "$HOME/.ae/archive/$A48_KUUID/meta" ]] && echo 1 || echo 0)"
+assert_eq "end-all: the purge target was NOT archived" "0" \
+    "$([[ -e "$HOME/.ae/archive/$A48_PUUID2" ]] && echo 1 || echo 0)"
+assert_eq "end-all: and its pre-existing archive was deleted" "0" \
+    "$([[ -e "$HOME/.ae/archive/$A48_PUUID2/meta" ]] && echo 1 || echo 0)"
+assert_eq "end-all: the keep target's archive survived its neighbour's purge" "1" \
+    "$([[ -f "$HOME/.ae/archive/$A48_KUUID/digest.md" ]] && echo 1 || echo 0)"
+# THE CONFIRMED SET BOUNDS THE DESTRUCTION. `end all` used to enumerate again at action
+# time, so a session created between the prompt and the answer could be ended without
+# ever having been named to the human.
+A48_LREPO="$(setup_repo)"
+(cd "$A48_LREPO" && "$AE" --local all-shown &) 2>/dev/null
+wait_for_session "all-shown" 20
+sleep 1
+A48_LFIFO="$TMPDIR/a48-list.fifo"
+rm -f "$A48_LFIFO"
+mkfifo "$A48_LFIFO"
+(
+    exec 3>"$A48_LFIFO"
+    sleep 5 # the prompt has listed exactly the sessions that existed
+    (cd "$A48_LREPO" && "$AE" --local all-sneaked >/dev/null 2>&1 &)
+    sleep 5
+    printf 'y' >&3
+    exec 3>&-
+) &
+a48_list="$("$AE" end all <"$A48_LFIFO" 2>&1)" || true
+wait || true
+rm -f "$A48_LFIFO"
+assert_contains "end-all: the prompt listed the session that existed when it asked" \
+    "  - all-shown: archive ->" "$a48_list"
+assert_eq "end-all: the listed session was ended" "0" \
+    "$([[ -d "$HOME/.ae/sessions/all-shown" ]] && echo 1 || echo 0)"
+assert_eq "end-all: a session that appeared AFTER the prompt was NOT ended" "1" \
+    "$([[ -d "$HOME/.ae/sessions/all-sneaked" ]] && echo 1 || echo 0)"
+assert_eq "end-all: and it was never named in the confirmation" "0" \
+    "$(grep -c 'all-sneaked' <<<"$a48_list" | tr -d '[:space:]')"
+"$AE" end -f --keep-history all-sneaked >/dev/null 2>&1 || true
+unset a48_list A48_LREPO A48_LFIFO
+
+# EMPTY SET IS NOT UNSET. An interactive `end all` with nothing to end confirms an EMPTY
+# list — and a length-based check read that zero as "no confirmation" and went back to a
+# fresh enumeration, ending a session that appeared while the prompt waited.
+A48_EREPO="$(setup_repo)"
+A48_EFIFO="$TMPDIR/a48-empty.fifo"
+rm -f "$A48_EFIFO"
+mkfifo "$A48_EFIFO"
+(
+    exec 3>"$A48_EFIFO"
+    sleep 5 # the prompt has been built against an empty fleet
+    (cd "$A48_EREPO" && "$AE" --local all-after-empty >/dev/null 2>&1 &)
+    sleep 5
+    printf 'y' >&3
+    exec 3>&-
+) &
+a48_empty="$("$AE" end all <"$A48_EFIFO" 2>&1)" || true
+wait || true
+rm -f "$A48_EFIFO"
+assert_eq "end-all: a session that appeared after an EMPTY confirmation is not ended" "1" \
+    "$([[ -d "$HOME/.ae/sessions/all-after-empty" ]] && echo 1 || echo 0)"
+assert_eq "end-all: and it was never named in that confirmation" "0" \
+    "$(grep -c 'all-after-empty' <<<"$a48_empty" | tr -d '[:space:]')"
+"$AE" end -f --keep-history all-after-empty >/dev/null 2>&1 || true
+unset a48_empty A48_EREPO A48_EFIFO
+
+unset A48_KREPO A48_PREPO A48_KUUID A48_PUUID2
+
+unset A48_FRESH
+unset A48_REPO A48_META A48_UUID A48_ARCH A48_PUUID A48_CMETA A48_ORIGIN A48_GREPO A48_GUUID A48_GBASE A48_GWORK A48_GARCH A48_NREPO A48_NUUID
+unset a48_tree_before a48_prev_out a48_end a48_forbidden a48_f a48_exec a48_p a48_m a48_dup a48_dup_rc a48_claim a48_claim_rc a48_purge a48_bad a48_bad_rc a48_ex2 a48_ex2_rc
 
 # ── Results ──────────────────────────────────────────────────────────
 

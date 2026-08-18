@@ -40,11 +40,30 @@ ae list                 # all sessions with per-agent health
 ## Finish up
 
 ```bash
-ae end my-feature       # commit + push to ae/my-feature branch, then clean up
+ae end my-feature       # commit + push to ae/my-feature branch, archive, then clean up
 ae rm my-experiment     # same as ae end
 ```
 
 Both forms leave the working directory clean — session state was always in `~/.ae/sessions/`, not in your repo.
+
+Before it removes that state, `ae end` **archives the session's memory** — goal, memo,
+event log, request payloads — to `~/.ae/archive/<session-uuid>/`, and prints the id and
+path. The archive is mandatory: if it cannot be written, the end fails and nothing is
+deleted. See what it would contain first, without ending anything:
+
+```bash
+ae archive preview my-feature      # stdout is the digest; writes nothing
+```
+
+Pick it up later in a fresh session — the new lead is told to read the digest before it
+starts:
+
+```bash
+ae my-feature-2 --from <archive-uuid>
+```
+
+`ae end --purge-history` is the opposite intent: no archive is written, and any existing
+one for that session is deleted along with the agent conversation files.
 
 ## Watch the event stream
 

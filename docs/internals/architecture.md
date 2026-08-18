@@ -72,6 +72,101 @@ When you start a session, ae creates `~/.ae/sessions/<name>/` and fills it with:
 
 Nothing in the project working directory changes.
 
+## Session archives
+
+`ae end` removes `~/.ae/sessions/<name>/`, which is where everything the session knew
+lived. Before it does, it publishes an **archive**: an inert, immutable, UUID-keyed
+snapshot under `~/.ae/archive/<session-uuid>/` holding a generated `meta`, a rendered
+`digest.md`, `memo.tsv`, `events.jsonl` and the request payload bodies from `messages/`.
+The key is the session's own `session_id` (canonical lowercase; legacy metas hold
+uppercase and are normalized), so an archive is addressable independently of the name,
+which is neither unique over time nor stable.
+
+**Publication protocol** — claim, stage, validate, rename:
+
+1. `mkdir ~/.ae/archive/.publishing.<uuid>` — an atomic claim. `mkdir` failing *is* the
+   mutual exclusion, which is why this needs no `flock` (optional on macOS).
+2. Populate `<claim>/payload/` under `umask 077`, setting every mode explicitly.
+3. Validate the staged tree (below). A failure removes only this invocation's claim.
+4. Re-check the target is absent, then `rename` payload → `<uuid>`. Same filesystem, so
+   the final archive appears complete or not at all.
+5. Remove the now-empty claim.
+
+A crashed publisher leaves its claim standing. The next run **refuses and names it**
+rather than cleaning it up: from the outside, a stale claim and a claim another publisher
+is still holding are the same thing.
+
+**The validator** is what makes an archive inert — by proof, not by intent. It enforces
+an exact path whitelist, refuses any symlink or special file, requires directories 0700
+and files 0600, asserts that no file carries an executable bit for *any* of
+user/group/other (`-x` only answers for the current user; a group-executable file is
+still a program), and checks that `meta` and `digest.md` agree about the archive id and
+the counts they report. An entry ae does not recognise fails rather than being ignored —
+"unknown" is the shape in which an executable arrives. The same validator gates
+`--from`, so an archive is proved before it is inherited from as well as before it is
+published.
+
+**The meta is generated, never copied.** Session, mode, origin, layout, ae version and
+goal are preserved under `source_*` names; `agent.<slot>` is reduced from
+`alias:name:provider-session-id` to `alias:name` (the provider conversation UUID is the
+one field that could re-open a real transcript); `work_dir`, `config`, `main_pane`,
+`ae_path`, `tmux_*`, `watchdog`, `meta_agent`, every `launch_id.*` and every unknown key
+are dropped. Keys are written in a fixed order, so two archives of the same facts are
+byte-identical.
+
+**Git facts** ride along for non-local sessions: `git_base_commit` is recorded once, at
+the fresh launch that created the working tree, and preserved across every later meta
+rewrite; the final HEAD and the push outcome are captured by the branch of `end` that
+actually ran. A range and count are rendered only when the base is a real ancestor of the
+final — a rewritten base renders `-`, and there is deliberately no merge-base fallback,
+because a guessed base is indistinguishable downstream from a true one.
+
+**Explicit lineage.** `ae <new> --from <uuid>` records `parent_archive_id` plus the
+parent's handover and pending counts in the new session's meta, injects a
+read-the-digest-first instruction into the *main* agent's system prompt, and adds a
+`## Parent archive` pointer to `workspace.md` for every agent. No archive content is
+injected anywhere, no lineage is ever inferred from a matching name, and the parent's
+path is derived from root + id rather than stored.
+
+`ae end --purge-history` inverts the whole thing: no archive is written and any existing
+archive for that source UUID is deleted (a purge that removed the provider transcripts
+but left the memo and the stored request payloads would only have looked like privacy).
+**A delete makes the same proofs a publish does** — real root, an atomically acquired
+`.publishing.<uuid>` claim, full validation of the tree, and an exact source-identity
+match — because the destructive direction deserves at least the care the creative one
+gets. It also refuses to delete the parent a live `--from` lineage points at.
+
+A session whose `meta` is gone but whose memo, events or request payloads remain cannot
+be identified, so the end refuses rather than letting cleanup delete that memory unread —
+and so does a session whose `session_id` is present but unparseable, whichever history
+flag was passed.
+
+The confirmed plan is **frozen**: `cmd_end` resolves each target's plan exactly once,
+renders the prompt from those fields and freezes those same fields, and
+`_end_archive_step` re-proves them under the lifecycle lock. One observation, not two —
+a value worth confirming to a human is worth observing exactly once, and nothing in that
+path may run inside a command substitution, because a fork cannot carry the freeze back.
+`ae end all` also carries the **confirmed target list** into execution rather than
+enumerating again, so the set can never grow between the question and the answer —
+tracked as an explicit "a prompt ran" fact rather than as the list's length, because an
+empty confirmed list means *end nothing*, which a count cannot distinguish from *nobody
+was asked*.
+
+Session meta is written through one function, and because it is shared it is deliberately
+fail-**closed**: every step is checked, a missing meta is refused rather than replaced by
+one holding only the keys being written, the temp is removed on any error, and the rename
+happens only after the complete new content exists. It cannot lean on `set -e` for any of
+that, because its callers invoke it under `!` and inside `if`, both of which suppress
+errexit for everything it does. A configuration change
+landing between the question and the answer makes the end refuse rather than perform the
+other action; `cleanup_session` reads the frozen answer too, so the conversation-file half
+cannot diverge from it either.
+
+A session with **no agents** is still a session — its memo and event log are worth
+keeping — so it archives with an empty roster rather than being refused.
+Only a target with nothing to lose — a leftover worktree, or a directory holding just
+generated helpers — is treated as "nothing to archive".
+
 ## Agent identity
 
 An agent is described by four distinct facets — keeping them separate is what lets messaging survive churn (a renamed agent, a transferred config, a resumed session). Pattern 9 in [design patterns](../design-patterns.md) is the full treatment; the layers:

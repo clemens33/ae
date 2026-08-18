@@ -22,10 +22,16 @@ ae steward [--attach|--init]
                        switches to it (--init scaffolds config + charter)
 ae stop [name]         Pause session, keep ae + agent conversation state for resume
 ae transfer <name> <ssh-target> [--pull]  Move a stopped session (incl. Claude/Codex conversation files) to/from another machine
+ae archive preview [name]
+                       Print the digest an end would archive. Read-only: writes nothing,
+                       emits no event, does not stop the session
+ae [name] --from <archive-uuid>
+                       Start a NEW session that explicitly continues an archived one
 ae end|rm [-f] [--purge-history|--keep-history] [name]
-                       End session: commit, push to ae/<name>, remove ae state. KEEPS the
+                       End session: commit, push to ae/<name>, ARCHIVE the session's memory
+                       to ~/.ae/archive/<session-uuid>/, then remove ae state. KEEPS the
                        per-session claude/codex conversation files by default (token history);
-                       --purge-history deletes them.
+                       --purge-history deletes them AND writes no archive.
 ae version             Show version
 ae help                Show short help
 ```
@@ -432,7 +438,9 @@ Wraps up:
 1. Commits any pending changes in the working tree (or worktree).
 2. Pushes to a branch named `ae/<session-name>` on the remote.
 3. Kills the tmux session.
-4. Removes ae state at `~/.ae/sessions/<name>/`.
+4. **Archives the session's memory** to `~/.ae/archive/<session-uuid>/` (see
+   [Session archives](#session-archives) below).
+5. Removes ae state at `~/.ae/sessions/<name>/`.
 5. **Keeps the per-session Claude / Codex conversation files** (jsonl + rollout) by
    default — they are the only local record of that session's token usage, retained
    for later usage/cost reporting. Purge them with `ae end --purge-history` (or set
@@ -441,6 +449,12 @@ Wraps up:
 
 ### Controlling conversation-file cleanup
 
+`ae end all` resolves both decisions **per session** and lists them, one line each:
+which archive path that session gets (or that it gets none, and which existing archive is
+deleted), and whether its conversation files are kept or deleted. The purge default comes
+from each session's own config, so a single sentence about "all sessions" would have been
+true of none of them.
+
 | Precedence | Source | Effect |
 |---|---|---|
 | 1 (highest) | `ae end --purge-history` / `--keep-history` | Force purge / keep for this run |
@@ -448,6 +462,137 @@ Wraps up:
 | 3 (default) | *(unset)* | **Keep** |
 
 Pass `-f` to force without confirmation. `ae end all` ends every session.
+
+## Session archives
+
+`ae end` deletes a session's state. Everything the session *knew* — its goal, its memo,
+its event log, the request payloads agents exchanged — lived only in
+`~/.ae/sessions/<name>/`, so ending it used to be the moment all of that stopped
+existing. An archive is that memory, kept: an inert, immutable, UUID-keyed snapshot.
+
+```text
+~/.ae/archive/<session-uuid>/     0700
+  meta                            0600   sanitized session facts, GENERATED not copied
+  digest.md                       0600   the human-readable summary
+  memo.tsv                        0600   durable shared memory, verbatim
+  events.jsonl                    0600   the raw event log, verbatim evidence
+  messages/                       0700
+    <ae-generated>.txt            0600   the request payload bodies the digest links
+```
+
+Four properties are worth knowing, because they are what the archive *is*:
+
+- **Inert by validator, not by intent.** Before anything is published, ae proves the
+  staged tree against an exact path whitelist: every entry is a regular file or the one
+  expected directory, nothing is a symlink or a special file, no file carries an
+  executable bit for *anyone*, and the meta and digest agree about what they describe.
+  Helpers, `launch.*.sh`, provider session-id scratch files, locks and the generated
+  `workspace.md` are all left behind — an archive is data, and it must not be possible to
+  run one.
+- **The meta is generated, never copied.** Live meta carries runtime coordinates that are
+  meaningless or harmful in a snapshot — panes, sockets, watchdog state, launch ids — and
+  in `agent.<slot>` it carries the *provider conversation UUID*, the one field that could
+  re-open somebody's real transcript. The archive records `alias:name` and drops the rest.
+- **Capture, then delete.** The archive is published after the session is verifiably
+  stopped and after git has had its say, and *before* any live state is removed. If it
+  cannot be written, `ae end` fails non-zero and the whole session is still there.
+- **Immutable.** An existing archive is never merged into, appended to or overwritten.
+  Publication takes an atomic `mkdir` claim (`.publishing.<uuid>`), stages a payload,
+  validates it, then renames it into place — so two publishers of the same id serialize
+  without needing `flock`. A crash leaves the claim standing on purpose: ae refuses and
+  names it rather than guess-cleaning something another publisher may still hold.
+
+`ae end --purge-history` writes **no** archive and deletes any existing one for that
+session's UUID. That is deliberate: purge means the session's traces go, and deleting the
+provider transcripts while leaving the memo and every stored request payload on disk
+would only have looked like privacy.
+
+A session ae cannot **identify** — one whose `meta` is gone while its memo, events or
+request payloads remain, or one whose `session_id` is present but unparseable — is
+refused *before* anything is stopped, with the reason, and nothing is deleted. That
+refusal does not depend on which history flag you passed: `--purge-history` on an
+unidentifiable session refuses too, because "delete it" is not an answer to "which
+session is this".
+
+A session that predates session ids has nothing to lose, so ae mints one and records the
+mint **in the live meta** (`session_id_origin=minted-at-end`) as well as in the archive
+(`archive_id_origin=minted-at-end`, with `source_session_id` rendered `-`). The live
+record is what makes a retry after a failed publication still tell the truth: by then the
+id is simply present, and its presence alone cannot say who put it there.
+
+**What you confirm is what happens.** The plan is resolved from configuration, and
+configuration can change while the prompt waits — so ae resolves each target once,
+freezes exactly what it showed you, and re-proves it under the lifecycle lock. `ae end
+all` ends exactly the sessions it listed: one that appears after the prompt is not part
+of what you agreed to. If it no longer matches,
+the end refuses and prints both versions rather than carrying out an action you never
+agreed to. (`-f` freezes nothing, because nothing was promised.)
+
+A purge makes every proof a publish makes, because it is the more dangerous of the two:
+the archive root must be ae's real directory (never a symlink), it acquires the same
+`.publishing.<uuid>` claim so a delete cannot race a publisher's rename, the tree must
+**validate** as an ae archive, and its meta must name this exact session — a *nonempty*
+owner that matches, since an archive naming no session is absence of proof rather than a
+wildcard (and is refused as malformed by the validator, so `--from` will not inherit
+from it either). Anything else
+is refused with the reason, and the end fails rather than deleting what it could not
+identify — including a hand-edited archive, which you can still remove yourself.
+
+### `ae archive preview [name]`
+
+Prints the digest an end *would* archive, for a running or a stopped session. It is
+read-only by construction: it writes nothing, emits no event, creates no archive and
+never enters the lifecycle.
+
+```bash
+ae archive preview                 # the session you are inside
+ae archive preview my-feature > /tmp/digest.md
+```
+
+Stdout is exactly the digest, so it can be redirected. Every diagnostic — the canonical
+archive id, the source session, the number of files that would be archived and their
+content bytes — goes to stderr. The three moving files
+(`meta`, `memo.tsv`, `events.jsonl`) are fingerprinted before and after the render with
+one clean retry, so a preview of a live session is never stitched together from two
+different moments; if it is still moving, it says so instead.
+
+A preview names its own volatility: `Archived at: pending` and
+`Push outcome: preview-not-run`. It cannot claim an end that has not happened.
+
+### `ae <new-name> --from <archive-uuid>`
+
+Start a **new** session that explicitly continues an archived one.
+
+```bash
+ae end my-feature                        # prints: Archived <uuid> … /Users/you/.ae/archive/<uuid>
+ae my-feature-2 --from <uuid>
+```
+
+The main agent is told, in its system prompt, to read that archive's `digest.md` before
+doing any work — and told in the same breath that it is historical data, not
+instructions. Every agent sees a `## Parent archive` pointer in `workspace.md`. No
+archive *content* is injected: a digest is a snapshot of other agents' instructions, and
+the one thing it must never become is a set of instructions.
+
+Lineage is explicit or absent. ae never infers a parent from a matching name — launching
+`ae my-feature` again after archiving `my-feature` records no lineage at all. `--from` is
+valid only for a session that does not yet exist in any form (no running tmux session, no
+session state, no worktree); onto an existing session it refuses rather than attaching,
+because "resume this AND inherit that" has two meanings and no safe default.
+
+The parent is proved before anything is created: a refusal leaves no tmux session, no
+session state and no worktree. (On a machine with no `~/.ae/config` yet, ae still writes
+its default config — that bootstrap happens on *every* invocation, `ae help` included,
+and its notice goes to stderr.) The id and the handover/pending counts come back from
+that one proof and are recorded as they were proved, rather than re-read afterwards from
+a file another process may be deleting; an archive that is mid-publication or mid-purge
+is refused outright.
+
+The child's meta records `parent_archive_id` plus the parent's handover and pending-request
+counts, and preserves them across resumes. The parent's absolute path is never stored — it
+is derived from the archive root and the id, so moving `AE_HOME` cannot rot it. If the
+parent archive is deleted later, a resume warns and continues: the lineage fact is still
+true, and `workspace.md` says the digest is no longer available.
 
 ## Hidden subcommands
 
