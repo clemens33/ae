@@ -160,6 +160,52 @@ false-positive control**, or it can pass by counting everything. State a textual
 guard's honest limit in place (this one cannot see `eval`, wrappers, or indirect
 invocation) rather than implying a completeness it does not have.
 
+Notes from the #48 archive primitive (`f58f860`) — five review rounds, ten
+blockers, every one on the **destructive** path and every one requiring a hostile
+construction no passing suite produces. Four rules, each earned from a reproduced
+defect:
+
+- **A delete proves as much as a write.** Publication was given three proofs — a
+  real archive root, an atomic claim, tree validation — and purge was given none.
+  With the archive root symlinked, purge deleted a directory *outside* the root;
+  with a publisher's claim standing, it deleted a target that publisher was about
+  to recreate. A tree ae cannot validate is a tree ae cannot claim to own. Whenever
+  a guard is written for the creative path, ask what the destructive one got.
+- **A fact observed twice is two facts.** The confirmation prompt rendered one
+  plan and the freeze captured a *second* observation of it, so flipping a
+  session's config between the prompt and `y` let a human confirm KEEP and receive
+  PURGE. Resolve once into fields; render, freeze and act on those same fields. If
+  a value is worth confirming to a human, it is worth observing exactly once — and
+  nothing in a freeze path may fork, because a subshell cannot return state.
+- **Consolidating writers concentrates risk.** One definition for all callers is
+  right, and that is precisely why the shared thing must be *more* defensive than
+  the private ones it replaced: a fail-open meta writer reached every meta path at
+  once, renaming a truncated file with a key silently dropped. A function whose
+  callers invoke it under `!` or `if` cannot lean on errexit for any part of its
+  job — the masking hazard documented for queries is far worse in a writer.
+- **An empty set is not unset.** A confirmed-target list's *length* was used as
+  the proxy for "a prompt ran", so an interactive `end all` with zero sessions
+  confirmed an empty list, the count stayed zero, and the code re-enumerated —
+  ending a session that appeared during the prompt and was never shown. Whether
+  something happened is its own fact, never inferable from a count.
+
+The same slice extended the specimen rule to **scaffolding**. Five fixtures and
+probes of the author's own reported clean on broken code: a stub archive that
+proved only that purge deletes whatever sits at the path; a leaked publication
+claim that made unrelated assertions fail; a pin asserting the presence of the
+very shape its label forbade; a probe capturing the subject through a **pipe**,
+forking the write it existed to observe; and a stub whose behaviour depended on
+invocation count. A probe verifying fork-sensitive state must not itself fork —
+pipes, command substitution and process substitution all do. And the division of
+labour worth remembering: the product defects were found by running the product;
+the test defects were found by *someone else* running the tests.
+
+One structural note on cadence: rounds three and four each fixed defects created
+by the previous round's fix — the confirmation gap, then the freeze mechanics,
+then the writer the freeze needed. That is not an argument against the fixes but
+for the review cadence, and a reason to expect at least one more round after any
+correction that introduces a new mechanism on a destructive path.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
