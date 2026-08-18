@@ -656,7 +656,8 @@ command tmux -S "$SC_PATH" kill-server 2>/dev/null || true
 command tmux -L "$SC_NAME" kill-server 2>/dev/null || true
 
 # ── issue #4 BLOCKER: prompt-delivery children must not inherit fd 8 ──
-# send_agent_cmd's codex-resume and opencode branches spawn a subshell with `&`
+# send_agent_cmd's codex-resume branch spawns a subshell with `&` (the opencode branch
+# did too until #53 moved its context to OPENCODE_CONFIG and deleted the paste)
 # that sleeps 3s before pasting. A child INHERITS open descriptors, so while the
 # lifecycle lock is held across agent launch those children kept it alive: the
 # parent's `exec 8>&-` closes only its own copy, and a competing `ae end` blocked
@@ -666,44 +667,50 @@ command tmux -L "$SC_NAME" kill-server 2>/dev/null || true
 # tests/unit pin WHERE the release sits among the top-level call sites, and they
 # pass the violating shape without complaint — position cannot see descriptor
 # inheritance. Measured before the fix: competitor waited 3016ms (codex) and
-# 3006ms (opencode); after: 4ms both.
+# 3006ms (opencode, since retired); after: 4ms both.
 if command -v flock >/dev/null 2>&1; then
-    for _fdb in codex opencode; do
-        _FD_ROOT="$(mktemp -d "$TMPDIR/aefd.XXXXXX")"
-        _FD_LOCK="$_FD_ROOT/lock"
-        : >"$_FD_LOCK"
-        # Scope to send_agent_cmd FIRST: ae mentions codex resume in more than one
-        # place and the others have no subshell at all. Extracting one of those made an
-        # earlier version of this probe pass against unfixed ae.
-        #
-        # ANCHORED ON THE DELIVERY CALL, not on a `case` label. The first version
-        # matched the arm `        codex*resume*)`; when that classification moved into
-        # an `if` — the built command can no longer be trusted to classify itself — the
-        # extractor silently produced an EMPTY fragment, so the probe stopped testing
-        # anything and took the suite down with it. What this probe is about is the
-        # backgrounded subshell around _deliver_launch_prompt, so that is what it finds:
-        # the enclosing `if [[ -n "$prompt" ]]` block, whatever encloses THAT.
-        awk -v b="$_fdb" '
-            /^send_agent_cmd\(\) \{/ { infn = 1 }
-            infn && /if \[\[ -n "\$prompt" \]\]; then/ { buf = $0 "\n"; cap = 1; want = 0; next }
-            infn && cap { buf = buf $0 "\n" }
-            infn && cap && $0 ~ ("_deliver_launch_prompt \"\\$pane\" " b) { want = 1 }
-            infn && cap && /^ *fi$/ { if (want) { printf "%s", buf; exit } cap = 0 }
-        ' "$AE" >"$_FD_ROOT/branch.sh"
-        assert_eq "fd8 probe ($_fdb): extracted a backgrounded subshell to test" "1" \
-            "$(command grep -qF ') &' "$_FD_ROOT/branch.sh" && echo 1 || echo 0)"
-        # The fragment is already a complete `if … fi`, so it runs as extracted.
-        command cp "$_FD_ROOT/branch.sh" "$_FD_ROOT/body.sh"
-        # Quoted heredoc: the branch body must NOT be expanded while writing this.
-        #
-        # THE CHILD MUST STAY ALIVE while containment is measured. Delivery is what
-        # keeps it alive in production (a bounded readiness wait, then a paste); here it
-        # blocks. Without meta_dir/slot defined and _deliver_launch_prompt stubbed, the
-        # fragment aborted on the first unbound expansion under `set -u` — so the lock
-        # came free because the child DIED, not because it closed fd 8, and this leg was
-        # green against a product with `exec 8>&-` deleted. The control below is the
-        # only reason we know it is not green like that again.
-        cat >"$_FD_ROOT/run.sh" <<'FDSTUB'
+    # codex only since #53: opencode's context rides OPENCODE_CONFIG as system-level
+    # instructions, so it has no launch-time paste and therefore no backgrounded
+    # delivery child to inherit fd 8. The loop is gone with it — one tool needs no
+    # iteration, and a single-item loop is a lie about what varies. (Removing opencode
+    # did not weaken this probe quietly: its extractor returned an EMPTY fragment and
+    # took the whole suite down, which is the extractor working as designed.)
+    _fdb=codex
+    _FD_ROOT="$(mktemp -d "$TMPDIR/aefd.XXXXXX")"
+    _FD_LOCK="$_FD_ROOT/lock"
+    : >"$_FD_LOCK"
+    # Scope to send_agent_cmd FIRST: ae mentions codex resume in more than one
+    # place and the others have no subshell at all. Extracting one of those made an
+    # earlier version of this probe pass against unfixed ae.
+    #
+    # ANCHORED ON THE DELIVERY CALL, not on a `case` label. The first version
+    # matched the arm `        codex*resume*)`; when that classification moved into
+    # an `if` — the built command can no longer be trusted to classify itself — the
+    # extractor silently produced an EMPTY fragment, so the probe stopped testing
+    # anything and took the suite down with it. What this probe is about is the
+    # backgrounded subshell around _deliver_launch_prompt, so that is what it finds:
+    # the enclosing `if [[ -n "$prompt" ]]` block, whatever encloses THAT.
+    awk -v b="$_fdb" '
+        /^send_agent_cmd\(\) \{/ { infn = 1 }
+        infn && /if \[\[ -n "\$prompt" \]\]; then/ { buf = $0 "\n"; cap = 1; want = 0; next }
+        infn && cap { buf = buf $0 "\n" }
+        infn && cap && $0 ~ ("_deliver_launch_prompt \"\\$pane\" " b) { want = 1 }
+        infn && cap && /^ *fi$/ { if (want) { printf "%s", buf; exit } cap = 0 }
+    ' "$AE" >"$_FD_ROOT/branch.sh"
+    assert_eq "fd8 probe ($_fdb): extracted a backgrounded subshell to test" "1" \
+        "$(command grep -qF ') &' "$_FD_ROOT/branch.sh" && echo 1 || echo 0)"
+    # The fragment is already a complete `if … fi`, so it runs as extracted.
+    command cp "$_FD_ROOT/branch.sh" "$_FD_ROOT/body.sh"
+    # Quoted heredoc: the branch body must NOT be expanded while writing this.
+    #
+    # THE CHILD MUST STAY ALIVE while containment is measured. Delivery is what
+    # keeps it alive in production (a bounded readiness wait, then a paste); here it
+    # blocks. Without meta_dir/slot defined and _deliver_launch_prompt stubbed, the
+    # fragment aborted on the first unbound expansion under `set -u` — so the lock
+    # came free because the child DIED, not because it closed fd 8, and this leg was
+    # green against a product with `exec 8>&-` deleted. The control below is the
+    # only reason we know it is not green like that again.
+    cat >"$_FD_ROOT/run.sh" <<'FDSTUB'
 set -uo pipefail
 pane_current_command() { printf '%s' "$BRANCHNAME"; }
 tmux() { :; }
@@ -715,28 +722,27 @@ flock -n 8 || exit 2
 source "$BODYFILE"
 exec 8>&-
 FDSTUB
-        # The FACT is blocked-vs-immediate; the millisecond count was
-        # ornamentation. EPOCHREALTIME is Bash 5 only and ae's floor is 4.0,
-        # where under set -u reading it aborts unbound — so a short flock
-        # timeout carries the whole assertion. The child sleeps 3s, so a
-        # half-second budget cleanly separates "already free" from "still held".
-        _fd_free() { # <body-file> <lock-file> -> 1 = free within the budget
-            : >"$2"
-            BRANCHNAME="$_fdb" LOCKPATH="$2" BODYFILE="$1" FD_META="$_FD_ROOT" \
-                "${BASH:-bash}" "$_FD_ROOT/run.sh" >/dev/null 2>&1
-            if flock -w 0.5 "$2" true 2>/dev/null; then echo 1; else echo 0; fi
-        }
-        assert_eq "fd8 ($_fdb): lock is free once send_agent_cmd returns (child closed fd 8)" "1" \
-            "$(_fd_free "$_FD_ROOT/body.sh" "$_FD_ROOT/lock.real")"
-        # MUTATION CONTROL, in the suite rather than in someone's head: strip the close
-        # and the same probe must go RED. A guard never observed to fail is not a guard.
-        command grep -v '^ *exec 8>&-$' "$_FD_ROOT/body.sh" >"$_FD_ROOT/body.mutant.sh"
-        assert_eq "fd8 ($_fdb): the control fragment really lost its close" "1" \
-            "$(command cmp -s "$_FD_ROOT/body.sh" "$_FD_ROOT/body.mutant.sh" && echo 0 || echo 1)"
-        assert_eq "fd8 ($_fdb) CONTROL: without exec 8>&- the child holds the lock" "0" \
-            "$(_fd_free "$_FD_ROOT/body.mutant.sh" "$_FD_ROOT/lock.mutant")"
-        rm -rf "$_FD_ROOT"
-    done
+    # The FACT is blocked-vs-immediate; the millisecond count was
+    # ornamentation. EPOCHREALTIME is Bash 5 only and ae's floor is 4.0,
+    # where under set -u reading it aborts unbound — so a short flock
+    # timeout carries the whole assertion. The child sleeps 3s, so a
+    # half-second budget cleanly separates "already free" from "still held".
+    _fd_free() { # <body-file> <lock-file> -> 1 = free within the budget
+        : >"$2"
+        BRANCHNAME="$_fdb" LOCKPATH="$2" BODYFILE="$1" FD_META="$_FD_ROOT" \
+            "${BASH:-bash}" "$_FD_ROOT/run.sh" >/dev/null 2>&1
+        if flock -w 0.5 "$2" true 2>/dev/null; then echo 1; else echo 0; fi
+    }
+    assert_eq "fd8 ($_fdb): lock is free once send_agent_cmd returns (child closed fd 8)" "1" \
+        "$(_fd_free "$_FD_ROOT/body.sh" "$_FD_ROOT/lock.real")"
+    # MUTATION CONTROL, in the suite rather than in someone's head: strip the close
+    # and the same probe must go RED. A guard never observed to fail is not a guard.
+    command grep -v '^ *exec 8>&-$' "$_FD_ROOT/body.sh" >"$_FD_ROOT/body.mutant.sh"
+    assert_eq "fd8 ($_fdb): the control fragment really lost its close" "1" \
+        "$(command cmp -s "$_FD_ROOT/body.sh" "$_FD_ROOT/body.mutant.sh" && echo 0 || echo 1)"
+    assert_eq "fd8 ($_fdb) CONTROL: without exec 8>&- the child holds the lock" "0" \
+        "$(_fd_free "$_FD_ROOT/body.mutant.sh" "$_FD_ROOT/lock.mutant")"
+    rm -rf "$_FD_ROOT"
 else
     printf 'NOTE: fd8 inheritance probe SKIPPED — flock not available.\n' >&2
 fi

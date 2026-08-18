@@ -815,6 +815,16 @@ launch_rerun_command() {
 # The generator is passed as a command, not piped in: a pipeline's producer can
 # fail after writing a prefix, and `cat` downstream would happily publish that
 # prefix. Called this way its exit status is checked before anything is renamed.
+# Data sibling of the executable chokepoint: same atomic temp+mode+rename, mode 0600.
+# These are read by a tool, never run, so they must not carry an executable bit — and
+# they must never be published by hand, for the reason the chokepoint exists: a
+# generator that dies mid-write would otherwise leave a truncated artifact in place.
+_publish_data_artifact() { # <dest> <generator...>
+    local dest="$1"
+    shift
+    _publish_executable_artifact "$dest" 0600 "$@"
+}
+
 _publish_executable_artifact() {
     local dest="$1" mode="$2"
     shift 2
@@ -906,7 +916,10 @@ wait_for_agent_start() {
 
     for ((i = 0; i < tries; i++)); do
         current="$(pane_current_command "$pane")"
-        if [[ "$current" == "$tool_kind" ]]; then
+        # opencode's process reports as "opencode.exe" (its bun-built launcher), so an
+        # exact comparison never matched and this wait silently degraded to the
+        # is-it-still-a-shell check. Compare on the name without a platform suffix.
+        if [[ "${current%.exe}" == "$tool_kind" ]]; then
             return 0
         fi
         if ! command_is_shell "$current"; then
@@ -928,7 +941,7 @@ reset_shell_launch_input() {
 
 # Map command prefix to human-readable tool name
 tool_name_from_cmd() {
-    case "$1" in
+    case "$(_cmd_strip_env_prefix "$1")" in
         claude*) echo "claude code" ;;
         codex*) echo "codex" ;;
         gemini*) echo "gemini cli" ;;
@@ -1349,6 +1362,33 @@ build_ae_context() {
 
 # Inject ae workspace context into agent system prompt (survives context compaction)
 # Claude Code: --append-system-prompt; Codex: -c developer_instructions; others: initial prompt
+# OpenCode takes no system-prompt flag, but OPENCODE_CONFIG points it at a config whose
+# `instructions` array is loaded as system-level content — MEASURED: a marker present
+# only in the instructions file is recited back by the model, and the config MERGES
+# rather than replaces (the operator's mcp/provider/model survive, and their own
+# `instructions` entries are CONCATENATED after ours rather than dropped).
+#
+# That is what lifts opencode to the claude/codex tier: context that is present in
+# every turn instead of a first-message paste that decays under compaction, and it
+# arrives without the launch-readiness gate on the critical path.
+#
+# Both files live in the SESSION META DIR beside the other per-slot artifacts — never
+# in the repo, never in the operator's ~/.config/opencode.
+_opencode_context_files() { # <meta-dir> <slot> <context-text> -> path to the config
+    local meta_dir="$1" slot="$2" ctx="$3"
+    local safe_slot="${slot//[^A-Za-z0-9._-]/_}"
+    local ctx_file="${meta_dir}/opencode.${safe_slot}.md"
+    local cfg_file="${meta_dir}/opencode.${safe_slot}.json"
+    _publish_data_artifact "$ctx_file" printf '%s\n' "$ctx" || return 1
+    # ae_json_escape, not the _json_escape alias: the alias is a one-liner, and the
+    # awk-range extractor used by the unit harness cannot load a function whose body
+    # does not close on its own line — the path came out empty and the config was
+    # silently useless.
+    _publish_data_artifact "$cfg_file" printf '{"instructions":["%s"]}\n' "$(ae_json_escape "$ctx_file")" || return 1
+    printf '%s' "$cfg_file"
+    return 0
+}
+
 inject_ae_context() {
     local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}" slot="${5:-}"
     local ctx
@@ -1401,6 +1441,20 @@ inject_ae_context() {
             local escaped="${full_ctx//\'/\'\\\'\'}"
             echo "${cmd} '${escaped}'"
             ;;
+        opencode*)
+            # No prompt suffix here: "This is context only, wait for a task" exists
+            # because gemini and grok receive a USER TURN. This is system-level content
+            # and reads oddly as an instruction to itself.
+            local cfg
+            if cfg="$(_opencode_context_files "$meta_dir" "${slot:-main}" "$ctx")"; then
+                echo "env OPENCODE_CONFIG=$(shell_quote "$cfg") ${cmd}"
+            else
+                # Context could not be published: launch anyway rather than not at all,
+                # and say so — a contextless agent is recoverable, a missing one is not.
+                echo "ae: could not write opencode context for '${slot:-main}' — launching without ae context" >&2
+                echo "$cmd"
+            fi
+            ;;
         *) echo "$cmd" ;;
     esac
 }
@@ -1411,21 +1465,12 @@ initial_prompt_for_cmd() {
     case "$cmd" in
         claude* | gemini* | grok*) echo "" ;; # context injected via CLI flag/argv
         codex*) echo "Go" ;;                  # codex needs a user message to act on developer_instructions
-        opencode*)
-            local ctx
-            local launch_marker=""
-            ctx="$(build_ae_context "$meta_dir" "$session" "$work_dir" "$slot")"
-            if [[ -n "$slot" && -f "${meta_dir}/meta" ]]; then
-                local launch_id
-                launch_id="$(read_launch_id_for_slot "$meta_dir" "$slot")"
-                if [[ -n "$launch_id" ]]; then
-                    # Meta keys are generic (launch_id.<slot>), but persisted markers stay tool-specific
-                    # because the matching logic searches different external storage backends per tool.
-                    launch_marker=$'\n'"AE_OPENCODE_LAUNCH_ID=${launch_id}"$'\n'"AE_OPENCODE_SLOT=${slot}"
-                fi
-            fi
-            printf '%s' "IMPORTANT — read and internalize these workspace instructions before doing anything else. They apply for the ENTIRE session. ${ctx}${launch_marker} Confirm you understood by briefly listing the other agents and available helpers."
-            ;;
+        # opencode's context now arrives as system-level `instructions` via
+        # OPENCODE_CONFIG, so there is nothing to paste and nothing to wait for. The
+        # launch-readiness gate is off its critical path entirely: a paste that timed
+        # out used to mean an agent running with ZERO ae context (measured: 45s
+        # timeout, 5588 bytes preserved, agent live and contextless).
+        opencode*) echo "" ;;
         *) echo "" ;; # unknown agents: no injection (no reliable delivery method)
     esac
 }
@@ -1463,8 +1508,70 @@ detect_current_session() {
 }
 
 # Detect tool kind from command (for staleness checks on resume)
+# ae prefixes an env assignment onto some launch commands (opencode's OPENCODE_CONFIG;
+# claude's nesting guards). Tool detection matches on the BINARY, so a leading `env`,
+# its -u/-i options, and any VAR=val words come off first.
+#
+# It walks WORD BY WORD from the head and stops at the first thing that is not a
+# prefix — it must never scan the whole command, whose tail can be kilobytes of
+# injected prose containing "=" and glob characters. (Testing `$cmd == *=*` would match
+# any command whose prompt happens to contain an equals sign; the first WORD is the
+# only safe thing to look at.)
+# Callers that hold only a string still need an answer, and "approximately correct" is
+# not one. Splitting on spaces broke on the command ae ITSELF generates: a session-meta
+# path containing a space is shell-quoted, so `env OPENCODE_CONFIG=/tmp/A\ B/x.json
+# opencode` split mid-value and classified UNKNOWN. And `-u` takes an argument while
+# `-i` does not, so treating them alike ate the binary.
+#
+# So this consumes SHELL WORDS — honouring quotes and backslash escapes — and stops at
+# the first word that is not part of an env prefix, returning the command from there.
+# It never scans past that word: the tail can be kilobytes of injected prose.
+_cmd_strip_env_prefix() { # <cmd>
+    local cmd="$1"
+    local n=${#cmd} i=0 ch q word wstart skip=0
+    while :; do
+        while ((i < n)) && [[ "${cmd:i:1}" == " " || "${cmd:i:1}" == $'\t' ]]; do ((i += 1)); done
+        ((i < n)) || break
+        wstart=$i
+        word=""
+        q=""
+        while ((i < n)); do
+            ch="${cmd:i:1}"
+            if [[ -n "$q" ]]; then
+                if [[ "$ch" == "$q" ]]; then q=""; else word+="$ch"; fi
+            elif [[ "$ch" == "\\" ]]; then
+                i=$((i + 1))
+                word+="${cmd:i:1}"
+            elif [[ "$ch" == "'" || "$ch" == '"' ]]; then
+                q="$ch"
+            elif [[ "$ch" == " " || "$ch" == $'\t' ]]; then
+                break
+            else
+                word+="$ch"
+            fi
+            i=$((i + 1))
+        done
+        if ((skip)); then
+            skip=0
+            continue
+        fi
+        case "$word" in
+            env) ;;       # the launcher itself
+            -i) ;;        # takes NO argument
+            -u) skip=1 ;; # ...unlike -u, which takes one
+            *=*) ;;       # VAR=value, quotes already consumed above
+            *)            # the binary: hand back the command from here on
+                printf '%s' "${cmd:wstart}"
+                return 0
+                ;;
+        esac
+    done
+    printf '%s' "$cmd" # nothing but prefix words — hand back what we were given
+    return 0
+}
+
 tool_kind_from_cmd() {
-    case "$1" in
+    case "$(_cmd_strip_env_prefix "$1")" in
         claude*) echo "claude" ;;
         codex*) echo "codex" ;;
         gemini*) echo "gemini" ;;
@@ -9636,7 +9743,12 @@ send_agent_cmd() {
     local pane="$1" cmd="$2" prompt="$3" meta_dir="$4" slot="$5" resume_id="${6:-}" pre_injection_cmd="${7:-}"
     local tool_kind launch_cmd launch_script launch_exec current
 
-    tool_kind="$(tool_kind_from_cmd "$cmd")"
+    # THE KIND IS TRANSPORTED, not recovered from the wrapped string. By this point
+    # $cmd may carry an `env OPENCODE_CONFIG=…` prefix whose value is shell-quoted, and
+    # re-parsing that is the same disease as re-deriving the resume id (#30), the
+    # injection boundary (#43) and the manifest tool (#46). The pre-injection command is
+    # what ae composed from config: the binary is word one, no prefixes, no prose.
+    tool_kind="$(tool_kind_from_cmd "${pre_injection_cmd:-$cmd}")"
     launch_cmd="$(build_launch_command "$cmd" "$prompt" "$resume_id" "$pre_injection_cmd")"
     # Checked assignment, not a bare one: `x="$(fn)"` swallows the failure
     # wherever errexit is suspended (any caller reached through if/&&/||), and
@@ -9680,18 +9792,9 @@ send_agent_cmd() {
         return 0
     fi
 
-    case "$cmd" in
-        opencode*)
-            # OpenCode has no system prompt flag — launch TUI, then paste context as first message.
-            if [[ -n "$prompt" ]]; then
-                (
-                    # Same lifecycle-lock inheritance as the codex branch above.
-                    exec 8>&-
-                    _deliver_launch_prompt "$pane" opencode "$prompt" "$meta_dir" "$slot"
-                ) &
-            fi
-            ;;
-    esac
+    # No opencode branch here any more: its context rides OPENCODE_CONFIG as
+    # system-level instructions, so there is no launch-time paste to defer. codex
+    # resume above is the only remaining deferred delivery.
 }
 
 # LAUNCH-TIME DELIVERY, GATED. This branch used to be `sleep 3 && if

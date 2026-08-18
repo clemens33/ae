@@ -92,7 +92,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(_ae_tac|_ae_stat|_ae_epoch|_ae_sed_inplace|_ae_json_first|_ae_json_first_num|_ae_md5|_ae_inside_tmux|daemon_session_running|launch_rerun_command|write_launch_script|_publish_executable_artifact|_emit_launch_script|_validate_session_name|_session_name_usable|_session_path_is_safe|_require_session_path_safe|_transfer_remote_path_is_safe|_canonical_dir|_path_is_direct_child|_spawn_rollback|parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|_end_target_kind|_tmux_err_is_clean_dead|_ae_install_tmux_shim|_end_sweep_servers|read_session_meta|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|_launch_injected_head|_launch_is_resume|_launch_id_probeable|_launch_probe_claude|_launch_probe_codex|_launch_resume_decider|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(_ae_tac|_ae_stat|_ae_epoch|_ae_sed_inplace|_ae_json_first|_ae_json_first_num|_ae_md5|_ae_inside_tmux|daemon_session_running|launch_rerun_command|write_launch_script|_publish_executable_artifact|_emit_launch_script|_validate_session_name|_session_name_usable|_session_path_is_safe|_require_session_path_safe|_transfer_remote_path_is_safe|_canonical_dir|_path_is_direct_child|_spawn_rollback|parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|_end_target_kind|_tmux_err_is_clean_dead|_ae_install_tmux_shim|_end_sweep_servers|read_session_meta|_cmd_strip_env_prefix|ae_json_escape|_publish_data_artifact|_opencode_context_files|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|_launch_injected_head|_launch_is_resume|_launch_id_probeable|_launch_probe_claude|_launch_probe_codex|_launch_resume_decider|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -958,9 +958,11 @@ assert_eq "read_launch_time_for_slot: invalid values coerce to zero" \
     "$(read_launch_time_for_slot "$_meta_dir" "worker.0")"
 rm -rf "$_meta_dir"
 
+# opencode is no longer the unknown-agent example: it has its own arm (#53). Use a tool
+# ae genuinely does not know, or this stops testing the fallback at all.
 assert_eq "ae_context: unknown agent is passthrough" \
-    "opencode" \
-    "$(inject_ae_context "opencode" "/tmp/ae-test")"
+    "mytool --flag" \
+    "$(inject_ae_context "mytool --flag" "/tmp/ae-test")"
 
 # inject_ae_context with [prompt] instructions
 _test_config="$(mktemp)"
@@ -1017,14 +1019,112 @@ assert_eq "initial_prompt: empty for grok (context already on argv)" \
     "" \
     "$(initial_prompt_for_cmd "grok --always-approve -m grok-build" "/tmp/ae" "sess" "/home/user")"
 
-result_opencode="$(initial_prompt_for_cmd "opencode" "/tmp/ae" "sess" "/home/user")"
-assert_eq "initial_prompt: opencode gets context" \
-    "1" \
-    "$([[ "$result_opencode" == *"ae multi-agent workspace"* ]] && echo 1 || echo 0)"
+# #53: opencode's context is system-level `instructions` via OPENCODE_CONFIG, so there
+# is NOTHING to paste. The old first-message paste decayed under compaction and, when
+# the readiness gate timed out, left the agent running with zero ae context.
+assert_eq "initial_prompt: opencode pastes nothing (context rides OPENCODE_CONFIG)" \
+    "" \
+    "$(initial_prompt_for_cmd "opencode" "/tmp/ae" "sess" "/home/user")"
 
-assert_eq "initial_prompt: opencode gets helpers path" \
-    "1" \
-    "$([[ "$result_opencode" == *"Helper scripts in /tmp/ae/"* ]] && echo 1 || echo 0)"
+# ── #53: opencode reaches the claude/codex tier via OPENCODE_CONFIG ──────────────
+# Its context is now system-level `instructions` — present in every turn, not a first
+# message that decays under compaction and dies with the readiness gate. MEASURED on
+# opencode 1.18.18 before relying on it: a marker present only in the instructions file
+# is recited back by the model; the config MERGES (operator's mcp/provider/model
+# survive) and instruction arrays CONCATENATE, so an operator's own entries are kept.
+_oc_meta="$(mktemp -d)"
+_oc_cmd="$(inject_ae_context "opencode --auto" "$_oc_meta" testsess /tmp/w worker.0 2>/dev/null)"
+assert_eq "#53: opencode launches under OPENCODE_CONFIG, with the command intact" "1" \
+    "$([[ "$_oc_cmd" == "env OPENCODE_CONFIG=${_oc_meta}/opencode.worker.0.json opencode --auto" ]] && echo 1 || echo 0)"
+# The pair lands in the SESSION META DIR beside the other per-slot artifacts — never the
+# repo, never the operator's ~/.config/opencode.
+assert_eq "#53: the config points at a context file that exists and holds the context" "1" \
+    "$(_cfg="${_oc_meta}/opencode.worker.0.json"
+       _ctx="$(command sed -E 's/.*\["([^"]+)"\].*/\1/' "$_cfg")"
+       [[ "$_ctx" == "${_oc_meta}/opencode.worker.0.md" && -s "$_ctx" ]] \
+        && command grep -q 'ae multi-agent workspace' "$_ctx" && echo 1 || echo 0)"
+# They are DATA. A file a tool reads must not be executable.
+assert_eq "#53: both artifacts are published non-executable" "no no" \
+    "$(_o=""
+       for _f in "${_oc_meta}/opencode.worker.0.json" "${_oc_meta}/opencode.worker.0.md"; do
+           if [[ -x "$_f" ]]; then _o="${_o}${_o:+ }YES"; else _o="${_o}${_o:+ }no"; fi
+       done
+       printf '%s' "$_o")"
+# The "context only, wait for a task" suffix is a USER-TURN artefact (gemini/grok). As
+# system-level content it would read as an instruction to itself.
+assert_eq "#53: the user-turn suffix is not carried into system instructions" "0" \
+    "$(command grep -c 'Do NOT act on it' "${_oc_meta}/opencode.worker.0.md" | tr -d '[:space:]')"
+# Detection must survive the env prefix ae just added, or the tool reads as "unknown"
+# and every TUI behaviour keyed on kind silently switches off.
+assert_eq "#53: tool detection sees through the env prefix" "opencode|opencode" \
+    "$(printf '%s|%s' "$(tool_kind_from_cmd "$_oc_cmd")" "$(tool_name_from_cmd "$_oc_cmd")")"
+# ...and a prompt containing "=" or glob characters is not mistaken for an assignment.
+assert_eq "#53: an '=' inside a prompt is not read as an env assignment" "claude|codex|grok" \
+    "$(printf '%s|%s|%s' \
+        "$(tool_kind_from_cmd "claude --append-system-prompt 'k=v and *.md'")" \
+        "$(tool_kind_from_cmd "codex -c developer_instructions='a=b'")" \
+        "$(tool_kind_from_cmd "grok --always-approve 'ctx a=b'")")"
+# THE GENERATED WORLD, not a synthetic string. A session meta path containing a SPACE is
+# shell-quoted into the command ae emits, and a stripper that split on spaces broke in
+# the middle of that value and answered "unknown" — for a command ae itself produced.
+# The earlier pin could not see it because mktemp handed it a space-free path.
+_oc_sp="$(mktemp -d)/ae ctx"
+mkdir -p "$_oc_sp"
+_oc_spcmd="$(inject_ae_context "opencode --auto" "$_oc_sp" testsess /tmp/w main 2>/dev/null)"
+assert_eq "#53: a space-bearing meta path still classifies (the generated command)" "opencode|opencode" \
+    "$(printf '%s|%s' "$(tool_kind_from_cmd "$_oc_spcmd")" "$(tool_name_from_cmd "$_oc_spcmd")")"
+assert_eq "#53: ...and that command really did carry a quoted space" "1" \
+    "$([[ "$_oc_spcmd" == *'ae\ ctx'* || "$_oc_spcmd" == *"'ae ctx'"* || "$_oc_spcmd" == *'"ae ctx"'* ]] && echo 1 || echo 0)"
+# env's own options: -u takes an argument, -i does not. Treating them alike ate the binary.
+assert_eq "#53: env -i and env -u are both consumed correctly" "opencode|opencode|opencode" \
+    "$(printf '%s|%s|%s' \
+        "$(tool_kind_from_cmd "env -i opencode --auto")" \
+        "$(tool_kind_from_cmd "env -u FOO opencode --auto")" \
+        "$(tool_kind_from_cmd "env -u FOO -i BAR=1 opencode --auto")")"
+rm -rf "${_oc_sp%/*}"
+unset _oc_sp _oc_spcmd
+# The kind is TRANSPORTED at the one call site that holds a wrapped command — driven
+# through the REAL send_agent_cmd rather than asserted from the source, because what
+# matters is the kind that reaches the readiness wait, not the shape of a line. The
+# stub records the argument it was handed.
+_oc_kind() { # <cmd> <pre-injection-cmd> -> the tool kind send_agent_cmd resolved
+    local _md
+    _md="$(mktemp -d)"
+    cat >"${_md}/probe.sh" <<'PROBE'
+set -uo pipefail
+AE_SOURCE="$(cat "$AE_BIN")"
+for fn in shell_quote _cmd_strip_env_prefix tool_kind_from_cmd _launch_id_probeable \
+    _launch_injected_head _launch_is_resume _launch_probe_claude _launch_probe_codex \
+    _launch_resume_decider build_launch_command send_agent_cmd; do
+    eval "$(awk "/^${fn}\(\) \{/,/^\}\$/" <<<"$AE_SOURCE")"
+done
+write_launch_script() { printf '%s/launch.sh' "$MD"; }
+tmux_paste_submit() { return 0; }
+wait_for_agent_start() { printf '%s' "$2" >"${MD}/kind"; return 0; }
+exec 8>"${MD}/lock"
+send_agent_cmd '%0' "$CMD" "" "$MD" main "" "$PRE" >/dev/null 2>&1
+PROBE
+    AE_BIN="$AE_BIN" MD="$_md" CMD="$1" PRE="$2" "${BASH:-bash}" "${_md}/probe.sh" >/dev/null 2>&1 || true
+    command cat "${_md}/kind" 2>/dev/null || printf 'NONE'
+    rm -rf "$_md"
+}
+assert_eq "#53: the readiness wait receives the transported kind, not a re-parsed one" "opencode" \
+    "$(_oc_kind "env OPENCODE_CONFIG=/tmp/a\\ b/oc.json opencode --auto" "opencode --auto")"
+# Control: with nothing transported it must still work for an unwrapped command, or the
+# pin would pass for the wrong reason.
+assert_eq "#53: ...and an unwrapped command classifies with nothing transported" "codex" \
+    "$(_oc_kind "codex --yolo" "")"
+unset -f _oc_kind
+# STRUCTURAL, and labelled as such. With the parser correct, re-deriving the kind from
+# the wrapped command and transporting it AGREE on every shape ae generates — so no
+# behavioural pin can tell them apart (checked: swapping the call back to $cmd fails
+# nothing above). The transport still matters, because its correctness does not DEPEND
+# on the parser staying correct, and that is a property of the wiring rather than of an
+# observable output. Asserting the call site is the only way to hold it.
+assert_eq "#53: send_agent_cmd classifies from the pre-injection command (structural)" "1" \
+    "$([[ "$AE_SOURCE" == *'tool_kind="$(tool_kind_from_cmd "${pre_injection_cmd:-$cmd}")"'* ]] && echo 1 || echo 0)"
+rm -rf "$_oc_meta"
+unset _oc_meta _oc_cmd
 
 # ── lead-default Part 1: DEFAULT_CONFIG — model-named aliases, strict pins ──
 # Extract the DEFAULT_CONFIG string from source, parse it with the real get_config.
@@ -1137,12 +1237,16 @@ assert_eq "colead: lead-solo worker.0 is a plain WORKER (colead is structural, n
 assert_eq "colead: composes with the mode block (local caution present)" "1" "$([[ "$_cl_colead" == *"COLEAD ROLE"* && "$_cl_colead" == *"LIVE checkout"* ]] && echo 1 || echo 0)"
 rm -rf "$_cl_dir"
 
+# The launch marker went with the paste. It existed so find_opencode_session_by_launch_id
+# could match a message part carrying AE_OPENCODE_LAUNCH_ID — MEASURED after this change:
+# instructions content does NOT reach opencode's message parts (0 rows), so that matcher
+# is inert for opencode and capture runs on the cwd+launch_time path, which was already
+# the effective path whenever the paste timed out.
 _meta_dir="$(mktemp -d)"
 printf 'launch_id.worker.0=opencode-123\n' > "$_meta_dir/meta"
-result_opencode_slot="$(initial_prompt_for_cmd "opencode" "$_meta_dir" "sess" "/home/user" "worker.0")"
-assert_eq "initial_prompt: opencode slot includes launch marker" \
-    "1" \
-    "$([[ "$result_opencode_slot" == *"AE_OPENCODE_LAUNCH_ID=opencode-123"* ]] && echo 1 || echo 0)"
+assert_eq "initial_prompt: opencode carries no launch marker (nothing is pasted)" \
+    "" \
+    "$(initial_prompt_for_cmd "opencode" "$_meta_dir" "sess" "/home/user" "worker.0")"
 rm -rf "$_meta_dir"
 
 # ── helper generation guards ────────────────────────────────────────
@@ -3840,10 +3944,18 @@ done <<<"$_pub_raw"
 assert_eq "chokepoint: the only raw executable-mode chmod left in ae is its own" \
     'if ! chmod "$mode" "$tmp"; then' "${_pub_left%$'\n'}"
 unset _pub_raw _pub_left _pl _pn _pnum _ptext _pnext
-assert_eq "chokepoint: one definition, and both non-session artifact writers enter it" "1|2" \
+# Three callers now: the launch script, the telegram daemon, and _publish_data_artifact
+# — the DATA sibling (#53), which delegates here rather than growing a second temp+mode
+# +rename of its own. A wrapper that enters the chokepoint is the discipline working,
+# not a bypass; what the guard forbids is a second definition or a hand-rolled publish.
+assert_eq "chokepoint: one definition, and every artifact writer enters it" "1|3" \
     "$(_d="$(printf '%s' "$AE_SOURCE" | command grep -c '^_publish_executable_artifact() {' || true)"
        _u="$(printf '%s' "$AE_SOURCE" | command grep -c '_publish_executable_artifact "' || true)"
        printf '%s|%s' "$_d" "$_u")"
+# ...and the data sibling publishes NON-executable, since these files are read by a
+# tool and never run.
+assert_eq "chokepoint: the data sibling publishes mode 0600" "1" \
+    "$([[ "$AE_SOURCE" == *'_publish_executable_artifact "$dest" 0600 "$@"'* ]] && echo 1 || echo 0)"
 
 # Behavioural: atomicity BY CONSTRUCTION (#31). The generator is passed as a
 # command, not piped in, precisely so its failure is visible before anything is
@@ -8988,9 +9100,13 @@ _sac="$(awk '/^send_agent_cmd\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 assert_eq "#36: launch delivery no longer sleeps-and-hopes" "1" \
     "$(_code="$(command grep -v '^ *#' <<<"$_sac" || true)"
        [[ "$_code" != *'sleep 3 &&'* && "$_code" != *'pane_current_command "$pane")" == "codex"'* \
-        && "$_code" == *'_deliver_launch_prompt "$pane" codex "$prompt" "$meta_dir" "$slot"'* \
-        && "$_code" == *'_deliver_launch_prompt "$pane" opencode "$prompt" "$meta_dir" "$slot"'* ]] \
+        && "$_code" == *'_deliver_launch_prompt "$pane" codex "$prompt" "$meta_dir" "$slot"'* ]] \
         && echo 1 || echo 0)"
+# opencode's deferred delivery is GONE, not refactored (#53): its context is system-level
+# `instructions`, so there is no launch-time paste to gate. codex resume is the only
+# remaining deferred delivery — it cannot take an inline prompt.
+assert_eq "#53: opencode has no launch-time delivery left to gate" "0" \
+    "$(command grep -c '_deliver_launch_prompt "$pane" opencode' <<<"$_sac" | tr -d '[:space:]')"
 # BEHAVIOURAL, driving the REAL _deliver_launch_prompt. The integration block
 # evaluates readiness FRAMES only — a specimen-scope gap the reviewer named: it never
 # executed the reporter itself. This runs it under `set -e`, the way the detached
