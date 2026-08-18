@@ -552,9 +552,9 @@ _launch_is_resume() { # <built-cmd> <resume-id> <pre-injection-cmd>
     [[ -n "$head" ]] || return 1
     # The tool is read off the HEAD, which is ae's own composition — never off the
     # tail, which is prose.
-    case "$head" in
-        codex*) token=" resume ${id}" ;;
-        claude*) token=" --resume ${id}" ;;
+    case "$(tool_kind_from_cmd "$head")" in
+        codex) token=" resume ${id}" ;;
+        claude) token=" --resume ${id}" ;;
         *) return 1 ;;
     esac
     [[ "$head" == *"$token"* ]] || return 1
@@ -565,8 +565,8 @@ build_launch_command() {
     local cmd="$1" prompt="$2" resume_id="${3:-}" pre_injection_cmd="${4:-}"
     local launch_cmd="$cmd"
 
-    case "$cmd" in
-        codex*)
+    case "$(tool_kind_from_cmd "$cmd")" in
+        codex)
             # RESUME vs FRESH is decided by a TRANSPORTED FACT plus the command HEAD,
             # never by a glob over the whole string. ae's own injected codex context
             # says "Enable session resume by running: <meta>/_register-sid" — so
@@ -600,7 +600,7 @@ build_launch_command() {
                 return 0
             fi
             ;;
-        opencode*)
+        opencode)
             printf '%s' "$cmd"
             return 0
             ;;
@@ -613,7 +613,7 @@ build_launch_command() {
     # first-contact sends. Off => a fresh pane shows only the ornament (input-region
     # slice, colead characterization). If the flag is ignored by a future claude, a
     # returned ghost simply reads as occupied => we fail closed, never clobber.
-    if [[ "$cmd" == claude* ]]; then
+    if [[ "$(tool_kind_from_cmd "$cmd")" == claude ]]; then
         launch_cmd="env -u CLAUDECODE -u CLAUDE_CODE_SESSION CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 ${launch_cmd}"
     fi
 
@@ -766,7 +766,9 @@ launch_rerun_command() {
     # injected prose away from extract_binary_from_cmd's UNQUOTED `for w in $cmd`
     # word split (which glob-expands every word); the pre-injection command has no
     # prose in it to keep away.
-    case "$(extract_binary_from_cmd "$pre")" in
+    # THE classifier, so an env prefix or an absolute path is seen (#32). It matches
+    # the binary EXACTLY, which is what kept `claudex` and `notgrok` out before.
+    case "$(tool_kind_from_cmd "$pre")" in
         claude | grok) ;;
         *) return 0 ;;
     esac
@@ -941,12 +943,12 @@ reset_shell_launch_input() {
 
 # Map command prefix to human-readable tool name
 tool_name_from_cmd() {
-    case "$(_cmd_strip_env_prefix "$1")" in
-        claude*) echo "claude code" ;;
-        codex*) echo "codex" ;;
-        gemini*) echo "gemini cli" ;;
-        grok*) echo "grok build" ;;
-        opencode*) echo "opencode" ;;
+    case "$(_cmd_binary_kind "$1")" in
+        claude) echo "claude code" ;;
+        codex) echo "codex" ;;
+        gemini) echo "gemini cli" ;;
+        grok) echo "grok build" ;;
+        opencode) echo "opencode" ;;
         *) echo "$1" ;;
     esac
 }
@@ -1033,29 +1035,45 @@ resume_cmd_from_cmd() {
     [[ "$session_id" == "pending" ]] && session_id=""
     local clean
     clean="$(strip_session_flags "$cmd")"
-    case "$cmd" in
-        claude*)
+    # Classified through THE classifier, not a private glob over the raw string: an
+    # env-prefixed or absolute-path command matched no arm here and silently lost exact
+    # resume (#32).
+    # THE classifier (#32): these arms globbed the RAW command, so an env-prefixed
+    # binary (CLAUDE_CONFIG_DIR=… claude …) or an absolute path matched nothing and
+    # fell through every arm.
+    case "$(tool_kind_from_cmd "$cmd")" in
+        claude)
             if [[ -n "$session_id" ]]; then
                 echo "${clean} --resume ${session_id}"
             else
                 echo "${clean} --continue"
             fi
             ;;
-        codex*)
+        codex)
             if [[ -n "$session_id" ]]; then
                 # Preserve flags (e.g. --yolo) from original command for the resume subcommand
-                local codex_flags="${clean#codex}"
-                codex_flags="${codex_flags# }" # strip leading space
+                # Taken apart around the REAL binary rather than the literal word
+                # "codex": an env prefix or an absolute path made `${clean#codex}` a
+                # no-op, so the rebuilt command duplicated the whole thing after a bare
+                # `codex` and dropped the prefix.
+                # ONE tokenizer result, not a second split of its output: the binary
+                # may be a quoted or escaped path containing spaces, and re-splitting
+                # on a literal space mis-spliced it.
+                local codex_prefix codex_bin codex_flags
+                _cmd_split_binary "$clean"
+                codex_prefix="$_CMD_PREFIX"
+                codex_bin="$_CMD_BIN_RAW"
+                codex_flags="${_CMD_REST# }"
                 if [[ -n "$codex_flags" ]]; then
-                    echo "codex ${codex_flags} resume ${session_id}"
+                    echo "${codex_prefix}${codex_bin} ${codex_flags} resume ${session_id}"
                 else
-                    echo "codex resume ${session_id}"
+                    echo "${codex_prefix}${codex_bin} resume ${session_id}"
                 fi
             else
                 echo "$clean" # fresh start (--last is unreliable for concurrent sessions)
             fi
             ;;
-        opencode*)
+        opencode)
             clean="$(strip_opencode_session_flags "$clean")"
             if [[ -n "$session_id" ]]; then
                 echo "${clean} --session ${session_id}"
@@ -1063,7 +1081,7 @@ resume_cmd_from_cmd() {
                 echo "${clean} --continue"
             fi
             ;;
-        gemini*)
+        gemini)
             clean="$(strip_gemini_prompt_flags "$clean")"
             if [[ -n "$session_id" ]]; then
                 echo "${clean} --resume ${session_id}"
@@ -1071,7 +1089,7 @@ resume_cmd_from_cmd() {
                 echo "${clean} --resume latest"
             fi
             ;;
-        grok*)
+        grok)
             # claude-shaped: exact UUID resume, CWD-heuristic --continue fallback.
             # Normalize from the ORIGINAL cmd, not $clean: the generic strip_session_flags
             # ran above misses grok's short forms (-s/-r/-c) and would already have eaten
@@ -1095,15 +1113,18 @@ inject_session_id() {
     local clean
     clean="$(strip_session_flags "$cmd")"
     if [[ -n "$session_id" ]]; then
-        case "$cmd" in
+        # THE classifier (#32): these arms globbed the RAW command, so an env-prefixed
+        # binary (CLAUDE_CONFIG_DIR=… claude …) or an absolute path matched nothing and
+        # fell through every arm.
+        case "$(tool_kind_from_cmd "$cmd")" in
             # grok takes an ae-generated UUID at launch exactly like claude (verified
             # live): the id is known upfront, so resume is UUID-scoped from the first
             # cycle — no launch-token scan, no _register-sid handshake, no entry in
             # tool_kind_supports_launch_id. Re-normalize from $cmd with the grok-complete
             # stripper so a pre-existing -s/-r/-c or bare --resume in the config cannot
             # stack with — or swallow — the launch --session-id.
-            grok*) echo "$(strip_grok_session_flags "$cmd") --session-id ${session_id}" ;;
-            claude*) echo "${clean} --session-id ${session_id}" ;;
+            grok) echo "$(strip_grok_session_flags "$cmd") --session-id ${session_id}" ;;
+            claude) echo "${clean} --session-id ${session_id}" ;;
             *) echo "$clean" ;;
         esac
     else
@@ -1393,12 +1414,15 @@ inject_ae_context() {
     local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}" slot="${5:-}"
     local ctx
     ctx="$(build_ae_context "$meta_dir" "$session" "$work_dir" "$slot")"
-    case "$cmd" in
-        claude*)
+    # THE classifier (#32): these arms globbed the RAW command, so an env-prefixed
+    # binary (CLAUDE_CONFIG_DIR=… claude …) or an absolute path matched nothing and
+    # fell through every arm.
+    case "$(tool_kind_from_cmd "$cmd")" in
+        claude)
             local escaped="${ctx//\'/\'\\\'\'}"
             echo "${cmd} --append-system-prompt '${escaped}'"
             ;;
-        codex*)
+        codex)
             # Tell codex to self-register its session ID by running the slot-scoped helper script
             local slot_arg=""
             local launch_marker=""
@@ -1416,7 +1440,7 @@ inject_ae_context() {
             local escaped="${full_ctx//\'/\'\\\'\'}"
             echo "${cmd} -c developer_instructions='${escaped}'"
             ;;
-        gemini*)
+        gemini)
             local launch_marker=""
             if [[ -n "$slot" && -f "${meta_dir}/meta" ]]; then
                 local launch_id
@@ -1431,7 +1455,7 @@ inject_ae_context() {
             local escaped="${full_ctx//\'/\'\\\'\'}"
             echo "${cmd} -i '${escaped}'"
             ;;
-        grok*)
+        grok)
             # grok has NO append-style system-prompt flag: --system-prompt-override
             # REPLACES the agent's own prompt (its tooling depends on that prompt), so
             # ae must never use it. The context rides in as the POSITIONAL initial
@@ -1441,7 +1465,7 @@ inject_ae_context() {
             local escaped="${full_ctx//\'/\'\\\'\'}"
             echo "${cmd} '${escaped}'"
             ;;
-        opencode*)
+        opencode)
             # No prompt suffix here: "This is context only, wait for a task" exists
             # because gemini and grok receive a USER TURN. This is system-level content
             # and reads oddly as an instruction to itself.
@@ -1462,15 +1486,18 @@ inject_ae_context() {
 # For agents without system prompt injection, return context as emphasized initial message
 initial_prompt_for_cmd() {
     local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}" slot="${5:-}"
-    case "$cmd" in
-        claude* | gemini* | grok*) echo "" ;; # context injected via CLI flag/argv
-        codex*) echo "Go" ;;                  # codex needs a user message to act on developer_instructions
+    # THE classifier (#32): these arms globbed the RAW command, so an env-prefixed
+    # binary (CLAUDE_CONFIG_DIR=… claude …) or an absolute path matched nothing and
+    # fell through every arm.
+    case "$(tool_kind_from_cmd "$cmd")" in
+        claude | gemini | grok) echo "" ;; # context injected via CLI flag/argv
+        codex) echo "Go" ;;                # codex needs a user message to act on developer_instructions
         # opencode's context now arrives as system-level `instructions` via
         # OPENCODE_CONFIG, so there is nothing to paste and nothing to wait for. The
         # launch-readiness gate is off its critical path entirely: a paste that timed
         # out used to mean an agent running with ZERO ae context (measured: 45s
         # timeout, 5588 bytes preserved, agent live and contextless).
-        opencode*) echo "" ;;
+        opencode) echo "" ;;
         *) echo "" ;; # unknown agents: no injection (no reliable delivery method)
     esac
 }
@@ -1517,18 +1544,34 @@ detect_current_session() {
 # injected prose containing "=" and glob characters. (Testing `$cmd == *=*` would match
 # any command whose prompt happens to contain an equals sign; the first WORD is the
 # only safe thing to look at.)
-# Callers that hold only a string still need an answer, and "approximately correct" is
-# not one. Splitting on spaces broke on the command ae ITSELF generates: a session-meta
-# path containing a space is shell-quoted, so `env OPENCODE_CONFIG=/tmp/A\ B/x.json
-# opencode` split mid-value and classified UNKNOWN. And `-u` takes an argument while
-# `-i` does not, so treating them alike ate the binary.
+# THE TOKENIZER. It runs once and yields one fact in four parts, and every consumer —
+# classification, prefix extraction, command reconstruction — reads THAT rather than
+# parsing its output again. The previous shape tokenized correctly and then re-split the
+# raw suffix on a literal space, so a quoted or backslash-escaped path with a space in
+# it ('/Applications/Open Code/codex') classified UNKNOWN while the same path without a
+# space worked — the giveaway that the bug lived at shell-word boundaries. Re-parsing a
+# parse is the same disease as the two capture ranges and the re-created cycle wiring:
+# one definition, all callers.
 #
-# So this consumes SHELL WORDS — honouring quotes and backslash escapes — and stops at
-# the first word that is not part of an env prefix, returning the command from there.
-# It never scans past that word: the tail can be kilobytes of injected prose.
-_cmd_strip_env_prefix() { # <cmd>
+# Results (globals, because bash returns one value and this yields four — precedent:
+# _event_json_str through _EV):
+#   _CMD_PREFIX   raw text before the binary, prefix words included
+#   _CMD_BIN_RAW  the binary exactly as written (quotes and escapes intact)
+#   _CMD_BIN      the binary DECODED, for comparison
+#   _CMD_REST     raw text after the binary
+_cmd_split_binary() { # <cmd>
     local cmd="$1"
-    local n=${#cmd} i=0 ch q word wstart skip=0
+    local n=${#cmd} i=0 ch nxt q word wstart skip=0 bad=0
+    _CMD_PREFIX="" _CMD_BIN_RAW="" _CMD_BIN="" _CMD_REST=""
+    # VALIDATION IS SCOPED TO WHAT THIS CONSUMES — the prefix words and the binary word.
+    # The tail is passed through untouched and ae makes no claim about it. An earlier
+    # version counted trailing backslashes across the WHOLE command and was wrong both
+    # ways: `codex --yolo # note\` is valid (the backslash is inside a comment) yet was
+    # refused, suppressing all codex shaping, while `codex --yolo "unterminated` is
+    # invalid yet classified fine because the scan had already stopped at the binary.
+    # A command that was already invalid stays invalid and fails loudly at exec, which
+    # is honest: ae never promised to validate the operator's config, and writing a full
+    # shell lexer in bash is not a promise it can keep.
     while :; do
         while ((i < n)) && [[ "${cmd:i:1}" == " " || "${cmd:i:1}" == $'\t' ]]; do ((i += 1)); done
         ((i < n)) || break
@@ -1537,9 +1580,41 @@ _cmd_strip_env_prefix() { # <cmd>
         q=""
         while ((i < n)); do
             ch="${cmd:i:1}"
-            if [[ -n "$q" ]]; then
-                if [[ "$ch" == "$q" ]]; then q=""; else word+="$ch"; fi
+            if [[ "$q" == "'" ]]; then
+                # Single quotes: everything is literal, including backslashes.
+                if [[ "$ch" == "'" ]]; then q=""; else word+="$ch"; fi
+            elif [[ "$q" == '"' ]]; then
+                # Double quotes: bash honours \ only before " \ $ ` and newline;
+                # anywhere else the backslash is itself literal. Closing at the FIRST
+                # quote regardless — the old shape — cut a valid path in half and
+                # swallowed the following argument into the binary's span.
+                if [[ "$ch" == "\\" ]]; then
+                    ((i + 1 < n)) || {
+                        bad=1
+                        break
+                    }
+                    nxt="${cmd:i+1:1}"
+                    case "$nxt" in
+                        '"' | \\ | '$' | '`')
+                            word+="$nxt"
+                            i=$((i + 1))
+                            ;;
+                        $'\n') i=$((i + 1)) ;; # line continuation: nothing emitted
+                        *) word+="$ch" ;;
+                    esac
+                elif [[ "$ch" == '"' ]]; then
+                    q=""
+                else
+                    word+="$ch"
+                fi
             elif [[ "$ch" == "\\" ]]; then
+                # A command may not END in a bare backslash: that is not valid shell,
+                # and silently dropping it used to hand back a confident answer for an
+                # input no shell would run.
+                ((i + 1 < n)) || {
+                    bad=1
+                    break
+                }
                 i=$((i + 1))
                 word+="${cmd:i:1}"
             elif [[ "$ch" == "'" || "$ch" == '"' ]]; then
@@ -1551,6 +1626,9 @@ _cmd_strip_env_prefix() { # <cmd>
             fi
             i=$((i + 1))
         done
+        # An unterminated quote is malformed too.
+        [[ -z "$q" ]] || bad=1
+        if ((bad)); then break; fi
         if ((skip)); then
             skip=0
             continue
@@ -1559,24 +1637,52 @@ _cmd_strip_env_prefix() { # <cmd>
             env) ;;       # the launcher itself
             -i) ;;        # takes NO argument
             -u) skip=1 ;; # ...unlike -u, which takes one
-            *=*) ;;       # VAR=value, quotes already consumed above
-            *)            # the binary: hand back the command from here on
-                printf '%s' "${cmd:wstart}"
+            *=*) ;;       # VAR=value; quotes already consumed above
+            *)            # the binary
+                _CMD_PREFIX="${cmd:0:wstart}"
+                _CMD_BIN_RAW="${cmd:wstart:i-wstart}"
+                _CMD_BIN="$word"
+                _CMD_REST="${cmd:i}"
                 return 0
                 ;;
         esac
     done
-    printf '%s' "$cmd" # nothing but prefix words — hand back what we were given
+    # FAIL TOWARD UNKNOWN. Malformed input, or nothing but prefix words: claim no
+    # binary and hand the command back whole. An unclassified command costs a degraded
+    # launch — no context, no exact resume — while a confidently WRONG classification
+    # sends a mis-spliced command to a live pane.
+    _CMD_PREFIX="" _CMD_BIN_RAW="" _CMD_BIN=""
+    _CMD_REST="$cmd"
+    return 0
+}
+
+# Thin readers over that single result. They exist so call sites stay legible, NOT so
+# each can do its own parsing.
+_cmd_strip_env_prefix() { # <cmd> -> the command from its binary onward
+    _cmd_split_binary "$1"
+    printf '%s' "${_CMD_BIN_RAW}${_CMD_REST}"
+    return 0
+}
+
+_cmd_env_prefix() { # <cmd> -> everything before the binary
+    _cmd_split_binary "$1"
+    printf '%s' "$_CMD_PREFIX"
+    return 0
+}
+
+_cmd_binary_kind() { # <cmd> -> the bare binary name, prefix and path removed
+    _cmd_split_binary "$1"
+    printf '%s' "${_CMD_BIN##*/}"
     return 0
 }
 
 tool_kind_from_cmd() {
-    case "$(_cmd_strip_env_prefix "$1")" in
-        claude*) echo "claude" ;;
-        codex*) echo "codex" ;;
-        gemini*) echo "gemini" ;;
-        grok*) echo "grok" ;;
-        opencode*) echo "opencode" ;;
+    case "$(_cmd_binary_kind "$1")" in
+        claude) echo "claude" ;;
+        codex) echo "codex" ;;
+        gemini) echo "gemini" ;;
+        grok) echo "grok" ;;
+        opencode) echo "opencode" ;;
         *) echo "unknown" ;;
     esac
 }
@@ -1930,11 +2036,14 @@ resolve_agent_session_id() {
         fi
     fi
     if [[ -z "$session_id" ]]; then
-        case "$cmd" in
+        # THE classifier (#32): these arms globbed the RAW command, so an env-prefixed
+        # binary (CLAUDE_CONFIG_DIR=… claude …) or an absolute path matched nothing and
+        # fell through every arm.
+        case "$(tool_kind_from_cmd "$cmd")" in
             # claude and grok both accept an ae-generated --session-id at launch, so their
             # UUID is known upfront — resume is exact from the first cycle with no
             # post-launch capture (neither appears in tool_kind_supports_launch_id).
-            claude* | grok*) session_id="$(gen_uuid)" ;;
+            claude | grok) session_id="$(gen_uuid)" ;;
             *) session_id="pending" ;;
         esac
     fi
@@ -9772,7 +9881,7 @@ send_agent_cmd() {
     # once the UI returns; a FRESH codex carries it inline and must NOT also get it
     # deferred. Both halves now read one answer computed from the transported id and the
     # transported boundary.
-    if _launch_is_resume "$cmd" "$resume_id" "$pre_injection_cmd" && [[ "$cmd" == codex* ]]; then
+    if _launch_is_resume "$cmd" "$resume_id" "$pre_injection_cmd" && [[ "$(tool_kind_from_cmd "$cmd")" == codex ]]; then
         if [[ -n "$prompt" ]]; then
             (
                 # fd 8 is the caller's LIFECYCLE LOCK. This subshell

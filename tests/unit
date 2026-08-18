@@ -92,7 +92,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(_ae_tac|_ae_stat|_ae_epoch|_ae_sed_inplace|_ae_json_first|_ae_json_first_num|_ae_md5|_ae_inside_tmux|daemon_session_running|launch_rerun_command|write_launch_script|_publish_executable_artifact|_emit_launch_script|_validate_session_name|_session_name_usable|_session_path_is_safe|_require_session_path_safe|_transfer_remote_path_is_safe|_canonical_dir|_path_is_direct_child|_spawn_rollback|parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|_end_target_kind|_tmux_err_is_clean_dead|_ae_install_tmux_shim|_end_sweep_servers|read_session_meta|_cmd_strip_env_prefix|ae_json_escape|_publish_data_artifact|_opencode_context_files|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|_launch_injected_head|_launch_is_resume|_launch_id_probeable|_launch_probe_claude|_launch_probe_codex|_launch_resume_decider|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
+    /^(_ae_tac|_ae_stat|_ae_epoch|_ae_sed_inplace|_ae_json_first|_ae_json_first_num|_ae_md5|_ae_inside_tmux|daemon_session_running|launch_rerun_command|write_launch_script|_publish_executable_artifact|_emit_launch_script|_validate_session_name|_session_name_usable|_session_path_is_safe|_require_session_path_safe|_transfer_remote_path_is_safe|_canonical_dir|_path_is_direct_child|_spawn_rollback|parse_config|get_config|build_ae_context|strip_session_flags|strip_opencode_session_flags|strip_gemini_prompt_flags|strip_grok_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|resolve_agent_session_id|resolve_launch_tmux_server|_end_verify_gone|_srv_tmux_args|_end_target_server|_end_target_kind|_tmux_err_is_clean_dead|_ae_install_tmux_shim|_end_sweep_servers|read_session_meta|_cmd_split_binary|_cmd_strip_env_prefix|_cmd_binary_kind|_cmd_env_prefix|ae_json_escape|_publish_data_artifact|_opencode_context_files|tool_kind_from_cmd|tool_name_from_cmd|tool_kind_supports_launch_id|read_launch_id_for_slot|read_launch_time_for_slot|default_session_name|sanitize_branch_name|shell_quote|build_launch_command|_launch_injected_head|_launch_is_resume|_launch_id_probeable|_launch_probe_claude|_launch_probe_codex|_launch_resume_decider|extract_binary_from_cmd|_transfer_validate_uuid|_transfer_find_claude_session_file|_transfer_find_codex_session_file|_transfer_json_escape|_transfer_bash_quote|_transfer_session_summary|_transfer_session_running|_transfer_ensure_stopped|_transfer_ensure_stopped_remote|_transfer_ssh_probe|_transfer_local_rsync_supports_protect_args|_transfer_remote_preflight|_transfer_check_remote_path|_transfer_remote_session_exists|_transfer_emit_destination_event|_transfer_read_remote_meta_value|_transfer_find_remote_claude_session_file|_transfer_find_remote_codex_session_file|_transfer_local_session_exists|_transfer_emit_local_event|_cleanup_agent_session_files|_end_target_class|_end_confirm_body|_end_tmux|_end_live_id|_end_target_server|_end_history_lines|_ae_session_id|_end_target_server|_end_live_id|_roster_glyph|_roster_label|_roster_compose|_roster_slot_refs|_roster_window_compose|_roster_session_id|cmd_transfer)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -1026,6 +1026,182 @@ assert_eq "initial_prompt: opencode pastes nothing (context rides OPENCODE_CONFI
     "" \
     "$(initial_prompt_for_cmd "opencode" "/tmp/ae" "sess" "/home/user")"
 
+# ── #32: the whole launch family classifies through ONE definition ───────────────
+# `CLAUDE_CONFIG_DIR=$HOME/.claude-mic claude …` is the documented multi-identity
+# pattern, and every consumer in the launch path used to carry its own
+# `case "$cmd" in claude*)` glob over the RAW string — so it matched no arm anywhere:
+# no ae context (the agent did not know it was in a session), no --session-id, no exact
+# resume. #53 fixed classification and left the consumers; this fixes the consumers.
+# Driven through the REAL functions with the operator's actual alias shape.
+_m32="CLAUDE_CONFIG_DIR=\$HOME/.claude-mic claude --permission-mode bypassPermissions --model fable"
+assert_eq "#32: an env-prefixed claude is classified, named and kind-matched" "claude|claude code" \
+    "$(printf '%s|%s' "$(tool_kind_from_cmd "$_m32")" "$(tool_name_from_cmd "$_m32")")"
+assert_eq "#32: ...gets its --session-id, with the operator's prefix left in front" "1" \
+    "$(_c="$(inject_session_id "$_m32" "UUID-1")"
+       [[ "$_c" == "CLAUDE_CONFIG_DIR="* && "$_c" == *"--session-id UUID-1"* ]] && echo 1 || echo 0)"
+assert_eq "#32: ...resumes EXACTLY rather than falling through to a fresh start" "1" \
+    "$(_c="$(resume_cmd_from_cmd "$_m32" "UUID-1")"
+       [[ "$_c" == "CLAUDE_CONFIG_DIR="* && "$_c" == *"--resume UUID-1"* ]] && echo 1 || echo 0)"
+_m32_meta="$(mktemp -d)"
+assert_eq "#32: ...and receives ae context (this is what the agent was missing)" "1" \
+    "$(_c="$(inject_ae_context "$_m32" "$_m32_meta" testsess /tmp/w main 2>/dev/null)"
+       [[ "$_c" == "CLAUDE_CONFIG_DIR="* && "$_c" == *"--append-system-prompt"* \
+        && "$_c" == *"ae multi-agent workspace"* ]] && echo 1 || echo 0)"
+rm -rf "$_m32_meta"
+# An upfront-UUID tool behind a prefix still mints its id at launch.
+assert_eq "#32: an env-prefixed claude still mints an upfront session id" "36" \
+    "$(_id="$(resolve_agent_session_id "$_m32" main)"; printf '%s' "${#_id}")"
+# ABSOLUTE PATHS were the other half: the arms matched a bare name, never a path.
+assert_eq "#32: an absolute path classifies by its basename" "opencode|claude|codex" \
+    "$(printf '%s|%s|%s' \
+        "$(tool_kind_from_cmd "/opt/homebrew/bin/opencode")" \
+        "$(tool_kind_from_cmd "/usr/local/bin/claude --model opus")" \
+        "$(tool_kind_from_cmd "env -i /usr/local/bin/codex --yolo")")"
+# ...while an EXACT match keeps look-alikes out — the re-run path has always relied on
+# this, and a prefix glob would have swept them in.
+assert_eq "#32: look-alike binaries are still not the tool" "unknown|unknown|unknown" \
+    "$(printf '%s|%s|%s' \
+        "$(tool_kind_from_cmd "claudex --flag")" \
+        "$(tool_kind_from_cmd "/opt/bin/notgrok")" \
+        "$(tool_kind_from_cmd "mytool --model claude")")"
+# codex resume REBUILDS its command (flags must precede the `resume` subcommand), and
+# that rebuild keyed on the literal word "codex": a prefix or a path made the strip a
+# no-op, so the result duplicated the command and dropped the prefix entirely.
+assert_eq "#32: a rebuilt codex resume keeps the prefix and the real binary" "FOO=1 codex --yolo resume UUID-2|/usr/local/bin/codex resume UUID-3" \
+    "$(printf '%s|%s' \
+        "$(resume_cmd_from_cmd "FOO=1 codex --yolo" "UUID-2")" \
+        "$(resume_cmd_from_cmd "/usr/local/bin/codex" "UUID-3")")"
+# THE SWEEP, HELD AS AN ABSENCE — not as a list. The first version enumerated eight
+# functions and omitted send_agent_cmd, whose raw codex classifier this very commit
+# changed: reverting that one site left it GREEN. A list is fail-open by omission, and a
+# listed name that goes missing yields an empty body and contributes zero SILENTLY.
+#
+# WHAT THIS GUARD ACTUALLY COVERS, stated plainly because a guard that overclaims is
+# worse than a modest one — the next reader trusts the label:
+#   caught   — case arms `claude*)` on their own line or inline after `case … in`,
+#              and `[[ "$var" = claude* ]]` / `== claude*` / `== "claude"*` tests.
+#   NOT caught — classification through a variable, an eval, or a helper that returns a
+#              glob; a textual guard cannot see any of those, and no regex will fix that.
+# It is deliberately anchored to `[[` tests and case arms rather than matching the words
+# anywhere: this repo's own comments and printf strings quote the old forms constantly,
+# and a guard that fires on prose is a guard someone disables.
+_m32_classifier_hits() { # <source> -> count of raw tool globs in code positions
+    local src="$1" code
+    # Drop full-line comments AND trailing comments: a line that MENTIONS `claude*)` in
+    # its explanation is documentation, not a classifier.
+    code="$(command sed -E 's/[[:space:]]+#[^"'"'"']*$//' <<<"$src" | command grep -vE '^[[:space:]]*#' || true)"
+    local n
+    # Tool alternatives are matched at line start, after an optional opening paren, or
+    # after a case-alternation pipe — so `(claude*)` and `custom* | claude*)` count too.
+    n="$(command grep -cE '(^[[:space:]]*\(?|\|[[:space:]]*)(claude|codex|gemini|grok|opencode)\*[[:space:]]*[)|]|case[^#]*[[:space:]]in[[:space:]]+\(?(claude|codex|gemini|grok|opencode)\*[)|]|\[\[[^]]*\$[A-Za-z_][A-Za-z_0-9]*"?[[:space:]]*==?[[:space:]]*"?(claude|codex|gemini|grok|opencode)"?\*' <<<"$code" | tr -d '[:space:]')"
+    printf '%s' "${n:-0}"
+    return 0
+}
+assert_eq "#32 GUARD (textual): no case arm or [[ ]] test in ae classifies by globbing a raw command" "0" \
+    "$(_m32_classifier_hits "$AE_SOURCE")"
+# It catches the spellings that are actually reachable — including the one-line case and
+# both [[ ]] forms, which the first version missed.
+assert_eq "#32 GUARD: the reachable raw spellings are all caught" "1|1|1|1|1|1" \
+    "$(printf '%s|%s|%s|%s|%s|%s' \
+        "$(_m32_classifier_hits '        claude*) echo hi ;;')" \
+        "$(_m32_classifier_hits '    case "$cmd" in claude*) echo hi ;; esac')" \
+        "$(_m32_classifier_hits '    if [[ "$cmd" = claude* ]]; then :; fi')" \
+        "$(_m32_classifier_hits '    if [[ "$cmd" == "claude"* ]]; then :; fi')" \
+        "$(_m32_classifier_hits '        custom* | claude*) echo hi ;;')" \
+        "$(_m32_classifier_hits '        (claude*) echo hi ;;')")"
+# A real classifier that happens to carry a trailing comment must still count — the
+# comment stripping must not swallow the code in front of it.
+assert_eq "#32 GUARD: a real classifier with a trailing comment still counts" "1" \
+    "$(_m32_classifier_hits '        claude*) echo hi ;; # the claude arm')"
+# FALSE-POSITIVE CONTROLS. Both of these fired before, and both are prose: a guard that
+# fires on documentation gets disabled, which is the #8 lesson exactly.
+assert_eq "#32 GUARD: prose and strings that merely quote the old form do not fire" "0|0|0" \
+    "$(printf '%s|%s|%s' \
+        "$(_m32_classifier_hits '    printf "%s" "example == claude* is the old shape"')" \
+        "$(_m32_classifier_hits '    tool_kind_from_cmd "$cmd" # replaces the old claude*) arm')" \
+        "$(_m32_classifier_hits '# the arms used to read claude*) and codex*)')")"
+unset -f _m32_classifier_hits
+
+# ...and the classifier really is the single consumer-facing definition: every launch
+# consumer names it. This list is allowed to exist ONLY because the assertion below
+# proves each body was actually found — an extraction that silently returns nothing is
+# the failure mode that made the old guard useless.
+assert_eq "#32: every launch consumer was FOUND and routes through the classifier" "10|10" \
+    "$(_fns="resume_cmd_from_cmd inject_session_id inject_ae_context initial_prompt_for_cmd resolve_agent_session_id build_launch_command launch_rerun_command _launch_is_resume send_agent_cmd _cmd_split_binary"
+       _found=0 _ok=0
+       for _f in $_fns; do
+           _body="$(awk -v f="^${_f}\\\\(\\\\) \\\\{" '$0 ~ f,/^\}$/' <<<"$AE_SOURCE" || true)"
+           [[ -n "$_body" ]] && _found=$((_found + 1))
+           # the tokenizer IS the definition; everyone else must reference it or the kind
+           if [[ "$_f" == _cmd_split_binary ]] || command grep -q 'tool_kind_from_cmd\|_cmd_split_binary' <<<"$_body"; then
+               _ok=$((_ok + 1))
+           fi
+       done
+       printf '%s|%s' "$_found" "$_ok")"
+# SHELL-CORRECTNESS, AND WHICH WAY IT FAILS. Inside double quotes bash honours `\`
+# only before " \ $ ` and newline; the first version closed the word at the first quote
+# it saw, so a VALID escaped-quote path was cut in half and the next argument was
+# swallowed into the binary's raw span — which reconstruction would then have spliced.
+assert_eq "#32: an escaped quote inside a double-quoted path decodes, and does not eat the next word" '/Applications/Open "Quoted"/codex|codex' \
+    "$(_cmd_split_binary 'env FOO=1 "/Applications/Open \"Quoted\"/codex" --yolo'
+       printf '%s|%s' "$_CMD_BIN" "$(tool_kind_from_cmd 'env FOO=1 "/Applications/Open \"Quoted\"/codex" --yolo')")"
+assert_eq "#32: ...and the untouched RAW span is what reconstruction splices" '"/Applications/Open \"Quoted\"/codex"| --yolo' \
+    "$(_cmd_split_binary 'env FOO=1 "/Applications/Open \"Quoted\"/codex" --yolo'
+       printf '%s|%s' "$_CMD_BIN_RAW" "$_CMD_REST")"
+# A PARSER VALIDATES WHAT IT CONSUMES, NOT WHAT IT SKIPS. The tokenizer's job is to
+# find the binary; everything after it is passed through untouched and ae makes no
+# validity claim about it. So a malformed PREFIX or BINARY WORD yields unknown — and a
+# malformed TAIL is simply not this function's business.
+#
+# An earlier version counted trailing backslashes across the whole command and was
+# wrong BOTH ways: it refused `codex --yolo # note\` (valid — the backslash is inside a
+# comment) and suppressed all codex shaping, while `codex --yolo "unterminated` (invalid)
+# classified fine anyway because the scan had already stopped at the binary. Reaching
+# for whole-command validity meant writing a shell lexer in bash, which is not a promise
+# this can keep.
+# shellcheck disable=SC1003  # the dangling backslash IS the fixture: it sits inside the
+# binary word, which is the region the tokenizer consumes and therefore validates.
+assert_eq "#32: a malformed BINARY WORD fails toward unknown" "unknown|unknown|unknown" \
+    "$(printf '%s|%s|%s' \
+        "$(tool_kind_from_cmd 'env FOO=1 codex\')" \
+        "$(tool_kind_from_cmd 'env FOO=1 "/opt/codex --yolo')" \
+        "$(tool_kind_from_cmd "env FOO=1 '/opt/codex --yolo")")"
+# ...and a malformed TAIL is not a validity claim ae makes. Both of these were wrong
+# before: the first was refused though valid, the second was accepted while the counter
+# pretended to judge the whole command.
+# shellcheck disable=SC1003  # trailing backslash inside a COMMENT — valid shell.
+assert_eq "#32: the tail is passed through, not judged" "codex|codex" \
+    "$(printf '%s|%s' \
+        "$(tool_kind_from_cmd 'codex --yolo # note\')" \
+        "$(tool_kind_from_cmd 'codex --yolo "unterminated')")"
+# Escapes in the binary word are PROCESSED, not rejected — without this control the fix
+# could pass by refusing anything containing a backslash. `co\dex` decodes to codex
+# (escaping an ordinary character yields that character), whereas `codex\\` decodes to a
+# binary literally NAMED "codex\" and correctly is not codex.
+# shellcheck disable=SC1003  # the escape is the fixture.
+assert_eq "#32: an escape inside the binary word is decoded, not refused" "codex|unknown" \
+    "$(printf '%s|%s' \
+        "$(tool_kind_from_cmd 'co\dex --yolo')" \
+        "$(tool_kind_from_cmd 'codex\\ --yolo')")"
+# And an unclassifiable command is left ALONE rather than half-rewritten.
+# shellcheck disable=SC1003  # same malformed fixture, asserted end to end.
+assert_eq "#32: an unclassifiable command is passed through untouched by resume shaping" 'env FOO=1 codex\' \
+    "$(resume_cmd_from_cmd 'env FOO=1 codex\' UUID-4)"
+
+# The tokenizer's own contract: quoted AND backslash-escaped paths containing spaces.
+# The bug classified both as unknown while the same path without a space worked, which
+# is what localised it to shell-word boundaries.
+assert_eq "#32: a spaced binary path classifies, quoted or escaped" "codex|codex|opencode" \
+    "$(printf '%s|%s|%s' \
+        "$(tool_kind_from_cmd "env FOO=1 '/Applications/Open Code/codex' --yolo")" \
+        "$(tool_kind_from_cmd "env FOO=1 /Applications/Open\\ Code/codex --yolo")" \
+        "$(tool_kind_from_cmd "\"/Applications/Open Code/opencode\"")")"
+# ...and reconstruction splices around that same span rather than re-splitting it.
+assert_eq "#32: codex resume rebuilds around a spaced path without mangling it" \
+    "env FOO=1 '/Applications/Open Code/codex' --yolo resume UUID-9" \
+    "$(resume_cmd_from_cmd "env FOO=1 '/Applications/Open Code/codex' --yolo" "UUID-9")"
+unset _m32 _m32_meta
+
 # ── #53: opencode reaches the claude/codex tier via OPENCODE_CONFIG ──────────────
 # Its context is now system-level `instructions` — present in every turn, not a first
 # message that decays under compaction and dies with the readiness gate. MEASURED on
@@ -1093,7 +1269,7 @@ _oc_kind() { # <cmd> <pre-injection-cmd> -> the tool kind send_agent_cmd resolve
     cat >"${_md}/probe.sh" <<'PROBE'
 set -uo pipefail
 AE_SOURCE="$(cat "$AE_BIN")"
-for fn in shell_quote _cmd_strip_env_prefix tool_kind_from_cmd _launch_id_probeable \
+for fn in shell_quote _cmd_split_binary _cmd_strip_env_prefix _cmd_binary_kind tool_kind_from_cmd _launch_id_probeable \
     _launch_injected_head _launch_is_resume _launch_probe_claude _launch_probe_codex \
     _launch_resume_decider build_launch_command send_agent_cmd; do
     eval "$(awk "/^${fn}\(\) \{/,/^\}\$/" <<<"$AE_SOURCE")"
