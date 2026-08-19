@@ -4318,7 +4318,10 @@ assert_eq "path-safe: -L is tested before -e, so a dangling symlink cannot slip 
 # Nine since #48: archive preview reads a session directory by name, so it asks the
 # same question before touching it — a preview of a symlinked "session" would read
 # whatever the link points at.
-assert_eq "path-safe: all nine boundaries consult it (launch, transfer, rename x2, stop x4, archive preview)" "9" \
+# Ten since slice 2: `ae compact` resolves a session by name and then ENDS it, which is
+# the most consequential consumer yet — a symlinked "session" would be archived and
+# deleted through the link.
+assert_eq "path-safe: all ten boundaries consult it (launch, transfer, rename x2, stop x4, archive preview, compact)" "10" \
     "$(printf '%s' "$AE_SOURCE" | command grep -c '_require_session_path_safe ' || true)"
 # ...and the two stop entrypoints ask BOTH questions, in the right order: before
 # any lock, meta or event path is built from the name.
@@ -5327,8 +5330,8 @@ assert_eq "self-stop: both stop-request and stop-result are emitted durably" "1"
 # FOUR sites now: #33 round 11 brought RENAME under lifecycle serialization, closing
 # a gap that pre-dates this issue (rename raced end and launch too) and that #33 made
 # concrete — a rename between a freeze and its lock rebuilt the F10 kill exactly.
-assert_eq "lifecycle-lock (12th I2): flock-missing degrades gracefully at ALL FOUR sites + doctor WARN" "1" \
-    "$([[ "$(printf '%s' "$AE_SOURCE" | command grep -c 'flock not found — lifecycle locking degraded' || true)" == "4" \
+assert_eq "lifecycle-lock (12th I2): flock-missing degrades gracefully at ALL FIVE sites + doctor WARN" "1" \
+    "$([[ "$(printf '%s' "$AE_SOURCE" | command grep -c 'flock not found — lifecycle locking degraded' || true)" == "5" \
         && "$AE_SOURCE" == *'doctor_report "WARN" "flock"'* ]] && echo 1 || echo 0)"
 # ...and each notice sits on a real lock acquisition, in one of the TWO shapes the
 # codebase uses: end and stop scope theirs to a brace group (`} 9>"$_lc_lock"`),
@@ -6250,7 +6253,7 @@ cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
 {"ts":"2026-01-01T00:01:00Z","actor":"codex:coworker","action":"reply","target":"claude:lead","ref":"ae-2026-001","summary":"world"}
 EVENTS
 assert_eq "ae_find_request: returns kind/sender/target for ask" \
-    $'ask\tclaude:lead\tcodex:coworker' \
+    $'ask\x1fclaude:lead\x1fcodex:coworker' \
     "$(ae_find_request "ae-2026-001")"
 
 # ae_find_request: matches review action
@@ -6258,7 +6261,7 @@ cat >"$_AE_META_DIR/events.jsonl" <<'EVENTS'
 {"ts":"2026-01-01T00:00:00Z","actor":"claude:lead","action":"review","target":"codex:coworker","ref":"review-2026-001","summary":"please review"}
 EVENTS
 assert_eq "ae_find_request: returns kind=review" \
-    $'review\tclaude:lead\tcodex:coworker' \
+    $'review\x1fclaude:lead\x1fcodex:coworker' \
     "$(ae_find_request "review-2026-001")"
 
 # ae_find_request: unknown ref returns nonzero, empty stdout
@@ -6283,7 +6286,7 @@ assert_eq "ae_find_request: ignores non-ask/review actions" "" "$_out"
     done
 } >"$_AE_META_DIR/events.jsonl"
 assert_eq "ae_find_request: finds ask deep in history via backward scan" \
-    $'ask\ta:b\tc:d' \
+    $'ask\x1fa:b\x1fc:d' \
     "$(ae_find_request "deep-req")"
 
 rm -rf "$_req_test_dir"
@@ -7262,20 +7265,26 @@ assert_eq "external-actor: ae_tracked_send self= respects AE_SENDER_OVERRIDE" "1
 
 # Structural: ae_tracked_send skips ae_resolve for external-actor targets so
 # an agent doing `ask telegram:user "approve?"` works without resolve failing.
-assert_eq "external-actor: ae_tracked_send skips ae_resolve for telegram:* / discord:* targets" "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ "$target_name" != telegram:* && "$target_name" != discord:* ]]; then'*'ae_resolve "$target_name"'* ]] && echo 1 || echo 0)"
+# (The event-only family gained ae:compact:* — compact's reserved return address — so
+# these pin the PROPERTY rather than one spelling of the list: every member skips
+# resolution, and the branch still precedes ae_resolve.)
+assert_eq "external-actor: ae_tracked_send skips ae_resolve for every event-only prefix" "1" \
+    "$([[ "$AE_SOURCE" == *'!= telegram:* && "$target_name" != discord:* && "$target_name" != ae:compact:* ]]; then'*'ae_resolve "$target_name"'* ]] && echo 1 || echo 0)"
 
 # Structural: send helper emits event-only for external-actor targets,
 # skipping tmux paste path entirely.
-assert_eq "external-actor: send helper event-only path for telegram:*/discord:* targets" "1" \
-    "$([[ "$AE_SOURCE" == *'if [[ "$target_ref" == telegram:* || "$target_ref" == discord:* ]]; then'*'ae_emit_event'*'exit 0'* ]] && echo 1 || echo 0)"
+assert_eq "external-actor: send helper's event-only path covers every prefix in the family" "1" \
+    "$([[ "$AE_SOURCE" == *'"$target_ref" == telegram:* || "$target_ref" == discord:* || "$target_ref" == ae:compact:*'*'ae_emit_event'* ]] && echo 1 || echo 0)"
 
 # Structural: external-actor branch runs BEFORE ae_resolve in send body
 # (otherwise resolve would fail on the unresolvable target name first).
 _t_external_branch_line="$(awk '/if \[\[ "\$target_ref" == telegram:\* \|\| "\$target_ref" == discord:\* \]\]; then/{print NR; exit}' "$(dirname "$0")/../ae")"
 _t_resolve_line="$(awk '/^    ae_resolve "\$target_ref"/{print NR; exit}' "$(dirname "$0")/../ae")"
 assert_eq "external-actor: send helper's external-target branch precedes ae_resolve in source order" "1" \
-    "$([[ -n "$_t_external_branch_line" && -n "$_t_resolve_line" && "$_t_external_branch_line" -lt "$_t_resolve_line" ]] && echo 1 || echo 0)"
+    "$(_ea_src="$(awk '/^helper_send_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+       _ea_branch="$(grep -n 'target_ref" == telegram:\*' <<<"$_ea_src" | head -1 | cut -d: -f1)"
+       _ea_resolve="$(grep -n 'ae_resolve "\$target_ref"' <<<"$_ea_src" | head -1 | cut -d: -f1)"
+       [[ -n "$_ea_branch" && -n "$_ea_resolve" && "$_ea_branch" -lt "$_ea_resolve" ]] && echo 1 || echo 0)"
 unset _t_external_branch_line _t_resolve_line
 
 # Structural: typo targets that don't match an external prefix still fail
@@ -9147,7 +9156,7 @@ _AE_META_DIR2="$(mktemp -d)"
 cat >"$_AE_META_DIR2/events.jsonl" <<'EVENTS'
 {"ts":"2026-01-01T00:00:00Z","actor":"a:b","action":"ask","target":"c:d","ref":"slot-req","actor_slot":"main","actor_session":"s1","target_slot":"worker.0","target_session":"s1","summary":"q"}
 EVENTS
-_AE_META_DIR="$_AE_META_DIR2" assert_eq "ae_find_request: slotted event -> 7 cols" $'ask\ta:b\tc:d\tmain\ts1\tworker.0\ts1' "$(_AE_META_DIR="$_AE_META_DIR2" ae_find_request "slot-req")"
+_AE_META_DIR="$_AE_META_DIR2" assert_eq "ae_find_request: slotted event -> 7 cols" $'ask\x1fa:b\x1fc:d\x1fmain\x1fs1\x1fworker.0\x1fs1' "$(_AE_META_DIR="$_AE_META_DIR2" ae_find_request "slot-req")"
 
 # ae_slot_resolver: session-qualified slot -> the CURRENT agent ref (survives name churn).
 eval "$(awk '/^ae_slot_resolver\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
@@ -11494,6 +11503,7 @@ _ar48_step() { # <session_id value or empty> -> rc|session-still-there|archives
         # `set -u` subscripting an UNDECLARED associative array is an arithmetic eval on
         # the key ("legacy: unbound variable") — the hazard AGENTS.md names.
         declare -A _AE_END_FROZEN_PLAN=()
+        declare -A _AE_END_FROZEN_AUTHORITY=()
         _end_archive_step legacy not-managed - - "" >/dev/null 2>&1
     ) || rc=$?
     printf '%s|%s|%s' "$rc" \
@@ -11705,7 +11715,11 @@ _ar48_c_newrep="$(_ar48_cancel_fixture \
     '{"ts":"1","actor":"a:one","action":"ask","ref":"c-newrep","target":"b:two","summary":"q"}' \
     '{"ts":"2","actor":"a:one","action":"cancel","ref":"c-newrep","summary":"withdrawn"}' \
     '{"ts":"3","actor":"b:two","action":"reply","ref":"c-newrep","target":"a:one","summary":"answered anyway"}')"
-assert_eq "sensor-cancel: and a valid reply NEWER than a valid cancel wins the other way" "replied" \
+# TERMINAL, not merely newest: a valid withdrawal closes the request for good, so a reply
+# arriving afterwards does not reopen it. (This pin asserted the recency rule until slice
+# 2; the spec's word for the state is "terminal", and a straggler reply reopening a
+# request withdrawn by `ae compact --digest-only` is precisely what the state prevents.)
+assert_eq "sensor-cancel: a reply AFTER a valid withdrawal does not reopen it" "cancelled" \
     "$(_ar48_status_of "$_ar48_c_newrep" c-newrep)"
 
 # Slot-qualified, like every other identity decision in this sensor.
@@ -11862,7 +11876,7 @@ assert_eq "archive-purge: it acquires the publisher claim and releases it" "0|0"
 # BARE, on the exactly-empty session an archive still has to describe.
 _ar48_bare2() { # <shell-code>
     local fns
-    fns="$(awk '/^(_ar_facts_row|_ar_count_lines|_ar_event_facts|_ar_memo_handover|_ar_memo_topics|_ar_request_states|_event_json_str|_ae_tac|_ar_meta_get|_ar_build_meta|_ar_compose_meta|_ar_roster_slots|_valid_slot)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    fns="$(awk '/^(_ar_facts_row|_ar_count_lines|_ar_event_facts|_ar_memo_handover|_ar_memo_topics|_ar_request_states|_event_json_str|_ae_tac|_ae_stat|_ar_meta_get|_ar_build_meta|_ar_compose_meta|_ar_roster_slots|_valid_slot|_compact_actor|_compact_memo_offset|_compact_memo_after|_compact_reply_seen|_compact_find_outstanding|_compact_baseline_of)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
     "${BASH}" -c "set -euo pipefail
 ${fns}
 ${1}
@@ -11945,6 +11959,7 @@ _ar48_frozen_step() { # <match|differ|none> -> rc
         SESSIONS_DIR="$home/sessions" WORKTREES_DIR="$home/worktrees" AE_HOME="$home/arch"
         _AE_PURGE_HISTORY_CLI=""
         declare -A _AE_END_FROZEN_PLAN=()
+        declare -A _AE_END_FROZEN_AUTHORITY=()
         case "$1" in
             # exactly what a prompt would have frozen, resolved from this same fixture
             match) _AE_END_FROZEN_PLAN["demo"]="$(_end_archive_plan demo)" ;;
@@ -11967,11 +11982,12 @@ assert_eq "end-freeze: and the refusal names both contracts" "1|1" \
            SESSIONS_DIR="$_ar48_h2/sessions" WORKTREES_DIR="$_ar48_h2/worktrees" AE_HOME="$_ar48_h2/arch"
            _AE_PURGE_HISTORY_CLI=""
            declare -A _AE_END_FROZEN_PLAN=()
+        declare -A _AE_END_FROZEN_AUTHORITY=()
            _AE_END_FROZEN_PLAN["demo"]="purge	/somewhere/else	true"
            _end_archive_step demo not-managed - - "" 2>&1 >/dev/null
          ))"
        printf '%s|%s' \
-         "$(grep -c 'Confirmed: purge' <<<"$_ar48_err" | tr -d '[:space:]')" \
+         "$(grep -c 'Authorized: purge' <<<"$_ar48_err" | tr -d '[:space:]')" \
          "$(grep -c 'Nothing was deleted' <<<"$_ar48_err" | tr -d '[:space:]')")"
 # The comparison lives at BOTH gates: before the stop (so a changed contract costs the
 # human nothing) and inside the archive step under the lock (so a change landing in that
@@ -11982,7 +11998,8 @@ assert_eq "end-freeze: the contract is re-proved before the stop as well as befo
 assert_eq "end-freeze: cleanup_session honours the frozen answer over a fresh read" "1" \
     "$([[ "$AE_SOURCE" == *'local _purge _frozen_plan="${_AE_END_FROZEN_PLAN[$session_name]:-}"'* ]] && echo 1 || echo 0)"
 assert_eq "end-freeze: the frozen map is declared at top level (set -u + assoc array)" "1" \
-    "$(printf '%s' "$AE_SOURCE" | grep -c '^declare -A _AE_END_FROZEN_PLAN=()' | tr -d '[:space:]')"
+    "$(printf '%s' "$AE_SOURCE" | grep -c '^declare -A _AE_END_FROZEN_PLAN=()
+        declare -A _AE_END_FROZEN_AUTHORITY=()' | tr -d '[:space:]')"
 # REPLY-style: it renders into _AE_END_PLAN_LINE, because capturing stdout means a
 # command substitution and the freeze path may not fork.
 assert_eq "end-plan-line: keep renders path and history action" \
@@ -12054,6 +12071,7 @@ eval "$(awk '/^cmd_end\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _ar48_confirm_probe() { # <target> <sessions...> -> what was rendered + what was frozen
     (
         declare -A _AE_END_FROZEN_PLAN=()
+        declare -A _AE_END_FROZEN_AUTHORITY=()
         declare -a _AE_END_CONFIRMED_TARGETS=()
         _AE_END_PLAN_LINE=""
         # The call counter lives in a FILE because the planner is read through a process
@@ -12193,6 +12211,7 @@ assert_eq "meta-write: a value containing '=' survives the round trip" "goal=a=b
 _ar48_empty_confirm_probe() { # <force: yes|no> -> what was ended
     (
         declare -A _AE_END_FROZEN_PLAN=()
+        declare -A _AE_END_FROZEN_AUTHORITY=()
         declare -a _AE_END_CONFIRMED_TARGETS=()
         _AE_END_TARGETS_CONFIRMED=false
         _AE_END_PLAN_LINE=""
@@ -12294,6 +12313,503 @@ assert_eq "meta-write: the writer never leans on errexit — every step is check
     "$(_ar48_w="$(awk '/^set_session_meta_values\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
        # any bare printf/mv/mapfile whose status is neither tested nor part of a list
        printf '%s' "$_ar48_w" | grep -cE '^ +(printf|mv|mapfile)[^|&]*$' | tr -d '[:space:]')"
+
+# ══ ae compact, phase (a): parse, refuse, freeze — nothing destructive ═══════════
+eval "$(awk '/^(_compact_parse_flags|_compact_handover_secs|_compact_freeze_source|_compact_archive_preflight|_compact_refuse_if_inside|_compact_usage|_compact_config_roster|get_config|parse_config)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+
+# ── the parser refuses rather than interprets ───────────────────────────────────
+_cp48_parse() { (_compact_parse_flags "$@" >/dev/null 2>&1 && printf '%s|%s|%s|%s' "$_CP_NAME" "$_CP_FORCE" "$_CP_KEEP_HISTORY" "$_CP_DIGEST_ONLY") || printf 'REFUSED'; }
+assert_eq "compact-parse: a bare name" "s1|false|false|false" "$(_cp48_parse s1)"
+assert_eq "compact-parse: -f sets force and NOTHING else (it is not digest-only)" "s1|true|false|false" "$(_cp48_parse -f s1)"
+assert_eq "compact-parse: --force is the same flag" "s1|true|false|false" "$(_cp48_parse --force s1)"
+assert_eq "compact-parse: --keep-history" "s1|false|true|false" "$(_cp48_parse --keep-history s1)"
+assert_eq "compact-parse: --digest-only" "s1|false|false|true" "$(_cp48_parse --digest-only s1)"
+assert_eq "compact-parse: flags compose, in any order" "s1|true|true|true" "$(_cp48_parse --digest-only -f s1 --keep-history)"
+assert_eq "compact-parse: the name is mandatory — there is no implicit current target" "REFUSED" "$(_cp48_parse)"
+assert_eq "compact-parse: 'all' has no meaning for a one-in-one-out operation" "REFUSED" "$(_cp48_parse all)"
+assert_eq "compact-parse: a second name is refused, never silently dropped" "REFUSED" "$(_cp48_parse s1 s2)"
+# Each of these would be a LIE if accepted, which is why they refuse rather than warn.
+assert_eq "compact-parse: --purge-history contradicts keeping an archive" "REFUSED" "$(_cp48_parse --purge-history s1)"
+assert_eq "compact-parse: --assume-stopped is an end acknowledgement; compact stops it itself" "REFUSED" "$(_cp48_parse --assume-stopped s1)"
+assert_eq "compact-parse: --from would give the child two parents" "REFUSED" "$(_cp48_parse --from u s1)"
+assert_eq "compact-parse: --from=UUID likewise" "REFUSED" "$(_cp48_parse --from=u s1)"
+assert_eq "compact-parse: a mode flag would contradict the frozen source mode (--local)" "REFUSED" "$(_cp48_parse --local s1)"
+assert_eq "compact-parse: ...(--copy)" "REFUSED" "$(_cp48_parse --copy s1)"
+assert_eq "compact-parse: ...(--worktree)" "REFUSED" "$(_cp48_parse --worktree s1)"
+assert_eq "compact-parse: 'use' would fight the configured roster" "REFUSED" "$(_cp48_parse s1 use codex)"
+assert_eq "compact-parse: an unknown flag is refused" "REFUSED" "$(_cp48_parse --nope s1)"
+
+# ── the handover budget is digits, or it is the default ─────────────────────────
+assert_eq "compact-secs: unset means the default" "300" "$(AE_COMPACT_HANDOVER_SECS='' _compact_handover_secs 2>/dev/null)"
+assert_eq "compact-secs: a positive number is honoured" "45" "$(AE_COMPACT_HANDOVER_SECS=45 _compact_handover_secs 2>/dev/null)"
+# "0" and "abc" must not silently mean "do not wait": the wait is what makes the handover
+# real, so a value ae cannot use falls back rather than being interpreted.
+assert_eq "compact-secs: zero is not 'do not wait' — it falls back" "300" "$(AE_COMPACT_HANDOVER_SECS=0 _compact_handover_secs 2>/dev/null)"
+assert_eq "compact-secs: and neither is a word" "300" "$(AE_COMPACT_HANDOVER_SECS=abc _compact_handover_secs 2>/dev/null)"
+assert_eq "compact-secs: a malformed value SAYS it fell back" "1" \
+    "$(AE_COMPACT_HANDOVER_SECS=abc _compact_handover_secs 2>&1 >/dev/null | grep -c 'using 300' | tr -d '[:space:]')"
+
+# ── freeze: ONE coherent observation, or a refusal that changes nothing ─────────
+_cp48_home="$_ar48_root/compact"
+_cp48_session() { # <name> <meta-lines...>
+    local d="$_cp48_home/sessions/$1"
+    mkdir -p "$d/messages"
+    shift
+    printf '%s\n' "$@" >"$d/meta"
+    : >"$d/memo.tsv"
+    : >"$d/events.jsonl"
+    # No stdout: no caller wants the path, and a fixture that chatters into the suite log
+    # is how a real signal gets missed.
+    return 0
+}
+_cp48_freeze() { # <name> <keep-history> -> the tuple, or REFUSED
+    (
+        # shellcheck disable=SC2034  # read by the freeze and its callees
+        SESSIONS_DIR="$_cp48_home/sessions" WORKTREES_DIR="$_cp48_home/worktrees" AE_HOME="$_cp48_home/arch"
+        _AE_PURGE_HISTORY_CLI=""
+        _compact_freeze_source "$1" "${2:-false}" 2>/dev/null
+    ) || printf 'REFUSED'
+}
+mkdir -p "$_cp48_home/arch"
+# A REAL config, because the freeze now resolves the ROSTER as well: it is printed at the
+# prompt as what the child will start, so it is part of what the human authorizes and it
+# is observed exactly once, here, with every other authorized fact.
+_cp48_cfg="$_cp48_home/cfg"
+printf '[agents]\ndummy = "bash"\n\n[workspace]\nmain = dummy\nworkers = helper\n' >"$_cp48_cfg"
+_cp48_session ok "mode=local" "origin=$_ar48_root" "session_id=aaaaaaaa-1111-2222-3333-444444444444" "config=$_cp48_cfg" "agent.main=a:b:c"
+# The origin is CANONICAL in the tuple (that is what the fresh session will be started
+# from), so the expectation resolves it the same way rather than assuming the fixture's
+# spelling — on macOS /tmp is a symlink to /private/tmp, which is exactly the class of
+# difference a byte-for-byte ABA comparison must not trip over.
+_cp48_root_canon="$(_canonical_dir "$_ar48_root")"
+assert_eq "compact-freeze: a healthy local session freezes its whole tuple" \
+    "ok|aaaaaaaa-1111-2222-3333-444444444444|session|local|$_cp48_root_canon|$_cp48_cfg|false|$_cp48_home/arch/archive/aaaaaaaa-1111-2222-3333-444444444444|a:b|main=dummy workers=helper" \
+    "$(_cp48_freeze ok | tr $'\x1f' '|')"
+# THE FRAMING THE PRIMITIVE PAID FOR: `config` is legitimately EMPTY for a session that
+# recorded none. Under tab framing that empty field collapses and every later field
+# shifts — and this tuple is the AUTHORIZATION PAYLOAD compared byte-for-byte after the
+# human answers, so a framing that can reorder it is not one it may use.
+# The roster still resolves for a session that recorded NO config — through the origin's
+# own .ae/config, which is how such a session actually runs. So `config` stays genuinely
+# EMPTY and this specimen keeps proving what it was written to prove.
+mkdir -p "$_ar48_root/.ae"
+printf '[agents]\ndummy = "bash"\n\n[workspace]\nmain = dummy\n' >"$_ar48_root/.ae/config"
+_cp48_session noconfig "mode=local" "origin=$_ar48_root" "session_id=bbbbbbbb-1111-2222-3333-444444444444" "agent.main=a:b:c"
+# awk's -F takes an ESCAPE awk itself decodes: '\x1f' inside single quotes reaches awk as
+# four literal characters and splits nothing, so the first version of this assertion
+# reported one field and would have passed a shifted tuple. '\037' is the octal escape awk
+# understands. (Verified both ways before trusting it.)
+assert_eq "compact-freeze: an EMPTY config field does not shift the tuple" "10" \
+    "$(_cp48_freeze noconfig | awk -F'\037' '{print NF}')"
+assert_eq "compact-freeze (control): the separator really is splitting, so the count means something" "10" \
+    "$(_cp48_freeze ok | awk -F'\037' '{print NF}')"
+assert_eq "compact-freeze: and the fields after it are still themselves" "local|$_cp48_root_canon||false" \
+    "$(_cp48_freeze noconfig | cut -d$'\x1f' -f4,5,6,7 | tr $'\x1f' '|')"
+# Modes: v1 is local-only, and the refusal says WHY rather than just no.
+_cp48_session gitmode "mode=git" "origin=$_ar48_root" "session_id=cccccccc-1111-2222-3333-444444444444"
+assert_eq "compact-freeze: a git-mode session refuses (v1 is local-only)" "REFUSED" "$(_cp48_freeze gitmode)"
+assert_eq "compact-freeze: and names the reason — a fresh workspace would lag the branch" "1" \
+    "$( (SESSIONS_DIR="$_cp48_home/sessions" WORKTREES_DIR="$_cp48_home/wt" AE_HOME="$_cp48_home/arch" \
+         _compact_freeze_source gitmode false 2>&1 >/dev/null) | grep -c 'missing the' | tr -d '[:space:]')"
+_cp48_session fullmode "mode=full" "origin=$_ar48_root" "session_id=dddddddd-1111-2222-3333-444444444444"
+assert_eq "compact-freeze: a full-copy session refuses too" "REFUSED" "$(_cp48_freeze fullmode)"
+_cp48_session nomode "origin=$_ar48_root" "session_id=eeeeeeee-1111-2222-3333-444444444444"
+assert_eq "compact-freeze: a session ae cannot classify refuses" "REFUSED" "$(_cp48_freeze nomode)"
+_cp48_session weird "mode=quantum" "origin=$_ar48_root" "session_id=ffffffff-1111-2222-3333-444444444444"
+assert_eq "compact-freeze: an unknown mode refuses" "REFUSED" "$(_cp48_freeze weird)"
+# Origin and config have to be real, because the fresh session is started FROM them.
+_cp48_session noorigin "mode=local" "session_id=11111111-1111-2222-3333-444444444444"
+assert_eq "compact-freeze: no origin means the fresh session has nowhere to start" "REFUSED" "$(_cp48_freeze noorigin)"
+_cp48_session badorigin "mode=local" "origin=$_ar48_root/vanished" "session_id=22222222-1111-2222-3333-444444444444"
+assert_eq "compact-freeze: an origin that does not resolve refuses" "REFUSED" "$(_cp48_freeze badorigin)"
+_cp48_session badconfig "mode=local" "origin=$_ar48_root" "config=$_ar48_root/no-such-config" "session_id=33333333-1111-2222-3333-444444444444"
+assert_eq "compact-freeze: an unreadable config refuses — the roster comes from it" "REFUSED" "$(_cp48_freeze badconfig)"
+assert_eq "compact-freeze: a missing session directory refuses" "REFUSED" "$(_cp48_freeze never-existed)"
+
+# THE ID SPLIT, identical to end's: absent is migrated, unparseable is evidence.
+_cp48_session mint "mode=local" "origin=$_ar48_root" "config=$_cp48_cfg" "agent.main=a:b:c"
+_cp48_mint_tuple="$(_cp48_freeze mint)"
+assert_eq "compact-freeze: an absent id is minted, and the archive will say so" "minted-at-compact" \
+    "$(cut -d$'\x1f' -f3 <<<"$_cp48_mint_tuple")"
+assert_eq "compact-freeze: the mint and its provenance land in the live meta together" "2" \
+    "$(grep -cE '^session_id=|^session_id_origin=minted-at-compact' "$_cp48_home/sessions/mint/meta" | tr -d '[:space:]')"
+assert_eq "compact-freeze: the frozen uuid IS the one written to meta" "1" \
+    "$(_cp48_u="$(cut -d$'\x1f' -f2 <<<"$_cp48_mint_tuple")"
+       grep -c "^session_id=${_cp48_u}$" "$_cp48_home/sessions/mint/meta" | tr -d '[:space:]')"
+_cp48_session badid "mode=local" "origin=$_ar48_root" "config=/dev/null" "session_id=not-a-uuid"
+assert_eq "compact-freeze: an unparseable id refuses" "REFUSED" "$(_cp48_freeze badid)"
+assert_eq "compact-freeze: and is left exactly as it was" "session_id=not-a-uuid" \
+    "$(grep '^session_id=' "$_cp48_home/sessions/badid/meta")"
+
+# The history policy is SEALED at freeze, and a stored purge contradicts compact.
+_cp48_session purger "mode=local" "origin=$_ar48_root" "config=$_cp48_home/purge.conf" "session_id=44444444-1111-2222-3333-444444444444" "agent.main=a:b:c"
+printf '[workspace]\npurge_agent_history = true\n' >"$_cp48_home/purge.conf"
+assert_eq "compact-freeze: a stored purge policy refuses rather than silently keeping" "REFUSED" "$(_cp48_freeze purger)"
+assert_eq "compact-freeze: --keep-history is the explicit override, and seals purge=false" "false" \
+    "$(_cp48_freeze purger true | cut -d$'\x1f' -f7)"
+
+# ── the archive-root preflight, before a human is asked anything ────────────────
+_cp48_pre() { (AE_HOME="$1" _compact_archive_preflight "$2" >/dev/null 2>&1) && echo ok || echo REFUSED; }
+mkdir -p "$_cp48_home/pre"
+assert_eq "compact-preflight: a clean root passes" "ok" "$(_cp48_pre "$_cp48_home/pre" aaaaaaaa-1111-2222-3333-444444444444)"
+mkdir -p "$_cp48_home/pre/archive/aaaaaaaa-1111-2222-3333-444444444444"
+assert_eq "compact-preflight: an archive that already exists refuses (immutable)" "REFUSED" \
+    "$(_cp48_pre "$_cp48_home/pre" aaaaaaaa-1111-2222-3333-444444444444)"
+mkdir -p "$_cp48_home/pre/archive/.publishing.bbbbbbbb-1111-2222-3333-444444444444"
+assert_eq "compact-preflight: a standing claim refuses" "REFUSED" \
+    "$(_cp48_pre "$_cp48_home/pre" bbbbbbbb-1111-2222-3333-444444444444)"
+mkdir -p "$_cp48_home/symhome"
+ln -s "$_cp48_home/pre/archive" "$_cp48_home/symhome/archive"
+assert_eq "compact-preflight: a symlinked archive root refuses" "REFUSED" \
+    "$(_cp48_pre "$_cp48_home/symhome" cccccccc-1111-2222-3333-444444444444)"
+
+# ── refusing from inside the target, before anything happens ────────────────────
+# compact ends the session the caller sits in and starts another; one command cannot
+# honestly hand the caller's terminal to the new one, so it says so.
+_cp48_inside() { # <predicate-answer: yes|no>
+    (
+        # shellcheck disable=SC2317,SC2329  # invoked by the refusal, not lexically here
+        _stop_current_target_proven() { [[ "$1" == "yes-target" ]]; }
+        _compact_refuse_if_inside "$1" 2>&1
+        printf 'rc=%s' "$?"
+    )
+}
+assert_eq "compact-self: proven inside the target refuses, with the detach recipe" "1" \
+    "$(_cp48_inside yes-target | grep -c 'Detach, then run: ae compact yes-target' | tr -d '[:space:]')"
+assert_eq "compact-self: ...and returns nonzero" "1" \
+    "$(_cp48_inside yes-target | grep -c 'rc=1' | tr -d '[:space:]')"
+assert_eq "compact-self: an UNPROVEN answer means not inside, which is the safe direction" "rc=0" \
+    "$(_cp48_inside other)"
+# ORDER MATTERS MORE THAN THE CHECK: it must run before a mint, an event, a prompt or an
+# archive read, so a caller inside the target cannot change anything by trying.
+_cp48_cmd_src="$(awk '/^cmd_compact\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "compact-self: the refusal precedes the freeze (which can MINT) in cmd_compact" "1" \
+    "$([[ "$_cp48_cmd_src" == *'_compact_refuse_if_inside "$name" || return 1'*'_compact_freeze_source'* ]] && echo 1 || echo 0)"
+assert_eq "compact-self: and it asks the same question stop asks, not a private one" "1" \
+    "$([[ "$AE_SOURCE" == *'_compact_refuse_if_inside() { # <name>'*'_stop_current_target_proven "$1"'* ]] && echo 1 || echo 0)"
+
+# ── bare-call safety for every new query ────────────────────────────────────────
+_cp48_bare() { # <shell-code>
+    local fns
+    fns="$(awk '/^(_compact_parse_flags|_compact_handover_secs|_compact_freeze_source|_compact_archive_preflight|_compact_config_roster|_ar_meta_get|_ar_canonical_uuid|_ar_root|_ar_require_real_root|_canonical_dir|_end_effective_purge|read_session_meta|get_config|parse_config|set_session_meta_values|set_session_meta_value|gen_uuid|_ae_stat)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    "${BASH}" -c "set -euo pipefail
+CONFIG_FILE=/dev/null
+AE_LOCAL_CONFIG=''
+${fns}
+${1}
+echo SURVIVED" 2>/dev/null
+}
+assert_eq "bare-call: _compact_handover_secs with a malformed value" "SURVIVED" \
+    "$(_cp48_bare "AE_COMPACT_HANDOVER_SECS=abc _compact_handover_secs >/dev/null 2>&1")"
+assert_eq "bare-call: _compact_parse_flags on a valid line" "SURVIVED" \
+    "$(_cp48_bare "_compact_parse_flags -f s1 >/dev/null")"
+assert_eq "bare-call: _compact_archive_preflight on a clean root" "SURVIVED" \
+    "$(_cp48_bare "AE_HOME='$_cp48_home/bare' _compact_archive_preflight aaaaaaaa-1111-2222-3333-444444444444 >/dev/null")"
+assert_eq "bare-call: _compact_freeze_source on a healthy session" "SURVIVED" \
+    "$(_cp48_bare "SESSIONS_DIR='$_cp48_home/sessions' WORKTREES_DIR='$_cp48_home/wt' AE_HOME='$_cp48_home/arch' _AE_PURGE_HISTORY_CLI='' _compact_freeze_source ok false >/dev/null")"
+
+# ══ ae compact, phase (b): the semantic handover ═════════════════════════════════
+eval "$(awk '/^(_compact_actor|_compact_memo_offset|_compact_memo_after|_compact_reply_seen|_compact_find_outstanding|_compact_baseline_of|_compact_request_text)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+
+# ── the reserved return address is a WHITELIST, not a namespace ─────────────────
+# compact is a command, not a pane, so a reply to it must be RECORDED rather than
+# delivered. The failure this family can produce is a SILENT NO-OP DELIVERY, which is why
+# the match is one exact prefix: an agent that mistypes an ae:-shaped target must still
+# fail loudly instead of having its message swallowed into the log.
+assert_eq "compact-sink: send records ae:compact: targets without pane delivery" "1" \
+    "$([[ "$AE_SOURCE" == *'"$target_ref" == telegram:* || "$target_ref" == discord:* || "$target_ref" == ae:compact:*'* ]] && echo 1 || echo 0)"
+assert_eq "compact-sink: and the tracked-send side skips resolution for the same set" "1" \
+    "$([[ "$AE_SOURCE" == *'"$target_name" != telegram:* && "$target_name" != discord:* && "$target_name" != ae:compact:*'* ]] && echo 1 || echo 0)"
+_cp48_sink_match() { # <target> -> yes|no, using the product's own condition
+    local target_ref="$1"
+    if [[ "$target_ref" == telegram:* || "$target_ref" == discord:* || "$target_ref" == ae:compact:* ]]; then
+        echo yes
+    else
+        echo no
+    fi
+}
+assert_eq "compact-sink: the reserved actor matches" "yes" "$(_cp48_sink_match "ae:compact:$(printf 'u')")"
+assert_eq "compact-sink: a bare ae: target does NOT (it would be a silent no-op)" "no" "$(_cp48_sink_match "ae:lead")"
+assert_eq "compact-sink: nor a near-miss prefix" "no" "$(_cp48_sink_match "ae:compactx:u")"
+assert_eq "compact-sink: nor one that merely contains it" "no" "$(_cp48_sink_match "xae:compact:u")"
+assert_eq "compact-sink: nor an ordinary agent name" "no" "$(_cp48_sink_match "claude:lead")"
+# MUTATION: broadening the family to ae:* must FAIL the near-miss pins above, or they are
+# decoration rather than protection.
+_cp48_broad_match() { # the shape we must NOT ship
+    local target_ref="$1"
+    if [[ "$target_ref" == telegram:* || "$target_ref" == discord:* || "$target_ref" == ae:* ]]; then
+        echo yes
+    else
+        echo no
+    fi
+}
+assert_eq "compact-sink (mutation): the broadened form would swallow a mistyped ae: target" "yes" \
+    "$(_cp48_broad_match "ae:lead")"
+assert_eq "compact-actor: the return address is derived from the source uuid" "ae:compact:U-1" "$(_compact_actor U-1)"
+
+# ── the memo baseline: what makes a handover REAL rather than claimed ───────────
+_cp48_m="$_ar48_root/compactmemo"
+mkdir -p "$_cp48_m"
+assert_eq "compact-memo: a missing memo has a zero baseline" "0" "$(_compact_memo_offset "$_cp48_m/none.tsv")"
+: >"$_cp48_m/memo.tsv"
+assert_eq "compact-memo: an empty memo has a zero baseline" "0" "$(_compact_memo_offset "$_cp48_m/memo.tsv")"
+printf '%s\t%s\t%s\t%s\n' "2026-01-01T00:00:00Z" "a:one" "notes" "before" >"$_cp48_m/memo.tsv"
+_cp48_base="$(_compact_memo_offset "$_cp48_m/memo.tsv")"
+assert_eq "compact-memo: a non-empty memo has a byte baseline" "1" "$([[ "$_cp48_base" -gt 0 ]] && echo 1 || echo 0)"
+assert_eq "compact-memo: nothing appended yet means no handover" "1" \
+    "$(_compact_memo_after "$_cp48_m/memo.tsv" "$_cp48_base"; echo $?)"
+printf '%s\t%s\t%s\t%s\n' "2026-01-01T01:00:00Z" "a:one" "notes" "after, but not a handover" >>"$_cp48_m/memo.tsv"
+assert_eq "compact-memo: a row on another TOPIC is not a handover" "1" \
+    "$(_compact_memo_after "$_cp48_m/memo.tsv" "$_cp48_base"; echo $?)"
+printf '%s\t%s\t%s\t%s\n' "2026-01-01T02:00:00Z" "a:one" "handover" "what the next session must know" >>"$_cp48_m/memo.tsv"
+assert_eq "compact-memo: a handover row appended AFTER the baseline counts" "0" \
+    "$(_compact_memo_after "$_cp48_m/memo.tsv" "$_cp48_base"; echo $?)"
+# A handover row that was already there BEFORE the request does not count — otherwise
+# every session with an old handover memo would pass the check without writing anything.
+printf '%s\t%s\t%s\t%s\n' "2026-01-01T00:00:00Z" "a:one" "handover" "an OLD handover" >"$_cp48_m/old.tsv"
+assert_eq "compact-memo: a PRE-EXISTING handover row does not satisfy the check" "1" \
+    "$(_compact_memo_after "$_cp48_m/old.tsv" "$(_compact_memo_offset "$_cp48_m/old.tsv")"; echo $?)"
+assert_eq "compact-memo: an empty-text handover row is not a handover" "1" \
+    "$(printf '%s\t%s\t%s\t\n' "2026-01-01T03:00:00Z" "a:one" "handover" >"$_cp48_m/empty.tsv"
+       _compact_memo_after "$_cp48_m/empty.tsv" 0; echo $?)"
+
+# The baseline rides in the request's stored body — not a new event field.
+printf 'some request text\nAE-COMPACT-MEMO-BASELINE=4242\nmore text\n' >"$_cp48_m/body.txt"
+assert_eq "compact-baseline: it is recovered from the stored body" "4242" "$(_compact_baseline_of "$_cp48_m/body.txt")"
+assert_eq "compact-baseline: a body without the marker reports failure" "1" \
+    "$(printf 'no marker here\n' >"$_cp48_m/nomark.txt"; _compact_baseline_of "$_cp48_m/nomark.txt" >/dev/null; echo $?)"
+assert_eq "compact-baseline: a missing body reports failure" "1" \
+    "$(_compact_baseline_of "$_cp48_m/absent.txt" >/dev/null; echo $?)"
+_cp48_req="$(_compact_request_text demo 99)"
+assert_eq "compact-request: it carries the baseline marker for the retry to find" "1" \
+    "$(grep -c '^AE-COMPACT-MEMO-BASELINE=99$' <<<"$_cp48_req" | tr -d '[:space:]')"
+assert_eq "compact-request: and every instruction the spec requires" "6" \
+    "$(grep -cE '^[1-6]\. ' <<<"$_cp48_req" | tr -d '[:space:]')"
+assert_eq "compact-request: including the spawn-closure rule, since compact refuses on one" "1" \
+    "$(grep -c 'Retire every agent you spawned' <<<"$_cp48_req" | tr -d '[:space:]')"
+
+# ── the reply must come from MAIN, in the FROZEN session ────────────────────────
+_cp48_ev="$_ar48_root/compactev"
+mkdir -p "$_cp48_ev"
+_cp48_reply_fixture() { printf '%s\n' "$@" >"$_cp48_ev/events.jsonl"; }
+_cp48_reply_fixture '{"ts":"1","actor":"ae:compact:U","action":"ask","ref":"R1","target":"c:main","target_slot":"main","target_session":"S","summary":"handover"}' \
+    '{"ts":"2","actor":"c:main","action":"reply","ref":"R1","target":"ae:compact:U","actor_slot":"main","actor_session":"S","summary":"done"}'
+assert_eq "compact-reply: main in the frozen session satisfies it" "0" \
+    "$(_compact_reply_seen "$_cp48_ev/events.jsonl" R1 S; echo $?)"
+assert_eq "compact-reply: the same reply does not satisfy a DIFFERENT session" "1" \
+    "$(_compact_reply_seen "$_cp48_ev/events.jsonl" R1 OTHER; echo $?)"
+assert_eq "compact-reply: nor a different ref" "1" \
+    "$(_compact_reply_seen "$_cp48_ev/events.jsonl" R2 S; echo $?)"
+_cp48_reply_fixture '{"ts":"1","actor":"ae:compact:U","action":"ask","ref":"R3","target":"c:main","summary":"handover"}' \
+    '{"ts":"2","actor":"w:worker","action":"reply","ref":"R3","target":"ae:compact:U","actor_slot":"worker.0","actor_session":"S","summary":"I answered for the lead"}'
+assert_eq "compact-reply: a WORKER cannot answer the handover on main's behalf" "1" \
+    "$(_compact_reply_seen "$_cp48_ev/events.jsonl" R3 S; echo $?)"
+assert_eq "compact-reply: a missing log is not a reply" "1" \
+    "$(_compact_reply_seen "$_cp48_ev/absent.jsonl" R1 S; echo $?)"
+
+# ── a retry REUSES its outstanding request, and only its own ───────────────────
+_cp48_reply_fixture '{"ts":"1","actor":"ae:compact:U","action":"ask","ref":"MINE","target":"c:main","summary":"handover","body_file":"/x/mine.txt"}' \
+    '{"ts":"2","actor":"someone:else","action":"ask","ref":"THEIRS","target":"c:main","summary":"unrelated"}'
+assert_eq "compact-reuse: it finds the pending request sent by its own reserved actor" "MINE	/x/mine.txt" \
+    "$(_compact_find_outstanding "$_cp48_ev/events.jsonl" "ae:compact:U")"
+assert_eq "compact-reuse: and does not adopt someone else's pending request" "1" \
+    "$(_compact_find_outstanding "$_cp48_ev/events.jsonl" "ae:compact:OTHER" >/dev/null; echo $?)"
+_cp48_reply_fixture '{"ts":"1","actor":"ae:compact:U","action":"ask","ref":"DONE","target":"c:main","target_slot":"main","target_session":"S","summary":"handover"}' \
+    '{"ts":"2","actor":"c:main","action":"reply","ref":"DONE","target":"ae:compact:U","actor_slot":"main","actor_session":"S","summary":"answered"}'
+assert_eq "compact-reuse: a request already answered is not outstanding" "1" \
+    "$(_compact_find_outstanding "$_cp48_ev/events.jsonl" "ae:compact:U" >/dev/null; echo $?)"
+_cp48_reply_fixture '{"ts":"1","actor":"ae:compact:U","action":"ask","ref":"GONE","target":"c:main","summary":"handover"}' \
+    '{"ts":"2","actor":"ae:compact:U","action":"cancel","ref":"GONE","summary":"withdrawn"}'
+assert_eq "compact-reuse: nor one this operation already withdrew" "1" \
+    "$(_compact_find_outstanding "$_cp48_ev/events.jsonl" "ae:compact:U" >/dev/null; echo $?)"
+
+# ── bare-call safety ───────────────────────────────────────────────────────────
+assert_eq "bare-call: the phase-(b) queries, on absent and present inputs" "SURVIVED" \
+    "$(_ar48_bare2 "_compact_actor U >/dev/null
+_compact_memo_offset /nope >/dev/null
+_compact_memo_offset '$_cp48_m/memo.tsv' >/dev/null
+_compact_memo_after /nope 0 || true
+_compact_memo_after '$_cp48_m/memo.tsv' 0 || true
+_compact_reply_seen /nope R S || true
+_compact_reply_seen '$_cp48_ev/events.jsonl' R1 S || true
+_compact_baseline_of /nope >/dev/null || true
+_compact_find_outstanding /nope A >/dev/null || true
+_compact_find_outstanding '$_cp48_ev/events.jsonl' 'ae:compact:U' >/dev/null || true")"
+
+# ══ ae compact, phases (c) and (d) ══════════════════════════════════════════════
+eval "$(awk '/^(_compact_spawn_slots|_compact_config_roster|_compact_revalidate|_compact_confirm_body|_compact_recovery_command|_ae_own_path|shell_quote)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+
+# ── the reply-routing tuple: a slotless ask must be replyable by its assignee ───
+# THE PREREQUISITE. compact runs OUTSIDE the target session, so it has no pane slot and
+# its ask carries an EMPTY actor_slot. Under tab framing that empty field collapsed and
+# every later field shifted, so `reply` compared the assignee's real slot against the
+# wrong column and REJECTED the very agent the request was assigned to — measured, and it
+# would have timed out every compact forever. Fourth appearance of the tab-collapse class.
+eval "$(awk '/^(ae_find_request)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_cp48_fr_dir="$_ar48_root/findreq"
+mkdir -p "$_cp48_fr_dir"
+_cp48_find() { # <event-line> -> the row, fields joined with |
+    printf '%s\n' "$1" >"$_cp48_fr_dir/events.jsonl"
+    (_AE_META_DIR="$_cp48_fr_dir" ae_find_request R) | tr $'\x1f' '|'
+}
+assert_eq "reply-routing: a SLOTLESS ask keeps every later field in place" \
+    "ask|ae:compact:U|c:main||demo|main|demo" \
+    "$(_cp48_find '{"ts":"1","actor":"ae:compact:U","action":"ask","ref":"R","target":"c:main","actor_session":"demo","target_slot":"main","target_session":"demo","summary":"handover"}')"
+assert_eq "reply-routing: so the assignee's slot is what reply compares against" "main" \
+    "$(_cp48_row="$(_cp48_find '{"ts":"1","actor":"ae:compact:U","action":"ask","ref":"R","target":"c:main","actor_session":"demo","target_slot":"main","target_session":"demo","summary":"handover"}')"
+       cut -d'|' -f6 <<<"$_cp48_row")"
+assert_eq "reply-routing: a fully-slotted ask is unchanged" \
+    "ask|a:one|b:two|main|S|worker.0|S" \
+    "$(_cp48_find '{"ts":"1","actor":"a:one","action":"ask","ref":"R","target":"b:two","actor_slot":"main","actor_session":"S","target_slot":"worker.0","target_session":"S"}')"
+assert_eq "reply-routing: a pre-migration ask keeps its three-column shape" \
+    "ask|a:one|b:two" \
+    "$(_cp48_find '{"ts":"1","actor":"a:one","action":"ask","ref":"R","target":"b:two"}')"
+assert_eq "reply-routing: and the reader is US-framed to match the writer" "1" \
+    "$([[ "$AE_SOURCE" == *"IFS=\$'\\x1f' read -r _ sender target actor_slot actor_session target_slot target_session <<<\"\$row\""* ]] && echo 1 || echo 0)"
+# MUTATION: the tab reader on the slotless row is what shipped, and it must be provably wrong.
+assert_eq "reply-routing (mutation): the tab reader mis-assigns the slot on that same row" "demo" \
+    "$(_cp48_tabrow="$(printf 'ask\tae:compact:U\tc:main\t\tdemo\tmain\tdemo')"
+       IFS=$'\t' read -r _ _ _ _ _ _cp48_tslot _ <<<"$_cp48_tabrow"; printf '%s' "$_cp48_tslot")"
+
+# ── a withdrawal is TERMINAL: a straggler reply cannot reopen it ────────────────
+_cp48_late="$(_ar48_cancel_fixture \
+    '{"ts":"1","actor":"ae:compact:U","action":"ask","ref":"late","target":"c:main","summary":"handover please"}' \
+    '{"ts":"2","actor":"ae:compact:U","action":"cancel","ref":"late","summary":"digest-only"}' \
+    '{"ts":"3","actor":"c:main","action":"reply","ref":"late","target":"ae:compact:U","summary":"sorry, here it is"}')"
+assert_eq "sensor-cancel: a LATE reply does not un-withdraw a cancelled request" "cancelled" \
+    "$(_ar48_status_of "$_cp48_late" late)"
+assert_eq "sensor-cancel: and the row still carries the withdrawal, not the straggler" "digest-only" \
+    "$(_ar48_summary_of "$_cp48_late" late)"
+
+# ── the spawn gate is mechanical, gaps and all ─────────────────────────────────
+_cp48_spawn_meta="$_ar48_root/spawnmeta"
+mkdir -p "$_cp48_spawn_meta"
+printf 'session=x\nagent.main=a:b:c\n' >"$_cp48_spawn_meta/none"
+printf 'session=x\nagent.main=a:b:c\nagent.spawned.3=o:helper:sid\n' >"$_cp48_spawn_meta/gap"
+printf 'session=x\nagent.main=a:b:c\nagent.spawned.0=unresolved-entry\n' >"$_cp48_spawn_meta/unresolved"
+assert_eq "compact-spawn: a clean roster has no spawned slots" "" "$(_compact_spawn_slots "$_cp48_spawn_meta/none")"
+assert_eq "compact-spawn: a GAPPED index is still a spawned slot" "spawned.3" "$(_compact_spawn_slots "$_cp48_spawn_meta/gap")"
+assert_eq "compact-spawn: an UNRESOLVED entry counts too" "spawned.0" "$(_compact_spawn_slots "$_cp48_spawn_meta/unresolved")"
+
+# ── the recovery line: it must BE the command that works ───────────────────────
+_cp48_tuple() { printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' "$1" "$2" session "$3" "$4" "$5" false "/arch/$2"; }
+assert_eq "compact-recovery: local mode maps to --local, and names the archive" \
+    "cd /work/proj && /opt/ae --local demo --from U1" \
+    "$(# shellcheck disable=SC2329  # invoked by _compact_recovery_command, not lexically here
+       _ae_own_path() { printf '/opt/ae'; }
+       AE_HOME="$HOME/.ae" _compact_recovery_command "$(_cp48_tuple demo U1 local /work/proj '')")"
+assert_eq "compact-recovery: git maps to --worktree" "1" \
+    "$(# shellcheck disable=SC2329  # invoked by _compact_recovery_command, not lexically here
+       _ae_own_path() { printf '/opt/ae'; }
+       [[ "$(AE_HOME="$HOME/.ae" _compact_recovery_command "$(_cp48_tuple demo U1 git /work/proj '')")" == *"--worktree demo"* ]] && echo 1 || echo 0)"
+assert_eq "compact-recovery: full maps to --copy" "1" \
+    "$(# shellcheck disable=SC2329  # invoked by _compact_recovery_command, not lexically here
+       _ae_own_path() { printf '/opt/ae'; }
+       [[ "$(AE_HOME="$HOME/.ae" _compact_recovery_command "$(_cp48_tuple demo U1 full /work/proj '')")" == *"--copy demo"* ]] && echo 1 || echo 0)"
+# A path with spaces must survive being pasted back into a shell.
+assert_eq "compact-recovery: an origin with spaces is quoted, not concatenated" "1" \
+    "$(# shellcheck disable=SC2329  # invoked by _compact_recovery_command, not lexically here
+       _ae_own_path() { printf '/opt/ae'; }
+       [[ "$(AE_HOME="$HOME/.ae" _compact_recovery_command "$(_cp48_tuple demo U1 local '/work/my proj' '')")" == *'cd /work/my\ proj &&'* ]] && echo 1 || echo 0)"
+assert_eq "compact-recovery: a config with spaces likewise" "1" \
+    "$(# shellcheck disable=SC2329  # invoked by _compact_recovery_command, not lexically here
+       _ae_own_path() { printf '/opt/ae'; }
+       [[ "$(AE_HOME=/custom/home _compact_recovery_command "$(_cp48_tuple demo U1 local /work '/etc/my cfg')")" == *'CONFIG_FILE=/etc/my\ cfg'* ]] && echo 1 || echo 0)"
+# Environment assignments appear ONLY when they are not the default — otherwise the line
+# advertises a default as though it were a decision.
+assert_eq "compact-recovery: a default AE_HOME is omitted" "0" \
+    "$(# shellcheck disable=SC2329  # invoked by _compact_recovery_command, not lexically here
+       _ae_own_path() { printf '/opt/ae'; }
+       AE_HOME="$HOME/.ae" _compact_recovery_command "$(_cp48_tuple demo U1 local /work '')" | grep -c 'AE_HOME=' | tr -d '[:space:]')"
+assert_eq "compact-recovery: an overridden AE_HOME is included" "1" \
+    "$(# shellcheck disable=SC2329  # invoked by _compact_recovery_command, not lexically here
+       _ae_own_path() { printf '/opt/ae'; }
+       AE_HOME=/custom/home _compact_recovery_command "$(_cp48_tuple demo U1 local /work '')" | grep -c "AE_HOME=/custom/home" | tr -d '[:space:]')"
+assert_eq "compact-recovery: a config equal to the default is omitted" "0" \
+    "$(# shellcheck disable=SC2329  # invoked by _compact_recovery_command, not lexically here
+       _ae_own_path() { printf '/opt/ae'; }
+       AE_HOME=/custom/home _compact_recovery_command "$(_cp48_tuple demo U1 local /work '/custom/home/config')" | grep -c 'CONFIG_FILE=' | tr -d '[:space:]')"
+
+# ── structural: SOURCE SHAPE ONLY, and the labels say so ───────────────────────
+# Mutation testing proved every assertion below survives an ACTIVE defect of the kind its
+# old label claimed to catch: an archive published then purged, a route to cmd_end instead
+# of its locked body, a WRONG authorization payload, both Recovery writes disabled while
+# dead text held the token order, the lock re-acquired immediately before the relaunch, and
+# the stderr redirection dropped so "Archived" printed twice. A GREP OVER SOURCE TEXT
+# PROVES A STRING IS PRESENT, NOT THAT A BEHAVIOUR HOLDS. They are kept because they do
+# catch accidental deletion or reordering of the text cheaply — but the behaviour is proven
+# in tests/integration, and each label now says which arm does it.
+
+_cp48_cmd="$(awk '/^cmd_compact\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+assert_eq "compact-proofs (source shape): no _ar_purge_archive call — behaviour proven by compact-full/compact-keep, whose archives must exist after the run" "0" \
+    "$(grep -c '_ar_purge_archive' <<<"$_cp48_cmd" | tr -d '[:space:]')"
+assert_eq "compact-proofs (source shape): no hand-rolled archive rm — same coverage" "0" \
+    "$(grep -cE 'rm -rf .*archive' <<<"$_cp48_cmd" | tr -d '[:space:]')"
+assert_eq "compact-proofs (source shape): two revalidation call sites — gate 2's BEHAVIOUR is proven by the compact-gate2 arm" "2" \
+    "$(grep -c '_compact_revalidate' <<<"$_cp48_cmd" | tr -d '[:space:]')"
+assert_eq "compact-proofs (source shape): _end_session_locked, not cmd_end — behaviour proven by compact-keep, which needs the frozen plan honoured by the shared planner" "1" \
+    "$([[ "$_cp48_cmd" == *'_end_session_locked "$c_name"'* && "$_cp48_cmd" != *'cmd_end'* ]] && echo 1 || echo 0)"
+assert_eq "compact-proofs (source shape): the authorization payload is installed — behaviour proven by compact-keep (a wrong payload makes the planner refuse)" "1" \
+    "$([[ "$_cp48_cmd" == *'_AE_END_FROZEN_PLAN["$c_name"]='*'_AE_END_FROZEN_AUTHORITY["$c_name"]="compact"'* ]] && echo 1 || echo 0)"
+# THE STDOUT CONTRACT. compact's stdout is five lines in one order, and a caller piping
+# this command gets the contract rather than the commentary — so end's own progress (which
+# prints its own "Archived <uuid>") and compact's phase-(a) diagnostics both go to stderr.
+# Pinned structurally because a later edit that drops one redirection reads as harmless and
+# silently doubles a line the caller parses.
+# SHAPE ONLY — the label says so deliberately. This catches an accidental reordering or
+# deletion of the contract's text; it does NOT prove what reaches a caller's stdout,
+# because a grep over source cannot. THE BEHAVIOUR IS PROVEN in tests/integration by the
+# "compact-out:" arms, which read the real stdout of a real compact and assert the four
+# lines come first with nothing of compact's after them.
+assert_eq "compact-stdout (source shape): the FOUR contract lines appear in the contract's order" "1" \
+    "$(_cp48_n() { grep -n "$1" <<<"$_cp48_cmd" | head -1 | cut -d: -f1; }
+       _cp48_a="$(_cp48_n "printf 'Archived %s")"; _cp48_b="$(_cp48_n "printf 'Archive: %s")"
+       _cp48_c="$(_cp48_n "printf 'Digest: %s")"; _cp48_d="$(_cp48_n "printf 'Recovery: %s")"
+       [[ -n "$_cp48_a" && "$_cp48_a" -lt "$_cp48_b" && "$_cp48_b" -lt "$_cp48_c" &&
+          "$_cp48_c" -lt "$_cp48_d" ]] && echo 1 || echo 0)"
+# And the fifth line is NOT on stdout: it announces a launch that can still refuse.
+assert_eq "compact-stdout (source shape): the relaunch announcement is redirected to stderr" "1" \
+    "$([[ "$_cp48_cmd" == *"printf 'Starting fresh session %s from archive %s...\\n' \"\$c_name\" \"\$c_uuid\""* &&
+         "$_cp48_cmd" == *'} >&2 2>/dev/null || true'* ]] && echo 1 || echo 0)"
+assert_eq "compact-stdout: so does the question, its echo, and a decline — stdout stays EMPTY unless the boundary is crossed" "1" \
+    "$([[ "$_cp48_cmd" == *'_compact_confirm_body "$tuple" "$roster" "$_CP_DIGEST_ONLY" >&2'* &&
+         "$_cp48_cmd" == *'printf "Continue? [y/N] " >&2'* &&
+         "$_cp48_cmd" == *'echo "Aborted." >&2'* ]] && echo 1 || echo 0)"
+# EOF IS NOT CONSENT and not a crash: the read must not be bare, or `set -e` kills the
+# command between the prompt and any word about what happened.
+assert_eq "compact-confirm: the read tolerates EOF instead of aborting, and RECORDS that it was EOF" "1" \
+    "$([[ "$_cp48_cmd" == *'read -r -n 1 reply || _cp_asked=false'* ]] && echo 1 || echo 0)"
+# EOF is the ABSENCE of an answer, not an answer. `n` exits 0; end-of-input must report
+# that ae could not ask — stdout is empty either way, so the status is the only channel.
+assert_eq "compact-confirm: and EOF returns NON-ZERO while a typed answer does not" "1" \
+    "$([[ "$_cp48_cmd" == *'could not obtain confirmation'* && "$_cp48_cmd" == *'_cp_asked" != true'* ]] && echo 1 || echo 0)"
+# THE BOUNDARY REPORT MUST NOT BE ABLE TO KILL THE RELAUNCH, and the restore is the half
+# a refactor drops: SIGPIPE is IGNORED across the report (a signal cannot be caught with
+# `|| true` — it kills the process), then RESTORED before the exec, because an ignored
+# disposition is INHERITED and would leave every child session unable to die on a closed
+# pipe. Structural because macOS exposes no signal mask for a running process.
+assert_eq "compact-boundary: SIGPIPE is ignored across the report and RESTORED before the exec" "1" \
+    "$(_cp48_ign="$(grep -nE 'trap .+ PIPE' <<<"$_cp48_cmd" | head -1 | cut -d: -f1)"
+       _cp48_res="$(grep -n 'trap - PIPE' <<<"$_cp48_cmd" | head -1 | cut -d: -f1)"
+       _cp48_x="$(grep -n '^    exec env' <<<"$_cp48_cmd" | head -1 | cut -d: -f1)"
+       [[ -n "$_cp48_ign" && -n "$_cp48_res" && -n "$_cp48_x" &&
+          "$_cp48_ign" -lt "$_cp48_res" && "$_cp48_res" -lt "$_cp48_x" ]] && echo 1 || echo 0)"
+assert_eq "compact-stdout: end's progress is chatter, so it goes to stderr" "1" \
+    "$([[ "$_cp48_cmd" == *'_end_session_locked "$c_name" >&2'* ]] && echo 1 || echo 0)"
+assert_eq "compact-stdout: and so do the frozen facts printed before the prompt" "1" \
+    "$([[ "$_cp48_cmd" == *'printf '"'"'archive: %s\n'"'"' "$c_archive"'*'} >&2'* ]] && echo 1 || echo 0)"
+assert_eq "compact-proofs (source shape): Recovery precedes the exec in the source — behaviour proven by compact-out, which reads the real stdout and stderr" "1" \
+    "$(_cp48_rec="$(grep -n 'Recovery: %s' <<<"$_cp48_cmd" | head -1 | cut -d: -f1)"
+       _cp48_exec="$(grep -n '^    exec env' <<<"$_cp48_cmd" | head -1 | cut -d: -f1)"
+       [[ -n "$_cp48_rec" && -n "$_cp48_exec" && "$_cp48_rec" -lt "$_cp48_exec" ]] && echo 1 || echo 0)"
+assert_eq "compact-proofs (source shape): the lock closes before the exec — behaviour proven by every arm asserting a LIVE child, which cannot start if the lock is held" "1" \
+    "$(_cp48_lock="$(grep -n '} 9>"\$_cp_lock"' <<<"$_cp48_cmd" | head -1 | cut -d: -f1)"
+       _cp48_exec="$(grep -n '^    exec env' <<<"$_cp48_cmd" | head -1 | cut -d: -f1)"
+       [[ -n "$_cp48_lock" && -n "$_cp48_exec" && "$_cp48_lock" -lt "$_cp48_exec" ]] && echo 1 || echo 0)"
+assert_eq "launch: the parent is proved AGAIN immediately before the child's meta is published" "1" \
+    "$([[ "$AE_SOURCE" == *'_from_proof_now="$(_ar_from_preflight "$PARENT_ARCHIVE_ID"'*'mv "${AE_META}/meta.tmp.$$" "${AE_META}/meta"'* ]] && echo 1 || echo 0)"
+assert_eq "launch: a changed parent rolls the launch back rather than publishing a lineage-free child" "1" \
+    "$([[ "$AE_SOURCE" == *'changed while this session was being created'*'_launch_rollback 1'* ]] && echo 1 || echo 0)"
 
 # ── BARE-CALL PROBES under set -euo pipefail ─────────────────────────
 # The ONLY shape that proves errexit safety. Every call site in ae today sits behind

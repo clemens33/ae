@@ -249,6 +249,26 @@ The script runs under `set -euo pipefail` (line 3). Exit codes you didn't think 
 - **Producers in process substitution** end silently: `< <(cmd)` doesn't abort the reader — guard with `|| true` only when failure is genuinely optional.
 - **`set -u` + associative arrays:** subscripting an *undeclared* array is an arithmetic eval on the key → abort on non-numeric refs. `declare -A map=()` before any lookup (see the stopped-sessions JSON path).
 - **Only a BARE call proves `set -e` safety — a green suite does not.** A failing command aborts *only* in statement position: `$(fn)`, `if fn`, `fn && …`, `fn || …` all mask it. `tests/unit` runs `set -euo pipefail` and still cannot catch this, because it reaches these functions exclusively through `$(…)` in `assert_eq` arguments. Entry points differ too — `ae` and the generated `spawn`/`retire` helpers enable errexit, the send-path helpers (`_lib`, `send`, `ask`, …) do not — so the same function is safe through one caller and aborts through another. Probe it *bare* under `set -euo pipefail`; that is the only shape that shows it. Shipped exhibit: `_sgr_parse`'s `((line++))` yields the *old* value, so it returns 1 at zero and a bare call aborts mid-parse — invisible through five review rounds until a new caller (`_cmd_spawn`, under `ae`'s errexit) reached it. (`((x++))` → `x=$((x + 1))`.)
+- **A probe built to detect an errexit abort must not put the subject in a context that
+  disables errexit.** The note above tells you `||`, `&&` and `if` mask errexit. It does
+  not tell you that your TEST for masking will itself be masked — and `( subject ) ||
+  echo "it died"` is the natural way to write that test, so **the instinct that makes you
+  write the probe is the instinct that breaks it**. Shipped exhibit: a probe of exactly
+  that shape reported `SURVIVED` for an assignment that provably kills a backgrounded
+  subshell, ten minutes from reverting the fix that made a test pass. Probe in the shape
+  the caller actually uses (`( … ) &` plus a marker file, or a bare call), and verify the
+  instrument answers correctly for a KNOWN failure before trusting it about an unknown
+  one. Note the direction of the error: a masked probe always reports success, so it
+  argues your change was unnecessary — **a biased instrument is worse than a noisy one**,
+  because the reading it biases toward is the one that ends the investigation.
+- **A backgrounded fixture that aborts is invisible AND misattributing.** Under `set -e`,
+  a failed assignment inside `( … ) &` stops the subshell with no output and no status
+  anyone reads; the failure then surfaces in whatever the fixture was feeding and blames
+  the product. Shipped exhibit: `v="$(awk … events.jsonl)"` polled a file that does not
+  exist until a session emits its first event, so the fixture died on iteration one and a
+  handover test reported "the reply did not arrive" 40s later, through four wrong
+  hypotheses. Give a backgrounded helper its own error surface — errexit's only report is
+  a process that is no longer there.
 
 ## Config
 

@@ -62,6 +62,18 @@ starts:
 ae my-feature-2 --from <archive-uuid>
 ```
 
+When the agent is out of context but the *work* isn't, do both in one move — archive, end,
+and relaunch the same name continuing from that archive:
+
+```bash
+ae compact my-feature              # asks the main agent for a handover first
+ae compact --digest-only my-feature  # skip the ask; the digest is the handover
+```
+
+It runs from *outside* the session (it ends the one you would be sitting in), local mode
+only for now, and prints a `Recovery:` line before the relaunch so you can start the fresh
+session by hand if anything goes wrong after the archive is published.
+
 `ae end --purge-history` is the opposite intent: no archive is written, and any existing
 one for that session is deleted along with the agent conversation files.
 

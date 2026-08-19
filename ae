@@ -4410,8 +4410,8 @@ _ar_request_states() { # <events.jsonl>
     done < <(_ae_tac "$file" 2>/dev/null || true)
     local i status summary
     local -a cands=()
-    local cand idx c_actor c_target c_aslot c_tslot c_asess c_tsess c_sum
-    local rep_ok rep_idx rep_text can_ok can_idx can_text
+    local cand c_actor c_target c_aslot c_tslot c_asess c_tsess c_sum
+    local rep_ok rep_text can_ok can_text
     for ((i = ${#order[@]} - 1; i >= 0; i--)); do
         ref="${order[$i]}"
         status="pending"
@@ -4420,13 +4420,12 @@ _ar_request_states() { # <events.jsonl>
         # one that passes is the newest that counts; an invalid newer reply is simply not
         # a candidate and cannot bury an older valid one.
         rep_ok=false
-        rep_idx=0
         rep_text=""
         if [[ -n "${cand_reply[$ref]:-}" ]]; then
             IFS=$'\x1e' read -ra cands <<<"${cand_reply[$ref]}"
             for cand in "${cands[@]}"; do
                 [[ -n "$cand" ]] || continue
-                IFS=$'\x1f' read -r idx c_actor c_target c_aslot c_tslot c_asess c_tsess c_sum <<<"$cand"
+                IFS=$'\x1f' read -r _ c_actor c_target c_aslot c_tslot c_asess c_tsess c_sum <<<"$cand"
                 # BOTH ENDS, not just the actor: a reply that carries the right ref from
                 # the right agent but is addressed elsewhere does not close the request.
                 if [[ -n "${req_target_slot[$ref]:-}" && -n "$c_aslot" ]]; then
@@ -4435,13 +4434,11 @@ _ar_request_states() { # <events.jsonl>
                         "$c_tslot" == "${req_actor_slot[$ref]:-}" &&
                         "$c_tsess" == "${req_actor_session[$ref]:-}" ]]; then
                         rep_ok=true
-                        rep_idx="$idx"
                         rep_text="$c_sum"
                         break
                     fi
                 elif [[ "$c_actor" == "${req_target[$ref]}" && "$c_target" == "${req_sender[$ref]}" ]]; then
                     rep_ok=true
-                    rep_idx="$idx"
                     rep_text="$c_sum"
                     break
                 fi
@@ -4451,41 +4448,33 @@ _ar_request_states() { # <events.jsonl>
         # a cancel has no target side to verify, so this is the actor half of the same
         # question the reply asks.
         can_ok=false
-        can_idx=0
         can_text=""
         if [[ -n "${cand_cancel[$ref]:-}" ]]; then
             IFS=$'\x1e' read -ra cands <<<"${cand_cancel[$ref]}"
             for cand in "${cands[@]}"; do
                 [[ -n "$cand" ]] || continue
-                IFS=$'\x1f' read -r idx c_actor c_aslot c_asess c_sum <<<"$cand"
+                IFS=$'\x1f' read -r _ c_actor c_aslot c_asess c_sum <<<"$cand"
                 if [[ -n "${req_actor_slot[$ref]:-}" && -n "$c_aslot" ]]; then
                     if [[ "$c_aslot" == "${req_actor_slot[$ref]}" &&
                         "$c_asess" == "${req_actor_session[$ref]:-}" ]]; then
                         can_ok=true
-                        can_idx="$idx"
                         can_text="$c_sum"
                         break
                     fi
                 elif [[ -n "$c_actor" && "$c_actor" == "${req_sender[$ref]}" ]]; then
                     can_ok=true
-                    can_idx="$idx"
                     can_text="$c_sum"
                     break
                 fi
             done
         fi
-        # RECENCY AMONG THE VALID ONES — now a true statement about both kinds, because
-        # each side already picked its newest VALID candidate rather than validating
-        # whichever happened to be newest.
-        if [[ "$can_ok" == true && "$rep_ok" == true ]]; then
-            if ((can_idx < rep_idx)); then
-                status="cancelled"
-                summary="$can_text"
-            else
-                status="replied"
-                summary="$rep_text"
-            fi
-        elif [[ "$can_ok" == true ]]; then
+        # A VALID WITHDRAWAL IS TERMINAL, in the strong sense: once the sender withdrew
+        # the request, a later answer does not un-withdraw it. Recency decides between
+        # candidates WITHIN a kind (the newest valid reply is the answer that counts);
+        # between kinds, cancellation wins whenever it is valid — otherwise a straggler
+        # reply arriving after `ae compact --digest-only` would quietly reopen a request
+        # nobody is waiting on, which is exactly what the state exists to prevent.
+        if [[ "$can_ok" == true ]]; then
             status="cancelled"
             summary="$can_text"
         elif [[ "$rep_ok" == true ]]; then
@@ -5410,6 +5399,943 @@ _ar_from_preflight() { # <raw-uuid>
     # proved (or empty ones defaulted to zero).
     printf '%s\t%s\t%s' "$aid" "$h" "$p"
     return 0
+}
+
+# ══ #48 slice 2: ae compact ═════════════════════════════════════════════════════
+# End a session, keep its archive, and start a fresh one that inherits the digest. It
+# composes the primitive's own boundaries — publish, then `--from` — and adds nothing to
+# the archive format. What it DOES add is a lifecycle in which a human authorizes one
+# thing and a machine must not perform another, so the discipline the primitive earned
+# applies with more force here: the frozen tuple is the authorization payload, a fact
+# observed twice is two facts, an empty set is not unset, and a delete proves as much as
+# a write.
+#
+# v1 IS LOCAL-ONLY (ruled). A managed session's fresh workspace would be based on
+# canonical-origin HEAD, which normally LAGS the session branch — handing back a session
+# missing the code it just archived. That needs the exact-final-commit rule and its own
+# lagging-origin tests; it is #62, and refusing plainly is the honest v1.
+_compact_usage() {
+    cat >&2 <<'USAGE'
+Usage: ae compact [-f|--force] [--keep-history] [--digest-only] <name>
+
+End this session, keep an archive, and start a fresh session that inherits its digest.
+Creates an archive; it does not prune or shrink archive storage.
+Run it outside the target session: detach, then run ae compact <name>.
+
+  -f, --force      skip the confirmation only — no gate, handover or check is skipped
+  --keep-history   required when the target's own config enables purge_agent_history
+  --digest-only    skip the semantic handover request (every other gate still applies)
+USAGE
+    return 0
+}
+
+# The parser refuses rather than interprets. Every flag it rejects is one whose meaning
+# would be a lie here: --purge-history contradicts "keep an archive", --from would give
+# the child two parents, a mode flag would contradict the frozen source mode, `use` would
+# fight the configured roster, and `all` has no coherent meaning for an operation that
+# ends one session and starts one session.
+_compact_parse_flags() { # <args...> -> _CP_NAME _CP_FORCE _CP_KEEP_HISTORY _CP_DIGEST_ONLY
+    _CP_NAME=""
+    _CP_FORCE=false
+    _CP_KEEP_HISTORY=false
+    _CP_DIGEST_ONLY=false
+    local a
+    for a in "$@"; do
+        case "$a" in
+            -f | --force) _CP_FORCE=true ;;
+            --keep-history) _CP_KEEP_HISTORY=true ;;
+            --digest-only) _CP_DIGEST_ONLY=true ;;
+            --purge-history)
+                echo "Error: --purge-history contradicts compact, which exists to keep the archive." >&2
+                echo "  To end a session and delete its archive: ae end --purge-history <name>" >&2
+                return 1
+                ;;
+            --assume-stopped)
+                echo "Error: --assume-stopped is an 'ae end' acknowledgement; compact stops the session itself." >&2
+                return 1
+                ;;
+            --from | --from=*)
+                echo "Error: --from is not a compact flag — compact inherits from the archive it just wrote." >&2
+                return 1
+                ;;
+            --local | --copy | --worktree)
+                echo "Error: '${a}' is not a compact flag — the fresh session keeps the mode the archived one had." >&2
+                return 1
+                ;;
+            --*)
+                echo "Error: unknown flag '${a}'." >&2
+                _compact_usage
+                return 1
+                ;;
+            use)
+                echo "Error: 'use' is not a compact argument — the fresh session starts the roster your config names now." >&2
+                return 1
+                ;;
+            all)
+                echo "Error: compact takes one session name; 'all' has no meaning for it." >&2
+                return 1
+                ;;
+            *)
+                if [[ -n "$_CP_NAME" ]]; then
+                    # A destructive command never silently drops a stray argument.
+                    echo "Error: unexpected extra argument '${a}' — compact takes exactly one session name." >&2
+                    return 1
+                fi
+                _CP_NAME="$a"
+                ;;
+        esac
+    done
+    if [[ -z "$_CP_NAME" ]]; then
+        echo "Error: compact needs a session name — there is no implicit current target." >&2
+        echo "  Run it outside the target session: detach, then run: ae compact <name>" >&2
+        return 1
+    fi
+    return 0
+}
+
+# AE_COMPACT_HANDOVER_SECS is digits only. A malformed value falls back to the default
+# with a note rather than being interpreted: "0" and "abc" must not silently mean "no
+# wait", because the wait is what makes the handover real.
+_compact_handover_secs() {
+    local v="${AE_COMPACT_HANDOVER_SECS:-}"
+    if [[ -n "$v" && "$v" =~ ^[0-9]+$ ]] && ((v > 0)); then
+        printf '%s' "$v"
+        return 0
+    fi
+    if [[ -n "$v" ]]; then
+        echo "note: AE_COMPACT_HANDOVER_SECS='${v}' is not a positive number of seconds — using 300." >&2
+    fi
+    printf '300'
+    return 0
+}
+
+# ── compact: resolve and freeze ─────────────────────────────────────────────────
+# ONE coherent observation of the source — NOT taken under the lifecycle lock (this runs
+# in a command substitution, and there is no flock in this path). REVALIDATION is what
+# protects identity, not the freeze: the tuple records what was true when the human was
+# asked, and both gates re-prove it. Every later phase is held to THIS tuple. Nothing downstream re-resolves a name and treats it as the
+# same instance — the primitive's B2 proved that gap is reachable in end itself, so
+# compact's revalidation is not theoretical hardening.
+#
+# Emits one US-separated (\x1f) line — NOT tab-separated. `config` is legitimately EMPTY
+# for a session that recorded none, and tab is an IFS *whitespace* character, so a run of
+# tabs collapses to one delimiter and an empty field shifts every later field left. This
+# tuple is the AUTHORIZATION PAYLOAD compared byte-for-byte after the human answers; a
+# framing that can silently reorder it is not a framing it may use. (Same defect the
+# primitive shipped and fixed; it does not get to reappear here.)
+#   name  uuid  uuid_origin  mode  origin  config  purge  archive_path
+_compact_freeze_source() { # <name> <keep-history:true|false>
+    local name="$1" keep_hist="${2:-false}"
+    local dir="${SESSIONS_DIR}/${name}"
+    if [[ ! -f "${dir}/meta" ]]; then
+        echo "Error: no ae session state for '${name}' — nothing to compact." >&2
+        return 1
+    fi
+    local mode origin config raw uuid uuid_origin
+    mode="$(_ar_meta_get "${dir}/meta" mode)"
+    case "$mode" in
+        local) ;;
+        git | full)
+            # RULED: v1 is local-only. A managed session's fresh workspace would be based
+            # on canonical-origin HEAD, which normally lags the session branch, so compact
+            # would report success and hand back a session missing the code it archived.
+            echo "Error: compact is local-mode only in this version; '${name}' is ${mode} mode." >&2
+            echo "  A fresh ${mode} workspace would be based on the canonical origin's HEAD, which" >&2
+            echo "  normally lags the session's own branch — you would get a session missing the" >&2
+            echo "  code it just archived. Use: ae end ${name}, then start a new session yourself." >&2
+            return 1
+            ;;
+        "")
+            echo "Error: session '${name}' records no mode — refusing to compact a session ae cannot classify." >&2
+            return 1
+            ;;
+        *)
+            echo "Error: session '${name}' records an unknown mode '${mode}'." >&2
+            return 1
+            ;;
+    esac
+    origin="$(_ar_meta_get "${dir}/meta" origin)"
+    if [[ -z "$origin" ]]; then
+        echo "Error: session '${name}' records no origin — the fresh session would have nowhere to start." >&2
+        return 1
+    fi
+    local origin_canon
+    origin_canon="$(_canonical_dir "$origin" 2>/dev/null || true)"
+    if [[ -z "$origin_canon" ]]; then
+        echo "Error: session '${name}' records origin '${origin}', which does not resolve." >&2
+        return 1
+    fi
+    config="$(_ar_meta_get "${dir}/meta" config)"
+    if [[ -n "$config" && "$config" != /dev/null && ! -r "$config" ]]; then
+        echo "Error: session '${name}' records config '${config}', which cannot be read." >&2
+        echo "  The fresh session's roster comes from that config; compact will not guess it." >&2
+        return 1
+    fi
+    raw="$(_ar_meta_get "${dir}/meta" session_id)"
+    uuid="$(_ar_canonical_uuid "$raw")"
+    uuid_origin="$(_ar_meta_get "${dir}/meta" session_id_origin)"
+    [[ -n "$uuid_origin" ]] || uuid_origin="session"
+    if [[ -z "$uuid" ]]; then
+        if [[ -n "$raw" ]]; then
+            # The same split end makes: a value ae cannot parse is the only evidence of
+            # what went wrong, and it is never overwritten.
+            echo "Error: session '${name}' records session_id '${raw}', which is not a UUID." >&2
+            echo "  ae will not overwrite a value it cannot parse. Nothing was changed." >&2
+            return 1
+        fi
+        # MIGRATE ON TOUCH, exactly as end does — and the id and its provenance are ONE
+        # transaction, because an id whose provenance lags reads as launch-assigned
+        # forever after.
+        uuid="$(gen_uuid 2>/dev/null || true)"
+        if [[ -z "$uuid" ]] || ! set_session_meta_values "${dir}/meta" \
+            session_id "$uuid" session_id_origin "minted-at-compact"; then
+            echo "Error: session '${name}' has no session id and one could not be minted." >&2
+            return 1
+        fi
+        uuid_origin="minted-at-compact"
+        echo "Minted a session id for '${name}' (it predates them): ${uuid}" >&2
+    fi
+    # The effective history policy, SEALED here. compact keeps the archive by definition,
+    # so a stored purge policy is a contradiction the human must resolve explicitly.
+    local purge
+    purge="$(_end_effective_purge "$name" "$origin_canon")"
+    if [[ "$keep_hist" == true ]]; then
+        purge=false
+    elif [[ "$purge" == true ]]; then
+        echo "Error: session '${name}' has purge_agent_history enabled, which contradicts compact." >&2
+        echo "  compact keeps the archive and the conversation history. To proceed anyway:" >&2
+        echo "      ae compact --keep-history ${name}" >&2
+        return 1
+    fi
+    # The MAIN REF and the RESOLVED ROSTER are authorization facts, not conveniences: the
+    # ref is who gets MESSAGED and the roster is what the human is PROMISED the child will
+    # start. Both were previously observed a second time, after the gates — so a session
+    # replaced under the prompt got messaged, and a config edited during the window
+    # produced a child roster nobody approved. Resolve them HERE, with everything else.
+    local main_ref roster
+    main_ref="$(_ar_meta_get "${dir}/meta" agent.main | cut -d: -f1-2)"
+    if [[ -z "$main_ref" ]]; then
+        echo "Error: session '${name}' records no main agent to hand over from." >&2
+        return 1
+    fi
+    roster="$(_compact_config_roster "$config" "$origin_canon")" || return 1
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+        "$name" "$uuid" "$uuid_origin" "$mode" "$origin_canon" "$config" "$purge" \
+        "$(_ar_root)/${uuid}" "$main_ref" "$roster"
+    return 0
+}
+
+# REFUSE FROM INSIDE THE TARGET, before anything is minted, messaged, prompted or read
+# from the archive. compact ends the session the caller is sitting in and starts another,
+# and one command cannot honestly hand the caller's terminal to the new one — so the
+# honest answer is to say so rather than to half-do it. This asks the SAME question `ae
+# stop` asks (C1..C4: inside tmux, our server answers for itself, it is the session's
+# recorded server, and our pane is in that session); an UNPROVEN answer means "not
+# inside", which is the safe direction: at worst compact proceeds from a terminal that
+# was never the target's.
+_compact_refuse_if_inside() { # <name>
+    if _stop_current_target_proven "$1" 2>/dev/null; then
+        echo "Error: cannot compact the current session. Detach, then run: ae compact ${1}" >&2
+        return 1
+    fi
+    return 0
+}
+
+# Advisory preflight on the archive root, before a human is asked anything. `publish`
+# repeats every one of these proofs definitively — this exists so the answer to "will
+# this work" is not discovered after the session has been stopped.
+_compact_archive_preflight() { # <uuid>
+    local uuid="$1" root
+    root="$(_ar_require_real_root --create)" || return 1
+    if [[ -e "${root}/${uuid}" ]]; then
+        echo "Error: an archive for ${uuid} already exists at ${root}/${uuid}." >&2
+        echo "  An archive is immutable; compact will not merge into or replace one." >&2
+        return 1
+    fi
+    if [[ -e "${root}/.publishing.${uuid}" ]]; then
+        echo "Error: ${root}/.publishing.${uuid} is standing — a publish or purge of ${uuid} is in flight." >&2
+        echo "  ae will not guess-clean it. Inspect it, then remove it by hand if it is stale." >&2
+        return 1
+    fi
+    return 0
+}
+
+# ── compact phase (b): the semantic handover ────────────────────────────────────
+# This is the first place compact TALKS to a live agent, so every failure here is a
+# DELIVERY failure and is treated as one: a send that cannot be verified refuses
+# immediately, a wait that expires refuses before anything is stopped, and the only
+# degradation is the explicit --digest-only — which withdraws the request through the
+# sensor rather than pretending it was answered. There is no headless fallback and no
+# fabricated reply: the point of the handover is that the agent that did the work says
+# what matters, and nothing else can stand in for that.
+
+# The reserved return address. compact is a COMMAND, not a pane, so a reply to it has
+# nowhere to be delivered and is RECORDED instead — `send` knows this exact prefix and
+# nothing wider. Derived from the source UUID so a retry recognises its own outstanding
+# request without a side table; the REF stays unique per attempt (ae_make_req_id mints
+# it), because two attempts collapsed onto one ref would let the archive show only the
+# newer one — and the withdrawn first attempt is precisely why a second exists.
+_compact_actor() { # <source-uuid>
+    printf 'ae:compact:%s' "$1"
+    return 0
+}
+
+# The memo baseline: how many bytes were there BEFORE the request went out. The handover
+# is only real if something was written AFTER that point, so this number is the whole
+# difference between "an agent replied" and "an agent wrote down what matters".
+_compact_memo_offset() { # <memo.tsv>
+    local f="$1" n
+    if [[ -f "$f" ]]; then
+        n="$(_ae_stat size "$f")"
+        [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    else
+        n=0
+    fi
+    printf '%s' "$n"
+    return 0
+}
+
+# At least one VALID handover row appended after the baseline. Rows are read from the
+# byte offset onward, so a memo that was rewritten wholesale (rather than appended to)
+# cannot masquerade as new content.
+_compact_memo_after() { # <memo.tsv> <offset>
+    local f="$1" off="${2:-0}" ts actor topic text
+    [[ -f "$f" ]] || return 1
+    while IFS=$'\t' read -r ts actor topic text; do
+        [[ -n "$ts" && -n "$actor" && -n "$topic" ]] || continue
+        [[ "$topic" == "handover" ]] || continue
+        [[ -n "$text" ]] || continue
+        return 0
+    done < <(tail -c "+$((off + 1))" "$f" 2>/dev/null || true)
+    return 1
+}
+
+# A reply for the EXACT ref, from the main slot of the FROZEN session. The sensor answers
+# "is this request closed"; this answers "closed by exactly whom", which is a different
+# question — the sensor's row carries the REQUEST's slots, not the reply's.
+_compact_reply_seen() { # <events.jsonl> <ref> <session>
+    local file="$1" ref="$2" session="$3" line
+    [[ -f "$file" ]] || return 1
+    while IFS= read -r line; do
+        [[ "$line" == \{* ]] || continue
+        _event_json_str "$line" action
+        [[ "$_EV" == "reply" ]] || continue
+        _event_json_str "$line" ref
+        [[ "$_EV" == "$ref" ]] || continue
+        _event_json_str "$line" actor_slot
+        [[ "$_EV" == "main" ]] || continue
+        _event_json_str "$line" actor_session
+        [[ "$_EV" == "$session" ]] || continue
+        return 0
+    done < <(_ae_tac "$file" 2>/dev/null || true)
+    return 1
+}
+
+# An outstanding compact request for THIS source, found in the sensor's own rows rather
+# than in a side file: a pending row whose sender is our reserved actor. This is what
+# makes a retry reuse the request instead of delivering a second one — the requirement
+# the derived actor exists to satisfy.
+# Emits: ref<TAB>body_file
+_compact_find_outstanding() { # <events.jsonl> <actor>
+    local file="$1" actor="$2" status kind ref from body
+    [[ -f "$file" ]] || return 1
+    while IFS=$'\x1f' read -r status kind ref from _ _ body _ _ _ _ _; do
+        [[ "$status" == "pending" ]] || continue
+        [[ "$from" == "$actor" ]] || continue
+        printf '%s\t%s' "$ref" "$body"
+        return 0
+    done < <(_ar_request_states "$file")
+    return 1
+}
+
+# The baseline travels in the request's own stored BODY, which the ask helper writes and
+# the ask event already references via body_file. Not a new event field: ae_emit_event's
+# fields are fixed, and widening the live event schema for one operation's bookkeeping is
+# how a schema stops being a schema. It survives into the archive as evidence for free.
+_compact_baseline_of() { # <body-file>
+    local f="$1" line
+    [[ -f "$f" ]] || return 1
+    while IFS= read -r line; do
+        if [[ "$line" == "AE-COMPACT-MEMO-BASELINE="* ]]; then
+            printf '%s' "${line#AE-COMPACT-MEMO-BASELINE=}"
+            return 0
+        fi
+    done <"$f"
+    return 1
+}
+
+_compact_request_text() { # <name> <baseline>
+    cat <<EOF
+COMPACT HANDOVER — this session is about to be archived and restarted fresh from its
+digest. You are its main agent; what you write now is what the next session begins with.
+
+1. Stop accepting new work.
+2. Quiesce your configured workers and consume their results.
+3. Persist the load-bearing continuation with:
+       ${SESSIONS_DIR}/${1}/memo add --topic handover "<what the next session must know>"
+   Write what cannot be re-derived from the code: decisions and their reasons, what was
+   ruled out, what is in flight, what will bite. Not a summary of the diff.
+4. Retire every agent you spawned. compact refuses while any spawned slot remains, and it
+   will not retire them for you.
+5. Reply with the exact command in this message.
+6. Do no further work after replying.
+
+AE-COMPACT-MEMO-BASELINE=${2}
+EOF
+    return 0
+}
+
+# Deliver through the EXISTING tracked-request protocol — the session's own `ask` helper,
+# with the reserved actor as sender — rather than an ad-hoc send. That buys verified
+# delivery, the reply command the agent must run, the request ledger, and the stored body,
+# all of which already work; an ad-hoc path would reimplement four things badly.
+_compact_send_handover() { # <session-dir> <name> <uuid> <main-ref> <baseline>
+    local dir="$1" name="$2" uuid="$3" main_ref="$4" baseline="$5"
+    local body
+    body="$(_compact_request_text "$name" "$baseline")"
+    if ! AE_SENDER_OVERRIDE="$(_compact_actor "$uuid")" "${dir}/ask" "$main_ref" "$body"; then
+        echo "Error: could not deliver the handover request to '${main_ref}'." >&2
+        echo "  Nothing was stopped and nothing was archived; the session is untouched." >&2
+        return 1
+    fi
+    return 0
+}
+
+# Wait for BOTH facts, polling the LOG and the MEMO — never pane output, which is the one
+# source this project has repeatedly proven cannot answer "did it land". A reply alone is
+# an agent saying "done" with nothing written down; a memo alone is something written with
+# nobody claiming the work stopped.
+# Reports WHICH of the two facts arrived, REPLY-style in _AE_CP_SAW, because the caller's
+# failure message is only honest if it can tell them apart: a reply that arrived CLOSED the
+# request, so "re-run to keep waiting on it" — true when nothing arrived — is false here.
+# The next run would send a NEW request with a NEW ref and wait on that instead.
+_AE_CP_SAW=""
+_compact_wait_handover() { # <session-dir> <ref> <session> <baseline> <seconds>
+    local dir="$1" ref="$2" session="$3" baseline="$4" secs="$5"
+    local waited=0 saw_reply=false saw_memo=false
+    while ((waited < secs)); do
+        saw_reply=false
+        saw_memo=false
+        _compact_reply_seen "${dir}/events.jsonl" "$ref" "$session" && saw_reply=true
+        _compact_memo_after "${dir}/memo.tsv" "$baseline" && saw_memo=true
+        if [[ "$saw_reply" == true && "$saw_memo" == true ]]; then
+            _AE_CP_SAW="both"
+            return 0
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    if [[ "$saw_reply" == true ]]; then
+        _AE_CP_SAW="reply"
+    elif [[ "$saw_memo" == true ]]; then
+        _AE_CP_SAW="memo"
+    else
+        _AE_CP_SAW="neither"
+    fi
+    return 1
+}
+
+# --digest-only withdraws an outstanding request rather than leaving it to read as open
+# work forever. The cancellation is addressed to the operation itself, which is why the
+# reserved actor is both sender and target here: `send` records it and delivers nowhere.
+_compact_cancel_outstanding() { # <session-dir> <ref> <actor>
+    local dir="$1" ref="$2" actor="$3"
+    if ! AE_SENDER_OVERRIDE="$actor" _AE_EVENT_ACTION="cancel" _AE_EVENT_REF="$ref" \
+        _AE_EVENT_SUMMARY="withdrawn: --digest-only, semantic handover skipped" \
+        "${dir}/send" "$actor" "withdrawn: --digest-only" >/dev/null 2>&1; then
+        echo "Error: could not record the withdrawal of ${ref}." >&2
+        return 1
+    fi
+    return 0
+}
+
+# ── compact phase (c): revalidate, then end under one lock ──────────────────────
+# THE ABA GUARD. Everything below re-proves the frozen tuple against the world before
+# acting on it, because a name is not an instance: the session that answers to this name
+# now may not be the one the human authorized. This slice proved that gap is REACHABLE in
+# `ae end` itself, so here it is checked twice — once after the confirmation so a
+# replacement is never MESSAGED, and again after the bounded wait so a replacement is
+# never STOPPED.
+
+# Any spawned agent at all refuses the compact. Not "accounted for", not a warning:
+# compact never auto-retires someone else's worker, and a spawned slot that survives into
+# the fresh session is a lie about what was handed over. Gapped and unresolved slots count
+# — the enumeration is the meta's own keys.
+_compact_spawn_slots() { # <meta>
+    local meta="$1"
+    [[ -f "$meta" ]] || return 0
+    command awk -F= '/^agent\.spawned\./ { sub(/^agent\./, "", $1); print $1 }' "$meta" 2>/dev/null
+    return 0
+}
+
+# The roster the CHILD will start, read from the recorded config in query-only mode. The
+# child deliberately starts what the configuration says NOW, not what the source session
+# happened to be running — so an unreadable or empty roster is refused here, before
+# anything is destroyed, rather than discovered after the archive is published.
+_compact_config_roster() { # <config> <origin> -> "main=<alias> workers=<a,b>"
+    local config="$1" origin="$2" main workers
+    local _prev_cfg="$CONFIG_FILE" _prev_local="${AE_LOCAL_CONFIG:-}"
+    if [[ -n "$config" && -f "$config" ]]; then
+        CONFIG_FILE="$config"
+    else
+        CONFIG_FILE=/dev/null
+    fi
+    if [[ -n "$origin" && -f "${origin}/.ae/config" ]]; then
+        AE_LOCAL_CONFIG="${origin}/.ae/config"
+    else
+        AE_LOCAL_CONFIG=""
+    fi
+    main="$(get_config workspace.main)"
+    workers="$(get_config workspace.workers)"
+    CONFIG_FILE="$_prev_cfg"
+    AE_LOCAL_CONFIG="$_prev_local"
+    if [[ -z "$main" ]]; then
+        echo "Error: the recorded config names no [workspace] main — the fresh session would have no agent." >&2
+        return 1
+    fi
+    printf 'main=%s workers=%s' "$main" "${workers:--}"
+    return 0
+}
+
+# Re-prove the frozen tuple. Every field that could have changed under us is compared, and
+# a mismatch NAMES THE FACT rather than saying no — the human needs to know what moved.
+_compact_revalidate() { # <name> <frozen-tuple> <when>
+    local name="$1" tuple="$2" when="$3"
+    # Read positionally into the fields this check actually compares; the tuple's own
+    # shape is asserted where it is BUILT, so naming unread fields here would only invite
+    # a stale copy of that shape to drift beside it.
+    local f_uuid f_mode f_origin f_config f_purge
+    IFS=$'\x1f' read -r _ f_uuid _ f_mode f_origin f_config f_purge _ f_main f_roster <<<"$tuple"
+    local dir="${SESSIONS_DIR}/${name}"
+    if [[ ! -f "${dir}/meta" ]]; then
+        echo "Error: session '${name}' no longer has ae state (${when})." >&2
+        return 1
+    fi
+    local now_uuid now_mode now_origin now_config now_canon
+    # CANONICALIZE ON THE READ. The frozen id is canonical (lowercase); a legacy meta
+    # holds it uppercase, so comparing the RAW value against it made every revalidation
+    # refuse for a session whose id merely predates normalization.
+    now_uuid="$(_ar_canonical_uuid "$(_ar_meta_get "${dir}/meta" session_id)")"
+    if [[ "$now_uuid" != "$f_uuid" ]]; then
+        echo "Error: '${name}' is not the session that was authorized (${when})." >&2
+        echo "  Authorized session id: ${f_uuid}" >&2
+        echo "  On disk now:           ${now_uuid:-<none>}" >&2
+        echo "  Nothing was stopped and nothing was archived." >&2
+        return 1
+    fi
+    now_mode="$(_ar_meta_get "${dir}/meta" mode)"
+    if [[ "$now_mode" != "$f_mode" ]]; then
+        echo "Error: '${name}' changed mode from ${f_mode} to ${now_mode} (${when}); refusing." >&2
+        return 1
+    fi
+    now_origin="$(_ar_meta_get "${dir}/meta" origin)"
+    now_canon="$(_canonical_dir "$now_origin" 2>/dev/null || true)"
+    if [[ "$now_canon" != "$f_origin" ]]; then
+        echo "Error: '${name}' changed origin from ${f_origin} to ${now_canon:-${now_origin:-<none>}} (${when}); refusing." >&2
+        return 1
+    fi
+    now_config="$(_ar_meta_get "${dir}/meta" config)"
+    if [[ "$now_config" != "$f_config" ]]; then
+        echo "Error: '${name}' changed its recorded config from '${f_config}' to '${now_config}' (${when}); refusing." >&2
+        return 1
+    fi
+    # The history policy is re-read and must still agree with what was sealed. compact
+    # keeps conversations by definition; a policy that flipped to purge under us is a
+    # different operation than the one authorized.
+    local now_purge
+    now_purge="$(_end_effective_purge "$name" "$f_origin")"
+    if [[ "$f_purge" == false && "$now_purge" == true && "$_CP_KEEP_HISTORY" != true ]]; then
+        echo "Error: '${name}' now has purge_agent_history enabled (${when}), which contradicts the authorized compact." >&2
+        echo "  Re-run with --keep-history if that is what you want." >&2
+        return 1
+    fi
+    # Strict spawn closure, mechanically.
+    local spawned
+    spawned="$(_compact_spawn_slots "${dir}/meta" | tr '\n' ' ')"
+    if [[ -n "${spawned// /}" ]]; then
+        echo "Error: '${name}' still has spawned agents (${when}): ${spawned}" >&2
+        echo "  compact never retires someone else's worker. Retire them, then re-run:" >&2
+        echo "      ${SESSIONS_DIR}/${name}/retire <agent>" >&2
+        return 1
+    fi
+    # THE MESSAGE TARGET IS AN AUTHORIZED FACT. Re-reading agent.main after this gate is
+    # how a replacement session got its main agent MESSAGED: the check observed one
+    # instance and the send addressed another.
+    local now_main
+    now_main="$(_ar_meta_get "${dir}/meta" agent.main | cut -d: -f1-2)"
+    if [[ "$now_main" != "$f_main" ]]; then
+        echo "Error: '${name}' changed its main agent from ${f_main} to ${now_main:-<none>} (${when}); refusing." >&2
+        echo "  Nothing was stopped and nothing was archived." >&2
+        return 1
+    fi
+    # AND SO IS THE ROSTER. It is PRINTED at the prompt as what the child will start, so
+    # it is part of what the human authorized — proving merely that SOME roster still
+    # resolves would let a config edited during the window start agents nobody approved.
+    # Edits made BEFORE compact are still adopted: the freeze happens at compact time.
+    local now_roster
+    now_roster="$(_compact_config_roster "$f_config" "$f_origin")" || return 1
+    if [[ "$now_roster" != "$f_roster" ]]; then
+        echo "Error: '${name}' would now start a different roster than the one shown (${when}); refusing." >&2
+        echo "  Shown:    ${f_roster}" >&2
+        echo "  Now:      ${now_roster}" >&2
+        echo "  Nothing was stopped and nothing was archived." >&2
+        return 1
+    fi
+    # And the archive is still publishable.
+    _compact_archive_preflight "$f_uuid" || return 1
+    return 0
+}
+
+# The confirmation. It names the frozen identity, the exact archive path, the roster the
+# CHILD will start (not the one the source is running), and what does not survive — panes,
+# spawned agents, provider conversations and launch scratch are not carried over, and
+# saying so is the difference between a compact and a surprise.
+_compact_confirm_body() { # <tuple> <roster> <digest-only>
+    local tuple="$1" roster="$2" digest_only="$3"
+    local c_name c_uuid c_origin_kind c_mode c_origin c_archive
+    IFS=$'\x1f' read -r c_name c_uuid c_origin_kind c_mode c_origin _ _ c_archive _ _ <<<"$tuple"
+    printf "Compact session '%s'?\n" "$c_name"
+    printf "  - Session id: %s (%s), mode: %s\n" "$c_uuid" "$c_origin_kind" "$c_mode"
+    printf "  - Origin:     %s\n" "$c_origin"
+    printf "  - ARCHIVES its memory to %s/, then ENDS it.\n" "$c_archive"
+    printf "  - Then starts a FRESH session '%s' that inherits that archive's digest.\n" "$c_name"
+    printf "  - The fresh session starts the roster your config names now: %s\n" "$roster"
+    printf "  - NOT carried over: provider conversations, panes, spawned agents, launch scratch.\n"
+    printf "  - KEPT: the archive, and the claude/codex conversation files on disk.\n"
+    if [[ "$digest_only" == true ]]; then
+        printf "  - No handover will be requested (--digest-only); the digest is the handover.\n"
+    else
+        printf "  - Your main agent will be asked to hand over first, and must reply AND write a handover memo.\n"
+    fi
+    return 0
+}
+
+# ── compact phase (d): the recovery line, and the relaunch ──────────────────────
+# The single command a human can paste to redo the relaunch by hand. It is printed BEFORE
+# launch is invoked, because after the archive is published the process may exec into the
+# launch and never return here — a recovery line emitted from a failure handler is a line
+# that does not exist when it is needed. Every component is shell-quoted, and the
+# environment assignments appear ONLY when they are not already the default, so the line
+# stays readable for the ordinary case and correct for the isolated one.
+_compact_recovery_command() { # <tuple>
+    local tuple="$1"
+    local c_name c_uuid c_mode c_origin c_config
+    IFS=$'\x1f' read -r c_name c_uuid _ c_mode c_origin c_config _ _ _ _ <<<"$tuple"
+    local mode_flag
+    case "$c_mode" in
+        git) mode_flag="--worktree" ;;
+        full) mode_flag="--copy" ;;
+        *) mode_flag="--local" ;;
+    esac
+    local cmd
+    cmd="cd $(shell_quote "$c_origin") && "
+    # AE_HOME only when it is overridden — otherwise the line advertises a default as if
+    # it were a decision.
+    if [[ -n "${AE_HOME:-}" && "${AE_HOME}" != "${HOME}/.ae" ]]; then
+        cmd+="AE_HOME=$(shell_quote "$AE_HOME") "
+    fi
+    if [[ -n "$c_config" && "$c_config" != "${AE_HOME:-${HOME}/.ae}/config" && "$c_config" != /dev/null ]]; then
+        cmd+="CONFIG_FILE=$(shell_quote "$c_config") "
+    fi
+    cmd+="$(shell_quote "$(_ae_own_path)") ${mode_flag} $(shell_quote "$c_name") --from ${c_uuid}"
+    printf '%s' "$cmd"
+    return 0
+}
+
+# Where this ae actually lives — the recovery line must name THIS binary, not whatever a
+# PATH lookup would find later.
+_ae_own_path() {
+    printf '%s' "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    return 0
+}
+
+# The command itself, phase by phase. Phase (a) is everything up to and including the
+# frozen tuple: parse, refuse from inside, freeze one coherent observation of the source,
+# and prove the archive root — with NOTHING destructive and nothing sent. The later
+# phases hang off this tuple, and each of them is held to it rather than re-resolving.
+cmd_compact() {
+    _compact_parse_flags "$@" || return 1
+    local name="$_CP_NAME"
+    _session_name_usable "$name" || {
+        echo "ae: '${name}' is not a usable session name." >&2
+        return 1
+    }
+    _require_session_path_safe "$name" || return 1
+    # FIRST, before a mint, an event, a prompt or an archive read.
+    _compact_refuse_if_inside "$name" || return 1
+    local tuple
+    tuple="$(_compact_freeze_source "$name" "$_CP_KEEP_HISTORY")" || return 1
+    local c_name c_uuid c_uuid_origin c_mode c_origin c_config c_purge c_archive c_main c_roster
+    IFS=$'\x1f' read -r c_name c_uuid c_uuid_origin c_mode c_origin c_config c_purge c_archive c_main c_roster <<<"$tuple"
+    _compact_archive_preflight "$c_uuid" || return 1
+    echo "compact: ${c_name} (${c_mode}) resolved and frozen." >&2
+    # STDERR: compact's STDOUT is a contract — the FOUR lines at the boundary, in order,
+    # and nothing else. (It was five until "Starting fresh session" moved to stderr: that
+    # line claimed a relaunch the launch can still refuse.) Everything before that is diagnostics, and a caller piping this
+    # command should get the contract rather than the commentary.
+    {
+        printf 'session: %s\n' "$c_name"
+        printf 'uuid: %s (%s)\n' "$c_uuid" "$c_uuid_origin"
+        printf 'mode: %s\n' "$c_mode"
+        printf 'origin: %s\n' "$c_origin"
+        printf 'config: %s\n' "${c_config:--}"
+        printf 'conversation files: %s\n' "$([[ "$c_purge" == true ]] && echo DELETED || echo kept)"
+        printf 'archive: %s\n' "$c_archive"
+    } >&2
+
+    # ── phase (1): confirm ──────────────────────────────────────────────────────
+    # The roster is resolved BEFORE the prompt, because the prompt promises which agents
+    # the fresh session will start and an unresolvable roster must refuse while there is
+    # still nothing to undo.
+    # The roster was resolved once, in the freezer, and is compared at both gates.
+    local roster="$c_roster"
+    if [[ "$_CP_FORCE" != true ]]; then
+        # THE PROMPT IS NOT THE CONTRACT. stdout carries the five boundary lines and
+        # nothing else, so the question, the answer's echo and a decline all go to
+        # stderr — which is where a human reading a terminal sees them anyway. The
+        # invariant this buys is worth more than the convention it breaks: compact's
+        # stdout is EMPTY unless the boundary was actually crossed.
+        _compact_confirm_body "$tuple" "$roster" "$_CP_DIGEST_ONLY" >&2
+        printf "Continue? [y/N] " >&2
+        local reply=""
+        # EOF IS NOT CONSENT — AND IT IS NOT A CRASH EITHER. `read` returns 1 at
+        # end-of-input, which under `set -e` aborted the command exactly here: after the
+        # facts were printed, before anything said what happened, with a non-zero status
+        # indistinguishable from a failure. A caller with no stdin — a script, cron,
+        # `ae compact x < /dev/null` — must get the same clean decline a human typing `n`
+        # gets. Declining on EOF is also the safe direction: the one thing this must never
+        # do is read "no answer" as "yes".
+        local _cp_asked=true
+        read -r -n 1 reply || _cp_asked=false
+        echo >&2
+        if [[ "$_cp_asked" != true ]]; then
+            # EOF IS NOT A DECISION, AND MUST NOT REPORT LIKE ONE. `n` is an answer and
+            # exits 0; end-of-input means ae could not ask at all. stdout is empty in both
+            # cases — deliberately, because it carries the boundary contract — so the exit
+            # STATUS is the only channel a caller has to tell "the operator said no" from
+            # "the question never reached anyone". Reporting 0 here would let
+            # `ae compact x && deploy` run deploy after nothing happened at all.
+            echo "Error: could not obtain confirmation — no input on stdin." >&2
+            echo "  Nothing was stopped, archived or changed. Run it from a terminal, or" >&2
+            echo "  pass -f if you mean to proceed without being asked." >&2
+            return 1
+        fi
+        if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+            echo "Aborted." >&2
+            return 0
+        fi
+    fi
+    # FIRST revalidation: between the freeze and the human's answer the session could have
+    # been replaced, and a replacement must never be MESSAGED. The second runs after the
+    # bounded wait, so a replacement is never STOPPED.
+    # ── phase (b): the semantic handover ────────────────────────────────────────
+    local dir="${SESSIONS_DIR}/${c_name}"
+    local actor ref body baseline outstanding
+    actor="$(_compact_actor "$c_uuid")"
+    # FREEZING A REFERENCE IS NOT FREEZING AN IDENTITY. The frozen main ref is
+    # `alias:name`, and a same-config replacement has the IDENTICAL ref — so it still
+    # addresses whoever holds that slot NOW, and a check-then-send gap let the message
+    # land on a session the gate never saw. The lock closes the gap where it exists:
+    # it spans the revalidation and the PUBLICATION of the request or its withdrawal,
+    # and is released before the bounded WAIT. Publication is fast; the wait can defer
+    # for 30s on a busy pane, and holding a lifecycle lock across that would be a new
+    # hazard rather than a fix.
+    # THE LIMIT OF THIS LOCK, NAMED: it serialises replacements that go THROUGH ae — an
+    # end plus a launch both take this lock and are ordered out of the window. It cannot
+    # serialise a DIRECT REWRITE of meta's session_id by something that never takes it;
+    # that is outside its reach by construction, not an oversight. Measured outcome for
+    # that case: compact asks the frozen main, the handover times out, and it returns
+    # non-zero with the session left LIVE — a wasted handover window, not a wrong action,
+    # which is the direction a destructive command is allowed to fail in. Do not add a
+    # revalidate-immediately-before-send to chase it: that narrows a window it cannot
+    # close and buys a false sense of coverage for a path the lock cannot reach.
+    local _cp_block="${SESSIONS_DIR}/.lifecycle.${c_name}.lock"
+    {
+        if command -v flock >/dev/null 2>&1; then
+            if ! flock -w 15 8; then
+                echo "Error: another lifecycle operation is in progress for '${c_name}' — retry shortly. Nothing was changed." >&2
+                return 1
+            fi
+        fi
+        _compact_revalidate "$c_name" "$tuple" "after confirmation" || return 1
+        # An outstanding request from a previous attempt is REUSED, never duplicated — and
+        # its baseline is reused with it, so a memo row written for the first attempt still
+        # counts for this one.
+        outstanding="$(_compact_find_outstanding "${dir}/events.jsonl" "$actor" || true)"
+        if [[ -n "$outstanding" ]]; then
+            IFS=$'\t' read -r ref body <<<"$outstanding"
+            baseline="$(_compact_baseline_of "$body" || printf '0')"
+            echo "compact: reusing the outstanding handover request ${ref}." >&2
+        fi
+        if [[ "$_CP_DIGEST_ONLY" == true ]]; then
+            # The ONLY degradation, and it is explicit. Withdraw anything outstanding so no
+            # later archive reports an open request nobody is waiting on.
+            if [[ -n "$outstanding" ]]; then
+                _compact_cancel_outstanding "$dir" "$ref" "$actor" || return 1
+                echo "compact: withdrew ${ref} (--digest-only)." >&2
+            fi
+            echo "compact: semantic handover skipped (--digest-only); the digest is the handover." >&2
+        elif [[ -z "$outstanding" ]]; then
+            # THE FROZEN ref, and now under the lock that proved it — the ref names a
+            # SLOT, so only holding the lock from the check through the send makes the
+            # instance that was proved the instance that is messaged.
+            local main_ref="$c_main"
+            baseline="$(_compact_memo_offset "${dir}/memo.tsv")"
+            _compact_send_handover "$dir" "$c_name" "$c_uuid" "$main_ref" "$baseline" || return 1
+            outstanding="$(_compact_find_outstanding "${dir}/events.jsonl" "$actor" || true)"
+            if [[ -z "$outstanding" ]]; then
+                echo "Error: the handover request was delivered but not recorded — refusing to wait on a request ae cannot see." >&2
+                return 1
+            fi
+            IFS=$'\t' read -r ref body <<<"$outstanding"
+            echo "compact: handover requested as ${ref}; waiting for the reply AND a new handover memo." >&2
+        fi
+    } 8>"$_cp_block"
+    # UNLOCKED from here: the wait is the long part, and nothing it observes needs the
+    # lock — both facts it polls are append-only records.
+    if [[ "$_CP_DIGEST_ONLY" != true ]]; then
+        local secs
+        secs="$(_compact_handover_secs)"
+        if ! _compact_wait_handover "$dir" "$ref" "$c_name" "${baseline:-0}" "$secs"; then
+            echo "Error: no complete handover within ${secs}s — a reply AND a new handover memo are both required." >&2
+            case "$_AE_CP_SAW" in
+                reply)
+                    # The reply CLOSED the request, so there is nothing left to keep waiting on
+                    # and a re-run will ask again from scratch. Say that rather than promising
+                    # the opposite.
+                    echo "  The reply arrived; the handover memo did not." >&2
+                    echo "  Nothing was stopped and nothing was archived. ${ref} is answered and closed, so" >&2
+                    echo "  a re-run sends a FRESH request: ask your main agent to write the memo first" >&2
+                    echo "  ('memo add --topic handover ...'), or run 'ae compact --digest-only ${c_name}'" >&2
+                    echo "  to archive the digest as it stands." >&2
+                    ;;
+                memo)
+                    echo "  The handover memo was written; the reply did not arrive." >&2
+                    echo "  Nothing was stopped and nothing was archived. The request stays open: re-run" >&2
+                    echo "  'ae compact ${c_name}' to keep waiting on it, or 'ae compact --digest-only ${c_name}'" >&2
+                    echo "  to withdraw it and archive the digest as it stands." >&2
+                    ;;
+                *)
+                    echo "  Nothing was stopped and nothing was archived. The request stays open: re-run" >&2
+                    echo "  'ae compact ${c_name}' to keep waiting on it, or 'ae compact --digest-only ${c_name}'" >&2
+                    echo "  to withdraw it and archive the digest as it stands." >&2
+                    ;;
+            esac
+            return 1
+        fi
+        echo "compact: handover complete (reply ${ref} and a new handover memo)." >&2
+    fi
+    # ── phase (c): revalidate, then end under ONE lock ─────────────────────────
+    # The lock spans revalidation through teardown, and is RELEASED before the relaunch —
+    # the fresh session has the same name and takes the same lock, so holding it across
+    # both would deadlock ae against itself.
+    local _cp_lock="${SESSIONS_DIR}/.lifecycle.${c_name}.lock"
+    local _cp_rc=0
+    {
+        if command -v flock >/dev/null 2>&1; then
+            if ! flock -w 15 9; then
+                echo "Error: another lifecycle operation is in progress for '${c_name}' — retry shortly. Nothing was changed." >&2
+                _cp_rc=1
+            fi
+        else
+            echo "note: flock not found — lifecycle locking degraded (compact/start/end races unguarded)" >&2
+        fi
+        if ((_cp_rc == 0)); then
+            # SECOND revalidation: a replacement is never STOPPED. The first ran before
+            # the handover request so a replacement is never MESSAGED.
+            if _compact_revalidate "$c_name" "$tuple" "after the handover wait"; then
+                # compact's frozen tuple IS end's authorization payload — one mechanism,
+                # and `keep` because compact exists to keep the archive.
+                _AE_END_FROZEN_PLAN["$c_name"]="keep"$'\t'"${c_archive}"$'\t'"${c_purge}"
+                _AE_END_FROZEN_AUTHORITY["$c_name"]="compact"
+                # THE INSTALLED FREEZE MUST BE SOMETHING THE LIVE PLANNER CAN EMIT.
+                # _end_archive_plan re-derives the history policy from live config, so a
+                # purge-configured session made the planner emit `purge|…|true` against a
+                # frozen `keep|…|false` and the byte-compare refused — which meant
+                # --keep-history, the documented override printed in compact's own refusal
+                # message, could never complete a compact. Sealing the decision through the
+                # CLI-override mechanism is what that mechanism already means: this
+                # decision is made, stop re-deriving it.
+                _AE_PURGE_HISTORY_CLI="$c_purge"
+                # The shared end implementation, entered INSIDE the lock it already holds
+                # — not a second process, not a second lock, not a copy of end's ordering.
+                # end's progress goes to STDERR: it is informative (file counts, cleanup)
+                # but its own "Archived <uuid>" line would duplicate the first line of
+                # compact's four-line stdout contract.
+                _end_session_locked "$c_name" >&2 || _cp_rc=$?
+            else
+                _cp_rc=1
+            fi
+        fi
+    } 9>"$_cp_lock"
+    if ((_cp_rc != 0)); then
+        return "$_cp_rc"
+    fi
+
+    # ── phase (d): the boundary, then the fresh session ────────────────────────
+    # THE ARCHIVE IS PUBLISHED AND THE SOURCE IS GONE. Everything from here is
+    # unrecoverable-by-rollback, so the recovery line is printed BEFORE the relaunch is
+    # invoked: after this point the process may exec into launch and never return, and a
+    # recovery line emitted from a failure handler is one that does not exist when needed.
+    local from_proof
+    if ! from_proof="$(_ar_from_preflight "$c_uuid")" || [[ -z "$from_proof" ]]; then
+        echo "Error: the archive ${c_uuid} was published but does not validate for inheritance." >&2
+        echo "  The archive is intact and the source session is gone; start the fresh session by hand:" >&2
+        echo "      $(_compact_recovery_command "$tuple")" >&2
+        return 1
+    fi
+    # The proof travels into the child's launch as an env-carried expectation: the launch
+    # re-proves the parent immediately before publishing the child's meta and must find
+    # this same tuple, or it rolls back rather than creating a child without lineage.
+    export _AE_FROM_EXPECTED="$from_proof"
+    # The roster is an authorized fact, so it travels as the ANSWER rather than as the
+    # path it was computed from — see the launch side for why a config snapshot could not
+    # have closed this window.
+    export _AE_FROM_ROSTER="$c_roster"
+    local recovery
+    recovery="$(_compact_recovery_command "$tuple")"
+    # THE REPORT MUST NOT BE ABLE TO KILL THE RELAUNCH. Past this line the archive is
+    # published and the source session is gone, so the only thing that still matters is
+    # that the fresh session starts. A consumer that exits before reading — `ae compact x
+    # | head -1`, the piped use this contract exists to support — closes stdout under us,
+    # and SIGPIPE KILLS THIS PROCESS rather than failing the write: `|| true` cannot catch
+    # a signal. Measured before the fix, 3/3: archived YES, session gone, NO relaunch, and
+    # the recovery line lost down the same closed pipe, with the pipeline reporting 0
+    # because a pipeline's status is its consumer's. Ignore SIGPIPE across the report, then
+    # RESTORE it before the exec so the child does not inherit an ignored disposition.
+    trap '' PIPE
+    {
+        printf 'Archived %s\n' "$c_uuid"
+        printf 'Archive: %s\n' "$c_archive"
+        printf 'Digest: %s/digest.md\n' "$c_archive"
+        printf 'Recovery: %s\n' "$recovery"
+    } 2>/dev/null || true
+    # THE RECOVERY INFORMATION ALSO GOES TO STDERR, so a broken stdout cannot destroy the
+    # only route back — and "starting the fresh session" is PROGRESS, not contract. The
+    # launch below can still refuse (the name is claimable in the release window), and a
+    # stdout line claiming a launch that then fails is precisely what the contract must
+    # never do. What stdout promises is now exactly what is true at this instant: THE
+    # ARCHIVE EXISTS AND THE PRINTED RECOVERY COMMAND WILL WORK.
+    {
+        printf 'Recovery: %s\n' "$recovery"
+        printf 'Starting fresh session %s from archive %s...\n' "$c_name" "$c_uuid"
+    } >&2 2>/dev/null || true
+    trap - PIPE
+    # Flushed before the exec: nothing below is guaranteed to run.
+    local mode_flag
+    case "$c_mode" in
+        git) mode_flag="--worktree" ;;
+        full) mode_flag="--copy" ;;
+        *) mode_flag="--local" ;;
+    esac
+    local -a launch_env=()
+    [[ -n "${AE_HOME:-}" ]] && launch_env+=("AE_HOME=${AE_HOME}")
+    [[ -n "$c_config" && "$c_config" != /dev/null ]] && launch_env+=("CONFIG_FILE=${c_config}")
+    cd "$c_origin" || {
+        echo "Error: cannot enter ${c_origin} to start the fresh session. Run the recovery command above." >&2
+        return 1
+    }
+    exec env "${launch_env[@]}" "$(_ae_own_path)" "$mode_flag" "$c_name" --from "$c_uuid"
 }
 
 cmd_status() {
@@ -6912,6 +7838,11 @@ _stop_session_locked() {
 # reached through the confirmation gap. Populated only when a human was actually asked;
 # `-f` freezes nothing, because nothing was promised.
 declare -A _AE_END_FROZEN_PLAN=()
+# WHOSE contract the payload is: `confirmed` (a human answered end's prompt) or `compact`
+# (an ae compact operation authorized it). One mechanism, several callers — recording the
+# authority costs nothing and makes a refusal legible about which agreement it is holding
+# the operation to.
+declare -A _AE_END_FROZEN_AUTHORITY=()
 # The exact target list the human was shown. `ae end all` used to enumerate again at
 # action time, so a session that appeared AFTER the prompt could be ended without ever
 # having been named to anyone.
@@ -7082,8 +8013,8 @@ _end_archive_step() { # <session> <push-outcome> <push-ref> <preserved> <workdir
     # to a different question. Refuse rather than carry out the other one.
     local _frozen="${_AE_END_FROZEN_PLAN[$name]:-}"
     if [[ -n "$_frozen" && "$_frozen" != "${action}"$'\t'"${detail}"$'\t'"${purge_now}" ]]; then
-        echo "Error: what '${name}' would do changed between the confirmation and now — refusing to act on an answer given to a different question." >&2
-        echo "  Confirmed: ${_frozen//$'\t'/ | }" >&2
+        echo "Error: what '${name}' would do changed since it was authorized by ${_AE_END_FROZEN_AUTHORITY[$name]:-confirmation} — refusing to act on an agreement made about a different question." >&2
+        echo "  Authorized: ${_frozen//$'\t'/ | }" >&2
         echo "  Now:       ${action} | ${detail} | ${purge_now}" >&2
         echo "  Nothing was deleted. Re-run 'ae end ${name}' to see the current plan." >&2
         return 1
@@ -12402,10 +13333,10 @@ ae_tracked_send() {
         echo "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead." >&2
         exec "${_AE_META_DIR}/send" "$target_name" "$body"
     fi
-    # External-actor targets (telegram:*, discord:*) are event-only sinks
-    # consumed by a bridge daemon; the send helper handles the no-pane case.
-    # Skip ae_resolve so the literal target name is preserved end-to-end.
-    if [[ "$target_name" != telegram:* && "$target_name" != discord:* ]]; then
+    # External-actor targets (telegram:*, discord:*, ae:compact:*) are event-only
+    # sinks; the send helper handles the no-pane case. Skip ae_resolve so the literal
+    # target name is preserved end-to-end.
+    if [[ "$target_name" != telegram:* && "$target_name" != discord:* && "$target_name" != ae:compact:* ]]; then
         ae_resolve "$target_name" || exit 1
         target_name="${AE_RESOLVED_AGENT:-$target_name}"
         # request-integrity: the churn-proof session-qualified target slot (empty ->
@@ -12463,13 +13394,21 @@ ae_find_request() {
             t_slot="$_EV"
             _event_json_str "$line" target_session
             t_sess="$_EV"
-            # Backward-compatible: emit the extended (slot) row ONLY when slots are present;
-            # a pre-migration event keeps the original 3-column output. Consumers read
-            # tab-safe (missing slot fields -> empty -> name-match fallback).
+            # US-SEPARATED (\x1f), NOT TAB. Any of these four slot fields is legitimately
+            # EMPTY — a slotless external sender (AE_SENDER_OVERRIDE, which is how a
+            # command with no pane asks for something), or an event-only target with no
+            # slot at all. Tab is an IFS *whitespace* character, so an empty field
+            # COLLAPSES and every later field shifts left: measured, a slotless ask
+            # produced target_slot='demo' instead of 'main', and `reply` then rejected the
+            # very agent the request was assigned to. Same class as the archive rows and
+            # the frozen tuple; one framing convention across all of them now.
+            #
+            # The three-column form for pre-migration events keeps its shape: it has no
+            # optional field to lose, and consumers still name-match on it.
             if [[ -n "${a_slot}${a_sess}${t_slot}${t_sess}" ]]; then
-                printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$action" "$actor" "$target" "$a_slot" "$a_sess" "$t_slot" "$t_sess"
+                printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$action" "$actor" "$target" "$a_slot" "$a_sess" "$t_slot" "$t_sess"
             else
-                printf '%s\t%s\t%s\n' "$action" "$actor" "$target"
+                printf '%s\x1f%s\x1f%s\n' "$action" "$actor" "$target"
             fi
             return 0
         fi
@@ -13120,7 +14059,15 @@ helper_send_main() {
     # event-only sinks consumed by an out-of-band bridge daemon tailing
     # events.jsonl. For these targets, emit the event and exit; skip the tmux
     # paste path. Any other unresolved name still fails loudly so typos surface.
-    if [[ "$target_ref" == telegram:* || "$target_ref" == discord:* ]]; then
+    #
+    # `ae:compact:<uuid>` joins that family as the return address of an `ae compact`
+    # handover request: compact is a COMMAND, not a pane, so the agent's reply has
+    # nowhere to be delivered and must be RECORDED instead. The match is that exact
+    # prefix and nothing wider — deliberately not `ae:*`, because the failure this
+    # family can produce is a SILENT NO-OP DELIVERY, and an agent that mistypes an
+    # `ae:`-shaped target must still fail loudly rather than have its message
+    # swallowed into the log. That is the whole reason the family is a whitelist.
+    if [[ "$target_ref" == telegram:* || "$target_ref" == discord:* || "$target_ref" == ae:compact:* ]]; then
         ae_emit_event "${_AE_EVENT_ACTION:-send}" "$target_ref" "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_SUMMARY:-$msg}"
         exit 0
     fi
@@ -13275,8 +14222,12 @@ helper_reply_main() {
         echo "Error: request id '${req_id}' not found in ${META_DIR}/events.jsonl" >&2
         exit 1
     }
-    # tab-safe: OLD 3-column rows leave the slot fields empty (name-match fallback).
-    IFS=$'\t' read -r _ sender target actor_slot actor_session target_slot target_session <<<"$row"
+    # US-separated, because these fields are legitimately EMPTY and tab collapses a run
+    # of them: a slotless sender (an ae command asking via AE_SENDER_OVERRIDE) or a
+    # slotless target would otherwise shift every later field and make this helper reject
+    # the agent the request was actually assigned to. OLD 3-column rows still leave the
+    # slot fields empty, which is the name-match fallback.
+    IFS=$'\x1f' read -r _ sender target actor_slot actor_session target_slot target_session <<<"$row"
 
     reply_sender=""
     if [[ -n "$target_slot" ]]; then
@@ -15595,6 +16546,10 @@ case "${1:-}" in
         cmd_status "${2:-}"
         exit $?
         ;;
+    compact)
+        cmd_compact "${@:2}"
+        exit $?
+        ;;
     archive)
         case "${2:-}" in
             preview)
@@ -15776,6 +16731,28 @@ esac
 # exactly one value, may appear once, and is order-free like the mode flags — and a
 # top-level loop can only be exercised by launching a real session. It returns rather
 # than exits so a probe can call it; the caller below turns a refusal into exit 1.
+# DEFINED BEFORE ANY LAUNCH BODY THAT CALLS IT. The --from reproof calls this from
+# SCRIPT BODY, which bash executes top-to-bottom — with the definition further down
+# the file it was a missing command (rc 127) and the rollback never ran: the failure
+# was correctly DETECTED and the cleanup silently did not happen, leaving a half-built
+# same-name session squatting the name the recovery command needs.
+_launch_rollback() {
+    local _rc="${1:-1}"
+    echo "ae: launch failed — rolling back '${SESSION}'." >&2
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    if ((${_AE_SESSION_DIR_CREATED:-0} != 1)); then
+        echo "ae: session state KEPT — it predates this attempt; retry with 'ae ${SESSION}'." >&2
+    elif ! _path_is_direct_child "$SESSIONS_DIR" "${AE_META:-}"; then
+        # Unreachable after entry validation; kept because the alternative to an
+        # unreachable branch here is an unbounded rm -rf.
+        echo "ae: session state KEPT — '${AE_META:-}' is not a direct child of ${SESSIONS_DIR}; refusing to delete." >&2
+    else
+        rm -rf "$AE_META" 2>/dev/null || true
+        echo "ae: session state removed — this launch created it; nothing left to reattach to." >&2
+    fi
+    exit "$_rc"
+}
+
 _launch_parse_flags() { # <args...> -> _LP_MODE _LP_NAME _LP_MAIN _LP_FROM
     _LP_MODE=""
     _LP_NAME=""
@@ -16002,6 +16979,36 @@ if [[ -z "$MAIN_OVERRIDE" ]]; then
 else
     MAIN_RAW="$MAIN_OVERRIDE"
 fi
+# THE ROSTER THE HUMAN AUTHORIZED, not the one the config files hold now. compact resolves
+# main+workers at the moment it prints them at the prompt and freezes THAT ANSWER; the
+# files it resolved them from stay live and can be edited during the end — a window in
+# which the source session is already archived and gone, so a child starting the wrong
+# roster cannot be undone. Freezing the resolved VALUE is what makes the child start what
+# was agreed. Freezing the config PATH would only have frozen a pointer to something still
+# mutable, and the origin's own .ae/config is layered at every ae startup regardless of
+# CONFIG_FILE, so a snapshot of the recorded config would not have closed this at all.
+# ONLY THIS LAUNCH: a later resume is a NEW decision by the human against whatever config
+# exists then. compact promises continuity of the session it archived, not permanent
+# immunity from config edits — do not "fix" that.
+_AE_FROZEN_WORKERS_SET=false
+_AE_FROZEN_WORKERS=""
+# THE LIMIT OF THIS GATE, NAMED RATHER THAN IMPLIED: it fires when _AE_FROM_ROSTER is set
+# AND this is a --from launch AND no explicit `use <alias>` override was given. The only
+# path known to set _AE_FROM_ROSTER is compact's exec into this launch; NO ENUMERATION of
+# other possible setters has been done. If you reach here with PARENT_ARCHIVE_ID from some
+# other route, this gate has not been proven for your path — read it as scoped to compact,
+# not as a general guarantee.
+if [[ -n "${_AE_FROM_ROSTER:-}" && -n "$PARENT_ARCHIVE_ID" && -z "$MAIN_OVERRIDE" ]]; then
+    _fr_main="${_AE_FROM_ROSTER#main=}"
+    _fr_main="${_fr_main%% workers=*}"
+    _fr_workers="${_AE_FROM_ROSTER##*workers=}"
+    [[ "$_fr_workers" == "-" ]] && _fr_workers=""
+    if [[ -n "$_fr_main" ]]; then
+        MAIN_RAW="$_fr_main"
+        _AE_FROZEN_WORKERS_SET=true
+        _AE_FROZEN_WORKERS="$_fr_workers"
+    fi
+fi
 if [[ "$MAIN_RAW" == *:* ]]; then
     MAIN_ALIAS="${MAIN_RAW%%:*}"
     MAIN_NAME="${MAIN_RAW#*:}"
@@ -16014,7 +17021,11 @@ if [[ "$MAIN_NAME" == *:* ]]; then
     exit 1
 fi
 LAYOUT="$(get_config workspace.layout)"
-WORKERS_RAW="$(get_config workspace.workers)"
+if [[ "$_AE_FROZEN_WORKERS_SET" == true ]]; then
+    WORKERS_RAW="$_AE_FROZEN_WORKERS"
+else
+    WORKERS_RAW="$(get_config workspace.workers)"
+fi
 # meta-agent (steward) mode: [workspace] steward = true (canonical) — or its
 # legacy aliases hub = true / meta = true — marks this session as the fleet
 # steward. The watchdog then runs a sweep-cadence (periodic "run your sweep now")
@@ -16448,6 +17459,27 @@ done
 for i in "${!WORKER_LAUNCH_IDS[@]}"; do
     [[ -n "${WORKER_LAUNCH_IDS[$i]}" ]] && echo "launch_id.worker.${i}=${WORKER_LAUNCH_IDS[$i]}" >>"${AE_META}/meta.tmp.$$"
 done
+# THE SECOND PARENT PROOF. The first ran before anything was created; this one runs in
+# the last moment before the child's meta becomes canonical, because between them the
+# archive could have been purged, claimed or corrupted — and a child published with a
+# lineage pointer to something that is no longer there is exactly the "fresh --from never
+# degrades" case. An expectation carried in by `ae compact` is compared byte-for-byte;
+# an ordinary --from launch re-proves the archive without one.
+if [[ -n "$PARENT_ARCHIVE_ID" && "$RESUMING" != true ]]; then
+    _from_proof_now="$(_ar_from_preflight "$PARENT_ARCHIVE_ID" 2>/dev/null || true)"
+    if [[ -z "$_from_proof_now" ]]; then
+        rm -f "${AE_META}/meta.tmp.$$"
+        echo "Error: parent archive ${PARENT_ARCHIVE_ID} stopped validating while this session was being created." >&2
+        _launch_rollback 1
+    fi
+    if [[ -n "${_AE_FROM_EXPECTED:-}" && "$_from_proof_now" != "${_AE_FROM_EXPECTED}" ]]; then
+        rm -f "${AE_META}/meta.tmp.$$"
+        echo "Error: parent archive ${PARENT_ARCHIVE_ID} changed while this session was being created." >&2
+        echo "  Expected: ${_AE_FROM_EXPECTED//$'\t'/ | }" >&2
+        echo "  Now:      ${_from_proof_now//$'\t'/ | }" >&2
+        _launch_rollback 1
+    fi
+fi
 mv "${AE_META}/meta.tmp.$$" "${AE_META}/meta"
 # The lifecycle lock is NOT released here. The complete initial meta is final at
 # this point, but the SESSION is not: sync_session_assets still has ~20 helpers,
@@ -16933,22 +17965,6 @@ fi
 #
 # Never masks the original status — every step tolerates failure, and the exit
 # code is the one that came in.
-_launch_rollback() {
-    local _rc="${1:-1}"
-    echo "ae: launch failed — rolling back '${SESSION}'." >&2
-    tmux kill-session -t "$SESSION" 2>/dev/null || true
-    if ((${_AE_SESSION_DIR_CREATED:-0} != 1)); then
-        echo "ae: session state KEPT — it predates this attempt; retry with 'ae ${SESSION}'." >&2
-    elif ! _path_is_direct_child "$SESSIONS_DIR" "${AE_META:-}"; then
-        # Unreachable after entry validation; kept because the alternative to an
-        # unreachable branch here is an unbounded rm -rf.
-        echo "ae: session state KEPT — '${AE_META:-}' is not a direct child of ${SESSIONS_DIR}; refusing to delete." >&2
-    else
-        rm -rf "$AE_META" 2>/dev/null || true
-        echo "ae: session state removed — this launch created it; nothing left to reattach to." >&2
-    fi
-    exit "$_rc"
-}
 
 # Every launch-path send goes through here: a bare `send_agent_cmd` would exit
 # on failure with the session half-built (the loud abort the previous round

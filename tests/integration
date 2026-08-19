@@ -30,6 +30,14 @@ REAL_AE_CONFIG="${REAL_HOME}/.ae/config"
 # Content fingerprint — GNU has md5sum, macOS md5; cksum is the POSIX floor.
 _fpr() { md5sum 2>/dev/null || md5 2>/dev/null || cksum; }
 if [[ -f "$REAL_AE_CONFIG" ]]; then REAL_CONFIG_FPR="$(_fpr <"$REAL_AE_CONFIG")"; else REAL_CONFIG_FPR="absent"; fi
+# SUBJECT TRIPWIRE: the thing under test must not move while it is being tested. Python
+# and friends rewrite the WHOLE file while bash reads a script INCREMENTALLY, so an `ae`
+# invocation in flight can read a torn file — half old, half new — and fail, or far worse
+# SUCCEED in a way that corresponds to no version anyone wrote. "It was only a comment" is
+# irrelevant: the tear is in the BYTES, not the semantics. This has happened twice, both
+# times to someone who knew the rule, which is why it is a mechanism here and not a habit:
+# detection you cannot forget beats prevention you can.
+AE_FPR_START="$(_fpr <"$AE")"
 export HOME="$TMPDIR/home"
 export AE_HOME="$HOME/.ae"
 mkdir -p "$HOME/.ae"
@@ -39,6 +47,15 @@ cleanup() {
     rm -rf "$TMPDIR" "$SOCK_DIR"
     local now_fpr
     if [[ -f "$REAL_AE_CONFIG" ]]; then now_fpr="$(_fpr <"$REAL_AE_CONFIG")"; else now_fpr="absent"; fi
+    local ae_fpr_end
+    ae_fpr_end="$(_fpr <"$AE" 2>/dev/null || echo missing)"
+    if [[ "$ae_fpr_end" != "$AE_FPR_START" ]]; then
+        echo "" >&2
+        echo "FATAL: ae CHANGED WHILE THIS SUITE WAS RUNNING — the subject moved under the test." >&2
+        echo "  Every result above is untrustworthy, including the passes: a script being" >&2
+        echo "  rewritten can be read torn. Re-run against a tree nobody is editing." >&2
+        exit 1
+    fi
     if [[ "$now_fpr" != "$REAL_CONFIG_FPR" ]]; then
         echo "" >&2
         echo "FATAL: the REAL user config ($REAL_AE_CONFIG) CHANGED during this test run." >&2
@@ -47,6 +64,13 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+# A suite that dies under `set -e` says NOTHING — no failure line, no summary, just a
+# truncated log and a non-zero status, which is indistinguishable from "the box killed
+# it". Name the abort instead: the ERR trap fires exactly where errexit would, so a bare
+# statement that returned non-zero (a timed-out launch, a grep that matched nothing, a
+# missing meta) is reported with its line and its text rather than guessed at afterwards.
+_abort_ec=0
+trap '_abort_ec=$?; echo "" >&2; echo "ABORTED at tests/integration:${LINENO} (status ${_abort_ec}) — the suite died under set -e, it did not fail an assertion." >&2; echo "  command: ${BASH_COMMAND}" >&2' ERR
 
 tmux() { command tmux -L "$AE_TMUX_SERVER" "$@"; }
 
@@ -413,7 +437,14 @@ assert_contains "list: default shows the running session" "test-state" \
 # on a single JSON line (the events.jsonl one-object-per-line invariant).
 state_main_pane="$(tmux list-panes -t test-state -F '#{pane_id} #{@ae_agent}' | awk -v a="$main_agent" '$2==a {print $1; exit}')"
 TMUX_PANE="$state_main_pane" "$HOME/.ae/sessions/test-state/say" "$(printf 'hello from say\nsecond line')" >/dev/null 2>&1
-say_line="$(tac "$STATE_EVENTS" 2>/dev/null | grep -m1 '"action":"chat"')"
+# LAST-MATCH LOOKUPS READ THE FILE AND KEEP THE LAST LINE — never `tac | grep -m1`.
+# `grep -m1` exits on its first match and closes the pipe under `tac`; if `tac` is still
+# writing it takes SIGPIPE, `pipefail` makes the pipeline 141, and `set -e` kills the whole
+# suite with no failing assertion and no summary. It fires only when the log is large
+# enough not to fit the pipe buffer, which is why it read as a random flake (#37).
+# `grep ... | tail -1` has the same semantics, never exits early, and drops raw `tac`
+# (GNU-only) as a bonus.
+say_line="$(grep '"action":"chat"' "$STATE_EVENTS" 2>/dev/null | tail -1)"
 assert_contains "say: emits a chat event" '"action":"chat"' "$say_line"
 assert_contains "say: chat event carries the message" 'hello from say' "$say_line"
 assert_contains "say: embedded newline kept as escaped \\n on one line" 'say\nsecond' "$say_line"
@@ -1211,7 +1242,7 @@ assert_eq "spawn: memo file exists" "1" "$([[ -f "$HOME/.ae/sessions/test-spawn/
 main_pane="$(tmux list-panes -s -t test-spawn -F '#{pane_id} #{@ae_agent}' | awk '$2=="dummy:dummy"{print $1; exit}')"
 worker_pane="$(tmux list-panes -s -t test-spawn -F '#{pane_id} #{@ae_agent}' | awk '$2=="dummy2:helper-0"{print $1; exit}')"
 TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/ask" dummy2 "check memo flow" 2>/dev/null || true
-req_id="$(tac "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | grep -m1 -E '"action":"(ask|review)"' | grep -oE '"ref":"[^"]+"' | cut -d'"' -f4)"
+req_id="$(grep -E '"action":"(ask|review)"' "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | tail -1 | grep -oE '"ref":"[^"]+"' | cut -d'"' -f4)"
 wrong_reply_status=0
 TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/reply" "$req_id" "wrong pane reply" >/dev/null 2>&1 || wrong_reply_status=$?
 assert_eq "spawn: reply rejects wrong agent identity" "1" "$wrong_reply_status"
@@ -1220,7 +1251,7 @@ requests_output="$("$HOME/.ae/sessions/test-spawn/requests" all 2>/dev/null || t
 assert_contains "spawn: requests show replied after correct reply" "replied" "$requests_output"
 
 TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/ask" dummy2 "check override reply flow" 2>/dev/null || true
-override_req_id="$(tac "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | grep -m1 -E '"action":"(ask|review)"' | grep -oE '"ref":"[^"]+"' | cut -d'"' -f4)"
+override_req_id="$(grep -E '"action":"(ask|review)"' "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | tail -1 | grep -oE '"ref":"[^"]+"' | cut -d'"' -f4)"
 # codex BLOCKER: --as CANNOT bypass the slot proof on a SLOTTED request. The WRONG pane
 # (main) with --as impersonating the target is rejected; the RIGHT pane (the target) with a
 # stale/mismatched --as name warns but still succeeds (slot verified).
@@ -1238,16 +1269,16 @@ assert_contains "spawn: override reply summary updated" "override handled" "$req
 # ask main->worker stores actor_slot + target_slot; churn BOTH @ae_agent names (keeping
 # @ae_slot); the reply must verify by SLOT and ROUTE to main's CURRENT name, not the stale one.
 TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/ask" dummy2 "churn round-trip" 2>/dev/null || true
-churn_req="$(tac "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | grep -m1 -E '"action":"(ask|review)"' | grep -oE '"ref":"[^"]+"' | cut -d'"' -f4)"
+churn_req="$(grep -E '"action":"(ask|review)"' "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | tail -1 | grep -oE '"ref":"[^"]+"' | cut -d'"' -f4)"
 # Confirm the ask recorded slot identity (the whole point).
-assert_eq "request-integrity: ask records target_slot" "1" "$(grep -q '"target_slot"' <<<"$(tac "$HOME/.ae/sessions/test-spawn/events.jsonl" | grep -m1 "$churn_req")" && echo 1 || echo 0)"
+assert_eq "request-integrity: ask records target_slot" "1" "$(grep -q '"target_slot"' <<<"$(grep "$churn_req" "$HOME/.ae/sessions/test-spawn/events.jsonl" | tail -1)" && echo 1 || echo 0)"
 # CHURN: rename @ae_agent on both panes; @ae_slot untouched.
 tmux set-option -p -t "$main_pane" @ae_agent "churned:lead2"
 tmux set-option -p -t "$worker_pane" @ae_agent "churned:worker2"
 churn_reply_status=0
 TMUX_PANE="$worker_pane" "$HOME/.ae/sessions/test-spawn/reply" "$churn_req" "routed by slot" >/dev/null 2>&1 || churn_reply_status=$?
 assert_eq "request-integrity: reply verifies by slot after a name churn" "0" "$churn_reply_status"
-churn_reply_target="$(tac "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | grep -m1 '"action":"reply"' | grep -oE '"target":"[^"]+"' | cut -d'"' -f4)"
+churn_reply_target="$(grep '"action":"reply"' "$HOME/.ae/sessions/test-spawn/events.jsonl" 2>/dev/null | tail -1 | grep -oE '"target":"[^"]+"' | cut -d'"' -f4)"
 assert_eq "request-integrity: reply ROUTES to the sender CURRENT name via slot (not stale)" "churned:lead2" "$churn_reply_target"
 # requests must still show the churned request as REPLIED (slot-matched, not stale name).
 churn_req_status="$(TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/requests" all 2>/dev/null | awk -v r="$churn_req" '$3==r{print $1}')"
@@ -4104,7 +4135,19 @@ cat >>"$A48_META/events.jsonl" <<EOF
 EOF
 
 # PREVIEW FIRST, on the LIVE session: it must change nothing.
-a48_tree_before="$(cd "$A48_META" && find . | LC_ALL=C sort)"
+# THE DIRECTORY HAS A SECOND WRITER. The session's own watchdog drops runtime files
+# (.watchdog.pid today) whenever it starts or restarts, so diffing the WHOLE listing asks
+# "did anything appear" when the question is "did PREVIEW write anything". That made a
+# shipped read-only guarantee pass or fail on watchdog timing — measured on identical
+# bytes: 760/0 in one run, 759/1 in another, differing only in when the watchdog blinked.
+# THE RULE, not the symptom: session RUNTIME state is owned by the watchdog and is not
+# preview's to write; preview's only possible writes are session CONTENT and archive
+# artifacts. Excluding one filename would pass until the watchdog wrote a second one.
+_a48_content_tree() { # the files preview could plausibly touch, watchdog runtime excluded
+    (cd "$A48_META" && find . -type f -o -type d) |
+        grep -vE '/\.watchdog[^/]*$|/\.[^/]*\.pid$|/\.[^/]*\.lock$' | LC_ALL=C sort
+}
+a48_tree_before="$(_a48_content_tree)"
 a48_prev_out="$("$AE" archive preview arch-keep 2>"$TMPDIR/a48.err")"
 assert_contains "archive-preview: stdout is the digest" "# ae session archive" "$a48_prev_out"
 assert_contains "archive-preview: it renders the live session's goal" "ship the archive" "$a48_prev_out"
@@ -4113,7 +4156,13 @@ assert_contains "archive-preview: stderr says PREVIEW ONLY" \
 assert_contains "archive-preview: stderr reports what would be archived, not the digest's size" \
     "selected files:" "$(cat "$TMPDIR/a48.err")"
 assert_contains "archive-preview: stderr names the canonical archive id" "$A48_UUID" "$(cat "$TMPDIR/a48.err")"
-assert_eq "archive-preview: it wrote nothing into the live session" "$a48_tree_before" "$(cd "$A48_META" && find . | LC_ALL=C sort)"
+assert_eq "archive-preview: it wrote nothing into the live session" "$a48_tree_before" "$(_a48_content_tree)"
+# CONTROL ON THE FILTER ITSELF: it must exclude watchdog runtime and NOTHING ELSE. If it
+# over-excluded, the comparison above would go blind to exactly the writes it exists to
+# catch, and would pass no matter what preview did. So assert the session's real content
+# is still inside the measured set.
+assert_eq "archive-preview: (control) the filter still measures the session's content" "3" \
+    "$(_a48_content_tree | grep -cE '/meta$|/memo\.tsv$|/events\.jsonl$' | tr -d '[:space:]')"
 assert_not_exists "archive-preview: it published no archive for this session" "$HOME/.ae/archive/$A48_UUID"
 assert_eq "archive-preview: and took no publisher claim" "0" \
     "$(find "$HOME/.ae/archive" -maxdepth 1 -name '.publishing.*' 2>/dev/null | grep -c . | tr -d '[:space:]')"
@@ -4719,6 +4768,790 @@ unset A48_KREPO A48_PREPO A48_KUUID A48_PUUID2
 unset A48_FRESH
 unset A48_REPO A48_META A48_UUID A48_ARCH A48_PUUID A48_CMETA A48_ORIGIN A48_GREPO A48_GUUID A48_GBASE A48_GWORK A48_GARCH A48_NREPO A48_NUUID
 unset a48_tree_before a48_prev_out a48_end a48_forbidden a48_f a48_exec a48_p a48_m a48_dup a48_dup_rc a48_claim a48_claim_rc a48_purge a48_bad a48_bad_rc a48_ex2 a48_ex2_rc
+
+# EVERY compact CALL BELOW DECLARES ITS STDIN OR PASSES -f, DELIBERATELY. The arms that
+# assert on facts printed before the prompt read `</dev/null` (EOF = decline), and the
+# arms that exercise the handover machinery pass `-f` to skip the prompt entirely. Left
+# to ambient stdin these hang for a human running the suite from a terminal, and pass or
+# fail by whatever the caller happened to supply — an undeclared input is a dependency.
+# ── ae compact, phase (a): it resolves, it refuses, it changes nothing ───────────
+_C48_BEFORE=$((PASS + FAIL))   # coverage baseline — see the sentinel at the end of this section
+C48_REPO="$(setup_repo)"
+(cd "$C48_REPO" && "$AE" --local comp-ok &) 2>/dev/null
+wait_for_session "comp-ok" 20
+sleep 1
+C48_UUID="$(grep '^session_id=' "$HOME/.ae/sessions/comp-ok/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+# `</dev/null`: this arm declines at the prompt, and it must decline for a REASON the
+# test controls. Left to the caller's stdin it passed only because whatever the harness
+# handed it happened not to be `y` — and the day that stdin was EOF instead, compact's
+# bare `read` aborted under set -e and took the whole suite with it. EOF is now a clean
+# decline in ae, and this asserts it rather than inheriting it.
+c48_ok_rc=0
+c48_ok="$("$AE" compact comp-ok </dev/null 2>&1)" || c48_ok_rc=$?
+assert_contains "compact: no answer at all is not a crash" "could not obtain confirmation" "$c48_ok"
+# `n` is a DECISION and exits 0; EOF is the ABSENCE of one and must not report success —
+# stdout is empty either way, so the status is the caller's only way to tell them apart.
+assert_eq "compact: EOF exits NONZERO — ae could not ask, which is not the operator saying no" "1" \
+    "$([[ $c48_ok_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "compact: while a typed 'n' is an answer, and answers exit 0" "0" \
+    "$(printf 'n' | "$AE" compact comp-ok >/dev/null 2>&1; echo $?)"
+assert_eq "compact: a decline writes NOTHING to stdout — the contract means the boundary was crossed" "0" \
+    "$("$AE" compact comp-ok </dev/null 2>/dev/null || true | wc -c | tr -d '[:space:]')"
+assert_contains "compact: it names the frozen session and mode" "compact: comp-ok (local) resolved and frozen." "$c48_ok"
+assert_contains "compact: and the uuid it froze, with its provenance" "uuid: ${C48_UUID} (session)" "$c48_ok"
+assert_contains "compact: and the exact archive path it would write" "archive: $HOME/.ae/archive/${C48_UUID}" "$c48_ok"
+assert_contains "compact: and what happens to the conversation files" "conversation files: kept" "$c48_ok"
+assert_eq "compact: resolving creates NO archive" "0" \
+    "$([[ -e "$HOME/.ae/archive/${C48_UUID}" ]] && echo 1 || echo 0)"
+assert_eq "compact: and takes no publisher claim" "0" \
+    "$(find "$HOME/.ae/archive" -maxdepth 1 -name '.publishing.*' 2>/dev/null | grep -c . | tr -d '[:space:]')"
+assert_eq "compact: and leaves the session running" "0" "$(tmux has-session -t comp-ok 2>/dev/null; echo $?)"
+
+# REFUSING FROM INSIDE THE TARGET — the case that cannot be tested outside a pane. compact
+# ends the session the caller sits in; one command cannot honestly hand that terminal to
+# the new session, so it says so before anything is minted, messaged or archived.
+c48_pane="$(tmux list-panes -t comp-ok -F '#{pane_id}' | head -1)"
+c48_self_out="$TMPDIR/c48-self.out"
+tmux send-keys -t "$c48_pane" "AE_HOME=$AE_HOME $AE compact comp-ok > $c48_self_out 2>&1" Enter
+sleep 4
+assert_contains "compact-self: run from inside the target, it refuses with the detach recipe" \
+    "cannot compact the current session. Detach, then run: ae compact comp-ok" "$(cat "$c48_self_out" 2>/dev/null || echo MISSING)"
+assert_eq "compact-self: the target is still live" "0" "$(tmux has-session -t comp-ok 2>/dev/null; echo $?)"
+assert_eq "compact-self: no archive was written" "0" \
+    "$([[ -e "$HOME/.ae/archive/${C48_UUID}" ]] && echo 1 || echo 0)"
+# A session that has never emitted an event has NO events.jsonl at all, so "no request
+# was recorded" has two shapes — an absent log and a log with no ask in it — and the
+# assertion has to accept both. awk counts either way and exits 0; `grep -c` on a missing
+# file prints nothing, which is what made the first version of this read as empty rather
+# than as zero.
+assert_eq "compact-self: and no request was recorded" "0" \
+    "$(awk '/"action":"ask"/ { n++ } END { print n + 0 }' "$HOME/.ae/sessions/comp-ok/events.jsonl" 2>/dev/null || echo 0)"
+
+# The stored purge policy contradicts compact, and --keep-history is the explicit override.
+mkdir -p "$C48_REPO/.ae"
+printf '[workspace]\npurge_agent_history = true\n' >"$C48_REPO/.ae/config"
+c48_purge_rc=0
+c48_purge="$("$AE" compact comp-ok </dev/null 2>&1)" || c48_purge_rc=$?
+assert_eq "compact: a stored purge policy refuses" "1" "$([[ $c48_purge_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact: and names the override" "ae compact --keep-history comp-ok" "$c48_purge"
+assert_contains "compact: --keep-history says it seals keep" "conversation files: kept" \
+    "$("$AE" compact --keep-history comp-ok </dev/null 2>&1 || true)"
+rm -f "$C48_REPO/.ae/config"
+"$AE" end -f --keep-history comp-ok >/dev/null 2>&1 || true
+
+# v1 IS LOCAL-ONLY: a managed session refuses, because a fresh workspace would be based on
+# canonical-origin HEAD, which normally lags the session's own branch.
+C48_GREPO="$(setup_repo)"
+(cd "$C48_GREPO" && "$AE" --worktree comp-git &) 2>/dev/null
+wait_for_session "comp-git" 20
+sleep 2
+c48_git_rc=0
+c48_git="$("$AE" compact comp-git </dev/null 2>&1)" || c48_git_rc=$?
+assert_eq "compact: a git-mode session refuses in v1" "1" "$([[ $c48_git_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact: and says why, rather than just no" \
+    "you would get a session missing the" "$c48_git"
+assert_eq "compact: the refused session is untouched" "0" "$(tmux has-session -t comp-git 2>/dev/null; echo $?)"
+"$AE" end -f --keep-history comp-git >/dev/null 2>&1 || true
+
+# A session that predates session ids is migrated on touch — id and provenance together.
+(cd "$C48_REPO" && "$AE" --local comp-mint &) 2>/dev/null
+wait_for_session "comp-mint" 20
+sleep 1
+_sed_i -e "/^session_id=/d" "$HOME/.ae/sessions/comp-mint/meta"
+c48_mint="$("$AE" compact comp-mint </dev/null 2>&1 || true)"
+assert_contains "compact: a session with no id is minted one at freeze" "Minted a session id for 'comp-mint'" "$c48_mint"
+assert_contains "compact: and the tuple records that provenance" "(minted-at-compact)" "$c48_mint"
+assert_eq "compact: the id and its provenance are both in the live meta" "2" \
+    "$(grep -cE '^session_id=|^session_id_origin=minted-at-compact' "$HOME/.ae/sessions/comp-mint/meta" | tr -d '[:space:]')"
+_sed_i -e "s|^session_id=.*|session_id=not-a-uuid|" "$HOME/.ae/sessions/comp-mint/meta"
+c48_badid_rc=0
+c48_badid="$("$AE" compact comp-mint </dev/null 2>&1)" || c48_badid_rc=$?
+assert_eq "compact: an unparseable id refuses" "1" "$([[ $c48_badid_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact: and will not overwrite it" "ae will not overwrite a value it cannot parse" "$c48_badid"
+assert_eq "compact: the value survives untouched" "not-a-uuid" \
+    "$(grep '^session_id=' "$HOME/.ae/sessions/comp-mint/meta" | cut -d= -f2-)"
+_sed_i -e "s|^session_id=.*|session_id=55555555-6666-7777-8888-999999999999|" "$HOME/.ae/sessions/comp-mint/meta"
+"$AE" end -f --keep-history comp-mint >/dev/null 2>&1 || true
+unset c48_ok_rc C48_REPO C48_GREPO C48_UUID c48_ok c48_pane c48_self_out c48_purge c48_purge_rc c48_git c48_git_rc c48_mint c48_badid c48_badid_rc
+
+# ── compact phase (b): the handover is a fact, not a claim ──────────────────────
+# DELIVERY FAILURE: a main agent whose pane is gone. compact must refuse before anything
+# is asked of anyone — no request recorded, nothing stopped, nothing archived.
+B48_REPO="$(setup_repo)"
+(cd "$B48_REPO" && "$AE" --local comp-dead &) 2>/dev/null
+wait_for_session "comp-dead" 20
+sleep 1
+B48_DEAD_PANE="$(grep '^main_pane=' "$HOME/.ae/sessions/comp-dead/meta" | cut -d= -f2-)"
+tmux kill-pane -t "$B48_DEAD_PANE" 2>/dev/null || true
+sleep 2
+b48_dead_rc=0
+b48_dead="$(AE_COMPACT_HANDOVER_SECS=6 "$AE" compact -f comp-dead 2>&1)" || b48_dead_rc=$?
+assert_eq "compact-deliver: a main agent with no pane refuses the whole operation" "1" \
+    "$([[ $b48_dead_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact-deliver: and says the session is untouched rather than half-done" \
+    "Nothing was stopped and nothing was archived" "$b48_dead"
+assert_eq "compact-deliver: and NO request was recorded — nothing was asked of anyone" "0" \
+    "$(awk '/"action":"ask"/ { n++ } END { print n + 0 }' "$HOME/.ae/sessions/comp-dead/events.jsonl" 2>/dev/null || echo 0)"
+assert_eq "compact-deliver: the session state survives" "1" \
+    "$([[ -f "$HOME/.ae/sessions/comp-dead/meta" ]] && echo 1 || echo 0)"
+"$AE" end -f --keep-history comp-dead >/dev/null 2>&1 || true
+unset B48_DEAD_PANE b48_dead b48_dead_rc
+
+# TIMEOUT, REUSE, WITHDRAWAL — the three states a handover request can be in.
+(cd "$B48_REPO" && "$AE" --local comp-wait &) 2>/dev/null
+wait_for_session "comp-wait" 20
+sleep 1
+B48_WDIR="$HOME/.ae/sessions/comp-wait"
+B48_WUUID="$(grep '^session_id=' "$B48_WDIR/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+b48_to_rc=0
+b48_to="$(AE_COMPACT_HANDOVER_SECS=6 "$AE" compact -f comp-wait 2>&1)" || b48_to_rc=$?
+assert_eq "compact-wait: with neither fact, it times out" "1" "$([[ $b48_to_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact-wait: and says BOTH facts are required" \
+    "a reply AND a new handover memo are both required" "$b48_to"
+assert_contains "compact-wait: and names the two ways forward" "--digest-only comp-wait" "$b48_to"
+assert_eq "compact-wait: exactly one request was sent" "1" \
+    "$(awk '/"action":"ask"/ { n++ } END { print n + 0 }' "$B48_WDIR/events.jsonl")"
+assert_eq "compact-wait: the source is untouched" "0" "$(tmux has-session -t comp-wait 2>/dev/null; echo $?)"
+# A retry REUSES the outstanding request rather than delivering a second one.
+b48_retry="$(AE_COMPACT_HANDOVER_SECS=4 "$AE" compact -f comp-wait 2>&1 || true)"
+assert_contains "compact-wait: a retry reuses the outstanding request" "reusing the outstanding handover request" "$b48_retry"
+assert_eq "compact-wait: and still only one request exists" "1" \
+    "$(awk '/"action":"ask"/ { n++ } END { print n + 0 }' "$B48_WDIR/events.jsonl")"
+# A reply ALONE is an agent saying "done" with nothing written down. The agent must answer
+# DURING compact's wait, on the ref compact is actually waiting on — replying between two
+# invocations CLOSES the request, and the next run then asks afresh with a new ref, which
+# is a different scenario than the one this arm means to test.
+B48_REF="$(awk -F'"' '/"action":"ask"/ { for (i = 1; i <= NF; i++) if ($i == "ref") print $(i + 2) }' "$B48_WDIR/events.jsonl" | tail -1)"
+B48_WPANE="$(grep '^main_pane=' "$B48_WDIR/meta" | cut -d= -f2-)"
+# THE FIXTURE NEEDS CLEARING FIRST, and the reason is worth knowing. The dummy agent in
+# this suite is `bash`, and compact's request text contains a literal example command
+# (`memo add --topic handover "<what the next session must know>"`). Pasting the ask into
+# a SHELL executes it, so a handover memo appears that no agent ever decided to write —
+# which makes the reply-only state unreachable and would let this arm "pass" against a
+# state it never entered. A real agent reads that line as an instruction; a shell runs it.
+: >"$B48_WDIR/memo.tsv"
+assert_eq "compact-wait: (setup) no handover memo exists, so reply-only is reachable" "0" \
+    "$(awk -F'\t' '$3 == "handover" { n++ } END { print n + 0 }' "$B48_WDIR/memo.tsv")"
+# The ASSIGNEE replies, identified by its pane — the suite's convention for driving a
+# helper. `--as` would be wrong here: it names the SENDER, and the sender is compact.
+(
+    sleep 3
+    TMUX_PANE="$B48_WPANE" "$B48_WDIR/reply" "$B48_REF" 'done, nothing written' >/dev/null 2>&1 || true
+) &
+b48_reply_only="$(AE_COMPACT_HANDOVER_SECS=12 "$AE" compact -f comp-wait 2>&1 || true)"
+wait || true
+# ASSERT THE PRECONDITION BEFORE THE BEHAVIOUR: a negative test that passes because its
+# setup silently failed is indistinguishable from one that passes because the code is right.
+assert_eq "compact-wait: (setup) the assignee's reply really was recorded" "1" \
+    "$(awk '/"action":"reply"/ { n++ } END { print n + 0 }' "$B48_WDIR/events.jsonl")"
+assert_contains "compact-wait: a reply with no handover memo is not enough" \
+    "a reply AND a new handover memo are both required" "$b48_reply_only"
+assert_contains "compact-wait: and it names WHICH of the two facts is missing" \
+    "The reply arrived; the handover memo did not." "$b48_reply_only"
+# The reply CLOSED the request, so the generic "re-run to keep waiting on it" would be a
+# promise ae cannot keep — a re-run asks again from scratch.
+assert_contains "compact-wait: and does not promise a closed request is still open" \
+    "a re-run sends a FRESH request" "$b48_reply_only"
+assert_eq "compact-wait: still nothing stopped" "0" "$(tmux has-session -t comp-wait 2>/dev/null; echo $?)"
+# BOTH facts, in the shape a real handover has: the memo is written, and the agent replies
+# to the request compact is waiting on — which is a NEW one, because the previous reply
+# closed the old. Driven through the REAL reply helper, so this exercises
+# reply -> send -> the reserved event-only sink, not a hand-built event that looks like one.
+"$B48_WDIR/memo" add --topic handover "what the next session must know" >/dev/null 2>&1 || true
+assert_eq "compact-wait: (setup) now exactly one handover memo exists" "1" \
+    "$(awk -F'\t' '$3 == "handover" { n++ } END { print n + 0 }' "$B48_WDIR/memo.tsv")"
+(
+    for _b48_i in $(seq 1 25); do
+        _b48_ref="$(awk -F'"' '/"action":"ask"/ { for (i = 1; i <= NF; i++) if ($i == "ref") print $(i + 2) }' "$B48_WDIR/events.jsonl" 2>/dev/null | tail -1)"
+        [[ -n "$_b48_ref" && "$_b48_ref" != "$B48_REF" ]] && break
+        sleep 1
+    done
+    TMUX_PANE="$B48_WPANE" "$B48_WDIR/reply" "$_b48_ref" 'handed over' >/dev/null 2>&1 || true
+) &
+b48_both="$(AE_COMPACT_HANDOVER_SECS=40 "$AE" compact -f comp-wait 2>&1 || true)"
+wait || true
+assert_contains "compact-wait: reply AND memo together complete the handover" "handover complete" "$b48_both"
+# AND THE COMPACT ACTUALLY COMPLETED. This is the one arm where compact proceeds through
+# archive, end and relaunch, and it used to assert only that compact SAID "handover
+# complete" before tearing the session down — a label claiming a behaviour and an
+# assertion proving a word, which is exactly what shipped the broken --keep-history
+# override. The uuid was already computed here and then discarded; shellcheck's SC2034 on
+# it is what surfaced the gap, so the warning was the signal and not the noise.
+assert_eq "compact-wait: and the archive really was published under the source's id" "1" \
+    "$([[ -f "$HOME/.ae/archive/${B48_WUUID}/digest.md" ]] && echo 1 || echo 0)"
+assert_eq "compact-wait: with a live child back under the same name" "0" \
+    "$(tmux has-session -t comp-wait 2>/dev/null; echo $?)"
+assert_eq "compact-wait: and the child continues THAT archive" "1" \
+    "$(grep -c "^parent_archive_id=${B48_WUUID}$" "$HOME/.ae/sessions/comp-wait/meta" 2>/dev/null | tr -d '[:space:]')"
+"$AE" end -f --keep-history comp-wait >/dev/null 2>&1 || true
+unset b48_to b48_to_rc b48_retry b48_reply_only b48_both
+
+# --digest-only WITHDRAWS an outstanding request through the sensor, so no later archive
+# reports an open request nobody is waiting on.
+(cd "$B48_REPO" && "$AE" --local comp-withdraw &) 2>/dev/null
+wait_for_session "comp-withdraw" 20
+sleep 1
+B48_XDIR="$HOME/.ae/sessions/comp-withdraw"
+AE_COMPACT_HANDOVER_SECS=6 "$AE" compact -f comp-withdraw >/dev/null 2>&1 || true
+B48_XREF="$(awk -F'"' '/"action":"ask"/ { for (i = 1; i <= NF; i++) if ($i == "ref") print $(i + 2) }' "$B48_XDIR/events.jsonl" | tail -1)"
+assert_eq "compact-withdraw: (setup) a request is outstanding" "1" \
+    "$("$B48_XDIR/requests" all 2>/dev/null | grep -c "pending .*${B48_XREF}" | tr -d '[:space:]')"
+B48_XUUID="$(grep '^session_id=' "$B48_XDIR/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+b48_wd="$(AE_COMPACT_HANDOVER_SECS=6 "$AE" compact -f --digest-only comp-withdraw 2>&1 || true)"
+sleep 2
+assert_contains "compact-withdraw: --digest-only withdraws it explicitly" "withdrew ${B48_XREF}" "$b48_wd"
+assert_contains "compact-withdraw: and says the digest is the handover" "the digest is the handover" "$b48_wd"
+# THE EVIDENCE IS IN THE ARCHIVE, not in the live session: the withdrawal is a step, and
+# the same command goes on to end this session and start a fresh one under the same name.
+# Reading `requests` afterwards would inspect the CHILD's empty ledger and pass vacuously.
+B48_XARCH="$HOME/.ae/archive/${B48_XUUID}"
+assert_eq "compact-withdraw: the archived log carries both the ask and its cancellation" "1 1" \
+    "$(awk '/"action":"ask"/ { a++ } /"action":"cancel"/ { c++ } END { print (a + 0) " " (c + 0) }' "$B48_XARCH/events.jsonl")"
+assert_contains "compact-withdraw: so the archive reports NOTHING unresolved — the point of withdrawing" \
+    "Unresolved requests (0)" "$(cat "$B48_XARCH/digest.md")"
+assert_eq "compact-withdraw: and the withdrawn ref is not listed as outstanding anywhere in it" "0" \
+    "$(grep -c "pending" "$B48_XARCH/digest.md" | tr -d '[:space:]')"
+"$AE" end -f --keep-history comp-withdraw >/dev/null 2>&1 || true
+unset B48_REPO B48_WDIR B48_WUUID B48_REF B48_WPANE B48_XDIR B48_XREF B48_XUUID B48_XARCH b48_wd
+
+# THE ROLLBACK MUST BE OBSERVED TO RUN. _launch_rollback is called from the --from
+# reproof in SCRIPT BODY, which bash executes top-to-bottom; the definition used to sit
+# ~500 lines further down, so the call was a missing command (rc 127) and the cleanup
+# provably never happened — the failure was correctly DETECTED and nothing was undone,
+# leaving a half-built same-name session squatting the name the recovery command needs.
+# A rollback nobody has watched run is not a rollback. Driven deterministically by handing
+# the launch an expectation that cannot match, rather than racing a vanishing archive.
+C48V_REPO="$(setup_repo)"
+(cd "$C48V_REPO" && "$AE" --local comp-roll &) 2>/dev/null
+wait_for_session "comp-roll" 20
+sleep 1
+C48V_UUID="$(grep '^session_id=' "$HOME/.ae/sessions/comp-roll/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+"$AE" end -f --keep-history comp-roll >/dev/null 2>&1 || true
+sleep 1
+assert_eq "compact-rollback: (setup) the parent archive exists to inherit from" "1" \
+    "$([[ -f "$HOME/.ae/archive/${C48V_UUID}/meta" ]] && echo 1 || echo 0)"
+c48v_rc=0
+c48v="$( (cd "$C48V_REPO" && _AE_FROM_EXPECTED="not-the-proof-this-archive-yields" \
+    "$AE" --local comp-rolled --from "$C48V_UUID") 2>&1 )" || c48v_rc=$?
+sleep 2
+assert_eq "compact-rollback: a parent that no longer matches refuses the launch" "1" \
+    "$([[ $c48v_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact-rollback: and says the parent changed under the launch" \
+    "changed while this session was being created" "$c48v"
+# THE PART THAT WAS BROKEN: the handler itself. Before the definition was moved, this
+# printed 'command not found' and left every one of these behind.
+assert_eq "compact-rollback: the rollback RAN — no command-not-found" "0" \
+    "$(grep -c "command not found" <<<"$c48v" | tr -d '[:space:]')"
+assert_eq "compact-rollback: no half-built session state survives" "0" \
+    "$([[ -e "$HOME/.ae/sessions/comp-rolled" ]] && echo 1 || echo 0)"
+assert_eq "compact-rollback: and no tmux session squats the name" "1" \
+    "$(tmux has-session -t comp-rolled 2>/dev/null && echo 0 || echo 1)"
+assert_eq "compact-rollback: the archive it refused to inherit is untouched" "1" \
+    "$([[ -f "$HOME/.ae/archive/${C48V_UUID}/meta" ]] && echo 1 || echo 0)"
+unset C48V_REPO C48V_UUID c48v c48v_rc
+
+# A CONSUMER THAT EXITS BEFORE READING MUST NOT COST THE RELAUNCH. Past the boundary the
+# archive is published and the source is gone, so the only thing left that matters is that
+# the fresh session starts. SIGPIPE KILLS the writer rather than failing the write, so
+# `|| true` cannot help — measured before the fix, 3/3: archived YES, session gone, NO
+# relaunch, recovery lost down the same closed pipe, and the PIPELINE REPORTING 0 because
+# its status is the consumer's. `| head -1` does NOT reproduce it: the writes fit the pipe
+# buffer before head can exit, the same buffer-size determinism as the tac|grep -m1 class.
+# So the fixture must be a consumer that exits IMMEDIATELY. Do not "simplify" it.
+# The assertion is the PROPERTY (the child exists), not the mechanism (a trap), because a
+# pin on the printf would need rewriting the day the mechanism changes and would not have
+# caught the inheritance half below at all.
+C48P_REPO="$(setup_repo)"
+(cd "$C48P_REPO" && "$AE" --local comp-pipe &) 2>/dev/null
+wait_for_session "comp-pipe" 20
+sleep 1
+C48P_UUID="$(grep '^session_id=' "$HOME/.ae/sessions/comp-pipe/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+(cd "$C48P_REPO" && "$AE" compact -f --digest-only comp-pipe 2>"$TMPDIR/c48p.err" | true) || true
+sleep 4
+assert_eq "compact-pipe: the archive was published" "1" \
+    "$([[ -f "$HOME/.ae/archive/${C48P_UUID}/digest.md" ]] && echo 1 || echo 0)"
+assert_eq "compact-pipe: AND THE CHILD STILL STARTED — a reporting failure must never suppress the relaunch" "0" \
+    "$(tmux has-session -t comp-pipe 2>/dev/null; echo $?)"
+assert_eq "compact-pipe: the child records the archive it continues" "1" \
+    "$(grep -c "^parent_archive_id=${C48P_UUID}$" "$HOME/.ae/sessions/comp-pipe/meta" 2>/dev/null | tr -d '[:space:]')"
+assert_contains "compact-pipe: and the recovery command survived on stderr" \
+    "Recovery: cd " "$(cat "$TMPDIR/c48p.err")"
+# THE OTHER HALF is pinned in tests/unit, structurally, and the reason is a real limit
+# rather than laziness: an ignored signal disposition is INHERITED ACROSS EXEC, so leaving
+# the trap set would hand every child session a process that cannot die on a closed pipe —
+# fixing compact by breaking what it launches. macOS exposes no signal mask for a running
+# process (no /proc, and ps has no field for it), so this suite cannot observe the child's
+# disposition directly. The unit pin asserts the restore precedes the exec, and the
+# mechanism itself was verified by hand: with the trap set the writer survives, with it
+# restored the exec'd child reports the default disposition.
+"$AE" end -f --keep-history comp-pipe >/dev/null 2>&1 || true
+unset C48P_REPO C48P_UUID
+
+# --keep-history MUST BE ABLE TO COMPLETE A COMPACT. The old arm was labelled "proceeds
+# and seals keep" and proved NEITHER: with no -f it declined at the prompt, so its needle
+# ("conversation files: kept") came from the FROZEN PRE-PROMPT FACTS while nothing
+# proceeded and nothing was archived. It could not reach the code the override was broken
+# in — _end_archive_plan re-derived the policy from live config and the byte-compare
+# refused, so the documented escape hatch could never be used. This drives a REAL end
+# against a purge-configured origin and asserts BOTH halves of that old label.
+C48K_REPO="$(setup_repo)"
+mkdir -p "$C48K_REPO/.ae"
+printf '[workspace]\npurge_agent_history = true\n' >"$C48K_REPO/.ae/config"
+(cd "$C48K_REPO" && "$AE" --local comp-keep &) 2>/dev/null
+wait_for_session "comp-keep" 20
+sleep 1
+C48K_UUID="$(grep '^session_id=' "$HOME/.ae/sessions/comp-keep/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+c48k="$( (cd "$C48K_REPO" && "$AE" compact -f --digest-only --keep-history comp-keep) 2>&1 || true )"
+sleep 3
+assert_eq "compact-keep: --keep-history PROCEEDS — the archive is published" "1" \
+    "$([[ -f "$HOME/.ae/archive/${C48K_UUID}/digest.md" ]] && echo 1 || echo 0)"
+assert_eq "compact-keep: and the source was really torn down and replaced" "1" \
+    "$(grep -c "^parent_archive_id=${C48K_UUID}$" "$HOME/.ae/sessions/comp-keep/meta" 2>/dev/null | tr -d '[:space:]')"
+assert_eq "compact-keep: with a live child under the same name" "0" \
+    "$(tmux has-session -t comp-keep 2>/dev/null; echo $?)"
+assert_contains "compact-keep: and keep was SEALED — the conversation files were not purged" \
+    "kept agent conversation files" "$c48k"
+assert_eq "compact-keep: the plan never flipped under the shared planner" "0" \
+    "$(grep -c "changed since it was authorized" <<<"$c48k" | tr -d '[:space:]')"
+"$AE" end -f --keep-history comp-keep >/dev/null 2>&1 || true
+unset C48K_REPO C48K_UUID c48k
+
+# THE ROSTER IS AUTHORIZED, NOT MERELY RESOLVABLE. It is PRINTED at the prompt as what the
+# child will start, so a config rewritten during the window must refuse — proving that
+# SOME roster still resolves would let a child start agents nobody approved. Edits made
+# BEFORE compact are still adopted; only a change DURING the window is refused.
+C48R_REPO="$(setup_repo)"
+mkdir -p "$C48R_REPO/.ae"
+printf '[agents]\ndummy = "bash"\n\n[workspace]\nmain = dummy\n' >"$C48R_REPO/.ae/config"
+(cd "$C48R_REPO" && "$AE" --local comp-roster &) 2>/dev/null
+wait_for_session "comp-roster" 20
+sleep 1
+C48R_FIFO="$TMPDIR/c48r.fifo"; rm -f "$C48R_FIFO"; mkfifo "$C48R_FIFO"
+(
+    exec 3>"$C48R_FIFO"
+    sleep 5   # the prompt is on screen, promising main=dummy
+    printf '[agents]\ndummy2 = "bash"\n\n[workspace]\nmain = dummy2\n' >"$C48R_REPO/.ae/config"
+    printf 'y' >&3
+    exec 3>&-
+) &
+c48r_rc=0
+c48r="$( (cd "$C48R_REPO" && "$AE" compact --digest-only comp-roster <"$C48R_FIFO") 2>&1 )" || c48r_rc=$?
+wait || true
+rm -f "$C48R_FIFO"
+assert_eq "compact-roster: a roster rewritten under the answer refuses" "1" \
+    "$([[ $c48r_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact-roster: and says the child would start something else" \
+    "would now start a different roster than the one shown" "$c48r"
+assert_contains "compact-roster: naming what was shown" "main=dummy" "$c48r"
+assert_eq "compact-roster: nothing was stopped" "0" "$(tmux has-session -t comp-roster 2>/dev/null; echo $?)"
+"$AE" end -f --keep-history comp-roster >/dev/null 2>&1 || true
+unset C48R_REPO C48R_FIFO c48r c48r_rc
+
+# THE CHILD STARTS WHAT WAS AUTHORIZED — PINNED AT THE CHILD, not at the gates. Both
+# gates already refuse a config rewritten before them; the window they cannot cover opens
+# AFTER the second gate, while the end is archiving and tearing down, and closes when the
+# child launches. In that window the source session is already gone, so a child starting
+# the wrong roster is unrecoverable. The rewrite is therefore timed to the ARCHIVE
+# APPEARING, which happens after gate 2 and before the exec. A fix must be pinned at the
+# point it claims to protect, not where it was convenient to observe.
+C48S_REPO="$(setup_repo)"
+mkdir -p "$C48S_REPO/.ae"
+printf '[agents]\ndummy = "bash"\ndummy2 = "bash"\n\n[workspace]\nmain = dummy\n' >"$C48S_REPO/.ae/config"
+(cd "$C48S_REPO" && "$AE" --local comp-snap &) 2>/dev/null
+wait_for_session "comp-snap" 20
+sleep 1
+C48S_UUID="$(grep '^session_id=' "$HOME/.ae/sessions/comp-snap/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+(
+    for _c48s_i in $(seq 1 160); do
+        [[ -d "$HOME/.ae/archive/${C48S_UUID}" ]] && break
+        sleep 0.25
+    done
+    printf '[agents]\ndummy = "bash"\ndummy2 = "bash"\n\n[workspace]\nmain = dummy2\n' >"$C48S_REPO/.ae/config"
+) &
+(cd "$C48S_REPO" && "$AE" compact -f --digest-only comp-snap >/dev/null 2>&1) || true
+wait || true
+sleep 3
+# THE CONTROL FIRST: if the rewrite did not land, everything below passes for free.
+assert_eq "compact-snapshot: (control) the live config really was rewritten under the launch" "dummy2" \
+    "$(sed -n 's/^main = *//p' "$C48S_REPO/.ae/config" | tail -1)"
+assert_eq "compact-snapshot: the child starts the roster the human was SHOWN" "dummy" \
+    "$(grep '^agent.main=' "$HOME/.ae/sessions/comp-snap/meta" 2>/dev/null | cut -d= -f2- | cut -d: -f1)"
+assert_eq "compact-snapshot: and it really is the child, not the survivor" "1" \
+    "$(grep -c "^parent_archive_id=${C48S_UUID}$" "$HOME/.ae/sessions/comp-snap/meta" 2>/dev/null | tr -d '[:space:]')"
+"$AE" end -f --keep-history comp-snap >/dev/null 2>&1 || true
+unset C48S_REPO C48S_UUID
+
+# GATE 2 — THE POST-HANDOVER REVALIDATION, DRIVEN RATHER THAN COUNTED. Confirmed
+# necessary by mutation: short-circuiting `_compact_revalidate` for "after the handover
+# wait" left the whole section green, so two structural call-site counts proved the code
+# EXISTS and nothing proved it ACTS.
+# THE WINDOW MOVED when the lifecycle lock was extended to span gate 1 through publication:
+# holding the lock now blocks compact BEFORE gate 1, so a mutation lands on the FIRST gate
+# and the arm would pass while testing the wrong one. The window that reaches gate 2 is the
+# BOUNDED WAIT, which runs unlocked by design — so the identity changes while compact is
+# waiting for a handover it will actually receive. The refusal text is what distinguishes
+# the gates ("after the handover wait" cannot be produced by the first), so this arm cannot
+# pass by catching the wrong one.
+C48G_REPO="$(setup_repo)"
+(cd "$C48G_REPO" && "$AE" --local comp-gate2 &) 2>/dev/null
+wait_for_session "comp-gate2" 20
+sleep 1
+C48G_DIR="$HOME/.ae/sessions/comp-gate2"
+C48G_PANE="$(grep '^main_pane=' "$C48G_DIR/meta" | cut -d= -f2-)"
+(
+    # PROVEN SHAPE, measured in isolation before being written here: satisfy the memo,
+    # change the identity, THEN reply. The reply helper is unaffected by the id change
+    # (it routes on the request's slot, not the session id), so the wait sees both facts
+    # and SUCCEEDS — which is the only way execution reaches gate 2 at all — and gate 2
+    # then reads an identity that no longer matches the frozen tuple. No lock and no sleep:
+    # ordering the writes is what makes it deterministic, not timing them.
+    for _c48g_i in $(seq 1 60); do
+        # `|| true`: events.jsonl DOES NOT EXIST until compact publishes its first event,
+        # and awk exits 2 on a missing file. Under the suite's `set -e` that failed
+        # ASSIGNMENT killed this background subshell outright on its first iteration — so
+        # the reply was never attempted, no log was written, and the only visible symptom
+        # was compact reporting "the reply did not arrive" 40s later. A silent death in a
+        # backgrounded fixture looks exactly like a product defect.
+        _c48g_ref="$(awk -F'"' '/"action":"ask"/ { for (i = 1; i <= NF; i++) if ($i == "ref") print $(i + 2) }' \
+            "$C48G_DIR/events.jsonl" 2>/dev/null | tail -1 || true)"
+        [[ -n "$_c48g_ref" ]] && break
+        sleep 0.5
+    done
+    "$C48G_DIR/memo" add --topic handover "handing over" >/dev/null 2>&1 || true
+    # REPLY FIRST, THEN MUTATE — measured, not assumed. Replying AFTER the identity change
+    # works on a quiet box but NOT in this suite: comp-wait's arm replies the same way and
+    # passes here, and the only difference is the mutation preceding it. Ordering the reply
+    # ahead of the mutation keeps the fixture on the path that is known to work under load,
+    # and the mutation still lands before gate 2 because the handover wait polls on a 2s
+    # cycle — so it is observed by the poll AFTER the writes, not between them.
+    # (Retry: workaround for #69 — the dummy is a shell left BUSY executing the pasted ask,
+    # so one delivery attempt is not reliable. Delete when the ignores-input dummy lands.)
+    for _c48g_try in $(seq 1 12); do
+        TMUX_PANE="$C48G_PANE" "$C48G_DIR/reply" "$_c48g_ref" 'handed over' \
+            >>/tmp/c48g-reply.log 2>&1 || true
+        grep -q '"action":"reply"' "$C48G_DIR/events.jsonl" 2>/dev/null && break
+        sleep 1
+    done
+    _sed_i -e "s|^session_id=.*|session_id=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee|" "$C48G_DIR/meta"
+) &
+c48g_rc=0
+c48g="$( (cd "$C48G_REPO" && AE_COMPACT_HANDOVER_SECS=40 "$AE" compact -f comp-gate2) 2>&1 )" || c48g_rc=$?
+wait || true
+# CONTROL: the handover must actually have completed, or compact refused for the wrong
+# reason and this arm never reached gate 2 at all.
+# The control names the fixture's own failure so a red here is not mistaken for a product
+# defect: if the reply never landed, compact's per-branch message says exactly that.
+assert_contains "compact-gate2: (control) the handover completed, so the wait was passed" \
+    "handover complete" "$c48g"
+assert_eq "compact-gate2: an identity change during the unlocked wait is refused" "1" \
+    "$([[ $c48g_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact-gate2: and it is the SECOND gate that catches it" \
+    "after the handover wait" "$c48g"
+assert_contains "compact-gate2: naming the session it was authorized for" \
+    "is not the session that was authorized" "$c48g"
+assert_eq "compact-gate2: the replacement was never STOPPED" "0" \
+    "$(tmux has-session -t comp-gate2 2>/dev/null; echo $?)"
+assert_eq "compact-gate2: and nothing was archived under the id it was never authorized for" "0" \
+    "$([[ -e "$HOME/.ae/archive/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" ]] && echo 1 || echo 0)"
+_sed_i -e "s|^session_id=.*|session_id=cccccccc-dddd-eeee-ffff-000000000000|" "$C48G_DIR/meta"
+"$AE" end -f --keep-history comp-gate2 >/dev/null 2>&1 || true
+unset C48G_REPO C48G_DIR C48G_PANE c48g c48g_rc
+
+# --keep-history MUST BE ABLE TO COMPLETE A COMPACT. The old arm was labelled "proceeds
+# and seals keep" and proved NEITHER: with no -f it declined at the prompt, so its needle
+# ("conversation files: kept") came from the FROZEN PRE-PROMPT FACTS while nothing
+# proceeded and nothing was archived. It could not reach the code the override was broken
+# in — _end_archive_plan re-derived the policy from live config and the byte-compare
+# refused, so the documented escape hatch could never be used. This drives a REAL end
+# against a purge-configured origin and asserts BOTH halves of that old label.
+C48K_REPO="$(setup_repo)"
+mkdir -p "$C48K_REPO/.ae"
+printf '[workspace]\npurge_agent_history = true\n' >"$C48K_REPO/.ae/config"
+(cd "$C48K_REPO" && "$AE" --local comp-keep &) 2>/dev/null
+wait_for_session "comp-keep" 20
+sleep 1
+C48K_UUID="$(grep '^session_id=' "$HOME/.ae/sessions/comp-keep/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+c48k="$( (cd "$C48K_REPO" && "$AE" compact -f --digest-only --keep-history comp-keep) 2>&1 || true )"
+sleep 3
+assert_eq "compact-keep: --keep-history PROCEEDS — the archive is published" "1" \
+    "$([[ -f "$HOME/.ae/archive/${C48K_UUID}/digest.md" ]] && echo 1 || echo 0)"
+assert_eq "compact-keep: and the source was really torn down and replaced" "1" \
+    "$(grep -c "^parent_archive_id=${C48K_UUID}$" "$HOME/.ae/sessions/comp-keep/meta" 2>/dev/null | tr -d '[:space:]')"
+assert_eq "compact-keep: with a live child under the same name" "0" \
+    "$(tmux has-session -t comp-keep 2>/dev/null; echo $?)"
+assert_contains "compact-keep: and keep was SEALED — the conversation files were not purged" \
+    "kept agent conversation files" "$c48k"
+assert_eq "compact-keep: the plan never flipped under the shared planner" "0" \
+    "$(grep -c "changed since it was authorized" <<<"$c48k" | tr -d '[:space:]')"
+"$AE" end -f --keep-history comp-keep >/dev/null 2>&1 || true
+unset C48K_REPO C48K_UUID c48k
+
+# THE ROSTER IS AUTHORIZED, NOT MERELY RESOLVABLE. It is PRINTED at the prompt as what the
+# child will start, so a config rewritten during the window must refuse — proving that
+# SOME roster still resolves would let a child start agents nobody approved. Edits made
+# BEFORE compact are still adopted; only a change DURING the window is refused.
+C48R_REPO="$(setup_repo)"
+mkdir -p "$C48R_REPO/.ae"
+printf '[agents]\ndummy = "bash"\n\n[workspace]\nmain = dummy\n' >"$C48R_REPO/.ae/config"
+(cd "$C48R_REPO" && "$AE" --local comp-roster &) 2>/dev/null
+wait_for_session "comp-roster" 20
+sleep 1
+C48R_FIFO="$TMPDIR/c48r.fifo"; rm -f "$C48R_FIFO"; mkfifo "$C48R_FIFO"
+(
+    exec 3>"$C48R_FIFO"
+    sleep 5   # the prompt is on screen, promising main=dummy
+    printf '[agents]\ndummy2 = "bash"\n\n[workspace]\nmain = dummy2\n' >"$C48R_REPO/.ae/config"
+    printf 'y' >&3
+    exec 3>&-
+) &
+c48r_rc=0
+c48r="$( (cd "$C48R_REPO" && "$AE" compact --digest-only comp-roster <"$C48R_FIFO") 2>&1 )" || c48r_rc=$?
+wait || true
+rm -f "$C48R_FIFO"
+assert_eq "compact-roster: a roster rewritten under the answer refuses" "1" \
+    "$([[ $c48r_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact-roster: and says the child would start something else" \
+    "would now start a different roster than the one shown" "$c48r"
+assert_contains "compact-roster: naming what was shown" "main=dummy" "$c48r"
+assert_eq "compact-roster: nothing was stopped" "0" "$(tmux has-session -t comp-roster 2>/dev/null; echo $?)"
+"$AE" end -f --keep-history comp-roster >/dev/null 2>&1 || true
+unset C48R_REPO C48R_FIFO c48r c48r_rc
+
+# THE CHILD STARTS WHAT WAS AUTHORIZED — PINNED AT THE CHILD, not at the gates. Both
+# gates already refuse a config rewritten before them; the window they cannot cover opens
+# AFTER the second gate, while the end is archiving and tearing down, and closes when the
+# child launches. In that window the source session is already gone, so a child starting
+# the wrong roster is unrecoverable. The rewrite is therefore timed to the ARCHIVE
+# APPEARING, which happens after gate 2 and before the exec. A fix must be pinned at the
+# point it claims to protect, not where it was convenient to observe.
+C48S_REPO="$(setup_repo)"
+mkdir -p "$C48S_REPO/.ae"
+printf '[agents]\ndummy = "bash"\ndummy2 = "bash"\n\n[workspace]\nmain = dummy\n' >"$C48S_REPO/.ae/config"
+(cd "$C48S_REPO" && "$AE" --local comp-snap &) 2>/dev/null
+wait_for_session "comp-snap" 20
+sleep 1
+C48S_UUID="$(grep '^session_id=' "$HOME/.ae/sessions/comp-snap/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+(
+    for _c48s_i in $(seq 1 160); do
+        [[ -d "$HOME/.ae/archive/${C48S_UUID}" ]] && break
+        sleep 0.25
+    done
+    printf '[agents]\ndummy = "bash"\ndummy2 = "bash"\n\n[workspace]\nmain = dummy2\n' >"$C48S_REPO/.ae/config"
+) &
+(cd "$C48S_REPO" && "$AE" compact -f --digest-only comp-snap >/dev/null 2>&1) || true
+wait || true
+sleep 3
+# THE CONTROL FIRST: if the rewrite did not land, everything below passes for free.
+assert_eq "compact-snapshot: (control) the live config really was rewritten under the launch" "dummy2" \
+    "$(sed -n 's/^main = *//p' "$C48S_REPO/.ae/config" | tail -1)"
+assert_eq "compact-snapshot: the child starts the roster the human was SHOWN" "dummy" \
+    "$(grep '^agent.main=' "$HOME/.ae/sessions/comp-snap/meta" 2>/dev/null | cut -d= -f2- | cut -d: -f1)"
+assert_eq "compact-snapshot: and it really is the child, not the survivor" "1" \
+    "$(grep -c "^parent_archive_id=${C48S_UUID}$" "$HOME/.ae/sessions/comp-snap/meta" 2>/dev/null | tr -d '[:space:]')"
+"$AE" end -f --keep-history comp-snap >/dev/null 2>&1 || true
+unset C48S_REPO C48S_UUID
+
+
+# ── compact (c)+(d): it hands over, it ends, it comes back ─────────────────────
+# The happy path proves the WHOLE boundary in one run: the five-line stdout contract
+# in order, the archive published with the session's own semantics inside it, the
+# source gone, and a genuinely NEW session under the same name that knows its parent.
+C48B_REPO="$(setup_repo)"
+mkdir -p "$C48B_REPO/.ae"
+printf '[workspace]\npurge_agent_history = false\n' >"$C48B_REPO/.ae/config"
+(cd "$C48B_REPO" && "$AE" --local comp-full &) 2>/dev/null
+wait_for_session "comp-full" 20
+sleep 1
+C48B_DIR="$HOME/.ae/sessions/comp-full"
+C48B_UUID="$(grep '^session_id=' "$C48B_DIR/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+"$C48B_DIR/memo" add --topic handover "the thing the next session must know" >/dev/null 2>&1 || true
+"$C48B_DIR/goal" "prove compact end to end" >/dev/null 2>&1 || true
+c48b_out="$TMPDIR/c48b.out"
+(cd "$C48B_REPO" && "$AE" compact -f --digest-only comp-full >"$c48b_out" 2>"$TMPDIR/c48b.err") &
+for _c48b_i in $(seq 1 90); do
+    grep -q "Starting fresh session" "$c48b_out" 2>/dev/null && break
+    sleep 1
+done
+wait || true
+sleep 2
+# THE OUTPUT CONTRACT: five lines, this order. Recovery is printed BEFORE the relaunch
+# because after that line the process may exec and never return.
+assert_eq "compact-out: line 1 names the archive id" "1" \
+    "$(sed -n '1p' "$c48b_out" | grep -c "^Archived ${C48B_UUID}$" | tr -d '[:space:]')"
+assert_eq "compact-out: line 2 the archive path" "1" \
+    "$(sed -n '2p' "$c48b_out" | grep -c "^Archive: .*/archive/${C48B_UUID}$" | tr -d '[:space:]')"
+assert_eq "compact-out: line 3 the digest path" "1" \
+    "$(sed -n '3p' "$c48b_out" | grep -c "^Digest: .*/archive/${C48B_UUID}/digest.md$" | tr -d '[:space:]')"
+assert_eq "compact-out: line 4 the recovery command, BEFORE the relaunch" "1" \
+    "$(sed -n '4p' "$c48b_out" | grep -c "^Recovery: cd .* comp-full --from ${C48B_UUID}$" | tr -d '[:space:]')"
+# THE CONTRACT STOPS AT WHAT IS TRUE AT THAT INSTANT. "Starting fresh session" was on
+# stdout and claimed a launch that can still refuse — the name is claimable in the release
+# window — so a caller could read "replaced" from a run that only archived. What stdout
+# now promises is exactly what holds: THE ARCHIVE EXISTS AND THE PRINTED RECOVERY COMMAND
+# WILL WORK. The relaunch announcement is progress, and progress is stderr.
+# COMPACT'S OWN stdout is four lines — but it EXECS into the launch, and the child
+# inherits the same stdout, so anything after line 4 belongs to the fresh session and is
+# not compact speaking. Assert the boundary rather than a total count: the four contract
+# lines come first, and nothing compact prints follows them.
+assert_eq "compact-out: the four contract lines come first, and are all compact writes to stdout" "4" \
+    "$(head -4 "$c48b_out" | grep -cE '^(Archived |Archive: |Digest: |Recovery: )' | tr -d '[:space:]')"
+assert_eq "compact-out: anything after them is the CHILD, not compact — no further contract lines" "0" \
+    "$(tail -n +5 "$c48b_out" | grep -cE '^(Archived |Archive: |Digest: |Recovery: )' | tr -d '[:space:]')"
+assert_eq "compact-out: it does NOT claim a relaunch that can still refuse" "0" \
+    "$(grep -c "Starting fresh session" "$c48b_out" | tr -d '[:space:]')"
+assert_eq "compact-out: the relaunch announcement is progress, so it is on stderr" "1" \
+    "$(grep -c "^Starting fresh session comp-full from archive ${C48B_UUID}" "$TMPDIR/c48b.err" | tr -d '[:space:]')"
+assert_eq "compact-out: and the recovery command reaches stderr too, so a broken stdout cannot lose it" "1" \
+    "$(grep -c "^Recovery: cd .* comp-full --from ${C48B_UUID}$" "$TMPDIR/c48b.err" | tr -d '[:space:]')"
+assert_eq "compact-out: end's own progress stays off the contract (no duplicate Archived)" "1" \
+    "$(grep -c '^Archived ' "$c48b_out" | tr -d '[:space:]')"
+# THE ARCHIVE
+assert_eq "compact: the archive is published" "1" \
+    "$([[ -f "$HOME/.ae/archive/${C48B_UUID}/digest.md" ]] && echo 1 || echo 0)"
+assert_contains "compact: the handover memo travelled into the digest" \
+    "the thing the next session must know" "$(cat "$HOME/.ae/archive/${C48B_UUID}/digest.md")"
+assert_contains "compact: and the goal" "prove compact end to end" \
+    "$(cat "$HOME/.ae/archive/${C48B_UUID}/digest.md")"
+assert_contains "compact: the archive keeps the id's real provenance" "archive_id_origin=session" \
+    "$(cat "$HOME/.ae/archive/${C48B_UUID}/meta")"
+# THE CHILD
+assert_eq "compact: a fresh session is live under the same name" "0" \
+    "$(tmux has-session -t comp-full 2>/dev/null; echo $?)"
+C48B_NEWUUID="$(grep '^session_id=' "$C48B_DIR/meta" 2>/dev/null | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+assert_eq "compact: the child is a NEW session, not the old one resumed" "1" \
+    "$([[ -n "$C48B_NEWUUID" && "$C48B_NEWUUID" != "$C48B_UUID" ]] && echo 1 || echo 0)"
+assert_contains "compact: and it records the archive it continues" \
+    "parent_archive_id=${C48B_UUID}" "$(cat "$C48B_DIR/meta")"
+assert_eq "compact: every agent sees the pointer in workspace.md" "1" \
+    "$(grep -c '^## Parent archive' "$C48B_DIR/workspace.md" | tr -d '[:space:]')"
+assert_eq "compact: the child carries no spawned slot from the source" "0" \
+    "$(grep -c '^agent\.spawned\.' "$C48B_DIR/meta" | tr -d '[:space:]')"
+assert_eq "compact: conversation history was kept (nothing purged)" "0" \
+    "$(grep -c 'removed claude conversation' "$TMPDIR/c48b.err" | tr -d '[:space:]')"
+"$AE" end -f --keep-history comp-full >/dev/null 2>&1 || true
+unset C48B_DIR C48B_UUID C48B_NEWUUID c48b_out
+
+# THE HISTORY POLICY IS A CONTRADICTION, NOT A DETAIL. compact exists to keep the
+# record; a session configured to purge it must be resolved by the human, and a flip
+# to purge WHILE the human is answering must refuse rather than carry out a different
+# operation than the one on screen.
+C48B_PREPO="$(setup_repo)"
+mkdir -p "$C48B_PREPO/.ae"
+printf '[workspace]\npurge_agent_history = true\n' >"$C48B_PREPO/.ae/config"
+(cd "$C48B_PREPO" && "$AE" --local comp-purge &) 2>/dev/null
+wait_for_session "comp-purge" 20
+sleep 1
+c48b_purge_rc=0
+c48b_purge="$( (cd "$C48B_PREPO" && "$AE" compact -f --digest-only comp-purge) 2>&1 )" || c48b_purge_rc=$?
+assert_eq "compact-purge: a purge_agent_history session refuses up front" "1" \
+    "$([[ $c48b_purge_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact-purge: and says why it contradicts compact" \
+    "which contradicts compact" "$c48b_purge"
+assert_contains "compact-purge: and offers the explicit way through" \
+    "ae compact --keep-history comp-purge" "$c48b_purge"
+C48B_PUUID="$(grep '^session_id=' "$HOME/.ae/sessions/comp-purge/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+assert_eq "compact-purge: it refused before publishing anything" "0" \
+    "$([[ -e "$HOME/.ae/archive/${C48B_PUUID}" ]] && echo 1 || echo 0)"
+assert_eq "compact-purge: and the session is still running" "0" \
+    "$(tmux has-session -t comp-purge 2>/dev/null; echo $?)"
+# Now the flip case: keep at the prompt, purge by the time the answer lands.
+printf '[workspace]\npurge_agent_history = false\n' >"$C48B_PREPO/.ae/config"
+C48B_PFIFO="$TMPDIR/c48b-purge.fifo"
+rm -f "$C48B_PFIFO"
+mkfifo "$C48B_PFIFO"
+(
+    exec 3>"$C48B_PFIFO"
+    sleep 5 # the prompt is on screen by now, promising the history is kept
+    printf '[workspace]\npurge_agent_history = true\n' >"$C48B_PREPO/.ae/config"
+    printf 'y' >&3
+    exec 3>&-
+) &
+c48b_flip_rc=0
+c48b_flip="$( (cd "$C48B_PREPO" && "$AE" compact --digest-only comp-purge <"$C48B_PFIFO") 2>&1 )" || c48b_flip_rc=$?
+wait || true
+rm -f "$C48B_PFIFO"
+assert_eq "compact-flip: a policy flip under the answer refuses" "1" \
+    "$([[ $c48b_flip_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact-flip: and names what changed" \
+    "now has purge_agent_history enabled" "$c48b_flip"
+assert_contains "compact-flip: caught at the first revalidation, before anything was messaged" \
+    "after confirmation" "$c48b_flip"
+assert_eq "compact-flip: the session is still running" "0" \
+    "$(tmux has-session -t comp-purge 2>/dev/null; echo $?)"
+"$AE" end -f --keep-history comp-purge >/dev/null 2>&1 || true
+unset C48B_PREPO C48B_PFIFO C48B_PUUID c48b_purge c48b_purge_rc c48b_flip c48b_flip_rc
+
+# SPAWN CLOSURE is strict, and --digest-only does not weaken it.
+(cd "$C48B_REPO" && "$AE" --local comp-spawn &) 2>/dev/null
+wait_for_session "comp-spawn" 20
+sleep 1
+printf 'agent.spawned.2=dummy:helper:pending\n' >>"$HOME/.ae/sessions/comp-spawn/meta"
+c48b_spawn_rc=0
+c48b_spawn="$( (cd "$C48B_REPO" && "$AE" compact -f --digest-only comp-spawn) 2>&1 )" || c48b_spawn_rc=$?
+assert_eq "compact-spawn: a spawned agent refuses the compact, even with --digest-only" "1" \
+    "$([[ $c48b_spawn_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact-spawn: and it never retires someone else's worker" \
+    "compact never retires someone else's worker" "$c48b_spawn"
+assert_eq "compact-spawn: the session is untouched" "0" \
+    "$(tmux has-session -t comp-spawn 2>/dev/null; echo $?)"
+_sed_i -e "/^agent\.spawned\./d" "$HOME/.ae/sessions/comp-spawn/meta"
+"$AE" end -f --keep-history comp-spawn >/dev/null 2>&1 || true
+unset c48b_spawn c48b_spawn_rc
+
+# ABA: the identity changes while the human is answering. The replacement must not be
+# messaged and must not be stopped.
+(cd "$C48B_REPO" && "$AE" --local comp-aba &) 2>/dev/null
+wait_for_session "comp-aba" 20
+sleep 1
+C48B_AFIFO="$TMPDIR/c48b-aba.fifo"
+rm -f "$C48B_AFIFO"
+mkfifo "$C48B_AFIFO"
+(
+    exec 3>"$C48B_AFIFO"
+    sleep 5
+    _sed_i -e "s|^session_id=.*|session_id=99999999-8888-7777-6666-555555555555|" \
+        "$HOME/.ae/sessions/comp-aba/meta"
+    printf 'y' >&3
+    exec 3>&-
+) &
+c48b_aba_rc=0
+c48b_aba="$( (cd "$C48B_REPO" && "$AE" compact comp-aba <"$C48B_AFIFO") 2>&1 )" || c48b_aba_rc=$?
+wait || true
+rm -f "$C48B_AFIFO"
+assert_eq "compact-aba: an identity change between the prompt and the answer refuses" "1" \
+    "$([[ $c48b_aba_rc -ne 0 ]] && echo 1 || echo 0)"
+assert_contains "compact-aba: and names the session it was authorized for" \
+    "is not the session that was authorized" "$c48b_aba"
+assert_contains "compact-aba: nothing was stopped and nothing was archived" \
+    "Nothing was stopped and nothing was archived" "$c48b_aba"
+# Nothing was sent AS compact: its actor is the only sender it ever uses, so the
+# absence of that string is the absence of the message. `|| echo 0` because a session
+# that never emitted an event has no log at all, and no log is also "never messaged".
+assert_eq "compact-aba: the replacement was never messaged" "0" \
+    "$( { grep -c 'ae:compact:' "$HOME/.ae/sessions/comp-aba/events.jsonl" 2>/dev/null || echo 0; } | head -1 | tr -d '[:space:]')"
+assert_eq "compact-aba: and never stopped" "0" \
+    "$(tmux has-session -t comp-aba 2>/dev/null; echo $?)"
+_sed_i -e "s|^session_id=.*|session_id=77777777-8888-9999-aaaa-bbbbbbbbbbbb|" \
+    "$HOME/.ae/sessions/comp-aba/meta"
+"$AE" end -f --keep-history comp-aba >/dev/null 2>&1 || true
+unset C48B_REPO C48B_AFIFO c48b_aba c48b_aba_rc
+
+# COVERAGE IS PROVED, NOT ASSUMED. Every arm in this section is straight-line — no loops,
+# no conditionals — so the number of assertions that RAN must equal the number that EXIST.
+# The expected count is read from this file at runtime rather than hardcoded, so adding an
+# arm cannot silently leave the check behind. This exists because an ABORT skips arms
+# without printing a single failure (ERRORS[] is flushed at the end, which an abort never
+# reaches), so "no FAIL lines" is evidence of nothing; and because a shortfall a human has
+# to notice is a shortfall a human will eventually stop noticing.
+_C48_RAN=$((PASS + FAIL - _C48_BEFORE))
+_C48_EXPECTED="$(awk '
+    /^# .. ae compact, phase \(a\)/ { on = 1 }
+    /^# .. Results/                  { on = 0 }
+    on && /^assert_(eq|contains) "compact-coverage:/ { next }
+    on && /^assert_(eq|contains) /   { n++ }
+    END { print n + 0 }' "$0")"
+assert_eq "compact-coverage: every arm in this section actually ran" "$_C48_EXPECTED" "$_C48_RAN"
+unset _C48_BEFORE _C48_RAN _C48_EXPECTED
 
 # ── Results ──────────────────────────────────────────────────────────
 
