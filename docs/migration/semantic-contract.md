@@ -194,19 +194,50 @@ Empirical: pending. Conflict: none.
 right agent after its display name changes. Authority: helpers.md. Empirical: pending.
 Conflict: none.
 
-**SC-210 — unmodelled tools receive without busy protection.** Bucket 2 — documented
-degradation (only claude/codex expose a reliable input-state read at 72c7293); the
-per-tool boundary is empirical; retires with DR-004's notification path. Authority:
-helpers.md closing note. Empirical: matrix. Conflict: none.
+**SC-210 — the unprotected-delivery degradation retires.** Bucket 4 — **DR-004**
+(gate consistency rule: a b2 row must survive with conflict none, and this one
+retires): at 72c7293 unmodelled tools receive without busy protection (only
+claude/codex expose an input-state read — empirical boundary); under the P2
+notification path the degradation ceases to exist. Authority: helpers.md closing note
++ DR-004. Empirical: matrix. Conflict: DR-004.
 
-**SC-211a..j — non-messaging helper CLI surfaces.** `authority=code-observation`, one
-row per helper, enumerated NOW so the canonical set contains them (gate rule: absent
-rows are invisible): 211a `state` signature/refusal; 211b `goal`; 211c `memo`
-(add/read/tail); 211d `requests` filters; 211e `peek`/`peak` bounds; 211f `agents
-[--all]`; 211g `focus` refusal modes; 211h `interrupt` no-message form; 211i `spawn`
-argument surface (beyond SC-1201 name validation); 211j `retire` refusal modes.
-Signature, refusal, and partial-failure semantics per helper: probe + seat ruling at
-the sweep. UNCLASSIFIED pending closure.
+Non-messaging helper CLI surfaces — one head per helper (each:
+`authority=code-observation`; Empirical: pending probe; Conflict: pending seat
+closure; UNCLASSIFIED):
+
+**SC-211a — `state` signature and refusal modes.**
+**SC-211b — `goal` signature and refusal modes.**
+**SC-211c — `memo` add/read/tail signatures and refusals.**
+**SC-211d — `requests` filter surface.**
+**SC-211e — `peek`/`peak` line bounds and refusals.**
+**SC-211f — `agents [--all]` output surface.**
+**SC-211g — `focus` refusal modes.**
+**SC-211h — `interrupt` no-message form.**
+**SC-211i — `spawn` argument surface** (beyond SC-1201 name validation).
+**SC-211j — `retire` refusal modes.**
+
+**SC-211k — `mark-done` is an exact alias surface.** Bucket 2 — exec shim over
+`state done`; behavior rows are SC-908 + ownership D07. Authority: workspace docs +
+D07 verification. Empirical: census-1. Conflict: none.
+
+**SC-211l — `say` CLI surface (args or piped stdin → chat event).** 
+`authority=code-observation`; Empirical: census-1 D10; Conflict: pending seat closure.
+UNCLASSIFIED.
+
+**SC-211m — session `watchdog` + `loop` helper surface.** Bucket 2 — cross-reference:
+behavior is SC-904/SC-926/SC-927 + D26a. Authority: those rows. Empirical: census-2.
+Conflict: none.
+
+**SC-211n — `events-tail` query surface.** `authority=code-observation` — snapshot cut
+is SC-1306e. Empirical: census-1 D03. Conflict: pending seat closure. UNCLASSIFIED.
+
+**SC-211o — `_register-sid` surface.** Bucket 2 — cross-reference: the transaction is
+D13 + SC-834a. Authority: those rows. Empirical: census-1. Conflict: none.
+
+**SC-211p — `_lib` name resolution grammar.** Bucket 2 — exact `alias:name`,
+alias-only when unique, bare name, `%pane-id`, and `@session:agent` all resolve; the
+grammar is the documented helper contract. Authority: AGENTS.md session-helpers
+section. Empirical: pending. Conflict: none.
 
 ### S4 — Config INI grammar
 
@@ -239,12 +270,12 @@ config.md `[agents]`. Empirical: pending. Conflict: none.
 binary, several logins via inline env prefix; each alias is its own identity.
 Authority: config.md multiple-identities section. Empirical: pending. Conflict: none.
 
-**SC-303 — env-prefixed commands get full tool handling.** Bucket 2 — conflict=none
-CROSS-REFERENCE to SC-705 (gate correction: #32 was FIXED before the freeze — commit
-7ab6457 is an ancestor of 72c7293, and the frozen unit pins tests/unit:1029-1053 drive
-a real env-prefixed command through classification, context injection, UUID mint, and
-exact resume). config.md's limitation paragraph is STALE PROSE, not IS — a docs fix is
-queued, and stale docs never manufacture a defect. Empirical: frozen #32 pins.
+**SC-303 — env-prefixed commands get full tool handling.** Bucket 2 — cross-reference
+to SC-705. Authority: SC-705's joint seat ruling (the classify-the-actual-executable
+rule) + the #32 closure ruling in the frozen tree (7ab6457, ancestor of 72c7293).
+Empirical: frozen unit pins tests/unit:1029-1053 (classification, context injection,
+UUID mint, exact resume). config.md's limitation paragraph is STALE PROSE — docs fix
+queued; stale docs never manufacture a defect. Conflict: none.
 
 **SC-304 — per-project `.ae/config` shadows the global config key-by-key.** Bucket 2 —
 full key-level shadowing (gate correction: config.md:3 — not `[prompt]`-only).
@@ -266,22 +297,29 @@ hub/steward dirs (`AE_HUB_DIR`, `AE_STEWARD_DIR`).
 
 <!-- rows: SC-4xx -->
 
-**SC-400 — the live session layout is the documented file set (phase-scoped).** Bucket
-2 — at 72c7293: `meta`, `events.jsonl`, `memo.tsv`, `messages/`, lock files,
-`workspace.md`, generated helpers, `launch.<slot>.sh` (+`.started`) under
-`~/.ae/sessions/<name>/`. PHASE TRANSITIONS (gate): DR-001 introduces event
-generations and P2 retires generated-logic helpers — at each flip the row's file set
-is re-cut with legacy-read/migration/write ownership stated explicitly; this row's
-current form freezes the bash era only. Authority: architecture.md + AGENTS.md +
-DR-001. Empirical: census-1/2. Conflict: none (DR-001 affected).
+**SC-400a — the bash-era session layout remains READABLE.** Bucket 2 — legacy-read
+compatibility survives every flip: a pre-flip session dir (`meta`, `events.jsonl`,
+`memo.tsv`, `messages/`, locks, `workspace.md`, helpers, `launch.<slot>.sh` +
+`.started`) is consumable by the successor. Authority: architecture.md + AGENTS.md.
+Empirical: census-1/2. Conflict: none.
 
-**SC-401 — the archive payload is the five-part set.** Bucket 2 — generated `meta`,
+**SC-400b — the successor-write layout is re-cut at each flip.** Bucket 4 — **DR-001**
+(+ P2 helper retirement): what the Rust owner WRITES changes (event generations,
+thin-shim helpers), with legacy-read/migration/write ownership stated explicitly at
+each flip commit. Authority: DR-001 + epic phases. Empirical: n/a (successor design).
+Conflict: DR-001.
+
+**SC-401a — the archive payload is the five-part set.** Bucket 2 — generated `meta`,
 rendered `digest.md`, `memo.tsv`, `events.jsonl`, `messages/*` bodies (#48 format;
-inertness proofs are SC-804/805). OPEN under DR-001 (recorded in its affected ids):
-whether a post-generations archive materializes ONE canonical stream or preserves
-generations is a DR-001 implementation decision at P2. Authority:
-architecture.md:77-83. Empirical: census-2 end section. Conflict: none (DR-001
-affected).
+inertness proofs are SC-804/805). Survives all flips. Authority:
+architecture.md:77-83. Empirical: census-2 end section. Conflict: none.
+
+**SC-401b — an archive materializes ONE canonical event stream.** Bucket 4 —
+**DR-001** (lead ruling 2026-08-20, colead concurrence due at ratification marks):
+publication drains and materializes a single ordered, complete stream regardless of
+live generations — generations are a live-store mechanism, never exported; archive
+consumers (digest, `--from` preflight, inheritance) read one stream. Authority:
+DR-001 + this ruling. Empirical: n/a (successor design). Conflict: DR-001.
 
 **SC-402 — working directories stay clean.** Bucket 1 — ae writes its coordination
 state under `~/.ae`, never into the project tree (`.ae/config` is the one deliberate
@@ -294,10 +332,13 @@ field shift or phantom rows; typed Rust satisfies this by construction. Authorit
 AGENTS.md TSV-framing ruling (the invariant behind it). Empirical: unit pins @72c7293
 (the `\x1f` implementation). Conflict: none.
 
-**SC-404 — all state roots derive from `AE_HOME` (default `~/.ae`).** Bucket 2 —
-config, `sessions/`, `archive/`, worktrees, and daemon dirs are derived from the one
-root (gate correction: the literal three-root list contradicted S15). Authority:
-AGENTS.md + architecture.md + config.md. Empirical: pending. Conflict: none.
+**SC-404 — state roots derive from `AE_HOME` (default `~/.ae`) with explicit override
+exceptions.** Bucket 2 — the DEFAULT derivation covers config, `sessions/`,
+`archive/`, worktrees, daemon dirs; the exceptions are explicit overrides only:
+`CONFIG_FILE` may point outside `AE_HOME`, project `.ae/config` shadows key-by-key
+(SC-304), and `AE_STEWARD_DIR`/`AE_HUB_DIR` may relocate their dirs (frozen ae:56-64,
+ae:10365-10370 — gate correction: not ALL roots). Authority: AGENTS.md +
+architecture.md + config.md. Empirical: frozen source cites. Conflict: none.
 
 ### S6 — Stdout/stderr/exit/refusal contracts
 
@@ -992,8 +1033,11 @@ Telegram (authority: telegram.md @72c7293, cited per memo):
   it and status warns.
 - **SC-943** b1 — inbound exists only with nonempty `allowed_user_ids`; empty =
   outbound-only.
-- **SC-944a/b/c** b1 — three separate trust predicates: numeric allowlisted `from.id`;
-  exact configured `chat.id`; private chat — ANY failure silently drops.
+- **SC-944a** b1 — inbound trust predicate: numeric allowlisted `from.id`; failure
+  silently drops.
+- **SC-944b** b1 — inbound trust predicate: exact configured `chat.id`; failure
+  silently drops.
+- **SC-944c** b1 — inbound trust predicate: private chat only; failure silently drops.
 - **SC-945** b2 — routing precedence: command > reply > compact > override/steward.
 - **SC-946** b1 — every inbound route passes the same session/agent revalidation.
 - **SC-947** b1 — only running sessions are addressable.
@@ -1004,7 +1048,8 @@ Telegram (authority: telegram.md @72c7293, cited per memo):
 - **SC-951** b1 — inbound update offset persists BEFORE dispatch: at-most-once side
   effects.
 - **SC-952** b2 — command-menu registration is best-effort (log and ignore).
-- **SC-953/954** b2 — start is idempotent; stop-when-stopped succeeds.
+- **SC-953** b2 — start is idempotent.
+- **SC-954** b2 — stop succeeds when already stopped.
 - **SC-955** b2 — status reports persisted intent, runtime, deps, token validity.
 - **SC-956** b1 — autostart failure warns one line and never blocks session launch.
 - **SC-957** b1 — supervision honors durable disabled state; can never revive after an
@@ -1082,10 +1127,12 @@ one-liner and the local-clone path both yield a working `ae` on PATH; the P5 bin
 install preserves the same outcome with its mechanism ruled via #57/SC-1006.
 Authority: install.md. Empirical: pending. Conflict: none.
 
-**SC-1001 — an upgrade preserves sessions and refreshes their helpers.** Bucket 2 —
-outcome-level: existing sessions keep working and self-heal their generated assets on
-next start/resume; `doctor --refresh [name]` forces it without reattaching. Authority:
-install.md upgrading. Empirical: pending. Conflict: none.
+**SC-1001 — an upgrade preserves existing sessions and refreshes/migrates phase-owned
+assets.** Bucket 2 — outcome-level (gate correction: helper REGENERATION is the
+bash-era asset mechanism and retires at P2 — it is not frozen as a P5 promise):
+sessions keep working across an upgrade, and whatever assets the current phase owns
+are refreshed or migrated on next start/resume (`doctor --refresh [name]` forces it).
+Authority: install.md upgrading (outcome). Empirical: pending. Conflict: none.
 
 **SC-1002 — doctor reports environment health as a fixed OK/WARN/FAIL checklist.**
 Bucket 2 — dependency presence, config, registered agent executables, sessions dir;
@@ -1259,23 +1306,32 @@ SHOULD (architecture.md:158-166): one function, every step checked, missing meta
 refused, temp removed on error, rename only after complete content. IS at 72c7293:
 two additional DIRECT-APPEND writers exist under the same lock (`launch_time.*`
 capture ae:2068-2075; `_cmd_spawn` rows ae:11923-11945 — census-3 audit I5), so
-unlocked readers can observe partial canonical meta. Conflict: pending seat closure at
-the sweep (extend #88 or dedicated issue — the one-writer promise vs three writers).
-Empirical: census-3 I5.
+unlocked readers can observe partial canonical meta. Conflict: fix-known-defect(#88-I,
+intended: every canonical meta update goes through ONE typed fail-closed atomic
+transaction; direct append is unrepresentable; a reader sees a complete old or new
+generation, never partial canonical bytes — both seats, transcribed from the issue
+comment). Empirical: census-3 I5.
 
 **SC-1302 — a session name's lifecycle operations serialize on one lock.** Bucket 3 —
 SHOULD: start/resume/end/stop/rename/transfer/compact for one name serialize on
 `.lifecycle.<name>.lock`. IS at 72c7293: with flock ABSENT the serialization silently
 disables (census-2 matrix) — the #75 conflict is LOCAL to this row, not only
 SC-1101a's. Conflict: fix-known-defect(#75, intended: native locking, never optional).
-Authority: architecture.md + census-2 (fd8 launch / fd9 end, same file). Empirical:
-census-2.
+Authority: architecture.md lifecycle-lock contract. Empirical: census-2 (fd8 launch /
+fd9 end, same lock file; degrade-to-unlocked matrix).
 
-**SC-1303..1306 — externally visible atomicity of rename / transfer / compact /
-read-side queries.** `authority=code-observation`, one row each (1303 rename, 1304
-transfer, 1305 compact, 1306 query snapshot semantics): what a concurrent observer may
-see mid-operation; census-fed + deterministic probes at the sweep (the D01-D04 probe
-designs per the closure-map gate). UNCLASSIFIED pending closure.
+Externally visible atomicity, one head per surface (each:
+`authority=code-observation`; Empirical: census-2 + deterministic probes per the
+closure-map gate designs; Conflict: pending seat closure; UNCLASSIFIED):
+
+**SC-1303 — rename: what a concurrent observer may see mid-operation.**
+**SC-1304 — transfer: mid-operation observability, per direction.**
+**SC-1305 — compact: mid-operation observability.**
+**SC-1306a — `list` snapshot cut under concurrent writes.**
+**SC-1306b — `status` snapshot cut.**
+**SC-1306c — `next` snapshot cut.**
+**SC-1306d — `requests` snapshot cut.**
+**SC-1306e — `events-tail` snapshot cut vs concurrent append/trim.**
 
 ### S15 — Environment controls (census: `AE_*` at 72c7293)
 
@@ -1290,22 +1346,35 @@ Each row: default when unset, malformed-value behavior, failure mode.
 
 <!-- rows: SC-14xx — the documented numeric defaults relocated from S10 (W-09..12) -->
 
-Authority for SC-1400..1407: config.md watchdog-defaults table + watchdog.md:35-44;
-empirical pending; conflict none — one row head per claim (gate grain):
+One head per claim, fields per head (gate: no range-level association; A = Authority
+`config.md watchdog table + watchdog.md:35-44`, E = Empirical pending, C = Conflict
+none — spelled per row):
 
-**SC-1400** — `AE_WATCHDOG_INTERVAL_SEC` defaults to 60. Bucket 2.
-**SC-1401** — `AE_WATCHDOG_STALE_MIN` defaults to 15. Bucket 2.
-**SC-1402** — `AE_WATCHDOG_MAX_NUDGES` defaults to 2. Bucket 2.
-**SC-1403** — `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` defaults to 5. Bucket 2.
-**SC-1404a** — `AE_WATCHDOG_TG_SUPERVISE_SEC` defaults to 120. Bucket 2.
-**SC-1404b** — tg-supervise `0` disables supervision. Bucket 2.
-**SC-1405a** — `AE_WATCHDOG_SWEEP_SEC` defaults to 300. Bucket 2.
-**SC-1405b** — sweep `0` falls back to normal watchdog behavior. Bucket 2.
-**SC-1406a** — `AE_WATCHDOG_SWEEP_RETRY_SEC` defaults to 30. Bucket 2.
-**SC-1406b** — sweep-retry is clamped to the sweep cadence (floor: next poll). Bucket 2.
-**SC-1407a** — `AE_WATCHDOG_SWEEP_RETRY_MAX` defaults to 6. Bucket 2.
+**SC-1400** — `AE_WATCHDOG_INTERVAL_SEC` defaults to 60. Bucket 2. A: config.md table
++ watchdog.md:35. E: pending. C: none.
+**SC-1401** — `AE_WATCHDOG_STALE_MIN` defaults to 15. Bucket 2. A: config.md table +
+watchdog.md:36. E: pending. C: none.
+**SC-1402** — `AE_WATCHDOG_MAX_NUDGES` defaults to 2. Bucket 2. A: config.md table +
+watchdog.md:37. E: pending. C: none.
+**SC-1403** — `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` defaults to 5. Bucket 2. A:
+config.md table + watchdog.md:38. E: pending. C: none.
+**SC-1404a** — `AE_WATCHDOG_TG_SUPERVISE_SEC` defaults to 120. Bucket 2. A: config.md
+table + watchdog.md:41. E: pending. C: none.
+**SC-1404b** — tg-supervise `0` disables supervision. Bucket 2. A: config.md table +
+watchdog.md:41. E: pending. C: none.
+**SC-1405a** — `AE_WATCHDOG_SWEEP_SEC` defaults to 300. Bucket 2. A: config.md table +
+watchdog.md:42. E: pending. C: none.
+**SC-1405b** — sweep `0` falls back to normal watchdog behavior. Bucket 2. A:
+config.md table + watchdog.md:42. E: pending. C: none.
+**SC-1406a** — `AE_WATCHDOG_SWEEP_RETRY_SEC` defaults to 30. Bucket 2. A: config.md
+table + watchdog.md:43. E: pending. C: none.
+**SC-1406b** — sweep-retry is clamped to the sweep cadence (floor: next poll). Bucket
+2. A: config.md table + watchdog.md:43. E: pending. C: none.
+**SC-1407a** — `AE_WATCHDOG_SWEEP_RETRY_MAX` defaults to 6. Bucket 2. A: config.md
+table + watchdog.md:44. E: pending. C: none.
 **SC-1407b** — exhausting retry-max escalates exactly as SC-938 rules (cross-reference,
-not a duplicate behavior row). Bucket 2.
+not a duplicate behavior row). Bucket 2. A: config.md table + SC-938. E: pending.
+C: none.
 
 **SC-1408a — an explicit `AE_WATCHDOG_*` value wins over its `AE_LOOP_*` legacy name.**
 Bucket 2. Authority: config.md. Empirical: pending. Conflict: none.
@@ -1314,21 +1383,32 @@ Bucket 2. Authority: config.md. Empirical: pending. Conflict: none.
 unset.** Bucket 2 — per-mapping verification is one probe matrix. Authority:
 config.md. Empirical: pending. Conflict: none.
 
-Malformed-value rows, one per class (`authority=code-observation`, UNCLASSIFIED
-pending probe + seat ruling — enumerated now so the canonical set contains them):
-**SC-1409a** numeric watchdog/loop tunables with non-numeric values; **SC-1409b**
-telegram include/exclude lists malformed; **SC-1409c** `allowed_user_ids` malformed.
+Malformed-value classes, one head each (`authority=code-observation`; Empirical:
+pending probe; Conflict: pending seat closure; UNCLASSIFIED):
 
-Remaining `AE_*` variables, one row each (`authority=code-observation`, UNCLASSIFIED
-pending probe + seat ruling): **SC-1410a** `AE_HOME`; **SC-1410b**
-`CONFIG_FILE`/`AE_LOCAL_CONFIG` precedence (#87 names the intended authority);
-**SC-1410c** `AE_TMUX_SERVER`; **SC-1410d** `AE_NO_AUTOSTART`; **SC-1410e**
-`AE_END_SERVER`; **SC-1410f** `AE_HUB_DIR`; **SC-1410g** `AE_STEWARD_DIR`;
-**SC-1410h** `AE_EVENTS_KEEP`; **SC-1410i** `AE_SEND_DEFER_SEC`; **SC-1410j**
-`AE_ATTN_REQUEST_SECS`; **SC-1410k** `AE_LIST_ACTIVE_SECS`; **SC-1410l**
-`AE_COMPACT_HANDOVER_SECS`; **SC-1410m** launch-token/slot vars (`AE_CODEX_*`,
-`AE_GEMINI_*`, `AE_OPENCODE_*`); **SC-1410n** resolution exports (`AE_RESOLVED_*`,
-`AE_SESSION`, `AE_META`, `AE_DIR`, `AE_MODE`, `AE_ORIGIN`, `AE_PATH*`).
+**SC-1409a — non-numeric values in numeric watchdog/loop tunables.**
+**SC-1409b — malformed telegram include/exclude lists.**
+**SC-1409c — malformed `allowed_user_ids`.**
+
+Remaining `AE_*` variables, one head each (`authority=code-observation`; Empirical:
+pending probe; Conflict: pending seat closure; UNCLASSIFIED — except where noted):
+
+**SC-1410a — `AE_HOME`.**
+**SC-1410b — `CONFIG_FILE`/`AE_LOCAL_CONFIG` precedence** (#87 names the intended
+authority).
+**SC-1410c — `AE_TMUX_SERVER`.**
+**SC-1410d — `AE_NO_AUTOSTART`.**
+**SC-1410e — `AE_END_SERVER`.**
+**SC-1410f — `AE_HUB_DIR`.**
+**SC-1410g — `AE_STEWARD_DIR`.**
+**SC-1410h — `AE_EVENTS_KEEP`.**
+**SC-1410i — `AE_SEND_DEFER_SEC`.**
+**SC-1410j — `AE_ATTN_REQUEST_SECS`.**
+**SC-1410k — `AE_LIST_ACTIVE_SECS`.**
+**SC-1410l — `AE_COMPACT_HANDOVER_SECS`.**
+**SC-1410m — launch-token/slot vars** (`AE_CODEX_*`, `AE_GEMINI_*`, `AE_OPENCODE_*`).
+**SC-1410n — resolution exports** (`AE_RESOLVED_*`, `AE_SESSION`, `AE_META`,
+`AE_DIR`, `AE_MODE`, `AE_ORIGIN`, `AE_PATH*`).
 (`AE_SENDER_OVERRIDE` is SC-974a, not duplicated.)
 
 ## Known-defect register (bucket 3)
