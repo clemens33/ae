@@ -58,8 +58,13 @@ Bucket 1. Arm: `name-never-infers`.
 Construction: a real parent archive is produced by a real end of a session named `same`
 (`parent_uuid c83db248-e951-426a-885e-0ed8989285ff`); a NEW session is then launched under
 **that same name WITHOUT `--from`**.
-IS: the new session's meta records **`parent_archive_id=-`**. The name matched an existing
-archive exactly and no lineage was attached.
+IS — **corrected; my first reading quoted the wrong file** (colead's finding, verified).
+`name-never-infers/child-lineage.txt` shows the new session's meta carrying `origin`,
+`session` and `session_id` and **no `parent_archive_id` KEY AT ALL**. The name matched an
+existing archive exactly and no lineage was attached — the key is simply absent.
+*My error:* I reported `parent_archive_id=-`, which came from `parent-archive-meta.txt` —
+the PARENT ARCHIVE's own meta, describing the parent's (absent) parent. **Absence is the
+correct incumbent observation; a sentinel value must not be invented for it.**
 *rc note:* the arm's rc=1 is the frozen attach (`open terminal failed: not a terminal`)
 while stdout shows the session did start (`Watchdog started in hidden ae-monitor window`).
 Per grain requirement 2 the rc belongs to the attach, and the claim rests on the recorded
@@ -88,25 +93,41 @@ Bucket 1. Arms: `invalid-parent-nonexistent` (rc=1,
 `Error: no archive 00000000-0000-4000-8000-000000000000 in …/.ae/archive.`) and
 `invalid-parent-validation-failing` (rc=1, `archive: digest says ## Handover (0) but meta
 says 99.` → `Error: archive 35ae42c1… did not validate — refusing to inherit from it.`).
-IS — **the strongest negative in batch L, because it is proved exhaustively rather than by
-spot check.** Each arm takes a FULL sweep of session dirs, worktrees, tmux sessions, the
-archive root, `AE_HOME` and the work dir before and after, and diffs them:
-**`full-sweep.diff` is 0 bytes in BOTH arms** (pre and post captures identical at 395
-bytes / 28 lines each in the nonexistent arm).
-"a refusal leaves no tmux session, no session state, no worktree" is not sampled here —
-the whole observable surface was compared and nothing moved.
-**CONFIRMED.**
+IS: each arm takes a FULL sweep of session dirs, worktrees, tmux sessions, the archive
+root, `AE_HOME` and the work dir before and after, and diffs them: **`full-sweep.diff` is
+0 bytes in BOTH arms** (pre and post captures byte-identical at 395 bytes / 28 lines in
+the nonexistent arm).
+**COMPOSITE (colead's finding, adopted) — and my temporal overclaim is DELETED.** A zero
+diff proves the **POSTCONDITION** (no residue survives the refusal). It does **not** prove
+the row's **TEMPORAL** headline "*proved BEFORE anything is created*", because a
+**create-then-perfectly-roll-back mutant produces the same zero diff**. I wrote "proved
+exhaustively… the whole observable surface was compared and nothing moved", which is true
+about residue and silent about ordering — the strongest-sounding sentence in the worksheet
+was measuring the wrong thing.
+The ORDERING comes from frozen source, ae:16974-16998, where the parent proof precedes any
+creation. The tree manifests remain strong direct evidence of the body's postcondition.
+**CONFIRMED AS COMPOSITE (frozen source ordering + byte-identical tree manifests).**
 
 ## SC-824a — proof facts are recorded as proved, never re-read
 
 Bucket 1. Arm: `transport-cut` — the PLAIN launch path
 (`ae --local child --from <parent>`), with an instrumented barrier immediately after the
 launch parses its FIRST parent proof, where the controller deletes the parent archive.
-IS: the child's meta carries the proof's facts as recorded values —
-`parent_archive_id=2a3a6787-…`, `parent_archive_handover_count=0`,
-`parent_archive_pending_count=0` — and they are still there after the parent archive is
-gone. Nothing was re-read from a file another process was deleting, because the facts had
-already been recorded from the one proof.
+**RULED: PARTIAL — the arm cannot prove this row, and my evidence came from a DIFFERENT
+ARM** (colead's BLOCKER, verified). `transport-cut/child-lineage.txt` reads literally
+`(no meta at that path)` and `(no workspace.md)`: the run re-proves, rolls back and
+**deletes the child**, so there is no recorded tuple to inspect. The barrier snapshot is
+taken *before* meta construction, so it cannot show one either.
+*My error:* the counts I quoted came from `lineage-durability-delete-parent`, which is
+SC-825c's arm. I attributed cross-arm evidence to a row whose own arm holds none.
+**The SEMANTIC is supported by frozen source** — the first tuple is assigned at
+ae:16987-16988 and written at ae:17575-17580, and the second proof at ae:17613-17626 never
+substitutes its own tuple — so the row may close as CODE-COMPOSITE. **Deletion cannot
+prove it.**
+**To close it at runtime** the discriminating arm is: after the first proof, replace the
+parent with a second VALID archive of the SAME id carrying DIFFERENT non-zero
+handover/pending counts; a successful child must retain the FIRST tuple. Until then,
+PARTIAL.
 **Boundary stated by the producer and respected here:** this arm exercises the plain
 launch path only and *"carries no re-proof expectation and no rollback machinery of its
 own"*. Its `source-trace.*` file is a frozen-source extract with line numbers — every line
@@ -133,19 +154,32 @@ without moving the row's home.
 
 ## SC-824b — an archive mid-publication or mid-purge is refused outright
 
-Bucket 1. Arms: `mid-publication` (rc=1) and `invalid-parent-validation-failing` (rc=1).
+Bucket 1. Arm: `mid-publication` (rc=1). **`invalid-parent-validation-failing` is NOT a
+second arm for this row** (colead's finding, verified): its mutation is
+`handover_count=0` → `handover_count=99`, a digest/meta VALIDATION mismatch, not a
+mid-publication or mid-purge state.
 IS: `Error: archive 2814388f-602c-42e5-85da-9920f1e8e1aa is being published or purged
 right now (…/.ae/archive/.publishing.2814388f-602c-42e5-85da-9920f1e8e1aa).` The refusal
 names the specific lock file it saw, so the operator can confirm the claim independently
-rather than trusting the diagnosis. `full-sweep.diff` for the validation-failing arm is
-likewise 0 bytes — refused outright, nothing created.
-**CONFIRMED.**
+rather than trusting the diagnosis.
+**COMPOSITE.** The planted `.publishing.<id>` claim is one exact runtime state **shared by
+publish and purge**, so a single capture cannot separate the row's two named conditions;
+frozen source maps BOTH operations to that same claim. The row closes on the refusal
+capture **plus both claim-writer source paths**, not on two-arm direct evidence.
 
 ## SC-825a — the child records lineage durably
 
 Bucket 2. Arm: `lineage-durability-stop-resume` (`stop_rc 0`; launch/resume rc are the
 attach, per limit 1).
-IS: `parent_archive_id=a3f54fee-fcf3-481c-a312-16648ad893f5` is present after `--from`,
+**RULED: PARTIAL — ID preservation is proven, COUNT preservation is not** (colead's
+BLOCKER, adopted). **Every captured `parent_archive_handover_count` and
+`parent_archive_pending_count` in this section is 0**, so an implementation that LOSES
+both and defaults them to zero passes all three captures identically. The arm cannot fail
+the count half of the claim.
+To close it: a real parent with **non-zero** handover and pending counts, then the
+stop/resume cycle.
+The ID half is proven and stands:
+`parent_archive_id=a3f54fee-fcf3-481c-a312-16648ad893f5` is present after `--from`,
 after the stop, and after the resume. The arm captures `lineage.1after-from.txt`,
 `lineage.2after-stop.txt`, `lineage.3after-resume.txt` and diffs the cycle: the
 `parent_archive_id` **value is byte-identical**, and the arm additionally records an `od`
@@ -156,12 +190,18 @@ the cycle is the line's position in the file.
 ## SC-825b — the parent path is derived, never stored
 
 Bucket 2. Arm: `lineage-durability-move-aehome`.
-IS — the arm's construction is the proof: after the move, the lineage is read from
-**`h2/.ae/sessions/child/meta`** (a different `AE_HOME` root than the `h/` it was written
-under) and `parent_archive_id=9a325c6e-8f5c-4cfa-9591-69372cd9cab6` is intact and
-byte-identical. Had the parent PATH been stored rather than derived from archive root + id,
-moving `AE_HOME` would have rotted it. It did not.
-**CONFIRMED.**
+**CONFIRMED WITH A NORMATIVE PRECISION** (colead's finding, verified). An absolute parent
+digest path **IS materialized** — `workspace.md` renders
+`…/h/.ae/archive/9a325c6e-…/digest.md` before the move and
+`…/h2/.ae/archive/9a325c6e-…/digest.md` after it. So "never stored" is too broad as
+written; what is never persisted as lineage STATE is an absolute parent-path **KEY** in
+meta (grepped: no `*path*=` key exists there).
+**Adopted precision:** *"persistent lineage state stores the parent id and counts, never
+an absolute parent path; rendered paths are derived from the current archive root plus the
+id."*
+The move arm then confirms exactly that, and confirms it well: the RENDERED path tracked
+`h` → `h2` while the stored id stayed byte-identical. A stored path would have rotted; a
+derived one followed the root. That contrast is the proof.
 
 ## SC-825c — a deleted parent warns and continues on resume
 
@@ -192,27 +232,53 @@ observed on both sides, not inferred from one.
 
 ---
 
-## Proposed dispositions
+## Dispositions — POST-GATE
 
-- **CONFIRMED / no change — 9**: SC-809, SC-822, SC-823, SC-824a, SC-824b, SC-825a,
-  SC-825b, SC-825c, SC-826.
-- **No PARTIAL, no DIVERGENCE, no reopened conflicts, no INCONCLUSIVE arms, no
-  ARM-INVALID.**
+*Colead's independent read moved SEVEN of the nine, including two BLOCKERs, and in two
+cases showed I had quoted evidence from the wrong FILE or the wrong ARM. This section
+does **not** converge. My pre-gate worksheet claimed 9/9 and was wrong.*
 
-**Section total: 9.** The second fully-converging section after L-PURGE (14/14).
+- **CONFIRMED, direct — 4**: SC-809, SC-822, SC-825c, SC-826.
+- **CONFIRMED AS COMPOSITE — 2**: SC-823 (frozen ordering + tree manifests),
+  SC-824b (refusal capture + both claim-writer source paths).
+- **CONFIRMED WITH A NORMATIVE PRECISION — 1**: SC-825b — persistent lineage state stores
+  the parent id and counts, never an absolute parent path; rendered paths are derived from
+  the current archive root plus the id.
+- **PARTIAL — 2**: SC-824a (its own arm deletes the child, so no recorded tuple exists;
+  needs the same-id/different-counts discriminator), SC-825a (every captured count is 0,
+  so an implementation that loses them and defaults to zero passes identically).
 
-## Why this section converged when L-STOP did not
+**Section total: 9.**
 
-Worth stating, because the difference is method and not luck:
+---
 
-1. **The producer applied the rc-attribution rule to itself first.** Limit 1 declares that
-   every non-pty rc is the attach's, and every arm records created state separately. In
-   L-STOP the same class of question had to be resolved row by row at classification time.
-2. **The negatives are proved by exhaustive diff, not by inspection.** `full-sweep.diff`
-   at 0 bytes says nothing anywhere changed; "we looked and saw nothing" says only that
-   someone looked. Compare SC-835f in L-STOP, where an absent file had to stand in for a
-   recorded absence.
-3. **Evidence that fell into the section's lap was declined.** The `transport-cut` arm
-   captured a product rollback matching SC-808 and did not bank it, because SC-808's arm
-   lives elsewhere. A section that will not over-claim in its own favour is one whose
-   confirmations mean something.
+## What this section changed about how we read rows
+
+My pre-gate version of this heading claimed the section converged and explained why. It
+did not converge, and two of the three reasons I gave were themselves wrong. Replaced with
+what actually happened:
+
+1. **A zero diff proves a postcondition, never an ordering** (SC-823). I called
+   `full-sweep.diff` at 0 bytes "the strongest negative in batch L… the whole observable
+   surface was compared and nothing moved". True — and silent about the row's actual
+   temporal claim, because a **create-then-perfectly-roll-back mutant produces the same
+   zero diff**. The most confident sentence in the worksheet was measuring the wrong thing.
+2. **All-zero captures cannot discriminate** (SC-825a). Every handover and pending count
+   in this section is 0, so "the counts were preserved" and "the counts were lost and
+   defaulted to zero" are indistinguishable. A fixture whose values are all the type's
+   default is a fixture that cannot fail.
+3. **A recursive grep that strips filenames returns a value with no provenance.** Both of
+   my factual errors came from `grep -rh … <arm>/`: SC-809's `parent_archive_id=-` was
+   really from `parent-archive-meta.txt` (the PARENT's meta), and SC-824a's counts were
+   really from `lineage-durability-delete-parent` (a DIFFERENT row's arm). I used `-h` to
+   get clean output, and that flag suppressed exactly the field that would have caught
+   both. **Third instrument error of the day, same shape as the checksum glob and the
+   roster grep: a cheap probe that answers plausibly is the one that does not get
+   re-checked.**
+4. **Not every arm listed against a row is evidence for it** (SC-824b). The
+   validation-failing mutation is `handover_count=0 → 99`, a digest/meta mismatch — not a
+   mid-purge state. Two arms cited is not two arms proving.
+5. **A producer's discipline still stands.** The rc-attribution limit declared in the
+   manifest, and the `transport-cut` arm declining to bank SC-808 evidence that fell into
+   its lap, were both real and both survived the gate. What did not survive was my reading
+   of what the captures proved.
