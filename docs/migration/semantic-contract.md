@@ -108,6 +108,7 @@ being checked against the grammar afterwards. Authority: AGENTS.md session-name 
 (ruling). Empirical: unit pins @72c7293. Conflict: none.
 
 **SC-101 — the running-session fast path's mutation exclusion.**
+  Empirical: census-2 launch section. Conflict: pending seat closure (UNCLASSIFIED).
 `authority=code-observation` (gate correction: "pure attach, autostarts excepted" was
 self-contradictory, and architecture.md says RESUME regenerates assets/monitor/
 watchdog — the attach-vs-resume boundary needs an exact phase-bounded mutation
@@ -115,14 +116,24 @@ exclusion). Census-2 records the fast path taking no lifecycle lock; the precise
 mutation set is a seat ruling after the probe. UNCLASSIFIED pending closure.
 
 **SC-102a — resume of a stopped session.** `authority=code-observation` — what resume
+  Empirical: census-2 launch section. Conflict: pending seat closure (UNCLASSIFIED).
 regenerates (assets/monitor/watchdog per architecture.md) vs preserves; probe + seat
 ruling. UNCLASSIFIED pending closure.
 
 **SC-102b — invocation from inside a session.** `authority=code-observation` — the
+  Empirical: census-2 launch section. Conflict: pending seat closure (UNCLASSIFIED).
 inside-session decision surface; probe + seat ruling. UNCLASSIFIED pending closure.
 
+**SC-011 — `rm` is an alias of `end`.** Bucket 2 — same operation, both spellings.
+Authority: commands.md end section. Empirical: pending. Conflict: none.
+
+**SC-012 — `help` prints usage.** Bucket 2 — `ae help` (and the bare-invocation help
+path) prints the command surface; inherits the M2 bootstrap caveat like every
+dispatcher entry. Authority: commands.md. Empirical: pending. Conflict: none.
+
 (S1's dispatcher exit/refusal rows live in S6 SC-513..517; its transaction rows in S9;
-the public command surface itself is the censused `cmd_*` set — S1 header.)
+`telegram setup` rows live in S10 SC-969/SC-970; the public command surface itself is
+the censused `cmd_*` set — S1 header.)
 
 ### S3 — Generated helper CLIs (every one — census: `helper_*_main` at 72c7293)
 
@@ -135,6 +146,7 @@ busy/human-typed, verify submit, fail loud).
 <!-- rows: SC-2xx -->
 
 **SC-200 — delivery-model evolution.** Bucket 4 — **DR-004** (ratified): the durable
+  Empirical: n/a (successor design under DR-004).
 per-agent inbox with coalesced notification replaces the paste-delivery model at P2;
 the paste rows stand until that cutover. Authority: DR-004 (both seats).
 Conflict: DR-004.
@@ -157,6 +169,7 @@ the stored body remains readable regardless. Authority: helpers.md 3 + DR-004
 outcomes. Empirical: pending. Conflict: none.
 
 **SC-204 — no durable outbox (until DR-004).** Bucket 4 — DR-004: at 72c7293 a loud
+  Empirical: helpers.md 4 is the frozen IS ("not a queue").
 failure is the re-send signal ("ae is not a queue"); the P2 inbox makes the store the
 transport and this promise retires. Authority: helpers.md 4 + DR-004.
 Conflict: DR-004.
@@ -206,24 +219,43 @@ helpers/AGENTS.md helper table (gate correction: these signatures ARE documented
 code-observation was wrong for them); Empirical: pending; Conflict: none:
 
 **SC-212a — `goal [text|--clear]` signature.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212b — `memo add [--topic t] <text>` signature.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212c — `requests [mine|inbox|all]` signature.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212d — `peek <agent> [lines]` signature.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212e — `agents [--all]` signature.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212f — `focus <agent>` signature.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212g — `interrupt <agent> [message]` signature.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212h — `spawn <alias:name> [prompt]` signature.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212i — `retire <agent|pane-id>` signature.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212j — `say` accepts args or piped stdin.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212k — `memo read [--topic t]` signature.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212l — `memo tail [n]` signature.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212m — `peak` is an alias of `peek`.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212n — peek default is 80 lines.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212o — peek maximum is 2000 lines.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212p — `interrupt` with no message cancels only.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212q — `retire` acts on spawned agents only.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212r — `say` emits a chat event.**
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212s — `state <working|waiting-user|blocked|done> [reason]` signature** (gate
+  Bucket 2.
 correction: documented at AGENTS.md@72c7293:96 — not code-observation).
 
 Code-observed refusal/malformed modes — one head per helper
@@ -231,16 +263,26 @@ Code-observed refusal/malformed modes — one head per helper
 closure; UNCLASSIFIED):
 
 **SC-211a — `state` refusal/malformed modes** (the signature is SC-212s; only the
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 residue is code-observed).
 **SC-211b — `goal` refusal/malformed modes.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-211c — `memo` refusal/malformed modes.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-211d — `requests` refusal/malformed modes.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-211e — `peek` out-of-bounds and refusal modes.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-211f — `agents` failure modes.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-211g — `focus` refusal modes.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-211h — `interrupt` refusal modes.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-211i — `spawn` non-name argument errors** (name validation is SC-1201).
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-211j — `retire` refusal modes.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 
 **SC-211k — `mark-done` is an exact alias surface.** Bucket 2 — exec shim over
 `state done`. Authority: the frozen helper table (documents mark-done as the state-done
@@ -624,11 +666,13 @@ detected (canary class, #22), never silently absorbed. Authority: #81 source-lan
 + epic #79. Empirical: the matrix. Conflict: none.
 
 **SC-704a — injected ae context never replaces a vendor's own agent prompt.** Bucket 1
+  Authority: S8 joint adapter ruling (SC-704 frame).
 — context rides an append/positional/config surface per tool; a replace-style flag is
 forbidden (the grok `--system-prompt-override` trap). Empirical: matrix rows.
 Conflict: none.
 
 **SC-704b — capture binds only a positively-owned signal.** Bucket 3 — SHOULD: an
+  Authority: S8 joint adapter ruling + DR-005 ownership rule.
 identity is captured only from a signal this agent slot positively owns, never ambient
 context (the confidentiality rule). IS at 72c7293: opencode capture is cwd/time
 heuristic — two agents in one dir are indistinguishable, max-updated wins.
@@ -636,16 +680,19 @@ Conflict: fix-known-defect(#56, intended per DR-005). Empirical: matrix + captur
 exhibits.
 
 **SC-704c — resume requires exact ownership.** Bucket 4 — **DR-005**: a resume targets
+  Authority: DR-005 (both seats).
 only an exactly-owned identity; with none stored, the command REFUSES with recovery
 guidance — it never guesses and never silently starts fresh over the only stored
 provider UUID (#50). Empirical: matrix resume rows. Conflict: DR-005.
 
 **SC-704d — heuristic fallbacks retire.** Bucket 4 — **DR-005**: `--continue` (CWD
+  Authority: DR-005 (both seats).
 guess) and `--resume latest` (recency guess) are cross-wire risks and do not survive;
 fresh launch remains an explicit, distinct operation that never claims to be a resume.
 Empirical: matrix fallback rows. Conflict: DR-005.
 
 **SC-704e — rerun truth is explicit.** Bucket 1 — re-running a launch script either
+  Authority: S8 joint adapter ruling (SC-704 frame) + SC-811 pins context.
 resumes the same conversation or honestly starts fresh; never a collision error,
 never a silent identity swap. Empirical: matrix rerun row + SC-811 pins.
 Conflict: none.
@@ -970,6 +1017,7 @@ promise. Authority: DR-001 (both seats). Empirical: ae:18046-18075 (trim) + cens
 audit I1 (reader race). Conflict: DR-001.
 
 **SC-901 — daemon topology.** Bucket 4 — **DR-002**: one Rust daemon per `AE_HOME`
+  Empirical: census-2 watchdog/telegram sections + census-3 (the measured topologies).
 owns watchdog + telegram at P4; the `AE_WATCHDOG_IMPL` selector and the per-session
 `_watchdog` process/pane retire. Per-session enable/persistence/start-stop-status
 semantics survive; `ae-monitor`/`_events` stay inspectable; daemon decisions are
@@ -985,54 +1033,82 @@ one-pass confirm (held at ratification per gate).**
 
 Watchdog + monitor (authority: watchdog.md / monitor.md @72c7293, cited per memo):
 - **SC-902** b2 — watchdog enabled by default; only explicit false/no/off/0 disables.
+  Authority: watchdog.md:5-10 + commands.md:177-185. Empirical: pending-probe(watchdog default/disable parsing). Conflict: none.
 - **SC-903** b2 — per-session enable state persists across resume.
+  Authority: watchdog.md:7-10. Empirical: docs/migration/evidence/locks-census-2.md § Watchdog controls and daemon loop — Write sequence/Crash residue. Conflict: none.
 - **SC-904** b2 — start is idempotent, confirms enabled state; start/stop/status + loop
+  Authority: commands.md:177-185 + watchdog.md:7-10. Empirical: docs/migration/evidence/locks-census-2.md § Watchdog controls and daemon loop — Write sequence. Conflict: none.
   surface survive DR-002.
 - **SC-905** b1 — per-pane cycle is first-match-wins; no later branch after a
+  Authority: watchdog.md:48-70. Empirical: pending-probe(per-pane first-match classification). Conflict: none.
   classification.
 - **SC-906** b1 — dead = shell foreground with no agent descendant; alert once, then
+  Authority: watchdog.md:70-73. Empirical: pending-probe(dead-pane definition and alert suppression). Conflict: none.
   ignore until state changes.
 - **SC-907** b1 — a quiet declaration applies only while it is the LATEST relevant
+  Authority: watchdog.md:73,85-88. Empirical: pending-probe(latest relevant quiet-state event). Conflict: none.
   event; any newer relevant event invalidates it.
 - **SC-908** b1 — `done` is event-only: pane churn never revives it; resumption needs a
+  Authority: watchdog.md:73,87-90. Empirical: pending-probe(event-only done resumption). Conflict: none.
   newer ae event.
 - **SC-909** b1 — waiting-user/blocked arm a post-echo pane baseline, hold while
+  Authority: watchdog.md:91-98. Empirical: pending-probe(waiting-user/blocked post-echo baseline). Conflict: none.
   unchanged, yield on later pane change.
 - **SC-910** b1 — active pane change suppresses the nudge and resets the count.
+  Authority: watchdog.md:74-75. Empirical: pending-probe(active pane-change nudge reset). Conflict: none.
 - **SC-911** b1 — recently-visible pane change suppresses within the stale window.
+  Authority: watchdog.md:75-76. Empirical: pending-probe(recent visible pane-change stale window). Conflict: none.
 - **SC-912** b1 — recent ae activity suppresses within the stale window.
+  Authority: watchdog.md:76-77. Empirical: pending-probe(recent ae-activity stale window). Conflict: none.
 - **SC-913** b3 fix-known-defect(#45) — every daemon nudge uses the ONE verified
+  Authority: watchdog.md:77-78 + joint S10 ruling grounded in closed #44 semantics. Empirical: docs/migration/evidence/locks-census-3-aewatch.md § I7 — delivery-guard asymmetry (#45). Conflict: fix-known-defect(#45).
   delivery primitive (target lock, busy/human/dead guards, durable failure evidence,
   verified submit); only rc0 delivery spends MAX_NUDGES. IS: aewatch pastes ungated
   (census-3 I7).
 - **SC-914** b1 — after MAX_NUDGES confirmed deliveries: one alert + visible banner,
+  Authority: watchdog.md:77-78,136. Empirical: pending-probe(MAX_NUDGES alert/banner and state-change reset). Conflict: none.
   then silent waiting until state changes.
 - **SC-915** b1 — first throttle cycle suppresses the nudge and resets the stale budget.
+  Authority: watchdog.md:104-121. Empirical: pending-probe(first throttle-cycle suppression/reset). Conflict: none.
 - **SC-916** b1 — first cycle of a throttle streak emits exactly one `throttled` event.
+  Authority: watchdog.md:116-121. Empirical: pending-probe(first throttle-streak event). Conflict: none.
 - **SC-917** b1 — continuous throttle alerts once at the threshold, never re-alerts in
+  Authority: watchdog.md:116-136. Empirical: pending-probe(throttle threshold single alert). Conflict: none.
   the same streak.
 - **SC-918** b1 — throttle disappearance emits `throttle-cleared` and resets the streak.
+  Authority: watchdog.md:116-136. Empirical: pending-probe(throttle-cleared transition). Conflict: none.
 - **SC-919** b1 — a registered missing pane alerts once per disappearance.
+  Authority: watchdog.md:80-83. Empirical: pending-probe(missing-pane disappearance alert). Conflict: none.
 - **SC-920** b3 fix-known-defect(#51) — human-origin evidence inside quiet stabilization
+  Authority: UNRESOLVED(memo s10-watchdog gives no normative authority citation). Empirical: pending-probe(human-origin evidence versus agent churn). Conflict: fix-known-defect(#51).
   must yield; a submitted human reply is never absorbed as agent churn. IS: equal pane
   hashes cannot distinguish them.
 - **SC-921** b3 fix-known-defect(#73) — monitor panes are never agents and never enter
+  Authority: UNRESOLVED(memo s10-watchdog gives no normative authority citation). Empirical: pending-probe(internal monitor panes versus user-agent roster). Conflict: fix-known-defect(#73).
   the roster. IS: regenerate_manifest lists `_watchdog`/`_events`.
 - **SC-922** b2 — every session keeps `ae-monitor` with an always-present `_events`
+  Authority: monitor.md:1-40. Empirical: docs/migration/evidence/locks-census-2.md § Watchdog controls and daemon loop — Write sequence. Conflict: none.
   view, independent of watchdog enablement, across resume.
 - **SC-923** b1 — monitor panes are read-only/input-disabled.
+  Authority: monitor.md:5-12. Empirical: pending-probe(monitor pane input-disabled/read-only behavior). Conflict: none.
 - **SC-924** b2 — watchdog stop never removes the `_events` inspection surface (DR-002
+  Authority: monitor.md:34-40,100-109; DR-002 retires only the _watchdog pane. Empirical: docs/migration/evidence/locks-census-2.md § Watchdog controls and daemon loop — stop Write sequence. Conflict: none.
   retires only the `_watchdog` pane).
 - **SC-925** b1 — a dead agent is never auto-restarted by the watchdog.
+  Authority: watchdog.md:138-143. Empirical: pending-probe(dead-agent no-auto-restart). Conflict: none.
 - **SC-926** b3 fix-known-defect(#88-A) — control success only when durable intent and
+  Authority: UNRESOLVED(memo supplies ownership D26a/census-2 evidence but no normative authority citation). Empirical: docs/migration/evidence/locks-census-2.md § Watchdog control partial success. Conflict: fix-known-defect(#88-A).
   runtime converge; typed partial failure otherwise. IS: meta-write failure ignored
   after tmux mutation.
 - **SC-927** b3 fix-known-defect(#88-B) — status is read-only; cleanup belongs to an
+  Authority: UNRESOLVED(memo supplies ownership D26b/census-2 evidence but no normative authority citation). Empirical: docs/migration/evidence/locks-census-2.md § Watchdog control partial success. Conflict: fix-known-defect(#88-B).
   explicit reconcile path. IS: status deletes stale pidfiles.
 - **SC-928** b3 fix-known-defect(#88-C) — an event-append error is surfaced and
+  Authority: UNRESOLVED(memo supplies census-3 I2 evidence but no normative authority citation). Empirical: docs/migration/evidence/locks-census-3-aewatch.md § I2 — _locked_append failure directions are two, not one. Conflict: fix-known-defect(#88-C).
   contained to its operation; it never stops the combined daemon or spends nudge state.
   IS: census-3 I2 crash/backoff.
 - **SC-929** b4 DR-002 — the restart outcome (gate ruling, testable): after a
+  Authority: UNRESOLVED(no SC-929 authority citation in requested S10 memos). Empirical: pending-probe(doctor --refresh serving-version ordering). Conflict: DR-002.
   successful `doctor --refresh` the serving daemon runs the INSTALLED version before
   the command returns; a failed refresh returns nonzero and leaves the previous daemon
   serving; the restart emits durable before/after/failure facts. Implementation may
@@ -1040,105 +1116,168 @@ Watchdog + monitor (authority: watchdog.md / monitor.md @72c7293, cited per memo
 
 Steward (authority: commands.md/telegram.md @72c7293, cited per memo):
 - **SC-930** b2 — bare `ae steward` ensures the detached steward, never attaches.
+  Authority: commands.md:219-249. Empirical: docs/migration/evidence/locks-census-2.md § Steward — Locks and acquisition order. Conflict: none.
 - **SC-931** b2 — `--attach` is the explicit attach/switch surface.
+  Authority: commands.md:233-249. Empirical: docs/migration/evidence/locks-census-2.md § Steward — Locks and acquisition order. Conflict: none.
 - **SC-932** b1 — `--init` scaffolds and NEVER overwrites operator files.
+  Authority: commands.md:233-238,251-256. Empirical: docs/migration/evidence/locks-census-2.md § Steward — Write sequence/Crash residue. Conflict: none.
 - **SC-933** b1 — steward launch isolates its config and neutralizes project-local
+  Authority: commands.md:240-246. Empirical: docs/migration/evidence/locks-census-2.md § Steward — Locks and acquisition order. Conflict: none.
   config.
 - **SC-934** b1 — steward authority is monitor/relay/suggest ONLY: never ends, stops,
+  Authority: commands.md:221-231. Empirical: pending-probe(steward authority boundary). Conflict: none.
   edits, or dispatches into another session without human authorization.
 - **SC-935** b1 — only the steward main agent gets sweep cadence, no stale escalation;
+  Authority: commands.md:187-195. Empirical: pending-probe(steward-only sweep cadence and worker watchdog). Conflict: none.
   its workers keep normal watchdog behavior.
 - **SC-936** b1 — a sweep nudge is delivery-checked; refusal is logged, never counted
+  Authority: commands.md:197-200. Empirical: pending-probe(sweep delivery refusal accounting). Conflict: none.
   delivered.
 - **SC-937** b1 — undelivered sweeps retry on the short cadence.
+  Authority: commands.md:197-203. Empirical: pending-probe(short retry cadence after undelivered sweep). Conflict: none.
 - **SC-938** b1 — after retry max: normal cadence + one unreachable alert, cleared on a
+  Authority: commands.md:201-203. Empirical: pending-probe(retry-max fallback and alert clear). Conflict: none.
   landed delivery.
 - **SC-939a** b1 — sweep delivery is at-least-once: event-write failure after paste may
+  Authority: commands.md:203-206. Empirical: pending-probe(at-least-once sweep event write). Conflict: none.
   duplicate, never silently drop.
 - **SC-939b** b1 — steward liveness = dead-pane checks AND a live-but-not-sweeping
+  Authority: commands.md:208-215. Empirical: docs/migration/evidence/locks-census-2.md § Steward — Write sequence (aemonitor/heartbeat read). Conflict: none.
   heartbeat (~2x cadence); stale alerts once, recovery clears.
 - **SC-939c** b2 — sweep nudges are outside the default Telegram include.
+  Authority: commands.md:215-217 + telegram.md:138-140. Empirical: pending-probe(steward sweep Telegram include exclusion). Conflict: none.
 - **SC-939d** b2 — plain Telegram text defaults to the running steward absent a sticky
+  Authority: telegram.md:69-77,110-116. Empirical: pending-probe(plain Telegram text steward default routing). Conflict: none.
   override; no steward yields start guidance.
 - **SC-939e** b2 — `/use` overrides that default; `/use clear` restores steward routing.
+  Authority: telegram.md:73-77,110-116. Empirical: docs/migration/evidence/locks-census-3-aewatch.md § Audited addenda — I3 shared Telegram store caller semantics. Conflict: none.
 - **SC-939f** b2 — deprecated `hub` stays accepted; canonical name is steward (#52
+  Authority: commands.md:264-272 + #52 policy ruling. Empirical: docs/migration/evidence/locks-census-2.md § Steward — Locks and acquisition order (steward/hub trampoline). Conflict: none.
   policy ruling).
 
 Telegram (authority: telegram.md @72c7293, cited per memo):
 - **SC-940** b1 — jq/curl absence refuses ONLY the bridge; core commands unimpaired.
+  Authority: telegram.md@72c7293:19-24. Empirical: pending-probe(feature-only jq/curl dependency refusal). Conflict: none.
 - **SC-941** b2 — outbound include allow-list default; exclude applies after include.
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 47-53). Empirical: pending-probe(outbound include/exclude precedence). Conflict: none.
 - **SC-942** b2 — `chat` action gives the two-way loop; include-without-chat disables
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 9-15). Empirical: pending-probe(chat action and include-without-chat status). Conflict: none.
   it and status warns.
 - **SC-943** b1 — inbound exists only with nonempty `allowed_user_ids`; empty =
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 51,55-57). Empirical: pending-probe(allowed_user_ids empty outbound-only mode). Conflict: none.
   outbound-only.
 - **SC-944a** b1 — inbound trust predicate: numeric allowlisted `from.id`; failure
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 59-65). Empirical: pending-probe(numeric allowlisted from.id trust predicate). Conflict: none.
   silently drops.
 - **SC-944b** b1 — inbound trust predicate: exact configured `chat.id`; failure
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 59-65). Empirical: pending-probe(exact configured chat.id trust predicate). Conflict: none.
   silently drops.
 - **SC-944c** b1 — inbound trust predicate: private chat only; failure silently drops.
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 59-65). Empirical: pending-probe(private-chat trust predicate). Conflict: none.
 - **SC-945** b2 — routing precedence: command > reply > compact > override/steward.
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 67-77). Empirical: pending-probe(inbound routing precedence). Conflict: none.
 - **SC-946** b1 — every inbound route passes the same session/agent revalidation.
+  Authority: UNRESOLVED(memo citation is only the unqualified line references 69,77). Empirical: pending-probe(shared session/agent revalidation). Conflict: none.
 - **SC-947** b1 — only running sessions are addressable.
+  Authority: UNRESOLVED(memo citation is only the unqualified line reference 91). Empirical: pending-probe(running-session addressability). Conflict: none.
 - **SC-948** b2 — session resolves by exact name or unique session_id prefix.
+  Authority: UNRESOLVED(memo citation is only the unqualified line reference 91). Empirical: pending-probe(exact-name/unique-session-prefix resolution). Conflict: none.
 - **SC-949** b1 — agents resolve only within that session; pane-id, cross-session, and
+  Authority: UNRESOLVED(memo citation is only the unqualified line reference 92). Empirical: pending-probe(session-local canonical agent resolution). Conflict: none.
   external-actor escapes rejected.
 - **SC-950** b2 — sender identity is `telegram:<id>`; replies route back outbound.
+  Authority: UNRESOLVED(memo citation is only the unqualified line reference 93). Empirical: pending-probe(Telegram sender identity and reply route). Conflict: none.
 - **SC-951** b1 — inbound update offset persists BEFORE dispatch: at-most-once side
+  Authority: UNRESOLVED(memo citation is only the unqualified line reference 97). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Inbound polling. Conflict: none.
   effects.
 - **SC-952** b2 — command-menu registration is best-effort (log and ignore).
+  Authority: UNRESOLVED(memo citation is only the unqualified line reference 95). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — tg_set_commands. Conflict: none.
 - **SC-953** b2 — start is idempotent.
+  Authority: UNRESOLVED(memo citation is only the unqualified line reference 155). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Locks and acquisition order. Conflict: none.
 - **SC-954** b2 — stop succeeds when already stopped.
+  Authority: UNRESOLVED(memo citation is only the unqualified line reference 155). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Locks and acquisition order. Conflict: none.
 - **SC-955** b2 — status reports persisted intent, runtime, deps, token validity.
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 148-155). Empirical: pending-probe(status persisted intent/runtime/deps/token validity). Conflict: none.
 - **SC-956** b1 — autostart failure warns one line and never blocks session launch.
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 161-167). Empirical: pending-probe(autostart failure warning and launch non-blocking). Conflict: none.
 - **SC-957** b1 — supervision honors durable disabled state; can never revive after an
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 163-171). Empirical: pending-probe(disabled-state supervision). Conflict: none.
   explicit stop (DR-002 changes topology, not this).
 - **SC-958** b4 DR-003 — outbound delivery is at-least-once: cursor persistence is part
+  Authority: UNRESOLVED(memo gives line ranges 9-12,167-169,181-185 and census3 I8 but no normative source citation). Empirical: docs/migration/evidence/locks-census-3-aewatch.md § I3 — shared Telegram store caller semantics. Conflict: DR-003.
   of committed progress, save failure is LOUD and retry-safe, duplicates possible only
   in the crash window, event id rides the outbound text/log for dedupe. (IS: save
   failure silently ignored — #86-D evidence.)
 - **SC-959** b2 — a first-seen session starts at EOF; no history flood.
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 167-169). Empirical: pending-probe(first-seen session EOF initialization). Conflict: none.
 - **SC-960** b1 — the persisted getUpdates offset prevents inbound redispatch on
+  Authority: UNRESOLVED(memo gives unqualified line references 97,169). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Inbound polling. Conflict: none.
   restart.
 - **SC-961** b1 — token file is owner-only 0600; wrong perms refuse start with a
+  Authority: UNRESOLVED(memo gives only unqualified line references 35,210,216-220). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Setup write sequence. Conflict: none.
   corrective diagnostic.
 - **SC-962** b1 — the token never enters argv; logs redact it.
+  Authority: UNRESOLVED(memo citation is only the unqualified line reference 212). Empirical: pending-probe(token argv/log redaction). Conflict: none.
 - **SC-963** b3 fix-known-defect(#83) — explicit start preserves exactly-one-sender:
+  Authority: UNRESOLVED(memo gives issue-evidence line range 181-198 without a frozen normative source citation). Empirical: docs/migration/evidence/locks-census-3-aewatch.md § Audited addenda — #83 explicit-start bypass. Conflict: fix-known-defect(#83).
   refuse or complete a verified takeover, never warn-and-double-send.
 - **SC-964** b3 fix-known-defect(#84) — takeover is serialized and proves every
+  Authority: UNRESOLVED(memo gives issue-evidence range 181-187 and DR-002 condition without a frozen normative source citation). Empirical: docs/migration/evidence/locks-census-3-aewatch.md § Telegram and aewatch tmux sessions / Audited addenda. Conflict: fix-known-defect(#84).
   predecessor absent across the COMPLETE scope before the first send.
 - **SC-965** b3 fix-known-defect(#85) — destructive tmux targets resolve exact
+  Authority: UNRESOLVED(memo names issue #85 without a frozen normative source citation). Empirical: docs/migration/evidence/locks-census-3-aewatch.md § Telegram and aewatch tmux sessions — destructive tmux targets. Conflict: fix-known-defect(#85).
   identity, never prefix.
 - **SC-966** b3 fix-known-defect(#86-E) — `/use clear` succeeds only after durable
+  Authority: UNRESOLVED(memo s10-telegram gives no normative authority citation). Empirical: docs/migration/evidence/locks-census-3-aewatch.md § I3 — shared Telegram store caller semantics. Conflict: fix-known-defect(#86-E).
   removal.
 - **SC-967** b3 fix-known-defect(#87) — one effective-config authority for every
+  Authority: UNRESOLVED(memo s10-telegram gives no normative authority citation). Empirical: docs/migration/evidence/locks-census-3-aewatch.md § config and token file. Conflict: fix-known-defect(#87).
   daemon mode, `CONFIG_FILE`/`AE_LOCAL_CONFIG` included.
 - **SC-968** b3 fix-known-defect(#88-G) — lifecycle ownership acquired before any
+  Authority: UNRESOLVED(memo s10-telegram gives no normative authority citation). Empirical: docs/migration/evidence/locks-census-3-aewatch.md § I6 — up is outside the daemon singleton. Conflict: fix-known-defect(#88-G).
   probe/kill/create mutation.
 - **SC-969** b3 fix-known-defect(#87-H) — setup publishes token/config with atomic
+  Authority: UNRESOLVED(memo s10-telegram gives no normative authority citation). Empirical: docs/migration/evidence/locks-census-3-aewatch.md § config and token file; docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Setup write sequence. Conflict: fix-known-defect(#87-H).
   visibility; no reader observes empty/partial canonical state.
 - **SC-970** b2 — setup persists enabled, token_file, chat_id, seeded allowlist (byte
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 27-53). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Setup write sequence. Conflict: none.
   formats: S5/S15).
 - **SC-971** b2 — start persists `enabled=true`; stop persists `enabled=false`.
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 148-165). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Start/stop write sequence. Conflict: none.
 
 Bridge protocol (authority: bridge-protocol.md @72c7293; lead splits per gate):
 - **SC-972** b2 — external actors are `<platform>:<id>`, opaque past the allowlisted
+  Authority: UNRESOLVED(no SC-972 authority citation in requested S10 memos). Empirical: pending-probe(external-actor target grammar). Conflict: none.
   prefix.
 - **SC-973a** b1 — event-only sinks (`telegram:`/`discord:`/`ae:compact:`) emit without
+  Authority: UNRESOLVED(no SC-973a authority citation in requested S10 memos). Empirical: docs/migration/evidence/locks-census-3-aewatch.md § Shared event log. Conflict: none.
   tmux resolution and preserve the literal target.
 - **SC-973b** b1 — an unknown non-allowlisted external target fails LOUDLY.
+  Authority: UNRESOLVED(no SC-973b authority citation in requested S10 memos). Empirical: pending-probe(unknown external target failure). Conflict: none.
 - **SC-974a** b2 — `AE_SENDER_OVERRIDE` sets the actor for send/ask/review.
+  Authority: UNRESOLVED(no SC-974a authority citation in requested S10 memos). Empirical: pending-probe(AE_SENDER_OVERRIDE actor selection). Conflict: none.
 - **SC-974b** b2 — reply caller identity comes from `--as`, not the override.
+  Authority: UNRESOLVED(no SC-974b authority citation in requested S10 memos). Empirical: pending-probe(reply --as identity precedence). Conflict: none.
 - **SC-975a** b1 — bridge readers tolerate a missing event file.
+  Authority: UNRESOLVED(no SC-975a authority citation in requested S10 memos). Empirical: docs/migration/evidence/locks-census-3-aewatch.md § Shared event log — Reads and writes. Conflict: none.
 - **SC-975b** b1 — malformed/unterminated trailing data is buffered until a complete
+  Authority: UNRESOLVED(no SC-975b authority citation in requested S10 memos). Empirical: pending-probe(trailing event record buffering). Conflict: none.
   newline record exists.
 - **SC-976a** b4 DR-001 — the reader cursor is generation-aware (generation + offset
+  Authority: UNRESOLVED(no SC-976a authority citation in requested S10 memos). Empirical: docs/migration/evidence/locks-census-3-aewatch.md § B3 — append-only contract vs resume trim; § I1 — event reader stat/open generation race. Conflict: DR-001.
   replaces the (session_id,inode) key).
 - **SC-976b** b2 — event logs are tailed/back-scanned bounded, never whole-loaded.
+  Authority: UNRESOLVED(no SC-976b authority citation in requested S10 memos). Empirical: docs/migration/evidence/locks-census-3-aewatch.md § Shared event log — Reads and writes. Conflict: none.
 - **SC-977** b1 — bridges bind the stable session_id across resume/rename/transfer.
+  Authority: UNRESOLVED(no SC-977 authority citation in requested S10 memos). Empirical: pending-probe(stable session_id across resume/rename/transfer). Conflict: none.
 - **SC-978a** b2 — bridges ignore unknown fields/actions.
+  Authority: UNRESOLVED(no SC-978a authority citation in requested S10 memos). Empirical: pending-probe(unknown bridge fields/actions). Conflict: none.
 - **SC-978b** b2 — renames/removals/semantic changes of existing fields are BREAKING.
+  Authority: UNRESOLVED(no SC-978b authority citation in requested S10 memos). Empirical: pending-probe(bridge field rename/removal compatibility). Conflict: none.
 - **SC-979a** b1 — telegram sends use plain-text paths (no parse-mode injection).
+  Authority: UNRESOLVED(no SC-979a authority citation in requested S10 memos). Empirical: pending-probe(plain-text Telegram send path). Conflict: none.
 - **SC-979b** b1 — jq programs stay fixed strings; user data enters via stdin only.
+  Authority: UNRESOLVED(no SC-979b authority citation in requested S10 memos). Empirical: pending-probe(fixed jq programs and stdin-only user data). Conflict: none.
 
 (A-02 is the historical revisit-trigger doctrine — executed by #79, not a contract row.
 A-05 = SC-1101, not duplicated. Batch conflicts 1–3 are owned by SC-900/#84-85/#45
@@ -1183,6 +1322,7 @@ missing PATH dir, re-run over an existing install; probe + seat ruling. UNCLASSI
 pending closure.
 
 **SC-1006 — the installed artifact is versioned and atomic.** Bucket 3 — SHOULD: what
+  Authority: install.md (outcome) + the #57 finding record.
 runs as `ae` is a deliberately installed version, atomically switched. IS at 72c7293:
 the installed `ae` is a symlink into the live dev checkout — work sessions run
 whatever the working tree holds (#57). Conflict: fix-known-defect(#57, intended: the
@@ -1215,6 +1355,7 @@ Authority: AGENTS.md shim rule (use the shim, never the raw tool). Empirical: sh
 macOS bugs @72c7293. Conflict: none.
 
 **SC-1101a — `flock` is an optional dependency.** Bucket 3 — SHOULD: absence degrades
+  Authority: AGENTS.md core-dependency rule (bash+tmux+git only; optional features degrade).
 loudly, never hard-fails core commands. IS at 72c7293: `ae_meta_set`/`_lib` paths die
 `command not found` (#75); per-path outcomes diverge (census-2 matrix).
 Conflict: fix-known-defect(#75, intended: the Rust core needs no external flock —
@@ -1230,6 +1371,7 @@ lowercase-only. Authority: AGENTS.md bullet (ruling). Empirical: pending.
 Conflict: none.
 
 **SC-1103 — a socket path stays within the active platform's limit or fails loud
+  Authority: S12 seat ruling 2026-08-20 (semantic limit-or-loud).
 before creation.** Bucket 1 — seat-ruled semantic SHOULD (2026-08-20): the limit is
 respected or the failure is explicit pre-creation; the exact byte limits (104 macOS /
 108 Linux) are measured platform facts, empirical only. Empirical: measured mktemp
@@ -1262,16 +1404,19 @@ live in S9 (SC-813/814).
 ruling.**
 
 **SC-1200 — agent names are allowlisted, not screened.** Bucket 1 —
+  Authority: #59 ruling (closing comment + 72c7293 commit message + AGENTS.md allowlist bullets).
 `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, because a name reaches a privileged sink: it is
 interpolated into that agent's own system prompt (the identity sentence).
 Empirical: unit pins @72c7293. Conflict: none.
 
 **SC-1201 — the spawn boundary treats a peer name as hostile.** Bucket 1 — a name
+  Authority: #59 ruling (closing comment + 72c7293 commit message + AGENTS.md allowlist bullets).
 arriving via `spawn` is validated fatally: violation refuses the spawn (the #59 exploit
 was a legal-looking name carrying prose into the identity sentence).
 Empirical: pending. Conflict: none.
 
 **SC-1202 — the operator roster boundary fails the launch before product mutation.**
+  Authority: #59 ruling (closing comment + 72c7293 commit message + AGENTS.md allowlist bullets).
 Bucket 3 (gate finding: known IS/SHOULD conflict) — SHOULD: a roster violation is
 rejected before any tmux, session-state, or config mutation (diagnostics permitted).
 IS at 72c7293: M2 writes the default config BEFORE dispatcher/roster validation, so an
@@ -1280,12 +1425,14 @@ Conflict: fix-known-defect(#61, intended: read/validation paths never bootstrap)
 Empirical: M2 census + ae:344-352.
 
 **SC-1203 — enforcement follows provenance, not the variable.** Bucket 1 — FRESH input
+  Authority: #59 ruling (closing comment + 72c7293 commit message + AGENTS.md allowlist bullets).
 (config, CLI, spawn) is fatal on violation; RESTORED input (saved meta, compact's
 frozen roster) is left to the interpolation guard — refusing restored input would make
 a pre-grammar session unresumable and kill a compact child whose source is already
 archived. Empirical: pending. Conflict: none.
 
 **SC-1204 — the interpolation boundary re-validates and fails quiet.** Bucket 1 —
+  Authority: #59 ruling (closing comment + 72c7293 commit message + AGENTS.md allowlist bullets).
 semantic SHOULD: at the system-prompt interpolation boundary, alias and name are EACH
 revalidated under their respective allowlists; an invalid restored identity omits ONLY
 the identity sentence and the launch continues. (The bash function/call path is
@@ -1301,15 +1448,18 @@ fits the 64 cap. Authority: #59 durable ruling. Empirical: unit pins @72c7293.
 Conflict: none.
 
 **SC-1206 — a leading underscore is a legal alias but never an agent name.** Bucket 2 —
+  Authority: #59 ruling (closing comment + 72c7293 commit message + AGENTS.md allowlist bullets).
 `workers = _foo` (alias as its own name) fails the launch with the grammar; internal
 `_`-prefixed helpers stay out of the agent namespace. Empirical: pending.
 Conflict: none.
 
 **SC-1207a — prompt identity facets are unambiguous.** Bucket 1 — neither the alias nor
+  Authority: #59 ruling.
 the name may contain the facet separator; identity parses one way only. Empirical:
 pending. Conflict: none.
 
 **SC-1207b — meta serializes agents as `alias:name:provider-session-id`.** Bucket 2 —
+  Authority: #59 ruling + meta format (S5).
 exact on-disk form (cross-link: S5 formats family). Empirical: pending. Conflict: none.
 
 **SC-1208 — pane/peer text is never spliced into instruction material.** Bucket 1 —
@@ -1340,6 +1490,7 @@ bridge-protocol.md. Empirical: census-1 M1. Conflict: none (DR-001 affected —
 mechanism only).
 
 **SC-1301 — session meta is written through one fail-closed writer.** Bucket 3 —
+  Authority: architecture.md:158-166 (the one-writer doc contract).
 SHOULD (architecture.md:158-166): one function, every step checked, missing meta
 refused, temp removed on error, rename only after complete content. IS at 72c7293:
 two additional DIRECT-APPEND writers exist under the same lock (`launch_time.*`
@@ -1363,19 +1514,33 @@ Externally visible atomicity, one head per surface (each:
 closure-map gate designs; Conflict: pending seat closure; UNCLASSIFIED):
 
 **SC-1303 — rename: what a concurrent observer may see mid-operation.**
-**SC-1304a — transfer push: the source is stopped/intact throughout.**
+  Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
+**SC-1304a — transfer push: after stop completes, the source remains present and no
+  Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
+destination write has yet occurred; stop effects may be visible on the source**
+(gate precision: present, not byte-intact — census-2:339-342).
 **SC-1304b — transfer push: the remote destination may hold partial/mixed state
+  Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
 mid-operation.**
-**SC-1304c — transfer pull: the remote source is stopped/intact throughout.**
+**SC-1304c — transfer pull: after stop completes, the remote source remains present
+  Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
+and no destination write has yet occurred; stop effects may be visible.**
 **SC-1304d — transfer pull: the local destination may hold partial/mixed state
+  Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
 mid-operation** (frozen ae:11443-11457 + census-2:329-345 — gate correction: the
 data-residue surface is the destination, per direction).
 **SC-1305 — compact: mid-operation observability.**
+  Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1306a — `list` snapshot cut under concurrent writes.**
+  Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1306b — `status` snapshot cut.**
+  Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1306c — `next` snapshot cut.**
+  Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1306d — `requests` snapshot cut.**
+  Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1306e — `events-tail` snapshot cut vs concurrent append/trim.**
+  Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
 
 ### S15 — Environment controls (census: `AE_*` at 72c7293)
 
@@ -1394,29 +1559,32 @@ One head per claim, fields per head (gate: no range-level association; A = Autho
 `config.md watchdog table + watchdog.md:35-44`, E = Empirical pending, C = Conflict
 none — spelled per row):
 
-**SC-1400** — `AE_WATCHDOG_INTERVAL_SEC` defaults to 60. Bucket 2. A: config.md table
-+ watchdog.md:35. E: pending. C: none.
-**SC-1401** — `AE_WATCHDOG_STALE_MIN` defaults to 15. Bucket 2. A: config.md table +
-watchdog.md:36. E: pending. C: none.
-**SC-1402** — `AE_WATCHDOG_MAX_NUDGES` defaults to 2. Bucket 2. A: config.md table +
-watchdog.md:37. E: pending. C: none.
+**SC-1400** — `AE_WATCHDOG_INTERVAL_SEC` defaults to 60. Bucket 2. Authority: config.md table
++ watchdog.md:35. Empirical: pending. Conflict: none.
+**SC-1401** — `AE_WATCHDOG_STALE_MIN` defaults to 15. Bucket 2. Authority: config.md table +
+watchdog.md:36. Empirical: pending. Conflict: none.
+**SC-1402** — `AE_WATCHDOG_MAX_NUDGES` defaults to 2. Bucket 2. Authority: config.md table +
+watchdog.md:37. Empirical: pending. Conflict: none.
 **SC-1403** — `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` defaults to 5. Bucket 2. A:
+  Authority: config.md table + watchdog.md:38. Empirical: pending. Conflict: none.
 config.md table + watchdog.md:38. E: pending. C: none.
-**SC-1404a** — `AE_WATCHDOG_TG_SUPERVISE_SEC` defaults to 120. Bucket 2. A: config.md
-table + watchdog.md:41. E: pending. C: none.
-**SC-1404b** — tg-supervise `0` disables supervision. Bucket 2. A: config.md table +
-watchdog.md:41. E: pending. C: none.
-**SC-1405a** — `AE_WATCHDOG_SWEEP_SEC` defaults to 300. Bucket 2. A: config.md table +
-watchdog.md:42. E: pending. C: none.
+**SC-1404a** — `AE_WATCHDOG_TG_SUPERVISE_SEC` defaults to 120. Bucket 2. Authority: config.md
+table + watchdog.md:41. Empirical: pending. Conflict: none.
+**SC-1404b** — tg-supervise `0` disables supervision. Bucket 2. Authority: config.md table +
+watchdog.md:41. Empirical: pending. Conflict: none.
+**SC-1405a** — `AE_WATCHDOG_SWEEP_SEC` defaults to 300. Bucket 2. Authority: config.md table +
+watchdog.md:42. Empirical: pending. Conflict: none.
 **SC-1405b** — sweep `0` falls back to normal watchdog behavior. Bucket 2. A:
+  Authority: config.md table + watchdog.md:42. Empirical: pending. Conflict: none.
 config.md table + watchdog.md:42. E: pending. C: none.
-**SC-1406a** — `AE_WATCHDOG_SWEEP_RETRY_SEC` defaults to 30. Bucket 2. A: config.md
-table + watchdog.md:43. E: pending. C: none.
+**SC-1406a** — `AE_WATCHDOG_SWEEP_RETRY_SEC` defaults to 30. Bucket 2. Authority: config.md
+table + watchdog.md:43. Empirical: pending. Conflict: none.
 **SC-1406b** — sweep-retry is clamped to the sweep cadence (floor: next poll). Bucket
-2. A: config.md table + watchdog.md:43. E: pending. C: none.
-**SC-1407a** — `AE_WATCHDOG_SWEEP_RETRY_MAX` defaults to 6. Bucket 2. A: config.md
-table + watchdog.md:44. E: pending. C: none.
+2. Authority: config.md table + watchdog.md:43. Empirical: pending. Conflict: none.
+**SC-1407a** — `AE_WATCHDOG_SWEEP_RETRY_MAX` defaults to 6. Bucket 2. Authority: config.md
+table + watchdog.md:44. Empirical: pending. Conflict: none.
 **SC-1407b** — exhausting retry-max escalates exactly as SC-938 rules (cross-reference,
+  Authority: config.md table + SC-938 cross-reference. Empirical: pending. Conflict: none.
 not a duplicate behavior row). Bucket 2. A: config.md table + SC-938. E: pending.
 C: none.
 
@@ -1431,41 +1599,64 @@ Malformed-value classes, one head each (`authority=code-observation`; Empirical:
 pending probe; Conflict: pending seat closure; UNCLASSIFIED):
 
 **SC-1409a — non-numeric values in numeric watchdog/loop tunables.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1409b — malformed telegram include/exclude lists.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1409c — malformed `allowed_user_ids`.**
 
 Remaining `AE_*` variables, one head each (`authority=code-observation`; Empirical:
 pending probe; Conflict: pending seat closure; UNCLASSIFIED — except where noted):
 
 **SC-1410a — `AE_HOME`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1410b — `CONFIG_FILE`/`AE_LOCAL_CONFIG` precedence** (#87 names the intended
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 authority).
 **SC-1410c — `AE_TMUX_SERVER`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1410d — `AE_NO_AUTOSTART`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1410e — `AE_END_SERVER`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1410f — `AE_HUB_DIR`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1410g — `AE_STEWARD_DIR`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1410h — `AE_EVENTS_KEEP`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1410i — `AE_SEND_DEFER_SEC`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1410j — `AE_ATTN_REQUEST_SECS`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1410k — `AE_LIST_ACTIVE_SECS`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1410l — `AE_COMPACT_HANDOVER_SECS`.**
 Launch-token/slot vars, split by shared invariant per provider (gate grain — each:
 `authority=code-observation`; Empirical: pending probe; Conflict: pending; UNCLASSIFIED):
 **SC-1411a — `AE_CODEX_LAUNCH_ID`/`AE_CODEX_SLOT`** (one invariant: the token pair
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 identifies the launch for post-launch capture).
 **SC-1411b — `AE_GEMINI_LAUNCH_ID`/`AE_GEMINI_SLOT`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1411c — `AE_OPENCODE_LAUNCH_ID`** (inert since the config route — census note).
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 
 Resolution/context exports, split by shared invariant (same field defaults):
 **SC-1412a — `AE_RESOLVED_*`** (one invariant: the resolution result set a helper
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 exports for its target).
 **SC-1412b — `AE_SESSION`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1412c — `AE_META`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1412d — `AE_DIR`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1412e — `AE_MODE`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1412f — `AE_ORIGIN`.**
+  Authority: code-observation. Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1412g — `AE_PATH`/`AE_PATH_BIN`** (one invariant: ae's own path identity).
+  Empirical: pending probe.
 (`AE_SENDER_OVERRIDE` is SC-974a, not duplicated.)
 
 ## Known-defect register (bucket 3)

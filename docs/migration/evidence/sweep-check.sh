@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/bash
+#!/usr/bin/env bash
 
 # Deterministic, presence-only migration evidence checker.
 #
@@ -91,7 +91,7 @@ function process_semantic_line(line,    rest, next_part, prefix, segment, candid
     }
 
     candidate = row_head(segment)
-    if (!valid_sc_id(candidate)) {
+    if (!valid_sc_id(candidate) || (!canonical_sc_id(candidate) && !grain_sc_id(candidate))) {
       print "MALFORMED-ROW-HEAD: " FNR " " segment
       malformed_count++
       finish_row()
@@ -109,7 +109,7 @@ function process_semantic_line(line,    rest, next_part, prefix, segment, candid
       print "DUPLICATE-ID: " row_id " (occurrence " (seen_ids[row_id] + 1) ")"
     }
     seen_ids[row_id]++
-    if (row_id ~ /[\/,]|\.\./) {
+    if (grain_sc_id(row_id)) {
       grain_count++
       print "GRAIN-VIOLATION: " row_id " combined/shorthand id in row head"
     }
@@ -120,9 +120,15 @@ function process_semantic_line(line,    rest, next_part, prefix, segment, candid
 }
 
 function add_surface_item(family, item, key) {
-  sub(/[[:space:]].*$/, "", item)
-  if (item !~ /^[A-Za-z_][A-Za-z0-9_-]*$/)
+  if (family != "S1")
+    sub(/[[:space:]].*$/, "", item)
+  sub(/[[:space:]]+$/, "", item)
+  if (family == "S1") {
+    if (item !~ /^[A-Za-z_][A-Za-z0-9_-]*( [A-Za-z_][A-Za-z0-9_-]*)?$/)
+      return
+  } else if (item !~ /^[A-Za-z_][A-Za-z0-9_-]*$/) {
     return
+  }
   key = family SUBSEP item
   if (!surface_seen[key]) {
     surface_seen[key] = 1
@@ -155,24 +161,34 @@ function parse_surface_header(family, line, rest, token, count, i) {
     }
   } else if (family == "S1") {
     rest = line
-    while (match(rest, /cmd_[A-Za-z0-9_]*\*?/)) {
-      token = substr(rest, RSTART, RLENGTH)
-      if (token !~ /\*/)
-        add_surface_item(family, token)
+    while (match(rest, /`[^`]+`/)) {
+      token = substr(rest, RSTART + 1, RLENGTH - 2)
+      gsub(/[\/|]/, "\n", token)
+      count = split(token, surface_parts, /\n/)
+      for (i = 1; i <= count; i++) {
+        token = surface_parts[i]
+        sub(/^[[:space:]]*ae[[:space:]]+/, "", token)
+        sub(/[[:space:]]*\[.*/, "", token)
+        sub(/[[:space:]]+--.*/, "", token)
+        sub(/[[:space:]]+\.\.\.$/, "", token)
+        sub(/[[:space:]]+…$/, "", token)
+        if (token !~ /^--/ && token !~ /^</ && token != "ae")
+          add_surface_item(family, token)
+      }
       rest = substr(rest, RSTART + RLENGTH)
     }
   }
 }
 
 function d_head(line, t) {
-  if (line ~ /^[[:space:]]*###[[:space:]]+D[0-9]/) {
+  if (line ~ /^[[:space:]]*###[[:space:]]+D[A-Za-z0-9._\/-]+/) {
     t = line
     sub(/^[[:space:]]*###[[:space:]]+/, "", t)
     sub(/[[:space:]]+—.*/, "", t)
     sub(/[[:space:]].*/, "", t)
     return t
   }
-  if (line ~ /^[[:space:]]*\*\*D[0-9]/) {
+  if (line ~ /^[[:space:]]*\*\*D[A-Za-z0-9._\/-]+/) {
     t = line
     sub(/^[[:space:]]*\*\*/, "", t)
     sub(/\*\*.*/, "", t)
@@ -183,10 +199,27 @@ function d_head(line, t) {
   return ""
 }
 
+function looks_like_d_head(line) {
+  return line ~ /^[[:space:]]*###[[:space:]]+D/ || \
+         line ~ /^[[:space:]]*\*\*D/
+}
+
 function valid_sc_id(id) {
-  # Slash/comma/range forms are intentionally accepted as one token so that a
-  # combined or shorthand row can be reported as a grain violation, never expanded.
+  # Broad row-token grammar lets us diagnose combined/shorthand forms rather
+  # than silently dropping their heads.  canonical_sc_id is the strict grammar.
   return id ~ /^SC-[0-9][0-9]*[A-Za-z0-9\/,\.]*$/
+}
+
+function canonical_sc_id(id) {
+  return id ~ /^SC-[0-9][0-9]*[a-z]?$/
+}
+
+function grain_sc_id(id) {
+  return id ~ /[\/,]|\.\./
+}
+
+function valid_d_id(id) {
+  return id ~ /^D[0-9][0-9]*[a-z]?$/
 }
 
 function exact_sc_token(line, id, escaped) {
@@ -341,7 +374,7 @@ function add_expected_line(line, token) {
 
 function surface_present(family, item, i) {
   for (i = 1; i <= row_count; i++) {
-    if (row_families[i] == family && row_blocks[i] ~ ("(^|[^A-Za-z0-9_-])" item "([^A-Za-z0-9_-]|$)"))
+    if ((family == "S1" || row_families[i] == family) && row_blocks[i] ~ ("(^|[^A-Za-z0-9_-])" item "([^A-Za-z0-9_-]|$)"))
       return 1
   }
   return 0
@@ -377,10 +410,22 @@ FILENAME == semantic_file {
 
 FILENAME == ownership_file {
   candidate = d_head($0)
-  if (candidate != "") {
+  if (looks_like_d_head($0)) {
     finish_d()
+    if (!valid_d_id(candidate)) {
+      print "MALFORMED-D-HEAD: " FNR " " $0
+      malformed_d_count++
+      d_id = ""
+      d_text = ""
+      next
+    }
     d_id = candidate
     d_text = $0
+    if (seen_d_ids[d_id]) {
+      duplicate_d_count++
+      print "DUPLICATE-D-ID: " d_id " (occurrence " (seen_d_ids[d_id] + 1) ")"
+    }
+    seen_d_ids[d_id]++
     next
   }
   if (d_id != "")
@@ -488,9 +533,9 @@ END {
 
   print "NOTE: presence checks cannot certify evidence FIDELITY; the separate pin audit must verify evidence fidelity."
   print "NOTE: line/block parsing may misparse prose-form or wrapped fields; implicit family authority and complex classified_by prose are not inferred."
-  print "NOTE: surface coverage only sees list-shaped S1/S3/S15 headers and token mentions; it cannot certify omitted, renamed, or prose-only surfaces."
-  printf "SUMMARY: SC_ROWS=%d D_RECORDS=%d MISSING_FIELDS=%d MISSING_D_FIELDS=%d MISSING_SURFACES=%d GRAIN_VIOLATIONS=%d DUPLICATE_IDS=%d MALFORMED_ROW_HEADS=%d CLOSURE_ORPHANS=%d CLOSURE_MISSING=%d SET_EXTRA=%d SET_MISSING=%d\n", \
-    row_count, d_count, missing_count, missing_d_count, missing_surface_count, grain_count, duplicate_count, malformed_count, \
+  print "NOTE: surface coverage only sees list-shaped S1/S3/S15 headers and token mentions (S1 may be covered by rows in another family); it cannot certify omitted, renamed, or prose-only surfaces."
+  printf "SUMMARY: SC_ROWS=%d D_RECORDS=%d MISSING_FIELDS=%d MISSING_D_FIELDS=%d MISSING_SURFACES=%d GRAIN_VIOLATIONS=%d DUPLICATE_IDS=%d MALFORMED_ROW_HEADS=%d DUPLICATE_D_IDS=%d MALFORMED_D_HEADS=%d CLOSURE_ORPHANS=%d CLOSURE_MISSING=%d SET_EXTRA=%d SET_MISSING=%d\n", \
+    row_count, d_count, missing_count, missing_d_count, missing_surface_count, grain_count, duplicate_count, malformed_count, duplicate_d_count, malformed_d_count, \
     closure_orphan_count, closure_missing_count, expected_extra_count, expected_missing_count
   printf "SUMMARY SC_IDS:"
   if (sorted_count == 0)
@@ -499,7 +544,7 @@ END {
     printf " %s", sorted_ids[i]
   printf "\n"
 
-  if (missing_count || missing_d_count || missing_surface_count || grain_count || duplicate_count || malformed_count || \
+  if (missing_count || missing_d_count || missing_surface_count || grain_count || duplicate_count || malformed_count || duplicate_d_count || malformed_d_count || \
       closure_orphan_count || closure_missing_count || expected_extra_count || expected_missing_count)
     exit 1
   exit 0
