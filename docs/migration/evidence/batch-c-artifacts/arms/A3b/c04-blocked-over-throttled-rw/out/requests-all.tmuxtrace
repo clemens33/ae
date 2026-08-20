@@ -1,0 +1,4 @@
+pid=12640	AE_TMUX_SERVER=/tmp/aecx/arms/A3b/c04-blocked-over-throttled-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/p_pair-blocked-over-throttled/s.sock display-message -p \#\{pane_id\} 
+pid=12643	AE_TMUX_SERVER=/tmp/aecx/arms/A3b/c04-blocked-over-throttled-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/p_pair-blocked-over-throttled/s.sock display-message -p \#\{pane_id\} 
+pid=12646	AE_TMUX_SERVER=/tmp/aecx/arms/A3b/c04-blocked-over-throttled-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/p_pair-blocked-over-throttled/s.sock display-message -p \#\{pane_id\} 
+pid=12647	AE_TMUX_SERVER=/tmp/aecx/arms/A3b/c04-blocked-over-throttled-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/p_pair-blocked-over-throttled/s.sock display-message -p -t '' \#S 

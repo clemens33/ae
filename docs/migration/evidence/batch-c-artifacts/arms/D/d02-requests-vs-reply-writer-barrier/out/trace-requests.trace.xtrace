@@ -1,0 +1,362 @@
++++ dirname /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02/requests
+++ cd /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02
+++ pwd
++ source /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02/_lib
+++++ dirname /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02/_lib
++++ cd /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02
++++ pwd
+++ _AE_META_DIR=/tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02
++++ grep '^tmux_server=' /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02/meta
++++ cut -d= -f2-
+++ _ts=/tmp/aecx/tpl/d02/s.sock
++++ grep '^tmux_server_kind=' /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02/meta
++++ cut -d= -f2-
+++ _tk=socket
+++ [[ socket == ambiguous ]]
+++ [[ socket == socket ]]
++++ grep '^session=' /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02/meta
++++ cut -d= -f2-
+++ _AE_SESSION=td02
++++ dirname /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02
+++ _AE_SESSIONS_DIR=/tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions
++ helper_requests_main all
++++ dirname /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02/requests
+++ cd /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02
+++ pwd
++ META_DIR=/tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02
++ mode=all
+++ ae_current_agent_ref
+++ local agent session pane
++++ ae_current_agent
++++ local pane
+++++ ae_current_pane
+++++ [[ -n '' ]]
+++++ tmux display-message -p '#{pane_id}'
+++++ true
++++ pane=
++++ [[ -n '' ]]
++++ return 0
+++ agent=
+++ [[ -n '' ]]
+++ return 0
++ self=
++ [[ all != mine ]]
++ [[ all != inbox ]]
++ [[ all != all ]]
++ [[ all != all ]]
++ local self_slot self_session
+++ ae_current_slot
+++ local pane slot
++++ ae_current_pane
++++ [[ -n '' ]]
++++ tmux display-message -p '#{pane_id}'
++++ true
+++ pane=
+++ [[ -n '' ]]
+++ return 0
++ self_slot=
++++ ae_current_pane
++++ [[ -n '' ]]
++++ tmux display-message -p '#{pane_id}'
++++ true
+++ tmux display-message -p -t '' '#S'
+++ true
++ self_session=
++ printf '%-8s %-8s %-28s %-20s %-20s %s\n' STATUS TYPE ID FROM TO SUMMARY
++ local status kind ref sender target actor_slot target_slot actor_session target_session summary
++ IFS=$'\037'
++ read -r status kind ref sender target _ _ actor_slot target_slot actor_session target_session summary
+++ _ar_request_states /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02/events.jsonl
+++ local file=/tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02/events.jsonl line ref action
+++ [[ -f /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02/events.jsonl ]]
+++ declare -A req_kind req_sender req_target req_summary req_ts req_body
+++ declare -A req_actor_slot req_target_slot req_actor_session req_target_session
+++ declare -A cand_reply cand_cancel
+++ order=()
+++ local -a order
+++ local scan=0
+++ IFS=
+++ read -r line
++++ _ae_tac /tmp/aecx/arms/D/d02-requests-vs-reply-writer/home/.ae/sessions/td02/events.jsonl
+++ [[ {"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"} == {* ]]
+++ scan=1
+++ _event_json_str '{"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' ref
+++ local 'line={"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' key=ref
+++ _EV=
+++ local 'prefix="ref":"'
+++ local 'rest=ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}'
+++ [[ ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"} == {"ts"\:"2026\-08\-20T17\:03\:30Z","actor"\:"fake\:worker","action"\:"reply","target"\:"fake\:lead","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"worker\.0","actor_session"\:"td02","target_slot"\:"main","target_session"\:"td02","summary"\:"D02 identity\-valid answer","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.reply\.lM9JHk\.txt"} ]]
+++ local head=ae-20260820T170328Z-75afd2c3
+++ [[ ae-20260820T170328Z-75afd2c3 != *\\* ]]
+++ _EV=ae-20260820T170328Z-75afd2c3
+++ return 0
+++ ref=ae-20260820T170328Z-75afd2c3
+++ [[ -n ae-20260820T170328Z-75afd2c3 ]]
+++ _event_json_str '{"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' action
+++ local 'line={"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' key=action
+++ _EV=
+++ local 'prefix="action":"'
+++ local 'rest=reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}'
+++ [[ reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"} == {"ts"\:"2026\-08\-20T17\:03\:30Z","actor"\:"fake\:worker","action"\:"reply","target"\:"fake\:lead","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"worker\.0","actor_session"\:"td02","target_slot"\:"main","target_session"\:"td02","summary"\:"D02 identity\-valid answer","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.reply\.lM9JHk\.txt"} ]]
+++ local head=reply
+++ [[ reply != *\\* ]]
+++ _EV=reply
+++ return 0
+++ action=reply
+++ case "$action" in
+++ _event_json_str '{"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' summary
+++ local 'line={"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' key=summary
+++ _EV=
+++ local 'prefix="summary":"'
+++ local 'rest=D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}'
+++ [[ D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"} == {"ts"\:"2026\-08\-20T17\:03\:30Z","actor"\:"fake\:worker","action"\:"reply","target"\:"fake\:lead","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"worker\.0","actor_session"\:"td02","target_slot"\:"main","target_session"\:"td02","summary"\:"D02 identity\-valid answer","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.reply\.lM9JHk\.txt"} ]]
+++ local 'head=D02 identity-valid answer'
+++ [[ D02 identity-valid answer != *\\* ]]
+++ _EV='D02 identity-valid answer'
+++ return 0
+++ _r_sum='D02 identity-valid answer'
+++ _event_json_str '{"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' actor
+++ local 'line={"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' key=actor
+++ _EV=
+++ local 'prefix="actor":"'
+++ local 'rest=fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}'
+++ [[ fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"} == {"ts"\:"2026\-08\-20T17\:03\:30Z","actor"\:"fake\:worker","action"\:"reply","target"\:"fake\:lead","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"worker\.0","actor_session"\:"td02","target_slot"\:"main","target_session"\:"td02","summary"\:"D02 identity\-valid answer","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.reply\.lM9JHk\.txt"} ]]
+++ local head=fake:worker
+++ [[ fake:worker != *\\* ]]
+++ _EV=fake:worker
+++ return 0
+++ _r_actor=fake:worker
+++ _event_json_str '{"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' target
+++ local 'line={"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' key=target
+++ _EV=
+++ local 'prefix="target":"'
+++ local 'rest=fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}'
+++ [[ fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"} == {"ts"\:"2026\-08\-20T17\:03\:30Z","actor"\:"fake\:worker","action"\:"reply","target"\:"fake\:lead","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"worker\.0","actor_session"\:"td02","target_slot"\:"main","target_session"\:"td02","summary"\:"D02 identity\-valid answer","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.reply\.lM9JHk\.txt"} ]]
+++ local head=fake:lead
+++ [[ fake:lead != *\\* ]]
+++ _EV=fake:lead
+++ return 0
+++ _r_target=fake:lead
+++ _event_json_str '{"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' actor_slot
+++ local 'line={"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' key=actor_slot
+++ _EV=
+++ local 'prefix="actor_slot":"'
+++ local 'rest=worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}'
+++ [[ worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"} == {"ts"\:"2026\-08\-20T17\:03\:30Z","actor"\:"fake\:worker","action"\:"reply","target"\:"fake\:lead","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"worker\.0","actor_session"\:"td02","target_slot"\:"main","target_session"\:"td02","summary"\:"D02 identity\-valid answer","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.reply\.lM9JHk\.txt"} ]]
+++ local head=worker.0
+++ [[ worker.0 != *\\* ]]
+++ _EV=worker.0
+++ return 0
+++ _r_aslot=worker.0
+++ _event_json_str '{"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' target_slot
+++ local 'line={"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' key=target_slot
+++ _EV=
+++ local 'prefix="target_slot":"'
+++ local 'rest=main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}'
+++ [[ main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"} == {"ts"\:"2026\-08\-20T17\:03\:30Z","actor"\:"fake\:worker","action"\:"reply","target"\:"fake\:lead","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"worker\.0","actor_session"\:"td02","target_slot"\:"main","target_session"\:"td02","summary"\:"D02 identity\-valid answer","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.reply\.lM9JHk\.txt"} ]]
+++ local head=main
+++ [[ main != *\\* ]]
+++ _EV=main
+++ return 0
+++ _r_tslot=main
+++ _event_json_str '{"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' actor_session
+++ local 'line={"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' key=actor_session
+++ _EV=
+++ local 'prefix="actor_session":"'
+++ local 'rest=td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}'
+++ [[ td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"} == {"ts"\:"2026\-08\-20T17\:03\:30Z","actor"\:"fake\:worker","action"\:"reply","target"\:"fake\:lead","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"worker\.0","actor_session"\:"td02","target_slot"\:"main","target_session"\:"td02","summary"\:"D02 identity\-valid answer","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.reply\.lM9JHk\.txt"} ]]
+++ local head=td02
+++ [[ td02 != *\\* ]]
+++ _EV=td02
+++ return 0
+++ _r_asess=td02
+++ _event_json_str '{"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' target_session
+++ local 'line={"ts":"2026-08-20T17:03:30Z","actor":"fake:worker","action":"reply","target":"fake:lead","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"worker.0","actor_session":"td02","target_slot":"main","target_session":"td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}' key=target_session
+++ _EV=
+++ local 'prefix="target_session":"'
+++ local 'rest=td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"}'
+++ [[ td02","summary":"D02 identity-valid answer","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.reply.lM9JHk.txt"} == {"ts"\:"2026\-08\-20T17\:03\:30Z","actor"\:"fake\:worker","action"\:"reply","target"\:"fake\:lead","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"worker\.0","actor_session"\:"td02","target_slot"\:"main","target_session"\:"td02","summary"\:"D02 identity\-valid answer","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.reply\.lM9JHk\.txt"} ]]
+++ local head=td02
+++ [[ td02 != *\\* ]]
+++ _EV=td02
+++ return 0
+++ _r_tsess=td02
+++ cand_reply["$ref"]=$'1\037fake:worker\037fake:lead\037worker.0\037main\037td02\037td02\037D02 identity-valid answer\036'
+++ IFS=
+++ read -r line
+++ [[ {"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"} == {* ]]
+++ scan=2
+++ _event_json_str '{"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' ref
+++ local 'line={"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' key=ref
+++ _EV=
+++ local 'prefix="ref":"'
+++ local 'rest=ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}'
+++ [[ ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"} == {"ts"\:"2026\-08\-20T17\:03\:29Z","actor"\:"fake\:lead","action"\:"ask","target"\:"fake\:worker","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"main","actor_session"\:"td02","target_slot"\:"worker\.0","target_session"\:"td02","summary"\:"D02 question","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.ask\.G96JWB\.txt"} ]]
+++ local head=ae-20260820T170328Z-75afd2c3
+++ [[ ae-20260820T170328Z-75afd2c3 != *\\* ]]
+++ _EV=ae-20260820T170328Z-75afd2c3
+++ return 0
+++ ref=ae-20260820T170328Z-75afd2c3
+++ [[ -n ae-20260820T170328Z-75afd2c3 ]]
+++ _event_json_str '{"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' action
+++ local 'line={"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' key=action
+++ _EV=
+++ local 'prefix="action":"'
+++ local 'rest=ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}'
+++ [[ ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"} == {"ts"\:"2026\-08\-20T17\:03\:29Z","actor"\:"fake\:lead","action"\:"ask","target"\:"fake\:worker","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"main","actor_session"\:"td02","target_slot"\:"worker\.0","target_session"\:"td02","summary"\:"D02 question","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.ask\.G96JWB\.txt"} ]]
+++ local head=ask
+++ [[ ask != *\\* ]]
+++ _EV=ask
+++ return 0
+++ action=ask
+++ case "$action" in
+++ [[ -n '' ]]
+++ req_kind["$ref"]=ask
+++ _event_json_str '{"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' actor
+++ local 'line={"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' key=actor
+++ _EV=
+++ local 'prefix="actor":"'
+++ local 'rest=fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}'
+++ [[ fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"} == {"ts"\:"2026\-08\-20T17\:03\:29Z","actor"\:"fake\:lead","action"\:"ask","target"\:"fake\:worker","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"main","actor_session"\:"td02","target_slot"\:"worker\.0","target_session"\:"td02","summary"\:"D02 question","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.ask\.G96JWB\.txt"} ]]
+++ local head=fake:lead
+++ [[ fake:lead != *\\* ]]
+++ _EV=fake:lead
+++ return 0
+++ req_sender["$ref"]=fake:lead
+++ _event_json_str '{"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' target
+++ local 'line={"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' key=target
+++ _EV=
+++ local 'prefix="target":"'
+++ local 'rest=fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}'
+++ [[ fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"} == {"ts"\:"2026\-08\-20T17\:03\:29Z","actor"\:"fake\:lead","action"\:"ask","target"\:"fake\:worker","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"main","actor_session"\:"td02","target_slot"\:"worker\.0","target_session"\:"td02","summary"\:"D02 question","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.ask\.G96JWB\.txt"} ]]
+++ local head=fake:worker
+++ [[ fake:worker != *\\* ]]
+++ _EV=fake:worker
+++ return 0
+++ req_target["$ref"]=fake:worker
+++ _event_json_str '{"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' actor_slot
+++ local 'line={"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' key=actor_slot
+++ _EV=
+++ local 'prefix="actor_slot":"'
+++ local 'rest=main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}'
+++ [[ main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"} == {"ts"\:"2026\-08\-20T17\:03\:29Z","actor"\:"fake\:lead","action"\:"ask","target"\:"fake\:worker","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"main","actor_session"\:"td02","target_slot"\:"worker\.0","target_session"\:"td02","summary"\:"D02 question","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.ask\.G96JWB\.txt"} ]]
+++ local head=main
+++ [[ main != *\\* ]]
+++ _EV=main
+++ return 0
+++ req_actor_slot["$ref"]=main
+++ _event_json_str '{"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' target_slot
+++ local 'line={"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' key=target_slot
+++ _EV=
+++ local 'prefix="target_slot":"'
+++ local 'rest=worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}'
+++ [[ worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"} == {"ts"\:"2026\-08\-20T17\:03\:29Z","actor"\:"fake\:lead","action"\:"ask","target"\:"fake\:worker","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"main","actor_session"\:"td02","target_slot"\:"worker\.0","target_session"\:"td02","summary"\:"D02 question","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.ask\.G96JWB\.txt"} ]]
+++ local head=worker.0
+++ [[ worker.0 != *\\* ]]
+++ _EV=worker.0
+++ return 0
+++ req_target_slot["$ref"]=worker.0
+++ _event_json_str '{"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' actor_session
+++ local 'line={"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' key=actor_session
+++ _EV=
+++ local 'prefix="actor_session":"'
+++ local 'rest=td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}'
+++ [[ td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"} == {"ts"\:"2026\-08\-20T17\:03\:29Z","actor"\:"fake\:lead","action"\:"ask","target"\:"fake\:worker","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"main","actor_session"\:"td02","target_slot"\:"worker\.0","target_session"\:"td02","summary"\:"D02 question","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.ask\.G96JWB\.txt"} ]]
+++ local head=td02
+++ [[ td02 != *\\* ]]
+++ _EV=td02
+++ return 0
+++ req_actor_session["$ref"]=td02
+++ _event_json_str '{"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' target_session
+++ local 'line={"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' key=target_session
+++ _EV=
+++ local 'prefix="target_session":"'
+++ local 'rest=td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}'
+++ [[ td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"} == {"ts"\:"2026\-08\-20T17\:03\:29Z","actor"\:"fake\:lead","action"\:"ask","target"\:"fake\:worker","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"main","actor_session"\:"td02","target_slot"\:"worker\.0","target_session"\:"td02","summary"\:"D02 question","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.ask\.G96JWB\.txt"} ]]
+++ local head=td02
+++ [[ td02 != *\\* ]]
+++ _EV=td02
+++ return 0
+++ req_target_session["$ref"]=td02
+++ _event_json_str '{"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' summary
+++ local 'line={"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' key=summary
+++ _EV=
+++ local 'prefix="summary":"'
+++ local 'rest=D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}'
+++ [[ D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"} == {"ts"\:"2026\-08\-20T17\:03\:29Z","actor"\:"fake\:lead","action"\:"ask","target"\:"fake\:worker","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"main","actor_session"\:"td02","target_slot"\:"worker\.0","target_session"\:"td02","summary"\:"D02 question","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.ask\.G96JWB\.txt"} ]]
+++ local 'head=D02 question'
+++ [[ D02 question != *\\* ]]
+++ _EV='D02 question'
+++ return 0
+++ req_summary["$ref"]='D02 question'
+++ _event_json_str '{"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' ts
+++ local 'line={"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' key=ts
+++ _EV=
+++ local 'prefix="ts":"'
+++ local 'rest=2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}'
+++ [[ 2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"} == {"ts"\:"2026\-08\-20T17\:03\:29Z","actor"\:"fake\:lead","action"\:"ask","target"\:"fake\:worker","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"main","actor_session"\:"td02","target_slot"\:"worker\.0","target_session"\:"td02","summary"\:"D02 question","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.ask\.G96JWB\.txt"} ]]
+++ local head=2026-08-20T17:03:29Z
+++ [[ 2026-08-20T17:03:29Z != *\\* ]]
+++ _EV=2026-08-20T17:03:29Z
+++ return 0
+++ req_ts["$ref"]=2026-08-20T17:03:29Z
+++ _event_json_str '{"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' body_file
+++ local 'line={"ts":"2026-08-20T17:03:29Z","actor":"fake:lead","action":"ask","target":"fake:worker","ref":"ae-20260820T170328Z-75afd2c3","actor_slot":"main","actor_session":"td02","target_slot":"worker.0","target_session":"td02","summary":"D02 question","body_file":"/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}' key=body_file
+++ _EV=
+++ local 'prefix="body_file":"'
+++ local 'rest=/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"}'
+++ [[ /tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt"} == {"ts"\:"2026\-08\-20T17\:03\:29Z","actor"\:"fake\:lead","action"\:"ask","target"\:"fake\:worker","ref"\:"ae\-20260820T170328Z\-75afd2c3","actor_slot"\:"main","actor_session"\:"td02","target_slot"\:"worker\.0","target_session"\:"td02","summary"\:"D02 question","body_file"\:"/tmp/aecx/tpl/d02/home/\.ae/sessions/td02/messages/ae\-20260820T170328Z\-75afd2c3\.ask\.G96JWB\.txt"} ]]
+++ local head=/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt
+++ [[ /tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt != *\\* ]]
+++ _EV=/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt
+++ return 0
+++ req_body["$ref"]=/tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt
+++ order+=("$ref")
+++ IFS=
+++ read -r line
+++ _ae_hook H_REQUEST_SCAN_COMPLETE
+++ [[ '' == H_REQUEST_SCAN_COMPLETE ]]
+++ return 0
+++ local i status summary
+++ cands=()
+++ local -a cands
+++ local cand c_actor c_target c_aslot c_tslot c_asess c_tsess c_sum
+++ local rep_ok rep_text can_ok can_text
+++ (( i = 1 - 1 ))
+++ (( i >= 0 ))
+++ ref=ae-20260820T170328Z-75afd2c3
+++ status=pending
+++ summary='D02 question'
+++ rep_ok=false
+++ rep_text=
+++ [[ -n 1fake:workerfake:leadworker.0maintd02td02D02 identity-valid answer ]]
+++ IFS=$'\036'
+++ read -ra cands
+++ for cand in "${cands[@]}"
+++ [[ -n 1fake:workerfake:leadworker.0maintd02td02D02 identity-valid answer ]]
+++ IFS=$'\037'
+++ read -r _ c_actor c_target c_aslot c_tslot c_asess c_tsess c_sum
+++ [[ -n worker.0 ]]
+++ [[ -n worker.0 ]]
+++ [[ worker.0 == worker\.0 ]]
+++ [[ td02 == td02 ]]
+++ [[ main == main ]]
+++ [[ td02 == td02 ]]
+++ rep_ok=true
+++ rep_text='D02 identity-valid answer'
+++ break
+++ can_ok=false
+++ can_text=
+++ [[ -n '' ]]
+++ [[ false == true ]]
+++ [[ true == true ]]
+++ status=replied
+++ summary='D02 identity-valid answer'
+++ printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' replied ask ae-20260820T170328Z-75afd2c3 fake:lead fake:worker 2026-08-20T17:03:29Z /tmp/aecx/tpl/d02/home/.ae/sessions/td02/messages/ae-20260820T170328Z-75afd2c3.ask.G96JWB.txt main worker.0 td02 td02 'D02 identity-valid answer'
+++ (( i-- ))
+++ (( i >= 0 ))
+++ return 0
++ case "$mode" in
++ printf '%-8s %-8s %-28s %-20s %-20s %s\n' replied ask ae-20260820T170328Z-75afd2c3 fake:lead fake:worker 'D02 identity-valid answer'
++ IFS=$'\037'
++ read -r status kind ref sender target _ _ actor_slot target_slot actor_session target_session summary

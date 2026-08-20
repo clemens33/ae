@@ -1,0 +1,5 @@
+SESSION                   STATUS    MODE        ORIGIN
+tpairwaitinguseroverblocked  running   local       /tmp/aecx/tpl/p_pair-waitinguser-over-blocked/work
+  git:master · ae 0.2.1 · active 5m ago · attn:waiting-user
+  fake:high               -         waiting-user  
+  fake:low                -         blocked       

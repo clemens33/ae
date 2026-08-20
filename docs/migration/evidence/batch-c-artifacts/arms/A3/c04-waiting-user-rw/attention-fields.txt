@@ -1,13 +1,12 @@
-## attention fields, extracted from out/list-json.stdout
-"needs_attention":true
-"attention":"waiting-user"
-"attention_rank":4
-## per-agent reasons
-"agents":[{"ref":"fake:lead"
-"alive":true
-"state":"working"
-"reason":null}
-{"ref":"fake:worker"
-"alive":true
-"state":"waiting-user"
-"reason":null}]}]}
+## attention fields, re-derived from out/list-json.stdout
+source=out/list-json.stdout sha256=0296e803dce558c7ca5ca3a9b01e5f934ce45102dbc04914cb4ce5f00c3e4e2a bytes=589
+derivation=pure post-processing of the captured bytes; nothing was re-run
+
+session=tg2wu
+  needs_attention=true
+  attention="waiting-user"
+  attention_rank=4
+  last_active_epoch=1787242416
+  agents:
+    {"alias": "fake", "alive": true, "name": "lead", "reason": null, "ref": "fake:lead", "session_id": "-", "state": "working"}
+    {"alias": "fake", "alive": true, "name": "worker", "reason": null, "ref": "fake:worker", "session_id": "-", "state": "waiting-user"}

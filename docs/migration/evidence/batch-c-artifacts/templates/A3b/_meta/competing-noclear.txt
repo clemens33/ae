@@ -1,0 +1,21 @@
+group=A3b
+member=competing-noclear
+fingerprint_pre_protection=47bbcb7b8c71b6a6bcb3762879d8a5ddf6444885d18e090bb4d8813e0a09bdbd
+source_sandbox=/tmp/aecx/tpl/p_competing-noclear
+source_session=tcompetingnoclear
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T17:17:15Z
+--- provenance ---
+member=competing-noclear rows=SC-017g competing set, uninvolved asker
+rank ladder cited from the frozen source: ae@72c7293:3571-3581 (comment at :3586)
+construction: the HIGHER-rank reason arrives FIRST, the adjacent LOWER-rank reason LAST
+watchdog knobs: INTERVAL=5 STALE_MIN=1 MAX_NUDGES=2 THROTTLE_ALERT_CYCLES=2
+no reason-owner is the actor of any later event, so no own-activity clear can occur
+  T0: kill the fake child under fake:high's pane -> DEAD alert (rank 6)
+  T1: fake:low declares waiting-user (rank 4)
+    rc=0
+  T2: fake:asker — an agent owning NO reason — asks fake:third, aged, never replied (rank 1).
+      This is the fix for the own-activity clear: in the earlier G2b the asker was the
+      dead agent itself, so its own later event cleared its own alert.
+    rc=0
+fingerprint_protected=7596649ff596114dc7e375f6d8cc4648a4355a9ff48bdb81ae5b8c293a049166

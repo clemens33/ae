@@ -1,17 +1,13 @@
-## attention fields, extracted from out/list-json.stdout
-"needs_attention":true
-"attention":"blocked"
-"attention_rank":3
-## per-agent reasons
-"agents":[{"ref":"fake:lead"
-"alive":true
-"state":null
-"reason":null}
-{"ref":"fake:bravo"
-"alive":true
-"state":"blocked"
-"reason":null}
-{"ref":"fake:charlie"
-"alive":true
-"state":null
-"reason":null}]}]}
+## attention fields, re-derived from out/list-json.stdout
+source=out/list-json.stdout sha256=dd3df4444cd56792e2505efdf95757a960168431d1fa15204c9fde5628488d46 bytes=681
+derivation=pure post-processing of the captured bytes; nothing was re-run
+
+session=ta3g
+  needs_attention=true
+  attention="blocked"
+  attention_rank=3
+  last_active_epoch=1787244483
+  agents:
+    {"alias": "fake", "alive": true, "name": "lead", "reason": null, "ref": "fake:lead", "session_id": "-", "state": null}
+    {"alias": "fake", "alive": true, "name": "bravo", "reason": null, "ref": "fake:bravo", "session_id": "-", "state": "blocked"}
+    {"alias": "fake", "alive": true, "name": "charlie", "reason": null, "ref": "fake:charlie", "session_id": "-", "state": null}

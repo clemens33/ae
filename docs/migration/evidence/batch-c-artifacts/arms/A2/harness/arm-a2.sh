@@ -103,6 +103,37 @@ a2_case() { # <mode>
     run_consumer "list_badflag" "$aehome" "$sock" -- "$B" "$AE" list --no-such-flag
     run_consumer "list_help"    "$aehome" "$sock" -- "$B" "$AE" list --help
 
+    # SC-017 activity window: at the wall clock the fixture's recent session is already
+    # far outside the 300s default, so every --active capture would be empty and the
+    # active/stopped intersections would prove nothing. The window is therefore made
+    # NON-VACUOUS by freezing the consumer's clock either side of it, from the fixture's
+    # own recorded mtime — both specimens, and both argument orders for each.
+    local mt inside outside
+    mt="$(stat -f %m "$aehome/sessions/tg1/events.jsonl")"
+    inside=$((mt + 60)); outside=$((mt + 100000))
+    export ARM_DATE_SHIM_LOG="$ACAP/date-shim.log"; : >"$ARM_DATE_SHIM_LOG"
+    { echo "## activity-window specimens"
+      echo "tg1_events_mtime_epoch=$mt utc=$(/bin/date -u -r "$mt" +%Y-%m-%dT%H:%M:%SZ)"
+      echo "inside_window_now=$inside  (mtime + 60s; the documented default window is 300s)"
+      echo "outside_window_now=$outside (mtime + 100000s)"
+      echo "clock frozen by the PATH-first date shim; every non-now-form still delegates"
+    } >"$ACAP/activity-window.txt"
+    led activity-window-specimens "mtime=$mt" "inside_now=$inside" "outside_now=$outside"         "artifact_sha256=$(sha "$ACAP/activity-window.txt")"
+    local win now
+    for win in inside outside; do
+        [[ "$win" == inside ]] && now=$inside || now=$outside
+        ARM_FAKE_NOW=$now run_consumer "win_${win}_list_active"       "$aehome" "$sock" -- "$B" "$AE" list --active
+        ARM_FAKE_NOW=$now run_consumer "win_${win}_list_active_json"  "$aehome" "$sock" -- "$B" "$AE" list --active --json
+        ARM_FAKE_NOW=$now run_consumer "win_${win}_list_busy"         "$aehome" "$sock" -- "$B" "$AE" list --busy
+        ARM_FAKE_NOW=$now run_consumer "win_${win}_active_all"        "$aehome" "$sock" -- "$B" "$AE" list --active --all
+        ARM_FAKE_NOW=$now run_consumer "win_${win}_all_active"        "$aehome" "$sock" -- "$B" "$AE" list --all --active
+        ARM_FAKE_NOW=$now run_consumer "win_${win}_active_stopped"    "$aehome" "$sock" -- "$B" "$AE" list --active --stopped
+        ARM_FAKE_NOW=$now run_consumer "win_${win}_stopped_active"    "$aehome" "$sock" -- "$B" "$AE" list --stopped --active
+        ARM_FAKE_NOW=$now run_consumer "win_${win}_needsattn_active"  "$aehome" "$sock" -- "$B" "$AE" list --needs-attn --active
+        ARM_FAKE_NOW=$now run_consumer "win_${win}_active_needsattn"  "$aehome" "$sock" -- "$B" "$AE" list --active --needs-attn
+    done
+    unset ARM_DATE_SHIM_LOG
+
     dir_manifest "$aehome" >"$ACAP/manifest.after.tsv"
     led manifest-after "artifact_sha256=$(sha "$ACAP/manifest.after.tsv")"
     { echo "## panes"; command tmux -S "$sock" list-panes -a -F '#{session_name}|#{pane_id}|#{@ae_agent}|#{@ae_slot}|#{pane_current_command}'

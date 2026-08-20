@@ -1,0 +1,12 @@
+arm=A3b case=c01-dead-over-stale rows=SC-017g template=A3b/pair-dead-over-stale clone_mode=rw session=tpairdeadoverstale
+template_fingerprint_pre_protection=4529353c588016259b7b6b7dd7e0af3d2769d64f85959a2a7fb3c95df063430a
+template_fingerprint_protected=1e9c59a0ad58d77bb1c092229671c1d33d5903d09d48dc1f135ef099782ad420
+clone_fingerprint=4529353c588016259b7b6b7dd7e0af3d2769d64f85959a2a7fb3c95df063430a
+clone_fingerprint_matches_template=yes
+live_topology=one pane per roster entry, the fixture's controllable fake binary, never a live model
+tmux_socket=/tmp/aecx/arms/A3b/c01-dead-over-stale-rw/live.sock
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+utc_start=2026-08-20T17:21:52Z
+manifest_diff_lines=0
+tmux_snapshot_identical=yes
+utc_end=2026-08-20T17:21:56Z

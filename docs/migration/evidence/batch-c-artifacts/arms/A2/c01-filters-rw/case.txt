@@ -10,7 +10,7 @@ live_topology_session_env=AE_SESSION/AE_ORIGIN/AE_DIR/AE_MODE/AE_HOME, stamped e
 clone_preserves_mtime=yes (harness change: events.jsonl MTIME is the frozen reader's activity clock, so a clone must carry the fixture's chosen mtime, not the clone's own)
 tmux_socket=/tmp/aecx/arms/A2/c01-filters-rw/live.sock
 frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-utc_start=2026-08-20T16:44:03Z
+utc_start=2026-08-20T17:20:49Z
 manifest_diff_lines=0
 tmux_snapshot_identical=yes
-utc_end=2026-08-20T16:44:34Z
+utc_end=2026-08-20T17:21:25Z

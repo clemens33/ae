@@ -1,0 +1,4 @@
+{"ts":"2026-08-20T17:18:58Z","actor":"watchdog","action":"nudge","target":"fake:high","summary":"no recent events, no recent ae activity","body_file":"/tmp/aecx/tpl/p_pair-stale-over-waitinguser/home/.ae/sessions/tpairstaleoverwaitinguser/messages/msg-20260820T171858Z.nudge.5yGZP3.txt"}
+{"ts":"2026-08-20T17:19:04Z","actor":"watchdog","action":"nudge","target":"fake:high","summary":"no recent events, no recent ae activity","body_file":"/tmp/aecx/tpl/p_pair-stale-over-waitinguser/home/.ae/sessions/tpairstaleoverwaitinguser/messages/msg-20260820T171904Z.nudge.fIGdbJ.txt"}
+{"ts":"2026-08-20T17:19:10Z","actor":"_watchdog","action":"alert","target":"fake:high","summary":"max nudges reached (no recent events), needs attention"}
+{"ts":"2026-08-20T17:19:25Z","actor":"fake:low","action":"state","ref":"waiting-user","summary":"A3b lower-rank declaration"}

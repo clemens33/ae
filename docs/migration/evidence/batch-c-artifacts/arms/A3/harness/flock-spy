@@ -1,0 +1,17 @@
+#!/opt/homebrew/bin/bash
+# PATH-first `flock` spy — PURE DELEGATE-AND-LOG, no active mode.
+# Records the argv, the caller pid and the wall clock around the call, then delegates to
+# the real binary unchanged and preserves its exit status. Present so a barrier arm can
+# show WHICH lock operations the reader and the writer actually performed and in what
+# order, without touching the frozen script.
+REAL="${AE_REAL_FLOCK:-/opt/homebrew/bin/flock}"
+if [[ -n "${AE_FLOCK_SPY_LOG:-}" ]]; then
+    { printf 'pid=%s\tppid=%s\tenter=%s\targv=' "$$" "$PPID" "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+      printf '%q ' "$@"; printf '\n'; } >>"$AE_FLOCK_SPY_LOG" 2>/dev/null || true
+fi
+"$REAL" "$@"
+_rc=$?
+if [[ -n "${AE_FLOCK_SPY_LOG:-}" ]]; then
+    printf 'pid=%s\tleave=%s\trc=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_rc" >>"$AE_FLOCK_SPY_LOG" 2>/dev/null || true
+fi
+exit $_rc

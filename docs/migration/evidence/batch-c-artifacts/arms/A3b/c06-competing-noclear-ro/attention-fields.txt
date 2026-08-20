@@ -1,0 +1,14 @@
+## attention fields, re-derived from out/list-json.stdout
+source=out/list-json.stdout sha256=d48f5b6a862a70c6a03e200bb9cbc8389d29bda155cca7dbeded58df98ec41da bytes=828
+derivation=pure post-processing of the captured bytes; nothing was re-run
+
+session=tcompetingnoclear
+  needs_attention=true
+  attention="dead"
+  attention_rank=6
+  last_active_epoch=1787246234
+  agents:
+    {"alias": "fake", "alive": true, "name": "high", "reason": null, "ref": "fake:high", "session_id": "-", "state": null}
+    {"alias": "fake", "alive": true, "name": "low", "reason": null, "ref": "fake:low", "session_id": "-", "state": "waiting-user"}
+    {"alias": "fake", "alive": true, "name": "third", "reason": null, "ref": "fake:third", "session_id": "-", "state": null}
+    {"alias": "fake", "alive": true, "name": "asker", "reason": null, "ref": "fake:asker", "session_id": "-", "state": null}

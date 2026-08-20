@@ -18,7 +18,7 @@ statements, no classification. Seats classify.
 | host | `Darwin 25.6.0 arm64` |
 | interpreter | `/opt/homebrew/bin/bash` — GNU bash 5.3.15(1) — sha256 `6ba6319962b59831740a56aa5f65e91d6467c72997f5d0a18be1ba1a6d8d378b` |
 | tmux | `/opt/homebrew/bin/tmux` — `tmux 3.7b` |
-| per-arm environment | `TZ=UTC`, `LANG=C`, `LC_ALL=C`, scrubbed `PATH`, fresh `HOME`/`AE_HOME`, own `TMPDIR`/`TMUX_TMPDIR`, dedicated tmux socket, cleaned per arm |
+| per-arm environment | `TZ=UTC`, `LANG=LC_ALL=en_US.UTF-8` (UTF-8 is required — see the correction section; A1–A4 all ran under it), scrubbed `PATH`, fresh `HOME`/`AE_HOME`, own `TMPDIR`/`TMUX_TMPDIR`, dedicated tmux socket, cleaned per arm |
 | live models / network | none used |
 
 ## Lane status
@@ -43,21 +43,32 @@ Only the sandboxes (template clones, tmux tmpdirs, sockets) live outside it.
 Every case keeps an append-only `admissibility-ledger.txt`: a monotonic `seq` plus UTC and
 epoch for each event — case open, rows, clone verification, the TAB round-trip
 START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the inactive-hook equivalence
-START/COMPLETE with its measured volatility floor, the before/after manifests, any
-barrier ARMED/REACHED/RELEASED and controller mutation, and every consumer START/COMPLETE
-with its rc and its stdout / stderr / tmuxtrace sha256. The ledger is written by the
-checks themselves as they run, so it establishes ORDER — that the standing checks
-completed before the first consumer invocation — from the original durable content, with
-each capture's own hash tied into the same record. Filesystem mtimes and the
-`SHA256SUMS.txt` list are not relied on for ordering.
+START/COMPLETE with its measured volatility floor, the before/after manifests, any barrier
+ARMED/REACHED/RELEASED and controller mutation, and every consumer START/COMPLETE with its
+rc and its stdout / stderr / tmuxtrace sha256. The ledger is written by the checks
+themselves as they run, so it establishes ORDER — that the standing checks completed
+before the first consumer invocation — from the original durable content, with each
+capture's own hash tied into the same record. Filesystem mtimes and the `SHA256SUMS.txt`
+list are not relied on for ordering.
 
-`arms/*/harness/manifest-tree-gate.sh` is the MANIFEST-versus-tree gate: it fails if this
-file cites a path that is not in the tree, if a published file is missing from its
-directory's `SHA256SUMS.txt`, or if any recorded hash no longer verifies. The tree it
+`arms/*/harness/manifest-tree-gate.sh` is the MANIFEST-versus-tree gate. The tree it
 audits is an ARGUMENT (first positional, then `$BATCH_C_ARTIFACTS`, then the live tree),
 so it can be red-proofed against a candidate copy instead of silently auditing the live
-one; it is proven to go red on a deleted listed file, on tampered bytes, and on a MANIFEST
-citation that does not resolve.
+one. It has two halves. The first is `arms/*/harness/path-cite-resolver.py`, a real
+multi-base resolver: every backticked path-shaped token in this file — including
+slash-less file citations like `FINGERPRINTS.tsv` and wildcard patterns — is resolved
+against the tree root, `arms/`, `templates/`, `twd-precursor/`, the repository root, the
+`<GROUP>/<member>` → `templates/<GROUP>/fixture-bytes/<member>` mapping, and the real
+context directories a relative citation can legitimately be written against (a case dir, an
+arms root, a group dir, a member's fixture-bytes dir, a session dir, a group `_meta` dir, a
+T-WD arm dir and its sub-dirs). A wildcard must expand NONEMPTY and every expansion must
+exist. It writes `PATH-CITES.tsv`, one row per citation with its class, the base that
+resolved it and the expansion count. The second half is SHA256SUMS coverage and
+verification per published directory. The two are complementary and both are red-proved:
+thirteen distinct injections (one per base, the mapping, an empty wildcard, each context
+class, a slash-less file, and a deleted citation target) each turn the resolver red, and a
+deleted case file — which the resolver cannot see, because that citation is a pattern
+satisfied by other cases — turns the SUMS half red instead.
 
 `hook-patch/` holds the ONE hook-only patch used by the barrier arms and the D-record
 designs — the unified diff, its generator, and the unmodified / hooked / patch hashes.
@@ -74,10 +85,15 @@ note (1306a→D01/Design 2, 1306b→D04a/Design 5, 1306c→D04b/Design 6, 1306d�
 
 | section | status |
 |---|---|
-| Step 0 — T-WD producer precursor (feeds G2) | COMPLETE (below) |
-| Template groups G1–G11 (+G2b) | COMPLETE — 12 groups, 29 members, all fingerprinted and chmod-protected (below) |
+| Step 0 — T-WD producer precursor (feeds G2) | COMPLETE |
+| Template groups G1–G11 (+G2b) + the A1/A2/A3/D members | COMPLETE — all fingerprinted and chmod-protected |
 | Arm group A1 (SC-509, 509b, 506, 510a–f, 511a–b, 405k) | COMPLETE, bash lane — 39 case runs |
-| Arm groups A2–A9 | not started |
+| Arm group A2 (SC-017a–f, 017i, 021, 521a) | COMPLETE, bash lane — 2 case runs x 54 invocations |
+| Arm group A3 (SC-017g, 017h, 524) | COMPLETE, bash lane — 20 case runs |
+| Arm group A3b (SC-017g adjacent pairs) | COMPLETE, bash lane — 12 case runs |
+| Arm group A4 (SC-016a–d, 513a–c, 019, 020a–c) | COMPLETE, bash lane — 7 case runs, incl. SC-020b on D04b's hook |
+| Arm groups A5–A9 | not started |
+| D-record executions (b0-design Designs 2–6) + SC-1306a–e | D01 and D02 COMPLETE with their controller-only twins; D03 fixture built; D03/D04a/D04b next |
 
 ---
 
@@ -438,7 +454,7 @@ Set equality against this enumeration is provable from
 ## Template groups G1-G11 (+G2b) and the A1 members
 
 A template MEMBER is a snapshot of a whole `AE_HOME` (its `config` plus
-`sessions/<session>/...`), so an arm clone is a working `AE_HOME` and the M2 bootstrap
+`sessions/<session>/`), so an arm clone is a working `AE_HOME` and the M2 bootstrap
 never runs against a protected tree. Every member is stored chmod-protected (`a-w`) and
 fingerprinted twice — before protection and after — over `_meta/<member>.modes.tsv`, the
 recursive manifest (type, mode, content hash, symlink target, path for every file). That
@@ -473,6 +489,14 @@ ruled not to be rebuilt.
 | `A3` | `017g-unanswered-vs-agent-owned` | `ta3g` | 38 | `5a610303e96ad18a7ddbed4245e68e94617184336a290f4c276846e978b9375b` | `ccd721fb59bb9799c11e2a55bcec9906946400408aeb7f3610394a999763edcd` | `(new member)` |
 | `A3` | `524a-future-ts-ordinary-mtime` | `tg1` | 42 | `fe7dac214fc310d387f7d983bc5d1e8d17bc272a519efc8efc53b2d14152c49a` | `d56b99e4b85163d19d3967874a21d66f6397225e823a0053596bf459f24dd49b` | `(new member)` |
 | `A3` | `524b-ordinary-ts-future-mtime` | `tg1` | 42 | `075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667` | `c940ecaed0bba78bb6b78f7a286ed3c65f601aa18f5a0babda6d2910aa062f18` | `(new member)` |
+| `A3b` | `competing-noclear` | `tcompetingnoclear` | 39 | `47bbcb7b8c71b6a6bcb3762879d8a5ddf6444885d18e090bb4d8813e0a09bdbd` | `7596649ff596114dc7e375f6d8cc4648a4355a9ff48bdb81ae5b8c293a049166` | `(new member)` |
+| `A3b` | `pair-blocked-over-throttled` | `tpairblockedoverthrottled` | 33 | `b0db024203d8a13b3e326daf1cb9b7214f0fc9d1d41fb3f508e5e83758f487df` | `bb7441fd113cd9dad8e2442b7a734809d57ae824a7826d412b24664e8019cde5` | `(new member)` |
+| `A3b` | `pair-dead-over-stale` | `tpairdeadoverstale` | 38 | `4529353c588016259b7b6b7dd7e0af3d2769d64f85959a2a7fb3c95df063430a` | `1e9c59a0ad58d77bb1c092229671c1d33d5903d09d48dc1f135ef099782ad420` | `(new member)` |
+| `A3b` | `pair-stale-over-waitinguser` | `tpairstaleoverwaitinguser` | 38 | `1a4b9cce376ac21bb359117a452b6c0955f9623dd82ace1576c6d80b2f0714b4` | `979b9bdcfe49d9f3763975aa321c3de596c4d292cdfdc1553299ffa875e3a48e` | `(new member)` |
+| `A3b` | `pair-throttled-over-unanswered` | `tpairthrottledoverunanswered` | 38 | `f397a68bc00ca03191655de0ec6207b07787c3f7149dc5695928c65f8e4afc64` | `e39eaf585b474db0f93ff670efe4de5c1b54a6333daa3d559e15c3d48cd15591` | `(new member)` |
+| `A3b` | `pair-waitinguser-over-blocked` | `tpairwaitinguseroverblocked` | 33 | `211b69861f9f331b9664bf277abfe1cd007296067f08aad64fd2de7601561a3e` | `b31945ae8c4612964f2eacc9dddacebe1e90917c836467012618355c0e53825e` | `(new member)` |
+| `D` | `d02-pending-with-harvested-reply` | `td02` | 40 | `c5a47d626ffaf77aed1dcfd551e1c945a71d612f3ee9ffaa8d16aa40e8192f14` | `c9863e6ad2a50e4b1e9912b29957bf6d972b3e48425bc8ce6a07154b16f7cd24` | `(new member)` |
+| `D` | `d03-31-numbered-events` | `td03` | 39 | `0bd4c21ce2c572b38527d83bc0ea8e8e82b830aee009453bfbfc1a18e9fa9dcb` | `d0d8630ccdb09be5fc6cdbe52960ccc134baea6840f2021c98fa47dd6656aa4d` | `(new member)` |
 | `G1` | `healthy` | `tg1` | 42 | `075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667` | `c940ecaed0bba78bb6b78f7a286ed3c65f601aa18f5a0babda6d2910aa062f18` | `bbfdf6957bb62063e2c5c94fc36844bede3eeab190027799b5a11164ddeab5dd` |
 | `G10` | `display-only-legacy` | `tg1` | 42 | `6de723ca980e505cb9833c1931ce95474c17192b8aea051cbc906b7fdb78de98` | `6d2ecd219feb5a0e2f77a46f9bee6b2ea5bf01e6841a438e6e096b3a9fe05d52` | `8d30b9a41b173a80a55376c5f840f390e50bd88bdfb5ec4dde08dfea632fa372` |
 | `G10` | `same-display-diff-routing` | `tg10` | 39 | `285cd5137c196a605e32088c6ad4657096e6da8375fda6afc2fdf8bd88ed9785` | `296b9224a4903e3b783484f69eb46c286716ce6f1ecd7c88cd479ac2b75cfb06` | `ed4e8f498da25df8aebefec61ef278b4afcf2fbbbce5c2a9567eae7c28496bac` |
@@ -556,7 +580,7 @@ Artifact paths (under `docs/migration/evidence/batch-c-artifacts/templates/`):
 - `<group>/fixture-bytes/<member>/` — `config`, `sessions/<s>/meta`,
   `sessions/<s>/events.jsonl`, `sessions/<s>/messages/*`, plus G11's producer INPUT files
   and A1/510c's planted producer input. The remaining files in a member are the
-  frozen-`ae`-generated helper set, hashed in `modes.tsv` rather than duplicated here
+  frozen-`ae`-generated helper set, hashed in `_meta/<member>.modes.tsv` rather than duplicated here
 - `date-shim/date`, `harness/` — the clock hook and every build script
 - `SHA256SUMS.txt`
 
@@ -601,6 +625,35 @@ comparison in the case ledger (`clone-VERIFIED`).
 The 524 pair starts from the same base member and differs only in WHICH of the two
 candidate activity sources is made anomalous, so the arm sees the incumbent's source
 choice directly instead of a fixture where both sources happen to agree.
+
+### A3b members — the adjacent-pair discrimination set
+
+The rank ladder is read out of the frozen source (`_attn_rank`, ae@72c7293:3571-3581, and
+the comment at :3586): dead 6 > stale 5 > waiting-user 4 > blocked 3 > throttled 2 >
+unanswered 1. Each pair member puts the HIGHER-rank reason FIRST in arrival order and the
+adjacent LOWER-rank reason LAST, so a last-wins reader and a rank-wins reader disagree,
+and each reason is owned by a DIFFERENT agent so no reason-owner is the actor of any later
+event.
+
+| member | construction |
+|---|---|
+| `A3b/pair-dead-over-stale` | the fake child under `fake:high`'s pane is killed (real watchdog raises the dead alert), then `fake:low` is left static past the shortened stale window until the real watchdog nudges twice and alerts |
+| `A3b/pair-stale-over-waitinguser` | `fake:high` is left static until the watchdog alerts; `fake:low` is kept demonstrably ACTIVE meanwhile (a line into its own pane every 15s) so it cannot accumulate a stale alert of its own, then declares waiting-user |
+| `A3b/pair-waitinguser-over-blocked` | `fake:high` declares waiting-user, then `fake:low` declares blocked, both through their own real `state` helpers |
+| `A3b/pair-blocked-over-throttled` | `fake:high` declares blocked, then `fake:low` prints the documented generic throttle phrase into its pane tail and the real watchdog emits `throttled` |
+| `A3b/pair-throttled-over-unanswered` | `fake:high` prints the throttle phrase (real watchdog emits `throttled`), then `fake:asker` — an agent owning NO reason — asks `fake:low` under the clock hook, aged past the 1800s default and never replied |
+| `A3b/competing-noclear` | dead (`fake:high`, real watchdog) then waiting-user (`fake:low`) then an aged unanswered ask issued by `fake:asker`, an agent owning no reason. This is the fix for the own-activity clear: in `G2b/competing` the asker was the dead agent itself, so its own later event cleared its own alert and the competition collapsed |
+
+`G2b/competing` is kept exactly as captured — the collapse it shows is itself a recorded
+observation, not something to erase — and `A3b/competing-noclear` is the additive
+non-collapsing construction beside it.
+
+### D members
+
+| group | member | construction |
+|---|---|---|
+| `D` | `d02-pending-with-harvested-reply` | a real `ask`, then a real `reply` produced by the real reply helper from the RESPONDER's own pane so it is identity-valid in every routing member; the reply LINE is then lifted out of `events.jsonl` (named mutation, byte diff recorded) leaving a genuinely PENDING request, and the removed bytes are carried INSIDE the member as `_d02-controller-payload.reply.jsonl` so a clone brings its own payload |
+| `D` | `d03-31-numbered-events` | 31 real `memo` invocations each carrying a unique numbered marker (`D03-SEED-EVENT-01..31`), so a follow window can be read off the pane BY NUMBER rather than by counting lines; three further real events are harvested and removed, and are carried inside the member as `_d03-payloads/` — one append sentinel and two distinct rotation sentinels |
 
 ## Arm group A1 — schema/document (bash lane)
 
@@ -770,6 +823,19 @@ intersection arms in BOTH orders — `--needs-attn --all`, `--all --needs-attn`,
 `--active --all`, `--all --active`, `--needs-attn --stopped`, `--active --stopped`
 (6 x 2 = 12); plus an unknown flag and `--help` (2). 54 invocations per clone mode, run on
 both the protected and the writable clone.
+
+**Activity window made non-vacuous (remediation).** At the wall clock the composite's one
+recent session is already far outside the documented 300s default, so every `--active`
+capture was empty and the active/stopped intersections proved nothing. The window is now
+exercised from BOTH sides by freezing the consumer's clock with the PATH-first date shim,
+using the fixture's OWN recorded mtime as the reference: `inside_window_now = mtime + 60s`
+and `outside_window_now = mtime + 100000s`, both recorded per case in
+`activity-window.txt` with the mtime they derive from. Nine invocations at each of the two
+frozen nows: `--active`, `--active --json`, `--busy`, and the intersections
+`--active --all`, `--all --active`, `--active --stopped`, `--stopped --active`,
+`--needs-attn --active`, `--active --needs-attn` — every intersection in BOTH argument
+orders. The shim's `date-shim.log` for the case records every `date` invocation the
+consumers made.
 ### A2 case table
 
 `checks<first consumer` names the ledger sequence numbers of the TAB round-trip
@@ -785,8 +851,8 @@ the ledger, and the before/at-barrier/after tmux snapshots bracket it.
 
 | case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
 |---|---|---|---|---|---|---|---|---|---|
-| `c01-filters-ro` | ro | SC-017a,SC-017b,SC-017c,SC-017d,SC-017e,SC-017f,SC-017i,SC-021,SC-521a | `A2/composite` | yes | 0 | yes | 54 | 8/10/12 | yes |
-| `c01-filters-rw` | rw | SC-017a,SC-017b,SC-017c,SC-017d,SC-017e,SC-017f,SC-017i,SC-021,SC-521a | `A2/composite` | yes | 0 | yes | 54 | 8/10/12 | yes |
+| `c01-filters-ro` | ro | SC-017a,SC-017b,SC-017c,SC-017d,SC-017e,SC-017f,SC-017i,SC-021,SC-521a | `A2/composite` | yes | 0 | yes | 72 | 8/10/12 | yes |
+| `c01-filters-rw` | rw | SC-017a,SC-017b,SC-017c,SC-017d,SC-017e,SC-017f,SC-017i,SC-021,SC-521a | `A2/composite` | yes | 0 | yes | 72 | 8/10/12 | yes |
 
 Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A2/<case>/`:
 
@@ -903,6 +969,78 @@ Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A3/<case>/`:
 - `A3/ledger.tsv` (case -> row ids), `A3/harness/` (the exact scripts and the
   tmux shim), `SHA256SUMS.txt` (every file above)
 
+## Arm group A3b — SC-017g adjacent-pair discrimination (bash lane)
+
+### A3b — what the arm does
+
+Row: SC-017g. This arm exists because A3 alone proved that each reason CAN appear and that
+waiting-user beats unanswered and blocked beats unanswered — but nothing in it
+discriminated the five ADJACENT pairs of the rank ladder, and in `G2b/competing` the later
+ask was issued by the dead agent itself, so its own activity cleared its own alert and the
+competition collapsed to waiting-user.
+
+Six cases, each run on both a protected and a writable clone, each on its own live
+topology: the five adjacent pairs (dead>stale, stale>waiting-user, waiting-user>blocked,
+blocked>throttled, throttled>unanswered) with the higher-rank reason arriving FIRST, plus
+a competing set whose aged unanswered ask is issued by an agent owning no reason at all.
+
+`attention-fields.txt` in every A3 and A3b case is re-derived from that case's captured
+`out/list-json.stdout` bytes — the source file's sha256 is recorded in the derived file
+and nothing is re-run — and now carries the session's `needs_attention` / `attention` /
+`attention_rank` / `last_active_epoch` plus the COMPLETE per-agent object (ref, alias,
+name, session_id, alive, state, reason). The earlier grep-based extraction dropped
+`alive` and `state`, which mattered: a null per-agent `reason` sitting beside a non-null
+session `attention` is visible now instead of being hidden by a lossy filter.
+### A3b case table
+
+`checks<first consumer` names the ledger sequence numbers of the TAB round-trip
+COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),
+and the first `consumer-START`. The ledger is append-only and written by the checks
+themselves, so the ordering is established by the original durable content — not by
+file mtimes and not by a hash list added afterwards. For a barrier case the first
+consumer activity is `barrier-ARMED` (the hooked run has no `consumer-START` line).
+
+A case whose design includes a CONTROLLER MUTATION necessarily shows a tmux delta;
+what the controller did, when, and from where is in `controller-mutation.txt` and in
+the ledger, and the before/at-barrier/after tmux snapshots bracket it.
+
+| case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
+|---|---|---|---|---|---|---|---|---|---|
+| `c01-dead-over-stale-ro` | ro | SC-017g | `A3b/pair-dead-over-stale` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c01-dead-over-stale-rw` | rw | SC-017g | `A3b/pair-dead-over-stale` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c02-stale-over-waitinguser-ro` | ro | SC-017g | `A3b/pair-stale-over-waitinguser` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c02-stale-over-waitinguser-rw` | rw | SC-017g | `A3b/pair-stale-over-waitinguser` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c03-waitinguser-over-blocked-ro` | ro | SC-017g | `A3b/pair-waitinguser-over-blocked` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c03-waitinguser-over-blocked-rw` | rw | SC-017g | `A3b/pair-waitinguser-over-blocked` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c04-blocked-over-throttled-ro` | ro | SC-017g | `A3b/pair-blocked-over-throttled` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c04-blocked-over-throttled-rw` | rw | SC-017g | `A3b/pair-blocked-over-throttled` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c05-throttled-over-unanswered-ro` | ro | SC-017g | `A3b/pair-throttled-over-unanswered` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c05-throttled-over-unanswered-rw` | rw | SC-017g | `A3b/pair-throttled-over-unanswered` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c06-competing-noclear-ro` | ro | SC-017g | `A3b/competing-noclear` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c06-competing-noclear-rw` | rw | SC-017g | `A3b/competing-noclear` | yes | 0 | yes | 10 | 8/10/12 | yes |
+
+Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A3b/<case>/`:
+
+- `admissibility-ledger.txt` — append-only, monotonic `seq` + UTC + epoch per event:
+  case open, rows, clone verification (clone vs expected fingerprint), the TAB
+  round-trip START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the
+  before/after manifests, and every consumer START/COMPLETE with its rc and its
+  stdout / stderr / tmuxtrace sha256
+- `env-tab-selfcheck.txt` — the TAB round-trip in this case's own scrubbed
+  environment, plus the paired `LANG=LC_ALL=C` probe on the same throwaway server
+- `tmux-shim-equivalence.txt` — live cases only: the delegate-and-log shim proven
+  byte-identical to the real binary on this arm's own stable topology
+- `case.txt`, `env.txt`, `consumers.tsv` (label, rc, stdout/stderr sha256 + bytes,
+  tmuxtrace sha256 + line count, bounded flag, exact argv)
+- `out/<label>.stdout`, `out/<label>.stderr` (present only when non-empty),
+  `out/<label>.tmuxtrace` — per invocation: the effective `AE_TMUX_SERVER` and kind,
+  the effective locale, and the DELEGATED tmux argv
+- `manifest.before.tsv` / `manifest.after.tsv` / `manifest.diff.txt` — recursive:
+  type, mode, content hash, symlink target, path across the cloned AE_HOME
+- `tmux.before.txt` / `tmux.after.txt`
+- `A3b/ledger.tsv` (case -> row ids), `A3b/harness/` (the exact scripts and the
+  tmux shim), `SHA256SUMS.txt` (every file above)
+
 ## Arm group A4 — status / next (bash lane)
 
 ### A4 — what the arm does
@@ -993,5 +1131,77 @@ Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A4/<case>/`:
   type, mode, content hash, symlink target, path across the cloned AE_HOME
 - `tmux.before.txt` / `tmux.after.txt`
 - `A4/ledger.tsv` (case -> row ids), `A4/harness/` (the exact scripts and the
+  tmux shim), `SHA256SUMS.txt` (every file above)
+
+## D-record executions (bash lane)
+
+### D-record executions — status
+
+`D01` (b0-design Design 2: list reader vs a live `goal` writer at `H_LIST_META_CAPTURED`)
+and `D02` (Design 3: request-scan reader vs a reply writer at
+`H_REQUEST_SCAN_COMPLETE`) have run, each with its CONTROLLER-ONLY TWIN — the same
+mutation performed alone on a fresh clone with no hooked reader, captured identically, so
+the controller's own effect can be subtracted. `D03`'s fixture is built and sealed
+(`D/d03-31-numbered-events`); D03 (Design 4, events-tail, four arms), D04a (Design 5,
+status pane-set cut) and D04b (Design 6, next selection/recheck with pty-attached clients)
+run next. SC-1306a–e ride the five designs per the mapping note and get no separate arms.
+
+Each barrier case carries `hook.patch`, the per-fixture `hook-inactive-equivalence.txt`
+with its measured control-control volatility floor, a `flockspy` log for every invocation
+(a PATH-first `flock` shim that is pure delegate-and-log), and an xtrace TWIN
+(`out/<prefix>.trace.xtrace`) run separately so the measured capture itself stays untraced.
+Snapshots bracket the mutation on both sides: `manifest.at-barrier-before-mutation.tsv`
+and `manifest.at-barrier-after-mutation.tsv`, with the matching tmux snapshots.
+
+**D02 needed one extra proof.** `_ar_request_states` is emitted into the session's OWN
+generated `requests` helper by `declare -f`, so the hook has to exist in THAT helper, not
+only in `ae`. The patch therefore adds `_ae_hook` to the `_lib` emission list, and the
+case regenerates the clone's helper set with the HOOKED binary through the frozen refresh
+path. Before anything is captured through the refreshed helper, `helper-refresh-equivalence.txt`
+proves it answers byte-for-byte as the pre-refresh helper did on the same fixture with the
+hook inactive — pre and post helper hashes, both rcs, both outputs. The helper is exercised
+IN PLACE, because it sources `_lib` from its own directory and a copy elsewhere cannot run
+at all; the first attempt compared a copy, the equivalence came back `identical=no`, and
+the harness refused to capture through it.
+### D case table
+
+`checks<first consumer` names the ledger sequence numbers of the TAB round-trip
+COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),
+and the first `consumer-START`. The ledger is append-only and written by the checks
+themselves, so the ordering is established by the original durable content — not by
+file mtimes and not by a hash list added afterwards. For a barrier case the first
+consumer activity is `barrier-ARMED` (the hooked run has no `consumer-START` line).
+
+A case whose design includes a CONTROLLER MUTATION necessarily shows a tmux delta;
+what the controller did, when, and from where is in `controller-mutation.txt` and in
+the ledger, and the before/at-barrier/after tmux snapshots bracket it.
+
+| case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
+|---|---|---|---|---|---|---|---|---|---|
+| `d01-controller-only-twin-twin` | twin | D01,SC-1306a | `G1/healthy` | - | 8 | - | 2 | 7/9/- | NO |
+| `d01-list-vs-goal-writer-barrier` | barrier | D01,SC-1306a | `G1/healthy` | - | 8 | - | 3 | 7/9/16 | yes |
+| `d02-controller-only-twin-twin` | twin | D02,SC-1306d | `D/d02-pending-with-harvested-reply` | - | 4 | - | 2 | 7/9/- | NO |
+| `d02-requests-vs-reply-writer-barrier` | barrier | D02,SC-1306d | `D/d02-pending-with-harvested-reply` | - | 4 | - | 3 | 7/9/19 | yes |
+
+Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/D/<case>/`:
+
+- `admissibility-ledger.txt` — append-only, monotonic `seq` + UTC + epoch per event:
+  case open, rows, clone verification (clone vs expected fingerprint), the TAB
+  round-trip START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the
+  before/after manifests, and every consumer START/COMPLETE with its rc and its
+  stdout / stderr / tmuxtrace sha256
+- `env-tab-selfcheck.txt` — the TAB round-trip in this case's own scrubbed
+  environment, plus the paired `LANG=LC_ALL=C` probe on the same throwaway server
+- `tmux-shim-equivalence.txt` — live cases only: the delegate-and-log shim proven
+  byte-identical to the real binary on this arm's own stable topology
+- `case.txt`, `env.txt`, `consumers.tsv` (label, rc, stdout/stderr sha256 + bytes,
+  tmuxtrace sha256 + line count, bounded flag, exact argv)
+- `out/<label>.stdout`, `out/<label>.stderr` (present only when non-empty),
+  `out/<label>.tmuxtrace` — per invocation: the effective `AE_TMUX_SERVER` and kind,
+  the effective locale, and the DELEGATED tmux argv
+- `manifest.before.tsv` / `manifest.after.tsv` / `manifest.diff.txt` — recursive:
+  type, mode, content hash, symlink target, path across the cloned AE_HOME
+- `tmux.before.txt` / `tmux.after.txt`
+- `D/ledger.tsv` (case -> row ids), `D/harness/` (the exact scripts and the
   tmux shim), `SHA256SUMS.txt` (every file above)
 

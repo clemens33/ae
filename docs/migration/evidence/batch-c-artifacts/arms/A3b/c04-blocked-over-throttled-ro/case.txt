@@ -1,0 +1,12 @@
+arm=A3b case=c04-blocked-over-throttled rows=SC-017g template=A3b/pair-blocked-over-throttled clone_mode=ro session=tpairblockedoverthrottled
+template_fingerprint_pre_protection=b0db024203d8a13b3e326daf1cb9b7214f0fc9d1d41fb3f508e5e83758f487df
+template_fingerprint_protected=bb7441fd113cd9dad8e2442b7a734809d57ae824a7826d412b24664e8019cde5
+clone_fingerprint=bb7441fd113cd9dad8e2442b7a734809d57ae824a7826d412b24664e8019cde5
+clone_fingerprint_matches_template=yes
+live_topology=one pane per roster entry, the fixture's controllable fake binary, never a live model
+tmux_socket=/tmp/aecx/arms/A3b/c04-blocked-over-throttled-ro/live.sock
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+utc_start=2026-08-20T17:22:17Z
+manifest_diff_lines=0
+tmux_snapshot_identical=yes
+utc_end=2026-08-20T17:22:20Z

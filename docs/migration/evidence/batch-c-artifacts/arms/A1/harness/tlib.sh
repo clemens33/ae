@@ -45,7 +45,7 @@ t_sandbox() {
         echo "fake = \"$FAKE_BIN\""
         echo
         echo "[workspace]"
-        echo "main = fake:lead"
+        echo "main = ${T_MAIN:-fake:lead}"
         [[ -n "$WORKERS" ]] && echo "workers = $WORKERS"
         echo "layout = vertical"
         echo "watchdog = ${T_WATCHDOG:-false}"

@@ -1,0 +1,5 @@
+## sessions
+tg1|1
+## panes
+tg1|%0|fake:lead|aefake
+tg1|%1|fake:worker|aefake

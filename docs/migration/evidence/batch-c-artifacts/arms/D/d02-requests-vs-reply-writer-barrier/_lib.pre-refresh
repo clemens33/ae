@@ -1,0 +1,1209 @@
+# tmux server shim
+_AE_META_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_ts="$(grep '^tmux_server=' "$_AE_META_DIR/meta" | cut -d= -f2-)"
+_tk="$(grep '^tmux_server_kind=' "$_AE_META_DIR/meta" 2>/dev/null | cut -d= -f2- || true)"
+if [[ "$_tk" == "ambiguous" ]]; then
+    tmux() {
+        echo "ae: refusing tmux operation — this session's server record is ambiguous; run 'ae doctor --refresh' first." >&2
+        return 1
+    }
+elif [[ "$_tk" == "socket" ]]; then
+    tmux() { command tmux -S "$_ts" "$@"; }
+elif [[ "$_tk" == "name" ]]; then
+    tmux() { command tmux -L "$_ts" "$@"; }
+elif [[ "$_ts" == /* ]]; then
+    tmux() { command tmux -S "$_ts" "$@"; }
+elif [[ -n "$_ts" ]]; then
+    tmux() { command tmux -L "$_ts" "$@"; }
+fi
+_AE_SESSION="$(grep '^session=' "$_AE_META_DIR/meta" | cut -d= -f2-)"
+_AE_SESSIONS_DIR="$(dirname "$_AE_META_DIR")"
+ae_resolve () 
+{ 
+    local target="$1";
+    AE_RESOLVED_PANE="";
+    AE_RESOLVED_AGENT="";
+    AE_RESOLVED_SLOT="";
+    AE_RESOLVED_SESSION="";
+    if [[ "$target" == %* ]]; then
+        AE_RESOLVED_PANE="$target";
+        local pane_agent pane_session;
+        pane_agent="$(tmux display-message -p -t "$target" '#{@ae_agent}' 2> /dev/null || true)";
+        pane_session="$(tmux display-message -p -t "$target" '#S' 2> /dev/null || true)";
+        AE_RESOLVED_SLOT="$(tmux display-message -p -t "$target" '#{@ae_slot}' 2> /dev/null || true)";
+        _valid_slot "$AE_RESOLVED_SLOT" || AE_RESOLVED_SLOT="";
+        AE_RESOLVED_SESSION="$pane_session";
+        if [[ -n "$pane_agent" ]]; then
+            if [[ -n "$pane_session" && "$pane_session" != "$_AE_SESSION" ]]; then
+                AE_RESOLVED_AGENT="@${pane_session}:${pane_agent}";
+            else
+                AE_RESOLVED_AGENT="$pane_agent";
+            fi;
+        fi;
+        return 0;
+    fi;
+    local search_session="$_AE_SESSION";
+    if [[ "$target" == @* ]]; then
+        if [[ "$target" != @*:* ]]; then
+            echo "Error: cross-session target must be @session:agent, got '${target}'" 1>&2;
+            return 1;
+        fi;
+        target="${target#@}";
+        search_session="${target%%:*}";
+        target="${target#*:}";
+        if [[ -z "$search_session" || -z "$target" ]]; then
+            echo "Error: cross-session target must be @session:agent" 1>&2;
+            return 1;
+        fi;
+        if ! tmux has-session -t "$search_session" 2> /dev/null; then
+            echo "Error: session '${search_session}' not found" 1>&2;
+            return 1;
+        fi;
+    fi;
+    local resolved="" resolved_agent="";
+    local alias_match="" alias_match_agent="" alias_count=0;
+    local bare_match="" bare_match_agent="" bare_count=0;
+    while IFS='	' read -r pid aagent; do
+        if [[ "$aagent" == "${target}" ]]; then
+            resolved="$pid";
+            if [[ "$search_session" != "$_AE_SESSION" ]]; then
+                resolved_agent="@${search_session}:${aagent}";
+            else
+                resolved_agent="$aagent";
+            fi;
+            break;
+        fi;
+        local aalias="${aagent%%:*}";
+        if [[ "$aalias" == "${target}" ]]; then
+            alias_match="$pid";
+            if [[ "$search_session" != "$_AE_SESSION" ]]; then
+                alias_match_agent="@${search_session}:${aagent}";
+            else
+                alias_match_agent="$aagent";
+            fi;
+            alias_count=$((alias_count + 1));
+        fi;
+        local aname="${aagent#*:}";
+        if [[ "$aname" == "${target}" ]]; then
+            bare_match="$pid";
+            if [[ "$search_session" != "$_AE_SESSION" ]]; then
+                bare_match_agent="@${search_session}:${aagent}";
+            else
+                bare_match_agent="$aagent";
+            fi;
+            bare_count=$((bare_count + 1));
+        fi;
+    done < <(tmux list-panes -s -t "$search_session" -F '#{pane_id}	#{@ae_agent}' 2> /dev/null);
+    if [[ -z "$resolved" && "$alias_count" -eq 1 ]]; then
+        resolved="$alias_match";
+        resolved_agent="$alias_match_agent";
+    fi;
+    if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
+        resolved="$bare_match";
+        resolved_agent="$bare_match_agent";
+    fi;
+    if [[ -z "$resolved" ]]; then
+        if [[ "$alias_count" -gt 1 || "$bare_count" -gt 1 ]]; then
+            echo "Error: ambiguous name '${target}' in session '${search_session}' — use alias:name format" 1>&2;
+        else
+            echo "Error: agent '${target}' not found in session '${search_session}'" 1>&2;
+        fi;
+        return 1;
+    fi;
+    AE_RESOLVED_PANE="$resolved";
+    AE_RESOLVED_AGENT="$resolved_agent";
+    AE_RESOLVED_SLOT="$(tmux display-message -p -t "$resolved" '#{@ae_slot}' 2> /dev/null || true)";
+    _valid_slot "$AE_RESOLVED_SLOT" || AE_RESOLVED_SLOT="";
+    AE_RESOLVED_SESSION="$(tmux display-message -p -t "$resolved" '#S' 2> /dev/null || true)";
+    return 0
+}
+ae_lock_target () 
+{ 
+    local pane="$1";
+    local lockdir="${_AE_SESSIONS_DIR}/.locks";
+    mkdir -p "$lockdir";
+    local lockfile="${lockdir}/send-lock-${pane//[^a-zA-Z0-9]/_}";
+    exec 9> "$lockfile";
+    flock 9
+}
+ae_unlock_target () 
+{ 
+    exec 9>&-
+}
+ae_now_utc () 
+{ 
+    date -u +%Y-%m-%dT%H:%M:%SZ
+}
+ae_current_pane () 
+{ 
+    if [[ -n "${TMUX_PANE:-}" ]]; then
+        printf '%s' "$TMUX_PANE";
+    else
+        tmux display-message -p '#{pane_id}' 2> /dev/null || true;
+    fi
+}
+ae_current_agent () 
+{ 
+    local pane;
+    pane="$(ae_current_pane)";
+    [[ -n "$pane" ]] || return 0;
+    tmux display-message -p -t "$pane" '#{@ae_agent}' 2> /dev/null || true
+}
+ae_current_agent_ref () 
+{ 
+    local agent session pane;
+    agent="$(ae_current_agent)";
+    [[ -n "$agent" ]] || return 0;
+    pane="$(ae_current_pane)";
+    session="$(tmux display-message -p -t "${pane:-$_AE_SESSION}" '#S' 2> /dev/null || true)";
+    if [[ -n "$session" && "$session" != "$_AE_SESSION" ]]; then
+        printf '@%s:%s' "$session" "$agent";
+    else
+        printf '%s' "$agent";
+    fi
+}
+ae_current_slot () 
+{ 
+    local pane slot;
+    pane="$(ae_current_pane)";
+    [[ -n "$pane" ]] || return 0;
+    slot="$(tmux display-message -p -t "$pane" '#{@ae_slot}' 2> /dev/null || true)";
+    _valid_slot "$slot" && printf '%s' "$slot";
+    return 0
+}
+_valid_slot () 
+{ 
+    [[ "$1" =~ ^(main|worker\.[0-9]+|spawned\.[0-9]+)$ ]]
+}
+ae_slot_resolver () 
+{ 
+    local want_session="$1" want_slot="$2" pid pslot pagent;
+    [[ -n "$want_slot" ]] || return 0;
+    local search="${want_session:-$_AE_SESSION}";
+    while IFS='|' read -r pid pslot pagent; do
+        [[ "$pslot" == "$want_slot" ]] || continue;
+        [[ -n "$pagent" ]] || continue;
+        if [[ -n "$want_session" && "$want_session" != "$_AE_SESSION" ]]; then
+            printf '@%s:%s' "$want_session" "$pagent";
+        else
+            printf '%s' "$pagent";
+        fi;
+        return 0;
+    done < <(tmux list-panes -s -t "$search" -F '#{pane_id}|#{@ae_slot}|#{@ae_agent}' 2> /dev/null || true);
+    return 0
+}
+ae_preview_text () 
+{ 
+    local text="$*";
+    text="${text//''/}";
+    text="${text//'
+'/\\n}";
+    text="${text//'	'/ }";
+    printf '%.200s' "$text"
+}
+ae_extract_req_id () 
+{ 
+    local text="$1";
+    if [[ "$text" =~ \[((ae|review)-[A-Za-z0-9._:-]+)\] ]]; then
+        printf '%s' "${BASH_REMATCH[1]}";
+    fi
+}
+ae_log_append () 
+{ 
+    local file="$1" line="$2";
+    { 
+        flock -w 5 8 || exit 1;
+        printf '%s\n' "$line" >> "$file"
+    } 8>> "${file}.lock"
+}
+ae_log_read () 
+{ 
+    local file="$1";
+    [[ -f "$file" ]] || return 0;
+    { 
+        flock -s 8 || exit 1;
+        cat "$file"
+    } 8<> "${file}.lock"
+}
+ae_target_tool () 
+{ 
+    local pane="$1" row agent cmd alias;
+    row="$(tmux list-panes -a -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2> /dev/null | awk -F'|' -v p="$pane" '$1==p {print; exit}')";
+    [[ -z "$row" ]] && { 
+        echo "other";
+        return 0
+    };
+    IFS='|' read -r _ agent cmd <<< "$row";
+    alias="${agent%%:*}";
+    if [[ "$alias" == "codex" || "$cmd" == "codex" ]]; then
+        echo "codex";
+    else
+        if [[ "$alias" == "claude" || "$cmd" == "claude" ]]; then
+            echo "claude";
+        else
+            echo "other";
+        fi;
+    fi
+}
+ae_json_escape () 
+{ 
+    local s="$1";
+    s="${s//\\/\\\\}";
+    s="${s//\"/\\\"}";
+    s="${s//'
+'/\\n}";
+    s="${s//'	'/\\t}";
+    s="${s//''/\\r}";
+    printf '%s' "$s"
+}
+ae_sanitize_utf8 () 
+{ 
+    local s="$1";
+    local LC_ALL=C;
+    if [[ "$s" != *['�'-'�']* ]]; then
+        _EV_CLEAN="$s";
+        return 0;
+    fi;
+    local out="" i=0 n=${#s} b c1 c2 c3 need lo hi ok;
+    while ((i < n)); do
+        printf -v b '%d' "'${s:i:1}";
+        if ((b < 0x80)); then
+            out+="${s:i:1}";
+            i=$((i + 1));
+            continue;
+        fi;
+        need=0;
+        lo=0x80;
+        hi=0xbf;
+        if ((b >= 0xc2 && b <= 0xdf)); then
+            need=1;
+        else
+            if ((b == 0xe0)); then
+                need=2;
+                lo=0xa0;
+            else
+                if ((b >= 0xe1 && b <= 0xec)); then
+                    need=2;
+                else
+                    if ((b == 0xed)); then
+                        need=2;
+                        hi=0x9f;
+                    else
+                        if ((b >= 0xee && b <= 0xef)); then
+                            need=2;
+                        else
+                            if ((b == 0xf0)); then
+                                need=3;
+                                lo=0x90;
+                            else
+                                if ((b >= 0xf1 && b <= 0xf3)); then
+                                    need=3;
+                                else
+                                    if ((b == 0xf4)); then
+                                        need=3;
+                                        hi=0x8f;
+                                    else
+                                        i=$((i + 1));
+                                        continue;
+                                    fi;
+                                fi;
+                            fi;
+                        fi;
+                    fi;
+                fi;
+            fi;
+        fi;
+        ok=1;
+        ((i + need < n)) || ok=0;
+        if ((ok)); then
+            printf -v c1 '%d' "'${s:i+1:1}";
+            ((c1 >= lo && c1 <= hi)) || ok=0;
+            if ((ok && need >= 2)); then
+                printf -v c2 '%d' "'${s:i+2:1}";
+                ((c2 >= 0x80 && c2 <= 0xbf)) || ok=0;
+            fi;
+            if ((ok && need >= 3)); then
+                printf -v c3 '%d' "'${s:i+3:1}";
+                ((c3 >= 0x80 && c3 <= 0xbf)) || ok=0;
+            fi;
+        fi;
+        if ((ok)); then
+            out+="${s:i:need+1}";
+            i=$((i + need + 1));
+        else
+            i=$((i + 1));
+        fi;
+    done;
+    _EV_CLEAN="$out";
+    return 0
+}
+ae_cap_summary () 
+{ 
+    local s="$1" max="$2";
+    local _mb='—';
+    if ((${#_mb} == 1)); then
+        if ((${#s} > max)); then
+            s="${s:0:max}";
+        fi;
+    else
+        local LC_ALL=C;
+        if ((${#s} > max)); then
+            s="${s:0:max}";
+            while [[ -n "$s" && "${s: -1}" == ['�'-'�'] ]]; do
+                s="${s%?}";
+            done;
+            [[ -n "$s" && "${s: -1}" == ['�'-'�'] ]] && s="${s%?}";
+        fi;
+    fi;
+    _EV_SUMMARY="$s";
+    return 0
+}
+ae_emit_event () 
+{ 
+    local action="$1" target="${2:-}" ref="${3:-}" summary="${4:-}";
+    local actor;
+    actor="${AE_SENDER_OVERRIDE:-$(ae_current_agent_ref)}";
+    [[ -n "$actor" ]] || actor="human";
+    local ts;
+    ts="$(date -u +%FT%TZ)";
+    ae_sanitize_utf8 "$summary";
+    summary="$_EV_CLEAN";
+    if [[ "$action" == "chat" ]]; then
+        ae_cap_summary "$summary" 3500;
+        summary="$_EV_SUMMARY";
+    else
+        summary="${summary//'
+'/ }";
+        summary="${summary//'	'/ }";
+        ae_cap_summary "$summary" 200;
+        summary="$_EV_SUMMARY";
+    fi;
+    local json;
+    json="$(printf '{"ts":"%s","actor":"%s","action":"%s"' "$(ae_json_escape "$ts")" "$(ae_json_escape "$actor")" "$(ae_json_escape "$action")")";
+    [[ -n "$target" ]] && json+="$(printf ',"target":"%s"' "$(ae_json_escape "$target")")";
+    [[ -n "$ref" ]] && json+="$(printf ',"ref":"%s"' "$(ae_json_escape "$ref")")";
+    [[ -n "${_AE_EVENT_ACTOR_SLOT:-}" ]] && json+="$(printf ',"actor_slot":"%s"' "$(ae_json_escape "$_AE_EVENT_ACTOR_SLOT")")";
+    [[ -n "${_AE_EVENT_ACTOR_SESSION:-}" ]] && json+="$(printf ',"actor_session":"%s"' "$(ae_json_escape "$_AE_EVENT_ACTOR_SESSION")")";
+    [[ -n "${_AE_EVENT_TARGET_SLOT:-}" ]] && json+="$(printf ',"target_slot":"%s"' "$(ae_json_escape "$_AE_EVENT_TARGET_SLOT")")";
+    [[ -n "${_AE_EVENT_TARGET_SESSION:-}" ]] && json+="$(printf ',"target_session":"%s"' "$(ae_json_escape "$_AE_EVENT_TARGET_SESSION")")";
+    [[ -n "$summary" ]] && json+="$(printf ',"summary":"%s"' "$(ae_json_escape "$summary")")";
+    [[ -n "${_AE_LAST_BODY_FILE:-}" ]] && json+="$(printf ',"body_file":"%s"' "$(ae_json_escape "$_AE_LAST_BODY_FILE")")";
+    json+="}";
+    ae_log_append "${_AE_META_DIR}/events.jsonl" "$json"
+}
+ae_latest_state_for () 
+{ 
+    local agent="$1";
+    local events="${_AE_META_DIR}/events.jsonl";
+    [[ -f "$events" ]] || return 0;
+    local line actor action st reason ts;
+    while IFS= read -r line; do
+        [[ "$line" == \{* ]] || continue;
+        _event_json_str "$line" actor;
+        actor="$_EV";
+        [[ "$actor" == "$agent" ]] || continue;
+        _event_json_str "$line" action;
+        action="$_EV";
+        case "$action" in 
+            state)
+                _event_json_str "$line" ref;
+                st="$_EV";
+                _event_json_str "$line" summary;
+                reason="$_EV";
+                _event_json_str "$line" ts;
+                ts="$_EV";
+                printf '%s\t%s\t%s\n' "$st" "$reason" "$ts";
+                return 0
+            ;;
+            done)
+                _event_json_str "$line" summary;
+                reason="$_EV";
+                _event_json_str "$line" ts;
+                ts="$_EV";
+                printf '%s\t%s\t%s\n' "done" "$reason" "$ts";
+                return 0
+            ;;
+        esac;
+    done < <(_ae_tac "$events" 2> /dev/null || true)
+}
+_event_json_str () 
+{ 
+    local line="$1" key="$2";
+    _EV="";
+    local prefix="\"${key}\":\"";
+    local rest="${line#*"${prefix}"}";
+    [[ "$rest" == "$line" ]] && return 0;
+    local head="${rest%%\"*}";
+    if [[ "$head" != *\\* ]]; then
+        _EV="$head";
+        return 0;
+    fi;
+    local result="" i=0 n=${#rest};
+    local c next;
+    while ((i < n)); do
+        c="${rest:$i:1}";
+        if [[ "$c" == "\\" ]]; then
+            next="${rest:$((i + 1)):1}";
+            case "$next" in 
+                n)
+                    result+=" "
+                ;;
+                t)
+                    result+=" "
+                ;;
+                r)
+
+                ;;
+                '"')
+                    result+='"'
+                ;;
+                "\\")
+                    result+="\\"
+                ;;
+                *)
+                    result+="$c$next"
+                ;;
+            esac;
+            i=$((i + 2));
+        else
+            if [[ "$c" == '"' ]]; then
+                break;
+            else
+                result+="$c";
+                i=$((i + 1));
+            fi;
+        fi;
+    done;
+    _EV="$result";
+    return 0
+}
+_agents_alert_reasons () 
+{ 
+    local events="$1" session="$2";
+    shift 2;
+    declare -p _AE_ALERT > /dev/null 2>&1 || declare -A _AE_ALERT=();
+    local a;
+    declare -A _pending=();
+    for a in "$@";
+    do
+        _AE_ALERT["$a"]="";
+        _pending["$a"]=1;
+    done;
+    local remaining="${#_pending[@]}";
+    ((remaining > 0)) || return 0;
+    [[ -f "$events" ]] || return 0;
+    local -a _pf=();
+    declare -A _esc_of=();
+    local _esc;
+    for a in "${!_pending[@]}";
+    do
+        if [[ "$a" == *'"'* || "$a" == *\\* || "$a" == *'
+'* || "$a" == *'	'* || "$a" == *''* ]]; then
+            _esc="$(ae_json_escape "$a")";
+        else
+            _esc="$a";
+        fi;
+        _esc_of["$a"]="$_esc";
+        _pf+=(-e "\"actor\":\"${_esc}\"");
+    done;
+    _pf+=(-e '"action":"alert"' -e '"action":"throttled"');
+    _pf+=(-e '"action":"throttle-cleared"' -e '"action":"alert-cleared"');
+    local line actor target action summary verdict;
+    local hit;
+    while IFS= read -r line; do
+        ((remaining > 0)) || break;
+        [[ "$line" == \{* ]] || continue;
+        hit=0;
+        for a in "${!_pending[@]}";
+        do
+            if [[ "$line" == *"${_esc_of[$a]}"* ]]; then
+                hit=1;
+                break;
+            fi;
+        done;
+        ((hit)) || continue;
+        _event_json_str "$line" actor;
+        actor="$_EV";
+        _event_json_str "$line" target;
+        target="$_EV";
+        action="";
+        for a in "${!_pending[@]}";
+        do
+            [[ "$actor" == "$a" || "$target" == "$a" || "$target" == "@${session}:${a}" ]] || continue;
+            if [[ -z "$action" ]]; then
+                _event_json_str "$line" action;
+                action="${_EV:--}";
+            fi;
+            verdict="";
+            case "$action" in 
+                alert)
+                    _event_json_str "$line" summary;
+                    summary="$_EV";
+                    case "$summary" in 
+                        *"not sweeping"*)
+                            verdict="stale"
+                        ;;
+                        *dead* | *dropped* | *missing* | *MISSING*)
+                            verdict="dead"
+                        ;;
+                        *throttl*)
+                            verdict="throttled"
+                        ;;
+                        *)
+                            verdict="stale"
+                        ;;
+                    esac
+                ;;
+                throttled)
+                    verdict="throttled"
+                ;;
+                throttle-cleared | alert-cleared)
+                    verdict=""
+                ;;
+                *)
+                    [[ "$actor" == "$a" ]] || continue;
+                    verdict=""
+                ;;
+            esac;
+            _AE_ALERT["$a"]="$verdict";
+            unset '_pending[$a]';
+            remaining=$((remaining - 1));
+        done;
+    done < <(grep -aF "${_pf[@]}" "$events" 2> /dev/null | _ae_tac || true);
+    return 0
+}
+_agent_alert_reason () 
+{ 
+    local events="$1" agent="$2" session="$3";
+    declare -A _AE_ALERT=();
+    _agents_alert_reasons "$events" "$session" "$agent";
+    printf '%s' "${_AE_ALERT[$agent]:-}";
+    return 0
+}
+ae_make_req_id () 
+{ 
+    local prefix="${1:-ae}";
+    local req_suffix;
+    req_suffix="$(cut -d- -f1 /proc/sys/kernel/random/uuid 2> /dev/null || true)";
+    [[ -n "$req_suffix" ]] || req_suffix="$(uuidgen 2> /dev/null | cut -d- -f1 | tr '[:upper:]' '[:lower:]' || true)";
+    [[ -n "$req_suffix" ]] || req_suffix="$(printf '%04x%04x' "$$" "$RANDOM")";
+    printf '%s-%s-%s' "$prefix" "$(date -u +%Y%m%dT%H%M%SZ)" "$req_suffix"
+}
+ae_tracked_send () 
+{ 
+    local action="$1" req_prefix="$2" header="$3" instructions="$4" reply_label="$5" target_name="$6";
+    shift 6;
+    local body="$*";
+    ae_require_body "$action" "$body" || exit 1;
+    local self _tgt_slot="" _tgt_session="" _actor_slot="";
+    self="${AE_SENDER_OVERRIDE:-$(ae_current_agent_ref)}";
+    if [[ -z "$self" ]]; then
+        echo "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead." 1>&2;
+        exec "${_AE_META_DIR}/send" "$target_name" "$body";
+    fi;
+    if [[ "$target_name" != telegram:* && "$target_name" != discord:* && "$target_name" != ae:compact:* ]]; then
+        ae_resolve "$target_name" || exit 1;
+        target_name="${AE_RESOLVED_AGENT:-$target_name}";
+        _tgt_slot="$AE_RESOLVED_SLOT";
+        _tgt_session="$AE_RESOLVED_SESSION";
+    fi;
+    if [[ -z "${AE_SENDER_OVERRIDE:-}" ]]; then
+        _actor_slot="$(ae_current_slot)";
+    fi;
+    local req_id;
+    req_id="$(ae_make_req_id "$req_prefix")";
+    local reply_cmd="${_AE_META_DIR}/reply --as \"${target_name}\" \"${req_id}\" \"${reply_label}\"";
+    local msg="${header} ${req_id} from ${self}: ${body}";
+    [[ -n "$instructions" ]] && msg+='
+
+'"${instructions}";
+    msg+='
+
+'"REQUIRED: When you have finished, you MUST run this exact command to reply:
+${reply_cmd}
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism.";
+    exec env _AE_EVENT_ACTION="$action" _AE_EVENT_REF="$req_id" _AE_EVENT_SUMMARY="$body" _AE_EVENT_ACTOR_SLOT="$_actor_slot" _AE_EVENT_ACTOR_SESSION="${_AE_SESSION:-}" _AE_EVENT_TARGET_SLOT="$_tgt_slot" _AE_EVENT_TARGET_SESSION="$_tgt_session" "${_AE_META_DIR}/send" "$target_name" "$msg"
+}
+ae_find_request () 
+{ 
+    local req_id="$1";
+    local events_file="${_AE_META_DIR}/events.jsonl";
+    [[ -f "$events_file" ]] || return 1;
+    local line ref action actor target;
+    while IFS= read -r line; do
+        [[ "$line" == \{* ]] || continue;
+        _event_json_str "$line" ref;
+        ref="$_EV";
+        [[ "$ref" == "$req_id" ]] || continue;
+        _event_json_str "$line" action;
+        action="$_EV";
+        if [[ "$action" == "ask" || "$action" == "review" ]]; then
+            _event_json_str "$line" actor;
+            actor="$_EV";
+            _event_json_str "$line" target;
+            target="$_EV";
+            local a_slot a_sess t_slot t_sess;
+            _event_json_str "$line" actor_slot;
+            a_slot="$_EV";
+            _event_json_str "$line" actor_session;
+            a_sess="$_EV";
+            _event_json_str "$line" target_slot;
+            t_slot="$_EV";
+            _event_json_str "$line" target_session;
+            t_sess="$_EV";
+            if [[ -n "${a_slot}${a_sess}${t_slot}${t_sess}" ]]; then
+                printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$action" "$actor" "$target" "$a_slot" "$a_sess" "$t_slot" "$t_sess";
+            else
+                printf '%s\x1f%s\x1f%s\n' "$action" "$actor" "$target";
+            fi;
+            return 0;
+        fi;
+    done < <(_ae_tac "$events_file" 2> /dev/null || true);
+    return 1
+}
+ae_require_body () 
+{ 
+    local what="$1" body="$2";
+    if [[ -z "${body//[[:space:]]/}" ]]; then
+        echo "ae: ${what} REFUSED — the message body is empty (or only whitespace). Nothing was sent." 1>&2;
+        echo "ae: a delivered header with no body reads as a message that was received and said nothing." 1>&2;
+        return 1;
+    fi;
+    return 0
+}
+ae_store_message_body () 
+{ 
+    local ref="$1" action="$2" body="$3" dir="${_AE_META_DIR}/messages" stem;
+    [[ -n "$body" ]] || return 0;
+    mkdir -p "$dir" 2> /dev/null || return 0;
+    if [[ "$ref" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        stem="$ref";
+    else
+        stem="msg-$(date -u +%Y%m%dT%H%M%SZ)";
+    fi;
+    [[ "$action" =~ ^[A-Za-z0-9._-]+$ ]] || action="send";
+    local _tmp;
+    _tmp="$(mktemp "${dir}/${stem}.${action}.XXXXXX" 2> /dev/null)" || { 
+        _AE_LAST_BODY_FILE="";
+        return 0
+    };
+    if command mv -f "$_tmp" "${_tmp}.txt" 2> /dev/null; then
+        _AE_LAST_BODY_FILE="${_tmp}.txt";
+    else
+        _AE_LAST_BODY_FILE="$_tmp";
+    fi;
+    printf '%s' "$body" > "$_AE_LAST_BODY_FILE" 2> /dev/null || { 
+        rm -f "$_AE_LAST_BODY_FILE" 2> /dev/null || true;
+        _AE_LAST_BODY_FILE="";
+        return 0
+    };
+    chmod 600 "$_AE_LAST_BODY_FILE" 2> /dev/null || true;
+    return 0
+}
+ae_provenance_sender () 
+{ 
+    if [[ -n "${AE_SENDER_OVERRIDE:-}" ]]; then
+        printf '%s' "$AE_SENDER_OVERRIDE";
+        return 0;
+    fi;
+    local pane="${TMUX_PANE:-}";
+    [[ -n "$pane" ]] || return 0;
+    [[ -n "${TMUX:-}" ]] || return 0;
+    local _sock="${TMUX%%,*}" _rest="${TMUX#*,}";
+    local _pid="${_rest%%,*}";
+    [[ -n "$_sock" && -n "$_pid" ]] || return 0;
+    local _ours;
+    _ours="$(command tmux -S "$_sock" display-message -p '#{socket_path} #{pid}' 2> /dev/null || true)";
+    [[ "$_ours" == "${_sock} ${_pid}" ]] || return 0;
+    local _srv _kind _theirs;
+    _srv="$(ae_meta_get tmux_server)";
+    _kind="$(ae_meta_get tmux_server_kind)";
+    [[ -n "$_srv" && "$_kind" != "ambiguous" ]] || return 0;
+    if [[ "$_kind" == "name" ]]; then
+        _theirs="$(command tmux -L "$_srv" display-message -p '#{socket_path} #{pid}' 2> /dev/null || true)";
+    else
+        _theirs="$(command tmux -S "$_srv" display-message -p '#{socket_path} #{pid}' 2> /dev/null || true)";
+    fi;
+    [[ -n "$_theirs" && "$_theirs" == "$_ours" ]] || return 0;
+    local seen;
+    seen="$(command tmux -S "$_sock" display-message -p -t "$pane" '#{pane_id}' 2> /dev/null || true)";
+    [[ "$seen" == "$pane" ]] || return 0;
+    local agent;
+    agent="$(command tmux -S "$_sock" display-message -p -t "$pane" '#{@ae_agent}' 2> /dev/null || true)";
+    [[ -n "$agent" ]] || return 0;
+    local session;
+    session="$(command tmux -S "$_sock" display-message -p -t "$pane" '#S' 2> /dev/null || true)";
+    if [[ -n "$session" && "$session" != "$_AE_SESSION" ]]; then
+        printf '@%s:%s' "$session" "$agent";
+    else
+        printf '%s' "$agent";
+    fi;
+    return 0
+}
+ae_submit_pasted_message () 
+{ 
+    local pane="$1" tool="$2" buf="$3" msg="$4";
+    local _settle=0.1;
+    if ! printf '%s' "$msg" | tmux load-buffer -b "$buf" - 2> /dev/null; then
+        echo "ae: paste transport FAILED for pane ${pane} (${tool}) — could not stage ${#msg} bytes. Nothing was sent." 1>&2;
+        return 1;
+    fi;
+    if [[ "$tool" == "codex" ]]; then
+        if ! tmux paste-buffer -d -p -b "$buf" -t "$pane" 2> /dev/null; then
+            echo "ae: paste FAILED into pane ${pane} (${tool}) — nothing was sent." 1>&2;
+            return 1;
+        fi;
+    else
+        if ! tmux paste-buffer -d -b "$buf" -t "$pane" 2> /dev/null; then
+            echo "ae: paste FAILED into pane ${pane} (${tool}) — nothing was sent." 1>&2;
+            return 1;
+        fi;
+        _settle=0.3;
+    fi;
+    sleep "$_settle";
+    tmux send-keys -t "$pane" Enter;
+    local _attempt=0;
+    while ((_attempt < 2)); do
+        sleep 0.3;
+        if ! _paste_still_staged "$pane" "$tool" "$msg"; then
+            return 0;
+        fi;
+        tmux send-keys -t "$pane" Enter;
+        _attempt=$((_attempt + 1));
+    done;
+    sleep 0.3;
+    if ! _paste_still_staged "$pane" "$tool" "$msg"; then
+        return 0;
+    fi;
+    echo "ae: submit UNCONFIRMED to pane ${pane} (${tool}) — message may not have sent. Re-send." 1>&2;
+    return 1
+}
+_capture_input_region () 
+{ 
+    local pane="$1";
+    tmux capture-pane -e -p -t "$pane" -S 0 2> /dev/null || true;
+    return 0
+}
+_sgr_parse () 
+{ 
+    _SGR_BOLD=();
+    _SGR_DIM=();
+    _SGR_TEXT=();
+    _SGR_LINE=();
+    local rest="$1" bold=0 dim=0 line=0 body seq rem final params text chunk;
+    local -a ps;
+    local j v;
+    while [[ -n "$rest" ]]; do
+        if [[ "$rest" == '['* ]]; then
+            body="${rest#'['}";
+            seq="${body%%[a-zA-Z]*}";
+            rem="${body#"$seq"}";
+            final="${rem:0:1}";
+            rest="${rem:1}";
+            [[ "$final" == "m" ]] || continue;
+            params="${seq:-0}";
+            IFS=';' read -ra ps <<< "$params";
+            j=0;
+            while ((j < ${#ps[@]})); do
+                v="${ps[j]:-0}";
+                case "$v" in 
+                    "" | 0)
+                        bold=0;
+                        dim=0
+                    ;;
+                    1)
+                        bold=1
+                    ;;
+                    2)
+                        dim=1
+                    ;;
+                    21 | 22)
+                        bold=0;
+                        dim=0
+                    ;;
+                    38 | 48)
+                        if [[ "${ps[j + 1]:-}" == "5" ]]; then
+                            ((j += 2));
+                        else
+                            if [[ "${ps[j + 1]:-}" == "2" ]]; then
+                                ((j += 4));
+                            fi;
+                        fi
+                    ;;
+                esac;
+                j=$((j + 1));
+            done;
+            continue;
+        fi;
+        if [[ "$rest" == ''* ]]; then
+            rest="${rest:1}";
+            while [[ -n "$rest" ]]; do
+                case "${rest:0:1}" in 
+                    ' ' | '!' | '"' | '#' | '$' | '%' | '&' | "'" | '(' | ')' | '*' | '+' | ',' | '-' | '.' | '/')
+                        rest="${rest:1}"
+                    ;;
+                    *)
+                        rest="${rest:1}";
+                        break
+                    ;;
+                esac;
+            done;
+            continue;
+        fi;
+        text="${rest%%''*}";
+        rest="${rest#"$text"}";
+        [[ -n "$text" ]] || continue;
+        while [[ "$text" == *'
+'* ]]; do
+            chunk="${text%%'
+'*}";
+            text="${text#*'
+'}";
+            if [[ -n "$chunk" ]]; then
+                _SGR_BOLD+=("$bold");
+                _SGR_DIM+=("$dim");
+                _SGR_TEXT+=("$chunk");
+                _SGR_LINE+=("$line");
+            fi;
+            line=$((line + 1));
+        done;
+        if [[ -n "$text" ]]; then
+            _SGR_BOLD+=("$bold");
+            _SGR_DIM+=("$dim");
+            _SGR_TEXT+=("$text");
+            _SGR_LINE+=("$line");
+        fi;
+    done;
+    return 0
+}
+_input_region_prompt_seg () 
+{ 
+    local live_only="$1";
+    shift;
+    _SGR_PROMPT_SEG=-1;
+    _SGR_PROMPT_TAIL="";
+    _SGR_PROMPT_ORN="";
+    [[ -n "${_SGR_TEXT+x}" ]] || return 1;
+    local n=${#_SGR_TEXT[@]};
+    ((n > 0)) || return 1;
+    local maxline=${_SGR_LINE[n - 1]};
+    local line i lead rest orn found;
+    for ((line = maxline; line >= 0; line--))
+    do
+        found=-1;
+        for ((i = 0; i < n; i++))
+        do
+            [[ "${_SGR_LINE[i]}" == "$line" ]] || continue;
+            [[ -z "${_SGR_TEXT[i]//[[:space:]]/}" ]] && continue;
+            found=$i;
+            break;
+        done;
+        ((found >= 0)) || continue;
+        lead="${_SGR_TEXT[found]}";
+        rest="${lead#"${lead%%[![:space:]]*}"}";
+        for orn in "$@";
+        do
+            [[ "$rest" == "$orn"* ]] || continue;
+            if ((live_only == 1)); then
+                [[ "${_SGR_BOLD[found]}" == 1 && "${_SGR_DIM[found]}" == 0 ]] || continue;
+            fi;
+            _SGR_PROMPT_SEG=$found;
+            _SGR_PROMPT_TAIL="$rest";
+            _SGR_PROMPT_ORN="$orn";
+            return 0;
+        done;
+    done;
+    return 1
+}
+_input_region_is_border () 
+{ 
+    local row="$1" maxw="$2";
+    [[ -n "$row" ]] || return 1;
+    [[ -z "${row//─/}" ]] || return 1;
+    ((${#row} == maxw)) || return 1;
+    return 0
+}
+_input_region_content_end () 
+{ 
+    local pl="$1" stop_at="$2" n=${#_SGR_TEXT[@]} i line;
+    local -a nonblank=() rowtext=();
+    _SGR_CONTENT_END=$((${_SGR_LINE[n - 1]} + 1));
+    local maxw=0 w;
+    for ((i = 0; i < n; i++))
+    do
+        line=${_SGR_LINE[i]};
+        rowtext[line]="${rowtext[line]:-}${_SGR_TEXT[i]}";
+    done;
+    for line in "${!rowtext[@]}";
+    do
+        w=${#rowtext[line]};
+        if ((w > maxw)); then
+            maxw=$w;
+        fi;
+    done;
+    for ((i = 0; i < n; i++))
+    do
+        line=${_SGR_LINE[i]};
+        ((line > pl)) || continue;
+        ((line < _SGR_CONTENT_END)) || continue;
+        [[ -z "${_SGR_TEXT[i]//[[:space:]]/}" ]] && continue;
+        nonblank[line]=1;
+        if [[ "$stop_at" == "border" ]] && _input_region_is_border "${rowtext[line]}" "$maxw"; then
+            _SGR_CONTENT_END=$line;
+        fi;
+    done;
+    if [[ "$stop_at" == "blank" ]]; then
+        for ((line = _SGR_CONTENT_END - 1; line > pl; line--))
+        do
+            if [[ -z "${nonblank[line]:-}" ]]; then
+                _SGR_CONTENT_END=$line;
+                break;
+            fi;
+        done;
+    fi;
+    return 0
+}
+_input_region_occupied () 
+{ 
+    local pane="$1" tool="$2" region;
+    region="$(_capture_input_region "$pane")";
+    [[ -n "$region" ]] || return 2;
+    case "$tool" in 
+        codex)
+            local i live s;
+            _sgr_parse "$region";
+            _input_region_prompt_seg 1 '›' || return 2;
+            live=$_SGR_PROMPT_SEG;
+            _input_region_content_end "${_SGR_LINE[live]}" blank;
+            s="${_SGR_PROMPT_TAIL#*›}";
+            for ((i = live + 1; i < ${#_SGR_TEXT[@]}; i++))
+            do
+                ((_SGR_LINE[i] < _SGR_CONTENT_END)) || break;
+                [[ "${_SGR_DIM[i]}" == 1 ]] && continue;
+                s+="${_SGR_TEXT[i]}";
+            done;
+            s="${s//' '/ }";
+            s="$(tr -d '\n\t ' <<< "$s")";
+            [[ -n "$s" ]] && return 0 || return 1
+        ;;
+        claude)
+            local i s;
+            _sgr_parse "$region";
+            _input_region_prompt_seg 0 '❯' '>' '▌' || return 2;
+            _input_region_content_end "${_SGR_LINE[$_SGR_PROMPT_SEG]}" border;
+            s="${_SGR_PROMPT_TAIL#"$_SGR_PROMPT_ORN"}";
+            for ((i = _SGR_PROMPT_SEG + 1; i < ${#_SGR_TEXT[@]}; i++))
+            do
+                ((_SGR_LINE[i] < _SGR_CONTENT_END)) || break;
+                s+="${_SGR_TEXT[i]}";
+            done;
+            s="${s//' '/ }";
+            s="$(tr -d '\n\t ' <<< "$s")";
+            [[ -n "$s" ]] && return 0 || return 1
+        ;;
+        *)
+            return 1
+        ;;
+    esac
+}
+_paste_still_staged () 
+{ 
+    local pane="$1" tool="$2" msg="$3" rc;
+    case "$tool" in 
+        claude | codex)
+            _input_region_occupied "$pane" "$tool";
+            rc=$?;
+            ((rc == 0)) && return 0 || return 1
+        ;;
+        *)
+            return 1
+        ;;
+    esac
+}
+_paste_input_busy () 
+{ 
+    local pane="$1" tool="$2";
+    case "$tool" in 
+        claude | codex)
+
+        ;;
+        *)
+            return 1
+        ;;
+    esac;
+    local rc;
+    _input_region_occupied "$pane" "$tool";
+    rc=$?;
+    ((rc == 1)) && return 1 || return 0
+}
+_pane_recently_viewed () 
+{ 
+    local pane="$1" grace="${2:-4}" now cpane cact;
+    now="$(date +%s)";
+    while IFS='|' read -r cpane cact; do
+        [[ "$cpane" == "$pane" ]] || continue;
+        [[ "$cact" =~ ^[0-9]+$ ]] || continue;
+        if ((now - cact < grace)); then
+            return 0;
+        fi;
+    done < <(tmux list-clients -F '#{pane_id}|#{client_activity}' 2> /dev/null || true);
+    return 1
+}
+command_is_shell () 
+{ 
+    case "$1" in 
+        bash | zsh | fish | sh | dash | "")
+            return 0
+        ;;
+        *)
+            return 1
+        ;;
+    esac
+}
+_agent_bin_for_pane () 
+{ 
+    local pane="$1" slot psess meta;
+    slot="$(tmux display-message -p -t "$pane" '#{@ae_slot}' 2> /dev/null || true)";
+    _valid_slot "$slot" || { 
+        printf '';
+        return 0
+    };
+    psess="$(tmux display-message -p -t "$pane" '#S' 2> /dev/null || true)";
+    [[ -n "$psess" ]] || { 
+        printf '';
+        return 0
+    };
+    meta="${_AE_SESSIONS_DIR}/${psess}/meta";
+    [[ -f "$meta" ]] || { 
+        printf '';
+        return 0
+    };
+    grep "^agent_bin.${slot}=" "$meta" 2> /dev/null | head -1 | cut -d= -f2- || true;
+    return 0
+}
+_pane_agent_is_dead () 
+{ 
+    local pane="$1" proc abin pane_pid;
+    proc="$(tmux display-message -p -t "$pane" '#{pane_current_command}' 2> /dev/null || true)";
+    command_is_shell "$proc" || return 1;
+    abin="$(_agent_bin_for_pane "$pane")";
+    command_is_shell "$abin" && return 1;
+    pane_pid="$(tmux display-message -p -t "$pane" '#{pane_pid}' 2> /dev/null || true)";
+    if [[ -n "$pane_pid" ]] && _pane_has_descendant_named "$pane_pid" "$abin"; then
+        return 1;
+    fi;
+    return 0
+}
+_pane_has_descendant_named () 
+{ 
+    local pane_pid="$1" target="$2";
+    [[ -n "$pane_pid" && -n "$target" ]] || return 1;
+    local pids;
+    pids="$(pgrep -x "$target" 2> /dev/null || true)";
+    [[ -n "$pids" ]] || return 1;
+    local pid cur;
+    for pid in $pids;
+    do
+        cur="$pid";
+        while [[ -n "$cur" && "$cur" != "1" && "$cur" != "0" ]]; do
+            if [[ "$cur" == "$pane_pid" ]]; then
+                return 0;
+            fi;
+            cur="$(ps -o ppid= -p "$cur" 2> /dev/null | tr -d '[:space:]' || true)";
+        done;
+    done;
+    return 1
+}
+ae_meta_get () 
+{ 
+    grep "^${1}=" "${_AE_META_DIR}/meta" 2> /dev/null | head -1 | cut -d= -f2- || true
+}
+ae_meta_set () 
+{ 
+    local key="$1" value="$2";
+    local meta_file="${_AE_META_DIR}/meta";
+    [[ -f "$meta_file" ]] || return 1;
+    value="${value//''/}";
+    value="${value//'
+'/ }";
+    { 
+        flock -w 5 200 || exit 1;
+        local tmp="${meta_file}.tmp.$$";
+        awk -F= -v k="$key" -v v="$value" '
+            BEGIN { updated = 0 }
+            $1 == k { print k "=" v; updated = 1; next }
+            { print }
+            END { if (!updated) print k "=" v }
+        ' "$meta_file" > "$tmp" && mv "$tmp" "$meta_file"
+    } 200> "${meta_file}.lock"
+}
+ae_meta_unset () 
+{ 
+    local key="$1";
+    local meta_file="${_AE_META_DIR}/meta";
+    [[ -f "$meta_file" ]] || return 0;
+    { 
+        flock -w 5 200 || exit 1;
+        local tmp="${meta_file}.tmp.$$";
+        awk -F= -v k="$key" '$1 != k { print }' "$meta_file" > "$tmp" && mv "$tmp" "$meta_file"
+    } 200> "${meta_file}.lock"
+}
+_ae_tac () 
+{ 
+    if command -v tac > /dev/null 2>&1; then
+        tac "$@";
+    else
+        tail -r "$@";
+    fi
+}
+_ae_stat () 
+{ 
+    local key="$1" file="$2";
+    case "$key" in 
+        mtime)
+            stat -c %Y "$file" 2> /dev/null || stat -f %m "$file" 2> /dev/null
+        ;;
+        size)
+            stat -c %s "$file" 2> /dev/null || stat -f %z "$file" 2> /dev/null
+        ;;
+        inode)
+            stat -c %i "$file" 2> /dev/null || stat -f %i "$file" 2> /dev/null
+        ;;
+        uid)
+            stat -c %u "$file" 2> /dev/null || stat -f %u "$file" 2> /dev/null
+        ;;
+        mode)
+            stat -c %a "$file" 2> /dev/null || stat -f %Lp "$file" 2> /dev/null
+        ;;
+        mtime-human)
+            stat -c %y "$file" 2> /dev/null || stat -f %Sm -t '%Y-%m-%d %H:%M:%S' "$file" 2> /dev/null
+        ;;
+        *)
+            return 1
+        ;;
+    esac
+}
+_ae_epoch () 
+{ 
+    local ts="${1:-}";
+    if [[ -z "$ts" ]]; then
+        printf '0';
+        return 0;
+    fi;
+    date -d "$ts" +%s 2> /dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$ts" +%s 2> /dev/null || printf '0';
+    return 0
+}
+_ae_json_first () 
+{ 
+    local key="$1" vclass="${2:-[^\"]}";
+    grep -oE "\"${key}\"[[:space:]]*:[[:space:]]*\"${vclass}*\"" | head -1 | sed -e "s/^\"${key}\"[[:space:]]*:[[:space:]]*\"//" -e 's/"$//' || true;
+    return 0
+}
+_ae_md5 () 
+{ 
+    if command -v md5sum > /dev/null 2>&1; then
+        md5sum;
+    else
+        md5 -q;
+    fi
+}

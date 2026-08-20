@@ -1,0 +1,12 @@
+## refreshed-helper inactive equivalence (D02)
+pre_refresh_helper_sha256=12250cf45a289ed6f42a48139df9e420ad6f07102f99590641550b92d2358ffe
+post_refresh_helper_sha256=141adf2af63e98fd132cae80c52a3a8ca495732ff77a0661a32d2668da3c8ef6
+refresh_rc=0
+pre_rc=0 post_rc=0
+identical=yes
+--- pre-refresh output ---
+STATUS   TYPE     ID                           FROM                 TO                   SUMMARY
+pending  ask      ae-20260820T170328Z-75afd2c3 fake:lead            fake:worker          D02 question
+--- post-refresh output (hook inactive) ---
+STATUS   TYPE     ID                           FROM                 TO                   SUMMARY
+pending  ask      ae-20260820T170328Z-75afd2c3 fake:lead            fake:worker          D02 question

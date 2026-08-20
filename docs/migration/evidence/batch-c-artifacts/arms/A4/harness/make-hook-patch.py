@@ -48,6 +48,12 @@ EDITS = [
      '        return 1\n'
      '    fi\n',
      '\n    _ae_hook H_NEXT_SELECTED\n', "after"),
+    # The hook must be DEFINED wherever a hooked function runs. `_ar_request_states` is
+    # emitted into the generated `requests` helper by `declare -f`, and that helper sources
+    # `_lib`, so `_ae_hook` is added to the _lib emission list — one identifier, no
+    # behavioural change: the emitted function is the same guard-first no-op.
+    ("            _ae_tac _ae_stat _ae_epoch _ae_json_first _ae_md5\n",
+     "            _ae_tac _ae_stat _ae_epoch _ae_json_first _ae_md5 _ae_hook\n", "replace"),
     # D04b — after the successful exact recheck, before the final focus call
     ('        echo "ae next: \'$best_name\' disappeared before attach." >&2\n'
      '        return 1\n'
@@ -61,6 +67,9 @@ for anchor, ins, mode in EDITS:
     n = out.count(anchor)
     if n != 1:
         sys.exit(f"ANCHOR NOT UNIQUE ({n}): {anchor[:70]!r}")
+    if mode == "replace":
+        out = out.replace(anchor, ins, 1)
+        continue
     if mode == "before":
         out = out.replace(anchor, ins + anchor, 1)
     elif mode == "after":

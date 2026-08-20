@@ -1,0 +1,18 @@
+group=A3b
+member=pair-waitinguser-over-blocked
+fingerprint_pre_protection=211b69861f9f331b9664bf277abfe1cd007296067f08aad64fd2de7601561a3e
+source_sandbox=/tmp/aecx/tpl/p_pair-waitinguser-over-blocked
+source_session=tpairwaitinguseroverblocked
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T17:16:43Z
+--- provenance ---
+member=pair-waitinguser-over-blocked rows=SC-017g adjacent pair waiting-user>blocked
+rank ladder cited from the frozen source: ae@72c7293:3571-3581 (comment at :3586)
+construction: the HIGHER-rank reason arrives FIRST, the adjacent LOWER-rank reason LAST
+watchdog knobs: INTERVAL=5 STALE_MIN=1 MAX_NUDGES=2 THROTTLE_ALERT_CYCLES=2
+no reason-owner is the actor of any later event, so no own-activity clear can occur
+  T0: fake:high declares waiting-user
+    rc=0
+  T1: fake:low declares blocked
+    rc=0
+fingerprint_protected=b31945ae8c4612964f2eacc9dddacebe1e90917c836467012618355c0e53825e

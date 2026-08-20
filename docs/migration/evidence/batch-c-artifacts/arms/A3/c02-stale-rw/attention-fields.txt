@@ -1,9 +1,11 @@
-## attention fields, extracted from out/list-json.stdout
-"needs_attention":true
-"attention":"stale"
-"attention_rank":5
-## per-agent reasons
-"agents":[{"ref":"fake:probe"
-"alive":true
-"state":null
-"reason":null}]}]}
+## attention fields, re-derived from out/list-json.stdout
+source=out/list-json.stdout sha256=02b6348e9cf9f9d507ab2cad424e71f49f5e6fa9a7d8395643c08fbba6cc701c bytes=455
+derivation=pure post-processing of the captured bytes; nothing was re-run
+
+session=twda2
+  needs_attention=true
+  attention="stale"
+  attention_rank=5
+  last_active_epoch=1787242410
+  agents:
+    {"alias": "fake", "alive": true, "name": "probe", "reason": null, "ref": "fake:probe", "session_id": "-", "state": null}

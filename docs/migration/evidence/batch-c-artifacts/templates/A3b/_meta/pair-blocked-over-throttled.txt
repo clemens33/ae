@@ -1,0 +1,17 @@
+group=A3b
+member=pair-blocked-over-throttled
+fingerprint_pre_protection=b0db024203d8a13b3e326daf1cb9b7214f0fc9d1d41fb3f508e5e83758f487df
+source_sandbox=/tmp/aecx/tpl/p_pair-blocked-over-throttled
+source_session=tpairblockedoverthrottled
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T17:16:56Z
+--- provenance ---
+member=pair-blocked-over-throttled rows=SC-017g adjacent pair blocked>throttled
+rank ladder cited from the frozen source: ae@72c7293:3571-3581 (comment at :3586)
+construction: the HIGHER-rank reason arrives FIRST, the adjacent LOWER-rank reason LAST
+watchdog knobs: INTERVAL=5 STALE_MIN=1 MAX_NUDGES=2 THROTTLE_ALERT_CYCLES=2
+no reason-owner is the actor of any later event, so no own-activity clear can occur
+  T0: fake:high declares blocked
+    rc=0
+  T1: fake:low prints the documented generic throttle phrase into its pane tail
+fingerprint_protected=bb7441fd113cd9dad8e2442b7a734809d57ae824a7826d412b24664e8019cde5

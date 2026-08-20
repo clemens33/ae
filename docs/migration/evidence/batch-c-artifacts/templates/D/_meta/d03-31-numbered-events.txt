@@ -1,0 +1,17 @@
+group=D
+member=d03-31-numbered-events
+fingerprint_pre_protection=0bd4c21ce2c572b38527d83bc0ea8e8e82b830aee009453bfbfc1a18e9fa9dcb
+source_sandbox=/tmp/aecx/tpl/d03
+source_session=td03
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T17:28:32Z
+--- provenance ---
+construction: 31 real memo invocations, each carrying a unique numbered marker, so
+the follow window can be read off the pane by number rather than by counting lines.
+  seeded_events=31
+  controller payloads (each a REAL harvested complete event line, carried inside the member):
+    append-sentinel.jsonl sha256=5b67427c19842d5e8069766f69d1815aeeb0f88ba7d23591f42f9c7a7936ba92 bytes=110
+    rotate-newpath.jsonl sha256=a401ed922606a73e702fad1f05843456a062c4672980c3ae831ce7a595679dbf bytes=109
+    rotate-oldinode.jsonl sha256=8725e10980413c2385642ccae24d4a077414168d2cf0a45590921c382287284c bytes=110
+  events after removing the three payload lines: 31
+fingerprint_protected=d0d8630ccdb09be5fc6cdbe52960ccc134baea6840f2021c98fa47dd6656aa4d

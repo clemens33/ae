@@ -11,12 +11,18 @@ A="${1:-${BATCH_C_ARTIFACTS:-/Users/ckriech/projects/clemens33/ae-rust/docs/migr
 [[ -d "$A" ]] || { echo "gate: no such tree: $A" >&2; exit 2; }
 echo "## tree under audit: $A"
 rc=0
-echo "## cited paths"
-while read -r p; do
-    case "$p" in *'<'*|*'*'*|'') continue;; esac
-    if [[ ! -e "$A/$p" ]]; then echo "  MISSING: $p"; rc=1; fi
-done < <(grep -oE '`(templates|arms|hook-patch)/[A-Za-z0-9_./-]+`' "$A/MANIFEST.md" | tr -d '`' | sort -u)
-echo "  cited-path check done"
+echo "## cited paths (multi-base resolver)"
+# Every backticked path-shaped token — including slash-less file citations and wildcard
+# patterns — resolved against the tree root, arms/, templates/, twd-precursor/, the repo
+# root, the group/member -> fixture-bytes mapping, and the real context directories a
+# relative citation can legitimately be written against. Emits PATH-CITES.tsv.
+RESOLVER="$(dirname "${BASH_SOURCE[0]}")/path-cite-resolver.py"
+[[ -f "$RESOLVER" ]] || RESOLVER="$A/arms/A1/harness/path-cite-resolver.py"
+if [[ -f "$RESOLVER" ]]; then
+    python3 "$RESOLVER" "$A" "${REPO_ROOT:-/Users/ckriech/projects/clemens33/ae-rust}" || rc=1
+else
+    echo "  RESOLVER MISSING — cannot check citations"; rc=1
+fi
 echo "## SHA256SUMS coverage + verification"
 for d in "$A"/templates "$A"/hook-patch "$A"/arms/*; do
     [[ -d "$d" ]] || continue

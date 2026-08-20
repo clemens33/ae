@@ -1,0 +1,20 @@
+seq=001	utc=2026-08-20T17:05:24Z	epoch=1787245524	event=case-OPEN	arm=D case=d01-controller-only-twin clone_mode=twin frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T17:05:24Z	epoch=1787245524	event=rows	rows=D01,SC-1306a template=G1/healthy design=b0-design.md Design 2
+seq=003	utc=2026-08-20T17:05:24Z	epoch=1787245524	event=clone-VERIFIED	clone_fingerprint=075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667 expected=075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667 matches=yes
+seq=004	utc=2026-08-20T17:05:25Z	epoch=1787245525	event=live-topology-built	sessions=tg1 agent_binary=/tmp/aecx/bin/aefake socket=/tmp/aecx/arms/D/d01-controller-only-twin/live.sock session_env=AE_SESSION/AE_ORIGIN/AE_DIR/AE_MODE/AE_HOME per ae@72c7293:17311-17318
+seq=005	utc=2026-08-20T17:05:26Z	epoch=1787245526	event=env-recorded	artifact_sha256=41d6b2093e74a2ceb8b1cb3a30b44e8b51ca28a7632a364d04886d09ffba7128
+seq=006	utc=2026-08-20T17:05:26Z	epoch=1787245526	event=env-tab-selfcheck-START	artifact=env-tab-selfcheck.txt
+seq=007	utc=2026-08-20T17:05:26Z	epoch=1787245526	event=env-tab-selfcheck-COMPLETE	tab_survived=yes artifact_sha256=a4be805887204a05d14c1d1c29c3470bc5ec75b280d0c4ab8f0b66cc63c22efc
+seq=008	utc=2026-08-20T17:05:26Z	epoch=1787245526	event=tmux-shim-equivalence-START	socket=/tmp/aecx/arms/D/d01-controller-only-twin/live.sock session=tg1
+seq=009	utc=2026-08-20T17:05:26Z	epoch=1787245526	event=tmux-shim-equivalence-COMPLETE	all_identical=yes artifact_sha256=b4c80008edbbd275f857fcb10eb038702018f27a96ca7b821fa67866bbb07095
+seq=010	utc=2026-08-20T17:05:26Z	epoch=1787245526	event=snapshot	label=before manifest_sha256=075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667 tmux_sha256=a6271fc3a6dc0ff8bcf105c4a907b7020eadd334b53434cdfb66c47178abb69c
+seq=011	utc=2026-08-20T17:05:26Z	epoch=1787245526	event=plain-consumer-START	prefix=baseline-list-json argv=/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae list --json 
+seq=012	utc=2026-08-20T17:05:26Z	epoch=1787245526	event=plain-consumer-COMPLETE	prefix=baseline-list-json rc=0 stdout_sha256=283cec46ed4c35b3a17ab54f1390293f69481c878768f21e3fe563e476cc4f4f flockspy_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+seq=013	utc=2026-08-20T17:05:26Z	epoch=1787245526	event=twin-note	the identical controller mutation performed alone so its own effect can be subtracted
+seq=014	utc=2026-08-20T17:05:27Z	epoch=1787245527	event=controller-mutation	helper=goal rc=0 artifact_sha256=39db66902e3ef4bfcf11f2792dcc01c59c31bf5359f104555df2c497f010cf9f
+seq=015	utc=2026-08-20T17:05:27Z	epoch=1787245527	event=snapshot	label=after manifest_sha256=0594099020f6ad9f806f83391d5a79049a4b594a81225aaaf34d2a705c13dacc tmux_sha256=a6271fc3a6dc0ff8bcf105c4a907b7020eadd334b53434cdfb66c47178abb69c
+seq=016	utc=2026-08-20T17:05:27Z	epoch=1787245527	event=plain-consumer-START	prefix=rerun-list-json argv=/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae list --json 
+seq=017	utc=2026-08-20T17:05:27Z	epoch=1787245527	event=plain-consumer-COMPLETE	prefix=rerun-list-json rc=0 stdout_sha256=629e9f6b804b035840206ed05333b349f522fe7db7045f9c2a826079b2742b26 flockspy_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+seq=018	utc=2026-08-20T17:05:27Z	epoch=1787245527	event=trace-twin-START	prefix=trace-list-json note=separate run; the measured capture is untraced
+seq=019	utc=2026-08-20T17:05:28Z	epoch=1787245528	event=trace-twin-COMPLETE	prefix=trace-list-json xtrace_sha256=2e2093876d7f90b919e336109d773bdd417ed7b60d3912212441d56f914c1764 xtrace_lines=1298
+seq=020	utc=2026-08-20T17:05:28Z	epoch=1787245528	event=case-CLOSE	case_txt_sha256=197853765370bacc57986def8f3a2f96eb0d316fa55bd993e8eb0109dcf35ea1 consumers_tsv_sha256=bdf087f0557fa97dc63f6349e076eed0d515b3b6a6304f5888b7ba75299af7c6

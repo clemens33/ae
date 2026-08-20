@@ -1,0 +1,2 @@
+{"ts":"2026-08-20T17:16:47Z","actor":"fake:high","action":"state","ref":"blocked","summary":"A3b higher-rank declaration"}
+{"ts":"2026-08-20T17:16:53Z","actor":"_watchdog","action":"throttled","target":"fake:low","summary":"upstream throttling detected — pausing nudges"}

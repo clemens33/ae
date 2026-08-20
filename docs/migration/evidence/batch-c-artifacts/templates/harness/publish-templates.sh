@@ -27,8 +27,13 @@ for g in "$TSTORE"/*/; do
                 mkdir -p "$out/sessions/$sess/messages"; cp "$m/sessions/$sess/messages/"* "$out/sessions/$sess/messages/" 2>/dev/null
             fi
         done
-        [[ -d "$m/_g11-producer-inputs" ]] && { mkdir -p "$out/_g11-producer-inputs"; cp "$m/_g11-producer-inputs/"* "$out/_g11-producer-inputs/" 2>/dev/null; }
-        [[ -f "$m/_a1-510c-planted-producer-input.jsonl" ]] && cp "$m/_a1-510c-planted-producer-input.jsonl" "$out/" 2>/dev/null
+        # Any top-level `_*` artifact a member carries for its own arms — producer inputs,
+        # controller payloads — is load-bearing fixture state and must be published with it.
+        for extra in "$m"/_*; do
+            [[ -e "$extra" ]] || continue
+            if [[ -d "$extra" ]]; then mkdir -p "$out/$(basename "$extra")"; cp "$extra"/* "$out/$(basename "$extra")/" 2>/dev/null
+            else cp "$extra" "$out/" 2>/dev/null; fi
+        done
         sess="${SESSLIST[0]:-}"
         pre="$(grep '^fingerprint_pre_protection=' "$g/_meta/$mem.txt" 2>/dev/null | cut -d= -f2-)"
         prot="$(grep '^fingerprint_protected=' "$g/_meta/$mem.txt" 2>/dev/null | cut -d= -f2-)"

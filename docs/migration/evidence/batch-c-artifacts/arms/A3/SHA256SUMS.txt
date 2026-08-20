@@ -1,6 +1,6 @@
 6ee25e3fc278a93fa57df1f46dff9aaa2679b8af253f312a03682c13781f82b5  ./c01-dead-ro/activity-sources.txt
 3731f07589c5b40a15c331e98418a84ac794727d29d49ef5e6cdf50e67125834  ./c01-dead-ro/admissibility-ledger.txt
-5637dc78085136ca374e35cfee0c0979dcef7c15f739c59810dabf49fa908db4  ./c01-dead-ro/attention-fields.txt
+ce8b4f67e185b21a1670ec5aead0314967dd48e7a3d55644fb0db30d56e78792  ./c01-dead-ro/attention-fields.txt
 82f0993abaebc48294dfd20540f70f738025448ce13519b8b49a3c6cf3ae2baf  ./c01-dead-ro/case.txt
 3f746765ceaf13ed6af69dffcb059f6ffd658699a9faf96329573b430ed2b9fd  ./c01-dead-ro/consumers.tsv
 2df921d4ae0a25fd74bf3569b11fb35e5b9615d6a282ccd95af8a40e843a3e59  ./c01-dead-ro/env-tab-selfcheck.txt
@@ -33,7 +33,7 @@ ca0a4da08be9f196e49769ffc723613393667d9909cedc55a6c8870a8c130b06  ./c01-dead-ro/
 ca0a4da08be9f196e49769ffc723613393667d9909cedc55a6c8870a8c130b06  ./c01-dead-ro/tmux.before.txt
 49658dbed19de3e58529d1ae9e147ae602ee0daea18296446495f6ad6c5ba64d  ./c01-dead-rw/activity-sources.txt
 89a0ff87a3aab4a38359d900439ce87e1def31dd6ce0445f9a4541ad784db154  ./c01-dead-rw/admissibility-ledger.txt
-5637dc78085136ca374e35cfee0c0979dcef7c15f739c59810dabf49fa908db4  ./c01-dead-rw/attention-fields.txt
+8c15e55724d4ef258063c67478852b7a5094493a8176c7dc1af84024ab5318a7  ./c01-dead-rw/attention-fields.txt
 b4a37889ef5624016623dfc99019f33c2494849f32bc9a7825fc02335b4925d7  ./c01-dead-rw/case.txt
 bd7963ecc9da53f74ef864c40c9b79935d1c432412c0ab41e8b954196ef29ce1  ./c01-dead-rw/consumers.tsv
 6a0edabbe28349574a63fc869dd9e711e12ceca504d2b9686f4c2c7f7461e332  ./c01-dead-rw/env-tab-selfcheck.txt
@@ -66,7 +66,7 @@ ca0a4da08be9f196e49769ffc723613393667d9909cedc55a6c8870a8c130b06  ./c01-dead-rw/
 ca0a4da08be9f196e49769ffc723613393667d9909cedc55a6c8870a8c130b06  ./c01-dead-rw/tmux.before.txt
 30af7afe32d3483b9e5437b19827523254ac3f6760613470ca7fd0283c834bfc  ./c02-stale-ro/activity-sources.txt
 d9cfed2f69024af1d8d2b06238306eb5142ed2dbb0bfad6542b1d8bfb60a2f0b  ./c02-stale-ro/admissibility-ledger.txt
-f49f412817cb5a5e3b573fb9da224a56ea816f59159cc15e1dfa102154c2e477  ./c02-stale-ro/attention-fields.txt
+baf8cd68d292a73079fb5ca59626a403622ec88b10f9e16d2e1640fd6b384e04  ./c02-stale-ro/attention-fields.txt
 153e39a76868673e3564728c1de2545ac095c610c6c7ac9eeb21ea2cdd4bf574  ./c02-stale-ro/case.txt
 a10b2616c5b5c3b9031e730cbc6f22925027600bd1dc1774e8d30f2fcfeed2dd  ./c02-stale-ro/consumers.tsv
 9095c6b6c1f41d559fe5260b1e8451a2a673053e3c2afd45fd57d4d901ceddfd  ./c02-stale-ro/env-tab-selfcheck.txt
@@ -99,7 +99,7 @@ e02327e925d03bc342ed8aae2b2e5e447217f83dd330d5479e469d465fbb7bf6  ./c02-stale-ro
 7d4aedace2dac109b4980c0f112d2736940099de17a03142ee67e4bbbab7850f  ./c02-stale-ro/tmux.before.txt
 27ea39da6d648a09e53429f010c74dfb1fddb82e3c2e024f1ef10b6cae3c1169  ./c02-stale-rw/activity-sources.txt
 d7a1df4d3f67479afa6cb7be2ecef42933020f9c09216dbbf4d0cbf4c84d9b9e  ./c02-stale-rw/admissibility-ledger.txt
-f49f412817cb5a5e3b573fb9da224a56ea816f59159cc15e1dfa102154c2e477  ./c02-stale-rw/attention-fields.txt
+1be35d07db742ea18dfda90e8b2dbd5b4c64cd0efce08fb57d76ca8b136f203a  ./c02-stale-rw/attention-fields.txt
 970bdb390c8ce1c67578c92b771c716e6cffc61135c89e2da418d284113aba6e  ./c02-stale-rw/case.txt
 7bc49ca9225d080348f0670304cf56710725de746cac121e7ee2885c8fd143af  ./c02-stale-rw/consumers.tsv
 d517df982bb8addd7bca84d8891e5a6b084385d51513ea4904cef0f33590a9c4  ./c02-stale-rw/env-tab-selfcheck.txt
@@ -132,7 +132,7 @@ e02327e925d03bc342ed8aae2b2e5e447217f83dd330d5479e469d465fbb7bf6  ./c02-stale-rw
 7d4aedace2dac109b4980c0f112d2736940099de17a03142ee67e4bbbab7850f  ./c02-stale-rw/tmux.before.txt
 a82b6695598705e2c972cf52e095983957abaf2cc8b8e087ed26b15926f8d4f8  ./c03-throttled-ro/activity-sources.txt
 f81818fb244cb20046e34cc73d30995d3df0512f6f9f0bf05c9e6162e583ab8e  ./c03-throttled-ro/admissibility-ledger.txt
-66dd43c29291177e6b814f40345653e84b518b96fddb1ac011fbfcd58aa983fa  ./c03-throttled-ro/attention-fields.txt
+6c849bbe5fec485115c12f45b87e3cef3b2f856ca51af115c6e03809ef043dd7  ./c03-throttled-ro/attention-fields.txt
 a98667049cb69b7e58039c0ba98f3bda2cba6851e1eb1800a3779209074e2005  ./c03-throttled-ro/case.txt
 082d544694e8ab4ed45f5646d8f9ebe000e452d2f8545c634cb8e42f14b6a8ef  ./c03-throttled-ro/consumers.tsv
 02b99c695cb1a153c3f608bf4dc6609cd1a209c6d4b16d2ea2096d91307ae970  ./c03-throttled-ro/env-tab-selfcheck.txt
@@ -165,7 +165,7 @@ ca31a632ccf643ce9242fe8b212fc26885d027bab0dedcbb0226aa2a96f4158b  ./c03-throttle
 9c2894f54361427edea88a903328aca5090553a2cbe45d6b3a7c86cb5756b3cc  ./c03-throttled-ro/tmux.before.txt
 f41f01bee8f48b732f01b7052b4b72b96f75f5e3f9afccd06c8c0d6a3c625219  ./c03-throttled-rw/activity-sources.txt
 a4829c1221997236611133c61418ca8265d1744c8cea11405bb264ea587ed4eb  ./c03-throttled-rw/admissibility-ledger.txt
-66dd43c29291177e6b814f40345653e84b518b96fddb1ac011fbfcd58aa983fa  ./c03-throttled-rw/attention-fields.txt
+45479dd2eac4a7fefa91f43c7da9eda8b6362813648bbcd6c668f9bb709a0655  ./c03-throttled-rw/attention-fields.txt
 260332c1761a5311e9c1ffa171bd6abe5f92e7a681a8c8a88e150e32e62bb2c9  ./c03-throttled-rw/case.txt
 e3b254959432178717cd17a0dcac67da2fb890c7027d07aa6ba150fbf95051de  ./c03-throttled-rw/consumers.tsv
 b771715842b992b16c5343e1125210d26056fa946c433bb69a39945fa1cca8b7  ./c03-throttled-rw/env-tab-selfcheck.txt
@@ -198,7 +198,7 @@ d917515915470c6cbe063357770100b4ec868c783ead3d075c74b6ef6fb7b871  ./c03-throttle
 9c2894f54361427edea88a903328aca5090553a2cbe45d6b3a7c86cb5756b3cc  ./c03-throttled-rw/tmux.before.txt
 d8b04bb71b3793ef0b35eaf1ce39b72bbc9790f33e92f2d5d8fe3c85dafe2bcc  ./c04-waiting-user-ro/activity-sources.txt
 03ad541323fae302a63141ded5f681b1117e3e86de3f0a4938ea94be8720aaf9  ./c04-waiting-user-ro/admissibility-ledger.txt
-bc8fdff81b5a3375a0e72804315569aa2cfaec329838490063f73c7ca8237195  ./c04-waiting-user-ro/attention-fields.txt
+56d3dc7229d7aedff35df7ced85c66bdb809a77ac6e5684189340524318764c9  ./c04-waiting-user-ro/attention-fields.txt
 254cb7c335eac1459b4b554f9aaff36a48fa2d402d9df33fd51ca3620d775abe  ./c04-waiting-user-ro/case.txt
 006dc4121f82dbd411361a7814ecb8e6614d9bdd0fdf673043e75f3533ec0ba9  ./c04-waiting-user-ro/consumers.tsv
 abf876fefaf02e9026c03989f1463c4a6a1332c0fd10d3ede822528231895c77  ./c04-waiting-user-ro/env-tab-selfcheck.txt
@@ -231,7 +231,7 @@ ba24772faf20d01ab0b9625ba2cc890d769dc99162175fc11a0e070e9a244592  ./c04-waiting-
 66e68b1e76291a4116968e383a03aa21e9dbed7d59f9c70f5dbd7e63a2927f7a  ./c04-waiting-user-ro/tmux.before.txt
 d584feaa279cb97e7b8611f638c610d11975d2ae5f6acada501719639b43b588  ./c04-waiting-user-rw/activity-sources.txt
 2a69faabd42e41540f3fd07872119a78b075ab15d96c09d1a1fbabd65eb78c6a  ./c04-waiting-user-rw/admissibility-ledger.txt
-bc8fdff81b5a3375a0e72804315569aa2cfaec329838490063f73c7ca8237195  ./c04-waiting-user-rw/attention-fields.txt
+619b05fc246b5feb094a9a46ab479c47b349e71588f8464393a8fdaf065fb671  ./c04-waiting-user-rw/attention-fields.txt
 0b21b8bff0a5bb7d82f8f36c4522b3a511a953f345279472c7aca7b0b400190b  ./c04-waiting-user-rw/case.txt
 dacfc45bef5a3ea6a564cf2e549476a95364eb7fb443f18831c8ba1f6c053183  ./c04-waiting-user-rw/consumers.tsv
 87c9b4bff62d6db1a73ee365db7dea7a90186a10a16d6d3c2483e191171e97a3  ./c04-waiting-user-rw/env-tab-selfcheck.txt
@@ -264,7 +264,7 @@ e695df9dc7cb4a16f425116f33d880e424c9f383dd61fc712b1bf0e812824e0b  ./c04-waiting-
 66e68b1e76291a4116968e383a03aa21e9dbed7d59f9c70f5dbd7e63a2927f7a  ./c04-waiting-user-rw/tmux.before.txt
 c891516057cde425d28475ccc397b7f68f4fce5af93f6e990e8dcecfc4fc968b  ./c05-blocked-ro/activity-sources.txt
 fa25ea261dc7e7250f0d4ef2f56796a4e6c1e66827e0a2e93921664ecc54f356  ./c05-blocked-ro/admissibility-ledger.txt
-3933e67018e26e8fba4380a7152872a6bff1794bd7e064d371824b8448063338  ./c05-blocked-ro/attention-fields.txt
+d6ceed2bfd719b5b3c0d39d9abca013a7333ce1319021a10dc46b682e6f63bd6  ./c05-blocked-ro/attention-fields.txt
 fcf6023a1a3e39ecc33535ed8320c748df967076aaf1122c368f283670330e1b  ./c05-blocked-ro/case.txt
 2ba507bc9d7849ff0c62ff100452f8a3ce2ee1e8252dd64eb5c50d04b3fc731e  ./c05-blocked-ro/consumers.tsv
 9e437fc9b5777499f6dee992479dae277a22f4855dabefbb892a89c19fc4f9ba  ./c05-blocked-ro/env-tab-selfcheck.txt
@@ -297,7 +297,7 @@ c58c370f365bc569778e547d348a9a329ebbcbb30864f53c62409a74ed3cd429  ./c05-blocked-
 339cda20708c9b9401fe596b5f21dc35de5033312bc402fff19efd49afdaf62a  ./c05-blocked-ro/tmux.before.txt
 e5e92647955875d45351db2eaa35f88d1b68ca00efbfb3a3e9d2160c2003aaef  ./c05-blocked-rw/activity-sources.txt
 e6aa3a34fdc127fc90ab3d26be3ec74f25aa36d8574e4cb5fe7505fbd65ec2f2  ./c05-blocked-rw/admissibility-ledger.txt
-3933e67018e26e8fba4380a7152872a6bff1794bd7e064d371824b8448063338  ./c05-blocked-rw/attention-fields.txt
+27ed917c37103da29826eaecd3e619cde15b21373a33a62721528e9a3b0bcde4  ./c05-blocked-rw/attention-fields.txt
 5e3f27b376ca547524b1d5e9d7a2c105567faea5d916939f2d16872cdac72f28  ./c05-blocked-rw/case.txt
 98a1f0409bbca0e07c4a72037cf50819052d6504f27e9bc46b5e6577ada39623  ./c05-blocked-rw/consumers.tsv
 4acde7d1d85d9157c30b3b142152cde6a582b8d7add3ff2821f46a05cad3d973  ./c05-blocked-rw/env-tab-selfcheck.txt
@@ -330,7 +330,7 @@ d871d99dc83aab363fc0b3224569790b9b2b6b4a5df2c7d67c45e95768e3ee11  ./c05-blocked-
 339cda20708c9b9401fe596b5f21dc35de5033312bc402fff19efd49afdaf62a  ./c05-blocked-rw/tmux.before.txt
 b1052b3ab10efcab46c70df9efdfb6eac84bd42407e817ceb7284b8f21173abd  ./c06-unanswered-ro/activity-sources.txt
 37c7a7cc27253849ef56320e1d4538377232c9341a17a18d39f845738db7610b  ./c06-unanswered-ro/admissibility-ledger.txt
-aa4cecb62def8e7120ce944d7d9c1e9730baa26fe38c4631b9f81bc010617bea  ./c06-unanswered-ro/attention-fields.txt
+60bf9ba4c6eb408abb4eedf4d843405709aa13cd18b5e59c298a3355623dacf5  ./c06-unanswered-ro/attention-fields.txt
 bd5a9e2efe6e8d16ec1692afb6ea4c4ecb16706764001b7fdf01f9b495a884f4  ./c06-unanswered-ro/case.txt
 4c4a05f23f8624d9ed91ed44f0cbdf8b8fce46851c11a5768b0941949ec2570f  ./c06-unanswered-ro/consumers.tsv
 bee0109a39f628afa48be9924ae06a3c2e9dcfa531f1308e85a57441635288f9  ./c06-unanswered-ro/env-tab-selfcheck.txt
@@ -363,7 +363,7 @@ a9d83797f4eca475f65c21e36df5b63d54a68f64e61a4382937d39bd092f8c0c  ./c06-unanswer
 a9d83797f4eca475f65c21e36df5b63d54a68f64e61a4382937d39bd092f8c0c  ./c06-unanswered-ro/tmux.before.txt
 41a2b5f5caa45546761b57c54287c64ef084284adc35bd4764e9c2fc002b2644  ./c06-unanswered-rw/activity-sources.txt
 fb3924c9a3c348722ae521d7dea6c117a6a1bd5550b356f29e3667a9d39a5680  ./c06-unanswered-rw/admissibility-ledger.txt
-aa4cecb62def8e7120ce944d7d9c1e9730baa26fe38c4631b9f81bc010617bea  ./c06-unanswered-rw/attention-fields.txt
+b1e7d0ac492abd42ee0a8662e59ab6c669fe90945a5fe7e2b115e33a327ae2a3  ./c06-unanswered-rw/attention-fields.txt
 f0a8b312b04011b26425480623c57e18076e0f1caf9682023d9964cd0bf0573b  ./c06-unanswered-rw/case.txt
 9fcf1424133680fe4d9b0be58ebc3c46429cbda220deec3bded5487801ce3f7a  ./c06-unanswered-rw/consumers.tsv
 7956b878dfffcda091cd555c7e955df54a3fe5f0c174537340560e355e2f5f20  ./c06-unanswered-rw/env-tab-selfcheck.txt
@@ -396,7 +396,7 @@ a9d83797f4eca475f65c21e36df5b63d54a68f64e61a4382937d39bd092f8c0c  ./c06-unanswer
 a9d83797f4eca475f65c21e36df5b63d54a68f64e61a4382937d39bd092f8c0c  ./c06-unanswered-rw/tmux.before.txt
 9ff87d98065946985358f824be95b9756398c74df843abaeffaa1e6cb29726f5  ./c07-competing-ro/activity-sources.txt
 0d80c55f455ee937b738afcdb682591e3c8d28c9e23761c6a053c582e5caa953  ./c07-competing-ro/admissibility-ledger.txt
-964f574d07dde4622f30164ae222702dd18a365c5ed44b4cd5262826587a4eec  ./c07-competing-ro/attention-fields.txt
+3af44a54a1fa93d4ee5785f354d510ef9554cc4f5ebc24f89c78995efc3aa097  ./c07-competing-ro/attention-fields.txt
 9d4e9c2a38de9dc28c46a90064d7726c27236016d445df1b2e7865523fd58660  ./c07-competing-ro/case.txt
 e97b44c05a5b91640480675f98f683928f6d5bfa03b96cd034608c147d449ce5  ./c07-competing-ro/consumers.tsv
 b62f6290d3c160e427000b7732858f29b3de7272ccfd080fd580dbbf363a17b4  ./c07-competing-ro/env-tab-selfcheck.txt
@@ -429,7 +429,7 @@ a685eeefb0bf5a9e11e1da430a7d51ab64e485a38512730e8ca70d2ad92909a6  ./c07-competin
 a685eeefb0bf5a9e11e1da430a7d51ab64e485a38512730e8ca70d2ad92909a6  ./c07-competing-ro/tmux.before.txt
 b08acaca3d952d372a159a6e182dd9a1f9075402ef1c4b2b6ef7e0ea70d5b061  ./c07-competing-rw/activity-sources.txt
 21ab0c496fc59068fc7fc160a539ebb996097913d693fa2a82dac3da59076ebc  ./c07-competing-rw/admissibility-ledger.txt
-964f574d07dde4622f30164ae222702dd18a365c5ed44b4cd5262826587a4eec  ./c07-competing-rw/attention-fields.txt
+28a4a4eb0133c8aeb083e9bf5304efbbc1bb2195d0d34137a42dc231135225b3  ./c07-competing-rw/attention-fields.txt
 7384fea7f94b85f8acf3e6b7c549ebc3c8648048c2ce91f2769fe3a835285fa8  ./c07-competing-rw/case.txt
 d9440d8b2c00f66ecad3a8154e039278fc1d65aaa60c842b7bd1ba7944747033  ./c07-competing-rw/consumers.tsv
 1b4719b975592a2b93947a10b8436ac17b1e9b04cc297b548dce0c9a60890403  ./c07-competing-rw/env-tab-selfcheck.txt
@@ -462,7 +462,7 @@ a685eeefb0bf5a9e11e1da430a7d51ab64e485a38512730e8ca70d2ad92909a6  ./c07-competin
 a685eeefb0bf5a9e11e1da430a7d51ab64e485a38512730e8ca70d2ad92909a6  ./c07-competing-rw/tmux.before.txt
 92a1190f6de3180207a1b4d89ae09ffdc4755efb2e39f747e0a5212c4011bb52  ./c08-unanswered-vs-agent-owned-ro/activity-sources.txt
 a73aac30ccb87d5dbc237d0eb1bf6805857ad18f8d07a7336280efd41d4e5a9f  ./c08-unanswered-vs-agent-owned-ro/admissibility-ledger.txt
-20a77f7624f0e4fe04cd63a07aa355d4d018049f47289268e7e828ce44f1781f  ./c08-unanswered-vs-agent-owned-ro/attention-fields.txt
+a1a8169dec928fc0c73f8f575473bdae57b379ebad8b98ace2ae1ee71b689dca  ./c08-unanswered-vs-agent-owned-ro/attention-fields.txt
 00dfe658a110621f44159bafd3fc7c3702636a0a5500048a9303e16ea775a238  ./c08-unanswered-vs-agent-owned-ro/case.txt
 92eb8741bcacaf321e793a3d7a0ba439dd6896b77283330daa46018823623a1e  ./c08-unanswered-vs-agent-owned-ro/consumers.tsv
 5f6a8d591d908cf17058e99f90c13e167c15949f66319c2ad1eb6d1e8129871e  ./c08-unanswered-vs-agent-owned-ro/env-tab-selfcheck.txt
@@ -495,7 +495,7 @@ b5775d28126927b6326c0b6723ec1ec7586294e3e1fd592defd9d493175881ab  ./c08-unanswer
 b5775d28126927b6326c0b6723ec1ec7586294e3e1fd592defd9d493175881ab  ./c08-unanswered-vs-agent-owned-ro/tmux.before.txt
 21714b804bd7085a2ff5cfa443d8edc0fc1f1459994a12f849b0b0134519294e  ./c08-unanswered-vs-agent-owned-rw/activity-sources.txt
 d98d804f525da462305d77daa9f54455f6ff09bd487a3cb18f910d765b66c376  ./c08-unanswered-vs-agent-owned-rw/admissibility-ledger.txt
-20a77f7624f0e4fe04cd63a07aa355d4d018049f47289268e7e828ce44f1781f  ./c08-unanswered-vs-agent-owned-rw/attention-fields.txt
+d459acd57d5c53c41937cc8abcc4662ab4da2b56beb0cb58aa1172ac9bac9dab  ./c08-unanswered-vs-agent-owned-rw/attention-fields.txt
 8168e9b3cc3a2eb46aaac5962a4bfb3ebc23949eb93553ea6d0b53e38e7a382e  ./c08-unanswered-vs-agent-owned-rw/case.txt
 021cd725c3f6d4c97996dd5fd8bad1f2da88f5626076b3f5812bb0ea52a2a63d  ./c08-unanswered-vs-agent-owned-rw/consumers.tsv
 4dc6f1ae38dc2152b0d63ce1d2f009f23cbef20159495376ec13df781bdca27e  ./c08-unanswered-vs-agent-owned-rw/env-tab-selfcheck.txt
@@ -528,7 +528,7 @@ b5775d28126927b6326c0b6723ec1ec7586294e3e1fd592defd9d493175881ab  ./c08-unanswer
 b5775d28126927b6326c0b6723ec1ec7586294e3e1fd592defd9d493175881ab  ./c08-unanswered-vs-agent-owned-rw/tmux.before.txt
 9184765ca638d4151db5fa7b7ab11167e879e16da407c8093dc1d4044942638c  ./c09-524a-future-ts-ordinary-mtime-ro/activity-sources.txt
 56a1e7966f7da24bc65a1b97a0c54a87a37969b712cdde2fc428e371f74f0c34  ./c09-524a-future-ts-ordinary-mtime-ro/admissibility-ledger.txt
-b6bb2dcfc312d295a8db5206c170f0b8fa4b99a3bff77bac38d3b1bd58304ddc  ./c09-524a-future-ts-ordinary-mtime-ro/attention-fields.txt
+3904284ff53f599a84164fc95f551b9a60b97a99a08567523da54636c2a6ccc6  ./c09-524a-future-ts-ordinary-mtime-ro/attention-fields.txt
 f1179f2c868bfbd8f5233fc701ac5fad6c46ab1d9c12000d7e197b10b12671c3  ./c09-524a-future-ts-ordinary-mtime-ro/case.txt
 a3ddc91ac2bc3cc439dd3f2ca925946106b153b5fe594456238ec6e6ca81624b  ./c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv
 40701982c6874c26a8d9135f41e582e746e57a29027c0436122668a991694bee  ./c09-524a-future-ts-ordinary-mtime-ro/env-tab-selfcheck.txt
@@ -562,7 +562,7 @@ c35201978e8186a1fa4f02c37fe7448654e2eec1dd64a27c633941b40a5a6c96  ./c09-524a-fut
 c35201978e8186a1fa4f02c37fe7448654e2eec1dd64a27c633941b40a5a6c96  ./c09-524a-future-ts-ordinary-mtime-ro/tmux.before.txt
 be02f07bac544771bdca60dc7919b68eb5578ab7c6922354ea88ab202216bd0e  ./c09-524a-future-ts-ordinary-mtime-rw/activity-sources.txt
 ad2d4d481a40a675366b4be84dfbeff5f2e912ec7f322dfcfc1d78788ebb12e3  ./c09-524a-future-ts-ordinary-mtime-rw/admissibility-ledger.txt
-b6bb2dcfc312d295a8db5206c170f0b8fa4b99a3bff77bac38d3b1bd58304ddc  ./c09-524a-future-ts-ordinary-mtime-rw/attention-fields.txt
+aa496600568bafc1d7a0a8e0f0917687809daa9df797e179a97c2ee0fc467d6f  ./c09-524a-future-ts-ordinary-mtime-rw/attention-fields.txt
 dfe6747ee9dfae569990063ebd1662434ec3843e5d627a1ce93684c3ca13c2d8  ./c09-524a-future-ts-ordinary-mtime-rw/case.txt
 58d97dc88289d060587cac628aaa6cd156888f1d886e0339c6cb5c10f0a6ec67  ./c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv
 f8260eb6722b25abc9ca026b723e6885dab2e60833e51b4e20127fbf47135f71  ./c09-524a-future-ts-ordinary-mtime-rw/env-tab-selfcheck.txt
@@ -596,7 +596,7 @@ c35201978e8186a1fa4f02c37fe7448654e2eec1dd64a27c633941b40a5a6c96  ./c09-524a-fut
 c35201978e8186a1fa4f02c37fe7448654e2eec1dd64a27c633941b40a5a6c96  ./c09-524a-future-ts-ordinary-mtime-rw/tmux.before.txt
 022d5e0d6ab23ff7d2819b259fbfe8fcdcfe39ffad176ec85e58e5bbab650712  ./c10-524b-ordinary-ts-future-mtime-ro/activity-sources.txt
 de0647fa2ae08dc25f6d79310f3f0f4dbb8c6bf9b856dd543e400c176aed489c  ./c10-524b-ordinary-ts-future-mtime-ro/admissibility-ledger.txt
-b6bb2dcfc312d295a8db5206c170f0b8fa4b99a3bff77bac38d3b1bd58304ddc  ./c10-524b-ordinary-ts-future-mtime-ro/attention-fields.txt
+771569a539af4e99946e9b1607d14a50ff0eb8f39ffa5b30291ccf81eba91d31  ./c10-524b-ordinary-ts-future-mtime-ro/attention-fields.txt
 b1e4f4c5cbd96339fdf82cddefacd465962db173676f5408b0cab0298189a54f  ./c10-524b-ordinary-ts-future-mtime-ro/case.txt
 99244a624339c8f4ac4d3a7b942c6126f68a071e2becb26bee6c9af00a630ad3  ./c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv
 676bd0e79aa42cd4d6abcd29bc10630c20ec750a8f5e573989e3f6ee212df421  ./c10-524b-ordinary-ts-future-mtime-ro/env-tab-selfcheck.txt
@@ -630,7 +630,7 @@ c35201978e8186a1fa4f02c37fe7448654e2eec1dd64a27c633941b40a5a6c96  ./c10-524b-ord
 c35201978e8186a1fa4f02c37fe7448654e2eec1dd64a27c633941b40a5a6c96  ./c10-524b-ordinary-ts-future-mtime-ro/tmux.before.txt
 fcfd44d7f87c570299feb213c5677728ce2e6624d1a9e3d8d66c8c5b4ec0a195  ./c10-524b-ordinary-ts-future-mtime-rw/activity-sources.txt
 60923d6fb2d912f2414b29032ae3eccfa65cc8608cca2fc94c099acc3a0e0008  ./c10-524b-ordinary-ts-future-mtime-rw/admissibility-ledger.txt
-b6bb2dcfc312d295a8db5206c170f0b8fa4b99a3bff77bac38d3b1bd58304ddc  ./c10-524b-ordinary-ts-future-mtime-rw/attention-fields.txt
+716718813d9730be651068c1827c3c8497c0cc239c2edd17c0549abe65e98928  ./c10-524b-ordinary-ts-future-mtime-rw/attention-fields.txt
 08ad0169fa4243ed8bf81c9490c559ff1aa84235ab76f24ede358030968029ff  ./c10-524b-ordinary-ts-future-mtime-rw/case.txt
 f9569c4cb1be410f1c377760403d050b20d34707b161638b115e9a9acca4ba0b  ./c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv
 defa78f6d4de22d1bb6fe6381bf45e737248dd94543d308ec79791b944dae725  ./c10-524b-ordinary-ts-future-mtime-rw/env-tab-selfcheck.txt
@@ -663,10 +663,16 @@ f235820e8b6e4e7ebb1a581990ed4779d2d2469f1afe14dd70eb5af54118897d  ./c10-524b-ord
 c35201978e8186a1fa4f02c37fe7448654e2eec1dd64a27c633941b40a5a6c96  ./c10-524b-ordinary-ts-future-mtime-rw/tmux.after.txt
 c35201978e8186a1fa4f02c37fe7448654e2eec1dd64a27c633941b40a5a6c96  ./c10-524b-ordinary-ts-future-mtime-rw/tmux.before.txt
 5e8b7c8c97861e5dc8c148f2aa987b88c88c8da4ce831136af6d1a61f76e1a42  ./harness/arm-a3.sh
-b89407c451d711d10b863c16b6a08e018eab9ac385676ba5f71d4038887d373c  ./harness/armlib.sh
+20f83b4718a68c185cb97fa0bafa325cb9d95bd3e02408248c3c1ca971f7a892  ./harness/arm-a3b.sh
+7d8d1bc5c90c4d682d747527f5934866746ced537da55a9e59ac51af661b6a4a  ./harness/armlib.sh
+4f0d45210750821e463ddf1b6eeeb8c023a52959a2236b78ce6f3ea97230f972  ./harness/dlib.sh
 5e7168687a5484ccb6c511fe7de588ed49fcc8fa1ffbb667a87a2b6fe4017b6a  ./harness/finalize-arm.sh
+cc13069ea0bd035ea232df98bcb7e6751c12faf2e989b1eb203337c0d0c6a88d  ./harness/flock-spy
 38668d4ef1640310a5d63beee459addc3a5aaa86e4a61d505ff11b3b2ccba539  ./harness/gen_arm_manifest.py
-126248fc54f031269ea48adc4d9d3544b05a2671c2eccfc3132457798f527fbc  ./harness/manifest-tree-gate.sh
-5ba893d2cbb62c63c6fe661118ba221471cf540331302ae1a3faeaeca6f80dc2  ./harness/tlib.sh
+2d6a83b0e90d81f7233a83588be328fb585b012e80c0c667dd4af8be7ca04414  ./harness/make-hook-patch.py
+575d6ace243b04f4b9f5e00116d20b08dccce179fa424dd099c510d52f9edc43  ./harness/manifest-tree-gate.sh
+560a7b1c03f47e767b9f1371dbbcf5ddc1a372a32461cf53056543ce2295fe04  ./harness/path-cite-resolver.py
+39ddf804abce4d7a3aa8ff5ea9c61c9bd6ea8a6e456934fd3686d7b64ac39a7e  ./harness/rebuild-attention-fields.py
+a997adf811331efc7e2eadb77b226b7ed93a1f193a84cce9475100910d41ff65  ./harness/tlib.sh
 64f693459920695f8f7705d3e9bc77ac7880ce1975371f0254629515f33ff01e  ./harness/tmux-shim
 2331d309b8977514c7704c001afb6daaeaebffb23f4c0a47782999092adbdab5  ./ledger.tsv

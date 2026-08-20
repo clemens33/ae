@@ -1,0 +1,11 @@
+mutation=ONE invocation of the session's OWN real goal helper
+helper=/tmp/aecx/arms/D/d01-controller-only-twin/home/.ae/sessions/tg1/goal
+text=D01 controller goal written at the barrier
+run_as_pane=%0 (the real pane environment a live agent has)
+utc=2026-08-20T17:05:26Z
+meta goal BEFORE: goal=healthy fixture session goal
+events lines BEFORE: 10
+controller_goal_rc=0
+meta goal AFTER: goal=D01 controller goal written at the barrier
+events lines AFTER: 11
+last event: {"ts":"2026-08-20T17:05:27Z","actor":"human","action":"goal","summary":"D01 controller goal written at the barrier"}

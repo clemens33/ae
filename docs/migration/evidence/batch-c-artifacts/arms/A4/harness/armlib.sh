@@ -42,6 +42,14 @@ consumer_env() { # <ae-home> <sock-or-empty> <trace-file-or-empty>
         CONSUMER_ENV+=("AE_TMUX_SHIM_LOG=$trace" "AE_REAL_TMUX=/opt/homebrew/bin/tmux")
         : >"$trace"
     fi
+    # ARM_FAKE_NOW freezes the consumer's clock through the PATH-first date shim, for arms
+    # whose row is about a TIME WINDOW and would otherwise be vacuous at whatever the wall
+    # clock happens to be. The shim delegates every non-now-form.
+    if [[ -n "${ARM_FAKE_NOW:-}" ]]; then
+        CONSUMER_ENV=("${CONSUMER_ENV[@]/#PATH=/PATH=/tmp/aecx/shim:}")
+        CONSUMER_ENV+=("AE_FAKE_NOW=$ARM_FAKE_NOW" "AE_REAL_DATE=/bin/date")
+        [[ -n "${ARM_DATE_SHIM_LOG:-}" ]] && CONSUMER_ENV+=("AE_DATE_SHIM_LOG=$ARM_DATE_SHIM_LOG")
+    fi
 }
 
 # run_consumer <label> <ae-home> <sock-or-empty> [--bounded <secs>] -- <argv...>

@@ -1,0 +1,21 @@
+group=A3b
+member=pair-stale-over-waitinguser
+fingerprint_pre_protection=1a4b9cce376ac21bb359117a452b6c0955f9623dd82ace1576c6d80b2f0714b4
+source_sandbox=/tmp/aecx/tpl/p_pair-stale-over-waitinguser
+source_session=tpairstaleoverwaitinguser
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T17:19:26Z
+--- provenance ---
+member=pair-stale-over-waitinguser rows=SC-017g adjacent pair stale>waiting-user
+rank ladder cited from the frozen source: ae@72c7293:3571-3581 (comment at :3586)
+construction: the HIGHER-rank reason arrives FIRST, the adjacent LOWER-rank reason LAST
+watchdog knobs: INTERVAL=5 STALE_MIN=1 MAX_NUDGES=2 THROTTLE_ALERT_CYCLES=2
+no reason-owner is the actor of any later event, so no own-activity clear can occur
+  T0: fake:high left static past the shortened stale window -> STALE alert.
+      fake:low is kept demonstrably ACTIVE meanwhile (a line into its own pane every
+      15s) so it cannot accumulate a stale alert of its own — the pair must isolate
+      ONE reason per agent, not stack two on the lower one.
+  low stale alerts present: 0
+  T1: fake:low declares waiting-user with its own real state helper
+    rc=0
+fingerprint_protected=979b9bdcfe49d9f3763975aa321c3de596c4d292cdfdc1553299ffa875e3a48e

@@ -1,0 +1,4 @@
+pid=97007	AE_TMUX_SERVER=/tmp/aecx/arms/A3b/c01-dead-over-stale-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3b/c01-dead-over-stale-ro/live.sock has-session -t tpairdeadoverstale 
+pid=97008	AE_TMUX_SERVER=/tmp/aecx/arms/A3b/c01-dead-over-stale-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3b/c01-dead-over-stale-ro/live.sock list-panes -s -t tpairdeadoverstale -F $'#{pane_id}\t#{@ae_agent}' 
+pid=97011	AE_TMUX_SERVER=/tmp/aecx/arms/A3b/c01-dead-over-stale-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3b/c01-dead-over-stale-ro/live.sock capture-pane -t %0 -p 
+pid=97019	AE_TMUX_SERVER=/tmp/aecx/arms/A3b/c01-dead-over-stale-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3b/c01-dead-over-stale-ro/live.sock capture-pane -t %1 -p 

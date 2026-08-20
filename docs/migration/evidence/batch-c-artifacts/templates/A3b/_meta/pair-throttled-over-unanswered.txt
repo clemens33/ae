@@ -1,0 +1,18 @@
+group=A3b
+member=pair-throttled-over-unanswered
+fingerprint_pre_protection=f397a68bc00ca03191655de0ec6207b07787c3f7149dc5695928c65f8e4afc64
+source_sandbox=/tmp/aecx/tpl/p_pair-throttled-over-unanswered
+source_session=tpairthrottledoverunanswered
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T17:17:04Z
+--- provenance ---
+member=pair-throttled-over-unanswered rows=SC-017g adjacent pair throttled>unanswered
+rank ladder cited from the frozen source: ae@72c7293:3571-3581 (comment at :3586)
+construction: the HIGHER-rank reason arrives FIRST, the adjacent LOWER-rank reason LAST
+watchdog knobs: INTERVAL=5 STALE_MIN=1 MAX_NUDGES=2 THROTTLE_ALERT_CYCLES=2
+no reason-owner is the actor of any later event, so no own-activity clear can occur
+  T0: fake:high prints the documented generic throttle phrase into its pane tail
+  T1: fake:asker (an UNINVOLVED agent) asks fake:low under the clock hook, aged past
+      the 1800s default and never replied. The asker owns no reason, so nothing clears.
+    rc=0
+fingerprint_protected=e39eaf585b474db0f93ff670efe4de5c1b54a6333daa3d559e15c3d48cd15591

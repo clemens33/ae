@@ -1,0 +1,19 @@
+arm=D case=d01-list-vs-goal-writer arm_kind=barrier design=b0-design.md Design 2 (D01) rows=D01,SC-1306a
+template=G1/healthy clone_mode=rw session=tg1
+clone_fingerprint=075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667 clone_fingerprint_matches_template=yes
+hook=H_LIST_META_CAPTURED (running-session site, immediately after meta_blob is read)
+unmodified_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd hooked_ae_sha256=2235e6b9f2505fdc1f4d1deaedadf05838e597b36f2c5a87971fdff635b2ab9d patch_sha256=994f73e05334db61b087ddbca616806371207a75d282346cc1861cf2f191ea6a
+flock_spy=/tmp/aecx/shim-flock/flock sha256=cc13069ea0bd035ea232df98bcb7e6751c12faf2e989b1eb203337c0d0c6a88d (pure delegate-and-log)
+tmux_socket=/tmp/aecx/arms/D/d01-list-vs-goal-writer/live.sock
+utc_start=2026-08-20T17:05:17Z
+manifest_diff_lines=8
+utc_end=2026-08-20T17:05:24Z
+harness_topology_note=The controller ran the session's own real `goal` helper with a live
+  pane environment (TMUX + TMUX_PANE), yet the emitted event carries actor "human". That is
+  a property of running a CLONED fixture on a NEW socket: the clone's meta still records the
+  socket of the sandbox it was produced in, and the frozen provenance check requires the
+  caller's tmux server to be the one the session's meta names before it will bind a pane id
+  to an agent identity. Recorded as harness-topology / current-IS context only, never as a
+  successor SHOULD, and it does not touch what this arm measures: the mutation is one real
+  helper invocation that rewrote goal in meta AND appended one goal event, both captured
+  before and after in controller-mutation.txt.

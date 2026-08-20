@@ -1,0 +1,5 @@
+SESSION                   STATUS    MODE        ORIGIN
+tpairblockedoverthrottled  running   local       /tmp/aecx/tpl/p_pair-blocked-over-throttled/work
+  git:master · ae 0.2.1 · active 5m ago · attn:blocked
+  fake:high               -         blocked       
+  fake:low                -         -             

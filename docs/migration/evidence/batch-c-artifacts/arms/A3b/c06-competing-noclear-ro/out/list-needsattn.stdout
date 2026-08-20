@@ -1,0 +1,7 @@
+SESSION                   STATUS    MODE        ORIGIN
+tcompetingnoclear         running   local       /tmp/aecx/tpl/p_competing-noclear/work
+  git:master · ae 0.2.1 · active 5m ago · attn:dead
+  fake:high               -         -             
+  fake:low                -         waiting-user  
+  fake:third              -         -             
+  fake:asker              -         -             

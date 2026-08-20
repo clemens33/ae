@@ -1,0 +1,4 @@
+pid=78291	AE_TMUX_SERVER=/tmp/aecx/arms/D/d02-requests-vs-reply-writer/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/d02/s.sock display-message -p \#\{pane_id\} 
+pid=78295	AE_TMUX_SERVER=/tmp/aecx/arms/D/d02-requests-vs-reply-writer/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/d02/s.sock display-message -p \#\{pane_id\} 
+pid=78298	AE_TMUX_SERVER=/tmp/aecx/arms/D/d02-requests-vs-reply-writer/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/d02/s.sock display-message -p \#\{pane_id\} 
+pid=78299	AE_TMUX_SERVER=/tmp/aecx/arms/D/d02-requests-vs-reply-writer/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/d02/s.sock display-message -p -t '' \#S 

@@ -1,0 +1,20 @@
+#!/opt/homebrew/bin/bash
+# PATH-first `tmux` shim — PURE DELEGATE-AND-LOG. It has no active mode: every
+# invocation is logged and then exec'd to the real binary unchanged.
+#
+# It exists to make each consumer invocation's tmux contact observable from
+# outside the frozen script: the effective AE_TMUX_SERVER / AE_TMUX_SERVER_KIND
+# the consumer process actually carried, and the DELEGATED argv. A leading
+# `-S <socket>` in that argv is the frozen ambient shim (ae@72c7293:80-89)
+# having been installed; its absence means the call went to the default server.
+REAL="${AE_REAL_TMUX:-/opt/homebrew/bin/tmux}"
+if [[ -n "${AE_TMUX_SHIM_LOG:-}" ]]; then
+    {
+        printf 'pid=%s\tAE_TMUX_SERVER=%s\tAE_TMUX_SERVER_KIND=%s\tLC_ALL=%s\tLANG=%s\targv=' \
+            "$$" "${AE_TMUX_SERVER-<unset>}" "${AE_TMUX_SERVER_KIND-<unset>}" \
+            "${LC_ALL-<unset>}" "${LANG-<unset>}"
+        printf '%q ' "$@"
+        printf '\n'
+    } >>"$AE_TMUX_SHIM_LOG" 2>/dev/null || true
+fi
+exec "$REAL" "$@"

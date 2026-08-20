@@ -1,0 +1,12 @@
+## attention fields, re-derived from out/list-json.stdout
+source=out/list-json.stdout sha256=f1e56d324cd0508e68d4e3409d59da8a65eea0aea2001ab7758e2dfc7ed00f1c bytes=641
+derivation=pure post-processing of the captured bytes; nothing was re-run
+
+session=tpairstaleoverwaitinguser
+  needs_attention=true
+  attention="stale"
+  attention_rank=5
+  last_active_epoch=1787246365
+  agents:
+    {"alias": "fake", "alive": true, "name": "high", "reason": null, "ref": "fake:high", "session_id": "-", "state": null}
+    {"alias": "fake", "alive": true, "name": "low", "reason": null, "ref": "fake:low", "session_id": "-", "state": "waiting-user"}

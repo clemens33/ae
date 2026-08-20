@@ -1,0 +1,7 @@
+case	rows	group	member
+d01-list-vs-goal-writer	D01,SC-1306a	G1	healthy
+d01-controller-only-twin	D01,SC-1306a	G1	healthy
+d02-requests-vs-reply-writer	D02,SC-1306d	D	d02-pending-with-harvested-reply
+d02-controller-only-twin	D02,SC-1306d	D	d02-pending-with-harvested-reply
+d02-requests-vs-reply-writer	D02,SC-1306d	D	d02-pending-with-harvested-reply
+d02-controller-only-twin	D02,SC-1306d	D	d02-pending-with-harvested-reply

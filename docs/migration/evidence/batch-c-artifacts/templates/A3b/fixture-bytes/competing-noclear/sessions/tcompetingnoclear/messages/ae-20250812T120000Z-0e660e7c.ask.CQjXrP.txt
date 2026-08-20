@@ -1,0 +1,6 @@
+⟦ae:msg from fake:asker⟧
+REQUEST ae-20250812T120000Z-0e660e7c from fake:asker: A3b competing unanswered question (never replied)
+
+REQUIRED: When you have finished, you MUST run this exact command to reply:
+/tmp/aecx/tpl/p_competing-noclear/home/.ae/sessions/tcompetingnoclear/reply --as "fake:third" "ae-20250812T120000Z-0e660e7c" "<your reply>"
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism.
