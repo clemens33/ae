@@ -474,7 +474,18 @@ and it arrives dressed as enthusiasm rather than as error.
    not the exit code inside it.
 7. **A check you learn to ignore is worse than no check** — a permanently-red guard trains
    people to skip it and then looks like coverage. Fix the check or delete it.
-8. **Generate, then paste; derive, never hand-copy.** And the clause that completes it:
+8. **Pre-registration freezes by PROVENANCE, not by path.** Hash every
+   harness-supplied executable and input — scripts, libs, hooks, shims, fixture builders,
+   generators, the frozen subject, the harness tree. Do **not** hash what the product
+   writes during the run: those are the named subject effects the arm exists to observe.
+   Getting this wrong is possible in both directions, and both were found in successive
+   review rounds of one design — **script-only** hashing is too narrow (an unchanged script
+   can source a changed harness), **whole-closure** hashing is too broad (it refuses an arm
+   for the product doing the thing being measured). A **dual-provenance** path — a helper
+   the harness planted and the product then rewrote — is **two artifacts**: registered
+   planted bytes and captured product-produced bytes. **Never a silently updated baseline**,
+   which is the shape that makes the whole registration vacuous.
+9. **Generate, then paste; derive, never hand-copy.** And the clause that completes it:
    **MEASURE, READ THE OUTPUT, THEN ASSERT — never measure and assert in the same action.**
    A worker ran a readiness check and sent the claim in the same breath, so the claim could
    not have been derived from the output; it was written before the output existed. The
@@ -483,7 +494,7 @@ and it arrives dressed as enthusiasm rather than as error.
    number, because the number lends the claim credibility it has not earned.** Measuring
    and asserting simultaneously defeats the generate-then-paste rule while appearing to
    follow it.
-9. **Verifying a conclusion independently does not validate the reasoning that reached it.**
+10. **Verifying a conclusion independently does not validate the reasoning that reached it.**
    In the same incident a seat re-derived the conclusion from scratch, found it correct,
    and reported the claim verified — because the underlying FACT was right. The defect was
    in the claimant's evidence chain (they had searched the wrong tree), which no
