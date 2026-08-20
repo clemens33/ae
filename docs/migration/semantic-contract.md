@@ -669,68 +669,163 @@ semantics survive; `ae-monitor`/`_events` stay inspectable; daemon decisions are
 durable events/log, never pane-peeking. Authority: DR-002 (both seats).
 Conflict: DR-002.
 
-The S10 claim table (source: s10source batch, one testable SHOULD per row; frozen-doc
-citations in the batch, memo-linked). Bucket column is the lead proposal; rows marked
-**DR-002** have their bash-era SHOULD retired by the topology decision and are kept as
-compatibility semantics only where DR-002 preserves them:
+Rows SC-902+ per the ratified schema (gate: the earlier flat table violated it).
+Sources: colead's fine-grain proposals (memo topics s10-watchdog/-steward/-telegram/
+-defects, frozen citations therein) + lead bridge/cross-cutting splits. Numeric
+tunables/defaults/malformed values live in S15; helper-publication atomicity in S11;
+core-dependency floor deduped to SC-940 + S12. **classified_by: pending colead's
+one-pass confirm (held at ratification per gate).**
 
-| Row | Claim (abbrev.) | Bucket | Conflict |
-|---|---|---|---|
-| W-01 | watchdog on by default; only false/no/off/0 disables | 2 | none |
-| W-02 | enablement persists in meta across resume | 2 | none |
-| W-03 | watchdog self-terminates when session/meta disappears | 1 | none |
-| W-04 | bash default impl; aewatch via AE_WATCHDOG_IMPL=uv | 4/DR-002 | selector retires |
-| W-05 | uv selects exclusively; else bash; never duplicates | 4/DR-002 | — |
-| W-06 | reuse running aewatch only on fresh heartbeat | 4/DR-002 | — |
-| W-07 | bridge ownership = marker AND heartbeat ≤90s | 4/DR-002 | — |
-| W-08 | stale ownership → bash revives | 4/DR-002 | — |
-| W-09 | interval/stale/nudge/throttle defaults 60s/15m/2/5 | 2 | none |
-| W-10 | tg supervision default 120s; 0 disables | 2 | none |
-| W-11 | steward sweep default 300s; 0 → normal behavior | 2 | none |
-| W-12 | sweep retry 30s clamped, 6 fast, one unreachable alert | 2 | none |
-| W-13 | branch order first-match-wins | 2 | none |
-| W-14 | agentless shell pane: alert once, mark dead, ignore | 2 | none |
-| W-15 | quiet declarations suppress; done event-only; wu/blocked yield to pane | 1 | none |
-| W-16 | throttle streak: suppress, one event, alert at N, cleared on recovery | 2 | none |
-| W-17 | at most MAX_NUDGES; limit cycle alerts then silence | 2 | none |
-| W-18 | missing panes alert once; pending captures retried | 2 | none |
-| W-19 | state done dual-emits; either recognized by older watchdog | 2 | none (torn emit = D07/S14 row) |
-| M-01 | ae-monitor window always; _events always; _watchdog only-while-running | 2 (+4/DR-002 for the _watchdog pane half) | — |
-| M-02 | watchdog stop/restart leaves events pane usable | 2 | none |
-| M-03 | baked status bar owned by ae; stop clears live segments only | 2 | none |
-| M-04 | doctor --refresh replaces disk code, never the running watchdog | 2 | none |
-| B-01 | external actor = platform:id, opaque past allowlist | 2 | none |
-| B-02 | event-only sinks: no tmux resolution, literal target; unknown fails loud | 1 | none |
-| B-03 | AE_SENDER_OVERRIDE for send/ask/review; reply identity via --as | 2 | none |
-| B-04 | readers tolerate missing files, buffer partial trailing records | 1 | none |
-| B-05 | offsets keyed (session_id,inode); tail never whole-load | 2 | DR-001 amends (generation cursor) |
-| B-06 | bridges bind stable session_id across resume/rename/transfer | 1 | none |
-| B-07 | claim, stop the other, THEN send; fresh marker = stand down | 1 | fix-known-defect(#84; #83 operator bypass) |
-| B-08 | bridges ignore unknown fields; renames/removals breaking | 2 | none |
-| T-01 | missing jq/curl refuses only the bridge, never core | 1 | none |
-| T-02 | default include set; per-session offsets prevent replay | 2 | fix-known-defect(#86: offsets can regress) |
-| T-03 | empty allowed_user_ids = outbound-only | 2 | none |
-| T-04 | inbound: numeric allowlisted from.id + exact chat.id + private, else silent drop | 1 | none |
-| T-05 | routing precedence chain with common revalidation | 2 | none |
-| T-06 | targets resolve to running exact/unique-prefix + real agents; escapes rejected | 1 | none |
-| T-07 | setMyCommands failure logged and ignored | 2 | none |
-| T-08 | offset advances BEFORE dispatch — restart cannot replay a side-effecting command | 1 | none |
-| T-09 | token file 0600 owner-only; wrong perms refuse start with diagnostic | 1 | none |
-| T-10 | start idempotent; stop-when-stopped succeeds; status = intent + runtime | 2 | none |
-| T-11 | autostart never blocks launch; failure = one-line warning | 1 | none |
-| T-12 | supervision ~120s, 0 disables, never undoes explicit stop, best-effort | 2 | none |
-| T-13 | tracked sessions resume from saved offset; new sessions start at EOF | 2 | DR-001 amends (cursor) |
-| T-14 | both backends: same filter/routing/menu over same state | 3 | fix-known-defect(#45 delivery, #86 stores, #87 config) |
-| T-15 | token never in argv; redacted in logs | 1 | none |
-| C-01 | steward session swept every 300s, no stale escalation; workers normal | 2 | none |
-| C-02 | sweep nudges delivery-checked, retried, at-least-once | 2 | none |
-| C-03 | steward liveness = pane checks + state-file mtime ~2x cadence | 2 | none |
-| C-04 | steward never ends/stops/edits another session or dispatches without human say-so | 1 | none |
-| C-05 | steward isolates config, neutralizes local, --init never overwrites | 1 | none |
-| C-06 | legacy hub supported; steward name reserved | 2 | none |
-| A-01 | core deps = bash>=4 + tmux + git; jq/curl never core | 1 | none |
-| A-03 | helper publication atomic temp+chmod+rename; running watchdog keeps body | 1 | none (M3 mechanism) |
-| A-04 | telegram plain-text paths; jq programs fixed, data via stdin | 1 | none |
+Watchdog + monitor (authority: watchdog.md / monitor.md @72c7293, cited per memo):
+- **SC-902** b2 — watchdog enabled by default; only explicit false/no/off/0 disables.
+- **SC-903** b2 — per-session enable state persists across resume.
+- **SC-904** b2 — start is idempotent, confirms enabled state; start/stop/status + loop
+  surface survive DR-002.
+- **SC-905** b1 — per-pane cycle is first-match-wins; no later branch after a
+  classification.
+- **SC-906** b1 — dead = shell foreground with no agent descendant; alert once, then
+  ignore until state changes.
+- **SC-907** b1 — a quiet declaration applies only while it is the LATEST relevant
+  event; any newer relevant event invalidates it.
+- **SC-908** b1 — `done` is event-only: pane churn never revives it; resumption needs a
+  newer ae event.
+- **SC-909** b1 — waiting-user/blocked arm a post-echo pane baseline, hold while
+  unchanged, yield on later pane change.
+- **SC-910** b1 — active pane change suppresses the nudge and resets the count.
+- **SC-911** b1 — recently-visible pane change suppresses within the stale window.
+- **SC-912** b1 — recent ae activity suppresses within the stale window.
+- **SC-913** b3 fix-known-defect(#45) — every daemon nudge uses the ONE verified
+  delivery primitive (target lock, busy/human/dead guards, durable failure evidence,
+  verified submit); only rc0 delivery spends MAX_NUDGES. IS: aewatch pastes ungated
+  (census-3 I7).
+- **SC-914** b1 — after MAX_NUDGES confirmed deliveries: one alert + visible banner,
+  then silent waiting until state changes.
+- **SC-915** b1 — first throttle cycle suppresses the nudge and resets the stale budget.
+- **SC-916** b1 — first cycle of a throttle streak emits exactly one `throttled` event.
+- **SC-917** b1 — continuous throttle alerts once at the threshold, never re-alerts in
+  the same streak.
+- **SC-918** b1 — throttle disappearance emits `throttle-cleared` and resets the streak.
+- **SC-919** b1 — a registered missing pane alerts once per disappearance.
+- **SC-920** b3 fix-known-defect(#51) — human-origin evidence inside quiet stabilization
+  must yield; a submitted human reply is never absorbed as agent churn. IS: equal pane
+  hashes cannot distinguish them.
+- **SC-921** b3 fix-known-defect(#73) — monitor panes are never agents and never enter
+  the roster. IS: regenerate_manifest lists `_watchdog`/`_events`.
+- **SC-922** b2 — every session keeps `ae-monitor` with an always-present `_events`
+  view, independent of watchdog enablement, across resume.
+- **SC-923** b1 — monitor panes are read-only/input-disabled.
+- **SC-924** b2 — watchdog stop never removes the `_events` inspection surface (DR-002
+  retires only the `_watchdog` pane).
+- **SC-925** b1 — a dead agent is never auto-restarted by the watchdog.
+- **SC-926** b3 fix-known-defect(#88-A) — control success only when durable intent and
+  runtime converge; typed partial failure otherwise. IS: meta-write failure ignored
+  after tmux mutation.
+- **SC-927** b3 fix-known-defect(#88-B) — status is read-only; cleanup belongs to an
+  explicit reconcile path. IS: status deletes stale pidfiles.
+- **SC-928** b3 fix-known-defect(#88-C) — an event-append error is surfaced and
+  contained to its operation; it never stops the combined daemon or spends nudge state.
+  IS: census-3 I2 crash/backoff.
+- **SC-929** b4 DR-002 — `doctor --refresh` vs the running daemon follows DR-002's
+  explicit restart contract (the bash keeps-loaded-body behavior retires with the
+  topology).
+
+Steward (authority: commands.md/telegram.md @72c7293, cited per memo):
+- **SC-930** b2 — bare `ae steward` ensures the detached steward, never attaches.
+- **SC-931** b2 — `--attach` is the explicit attach/switch surface.
+- **SC-932** b1 — `--init` scaffolds and NEVER overwrites operator files.
+- **SC-933** b1 — steward launch isolates its config and neutralizes project-local
+  config.
+- **SC-934** b1 — steward authority is monitor/relay/suggest ONLY: never ends, stops,
+  edits, or dispatches into another session without human authorization.
+- **SC-935** b1 — only the steward main agent gets sweep cadence, no stale escalation;
+  its workers keep normal watchdog behavior.
+- **SC-936** b1 — a sweep nudge is delivery-checked; refusal is logged, never counted
+  delivered.
+- **SC-937** b1 — undelivered sweeps retry on the short cadence.
+- **SC-938** b1 — after retry max: normal cadence + one unreachable alert, cleared on a
+  landed delivery.
+- **SC-939a** b1 — sweep delivery is at-least-once: event-write failure after paste may
+  duplicate, never silently drop.
+- **SC-939b** b1 — steward liveness = dead-pane checks AND a live-but-not-sweeping
+  heartbeat (~2x cadence); stale alerts once, recovery clears.
+- **SC-939c** b2 — sweep nudges are outside the default Telegram include.
+- **SC-939d** b2 — plain Telegram text defaults to the running steward absent a sticky
+  override; no steward yields start guidance.
+- **SC-939e** b2 — `/use` overrides that default; `/use clear` restores steward routing.
+- **SC-939f** b2 — deprecated `hub` stays accepted; canonical name is steward (#52
+  policy ruling).
+
+Telegram (authority: telegram.md @72c7293, cited per memo):
+- **SC-940** b1 — jq/curl absence refuses ONLY the bridge; core commands unimpaired.
+- **SC-941** b2 — outbound include allow-list default; exclude applies after include.
+- **SC-942** b2 — `chat` action gives the two-way loop; include-without-chat disables
+  it and status warns.
+- **SC-943** b1 — inbound exists only with nonempty `allowed_user_ids`; empty =
+  outbound-only.
+- **SC-944a/b/c** b1 — three separate trust predicates: numeric allowlisted `from.id`;
+  exact configured `chat.id`; private chat — ANY failure silently drops.
+- **SC-945** b2 — routing precedence: command > reply > compact > override/steward.
+- **SC-946** b1 — every inbound route passes the same session/agent revalidation.
+- **SC-947** b1 — only running sessions are addressable.
+- **SC-948** b2 — session resolves by exact name or unique session_id prefix.
+- **SC-949** b1 — agents resolve only within that session; pane-id, cross-session, and
+  external-actor escapes rejected.
+- **SC-950** b2 — sender identity is `telegram:<id>`; replies route back outbound.
+- **SC-951** b1 — inbound update offset persists BEFORE dispatch: at-most-once side
+  effects.
+- **SC-952** b2 — command-menu registration is best-effort (log and ignore).
+- **SC-953/954** b2 — start is idempotent; stop-when-stopped succeeds.
+- **SC-955** b2 — status reports persisted intent, runtime, deps, token validity.
+- **SC-956** b1 — autostart failure warns one line and never blocks session launch.
+- **SC-957** b1 — supervision honors durable disabled state; can never revive after an
+  explicit stop (DR-002 changes topology, not this).
+- **SC-958** b4 DR-003 — outbound delivery is at-least-once: cursor persistence is part
+  of committed progress, save failure is LOUD and retry-safe, duplicates possible only
+  in the crash window, event id rides the outbound text/log for dedupe. (IS: save
+  failure silently ignored — #86-D evidence.)
+- **SC-959** b2 — a first-seen session starts at EOF; no history flood.
+- **SC-960** b1 — the persisted getUpdates offset prevents inbound redispatch on
+  restart.
+- **SC-961** b1 — token file is owner-only 0600; wrong perms refuse start with a
+  corrective diagnostic.
+- **SC-962** b1 — the token never enters argv; logs redact it.
+- **SC-963** b3 fix-known-defect(#83) — explicit start preserves exactly-one-sender:
+  refuse or complete a verified takeover, never warn-and-double-send.
+- **SC-964** b3 fix-known-defect(#84) — takeover is serialized and proves every
+  predecessor absent across the COMPLETE scope before the first send.
+- **SC-965** b3 fix-known-defect(#85) — destructive tmux targets resolve exact
+  identity, never prefix.
+- **SC-966** b3 fix-known-defect(#86-E) — `/use clear` succeeds only after durable
+  removal.
+- **SC-967** b3 fix-known-defect(#87) — one effective-config authority for every
+  daemon mode, `CONFIG_FILE`/`AE_LOCAL_CONFIG` included.
+- **SC-968** b3 fix-known-defect(#88-G) — lifecycle ownership acquired before any
+  probe/kill/create mutation.
+- **SC-969** b3 fix-known-defect(#87-H) — setup publishes token/config with atomic
+  visibility; no reader observes empty/partial canonical state.
+- **SC-970** b2 — setup persists enabled, token_file, chat_id, seeded allowlist (byte
+  formats: S5/S15).
+- **SC-971** b2 — start persists `enabled=true`; stop persists `enabled=false`.
+
+Bridge protocol (authority: bridge-protocol.md @72c7293; lead splits per gate):
+- **SC-972** b2 — external actors are `<platform>:<id>`, opaque past the allowlisted
+  prefix.
+- **SC-973a** b1 — event-only sinks (`telegram:`/`discord:`/`ae:compact:`) emit without
+  tmux resolution and preserve the literal target.
+- **SC-973b** b1 — an unknown non-allowlisted external target fails LOUDLY.
+- **SC-974a** b2 — `AE_SENDER_OVERRIDE` sets the actor for send/ask/review.
+- **SC-974b** b2 — reply caller identity comes from `--as`, not the override.
+- **SC-975a** b1 — bridge readers tolerate a missing event file.
+- **SC-975b** b1 — malformed/unterminated trailing data is buffered until a complete
+  newline record exists.
+- **SC-976a** b4 DR-001 — the reader cursor is generation-aware (generation + offset
+  replaces the (session_id,inode) key).
+- **SC-976b** b2 — event logs are tailed/back-scanned bounded, never whole-loaded.
+- **SC-977** b1 — bridges bind the stable session_id across resume/rename/transfer.
+- **SC-978a** b2 — bridges ignore unknown fields/actions.
+- **SC-978b** b2 — renames/removals/semantic changes of existing fields are BREAKING.
+- **SC-979a** b1 — telegram sends use plain-text paths (no parse-mode injection).
+- **SC-979b** b1 — jq programs stay fixed strings; user data enters via stdin only.
 
 (A-02 is the historical revisit-trigger doctrine — executed by #79, not a contract row.
 A-05 = SC-1101, not duplicated. Batch conflicts 1–3 are owned by SC-900/#84-85/#45
@@ -927,6 +1022,30 @@ bar for DR completeness: the wider the divergence, the fuller the record.
 |---|---|---|
 | DR-001 | Event-log generations | RATIFIED (both seats, 2026-08-20) |
 | DR-002 | One daemon per AE_HOME | RATIFIED (both seats, 2026-08-20) |
+| DR-003 | At-least-once outbound Telegram delivery | RATIFIED (both seats, 2026-08-20) |
+
+```
+DR-003 At-least-once outbound Telegram delivery
+- affected SC ids: SC-958 (bucket 4 under this DR); #86's outbound half (scope refined
+  by issue comment); inbound is NOT affected — SC-951/SC-960 stay at-most-once.
+- context / current IS: telegram.md:9-12,167-169 promise saved offsets prevent restart
+  replay; census-3 I3 shows sends succeed while the durable offset save fails silently.
+  After a remote send succeeds, a crash before local cursor commit makes exactly-once
+  unachievable without a remote idempotency primitive; persist-before-send trades
+  duplicates for LOST notifications.
+- options considered: (a) fix-known-defect preserving no-replay via at-most-once —
+  explicitly accepts silent alert loss; (b) at-least-once with explicit policy.
+- decision / intended Rust behavior: at-least-once. Duplicates possible ONLY within the
+  crash window; the event id rides the outbound text/log for human/system dedupe;
+  cursor-commit failure is LOUD and retry-safe (cursor persistence is part of committed
+  outbound progress, never ignored).
+- trade-offs accepted: occasional visible duplicate over silent alert loss — for a
+  notification bridge, a lost alert is the worse failure; doc no-replay promise amended
+  for outbound.
+- authority: telegram.md/bridge-protocol.md (current promise), census-3 I3 (evidence),
+  ambitious-divergence latitude.
+- seats + date: gpt56sol:colead (proposed) + fable5:lead (concurred), 2026-08-20.
+```
 
 ```
 DR-002 One daemon per AE_HOME
