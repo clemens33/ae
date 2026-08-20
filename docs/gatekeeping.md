@@ -537,6 +537,31 @@ site, so a rename breaks loudly and a renumber cannot happen at all.
 Note the recursion, which is the usual shape: the arms written to *introduce* this rule
 initially carried the same prose back-references the rule forbids.
 
+### Ask what gates precede the fact under test
+
+Three times in one cluster an arm could not exercise its own subject because an **upstream
+guard fired first**, and each was found only after the capture:
+
+| arm intent | upstream gate that foreclosed it |
+|---|---|
+| does the cwd fallback select? | the token path selects first, and the fallback runs only when it finds nothing |
+| does refresh restart a running daemon? | a liveness gate decides whether the running-daemon branch is entered at all |
+| do these selector spellings differ? | a config-presence check refuses before any selector is consulted |
+
+In each case the cases reported **identically**, which reads as "no difference here" and is
+actually "the question was never asked." The pattern is not carelessness — a fixture author
+reasons forward from the manipulation to the expected observation and does not naturally
+enumerate what stands between them.
+
+**So enumerate it deliberately, before building: what guards precede this fact, and does
+the fixture pass them?** It costs one read of the call path and it is the difference between
+an arm that answers its question and an arm that answers a question nobody asked.
+
+And when it happens anyway, the disposition is the one that preserves both facts: **keep the
+cases as evidence for what they DO establish** — the precedence, the gate's own behaviour —
+**and build a separate pair that reaches the original question.** Rebuilding in place throws
+away a true observation to test a different one.
+
 ### Reachable is not discriminating, and an amendment's blast radius is not what it names
 
 Two rules from one rebuild, both earned twice over.
