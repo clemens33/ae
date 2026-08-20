@@ -323,6 +323,117 @@ fails the end), `--purge-history`, transfer (both directions), rename, compact/h
 
 <!-- rows: SC-8xx -->
 
+Lead drafts, SHOULD frozen from architecture.md + commands.md + AGENTS.md ruling
+bullets; one testable SHOULD per row. `classified_by` pending joint pass.
+
+**SC-800 — archive publication claims by `mkdir`.** Bucket 1 — the atomic claim is
+`mkdir .publishing.<uuid>`; mkdir failing IS the mutual exclusion (no flock required —
+flock is optional on the platform). Authority: architecture.md:85-88.
+Empirical: census-2 end section (audited). Conflict: none.
+
+**SC-801 — staging is private by construction.** Bucket 1 — payload populated under
+umask 077 with every mode set explicitly. Authority: architecture.md:89.
+Empirical: pending. Conflict: none.
+
+**SC-802 — the final archive appears complete or not at all.** Bucket 1 — validate the
+staged tree, re-check the target absent, then one same-filesystem `rename`.
+Authority: architecture.md:90-93. Empirical: census-2 (audited). Conflict: none.
+
+**SC-803 — a standing claim is refused and named, never cleaned.** Bucket 1 — from the
+outside a stale claim and a live publisher are indistinguishable; the next run refuses
+with the claim's name. Authority: architecture.md:95-97. Empirical: pending.
+Conflict: none.
+
+**SC-804a — validator: exact path whitelist.** Bucket 1 — an entry ae does not
+recognise FAILS validation rather than being ignored. Authority: architecture.md:99-104.
+Empirical: pending. Conflict: none.
+
+**SC-804b — validator: no symlink or special file.** Bucket 1. Authority:
+architecture.md:100. Empirical: pending. Conflict: none.
+
+**SC-804c — validator: directories 0700, files 0600.** Bucket 1. Authority:
+architecture.md:100-101. Empirical: pending. Conflict: none.
+
+**SC-804d — validator: no executable bit for user, group, OR other.** Bucket 1 — `-x`
+answers only for the current user; a group-executable file is still a program.
+Authority: architecture.md:101-103. Empirical: pending. Conflict: none.
+
+**SC-804e — validator: `meta` and `digest.md` must agree.** Bucket 1 — on the archive
+id and the counts they report. Authority: architecture.md:103-104. Empirical: pending.
+Conflict: none.
+
+**SC-805 — an archive is inert data.** Bucket 1 — never an executable file; the
+validator is the proof, not intent. Authority: AGENTS.md rules bullet + architecture.md.
+Empirical: pending. Conflict: none.
+
+**SC-806 — archive key is the canonical lowercase session UUID.** Bucket 2 —
+addressable independently of the name (neither unique over time nor stable); legacy
+uppercase metas are normalized. Authority: architecture.md:81-83. Empirical: pending.
+Conflict: none.
+
+**SC-807 — the lifecycle lock is released before the relaunch.** Bucket 1 — the child
+takes the same lock under the same name; holding across both would deadlock ae against
+itself. Authority: architecture.md:230-232. Empirical: pending. Conflict: none.
+
+**SC-808 — the child re-proves the parent archive before publishing its meta.** Bucket
+1 — `_AE_FROM_EXPECTED` immediately before meta publication; mismatch rolls the launch
+back rather than creating a child with no lineage. Authority: architecture.md:232-234.
+Empirical: pending. Conflict: none.
+
+**SC-809 — lineage is never inferred from a name.** Bucket 1 — a session continues an
+archive only via explicit `--from <uuid>`. Authority: AGENTS.md "How it works" (ruling
+text) + architecture.md. Empirical: pending. Conflict: none.
+
+**SC-810 — `--purge-history` inverts the archive contract.** Bucket 2 — no archive is
+written and any existing archive for that UUID is deleted. Authority: AGENTS.md "How it
+works". Empirical: pending. Conflict: none.
+
+**SC-811 — `launch.<slot>.sh` re-run resumes for upfront-UUID tools.** Bucket 2 —
+first run creates (drops the `.started` marker), later runs exec the resume variant; ae
+clears the marker when it rewrites the script so a fresh launch always creates.
+Authority: AGENTS.md launch-rerun bullet (ruling). Empirical: pending. Conflict: none.
+
+**SC-812 — the resume decision happens BEFORE exec.** Bucket 1 — a `cmd || fallback`
+chain leaves bash as the pane process and `pane_current_command` reports `bash`,
+silently disabling the send path's TUI modelling. Authority: AGENTS.md launch-rerun
+bullet + #30-family ruling (commit 32719f5). Empirical: pending. Conflict: none.
+
+**SC-813 — session names are allowlisted at every creation/import boundary.** Bucket 1
+— `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$` at launch entry, `default_session_name`,
+`transfer` both directions, `rename` target; consumers of existing sessions may accept
+legacy direct-child names as a migration path, never traversal. Authority: AGENTS.md
+session-name bullet (ruling). Empirical: unit pins @72c7293 (verification).
+Conflict: none.
+
+**SC-814 — transfer validates both endpoint names before any side effect.** Bucket 1 —
+before any path construction, SSH probe, mkdir, or rsync. Authority: AGENTS.md
+session-name bullet. Empirical: pending. Conflict: none.
+
+**SC-815a — the confirmed fleet is the fleet acted on.** Bucket 1 — `stop all` hands
+over the exact confirmed list and does not re-enumerate; a session started during
+confirmation is left alone. Authority: commands.md:382-386. Empirical: pending.
+Conflict: none.
+
+**SC-815b — fleet entries carry session identity, not names.** Bucket 1 — ending a
+session and starting a new one under the same name mid-operation leaves the newcomer
+running, with a recorded failure explaining the name changed hands. Authority:
+commands.md:386-389. Empirical: pending. Conflict: none.
+
+**SC-815c — each fleet run tags its events with its own operation id.** Bucket 2 —
+`[op <uuid>]`, so two concurrent runs tell their results apart. Authority:
+commands.md:389-390. Empirical: pending. Conflict: none.
+
+**SC-816 — an unverifiable session is still a target.** Bucket 1 — if its recorded tmux
+server is unreachable, ae does not know it is stopped: it is carried into the fleet and
+fails loudly in its own log rather than being silently counted as gone. Authority:
+commands.md:378-381. Empirical: pending. Conflict: none.
+
+**SC-817 — end runs git before capture.** Bucket 2 — managed modes commit + push to
+`ae/<session>` before the archive is captured; the archive therefore records
+`git_final_commit` facts that already exist on the remote. Authority: AGENTS.md "How it
+works" + commands.md end section. Empirical: census-2 end section (audited; sequence
+verify/kill → git → archive → cleanup). Conflict: none.
+
 ### S10 — Daemons/sidecars + contrib boundary
 
 Watchdog (nudge rules, quiet-state honoring, footprint exclusion; bash impl vs
