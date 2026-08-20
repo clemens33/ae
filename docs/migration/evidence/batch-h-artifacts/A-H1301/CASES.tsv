@@ -1,0 +1,5 @@
+case_dir	ledger_sha256	ledger_lines	files
+h1301-c00-inactive-equivalence	7dbfa2414edcbc5d3040dde2c339c76f4279da37b0ae7f0b4af038016ee2c0f4	6	21
+h1301-c01-atomic-temp-rename	c803851745a80d074267f9fdc3d7747b558fada8149a37e8af6d103e4fd0f681	12	19
+h1301-c02-spawn-partial-generation	c1f7f012b868566009e174a6b29110d101c814c698fa9759dd0530f73c4be4eb	12	17
+h1301-c03-reader-fault-response	037ef4b415745f489d4cd7eef755f944a705a0e3f0cff6f2894a45ed2c2d4b59	17	21

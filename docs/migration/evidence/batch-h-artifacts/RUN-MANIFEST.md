@@ -168,6 +168,11 @@ byte-equivalent to the unmodified control on the same scenario, AND the comparat
 a KNOWN difference (a copy with an altered version string) as different. A comparator that
 has never reported red cannot certify equivalence.
 
+### A25 — `_harness/derive-h1301-record.py` registered after A-H1301's run
+
+- new sha256: `43fe3257370e70d01317e5760550259316c98531a94659b1aa68ca2eec0b5ce7`
+- post-capture reporting only.
+
 ## Frozen source
 
 `72c7293`, verified by hash at every case open and recorded in each case's ledger.

@@ -1,0 +1,12 @@
+3c3
+< ./sessions/teq/_lib	91da0d9b5bcd6d3c8abcd5c974fe7be0c63a329ba5971cbbb57b6fd8e71a2d40
+---
+> ./sessions/teq/_lib	c27d48245dd1bccfe569a54d22d2f819995c3d25b734f63f0bc659bf684a737b
+16c16
+< ./sessions/teq/meta	54c3b61ee6418d81af79294d22720d724b380a0fcd891db13d98d1b0270e2d30
+---
+> ./sessions/teq/meta	3b8eb9bec1744ff97a034aa67929ca3c2f7335cf38c78ef8836be4b016c41085
+29c29
+< ./sessions/teq/workspace.md	5ff51d5e4b39c714e73b89371b44cbe21fa27918d4d9de078ac9a0e702976178
+---
+> ./sessions/teq/workspace.md	53b5960ca9685d3030decab0f38f5d7fe3028b4efbfac3a45f88c9457378a261

@@ -17,7 +17,7 @@ accepts it.
 | A-H2 — steward help and detach spellings (SC-013) | COMPLETE — 9 case runs |
 | A-H8 — the long-lived query (SC-211n) | COMPLETE — 7 case runs |
 | SC-211l — `say` under its containment | COMPLETE — 5 case runs |
-| SC-1301 — hooks and barriers | not started |
+| SC-1301 — the meta-writer fault arm | COMPLETE — 4 case runs (1 admissibility, 3 cuts) |
 | D14b | HELD and EXCLUDED pending the ownership-record split |
 
 ## A-H4 — SC-211p (`_lib` name resolution)
@@ -180,3 +180,31 @@ Three replay cohorts of 29, 30 and 31 events sit either side of the cut and at i
 `planted_lines` recorded beside `planted_events` — the first run's cohorts held ONE
 unterminated line however many events were written, and nothing in the output would have
 shown it (`RUN-MANIFEST.md` A19).
+
+## A-H1301 — SC-1301, three writer-shaped cuts
+
+One hook-only patch over an exact 72c7293 copy: 5 lines added, 2 modified, three hook
+points, one per writer, because the three writers do not share a boundary. The hash triple
+(frozen, hooked, patch) is in the admissibility case's ledger and the patch is committed
+beside it.
+
+**Admissibility came first and the arm refuses to proceed without it.** The inactive hook
+is proven equivalent to the unmodified control on the same scenario, in the ENUMERATED form
+— identical everywhere except files whose only difference is the hook's own bytes, which
+the arm proves by diffing each differing file and failing on any non-hook line. Three files
+differ (`_lib` and the two that quote it) and none differs in non-hook bytes. The comparator
+is separately proven able to report red against a copy with an altered version string.
+
+- **cut 1, `ae_meta_set`:** at the barrier the temp file exists, the canonical meta is
+  unchanged, and a concurrent reader is captured. Claim: what a reader observes across the
+  temp/rename boundary.
+- **cut 2, `_cmd_spawn`:** the barrier sits between two of the writer's OWN appends and the
+  controller SIGKILLs there, so the partial state in meta was written by the frozen writer
+  and by nothing else. Claim: an observed partial-generation state.
+- **cut 3, `start_capture_session_id`:** one append, no mid-write window, so the
+  controller-created partial line is labelled READER-FAULT RESPONSE in every artifact and
+  is never reported as an observed tear. The untouched source writer is captured separately
+  in the same case.
+
+A case whose barrier does not arm records INCONCLUSIVE and stops: everything captured after
+an unarmed barrier is a completed write wearing a barrier's label (`RUN-MANIFEST.md` A23).

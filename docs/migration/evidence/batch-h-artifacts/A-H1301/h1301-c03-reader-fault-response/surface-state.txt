@@ -1,0 +1,21 @@
+## source state of the surfaces under test, read from the filesystem
+### /tmp/aecx/h/c3/home/.ae/sessions/tc1301c/_lib
+  exists=yes
+  type=file
+  mode=700
+  size=39073
+  interpreter=<none>
+  sources_lib=0
+  read_attempt_rc=0
+  read_attempt_stderr=<none>
+  sha256=c27d48245dd1bccfe569a54d22d2f819995c3d25b734f63f0bc659bf684a737b
+### /tmp/aecx/h/c3/home/.ae/sessions/tc1301c/meta
+  exists=yes
+  type=file
+  mode=644
+  size=350
+  interpreter=<none>
+  sources_lib=0
+  read_attempt_rc=0
+  read_attempt_stderr=<none>
+  sha256=d11c37400a6059295ee072ce79be6fb13665db3d5d1e0452451deddd894f7dbb

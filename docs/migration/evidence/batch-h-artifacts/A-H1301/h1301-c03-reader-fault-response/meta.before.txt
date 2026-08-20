@@ -1,0 +1,14 @@
+mode=local
+origin=/tmp/aecx/h/c3/work
+session=tc1301c
+session_id=0387d62e-a77a-423f-9fe8-ce8fb10e7efb
+work_dir=/tmp/aecx/h/c3/work
+layout=vertical
+config=/tmp/aecx/h/c3/home/.ae/config
+main_pane=%0
+ae_path=/tmp/aecx/h/hook/ae
+ae_version=0.2.1
+tmux_server=/tmp/aecx/h/c3/s.sock
+tmux_server_kind=socket
+agent.main=cl:lead:pending
+agent_bin.main=aefake

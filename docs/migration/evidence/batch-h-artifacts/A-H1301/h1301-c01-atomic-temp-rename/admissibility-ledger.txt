@@ -1,0 +1,12 @@
+seq=001	utc=2026-08-20T23:49:43Z	epoch=1787269783	event=case-OPEN	arm=A-H1301	case=h1301-c01-atomic-temp-rename	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T23:49:43Z	epoch=1787269783	event=rows	rows=SC-1301	writer=ae_meta_set (atomic, temp+rename)	claim=what a concurrent reader observes across the boundary
+seq=003	utc=2026-08-20T23:49:45Z	epoch=1787269785	event=surface-state-captured	artifact_sha256=d6712b7e50089ba1ce734ca932abfcc0bb499672a7e67079ebdaa8aa4d069257	paths=/tmp/aecx/h/c1/home/.ae/sessions/tc1301a/goal /tmp/aecx/h/c1/home/.ae/sessions/tc1301a/meta
+seq=004	utc=2026-08-20T23:49:46Z	epoch=1787269786	event=invocation	label=canary-pre-c1	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=8bec5c2eee5b6ad19e8e2d81513da9c7f573054c4003e89ede67078ce2969141	stderr_sha256=3f30fe99e217828513c496261e2a42bffac71a01aea6314ca936973d11f2e614
+seq=005	utc=2026-08-20T23:49:46Z	epoch=1787269786	event=canary	when=pre	tag=c1	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=006	utc=2026-08-20T23:49:46Z	epoch=1787269786	event=PRODUCT-START	label=goal-set
+seq=007	utc=2026-08-20T23:49:46Z	epoch=1787269786	event=barrier-ARMED	point=AH_META_TEMP_COMPLETE	mark_seen=yes	waited_s=0
+seq=008	utc=2026-08-20T23:49:46Z	epoch=1787269786	event=reader-at-barrier	stdout_sha256=acbe00ad1e6618daf849e707c90a9a4a1f25b7289fab334d167531575282d486	note=a concurrent read taken while the temp file exists and the rename has not happened
+seq=009	utc=2026-08-20T23:49:47Z	epoch=1787269787	event=PRODUCT-COMPLETE	label=goal-set
+seq=010	utc=2026-08-20T23:49:47Z	epoch=1787269787	event=invocation	label=canary-post-c1	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=4d7d768df8b7ca7f887838b8aeb401c6a0f3eb84c15150e56c211a4a3788e109	stderr_sha256=830862c9499cfe506f3f8146655c40eefba93d7b23924f8c1e812eeaf0b8bf7b
+seq=011	utc=2026-08-20T23:49:47Z	epoch=1787269787	event=canary	when=post	tag=c1	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=012	utc=2026-08-20T23:49:47Z	epoch=1787269787	event=case-CLOSE	before_vs_barrier_lines=0	barrier_vs_after_lines=2

@@ -1,0 +1,17 @@
+seq=001	utc=2026-08-20T23:49:52Z	epoch=1787269792	event=case-OPEN	arm=A-H1301	case=h1301-c03-reader-fault-response	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T23:49:52Z	epoch=1787269792	event=rows	rows=SC-1301	writer=start_capture_session_id (ONE append; no mid-write window)	claim=READER-FAULT RESPONSE — this is a controller-created state, NOT an observed writer tear
+seq=003	utc=2026-08-20T23:49:54Z	epoch=1787269794	event=surface-state-captured	artifact_sha256=bff3a641c6a262834f1eb03496338deb8b18de6810ebc0f1f16478cba2848bed	paths=/tmp/aecx/h/c3/home/.ae/sessions/tc1301c/_lib /tmp/aecx/h/c3/home/.ae/sessions/tc1301c/meta
+seq=004	utc=2026-08-20T23:49:54Z	epoch=1787269794	event=invocation	label=canary-pre-c3a	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=a17d91cab1c13ddb53dd7beed02dc275602abacd4ddeef33070567fb13dde086	stderr_sha256=109ce4a6cb5c44b15a48d59d272ba16e8d4895cf963b0c5dd01b14a2f8797f07
+seq=005	utc=2026-08-20T23:49:54Z	epoch=1787269794	event=canary	when=pre	tag=c3a	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=006	utc=2026-08-20T23:49:54Z	epoch=1787269794	event=PRODUCT-START	label=untouched-writer
+seq=007	utc=2026-08-20T23:49:54Z	epoch=1787269794	event=PRODUCT-COMPLETE	label=untouched-writer
+seq=008	utc=2026-08-20T23:49:55Z	epoch=1787269795	event=invocation	label=canary-post-c3a	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=682b476c1b657205a1473d3138c6b552be590cdde1a081246910785835b4f729	stderr_sha256=c592b33b4ecb07b89e40c6ba88672ad100d8fab840eed623b916c54cff2d7649
+seq=009	utc=2026-08-20T23:49:55Z	epoch=1787269795	event=canary	when=post	tag=c3a	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=010	utc=2026-08-20T23:49:55Z	epoch=1787269795	event=controller-mutation	artifact_sha256=6c184a536b7ec37847769e3e31472f4cf251b9af7a9645635598bbc0ae6942ee	bytes=launch_time.main=17872	label=READER-FAULT RESPONSE
+seq=011	utc=2026-08-20T23:49:56Z	epoch=1787269796	event=invocation	label=canary-pre-c3b	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=d91218c77877efb51447893e47d32ce6376fc93b263dde20a003000bdd903d91	stderr_sha256=4a65115b10d73a6ea375c24205721110844ceb2baad3093aabc0fd2fdda3949e
+seq=012	utc=2026-08-20T23:49:56Z	epoch=1787269796	event=canary	when=pre	tag=c3b	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=013	utc=2026-08-20T23:49:56Z	epoch=1787269796	event=PRODUCT-START	label=reader
+seq=014	utc=2026-08-20T23:49:56Z	epoch=1787269796	event=PRODUCT-COMPLETE	label=reader
+seq=015	utc=2026-08-20T23:49:57Z	epoch=1787269797	event=invocation	label=canary-post-c3b	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=24ecd9fb676915cf24b2193aea76f6e8a1e095a30d0188448b4ce17cb995f6b2	stderr_sha256=d859cba7591e23c86eb45182446976791d43625d7eb8a980b7882fed6375e61e
+seq=016	utc=2026-08-20T23:49:57Z	epoch=1787269797	event=canary	when=post	tag=c3b	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=017	utc=2026-08-20T23:49:57Z	epoch=1787269797	event=case-CLOSE

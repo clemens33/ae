@@ -1,0 +1,56 @@
+--- ae@72c7293
++++ ae@72c7293+hook
+@@ -2,6 +2,7 @@
+ # ae - agentic engineering: tmux-based multi-agent workspace
+ set -euo pipefail
+ AE_VERSION="0.2.1"
++_ae_hook() { # <point> — GUARD FIRST: with AE_HOOK unset this is a no-op and returns 0
+    [[ -n "${AE_HOOK:-}" ]] || return 0
+    [[ "${AE_HOOK}" == "$1" ]] || return 0
+    printf '%s\t%s\n' "$1" "$(/bin/date -u +%s)" >>"${AE_HOOK_MARK:-/dev/null}"
+    if [[ -n "${AE_HOOK_WAIT:-}" ]]; then
+        local _n=0
+        while [[ ! -e "${AE_HOOK_WAIT}" ]] && (( _n < 120 )); do sleep 0.5; _n=$((_n + 1)); done
+    fi
+    return 0
+}
+
+ 
+ # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
+ # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
+@@ -2071,6 +2072,7 @@
+     (
+         flock -w 5 200 || exit 1
+         echo "launch_time.${slot}=$(date +%s)" >>"$meta_dir/meta"
++        _ae_hook AH_CAPTURE_APPEND_DONE
+     ) 200>"$meta_dir/meta.lock"
+     capture_session_id "$tool_kind" "$pane" "$slot" "$meta_dir" &
+ }
+@@ -11937,6 +11939,7 @@
+         [[ -z "$spawn_name" ]] && spawn_name="helper-${next_idx}"
+         session_id="$(resolve_agent_session_id "$cmd" "$slot")"
+         echo "agent.${slot}=${alias_name}:${spawn_name}:${session_id}" >>"$meta_dir/meta"
++        _ae_hook AH_SPAWN_BETWEEN_APPENDS
+         echo "agent_bin.${slot}=$(extract_binary_from_cmd "$cmd")" >>"$meta_dir/meta"
+         if tool_kind_supports_launch_id "$tool_kind"; then
+             launch_id="$(gen_uuid)"
+@@ -14138,7 +14141,7 @@
+             $1 == k { print k "=" v; updated = 1; next }
+             { print }
+             END { if (!updated) print k "=" v }
+-        ' "$meta_file" >"$tmp" && mv "$tmp" "$meta_file"
++        ' "$meta_file" >"$tmp" || return 1
+        _ae_hook AH_META_TEMP_COMPLETE
+        mv "$tmp" "$meta_file"
+     } 200>"${meta_file}.lock"
+ }
+ 
+@@ -17718,7 +17721,7 @@
+             ae_require_body ae_store_message_body ae_provenance_sender \
+             ae_submit_pasted_message _capture_input_region _sgr_parse _input_region_prompt_seg _input_region_is_border _input_region_content_end _input_region_occupied _paste_still_staged _paste_input_busy _pane_recently_viewed \
+             command_is_shell _agent_bin_for_pane _pane_agent_is_dead _pane_has_descendant_named \
+-            ae_meta_get ae_meta_set ae_meta_unset \
++            _ae_hook ae_meta_get ae_meta_set ae_meta_unset \
+             _ae_tac _ae_stat _ae_epoch _ae_json_first _ae_md5
+     } >"${AE_META}/_lib.tmp.$$"
+     chmod 0700 "${AE_META}/_lib.tmp.$$"

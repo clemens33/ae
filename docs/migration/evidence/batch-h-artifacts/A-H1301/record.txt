@@ -1,0 +1,57 @@
+## A-H1301 — SC-1301, three writer-shaped cuts (generated from the captures)
+
+Three cuts, THREE DIFFERENT evidence claims, because the three writers do not share a
+boundary. Nothing here says what any reading means.
+
+## admissibility
+
+  frozen_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd	hooked_sha256=dde61d9ba040b8f0fdb0da8f1c1e360b5a890a4f419ac1dc7cdd0dde9014b267	patch_sha256=da1eb14aff2e4299153e2b7b82e724331b48e7693ea0228a630c9257f356246c	lines_added=5	lines_removed=2
+
+  differing_files=3	files_differing_in_NON_hook_bytes=0	control_vs_known_difference_differs=yes	stdout_identical=yes	note=the hooked copy emits _ae_hook into every generated _lib, so equivalence is the enumerated form; the third column is the comparator's own can-fail control
+
+  differing files (the hook rides the _lib emission list, so _lib and the files that
+  quote it necessarily differ):
+      ./sessions/teq/_lib
+      ./sessions/teq/meta
+      ./sessions/teq/workspace.md
+
+## cut 1 — ae_meta_set, between the temp write and the rename
+
+  claim        : what a concurrent reader observes across the boundary
+  barrier      : point=AH_META_TEMP_COMPLETE	mark_seen=yes	waited_s=0
+  reader-at-barrier : stdout_sha256=acbe00ad1e6618daf849e707c90a9a4a1f25b7289fab334d167531575282d486	note=a concurrent read taken wh
+  temp files at the barrier : meta.tmp.18718
+  reader at the barrier     : (no goal set)
+  meta before vs at barrier : 0 diff line(s)
+  meta at barrier vs after  : 2 diff line(s)
+  canaries passing          : 2 of 2
+  inconclusive outcomes     : 0
+
+## cut 2 — _cmd_spawn, between two of its own appends
+
+  claim        : an observed partial-generation state, attributed to the product's own writes
+  barrier      : point=AH_SPAWN_BETWEEN_APPENDS	mark_seen=yes	waited_s=1
+  controller-action : action=SIGKILL the spawning process at the barrier	note=the bytes already in meta are the FROZEN WRITER's own;
+  meta after the kill, agent rows:
+      agent.main=cl:lead:pending
+      agent_bin.main=aefake
+      agent.spawned.0=cx:probe:pending
+      agent.<slot>, agent_bin.<slot>, and launch_id.<slot> for a launch-id tool
+  canaries passing          : 2 of 2
+  inconclusive outcomes     : 0
+
+## cut 3 — start_capture_session_id: READER-FAULT RESPONSE, not a writer tear
+
+  claim        : READER-FAULT RESPONSE — this is a controller-created state, NOT an observed writer tear
+  controller-mutation : artifact_sha256=6c184a536b7ec37847769e3e31472f4cf251b9af7a9645635598bbc0ae6942ee	bytes=launch_time.main=17872	
+      ## CONTROLLER-CREATED partial line — this is NOT something a writer was observed doing
+      writer_shaped_bytes=launch_time.main=17872
+      newline_present=no
+      intended_complete_row=launch_time.main=<epoch>
+      why_this_is_not_a_writer_tear=start_capture_session_id performs ONE append (ae:2073),
+        so there is no window in which the frozen writer can leave a line half-written.
+  reader stdout first line : AGENT                     PANE     PROCESS
+  goal reader              : (no goal set)
+  canaries passing          : 4 of 4
+  inconclusive outcomes     : 0
+
