@@ -24,8 +24,14 @@ source "$HERE/hfix.sh"
 ARM=A-H8
 mkdir -p "$ADEST/$ARM"
 
+# NOTE THE TRAILING NEWLINE. Without it every "event" concatenates onto the previous one
+# and the file holds ONE unterminated line however many events were written — `tail -n 30`
+# then has nothing to cut and the formatter renders the first field it finds. The replay
+# cohorts measured nothing on their first run for exactly that reason: the fact under test
+# was foreclosed by the INPUT CONSTRUCTION rather than by a product guard, which is the same
+# shape as the upstream-guard pattern and is just as invisible in the output.
 ev_line() { # <n> <marker>
-    printf '{"ts":"2026-08-21T00:00:%02dZ","actor":"fake:lead","action":"memo","target":"","summary":"%s"}' \
+    printf '{"ts":"2026-08-21T00:00:%02dZ","actor":"fake:lead","action":"memo","target":"","summary":"%s"}\n' \
         "$(( $1 % 60 ))" "$2"
 }
 
@@ -107,6 +113,7 @@ for n in 29 30 31; do
     led PRODUCT-COMPLETE "label=tail"
     canary post "h8r$n"
     { echo "planted_events=$n"
+      echo "planted_lines=$(wc -l <"$CASE_DIR/events.planted.jsonl" | tr -d ' ')  # must equal planted_events"
       echo "rendered_lines=$(grep -c 'REPLAY-' "$CASE_DIR/out/tail.stdout" 2>/dev/null | tr -d ' ')"
       echo "first_rendered=$(grep -o 'REPLAY-[0-9]*-OF-[0-9]*' "$CASE_DIR/out/tail.stdout" 2>/dev/null | head -1)"
       echo "last_rendered=$(grep -o 'REPLAY-[0-9]*-OF-[0-9]*' "$CASE_DIR/out/tail.stdout" 2>/dev/null | tail -1)"

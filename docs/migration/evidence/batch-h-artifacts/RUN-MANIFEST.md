@@ -26,7 +26,7 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 |---|---|---|
 | `_harness/hlib.sh` | `0f838f7e89619358650f4ee99da31776f5351ef219c32f85c9b1546a0a8779e4` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
-| `_harness/arm-h8.sh` | `288e0013679c4cc6c74c0e33f3ba422b775c7d9a2d139b3d98f60333b047a58a` | 2026-08-21 (registered BEFORE its first run) |
+| `_harness/arm-h8.sh` | `a0382a9dc48123dd10a1034e85723fcbc3d06fb69d51f229331ebbe86061df71` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h1h2.sh` | `4c2c8cb2d71d8153a9efe102572596546780b8381fed2885d30ed0f13d0da720` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h7l.sh` | `dffe8d0a7a2101555a776887c66efa66ad7673994e2eb73f31163c344206da86` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/pty-run.py` | `04bb88cc25a4312a76e6cde62563aa5c18966a1ac17d3e6c9b06f02d7842c5c3` | 2026-08-21 (registered BEFORE its first run) |
@@ -303,3 +303,19 @@ re-read after an amendment instead of only the ones the amendment names.
 - the guard worked: every case aborted rather than reporting a contained run on a census
   that could not see its own control.
 - arms reopened: A-H7L, which had produced no reading.
+
+### A19 — the replay cohorts held one unterminated line, not 29/30/31 events
+
+- `288e0013679c4cc6c74c0e33f3ba422b775c7d9a2d139b3d98f60333b047a58a` -> `a0382a9dc48123dd10a1034e85723fcbc3d06fb69d51f229331ebbe86061df71`
+- what changed: `ev_line` printed its JSON WITHOUT a trailing newline, so every planted
+  event concatenated onto the previous one and each cohort file held ONE unterminated line
+  regardless of how many events were written (`wc -l` = 0 on a 29-event cohort).
+  `tail -n 30` had nothing to cut and the formatter rendered the first field it found, so
+  all three cohorts reported one rendered line and no barrier was ever seen.
+- the shape is the one this arm's guard enumeration was written to prevent, arriving from
+  the other side: the fact under test was foreclosed by the INPUT CONSTRUCTION rather than
+  by a product guard. Enumerating the guards between the manipulation and the observation
+  does not cover whether the manipulation produced the input it claims — that is its own
+  check, and the arm now records `planted_lines` beside `planted_events` so the two can
+  disagree visibly.
+- arms reopened: A-H8, whole. Nothing from the first run is published.
