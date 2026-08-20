@@ -283,6 +283,38 @@ That is a difference in instrument design, not in care.
   see a child that lived only between the samples. Census the long-lived ROOTS instead —
   reach is inherited across fork, so a child cannot reach what its parent cannot.
 
+### A tool that makes a check CHEAP is not a tool that PERFORMS it
+
+The most easily forgotten limit, recorded because it is invisible once a tool reports
+green. A citation-pinning tool resolves every `ae:NNNN` against the frozen source and
+prints the cited line's own text. What it proves is that the citation **resolves to a real
+line**. What it does **not** prove is that the line is the RIGHT one for the claim beside
+it — a citation pointing confidently at a wrong-but-plausible line passes clean.
+
+The demonstration is exact: that tool would NOT have caught the `+8`-offset steward
+citations that motivated building it. `ae:16748` is a real line with real text. What caught
+them was a seat reading the source.
+
+**The tool's value is that it makes that reading CHEAP — the line's text sits beside the
+claim — not that it performs it.** Conflating the two is how a green check becomes a
+substitute for judgment. State this limit wherever the tool's output is cited, because the
+first reader who has not built it will assume the stronger thing.
+
+The same distinction applies to a count: **a count is a fact about an invocation, and a
+count quoted in prose has lost its invocation.** Two honest runs of the same tool over
+different document sets returned 234 and 257; neither was wrong and only one matched the
+claim. Generate the number with its inputs recorded; never retype it into a sentence.
+
+### Bounding your own result
+
+A guard that becomes able to fail and immediately finds something proves exactly one thing:
+**it was not guarding anything before.** It does not license any claim about how much the
+other guards are missing. The worker who built such a guard, having just watched it catch a
+real duplicate the moment it could fail, wrote the narrow statement and refused the broad
+one — while the lead reviewing it had already inflated it into "the strongest argument for
+the discipline." **Overclaiming is the reviewer's failure mode as much as the builder's**,
+and it arrives dressed as enthusiasm rather than as error.
+
 ### What to demand instead
 
 1. **The arm must be able to produce the unwanted answer.** All-zero counts cannot
