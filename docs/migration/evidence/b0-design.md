@@ -128,7 +128,9 @@ rendered (bounded poll; timeout → INCONCLUSIVE per the global rule). Arms:
 
 Cleanup is bounded and unconditional; a pane that shows neither sentinel at
 timeout is recorded INCONCLUSIVE with its captures, never interpreted by the
-worker. Controller-only twins apply.
+worker. Controller-only twins apply to arms 2-4; arm 1 (initial window) is
+read-only with no controller mutation and is explicitly EXEMPT from the twin
+rule.
 
 ## Design 5 — D04a: status pane-set cut (executed by C)
 
@@ -164,9 +166,12 @@ completion, alongside rc and stdout/stderr.
 Arms: (1) controller kills the exact target session between `H_NEXT_SELECTED` and
 the recheck; (2) prefix-sibling topology (sibling pre-created), controller kills
 only the exact target AFTER `H_NEXT_RECHECKED`; (3) companion arm identical to (2)
-with no sibling present. The default no-attach arm runs outside any client and
-closes via file + tmux manifests; attach arms capture the client mapping deltas.
-Controller-only twins; source/call/flock traces.
+with no sibling present. Every controller kill is issued from a SEPARATE
+controller client/socket connection — never from inside the client under test.
+The default no-attach arm runs outside any client (the frozen outside-tmux verb
+is blocking `attach-session`; this arm captures the non-attach outcome via file +
+tmux manifests); attach arms capture the client mapping deltas. Controller-only
+twins; source/call/flock traces.
 
 ## Design 7 — SC-511c: frozen-consumer schema-evolution fixtures (B0 worker
 executes)
@@ -200,11 +205,15 @@ must run; captures are those consumers' stdout/rc/files.
 | target_slot | routed ask/review pair | request target validation |
 | target_session | same cohort as target_slot | same consumers |
 
-**Routing-key churn cases (whole-cohort):** for each of the four routing keys, a
-second cohort built through a real `cmd_rename` — specimens whose display names
-changed while slot/session routing fields stayed stable (rename emits NO event
-action at 72c7293; churn is realized via session/meta/tmux/path effects plus the
-surrounding producer sequence). Consumers run on pre-churn and post-churn clones.
+**Routing-key churn cases (whole-cohort; corrected per gate — `cmd_rename` is the
+WRONG construction: it renames the SESSION and its paths, making `actor_session`
+STALE rather than holding routing identity fixed):** use the frozen
+integration-test shape at tests/integration@72c7293:1268-1285 — real ask/reply
+producer bytes, then mutate BOTH panes' `@ae_agent` display names via
+`tmux set-option -p` while `@ae_slot` and the session (hence all four routing
+keys) stay untouched. Consumers run on pre-churn and post-churn states. (A
+stale-`actor_session` cohort is SC-405j's negative case, owned by Batch C A7 —
+not this design.)
 
 **Additive arms:** one unknown optional key inserted at FIRST / MIDDLE / LAST
 object position — three fresh-clone arms, each running every consumer family.
