@@ -39,8 +39,8 @@ hcase() { # <case-id> <helper> [args...]
     surface_state "$G_META/$helper" "$G_META/_lib"
     dir_bytes "$G_META" >"$CASE_DIR/session-bytes.before.tsv"
     led measured-input "helper=$helper" "argv=$*" "invocation_cwd=$G_WORK"
-    ( cd "$G_WORK" && measured "$cid" "$helper" 25 -- env TMUX="${G_SOCK},${G_SRV},0" \
-        TMUX_PANE="$G_PANE" "$G_META/$helper" "$@" )
+    run_in "$G_WORK" measured "$cid" "$helper" 25 -- env TMUX="${G_SOCK},${G_SRV},0" \
+        TMUX_PANE="$G_PANE" "$G_META/$helper" "$@"
     dir_bytes "$G_META" >"$CASE_DIR/session-bytes.after.tsv"
     diff "$CASE_DIR/session-bytes.before.tsv" "$CASE_DIR/session-bytes.after.tsv" \
         >"$CASE_DIR/session-bytes.diff.txt" 2>&1

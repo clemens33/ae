@@ -65,11 +65,11 @@ run_case() { # <case-id> <slot-argv-or-EMPTY> <setup-fn> <note>
     # same pair failed to consult its own fact.
     led invocation-cwd "cwd=$H_WORK" "note=the session work dir, as an agent's pane has"
     if [[ -n "$slot" ]]; then
-        ( cd "$H_WORK" && measured "$cid" "register" 25 -- env TMUX="${H_SOCK},${H_SRV},0" \
-            TMUX_PANE="$(h_pane_of cl:lead)" "$H_META/_register-sid" "$slot" )
+        run_in "$H_WORK" measured "$cid" "register" 25 -- env TMUX="${H_SOCK},${H_SRV},0" \
+            TMUX_PANE="$(h_pane_of cl:lead)" "$H_META/_register-sid" "$slot"
     else
-        ( cd "$H_WORK" && measured "$cid" "register" 25 -- env TMUX="${H_SOCK},${H_SRV},0" \
-            TMUX_PANE="$(h_pane_of cl:lead)" "$H_META/_register-sid" )
+        run_in "$H_WORK" measured "$cid" "register" 25 -- env TMUX="${H_SOCK},${H_SRV},0" \
+            TMUX_PANE="$(h_pane_of cl:lead)" "$H_META/_register-sid"
     fi
     cp "$H_META/meta" "$CASE_DIR/meta.after.txt"
     diff "$CASE_DIR/meta.before.txt" "$CASE_DIR/meta.after.txt" >"$CASE_DIR/meta.diff.txt" 2>&1
@@ -120,12 +120,15 @@ s_tok_cwd_match()  { meta_set "launch_id.main" "TOK-MATCH"
 s_tok_cwd_diff()   { meta_set "launch_id.main" "TOK-MATCH"
                      meta_set "launch_time.main" "$((NOW - 600))"
                      plant "$TODAY" cand-a $((NOW - 60)) "{\"id\":\"$ID_A\",\"cwd\":\"/tmp\",\"x\":\"AE_CODEX_LAUNCH_ID=TOK-MATCH\"}"; }
+# ONE variable. The first build of this pair varied the marker field as well as the cwd,
+# in the pair built to demonstrate one-variable discipline. The marker is identical now and
+# the cwd is the only difference between the two planted candidates.
 s_fb_cwd_match()   { meta_set "launch_id.main" "TOK-NOBODY-CARRIES-THIS"
                      meta_set "launch_time.main" "$((NOW - 600))"
-                     plant "$TODAY" cand-a $((NOW - 60)) "$(line "$ID_A" "$H_WORK" fallback-cwd-match)"; }
+                     plant "$TODAY" cand-a $((NOW - 60)) "$(line "$ID_A" "$H_WORK" fallback)"; }
 s_fb_cwd_differs() { meta_set "launch_id.main" "TOK-NOBODY-CARRIES-THIS"
                      meta_set "launch_time.main" "$((NOW - 600))"
-                     plant "$TODAY" cand-a $((NOW - 60)) "$(line "$ID_A" /tmp fallback-cwd-differs)"; }
+                     plant "$TODAY" cand-a $((NOW - 60)) "$(line "$ID_A" /tmp fallback)"; }
 s_malformed_id() { meta_set "launch_time.main" "$((NOW - 600))"
                    plant "$TODAY" cand-a $((NOW - 60)) '{"id":"NOT-A-UUID!!","cwd":"'"$H_WORK"'"}'; }
 s_empty_first()  { meta_set "launch_time.main" "$((NOW - 600))"

@@ -55,6 +55,14 @@ echo "## committed bytes (what a fresh clone yields)"
 # The three checks above all read the WORKING TREE, so none of them can see a tree that
 # passes locally and fails on clone: a text filter can make the committed BLOB differ from
 # both the working file and the recorded hash. Verified real at commit ce8965e.
+echo "## ledger chronology (unique and monotonic sequence identities)"
+LED_CHK="$(dirname "${BASH_SOURCE[0]}")/check-ledger-chronology.py"
+if [[ -f "$LED_CHK" ]]; then
+    python3 "$LED_CHK" "$A" || rc=1
+else
+    echo "  LEDGER CHRONOLOGY CHECK MISSING — order cannot be checked"; rc=1
+fi
+
 CB_CHK="$(dirname "${BASH_SOURCE[0]}")/committed-bytes-check.py"
 [[ -f "$CB_CHK" ]] || CB_CHK="$A/arms/A1/harness/committed-bytes-check.py"
 if [[ -f "$CB_CHK" ]]; then

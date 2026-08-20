@@ -24,10 +24,10 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 
 | script | sha256 | registered (UTC) |
 |---|---|---|
-| `_harness/hlib.sh` | `b2cf84dd1990c01fdbfc9512c00834d10543d4745ed6a2dc2ad6c134ea27455d` | 2026-08-20T21:51:16Z |
+| `_harness/hlib.sh` | `0f838f7e89619358650f4ee99da31776f5351ef219c32f85c9b1546a0a8779e4` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
-| `_harness/arm-h3.sh` | `6c5c7fc06eadff0360cb7411a4e26bbf584d75df199d51e3612cf9cc06e7277b` | 2026-08-21 (registered BEFORE its first run) |
-| `_harness/arm-h5.sh` | `8796a1023a4dd211732cb8e0e95e183543908861defa1552d1de2622dba00921` | 2026-08-21 (registered BEFORE its first run) |
+| `_harness/arm-h3.sh` | `453421717eaf23a711d303a65e63016e95ba1d4ea99c093e4ab0ede98d721ce1` | 2026-08-21 (registered BEFORE its first run) |
+| `_harness/arm-h5.sh` | `0977a5fdf505de288518175c882fe78837249fe473fe41f8d12ed6eb8110e400` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h4.sh` | `5944b88c92acd4752addffabe9705ab087ff6c430bed0ea1d0bf6d8040693009` | 2026-08-20T21:51:16Z |
 
 ### A3 — `_harness/derive-h4-record.py` registered after A-H4's run
@@ -196,3 +196,28 @@ A9 it stands in the session work dir, where the planted candidate's recorded cwd
 match. The reading is a joint property of the case's fixture and the invocation's cwd, and
 it moved when the cwd did. Recorded rather than smoothed: it is the reason every case is
 re-read after an amendment instead of only the ones the amendment names.
+
+### A12 — the subshell broke the chronology record, in two arms
+
+- `hlib.sh`: `b2cf84dd1990c01fdbfc9512c00834d10543d4745ed6a2dc2ad6c134ea27455d` -> `0f838f7e89619358650f4ee99da31776f5351ef219c32f85c9b1546a0a8779e4`
+- `arm-h5.sh`: `8796a1023a4dd211732cb8e0e95e183543908861defa1552d1de2622dba00921` -> `0977a5fdf505de288518175c882fe78837249fe473fe41f8d12ed6eb8110e400`
+- `arm-h3.sh`: `6c5c7fc06eadff0360cb7411a4e26bbf584d75df199d51e3612cf9cc06e7277b` -> `453421717eaf23a711d303a65e63016e95ba1d4ea99c093e4ab0ede98d721ce1`
+- what changed: A9 changed the invocation directory with `( cd dir && measured ... )`.
+  `LED_SEQ` is a shell variable; the subshell advanced it and the parent resumed at its own
+  stale value, so every ledger written that way REPEATS identities it has already used. All
+  sixteen A-H5 ledgers and all seventy-two A-H3 ledgers are chronologically impossible
+  records with correct checksums. `run_in` changes directory without a subshell.
+- **the ledgers are NOT renumbered.** A chronology record cannot be repaired by editing it —
+  renumbering manufactures the ordering the file exists to attest. Both arms are re-run
+  under the new hashes and the old captures are deleted, not corrected.
+- `arm-h3.sh` had the same defect and had not yet been reported: found by applying the
+  seat's finding to the other arm that shares the pattern rather than waiting for it to be
+  raised again.
+- ALSO in `arm-h5.sh`: `h5-c15`/`h5-c16` varied the candidate's marker field as well as its
+  cwd — one variable violated inside the pair built to demonstrate one-variable discipline.
+  The marker is identical now.
+- the gate could not see any of this: it checks presence and hash, and a file that repeats
+  an identity passes both. `gate/check-ledger-chronology.py` now checks uniqueness and
+  monotonicity, with a neutral leg reporting caught=NO and four mutated legs reporting YES,
+  including the exact subshell shape. Batch C's 177 ledgers pass it unchanged.
+- arms reopened: A-H5 and A-H3, both whole.

@@ -140,3 +140,20 @@ measured() { # <tag> <label> <bound> -- <argv...>
     canary post "$tag" || return 1
     return 0
 }
+
+# Run a command in another directory WITHOUT a subshell.
+#
+# `( cd dir && measured ... )` looked harmless and was not: LED_SEQ is a shell variable, the
+# subshell advanced it, and the parent resumed at its own stale value — so every ledger
+# written that way repeats identities it has already used. A chronology record that repeats
+# an identity is not a chronology record, and no hash or presence check can see it.
+# A ledger cannot be repaired after capture either: renumbering manufactures the very
+# ordering the file exists to attest.
+run_in() { # <dir> <command...>
+    local _prev="$PWD" _rc=0
+    cd "$1" || return 1
+    shift
+    "$@" || _rc=$?
+    cd "$_prev" || true
+    return $_rc
+}
