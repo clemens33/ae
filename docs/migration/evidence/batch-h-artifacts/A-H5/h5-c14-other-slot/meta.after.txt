@@ -1,7 +1,7 @@
 mode=local
 origin=/tmp/aecx/h/h6/work
 session=th6
-session_id=04db8cf2-150c-438b-8d61-27b26cd66000
+session_id=fabdd5cb-cc8b-4e37-8d9a-9fa27025cd14
 work_dir=/tmp/aecx/h/h6/work
 layout=vertical
 config=/tmp/aecx/h/h6/home/.ae/config
@@ -12,4 +12,4 @@ tmux_server=/tmp/aecx/h/h6/s.sock
 tmux_server_kind=socket
 agent.main=cl:lead:pending
 agent_bin.main=aefake
-launch_time.worker.0=1787263709
+launch_time.worker.0=1787264662

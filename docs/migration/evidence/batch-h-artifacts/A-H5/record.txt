@@ -11,66 +11,92 @@ should win.
   h5-c01-no-slot-arg          <none>     0    1      yes   0          2/2    
   h5-c02-slot-no-launchtime   main       0    1      yes   0          2/2    
   h5-c03-token-match          main       0    1      yes   0          2/2    
-  h5-c04-token-mismatch       main       1    1      no    0          2/2    
+  h5-c04-token-mismatch       main       0    1      yes   0          2/2    
   h5-c05-older-than-launch    main       1    1      no    0          2/2    
   h5-c06-nonnumeric-time      main       0    1      yes   0          2/2    
   h5-c07-equal-mtimes         main       0    2      yes   0          2/2    
   h5-c08-different-mtimes     main       0    2      yes   0          2/2    
-  h5-c09-cwd-match            main       0    1      yes   0          2/2    
-  h5-c10-cwd-differs          main       0    1      yes   0          2/2    
+  h5-c09-token-precedence-cw  main       0    1      yes   0          2/2    
+  h5-c10-token-precedence-cw  main       0    1      yes   0          2/2    
   h5-c11-malformed-id         main       1    1      no    0          2/2    
   h5-c12-empty-first-line     main       1    1      no    0          2/2    
   h5-c13-yesterday            main       0    1      yes   0          2/2    
   h5-c14-other-slot           worker.0   0    1      yes   0          2/2    
+  h5-c15-fallback-cwd-match   main       0    1      yes   0          2/2    
+  h5-c16-fallback-cwd-differ  main       1    1      no    0          2/2    
 
 ## what each case varied, and what the sid artifact carried
 
   h5-c01-no-slot-arg
       varied : no slot argument
       sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=673f7074c64c38d3ea29a7d91ec3d4d6d204db2155ac54854b1bbfed64829490
   h5-c02-slot-no-launchtime
       varied : a slot with no launch_time
       sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=673f7074c64c38d3ea29a7d91ec3d4d6d204db2155ac54854b1bbfed64829490
   h5-c03-token-match
       varied : a candidate carrying the launch-id token
       sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=56ff2007d1e214022cb4cfe3ada90ad2a0b827b7dc1f1ee3f6421435b50a41a1
   h5-c04-token-mismatch
       varied : a candidate carrying a different token
-      sid    : (none written)
+      sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=184cd8246930d3415537ef281dfee2621563f14c3690fc3e71c11434557be4cf
   h5-c05-older-than-launch
       varied : a candidate older than the launch time
       sid    : (none written)
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787261662 sha256=0e059b2234527366a55cee5ad4d43a78440c0086e3a537ba6585dfdefca78a1a
   h5-c06-nonnumeric-time
       varied : a non-numeric launch time
       sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=673f7074c64c38d3ea29a7d91ec3d4d6d204db2155ac54854b1bbfed64829490
   h5-c07-equal-mtimes
       varied : two candidates with equal mtimes
       sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=324ea703dfc8f7408efe365254a5f51768fcbe0a2e3ab70de470817245312896
+      cand   : 2026/08/20/cand-b.jsonl mtime=1787265202 sha256=35f2272996bf1e2e47619cd48309272f77dd30b6dd144f93b9bdcf435f2129ec
   h5-c08-different-mtimes
       varied : two candidates with different mtimes
       sid    : bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb
-  h5-c09-cwd-match
-      varied : a candidate whose cwd matches the invoking cwd
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265142 sha256=478947a5439e4493d0c79e209bef48378639fa4934ed1d59755d6de411256c79
+      cand   : 2026/08/20/cand-b.jsonl mtime=1787265202 sha256=57ce29f6f5a295029e99af7bbda8b5b0114f2cd6ed995db5bedc43144959401c
+  h5-c09-token-precedence-cwd-match
+      varied : TOKEN-PRECEDENCE CONTROL: token matches, candidate cwd matches
       sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
-  h5-c10-cwd-differs
-      varied : a candidate whose cwd differs
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=56ff2007d1e214022cb4cfe3ada90ad2a0b827b7dc1f1ee3f6421435b50a41a1
+  h5-c10-token-precedence-cwd-diff
+      varied : TOKEN-PRECEDENCE CONTROL: token matches, candidate cwd differs
       sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=e237be7c371a12a12d87fc363b8b187e58f3a8f98f3f26135957aa009d603446
   h5-c11-malformed-id
       varied : a malformed first-line id
       sid    : (none written)
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=3d81179703e8cbe7e30b94ab791a4b583f8aae988d239ffbe251d2fef7ae1c11
   h5-c12-empty-first-line
       varied : an empty first line
       sid    : (none written)
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b
   h5-c13-yesterday
       varied : a candidate in yesterday's directory
       sid    : bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb
+      cand   : 2026/08/19/cand-y.jsonl mtime=1787175262 sha256=450f34baf021c4d3b0c2186412f70bc29cbf8b631d8b00ece739f96d8c8d96c1
   h5-c14-other-slot
       varied : a slot other than the invoking pane's
       sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=87879ecd46c874eb696f3c13659977f4bd3b4fc41ea7932575c1a79236653e7a
+  h5-c15-fallback-cwd-match
+      varied : FALLBACK PAIR: no candidate carries the token, candidate cwd matches
+      sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=005316cde937a45cf6e00da688a47b5faf7c38969e1a334ac7f01ef633ac038c
+  h5-c16-fallback-cwd-differs
+      varied : FALLBACK PAIR: no candidate carries the token, candidate cwd differs
+      sid    : (none written)
+      cand   : 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=ad39295c857bdd19860c2040cbad9f184e7c646a5555b396438ed10009a140d8
 
 ## distinct readings
 
-  cases writing a sid artifact: 10 of 14
+  cases writing a sid artifact: 12 of 16
   distinct sid contents: 2
   distinct rc values: ['0', '1']
   cases whose meta changed across the invocation: 0

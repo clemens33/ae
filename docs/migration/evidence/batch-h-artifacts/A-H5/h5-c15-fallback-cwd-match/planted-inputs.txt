@@ -1,0 +1,4 @@
+  meta line appended: launch_id.main=TOK-NOBODY-CARRIES-THIS
+  meta line appended: launch_time.main=1787264662
+  planted 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=005316cde937a45cf6e00da688a47b5faf7c38969e1a334ac7f01ef633ac038c
+    first_line={"id":"aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa","cwd":"/tmp/aecx/h/h6/work","marker":"fallback-cwd-match"}

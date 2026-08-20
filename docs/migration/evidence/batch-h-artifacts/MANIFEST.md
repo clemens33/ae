@@ -11,7 +11,7 @@ accepts it.
 | section | status |
 |---|---|
 | A-H4 — SC-211p, `_lib` name resolution | COMPLETE — 15 case runs |
-| A-H5 — SC-211o, codex identity registration | COMPLETE — 14 case runs |
+| A-H5 — SC-211o, codex identity registration | COMPLETE — 16 case runs |
 | A-H3 — the argument surface | not started |
 | A-H1 / A-H2 — dispatch, version, steward | not started |
 | A-H8 — the long-lived query | not started |
@@ -56,7 +56,7 @@ Artifact paths — `A-H4/<case>/`:
 
 ## A-H5 — SC-211o (`_register-sid`)
 
-Rows: SC-211o. Fourteen cases, each varying ONE fixture fact and capturing the artifact the
+Rows: SC-211o. Sixteen cases, each varying ONE fixture fact and capturing the artifact the
 surface writes. `_register-sid` takes a SLOT (ae@72c7293:14752), reads `launch_id.<slot>`
 and `launch_time.<slot>` from meta, scans today's and yesterday's Codex session directories,
 and writes what it selects to `codex.<slot>.sid`.
@@ -78,3 +78,11 @@ and both canaries'.
 `../gate/` holds the canonical gate. Each arm's own harness directory is a provenance
 snapshots of the version each arm ran under; an older snapshot reports violations the
 current gate does not, so a reader reproducing a gate result runs the canonical copy.
+
+**Two pairs, answering two questions.** `h5-c09` / `h5-c10` are TOKEN-PRECEDENCE controls:
+the candidate carries the matching token and only its recorded cwd differs, so they record
+that the cwd fallback is not reached while the token path selects (the guard at
+ae:14793). `h5-c15` / `h5-c16` are the CWD FALLBACK pair: a token no candidate carries, so
+the fallback is reached and cwd is what decides. Every other byte and time is held constant
+within each pair. `RUN-MANIFEST.md` A8-A10 carry how they got there, including a reading
+that moved in a case the amendment did not name.

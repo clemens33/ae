@@ -1,0 +1,15 @@
+seq=001	utc=2026-08-20T22:34:38Z	epoch=1787265278	event=case-OPEN	arm=A-H5	case=h5-c09-token-precedence-cwd-match	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T22:34:38Z	epoch=1787265278	event=rows	rows=SC-211o	surface=_register-sid	fixture=H6 cohorts
+seq=003	utc=2026-08-20T22:34:38Z	epoch=1787265278	event=surface-state-captured	artifact_sha256=56f0059eb999ce0316f2fc64286f4db59c87be6a1b8c3640a0bd87cf97919f70	paths=/tmp/aecx/h/h6/home/.ae/sessions/th6/_register-sid /tmp/aecx/h/h6/home/.ae/sessions/th6/meta
+seq=004	utc=2026-08-20T22:34:38Z	epoch=1787265278	event=planted	artifact_sha256=1e6412a204bbd3cfc1b31cdebf837d5e43c9d6b5a9399fd0b7a5af56bb3db6aa	note=candidate files and meta keys are CONTROLLER-constructed input data, listed with their bytes
+seq=005	utc=2026-08-20T22:34:38Z	epoch=1787265278	event=measured-input	slot_argv=main	note=TOKEN-PRECEDENCE CONTROL: token matches, candidate cwd matches
+seq=006	utc=2026-08-20T22:34:38Z	epoch=1787265278	event=invocation-cwd	cwd=/tmp/aecx/h/h6/work	note=the session work dir, as an agent's pane has
+seq=007	utc=2026-08-20T22:34:39Z	epoch=1787265279	event=invocation	label=canary-pre-h5-c09-token-precedence-cwd-match	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=57663f40fff77afdab5abfb12ab12f2ba8c3de7f94d33ab321a56ffee72c54e7	stderr_sha256=d4778baa21fe14c422a02d2f5cd4d9efb8b5a683191cef6b7c606eea60fa0ba6
+seq=008	utc=2026-08-20T22:34:39Z	epoch=1787265279	event=canary	when=pre	tag=h5-c09-token-precedence-cwd-match	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=009	utc=2026-08-20T22:34:39Z	epoch=1787265279	event=PRODUCT-START	label=25
+seq=010	utc=2026-08-20T22:34:39Z	epoch=1787265279	event=invocation	label=register	rc=0	elapsed_s=0	timed_out=no	stdout_sha256=7a20bfa09b39e6d3a2495855e85591220bdf3ae7e2a5e0f1f83526cbf32f9bd3	stderr_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+seq=011	utc=2026-08-20T22:34:39Z	epoch=1787265279	event=PRODUCT-COMPLETE	label=25
+seq=012	utc=2026-08-20T22:34:40Z	epoch=1787265280	event=invocation	label=canary-post-h5-c09-token-precedence-cwd-match	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=baef0e914114c88987fc0660bdf39d53dcf8b30cd6e2ff8cdb66c4debc2343c7	stderr_sha256=aab0d2b28f772b806c829e3ded39c9f0ecbcbaadc6986782b5fcb624aeed8f68
+seq=013	utc=2026-08-20T22:34:40Z	epoch=1787265280	event=canary	when=post	tag=h5-c09-token-precedence-cwd-match	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=007	utc=2026-08-20T22:34:40Z	epoch=1787265280	event=sid-artifact	artifact_sha256=fc8b8c3c245dea0d18358e6a841b4d06f0657bff8b240553dbc4ca24869c7495	meta_diff_lines=0
+seq=008	utc=2026-08-20T22:34:40Z	epoch=1787265280	event=case-CLOSE	invocations_sha256=46977ce9ba661df8e3c13d09d171f99da1b1acd00e399ebdd26d2ba8fdab80b4

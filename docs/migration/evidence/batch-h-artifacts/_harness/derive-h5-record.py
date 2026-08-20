@@ -23,8 +23,11 @@ for case in sorted(glob.glob(os.path.join(arm, "h5-c*"))):
     planted = open(os.path.join(case, "planted-inputs.txt"), encoding="utf-8").read()
     ncand = planted.count("planted ")
     mdiff = sum(1 for _ in open(os.path.join(case, "meta.diff.txt"), encoding="utf-8"))
+    # Candidate enumeration IN ORDER, so a reading stays attributable to the candidate set
+    # that produced it rather than to a count.
+    cands = [l.strip() for l in planted.split("\n") if l.strip().startswith("planted ")]
     rows.append((cid, slot, note, rc, ncand, written, content, mdiff,
-                 led.count("pass=yes"), led.count("event=canary")))
+                 led.count("pass=yes"), led.count("event=canary"), cands))
 L = ["## A-H5 — SC-211o, `_register-sid` (generated from the captures)", "",
      "One fixture fact varies per case. `sid` is whether a `codex.<slot>.sid` artifact was",
      "written and what it contains; `meta diff` is the change to the session's own meta",
@@ -42,6 +45,8 @@ for r in rows:
     L.append(f"  {r[0]}")
     L.append(f"      varied : {r[2]}")
     L.append(f"      sid    : {r[6] or '(none written)'}")
+    for c in r[10]:
+        L.append(f"      cand   : {c[len('planted '):]}")
 L += ["", "## distinct readings", "",
       f"  cases writing a sid artifact: {sum(1 for r in rows if r[5]=='yes')} of {len(rows)}",
       f"  distinct sid contents: {len({r[6] for r in rows if r[6]})}",
