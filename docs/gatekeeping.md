@@ -460,7 +460,18 @@ The worker who did the last one supplied the mechanism:
 > hand did not present itself as a member of that category.
 
 **A rule is stored as a category; a violation arrives as an instance that does not announce
-its membership.** That is the whole reason every one of these has needed a *mechanism*
+its membership.**
+
+**The same gap separates KNOWING a fact from APPLYING it.** One design derived a product
+fact, cited it correctly in its own change log two drafts earlier, and then contradicted it
+in an arm body. Three further contradictions in that document had the corrected text and
+the uncorrected text **both by the same author, in the same section, in the same commit** —
+a preamble demoting a path to out-of-scope while an arm below named it as its sink; a
+preamble naming one subject directly above arms testing another. **A correction lands where
+it is written and does not propagate**, and neither version looks wrong on its own: only
+holding both at once shows the contradiction, which is exactly what an author revising in
+place cannot do. This is why an internal-contradiction check is worth more than a careful
+re-read — the check holds both simultaneously and the author cannot. That is the whole reason every one of these has needed a *mechanism*
 rather than a resolution: a mechanism operates on instances — it sees the actual text and
 does not need the author to recognise the category — while a resolution operates on
 categories and requires exactly the recognition that fails. It also explains why *being
