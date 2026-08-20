@@ -358,18 +358,22 @@ detected (canary class, #22), never silently absorbed. Authority: #81 source-lan
 forbidden (the grok `--system-prompt-override` trap). Empirical: matrix rows.
 Conflict: none.
 
-**SC-704b — an exactly-owned identity is used whenever the tool offers one.** Bucket 1
-— upfront UUID where accepted; otherwise capture binds only a positively-owned signal
-(never ambient context — the #59-adjacent confidentiality rule). Empirical: matrix +
-capture exhibits. Conflict: none.
+**SC-704b — capture binds only a positively-owned signal.** Bucket 3 — SHOULD: an
+identity is captured only from a signal this agent slot positively owns, never ambient
+context (the confidentiality rule). IS at 72c7293: opencode capture is cwd/time
+heuristic — two agents in one dir are indistinguishable, max-updated wins.
+Conflict: fix-known-defect(#56, intended per DR-005). Empirical: matrix + capture
+exhibits.
 
-**SC-704c — resume never cross-wires.** Bucket 1 — a resume targets only an identity
-positively owned by this agent slot; an unowned or ambiguous identity falls back,
-never guesses. Empirical: matrix resume rows. Conflict: none.
+**SC-704c — resume requires exact ownership.** Bucket 4 — **DR-005**: a resume targets
+only an exactly-owned identity; with none stored, the command REFUSES with recovery
+guidance — it never guesses and never silently starts fresh over the only stored
+provider UUID (#50). Empirical: matrix resume rows. Conflict: DR-005.
 
-**SC-704d — fallback semantics are explicit per tool.** Bucket 1 — each adapter's
-degradation (continue/fresh/latest) is a documented decision surfaced to the operator,
-never a silent substitution. Empirical: matrix fallback rows. Conflict: none.
+**SC-704d — heuristic fallbacks retire.** Bucket 4 — **DR-005**: `--continue` (CWD
+guess) and `--resume latest` (recency guess) are cross-wire risks and do not survive;
+fresh launch remains an explicit, distinct operation that never claims to be a resume.
+Empirical: matrix fallback rows. Conflict: DR-005.
 
 **SC-704e — rerun truth is explicit.** Bucket 1 — re-running a launch script either
 resumes the same conversation or honestly starts fresh; never a collision error,
@@ -1064,6 +1068,34 @@ bar for DR completeness: the wider the divergence, the fuller the record.
 | DR-002 | One daemon per AE_HOME | RATIFIED (both seats, 2026-08-20) |
 | DR-003 | At-least-once outbound Telegram delivery | RATIFIED (both seats, 2026-08-20) |
 | DR-004 | Durable inbox, coalesced notification | RATIFIED (both seats, 2026-08-20) |
+| DR-005 | Exact identity or loud refusal | RATIFIED (both seats, 2026-08-20) |
+
+```
+DR-005 Exact identity or loud refusal
+- affected SC ids: SC-704c, SC-704d (bucket 4 under this DR); SC-704b (#56's intended
+  behavior is defined by this DR); interacts with #50 (resume preflight) and the
+  matrix's per-tool resume/fallback rows (heuristic cells become historical IS).
+- context / current IS: claude/grok fall back to --continue (CWD heuristic), gemini to
+  --resume latest (recency), opencode capture is cwd/time-heuristic (#56); the codex
+  registration exhibit captured the HUMAN's own session in the same cwd — gatekeeping
+  classifies ambient-derived identity as a CONFIDENTIALITY failure, not bookkeeping.
+- options considered: (a) weaken never-cross-wires and accept documented
+  confidentiality risk; (b) exact identity or loud refusal.
+- decision / intended Rust behavior: capture records a provider session id only from a
+  positively slot-owned signal; resume acts on an exactly-owned id only. If the id is
+  absent, pending, ambiguous, or the current profile store does not match, the command
+  fails BEFORE any tmux/meta mutation, with a diagnostic and an explicit reset/
+  new-session remedy — never `--continue`, never `latest`, never silently fresh, never
+  overwriting stored identity (#50: fresh-on-mismatch destroys reachability). The
+  distinction that keeps SC-704e coherent: a launch-script rerun with NO established
+  conversation may honestly start fresh; a command acting on SAVED resume state may
+  not. Heuristic resume/capture is removed across ALL adapters, not patched per tool.
+- trade-offs accepted: a session whose id was never captured requires explicit operator
+  action instead of a convenient guess; convenience lost, cross-wire class gone.
+- authority: gatekeeping ambient-derived-identity doctrine + #56/#50 evidence + the
+  matrix (empirical).
+- seats + date: gpt56sol:colead (proposed) + fable5:lead (concurred), 2026-08-20.
+```
 
 ```
 DR-004 Durable inbox, coalesced notification

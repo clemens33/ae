@@ -67,7 +67,7 @@ invocation; cost-only rows carry `protected gate: none (cost)`.
 | 77 | RR(P3) +B3 | compact roster must satisfy launch grammar |
 | 78 | RR byC | empty-key class unrepresentable; epic-folded; closure by construction per-domain as each cuts over, complete by P5 |
 
-## migration-enabler (owner TBD per brief; gate = 811 integration suite unless noted)
+## migration-enabler (owners = role lanes below; gate = 811 integration suite unless noted)
 
 Owner lanes (gate ruling): `gate-tooling`, `integration-harness`, `CI/toolchain`,
 `test-infra` — spawned as worker lanes at P1 entry. Protected gate for every
@@ -75,7 +75,7 @@ gate-integrity row: the FIRST P1 811-suite invocation; integrity rows resolve fi
 
 | # | Owner lane | Phase needed | Gate-impact | Note |
 |---|---|---|---|---|
-| 10 | CI/toolchain | opportunistic, by P1/P5 | gate-cost (protected gate: none — cost) | recast (gate): the P0-close label was already missed — #80's Rust-native Linux proof landed without the issue's bash just-check+integration acceptance; remaining scope is the bash CI half |
+| 10 | CI/toolchain | opportunistic (target P1 entry; hard deadline P5 flip) | gate-cost (protected gate: none — cost) | recast (gate): the P0-close label was already missed — #80's Rust-native Linux proof landed without the issue's bash just-check+integration acceptance; remaining scope is the bash CI half |
 | 37 | integration-harness | pre-P1 gate | gate-integrity | SIGPIPE flake, undiagnosed |
 | 41 | integration-harness | pre-P1 gate | gate-integrity | SPAWN INCOMPLETE seed swallows status |
 | 58 | gate-tooling | pre-P1 gate | gate-integrity | always-red just check is not a gate |
