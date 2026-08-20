@@ -1566,6 +1566,14 @@ exactly as the process spelled them. Those final delegated argv lines are in eac
 Nothing here is classified: the record names what each case invoked, what it printed, what
 it wrote, and what argv it ended on.
 
+**LIMITATION, recorded on this arm rather than in a later citation:** A8's instrument
+controls fire AFTER the measured invocation only, so they demonstrate the witness and the
+change record were responsive at the after-snapshot, not during the invocation. The
+before-half rests on the before-snapshot itself (non-empty in every case, `added_paths=0`
+throughout — a blind before-snapshot would render every path as ADDED). The Batch H design
+adopts a pre+post control chronology; this arm predates it and was not re-run by seat
+ruling. Full statement with the measured counts: `arms/A8/limitations.txt`.
+
 ### A8 case table
 
 Every case is a LIVE launch — there is no template and no clone, so the read-only arms'

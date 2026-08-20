@@ -1,0 +1,29 @@
+## LIMITATION — this arm's instrument controls fired AFTER the measured invocation only
+
+Recorded so a later citation cannot read A8's controls as before-and-after. The Batch H
+design adopts a pre+post control chronology (pre-canary complete before PRODUCT-START,
+post-canary after PRODUCT-COMPLETE, both content-bound in the ledger); THIS ARM PREDATES
+THAT RULE and was deliberately not re-run.
+
+WHAT THE CONTROL HERE DOES AND DOES NOT SHOW. Each case rewrites a declared harness probe
+byte-identically after the measured invocation and requires the write witness to report it
+(`witness_control_rewrite_seen=yes`, present in all four cases). That demonstrates the
+witness and the change record were responsive AT THE AFTER-SNAPSHOT. It does not
+demonstrate they were responsive DURING the invocation.
+
+WHAT CARRIES THE BEFORE-HALF INSTEAD: the before-snapshot itself, taken before
+PRODUCT-START, plus one property of the readings. A before-snapshot taken by a blind
+instrument would be empty, and every path would then appear as ADDED in the after-diff.
+The measured counts:
+  a8-c01-fastpath-running-mutating   witness.before lines=33  manifest.before lines=33  added_paths=0  removed_paths=0  rewritten_paths_PRODUCT=0
+  a8-c02-resume-stopped-mutating     witness.before lines=33  manifest.before lines=33  added_paths=0  removed_paths=0  rewritten_paths_PRODUCT=29
+  a8-c03-inside-session-mutating     witness.before lines=33  manifest.before lines=33  added_paths=0  removed_paths=0  rewritten_paths_PRODUCT=0
+  a8-c04-use-existing-mutating       witness.before lines=33  manifest.before lines=33  added_paths=0  removed_paths=0  rewritten_paths_PRODUCT=0
+
+No case shows an empty before-snapshot and no case shows an all-added diff, so the specific
+failure a pre-control guards against is excluded by the data this arm already holds. That
+is a statement about this arm's own equipment; it is not a classification of anything the
+product did, and it does not make the controls pre+post.
+
+Ruling: seat ruling of 2026-08-20 — strengthen the rule going forward, disclose the
+limitation here, do not re-run. Raised by the arm's own author.

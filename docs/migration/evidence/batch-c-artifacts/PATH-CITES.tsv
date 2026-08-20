@@ -166,6 +166,7 @@ arms/*/harness/committed-bytes-redproof.sh	wildcard	tree	6	arms/A1/harness/commi
 arms/*/harness/gate-redproof.sh	wildcard	tree	9	arms/A1/harness/gate-redproof.sh
 arms/*/harness/manifest-tree-gate.sh	wildcard	tree	9	arms/A1/harness/manifest-tree-gate.sh
 arms/<ARM>/CASES.tsv	wildcard	tree	11	arms/A1/CASES.tsv
+arms/A8/limitations.txt	path	tree	1	arms/A8/limitations.txt
 attention-fields.txt	context	case-rel	32	arms/A3/c01-dead-ro/attention-fields.txt
 bin-listing.txt	context	case-rel	7	arms/A5/a5-clean-controlled-path/bin-listing.txt
 case-schema-check.py	context	case-rel	9	arms/A1/harness/case-schema-check.py
