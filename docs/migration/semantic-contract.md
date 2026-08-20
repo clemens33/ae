@@ -138,8 +138,12 @@ validation-error grammar echoes (`_validate_session_name`, `_validate_agent_name
 Rows below: SHOULD frozen from normative sources BEFORE census consultation (lane
 discipline); `empirical` cites audited census/test evidence or is `pending`.
 Revised per gate e3516d34 (sources extended to docs/reference/commands.md +
-docs/internals/events.md — a lead lane miss the gate caught). `classified_by` fills at
-the joint pass.
+docs/internals/events.md — a lead lane miss the gate caught); split per its fold
+verdict.
+
+**classified_by: SC-500..517 and all their letter-splits EXCEPT SC-508 —
+fable5:lead + gpt56sol:colead, 2026-08-20. SC-508 is explicitly UNCLASSIFIED until its
+evidence probe + joint closure.**
 
 **SC-500 — compact stdout byte format.** Bucket 2 — `Archived`, `Archive:`, `Digest:`,
 `Recovery:`: four lines, that order, nothing else, and EMPTY unless the boundary was
@@ -174,9 +178,10 @@ that exits early (closed/broken stdout) must not kill the operation between arch
 launch. Authority: commands.md:685-686 + architecture.md. Empirical: pending.
 Conflict: none.
 
-**SC-504b — no altered signal disposition leaks into the child.** Bucket 1 — semantic
-SHOULD: the child starts with default dispositions; the parent's boundary-survival
-mechanism (bash: ignore/restore SIGPIPE) is implementation, not the contract.
+**SC-504b — no altered SIGPIPE disposition leaks into the child.** Bucket 1 — semantic
+SHOULD, narrowed per fold guard: the child sees normal/unmodified SIGPIPE behavior; the
+authority guarantees restoration of SIGPIPE specifically, not that every disposition is
+default. The parent's mechanism (ignore/restore) is implementation, not contract.
 Authority: architecture.md. Empirical: pending. Conflict: none.
 
 **SC-505a — session-name validation error echoes its grammar verbatim.** Bucket 2 —
@@ -200,42 +205,77 @@ needs_attention/attention/attention_rank) and `agents[]` fields (ref/alias/name/
 session_id/alive/state/reason); `schema_version` lets consumers gate on shape.
 Authority: commands.md:97-132. Empirical: pending. Conflict: none.
 
-**SC-510 — event object shape.** Bucket 2 — required keys `ts` (ISO 8601 UTC, second
-precision), `actor`, `action`; optional `target`/`ref`/`summary` OMITTED when empty;
-`ref` polysemy per action table; string values JSON-escaped (`\"` `\\` `\n` `\t` `\r`).
-Authority: events.md:47-70. Empirical: pending. Conflict: none.
+**SC-510a — event required keys.** Bucket 2 — every event carries `ts` (ISO 8601 UTC,
+second precision), `actor`, `action`. Authority: events.md:47-60. Empirical: pending.
+Conflict: none.
 
-**SC-511 — event schema evolution is additive-only.** Bucket 2 — messaging events carry
-optional routing-key fields (`actor_slot`/`actor_session`/`target_slot`/
-`target_session`); readers ignore unknown keys and prefer slot+session for pairing;
-adding optional keys is fine, renaming/removing is BREAKING and requires a migration
-story (#21 lands at the first such change). Authority: events.md:71-84,142-144.
-Empirical: pending. Conflict: none.
+**SC-510b — optional keys are omitted when empty.** Bucket 2 — `target`/`ref`/`summary`
+never appear as empty strings. Authority: events.md:49. Empirical: pending.
+Conflict: none.
 
-**SC-507 — `archive preview` stdout is exactly the digest.** Bucket 2 — every
-diagnostic to stderr; read-only by construction (writes nothing, no event, no archive,
-never enters the lifecycle). Authority: commands.md:544-560 (normative — the gate
+**SC-510c — `ref` polysemy follows the action table.** Bucket 2 — request id for
+ask/review/reply, topic for memo, captured session id for recover, absent otherwise.
+Authority: events.md:62-68. Empirical: pending. Conflict: none.
+
+**SC-510d — string values are JSON-escaped.** Bucket 2 — the escape set is `\"` `\\`
+`\n` `\t` `\r`. Authority: events.md:70. Empirical: pending. Conflict: none.
+
+**SC-511a — messaging events carry optional routing-key fields.** Bucket 2 —
+`actor_slot`/`actor_session`/`target_slot`/`target_session` on send/ask/review/reply
+when known, omitted when empty. Authority: events.md:71-84. Empirical: pending.
+Conflict: none.
+
+**SC-511b — readers prefer slot+session over display name.** Bucket 2 — pairing and
+delivery use the churn-proof routing key where present; unknown keys are ignored.
+Authority: events.md:84. Empirical: pending. Conflict: none.
+
+**SC-511c — schema evolution is additive-only.** Bucket 2 — adding optional keys is
+fine; renaming/removing is BREAKING and requires a migration story (#21 lands at the
+first such change). Authority: events.md:142-144. Empirical: pending. Conflict: none.
+
+**SC-507a — `archive preview` stdout is exactly the digest.** Bucket 2 — redirectable
+digest bytes, nothing else. Authority: commands.md:553-554 (normative — the gate
 corrected an earlier code-observation flag; quick-start.md corroborates).
 Empirical: M2 census note. Conflict: none.
+
+**SC-507c — `archive preview` diagnostics go to stderr.** Bucket 2 — canonical archive
+id, source session, file counts and bytes. Authority: commands.md:554-556.
+Empirical: pending. Conflict: none.
+
+**SC-507d — `archive preview` is read-only by construction.** Bucket 2 — writes
+nothing, emits no event, creates no archive, never enters the lifecycle. Authority:
+commands.md:546-548. Empirical: pending. Conflict: none.
 
 **SC-507b — a live preview is never stitched from two moments.** Bucket 2 — the three
 moving files are fingerprinted before and after the render with one clean retry; if
 still moving, it says so instead. Authority: commands.md:556-560. Empirical: pending.
 Conflict: none.
 
-**SC-513 — `next` exit contract.** Bucket 2 — nothing-needs-attention exits non-zero
-with a message (composes in scripts); unknown argument exits non-zero; read-only by
-default. Authority: commands.md:150-159. Empirical: pending. Conflict: none.
+**SC-513a — `next` exits non-zero when nothing needs attention.** Bucket 2 — with a
+message; composes in scripts. Authority: commands.md:150-152. Empirical: pending.
+Conflict: none.
+
+**SC-513b — `next` exits non-zero on an unknown argument.** Bucket 2. Authority:
+commands.md:158-159. Empirical: pending. Conflict: none.
+
+**SC-513c — `next` is read-only by default.** Bucket 2 — no tmux focus change without
+`--attach`. Authority: commands.md:150. Empirical: pending. Conflict: none.
 
 **SC-514 — `doctor` exit contract.** Bucket 2 — non-zero if any checklist item FAILed.
 Authority: commands.md:168. Empirical: pending. Conflict: none.
 
-**SC-515 — `stop all` folded exit.** Bucket 2 — per-target stop-result records are
-folded into the exit code after a bounded (~30s) wait; timeout reports `results
-pending` and keeps the handoff status rather than calling a working supervisor a
-failure; an ae-tagged session visible but absent from meta is named, NOT stopped, and
-makes the run a partial failure (non-zero). Authority: commands.md:365-395.
-Empirical: pending. Conflict: none.
+**SC-515a — `stop all` folds per-target result records into its exit.** Bucket 2 —
+bounded (~30s) wait on the per-session stop-result events. Authority:
+commands.md:365-373. Empirical: pending. Conflict: none.
+
+**SC-515b — result-wait timeout is not a failure.** Bucket 2 — reports `results
+pending` and keeps the handoff status rather than calling a still-working supervisor a
+failure. Authority: commands.md:370-372. Empirical: pending. Conflict: none.
+
+**SC-515c — an unowned ae-tagged session is named, not stopped.** Bucket 2 — visible on
+the server but absent from meta: not killed, run becomes a partial failure (non-zero),
+message names both ways out. Authority: commands.md:392-395. Empirical: pending.
+Conflict: none.
 
 **SC-516 — `end` fails non-zero when the archive cannot be written.** Bucket 1 —
 capture-then-delete: publication happens after verified stop and git, before any live
@@ -243,10 +283,16 @@ state is removed; a failed archive fails the end with the whole session still on
 Authority: commands.md:499-501 + architecture.md publication protocol.
 Empirical: pending (census-2 end section). Conflict: none.
 
-**SC-517 — compact's exit status is the launch's.** Bucket 2 — compact execs into the
-launch; in a terminal it attaches and exits on detach; with no terminal the launch
-reports failure exactly as a plain `ae <name>` does, with archive and fresh session
-already in place. Authority: commands.md:687-691. Empirical: pending. Conflict: none.
+**SC-517a — compact's exit status is the launch's.** Bucket 2 — compact execs into the
+launch; there is no separate compact exit. Authority: commands.md:687-688.
+Empirical: pending. Conflict: none.
+
+**SC-517b — terminal case: attach, exit on detach.** Bucket 2. Authority:
+commands.md:688-689. Empirical: pending. Conflict: none.
+
+**SC-517c — non-terminal case: launch failure reports as plain `ae <name>`.** Bucket 2
+— with archive and fresh session already in place, `Recovery:` naming the route.
+Authority: commands.md:689-691. Empirical: pending. Conflict: none.
 
 **SC-508 — residual undocumented exit codes.** `authority=code-observation` — only the
 cases NOT covered by SC-513..517 remain; probes then seat closure (preserve/fix/
