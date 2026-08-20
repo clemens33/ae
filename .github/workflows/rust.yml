@@ -11,17 +11,63 @@
 
 name: rust
 
+# PATHS FILTER: only Rust-affecting changes start these lanes. Measured cause —
+# a docs slice pushing to this branch every 2-6 minutes started a rust run each
+# time, and none of those pushes touched a Rust file.
+#
+# TRAP, recorded where the decision lives: if `rust` ever becomes a REQUIRED
+# status check, a run skipped by this filter reports "skipped", not "success",
+# and a docs-only PR can never satisfy it — the merge blocks forever. Revisit
+# this filter at that moment (the usual answer is a paths-filtered job plus a
+# always-runs gate job that reports success). No branch protection exists today.
 on:
   push:
     branches: [rust-rewrite, main]
+    # Spelled out on both triggers rather than shared via a YAML anchor.
+    # Anchors are not part of the documented workflow syntax, and NOTHING here
+    # can settle the question locally: python yaml resolves them, and actionlint
+    # accepts them too (measured) — so an anchor GitHub rejected would surface
+    # only as a workflow that silently runs no jobs. Duplication is the one form
+    # that is safe under either reading. Keep the two lists in sync by hand.
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - deny.toml
+      - clippy.toml
+      - taplo.toml
+      - .cargo/**
+      - src/**
+      - tests/it/**
+      - justfile
+      - .github/workflows/rust.yml
   pull_request:
     branches: [rust-rewrite, main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - deny.toml
+      - clippy.toml
+      - taplo.toml
+      - .cargo/**
+      - src/**
+      - tests/it/**
+      - justfile
+      - .github/workflows/rust.yml
+  # The manual escape hatch: run the lanes against any ref regardless of paths.
   workflow_dispatch:
 
-# A new push supersedes an in-flight run on the same ref.
 concurrency:
   group: rust-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel only PR runs, where a newer commit genuinely supersedes the old one.
+  #
+  # PUSH RUNS MUST FINISH. A cancelled job never reaches its Post Cache steps, so
+  # cancelling every push run meant the tool cache was never written — and
+  # without the cache every run is a cold ~10-15min build that the next push
+  # cancels again. That is a livelock, not slowness: measured `caches: 0` across
+  # three consecutive cancelled runs on this branch.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
