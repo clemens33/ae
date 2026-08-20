@@ -2,9 +2,9 @@
 
 - Snapshot: contract sources read from `git show HEAD` at `ba116fe3d11b6637e9ccf6e6bf1fb4c08cd88a84`; worktree dirty: yes (non-contract changes present).
 - Scope: SC rows only. Ownership D records are excluded from all queues: 43 canonical D records (D01–D31 with letter splits); their TBD-field closures remain in evidence batches.
-- Canonical SC rows: 426; raw qualifications Q1=143, Q2=35, Q3=123; Q2∩Q3=15.
-- Emitted queues after precedence Q2 > Q3 > Q1: Q1=143, Q2=35, Q3=108; already-closed=138; no-queue anomalies=2.
-- Reconciliation: 143 Q1 + 35 Q2 + 108 Q3 + 138 already-closed + 2 no-queue = 426 canonical SC rows. The 15 dual Q2/Q3 rows are resolved to Q2 and are not added twice. Canonical deltas from the stale 424-row snapshot: SC-1106, then SC-012b (bare-invocation residue split from SC-012 by seat ruling ae-20260820T165746Z-fb9c4fb6).
+- Canonical SC rows: 426; raw qualifications Q1=143, Q2=36, Q3=123; Q2∩Q3=15.
+- Emitted queues after precedence Q2 > Q3 > Q1: Q1=143, Q2=36, Q3=108; already-closed=137; no-queue anomalies=2.
+- Reconciliation: 143 Q1 + 36 Q2 + 108 Q3 + 137 already-closed + 2 no-queue = 426 canonical SC rows. SC-521a sits in Q2 (bucket-3 reclass, #96) although re-marked - Q2 membership is mark-independent by derivation. The 15 dual Q2/Q3 rows are resolved to Q2 and are not added twice. Canonical deltas from the stale 424-row snapshot: SC-1106, then SC-012b (bare-invocation residue split from SC-012 by seat ruling ae-20260820T165746Z-fb9c4fb6).
 - Manifest cross-check (orthogonal criticality labels, not queue criteria): ratification-critical.md at this snapshot reports CRITICAL=325 + DEFERRABLE=103 + OBSERVED=41 = 469 total IDs (426 SC + 43 D).
 - Derivation: Q1 requires an explicit docs/ruling anchor in Authority, conflict=none, and no per-row or block classified_by mark. Q2 includes every Bucket 3/4 row and preserves its fix-known-defect issue or DR reference, regardless of mark status. Q3 requires Authority beginning with code-observation, Authority beginning with UNRESOLVED, or an explicit UNCLASSIFIED conflict; each emitted Q3 row uses its CRIT-ASSIGN batch. Rows are read at row-paragraph grain; family/range marks are expanded only to their declared exact IDs.
 - Mark states: `block-marked` = S1 preflight, exact S6 frozen set, S9 SC-800..831, or S13 SC-1200..1209; `per-row-marked` = explicit row classified_by (including S1MAP/ratification-day marks and the S3 delivery/routing and helper-signature blocks); otherwise `genuinely-unmarked`.
@@ -166,6 +166,7 @@ SC-210 | 4 | helpers.md + DR-004 | DR-004 | — | genuinely-unmarked
 SC-400b | 4 | DR-001 | DR-001 | — | genuinely-unmarked
 SC-400c | 4 | DR-006 + #79 + #76 | DR-006 | — | genuinely-unmarked
 SC-401b | 4 | DR-001 | DR-001 | — | genuinely-unmarked
+SC-521a | 3 | commands.md filter rows + joint ruling | fix-known-defect(#96) | — | per-row-marked (RE-MARKED after reclass)
 SC-704b | 3 | DR-005 | fix-known-defect(#56) | — | genuinely-unmarked
 SC-704c | 4 | DR-005 + #50 | DR-005 | — | genuinely-unmarked
 SC-704d | 4 | DR-005 | DR-005 | — | genuinely-unmarked
@@ -315,7 +316,7 @@ S1 preflight | ae-20260820T115449Z-1b7ef041 | SC-016a, SC-016b, SC-016c, SC-016d
 S1MAP/ratification-day | 2026-08-20 | SC-021, SC-022
 S5 per-row marks | 2026-08-20 | SC-404, SC-405a, SC-405b, SC-405c, SC-405d, SC-405f, SC-405g, SC-405i, SC-405j, SC-405k
 S6 exact frozen set | 76722eb/f4e93ef | SC-500, SC-501, SC-502, SC-503a, SC-503b, SC-504a, SC-504b, SC-505a, SC-505b, SC-506, SC-507a, SC-507b, SC-507c, SC-507d, SC-509, SC-510a, SC-510b, SC-510c, SC-510d, SC-511a, SC-511b, SC-511c, SC-512, SC-513a, SC-513b, SC-513c, SC-514, SC-515a, SC-515b, SC-515c, SC-516, SC-517a, SC-517b, SC-517c
-S6 per-row marks | 2026-08-20 | SC-509b, SC-510e, SC-510f, SC-518, SC-519, SC-520, SC-521a, SC-521b, SC-522, SC-523a, SC-523b, SC-524
+S6 per-row marks | 2026-08-20 | SC-509b, SC-510e, SC-510f, SC-518, SC-519, SC-520, SC-521b, SC-522, SC-523a, SC-523b, SC-524 (SC-521a moved to Q2 on its bucket-3 reclass, #96 — still re-marked; queue membership is mark-independent)
 S9 exact frozen set | 7398f6de | SC-800, SC-801, SC-802, SC-803, SC-805, SC-807, SC-808, SC-809, SC-812, SC-813, SC-814, SC-816, SC-817, SC-819, SC-822, SC-823, SC-826, SC-827, SC-828, SC-830, SC-831
 S12 per-row mark | 2026-08-20 | SC-980
 S13 exact frozen set | 07e2770 | SC-1200, SC-1201, SC-1203, SC-1204, SC-1206, SC-1208, SC-1209

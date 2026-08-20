@@ -854,13 +854,18 @@ mark the session degraded in the public JSON (a buffered unterminated tail is no
 malformed — SC-975b). Authority: joint ruling + SC-975b. Empirical: pending.
 Conflict: none. **classified_by: both seats, 2026-08-20.**
 
-**SC-521a — cross-dimension filter combinations intersect literally.** Bucket 2 —
-(slice-1 Q7c; split from SC-521 at slice-1c for row grain): `--stopped --needs-attn`
+**SC-521a — cross-dimension filter combinations intersect literally.** Bucket 3 —
+fix-known-defect(#96) (reclassified from bucket 2/conflict=none by seat ruling, colead
+phase read 2026-08-20, on A2 evidence): SHOULD (unchanged): `--stopped --needs-attn`
 and `--stopped --active` select nothing (each attention/activity row reads "running
 sessions only" literally); `--all` with either keeps only matching running sessions;
-no invented usage error. Authority: commands.md filter rows + joint ruling.
-Empirical: pending (Batch C A2). Conflict: none. **classified_by: both seats,
-2026-08-20.**
+no invented usage error — and no silent selector override. IS at 72c7293: `list
+--needs-attn --stopped` emits RUNNING attention sessions — ae:4122-4127 force-resets
+the scope to running after selector parsing whenever an attention/activity filter is
+present, silently overriding `--stopped`. Authority: commands.md filter rows + joint
+ruling. Empirical: observed (Batch C A2 @36a107b, inter_needsattnstopped arms, both
+argument orders). Conflict: fix-known-defect(#96, intended: literal intersection).
+**classified_by: RE-MARKED after reclassification — both seats, 2026-08-20.**
 
 **SC-521b — same-dimension scope flags are alternatives: last distinct selector
 wins.** Bucket 2 — (slice-1c, seat ruling on reviewer3 I7):
