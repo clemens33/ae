@@ -1,0 +1,9 @@
+SESSION                   STATUS    MODE        ORIGIN
+proj2                     running   local       /private/tmp/aelx/L-832C/cut-tmux-consumer-list/w
+  git:main · ae ? · active -
+projx                     running   local       /private/tmp/aelx/L-832C/cut-tmux-consumer-list/w
+  git:main · ae 0.2.1 · active 11s ago
+  grok:grok               6f759220  -             
+proj                      stopped   local       /private/tmp/aelx/L-832C/cut-tmux-consumer-list/w
+  git:main · ae 0.2.1 · active 16s ago
+  grok:grok               42563b94

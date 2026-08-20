@@ -1,0 +1,18 @@
+2026-08-20T21:39:48Z	setup	arm	cut-meta-consumer-stop
+2026-08-20T21:39:48Z	setup	cut	meta — after meta session= is rewritten, before workspace.md is regenerated
+2026-08-20T21:39:48Z	setup	barrier	b_rn_meta_updated
+2026-08-20T21:39:59Z	setup	topology	proj + projx (prefix-sibling pair) on one recorded server
+2026-08-20T21:40:00Z	cut	subject.pid	74718
+2026-08-20T21:40:02Z	cut	barrier	b_rn_meta_updated.74718.1
+2026-08-20T21:40:02Z	cut	method	SIGKILL to the whole rename process tree at the barrier
+2026-08-20T21:40:02Z	cut	rename.rc	137
+2026-08-20T21:40:04Z	precondition	death.and.descriptors	MET
+2026-08-20T21:40:05Z	mixed	tmux.names	proj2,projx
+2026-08-20T21:40:05Z	mixed	dir.names	proj2,projx
+2026-08-20T21:40:05Z	mixed	meta.sessions	proj2,projx
+2026-08-20T21:40:05Z	mixed	sources.disagree	no
+2026-08-20T21:40:05Z	consumer	clone	/tmp/aelx/L-832C/cut-meta-consumer-stop/clones/stop/.ae
+2026-08-20T21:40:06Z	consumer	stop.target	proj2
+2026-08-20T21:40:06Z	consumer	4stop.rc	0
+2026-08-20T21:40:09Z	consumer	clone.manifest.changed.lines	0
+2026-08-20T21:40:10Z	consumer	origin.manifest.changed.lines	0

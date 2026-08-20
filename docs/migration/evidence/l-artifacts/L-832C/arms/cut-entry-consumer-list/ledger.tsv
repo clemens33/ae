@@ -1,0 +1,18 @@
+2026-08-20T21:35:03Z	setup	arm	cut-entry-consumer-list
+2026-08-20T21:35:03Z	setup	cut	entry — inside the two-lock region, before any check the rename then mutates (the CONTROL cut)
+2026-08-20T21:35:03Z	setup	barrier	b_rn_locked_entry
+2026-08-20T21:35:14Z	setup	topology	proj + projx (prefix-sibling pair) on one recorded server
+2026-08-20T21:35:15Z	cut	subject.pid	81676
+2026-08-20T21:35:16Z	cut	barrier	b_rn_locked_entry.81676.1
+2026-08-20T21:35:17Z	cut	method	SIGKILL to the whole rename process tree at the barrier
+2026-08-20T21:35:17Z	cut	rename.rc	137
+2026-08-20T21:35:19Z	precondition	death.and.descriptors	MET
+2026-08-20T21:35:20Z	mixed	tmux.names	proj,projx
+2026-08-20T21:35:20Z	mixed	dir.names	proj,projx
+2026-08-20T21:35:20Z	mixed	meta.sessions	proj,projx
+2026-08-20T21:35:20Z	mixed	sources.disagree	no
+2026-08-20T21:35:20Z	consumer	clone	/tmp/aelx/L-832C/cut-entry-consumer-list/clones/list/.ae
+2026-08-20T21:35:21Z	consumer	4list.rc	0
+2026-08-20T21:35:21Z	consumer	4list-all.rc	0
+2026-08-20T21:35:24Z	consumer	clone.manifest.changed.lines	0
+2026-08-20T21:35:26Z	consumer	origin.manifest.changed.lines	0

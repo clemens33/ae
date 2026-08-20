@@ -1,0 +1,27 @@
+# identity tuple at 1pre (AE_HOME=/tmp/aelx/L-832C/cut-meta-consumer-stop/h/.ae)
+
+## tmux session names on the recorded server
+$0|proj
+$1|projx
+
+## state directory names under sessions/
+proj
+projx
+
+## per state directory: meta session= , session_id= , and workspace.md
+--- dir: proj
+meta.session=      proj
+meta.session_id=   2c3233c1-9930-4cde-91f7-a4541e270b05
+meta.tmux_server=  /private/tmp/aelx/L-832C/cut-meta-consumer-stop/t/tmux-501/default
+workspace.md       present
+workspace.session  Session: proj
+--- dir: projx
+meta.session=      projx
+meta.session_id=   2b70e775-05c8-49b8-88df-61dfa1902bd9
+meta.tmux_server=  /private/tmp/aelx/L-832C/cut-meta-consumer-stop/t/tmux-501/default
+workspace.md       present
+workspace.session  Session: projx
+
+## lifecycle lock files present
+/tmp/aelx/L-832C/cut-meta-consumer-stop/h/.ae/sessions/.lifecycle.proj.lock
+/tmp/aelx/L-832C/cut-meta-consumer-stop/h/.ae/sessions/.lifecycle.projx.lock

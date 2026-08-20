@@ -1,0 +1,20 @@
+# verify from: this section directory  (shasum -a 256 -c ADMISSIBILITY-SHA256SUMS.txt)
+# the proofs live one level up in _admissibility/
+b2ae18c16a83fa4859cee591030a8806c9fe9e036ddcc3024e259d1ecfab41df  ../_admissibility/equiv-A-inactive-hook.txt
+994b4efc953725626366d0749684d3a8c2f533ede0aa37b81fff3de7de4a99b0  ../_admissibility/equiv-B-tmux-shim.txt
+f72bc224f811627c2482b9cdcff0e5e7565ec2de5597bc2ce063ef9a734f1471  ../_admissibility/equiv-D-known-difference.txt
+c802fcdb7d6a74e4f551e26c39636558d7efb0c7e4bc6d127f5b68af5636c329  ../_admissibility/equiv-E-flock-spy.txt
+117e9c61a478c0821f27ce47a362c5d73c29586f1630be750d37a0777d0ec0b3  ../_admissibility/equiv-E-known-difference.txt
+fd961597a72823c1593d7305980a38e31cd655b267b5a2c0da45341cb94bc1de  ../_admissibility/equiv-F-git-shim.txt
+50abeb7990430678e03d7ffe5f840735780d10bb27feb6d100d5ba666c8056ba  ../_admissibility/equiv-F-known-difference.txt
+1b1dbaa04f8e64c2d8bcb78cc919bfaf149ad9e625747cdcb660cc22fe83dfe6  ../_admissibility/equiv-G-known-difference.txt
+306d49e8bd9c67a5201b55438cd69fb210a8eea5629a3d21479fbd1e3c3fdc32  ../_admissibility/equiv-G-v2-inactive-stop.txt
+d6a5f4b94a20924b54391c381edc755c0e4d0b0e692a94ac3863cd622f73a667  ../_admissibility/equiv-H-known-difference.txt
+9c269ebde0901a73579deb6ae253733bf56413711add96096dd3ef314c58bd55  ../_admissibility/equiv-H-v2-inactive-end.txt
+1e9e87d3304da8fb28c28f298222d677118fed3bd9bda37866b2329bd45017c6  ../_admissibility/equiv-I-known-difference.txt
+b0337c2fe2b25e6532114a6d06a35530d607747d8cf7f12c6e86977fc2123d0c  ../_admissibility/equiv-I-v3-inactive-compact.txt
+d27ca92a439d3f81f8eb117b7d5fe918db1c3425f046c8f77d890d1797a8f1f7  ../_admissibility/equiv-J-known-difference.txt
+4fe7b700172e8221a462c0220fca201246ad862b04303aaff20b7bb310c06c05  ../_admissibility/equiv-J-v4-inactive-rename.txt
+c73a2b0dc2d0e1445e1f1cb6787c77194d0470ab791d899d3d29ff21363dafa4  ../_admissibility/equiv-K-known-difference.txt
+1a97ad53572c02c816ca6fed92989e9de3bcb2bf1d78afa8e91f95b286b571af  ../_admissibility/equiv-K-ssh-rsync-shims.txt
+28ef0292066eca255c2322de2d76a8cede4d1be5655867e3b9bd48a9c73fdade  ../_admissibility/equiv-L-v5-inactive-stop.txt

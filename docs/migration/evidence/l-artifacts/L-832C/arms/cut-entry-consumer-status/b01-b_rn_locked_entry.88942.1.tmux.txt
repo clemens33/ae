@@ -1,0 +1,18 @@
+## socket	/tmp/aelx/L-832C/cut-entry-consumer-status/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|proj|2|0|1787261726
+$1|projx|2|0|1787261732
+## windows
+proj|@0|0|proj|1
+proj|@1|99|ae-monitor|2
+projx|@2|0|projx|1
+projx|@3|99|ae-monitor|2
+## panes
+proj|@0|%0|86069|grok|grok:grok|main|0
+proj|@1|%2|86604|bash|_watchdog||0
+proj|@1|%1|86544|bash|_events||0
+projx|@2|%3|87370|grok|grok:grok|main|0
+projx|@3|%5|87907|bash|_watchdog||0
+projx|@3|%4|87720|bash|_events||0
+## clients

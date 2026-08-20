@@ -1,0 +1,18 @@
+2026-08-20T21:34:20Z	setup	arm	cut-tmux-consumer-list
+2026-08-20T21:34:20Z	setup	cut	tmux — after tmux rename-session and the main-window rename, before the state directory move
+2026-08-20T21:34:20Z	setup	barrier	b_rn_tmux_renamed
+2026-08-20T21:34:32Z	setup	topology	proj + projx (prefix-sibling pair) on one recorded server
+2026-08-20T21:34:33Z	cut	subject.pid	72536
+2026-08-20T21:34:34Z	cut	barrier	b_rn_tmux_renamed.72536.1
+2026-08-20T21:34:34Z	cut	method	SIGKILL to the whole rename process tree at the barrier
+2026-08-20T21:34:34Z	cut	rename.rc	137
+2026-08-20T21:34:36Z	precondition	death.and.descriptors	MET
+2026-08-20T21:34:37Z	mixed	tmux.names	proj2,projx
+2026-08-20T21:34:37Z	mixed	dir.names	proj,projx
+2026-08-20T21:34:37Z	mixed	meta.sessions	proj,projx
+2026-08-20T21:34:37Z	mixed	sources.disagree	yes
+2026-08-20T21:34:37Z	consumer	clone	
+2026-08-20T21:34:37Z	consumer	4list.rc	0
+2026-08-20T21:34:38Z	consumer	4list-all.rc	0
+2026-08-20T21:34:40Z	consumer	clone.manifest.changed.lines	0
+2026-08-20T21:34:41Z	consumer	origin.manifest.changed.lines	0

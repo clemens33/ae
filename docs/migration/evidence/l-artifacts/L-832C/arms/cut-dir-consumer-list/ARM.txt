@@ -1,0 +1,22 @@
+arm	cut-dir-consumer-list
+section	L-832C
+roster_ids	SC-832c (and the D20 gate that carries the same hold)
+cut	dir
+cut_site	after the state directory move, before the meta rewrite
+barrier	b_rn_dir_moved
+consumer	list
+construction	the rename is interrupted by SIGKILL to its whole process tree at the named cut, so the lifecycle descriptors are released BY DEATH and never by a resumed process; a FRESH PROCESS then runs one consumer against its OWN independent post-crash clone
+independence	one sandbox per (cut, consumer) pair — the tmux server cannot be cloned, so each consumer gets a whole separate run rather than a shared server
+hook_patch_version	L-HOOKS-v4
+binary.sha256	c66fe2d897c5d3b354e1ee11663e17b63ba4077792ab2882c3317da8c082b308
+subject_pid	31182
+rename_rc	137
+precondition_met	YES
+postcrash.tmux_names	proj2,projx
+postcrash.dir_names	proj2,projx
+postcrash.meta_sessions	proj,projx
+postcrash.sources_disagree	yes
+clone_manifest_changed_lines	0
+origin_manifest_changed_lines	0
+consumer_rcs	4list-all=0 4list=0 
+OBSERVATION	tuple.*.txt at 1pre, at-cut, 3post-crash and 6after-consumer; death-and-descriptors.txt; the consumer stdout/stderr/rc; and the two no-mutation diffs. No verdict is stated here.

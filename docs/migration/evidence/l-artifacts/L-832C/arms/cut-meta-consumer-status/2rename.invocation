@@ -1,0 +1,24 @@
+cwd: /tmp/aelx/L-832C/cut-meta-consumer-status/w
+argv (bg):
+  /tmp/aelx/L-832C/cut-meta-consumer-status/b/ae
+  rename
+  proj
+  proj2
+env:
+  HOME=/tmp/aelx/L-832C/cut-meta-consumer-status/h
+  AE_HOME=/tmp/aelx/L-832C/cut-meta-consumer-status/h/.ae
+  TMPDIR=/tmp/aelx/L-832C/cut-meta-consumer-status/tp
+  TMUX_TMPDIR=/tmp/aelx/L-832C/cut-meta-consumer-status/t
+  PATH=/tmp/aelx/L-832C/cut-meta-consumer-status/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-832C/cut-meta-consumer-status/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-832C/cut-meta-consumer-status/cap/tmux-argv.log
+  AE_L_HOOKS=b_rn_meta_updated
+  AE_L_TRACE=/tmp/aelx/L-832C/cut-meta-consumer-status/cap/hook-trace.tsv
+  AE_L_BLOCK=/tmp/aelx/L-832C/cut-meta-consumer-status/ctl
+  AE_L_BLOCK_MAX=1800

@@ -1,0 +1,19 @@
+cwd: /tmp/aelx/L-832C/cut-entry-consumer-stop/w
+argv:
+  /tmp/aelx/L-832C/cut-entry-consumer-stop/b/ae
+  --local
+  projx
+env:
+  HOME=/tmp/aelx/L-832C/cut-entry-consumer-stop/h
+  AE_HOME=/tmp/aelx/L-832C/cut-entry-consumer-stop/h/.ae
+  TMPDIR=/tmp/aelx/L-832C/cut-entry-consumer-stop/tp
+  TMUX_TMPDIR=/tmp/aelx/L-832C/cut-entry-consumer-stop/t
+  PATH=/tmp/aelx/L-832C/cut-entry-consumer-stop/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-832C/cut-entry-consumer-stop/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-832C/cut-entry-consumer-stop/cap/tmux-argv.log

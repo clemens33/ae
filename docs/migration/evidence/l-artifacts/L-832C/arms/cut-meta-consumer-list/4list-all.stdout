@@ -1,0 +1,7 @@
+SESSION                   STATUS    MODE        ORIGIN
+proj2                     running   local       /private/tmp/aelx/L-832C/cut-meta-consumer-list/w
+  git:main · ae 0.2.1 · active 18s ago
+  grok:grok               2675ec68  -             
+projx                     running   local       /private/tmp/aelx/L-832C/cut-meta-consumer-list/w
+  git:main · ae 0.2.1 · active 12s ago
+  grok:grok               a37b290c  -             
