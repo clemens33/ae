@@ -60,7 +60,10 @@ surface_state() { # <path-to-surface> [more paths...]
           echo "  read_attempt_stderr=${err:-<none>}"
           [[ $rc -eq 0 && -e "$p" ]] && echo "  sha256=$(sha "$p")" || echo "  sha256=- (not readable by this uid)"
       done; } >"$out"
-    led source-state-captured "artifact_sha256=$(sha "$out")" "paths=$*"
+    # Distinct from batch C's `source-state-captured`: the two batches capture different
+    # artifacts (meta-state.txt there, surface-state.txt here) and a shared event name
+    # would make one batch's schema rule silently apply to the other's cases.
+    led surface-state-captured "artifact_sha256=$(sha "$out")" "paths=$*"
 }
 
 # THE CAPTURE WRAPPER. Everything measured goes through this one function, so the canaries

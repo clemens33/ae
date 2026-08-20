@@ -24,7 +24,7 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 
 | script | sha256 | registered (UTC) |
 |---|---|---|
-| `_harness/hlib.sh` | `40ace86d757f5e0f27734472a25d6f4658875140720b85499bce2b6f90f0cb5f` | 2026-08-20T21:51:16Z |
+| `_harness/hlib.sh` | `b2cf84dd1990c01fdbfc9512c00834d10543d4745ed6a2dc2ad6c134ea27455d` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
 | `_harness/arm-h4.sh` | `5944b88c92acd4752addffabe9705ab087ff6c430bed0ea1d0bf6d8040693009` | 2026-08-20T21:51:16Z |
 
@@ -36,6 +36,12 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 - why it is registered anyway: pre-registration is about the capture program, and a
   reporting script that runs after the captures exist is outside it — but it is committed
   and hashed here so a seat reading the record can regenerate it and get the same bytes.
+
+### A5 — `_harness/finalize-h-arm.sh` registered after A-H4's run
+
+- new sha256: `3e6bdba0ccc314ebeb2700900d1c17b956623b8e07db5f9032a5a573ae6898de`
+- what it is: a post-capture indexer. It writes the content-bound case index (case dir ->
+  ledger sha256, ledger lines, file count) and records no observation.
 
 ## Frozen source
 
@@ -81,3 +87,18 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
   `fixture-validity.txt` naming what the roster and the server actually carry, before any
   case runs.
 - arms reopened: A-H4, entirely.
+
+### A4 — `_harness/hlib.sh`, event name made batch-distinct
+
+- `40ace86d757f5e0f27734472a25d6f4658875140720b85499bce2b6f90f0cb5f` -> `b2cf84dd1990c01fdbfc9512c00834d10543d4745ed6a2dc2ad6c134ea27455d`
+- what changed: `surface_state()` emitted `source-state-captured`, the same event batch C
+  uses to declare it captured `meta-state.txt`. The shared name made batch C's schema rule
+  apply to batch H's cases, which capture `surface-state.txt` instead — so the gate
+  demanded an artifact this batch does not produce. Renamed to `surface-state-captured`,
+  and the schema kinds now fork by batch layout rather than one batch's rule being
+  weakened to fit the other's captures.
+- why it is not adaptive capture: the event name is a LEDGER LABEL, not a reading. No
+  capture changes. A-H4 is re-run anyway so its committed ledgers match the script that is
+  registered against them — a ledger naming an event its script no longer emits is exactly
+  the drift the hash registration exists to prevent.
+- arms reopened: A-H4.

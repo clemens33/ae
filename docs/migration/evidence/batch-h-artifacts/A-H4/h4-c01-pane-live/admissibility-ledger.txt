@@ -1,14 +1,14 @@
-seq=001	utc=2026-08-20T22:06:22Z	epoch=1787263582	event=case-OPEN	arm=A-H4	case=h4-c01-pane-live	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-seq=002	utc=2026-08-20T22:06:22Z	epoch=1787263582	event=rows	rows=SC-211p	surface=_lib ae_resolve	fixture=H5 (two live sessions, one server)
-seq=003	utc=2026-08-20T22:06:22Z	epoch=1787263582	event=fixture	session_a=th5a	session_b=th5b	live_pane=%0	dead_pane=%4
-seq=004	utc=2026-08-20T22:06:22Z	epoch=1787263582	event=source-state-captured	artifact_sha256=ba65e175d734ac1e97b8a435d767d207be7c06b7444cd1494e0d5f7759efdf81	paths=/tmp/aecx/h/h5/home/.ae/sessions/th5a/_lib /tmp/aecx/h/h5/home/.ae/sessions/th5a/meta
-seq=005	utc=2026-08-20T22:06:22Z	epoch=1787263582	event=env-equivalence	helper_sha256=afba2f5676348566e39cb98becf9470ad1957b3ada7dcc5d6136542aa72e45d2	controller_sha256=a6275ba6ba81b7c3495ecad10780dd5f3f22c6ac2f925d31fdd7846ff5725094	diff_lines=6
-seq=006	utc=2026-08-20T22:06:22Z	epoch=1787263582	event=measured-input	input=%0	note=a live pane id
-seq=007	utc=2026-08-20T22:06:23Z	epoch=1787263583	event=invocation	label=canary-pre-h4-c01-pane-live	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=84291c156fa17de8a5eaff353d16995361c5d52289fb6ce5d67e7a1f0a5c2f98	stderr_sha256=8255c1f74d292e94c68b3c915ec6d92510c23a2b5b884c75d9b910f059b38d51
-seq=008	utc=2026-08-20T22:06:23Z	epoch=1787263583	event=canary	when=pre	tag=h4-c01-pane-live	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
-seq=009	utc=2026-08-20T22:06:23Z	epoch=1787263583	event=PRODUCT-START	label=20
-seq=010	utc=2026-08-20T22:06:23Z	epoch=1787263583	event=invocation	label=resolve	rc=0	elapsed_s=0	timed_out=no	stdout_sha256=f7728c9bf14804291d39305afd6c2d3b31388d72cfd4cf38a1fb39c8133093f4	stderr_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-seq=011	utc=2026-08-20T22:06:23Z	epoch=1787263583	event=PRODUCT-COMPLETE	label=20
-seq=012	utc=2026-08-20T22:06:24Z	epoch=1787263584	event=invocation	label=canary-post-h4-c01-pane-live	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=9e1219031dfed2aa211be7781da02cf5e4db83c98cafeef62e282041a7fc5002	stderr_sha256=687f01a06db499b1227dac60fdf9e5870724e62024e173decb4634794030e987
-seq=013	utc=2026-08-20T22:06:24Z	epoch=1787263584	event=canary	when=post	tag=h4-c01-pane-live	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
-seq=014	utc=2026-08-20T22:06:24Z	epoch=1787263584	event=case-CLOSE	invocations_sha256=6ae3294f1a941fb04887f65af5cf6c14a345280a05410dccace6916df351e368
+seq=001	utc=2026-08-20T22:12:59Z	epoch=1787263979	event=case-OPEN	arm=A-H4	case=h4-c01-pane-live	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T22:12:59Z	epoch=1787263979	event=rows	rows=SC-211p	surface=_lib ae_resolve	fixture=H5 (two live sessions, one server)
+seq=003	utc=2026-08-20T22:12:59Z	epoch=1787263979	event=fixture	session_a=th5a	session_b=th5b	live_pane=%0	dead_pane=%4
+seq=004	utc=2026-08-20T22:12:59Z	epoch=1787263979	event=surface-state-captured	artifact_sha256=35bf9ccc00df3f77e7530ab4325566c39164373a42796b39a75bb81db44979a1	paths=/tmp/aecx/h/h5/home/.ae/sessions/th5a/_lib /tmp/aecx/h/h5/home/.ae/sessions/th5a/meta
+seq=005	utc=2026-08-20T22:12:59Z	epoch=1787263979	event=env-equivalence	helper_sha256=9e48f61b4af825167231e7629a22c3b979a5f5b582a68828e696695e58f93505	controller_sha256=a6275ba6ba81b7c3495ecad10780dd5f3f22c6ac2f925d31fdd7846ff5725094	diff_lines=6
+seq=006	utc=2026-08-20T22:12:59Z	epoch=1787263979	event=measured-input	input=%0	note=a live pane id
+seq=007	utc=2026-08-20T22:13:00Z	epoch=1787263980	event=invocation	label=canary-pre-h4-c01-pane-live	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=84291c156fa17de8a5eaff353d16995361c5d52289fb6ce5d67e7a1f0a5c2f98	stderr_sha256=8255c1f74d292e94c68b3c915ec6d92510c23a2b5b884c75d9b910f059b38d51
+seq=008	utc=2026-08-20T22:13:00Z	epoch=1787263980	event=canary	when=pre	tag=h4-c01-pane-live	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=009	utc=2026-08-20T22:13:00Z	epoch=1787263980	event=PRODUCT-START	label=20
+seq=010	utc=2026-08-20T22:13:01Z	epoch=1787263981	event=invocation	label=resolve	rc=0	elapsed_s=0	timed_out=no	stdout_sha256=f7728c9bf14804291d39305afd6c2d3b31388d72cfd4cf38a1fb39c8133093f4	stderr_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+seq=011	utc=2026-08-20T22:13:01Z	epoch=1787263981	event=PRODUCT-COMPLETE	label=20
+seq=012	utc=2026-08-20T22:13:01Z	epoch=1787263981	event=invocation	label=canary-post-h4-c01-pane-live	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=9e1219031dfed2aa211be7781da02cf5e4db83c98cafeef62e282041a7fc5002	stderr_sha256=687f01a06db499b1227dac60fdf9e5870724e62024e173decb4634794030e987
+seq=013	utc=2026-08-20T22:13:01Z	epoch=1787263981	event=canary	when=post	tag=h4-c01-pane-live	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=014	utc=2026-08-20T22:13:01Z	epoch=1787263981	event=case-CLOSE	invocations_sha256=fa1ac63490002c7709dc005c61d51f6c20133d7a8617bee5d9cd22c3d6a033ad
