@@ -42,15 +42,18 @@ cp "$PATCHF" "$CASE_DIR/hook.patch"
 surface_state "$HOOKED" "$FROZEN_AE"
 
 equiv_run() { # <tag> <binary>
+    # SAME session name in every run. The first attempt named the session after the tag, so
+    # every path differed and the comparison reported the tag rather than the binary — a
+    # comparator answering about its own labelling.
     h_sandbox "eq$1" "cl:lead" "cx:worker" || return 1
-    ( cd "$ROOT/work" && "$HARNESS_BASH" "$2" --local "teq$1" </dev/null \
+    ( cd "$ROOT/work" && "$HARNESS_BASH" "$2" --local "teq" </dev/null \
         >"$CASE_DIR/out/$1.launch.stdout" 2>"$CASE_DIR/out/$1.launch.stderr" )
     echo "rc=$?" >>"$CASE_DIR/out/$1.launch.rc"
     snapshot "$AE_HOME" "$SOCK" | sed "s#/tmp/aecx/h/eq$1#<ROOT>#g" >"$CASE_DIR/state.$1.txt"
     command tmux -S "$SOCK" kill-server >/dev/null 2>&1
 }
-equiv_run control "$FROZEN_AE"
-equiv_run hooked  "$HOOKED"
+equiv_run control "$FROZEN_AE"; ROOT_CONTROL="$AE_HOME"
+equiv_run hooked  "$HOOKED";   ROOT_HOOKED="$AE_HOME"
 # THE KNOWN-DIFFERENCE CONTROL: a binary that differs in a way the comparator must catch.
 sed 's/^AE_VERSION=.*/AE_VERSION="0.0.0-known-difference"/' "$FROZEN_AE" >/tmp/aecx/h/hook/ae.different
 equiv_run different /tmp/aecx/h/hook/ae.different
@@ -59,13 +62,34 @@ EQ=$?
 diff "$CASE_DIR/state.control.txt" "$CASE_DIR/state.different.txt" >"$CASE_DIR/equiv.control-vs-different.diff" 2>&1
 DF=$?
 diff "$CASE_DIR/out/control.launch.stdout" "$CASE_DIR/out/hooked.launch.stdout" >"$CASE_DIR/equiv.stdout.diff" 2>&1
-led inactive-equivalence "control_vs_hooked_differs=$( ((EQ==0)) && echo no || echo yes )" \
+# The hooked copy emits `_ae_hook` into every generated `_lib`, so a byte-identical `_lib`
+# is impossible with this patch. Equivalence is therefore the ENUMERATED form: identical
+# everywhere, except files whose only difference is the hook's own bytes — and the arm
+# proves the difference set is exactly that rather than asserting it.
+: >"$CASE_DIR/equiv.differing-files.txt"
+: >"$CASE_DIR/equiv.non-hook-differences.txt"
+while IFS=$'\t' read -r f h1; do
+    h2="$(awk -F'\t' -v k="$f" '$1==k{print $2}' "$CASE_DIR/state.hooked.txt")"
+    [[ -n "$h2" && "$h1" != "$h2" ]] || continue
+    echo "$f" >>"$CASE_DIR/equiv.differing-files.txt"
+    a="$ROOT_CONTROL/${f#./}"; b="$ROOT_HOOKED/${f#./}"
+    if [[ -f "$a" && -f "$b" ]]; then
+        if diff "$a" "$b" | grep -E '^[<>]' | grep -qv '_ae_hook'; then
+            { echo "## $f — differs in bytes that are NOT the hook's"; diff "$a" "$b" | head -20; } \
+                >>"$CASE_DIR/equiv.non-hook-differences.txt"
+        fi
+    fi
+done < <(grep -v '^##' "$CASE_DIR/state.control.txt")
+NONHOOK=$(wc -l <"$CASE_DIR/equiv.non-hook-differences.txt" | tr -d ' ')
+led inactive-equivalence \
+    "differing_files=$(wc -l <"$CASE_DIR/equiv.differing-files.txt" | tr -d ' ')" \
+    "files_differing_in_NON_hook_bytes=$NONHOOK" \
     "control_vs_known_difference_differs=$( ((DF==0)) && echo no || echo yes )" \
     "stdout_identical=$( [[ -s "$CASE_DIR/equiv.stdout.diff" ]] && echo no || echo yes )" \
-    "note=the second column is the comparator's own can-fail control"
+    "note=the hooked copy emits _ae_hook into every generated _lib, so equivalence is the enumerated form; the third column is the comparator's own can-fail control"
 led case-CLOSE
-if ((EQ != 0)); then
-    led HARNESS-ABORT "reason=the inactive hook is not equivalent to the unmodified control"
+if (( NONHOOK != 0 )); then
+    led HARNESS-ABORT "reason=the inactive hook changed bytes that are not the hook's own"
     echo "INACTIVE EQUIVALENCE FAILED"; exit 1
 fi
 if ((DF == 0)); then

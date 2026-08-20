@@ -27,7 +27,7 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 | `_harness/hlib.sh` | `0f838f7e89619358650f4ee99da31776f5351ef219c32f85c9b1546a0a8779e4` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
 | `_harness/make-h-hook-patch.py` | `b9b62f8ddf2a1db0fbadbb45e2b42a51573cb3976bc66990dec021e48da485be` | 2026-08-21 (registered BEFORE its first run) |
-| `_harness/arm-h1301.sh` | `7183ec11273bc311c145cb32ebeacc51e5b806b4d01f3ad18dccf74cddf273be` | 2026-08-21 (registered BEFORE its first run) |
+| `_harness/arm-h1301.sh` | `7794562234bac7a4e1027c3ecea61935d7eea0d84c53c42ff14515a5e7882d1d` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h8.sh` | `a0382a9dc48123dd10a1034e85723fcbc3d06fb69d51f229331ebbe86061df71` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h1h2.sh` | `4c2c8cb2d71d8153a9efe102572596546780b8381fed2885d30ed0f13d0da720` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h7l.sh` | `dffe8d0a7a2101555a776887c66efa66ad7673994e2eb73f31163c344206da86` | 2026-08-21 (registered BEFORE its first run) |
@@ -349,3 +349,20 @@ re-read after an amendment instead of only the ones the amendment names.
   check, and the arm now records `planted_lines` beside `planted_events` so the two can
   disagree visibly.
 - arms reopened: A-H8, whole. Nothing from the first run is published.
+
+### A22 — SC-1301's equivalence comparison, twice wrong before it could certify anything
+
+- `7183ec11273bc311c145cb32ebeacc51e5b806b4d01f3ad18dccf74cddf273be` -> `7794562234bac7a4e1027c3ecea61935d7eea0d84c53c42ff14515a5e7882d1d`
+- what the first run showed: the arm ABORTED before any hooked capture, which is the guard
+  working. Two causes:
+  1. each equivalence run named its session after its own tag, so every path differed and
+     the comparison reported the LABELLING rather than the binary. Same session name in
+     every run now.
+  2. equivalence as byte-identity is IMPOSSIBLE with this patch: the hooked copy emits
+     `_ae_hook` into every generated `_lib`, so that file legitimately differs. Equivalence
+     is now the ENUMERATED form — identical everywhere except files whose ONLY difference is
+     the hook's own bytes — and the arm PROVES the difference set is exactly that by
+     diffing each differing file and failing on any non-hook line, rather than asserting it.
+- the can-fail control is unchanged and still required: a copy with an altered version
+  string must be reported as different, or the comparator has never shown it can report red.
+- arms reopened: A-H1301, which had produced no hooked capture.
