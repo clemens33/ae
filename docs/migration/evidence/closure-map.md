@@ -5,6 +5,12 @@
 - canonical set: SC rows `398`; ownership records `42`; total entries `440`
 - evidence-kind counts: TEST `81`; CENSUS/CODE `21`; PROBE `338`
 
+AMENDMENT (both seats, 2026-08-20, preflight ae-20260820T111048Z-352d6eea): TEST and
+CENSUS/CODE entries are CANDIDATE evidence pointers pending the pin audit;
+`artifact=not-yet-run` PROBE entries are PLACEHOLDERS — planned evidence routes,
+neither evidence nor executable probe designs; the kind counts above are
+planned-route counts, not proven-evidence counts.
+
 Schema: `SC/D-ID | EVIDENCE-KIND | evidence fields`. Every canonical SC row and ownership D record has exactly one stable-ID entry. TEST pins are exact assertion lines from `git show 72c7293:<path>`; CENSUS/CODE pins name artifact commit/path/section heading and require rechecking cited 72c7293 locations. PROBE specs are value-blind: deterministic manipulation, barriers, and captured stdout/stderr/rc/files/tmux state are specified; expected values are omitted. Stable SC/D IDs are the only contract joins; no semantic-contract or ownership line anchors.
 
 ## Semantic rows
