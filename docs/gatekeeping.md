@@ -586,6 +586,24 @@ actually "the question was never asked." The pattern is not carelessness — a f
 reasons forward from the manipulation to the expected observation and does not naturally
 enumerate what stands between them.
 
+**And the complement, which the guard enumeration does NOT cover: did the manipulation
+actually produce the input it claims?** A worker enumerated every downstream guard before
+building — banner, file-existence wait, replay cut, a formatter that returns early on a
+malformed line — wrote the enumeration into the run manifest, correctly identified which
+guard would have cost a run, and **still measured nothing**. Their planting helper emitted
+JSON *without a trailing newline*, so a 29-event cohort was one unterminated line: `wc -l`
+returned 0, the cut had nothing to cut, and the formatter rendered whatever it found first.
+
+**Guards sit downstream of the fixture; a construction failure is upstream of all of them.**
+No amount of call-path reading reaches it.
+
+The fix generalises and is cheap: **every planted input gets an independent count of what
+actually landed, recorded beside what was intended, so the two can disagree visibly** —
+`planted_lines` next to `planted_events`. That completes a family of three, all asking *did
+the thing you believe happened actually happen* at successive stages: verify the seed landed
+(red-proof injection), verify the manipulation produced its claimed input (fixture
+construction), enumerate the guards between manipulation and observation (below).
+
 **So enumerate it deliberately, before building: what guards precede this fact, and does
 the fixture pass them?** It costs one read of the call path and it is the difference between
 an arm that answers its question and an arm that answers a question nobody asked.
