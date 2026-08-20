@@ -135,6 +135,81 @@ validation-error grammar echoes (`_validate_session_name`, `_validate_agent_name
 
 <!-- rows: SC-5xx -->
 
+Rows below: SHOULD frozen from normative sources BEFORE census consultation (lane
+discipline); `empirical` cites audited census/test evidence or is `pending`.
+`classified_by` fills at the joint pass — these are lead drafts.
+
+**SC-500 — compact stdout is exactly four lines or empty.**
+- normative: bucket 2 (compat promise) — `Archived`, `Archive:`, `Digest:`, `Recovery:`,
+  that order, nothing else, and EMPTY unless the boundary was crossed; non-empty stdout
+  means the session really was archived and replaced. Authority:
+  docs/internals/architecture.md ("Its stdout is a contract"), normative doc contract.
+- empirical: pending (census-2 compact section + integration pins).
+- conflict: none (draft).
+
+**SC-501 — compact stderr carries everything else.**
+- normative: bucket 2 — end's progress, compact's frozen facts, the confirmation body,
+  the question, and `Aborted.` all go to stderr, so a caller can pipe stdout and parse
+  it. Authority: architecture.md, normative.
+- empirical: pending.
+- conflict: none (draft).
+
+**SC-502 — `Recovery:` prints BEFORE the relaunch.**
+- normative: bucket 1 (invariant) — past the relaunch the archive is published, the
+  source is gone, and the process may exec and never return; a recovery command emitted
+  from a failure handler does not exist when needed. Authority: architecture.md,
+  normative.
+- empirical: pending.
+- conflict: none (draft).
+
+**SC-503 — compact confirmation treats EOF as no.**
+- normative: bucket 1 — a bare read returning 1 at end-of-input must refuse, not abort
+  between the question and any word about what happened. Rust shape: closed stdin =
+  refusal, never a crash or a yes. Authority: architecture.md, normative.
+- empirical: pending.
+- conflict: none (draft).
+
+**SC-504 — the boundary report survives a departed consumer.**
+- normative: bucket 1 — SIGPIPE is ignored while the boundary report writes and restored
+  before exec; a consumer exiting early must not kill the process between archive and
+  launch, and the ignored disposition must not leak into children. Rust shape: report
+  write errors handled, never fatal at the boundary, no signal-disposition leak.
+  Authority: architecture.md, normative.
+- empirical: pending.
+- conflict: none (draft).
+
+**SC-505 — validation errors echo the grammar verbatim.**
+- normative: bucket 2 — `_validate_session_name` / `_validate_agent_name` error messages
+  state the allowlist grammar exactly (`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$` /
+  `{0,63}$`), one definition each. Authority: #59 ruling + AGENTS.md allowlist bullets,
+  normative.
+- empirical: unit-test pins at 72c7293 (verification, not authority).
+- conflict: none (draft).
+
+**SC-506 — `list --json` never truncates mid-document.**
+- normative: bucket 1 — one bad session degrades its entry; the JSON array always closes.
+  Authority: AGENTS.md set-e rule ("Long emitters must not abort mid-output", guarded by
+  a structural unit test — ruling bullet, normative). Shipped exhibit
+  `_agent_alert_reason` is the defect this rule answers.
+- empirical: structural unit guard at 72c7293 (verification).
+- conflict: none (draft).
+
+**SC-507 — `archive preview` stdout is the digest bytes and nothing else.**
+- normative: PENDING SOURCE CHECK — stated today only in a code comment at the M2
+  bootstrap site (weakest tier). If no doc-contract backing exists, flag
+  `authority=code-observation` and close via seat ruling (expected: preserve, bucket 2 —
+  the M2 stderr routing exists precisely to protect this).
+- empirical: M2 census citation (ae:344-352 comment).
+- conflict: pending normative closure.
+
+**SC-508 — bash `ae` exit codes.**
+- normative: `authority=code-observation` — no normative source names a dispatcher-wide
+  exit-code contract. Seats classify after evidence (probe: exit codes per refusal
+  family). Note: the Rust binary already pins 0 success / 2 usage (its own tests); the
+  seam between the two is a P1 decision row.
+- empirical: pending probe.
+- conflict: pending normative closure.
+
 ### S7 — tmux effects
 
 Options/format-string literalization (`_ae_tmux_format_literal`, `@ae_*` user options),
