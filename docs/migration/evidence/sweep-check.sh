@@ -23,13 +23,14 @@ semantic_file=${1:-$repo_root/docs/migration/semantic-contract.md}
 ownership_file=${2:-$repo_root/docs/migration/ownership.md}
 closure_file=${3:-$repo_root/docs/migration/evidence/closure-map.md}
 expected_file=${4:-$closure_file}
+critical_file=$script_dir/ratification-critical.md
 
 if [ "$#" -gt 4 ]; then
   echo "usage: $0 [semantic-contract] [ownership] [closure-map] [expected-id-set]" >&2
   exit 2
 fi
 
-for input_file in "$semantic_file" "$ownership_file" "$closure_file" "$expected_file"; do
+for input_file in "$semantic_file" "$ownership_file" "$closure_file" "$expected_file" "$critical_file"; do
   if [ ! -r "$input_file" ]; then
     echo "ERROR: unreadable input: $input_file" >&2
     exit 2
@@ -38,11 +39,17 @@ done
 
 # awk is the only parser: this keeps row/block boundaries deterministic and
 # avoids depending on non-portable sort, grep, or temporary-file behavior.
+awk_input_files=("$semantic_file" "$ownership_file" "$closure_file")
+if [ "$expected_file" != "$closure_file" ]; then
+  awk_input_files+=("$expected_file")
+fi
+awk_input_files+=("$critical_file")
 awk \
   -v semantic_file="$semantic_file" \
   -v ownership_file="$ownership_file" \
   -v closure_file="$closure_file" \
   -v expected_file="$expected_file" \
+  -v critical_file="$critical_file" \
   '
 function row_head(line, t, close_pos, dash_pos) {
   if (line ~ /^[[:space:]]*-[[:space:]]+\*\*SC-/) {
@@ -311,6 +318,14 @@ function valid_d_id(id) {
   return id ~ /^D[0-9][0-9]*[a-z]?$/
 }
 
+function valid_combined_id(id) {
+  return canonical_sc_id(id) || valid_d_id(id)
+}
+
+function is_d_id(id) {
+  return id ~ /^D[0-9][0-9]*[a-z]?$/
+}
+
 function exact_sc_token(line, id, escaped) {
   escaped = id
   gsub(/[][\\.^$*+?(){}|]/, "\\\\&", escaped)
@@ -434,12 +449,14 @@ function classified_for(id,    i, line, rest, token, start, finish, n, suffix) {
 
 function id_number(id, n) {
   n = id
-  sub(/^SC-/, "", n)
+  sub(/^(SC-|D)/, "", n)
   sub(/[A-Za-z\/].*$/, "", n)
   return n + 0
 }
 
 function id_less(a, b, na, nb) {
+  if (a ~ /^SC-/ && b ~ /^D/) return 1
+  if (a ~ /^D/ && b ~ /^SC-/) return 0
   na = id_number(a)
   nb = id_number(b)
   if (na != nb)
@@ -449,16 +466,33 @@ function id_less(a, b, na, nb) {
 
 function add_expected_token(token) {
   sub(/[[:space:](].*$/, "", token)
-  if (valid_sc_id(token))
+  if (valid_combined_id(token))
     expected_ids[token] = 1
 }
 
 function add_expected_line(line, token) {
-  while (match(line, /SC-[0-9][0-9]*[A-Za-z0-9\/,\.]*/)) {
+  while (match(line, /SC-[0-9][0-9]*[A-Za-z0-9\/,\.]*|D[0-9][0-9]*[a-z]?/)) {
     token = substr(line, RSTART, RLENGTH)
     add_expected_token(token)
     line = substr(line, RSTART + RLENGTH)
   }
+}
+
+function parse_crit_assign(line, rest, fields, field_count, id) {
+  if (line !~ /^[[:space:]]*CRIT-ASSIGN:[[:space:]]*[^|[:space:]]+[[:space:]]*\|[[:space:]]*[^|]*[[:space:]]*\|[[:space:]]*[^|]*[[:space:]]*$/)
+    return
+  rest = line
+  sub(/^[[:space:]]*CRIT-ASSIGN:[[:space:]]*/, "", rest)
+  field_count = split(rest, fields, /\|/)
+  if (field_count != 3)
+    return
+  id = fields[1]
+  gsub(/^[[:space:]]+|[[:space:]]+$/, "", id)
+  if (id == "")
+    return
+  crit_assign_present = 1
+  crit_assign_lines++
+  crit_assign_counts[id]++
 }
 
 function surface_present(family, item, i) {
@@ -542,10 +576,11 @@ FILENAME == ownership_file {
 
 FILENAME == closure_file {
   # Mapping entries begin with their canonical id.  Body prose is not map data.
-  if ($0 ~ /^SC-[0-9]/) {
+  parse_crit_assign($0)
+  if ($0 ~ /^(SC-[0-9]|D[0-9])/) {
     candidate = $1
     sub(/\(.*/, "", candidate)
-    if (valid_sc_id(candidate)) {
+    if (valid_combined_id(candidate)) {
       closure_ids[candidate] = 1
       if (expected_file == closure_file)
         expected_ids[candidate] = 1
@@ -557,8 +592,23 @@ FILENAME == closure_file {
 FILENAME == expected_file {
   # Explicit expected sets may contain one id per line or whitespace-separated
   # ids.  The closure-map mapping-entry parser above remains stricter.
-  if (expected_file != closure_file)
+  if (expected_file != closure_file) {
+    parse_crit_assign($0)
     add_expected_line($0)
+  }
+  next
+}
+
+FILENAME == critical_file {
+  # Only CRITICAL rows participate in the optional assignment check.  The
+  # assignment table is opt-in: no CRIT-ASSIGN line means no assignment gate.
+  if ($0 ~ /^[[:space:]]*-[[:space:]]+/ && $0 ~ /—[[:space:]]+CRITICAL/) {
+    candidate = $0
+    sub(/^[[:space:]]*-[[:space:]]+/, "", candidate)
+    sub(/[[:space:]].*$/, "", candidate)
+    if (valid_combined_id(candidate))
+      critical_ids[candidate] = 1
+  }
   next
 }
 
@@ -600,6 +650,10 @@ END {
   # Build one natural-sorted universe first so every set-difference report is
   # stable across awk hash-table iteration orders.
   for (id in seen_ids)
+    all_ids[id] = 1
+  for (id in seen_d_ids)
+    all_ids[id] = 1
+  for (id in all_ids)
     universe_ids[id] = 1
   for (id in closure_ids)
     universe_ids[id] = 1
@@ -621,21 +675,63 @@ END {
   }
   for (i = 1; i <= universe_count; i++) {
     id = universe_sorted[i]
-    if ((id in closure_ids) && !(id in seen_ids)) {
+    if ((id in closure_ids) && !(id in all_ids)) {
       print "CLOSURE-MAP-ORPHAN: " id
       closure_orphan_count++
+      if (is_d_id(id))
+        closure_d_orphan_count++
     }
-    if ((id in seen_ids) && !(id in closure_ids)) {
+    if ((id in all_ids) && !(id in closure_ids)) {
       print "CLOSURE-MAP-MISSING: " id
       closure_missing_count++
+      if (is_d_id(id))
+        closure_d_missing_count++
     }
-    if ((id in seen_ids) && !(id in expected_ids)) {
+    if ((id in all_ids) && !(id in expected_ids)) {
       print "SET-DIFF extra-in-contract: " id
       expected_extra_count++
     }
-    if ((id in expected_ids) && !(id in seen_ids)) {
+    if ((id in expected_ids) && !(id in all_ids)) {
       print "SET-DIFF missing-from-contract: " id
       expected_missing_count++
+    }
+  }
+
+  # A CRIT-ASSIGN table is opt-in.  Once one line exists, every CRITICAL id
+  # must be assigned exactly once, and every assigned id must be CRITICAL.
+  if (crit_assign_present) {
+    for (id in critical_ids)
+      assignment_universe[id] = 1
+    for (id in crit_assign_counts)
+      assignment_universe[id] = 1
+    assignment_universe_count = 0
+    for (id in assignment_universe) {
+      assignment_universe_count++
+      assignment_universe_sorted[assignment_universe_count] = id
+    }
+    for (i = 1; i <= assignment_universe_count; i++) {
+      for (j = i + 1; j <= assignment_universe_count; j++) {
+        if (id_less(assignment_universe_sorted[j], assignment_universe_sorted[i])) {
+          id = assignment_universe_sorted[i]
+          assignment_universe_sorted[i] = assignment_universe_sorted[j]
+          assignment_universe_sorted[j] = id
+        }
+      }
+    }
+    for (i = 1; i <= assignment_universe_count; i++) {
+      id = assignment_universe_sorted[i]
+      if ((id in critical_ids) && !(id in crit_assign_counts)) {
+        print "ASSIGN-MISSING: " id
+        assignment_missing_count++
+      }
+      if ((id in crit_assign_counts) && (id in critical_ids) && crit_assign_counts[id] > 1) {
+        print "ASSIGN-DUP: " id
+        assignment_duplicate_count++
+      }
+      if ((id in crit_assign_counts) && !(id in critical_ids)) {
+        print "ASSIGN-UNKNOWN: " id
+        assignment_unknown_count++
+      }
     }
   }
 
@@ -657,9 +753,9 @@ END {
   print "NOTE: presence checks cannot certify evidence FIDELITY; the separate pin audit must verify evidence fidelity."
   print "NOTE: line/block parsing may misparse prose-form or wrapped fields; implicit family authority and complex classified_by prose are not inferred."
   print "NOTE: surface coverage only sees list-shaped S3/S15 headers; S1 coverage only sees backtick-shaped inventory items and S1MAP lines inside the recognized machine-readable table fence. Neither check can certify omitted, renamed, or prose-only surfaces."
-  printf "SUMMARY: SC_ROWS=%d D_RECORDS=%d MISSING_FIELDS=%d MISSING_D_FIELDS=%d MISSING_SURFACES=%d MISSING_S1MAP_ITEMS=%d S1MAP_BAD_TARGETS=%d S1MAP_EMPTY_TARGETS=%d GRAIN_VIOLATIONS=%d DUPLICATE_IDS=%d MALFORMED_ROW_HEADS=%d DUPLICATE_D_IDS=%d MALFORMED_D_HEADS=%d CLOSURE_ORPHANS=%d CLOSURE_MISSING=%d SET_EXTRA=%d SET_MISSING=%d\n", \
+  printf "SUMMARY: SC_ROWS=%d D_RECORDS=%d MISSING_FIELDS=%d MISSING_D_FIELDS=%d MISSING_SURFACES=%d MISSING_S1MAP_ITEMS=%d S1MAP_BAD_TARGETS=%d S1MAP_EMPTY_TARGETS=%d GRAIN_VIOLATIONS=%d DUPLICATE_IDS=%d MALFORMED_ROW_HEADS=%d DUPLICATE_D_IDS=%d MALFORMED_D_HEADS=%d CLOSURE_ORPHANS=%d CLOSURE_MISSING=%d CLOSURE_D_ORPHANS=%d CLOSURE_D_MISSING=%d SET_EXTRA=%d SET_MISSING=%d CRIT_ASSIGN_LINES=%d ASSIGN_MISSING=%d ASSIGN_DUP=%d ASSIGN_UNKNOWN=%d\n", \
     row_count, d_count, missing_count, missing_d_count, missing_surface_count, missing_s1map_count, s1map_bad_target_count, empty_s1map_count, grain_count, duplicate_count, malformed_count, duplicate_d_count, malformed_d_count, \
-    closure_orphan_count, closure_missing_count, expected_extra_count, expected_missing_count
+    closure_orphan_count, closure_missing_count, closure_d_orphan_count, closure_d_missing_count, expected_extra_count, expected_missing_count, crit_assign_lines, assignment_missing_count, assignment_duplicate_count, assignment_unknown_count
   printf "SUMMARY SC_IDS:"
   if (sorted_count == 0)
     printf " (none)"
@@ -668,8 +764,8 @@ END {
   printf "\n"
 
   if (missing_count || missing_d_count || missing_surface_count || missing_s1map_count || s1map_bad_target_count || empty_s1map_count || grain_count || duplicate_count || malformed_count || duplicate_d_count || malformed_d_count || \
-      closure_orphan_count || closure_missing_count || expected_extra_count || expected_missing_count)
+      closure_orphan_count || closure_missing_count || expected_extra_count || expected_missing_count || assignment_missing_count || assignment_duplicate_count || assignment_unknown_count)
     exit 1
   exit 0
 }
-' "$semantic_file" "$ownership_file" "$closure_file" "$expected_file"
+' "${awk_input_files[@]}"
