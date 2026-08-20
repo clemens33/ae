@@ -26,7 +26,7 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 |---|---|---|
 | `_harness/hlib.sh` | `b2cf84dd1990c01fdbfc9512c00834d10543d4745ed6a2dc2ad6c134ea27455d` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
-| `_harness/arm-h5.sh` | `6f1d7e8123717aba8d66867080d7d6282251830a41717c6a8fa375aa611c2380` | 2026-08-21 (registered BEFORE its first run) |
+| `_harness/arm-h5.sh` | `3055a8c98121a2c940e103a9e4d854d945d7375c08e59fd6df8fa70519984889` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h4.sh` | `5944b88c92acd4752addffabe9705ab087ff6c430bed0ea1d0bf6d8040693009` | 2026-08-20T21:51:16Z |
 
 ### A3 — `_harness/derive-h4-record.py` registered after A-H4's run
@@ -140,3 +140,18 @@ claim this arm cannot make about its candidates and should not appear to.
 - arms reopened: A-H5, whole. The other twelve cases are re-run under the amended script so
   every committed ledger matches the hash registered against it, and their readings are
   compared with the previous run rather than assumed to reproduce.
+
+### A9 — `_harness/arm-h5.sh`, the invocation stood in the wrong directory
+
+- `6f1d7e8123717aba8d66867080d7d6282251830a41717c6a8fa375aa611c2380` -> `3055a8c98121a2c940e103a9e4d854d945d7375c08e59fd6df8fa70519984889`
+- what changed: with the fallback now reachable (A8), both cwd cases reported rc 1 and no
+  artifact — still identical, in the other direction. The helper takes `TARGET_CWD` from
+  `$PWD` (ae:14753) and the fallback compares a candidate's recorded cwd against it
+  (ae:14807); the arm invoked it from wherever the controller happened to stand, so the
+  match case could not match BY CONSTRUCTION. Invocations now run from the session's work
+  dir, which is where an agent's pane stands, and the cwd is recorded in each ledger.
+- the same pair has now failed to consult its own fact twice, for two different reasons.
+  The first was caught by a seat reading the guard; the second by the rebuild reporting
+  identical-again readings rather than the opposed pair the fix predicted — which is why a
+  rebuilt case is re-read rather than assumed fixed.
+- arms reopened: A-H5, whole.

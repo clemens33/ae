@@ -58,12 +58,18 @@ run_case() { # <case-id> <slot-argv-or-EMPTY> <setup-fn> <note>
     led planted "artifact_sha256=$(sha "$CASE_DIR/planted-inputs.txt")" \
         "note=candidate files and meta keys are CONTROLLER-constructed input data, listed with their bytes"
     led measured-input "slot_argv=${slot:-<none>}" "note=$note"
+    # The helper reads $PWD (ae:14753 TARGET_CWD) and the fallback compares a candidate's
+    # recorded cwd against it (ae:14807). A real agent invokes it from the session's WORK
+    # DIR, so the arm does too — invoking from wherever the controller happened to stand
+    # made the cwd-match case unable to match by construction, which is the second way the
+    # same pair failed to consult its own fact.
+    led invocation-cwd "cwd=$H_WORK" "note=the session work dir, as an agent's pane has"
     if [[ -n "$slot" ]]; then
-        measured "$cid" "register" 25 -- env TMUX="${H_SOCK},${H_SRV},0" \
-            TMUX_PANE="$(h_pane_of cl:lead)" "$H_META/_register-sid" "$slot"
+        ( cd "$H_WORK" && measured "$cid" "register" 25 -- env TMUX="${H_SOCK},${H_SRV},0" \
+            TMUX_PANE="$(h_pane_of cl:lead)" "$H_META/_register-sid" "$slot" )
     else
-        measured "$cid" "register" 25 -- env TMUX="${H_SOCK},${H_SRV},0" \
-            TMUX_PANE="$(h_pane_of cl:lead)" "$H_META/_register-sid"
+        ( cd "$H_WORK" && measured "$cid" "register" 25 -- env TMUX="${H_SOCK},${H_SRV},0" \
+            TMUX_PANE="$(h_pane_of cl:lead)" "$H_META/_register-sid" )
     fi
     cp "$H_META/meta" "$CASE_DIR/meta.after.txt"
     diff "$CASE_DIR/meta.before.txt" "$CASE_DIR/meta.after.txt" >"$CASE_DIR/meta.diff.txt" 2>&1
