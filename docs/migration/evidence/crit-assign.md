@@ -259,6 +259,7 @@ CRIT-ASSIGN: SC-1006 | F-INSTALL | installer/doctor probe: the installed artifac
 CRIT-ASSIGN: SC-1101a | F-PLATFORM | flock-absent PATH shim arm: core commands degrade loudly, never command-not-found death
 CRIT-ASSIGN: SC-1102 | F-PLATFORM | platform probe: session/archive UUIDs are canonical lowercase
 CRIT-ASSIGN: SC-1103 | F-PLATFORM | platform probe: socket-path limit arm — over-limit path fails loud pre-creation
+CRIT-ASSIGN: SC-1106 | F-PLATFORM | C-vs-UTF-8 negative arm: same consumer tmux query, both locales, identical live topology; raw format bytes + rendered outputs captured
 CRIT-ASSIGN: SC-1200 | F-IDENTITY | identity boundary probe: agent names are allowlisted, not screened
 CRIT-ASSIGN: SC-1201 | F-IDENTITY | identity boundary probe: the spawn boundary treats a peer name as hostile
 CRIT-ASSIGN: SC-1202 | F-IDENTITY | identity boundary probe: the operator roster boundary fails the launch before product mutation

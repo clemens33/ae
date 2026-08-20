@@ -1856,6 +1856,22 @@ requirement applies to what remains bash after each flip; the binary imposes no 
 requirement at all. Authority: AGENTS.md rules + epic end state. Empirical: pending.
 Conflict: none.
 
+**SC-1106 — tmux-format reads are locale-independent.** Bucket 3 — SHOULD: either
+the invocation environment guarantees an encoding under which the chosen separator
+survives, or the separator is one tmux never rewrites; a valid user locale never
+converts live panes into dead/absent. IS at 72c7293 (Batch C A1 incident, four-way
+locale matrix): tmux 3.7b sanitises TAB to underscore in `-F` output under a
+non-UTF-8 locale, and ae parses TAB-framed tmux formats at seven sites (ae:3631,
+4207, 6488, 12151, 12170, 12297, 12962) without forcing a locale — under LC_ALL=C
+live agents render alive:false, the rollup reports attn:dead, status reports no
+panes. Distinct from the harness lesson (baselines pin UTF-8); the C-locale failure
+is the product's own (colead dissent, adopted). Authority: AGENTS.md TSV-framing +
+interpreted-sinks direction (ruling). Empirical: observed(A1 incident isolation,
+cexec 2026-08-20; the dedicated C-vs-UTF-8 negative arm rides F-PLATFORM).
+Conflict: fix-known-defect(#95, intended: locale-independent tmux-format reads —
+guaranteed encoding or an unsanitisable separator). **classified_by: both seats,
+2026-08-20 (dissent adopted as the ruling).**
+
 ### S13 — Identity/provenance security surface
 
 System-prompt interpolation (#59): agent/session name allowlists at every creation
