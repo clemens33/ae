@@ -1,0 +1,86 @@
+pid=54030 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <pg>
+pid=54089 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <pg> <-c> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/w>
+pid=54093 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <-u> <CLAUDECODE>
+pid=54095 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <-u> <CLAUDE_CODE_SESSION>
+pid=54096 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <AE_SESSION> <1>
+pid=54105 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <AE_ORIGIN> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/w>
+pid=54106 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <AE_DIR> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/w>
+pid=54107 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <AE_MODE> <local>
+pid=54108 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <AE_HOME> </tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/h/.ae>
+pid=54109 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pg> <mouse> <on>
+pid=54110 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pg> <focus-events> <on>
+pid=54111 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pg> <history-limit> <50000>
+pid=54112 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pg> <pane-border-status> <top>
+pid=54113 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pg> <pane-border-format> < #{@ae_agent} >
+pid=54114 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <pg>
+pid=54116 ppid=54115 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=54125 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae pg] >
+pid=54126 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=54127 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…dator-taxonomy-f2-count-mismatch-from/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=54128 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=54129 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=54130 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=54133 ppid=54132 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=54134 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=54135 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=54136 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=54137 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=54138 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pg> <automatic-rename> <off>
+pid=54140 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <pg> <pg>
+pid=54141 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <pg> <-p> <#{pane_id}>
+pid=54142 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:claude:claude>
+pid=54143 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <claude:claude>
+pid=54144 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=54162 ppid=54161 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=54249 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <pg> <-F> <#{pane_id}	#{@ae_agent}>
+pid=54270 ppid=54269 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=54357 ppid=54356 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=54372 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-53938-%0> <->
+pid=54391 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-53938-%0> <-t> <%0>
+pid=54631 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=54685 ppid=54684 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=54819 ppid=54817 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id} #{@ae_agent}>
+pid=54821 ppid=54820 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <new-window> <-d> <-t> <pg:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/h/.ae/sessions/pg/events-tail>
+pid=54823 ppid=54697 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=54824 ppid=54697 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=54825 ppid=54697 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <set-window-option> <-t> <pg:ae-monitor> <pane-border-status> <top>
+pid=54826 ppid=54697 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=54860 ppid=54858 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id} #{@ae_agent}>
+pid=54869 ppid=54866 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id} #{@ae_agent}>
+pid=54874 ppid=54872 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id} #{@ae_agent}>
+pid=54876 ppid=54875 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/h/.ae/sessions/pg/watchdog _run>
+pid=54878 ppid=54833 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=54881 ppid=54833 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=54894 ppid=54833 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <select-pane> <-t> <%2> <-d>
+pid=54909 ppid=54906 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=54914 ppid=53938 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%0>
+pid=54915 ppid=54877 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=53938 ppid=29241 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session> <-t> <pg>
+pid=54929 ppid=54927 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=54930 ppid=54916 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=54938 ppid=54936 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=54939 ppid=54877 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=54941 ppid=54877 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <has-session> <-t> <pg>
+pid=54949 ppid=54877 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=54964 ppid=54961 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=54973 ppid=54970 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=55053 ppid=55050 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=55068 ppid=54877 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=55090 ppid=55088 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=55100 ppid=55071 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=55127 ppid=55125 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=55130 ppid=54877 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=55161 ppid=55158 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=55165 ppid=54877 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <claude●>
+pid=55181 ppid=55180 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=55184 ppid=54877 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=55186 ppid=54877 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=55436 ppid=55427 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=55455 ppid=55446 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=55466 ppid=55457 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <show-environment> <-t> <$0> <AE_MODE>
+pid=55477 ppid=55468 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <show-environment> <-t> <$0> <AE_ORIGIN>
+pid=55490 ppid=55481 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=55505 ppid=55492 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <show-environment> <-t> <$0> <AE_DIR>
+pid=55527 ppid=55417 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <kill-session> <-t> <$0>
+pid=55539 ppid=55529 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-sessions> <-F>pid=55543 ppid=55541 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <#{session_name}>
+ <-S> </private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

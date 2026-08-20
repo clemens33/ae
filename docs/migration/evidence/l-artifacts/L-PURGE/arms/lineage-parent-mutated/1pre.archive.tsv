@@ -1,0 +1,9 @@
+# manifest-root	/tmp/aelx/L-PURGE/lineage-parent-mutated/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+2f61f3fe-6bea-46e2-aa65-054983ca9c63	dir	700	7	224	-	-
+2f61f3fe-6bea-46e2-aa65-054983ca9c63/digest.md	file	600	1	1302	-	fd729a0d7f1838a2255e662320bb721d699b3a5e0528bfcbfaf57dfea1d819e2
+2f61f3fe-6bea-46e2-aa65-054983ca9c63/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+2f61f3fe-6bea-46e2-aa65-054983ca9c63/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+2f61f3fe-6bea-46e2-aa65-054983ca9c63/messages	dir	700	2	64	-	-
+2f61f3fe-6bea-46e2-aa65-054983ca9c63/meta	file	600	1	655	-	c5dfcf7d37dc1d940f41c745b2f2088ac7ce2404796ae22ab9f759838222b85d

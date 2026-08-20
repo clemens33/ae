@@ -1,0 +1,2 @@
+Error: session 'un' cannot be archived — its session_id (not-a-uuid--0000) is not a UUID, and ae will not overwrite a value it cannot parse.
+  Nothing was stopped and NOTHING was deleted; ae does not delete a session it could not capture.

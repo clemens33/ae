@@ -1,0 +1,13 @@
+arm	validator-taxonomy-f2-count-mismatch-from
+section	L-PURGE
+roster_ids	SC-804e SC-818c
+fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
+construction	on a SECOND independent clone: the archive meta's handover_count value is replaced by 42 so meta and digest disagree, mode preserved; this clone drives the from path ONLY
+template_uuid	c01c8ae1-2a31-463b-8aeb-e11a03973dfb
+binary	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
+case	f2-count-mismatch
+side	from
+mutation_target	meta
+op	ae --local pgchild --from c01c8ae1-2a31-463b-8aeb-e11a03973dfb
+op_rc	1
+also_covers	SC-818c (post-state manifests of the archive root and the session state after the attempt)

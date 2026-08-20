@@ -1,0 +1,2 @@
+archive: 'memo.tsv' has mode 700 — an archived file must carry no executable bit.
+Error: archive fa7ac70c-6981-4e31-bb2f-4069a1ffdc37 did not validate — refusing to inherit from it.

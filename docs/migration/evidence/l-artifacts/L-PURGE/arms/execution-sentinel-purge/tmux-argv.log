@@ -1,0 +1,90 @@
+pid=80726 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <pg>
+pid=80754 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <pg> <-c> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/w>
+pid=80758 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <-u> <CLAUDECODE>
+pid=80760 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <-u> <CLAUDE_CODE_SESSION>
+pid=80761 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <AE_SESSION> <1>
+pid=80762 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <AE_ORIGIN> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/w>
+pid=80763 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <AE_DIR> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/w>
+pid=80764 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <AE_MODE> <local>
+pid=80765 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pg> <AE_HOME> </tmp/aelx/L-PURGE/execution-sentinel-purge/h/.ae>
+pid=80768 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pg> <mouse> <on>
+pid=80780 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pg> <focus-events> <on>
+pid=80786 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pg> <history-limit> <50000>
+pid=80794 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pg> <pane-border-status> <top>
+pid=80799 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pg> <pane-border-format> < #{@ae_agent} >
+pid=80810 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <pg>
+pid=80818 ppid=80817 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=80827 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae pg] >
+pid=80828 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=80829 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…aelx/L-PURGE/execution-sentinel-purge/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=80830 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=80831 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=80832 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=80834 ppid=80833 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=80835 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=80836 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=80837 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=80838 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=80839 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pg> <automatic-rename> <off>
+pid=80841 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <pg> <pg>
+pid=80842 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <pg> <-p> <#{pane_id}>
+pid=80843 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:claude:claude>
+pid=80844 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <claude:claude>
+pid=80845 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=80863 ppid=80862 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=80949 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <pg> <-F> <#{pane_id}	#{@ae_agent}>
+pid=80970 ppid=80969 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=81031 ppid=81030 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=81033 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-80711-%0> <->
+pid=81034 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-80711-%0> <-t> <%0>
+pid=81036 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=81041 ppid=81040 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=81125 ppid=81122 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id} #{@ae_agent}>
+pid=81135 ppid=81133 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <new-window> <-d> <-t> <pg:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-PURGE/execution-sentinel-purge/h/.ae/sessions/pg/events-tail>
+pid=81145 ppid=81047 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=81154 ppid=81047 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=81159 ppid=81047 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <set-window-option> <-t> <pg:ae-monitor> <pane-border-status> <top>
+pid=81168 ppid=81047 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=81221 ppid=81219 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id} #{@ae_agent}>
+pid=81234 ppid=81232 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id} #{@ae_agent}>
+pid=81245 ppid=81243 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id} #{@ae_agent}>
+pid=81252 ppid=81250 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-PURGE/execution-sentinel-purge/h/.ae/sessions/pg/watchdog _run>
+pid=81260 ppid=81186 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=81262 ppid=81186 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=81287 ppid=81186 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <select-pane> <-t> <%2> <-d>
+pid=81318 ppid=80711 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%0>
+pid=81327 ppid=81324 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=80711 ppid=80669 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session> <-t> <pg>
+pid=81333 ppid=81259 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=81350 ppid=81348 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=81351 ppid=81337 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=81360 ppid=81358 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=81361 ppid=81259 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=81362 ppid=81259 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <has-session> <-t> <pg>
+pid=81368 ppid=81259 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=81370 ppid=81369 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=81373 ppid=81372 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=81430 ppid=81427 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=81438 ppid=81259 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=81458 ppid=81456 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=81459 ppid=81446 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=81468 ppid=81466 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=81469 ppid=81259 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=81480 ppid=81478 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=81481 ppid=81259 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <claude●>
+pid=81486 ppid=81485 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-panes> <-s> <-t> <pg> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=81492 ppid=81259 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=81502 ppid=81259 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=82454 ppid=82443 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=82483 ppid=82472 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=82502 ppid=82488 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <show-environment> <-t> <$0> <AE_MODE>
+pid=82518 ppid=82507 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <show-environment> <-t> <$0> <AE_ORIGIN>
+pid=82535 ppid=82526 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=82558 ppid=82541 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <show-environment> <-t> <$0> <AE_DIR>
+pid=82594 ppid=82423 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <kill-session> <-t> <$0>
+pid=82614 ppid=82601 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5pid=82617 ppid=82615 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <-S> <list-sessions> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <-F> <list-sessions> <#{session_name}> <-F> <#{session_id} #{session_name}>
+
+pid=87516 ppid=87507 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=87535 ppid=87526 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=87544 ppid=87536 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=87558 ppid=87549 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/execution-sentinel-purge/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

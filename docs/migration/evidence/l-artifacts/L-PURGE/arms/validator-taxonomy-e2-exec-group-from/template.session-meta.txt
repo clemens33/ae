@@ -1,0 +1,15 @@
+mode=local
+origin=/private/tmp/aelx/L-PURGE/validator-taxonomy-e2-exec-group-from/w
+session=pg
+session_id=4fa37f1c-13ed-4c8d-b161-59123965fc52
+work_dir=/private/tmp/aelx/L-PURGE/validator-taxonomy-e2-exec-group-from/w
+layout=vertical
+config=/tmp/aelx/L-PURGE/validator-taxonomy-e2-exec-group-from/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-PURGE/validator-taxonomy-e2-exec-group-from/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-PURGE/validator-taxonomy-e2-exec-group-from/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:b7de0403-39d3-4738-8b59-47a190e28f5c
+agent_bin.main=claude
+watchdog=true

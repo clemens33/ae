@@ -1,0 +1,6 @@
+## main...origin/main
+--- log ---
+db08b3e seed
+--- branches -r ---
+  origin/HEAD -> origin/main
+  origin/main

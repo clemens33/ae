@@ -1,0 +1,7 @@
+template.session	pg
+template.uuid	7d7de912-f209-42cc-9d3c-e8b623be4bfa
+template.cut_barrier	b_pre_cleanup
+template.archive_present	yes
+template.claim_present	no
+template.session_dir_present	yes
+template.end_rc	137

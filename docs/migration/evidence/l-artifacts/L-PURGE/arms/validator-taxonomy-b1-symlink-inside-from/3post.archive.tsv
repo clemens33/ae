@@ -1,0 +1,9 @@
+# manifest-root	/tmp/aelx/L-PURGE/validator-taxonomy-b1-symlink-inside-from/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+cbdcd50c-db86-4ce8-b27f-d82b8aa6802e	dir	700	7	224	-	-
+cbdcd50c-db86-4ce8-b27f-d82b8aa6802e/digest.md	file	600	1	1321	-	dbe365100434fd874c971d883ee21e9187e99bf31e3280d61e2450a1570fcd1c
+cbdcd50c-db86-4ce8-b27f-d82b8aa6802e/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+cbdcd50c-db86-4ce8-b27f-d82b8aa6802e/memo.tsv	symlink	755	1	10	/etc/hosts	-
+cbdcd50c-db86-4ce8-b27f-d82b8aa6802e/messages	dir	700	2	64	-	-
+cbdcd50c-db86-4ce8-b27f-d82b8aa6802e/meta	file	600	1	674	-	a6e003cf86c0a5cefa835d027acc8e5f511c834353c6f47db65001cc388f2ebd

@@ -1,0 +1,15 @@
+mode=local
+origin=/private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-purge/w
+session=pg
+session_id=a9c22afe-bb82-4d15-bbd7-e5b1c0e1de7e
+work_dir=/private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-purge/w
+layout=vertical
+config=/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-purge/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-purge/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-purge/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:d4f7dc45-5ccc-46ad-bf39-623f870b7a26
+agent_bin.main=claude
+watchdog=true

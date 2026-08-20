@@ -1,0 +1,19 @@
+cwd: /tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep-assume-stopped/w
+argv:
+  /tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep-assume-stopped/b/ae
+  --local
+  un
+env:
+  HOME=/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep-assume-stopped/h
+  AE_HOME=/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep-assume-stopped/h/.ae
+  TMPDIR=/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep-assume-stopped/tp
+  TMUX_TMPDIR=/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep-assume-stopped/t
+  PATH=/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep-assume-stopped/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep-assume-stopped/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep-assume-stopped/cap/tmux-argv.log

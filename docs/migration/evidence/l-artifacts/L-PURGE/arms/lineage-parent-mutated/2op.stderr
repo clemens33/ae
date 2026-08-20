@@ -1,0 +1,2 @@
+archive: refusing to purge 2f61f3fe-6bea-46e2-aa65-054983ca9c63 — it is the parent archive this session was launched from.
+Error: purging the archive for 'ch' failed — the session is STOPPED and nothing was deleted.

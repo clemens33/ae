@@ -1,0 +1,1 @@
+mutation	the session meta file is REMOVED; the rest of the session directory (memo, events, helpers, messages) is left intact

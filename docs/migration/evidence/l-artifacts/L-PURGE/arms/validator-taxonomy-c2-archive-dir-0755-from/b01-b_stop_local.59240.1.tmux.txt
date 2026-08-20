@@ -1,0 +1,14 @@
+## socket	/tmp/aelx/L-PURGE/validator-taxonomy-c2-archive-dir-0755-from/t/tmux-501/default
+## socket-exists	yes
+## sessions
+no server running on /tmp/aelx/L-PURGE/validator-taxonomy-c2-archive-dir-0755-from/t/tmux-501/default
+(rc=1)
+## windows
+no server running on /tmp/aelx/L-PURGE/validator-taxonomy-c2-archive-dir-0755-from/t/tmux-501/default
+(rc=1)
+## panes
+no server running on /tmp/aelx/L-PURGE/validator-taxonomy-c2-archive-dir-0755-from/t/tmux-501/default
+(rc=1)
+## clients
+no server running on /tmp/aelx/L-PURGE/validator-taxonomy-c2-archive-dir-0755-from/t/tmux-501/default
+(rc=1)

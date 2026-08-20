@@ -1,0 +1,15 @@
+mode=local
+origin=/private/tmp/aelx/L-PURGE/validator-taxonomy-d-file-0644-purge/w
+session=pg
+session_id=35137481-af5c-4134-9485-addeab5780bb
+work_dir=/private/tmp/aelx/L-PURGE/validator-taxonomy-d-file-0644-purge/w
+layout=vertical
+config=/tmp/aelx/L-PURGE/validator-taxonomy-d-file-0644-purge/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-PURGE/validator-taxonomy-d-file-0644-purge/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-PURGE/validator-taxonomy-d-file-0644-purge/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:a69869ad-f664-418f-bfea-36b6bab46b6a
+agent_bin.main=claude
+watchdog=true

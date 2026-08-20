@@ -1,0 +1,2 @@
+archive: digest says ## Handover (0) but meta says 42.
+Error: archive c01c8ae1-2a31-463b-8aeb-e11a03973dfb did not validate — refusing to inherit from it.

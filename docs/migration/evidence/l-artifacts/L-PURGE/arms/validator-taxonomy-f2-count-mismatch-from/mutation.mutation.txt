@@ -1,0 +1,3 @@
+mutation.label	mutation
+mutation.target	/tmp/aelx/L-PURGE/validator-taxonomy-f2-count-mismatch-from/h/.ae/archive/c01c8ae1-2a31-463b-8aeb-e11a03973dfb/meta
+mutation.description	on a SECOND independent clone: the archive meta's handover_count value is replaced by 42 so meta and digest disagree, mode preserved

@@ -1,0 +1,82 @@
+pid=24565 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <un>
+pid=24590 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <un> <-c> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/w>
+pid=24594 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <un> <-u> <CLAUDECODE>
+pid=24596 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <un> <-u> <CLAUDE_CODE_SESSION>
+pid=24597 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <un> <AE_SESSION> <1>
+pid=24598 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <un> <AE_ORIGIN> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/w>
+pid=24599 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <un> <AE_DIR> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/w>
+pid=24600 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <un> <AE_MODE> <local>
+pid=24601 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <un> <AE_HOME> </tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/h/.ae>
+pid=24602 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <un> <mouse> <on>
+pid=24603 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <un> <focus-events> <on>
+pid=24604 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <un> <history-limit> <50000>
+pid=24605 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <un> <pane-border-status> <top>
+pid=24606 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <un> <pane-border-format> < #{@ae_agent} >
+pid=24608 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <un>
+pid=24610 ppid=24609 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=24619 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae un] >
+pid=24620 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=24621 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…URGE/unidentifiable-missing-meta-keep/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=24622 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=24623 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=24624 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=24626 ppid=24625 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=24627 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=24628 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=24629 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=24630 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=24631 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <un> <automatic-rename> <off>
+pid=24633 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <un> <un>
+pid=24634 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <un> <-p> <#{pane_id}>
+pid=24635 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:claude:claude>
+pid=24636 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <claude:claude>
+pid=24637 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=24655 ppid=24654 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=24741 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <un> <-F> <#{pane_id}	#{@ae_agent}>
+pid=24762 ppid=24761 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-panes> <-s> <-t> <un> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=24823 ppid=24822 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=24828 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-24502-%0> <->
+pid=24836 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-24502-%0> <-t> <%0>
+pid=25059 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=25106 ppid=25105 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=25146 ppid=25144 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-panes> <-s> <-t> <un> <-F> <#{pane_id} #{@ae_agent}>
+pid=25148 ppid=25147 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <new-window> <-d> <-t> <un:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/h/.ae/sessions/un/events-tail>
+pid=25150 ppid=25112 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=25151 ppid=25112 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=25152 ppid=25112 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <set-window-option> <-t> <un:ae-monitor> <pane-border-status> <top>
+pid=25153 ppid=25112 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=25187 ppid=25185 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-panes> <-s> <-t> <un> <-F> <#{pane_id} #{@ae_agent}>
+pid=25192 ppid=25190 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-panes> <-s> <-t> <un> <-F> <#{pane_id} #{@ae_agent}>
+pid=25197 ppid=25195 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-panes> <-s> <-t> <un> <-F> <#{pane_id} #{@ae_agent}>
+pid=25202 ppid=25201 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/h/.ae/sessions/un/watchdog _run>
+pid=25204 ppid=25160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=25207 ppid=25160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=25220 ppid=25160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <select-pane> <-t> <%2> <-d>
+pid=25256 ppid=24502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%0>
+pid=25266 ppid=25263 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=24502 ppid=24310 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session> <-t> <un>
+pid=25273 ppid=25203 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=25312 ppid=25310 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=25313 ppid=25283 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=25344 ppid=25342 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=25350 ppid=25203 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=25356 ppid=25203 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <has-session> <-t> <un>
+pid=25375 ppid=25203 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-panes> <-s> <-t> <un> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=25385 ppid=25384 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=25396 ppid=25395 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=25429 ppid=25427 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=25430 ppid=25203 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=25443 ppid=25441 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=25444 ppid=25431 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=25452 ppid=25450 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=25453 ppid=25203 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=25464 ppid=25462 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=25465 ppid=25203 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <claude●>
+pid=25470 ppid=25469 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-panes> <-s> <-t> <un> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=25472 ppid=25203 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=25473 ppid=25203 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=25560 ppid=25551 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=25571 ppid=25536 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <kill-session> <-t> <$0>
+pid=25584 ppid=25573 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-sessions>pid=25587 ppid=25585 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-F> <#{session_name}> <-S>
+ </private/tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=27181 ppid=27180 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </tmp/aelx/L-PURGE/unidentifiable-missing-meta-keep/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>

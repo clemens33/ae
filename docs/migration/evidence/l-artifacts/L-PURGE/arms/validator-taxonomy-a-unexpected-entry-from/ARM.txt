@@ -1,0 +1,13 @@
+arm	validator-taxonomy-a-unexpected-entry-from
+section	L-PURGE
+roster_ids	SC-804a SC-818c
+fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
+construction	an unexpected extra entry (a regular file mode 0600 named EXTRA.txt) is created inside the archive directory; this clone drives the from path ONLY
+template_uuid	9cfbc2e1-2228-4a62-966f-6ef14cfc4048
+binary	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
+case	a-unexpected-entry
+side	from
+mutation_target	EXTRA.txt
+op	ae --local pgchild --from 9cfbc2e1-2228-4a62-966f-6ef14cfc4048
+op_rc	1
+also_covers	SC-818c (post-state manifests of the archive root and the session state after the attempt)

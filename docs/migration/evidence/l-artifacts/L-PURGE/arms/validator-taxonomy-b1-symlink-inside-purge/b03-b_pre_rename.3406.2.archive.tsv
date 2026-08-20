@@ -1,0 +1,10 @@
+# manifest-root	/tmp/aelx/L-PURGE/validator-taxonomy-b1-symlink-inside-purge/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+.publishing.2a67dabb-e1fe-4b02-a424-2372c47030ce	dir	700	3	96	-	-
+.publishing.2a67dabb-e1fe-4b02-a424-2372c47030ce/payload	dir	700	7	224	-	-
+.publishing.2a67dabb-e1fe-4b02-a424-2372c47030ce/payload/digest.md	file	600	1	1322	-	afb56324fa75046500404220741bdfb8fb79d7871acb01199544f88cceed42d2
+.publishing.2a67dabb-e1fe-4b02-a424-2372c47030ce/payload/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+.publishing.2a67dabb-e1fe-4b02-a424-2372c47030ce/payload/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+.publishing.2a67dabb-e1fe-4b02-a424-2372c47030ce/payload/messages	dir	700	2	64	-	-
+.publishing.2a67dabb-e1fe-4b02-a424-2372c47030ce/payload/meta	file	600	1	675	-	e185195c24be8aa91a1637198007b0cc712366c5bfceafdc9c4aa0f21b0a1fb5

@@ -1,0 +1,2 @@
+Error: an archive for e66c1dd9-cca5-47fc-885b-be95eaafbba2 already exists at /tmp/aelx/L-PURGE/execution-sentinel-compact/h/.ae/archive/e66c1dd9-cca5-47fc-885b-be95eaafbba2.
+  An archive is immutable; compact will not merge into or replace one.

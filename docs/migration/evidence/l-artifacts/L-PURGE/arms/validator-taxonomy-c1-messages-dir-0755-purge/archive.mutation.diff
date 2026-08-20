@@ -1,0 +1,9 @@
+--- /tmp/aelx/L-PURGE/validator-taxonomy-c1-messages-dir-0755-purge/cap/archive.pre-mutation.tsv	2026-08-20 19:11:13
++++ /tmp/aelx/L-PURGE/validator-taxonomy-c1-messages-dir-0755-purge/cap/archive.post-mutation.tsv	2026-08-20 19:11:13
+@@ -4,5 +4,5 @@
+ digest.md	file	600	1	1325	-	088c0ff06272653d66b5f4526d887fa7934bd514c1f4abe214eff108f8ed7363
+ events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+-messages	dir	700	2	64	-	-
++messages	dir	755	2	64	-	-
+ meta	file	600	1	678	-	49b3597c220c525db9b0e2ba185673d221ae4c2b23e2b6dc1a93ae685eee2020

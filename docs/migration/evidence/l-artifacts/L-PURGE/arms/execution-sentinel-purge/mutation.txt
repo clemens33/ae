@@ -1,0 +1,6 @@
+mutation.target	/tmp/aelx/L-PURGE/execution-sentinel-purge/h/.ae/archive/9a0e45d6-23df-4a2a-9272-a8dc26ca85fd/memo.tsv
+mutation.description	the archive member memo.tsv is replaced by a shebang script whose body would write a SENTINEL file OUTSIDE the archive
+mutation.mode.before	600
+mutation.mode.after	700
+mutation.exec_bits	GRANTED (0700)
+sentinel.path	/tmp/aelx/L-PURGE/execution-sentinel-purge/SENTINEL-WAS-EXECUTED

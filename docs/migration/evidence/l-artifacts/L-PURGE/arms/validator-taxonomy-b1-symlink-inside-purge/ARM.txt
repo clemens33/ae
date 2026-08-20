@@ -1,0 +1,13 @@
+arm	validator-taxonomy-b1-symlink-inside-purge
+section	L-PURGE
+roster_ids	SC-804b SC-818c
+fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
+construction	the archive member memo.tsv is replaced by a SYMLINK pointing outside the archive (/etc/hosts); this clone drives the purge path ONLY
+template_uuid	2a67dabb-e1fe-4b02-a424-2372c47030ce
+binary	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
+case	b1-symlink-inside
+side	purge
+mutation_target	memo.tsv
+op	ae end -f --purge-history pg
+op_rc	1
+also_covers	SC-818c (post-state manifests of the archive root and the session state after the attempt)

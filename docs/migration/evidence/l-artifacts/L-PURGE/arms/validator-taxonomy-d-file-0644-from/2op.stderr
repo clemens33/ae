@@ -1,0 +1,2 @@
+archive: 'meta' has mode 644, expected 600.
+Error: archive 55a356fb-a5aa-4887-ad5b-509759f7d104 did not validate — refusing to inherit from it.

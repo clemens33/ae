@@ -1,0 +1,12 @@
+arm	unidentifiable-unparseable-id-keep
+section	L-PURGE
+roster_ids	SC-819
+fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
+construction	a real --local session is stopped, then ONE named mutation is applied to its state (unparseable-id), then exactly ONE end invocation runs on this clone (keep)
+template_uuid	7fecec9e-e8df-47cc-af97-2f8df2d5b668
+binary	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+class	unparseable-id
+policy	keep
+op	ae end -f un
+op_rc	1
+stop_rc	0

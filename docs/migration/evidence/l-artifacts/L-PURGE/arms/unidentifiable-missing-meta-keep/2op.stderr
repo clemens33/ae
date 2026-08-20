@@ -1,0 +1,4 @@
+Error: session 'un' has no positive server record (pre-fix or ambiguous meta) — it may be live somewhere ae cannot enumerate.
+  Resolve: 'ae doctor --refresh un', AE_END_SERVER='<name|/socket/path>' ae end un,
+  or acknowledge it is stopped: ae end --assume-stopped un
+  State preserved.

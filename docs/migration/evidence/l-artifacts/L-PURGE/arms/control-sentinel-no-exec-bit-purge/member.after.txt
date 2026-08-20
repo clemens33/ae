@@ -1,0 +1,2 @@
+#!/bin/sh
+printf %s "batch-l sentinel: this archive member was EXECUTED" > /tmp/aelx/L-PURGE/control-sentinel-no-exec-bit-purge/SENTINEL-WAS-EXECUTED

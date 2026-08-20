@@ -1,0 +1,3 @@
+archive: 'memo.tsv' is not a regular file.
+archive: 'memo.tsv' is missing.
+Error: archive ceaf1a8e-3815-4de5-b3aa-5e6f93df2b6c did not validate — refusing to inherit from it.

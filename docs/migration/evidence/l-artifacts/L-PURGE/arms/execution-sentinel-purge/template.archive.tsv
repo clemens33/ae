@@ -1,0 +1,9 @@
+# manifest-root	/tmp/aelx/L-PURGE/execution-sentinel-purge/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+9a0e45d6-23df-4a2a-9272-a8dc26ca85fd	dir	700	7	224	-	-
+9a0e45d6-23df-4a2a-9272-a8dc26ca85fd/digest.md	file	600	1	1304	-	ff3e997e3c8eb374e2d9136cafadfdea050c1bbf4c30c20d287acddee77a6b83
+9a0e45d6-23df-4a2a-9272-a8dc26ca85fd/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+9a0e45d6-23df-4a2a-9272-a8dc26ca85fd/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+9a0e45d6-23df-4a2a-9272-a8dc26ca85fd/messages	dir	700	2	64	-	-
+9a0e45d6-23df-4a2a-9272-a8dc26ca85fd/meta	file	600	1	657	-	5f8da5ee2f4478ddca5cd4a12bd914dbe7507c376ae760a23a59bad55dcd99e7

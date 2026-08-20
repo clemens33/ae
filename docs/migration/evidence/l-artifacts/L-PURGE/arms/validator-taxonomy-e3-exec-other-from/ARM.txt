@@ -1,0 +1,13 @@
+arm	validator-taxonomy-e3-exec-other-from
+section	L-PURGE
+roster_ids	SC-804d SC-818c
+fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
+construction	the archive member digest.md gains the OTHER executable bit (0600 -> 0601); this clone drives the from path ONLY
+template_uuid	7d7de912-f209-42cc-9d3c-e8b623be4bfa
+binary	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
+case	e3-exec-other
+side	from
+mutation_target	digest.md
+op	ae --local pgchild --from 7d7de912-f209-42cc-9d3c-e8b623be4bfa
+op_rc	1
+also_covers	SC-818c (post-state manifests of the archive root and the session state after the attempt)

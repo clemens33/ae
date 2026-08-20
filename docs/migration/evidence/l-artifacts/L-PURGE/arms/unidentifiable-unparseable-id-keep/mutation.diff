@@ -1,0 +1,11 @@
+--- /tmp/aelx/L-PURGE/unidentifiable-unparseable-id-keep/cap/session-meta.before.txt	2026-08-20 19:19:25
++++ /tmp/aelx/L-PURGE/unidentifiable-unparseable-id-keep/cap/session-meta.after.txt	2026-08-20 19:19:29
+@@ -1,7 +1,7 @@
+ mode=local
+ origin=/private/tmp/aelx/L-PURGE/unidentifiable-unparseable-id-keep/w
+ session=un
+-session_id=7fecec9e-e8df-47cc-af97-2f8df2d5b668
++session_id=not-a-uuid--0000
+ work_dir=/private/tmp/aelx/L-PURGE/unidentifiable-unparseable-id-keep/w
+ layout=vertical
+ config=/tmp/aelx/L-PURGE/unidentifiable-unparseable-id-keep/h/.ae/config

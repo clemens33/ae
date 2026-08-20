@@ -1,0 +1,11 @@
+--- /tmp/aelx/L-PURGE/validator-taxonomy-e1-exec-user-purge/cap/archive.pre-mutation.tsv	2026-08-20 19:12:57
++++ /tmp/aelx/L-PURGE/validator-taxonomy-e1-exec-user-purge/cap/archive.post-mutation.tsv	2026-08-20 19:12:57
+@@ -1,7 +1,7 @@
+ # manifest-root	/tmp/aelx/L-PURGE/validator-taxonomy-e1-exec-user-purge/h/.ae/archive/5944456d-0251-43f6-b4fc-dfdcd8988bcd
+ #path	type	mode	nlink	size	link	sha256
+ .	dir	700	7	224	-	-
+-digest.md	file	600	1	1317	-	0a8362ded8db10e5d96ff85bcabf20300218e5fdad8a92e7eafee083a5ff7a01
++digest.md	file	700	1	1317	-	0a8362ded8db10e5d96ff85bcabf20300218e5fdad8a92e7eafee083a5ff7a01
+ events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ messages	dir	700	2	64	-	-

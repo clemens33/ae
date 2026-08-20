@@ -1,0 +1,13 @@
+arm	lineage-parent-mutated
+section	L-PURGE
+roster_ids	SC-818e
+fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
+construction	a REAL --from child of a REAL parent archive, with ONE named mutation setting the child meta session_id equal to its parent_archive_id; end --purge-history then runs on the child
+template_uuid	2f61f3fe-6bea-46e2-aa65-054983ca9c63
+binary	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+reading	(a) the construction that reaches the named guard
+parent_uuid	2f61f3fe-6bea-46e2-aa65-054983ca9c63
+parent_end_rc	0
+child_launch_rc	1
+op	ae end -f --purge-history ch
+op_rc	1

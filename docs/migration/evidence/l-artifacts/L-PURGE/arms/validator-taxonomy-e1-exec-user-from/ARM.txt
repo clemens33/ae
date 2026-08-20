@@ -1,0 +1,13 @@
+arm	validator-taxonomy-e1-exec-user-from
+section	L-PURGE
+roster_ids	SC-804d SC-818c
+fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
+construction	the archive member digest.md gains the USER executable bit (0600 -> 0700); this clone drives the from path ONLY
+template_uuid	2ca6d069-052d-410f-8563-6d01492eae99
+binary	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
+case	e1-exec-user
+side	from
+mutation_target	digest.md
+op	ae --local pgchild --from 2ca6d069-052d-410f-8563-6d01492eae99
+op_rc	1
+also_covers	SC-818c (post-state manifests of the archive root and the session state after the attempt)

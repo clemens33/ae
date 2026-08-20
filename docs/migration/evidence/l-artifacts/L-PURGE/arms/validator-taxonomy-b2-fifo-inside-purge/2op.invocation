@@ -1,0 +1,21 @@
+cwd: /tmp/aelx/L-PURGE/validator-taxonomy-b2-fifo-inside-purge/w
+argv:
+  /tmp/aelx/L-PURGE/validator-taxonomy-b2-fifo-inside-purge/b/ae
+  end
+  -f
+  --purge-history
+  pg
+env:
+  HOME=/tmp/aelx/L-PURGE/validator-taxonomy-b2-fifo-inside-purge/h
+  AE_HOME=/tmp/aelx/L-PURGE/validator-taxonomy-b2-fifo-inside-purge/h/.ae
+  TMPDIR=/tmp/aelx/L-PURGE/validator-taxonomy-b2-fifo-inside-purge/tp
+  TMUX_TMPDIR=/tmp/aelx/L-PURGE/validator-taxonomy-b2-fifo-inside-purge/t
+  PATH=/tmp/aelx/L-PURGE/validator-taxonomy-b2-fifo-inside-purge/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-PURGE/validator-taxonomy-b2-fifo-inside-purge/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-PURGE/validator-taxonomy-b2-fifo-inside-purge/cap/tmux-argv.log

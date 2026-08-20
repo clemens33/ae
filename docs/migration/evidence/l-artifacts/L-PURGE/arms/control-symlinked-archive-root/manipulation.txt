@@ -1,0 +1,2 @@
+manipulation	the archive ROOT is replaced by a symlink to a directory outside AE_HOME holding the same real archive
+link	/tmp/aelx/L-PURGE/control-symlinked-archive-root/h/.ae/archive -> /tmp/aelx/L-PURGE/control-symlinked-archive-root/elsewhere-archive

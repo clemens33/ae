@@ -1,0 +1,19 @@
+cwd: /tmp/aelx/L-PURGE/execution-sentinel-from/w
+argv:
+  /tmp/aelx/L-PURGE/execution-sentinel-from/b/ae
+  --local
+  pg
+env:
+  HOME=/tmp/aelx/L-PURGE/execution-sentinel-from/h
+  AE_HOME=/tmp/aelx/L-PURGE/execution-sentinel-from/h/.ae
+  TMPDIR=/tmp/aelx/L-PURGE/execution-sentinel-from/tp
+  TMUX_TMPDIR=/tmp/aelx/L-PURGE/execution-sentinel-from/t
+  PATH=/tmp/aelx/L-PURGE/execution-sentinel-from/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-PURGE/execution-sentinel-from/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-PURGE/execution-sentinel-from/cap/tmux-argv.log

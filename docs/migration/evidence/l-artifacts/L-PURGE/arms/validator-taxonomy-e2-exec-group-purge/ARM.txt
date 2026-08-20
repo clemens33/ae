@@ -1,0 +1,13 @@
+arm	validator-taxonomy-e2-exec-group-purge
+section	L-PURGE
+roster_ids	SC-804d SC-818c
+fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
+construction	the archive member digest.md gains the GROUP executable bit (0600 -> 0610); this clone drives the purge path ONLY
+template_uuid	e2cdd183-c90d-4e93-9357-7b2ea0f07b0c
+binary	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
+case	e2-exec-group
+side	purge
+mutation_target	digest.md
+op	ae end -f --purge-history pg
+op_rc	1
+also_covers	SC-818c (post-state manifests of the archive root and the session state after the attempt)

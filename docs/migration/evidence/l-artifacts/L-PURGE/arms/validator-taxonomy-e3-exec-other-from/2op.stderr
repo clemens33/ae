@@ -1,0 +1,2 @@
+archive: 'digest.md' has mode 601 — an archived file must carry no executable bit.
+Error: archive 7d7de912-f209-42cc-9d3c-e8b623be4bfa did not validate — refusing to inherit from it.

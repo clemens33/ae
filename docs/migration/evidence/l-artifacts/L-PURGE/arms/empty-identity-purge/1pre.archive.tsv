@@ -1,0 +1,9 @@
+# manifest-root	/tmp/aelx/L-PURGE/empty-identity-purge/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+2e731eb2-60d6-4dcf-8184-cb4b8ed9076b	dir	700	7	224	-	-
+2e731eb2-60d6-4dcf-8184-cb4b8ed9076b/digest.md	file	600	1	1300	-	6936cbd16ea7441b1e41705ce657d01db39f57aff9f13a0c114bd7224569202f
+2e731eb2-60d6-4dcf-8184-cb4b8ed9076b/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+2e731eb2-60d6-4dcf-8184-cb4b8ed9076b/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+2e731eb2-60d6-4dcf-8184-cb4b8ed9076b/messages	dir	700	2	64	-	-
+2e731eb2-60d6-4dcf-8184-cb4b8ed9076b/meta	file	600	1	651	-	f1cb1628aa4fa8f01ba0372aa6536002153e4b0ea83eafc5f5b103190f877d11

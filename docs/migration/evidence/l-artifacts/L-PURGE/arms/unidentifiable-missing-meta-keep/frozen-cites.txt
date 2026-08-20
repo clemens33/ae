@@ -1,0 +1,13 @@
+Frozen cites carried into this arm's notes verbatim, supplied by gpt56sol:colead via
+fable5:lead. They are POINTERS to frozen semantics for the seats to classify these
+captures against. This worker states no verdict about them.
+
+- 72c7293 ae:2911-2955 — `--assume-stopped` acknowledges ONLY stopped-state absence
+  after the full enumerable sweep. It does not authorize identity fabrication and does
+  not authorize memory deletion.
+- 72c7293 ae:8039-8052 — `_end_archive_plan` classifies missing-meta-with-memory as
+  `unavailable`.
+
+What this arm captures is the operation's own stdout/stderr/rc and the full before/after
+state, nothing more. Which gate the invocation actually reached, and whether that tracks
+the row's SHOULD, is seat work.

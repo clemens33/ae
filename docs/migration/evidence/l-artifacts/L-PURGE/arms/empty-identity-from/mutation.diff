@@ -1,0 +1,20 @@
+--- /tmp/aelx/L-PURGE/empty-identity-from/cap/mutation.before.txt	2026-08-20 19:08:10
++++ /tmp/aelx/L-PURGE/empty-identity-from/cap/mutation.after.txt	2026-08-20 19:08:16
+@@ -2,7 +2,7 @@
+ archive_id=1bd2ace7-08b2-4796-a8e5-49a0fcf70c21
+ archive_id_origin=session
+ archived_at=2026-08-20T17:08:10Z
+-source_session=pg
++source_session=
+ source_session_id=1bd2ace7-08b2-4796-a8e5-49a0fcf70c21
+ source_mode=local
+ source_origin=/private/tmp/aelx/L-PURGE/empty-identity-from/w
+--- directory manifest diff ---
+--- /tmp/aelx/L-PURGE/empty-identity-from/cap/mutation.dir.before.tsv	2026-08-20 19:08:16
++++ /tmp/aelx/L-PURGE/empty-identity-from/cap/mutation.dir.after.tsv	2026-08-20 19:08:17
+@@ -5,4 +5,4 @@
+ events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ messages	dir	700	2	64	-	-
+-meta	file	600	1	652	-	06f7b3550b003170a21b4b75edd3eb9659d3f895be79078ffb46ab425c049769
++meta	file	600	1	650	-	5810b47dc7a7caf430d2977cc9ecd91382a8a7f21aa98c54f9e34729c5baa62b

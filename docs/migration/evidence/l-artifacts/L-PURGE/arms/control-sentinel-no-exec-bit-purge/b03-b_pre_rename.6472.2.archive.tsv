@@ -1,0 +1,10 @@
+# manifest-root	/tmp/aelx/L-PURGE/control-sentinel-no-exec-bit-purge/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+.publishing.1a726029-0481-48fc-b7d0-2782acfba682	dir	700	3	96	-	-
+.publishing.1a726029-0481-48fc-b7d0-2782acfba682/payload	dir	700	7	224	-	-
+.publishing.1a726029-0481-48fc-b7d0-2782acfba682/payload/digest.md	file	600	1	1314	-	f54d6c2d292f6e4ed64cb2b09b6ba0bfd40fabdb993d49971a554f7cffc6f0ba
+.publishing.1a726029-0481-48fc-b7d0-2782acfba682/payload/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+.publishing.1a726029-0481-48fc-b7d0-2782acfba682/payload/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+.publishing.1a726029-0481-48fc-b7d0-2782acfba682/payload/messages	dir	700	2	64	-	-
+.publishing.1a726029-0481-48fc-b7d0-2782acfba682/payload/meta	file	600	1	667	-	5339675814ae4850a1751b2b7850e62dee75dc5340f7a8b6e98c09214356e7e9

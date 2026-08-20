@@ -1,0 +1,12 @@
+--- directory manifest diff ---
+--- /tmp/aelx/L-PURGE/validator-taxonomy-a-unexpected-entry-purge/cap/mutation.dir.before.tsv	2026-08-20 19:09:19
++++ /tmp/aelx/L-PURGE/validator-taxonomy-a-unexpected-entry-purge/cap/mutation.dir.after.tsv	2026-08-20 19:09:19
+@@ -1,6 +1,7 @@
+ # manifest-root	/tmp/aelx/L-PURGE/validator-taxonomy-a-unexpected-entry-purge/h/.ae/archive/695769c4-3ef4-4085-b6ec-d49057426ebb
+ #path	type	mode	nlink	size	link	sha256
+-.	dir	700	7	224	-	-
++.	dir	700	8	256	-	-
++EXTRA.txt	file	600	1	36	-	28a958df6140ec79011c0634d962345d054016846e0bb7709afb22f2ff8d488d
+ digest.md	file	600	1	1323	-	f36c07788d0926cf3a4fdfb58fe515dfad63951197fa202a73e041e0da1677bb
+ events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

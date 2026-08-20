@@ -1,0 +1,3 @@
+Error: working directory is not a git repo — cannot preserve work.
+  Nothing was stopped and nothing was deleted; the session is still running.
+  Working directory: /tmp/aelx/L-PURGE/unidentifiable-missing-meta-purge-assume-stopped/h/.ae/worktrees/un

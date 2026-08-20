@@ -1,0 +1,15 @@
+mode=local
+origin=/private/tmp/aelx/L-PURGE/unidentifiable-unparseable-id-keep/w
+session=un
+session_id=7fecec9e-e8df-47cc-af97-2f8df2d5b668
+work_dir=/private/tmp/aelx/L-PURGE/unidentifiable-unparseable-id-keep/w
+layout=vertical
+config=/tmp/aelx/L-PURGE/unidentifiable-unparseable-id-keep/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-PURGE/unidentifiable-unparseable-id-keep/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-PURGE/unidentifiable-unparseable-id-keep/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:18d55973-391d-4306-9ebd-621169f99663
+agent_bin.main=claude
+watchdog=true

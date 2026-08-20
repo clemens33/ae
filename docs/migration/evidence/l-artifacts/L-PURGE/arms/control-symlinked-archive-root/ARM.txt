@@ -1,0 +1,9 @@
+arm	control-symlinked-archive-root
+section	L-PURGE
+roster_ids	(none — SC-818a is a non-roster safety control, ref only; this arm is NOT a coverage arm)
+fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
+construction	the archive root is a symlink to a directory outside AE_HOME holding the same real archive; end --purge-history then runs
+template_uuid	736e1f2a-875b-415b-a9dd-6f5da44c8ab4
+binary	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
+op	ae end -f --purge-history pg
+op_rc	1

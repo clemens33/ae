@@ -1,0 +1,8 @@
+--- /tmp/aelx/L-PURGE/validator-taxonomy-f1-id-mismatch-from/cap/archive.pre-mutation.tsv	2026-08-20 19:15:03
++++ /tmp/aelx/L-PURGE/validator-taxonomy-f1-id-mismatch-from/cap/archive.post-mutation.tsv	2026-08-20 19:15:04
+@@ -5,4 +5,4 @@
+ events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ messages	dir	700	2	64	-	-
+-meta	file	600	1	671	-	eead4717f8977afad09b141fca5f8f2030deaf0d403a94f449c31572bef01e0d
++meta	file	600	1	671	-	a0a1b3d9c0b977f9dd638a22de68e73942ebe154d1b939dd39d5a9b4b393f681
