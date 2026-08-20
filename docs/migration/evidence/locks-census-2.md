@@ -1,4 +1,4 @@
-# Lock/atomicity census — lifecycle, daemon, and remaining operations (P2 scope)
+# Lock/atomicity census — lifecycle, daemon, and remaining operations (P2–P4 scope)
 
 > Scope (lead note, 2026-08-20): this census covers the operations named for census-2:
 > interrupt, focus, launch (including `--from`), end/rm and archive publication, stop,
@@ -107,11 +107,16 @@ closed by process exit, while the lock-file path created by redirection remains 
   artifacts; representative generated helper sites are `ae:17798-17810` and
   `ae:17909-18032`, and the manifest write is `ae:12267-12339`.
 - `send_agent_cmd` launch delivery runs while lifecycle fd 8 is held through
-  `_send_or_rollback` at `ae:18114-18166`. For normal pane delivery its helper target lock is
-  acquired under that lifecycle lock, then released before the body-file write and event
-  append (`ae:14235-14283`). Launch failure reporting uses `_spawn_emit_event` with an events
-  fd 8 `flock -w 5` at `ae:12689-12693`; the Codex deferred-delivery child closes its inherited
-  lifecycle fd before this call (`ae:12622-12635`).
+  `_send_or_rollback` at `ae:18114-18166`. **CORRECTED (audit 2026-08-20, lead-verified):**
+  normal launch delivery does NOT go through the helper send path — `send_agent_cmd`
+  writes `launch.<slot>.sh` and pastes directly via `tmux_paste_submit`, taking NO target
+  fd9 lock, writing NO message body, and emitting NO event (`ae:12587-12643`; zero calls
+  to `ae_lock_target`/`ae_store_message_body`/`ae_emit_event` in `ae:12587-12698`,
+  grep-verified). The paste and its wait are fire-and-forget/ignored (`ae:12608-12613`) —
+  launch can succeed with an unconfirmed empty-shell pane. Only the deferred Codex-resume
+  prompt path can write `undelivered.launch-*` and emit `launch-delivery-failed` via
+  `_spawn_emit_event` (`ae:12620-12635`, `ae:12661-12698`), after closing its inherited
+  lifecycle fd 8.
 - After fd 8 is released, background session-id capture may acquire `${meta}.lock` fd 200
   with `flock -w 5` and perform `_ae_sed_inplace`'s copy/sed-to-temp then mv rewrite
   (`ae:152-171`, `ae:2068-2076`, `ae:1860-1865`, `ae:2020-2025`, `ae:2049-2054`).
@@ -134,11 +139,10 @@ closed by process exit, while the lock-file path created by redirection remains 
 - Resume event retention uses `tail -n ... > events.jsonl.trim.$$ && mv` under the events lock
   (`ae:18046-18075`).
 - Launch scripts are generated and launch prompts are sent before release (`ae:18114-18166`).
-  A normal launch send uses tmux side effects, then `ae_store_message_body` (unique mktemp,
-  rename to `.txt`, in-place `printf`, chmod) and `ae_emit_event` after target-lock release
-  (`ae:13322-13359`, `ae:14235-14283`). A failed launch delivery writes
-  `undelivered.launch-<slot>.txt` directly and emits via `_spawn_emit_event`
-  (`ae:12689-12693`).
+  **CORRECTED (audit 2026-08-20):** a normal launch send is a direct fire-and-forget
+  `tmux_paste_submit` — no body file, no event, paste failure ignored (`ae:12608-12613`).
+  Only the deferred Codex-resume path writes `undelivered.launch-<slot>.txt` and emits
+  `launch-delivery-failed` via `_spawn_emit_event` (`ae:12620-12635`, `ae:12661-12698`).
 - Post-release capture appends `launch_time.<slot>` directly under meta fd 200 at
   `ae:2068-2076`; capture rewrites `meta` with `_ae_sed_inplace` temp+mv under the same lock
   (`ae:152-171`, `ae:1860-1865`, `ae:2020-2025`, `ae:2049-2054`). Watchdog/Telegram/steward autostart calls then perform
@@ -694,3 +698,43 @@ closed by process exit, while the lock-file path created by redirection remains 
 - Interruption during direct `printf >"$CONFIG_FILE"` can leave a partial default config. The
   next invocation enters the branch only if the file is absent, so a partial existing file is
   not replaced by this bootstrap (`ae:345-347`).
+
+## Audited addenda (colead batch 2026-08-20, lead-verified samples)
+
+### Missing-flock / event-failure matrix (per caller — #75 material, one row each)
+
+- end/stop/rename/launch lifecycle: proceed UNLOCKED with a stderr note when flock is
+  absent (`ae:2884-2891` and siblings).
+- compact: phase-b handover proceeds unlocked SILENTLY (`ae:6272-6280`); phase-c notes
+  degradation (`ae:6352-6362`).
+- fleet identity freeze: mints nothing without flock and later REFUSES (`ae:7420-7465`).
+- `ae_lock_target`: unguarded `flock` command — under non-errexit helper callers
+  (send/interrupt) delivery can proceed UNLOCKED (`ae:12993-13000`).
+- `ae_log_append`: exits the helper/daemon on timeout or missing flock (`ae:13171-13176`).
+- `_spawn_emit_event`: silently drops the event and returns 0 (`ae:12092-12115`).
+- transfer: event failure warned, transfer still succeeds (`ae:11107-11114`,
+  `ae:11516-11537`).
+- telegram start/stop: report busy; autostart skips.
+- aewatch: fcntl is mandatory; its event timeout drops and continues (contrib census
+  pending).
+
+### Watchdog control partial success
+
+`_watchdog_start`/`_watchdog_stop` mutate tmux/pid/options, call fd200 `_set_meta_kv`,
+IGNORE its failure, and exit 0 (`ae:14934-14948`, `ae:15031-15105`, notably
+`ae:15060`, `ae:15102`) — stale meta with reported success. `watchdog status` is NOT
+read-only: it can delete a stale pidfile (`ae:14910-14931`, `ae:15064-15070`).
+
+### Transfer audit event is best-effort
+
+After stop + rsync succeed, local/remote event append failure is warned and
+`cmd_transfer` still prints and returns success (`ae:11530-11535`) — either side can be
+transferred with no audit event.
+
+### Cross-lock race windows
+
+- rename holds only the two lifecycle locks and rewrites `meta` WITHOUT `meta.lock`
+  (`ae:11597-11667`) — unserialized against helper meta writers (fd200).
+- archive staging direct-copies `memo.tsv`/`events.jsonl`/`messages/*` holding the
+  lifecycle lock but NOT the writers' locks (`ae:5356-5386`) — snapshot consistency is
+  not guaranteed by the lock held.

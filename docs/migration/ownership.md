@@ -230,12 +230,14 @@ consuming operation owns its own artifact publication and ports the chokepoint i
 
 ### D12 — `focus`
 
-- effects: tmux focus switch only (no state write — TBD verify)
+- effects: tmux focus switch PLUS a `focus` event append (ae:14649-14653, verified) —
+  the "pure tmux glue" rationale was false
 - current writer/call path: `helper_focus_main`
-- locks (ordered): none expected — TBD
-- atomicity boundary: n/a
+- locks (ordered): event fd8 only
+- atomicity boundary: tmux selection can land with no event (append after selection)
 - current owner: bash
-- planned owner/fate: TBD — candidate **stays bash** (pure tmux glue)
+- planned owner/fate: **rust at P2** (seat ruling 2026-08-20: it writes state, so it
+  moves with the other event-writing helpers, one operation incl. its tmux calls)
 
 ### D13 — codex SID capture (staging + async reconciliation, one transaction)
 
@@ -308,7 +310,13 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 
 - effects: session dir + meta + helpers + workspace.md, tmux session/panes, per-session
   ae-monitor window (`_monitor_ensure_events_pane`), worktree/copy creation, launch
-  rollback (`rm -rf` of the validated name), archive inheritance
+  rollback (`rm -rf` of the validated name), archive inheritance. Launch delivery is a
+  direct fire-and-forget paste — NO target lock, NO body, NO event; paste failure is
+  IGNORED (ae:12608-12613). Contract-row candidates (census-2 audit): launch-script
+  publication failure vs rollback; ignored paste failure = reported success with an
+  unstarted agent (completion-without-delivery); deferred Codex-resume prompt failure
+  leaves durable evidence (`undelivered.launch-*`, `launch-delivery-failed`) but the
+  parent launch already reported success
 - current writer/call path: launch family
 - locks (ordered): `.lifecycle.<name>.lock` on fd 8 (NOT the event lock — fd number
   reuse), `flock -w 15`, and **degrades to UNLOCKED with a one-line note when flock is
@@ -333,19 +341,39 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 - effects: git commit+push to `ae/<session>`, archive capture to `~/.ae/archive/<uuid>/`
   (MANDATORY on keep; ordering: after verified stop + git, before live-state removal;
   failed archive fails the end), session dir removal, tmux teardown, events
-- current writer/call path: `cmd_end`
-- locks (ordered): `.lifecycle.<name>.lock` fd8 `flock -w 15`, degrade-to-unlocked
-  without flock (the ae:17288-17298 block names end explicitly) + TBD
-- atomicity boundary: archive-before-removal is the load-bearing promise (contract row)
+- current writer/call path: `cmd_end` → `end_session`
+- locks (ordered): `.lifecycle.<name>.lock` on **fd 9** (`flock -w 15 9`, ae:2879-2894,
+  verified — the fd 8 block at ae:17288 is the LAUNCH side of the same file);
+  degrade-to-unlocked without flock; meta fd200 nested inside (lifecycle → meta,
+  census-2); archive publication serializes via a `mkdir -m 0700` UUID claim, not flock
+- atomicity boundary: archive-before-removal is the load-bearing promise (contract row).
+  end appends NO event of its own; archive staging direct-copies
+  `memo.tsv`/`events.jsonl`/`messages/*` while holding the lifecycle lock but NOT the
+  writers' locks (ae:5356-5386) — snapshot consistency is an empirical race window,
+  its own contract rows
 - current owner: bash
 - planned owner/fate: **rust at P3**
 
-### D19 — `stop`
+### D19a — external singular `stop`
 
-- effects: tmux teardown without archive/removal — TBD exact meta/state writes
+- effects: tmux teardown without archive/removal; NO event (census-2 audit)
 - current writer/call path: `cmd_stop` (resolves via session lookup, not raw paths — measured)
-- locks (ordered): TBD
-- atomicity boundary: TBD
+- locks (ordered): lifecycle lock per census-2; TBD detail
+- current owner: bash
+- planned owner/fate: **rust at P3**
+
+### D19b — self-supervised stop
+
+- effects: differ from D19a (census-2); split per the grouped-cutover rule
+- current writer/call path / locks: census-2 stop section
+- current owner: bash
+- planned owner/fate: **rust at P3**
+
+### D19c — fleet stop (`stop all`)
+
+- effects: fleet identity mint (refuses without flock, ae:7420-7465), per-session stops,
+  best-effort request/result reporting
+- current writer/call path / locks: census-2 stop section
 - current owner: bash
 - planned owner/fate: **rust at P3**
 
@@ -353,7 +381,9 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 
 - effects: meta, tmux session name, session dir move, `.lifecycle.<name>.lock` identity
 - current writer/call path: `cmd_rename` (target name strict-validated)
-- locks (ordered): TBD
+- locks (ordered): BOTH names' lifecycle locks — and then rewrites meta WITHOUT
+  `meta.lock` (ae:11597-11667): unserialized against helper meta writers (fd200),
+  empirical race window, own contract row
 - atomicity boundary: TBD (dir moved but tmux rename fails → ?)
 - current owner: bash
 - planned owner/fate: **rust at P3**
@@ -363,7 +393,9 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 - effects: rsync both directions, SSH probe, dest `mkdir`, name validation both ends
 - current writer/call path: `cmd_transfer`
 - locks (ordered): TBD
-- atomicity boundary: TBD (partial rsync → ?)
+- atomicity boundary: TBD (partial rsync → ?); audit event is BEST-EFFORT — after
+  stop+rsync succeed, event failure on either side is warned and transfer still reports
+  success (ae:11530-11535): per-direction contract rows
 - current owner: bash
 - planned owner/fate: **rust at P3**
 
@@ -380,15 +412,18 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 - current owner: bash
 - planned owner/fate: **rust at P3**
 
-### D23 — `recover-pending`
+### D23 — `_recover-pending` (SID/meta reconciliation — NOT request recovery)
 
-- effects: TBD (request-recovery writes)
-- current writer/call path: `cmd_recover_pending`
-- locks (ordered): TBD
-- atomicity boundary: TBD
+- corrected per census-2 audit: despite the name, this is the recovery half of the SID
+  transaction family (D13), not a D05 request operation
+- effects: rewrites `agent.<slot>` in meta; the watchdog appends a `recover` event only
+  AFTERWARD (ae:8690-8872, ae:16528-16536)
+- current writer/call path: standalone `_recover-pending` + the watchdog path
+- locks (ordered): meta fd200 (`flock -w 5 || exit 1`, verified ae:8718-8733)
+- atomicity boundary: meta rewrite and recover event are separate acquisitions
 - current owner: bash
-- planned owner/fate: **rust at P3** (grouped with D05's domain if evidence shows shared
-  store + locks — grouped-cutover justification required otherwise)
+- planned owner/fate: **rust at P2, with D13** (seat ruling: same transaction family
+  flips together)
 
 ### D24 — claims (#71 invariants)
 
@@ -396,6 +431,18 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 - current writer/call path: **none — unimplemented; no bash writer exists**
 - current owner: **none**
 - planned owner/fate: **rust-born at P3**; brief re-ratified before build
+
+### D31 — `doctor --refresh` (own mutation transaction; census-2 audit)
+
+- effects: meta migrations/updates, helper-set publication AND removal, direct
+  `workspace.md` rewrite, pane stamping/status, watchdog stop/start, SID recovery
+- current writer/call path: doctor refresh family (ae:8536-8680)
+- locks (ordered): **NO lifecycle lock spans it** — the D14 artifact classes do not own
+  this transaction; per-write locks only (meta fd200 where used)
+- atomicity boundary: per-artifact temp+mv; the transaction as a whole is unserialized
+- current owner: bash
+- planned owner/fate: **rust at P2** (it regenerates the helpers whose logic dies at P2;
+  flips with D14a)
 
 ## Daemons + control surfaces (P4)
 
@@ -409,17 +456,20 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 
 ### D26a — watchdog start/stop (`ae watchdog start|stop`, session `watchdog` + `loop` helpers)
 
-- effects: daemon lifecycle mutations (pid/marker files). NOT an M3 consumer — the
-  session watchdog/loop helpers are emitted via D14a; M3's census (lines above) names
+- effects: daemon lifecycle mutations (pid/marker files, tmux/options). NOT an M3
+  consumer — the session watchdog/loop helpers are emitted via D14a; M3's census names
   launch scripts and the telegram daemon only (gate finding a1358882)
 - current writer/call path: `cmd_watchdog`, `helper_watchdog_main`, `loop` shim
-- locks / atomicity: TBD
+- locks / atomicity: PARTIAL SUCCESS CAN LIE (census-2 audit): start/stop mutate
+  tmux/pid/options, call fd200 `_set_meta_kv`, IGNORE its failure, exit 0
+  (ae:15060, ae:15102) — stale meta with reported success; contract row
 - current owner: bash
 - planned owner/fate: **rust at P4** (with D25)
 
-### D26b — watchdog status (read)
+### D26b — watchdog status
 
-- effects: none
+- effects: NOT read-only — can delete a stale pidfile (ae:14910-14931, ae:15064-15070;
+  census-2 audit)
 - current writer/call path: `cmd_watchdog` status arm
 - current owner: bash
 - planned owner/fate: **rust at P4**
@@ -429,6 +479,10 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 - **ownership is a runtime handoff, not a static split:** when the aewatch marker exists
   AND its heartbeat is fresh, **aewatch owns the bridge operation and the bash daemon
   stands down**; otherwise the bash daemon owns it.
+- **known defect (both seats, 2026-08-20):** `ae telegram start` under a live aewatch
+  WARNS AND PROCEEDS, creating a double-sender state (ae:10639-10648). Classified
+  fix-known-defect — intended behavior: the single-sender invariant holds against
+  explicit operator start (refuse or take over cleanly); not a DR.
 - effects: chat event consumption, Telegram send/receive, reply routing to panes
 - current writer/call path: bash telegram daemon; aewatch bridge (mode above)
 - locks / atomicity: TBD per mode — the marker+heartbeat handoff itself is a contract
@@ -437,16 +491,18 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 
 ### D28a — telegram setup (`ae telegram setup`)
 
-- effects: credential/config writes; machine-global telegram-daemon script publication (M3)
+- effects: token/config writes ONLY (ae:10550-10607, verified — no publication, no tmux)
 - current writer/call path: `cmd_telegram_setup`
 - locks / atomicity: TBD
 - current owner: bash
 - planned owner/fate: **rust at P4**
 
-### D28b — telegram start/stop
+### D28b — telegram start/stop (+ autostart)
 
-- effects: daemon lifecycle (pid/marker files)
-- current writer/call path: `cmd_telegram_start` / `cmd_telegram_stop`
+- effects: machine-global telegram-daemon script publication via M3 (ae:9305-9308,
+  ae:10315-10346, ae:10628-10655 — moved here from setup per census-2 audit), tmux
+  creation, daemon lifecycle, machine-global control lock
+- current writer/call path: `cmd_telegram_start` / `cmd_telegram_stop` / autostart path
 - locks / atomicity: TBD
 - current owner: bash
 - planned owner/fate: **rust at P4**
