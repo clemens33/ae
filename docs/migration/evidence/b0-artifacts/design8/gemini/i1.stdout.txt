@@ -1,0 +1,1 @@
+Spawned gemini:worker1 in pane %2

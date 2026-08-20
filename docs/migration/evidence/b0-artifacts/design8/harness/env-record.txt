@@ -1,0 +1,18 @@
+# B0 Design 8 environment / tool record
+captured_utc=2026-08-20T15:36:58Z
+uname=Darwin MacOS-ckriech 25.6.0 Darwin Kernel Version 25.6.0: Fri Jul 31 19:19:08 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6050 arm64
+frozen_commit=72c729343a0117af2968b66e1c43f89ad25fc0b2
+frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+fake_binary_sha256=6ba6319962b59831740a56aa5f65e91d6467c72997f5d0a18be1ba1a6d8d378b  (a renamed copy of /opt/homebrew/bin/bash; all five names identical)
+fake_driver_sha256=df41fbe8367f7a6bfabce6369aec66916c47e86de982fdc129d59f509131e8ed
+fixture claude.idle-region.txt fdc32fc1f18daba3c5fb551d016f60ee1cf35ee1030fc28db782a6cde441c1e1
+fixture codex.idle-region.txt c36b0efaee3d59dece16e1294da5a407188527618d1e86fb60e3236bac2392e7
+arm_PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+TZ=UTC LANG=en_US.UTF-8 TERM=xterm-256color
+tool /opt/homebrew/bin/bash 6ba6319962b59831740a56aa5f65e91d6467c72997f5d0a18be1ba1a6d8d378b
+tool /opt/homebrew/bin/tmux d2c8cff1aeba41d4a63e29b62e8d16bf95512f8c835865028b990811f9207b2a
+tool /usr/bin/git b8763cf250e607a778bb4603cecb5b90338814d0a3dfcba0d57b1de242f610e9
+bash=GNU bash, version 5.3.15(1)-release (aarch64-apple-darwin25.4.0)
+tmux=tmux 3.7b
+real_claude_binary=/Users/ckriech/.local/bin/claude (used ONLY for the idle-screen harvest attempt; no prompt sent)
+real_codex_binary=/Users/ckriech/.local/bin/codex (used ONLY for the idle-screen harvest; no prompt sent)

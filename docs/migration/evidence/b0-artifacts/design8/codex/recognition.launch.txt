@@ -1,0 +1,3 @@
+FAKE-RECOGNITION PREREQUISITE (launch)
+pane=%0 intended_tool=codex pane_current_command=codex
+positively_identifies_as_intended_tool=yes

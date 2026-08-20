@@ -1,0 +1,18 @@
+=== fake opencode invoked 2026-08-20T15:36:11Z ===
+argc=0
+cwd=/tmp/aeb0/d8/arms/opencode/cwd
+env (ALLOWLIST ONLY: AE_*, OPENCODE_CONFIG, PATH, HOME, TERM):
+  AE_FAKE_LOG_DIR=/tmp/aeb0/d8/arms/opencode/logs
+  AE_MODE=local
+  AE_ORIGIN=/tmp/aeb0/d8/arms/opencode/cwd
+  AE_HOME=/tmp/aeb0/d8/arms/opencode/home/.ae
+  AE_TMUX_SERVER_KIND=name
+  HOME=/tmp/aeb0/d8/arms/opencode/home
+  AE_DIR=/tmp/aeb0/d8/arms/opencode/cwd
+  OPENCODE_CONFIG=/tmp/aeb0/d8/arms/opencode/home/.ae/sessions/d8/opencode.spawned.0.json
+  AE_FAKE_IDLE_FIXTURE=
+  AE_FAKE_TOOL=opencode
+  TERM=tmux-256color
+  AE_TMUX_SERVER=d8opencode
+  PATH=/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/pkg/env/global/bin:/Applications/Privileges.app/Contents/MacOS:/opt/homebrew/bin:/opt/homebrew/opt/mise/bin
+  AE_SESSION=1

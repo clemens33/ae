@@ -1,0 +1,3 @@
+controller wrote the hostile pane bytes DIRECTLY to the pane tty /dev/ttys071
+(pane OUTPUT, not stdin — the readiness sensors read over it)
+pane-bytes write: ok

@@ -1,0 +1,3 @@
+claude.68845	pid=68845	tool=claude	started=2026-08-20T15:32:42Z
+claude.71987	pid=71987	tool=claude	started=2026-08-20T15:32:49Z
+claude.81507	pid=81507	tool=claude	started=2026-08-20T15:33:12Z

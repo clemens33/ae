@@ -1,0 +1,1 @@
+Spawned claude:worker1 in pane %2

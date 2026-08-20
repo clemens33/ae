@@ -1,0 +1,7 @@
+# tmux snapshot (after-launch)
+d8: 2 windows (created Thu Aug 20 15:35:23 2026)
+rc=0
+%0 d8 grok:grok main grok /dev/ttys069
+%1 d8 _events  fish /dev/ttys077
+rc=0
+rc=0
