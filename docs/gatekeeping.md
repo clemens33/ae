@@ -408,6 +408,49 @@ the frozen source themselves. That is strictly better than being handed a conclu
 keeps the anti-oracle rule pointed at seats too, and a seat that has been right six times is
 still not an authority about the product.
 
+### Two people agreeing from memory about a document is not a reading of the document
+
+The most dangerous verification failure found, because it is **undetectable from either
+side** and it looks exactly like independent confirmation.
+
+A seat told a worker three conditions were binding and added *"you have all three
+already"* — having read the file. The worker checked instead of confirming, and found only
+one and a half: an execution-order line naming spec ids where executed units were meant,
+lane visibility present as incidental phrasing in one row rather than as a rule, and
+nothing anywhere forbidding the cross-lane aggregate the condition existed to prevent.
+
+The seat had checked whether the **concept** was present. The condition was about whether
+the **rule** was stated. The worker knew the concept was there because they had written it.
+**Both parties confirmed the same wrong thing from different directions**, and confirming
+would have cost nothing and left no trace, because the seat had already reached the
+conclusion independently.
+
+> Two independent wrong readings look exactly like verification.
+
+This is distinct from *verifying a conclusion does not validate the reasoning* — that is
+about one party's path to an answer. This is two parties' **agreement** substituting for a
+check neither performed at the right grain. The defence is the worker's: when told "you
+already have X," **read for X as stated, not for X as remembered** — and treat a seat's
+confirmation as a claim about the document, checkable like any other.
+
+*Where the defect sat:* three lines below a sentence warning against prose counts, in a
+paragraph that cited a previous instance of the same defect. Fourth occurrence in the
+cluster of a rule broken inside its own statement.
+
+### Hand-maintained redundancy, of which stale pointers are one instance
+
+Sixty-two positional back-references retargeted silently when a roster renumbered; the
+proposed alternative to a parameterised arm was sixteen near-identical blocks differing
+only in a selector. The worker's reframing is the general form:
+
+> I had been treating that failure as being about POINTERS. It is about HAND-MAINTAINED
+> REDUNDANCY, and pointers were one instance.
+
+Any fact stated in two places that a human must keep in agreement will drift, and the drift
+is silent because both copies still parse. **Where a number must be maintained by hand, the
+right move is usually to stop having the number** — a heading naming a range rather than a
+count, a checker deriving a set from typed rows rather than asserting its size.
+
 ### A transcribed checklist can only under-report
 
 The sharpest instrument bias found in the cluster, because its error mode has **one
