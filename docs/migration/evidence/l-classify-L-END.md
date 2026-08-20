@@ -122,16 +122,26 @@ no change.**
 statement here was FALSE and is withdrawn** (colead caught it; lead re-read the bytes
 and confirms): both `launch-rerun/1first-run.pane_current_command.txt` and
 `3second-run.pane_current_command.txt` read `%0|<pid>|bash|0` — `bash`, NOT the tool
-name. The fixture tool is a renamed bash copy, so these pane files are
-FIDELITY-LIMITED and prove nothing either way about fallback retention; they must not
-be cited for this row. (Note also: L-END's section report claims
-`pane_current_command` positively records the tool name per arm — that claim does not
-hold for this arm's captures; relayed to lexec.) Admissible empirical instead
-(colead): the generated `launch.main.sh.0after-launch` BYTES showing the branch
-decision followed by an explicit `exec` on BOTH paths, plus the frozen source.
-Verified: bytes (the falsification), record (the replacement pointer).
+name. **ROOT CAUSE (colead, verified by lead against `1first-run.ps.txt` /
+`3second-run.ps.txt`): those pane PIDs 14065/14467 are the HARNESS's own outer
+driver** — `/opt/homebrew/bin/bash -c 'cd …; env -i … launch.main.sh; …'` — which the
+controller MUST retain to collect the rc. The pane reports the harness's shell, not
+the product's process. These two files are **INADMISSIBLE for any process-shape
+inference** and must not be cited for this row in either direction.
+
+Two superseded explanations are recorded so neither is repeated: L-END's section
+report claimed `pane_current_command` positively records the tool name per arm (false
+for this arm); lexec then attributed the `bash` to the product's rerun branch exec'ing
+a fallback chain (also false — the ps evidence and the script bytes both refute it).
+
+Admissible empirical instead (colead): (a) the generated
+`launch.main.sh.0after-launch` BYTES — marker branch followed by an explicit `exec`,
+NO `cmd || fallback`; and (b) INDEPENDENTLY, frozen AGENTS.md@72c7293:165's own
+measured statement that the real `claude --resume … || --continue` resume path reads
+`bash`. Verified: bytes (the falsification and the ps root cause).
 **CONFIRMED / no change (both seats)** on the normative row; empirical rests on the
-script bytes, with the pane limitation recorded.
+script bytes plus the independent frozen-doc measurement, with the harness-pane
+inadmissibility recorded.
 
 **SC-816** — an unverifiable session is still a target (b1, none). Artifacts:
 `unreachable-server/manipulation.txt`, `socketdir.before/after.tsv`, `2end.stderr`

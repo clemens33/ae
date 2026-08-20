@@ -1192,6 +1192,16 @@ config/meta into every delivery call; a process title is liveness evidence only,
 never a classifier). **classified_by: REOPENED by the #94 observation and RE-MARKED —
 fable5:lead + gpt56sol:colead, 2026-08-20.**
 
+
+**Empirical colour (joint L classification, both seats, 2026-08-20):** the affected
+population is not hypothetical. Frozen AGENTS.md@72c7293:165 states as a MEASURED fact
+that the `claude --resume … || --continue` resume path reads `bash` in
+`pane_current_command`; since delivery re-derives tool kind from that same field,
+Claude panes launched through the bash-era fallback-chain resume path lose the TUI
+protection this row governs. Scoped precisely (colead): NOT every resumed session —
+marker-based `launch.<slot>.sh` reruns are also resumes and take the explicit-branch
+path. Sourced to AGENTS.md:165 only; no new issue — #94 owns the fix.
+
 **SC-706 — a fact built upstream is transported, never re-parsed.** Bucket 3 — resume
 ids, injection boundaries, and tool kinds ride explicit parameters; the built command
 is downstream data — hostile input, not a source of truth. IS at 72c7293:
