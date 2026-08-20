@@ -1,21 +1,442 @@
 #!/usr/bin/env bash
 # Integration tests for ae (requires tmux, git)
-# Run: ./test-integration
-# Uses an isolated tmux server and temp HOME — safe to run alongside real sessions.
+# Run: AE_ITEST_FULL=1 tests/integration — the full suite, UNNARROWABLE. Gates use this:
+#                                          it ignores any inherited AE_ITEST_ONLY, so a
+#                                          stray export cannot shrink an acceptance run.
+#      tests/integration                 — the full suite, unless AE_ITEST_ONLY is set
+#      tests/integration <pattern>       — scope to matching sections (#64, inner loop only)
+#      AE_ITEST_ONLY=<pattern> tests/integration
+#      tests/integration --list          — print every section name
+#      tests/integration --full          — flag form of AE_ITEST_FULL=1
+# An explicit argument beats AE_ITEST_ONLY; full mode beats both.
+# Uses an isolated tmux server, tmux socket directory and temp HOME — safe to run
+# alongside real sessions.
 set -euo pipefail
 
 PASS=0
 FAIL=0
 ERRORS=()
+# The suite always runs from its own path — a scoped run no longer re-execs a copy
+# (see the filter block below), so there is no case where $0 is not the real file and
+# no AE_ITEST_ROOT hand-off. The environment cannot influence which tree is tested.
 AE="$(cd "$(dirname "$0")/.." && pwd)/ae"
+
+# ── Test-name filter (#64) ───────────────────────────────────────────────────
+# One ~5800-line script with no filter costs 25-40 minutes to answer one
+# inner-loop question, and that toll is paid by the implementer at every phase
+# boundary and again by the gate. AE_ITEST_ONLY — or the first positional
+# argument — scopes the run to the sections whose name matches an extended
+# regex, case-insensitively.
+#
+# A SECTION IS AN `if _itest_section "<name>"; then … fi` BLOCK, and nothing else.
+# Not a comment banner, not a text range. The first cut of this filter derived
+# sections from the `# ── … ──` banners and blanked the unselected lines out of a
+# temp copy, which is UNSAFE and was proven so: a banner-shaped line inside a
+# heredoc BODY is indistinguishable from a real banner, so blanking could delete a
+# `cat <<'EOF'` opener while keeping its body — turning documentation into
+# executable code that passes `bash -n` and exits 0. `bash -n` cannot catch it,
+# because the torn result is still valid shell. The comment that claimed any tear
+# would be unparseable was simply wrong.
+#
+# So the mechanism is not text surgery any more. The file is never rewritten,
+# never copied, never re-exec'd; bash parses the whole document exactly as
+# committed and the guard decides at RUNTIME whether each block runs. That kills
+# the entire failure class rather than validating around it:
+#   * a heredoc cannot be torn, because nothing is ever removed from the text;
+#   * `${LINENO}` in the ERR trap is exact by construction — the file that runs
+#     IS the file you are editing, so there is no copy for a line to point into;
+#   * a section with no executable content is a bash SYNTAX ERROR (`then` with an
+#     empty body), so a vacuous "0 passed, 0 failed" section cannot be authored —
+#     it fails at parse time, on every run, filtered or not;
+#   * decorative banners and load-bearing text markers (the compact section's end
+#     sentinel) are inert here, because they are not the selection mechanism.
+#
+# Three properties that must never be lost:
+#   * unset → every guard returns 0 and the run is exactly today's full suite.
+#   * a pattern matching no section EXITS 2 before any side effect, and prints the
+#     section list. A filter that silently selects nothing is a green run that
+#     proves nothing — the exact failure this project keeps being bitten by.
+#   * the SUMMARY LINE ITSELF carries the scope. Not a line above it: `tail -1` is
+#     how a result gets pasted into a report, so the marker has to be on the line
+#     that carries the counts or the warning is the one thing that gets cut off.
+#
+# Sections carry local state (fixtures, stub functions, sessions) — scoping to a
+# section that depends on an earlier one fails LOUDLY under `set -euo pipefail`
+# and the ERR trap, which is the intended outcome, not a silent pass. #64 buys
+# fast reruns; it does not make the sections hermetic.
+# Gates still run the suite unfiltered. This cuts the inner loop, not acceptance.
+# FULL MODE — the gate's protection against its own environment.
+#
+# AE_ITEST_ONLY is read from the ENVIRONMENT, and an environment is inherited by
+# things that never asked for it. Measured: with AE_ITEST_ONLY exported in a shell,
+# `just test-integration` ran ONE of 75 sections, asserted twice, and exited 0. The
+# honest "SCOPED RUN" marker on the summary cannot repair that, because automation
+# reads the EXIT CODE, not the prose — a narrowed gate that returns 0 is a gate that
+# has been silently narrowed. The filter was built to cut the inner loop; this is the
+# guarantee that it can never cut the outer one.
+#
+# So gate recipes ask for full mode explicitly (AE_ITEST_FULL=1, or `--full`), and in
+# full mode an inherited filter is IGNORED, not honoured — loudly, at the top and
+# again on the summary line. Ignoring rather than refusing is deliberate: the gate's
+# job is to test everything, and a red gate caused by someone's leftover shell export
+# teaches people to unset the variable, not to trust the gate. The ignore is recorded
+# where it cannot be missed, so a full run is never quietly a different run.
+#
+# PROVENANCE IS PART OF THE VALUE. `--list` is a MODE, and a mode may only be requested
+# by someone typing it; the same six characters arriving in AE_ITEST_ONLY are a filter
+# VALUE that happens to spell one. Conflating the two reopened the exact bypass full
+# mode exists to close: `AE_ITEST_FULL=1 AE_ITEST_ONLY=--list` printed 75 names and
+# exited 0, having run nothing — a gate that tests nothing and reports success. So the
+# argv and environment channels are kept apart from here on, and only the argv one can
+# select a mode.
+_itest_full=""
+_itest_list=""
+_itest_argv_filter=""
+_itest_arg="${1:-}"
+case "$_itest_arg" in
+    --full) _itest_full=1 ;;
+    --list) _itest_list=1 ;;
+    *) _itest_argv_filter="$_itest_arg" ;;
+esac
+if [[ "${AE_ITEST_FULL:-}" == "1" ]]; then _itest_full=1; fi
+# AN EXPLICIT ARGUMENT BEATS THE ENVIRONMENT. Same family as full mode, one scale down:
+# with AE_ITEST_ONLY exported, `tests/integration --list` used to perform a scoped RUN
+# instead of listing, because the ambient variable won. What someone typed is what they
+# meant; an inherited variable is what they forgot.
+_ITEST_FILTER_IGNORED=""
+if [[ -n "$_itest_argv_filter" ]]; then
+    _itest_filter="$_itest_argv_filter"
+    _itest_filter_src="typed on the command line"
+else
+    _itest_filter="${AE_ITEST_ONLY:-}"
+    _itest_filter_src="inherited from AE_ITEST_ONLY"
+fi
+# Full mode overrides every filter, whatever its provenance — that is what makes an
+# acceptance run unnarrowable. Provenance decides the MODE question above, not this one.
+if [[ -n "$_itest_full" && -n "$_itest_filter" ]]; then
+    _ITEST_FILTER_IGNORED="$_itest_filter"
+    _itest_filter=""
+    {
+        echo ""
+        echo "FULL MODE: a test-name filter (${_itest_filter_src}) was set" >&2
+        echo "  to '${_ITEST_FILTER_IGNORED}' and is being IGNORED."
+        echo "  This run was asked for the FULL suite, so it runs every section. A filter"
+        echo "  must never narrow an acceptance run, least of all one nobody typed."
+        echo ""
+    } >&2
+fi
+unset _itest_arg _itest_argv_filter
+_ITEST_RAN=""
+_ITEST_RAN_N=0
+_ITEST_SKIPPED_N=0
+
+# Every section name, in file order, read back out of the guard calls THEMSELVES —
+# never a hand-kept parallel list, which would drift from what actually runs. The
+# anchored pattern also pins the canonical one-line form: a guard written any other
+# way is invisible here and would be reported as "not a section" rather than
+# silently mis-scoped.
+#
+# SINGLE quotes, and the form is mandatory. These names are prose written by whoever
+# adds a section, and this prose sits in a shell word: three existing titles contain
+# BACKTICKS (`ae end`, `ae end <prefix>`) and under double quotes bash treats those as
+# COMMAND SUBSTITUTION — the guard line would have run `ae end` on its way to deciding
+# whether to run the section. Single quotes make the name inert text, which is what a
+# label is. An embedded `'` is written `'\''`; the reader below strips that back out.
+_itest_names() {
+    sed -n "s/^if _itest_section '\(.*\)'; then\$/\1/p" "$1" | sed "s/'\\\\''/'/g"
+}
+
+# Lowercase both sides rather than `shopt -s nocasematch`: the shopt is global
+# state that would still be set while the SUITE runs, quietly changing the
+# semantics of every `[[ … == … ]]` and `case` in 5800 lines of tests.
+# `tr`, not `${v,,}`: this file must stay readable to bash 3.2, which is what
+# `#!/usr/bin/env bash` resolves to on a stock macOS login shell.
+_itest_match() {
+    if [[ -z "$_itest_filter" ]]; then return 0; fi
+    local l p
+    l="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    p="$(printf '%s' "$_itest_filter" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$l" =~ $p ]]; then return 0; fi
+    return 1
+}
+
+# The guard. Used ONLY as `if _itest_section "<name>"; then … fi`, which is a
+# condition position — errexit is disabled there by definition, so returning 1 to
+# mean "skip" can never abort the suite. Inside the body errexit and the ERR trap
+# are fully active (measured), so a wrapped section keeps exactly the failure
+# semantics it had as top-level code.
+_itest_section() {
+    if _itest_match "$1"; then
+        _ITEST_RAN="${_ITEST_RAN}$1"$'\n'
+        _ITEST_RAN_N=$((_ITEST_RAN_N + 1))
+        return 0
+    fi
+    _ITEST_SKIPPED_N=$((_ITEST_SKIPPED_N + 1))
+    return 1
+}
+
+# Only a TYPED --list lists. Reading this off `$_itest_filter` was the bypass: an
+# inherited AE_ITEST_ONLY=--list satisfied it, so the suite listed and exited 0 without
+# running anything — under full mode, in a gate.
+if [[ -n "$_itest_list" ]]; then
+    _itest_names "$0"
+    exit 0
+fi
+if [[ -n "$_itest_filter" ]]; then
+    _itest_all="$(_itest_names "$0")"
+    _itest_all_n="$(printf '%s\n' "$_itest_all" | grep -c . || true)"
+    # A duplicated name is ambiguous in both directions — the filter would select
+    # two blocks under one label and the report would under-count. Refuse.
+    _itest_dupes="$(printf '%s\n' "$_itest_all" | sort | uniq -d)"
+    if [[ -n "$_itest_dupes" ]]; then
+        {
+            echo "DUPLICATE SECTION NAMES — refusing to run:"
+            printf '%s\n' "$_itest_dupes" | sed 's/^/  /'
+        } >&2
+        exit 2
+    fi
+    _itest_sel="$(printf '%s\n' "$_itest_all" | awk -v pat="$_itest_filter" 'tolower($0) ~ tolower(pat)')"
+    if [[ -z "$_itest_sel" ]]; then
+        {
+            echo ""
+            echo "FILTER MATCHED NOTHING: '$_itest_filter' selected 0 of ${_itest_all_n} sections."
+            echo "  Refusing to run — a filter that silently selects nothing is a green run"
+            echo "  that proves nothing. The pattern is an extended regex, case-insensitive."
+            echo ""
+            echo "Available sections:"
+            printf '%s\n' "$_itest_all" | sed 's/^/  /'
+        } >&2
+        exit 2
+    fi
+    echo "SCOPED RUN (#64) — filter: '$_itest_filter'"
+    echo "  $(printf '%s\n' "$_itest_sel" | grep -c . || true) of ${_itest_all_n} sections selected:"
+    printf '%s\n' "$_itest_sel" | sed 's/^/    + /'
+    echo "  THIS IS NOT A FULL RUN. Gates run the suite unfiltered."
+    echo ""
+    unset _itest_all _itest_sel _itest_dupes
+fi
 
 # Isolated environment
 TMPDIR="$(mktemp -d)"
 # Unix socket paths must fit sun_path (104 bytes on macOS, 108 on Linux) and
 # macOS mktemp hands out /var/folders/<20 chars>/T/tmp.XXXXXXXX — long enough to
 # blow the limit on its own. Socket-path tests get this short dir instead.
-SOCK_DIR="/tmp/ae-itest-$$"
-mkdir -p "$SOCK_DIR"
+# The run's own directory. mktemp, not "/tmp/ae-itest-$$": a PID is not a generation
+# identity. `mkdir -p` on a predictable path SUCCEEDS on a directory that is already
+# there, so a recycled PID silently ADOPTS a dead run's debris and inherits its
+# sockets — and two generations sharing one path is exactly the state the sweep below
+# reasons about. mktemp creates atomically and fails if it cannot, so a path is only
+# ever one generation's.
+SOCK_DIR="$(mktemp -d "/tmp/ae-itest-$$-XXXXXX")"
+# OWNERSHIP IS A MARKER WE WROTE, NEVER A NAME WE RECOGNISE. Anything may create a
+# directory called /tmp/ae-itest-<digits>-<six chars>; a sweep that infers ownership
+# from the pattern will happily `rm -rf` a stranger's directory and probe whatever is
+# inside it. The marker is the only thing that says "this suite made this".
+_ITEST_MARKER_NAME=".ae-itest-owner"
+_ITEST_MARKER_MAGIC="ae-integration-suite-owned-directory"
+# Published temp+rename, never written in place. A reader — the next run's sweep — can
+# otherwise catch the file half-written and see our magic with no pid line yet, which is
+# indistinguishable from a torn marker and used to read as "dead". rename(2) is atomic:
+# the marker either is not there or is complete.
+_itest_publish_marker() {
+    local dir="$1" tmp="$1/.ae-itest-owner.tmp.$$"
+    printf '%s\npid=%s\n' "$_ITEST_MARKER_MAGIC" "$$" >"$tmp"
+    mv "$tmp" "$dir/$_ITEST_MARKER_NAME"
+}
+_itest_publish_marker "$SOCK_DIR"
+# ── Hermetic tmux SOCKET DIRECTORY (#70) ─────────────────────────────
+# The suite already isolated HOME and its own tmux server, but not the directory
+# tmux keeps sockets in — and `ae` enumerates that whole directory FAIL-CLOSED: a
+# socket it cannot interrogate blocks a lifecycle operation, because a real
+# session could be hiding behind it. `ae` is right to do that; the debris was the
+# problem. Sharing the machine's directory meant every hard-killed run left a
+# socket there PERMANENTLY (281 measured, accumulated across a week by every
+# agent on the box), so the failure probability of every future run rose
+# monotonically and looked like contention.
+#
+# Give the run its own directory rather than sweeping the shared one. A test
+# suite that deletes files outside its own sandbox is precisely the isolation
+# breach the tripwire below exists to catch — and unlinking the socket of a live
+# server someone else owns turns their session unenumerable, which is worse than
+# the debris. Sweeping OUR OWN namespace (below) is the part that is ours to do.
+export TMUX_TMPDIR="$SOCK_DIR/tmuxtmp"
+mkdir -p "$TMUX_TMPDIR"
+# Where tmux will actually place sockets. Tests that plant, chmod or unlink a
+# socket BY HAND must address this, never /tmp/tmux-<uid> — that one belongs to
+# the human's real sessions.
+TMUX_SOCK_DIR="$TMUX_TMPDIR/tmux-$(id -u)"
+
+# Is this directory one WE created? A marker file we wrote, read as a regular file
+# (never through a symlink), containing our magic. No marker means hands off
+# entirely: not probed, not classified, above all not deleted.
+# The owning PID, on stdout, ONLY when the marker is complete and unambiguous: our
+# magic, and EXACTLY ONE syntactically valid pid line. Anything else — missing, a
+# symlink, truncated mid-write, two pid lines, a pid that is not digits — returns
+# non-zero and says nothing. It must NEVER degrade to "no pid, therefore dead": a torn
+# marker on a CONCURRENT run would then read as reapable and we would kill its servers.
+_itest_marker_pid() {
+    local m="$1" pids n
+    if [[ -L "$m" ]]; then return 1; fi
+    if [[ ! -f "$m" ]]; then return 1; fi
+    if ! grep -qxF "$_ITEST_MARKER_MAGIC" "$m" 2>/dev/null; then return 1; fi
+    pids="$(sed -n 's/^pid=\([0-9][0-9]*\)$/\1/p' "$m")"
+    n="$(printf '%s\n' "$pids" | grep -c . || true)"
+    if [[ "$n" != "1" ]]; then return 1; fi
+    printf '%s' "$pids"
+    return 0
+}
+
+# UNKNOWN is not a verdict anyone may act on, and what it MEANS depends on whose
+# directory it is. The two meanings are opposites, which is why they are not one code
+# path:
+#   foreign -> hands off, always. We have no claim on it and no obligation to it, so
+#              "I cannot tell" and "not mine" have the same safe answer: leave it.
+#   self    -> preserve it and FAIL. Our own directory that we cannot account for is
+#              precisely the state that strands live servers while the run reports 0.
+_itest_unknown() {
+    local mode="$1" dir="$2" why="$3"
+    if [[ "$mode" == "self" ]]; then
+        echo "  REFUSING (our own directory): $dir — $why" >&2
+        return 1
+    fi
+    return 0
+}
+
+# Classify the COMPLETE tree and neutralise it, or refuse. Returns 0 only when every
+# entry was accounted for and no server can still be hiding behind a socket.
+#
+# `find`, not a glob: a glob skips DOT ENTRIES, and "everything except the hidden
+# files" is not an inventory. `find` also does not follow symlinks, which is what
+# makes the symlink rule enforceable AT EVERY LEVEL rather than only at the top: a
+# `tmuxtmp` or `tmux-<uid>` symlink pointing at the real /tmp/tmux-<uid> would
+# otherwise aim the kill-and-verify logic below at the human's live servers, and it
+# would dutifully kill them. Any symlink anywhere in the tree is refusal.
+#
+# The allowlist is the true invariant of this tree, not a guess: we create
+# directories and unix sockets, plus the one marker file. Anything else — a regular
+# file, a fifo, a device — means this is not the directory we think it is.
+#
+# Socket classification, and why "unknown" is not "dead":
+#   answers        -> kill it, then RE-PROBE. Still answering means NOT reapable.
+#   cannot probe   -> UNKNOWN (mode 000). Refuse. A socket we cannot interrogate is
+#                     the exact condition `ae` itself fails closed on; a test suite
+#                     may not be more reckless than that.
+#   does not answer and is probeable -> clean-dead. Reapable.
+_itest_tree_reapable() {
+    local dir="$1" rc=0 entries e i
+    if ! entries="$(find "$dir" -mindepth 1 2>/dev/null)"; then
+        echo "  REFUSING: could not enumerate $dir — an un-inventoried tree is never deleted" >&2
+        return 1
+    fi
+    while IFS= read -r e; do
+        [[ -n "$e" ]] || continue
+        if [[ -L "$e" ]]; then
+            echo "  REFUSING: $e is a SYMLINK — this tree contains none, so it is not ours" >&2
+            rc=1
+            continue
+        fi
+        if [[ -d "$e" ]]; then continue; fi
+        if [[ -S "$e" ]]; then
+            if [[ ! -r "$e" || ! -w "$e" ]]; then
+                echo "  REFUSING: $e cannot be probed (mode) — unknown is not dead" >&2
+                rc=1
+                continue
+            fi
+            if command tmux -S "$e" list-sessions >/dev/null 2>&1; then
+                command tmux -S "$e" kill-server >/dev/null 2>&1 || true
+                # A server takes a moment to go. Verify rather than believe an exit code.
+                for i in 1 2 3 4 5 6 7 8 9 10; do
+                    command tmux -S "$e" list-sessions >/dev/null 2>&1 || break
+                    sleep 0.2
+                done
+                if command tmux -S "$e" list-sessions >/dev/null 2>&1; then
+                    echo "  REFUSING: server behind $e SURVIVED kill-server — deleting its" >&2
+                    echo "            socket now would orphan it." >&2
+                    rc=1
+                fi
+            fi
+            continue
+        fi
+        if [[ "$e" == "$dir/$_ITEST_MARKER_NAME" && -f "$e" ]]; then continue; fi
+        echo "  REFUSING: $e is not a directory, socket or the ownership marker" >&2
+        rc=1
+    done <<<"$entries"
+    return $rc
+}
+
+# BSD `rm -rf` is neither atomic nor retried: if anything writes into the tree while
+# it walks, it fails with "Directory not empty" and leaves the debris behind. Measured
+# with fish writing completions under HOME — which lives inside TMPDIR — as its pane
+# was going away. The writers are pane children of servers we kill first, so this is a
+# BOUNDED WAIT for them to finish dying, driven by the actual condition (did it go?)
+# rather than by a guessed sleep.
+_itest_rm_bounded() {
+    local p="$1" i
+    for i in $(seq 1 40); do
+        [[ -e "$p" ]] || return 0
+        rm -rf "$p" 2>/dev/null || true
+        [[ -e "$p" ]] || return 0
+        sleep 0.25
+    done
+    [[ -e "$p" ]] || return 0
+    return 1
+}
+
+# Remove one run's directory, but only after ownership, structure and every server in
+# it have been positively established. Preserving debris is recoverable; orphaning a
+# server, or deleting a directory that was never ours, is not.
+_itest_reap_dir() {
+    local dir="$1" mode="${2:-foreign}" pid
+    # Each ownership fact is answered explicitly. There is no "probably ours" branch and
+    # no fact whose absence is read as permission.
+    if [[ -L "$dir" ]]; then
+        if _itest_unknown "$mode" "$dir" "the path is a SYMLINK, not a directory we created"; then
+            return 0
+        fi
+        return 1
+    fi
+    if [[ ! -d "$dir" ]]; then
+        # Foreign: it went away between the glob and here. Nothing to do, nothing wrong.
+        # Self: our socket directory is GONE and we did not remove it — the servers that
+        # lived in it are now unreachable, which is the loudest thing this suite can find.
+        if _itest_unknown "$mode" "$dir" "our own socket directory is GONE — its servers are now unreachable"; then
+            return 0
+        fi
+        return 1
+    fi
+    if ! pid="$(_itest_marker_pid "$dir/$_ITEST_MARKER_NAME")"; then
+        # For a FOREIGN directory this is both "not ours" and "torn marker", and both
+        # mean hands off. For our OWN it means the ownership fact we wrote is gone.
+        if _itest_unknown "$mode" "$dir" "our ownership marker is missing, torn, or ambiguous"; then
+            return 0
+        fi
+        return 1
+    fi
+    if [[ "$mode" != "self" ]]; then
+        # A liveness hint, read from the marker WE wrote rather than from the directory
+        # name. Alive means a CONCURRENT run: leave it entirely alone.
+        if kill -0 "$pid" 2>/dev/null; then return 0; fi
+    fi
+    if ! _itest_tree_reapable "$dir"; then
+        echo "  PRESERVED: $dir (see refusals above)" >&2
+        return 1
+    fi
+    if ! _itest_rm_bounded "$dir"; then
+        echo "  PRESERVED: $dir — removal kept failing (something is still writing into it)" >&2
+        return 1
+    fi
+    return 0
+}
+
+# Our own leftovers: a run killed hard cannot clean up after itself. Every safety
+# question — is it ours, is it intact, is anything still alive in it — is answered by
+# _itest_reap_dir, which is the SAME function this run's own cleanup uses. One
+# implementation, so the careful path cannot drift from the convenient one.
+for _stale in /tmp/ae-itest-*; do
+    if [[ "$_stale" == "$SOCK_DIR" ]]; then continue; fi
+    _itest_reap_dir "$_stale" foreign || true
+done
+unset _stale
 export AE_TMUX_SERVER="ae-test-$$"
 # Tripwire (2026-07-02 incident: the REAL ~/.ae/config was clobbered with a
 # test fixture during a test window): fingerprint the real user's config
@@ -44,7 +465,23 @@ mkdir -p "$HOME/.ae"
 
 cleanup() {
     command tmux -L "$AE_TMUX_SERVER" kill-server 2>/dev/null || true
-    rm -rf "$TMPDIR" "$SOCK_DIR"
+    # ORDER MATTERS, AND IT IS THE OPPOSITE OF THE OBVIOUS ONE.
+    #
+    # HOME lives inside TMPDIR, and the pane shells are still running when this trap
+    # fires — fish writes completion caches under HOME as it exits. Removing TMPDIR
+    # first therefore races live writers, and BSD `rm -rf` loses that race loudly and
+    # partially: "Directory not empty", rc=1, debris left behind. Measured.
+    #
+    # So: kill and VERIFY every server first (which takes the panes, and the panes are
+    # the writers), and only then remove the tree they were writing into, with a
+    # bounded retry for the stragglers. Same rule as the sweep, same function — an
+    # unverified kill followed by a successful delete is what orphans a server.
+    #
+    # Every step runs even if an earlier one failed. A cleanup that gives up half way
+    # leaves MORE debris than one that reports two failures and finishes.
+    local _reap_failed=0 _tmp_failed=0
+    _itest_reap_dir "$SOCK_DIR" self || _reap_failed=1
+    _itest_rm_bounded "$TMPDIR" || _tmp_failed=1
     local now_fpr
     if [[ -f "$REAL_AE_CONFIG" ]]; then now_fpr="$(_fpr <"$REAL_AE_CONFIG")"; else now_fpr="absent"; fi
     local ae_fpr_end
@@ -61,6 +498,27 @@ cleanup() {
         echo "FATAL: the REAL user config ($REAL_AE_CONFIG) CHANGED during this test run." >&2
         echo "A test escaped isolation. Investigate before trusting any results." >&2
         exit 97
+    fi
+    # Last, so it can never mask the two tripwires above — but still non-zero, because
+    # a run that leaves a server nobody can reach has not finished cleanly whatever its
+    # assertions said. The directory is still on disk and named above; the next run's
+    # sweep will retry it, and will refuse again for as long as the server is alive.
+    if ((_reap_failed || _tmp_failed)); then
+        echo "" >&2
+        if ((_reap_failed)); then
+            echo "FATAL: this run's tmux socket directory could NOT be safely removed." >&2
+            echo "  A server refused to die, a socket could not be classified, or the tree" >&2
+            echo "  held something we did not put there. It has been PRESERVED — deleting it" >&2
+            echo "  would orphan the server. Investigate the refusals printed above." >&2
+        fi
+        if ((_tmp_failed)); then
+            echo "FATAL: this run's temp HOME ($TMPDIR) could NOT be removed." >&2
+            echo "  Something kept writing into it for the whole bounded retry, which means a" >&2
+            echo "  process outlived the panes. Find it before trusting the next run's" >&2
+            echo "  isolation; the tree is still on disk, named above." >&2
+        fi
+        echo "  The assertion counts reported below are otherwise valid." >&2
+        exit 96
     fi
 }
 trap cleanup EXIT
@@ -199,7 +657,13 @@ wait_for_session() {
     return 0
 }
 
+#@itest-sections-begin
+# Everything above is the preamble and always runs. Everything below is carved
+# into sections by `# ── <title> ──` banners, which is what the #64 name filter
+# selects on. Do not move this marker without reading that block.
+
 # ── Test 1: Lifecycle — create, list, end ────────────────────────
+if _itest_section 'Test 1: Lifecycle — create, list, end'; then
 
 REPO="$(setup_repo)"
 (cd "$REPO" && "$AE" --local test-life &) 2>/dev/null
@@ -237,8 +701,10 @@ for _sb in "$HOME/.ae/sessions/test-life"/*; do
     "$_sb_interp" -n "$_sb" 2>/dev/null || _sb_bad+="$(basename "$_sb"):parse "
 done
 assert_eq "helpers: every shebang names a bash >= 4 that can parse the helper" "" "$_sb_bad"
+fi
 
 # ── hostile PATH: ae must survive its own re-exec marker ──────────────
+if _itest_section 'hostile PATH: ae must survive its own re-exec marker'; then
 # On a macOS login shell path_helper puts /bin first, so ae's own
 # `#!/usr/bin/env bash` resolves to 3.2 and ae re-execs itself under a modern
 # bash. Anything ae then spawns that re-invokes ae through that same shebang
@@ -267,8 +733,10 @@ assert_contains "hostile PATH: the refusal names the fix" "brew install bash" \
 sleep 0.5
 assert_eq "lifecycle: tmux session gone after end" "1" "$(tmux has-session -t test-life 2>/dev/null && echo 0 || echo 1)"
 assert_not_exists "lifecycle: session dir cleaned" "$HOME/.ae/sessions/test-life"
+fi
 
 # ── Test 2: Resume detection ─────────────────────────────────────────
+if _itest_section 'Test 2: Resume detection'; then
 
 REPO2="$(setup_repo)"
 (cd "$REPO2" && "$AE" --local test-resume &) 2>/dev/null
@@ -297,8 +765,10 @@ assert_eq "resume: session re-created" "0" "$(tmux has-session -t test-resume 2>
 # Clean up
 "$AE" end -f test-resume 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 2b: Rename moves session, window, and meta ──────────────────
+if _itest_section 'Test 2b: Rename moves session, window, and meta'; then
 
 REPO2B="$(setup_repo)"
 (cd "$REPO2B" && "$AE" --local test-rename-old &) 2>/dev/null
@@ -323,8 +793,10 @@ assert_not_exists "rename: old session dir moved" "$HOME/.ae/sessions/test-renam
 
 "$AE" end -f test-rename-new 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 3: Health check in list ─────────────────────────────────────
+if _itest_section 'Test 3: Health check in list'; then
 
 REPO3="$(setup_repo)"
 (cd "$REPO3" && "$AE" --local test-health &) 2>/dev/null
@@ -340,8 +812,10 @@ assert_contains "health: agent row shows name" "dummy" "$list_output"
 # Clean up
 "$AE" end -f test-health 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 3a: --active (recently-active filter) ───────────────────────
+if _itest_section 'Test 3a: --active (recently-active filter)'; then
 
 REPO3A="$(setup_repo)"
 (cd "$REPO3A" && "$AE" --local test-active &) 2>/dev/null
@@ -368,8 +842,10 @@ assert_contains "active: stale session still shown in plain list" "test-active" 
 # Clean up
 "$AE" end -f test-active 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 3b: state column + session attn marker in list ──────────────
+if _itest_section 'Test 3b: state column + session attn marker in list'; then
 
 REPO3B="$(setup_repo)"
 (cd "$REPO3B" && "$AE" --local test-state &) 2>/dev/null
@@ -477,8 +953,12 @@ if command -v python3 >/dev/null 2>&1; then
     assert_eq "json: --all output is valid JSON" "ok" \
         "$("$AE" list --all --json 2>/dev/null | python3 -c 'import json,sys; json.load(sys.stdin); print("ok")' 2>/dev/null || echo "invalid")"
 fi
+fi
 
 # ── P1: `ae end` resolves the target BEFORE the destructive prompt ───
+# shellcheck disable=SC2016 # the backticks are LITERAL text in a label, not
+# a substitution: single quotes are the fix here, not the finding (see _itest_names).
+if _itest_section 'P1: `ae end` resolves the target BEFORE the destructive prompt'; then
 # Bug (Clemens 2026-07-21): `ae end <bogus>` PROMPTED the destructive confirm, then
 # said "not found" after y. A nonexistent target must error with NO prompt. This is a
 # CALLER PROBE (round-6 lesson: source text cannot prove a runtime order). Feed 'y' so
@@ -504,8 +984,10 @@ else
 fi
 assert_eq "end slashed name: nonzero and no prompt" "1" \
     "$([[ $end_slash_rc -ne 0 && "$end_slash_out" != *"Continue?"* ]] && echo 1 || echo 0)"
+fi
 
 # ── P1 review B2: dot-component targets are rejected before any prompt ─
+if _itest_section 'P1 review B2: dot-component targets are rejected before any prompt'; then
 # `.` and `..` have no '/', so the slash guard alone accepted them and `ae end ..`
 # prompted on `sessions/../` (a real dir → classified 'stopped'). Reject dot
 # components at the same guard.
@@ -514,8 +996,12 @@ for dotname in . ..; do
     assert_eq "end '$dotname': nonzero and NO prompt (dot-component rejected)" "1" \
         "$([[ $dot_rc -ne 0 && "$end_dot_out" != *"Continue?"* && "$end_dot_out" != *"Removes ae state"* ]] && echo 1 || echo 0)"
 done
+fi
 
 # ── P1 review B1: `ae end <prefix>` must not touch a live neighbour ───
+# shellcheck disable=SC2016 # the backticks are LITERAL text in a label, not
+# a substitution: single quotes are the fix here, not the finding (see _itest_names).
+if _itest_section 'P1 review B1: `ae end <prefix>` must not touch a live neighbour'; then
 # tmux -t PREFIX-MATCHES: with `lifeproj` live, `ae end lifepro` used to classify live
 # (has-session -t lifepro matched lifeproj), prompt, and could kill lifeproj. Resolve
 # the EXACT session id; a prefix that is not an exact session/dir is not-found.
@@ -532,8 +1018,10 @@ assert_eq "end prefix: the live neighbour 'lifeproj' is STILL ALIVE (not prefix-
 # doctor-orphan test far below (teardown can lag under full-suite contention).
 for _i in $(seq 1 20); do tmux has-session -t "=lifeproj" 2>/dev/null || break; sleep 0.3; done
 "$AE" end -f lifeproj 2>/dev/null || true
+fi
 
 # ── P1: truthful prompt + stopped-dir end-by-name regression ─────────
+if _itest_section 'P1: truthful prompt + stopped-dir end-by-name regression'; then
 # test-state is a LOCAL, now-STOPPED session. Ending it removes leftover state with NO
 # commit/push (local never pushes) — the prompt must not claim otherwise, and the
 # stopped-dir path must still end it (the elif we hoist resolution past).
@@ -551,8 +1039,10 @@ assert_not_exists "end stopped local: session dir removed" "$HOME/.ae/sessions/t
 # Clean up (already ended above; harmless if so)
 "$AE" end -f test-state 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── P1 review B1: end a session on a DIFFERENT tmux server (named-server) ──
+if _itest_section 'P1 review B1: end a session on a DIFFERENT tmux server (named-server)'; then
 # `_ae_session_id` lists only the AMBIENT server. A session live on a NAMED server, ended
 # from a shell whose ambient server is different, was misclassified as stopped: rc0, its
 # state deleted, the agent left ALIVE (orphaned). The end path must resolve the target's
@@ -580,8 +1070,10 @@ assert_eq "end named-server: the agent is KILLED on its own server (not orphaned
     "$(command tmux -L "$SRV_A" has-session -t "=nsrv" 2>/dev/null && echo 0 || echo 1)"
 assert_not_exists "end named-server: state removed" "$HOME/.ae/sessions/nsrv"
 command tmux -L "$SRV_A" kill-server 2>/dev/null || true
+fi
 
 # ── 2nd-delta B1 MIRROR: DEFAULT-server target, ended from a NAMED-ambient shell ──
+if _itest_section '2nd-delta B1 MIRROR: DEFAULT-server target, ended from a NAMED-ambient shell'; then
 # The symmetric case: a session whose meta records an EMPTY tmux_server (= the default
 # socket) ended from a shell with a NAMED ambient AE_TMUX_SERVER. Empty must resolve the
 # pinned default socket, never the ambient shim and never inherited $TMUX.
@@ -602,13 +1094,13 @@ assert_eq "end default-mock: session live on the mock-default with EMPTY meta se
 # Option-B invariant: a BLANK record never queries any server — not even the pinned
 # default. Plain end fails closed; the explicit AE_END_SERVER override (typed by shape,
 # a name here) is the resolution, and it must ignore ambient + inherited $TMUX.
-if TMUX="/tmp/tmux-$(id -u)/ae-elsewhere-$$,999,0" AE_TMUX_SERVER="ae-mirror-$$" \
+if TMUX="$TMUX_SOCK_DIR/ae-elsewhere-$$,999,0" AE_TMUX_SERVER="ae-mirror-$$" \
     AE_TMUX_DEFAULT_SOCKET="$DEFMOCK" "$AE" end -f dsrv >/dev/null 2>&1; then dm_rc=0; else dm_rc=$?; fi
 assert_eq "end default-mock (invariant): blank record fails closed — default is NOT queried" "1" \
     "$([[ $dm_rc -ne 0 ]] && command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && echo 1 || echo 0)"
 for _i in $(seq 1 20); do
     command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null || break
-    TMUX="/tmp/tmux-$(id -u)/ae-elsewhere-$$,999,0" AE_TMUX_SERVER="ae-mirror-$$" \
+    TMUX="$TMUX_SOCK_DIR/ae-elsewhere-$$,999,0" AE_TMUX_SERVER="ae-mirror-$$" \
         AE_END_SERVER="$DEFMOCK" "$AE" end -f dsrv 2>/dev/null || true
     sleep 0.4
 done
@@ -616,8 +1108,10 @@ assert_eq "end default-mock (invariant): AE_END_SERVER override ends it on the R
     "$(command tmux -L "$DEFMOCK" has-session -t "=dsrv" 2>/dev/null && echo 0 || echo 1)"
 assert_not_exists "end default-mock (invariant): state removed" "$HOME/.ae/sessions/dsrv"
 command tmux -L "$DEFMOCK" kill-server 2>/dev/null || true
+fi
 
 # ── 4th review B1: launch INSIDE a foreign tmux pane records the REAL server ──
+if _itest_section '4th review B1: launch INSIDE a foreign tmux pane records the REAL server'; then
 # AE_TMUX_SERVER unset + $TMUX inherited → the session lands on the pane's server; meta
 # must record THAT server, not "" (which every exact-server consumer reads as default).
 FOREIGN="ae-foreign-$$"
@@ -632,7 +1126,7 @@ assert_eq "launch-inside (4th B1): session landed on the FOREIGN server" "1" \
 # Resolved path: macOS /tmp is a symlink to /private/tmp, and ae records the
 # socket path exactly as tmux reports it in $TMUX (already resolved).
 assert_eq "launch-inside (4th B1): meta records the FOREIGN socket PATH + kind=socket" \
-    "$(cd "/tmp/tmux-$(id -u)" && pwd -P)/$FOREIGN|socket" \
+    "$(cd "$TMUX_SOCK_DIR" && pwd -P)/$FOREIGN|socket" \
     "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/insidesess/meta" 2>/dev/null)|$(sed -n 's/^tmux_server_kind=//p' "$HOME/.ae/sessions/insidesess/meta" 2>/dev/null)"
 # ...and an end from a PLAIN shell finds it there (the full round trip the lie broke).
 for _i in $(seq 1 15); do
@@ -644,8 +1138,10 @@ assert_eq "launch-inside (4th B1): plain-shell end kills it on the foreign serve
     "$(command tmux -L "$FOREIGN" has-session -t "=insidesess" 2>/dev/null && echo 0 || echo 1)"
 assert_not_exists "launch-inside (4th B1): state removed" "$HOME/.ae/sessions/insidesess"
 command tmux -L "$FOREIGN" kill-server 2>/dev/null || true
+fi
 
 # ── 5th review B1: -S socket vs same-basename -L server collision round-trip ──
+if _itest_section '5th review B1: -S socket vs same-basename -L server collision round-trip'; then
 # A `-S /path/collide.sock` server and a `-L collide.sock` server are DIFFERENT servers
 # sharing a basename. The recorded identity must be the PATH: end the -S target, decoy
 # on -L untouched — the old basename record killed the wrong-server lookup.
@@ -685,8 +1181,10 @@ assert_eq "S-collision (5th B1): the same-basename -L decoy is UNTOUCHED" "1" \
 assert_not_exists "S-collision (5th B1): state removed" "$HOME/.ae/sessions/scoll"
 command tmux -S "$SC_PATH" kill-server 2>/dev/null || true
 command tmux -L "$SC_NAME" kill-server 2>/dev/null || true
+fi
 
 # ── issue #4 BLOCKER: prompt-delivery children must not inherit fd 8 ──
+if _itest_section 'issue #4 BLOCKER: prompt-delivery children must not inherit fd 8'; then
 # send_agent_cmd's codex-resume branch spawns a subshell with `&` (the opencode branch
 # did too until #53 moved its context to OPENCODE_CONFIG and deleted the paste)
 # that sleeps 3s before pasting. A child INHERITS open descriptors, so while the
@@ -777,8 +1275,12 @@ FDSTUB
 else
     printf 'NOTE: fd8 inheritance probe SKIPPED — flock not available.\n' >&2
 fi
+fi
 
 # ── issue #4: `ae end` racing a launch must not leave a recreated session ──
+# shellcheck disable=SC2016 # the backticks are LITERAL text in a label, not
+# a substitution: single quotes are the fix here, not the finding (see _itest_names).
+if _itest_section 'issue #4: `ae end` racing a launch must not leave a recreated session'; then
 # The lifecycle lock used to be released immediately after the meta mv, while
 # ~20 helpers, the loop shim, workspace.md and launch.<slot>.sh were still being
 # written. A concurrent `ae end` rm -rf'd the directory mid-generation and the
@@ -870,8 +1372,10 @@ assert_eq "race (#4): no attempt leaves a session directory behind after a SUCCE
         "$RACE_INCONCLUSIVE" >&2
 assert_eq "race (#4): at least one attempt actually completed an end" "1" \
     "$([[ "$(printf '%s' "$RACE_INCONCLUSIVE" | wc -w | tr -d ' ')" -lt 3 ]] && echo 1 || echo 0)"
+fi
 
 # ── 5th review B2: legacy-empty meta upgrade — fail closed, then migrate, then end ──
+if _itest_section '5th review B2: legacy-empty meta upgrade — fail closed, then migrate, then end'; then
 LEG="ae-leg-$$"; DEFB="ae-defb-$$"
 command tmux -L "$DEFB" new-session -d -s unrelated 2>/dev/null
 REPO_LEG="$(setup_repo)"
@@ -887,7 +1391,7 @@ assert_eq "legacy-empty (5th B2): state preserved + session still alive" "1" \
     "$([[ -d "$HOME/.ae/sessions/legsess" ]] && command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null && echo 1 || echo 0)"
 AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" doctor --refresh legsess >/dev/null 2>&1 || true
 assert_eq "legacy-empty (5th B2): doctor --refresh migrates value + kind=socket" \
-    "/tmp/tmux-$(id -u)/$LEG|socket" \
+    "$TMUX_SOCK_DIR/$LEG|socket" \
     "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/legsess/meta" 2>/dev/null)|$(sed -n 's/^tmux_server_kind=//p' "$HOME/.ae/sessions/legsess/meta" 2>/dev/null)"
 for _i in $(seq 1 15); do
     command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null || break
@@ -897,8 +1401,10 @@ done
 assert_eq "legacy-empty (5th B2): post-migration end succeeds on the right server" "1" \
     "$(command tmux -L "$LEG" has-session -t "=legsess" 2>/dev/null && echo 0 || echo 1)"
 command tmux -L "$LEG" kill-server 2>/dev/null || true
+fi
 
 # ── missing-line legacy meta (pre-tmux_server era): migration must ADD, not just replace ──
+if _itest_section 'missing-line legacy meta (pre-tmux_server era): migration must ADD, not just replace'; then
 # Replace-only wrote kind=socket with NO value line — a malformed record (-S "") the
 # migration exists to prevent. Caught live: the empty-value sim above raced a not-yet-
 # written meta and produced exactly this shape. Fixture is HAND-BUILT (review: a live
@@ -924,13 +1430,15 @@ LEGMEOF
 command tmux -L "$LEGMSRV" new-session -d -s "$LEGM" 2>/dev/null
 AE_TMUX_DEFAULT_SOCKET="$DEFB" "$AE" doctor --refresh "$LEGM" >/dev/null 2>&1 || true
 assert_eq "legacy missing-line: migration ADDS tmux_server value + kind" \
-    "/tmp/tmux-$(id -u)/$LEGMSRV|socket" \
+    "$TMUX_SOCK_DIR/$LEGMSRV|socket" \
     "$(sed -n 's/^tmux_server=//p' "$HOME/.ae/sessions/$LEGM/meta" 2>/dev/null)|$(sed -n 's/^tmux_server_kind=//p' "$HOME/.ae/sessions/$LEGM/meta" 2>/dev/null)"
 command tmux -L "$LEGMSRV" kill-server 2>/dev/null || true
 rm -rf "$HOME/.ae/sessions/$LEGM"
 command tmux -L "$DEFB" kill-server 2>/dev/null || true
+fi
 
 # ── 7th review B3: zero-hit stays empty; --assume-stopped is the explicit teardown ──
+if _itest_section '7th review B3: zero-hit stays empty; --assume-stopped is the explicit teardown'; then
 AS="ae-as-$$"
 REPO_AS="$(setup_repo)"
 (cd "$REPO_AS" && AE_TMUX_SERVER="$AS" "$AE" --local assess &) 2>/dev/null
@@ -949,8 +1457,10 @@ if printf 'y\n' | AE_TMUX_DEFAULT_SOCKET="$ASDEF" "$AE" end -f --assume-stopped 
 assert_eq "assume-stopped (7th B3): explicit acknowledgement ends the stopped session" "1" \
     "$([[ $as2_rc -eq 0 ]] && echo 1 || echo 0)"
 assert_not_exists "assume-stopped (7th B3): state removed" "$HOME/.ae/sessions/assess"
+fi
 
 # ── 10th review B1 behavioral: an unverifiable enumerable socket BLOCKS the ack ──
+if _itest_section '10th review B1 behavioral: an unverifiable enumerable socket BLOCKS the ack'; then
 AS2="ae-as2-$$"; HID="ae-hid-$$"
 REPO_AS2="$(setup_repo)"
 (cd "$REPO_AS2" && AE_TMUX_SERVER="$AS2" "$AE" --local assess2 &) 2>/dev/null
@@ -959,24 +1469,26 @@ for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/assess2/meta" ]] && break; s
 command tmux -L "$AS2" kill-server 2>/dev/null || true
 _sed_i -e 's/^tmux_server=.*/tmux_server=/' -e '/^tmux_server_kind=/d' "$HOME/.ae/sessions/assess2/meta"
 command tmux -L "$HID" new-session -d -s hider 2>/dev/null   # an unrelated live server...
-chmod 000 "/tmp/tmux-$(id -u)/$HID"                          # ...made unverifiable
+chmod 000 "$TMUX_SOCK_DIR/$HID"                          # ...made unverifiable
 if hid_out="$(printf 'y\n' | AE_TMUX_DEFAULT_SOCKET="ae-asdef2-$$" "$AE" end -f --assume-stopped assess2 2>&1)"; then hid_rc=0; else hid_rc=$?; fi
 assert_eq "ack-block (10th B1): unverifiable socket refuses --assume-stopped, state preserved" "1" \
     "$([[ $hid_rc -ne 0 && "$hid_out" == *"cannot verify enumerable tmux server"* && -d "$HOME/.ae/sessions/assess2" ]] && echo 1 || echo 0)"
-chmod 700 "/tmp/tmux-$(id -u)/$HID"
+chmod 700 "$TMUX_SOCK_DIR/$HID"
 command tmux -L "$HID" kill-server 2>/dev/null || true
 if printf 'y\n' | AE_TMUX_DEFAULT_SOCKET="ae-asdef2-$$" "$AE" end -f --assume-stopped assess2 >/dev/null 2>&1; then hid2_rc=0; else hid2_rc=$?; fi
 assert_eq "ack-block (10th B1): once every socket verifies, the acknowledgement proceeds" "0" "$hid2_rc"
 assert_not_exists "ack-block (10th B1): state removed after the clean ack" "$HOME/.ae/sessions/assess2"
+fi
 
 # ── 11th review B1: unlinked-but-LIVE server must be CANNOT-VERIFY, never clean-dead ──
+if _itest_section '11th review B1: unlinked-but-LIVE server must be CANNOT-VERIFY, never clean-dead'; then
 UL="ae-ul-$$"
 REPO_UL="$(setup_repo)"
 (cd "$REPO_UL" && AE_TMUX_SERVER="$UL" "$AE" --local ulsess &) 2>/dev/null
 for _i in $(seq 1 25); do command tmux -L "$UL" has-session -t "=ulsess" 2>/dev/null && break; sleep 0.4; done
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/ulsess/meta" ]] && break; sleep 0.3; done
 UL_PID="$(command tmux -L "$UL" display-message -p '#{pid}' 2>/dev/null)"
-rm -f "/tmp/tmux-$(id -u)/$UL"                    # unlink the LIVE server's socket
+rm -f "$TMUX_SOCK_DIR/$UL"                    # unlink the LIVE server's socket
 if "$AE" end -f ulsess >/dev/null 2>&1; then ul_rc=0; else ul_rc=$?; fi
 assert_eq "live-unlinked (11th B1): end refuses (ENOENT is cannot-verify), state preserved" "1" \
     "$([[ $ul_rc -ne 0 && -d "$HOME/.ae/sessions/ulsess" ]] && echo 1 || echo 0)"
@@ -985,8 +1497,10 @@ assert_eq "live-unlinked (11th B1): the server survived (it was NEVER dead)" "1"
 kill "$UL_PID" 2>/dev/null || true; sleep 0.3
 printf 'y\n' | "$AE" end -f --assume-stopped ulsess >/dev/null 2>&1 || true
 rm -rf "$HOME/.ae/sessions/ulsess" 2>/dev/null || true
+fi
 
 # ── 11th review B2: the lifecycle lock excludes end vs start/resume ──
+if _itest_section '11th review B2: the lifecycle lock excludes end vs start/resume'; then
 LK="ae-lk-$$"
 REPO_LK="$(setup_repo)"
 (cd "$REPO_LK" && AE_TMUX_SERVER="$LK" "$AE" --local lksess &) 2>/dev/null
@@ -1008,16 +1522,18 @@ done
 assert_eq "lifecycle-lock (11th B2): released lock → end proceeds normally" "1" \
     "$(command tmux -L "$LK" has-session -t "=lksess" 2>/dev/null && echo 0 || echo 1)"
 command tmux -L "$LK" kill-server 2>/dev/null || true
+fi
 
 # ── 4th review B2: unreachable server → CANNOT VERIFY → state preserved, rc!=0 ──
+if _itest_section '4th review B2: unreachable server → CANNOT VERIFY → state preserved, rc!=0'; then
 UNRV="ae-unreach-$$"
 REPO_UNR="$(setup_repo)"
 (cd "$REPO_UNR" && AE_TMUX_SERVER="$UNRV" "$AE" --local unrsess &) 2>/dev/null
 for _i in $(seq 1 25); do command tmux -L "$UNRV" has-session -t "=unrsess" 2>/dev/null && break; sleep 0.4; done
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/unrsess/meta" ]] && break; sleep 0.3; done
-chmod 000 "/tmp/tmux-$(id -u)/$UNRV"
+chmod 000 "$TMUX_SOCK_DIR/$UNRV"
 if unr_out="$(AE_TMUX_SERVER="$UNRV" "$AE" end -f unrsess 2>&1)"; then unr_rc=0; else unr_rc=$?; fi
-chmod 700 "/tmp/tmux-$(id -u)/$UNRV"
+chmod 700 "$TMUX_SOCK_DIR/$UNRV"
 assert_eq "unreachable (4th B2): end fails loudly instead of faking success" "1" \
     "$([[ $unr_rc -ne 0 && "$unr_out" == *"cannot verify"* ]] && echo 1 || echo 0)"
 assert_eq "unreachable (4th B2): state PRESERVED while unverifiable" "1" \
@@ -1026,8 +1542,10 @@ assert_eq "unreachable (4th B2): session still alive after socket restore (nothi
     "$(command tmux -L "$UNRV" has-session -t "=unrsess" 2>/dev/null && echo 1 || echo 0)"
 "$AE" end -f unrsess >/dev/null 2>&1 || true
 command tmux -L "$UNRV" kill-server 2>/dev/null || true
+fi
 
 # ── 4th review B3-probe: no-remote worktree end preserves dir + commit reachable ──
+if _itest_section '4th review B3-probe: no-remote worktree end preserves dir + commit reachable'; then
 REPO_NR="$(setup_repo)"
 (cd "$REPO_NR" && AE_TMUX_SERVER="ae-nr-$$" "$AE" --worktree nrsess &) 2>/dev/null
 for _i in $(seq 1 25); do command tmux -L "ae-nr-$$" has-session -t "=nrsess" 2>/dev/null && break; sleep 0.4; done
@@ -1050,8 +1568,10 @@ assert_eq "no-remote (4th): ae session state removed (contents if not: $(find "$
     "$([[ ! -d "$HOME/.ae/sessions/nrsess" ]] && echo 1 || echo 0)"
 rm -rf "$NR_WT" 2>/dev/null || true
 command tmux -L "ae-nr-$$" kill-server 2>/dev/null || true
+fi
 
 # ── P1 review B2: cleanup must not read a prefix-neighbor's mode after the kill ──
+if _itest_section 'P1 review B2: cleanup must not read a prefix-neighbor'\''s mode after the kill'; then
 # cleanup_session used to re-read AE_MODE by RAW NAME post-kill. With a git target and a
 # LOCAL prefix-neighbor live, `-t <git-target>` prefix-matched the neighbor, read mode
 # local, skipped the worktree removal → the target's worktree LEAKED and it lied "Cleaned
@@ -1081,8 +1601,10 @@ assert_eq "end (B2): the local prefix-neighbor is UNTOUCHED and still live" "1" 
     "$(tmux has-session -t "=wtendlocal" 2>/dev/null && echo 1 || echo 0)"
 "$AE" end -f wtendlocal 2>/dev/null || true
 sleep 0.3
+fi
 
 # ── Test 3c: derived rollup surfaces a watchdog alert (slice 2) ──────
+if _itest_section 'Test 3c: derived rollup surfaces a watchdog alert (slice 2)'; then
 # An agent with no declared state but a max-nudges alert from the watchdog must
 # raise attn:stale — the rollup reuses the watchdog's own alert events.
 
@@ -1109,8 +1631,10 @@ assert_eq "rollup: newer activity clears the stale alert" "0" \
 # Clean up
 "$AE" end -f test-alert 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 3d: ae next — attention navigator (Layer 2, slice A) ────────
+if _itest_section 'Test 3d: ae next — attention navigator (Layer 2, slice A)'; then
 # `ae next` names the top-ranked running session needing attention, reusing the
 # same rollup/ranking as `ae list`. Read-only (no tmux focus change).
 
@@ -1171,8 +1695,10 @@ sleep 0.5
 # practical here: the watchdog runs in a tmux split-window pane that inherits
 # tmux's environment, so AE_WATCHDOG_* overrides set on the ae invocation do
 # not reach it, leaving no way to drive a fast, deterministic cycle.
+fi
 
 # ── Test 4: Spawn persistence ────────────────────────────────────────
+if _itest_section 'Test 4: Spawn persistence'; then
 
 REPO4="$(setup_repo)"
 (cd "$REPO4" && "$AE" --local test-spawn &) 2>/dev/null
@@ -1264,8 +1790,10 @@ assert_eq "spawn: right pane + stale --as warns but succeeds (slot verified)" "0
 requests_output="$("$HOME/.ae/sessions/test-spawn/requests" all 2>/dev/null || true)"
 assert_contains "spawn: override reply recorded as replied" "$override_req_id" "$requests_output"
 assert_contains "spawn: override reply summary updated" "override handled" "$requests_output"
+fi
 
 # ── request-integrity: slot-routed reply survives a display-name CHURN (codex B1) ──
+if _itest_section 'request-integrity: slot-routed reply survives a display-name CHURN (codex B1)'; then
 # ask main->worker stores actor_slot + target_slot; churn BOTH @ae_agent names (keeping
 # @ae_slot); the reply must verify by SLOT and ROUTE to main's CURRENT name, not the stale one.
 TMUX_PANE="$main_pane" "$HOME/.ae/sessions/test-spawn/ask" dummy2 "churn round-trip" 2>/dev/null || true
@@ -1323,8 +1851,10 @@ assert_eq "retire: purges stale launch_time/launch_id for the slot" "0" \
 # Clean up
 "$AE" end -f test-spawn 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 5: End session (worktree mode) ──────────────────────────────
+if _itest_section 'Test 5: End session (worktree mode)'; then
 
 REPO5="$(setup_repo)"
 # Add a bare remote so 'ae end' can push
@@ -1364,8 +1894,10 @@ else
     # Worktree creation may fail in some environments (nested git)
     PASS=$((PASS + 2))  # skip these tests gracefully
 fi
+fi
 
 # ── Test 6: ae status ──────────────────────────────────────────────
+if _itest_section 'Test 6: ae status'; then
 
 REPO6="$(setup_repo)"
 (cd "$REPO6" && "$AE" --local test-status &) 2>/dev/null
@@ -1385,8 +1917,10 @@ assert_contains "status: stopped session" "stopped" "$status_output"
 # Clean up
 "$AE" end -f test-status 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 7: Per-project config override ───────────────────────────
+if _itest_section 'Test 7: Per-project config override'; then
 
 REPO7="$(setup_repo)"
 # Create a per-project config that overrides main agent
@@ -1407,8 +1941,10 @@ assert_eq "projcfg: local config overrides main" "dummy2:dummy2" "$pane_agent"
 # Clean up
 "$AE" end -f test-projcfg 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 8: ae <name> use <alias> override ────────────────────────
+if _itest_section 'Test 8: ae <name> use <alias> override'; then
 
 REPO8="$(setup_repo)"
 (cd "$REPO8" && "$AE" --local test-use use dummy2 &) 2>/dev/null
@@ -1426,8 +1962,10 @@ assert_contains "use: meta records override agent" "agent.main=dummy2:" "$meta_m
 # Clean up
 "$AE" end -f test-use 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 9: Resume from different CWD (local mode) ─────────────────
+if _itest_section 'Test 9: Resume from different CWD (local mode)'; then
 
 REPO9="$(setup_repo)"
 (cd "$REPO9" && "$AE" --local test-cwd &) 2>/dev/null
@@ -1458,8 +1996,10 @@ assert_eq "cwd-resume: pane CWD restored to original" \
 # Clean up
 "$AE" end -f test-cwd 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 10: ae doctor ───────────────────────────────────────────────
+if _itest_section 'Test 10: ae doctor'; then
 
 REPO10="$(setup_repo)"
 (cd "$REPO10" && "$AE" doctor > "$TMPDIR/doctor.out" 2>/dev/null)
@@ -1470,8 +2010,10 @@ assert_contains "doctor: checks tmux" "OK    tmux" "$doctor_output"
 assert_contains "doctor: checks git" "OK    git" "$doctor_output"
 assert_contains "doctor: checks dummy agent" "OK    agent:dummy" "$doctor_output"
 assert_contains "doctor: prints summary" "Summary: 0 failure(s)" "$doctor_output"
+fi
 
 # ── Test 10b: ae doctor orphan check (P2a — lifecycle blindness) ──────
+if _itest_section 'Test 10b: ae doctor orphan check (P2a — lifecycle blindness)'; then
 # A session dir left behind after tmux dies (wind-down declared done but never
 # `ae end`ed) is invisible to every --running-scoped sensor. doctor reads on-disk
 # state, so it must surface the orphan by name. WARN, not FAIL — a stopped session
@@ -1529,8 +2071,10 @@ assert_contains "doctor orphan (I1): once its server is gone, the dir IS an orph
     "$(grep -E 'WARN.*orphans' "$TMPDIR/doctor-i1b.out" 2>/dev/null || true)"
 rm -rf "$HOME/.ae/sessions/onother"
 sleep 0.3
+fi
 
 # ── Test 11: ae doctor --refresh ─────────────────────────────────────
+if _itest_section 'Test 11: ae doctor --refresh'; then
 
 REPO11="$(setup_repo)"
 (cd "$REPO11" && "$AE" --local test-sync &) 2>/dev/null
@@ -1667,8 +2211,10 @@ assert_contains "doctor-refresh: regenerated watchdog starts and reports running
 # Clean up
 "$AE" end -f test-sync 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 11b: refresh must NOT stop a STOPPED session's stale-pid watchdog ──
+if _itest_section 'Test 11b: refresh must NOT stop a STOPPED session'\''s stale-pid watchdog'; then
 # The doctor --refresh liveness gate must veto the watchdog restart when the tmux
 # side is gone, so a stale .watchdog.pid pointing at a recycled, unrelated live
 # PID is never stopped/killed. (The status/start/stop root behavior — status must
@@ -1704,8 +2250,10 @@ kill "$dummy_pid" 2>/dev/null || true
 "$AE" end -f test-stale-wd 2>/dev/null || true
 rm -rf "$HOME/.ae/sessions/test-stale-wd" 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 11c: resume trims events.jsonl to the newest AE_EVENTS_KEEP lines ──
+if _itest_section 'Test 11c: resume trims events.jsonl to the newest AE_EVENTS_KEEP lines'; then
 # The event log is append-only; a long-lived session accumulates it across every
 # resume. Seed a stopped session with 1200 events, resume, and assert the log was
 # capped to the newest 1000 (default) — oldest dropped, newest kept. Watchdog off
@@ -1748,8 +2296,10 @@ assert_eq "events-retention: oldest-dropped boundary gone (seedmarker-200)" \
 "$AE" end -f test-evretain 2>/dev/null || true
 rm -rf "$HOME/.ae/sessions/test-evretain" 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 11d: watchdog status/start/stop reject a stale RECYCLED pid ──────
+if _itest_section 'Test 11d: watchdog status/start/stop reject a stale RECYCLED pid'; then
 # Root fix (beyond the doctor --refresh gate of 11b): _watchdog_is_running must
 # require a live @ae_agent=_watchdog pane in its OWN session, not just a live pid.
 # A stale .watchdog.pid pointing at a recycled, unrelated process must read as NOT
@@ -1798,8 +2348,10 @@ assert_eq "wd-root: the running watchdog pid is NOT the recycled dummy" \
 kill "$wdr_dummy" 2>/dev/null || true
 "$AE" end -f test-wd-root 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 11e: status bar is AE-OWNED — the watchdog never rewrites status-right ──
+if _itest_section 'Test 11e: status bar is AE-OWNED — the watchdog never rewrites status-right'; then
 # ae bakes '[<path><git>] [watch …]' once (_ae_apply_status_bar); the watchdog only
 # feeds the @ae_watchdog_status user option. A stop/start cycle must leave the baked
 # status-right byte-identical — the old save/prepend/restore (and its doubling bug)
@@ -1833,8 +2385,10 @@ assert_eq "status-bar: watchdog stop/start leaves status-right byte-identical" \
     "$wdo_sr0" "$wdo_sr1"
 "$AE" end -f test-wd-own 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── Test 11f: agent roster (@ae_agents_status) with a LIVE watchdog ──
+if _itest_section 'Test 11f: agent roster (@ae_agents_status) with a LIVE watchdog'; then
 # The roster must be published by a real cycle (not just composable in a unit), must
 # track a declared state change, and must be UNSET on stop — a frozen roster asserting
 # a fleet that no longer exists is worse than no roster.
@@ -1937,7 +2491,9 @@ assert_eq "window: @ae_window_status unset on stop for EVERY window (no frozen g
         | while read -r _wi; do tmux show-options -w -v -t "$_wi" @ae_window_status 2>/dev/null || true; done | tr -d '\n')"
 "$AE" end -f test-roster 2>/dev/null || true
 sleep 0.5
+fi
 # ── input-region: REAL capture+sensor seam against live tmux (colead BLOCKER 2) ──
+if _itest_section 'input-region: REAL capture+sensor seam against live tmux (colead BLOCKER 2)'; then
 # The unit fixtures stub _capture_input_region, so they cannot prove GEOMETRY — the
 # old source-text "geometry" assert was inert, and the old cy-8 look-back was an
 # invented bound. Here the sensor runs against a REAL pane whose live prompt sits
@@ -1974,8 +2530,10 @@ _input_region_occupied "$ir_pane" codex || ir_rc=$?
 assert_eq "input-region: real seam detects the staged multiline as OCCUPIED (not false-clear)" "0" "$ir_rc"
 tmux kill-session -t ir-geom 2>/dev/null || true
 rm -f "$ir_script"
+fi
 
 # ── input-region: CURSOR IS NOT THE REGION END (colead ROUND4 BLOCKER) ───────────
+if _itest_section 'input-region: CURSOR IS NOT THE REGION END (colead ROUND4 BLOCKER)'; then
 # cursor_y is the EDIT position, not the last row of the input. A multiline draft keeps
 # real unsent rows BELOW the cursor after cursor navigation (or a leading blank line);
 # bounding the capture at cursor_y dropped them, the sensor read IDLE, and the pre-paste
@@ -2029,8 +2587,10 @@ _input_region_occupied "$ir3_pane" codex || ir3_rc=$?
 assert_eq "chrome-bound: real idle pane w/ footer below stays IDLE (no send outage)" "1" "$ir3_rc"
 tmux kill-session -t ir-idle 2>/dev/null || true
 rm -f "$ir2_script" "$ir3_script"
+fi
 
 # ── goal helper: set → list → survives resume ────────────────────────
+if _itest_section 'goal helper: set → list → survives resume'; then
 REPO_GOAL="$(setup_repo)"
 (cd "$REPO_GOAL" && "$AE" --local goaltest &) 2>/dev/null
 wait_for_session "goaltest"
@@ -2091,8 +2651,10 @@ fi
 # Clean up
 "$AE" end -f goaltest 2>/dev/null || true
 sleep 0.5
+fi
 
 # ── ae transfer — phase 1 failure paths ──────────────────────────────
+if _itest_section 'ae transfer — phase 1 failure paths'; then
 # Full end-to-end SSH-transfer testing requires a second machine. These
 # scenarios cover the failure paths cmd_transfer guards against, which
 # are exercise-able without a real remote.
@@ -2164,8 +2726,10 @@ assert_contains "transfer: --help mentions --pull" "--pull" "$transfer_help_out"
 assert_contains "transfer: --help mentions --with-workdir" "--with-workdir" "$transfer_help_out"
 assert_contains "transfer: --help mentions --dry-run" "--dry-run" "$transfer_help_out"
 assert_contains "transfer: --help mentions --yes" "--yes" "$transfer_help_out"
+fi
 
 # ── Test: ae steward (legacy hub scaffold) — config isolation + hub compat ──
+if _itest_section 'Test: ae steward (legacy hub scaffold) — config isolation + hub compat'; then
 # The launcher must reproduce the start-steward wrapper's FULL isolation: a
 # project's ./.ae/config must NOT override the standalone config (the worker-leak
 # class codex flagged as a BLOCKER). We run the DEPRECATED `ae hub` alias with a
@@ -2340,8 +2904,10 @@ assert_contains "ae end: session with no usable stored config KEEPS (no cwd fall
 # Destructive command rejects a stray second positional rather than dropping it.
 assert_eq "ae end: rejects a second positional argument" "1" \
     "$("$AE" end -f foo bar 2>/dev/null; echo $?)"
+fi
 
 # ── ae list robustness: a per-session helper returning non-zero must NOT abort
+if _itest_section 'ae list robustness: a per-session helper returning non-zero must NOT abort'; then
 #    the listing. Regression: cmd_list ran under `set -e`, so when
 #    `_agent_alert_reason` returned non-zero (a scanned event targets an agent
 #    whose actor is someone else — e.g. an inbound send/nudge), the assignment
@@ -2368,8 +2934,10 @@ fi
 human_rc="$("$AE" list >/dev/null 2>&1; echo $?)"
 assert_eq "list (human): exits 0 when a per-session helper returns non-zero" "0" "$human_rc"
 "$AE" end -f jsonrobust 2>/dev/null || true
+fi
 
 # ── steward companion autostart: scaffold → any launch brings it up ──
+if _itest_section 'steward companion autostart: scaffold → any launch brings it up'; then
 mkdir -p "$HOME/.ae/steward"
 cat > "$HOME/.ae/steward/steward.config" <<'EOF'
 [agents]
@@ -2415,8 +2983,10 @@ assert_eq "autostart: AE_NO_AUTOSTART=1 keeps the steward down" "1" \
 "$AE" end -f autostart-off 2>/dev/null || true
 rm -rf "$HOME/.ae/steward"
 sleep 0.5
+fi
 
 # ── _aewatch_autostart_if_available behavior (slice 18) ────────────────
+if _itest_section '_aewatch_autostart_if_available behavior (slice 18)'; then
 # Extract the hook to a file and run it in a controlled env: a FAKE sidecar under a temp
 # $0 dir (records its `up` argv), a stubbed daemon_session_running, and a controlled
 # heartbeat. Proves start / silent no-op / existing-session fast path / STALE-restart.
@@ -2489,8 +3059,10 @@ assert_eq "aewatch-autostart: AE_NO_AUTOSTART=1 skips" "noop" "$(_aw_run 1 none 
 # fully available + not running (default = bash watchdog only, no live double-run).
 assert_eq "aewatch-autostart: no-op under AE_WATCHDOG_IMPL=bash (default path)" "noop" "$(_aw_run 1 none 0 '' bash)"
 assert_eq "aewatch-autostart: no-op when AE_WATCHDOG_IMPL unset/empty" "noop" "$(_aw_run 1 none 0 '' '')"
+fi
 
 # ── s19: Telegram bridge ownership / no-double-send (the MANDATORY guard test) ──
+if _itest_section 's19: Telegram bridge ownership / no-double-send (the MANDATORY guard test)'; then
 # All THREE bash-bridge revive paths (launch, reattach, watchdog _supervise) funnel through
 # _telegram_autostart_if_enabled. Ownership is a DURABLE MARKER + fresh heartbeat (NOT env —
 # a concurrent bash reviver never shares the uv-launcher's env). Drive the REAL
@@ -2546,8 +3118,10 @@ assert_eq "s19: bridge-owner + fresh + bash already running -> no second spawn" 
 assert_eq "s19: bridge-owner + STALE heartbeat -> bash bridge spawns (fallback revive)" "spawned" "$(_tg_run yes stale 1)"
 # Default path zero-diff: no marker -> bash autostarts exactly as before.
 assert_eq "s19: no marker + enabled -> bash bridge spawns (default path unchanged)" "spawned" "$(_tg_run no none 1)"
+fi
 
 # ── lead-default Part 3: layout = lead-solo (real tmux windows) ───────
+if _itest_section 'lead-default Part 3: layout = lead-solo (real tmux windows)'; then
 cp "$HOME/.ae/config" "$HOME/.ae/config.ls-bak"
 cat >"$HOME/.ae/config" <<'EOF'
 [agents]
@@ -2593,8 +3167,10 @@ sleep 1
 ls0_has_win1="$(tmux list-windows -t test-leadsolo0 -F '#{window_index}' 2>/dev/null | grep -c '^1$' || true)"
 assert_eq "lead-solo zero-worker: no window 1 (valid no-op)" "0" "$ls0_has_win1"
 "$AE" end -f test-leadsolo0 >/dev/null 2>&1 || true
+fi
 
 # ── session-shape: layout = lead-pair (colead seat in window 0, real tmux) ──
+if _itest_section 'session-shape: layout = lead-pair (colead seat in window 0, real tmux)'; then
 cat >"$HOME/.ae/config" <<'EOF'
 [agents]
 dummy = "bash"
@@ -2718,8 +3294,10 @@ assert_eq "lead-pair rename: status-left refreshed to the new session name" "[ae
 "$AE" end -f test-leadpair2 >/dev/null 2>&1 || true
 "$AE" end -f test-leadpair >/dev/null 2>&1 || true
 mv "$HOME/.ae/config.ls-bak" "$HOME/.ae/config"
+fi
 
 # ── #27: launch.<slot>.sh survives being re-run ──────────────────────
+if _itest_section '#27: launch.<slot>.sh survives being re-run'; then
 # The human /exits the TUI (to pick up a globally-updated MCP config, say) and
 # arrow-ups the launch script. It bakes `--session-id UUID` — creation semantics
 # — so before the fix every re-run died with "Session ID <uuid> is already in
@@ -2790,8 +3368,10 @@ assert_eq "#27: the collision was never hit" "0" \
 assert_contains "#27: the fallback announces itself" "re-run" "$RR_ERR"
 "$AE" end -f rerun27 >/dev/null 2>&1 || true
 unset RR_BIN RR_REPO RR_UUID RR_SCRIPT RR_ERR
+fi
 
 # ── #28 boundary: ONE definition, BOTH runtimes ──────────────────────
+if _itest_section '#28 boundary: ONE definition, BOTH runtimes'; then
 # Round-3 BLOCKER. daemon_session_running lived ONLY inside the telegram daemon's
 # single-quoted heredoc, so ae's own top-level callers
 # (_steward_autostart_if_scaffolded, _aewatch_autostart_if_available) invoked an
@@ -2875,8 +3455,10 @@ assert_eq "#28 boundary: tri-state answers inside the artifact (stale=absent, EN
     "$(printf '%s\n' "$tg_run" | command grep -E '^(running|absent|stale|enoent)=' | paste -sd'|' -)"
 rm -rf "$TGB"
 unset TGB TGD tg_top tg_run
+fi
 
 # ── ROLLBACK: a failed launch must not leave debris behind ───────────
+if _itest_section 'ROLLBACK: a failed launch must not leave debris behind'; then
 # Driven through the REAL bare callers, not a stand-in: a `chmod` earlier on
 # PATH fails ONLY for a launch script's temp, so the chokepoint refuses, the
 # publish fails, and send_agent_cmd returns non-zero exactly where it would in
@@ -3290,8 +3872,10 @@ assert_eq "ownership: ...and the rollback said so rather than deleting" "1" \
 rm -rf "$HOME/.ae/sessions/rbpre"
 unset RB_BIN RB_REPO RB_REPO2 RB_REPO3 RB_REPO4 RB_REPO5 \
     rb_rc rb2_rc rb3_rc rb4_rc rb5_rc rb_out rb2_out rb3_out rb4_out rb5_out
+fi
 
 # ── #33: stop targets the RECORDED server by EXACT id, and verifies ──
+if _itest_section '#33: stop targets the RECORDED server by EXACT id, and verifies'; then
 # Measured on main before the fix: `ae stop <prefix>` returned rc=0, printed
 # "Stopped <prefix>", and killed the LONGER-named session — tmux -t <name>
 # prefix-matches. Each seed below is written so that ONLY its own property can
@@ -3334,10 +3918,10 @@ SS_SRV="ae-stopunv-$$"
 (cd "$SS_REPO3" && AE_TMUX_SERVER="$SS_SRV" "$AE" --local stopunv &) 2>/dev/null
 for _i in $(seq 1 25); do command tmux -L "$SS_SRV" has-session -t "=stopunv" 2>/dev/null && break; sleep 0.4; done
 sleep 1
-chmod 000 "/tmp/tmux-$(id -u)/$SS_SRV" 2>/dev/null || true
+chmod 000 "$TMUX_SOCK_DIR/$SS_SRV" 2>/dev/null || true
 ss3_rc=0
 ss3_out="$("$AE" stop stopunv 2>&1)" || ss3_rc=$?
-chmod 700 "/tmp/tmux-$(id -u)/$SS_SRV" 2>/dev/null || true
+chmod 700 "$TMUX_SOCK_DIR/$SS_SRV" 2>/dev/null || true
 # NOTE what this actually reaches: with the socket unreadable the id lookup fails
 # FIRST, so this is the PRE-kill unreachable branch. The post-kill arm of
 # _lifecycle_kill_verified is unreachable from here without racing a server into
@@ -3518,7 +4102,7 @@ REPO_GH="$(setup_repo)"
 for _i in $(seq 1 25); do command tmux -L "$GH" has-session -t "=ghsess" 2>/dev/null && break; sleep 0.4; done
 for _i in $(seq 1 25); do [[ -f "$HOME/.ae/sessions/ghsess/meta" ]] && break; sleep 0.3; done
 GH_PID="$(command tmux -L "$GH" display-message -p '#{pid}' 2>/dev/null || true)"
-rm -f "/tmp/tmux-$(id -u)/$GH" # unlink the LIVE server's socket
+rm -f "$TMUX_SOCK_DIR/$GH" # unlink the LIVE server's socket
 # Singular stop already answers this correctly; the ASYMMETRY between the two
 # routes was the defect, so pin the reference behaviour alongside the fleet one.
 gh_single="$("$AE" stop ghsess -y 2>&1 || true)"
@@ -3892,8 +4476,10 @@ assert_eq "no-tty (I3): no prompt is printed when there is no one to prompt" "1"
 "$AE" end -f ttysess >/dev/null 2>&1 || true
 rm -f "$tt_out"
 unset TT_R tt_out
+fi
 
 # ── #34: end STOPS before it SNAPSHOTS ───────────────────────────────
+if _itest_section '#34: end STOPS before it SNAPSHOTS'; then
 # end used to add/commit/fetch/push while the agents were still live and only then
 # kill, so a write landing after the snapshot and before the kill was neither
 # committed nor left on disk — cleanup removed the directory it lived in.
@@ -3948,8 +4534,10 @@ fi
 "$AE" end -f --assume-stopped e34order >/dev/null 2>&1 || true
 rm -rf "$HOME/.ae/sessions/e34order" "$E34_REMOTE"
 unset E34_R E34_REMOTE e34_wd e34_probe e34_hooks _i
+fi
 
 # ── #34: a failed push leaves everything, and SAYS the session is stopped ──
+if _itest_section '#34: a failed push leaves everything, and SAYS the session is stopped'; then
 # Before the reorder, "Session preserved" was accurate — the kill had not happened
 # yet. After it, the same path leaves the session STOPPED, and "preserved" reads as
 # "still running, go back to it". The message has to say which.
@@ -3995,8 +4583,10 @@ fi
 "$AE" end -f --assume-stopped e34push >/dev/null 2>&1 || true
 rm -rf "$HOME/.ae/sessions/e34push" "$E34_REMOTE2"
 unset E34_R2 E34_REMOTE2 e34_wd2 e34_out e34_rc _i
+fi
 
 # ── #36: launch-time delivery waits for READINESS, not for a clock ──────
+if _itest_section '#36: launch-time delivery waits for READINESS, not for a clock'; then
 # codex draws its input box before it can act on input — measured cold 2026-08-15:
 # box at t=0.5s while the header still reads "model: loading", MCP servers still
 # starting to t=2.5s, settled t=3.0s. The old readiness predicate answered READY from
@@ -4074,8 +4664,10 @@ fi
 tmux kill-session -t r36probe 2>/dev/null || true
 rm -f "$r36_stub"
 unset r36_stub r36_pane r36_early r36_mid r36_late r36_src _f
+fi
 
 # ── #30: a resumed pane reports the TOOL, not bash ───────────────────
+if _itest_section '#30: a resumed pane reports the TOOL, not bash'; then
 # The acceptance measurement from the issue, run against real panes with a stub
 # "tool" so no agent is involved — the question is process shape, not behaviour.
 R30_SRV="ae-r30-$$"
@@ -4111,8 +4703,10 @@ assert_eq "resume (#30): the probe-MISS branch reports the tool, not bash" "slee
 command tmux -L "$R30_SRV" kill-server 2>/dev/null || true
 rm -rf "$TMPDIR/r30"
 unset R30_SRV R30_SH r30_hit r30_miss
+fi
 
 # ── #48: session archives, end to end ────────────────────────────────
+if _itest_section '#48: session archives, end to end'; then
 # The unit suite proves the pieces against fixtures. This proves the LIFECYCLE: that a
 # real session, ended for real, leaves an archive that validates — and that when it
 # cannot, the session is still there.
@@ -4281,8 +4875,10 @@ assert_eq "archive-claim: and the session survived it" "1" \
     "$([[ -f "$HOME/.ae/sessions/arch-dup/meta" ]] && echo 1 || echo 0)"
 rm -rf "$HOME/.ae/archive/.publishing.11111111-2222-3333-4444-555555555555"
 "$AE" end -f --keep-history arch-dup >/dev/null 2>&1 || true
+fi
 
 # ── purge: no archive written, and an existing one removed ───────────
+if _itest_section 'purge: no archive written, and an existing one removed'; then
 (cd "$A48_REPO" && "$AE" --local arch-purge &) 2>/dev/null
 wait_for_session "arch-purge" 20
 sleep 1
@@ -4349,8 +4945,10 @@ assert_eq "archive-nometa: the memo is still on disk" "1" \
     "$([[ -s "$HOME/.ae/sessions/arch-nometa/memo.tsv" ]] && echo 1 || echo 0)"
 rm -rf "$HOME/.ae/sessions/arch-nometa"
 unset a48_nm a48_nm_rc
+fi
 
 # ── explicit lineage ─────────────────────────────────────────────────
+if _itest_section 'explicit lineage'; then
 # PRECONDITION, asserted rather than assumed: no claim is standing anywhere. The lineage
 # preflight refuses an archive that is mid-publication, so a claim leaked by an earlier
 # arm would make every assertion below fail for a reason that has nothing to do with
@@ -4429,8 +5027,10 @@ assert_eq "lineage: --from onto an EXISTING session refuses instead of attaching
     "$([[ $a48_ex2_rc -ne 0 ]] && echo 1 || echo 0)"
 assert_contains "lineage: and explains that inheritance has no meaning there" "only valid for a NEW session" "$a48_ex2"
 "$AE" end -f --keep-history arch-existing >/dev/null 2>&1 || true
+fi
 
 # ── git mode: the commit range is recorded, and the push outcome is the one that ran ──
+if _itest_section 'git mode: the commit range is recorded, and the push outcome is the one that ran'; then
 A48_ORIGIN="$TMPDIR/a48-origin.git"
 git init -q --bare "$A48_ORIGIN"
 A48_GREPO="$(setup_repo)"
@@ -4516,8 +5116,10 @@ assert_eq "archive-badid: and its session_id is untouched" "not-a-uuid" \
 _sed_i -e "s|^session_id=.*|session_id=22222222-3333-4444-5555-666666666666|" "$HOME/.ae/sessions/arch-badid/meta"
 "$AE" end -f --keep-history arch-badid >/dev/null 2>&1 || true
 unset A48_LUUID a48_leg a48_badid a48_badid_rc
+fi
 
 # ── review round 2: the destructive path, through the product ────────────────────
+if _itest_section 'review round 2: the destructive path, through the product'; then
 # Every arm below drives the real `ae end` route that was wrong, not a nearby one.
 
 # (B1) A corrupt session_id refuses under --purge-history too. This route reported "this
@@ -4668,8 +5270,10 @@ assert_contains "archive-lonely: and its memo went with it" "kept even with no r
 assert_eq "archive-lonely: the roster section is simply empty" "0" \
     "$(grep -c '^- main — ' "$HOME/.ae/archive/$A48_LOUUID/digest.md" | tr -d '[:space:]')"
 unset a48_lonely_rc A48_LOUUID A48_FREPO A48_FUUID A48_OUUID
+fi
 
 # ── end all: every target resolved on ITS OWN policy ─────────────────────────────
+if _itest_section 'end all: every target resolved on ITS OWN policy'; then
 # The purge default is per-session, read from the session's own config — so `end all`
 # must archive one target and purge the other in the same run. This is also why the
 # confirmation lists every target: one sentence about "all sessions" would be true of
@@ -4774,7 +5378,9 @@ unset a48_tree_before a48_prev_out a48_end a48_forbidden a48_f a48_exec a48_p a4
 # arms that exercise the handover machinery pass `-f` to skip the prompt entirely. Left
 # to ambient stdin these hang for a human running the suite from a terminal, and pass or
 # fail by whatever the caller happened to supply — an undeclared input is a dependency.
+fi
 # ── ae compact, phase (a): it resolves, it refuses, it changes nothing ───────────
+if _itest_section 'ae compact, phase (a): it resolves, it refuses, it changes nothing'; then
 _C48_BEFORE=$((PASS + FAIL))   # coverage baseline — see the sentinel at the end of this section
 C48_REPO="$(setup_repo)"
 (cd "$C48_REPO" && "$AE" --local comp-ok &) 2>/dev/null
@@ -4873,8 +5479,10 @@ assert_eq "compact: the value survives untouched" "not-a-uuid" \
 _sed_i -e "s|^session_id=.*|session_id=55555555-6666-7777-8888-999999999999|" "$HOME/.ae/sessions/comp-mint/meta"
 "$AE" end -f --keep-history comp-mint >/dev/null 2>&1 || true
 unset c48_ok_rc C48_REPO C48_GREPO C48_UUID c48_ok c48_pane c48_self_out c48_purge c48_purge_rc c48_git c48_git_rc c48_mint c48_badid c48_badid_rc
+fi
 
 # ── compact phase (b): the handover is a fact, not a claim ──────────────────────
+if _itest_section 'compact phase (b): the handover is a fact, not a claim'; then
 # DELIVERY FAILURE: a main agent whose pane is gone. compact must refuse before anything
 # is asked of anyone — no request recorded, nothing stopped, nothing archived.
 B48_REPO="$(setup_repo)"
@@ -5228,7 +5836,7 @@ C48G_PANE="$(grep '^main_pane=' "$C48G_DIR/meta" | cut -d= -f2-)"
     # so one delivery attempt is not reliable. Delete when the ignores-input dummy lands.)
     for _c48g_try in $(seq 1 12); do
         TMUX_PANE="$C48G_PANE" "$C48G_DIR/reply" "$_c48g_ref" 'handed over' \
-            >>/tmp/c48g-reply.log 2>&1 || true
+            >>"$TMPDIR/c48g-reply.log" 2>&1 || true
         grep -q '"action":"reply"' "$C48G_DIR/events.jsonl" 2>/dev/null && break
         sleep 1
     done
@@ -5350,9 +5958,11 @@ assert_eq "compact-snapshot: and it really is the child, not the survivor" "1" \
     "$(grep -c "^parent_archive_id=${C48S_UUID}$" "$HOME/.ae/sessions/comp-snap/meta" 2>/dev/null | tr -d '[:space:]')"
 "$AE" end -f --keep-history comp-snap >/dev/null 2>&1 || true
 unset C48S_REPO C48S_UUID
+fi
 
 
 # ── compact (c)+(d): it hands over, it ends, it comes back ─────────────────────
+if _itest_section 'compact (c)+(d): it hands over, it ends, it comes back'; then
 # The happy path proves the WHOLE boundary in one run: the five-line stdout contract
 # in order, the archive published with the session's own semantics inside it, the
 # source gone, and a genuinely NEW session under the same name that knows its parent.
@@ -5559,12 +6169,14 @@ _C48_EXPECTED="$(awk '
     END { print n + 0 }' "$0")"
 assert_eq "compact-coverage: every arm in this section actually ran" "$_C48_EXPECTED" "$_C48_RAN"
 unset _C48_BEFORE _C48_RAN _C48_EXPECTED
+fi
 
 # ── end of the ae compact section ──
 # Load-bearing: the sentinel's awk range stops HERE. Anything appended below is a new
 # section and must not be counted as a compact arm. Do not delete or reword the marker.
 
 # ── #59: each slot's generated artifacts carry THAT slot's identity ──
+if _itest_section '#59: each slot'\''s generated artifacts carry THAT slot'\''s identity'; then
 # The unit pins prove build_ae_context composes the sentence. This proves the whole real
 # path lands it in the artifacts the tools actually consume: a live launch with TWO
 # different tool kinds plus a live spawn, then read each slot's own artifact back.
@@ -5666,8 +6278,10 @@ assert_eq "#59 control: the singleton pin goes RED on that contaminated specimen
 # so the pin is not just a counter.
 assert_eq "#59 control: one identity naming the wrong agent also goes RED" "0" \
     "$(_id59_singleton "You are agent cl:helper (slot spawned.0)." "You are agent cl:boss (slot main).")"
+fi
 
 # ── #59 R1: a hostile spawn name never reaches an artifact ────────────────────
+if _itest_section '#59 R1: a hostile spawn name never reaches an artifact'; then
 # The peer boundary, exercised the way a peer exercises it: through the generated `spawn`
 # helper. Before the agent-name grammar this name was legal (only ':' was refused) and its
 # prose would have been emitted inside the identity sentence of the agent it created.
@@ -5688,8 +6302,10 @@ assert_eq "#59 R1: ...and the roster still holds exactly the three real agents" 
 "$AE" end -f ident59 >/dev/null 2>&1 || true
 unset ID59_BIN ID59_REPO ID59_META _id59_t ID59_DEC_MAIN ID59_DEC_SP0 ID59_OC_W0 \
     ID59_POISON ID59_HOSTILE ID59_SP_RC ID59_SP_OUT
+fi
 
 # ── #59 C3-2: a RESTORED roster name is fail-quiet, a FRESH one is fatal ─────
+if _itest_section '#59 C3-2: a RESTORED roster name is fail-quiet, a FRESH one is fatal'; then
 # The agent-name grammar must not lock anyone out of their own history. A session whose
 # meta predates it has to keep resuming; only a name the human is supplying NOW is refused.
 C32_BIN="$TMPDIR/c32-bin"
@@ -5738,8 +6354,10 @@ assert_eq "#59 C3-2: ...and no session was created for it" "0" \
     "$(tmux has-session -t c32fresh 2>/dev/null && echo 1 || echo 0)"
 "$AE" end -f c32fresh >/dev/null 2>&1 || true
 unset C32_BIN C32_LEGACY C32_REPO C32_REPO2 C32_META C32_DEC C32_OUT
+fi
 
 # ── #59 C4: the frozen-roster branch, driven for real ────────────────────────
+if _itest_section '#59 C4: the frozen-roster branch, driven for real'; then
 # The provenance flags were previously pinned by TEXT ORDER against $AE_SOURCE
 # (`*'MAIN_RAW="$_fr_main"'*'_ROSTER_NAMES_RESTORED=true'*`), which only says "appears
 # somewhere later in the file" — deleting the in-branch assignment and appending the same
@@ -5818,6 +6436,7 @@ assert_eq "#59 C4-1: an EMPTY frozen WORKER name still launches" "1" \
     "$(tmux has-session -t c4empty2 2>/dev/null && echo 1 || echo 0)"
 "$AE" end -f c4empty2 >/dev/null 2>&1 || true
 unset C4_BIN C4_REPO C4_REPO2 C4_AID C4_KID C4_OUT _c4_t _c4_d
+fi
 
 # ── Results ──────────────────────────────────────────────────────────
 
@@ -5828,5 +6447,33 @@ if [[ ${#ERRORS[@]} -gt 0 ]]; then
         echo ""
     done
 fi
-echo "${PASS} passed, ${FAIL} failed"
+# A scoped result must never be readable as a full one (#64). The marker goes ON the
+# counts line, not above it: `tail -1` is how a suite result reaches a report or a gate
+# log, and a warning printed on the previous line is exactly the line that gets cut off.
+# So the last line of a scoped run is never mistakable for the last line of a full one.
+# The braces to the name-scan's belt. `_itest_names` reads the guard lines as TEXT, and
+# B5's lesson is that text inside a heredoc body can be indistinguishable from the real
+# thing — so a name could in principle be LISTED and selectable without any reachable
+# guard behind it, and the run would report a serene "0 passed, 0 failed". This check
+# does not care how that happens: if a filter was given and no section actually
+# executed, the run failed to do what it was asked, and says so instead of going green.
+if [[ -n "$_itest_filter" ]] && ((_ITEST_RAN_N == 0)); then
+    echo "" >&2
+    echo "FILTER SELECTED A NAME THAT NEVER RAN: '$_itest_filter' matched the section list," >&2
+    echo "  but ZERO sections executed. Nothing was tested. This is reported as a failure" >&2
+    echo "  rather than as '0 passed, 0 failed', which is indistinguishable from success." >&2
+    exit 2
+fi
+if [[ -n "$_itest_filter" ]]; then
+    echo "${PASS} passed, ${FAIL} failed" \
+        "— SCOPED RUN (#64), filter '$_itest_filter': ${_ITEST_RAN_N} of $((_ITEST_RAN_N + _ITEST_SKIPPED_N)) sections ran," \
+        "${_ITEST_SKIPPED_N} SKIPPED. NOT a full suite — gates run it unfiltered."
+elif [[ -n "$_ITEST_FILTER_IGNORED" ]]; then
+    # A full run, and the fact that it had to override an inherited filter belongs on
+    # the line people read — otherwise the only trace is a warning far up the log.
+    echo "${PASS} passed, ${FAIL} failed" \
+        "— FULL RUN (every section); inherited filter '${_ITEST_FILTER_IGNORED}' was IGNORED."
+else
+    echo "${PASS} passed, ${FAIL} failed"
+fi
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

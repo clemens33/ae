@@ -54,7 +54,7 @@ test-unit:
 
 # Integration tests (requires tmux, git)
 test-integration:
-    bash tests/integration
+    AE_ITEST_FULL=1 bash tests/integration
 
 # contrib aemonitor helper tests (requires python3; deterministic fixtures)
 test-aemonitor:
