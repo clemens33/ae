@@ -1,6 +1,6 @@
 # Batch H-HELPER — design
 
-**STATUS: DRAFT v7 — worker-authored (opus5:cexec). Two REQUEST-CHANGES rounds addressed. No arm runs until both seats approve.** v1-v3 are in git history;
+**STATUS: DRAFT v8 — worker-authored (opus5:cexec). Two REQUEST-CHANGES rounds addressed. No arm runs until both seats approve.** v1-v3 are in git history;
 this revision accepts every factual correction in that review, and each one is recorded
 where it changed the design rather than silently applied.
 
@@ -61,7 +61,9 @@ Governed by `cluster-plan.md`'s global rule; batch-local specifics, no exception
 - **The writing helpers make their arms MUTATING** (`state`, `goal`, `memo`, `say`,
   `spawn`, `retire`, `_register-sid`): A8's machinery applies — declared harness-touched
   set, content change record, inode/mtime/size write witness, and per-case instrument
-  controls fired AFTER the measured invocation.
+  controls under the BEFORE-AND-AFTER chronology below. (An earlier draft said "fired
+  AFTER" here and "before and after" below; an instrument contract stated twice with two
+  values is not a contract.)
 - **Every invocation is BOUNDED.** A timeout produces its own INCONCLUSIVE artifact naming
   the bound; it is never reported as a refusal or as a product rc.
 - **Controls fire BEFORE and AFTER every measured invocation, not after only.** A post-run
@@ -141,6 +143,15 @@ down, and the earlier construction was not admissible:
 - A helper whose captures differ under trace has INADMISSIBLE trace evidence, recorded by
   name; its primary capture stands.
 
+## Citations are pinned, not asserted
+
+Every `ae:NNNN` in this design and in the census is resolved against
+`git show 72c7293:ae` by `batch-h-tools/check-citations.py`, which emits
+`batch-h-citation-pins.md` carrying the cited line's own TEXT — so a seat reads source
+rather than trusting arithmetic. It exists because the steward citations here were wrong by
+a constant 8: transcribed from a windowed grep, window offsets written down as absolute
+lines, under a claim of exact verification. 259 citations pinned, 0 suspicious.
+
 ## Required pre-step — the argument census
 
 Before any arm is written, the argument handling of each frozen helper, the delegated
@@ -173,11 +184,13 @@ recorded beside it.
 
 ## Arms
 
-**A-H1 top-level dispatch (SC-012b, SC-014).** `ae -h`, `ae --help`, `ae help`, `ae
-version`, `ae --version`, `ae -V`, an unknown LONG OPTION, and a non-option word — each
-invoked separately into its own capture. The last two are separate input classes, not one
-"unknown word": the launch parser handles `--*` and a bare word in different arms
-(ae:16928-16934), and collapsing them would erase the distinction the row is about.
+**A-H1 top-level dispatch (SC-012b, SC-014).** `ae -h`, `ae --help`, `ae help` (SC-012b)
+and `ae version`, `ae --version`, `ae -V` (SC-014), each invoked separately into its own
+capture and recorded as a spelling FAMILY. The unknown-LONG-OPTION class belongs to SC-022
+and a non-option word enters the launch path; both are marked OUT-OF-BATCH in the census,
+neither can close SC-012b, and the generated brief excludes them. They stay in the census
+because an earlier version collapsed them into "an unknown first word", erasing a
+distinction the contract draws.
 
 **A-H2 steward (SC-013).** SC-013 owns the HELP and DETACH spellings only: `-h`,
 `--help`, `help`, `--detach`, `--no-attach`, help with trailing arguments, and the
@@ -281,15 +294,15 @@ family record covers the help/version spellings of A-H1 for the same reason.
 
 **A-H8 long-lived query (SC-211n).** `events-tail` is not a refusal row: it is a long-lived
 query, so refusal semantics do not apply and a generic timeout must never be read as a
-product rc. The arm uses NAMED barriers and controller termination: (i) invoked against a
-session directory whose events file does not yet exist, with the controller CREATING it as
-a named transition that the capture brackets; (ii) producer-derived replay cohorts of 29, 30 and 31 events with per-line provenance,
+product rc. The arm uses NAMED barriers and controller termination: (1) invoked against a session directory whose events file does not yet exist, with the
+controller CREATING it as a named transition that the capture brackets; (2) producer-derived
+replay cohorts of 29, 30 and 31 events with per-line provenance,
 each read before any follow begins, so the frozen replay cut is exercised on both sides and
-at the boundary rather than assumed; (iii) a replay capture closed by a named event
+at the boundary rather than assumed; (3) a replay capture closed by a named event
 barrier — the controller emits a known event and the capture closes when it appears; (iii)
 a follow capture across a second named event; (iv) a partial final line written in TWO
 steps with a barrier between them, so what the follower emits at each step is captured
-separately; (vi) an unknown-argv invocation captured beside the plain one. Termination is
+separately; (6) an unknown-argv invocation captured beside the plain one. Termination is
 performed by the controller AFTER the named capture barrier and recorded as a controller
 action — never as an rc, never as a timeout. SC-1306e's snapshot claim is cross-referenced,
 not classified here.

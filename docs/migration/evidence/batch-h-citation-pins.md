@@ -261,7 +261,5 @@ than trusted as arithmetic. A line number is a claim; the line is the evidence.
 | batch-h-design.md | ae:14824 | `fi` |
 | batch-h-design.md | ae:16730 | `while [[ $# -gt 0 ]]; do` |
 | batch-h-design.md | ae:16758 | `echo "Error: 'ae steward' takes no positional arguments (flags: --init / --help / --attach / --detach). Got: $` |
-| batch-h-design.md | ae:16928 | `--*)` |
-| batch-h-design.md | ae:16934 | `shift` |
 | batch-h-design.md | ae:17631 | `# the loop shim and workspace.md to write, and send_agent_cmd writes` |
 | batch-h-design.md | ae:17632 | `# launch.<slot>.sh after that. Releasing here let a concurrent `ae end` rm -rf the` |
