@@ -201,28 +201,45 @@ claude/codex expose an input-state read — empirical boundary); under the P2
 notification path the degradation ceases to exist. Authority: helpers.md closing note
 + DR-004. Empirical: matrix. Conflict: DR-004.
 
-Non-messaging helper CLI surfaces — one head per helper (each:
-`authority=code-observation`; Empirical: pending probe; Conflict: pending seat
+Documented helper SIGNATURES — one head per helper, bucket 2, Authority: the frozen
+helpers/AGENTS.md helper table (gate correction: these signatures ARE documented;
+code-observation was wrong for them); Empirical: pending; Conflict: none:
+
+**SC-212a — `goal [text|--clear]` signature.**
+**SC-212b — `memo add [--topic t]` / `memo read [--topic t]` / `memo tail [n]`
+signatures.**
+**SC-212c — `requests [mine|inbox|all]` signature.**
+**SC-212d — `peek <agent> [lines]` (+ `peak` alias) signature, default 80 / max 2000.**
+**SC-212e — `agents [--all]` signature.**
+**SC-212f — `focus <agent>` signature.**
+**SC-212g — `interrupt <agent> [message]` signature (no-message form cancels only).**
+**SC-212h — `spawn <alias:name> [prompt]` signature.**
+**SC-212i — `retire <agent|pane-id>` signature (spawned agents only).**
+**SC-212j — `say <text|stdin>` signature → chat event.**
+
+Code-observed refusal/malformed modes — one head per helper
+(`authority=code-observation`; Empirical: pending probe; Conflict: pending seat
 closure; UNCLASSIFIED):
 
-**SC-211a — `state` signature and refusal modes.**
-**SC-211b — `goal` signature and refusal modes.**
-**SC-211c — `memo` add/read/tail signatures and refusals.**
-**SC-211d — `requests` filter surface.**
-**SC-211e — `peek`/`peak` line bounds and refusals.**
-**SC-211f — `agents [--all]` output surface.**
+**SC-211a — `state` signature and refusal modes** (signature not in the frozen helper
+table's documented set — whole surface code-observed).
+**SC-211b — `goal` refusal/malformed modes.**
+**SC-211c — `memo` refusal/malformed modes.**
+**SC-211d — `requests` refusal/malformed modes.**
+**SC-211e — `peek` out-of-bounds and refusal modes.**
+**SC-211f — `agents` failure modes.**
 **SC-211g — `focus` refusal modes.**
-**SC-211h — `interrupt` no-message form.**
-**SC-211i — `spawn` argument surface** (beyond SC-1201 name validation).
+**SC-211h — `interrupt` refusal modes.**
+**SC-211i — `spawn` non-name argument errors** (name validation is SC-1201).
 **SC-211j — `retire` refusal modes.**
 
 **SC-211k — `mark-done` is an exact alias surface.** Bucket 2 — exec shim over
-`state done`; behavior rows are SC-908 + ownership D07. Authority: workspace docs +
-D07 verification. Empirical: census-1. Conflict: none.
+`state done`. Authority: the frozen helper table (documents mark-done as the state-done
+shim). Empirical: ownership D07 verification + census-1. Conflict: none.
 
-**SC-211l — `say` CLI surface (args or piped stdin → chat event).** 
-`authority=code-observation`; Empirical: census-1 D10; Conflict: pending seat closure.
-UNCLASSIFIED.
+**SC-211l — `say` refusal/failure modes.** `authority=code-observation`; Empirical:
+census-1 D10; Conflict: pending seat closure. UNCLASSIFIED. (The documented signature
+is SC-212j.)
 
 **SC-211m — session `watchdog` + `loop` helper surface.** Bucket 2 — cross-reference:
 behavior is SC-904/SC-926/SC-927 + D26a. Authority: those rows. Empirical: census-2.
@@ -231,8 +248,10 @@ Conflict: none.
 **SC-211n — `events-tail` query surface.** `authority=code-observation` — snapshot cut
 is SC-1306e. Empirical: census-1 D03. Conflict: pending seat closure. UNCLASSIFIED.
 
-**SC-211o — `_register-sid` surface.** Bucket 2 — cross-reference: the transaction is
-D13 + SC-834a. Authority: those rows. Empirical: census-1. Conflict: none.
+**SC-211o — `_register-sid` surface.** Bucket 2 — Codex's first-task self-registration
+of its session UUID (gate correction: SC-834a is recover-pending, not this).
+Authority: commands.md:713-715 (documents purpose + caller). Empirical: census-1 D13.
+Conflict: none.
 
 **SC-211p — `_lib` name resolution grammar.** Bucket 2 — exact `alias:name`,
 alias-only when unique, bare name, `%pane-id`, and `@session:agent` all resolve; the
@@ -303,11 +322,16 @@ compatibility survives every flip: a pre-flip session dir (`meta`, `events.jsonl
 `.started`) is consumable by the successor. Authority: architecture.md + AGENTS.md.
 Empirical: census-1/2. Conflict: none.
 
-**SC-400b — the successor-write layout is re-cut at each flip.** Bucket 4 — **DR-001**
-(+ P2 helper retirement): what the Rust owner WRITES changes (event generations,
-thin-shim helpers), with legacy-read/migration/write ownership stated explicitly at
-each flip commit. Authority: DR-001 + epic phases. Empirical: n/a (successor design).
-Conflict: DR-001.
+**SC-400b — the event store's written layout changes under DR-001.** Bucket 4 —
+**DR-001**: generations replace the single `events.jsonl`, with legacy-read/migration/
+write ownership stated at the flip commit. Authority: DR-001. Empirical: n/a
+(successor design). Conflict: DR-001.
+
+**SC-400c — generated-logic helpers retire from the written layout at P2.** Bucket 4 —
+governed by the epic/#76, not DR-001 (gate split): helpers become thin shims; the
+generated-logic class leaves the session dir's written set. Authority: epic #79 P2 +
+#76. Empirical: n/a (successor design). Conflict: none (phase plan, not a DR — the
+epic itself is the ruling).
 
 **SC-401a — the archive payload is the five-part set.** Bucket 2 — generated `meta`,
 rendered `digest.md`, `memo.tsv`, `events.jsonl`, `messages/*` bodies (#48 format;
@@ -315,11 +339,15 @@ inertness proofs are SC-804/805). Survives all flips. Authority:
 architecture.md:77-83. Empirical: census-2 end section. Conflict: none.
 
 **SC-401b — an archive materializes ONE canonical event stream.** Bucket 4 —
-**DR-001** (lead ruling 2026-08-20, colead concurrence due at ratification marks):
-publication drains and materializes a single ordered, complete stream regardless of
-live generations — generations are a live-store mechanism, never exported; archive
-consumers (digest, `--from` preflight, inheritance) read one stream. Authority:
-DR-001 + this ruling. Empirical: n/a (successor design). Conflict: DR-001.
+**DR-001**, BOTH SEATS (lead ruling + colead binding precision, 2026-08-20):
+publication takes a frozen cut — after writers quiesce, or under the same generation
+protocol — and concatenates every RETAINED generation exactly once in total order.
+"Complete" means the complete RETAINED history plus explicit retention/loss
+provenance, never an impossible lifetime claim after retention. Generation container
+files/boundaries are not exported; stable event/dedupe identities
+(session_id+generation+offset) SURVIVE materialization. Archive consumers (digest,
+`--from` preflight, inheritance) read one stream. Authority: DR-001 + this joint
+ruling. Empirical: n/a (successor design). Conflict: DR-001.
 
 **SC-402 — working directories stay clean.** Bucket 1 — ae writes its coordination
 state under `~/.ae`, never into the project tree (`.ae/config` is the one deliberate
@@ -1325,7 +1353,8 @@ Externally visible atomicity, one head per surface (each:
 closure-map gate designs; Conflict: pending seat closure; UNCLASSIFIED):
 
 **SC-1303 — rename: what a concurrent observer may see mid-operation.**
-**SC-1304 — transfer: mid-operation observability, per direction.**
+**SC-1304a — transfer push direction: mid-operation observability at the destination.**
+**SC-1304b — transfer pull direction: mid-operation observability at the source.**
 **SC-1305 — compact: mid-operation observability.**
 **SC-1306a — `list` snapshot cut under concurrent writes.**
 **SC-1306b — `status` snapshot cut.**
@@ -1406,9 +1435,22 @@ authority).
 **SC-1410j — `AE_ATTN_REQUEST_SECS`.**
 **SC-1410k — `AE_LIST_ACTIVE_SECS`.**
 **SC-1410l — `AE_COMPACT_HANDOVER_SECS`.**
-**SC-1410m — launch-token/slot vars** (`AE_CODEX_*`, `AE_GEMINI_*`, `AE_OPENCODE_*`).
-**SC-1410n — resolution exports** (`AE_RESOLVED_*`, `AE_SESSION`, `AE_META`,
-`AE_DIR`, `AE_MODE`, `AE_ORIGIN`, `AE_PATH*`).
+Launch-token/slot vars, split by shared invariant per provider (gate grain — each:
+`authority=code-observation`; Empirical: pending probe; Conflict: pending; UNCLASSIFIED):
+**SC-1411a — `AE_CODEX_LAUNCH_ID`/`AE_CODEX_SLOT`** (one invariant: the token pair
+identifies the launch for post-launch capture).
+**SC-1411b — `AE_GEMINI_LAUNCH_ID`/`AE_GEMINI_SLOT`.**
+**SC-1411c — `AE_OPENCODE_LAUNCH_ID`** (inert since the config route — census note).
+
+Resolution/context exports, split by shared invariant (same field defaults):
+**SC-1412a — `AE_RESOLVED_*`** (one invariant: the resolution result set a helper
+exports for its target).
+**SC-1412b — `AE_SESSION`.**
+**SC-1412c — `AE_META`.**
+**SC-1412d — `AE_DIR`.**
+**SC-1412e — `AE_MODE`.**
+**SC-1412f — `AE_ORIGIN`.**
+**SC-1412g — `AE_PATH`/`AE_PATH_BIN`** (one invariant: ae's own path identity).
 (`AE_SENDER_OVERRIDE` is SC-974a, not duplicated.)
 
 ## Known-defect register (bucket 3)
