@@ -452,7 +452,7 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-1412f — CRITICAL(A)
 - SC-1412g — CRITICAL(A)
 
-## Slice-1 additions (2026-08-20, concurrent movement — 16 rows)
+## Slice-1 additions (2026-08-20, concurrent movement — 17 rows after the SC-523 split)
 
 - SC-509b — CRITICAL(C,D)
 - SC-518 — CRITICAL(C,D)
