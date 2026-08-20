@@ -5,7 +5,9 @@ machine-counted 2026-08-20 post slice-1d: SC-510e/f + SC-021 added; header and l
 manifest↔canonical SET_EXTRA=0/SET_MISSING=0). Rules inherited: dependency closure (a
 critical SC row pulls its interpreting D record/mechanism into the same batch unless
 independently proven); probe designs are VALUE-BLIND (manipulation/barriers + captured
-stdout/stderr/rc/files/tmux; expected values omitted — seats classify); deterministic
+stdout/stderr/rc/files/tmux; expected values omitted — seats classify;
+**see "The value-blindness line" below — naming the CANDIDATE SPACE is required, naming
+the EXPECTED OUTCOME is the leak**); deterministic
 per the closure-map gate (no timing races, no live-model queries); every capture is a
 CANDIDATE observation until seat acceptance (never a builder oracle before scoped
 ratification — P1-start condition 2).
@@ -14,6 +16,50 @@ Family spread of the 324 (id-range convention, machine-joined): S9=71, S10=58,
 S6=45, S15=25, S3=24, S1=21, S5=18, S14=13, S13=12, S8=8, S7=5, S2=3, S12=4, S4=2,
 S11=2, +13 D records (D01-D04 read side; D14b half; D24 negative pointer;
 D25/27/30x gates; D28c).
+
+
+## The value-blindness line — candidate space vs expected outcome
+
+**Joint seat ruling, 2026-08-20**, after a batch-H design review raised whether the
+standard reached backward to batch C's 177 accepted cases. Written here so it is settled
+once rather than re-litigated per batch.
+
+**Naming the EXPECTED OUTCOME leaks. Naming the CANDIDATE SPACE does not.**
+
+| worker-visible text | verdict | why |
+|---|---|---|
+| "the control is KNOWN to succeed" | **LEAK** | states the answer |
+| inputs labelled "Resolves" / "Does not resolve" | **LEAK** | labels the answer |
+| "last-record **vs** max-ts implementations become distinguishable" | **PERMITTED** | names two candidates, says which holds for neither |
+| "first-equals split **distinguishable from** any-equals split" | **PERMITTED** | same shape |
+| "omission-**vs**-empty-string observable in emitted bytes" | **PERMITTED** | same shape |
+
+The second kind is the **discriminator specification**, and removing it does not make an
+arm more value-blind — it makes the arm **unable to fail**. Every capture failure this
+cluster has had came from its ABSENCE: all-zero counts where "preserved" and "lost then
+defaulted to zero" were indistinguishable (SC-825a); seven identity cases that all agreed
+because a lone ask gave a routing member nothing to affect (SC-405j); a boundary triple of
+three empty readings (SC-523). A differentiator naming the candidate space is the FIX for
+those, not an instance of the disease.
+
+**The decisive evidence is behavioural, not textual.** SC-405f's worker-visible
+differentiator said "last-record vs max-ts become distinguishable" — and the arm captured
+the answer with **nobody knowing it in advance**: the executor did not predict it, neither
+seat knew it, and the ambiguity was ruled on only after the capture returned (and one
+seat's rationale was then corrected by the other). A differentiator that leaked the answer
+could not produce that sequence.
+
+**Consequence for accepted work:** batch C's worker-visible differentiators were audited
+row by row against this line — SC-405a, SC-405f, SC-405g, SC-510b, SC-511a — and all are
+candidate-space. **Batch C is not reopened.**
+
+**Consequence for executor contamination:** an author who reads their own design is
+structurally contaminated as its executor. The primary remedy is **pre-registration** — every
+arm script committed before its first run, post-hoc changes carrying an amendment record —
+NOT merely a fresh executor. A fresh executor can adapt just as easily and **leaves no
+trace when it does**; a script committed before the run makes adaptation an **auditable
+diff**. A guarantee that can be checked beats one that must be trusted. The two compose;
+pre-registration is the load-bearing one.
 
 ## Global rule — instrumentation admissibility (B0 preflight ruling, binding for EVERY batch)
 
