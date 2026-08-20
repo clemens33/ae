@@ -1,0 +1,13 @@
+group=A7
+member=pair-405j-stale-keys
+derived_from=G5/m1-control (byte copy)
+source_fingerprint_protected=fad76e71451d28616d5fee1fa330a6ab23bf5a5545b0ea12a3a748f04ad72205
+session=tg5
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+base=a real ask (line 1) and its real identity-valid reply (line 2)
+mutations land on the REPLY's routing members, line 2
+note=case 2: all four members PRESENT but naming a slot and session this is not
+built_utc=2026-08-20T20:02:06Z
+fingerprint_pre_protection=7d7e17f85e00f9ce46652c542964ba71b1227839d5414f17d64befc3f4cd56f9
+named_mutations=see _meta/pair-405j-stale-keys.mutation.txt
+fingerprint_protected=0c1c8e59b9254ea5603eb5002edf689382c36abe05e92ab3fcdfe041479eb28d

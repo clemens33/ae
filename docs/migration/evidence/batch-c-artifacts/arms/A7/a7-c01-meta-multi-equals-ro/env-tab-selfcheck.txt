@@ -1,0 +1,15 @@
+## environment admissibility — consumer TAB round-trip
+case=a7-c01-meta-multi-equals clone_mode=ro
+query=tmux list-panes -s -t <session> -F '#{@ae_agent}<TAB>#{pane_current_command}'
+locale=LANG=LC_ALL=en_US.UTF-8
+raw_bytes=0000000    x   :   y  \t   f   i   s   h                                
+0000010
+split_field_1=[x:y]
+split_field_2=[fish]
+tab_survived=yes
+oracle=the TAB delimited TWO fields; the throwaway pane's own command is not part of the check
+## paired raw capture — identical probe, identical server, LANG=LC_ALL=C
+c_locale_raw_bytes=0000000    x   :   y   _   f   i   s   h                                
+0000010
+c_locale_split_field_1=[x:y_fish]
+c_locale_split_field_2=[]

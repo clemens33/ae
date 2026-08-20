@@ -1,0 +1,6 @@
+⟦ae:msg from fake:third⟧
+REQUEST ae-20260820T161304Z-be61f143 from fake:third: G5 third-agent question (routing-key donor)
+
+REQUIRED: When you have finished, you MUST run this exact command to reply:
+/tmp/aecx/tpl/g5/home/.ae/sessions/tg5/reply --as "fake:lead" "ae-20260820T161304Z-be61f143" "<your reply>"
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

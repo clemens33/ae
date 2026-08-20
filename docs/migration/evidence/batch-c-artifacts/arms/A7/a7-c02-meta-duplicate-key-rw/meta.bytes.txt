@@ -1,0 +1,16 @@
+mode=local
+origin=/tmp/aecx/tpl/a7a/work
+session=ta7a
+session_id=b53989ec-8a07-48f1-bcab-b620f2026e2c
+work_dir=/tmp/aecx/tpl/a7a/work
+layout=vertical
+config=/tmp/aecx/tpl/a7a/home/.ae/config
+main_pane=%0
+ae_path=/private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae
+ae_version=0.2.1
+tmux_server=/tmp/aecx/tpl/a7a/s.sock
+tmux_server_kind=socket
+agent.main=fake:lead:pending
+agent_bin.main=aefake
+goal=alpha=beta=gamma delta=epsilon
+goal=SECOND-GOAL-LINE-APPENDED-AFTER

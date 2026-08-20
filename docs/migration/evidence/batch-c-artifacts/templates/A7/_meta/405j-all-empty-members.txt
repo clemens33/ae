@@ -1,0 +1,11 @@
+group=A7
+member=405j-all-empty-members
+derived_from=A7/405j-full-fresh (byte copy)
+source_fingerprint_protected=b62bd9f1f706794d34f2f1ac617fabfff3e1de78a0a7a7e88912bec492aedad2
+session=ta7j
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+note=case 5b: ALL routing members present as the EMPTY STRING
+built_utc=2026-08-20T19:56:57Z
+fingerprint_pre_protection=e87bfc836ee2c8b6554ff3434ae4c15588f455a5a06df48ee9efc354f2b2ea7d
+named_mutations=see _meta/405j-all-empty-members.mutation.txt
+fingerprint_protected=4de89389ee74bf6d044465b126df825a9e440e34107d8f8601eb4cbfdd7e160d

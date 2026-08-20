@@ -1,0 +1,44 @@
+## mutation: reply actor_slot -> a slot no roster entry holds
+file: /tmp/aecx/templates/A7/pair-405j-stale-keys/sessions/tg5/events.jsonl
+op: repl '2' '"actor_slot":"worker.0"' '"actor_slot":"worker.9"'
+detail: line 2: replace b'"actor_slot":"worker.0"' -> b'"actor_slot":"worker.9"' (first occurrence)
+before: sha256=8fe76b4cc5e3459ffbcc1d241896d3963cb1291f0d8157c6df1d51d4a3f3a539 bytes=1478
+after:  sha256=33894ce49ad391977b79c1c60414db63062fc84cd8999d3c6cf22add5a079343 bytes=1478
+byte-diff:
+  common_prefix_bytes=499 common_suffix_bytes=978
+  removed=b'0'
+  inserted=b'9'
+
+## mutation: reply actor_session -> a session this is not
+file: /tmp/aecx/templates/A7/pair-405j-stale-keys/sessions/tg5/events.jsonl
+op: repl '2' '"actor_session":"tg5"' '"actor_session":"some-other-session"'
+detail: line 2: replace b'"actor_session":"tg5"' -> b'"actor_session":"some-other-session"' (first occurrence)
+before: sha256=33894ce49ad391977b79c1c60414db63062fc84cd8999d3c6cf22add5a079343 bytes=1478
+after:  sha256=f088da0519a86ad51b9682c4fee859a35deae2625957b8fd3d55d5c1f0ad692a bytes=1493
+byte-diff:
+  common_prefix_bytes=519 common_suffix_bytes=956
+  removed=b'tg5'
+  inserted=b'some-other-session'
+
+## mutation: reply target_slot -> a slot no roster entry holds
+file: /tmp/aecx/templates/A7/pair-405j-stale-keys/sessions/tg5/events.jsonl
+op: repl '2' '"target_slot":"main"' '"target_slot":"worker.8"'
+detail: line 2: replace b'"target_slot":"main"' -> b'"target_slot":"worker.8"' (first occurrence)
+before: sha256=f088da0519a86ad51b9682c4fee859a35deae2625957b8fd3d55d5c1f0ad692a bytes=1493
+after:  sha256=77ed93d82e0707b3e50940ebea17e4be4ae7a872674c714d75208cc489e1b863 bytes=1497
+byte-diff:
+  common_prefix_bytes=554 common_suffix_bytes=935
+  removed=b'main'
+  inserted=b'worker.8'
+
+## mutation: reply target_session -> a session this is not
+file: /tmp/aecx/templates/A7/pair-405j-stale-keys/sessions/tg5/events.jsonl
+op: repl '2' '"target_session":"tg5"' '"target_session":"some-other-session"'
+detail: line 2: replace b'"target_session":"tg5"' -> b'"target_session":"some-other-session"' (first occurrence)
+before: sha256=77ed93d82e0707b3e50940ebea17e4be4ae7a872674c714d75208cc489e1b863 bytes=1497
+after:  sha256=08c38ed28deab5e0dd987310757875407e5f3129d7b48e4e8fbc47ac22eb6350 bytes=1512
+byte-diff:
+  common_prefix_bytes=582 common_suffix_bytes=912
+  removed=b'tg5'
+  inserted=b'some-other-session'
+

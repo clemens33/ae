@@ -1,0 +1,11 @@
+group=A7
+member=meta-duplicate-key
+derived_from=A7/meta-multi-equals (byte copy)
+source_fingerprint_protected=cc25fcd22ba8a493f0899c15fe4ad217e4b2adffbb8be69494ee4975ab3da260
+session=ta7a
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+note=a DUPLICATE meta key: the same key appears twice with different values, in the file the launch wrote
+built_utc=2026-08-20T19:56:59Z
+fingerprint_pre_protection=98a22d1c6c5cf97cdac15ffa3278293c0feb3d05bb37d77e3764eb163a476321
+named_mutations=see _meta/meta-duplicate-key.mutation.txt
+fingerprint_protected=4845e6721e72b08ad0b55e7af3379f64a95ff67960976a1bd0810d375b508ff0

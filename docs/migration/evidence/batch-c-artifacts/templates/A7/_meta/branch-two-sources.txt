@@ -1,0 +1,16 @@
+group=A7
+member=branch-two-sources
+fingerprint_pre_protection=cdec74d07c6366c0517b3bbb39b42280f2f94c2e506ea07447568a3a332d78cb
+source_sandbox=/tmp/aecx/tpl/a7g
+source_session=ta7g
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T19:56:08Z
+--- provenance ---
+the two candidate sources are given DELIBERATELY DIFFERENT values, so which one the
+consumer reports is observable rather than a coincidence:
+  git branch in the work dir : master
+  tmux @ae_branch_name       : TMUX-OPTION-BRANCH-VALUE
+The live subarm runs with the option set on a running server; the stopped subarm
+runs from the same fixture with no server at all, leaving only the git source.
+  tmux option now: TMUX-OPTION-BRANCH-VALUE
+fingerprint_protected=3d0d67242624ee3f87cc1ac40810cd61898ffa404791d5e3a48431f0c2e26a55

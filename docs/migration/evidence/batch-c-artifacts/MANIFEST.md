@@ -168,7 +168,8 @@ note (1306a→D01/Design 2, 1306b→D04a/Design 5, 1306c→D04b/Design 6, 1306d�
 | Arm group A4 (SC-016a–d, 513a–c, 019, 020a–c) | COMPLETE, bash lane — 7 case runs, incl. SC-020b on D04b's hook |
 | Arm group A5 (SC-514) | COMPLETE, bash lane — 7 case runs under a controlled PATH |
 | Arm group A6 (SC-518, 522, 523a–b) | COMPLETE, bash lane — 13 case runs |
-| Arm groups A7–A9 | not started |
+| Arm group A7 (SC-405a–g, 405j) | COMPLETE, bash lane — 36 case runs |
+| Arm groups A8–A9 | not started |
 | D-record executions (b0-design Designs 2–6) + SC-1306a–e | COMPLETE, bash lane — D01, D02, D03, D04a, D04b, all with controller-only twins |
 
 ---
@@ -572,6 +573,26 @@ ruled not to be rebuilt.
 | `A3b` | `pair-throttled-over-unanswered` | `tpairthrottledoverunanswered` | 38 | `f397a68bc00ca03191655de0ec6207b07787c3f7149dc5695928c65f8e4afc64` | `e39eaf585b474db0f93ff670efe4de5c1b54a6333daa3d559e15c3d48cd15591` | `(new member)` |
 | `A3b` | `pair-waitinguser-over-blocked` | `tpairwaitinguseroverblocked` | 33 | `211b69861f9f331b9664bf277abfe1cd007296067f08aad64fd2de7601561a3e` | `b31945ae8c4612964f2eacc9dddacebe1e90917c836467012618355c0e53825e` | `(new member)` |
 | `A5` | `doctor-fixture` | `ta5` | 33 | `e3da566fb1c16e07f0bbdb7af612432fe22f13b9010bec50ae556044ebbb8c4c` | `5cd8a20578b15e0438e095a142d5c9e19439ebe962d8a03a50f980be96d2998c` | `(new member)` |
+| `A7` | `405j-all-empty-members` | `ta7j` | 37 | `e87bfc836ee2c8b6554ff3434ae4c15588f455a5a06df48ee9efc354f2b2ea7d` | `4de89389ee74bf6d044465b126df825a9e440e34107d8f8601eb4cbfdd7e160d` | `(new member)` |
+| `A7` | `405j-full-fresh` | `ta7j` | 37 | `385a7de811fc015c3d96874c242da2a1bfe59a6802bcb2efae23e018604b03b7` | `b62bd9f1f706794d34f2f1ac617fabfff3e1de78a0a7a7e88912bec492aedad2` | `(new member)` |
+| `A7` | `405j-keyless-legacy` | `ta7j` | 37 | `a7b9eb3f36b386c6e7a0c62750bb154625687358cdda49223325b423b3f29176` | `5bfa681ddf302cefb481a27d5e1dfe02226487863708114fd1e57ef7ae0c3dc9` | `(new member)` |
+| `A7` | `405j-one-empty-member` | `ta7j` | 37 | `6ae0ec32a3ffd7736d754e9b8f5438c7bcc060ec4262b5cb80c80e3c0d2953f7` | `70447a012db1950007286d433edce85edcae22cc8faaab6939f59e59f9121819` | `(new member)` |
+| `A7` | `405j-session-only` | `ta7j` | 37 | `50cc613d6d1af2aebafbdd37ff266a90ac897059cfbc22843aa821af9096a9c4` | `d7a34bfdf2a4114b8303fdbdbd5266f2d7ea592e8a01662f3f01448427a1d3ae` | `(new member)` |
+| `A7` | `405j-slot-only` | `ta7j` | 37 | `41fc0e810d6bd95b5e259c25e26a3b068ca721c971397ad2956c057fbf799aea` | `337a8a8cce7cf859bb683d6316d0c92b040a31402550f3a0ad72a58959b44095` | `(new member)` |
+| `A7` | `405j-stale-mismatched-keys` | `ta7j` | 37 | `61c1b473e5900455919898f136065545a6eee4c85176b734745ae55bac3852d7` | `ef3776dd8976aecd7c26e88eac53dfde39fd5e016493919e77cb96249aa19899` | `(new member)` |
+| `A7` | `branch-two-sources` | `ta7g` | 30 | `cdec74d07c6366c0517b3bbb39b42280f2f94c2e506ea07447568a3a332d78cb` | `3d0d67242624ee3f87cc1ac40810cd61898ffa404791d5e3a48431f0c2e26a55` | `(new member)` |
+| `A7` | `goal-order-agreeing` | `ta7goalorderagreeing` | 32 | `8c4c952f273938065279c801e64025e429b5b8b3003185c3c743e326a819e757` | `21ea2c61d47b9df9d16e991a6bb34e3d9a4a9ce4dff439bdaabd606d8bcd5f07` | `(new member)` |
+| `A7` | `goal-order-opposed` | `ta7goalorderopposed` | 32 | `b42f26403913bdbb3995a40b3bf5ce750e65bab5bb1b93747d162e73f9855e89` | `3fcccfcdb884cee041ab947a94ef971763226ab1b05660c93727c1de4a1a8a2b` | `(new member)` |
+| `A7` | `goal-order-single` | `ta7goalordersingle` | 32 | `3ddc37471ae584993271329477a009edca01380bab9a6135a3a2d7d6270b303f` | `85821f2e87914324545ef84f7bf472fa2e9845d5bf341d9a3d0f5921df8c1f25` | `(new member)` |
+| `A7` | `meta-duplicate-key` | `ta7a` | 32 | `98a22d1c6c5cf97cdac15ffa3278293c0feb3d05bb37d77e3764eb163a476321` | `4845e6721e72b08ad0b55e7af3379f64a95ff67960976a1bd0810d375b508ff0` | `(new member)` |
+| `A7` | `meta-multi-equals` | `ta7a` | 32 | `7a8388b0822834920abe2242895c92f46c92079c7aeb6f2aa6a545a419220fd8` | `cc25fcd22ba8a493f0899c15fe4ad217e4b2adffbb8be69494ee4975ab3da260` | `(new member)` |
+| `A7` | `pair-405j-all-empty` | `tg5` | 42 | `d3c2c20f1a0e16decb11d7911134e3e6af9c45544718f2acb651618d7c6d10b7` | `1a819a2878388c1e3450110792d2c35e199f6e7399c7a3236adebaf86cc6fa48` | `(new member)` |
+| `A7` | `pair-405j-full-fresh` | `tg5` | 42 | `28dc10300e4bb7b260b1e9273cf6bddf2189910ff4e783f4d8eb346436b4cc04` | `fad76e71451d28616d5fee1fa330a6ab23bf5a5545b0ea12a3a748f04ad72205` | `(new member)` |
+| `A7` | `pair-405j-keyless` | `tg5` | 42 | `dc659e622fd3217bf5276223336db604bc1f14cfd704dd64c38abc3fb4f05078` | `3683b2d418628bc0a004d576a7e3de39752aa4350002aae24a61991358277edc` | `(new member)` |
+| `A7` | `pair-405j-one-empty` | `tg5` | 42 | `d56194e44fbe8e622f25657b3c51abfff8732715884fe820f7808ded2427312e` | `534a95fe54e26dc67a29395b82cf592fe7ce4b24cab5ce48f9f06be67328d781` | `(new member)` |
+| `A7` | `pair-405j-session-only` | `tg5` | 42 | `95d1ad38acd838a216f08101742d37092660b0e92aae7d1fd6691e48fd61d659` | `08b1dd9a9112a345b10ba396c85888cc20af22a95ed70a43b1c6af8a3f031b15` | `(new member)` |
+| `A7` | `pair-405j-slot-only` | `tg5` | 42 | `b5e8c248faaa292a1aab9ed5198015e30b81ebd5ae718b3e300ed5bcfb0493d8` | `f03746c23eb5f84c41e22672f6beb99dffb6d1ae68a74348e21e8ba747f92fe6` | `(new member)` |
+| `A7` | `pair-405j-stale-keys` | `tg5` | 42 | `7d7e17f85e00f9ce46652c542964ba71b1227839d5414f17d64befc3f4cd56f9` | `0c1c8e59b9254ea5603eb5002edf689382c36abe05e92ab3fcdfe041479eb28d` | `(new member)` |
 | `D` | `d02-pending-with-harvested-reply` | `td02` | 40 | `c5a47d626ffaf77aed1dcfd551e1c945a71d612f3ee9ffaa8d16aa40e8192f14` | `c9863e6ad2a50e4b1e9912b29957bf6d972b3e48425bc8ce6a07154b16f7cd24` | `(new member)` |
 | `D` | `d03-31-numbered-events` | `td03` | 39 | `0bd4c21ce2c572b38527d83bc0ea8e8e82b830aee009453bfbfc1a18e9fa9dcb` | `d0d8630ccdb09be5fc6cdbe52960ccc134baea6840f2021c98fa47dd6656aa4d` | `(new member)` |
 | `G1` | `healthy` | `tg1` | 42 | `075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667` | `c940ecaed0bba78bb6b78f7a286ed3c65f601aa18f5a0babda6d2910aa062f18` | `bbfdf6957bb62063e2c5c94fc36844bede3eeab190027799b5a11164ddeab5dd` |
@@ -1372,6 +1393,122 @@ Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A6/<case>/`:
   type, mode, content hash, symlink target, path across the cloned AE_HOME
 - `tmux.before.txt` / `tmux.after.txt`
 - `A6/ledger.tsv` (case -> row ids), `A6/harness/` (the exact scripts and the
+  tmux shim), `SHA256SUMS.txt` (every file above)
+
+
+## Arm group A7 — meta grammar (bash lane)
+
+### A7 — what the arm does
+
+Rows: SC-405a through SC-405g, and SC-405j. 36 case runs, each on both a protected and a
+writable clone, with the fixture's own `meta` and `events.jsonl` bytes copied in beside the
+captures (`meta.bytes.txt`, `events.bytes.jsonl`) so the grammar under test sits next to the
+consumer's reading of it, and the member's own named byte diff copied in as `member.mutation.txt` where one exists.
+
+**SC-405a** uses a meta value the producer itself wrote containing several `=` characters
+(`goal=alpha=beta=gamma delta=epsilon`), so a first-equals split and an any-equals split
+disagree on a real line. `a7-c02` adds a DUPLICATE meta key: the same key twice with
+different values, so a first-wins reader and a last-wins reader disagree too.
+
+**SC-405f is an ORDER claim, so it carries the controls an order claim needs.** The opposed
+fixture appends the NEWER timestamp first and the OLDER one second, which makes the two
+candidate answers different strings by construction — a last-record reader and a
+max-timestamp reader cannot both be right. Two controls sit beside it: an AGREEING pair
+where both candidates coincide (so the reader is known to respond to a second goal at all)
+and a SINGLE goal baseline, plus G9's four goals with increasing timestamps.
+`order-discrimination.txt` names both candidate answers, states that they differ, and
+records what the consumer rendered, with each source's sha256. No conclusion is drawn there.
+
+**SC-405g** gives the two candidate branch sources DELIBERATELY DIFFERENT values — the git
+branch in the work dir, and tmux `@ae_branch_name` set to a value no git branch has — and
+reads the same fixture twice: `a7-c10` on a live server with the option set, `a7-c11` with
+no server at all, leaving only the git source. Source ownership is observable rather than a
+coincidence of the two agreeing.
+
+**SC-405j** runs seven cases that share ONE display name and differ only in the completeness
+of the reply's routing members: full and fresh, all four present but naming a slot and
+session this is not, slot-only, session-only, keyless, one member as the empty string, and
+all four as the empty string. `identity-405j-record.txt` carries every reading with its
+source hash and a `discriminating=` line computed from the distinct outcomes observed.
+
+**These cases were rebuilt.** The first attempt put them on a LONE ASK and all seven
+rendered identically — a property of the fixture, not the product: a routing member with
+nothing to pair against cannot affect anything. The A6 SC-518 captures had already shown the
+consumer responds sharply to pairing inputs, which is what made a flat result suspect. The
+cases now sit on a real ask→reply pair, the superseded ones were removed rather than
+published, and the record says why.
+### A7 case table
+
+`checks<first consumer` names the ledger sequence numbers of the TAB round-trip
+COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),
+and the first `consumer-START`. The ledger is append-only and written by the checks
+themselves, so the ordering is established by the original durable content — not by
+file mtimes and not by a hash list added afterwards. For a barrier case the first
+consumer activity is `barrier-ARMED` (the hooked run has no `consumer-START` line).
+
+A case whose design includes a CONTROLLER MUTATION necessarily shows a tmux delta;
+what the controller did, when, and from where is in `controller-mutation.txt` and in
+the ledger, and the before/at-barrier/after tmux snapshots bracket it.
+
+| case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
+|---|---|---|---|---|---|---|---|---|---|
+| `a7-c01-meta-multi-equals-ro` | ro | SC-405a | `A7/meta-multi-equals` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c01-meta-multi-equals-rw` | rw | SC-405a | `A7/meta-multi-equals` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c02-meta-duplicate-key-ro` | ro | SC-405a,SC-405d | `A7/meta-duplicate-key` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c02-meta-duplicate-key-rw` | rw | SC-405a,SC-405d | `A7/meta-duplicate-key` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c03-meta-unknown-keys-ro` | ro | SC-405b,SC-405c | `G7/meta-unknown-keys` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c03-meta-unknown-keys-rw` | rw | SC-405b,SC-405c | `G7/meta-unknown-keys` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c04-healthy-baseline-ro` | ro | SC-405b,SC-405c | `G1/healthy` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c04-healthy-baseline-rw` | rw | SC-405b,SC-405c | `G1/healthy` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c05-meta-mode-000-ro` | ro | SC-405e | `G3/meta-mode-000` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c05-meta-mode-000-rw` | rw | SC-405e | `G3/meta-mode-000` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c06-goal-order-opposed-ro` | ro | SC-405f | `A7/goal-order-opposed` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c06-goal-order-opposed-rw` | rw | SC-405f | `A7/goal-order-opposed` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c07-goal-order-agreeing-ro` | ro | SC-405f | `A7/goal-order-agreeing` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c07-goal-order-agreeing-rw` | rw | SC-405f | `A7/goal-order-agreeing` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c08-goal-order-single-ro` | ro | SC-405f | `A7/goal-order-single` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c08-goal-order-single-rw` | rw | SC-405f | `A7/goal-order-single` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c09-goals-distinct-ts-ro` | ro | SC-405f | `G9/goals-distinct-ts` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c09-goals-distinct-ts-rw` | rw | SC-405f | `G9/goals-distinct-ts` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c10-branch-live-ro` | ro | SC-405g | `A7/branch-two-sources` | yes | 0 | - | 7 | 9/11/13 | yes |
+| `a7-c10-branch-live-rw` | rw | SC-405g | `A7/branch-two-sources` | yes | 0 | - | 7 | 9/11/13 | yes |
+| `a7-c11-branch-stopped-ro` | ro | SC-405g | `A7/branch-two-sources` | yes | 0 | - | 7 | 8/-/10 | yes |
+| `a7-c11-branch-stopped-rw` | rw | SC-405g | `A7/branch-two-sources` | yes | 0 | - | 7 | 8/-/10 | yes |
+| `a7-c12-405j-pair-full-fresh-ro` | ro | SC-405j | `A7/pair-405j-full-fresh` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c12-405j-pair-full-fresh-rw` | rw | SC-405j | `A7/pair-405j-full-fresh` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c13-405j-pair-stale-keys-ro` | ro | SC-405j | `A7/pair-405j-stale-keys` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c13-405j-pair-stale-keys-rw` | rw | SC-405j | `A7/pair-405j-stale-keys` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c14-405j-pair-slot-only-ro` | ro | SC-405j | `A7/pair-405j-slot-only` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c14-405j-pair-slot-only-rw` | rw | SC-405j | `A7/pair-405j-slot-only` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c15-405j-pair-session-only-ro` | ro | SC-405j | `A7/pair-405j-session-only` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c15-405j-pair-session-only-rw` | rw | SC-405j | `A7/pair-405j-session-only` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c16-405j-pair-keyless-ro` | ro | SC-405j | `A7/pair-405j-keyless` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c16-405j-pair-keyless-rw` | rw | SC-405j | `A7/pair-405j-keyless` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c17-405j-pair-one-empty-ro` | ro | SC-405j | `A7/pair-405j-one-empty` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c17-405j-pair-one-empty-rw` | rw | SC-405j | `A7/pair-405j-one-empty` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c18-405j-pair-all-empty-ro` | ro | SC-405j | `A7/pair-405j-all-empty` | yes | 0 | - | 7 | 8/10/12 | yes |
+| `a7-c18-405j-pair-all-empty-rw` | rw | SC-405j | `A7/pair-405j-all-empty` | yes | 0 | - | 7 | 8/10/12 | yes |
+
+Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A7/<case>/`:
+
+- `admissibility-ledger.txt` — append-only, monotonic `seq` + UTC + epoch per event:
+  case open, rows, clone verification (clone vs expected fingerprint), the TAB
+  round-trip START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the
+  before/after manifests, and every consumer START/COMPLETE with its rc and its
+  stdout / stderr / tmuxtrace sha256
+- `env-tab-selfcheck.txt` — the TAB round-trip in this case's own scrubbed
+  environment, plus the paired `LANG=LC_ALL=C` probe on the same throwaway server
+- `tmux-shim-equivalence.txt` — live cases only: the delegate-and-log shim proven
+  byte-identical to the real binary on this arm's own stable topology
+- `case.txt`, `env.txt`, `consumers.tsv` (label, rc, stdout/stderr sha256 + bytes,
+  tmuxtrace sha256 + line count, bounded flag, exact argv)
+- `out/<label>.stdout`, `out/<label>.stderr` (present only when non-empty),
+  `out/<label>.tmuxtrace` — per invocation: the effective `AE_TMUX_SERVER` and kind,
+  the effective locale, and the DELEGATED tmux argv
+- `manifest.before.tsv` / `manifest.after.tsv` / `manifest.diff.txt` — recursive:
+  type, mode, content hash, symlink target, path across the cloned AE_HOME
+- `tmux.before.txt` / `tmux.after.txt`
+- `A7/ledger.tsv` (case -> row ids), `A7/harness/` (the exact scripts and the
   tmux shim), `SHA256SUMS.txt` (every file above)
 
 ## D-record executions (bash lane)

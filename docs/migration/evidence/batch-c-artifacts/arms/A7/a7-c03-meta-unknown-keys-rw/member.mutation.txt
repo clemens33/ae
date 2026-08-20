@@ -1,0 +1,5 @@
+## mutation: append two unknown keys to meta
+file: sessions/tg1/meta
+before: sha256=9c95b975917e11fcec42d1b51824bbf2e0150416eead89287399201536cf75ee bytes=555
+after:  sha256=8151325f93d1aeb62c20137863339ba2c77b9f26a4ae6ea07edf93d4fe51a0fa bytes=605
+inserted: 'zzz_unknown_key=some value\nanother.unknown.key=42\n' appended at EOF

@@ -1,0 +1,4 @@
+pid=54054	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c01-meta-multi-equals-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a7a/s.sock display-message -p \#\{pane_id\} 
+pid=54057	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c01-meta-multi-equals-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a7a/s.sock display-message -p \#\{pane_id\} 
+pid=54060	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c01-meta-multi-equals-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a7a/s.sock display-message -p \#\{pane_id\} 
+pid=54061	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c01-meta-multi-equals-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a7a/s.sock display-message -p -t '' \#S 

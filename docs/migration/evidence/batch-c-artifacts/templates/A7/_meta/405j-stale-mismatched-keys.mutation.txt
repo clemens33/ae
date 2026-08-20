@@ -1,0 +1,44 @@
+## mutation: actor_slot -> a slot no roster entry holds
+file: /tmp/aecx/templates/A7/405j-stale-mismatched-keys/sessions/ta7j/events.jsonl
+op: repl '1' '"actor_slot":"main"' '"actor_slot":"worker.9"'
+detail: line 1: replace b'"actor_slot":"main"' -> b'"actor_slot":"worker.9"' (first occurrence)
+before: sha256=9f317805e9c342efb836c8e641dbc1f6bc131ea076f597aa68d3bfb79304aca2 bytes=363
+after:  sha256=c2c53a2b7dc15d4490f9b6f83aeb386310d872b944b7101d420c715e0706ddc8 bytes=367
+byte-diff:
+  common_prefix_bytes=138 common_suffix_bytes=221
+  removed=b'main'
+  inserted=b'worker.9'
+
+## mutation: actor_session -> a session this is not
+file: /tmp/aecx/templates/A7/405j-stale-mismatched-keys/sessions/ta7j/events.jsonl
+op: repl '1' '"actor_session":"ta7j"' '"actor_session":"some-other-session"'
+detail: line 1: replace b'"actor_session":"ta7j"' -> b'"actor_session":"some-other-session"' (first occurrence)
+before: sha256=c2c53a2b7dc15d4490f9b6f83aeb386310d872b944b7101d420c715e0706ddc8 bytes=367
+after:  sha256=2a15082152e45ee14dfcde93ce6008deee762db53c5269f96188e9d4c14b5e56 bytes=381
+byte-diff:
+  common_prefix_bytes=165 common_suffix_bytes=198
+  removed=b'ta7j'
+  inserted=b'some-other-session'
+
+## mutation: target_slot -> a slot no roster entry holds
+file: /tmp/aecx/templates/A7/405j-stale-mismatched-keys/sessions/ta7j/events.jsonl
+op: repl '1' '"target_slot":"worker.0"' '"target_slot":"worker.8"'
+detail: line 1: replace b'"target_slot":"worker.0"' -> b'"target_slot":"worker.8"' (first occurrence)
+before: sha256=2a15082152e45ee14dfcde93ce6008deee762db53c5269f96188e9d4c14b5e56 bytes=381
+after:  sha256=c1698321ae120483f81924a04dd9544719b10f1ef10195b292962f9398a3bf89 bytes=381
+byte-diff:
+  common_prefix_bytes=207 common_suffix_bytes=173
+  removed=b'0'
+  inserted=b'8'
+
+## mutation: target_session -> a session this is not
+file: /tmp/aecx/templates/A7/405j-stale-mismatched-keys/sessions/ta7j/events.jsonl
+op: repl '1' '"target_session":"ta7j"' '"target_session":"some-other-session"'
+detail: line 1: replace b'"target_session":"ta7j"' -> b'"target_session":"some-other-session"' (first occurrence)
+before: sha256=c1698321ae120483f81924a04dd9544719b10f1ef10195b292962f9398a3bf89 bytes=381
+after:  sha256=e4bfe073471a63a6e13cbf02f4a6b32f5cf12eb7479b325fa60dc2513f6355e2 bytes=395
+byte-diff:
+  common_prefix_bytes=228 common_suffix_bytes=149
+  removed=b'ta7j'
+  inserted=b'some-other-session'
+

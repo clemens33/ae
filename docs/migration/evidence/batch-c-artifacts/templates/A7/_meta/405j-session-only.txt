@@ -1,0 +1,11 @@
+group=A7
+member=405j-session-only
+derived_from=A7/405j-full-fresh (byte copy)
+source_fingerprint_protected=b62bd9f1f706794d34f2f1ac617fabfff3e1de78a0a7a7e88912bec492aedad2
+session=ta7j
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+note=case 3b: PARTIAL keys — the session members survive, both slot members are deleted
+built_utc=2026-08-20T19:56:53Z
+fingerprint_pre_protection=50cc613d6d1af2aebafbdd37ff266a90ac897059cfbc22843aa821af9096a9c4
+named_mutations=see _meta/405j-session-only.mutation.txt
+fingerprint_protected=d7a34bfdf2a4114b8303fdbdbd5266f2d7ea592e8a01662f3f01448427a1d3ae

@@ -1,0 +1,12 @@
+arm=A7 case=a7-c18-405j-pair-all-empty
+rows=SC-405j
+template=A7/pair-405j-all-empty
+clone_mode=ro
+session=tg5
+live_topology=yes
+clone_fingerprint=1a819a2878388c1e3450110792d2c35e199f6e7399c7a3236adebaf86cc6fa48
+clone_fingerprint_matches_template=yes
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+utc_start=2026-08-20T20:03:31Z
+manifest_diff_lines=0

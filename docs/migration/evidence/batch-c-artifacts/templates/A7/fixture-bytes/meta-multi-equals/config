@@ -1,0 +1,7 @@
+[agents]
+fake = "/tmp/aecx/bin/aefake"
+
+[workspace]
+main = fake:lead
+layout = vertical
+watchdog = false

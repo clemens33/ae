@@ -1,0 +1,13 @@
+group=A7
+member=405j-full-fresh
+fingerprint_pre_protection=385a7de811fc015c3d96874c242da2a1bfe59a6802bcb2efae23e018604b03b7
+source_sandbox=/tmp/aecx/tpl/a7j
+source_session=ta7j
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T19:56:13Z
+--- provenance ---
+a real ask, so all four routing members are present and fresh; the five 405j cases
+are named byte mutations of THIS line, each keeping the same display name.
+  as=%0 helper='ask fake:worker A7 405j identity question'
+    rc=0
+fingerprint_protected=b62bd9f1f706794d34f2f1ac617fabfff3e1de78a0a7a7e88912bec492aedad2

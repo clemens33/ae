@@ -1,0 +1,11 @@
+group=A7
+member=405j-stale-mismatched-keys
+derived_from=A7/405j-full-fresh (byte copy)
+source_fingerprint_protected=b62bd9f1f706794d34f2f1ac617fabfff3e1de78a0a7a7e88912bec492aedad2
+session=ta7j
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+note=case 2: all four routing members PRESENT but naming a slot and a session that are not this session's
+built_utc=2026-08-20T19:56:50Z
+fingerprint_pre_protection=61c1b473e5900455919898f136065545a6eee4c85176b734745ae55bac3852d7
+named_mutations=see _meta/405j-stale-mismatched-keys.mutation.txt
+fingerprint_protected=ef3776dd8976aecd7c26e88eac53dfde39fd5e016493919e77cb96249aa19899

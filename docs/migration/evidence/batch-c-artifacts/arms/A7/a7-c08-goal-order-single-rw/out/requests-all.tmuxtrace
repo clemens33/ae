@@ -1,0 +1,4 @@
+pid=81340	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c08-goal-order-single-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a7fsingle/s.sock display-message -p \#\{pane_id\} 
+pid=81343	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c08-goal-order-single-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a7fsingle/s.sock display-message -p \#\{pane_id\} 
+pid=81346	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c08-goal-order-single-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a7fsingle/s.sock display-message -p \#\{pane_id\} 
+pid=81347	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c08-goal-order-single-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a7fsingle/s.sock display-message -p -t '' \#S 

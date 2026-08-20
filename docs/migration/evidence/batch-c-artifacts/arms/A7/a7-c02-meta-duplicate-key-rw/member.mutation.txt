@@ -1,0 +1,7 @@
+## mutation: append a SECOND goal= line after the producer-written one
+file: sessions/ta7a/meta
+before: sha256=95f30d5d4e60a12909b4f61562ba58aa12eaa950e6759d212cdc3bff5cadbd54 bytes=501
+after:  sha256=2fbcaa001e79b9a03e17ad5c45fd11aa451aff944eb843e19e117b908ba783b1 bytes=538
+the two values differ, so a first-wins reader and a last-wins reader disagree
+first goal line: goal=alpha=beta=gamma delta=epsilon
+last  goal line: goal=SECOND-GOAL-LINE-APPENDED-AFTER

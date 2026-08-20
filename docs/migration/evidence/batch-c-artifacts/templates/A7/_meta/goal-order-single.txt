@@ -1,0 +1,16 @@
+group=A7
+member=goal-order-single
+fingerprint_pre_protection=3ddc37471ae584993271329477a009edca01380bab9a6135a3a2d7d6270b303f
+source_sandbox=/tmp/aecx/tpl/a7fsingle
+source_session=ta7goalordersingle
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T19:56:05Z
+--- provenance ---
+CONTROL: a single goal. Establishes the baseline rendering with nothing to choose between.
+clock hook active; real date=/bin/date sha256=0c7f77e19bc79013bc5bc4e67beea3b9d546d6d09a36799c2eed2693967af8c6
+  append 1 at frozen now=1755000000 text='GOAL-TEXT-ONLY'
+    rc=0
+  events (append order, top to bottom):
+    {"ts":"2025-08-12T12:00:00Z","actor":"fake:lead","action":"goal","summary":"GOAL-TEXT-ONLY"}
+  meta goal line: goal=GOAL-TEXT-ONLY
+fingerprint_protected=85821f2e87914324545ef84f7bf472fa2e9845d5bf341d9a3d0f5921df8c1f25

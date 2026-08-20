@@ -1,0 +1,44 @@
+## mutation: reply actor_slot -> empty
+file: /tmp/aecx/templates/A7/pair-405j-all-empty/sessions/tg5/events.jsonl
+op: repl '2' '"actor_slot":"worker.0"' '"actor_slot":""'
+detail: line 2: replace b'"actor_slot":"worker.0"' -> b'"actor_slot":""' (first occurrence)
+before: sha256=8fe76b4cc5e3459ffbcc1d241896d3963cb1291f0d8157c6df1d51d4a3f3a539 bytes=1478
+after:  sha256=f13823183779535d9a77c3198b079b6a3c20f515dcbe706fcbc1daa0fd9f3d79 bytes=1470
+byte-diff:
+  common_prefix_bytes=492 common_suffix_bytes=978
+  removed=b'worker.0'
+  inserted=b''
+
+## mutation: reply actor_session -> empty
+file: /tmp/aecx/templates/A7/pair-405j-all-empty/sessions/tg5/events.jsonl
+op: repl '2' '"actor_session":"tg5"' '"actor_session":""'
+detail: line 2: replace b'"actor_session":"tg5"' -> b'"actor_session":""' (first occurrence)
+before: sha256=f13823183779535d9a77c3198b079b6a3c20f515dcbe706fcbc1daa0fd9f3d79 bytes=1470
+after:  sha256=cf2cb2dee3379065c17ba0ca9fe30d931b7b2d45115ff53332018a831148f96e bytes=1467
+byte-diff:
+  common_prefix_bytes=511 common_suffix_bytes=956
+  removed=b'tg5'
+  inserted=b''
+
+## mutation: reply target_slot -> empty
+file: /tmp/aecx/templates/A7/pair-405j-all-empty/sessions/tg5/events.jsonl
+op: repl '2' '"target_slot":"main"' '"target_slot":""'
+detail: line 2: replace b'"target_slot":"main"' -> b'"target_slot":""' (first occurrence)
+before: sha256=cf2cb2dee3379065c17ba0ca9fe30d931b7b2d45115ff53332018a831148f96e bytes=1467
+after:  sha256=ad9d28d71334ebe10d71c74283034df074fd1f43a1a82e8afe5c4afd4e4d01bf bytes=1463
+byte-diff:
+  common_prefix_bytes=528 common_suffix_bytes=935
+  removed=b'main'
+  inserted=b''
+
+## mutation: reply target_session -> empty
+file: /tmp/aecx/templates/A7/pair-405j-all-empty/sessions/tg5/events.jsonl
+op: repl '2' '"target_session":"tg5"' '"target_session":""'
+detail: line 2: replace b'"target_session":"tg5"' -> b'"target_session":""' (first occurrence)
+before: sha256=ad9d28d71334ebe10d71c74283034df074fd1f43a1a82e8afe5c4afd4e4d01bf bytes=1463
+after:  sha256=95c163b2a5e81b7bec645a34ceef58225f797de10d8204e22b4671cc1bc4f0cc bytes=1460
+byte-diff:
+  common_prefix_bytes=548 common_suffix_bytes=912
+  removed=b'tg5'
+  inserted=b''
+

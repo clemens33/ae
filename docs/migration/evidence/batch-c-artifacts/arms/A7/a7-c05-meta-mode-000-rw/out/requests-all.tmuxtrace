@@ -1,0 +1,4 @@
+pid=70571	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c05-meta-mode-000-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=display-message -p \#\{pane_id\} 
+pid=70577	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c05-meta-mode-000-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=display-message -p \#\{pane_id\} 
+pid=70580	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c05-meta-mode-000-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=display-message -p \#\{pane_id\} 
+pid=70581	AE_TMUX_SERVER=/tmp/aecx/arms/A7/a7-c05-meta-mode-000-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=display-message -p -t '' \#S 

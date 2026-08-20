@@ -1,0 +1,4 @@
+SESSION                   STATUS    MODE        ORIGIN
+tg9                       running   local       /tmp/aecx/tpl/g9/work
+  goal (>7d): G9 goal revision 4 · git:master · ae 0.2.1 · active 3h ago
+  fake:lead               -         -             
