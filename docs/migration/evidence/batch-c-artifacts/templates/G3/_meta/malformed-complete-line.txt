@@ -1,0 +1,10 @@
+group=G3
+member=malformed-complete-line
+derived_from=G1/healthy (byte copy)
+source_fingerprint_protected=07def20c11115339748598d834b4240ac0ea2c817cf713c68fc4cd09d8c38152
+session=tg1
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:23:07Z
+fingerprint_pre_protection=567dc0a279c86307fd4225dc4981a55b6412db59db3cf876fe21727ba876c964
+named_mutations=see _meta/malformed-complete-line.mutation.txt
+fingerprint_protected=b7d64f72ede6cbd61dc1652eedace4128610868395befd2da67895b3fdcd9705

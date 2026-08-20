@@ -1,0 +1,4 @@
+⟦ae:msg from fake:lead⟧
+newline class: line one
+line two
+line three

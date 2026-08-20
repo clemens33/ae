@@ -1,0 +1,18 @@
+group=G7
+member=events-unknown-action
+fingerprint_pre_protection=fd9ea1661827ec84bd518462beced7e3e0b6bbd2b4b7050f29986753317ffc99
+source_sandbox=/tmp/aecx/tpl/g7a
+source_session=tg7a
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:19:42Z
+--- provenance ---
+unknown action produced by the REAL send helper via its documented _AE_EVENT_ACTION override
+  as=%0 helper='state working baseline before the unknown action'
+    rc=0
+  _AE_EVENT_ACTION=zzz-unknown-action send
+    rc=0
+  _AE_EVENT_ACTION=another.unknown/action send
+    rc=0
+  _AE_EVENT_ACTION=UPPER-Unknown send
+    rc=0
+fingerprint_protected=ae83c220053fb12e54dbaef0349905a374b0f8054d80b692b6522d966ab13a39

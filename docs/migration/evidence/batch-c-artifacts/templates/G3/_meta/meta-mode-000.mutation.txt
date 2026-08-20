@@ -1,0 +1,4 @@
+## mutation: meta file mode -> 000
+file: sessions/tg1/meta
+detail: mode 644 -> 000; CONTENT BYTES UNCHANGED
+content_sha256=8fa5a53b1e7ec771faf302ce669a85bbee17ba61d6b568f03205bc6b4ea55360

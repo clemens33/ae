@@ -1,0 +1,16 @@
+mode=local
+origin=/tmp/aecx/tpl/g2bl/work
+session=tg2bl
+session_id=1441e413-237a-44c0-abd0-bb251ed9fad0
+work_dir=/tmp/aecx/tpl/g2bl/work
+layout=vertical
+config=/tmp/aecx/tpl/g2bl/home/.ae/config
+main_pane=%0
+ae_path=/private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae
+ae_version=0.2.1
+tmux_server=/tmp/aecx/tpl/g2bl/s.sock
+tmux_server_kind=socket
+agent.main=fake:lead:pending
+agent_bin.main=aefake
+agent.worker.0=fake:worker:pending
+agent_bin.worker.0=aefake

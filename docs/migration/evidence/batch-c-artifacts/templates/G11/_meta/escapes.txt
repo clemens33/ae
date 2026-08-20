@@ -1,0 +1,29 @@
+group=G11
+member=escapes
+fingerprint_pre_protection=aac57e86f0e04b92777d0bd5364470148958dabc79e83cd386a4e5bece0597f3
+source_sandbox=/tmp/aecx/tpl/g11
+source_session=tg11
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:19:36Z
+--- provenance ---
+  class=quote input_file=inputs/quote.bin input_sha256=cc4cfa67128386ad32ab0a8722ed3ea1c1c597ac05690f0d33b52f750159e3cf input_bytes=38
+    say rc=0
+    memo rc=0
+    send rc=0
+  class=backslash input_file=inputs/backslash.bin input_sha256=2367a20637b5b2077338739c951ca22f17465a49552842dace9664e0bf6d8419 input_bytes=44
+    say rc=0
+    memo rc=0
+    send rc=0
+  class=newline input_file=inputs/newline.bin input_sha256=7a175209836bbd8a206ce02f2236b5e56becee9d20291eba7669ff05dbd44b93 input_bytes=43
+    say rc=0
+    memo rc=0
+    send rc=0
+  class=tab input_file=inputs/tab.bin input_sha256=b1b4edb9e79cae88b9a4060be983cc3d62a362845b53b77381224db3d663328c input_bytes=25
+    say rc=0
+    memo rc=0
+    send rc=0
+  class=cr input_file=inputs/cr.bin input_sha256=d195cdb3df95496e4b6531da56f24089e2b606a9629a45af465a81245bcb25eb input_bytes=22
+    say rc=0
+    memo rc=0
+    send rc=0
+fingerprint_protected=84b2df23b1fdaadc629f79332a3d956e294a0e88a09cfd8a9e0b362cfffb6d5a

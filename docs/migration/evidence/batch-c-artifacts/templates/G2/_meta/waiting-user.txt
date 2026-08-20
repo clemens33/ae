@@ -1,0 +1,15 @@
+group=G2
+member=waiting-user
+fingerprint_pre_protection=24c2cbcec497f267cafc3b312fb027b99a0515a605194a21f21ffcb4bd5fd439
+source_sandbox=/tmp/aecx/tpl/g2wu
+source_session=tg2wu
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:21:23Z
+--- provenance ---
+  as=%0 helper='state working before the declaration'
+    rc=0
+  as=%0 helper='send fake:worker ordinary traffic'
+    rc=0
+  as=%1 helper='state waiting-user asked the human a question'
+    rc=0
+fingerprint_protected=386df958c8ee6df1b30373825e7015865e78448b41f06cf29f927391de69d720

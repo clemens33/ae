@@ -1,0 +1,10 @@
+group=G5
+member=m3-wrong-actor
+derived_from=G5/m1-control (byte copy)
+source_fingerprint_protected=e729e933f1465f1d31332090a4eb4e583c7bfa337cb4ed6c83f1d307c4dae385
+session=tg5
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:23:14Z
+fingerprint_pre_protection=707e1807d8750479f87847ad361f160bbe2a4386b3fdaad3bfffc554abbad135
+named_mutations=see _meta/m3-wrong-actor.mutation.txt
+fingerprint_protected=7538479765c5af9959ca0230cce2222c10ede7a2e41983faf961abab97901294

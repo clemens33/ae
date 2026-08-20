@@ -1,0 +1,17 @@
+## date-shim inactive-equivalence replay
+shim=/tmp/aecx/shim/date sha256=525e3808ac9fd1c59db60330508d28c6fb656a15a028ceb887d7d7767b87c2ac
+real=/bin/date sha256=0c7f77e19bc79013bc5bc4e67beea3b9d546d6d09a36799c2eed2693967af8c6
+source_log=/tmp/aecx/templates/G2/_meta/unanswered.date-shim-invocations.log distinct_argv=3
+trials_per_nowform=20
+
+argv=-u +%FT%TZ 
+  IDENTICAL stdout/stderr/rc on first pair (rc=0)
+argv=-u +%Y%m%dT%H%M%SZ 
+  IDENTICAL stdout/stderr/rc on first pair (rc=0)
+argv=+%s 
+  IDENTICAL stdout/stderr/rc on first pair (rc=0)
+
+## structural
+With AE_FAKE_NOW unset the shim reaches 'exec $REAL "$@"' before any case analysis.
+xtrace of one inactive invocation:
+  + /tmp/aecx/shim/date -u +%Y/%m/%d

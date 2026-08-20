@@ -1,0 +1,44 @@
+## mutation: reply: delete routing member actor_slot (reply becomes display-only, ask stays routed)
+file: /tmp/aecx/templates/G5/m6-mixed-routed-display/sessions/tg5/events.jsonl
+op: delkey '2' 'actor_slot'
+detail: line 2: delete member b',"actor_slot":"worker.0"'
+before: sha256=450d53f62a358c277b946e3de1470bff98f520618743fe06c44f002c762b0b34 bytes=1478
+after:  sha256=817ffd7c3ebe5d06d4fdcb94116cc013e9671f3bcb2d44aed53ff62dffcef168 bytes=1454
+byte-diff:
+  common_prefix_bytes=486 common_suffix_bytes=968
+  removed=b'lot":"worker.0","actor_s'
+  inserted=b''
+
+## mutation: reply: delete routing member actor_session (reply becomes display-only, ask stays routed)
+file: /tmp/aecx/templates/G5/m6-mixed-routed-display/sessions/tg5/events.jsonl
+op: delkey '2' 'actor_session'
+detail: line 2: delete member b',"actor_session":"tg5"'
+before: sha256=817ffd7c3ebe5d06d4fdcb94116cc013e9671f3bcb2d44aed53ff62dffcef168 bytes=1454
+after:  sha256=92927ad6b57cee96ad44f4badb61f3f41f9f551065abcc442c6eb564eea9e535 bytes=1432
+byte-diff:
+  common_prefix_bytes=479 common_suffix_bytes=953
+  removed=b'actor_session":"tg5","'
+  inserted=b''
+
+## mutation: reply: delete routing member target_slot (reply becomes display-only, ask stays routed)
+file: /tmp/aecx/templates/G5/m6-mixed-routed-display/sessions/tg5/events.jsonl
+op: delkey '2' 'target_slot'
+detail: line 2: delete member b',"target_slot":"main"'
+before: sha256=92927ad6b57cee96ad44f4badb61f3f41f9f551065abcc442c6eb564eea9e535 bytes=1432
+after:  sha256=37632ebd7467b5cb5edb0a305da4b65b362c560e97951e5f102a0f3036d284ca bytes=1411
+byte-diff:
+  common_prefix_bytes=487 common_suffix_bytes=924
+  removed=b'lot":"main","target_s'
+  inserted=b''
+
+## mutation: reply: delete routing member target_session (reply becomes display-only, ask stays routed)
+file: /tmp/aecx/templates/G5/m6-mixed-routed-display/sessions/tg5/events.jsonl
+op: delkey '2' 'target_session'
+detail: line 2: delete member b',"target_session":"tg5"'
+before: sha256=37632ebd7467b5cb5edb0a305da4b65b362c560e97951e5f102a0f3036d284ca bytes=1411
+after:  sha256=a459846bc6f941117cd4b2b35807f3a8a543ccf5907cf2154640250b5298dbd6 bytes=1388
+byte-diff:
+  common_prefix_bytes=479 common_suffix_bytes=909
+  removed=b'target_session":"tg5","'
+  inserted=b''
+

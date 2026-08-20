@@ -1,0 +1,4 @@
+## mutation: remove events.jsonl entirely
+file: sessions/tg1/events.jsonl
+before: sha256=2974d3a187a0223cdd7ce0addedb064fa350ce5c16d6eab821b5bbff93679893 bytes=1754
+after:  FILE ABSENT

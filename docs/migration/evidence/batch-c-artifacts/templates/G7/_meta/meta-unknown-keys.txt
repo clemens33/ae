@@ -1,0 +1,10 @@
+group=G7
+member=meta-unknown-keys
+derived_from=G1/healthy (byte copy)
+source_fingerprint_protected=07def20c11115339748598d834b4240ac0ea2c817cf713c68fc4cd09d8c38152
+session=tg1
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:23:22Z
+fingerprint_pre_protection=693b3ddf0e39655ea3865f3cc4c5d7e982c7d38e0189a207c67c762673fef885
+named_mutations=see _meta/meta-unknown-keys.mutation.txt
+fingerprint_protected=dac4925b3cb97cf0155340bc21e9eb5df19b1034cfc7ab0a349a3740d530a511

@@ -1,0 +1,10 @@
+group=G7
+member=events-unknown-keys
+derived_from=G1/healthy (byte copy)
+source_fingerprint_protected=07def20c11115339748598d834b4240ac0ea2c817cf713c68fc4cd09d8c38152
+session=tg1
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:23:23Z
+fingerprint_pre_protection=2652b58f18f883e6be5facff84f3d156811b2f77fa1730ed4609c58c5e89b926
+named_mutations=see _meta/events-unknown-keys.mutation.txt
+fingerprint_protected=f7487f66c7a17ea89e7ccb5d6b08546696ea17114f3dccc4c6b729a69b0f620b

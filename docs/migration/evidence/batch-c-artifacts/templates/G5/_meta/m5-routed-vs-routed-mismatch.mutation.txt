@@ -1,0 +1,11 @@
+## mutation: ask target_slot -> worker.1 while the reply's actor_slot stays worker.0: both sides routed, keys disagree
+file: /tmp/aecx/templates/G5/m5-routed-vs-routed-mismatch/sessions/tg5/events.jsonl
+op: repl '1' '"target_slot":"worker.0"' '"target_slot":"worker.1"'
+detail: line 1: replace b'"target_slot":"worker.0"' -> b'"target_slot":"worker.1"' (first occurrence)
+before: sha256=450d53f62a358c277b946e3de1470bff98f520618743fe06c44f002c762b0b34 bytes=1478
+after:  sha256=cd8b85c3f9e691ffab17c612f1f4f5d80809f8c273051c6ac71d3ed564bfcd61 bytes=1478
+byte-diff:
+  common_prefix_bytes=188 common_suffix_bytes=1289
+  removed=b'0'
+  inserted=b'1'
+

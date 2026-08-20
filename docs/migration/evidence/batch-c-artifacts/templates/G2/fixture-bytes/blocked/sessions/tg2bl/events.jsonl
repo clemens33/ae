@@ -1,0 +1,2 @@
+{"ts":"2026-08-20T15:21:26Z","actor":"fake:lead","action":"state","ref":"working","summary":"before the declaration"}
+{"ts":"2026-08-20T15:21:26Z","actor":"fake:worker","action":"state","ref":"blocked","summary":"waiting on an external dependency"}

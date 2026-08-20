@@ -1,0 +1,22 @@
+## mutation: insert an unknown member into the state event (line 1)
+file: /tmp/aecx/templates/G7/events-unknown-keys/sessions/tg1/events.jsonl
+op: repl '1' ',"summary":"building the healthy fixture"}' ',"zzz_unknown":"unknown member value","summary":"building the healthy fixture"}'
+detail: line 1: replace b',"summary":"building the healthy fixture"}' -> b',"zzz_unknown":"unknown member value","summary":"building the healthy fixture"}' (first occurrence)
+before: sha256=2974d3a187a0223cdd7ce0addedb064fa350ce5c16d6eab821b5bbff93679893 bytes=1754
+after:  sha256=8ce057d85e822b7c4008153742d214668e8a3c8bcc8c72ac0b5d710bdaa26739 bytes=1791
+byte-diff:
+  common_prefix_bytes=83 common_suffix_bytes=1671
+  removed=b''
+  inserted=b'zzz_unknown":"unknown member value","'
+
+## mutation: insert an unknown member at end of the ask event (line 6)
+file: /tmp/aecx/templates/G7/events-unknown-keys/sessions/tg1/events.jsonl
+op: repl '6' '.txt"}' '.txt","another_unknown":123}'
+detail: line 6: replace b'.txt"}' -> b'.txt","another_unknown":123}' (first occurrence)
+before: sha256=8ce057d85e822b7c4008153742d214668e8a3c8bcc8c72ac0b5d710bdaa26739 bytes=1791
+after:  sha256=1147552fe2fc138d87b2f926441484e90189b57db2900bd7187fe78f12e47604 bytes=1813
+byte-diff:
+  common_prefix_bytes=1113 common_suffix_bytes=678
+  removed=b''
+  inserted=b',"another_unknown":123'
+

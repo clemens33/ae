@@ -1,0 +1,22 @@
+## mutation: reply actor display -> fake:third
+file: /tmp/aecx/templates/G5/m3-wrong-actor/sessions/tg5/events.jsonl
+op: repl '2' '"actor":"fake:worker"' '"actor":"fake:third"'
+detail: line 2: replace b'"actor":"fake:worker"' -> b'"actor":"fake:third"' (first occurrence)
+before: sha256=450d53f62a358c277b946e3de1470bff98f520618743fe06c44f002c762b0b34 bytes=1478
+after:  sha256=3e5e1258c14f0b0dc0a936ac4f0e5108f68fd92a1ebb004fb6b1fc09350292ab bytes=1477
+byte-diff:
+  common_prefix_bytes=395 common_suffix_bytes=1077
+  removed=b'worker'
+  inserted=b'third'
+
+## mutation: reply actor_slot -> worker.1 (fake:third's real slot bytes, line 3)
+file: /tmp/aecx/templates/G5/m3-wrong-actor/sessions/tg5/events.jsonl
+op: repl '2' '"actor_slot":"worker.0"' '"actor_slot":"worker.1"'
+detail: line 2: replace b'"actor_slot":"worker.0"' -> b'"actor_slot":"worker.1"' (first occurrence)
+before: sha256=3e5e1258c14f0b0dc0a936ac4f0e5108f68fd92a1ebb004fb6b1fc09350292ab bytes=1477
+after:  sha256=67170e79c5f661fd2b4ba896792e08452204c0f2f77fe94f04cceebbed52b53f bytes=1477
+byte-diff:
+  common_prefix_bytes=498 common_suffix_bytes=978
+  removed=b'0'
+  inserted=b'1'
+

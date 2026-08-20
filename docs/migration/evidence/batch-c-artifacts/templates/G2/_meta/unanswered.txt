@@ -1,0 +1,13 @@
+group=G2
+member=unanswered
+fingerprint_pre_protection=50ffdd45792750ecb7ed0c6f682aceaa6c25a7203cd41946c271024045a5c7f1
+source_sandbox=/tmp/aecx/tpl/g2un
+source_session=tg2un
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:21:31Z
+--- provenance ---
+clock hook: PATH-first date shim; real date=/bin/date sha256=0c7f77e19bc79013bc5bc4e67beea3b9d546d6d09a36799c2eed2693967af8c6
+  AE_FAKE_NOW=1755000000 for the ask (aged; no reply is ever produced)
+  as=%0 helper='ask fake:worker G2 unanswered question (never replied)'
+    rc=0
+fingerprint_protected=489b489e33e9253ee07d6e35dfe34aa66f3324a0e8bcafdf29689e31885e7ac5

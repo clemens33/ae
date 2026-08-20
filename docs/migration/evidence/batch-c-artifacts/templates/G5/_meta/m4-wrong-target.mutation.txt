@@ -1,0 +1,22 @@
+## mutation: reply target display -> fake:third
+file: /tmp/aecx/templates/G5/m4-wrong-target/sessions/tg5/events.jsonl
+op: repl '2' '"target":"fake:lead"' '"target":"fake:third"'
+detail: line 2: replace b'"target":"fake:lead"' -> b'"target":"fake:third"' (first occurrence)
+before: sha256=450d53f62a358c277b946e3de1470bff98f520618743fe06c44f002c762b0b34 bytes=1478
+after:  sha256=eed2b05fc766e688a7ab2c8eb5f323fa880c9bf0b0aeeec6f3bf5617161e5853 bytes=1479
+byte-diff:
+  common_prefix_bytes=435 common_suffix_bytes=1040
+  removed=b'lea'
+  inserted=b'thir'
+
+## mutation: reply target_slot -> worker.1 (fake:third's real slot bytes)
+file: /tmp/aecx/templates/G5/m4-wrong-target/sessions/tg5/events.jsonl
+op: repl '2' '"target_slot":"main"' '"target_slot":"worker.1"'
+detail: line 2: replace b'"target_slot":"main"' -> b'"target_slot":"worker.1"' (first occurrence)
+before: sha256=eed2b05fc766e688a7ab2c8eb5f323fa880c9bf0b0aeeec6f3bf5617161e5853 bytes=1479
+after:  sha256=cd56b0f8cfbf83d065a445a7ab17b70382af8482dc13d8dd40e4a9749f9ae17e bytes=1483
+byte-diff:
+  common_prefix_bytes=540 common_suffix_bytes=935
+  removed=b'main'
+  inserted=b'worker.1'
+

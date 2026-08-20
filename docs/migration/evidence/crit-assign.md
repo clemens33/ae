@@ -32,6 +32,7 @@ CRIT-ASSIGN: SC-019 | C | read-side fixture cluster: `jump` is an alias of `next
 CRIT-ASSIGN: SC-020a | C | read-side fixture cluster: `next --attach` switches inside tmux, attaches outside
 CRIT-ASSIGN: SC-020b | C | read-side fixture cluster: `--attach` re-checks the session still exists first
 CRIT-ASSIGN: SC-020c | C | read-side fixture cluster: `--attach` no-ops with a message when already current
+CRIT-ASSIGN: SC-021 | C | read-side fixture cluster: ls-alias arm (A2) — ls invocation captured alongside list
 CRIT-ASSIGN: D24 | B0 | negative-evidence artifact: scoped writer-enumeration absence assertion with demonstrated red arm
 CRIT-ASSIGN: D25 | T-WD | watchdog branch harness: watchdog daemon (mode-split; measured, colead 2026-08-20; census-3 audited)
 CRIT-ASSIGN: D27 | T-STORE | store/handoff harness: telegram bridge (runtime handoff; corrected per gate finding fe7cfc2e, blocker 6)

@@ -1,0 +1,15 @@
+{"ts":"2026-08-20T15:19:30Z","actor":"fake:lead","action":"chat","summary":"quote class: he said \"hello\" and 'bye'"}
+{"ts":"2026-08-20T15:19:30Z","actor":"fake:lead","action":"memo","ref":"quote","summary":"quote class: he said \"hello\" and 'bye'"}
+{"ts":"2026-08-20T15:19:31Z","actor":"fake:lead","action":"send","target":"fake:worker","summary":"⟦ae:msg from fake:lead⟧ quote class: he said \"hello\" and 'bye'","body_file":"/tmp/aecx/tpl/g11/home/.ae/sessions/tg11/messages/msg-20260820T151931Z.send.teTr0k.txt"}
+{"ts":"2026-08-20T15:19:31Z","actor":"fake:lead","action":"chat","summary":"backslash class: a\\b and c\\\\d and \\n literal"}
+{"ts":"2026-08-20T15:19:31Z","actor":"fake:lead","action":"memo","ref":"backslash","summary":"backslash class: a\\b and c\\\\d and \\n literal"}
+{"ts":"2026-08-20T15:19:32Z","actor":"fake:lead","action":"send","target":"fake:worker","summary":"⟦ae:msg from fake:lead⟧ backslash class: a\\b and c\\\\d and \\n literal","body_file":"/tmp/aecx/tpl/g11/home/.ae/sessions/tg11/messages/msg-20260820T151932Z.send.pvUyrD.txt"}
+{"ts":"2026-08-20T15:19:32Z","actor":"fake:lead","action":"chat","summary":"newline class: line one\nline two\nline three"}
+{"ts":"2026-08-20T15:19:32Z","actor":"fake:lead","action":"memo","ref":"newline","summary":"newline class: line one line two line three"}
+{"ts":"2026-08-20T15:19:32Z","actor":"fake:lead","action":"send","target":"fake:worker","summary":"⟦ae:msg from fake:lead⟧ newline class: line one line two line three","body_file":"/tmp/aecx/tpl/g11/home/.ae/sessions/tg11/messages/msg-20260820T151932Z.send.2h817N.txt"}
+{"ts":"2026-08-20T15:19:33Z","actor":"fake:lead","action":"chat","summary":"tab class: col1\tcol2\tcol3"}
+{"ts":"2026-08-20T15:19:33Z","actor":"fake:lead","action":"memo","ref":"tab","summary":"tab class: col1 col2 col3"}
+{"ts":"2026-08-20T15:19:33Z","actor":"fake:lead","action":"send","target":"fake:worker","summary":"⟦ae:msg from fake:lead⟧ tab class: col1 col2 col3","body_file":"/tmp/aecx/tpl/g11/home/.ae/sessions/tg11/messages/msg-20260820T151933Z.send.oRUYjR.txt"}
+{"ts":"2026-08-20T15:19:33Z","actor":"fake:lead","action":"chat","summary":"cr class: before\rafter"}
+{"ts":"2026-08-20T15:19:33Z","actor":"fake:lead","action":"memo","ref":"cr","summary":"cr class: beforeafter"}
+{"ts":"2026-08-20T15:19:34Z","actor":"fake:lead","action":"send","target":"fake:worker","summary":"⟦ae:msg from fake:lead⟧ cr class: before\rafter","body_file":"/tmp/aecx/tpl/g11/home/.ae/sessions/tg11/messages/msg-20260820T151934Z.send.VaUHOV.txt"}

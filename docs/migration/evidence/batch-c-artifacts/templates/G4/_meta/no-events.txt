@@ -1,0 +1,10 @@
+group=G4
+member=no-events
+derived_from=G1/healthy (byte copy)
+source_fingerprint_protected=07def20c11115339748598d834b4240ac0ea2c817cf713c68fc4cd09d8c38152
+session=tg1
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:23:09Z
+fingerprint_pre_protection=5e18fb79539713c2ac885c5323f0e79b4b64f3bea11917297c3525372caca000
+named_mutations=see _meta/no-events.mutation.txt
+fingerprint_protected=80cdb9235faac60b7aff2baa44b7366c3f5fcb858f84e47b45f8c5f7c2775a0e

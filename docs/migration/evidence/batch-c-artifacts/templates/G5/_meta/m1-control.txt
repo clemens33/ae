@@ -1,0 +1,22 @@
+group=G5
+member=m1-control
+fingerprint_pre_protection=b8c3259102203f74a460ec56d466a06d068455a692c2490cfda6aee4c581de53
+source_sandbox=/tmp/aecx/tpl/g5
+source_session=tg5
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:19:23Z
+--- provenance ---
+producers: real ask (lead->worker) + real reply (worker->lead) = the mirror pair;
+plus a real ask from the THIRD agent, harvested only so its genuine routing-key
+bytes exist to be used verbatim by the G5 mutations.
+  as=%0 helper='ask fake:worker G5 mirror question'
+    rc=0
+  mirror_request_id=ae-20260820T151918Z-a3ec9238
+  as=%1 helper='reply ae-20260820T151918Z-a3ec9238 G5 mirror answer'
+    rc=0
+  as=%2 helper='ask fake:lead G5 third-agent question (routing-key donor)'
+    rc=0
+  donor_request_id=ae-20260820T151920Z-3c9a8370
+  as=%0 helper='review fake:worker G5 review request (second well-formed ref donor)'
+    rc=0
+fingerprint_protected=e729e933f1465f1d31332090a4eb4e583c7bfa337cb4ed6c83f1d307c4dae385

@@ -1,0 +1,11 @@
+## mutation: malformed-complete-line
+file: /tmp/aecx/templates/G3/malformed-complete-line/sessions/tg1/events.jsonl
+op: repl '3' '"action":"memo"' '"action:"memo"'
+detail: line 3: replace b'"action":"memo"' -> b'"action:"memo"' (first occurrence)
+before: sha256=2974d3a187a0223cdd7ce0addedb064fa350ce5c16d6eab821b5bbff93679893 bytes=1754
+after:  sha256=542570f7e456bee02db3f0a9c2d654c1d77ee345f6850d582359b9d48ae18f0d bytes=1753
+byte-diff:
+  common_prefix_bytes=287 common_suffix_bytes=1466
+  removed=b'"'
+  inserted=b''
+

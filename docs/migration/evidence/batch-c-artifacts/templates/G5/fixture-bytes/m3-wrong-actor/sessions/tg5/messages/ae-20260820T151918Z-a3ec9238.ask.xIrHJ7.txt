@@ -1,0 +1,6 @@
+⟦ae:msg from fake:lead⟧
+REQUEST ae-20260820T151918Z-a3ec9238 from fake:lead: G5 mirror question
+
+REQUIRED: When you have finished, you MUST run this exact command to reply:
+/tmp/aecx/tpl/g5/home/.ae/sessions/tg5/reply --as "fake:worker" "ae-20260820T151918Z-a3ec9238" "<your reply>"
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

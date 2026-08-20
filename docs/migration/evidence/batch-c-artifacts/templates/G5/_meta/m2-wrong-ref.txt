@@ -1,0 +1,10 @@
+group=G5
+member=m2-wrong-ref
+derived_from=G5/m1-control (byte copy)
+source_fingerprint_protected=e729e933f1465f1d31332090a4eb4e583c7bfa337cb4ed6c83f1d307c4dae385
+session=tg5
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:23:13Z
+fingerprint_pre_protection=daf9b7375f4c8fa7f011b24f1e7a60dac8c86dcb8e9a6ae3371fbc95b16aca6b
+named_mutations=see _meta/m2-wrong-ref.mutation.txt
+fingerprint_protected=6ba86f7acb332e598e234b5337cafe73193f767eaf3d983d63375e2fed704a27

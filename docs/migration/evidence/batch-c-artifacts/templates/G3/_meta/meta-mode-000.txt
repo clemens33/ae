@@ -1,0 +1,10 @@
+group=G3
+member=meta-mode-000
+derived_from=G1/healthy (byte copy)
+source_fingerprint_protected=07def20c11115339748598d834b4240ac0ea2c817cf713c68fc4cd09d8c38152
+session=tg1
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:23:06Z
+fingerprint_pre_protection=aedf591ba17afa050ae38b2b488c8b98d8dafcce753ae7d38f4940233858aa3c
+named_mutations=see _meta/meta-mode-000.mutation.txt
+fingerprint_protected=4b127dd1a084858f39feae630282595ccf965dae34a6ec7544e026346b02001b

@@ -220,6 +220,15 @@ Authority: commands.md:83. Empirical: pending. Conflict: none.
 `tmux switch-client` when already in tmux, `tmux attach-session` otherwise; `--switch`
 is its alias. Authority: commands.md:155-157. Empirical: pending. Conflict: none.
 
+**SC-021 — `ls` is an alias of `list`.** Bucket 2 — same operation, both spellings
+(SC-011/SC-019 precedent). NOTE the authority honestly: `ls` appears NOWHERE in
+commands.md — the alias exists only in the dispatcher and in this contract's S1
+surface inventory, which named `ls` as a surface at ratification; the inventory
+line (S1MAP `ls ->`) is the normative commitment that the surface survives.
+Authority: S1 surface inventory (joint, ratification day) — commands.md is
+SILENT, a doc gap worth closing bash-side or noting at P5. Empirical:
+observed(dispatcher `list | ls)` ae@72c7293:16663). Conflict: none.
+
 **SC-020b — `--attach` re-checks the session still exists first.** Bucket 1.
 Authority: commands.md:157-158. Empirical: pending. Conflict: none.
 
@@ -238,7 +247,7 @@ S1MAP: launch -> SC-100 SC-101 SC-102a SC-102b SC-813
 S1MAP: --local/--copy/--worktree -> SC-306
 S1MAP: --from -> SC-822 SC-823 SC-824a SC-824b SC-825a
 S1MAP: list -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-509 SC-506 SC-1306a
-S1MAP: ls -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-509 SC-506 SC-1306a
+S1MAP: ls -> SC-021 SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-509 SC-506 SC-1306a
 S1MAP: status -> SC-016a SC-016b SC-016c SC-016d SC-1306b
 S1MAP: next -> SC-513a SC-513b SC-513c SC-020a SC-020b SC-020c SC-1306c
 S1MAP: jump -> SC-019

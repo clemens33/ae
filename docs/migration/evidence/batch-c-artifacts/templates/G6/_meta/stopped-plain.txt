@@ -1,0 +1,15 @@
+group=G6
+member=stopped-plain
+fingerprint_pre_protection=8120c7cb5b5c457166bc8e61a38006fd1eafb3729bffa1648657c7c9ea44b17c
+source_sandbox=/tmp/aecx/tpl/g6a
+source_session=tg6a
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:21:45Z
+--- provenance ---
+  as=%0 helper='state working work before the stop'
+    rc=0
+  as=%0 helper='send fake:worker ordinary traffic before the stop'
+    rc=0
+  ae stop tg6a
+    rc=0
+fingerprint_protected=d62e16b4d40fbc0e243064bbc918ac4f48569381fc42fd1baf2687149d1ac9a7

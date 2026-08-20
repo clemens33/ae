@@ -1,0 +1,10 @@
+group=G10
+member=display-only-legacy
+derived_from=G1/healthy (byte copy)
+source_fingerprint_protected=07def20c11115339748598d834b4240ac0ea2c817cf713c68fc4cd09d8c38152
+session=tg1
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:23:28Z
+fingerprint_pre_protection=8d30b9a41b173a80a55376c5f840f390e50bd88bdfb5ec4dde08dfea632fa372
+named_mutations=see _meta/display-only-legacy.mutation.txt
+fingerprint_protected=c96d9564b6d4ad60383e66c82b502eab20f249f3ace64e07d2a9070b9cd473c5

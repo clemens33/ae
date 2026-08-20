@@ -1,0 +1,6 @@
+## manipulation: G2/throttled events.jsonl <- producer state at barrier post-phaseA
+before: sha256=785ce345e5eacb2688bc0ddd0cff5526120e05b3c486a84a7c04cd9aa2c08cab bytes=441
+after:  sha256=174f9bf2bf1e8813b6960e3eba5afad25b570397dcc72c9cdcd9f36ebfbc3213 bytes=295
+byte-diff (removed suffix):
+  3d2
+  < {"ts":"2026-08-20T15:07:21Z","actor":"_watchdog","action":"throttle-cleared","target":"fake:probe","summary":"throttling cleared after 5 cycles"}

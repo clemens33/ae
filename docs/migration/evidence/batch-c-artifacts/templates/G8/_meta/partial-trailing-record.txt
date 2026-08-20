@@ -1,0 +1,10 @@
+group=G8
+member=partial-trailing-record
+derived_from=G1/healthy (byte copy)
+source_fingerprint_protected=07def20c11115339748598d834b4240ac0ea2c817cf713c68fc4cd09d8c38152
+session=tg1
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:23:27Z
+fingerprint_pre_protection=837c6bb0547a90bf59dbda97ce6dd6367f8662811478f91bc409a23a5468d53e
+named_mutations=see _meta/partial-trailing-record.mutation.txt
+fingerprint_protected=2dd43440979581c3a6de5796a715f33460625a20024861f7421b40a4ec877575

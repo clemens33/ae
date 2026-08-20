@@ -1,0 +1,11 @@
+## mutation: truncate 40 bytes: the final record is left partial and unterminated
+file: /tmp/aecx/templates/G8/partial-trailing-record/sessions/tg1/events.jsonl
+op: droptail '40'
+detail: truncate 40 trailing byte(s): b'":"working","summary":"lead continues"}\n'
+before: sha256=2974d3a187a0223cdd7ce0addedb064fa350ce5c16d6eab821b5bbff93679893 bytes=1754
+after:  sha256=b6e838111133a77e0123325fa9404b22d53d8438aabf196d3c2d7fe10ab5d855 bytes=1714
+byte-diff:
+  common_prefix_bytes=1714 common_suffix_bytes=0
+  removed=b'":"working","summary":"lead continues"}\n'
+  inserted=b''
+

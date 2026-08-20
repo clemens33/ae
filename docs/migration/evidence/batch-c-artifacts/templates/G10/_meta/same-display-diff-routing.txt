@@ -1,0 +1,29 @@
+group=G10
+member=same-display-diff-routing
+fingerprint_pre_protection=ed4e8f498da25df8aebefec61ef278b4afcf2fbbbce5c2a9567eae7c28496bac
+source_sandbox=/tmp/aecx/tpl/g10
+source_session=tg10
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T15:24:11Z
+--- provenance ---
+construction: a SECOND agent carrying the SAME display name is added by the real spawn helper;
+both then run the real ask helper, so one display name appears with two genuine routing keys.
+  as=%0 helper='spawn fake:lead second holder of the display name'
+    rc=0
+  meta after spawn:
+    agent.main=fake:lead:pending
+    agent_bin.main=aefake
+    agent.worker.0=fake:worker:pending
+    agent_bin.worker.0=aefake
+    agent.spawned.0=fake:lead:pending
+    agent_bin.spawned.0=aefake
+    pane %0|fake:lead|main
+    pane %1|fake:worker|worker.0
+    pane %3|fake:lead|spawned.0
+    pane %2|_events|
+  spawned_pane=%3
+  as=%0 helper='ask fake:worker G10 question from the main-slot holder of the display name'
+    rc=0
+  as=%3 helper='ask fake:worker G10 question from the spawned-slot holder of the same display name'
+    rc=0
+fingerprint_protected=c0e588ee2d386d1b5e55f50374cfa0bc865a7ef7562cbb5587c6ca6d80c16800

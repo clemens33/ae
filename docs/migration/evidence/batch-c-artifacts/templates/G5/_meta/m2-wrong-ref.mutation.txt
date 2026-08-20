@@ -1,0 +1,11 @@
+## mutation: reply ref -> a different well-formed producer-derived request id (line 4's review ref)
+file: /tmp/aecx/templates/G5/m2-wrong-ref/sessions/tg5/events.jsonl
+op: repl '2' '"ref":"ae-20260820T151918Z-a3ec9238"' '"ref":"review-20260820T151921Z-2e6f3ac8"'
+detail: line 2: replace b'"ref":"ae-20260820T151918Z-a3ec9238"' -> b'"ref":"review-20260820T151921Z-2e6f3ac8"' (first occurrence)
+before: sha256=450d53f62a358c277b946e3de1470bff98f520618743fe06c44f002c762b0b34 bytes=1478
+after:  sha256=a413f941d14761481ed13ed09815c6007ba8aa9ac263577fc34ff1544456959d bytes=1482
+byte-diff:
+  common_prefix_bytes=448 common_suffix_bytes=1003
+  removed=b'ae-20260820T151918Z-a3ec923'
+  inserted=b'review-20260820T151921Z-2e6f3ac'
+
