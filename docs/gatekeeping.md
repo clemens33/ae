@@ -443,7 +443,22 @@ and it arrives dressed as enthusiasm rather than as error.
    not the exit code inside it.
 7. **A check you learn to ignore is worse than no check** — a permanently-red guard trains
    people to skip it and then looks like coverage. Fix the check or delete it.
-8. **Generate, then paste; derive, never hand-copy.** A table you generate and a reviewer
+8. **Generate, then paste; derive, never hand-copy.** And the clause that completes it:
+   **MEASURE, READ THE OUTPUT, THEN ASSERT — never measure and assert in the same action.**
+   A worker ran a readiness check and sent the claim in the same breath, so the claim could
+   not have been derived from the output; it was written before the output existed. The
+   message contained real, correct hashes sitting beside a sentence one of them
+   contradicted. **A generated number pasted next to an unchecked claim is worse than no
+   number, because the number lends the claim credibility it has not earned.** Measuring
+   and asserting simultaneously defeats the generate-then-paste rule while appearing to
+   follow it.
+9. **Verifying a conclusion independently does not validate the reasoning that reached it.**
+   In the same incident a seat re-derived the conclusion from scratch, found it correct,
+   and reported the claim verified — because the underlying FACT was right. The defect was
+   in the claimant's evidence chain (they had searched the wrong tree), which no
+   independent check of the conclusion can surface. **Only the claimant can catch a wrong
+   path to a right answer**, which is why self-correction still matters after review
+   passes, and why a review that agrees is not a review that checked the same thing. A table you generate and a reviewer
    reads is still your word. A table the reviewer can regenerate is not. The same applies
    one layer down to any document derived from another.
 
