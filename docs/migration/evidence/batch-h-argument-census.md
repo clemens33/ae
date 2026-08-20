@@ -275,29 +275,33 @@ to the identity boundary rows, not to SC-211o.
 
 ## Usage-exit family (seat-only) — measured across the whole generated helper set
 
-Raised because one row's finding is only legible beside the others. `goal`'s usage path
-exits 1 and `say`'s exits 2; the rest of the family splits the same two ways, and no single
-row's capture would show it.
+Raised because one row's reading is not legible beside nothing. Each cell below is the
+EXIT LINE ITSELF, read inside the function or block, and cited at its own line — not at the
+opening brace, which is what a line citation for a function points at. A citation is not a
+reading.
 
-| Surface | Usage path | Exit |
-|---|---|---|
-| `state` | `helper_state_usage`, ae:12818 | 2 |
-| `say` | `helper_say_usage`, ae:14459 | 2 |
-| `goal` | `helper_goal_usage`, ae:14551 | 1 |
-| `memo` | `helper_memo_usage`, ae:14489 | 1 |
-| `requests` | inline usage, ae:14407 | 1 |
-| `peek` | inline usage, ae:14596 | 1 |
-| `focus` | inline usage, ae:14641 | 1 |
-| `interrupt` | inline usage, ae:14657 | 1 |
-| `spawn` | inline usage, ae:14704 | 1 |
-| `retire` | inline usage, ae:14726 | 1 |
+| Surface | Usage path | Exit line | Exit |
+|---|---|---|---|
+| `state` | dedicated function, `helper_state_usage` | ae:12828 | 2 |
+| `say` | dedicated function, `helper_say_usage` | ae:14467 | 2 |
+| `goal` | dedicated function, `helper_goal_usage` | ae:14555 | 1 |
+| `memo` | dedicated function, `helper_memo_usage` | ae:14491 | 1 |
+| `requests` | inline block | ae:14414 | 1 |
+| `peek` | inline block | ae:14601 | 1 |
+| `focus` | inline block | ae:14646 | 1 |
+| `interrupt` | inline block | ae:14662 | 1 |
+| `spawn` | inline block | ae:14720 | 1 |
+| `retire` | inline block | ae:14744 | 1 |
 
-Eight surfaces exit 1 and two exit 2, and the two that exit 2 are the two with a dedicated
-usage FUNCTION rather than an inline block — which is an observation about shape, not a
-claim about intent. The arms capture each surface's usage rc, and the batch record places
-them SIDE BY SIDE so a seat reads the family rather than ten isolated numbers. Nothing here
-classifies the split: it may be deliberate, and it is exactly the kind of thing a rewrite
-regularises without anyone noticing.
+Eight exit 1 and two exit 2. **No explanation of the split is offered here.** An earlier
+version of this section asserted that the exit-2 surfaces were the ones with a dedicated
+usage function; that is REFUTED by the same table — `goal` and `memo` are dedicated
+functions and exit 1. A stated correlation is a claim even when it is framed as shape
+rather than intent, and a seat would have reasoned from it. If a shape claim is wanted it
+is a seat act, taken with all ten rows in front of it.
+
+The arms capture each surface's usage rc; the batch record places them side by side so the
+family is read as a family.
 
 ## Row -> input-class mapping (for the seat gate)
 
