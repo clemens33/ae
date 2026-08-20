@@ -427,10 +427,14 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 
 ### D24 — claims (#71 invariants)
 
-- effects: TBD (design per #71 DURABLE HANDOFF RECORD, re-ratified against Rust semantics)
-- current writer/call path: **none — unimplemented; no bash writer exists**
-- current owner: **none**
-- planned owner/fate: **rust-born at P3**; brief re-ratified before build
+- current effects / writer / owner: **none — unimplemented; no bash writer exists**
+  (the absence is CLASSIFIED, not hidden — seat ruling with colead precision condition,
+  2026-08-20)
+- planned effects: the seat-owned #71 DURABLE HANDOFF RECORD design, **blocked on an
+  explicit pre-build P3 design gate** that must define effects, locks + order,
+  atomicity boundary, flip, rollback, and the test oracle before any code
+- planned owner/fate: **rust-born at P3**; #71 invariants re-ratified against Rust
+  semantics at that gate
 
 ### D31 — `doctor --refresh` (own mutation transaction; census-2 audit)
 
