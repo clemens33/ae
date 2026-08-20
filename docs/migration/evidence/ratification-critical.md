@@ -3,10 +3,12 @@
 Derived mechanically from the canonical set reported by sweep-check.sh; letters are criteria only.
 
 - Canonical IDs: SC=398, D=42, total=440
-- Class counts: CRITICAL=314, DEFERRABLE=102, ALREADY-OBSERVED=24 (amended
-  2026-08-20, ae-20260820T114105Z-f9ad4b82: the SC deferrable predicate is a type
-  error over ownership records — no D record is deferrable by it; every non-PROVES
-  D record is critical for this P0. 290 critical observations outstanding.)
+- Class counts (amended 2026-08-20, census-audit gate ae-20260820T115339Z-9905b9ec):
+  canonical 441 (D14 umbrella de-recorded; D05 replaced by D05a/b/c). CRITICAL=299,
+  DEFERRABLE=102, OBSERVED=40 (24 pin-audit PROVES + 13 census-audit + D05a/b/c;
+  D24 non-observed pending its negative-evidence pointer — 298/41 when it lands).
+  Outstanding critical observations: 299. The earlier 290 was a double-subtraction,
+  expunged; clusters build only from the regenerated remaining-ID manifest.
 - Critical-letter counts (overlaps counted): A=119, B=38, C=39, D=192
 - A includes explicit UNCLASSIFIED, authority=code-observation, literal Authority: UNRESOLVED(...) rows, and D records whose TBD fields feed a seat ruling; ALREADY-OBSERVED takes pin-audit PROVES priority.
 
@@ -15,7 +17,9 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - D03 — CRITICAL(A,C)
 - D04a — CRITICAL(A,C)
 - D04b — CRITICAL(A,C)
-- D05 — CRITICAL(A,D) — grouping-provisional: A until the grouping is ruled; the unlocked request lookup and delivered/body/event residues are the operation model behind #66
+- D05a — OBSERVED (census-audit split map: C2 proves all five E fields; N via P2 + epic defaults; joint marks ruling replaced the umbrella)
+- D05b — OBSERVED (census-audit split map: C2)
+- D05c — OBSERVED (census-audit split map: C19)
 - D06 — CRITICAL(D) — delivered-pane + body-without-event residue is the irreversible delivery boundary
 - D07 — CRITICAL(D)
 - D08 — ALREADY-OBSERVED(pin-audit PROVES pointer)
@@ -27,7 +31,6 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-012 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
 - D13 — CRITICAL(B)
 - SC-013 — CRITICAL(A)
-- D14 — CRITICAL(D)
 - SC-014 — CRITICAL(A)
 - D14a — CRITICAL(D)
 - D14b — CRITICAL(D)

@@ -137,24 +137,43 @@ consuming operation owns its own artifact publication and ports the chokepoint i
 
 ## Write domains (P2)
 
-### D05 — request tracking (`ask` / `review` / `reply` / withdraw)
+Request tracking — SPLIT by joint marks ruling (2026-08-20,
+ae-20260820T115339Z-9905b9ec): the frozen census DISPROVES the one-group premise
+permanently against 72c7293 (withdraw is event-only; reply adds an unlocked lookup;
+ask/review traverse target-lock → body → event) — the former D05 umbrella is replaced.
+Shared facts: there is NO request table at 72c7293 — request authority is
+`events.jsonl` + `messages/*` body artifacts.
 
-- **grouping provisional** (grouped-cutover rule): stays one record ONLY if evidence
-  proves one shared store + one lock protocol + one atomic cutover; else splits
-- effects (colead row-fill, census-backed): there is NO request table at 72c7293 —
-  request authority is `events.jsonl` + `messages/*` body artifacts. ask/review:
-  deliver first, store body, THEN append the request event (the #66
-  delivered-before-logged defect). reply: reads events UNLOCKED via `ae_find_request`,
-  then the same deliver/body/event sequence
-- current writer/call path: `helper_ask_main`/`helper_review_main`/`helper_reply_main`,
-  `ae_tracked_send`, `ae_find_request`
-- locks (ordered): per delivery — target fd9 (held for paste, released), then unlocked
-  body write, then event fd8
+### D05a — request initiation (`ask` / `review`)
+
+- effects: deliver first, store body, THEN append the request event (the #66
+  delivered-before-logged defect); pane delivery + body file + event
+- current writer/call path: `helper_ask_main`/`helper_review_main`, `ae_tracked_send`
+- locks (ordered): target fd9 (held for paste, released), then unlocked body write,
+  then event fd8
 - atomicity boundary: delivered-but-unlogged and body-without-event residues are real
-  (#66 rows); unlocked read in `ae_find_request` can race an append
-- withdraw (named per citation audit): `_compact_cancel_outstanding` (ae:5958-5969)
-  delegates to send's external `ae:compact` path — fd8 event append ONLY; an append
-  timeout means the withdrawal was never recorded
+  (#66 rows)
+- current owner: bash
+- planned owner/fate: **rust at P2**
+
+### D05b — reply
+
+- effects: unlocked request lookup, then the same deliver/body/event sequence
+- current writer/call path: `helper_reply_main`, `ae_find_request` (reads events
+  UNLOCKED — can race an append), `ae_tracked_send`
+- locks (ordered): none for the lookup; then the D05a delivery sequence
+- atomicity boundary: the lookup race + the D05a residues
+- current owner: bash
+- planned owner/fate: **rust at P2**
+
+### D05c — withdraw
+
+- effects: fd8 event append ONLY — `_compact_cancel_outstanding` (ae:5958-5969)
+  delegates to send's external `ae:compact` path; an append timeout means the
+  withdrawal was never recorded
+- current writer/call path: `_compact_cancel_outstanding` → send external path
+- locks (ordered): event fd8 only
+- atomicity boundary: timeout = unrecorded withdrawal
 - current owner: bash
 - planned owner/fate: **rust at P2**
 
@@ -256,7 +275,9 @@ consuming operation owns its own artifact publication and ports the chokepoint i
 - current owner: bash (both paths — the domain is the full transaction; it flips whole)
 - planned owner/fate: **rust at P2**
 
-### D14 — helper generation (split by artifact class; gate finding fe7cfc2e, blocker 3)
+### Helper generation (artifact classes D14a/D14b — the umbrella carries NO record id;
+joint marks ruling 2026-08-20: an umbrella with no independent field set is not a
+record under the operation-grain rule)
 
 **D14a — generated-logic helpers** (send/ask/state/… bodies via declare-f)
 
@@ -465,7 +486,7 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
   heartbeat/backoff temp+replace (atomic visibility, NOT power-loss durability — audit
   I8); logger direct append with lock-free rotation
 - planned owner/fate: **rust at P4**; both modes retire together. **Final row fill
-  blocked until B1–B3 resolutions recorded (census-3 addenda).**
+  gate: DR-002's five binding conditions + the #83/#84/#88 intended behaviors ARE the written flip-gate requirement (stale B1–B3 blocker text removed 2026-08-20; B1–B3 resolved into #84/#85/DR-001).**
 
 ### D26a — watchdog start/stop (`ae watchdog start|stop`, session `watchdog` + `loop` helpers)
 
@@ -505,7 +526,7 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
   handoff and bash start/stop/supervise; `aewatch.lock` is distinct from bash's
   daemon/control locks; shared Telegram stores (`tg_offset`, `state.tsv`,
   `current_target`) have NO common lock — bash EXIT can regress offsets after a
-  takeover (audit I3). **Final row fill blocked until B1–B3 resolutions recorded.**
+  takeover (audit I3). **Gate: DR-002 conditions + DR-003 + #83-#87 intended behaviors are the written flip-gate requirement (stale blocker text removed 2026-08-20).**
 - effects: chat event consumption, Telegram send/receive, reply routing to panes
 - current writer/call path: bash telegram daemon; aewatch bridge (mode above)
 - locks / atomicity: TBD per mode — the marker+heartbeat handoff itself is a contract
@@ -586,4 +607,4 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 - planned owner/fate: split fates (gate finding a1358882) — **runtime ownership retires at
   P4** when D25/D27 flip to Rust; **source stays contrib as reference/incubator** per the
   epic (it is the measured spec for the daemon port). **Final row fill blocked until
-  B1–B3 resolutions recorded.**
+  gate: DR-001/DR-002 conditions + #84-#88 intended behaviors are the written requirement (stale blocker text removed 2026-08-20).**
