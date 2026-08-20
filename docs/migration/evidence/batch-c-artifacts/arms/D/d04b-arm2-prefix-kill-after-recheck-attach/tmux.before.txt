@@ -1,0 +1,9 @@
+## sessions
+caller|1
+tg2wu|1
+tg2wuextra|1
+## panes
+caller|%3||zsh
+tg2wu|%0|fake:lead|aefake
+tg2wu|%1|fake:worker|aefake
+tg2wuextra|%2||aefake

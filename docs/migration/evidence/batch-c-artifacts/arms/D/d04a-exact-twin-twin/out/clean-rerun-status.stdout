@@ -1,0 +1,15 @@
+── fake:worker (%1) ──
+ckriech@MacOS-ckriech work % /tmp/aecx/
+tpl/d04aexacttwin/home/.ae/sessions/td0
+4aexatwi/launch.worker.0.sh
+aefake ❯ ready
+
+── fake:added-after-the-cut (%3) ──
+aefake ❯ ready
+
+── _events (%2) ──
+╭─ ae events — session: td04aexatwi ───────────────────────────────╮
+│ date+time (UTC)  action   actor                  → target                 summ
+ary
+╰──────────────────────────────────────────────────────────────────────────╯
+

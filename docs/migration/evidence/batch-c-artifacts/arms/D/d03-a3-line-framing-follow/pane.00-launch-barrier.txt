@@ -1,0 +1,35 @@
+╭─ ae events — session: td03 ───────────────────────────────╮
+│ date+time (UTC)  action   actor                  → target                 summary
+╰──────────────────────────────────────────────────────────────────────────╯
+
+08-20T17:28:29  memo     fake:lead                                       D03-SEED-EVENT-02
+08-20T17:28:29  memo     fake:lead                                       D03-SEED-EVENT-03
+08-20T17:28:29  memo     fake:lead                                       D03-SEED-EVENT-04
+08-20T17:28:29  memo     fake:lead                                       D03-SEED-EVENT-05
+08-20T17:28:29  memo     fake:lead                                       D03-SEED-EVENT-06
+08-20T17:28:29  memo     fake:lead                                       D03-SEED-EVENT-07
+08-20T17:28:29  memo     fake:lead                                       D03-SEED-EVENT-08
+08-20T17:28:29  memo     fake:lead                                       D03-SEED-EVENT-09
+08-20T17:28:29  memo     fake:lead                                       D03-SEED-EVENT-10
+08-20T17:28:29  memo     fake:lead                                       D03-SEED-EVENT-11
+08-20T17:28:29  memo     fake:lead                                       D03-SEED-EVENT-12
+08-20T17:28:29  memo     fake:lead                                       D03-SEED-EVENT-13
+08-20T17:28:29  memo     fake:lead                                       D03-SEED-EVENT-14
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-15
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-16
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-17
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-18
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-19
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-20
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-21
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-22
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-23
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-24
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-25
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-26
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-27
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-28
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-29
+08-20T17:28:30  memo     fake:lead                                       D03-SEED-EVENT-30
+08-20T17:28:31  memo     fake:lead                                       D03-SEED-EVENT-31
+

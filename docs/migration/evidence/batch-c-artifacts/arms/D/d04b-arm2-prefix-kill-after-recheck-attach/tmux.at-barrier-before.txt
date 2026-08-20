@@ -1,0 +1,4 @@
+## sessions at the barrier, before any controller action
+caller|1
+tg2wu|0
+tg2wuextra|0

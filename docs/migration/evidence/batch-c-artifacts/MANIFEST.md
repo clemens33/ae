@@ -51,24 +51,56 @@ before the first consumer invocation — from the original durable content, with
 capture's own hash tied into the same record. Filesystem mtimes and the `SHA256SUMS.txt`
 list are not relied on for ordering.
 
-`arms/*/harness/manifest-tree-gate.sh` is the MANIFEST-versus-tree gate. The tree it
-audits is an ARGUMENT (first positional, then `$BATCH_C_ARTIFACTS`, then the live tree),
-so it can be red-proofed against a candidate copy instead of silently auditing the live
-one. It has two halves. The first is `arms/*/harness/path-cite-resolver.py`, a real
-multi-base resolver: every backticked path-shaped token in this file — including
-slash-less file citations like `FINGERPRINTS.tsv` and wildcard patterns — is resolved
-against the tree root, `arms/`, `templates/`, `twd-precursor/`, the repository root, the
-`<GROUP>/<member>` → `templates/<GROUP>/fixture-bytes/<member>` mapping, and the real
+### The gate, and exactly what each of its three checks guarantees
+
+`arms/*/harness/manifest-tree-gate.sh` audits a tree given as an ARGUMENT (first
+positional, then `$BATCH_C_ARTIFACTS`, then the live tree), so it can be red-proofed
+against a candidate copy instead of silently auditing the live one. It runs three checks
+that guarantee three DIFFERENT things. None of them subsumes another, and none of them
+alone proves the tree is complete.
+
+**1. Citation resolution** (`path-cite-resolver.py`) — guarantees that every backticked
+path-shaped token in this file RESOLVES somewhere: against the tree root, `arms/`,
+`templates/`, `twd-precursor/`, the repository root, the
+`<GROUP>/<member>` → `templates/<GROUP>/fixture-bytes/<member>` mapping, or one of the real
 context directories a relative citation can legitimately be written against (a case dir, an
 arms root, a group dir, a member's fixture-bytes dir, a session dir, a group `_meta` dir, a
 T-WD arm dir and its sub-dirs). A wildcard must expand NONEMPTY and every expansion must
-exist. It writes `PATH-CITES.tsv`, one row per citation with its class, the base that
-resolved it and the expansion count. The second half is SHA256SUMS coverage and
-verification per published directory. The two are complementary and both are red-proved:
-thirteen distinct injections (one per base, the mapping, an empty wildcard, each context
-class, a slash-less file, and a deleted citation target) each turn the resolver red, and a
-deleted case file — which the resolver cannot see, because that citation is a pattern
-satisfied by other cases — turns the SUMS half red instead.
+exist. It writes `PATH-CITES.tsv`, one row per citation with class, resolving base and
+expansion count.
+It does NOT prove per-case completeness. Relative tokens are deduplicated globally and
+satisfied by ANY matching context, so `case.txt` resolving proves that SOME case has a
+`case.txt`, not that every case does.
+
+**2. SHA256SUMS coverage and verification** — guarantees that every published file is
+listed in its directory's `SHA256SUMS.txt` and that every listed hash still verifies.
+It does NOT prove per-case completeness either: a file deleted TOGETHER with its
+`SHA256SUMS` line leaves `files == listed` and every remaining hash intact. That exact
+paired deletion passed the two-check gate and is the defect this section was rewritten for.
+
+**3. Per-case artifact schema and case index** (`case-schema-check.py`, `case-schema.tsv`)
+— guarantees per-case COMPLETENESS. Each case declares its KIND through its own
+admissibility ledger (`barrier`, `twin`, `live`, `staged`/`unstaged`, `pane-follow`,
+`consumer-run`, `hooked`, `document`), and the schema table says which artifacts each kind
+must contain; a case missing one fails whether or not its `SHA256SUMS` line went with it.
+Membership is checked against `arms/<ARM>/CASES.tsv`, a case index written when the arm
+completes that binds every case DIRECTORY to the sha256 of that case's own ledger — so a
+whole case removed with its hash lines still fails, and a ledger edited and re-hashed into
+`SHA256SUMS` fails too, because the index disagrees.
+
+**The honest limit.** These three make an omission require coordinated edits across three
+independent records — the ledger-derived schema, the content-bound case index, and the
+hash list. They do not, and cannot, defend against an editor who rewrites all three
+consistently; that is what git history and seat review are for. The claim here is
+completeness against ACCIDENT and against single-record tampering, not against a
+determined forger.
+
+All three are red-proved together by `arms/*/harness/gate-redproof.sh`: a green control
+plus fifteen injections — one per citation base, the group/member mapping, an empty
+wildcard, a case-relative token, a slash-less file citation, a deleted listed file,
+tampered bytes, a file deleted with its SUMS line, a case directory removed with its SUMS
+lines, a deleted case index, and a ledger edited and re-hashed. Every one turns the gate
+red; the control stays green.
 
 `hook-patch/` holds the ONE hook-only patch used by the barrier arms and the D-record
 designs — the unified diff, its generator, and the unmodified / hooked / patch hashes.
@@ -93,7 +125,7 @@ note (1306a→D01/Design 2, 1306b→D04a/Design 5, 1306c→D04b/Design 6, 1306d�
 | Arm group A3b (SC-017g adjacent pairs) | COMPLETE, bash lane — 12 case runs |
 | Arm group A4 (SC-016a–d, 513a–c, 019, 020a–c) | COMPLETE, bash lane — 7 case runs, incl. SC-020b on D04b's hook |
 | Arm groups A5–A9 | not started |
-| D-record executions (b0-design Designs 2–6) + SC-1306a–e | D01 and D02 COMPLETE with their controller-only twins; D03 fixture built; D03/D04a/D04b next |
+| D-record executions (b0-design Designs 2–6) + SC-1306a–e | COMPLETE, bash lane — D01, D02, D03, D04a, D04b, all with controller-only twins |
 
 ---
 
@@ -1135,34 +1167,63 @@ Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A4/<case>/`:
 
 ## D-record executions (bash lane)
 
-### D-record executions — status
+### D-record executions
 
-`D01` (b0-design Design 2: list reader vs a live `goal` writer at `H_LIST_META_CAPTURED`)
-and `D02` (Design 3: request-scan reader vs a reply writer at
-`H_REQUEST_SCAN_COMPLETE`) have run, each with its CONTROLLER-ONLY TWIN — the same
-mutation performed alone on a fresh clone with no hooked reader, captured identically, so
-the controller's own effect can be subtracted. `D03`'s fixture is built and sealed
-(`D/d03-31-numbered-events`); D03 (Design 4, events-tail, four arms), D04a (Design 5,
-status pane-set cut) and D04b (Design 6, next selection/recheck with pty-attached clients)
-run next. SC-1306a–e ride the five designs per the mapping note and get no separate arms.
+All five b0-design concurrency designs have run, each with its CONTROLLER-ONLY TWIN — the
+same mutation performed alone, with no reader blocked in it, captured identically, so the
+controller's own effect can be subtracted. SC-1306a–e ride these five per the mapping note
+and get no separate arms: 1306a→D01, 1306b→D04a, 1306c→D04b, 1306d→D02, 1306e→D03.
 
-Each barrier case carries `hook.patch`, the per-fixture `hook-inactive-equivalence.txt`
+Every barrier case carries `hook.patch`, the per-fixture `hook-inactive-equivalence.txt`
 with its measured control-control volatility floor, a `flockspy` log for every invocation
-(a PATH-first `flock` shim that is pure delegate-and-log), and an xtrace TWIN
-(`out/<prefix>.trace.xtrace`) run separately so the measured capture itself stays untraced.
-Snapshots bracket the mutation on both sides: `manifest.at-barrier-before-mutation.tsv`
-and `manifest.at-barrier-after-mutation.tsv`, with the matching tmux snapshots.
+(a PATH-first `flock` shim that is pure delegate-and-log and preserves argv and rc), and
+snapshots bracketing the mutation on both sides.
 
-**D02 needed one extra proof.** `_ar_request_states` is emitted into the session's OWN
-generated `requests` helper by `declare -f`, so the hook has to exist in THAT helper, not
-only in `ae`. The patch therefore adds `_ae_hook` to the `_lib` emission list, and the
-case regenerates the clone's helper set with the HOOKED binary through the frozen refresh
-path. Before anything is captured through the refreshed helper, `helper-refresh-equivalence.txt`
-proves it answers byte-for-byte as the pre-refresh helper did on the same fixture with the
-hook inactive — pre and post helper hashes, both rcs, both outputs. The helper is exercised
-IN PLACE, because it sources `_lib` from its own directory and a copy elsewhere cannot run
-at all; the first attempt compared a copy, the equivalence came back `identical=no`, and
-the harness refused to capture through it.
+**D01 — Design 2, list reader vs a live writer.** Hook `H_LIST_META_CAPTURED` at the
+running-session site, immediately after `meta_blob` is read. At the barrier the controller
+invokes the session's OWN real `goal` helper once — one logical writer operation that
+rewrites `goal` in meta AND appends a goal event, both captured before and after.
+
+**D02 — Design 3, request-scan reader vs a reply writer.** Hook
+`H_REQUEST_SCAN_COMPLETE`, after the reversed scan and before row emission. The controller
+appends ONE producer-harvested, identity-valid reply event. `_ar_request_states` is emitted
+into the session's OWN generated `requests` helper by `declare -f`, so the patch adds
+`_ae_hook` to the `_lib` emission list and the case regenerates the clone's helper set with
+the HOOKED binary through the frozen refresh path;
+`helper-refresh-equivalence.txt` proves the refreshed helper answers byte-for-byte as the
+pre-refresh one did with the hook inactive, exercised IN PLACE because the helper sources
+`_lib` from its own directory and a copy elsewhere cannot run at all.
+
+**D03 — Design 4, events-tail follow semantics.** No hook: the REAL generated events helper
+runs in a pane and the LAUNCH BARRIER is a positive pane observation (the final baseline
+record `D03-SEED-EVENT-31` rendered), bounded, with expiry recorded INCONCLUSIVE. Every
+controller write is confirmed by a file-size STAT BARRIER, never by a sleep. Four arms:
+the initial window; one complete harvested append; line framing in two steps (a partial
+producer-derived line with NO terminating newline, stat-confirmed and captured, then the
+withheld remainder plus the newline, stat-confirmed and captured); and rotation — a
+hardlink held to the original inode, an atomic replace (inode change recorded), then
+DISTINCT harvested sentinels appended to the new path and through the hardlink to the old
+inode, each stat-confirmed and each followed by a bounded pane poll. Arms 2–4 have twins;
+arm 1 is read-only and exempt.
+
+**D04a — Design 5, status pane-set cut.** A delegating tmux shim captures the REAL
+`list-panes` result, signals `H_STATUS_PANESET` and BLOCKS before replay; the controller
+kills one listed pane and creates one new pane, then releases, and the shim replays exactly
+the captured bytes and exit status. Both mandatory topology arms — exact-name only, and a
+prefix-sibling session whose name EXTENDS the target's. The shim's inactive equivalence is
+proven on the same stable topology before its active barrier is used; its default mode is
+pure delegate-and-log and the active barrier exists only when `AE_TMUX_BARRIER_DIR` is set.
+
+**D04b — Design 6, next selection/recheck cut.** Both hooks: `H_NEXT_SELECTED` (after
+best-candidate resolution, before the exact recheck) and `H_NEXT_RECHECKED` (after the
+successful exact match, before the final focus call). Attach arms run `next --attach` from
+a pane INSIDE an attached client: the harness attaches a scripted client on a REAL pty to a
+CALLER session first — `script(1)` cannot be used here because it calls `tcgetattr` on its
+own stdin and this harness has no controlling terminal, so `pty-attach.py` forks a pty
+directly. Every controller kill is issued from a SEPARATE connection, never from inside the
+client under test. `list-clients` mappings are captured before and after. Three arms plus a
+no-kill twin: kill at `H_NEXT_SELECTED`; kill after `H_NEXT_RECHECKED` WITH a prefix
+sibling present; and the companion arm with no sibling.
 ### D case table
 
 `checks<first consumer` names the ledger sequence numbers of the TAB round-trip
@@ -1182,6 +1243,21 @@ the ledger, and the before/at-barrier/after tmux snapshots bracket it.
 | `d01-list-vs-goal-writer-barrier` | barrier | D01,SC-1306a | `G1/healthy` | - | 8 | - | 3 | 7/9/16 | yes |
 | `d02-controller-only-twin-twin` | twin | D02,SC-1306d | `D/d02-pending-with-harvested-reply` | - | 4 | - | 2 | 7/9/- | NO |
 | `d02-requests-vs-reply-writer-barrier` | barrier | D02,SC-1306d | `D/d02-pending-with-harvested-reply` | - | 4 | - | 3 | 7/9/19 | yes |
+| `d03-a1-initial-window-follow` | follow | D03,SC-1306e | `D/d03-31-numbered-events` | - | 0 | - | 0 | 6/-/- | NO |
+| `d03-a2-complete-append-follow` | follow | D03,SC-1306e | `D/d03-31-numbered-events` | - | 4 | - | 0 | 6/-/- | NO |
+| `d03-a2-twin-twin` | twin | D03,SC-1306e | `D/d03-31-numbered-events` | - | 4 | - | 0 | 6/-/- | NO |
+| `d03-a3-line-framing-follow` | follow | D03,SC-1306e | `D/d03-31-numbered-events` | - | 4 | - | 0 | 6/-/- | NO |
+| `d03-a3-twin-twin` | twin | D03,SC-1306e | `D/d03-31-numbered-events` | - | 4 | - | 0 | 6/-/- | NO |
+| `d03-a4-rotation-follow` | follow | D03,SC-1306e | `D/d03-31-numbered-events` | - | 6 | - | 0 | 6/-/- | NO |
+| `d03-a4-twin-twin` | twin | D03,SC-1306e | `D/d03-31-numbered-events` | - | 6 | - | 0 | 6/-/- | NO |
+| `d04a-exact-barrier-barrier` | barrier | D04a,SC-1306b | `live/no-template (live launch + pane-set cut)` | - | 0 | - | 2 | 5/7/10 | yes |
+| `d04a-exact-twin-twin` | twin | D04a,SC-1306b | `live/no-template (live launch + pane-set cut)` | - | 0 | - | 1 | 5/7/- | NO |
+| `d04a-prefix-barrier-barrier` | barrier | D04a,SC-1306b | `live/no-template (live launch + pane-set cut)` | - | 0 | - | 2 | 6/8/11 | yes |
+| `d04a-prefix-twin-twin` | twin | D04a,SC-1306b | `live/no-template (live launch + pane-set cut)` | - | 0 | - | 1 | 6/8/- | NO |
+| `d04b-arm1-kill-at-selected-attach` | attach | D04b,SC-1306c | `A2/composite` | - | 0 | - | 1 | 8/10/16 | yes |
+| `d04b-arm2-prefix-kill-after-recheck-attach` | attach | D04b,SC-1306c | `A2/composite` | - | 0 | - | 1 | 9/11/17 | yes |
+| `d04b-arm3-nosibling-kill-after-recheck-attach` | attach | D04b,SC-1306c | `A2/composite` | - | 0 | - | 1 | 8/10/16 | yes |
+| `d04b-twin-no-kill-attach` | attach | D04b,SC-1306c | `A2/composite` | - | 0 | - | 1 | 8/10/16 | yes |
 
 Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/D/<case>/`:
 

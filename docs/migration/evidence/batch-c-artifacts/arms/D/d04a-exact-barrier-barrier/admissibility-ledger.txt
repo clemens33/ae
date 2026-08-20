@@ -1,0 +1,20 @@
+seq=001	utc=2026-08-20T17:37:54Z	epoch=1787247474	event=case-OPEN	arm=D case=d04a-exact-barrier clone_mode=barrier frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T17:37:54Z	epoch=1787247474	event=rows	rows=D04a,SC-1306b design=b0-design.md Design 5 topology=exact
+seq=003	utc=2026-08-20T17:37:57Z	epoch=1787247477	event=env-recorded	artifact_sha256=047429a87d4756599b42c0ce5c41489c6fe201d5d006caf2e0be81e2368a9659
+seq=004	utc=2026-08-20T17:37:57Z	epoch=1787247477	event=env-tab-selfcheck-START	artifact=env-tab-selfcheck.txt
+seq=005	utc=2026-08-20T17:37:57Z	epoch=1787247477	event=env-tab-selfcheck-COMPLETE	tab_survived=yes artifact_sha256=8597dca5575226d4aff6c2edb522602b417afa8c7dea965d165a3278ec3c57fa
+seq=006	utc=2026-08-20T17:37:57Z	epoch=1787247477	event=tmux-shim-equivalence-START	socket=/tmp/aecx/tpl/d04aexactbarrier/s.sock session=td04aexabar
+seq=007	utc=2026-08-20T17:37:57Z	epoch=1787247477	event=tmux-shim-equivalence-COMPLETE	all_identical=yes artifact_sha256=6a34e73b0df827dad529b5dc70c4242900cdb388c4e3c5de66d9082fabe73065
+seq=008	utc=2026-08-20T17:37:57Z	epoch=1787247477	event=snapshot	label=before manifest_sha256=6168dcb040b484d39ebd1ac57b112bf2ed53bc184e6833d92a05aca20457a3dc tmux_sha256=df66c47522952c0d455e25f2d97ef3a551728a2c6de562fd588f9b597f9d0db5
+seq=009	utc=2026-08-20T17:37:58Z	epoch=1787247478	event=paneset-before	artifact_sha256=d3972f484bd59cfeaade04cfc7bb2cbf0b07303b3b48baa4b25baad85b2b07b6
+seq=010	utc=2026-08-20T17:37:58Z	epoch=1787247478	event=barrier-ARMED	hook=H_STATUS_PANESET (tmux shim, list-panes) barrier_dir=/tmp/aecx/arms/D/d04a-exact-barrier/tmuxtmp/barrierdir
+seq=011	utc=2026-08-20T17:37:58Z	epoch=1787247478	event=barrier-REACHED	reached=1 waited_s=0
+seq=012	utc=2026-08-20T17:37:58Z	epoch=1787247478	event=barrier-captured-paneset	sha256=791eaea180e8b49ed2630e50662408d10f3f94b33e9e76ff5ec15292bc31ba00 lines=3
+seq=013	utc=2026-08-20T17:37:58Z	epoch=1787247478	event=controller-mutation	killed=%0 created=%3 artifact_sha256=c3f8a1408c58545ab098988b4726ace796bb461be2aeb0f6936e180931c5126c
+seq=014	utc=2026-08-20T17:37:58Z	epoch=1787247478	event=barrier-RELEASED	
+seq=015	utc=2026-08-20T17:37:58Z	epoch=1787247478	event=barrier-consumer-COMPLETE	rc=0 stdout_sha256=276ce002e87a9e07f18d859d05a78e3df195ab5a2ac476f6cbc1d9e07246c301
+seq=016	utc=2026-08-20T17:37:58Z	epoch=1787247478	event=paneset-after	artifact_sha256=ea0461013a937e069b877279ffd5d7fb7cc186a0dcf9a11065c8dda60bcfec01
+seq=017	utc=2026-08-20T17:37:58Z	epoch=1787247478	event=plain-consumer-START	prefix=clean-rerun-status argv=/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae status td04aexabar 
+seq=018	utc=2026-08-20T17:37:58Z	epoch=1787247478	event=plain-consumer-COMPLETE	prefix=clean-rerun-status rc=0 stdout_sha256=454151b01010171420c970fc4723c9879ece934fe53d4919bb1f3f2b8491b4cd flockspy_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+seq=019	utc=2026-08-20T17:37:59Z	epoch=1787247479	event=snapshot	label=after manifest_sha256=6168dcb040b484d39ebd1ac57b112bf2ed53bc184e6833d92a05aca20457a3dc tmux_sha256=a5924b50b5502acfca11143a89e7f92de52a6d3c4eba56af42371f5445abba9f
+seq=020	utc=2026-08-20T17:37:59Z	epoch=1787247479	event=case-CLOSE	case_txt_sha256=0b41a9c48a0ffc57055dc61ac3c0c4d4acb41b24ca6b4c42231f34bd520880fe consumers_tsv_sha256=b3c5e9062551d24b4ff52be5ef27a2ea30ec7c7e58a79a9ad772db0dc6670367

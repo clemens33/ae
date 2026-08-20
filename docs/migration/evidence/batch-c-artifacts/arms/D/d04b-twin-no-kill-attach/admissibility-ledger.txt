@@ -1,0 +1,24 @@
+seq=001	utc=2026-08-20T18:04:15Z	epoch=1787249055	event=case-OPEN	arm=D case=d04b-twin-no-kill clone_mode=attach frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T18:04:15Z	epoch=1787249055	event=rows	rows=D04b,SC-1306c design=b0-design.md Design 6 hook=H_NEXT_SELECTED kill_when=none prefix_sibling=no
+seq=003	utc=2026-08-20T18:04:21Z	epoch=1787249061	event=clone-VERIFIED	clone_fingerprint=a5b346582285e0b90f6aa3ebab5a5abf0faba841c384a077794b973ae95e4b0b expected=a5b346582285e0b90f6aa3ebab5a5abf0faba841c384a077794b973ae95e4b0b matches=yes
+seq=004	utc=2026-08-20T18:04:22Z	epoch=1787249062	event=live-topology-built	sessions=tg2wu agent_binary=/tmp/aecx/bin/aefake socket=/tmp/aecx/arms/D/d04b-twin-no-kill/live.sock session_env=AE_SESSION/AE_ORIGIN/AE_DIR/AE_MODE/AE_HOME per ae@72c7293:17311-17318
+seq=005	utc=2026-08-20T18:04:22Z	epoch=1787249062	event=hook-patch-published	artifact_sha256=a252a7497280da2c1670f7d08b3eaa65d15b5a4c9369f04fa92f0a3d317b43e0
+seq=006	utc=2026-08-20T18:04:22Z	epoch=1787249062	event=env-recorded	artifact_sha256=15d8fe207f6410ea5783ee3d57039532fe6ae36e888b413ee53a536e6ffb7aa3
+seq=007	utc=2026-08-20T18:04:22Z	epoch=1787249062	event=env-tab-selfcheck-START	artifact=env-tab-selfcheck.txt
+seq=008	utc=2026-08-20T18:04:22Z	epoch=1787249062	event=env-tab-selfcheck-COMPLETE	tab_survived=yes artifact_sha256=4ce9278ef058015a477c5480bebe46a955c12c27f95f519f4e93e83cbb200df9
+seq=009	utc=2026-08-20T18:04:22Z	epoch=1787249062	event=tmux-shim-equivalence-START	socket=/tmp/aecx/arms/D/d04b-twin-no-kill/live.sock session=tg2wu
+seq=010	utc=2026-08-20T18:04:22Z	epoch=1787249062	event=tmux-shim-equivalence-COMPLETE	all_identical=yes artifact_sha256=c6be334d560a6cb0f42702108a4b91f2c0f4e2336786d665159a83a2641fb849
+seq=011	utc=2026-08-20T18:04:22Z	epoch=1787249062	event=hook-inactive-equivalence-START	unmodified_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd hooked_sha256=7d5a9bda713dc28cd01e7d99dd39eb524a9e6994d7bf7714a551648e980c29f0 patch_sha256=a252a7497280da2c1670f7d08b3eaa65d15b5a4c9369f04fa92f0a3d317b43e0
+seq=012	utc=2026-08-20T18:04:26Z	epoch=1787249066	event=hook-inactive-equivalence-COMPLETE	control_control_divergences=0 control_hooked_divergences=0 artifact_sha256=412bfd1e33740d318fcd17266085216efb6376d83c9aa928d6de5380a09dcf8d
+seq=013	utc=2026-08-20T18:04:26Z	epoch=1787249066	event=scripted-client-attached	clients=/dev/ttys063  waited_s=0
+seq=014	utc=2026-08-20T18:04:26Z	epoch=1787249066	event=clients-snapshot	label=before artifact_sha256=036ae194dae1c236a85daba50937bb60879aa31d2bc7aca62034289ee26ab9fe
+seq=015	utc=2026-08-20T18:04:30Z	epoch=1787249070	event=snapshot	label=before manifest_sha256=a5b346582285e0b90f6aa3ebab5a5abf0faba841c384a077794b973ae95e4b0b tmux_sha256=39ddcad5e7465db773090daf1d767095a5fd69a0a564f63a692c21cd08d51f58
+seq=016	utc=2026-08-20T18:04:30Z	epoch=1787249070	event=barrier-ARMED	hook=H_NEXT_SELECTED invoked_from=caller pane %2 inside the attached client
+seq=017	utc=2026-08-20T18:04:30Z	epoch=1787249070	event=send-keys-issued	pane=%2 rc=0 script=/tmp/aecx/arms/D/d04b-twin-no-kill/run-next.sh
+seq=018	utc=2026-08-20T18:04:31Z	epoch=1787249071	event=barrier-REACHED	hook=H_NEXT_SELECTED reached=1 waited_s=1
+seq=019	utc=2026-08-20T18:04:31Z	epoch=1787249071	event=controller-mutation	none=this arm releases without killing anything artifact_sha256=133f46437cbfcb3c144b748319041ee625974c83f3dcb9db8080fb858c2ce49e
+seq=020	utc=2026-08-20T18:04:31Z	epoch=1787249071	event=barrier-RELEASED	hook=H_NEXT_SELECTED
+seq=021	utc=2026-08-20T18:04:31Z	epoch=1787249071	event=clients-snapshot	label=after artifact_sha256=78b2120710140f0e156a7521b593a42977963aebbeac7374eb2ccd6937ea2242
+seq=022	utc=2026-08-20T18:04:31Z	epoch=1787249071	event=attach-consumer-COMPLETE	rc=0 stdout_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 hook_log_sha256=15fd36ed30bf9a3451d57377509fbcab45c9326cce93fd7edc961864644cbf19 client_mapping_changed=yes
+seq=023	utc=2026-08-20T18:04:35Z	epoch=1787249075	event=snapshot	label=after manifest_sha256=a5b346582285e0b90f6aa3ebab5a5abf0faba841c384a077794b973ae95e4b0b tmux_sha256=39ddcad5e7465db773090daf1d767095a5fd69a0a564f63a692c21cd08d51f58
+seq=024	utc=2026-08-20T18:04:35Z	epoch=1787249075	event=case-CLOSE	case_txt_sha256=72d88c07e461856102d993c145b6105ffbc5f5ae26c823e8b589a65a3f22d807 consumers_tsv_sha256=9a0b05493046b8063761a9de2948ca762f72bfc5d4f1bfceaa06591812a1e9a9

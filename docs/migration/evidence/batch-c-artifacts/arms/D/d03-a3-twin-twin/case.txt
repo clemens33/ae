@@ -1,0 +1,12 @@
+arm=D case=d03-a3-twin arm_kind=twin design=b0-design.md Design 4 (D03) rows=D03,SC-1306e
+template=D/d03-31-numbered-events clone_mode=rw session=td03
+clone_fingerprint=0bd4c21ce2c572b38527d83bc0ea8e8e82b830aee009453bfbfc1a18e9fa9dcb clone_fingerprint_matches_template=yes
+consumer=the session's OWN generated events-tail helper, started in a pane
+launch_barrier=positive pane observation (banner + the final baseline record), bounded poll
+write_confirmation=file-size stat barrier on every controller write; no sleep-based inference
+seeded_events=31 last=D03-SEED-EVENT-31
+events_inode_at_start=28789114 size=3348
+utc_start=2026-08-20T17:35:36Z
+events_inode_at_end=28789114 size=3458
+utc_end=2026-08-20T17:35:37Z
+manifest_diff_lines=4

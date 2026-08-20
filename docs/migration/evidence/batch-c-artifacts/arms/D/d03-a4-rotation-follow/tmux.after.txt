@@ -1,0 +1,4 @@
+## sessions
+d03|1
+## panes
+d03|%0||bash

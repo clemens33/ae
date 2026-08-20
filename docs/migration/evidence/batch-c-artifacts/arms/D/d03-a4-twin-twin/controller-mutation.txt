@@ -1,0 +1,8 @@
+mutation=rotation
+original_inode=28790082 size=3348
+hardlink_held_at=events.jsonl.oldinode inode=28790082
+after atomic replace: events.jsonl inode=28790135 size=3348
+old inode still reachable through the hardlink: inode=28790082 size=3348
+inode_changed=yes
+appended ROTATE-NEWPATH to the NEW path; size=3457
+appended ROTATE-OLDINODE through the hardlink to the ORIGINAL inode; size=3458

@@ -1,0 +1,8 @@
+## pane set before anything
+%0|fake:lead|aefake
+%1|fake:worker|aefake
+%2|_events|bash
+## all panes on the server
+td04aexabar|%0|fake:lead|aefake
+td04aexabar|%1|fake:worker|aefake
+td04aexabar|%2|_events|bash

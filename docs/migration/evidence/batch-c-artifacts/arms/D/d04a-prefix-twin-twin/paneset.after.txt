@@ -1,0 +1,9 @@
+## pane set after
+%1|fake:worker|aefake
+%4|fake:added-after-the-cut|aefake
+%2|_events|bash
+## all panes on the server
+td04apretwi|%1|fake:worker|aefake
+td04apretwi|%4|fake:added-after-the-cut|aefake
+td04apretwi|%2|_events|bash
+td04apretwiextra|%3||aefake

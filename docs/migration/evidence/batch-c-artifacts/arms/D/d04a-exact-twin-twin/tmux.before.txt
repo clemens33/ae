@@ -1,0 +1,6 @@
+## sessions
+td04aexatwi|2
+## panes
+td04aexatwi|%0|fake:lead|aefake
+td04aexatwi|%1|fake:worker|aefake
+td04aexatwi|%2|_events|bash

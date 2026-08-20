@@ -1,0 +1,2 @@
+consumer	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	tmuxtrace_sha256	tmuxtrace_lines	bounded	argv
+attach-next	1	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0	a69d8f405250ed64cc005fa5455ac702cc7b741e81bc412fd0dbf3027d84ce1f	26	b9ed8af147870ebc2f5713a076a96e3f16b66d69add3af03b70016351aa81d6f	8	hooked:H_NEXT_RECHECKED	ae next --attach (from the caller pane inside the attached client)

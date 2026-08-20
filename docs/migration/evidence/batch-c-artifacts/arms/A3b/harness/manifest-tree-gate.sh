@@ -23,6 +23,20 @@ if [[ -f "$RESOLVER" ]]; then
 else
     echo "  RESOLVER MISSING — cannot check citations"; rc=1
 fi
+echo "## per-case artifact schema + case index"
+# files==listed cannot see a file deleted TOGETHER with its SHA256SUMS line, and the
+# citation resolver deduplicates relative tokens globally, so neither of the other halves
+# checks per-case COMPLETENESS. This one does, from each case's own ledger-derived kind
+# and from the arm's content-bound case index.
+SCHEMA_CHK="$(dirname "${BASH_SOURCE[0]}")/case-schema-check.py"
+SCHEMA_TSV="$(dirname "${BASH_SOURCE[0]}")/case-schema.tsv"
+[[ -f "$SCHEMA_CHK" ]] || { SCHEMA_CHK="$A/arms/A1/harness/case-schema-check.py"; SCHEMA_TSV="$A/arms/A1/harness/case-schema.tsv"; }
+if [[ -f "$SCHEMA_CHK" && -f "$SCHEMA_TSV" ]]; then
+    python3 "$SCHEMA_CHK" "$A" "$SCHEMA_TSV" || rc=1
+else
+    echo "  SCHEMA CHECK MISSING — per-case completeness cannot be checked"; rc=1
+fi
+
 echo "## SHA256SUMS coverage + verification"
 for d in "$A"/templates "$A"/hook-patch "$A"/arms/*; do
     [[ -d "$d" ]] || continue

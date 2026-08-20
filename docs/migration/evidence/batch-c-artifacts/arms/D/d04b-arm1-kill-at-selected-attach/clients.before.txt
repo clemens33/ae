@@ -1,0 +1,5 @@
+## clients (client -> session mapping)
+/dev/ttys063|/dev/ttys063|caller|%2|1787249004
+## sessions
+caller|1
+tg2wu|0

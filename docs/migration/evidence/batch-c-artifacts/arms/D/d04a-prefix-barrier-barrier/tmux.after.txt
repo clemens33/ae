@@ -1,0 +1,8 @@
+## sessions
+td04aprebar|3
+td04aprebarextra|1
+## panes
+td04aprebar|%1|fake:worker|aefake
+td04aprebar|%4|fake:added-after-the-cut|aefake
+td04aprebar|%2|_events|bash
+td04aprebarextra|%3||aefake

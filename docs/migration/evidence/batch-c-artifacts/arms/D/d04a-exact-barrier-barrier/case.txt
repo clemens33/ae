@@ -1,0 +1,9 @@
+arm=D case=d04a-exact-barrier arm_kind=barrier design=b0-design.md Design 5 (D04a) rows=D04a,SC-1306b
+topology=exact target_session=td04aexabar sibling=<none>
+tmux_socket=/tmp/aecx/tpl/d04aexactbarrier/s.sock
+tmux_shim=/tmp/aecx/shim-tmux/tmux sha256=05cadb933aa636b7a6f3856aae55be50079c5cc06f1988b18bfa2b3dd754bd02
+shim_default_mode=pure delegate-and-log; the active barrier exists only when AE_TMUX_BARRIER_DIR is set
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+utc_start=2026-08-20T17:37:57Z
+manifest_diff_lines=0
+utc_end=2026-08-20T17:37:59Z

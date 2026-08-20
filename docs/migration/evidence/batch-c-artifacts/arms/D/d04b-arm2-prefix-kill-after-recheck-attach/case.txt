@@ -1,0 +1,11 @@
+arm=D case=d04b-arm2-prefix-kill-after-recheck design=b0-design.md Design 6 (D04b) rows=D04b,SC-1306c
+hook=H_NEXT_RECHECKED kill_when=after-recheck prefix_sibling=yes
+target_session=tg2wu sibling=tg2wuextra caller_session=caller caller_pane=%3
+attach_client=pty-wrapped script(1) running tmux -S <sock> attach -t caller
+controller_connection=a SEPARATE tmux -S <sock> invocation, never from inside the client under test
+unmodified_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd hooked_ae_sha256=7d5a9bda713dc28cd01e7d99dd39eb524a9e6994d7bf7714a551648e980c29f0 patch_sha256=a252a7497280da2c1670f7d08b3eaa65d15b5a4c9369f04fa92f0a3d317b43e0
+tmux_socket=/tmp/aecx/arms/D/d04b-arm2-prefix-kill-after-recheck/live.sock
+utc_start=2026-08-20T18:03:40Z
+manifest_diff_lines=0
+client_mapping_changed=yes
+utc_end=2026-08-20T18:03:54Z

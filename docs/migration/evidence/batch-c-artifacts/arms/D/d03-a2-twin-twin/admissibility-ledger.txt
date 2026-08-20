@@ -1,0 +1,12 @@
+seq=001	utc=2026-08-20T17:35:27Z	epoch=1787247327	event=case-OPEN	arm=D case=d03-a2-twin clone_mode=twin frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T17:35:27Z	epoch=1787247327	event=rows	rows=D03,SC-1306e template=D/d03-31-numbered-events design=b0-design.md Design 4
+seq=003	utc=2026-08-20T17:35:28Z	epoch=1787247328	event=clone-VERIFIED	clone_fingerprint=0bd4c21ce2c572b38527d83bc0ea8e8e82b830aee009453bfbfc1a18e9fa9dcb expected=0bd4c21ce2c572b38527d83bc0ea8e8e82b830aee009453bfbfc1a18e9fa9dcb matches=yes
+seq=004	utc=2026-08-20T17:35:28Z	epoch=1787247328	event=env-recorded	artifact_sha256=9f16c14ada9c70d98aac1859e0271a9467c55f612121abb89b8013f3071c5460
+seq=005	utc=2026-08-20T17:35:28Z	epoch=1787247328	event=env-tab-selfcheck-START	artifact=env-tab-selfcheck.txt
+seq=006	utc=2026-08-20T17:35:28Z	epoch=1787247328	event=env-tab-selfcheck-COMPLETE	tab_survived=yes artifact_sha256=ec912c5955d5ca18186ab397b81e51fbe4b1bc8c48c59d926c3be601028b4191
+seq=007	utc=2026-08-20T17:35:29Z	epoch=1787247329	event=snapshot	label=before manifest_sha256=0bd4c21ce2c572b38527d83bc0ea8e8e82b830aee009453bfbfc1a18e9fa9dcb tmux_sha256=5e032012760e5cdffdb4b827ebb27445f343ff62279a91b837fd0fcd4de7be91
+seq=008	utc=2026-08-20T17:35:29Z	epoch=1787247329	event=twin-note	controller-only twin: the identical mutations with NO events-tail running
+seq=009	utc=2026-08-20T17:35:29Z	epoch=1787247329	event=controller-mutation	append=complete harvested event size_before=3348 size_after=3458
+seq=010	utc=2026-08-20T17:35:29Z	epoch=1787247329	event=stat-barrier	label=complete-append file_size=3458 reached=1
+seq=011	utc=2026-08-20T17:35:29Z	epoch=1787247329	event=snapshot	label=after manifest_sha256=aff005ce56bc1fb3577b4fcf55283da8e335292041b5efdb9a2f54df63b00cd8 tmux_sha256=5e032012760e5cdffdb4b827ebb27445f343ff62279a91b837fd0fcd4de7be91
+seq=012	utc=2026-08-20T17:35:29Z	epoch=1787247329	event=case-CLOSE	case_txt_sha256=708d131af4c9077fc82838626b799745696540af9ca9ac74f4b5f22653edb85f consumers_tsv_sha256=9440b69790145289b7f2fb91cc5e8b4f25b5d30e51f49dea2cae3e7c3135aa3c

@@ -1,0 +1,37 @@
+## inactive-hook equivalence, per fixture
+case=d04b-arm3-nosibling-kill-after-recheck clone_mode=attach session=tg2wu
+unmodified=/private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+hooked=/tmp/aecx/hooked/ae sha256=7d5a9bda713dc28cd01e7d99dd39eb524a9e6994d7bf7714a551648e980c29f0
+patch=/tmp/aecx/hooked/hook.patch sha256=a252a7497280da2c1670f7d08b3eaa65d15b5a4c9369f04fa92f0a3d317b43e0 (added lines only; see the patch file)
+AE_HOOK is UNSET for every invocation in this pass
+clock frozen at AE_FAKE_NOW=1787000000 via the PATH-first date shim, so run-to-run
+volatility cannot be mistaken for a binary difference
+
+invocation=ae list
+  control-A vs control-B : IDENTICAL
+  control-A vs hooked    : IDENTICAL
+  rc control=0 hooked=0   stdout_bytes control=289 hooked=289
+invocation=ae list --json
+  control-A vs control-B : IDENTICAL
+  control-A vs hooked    : IDENTICAL
+  rc control=0 hooked=0   stdout_bytes control=589 hooked=589
+invocation=ae list --all
+  control-A vs control-B : IDENTICAL
+  control-A vs hooked    : IDENTICAL
+  rc control=0 hooked=0   stdout_bytes control=1779 hooked=1779
+invocation=ae list --all --json
+  control-A vs control-B : IDENTICAL
+  control-A vs hooked    : IDENTICAL
+  rc control=0 hooked=0   stdout_bytes control=4833 hooked=4833
+invocation=ae next
+  control-A vs control-B : IDENTICAL
+  control-A vs hooked    : IDENTICAL
+  rc control=0 hooked=0   stdout_bytes control=46 hooked=46
+invocation=ae status tg2wu
+  control-A vs control-B : IDENTICAL
+  control-A vs hooked    : IDENTICAL
+  rc control=0 hooked=0   stdout_bytes control=88 hooked=88
+
+control_control_divergences=0 (the measured run-to-run volatility floor)
+control_hooked_divergences=0
+verdict_free_note=no interpretation is offered here; the byte comparisons are the record
