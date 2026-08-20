@@ -1,13 +1,13 @@
-arm=A1 case=c02-meta-mode-000 template=G3/meta-mode-000 clone_mode=ro session=tg1
+arm=A1 case=c02-meta-mode-000 rows=SC-506 template=G3/meta-mode-000 clone_mode=ro session=tg1
 template_fingerprint_pre_protection=03fc645781ec224d20f5f6d11b0c87280197126af028f6047893d7dc8354a8f6
 template_fingerprint_protected=167845758dd6755ea404ebbb53bef4abc3ecdc8e0511d90ed566dd9c0169180f
 clone_fingerprint=167845758dd6755ea404ebbb53bef4abc3ecdc8e0511d90ed566dd9c0169180f
 clone_fingerprint_matches_template=yes
 tmux_socket=/tmp/aecx/arms/A1/c02-meta-mode-000-ro/none.sock (no server started for this case)
 frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-utc_start=2026-08-20T16:18:42Z
+utc_start=2026-08-20T16:37:27Z
 manifest_diff_lines=0
 manifest_before_sha256=167845758dd6755ea404ebbb53bef4abc3ecdc8e0511d90ed566dd9c0169180f
 manifest_after_sha256=167845758dd6755ea404ebbb53bef4abc3ecdc8e0511d90ed566dd9c0169180f
 tmux_snapshot_identical=yes
-utc_end=2026-08-20T16:18:49Z
+utc_end=2026-08-20T16:37:34Z

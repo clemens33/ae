@@ -1,0 +1,2 @@
+{"ts":"2026-08-20T16:13:59Z","actor":"fake:lead","action":"state","ref":"working","summary":"work before the stop"}
+{"ts":"2026-08-20T16:14:00Z","actor":"fake:lead","action":"send","target":"fake:worker","summary":"⟦ae:msg from fake:lead⟧ ordinary traffic before the stop","body_file":"/tmp/aecx/tpl/g6a/home/.ae/sessions/tg6a/messages/msg-20260820T161400Z.send.6BOWUq.txt"}

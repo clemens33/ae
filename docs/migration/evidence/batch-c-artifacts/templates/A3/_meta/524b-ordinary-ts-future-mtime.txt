@@ -1,0 +1,11 @@
+group=A3
+member=524b-ordinary-ts-future-mtime
+derived_from=G1/healthy (byte copy)
+source_fingerprint_protected=c940ecaed0bba78bb6b78f7a286ed3c65f601aa18f5a0babda6d2910aa062f18
+session=tg1
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+pair_note=both halves start from the SAME base member; they differ only in WHICH
+  of the two candidate activity sources is made anomalous.
+built_utc=2026-08-20T16:48:06Z
+fingerprint_pre_protection=075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667
+fingerprint_protected=c940ecaed0bba78bb6b78f7a286ed3c65f601aa18f5a0babda6d2910aa062f18

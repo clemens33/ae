@@ -18,4 +18,4 @@ c16-events-unknown-keys	SC-509b,SC-510a	G7	events-unknown-keys
 c17-unknown-action	SC-509b,SC-510a	G7	events-unknown-action
 c18-no-trailing-newline	SC-509b	G8	no-trailing-newline
 c19-partial-tail	SC-509b	G8	partial-trailing-record
-c20-405k-live	SC-405k	live	no-template (live 2-agent launch + two named topology manipulations)
+c20-405k	SC-405k	live	no-template (live 2-agent launch + two named topology manipulations)

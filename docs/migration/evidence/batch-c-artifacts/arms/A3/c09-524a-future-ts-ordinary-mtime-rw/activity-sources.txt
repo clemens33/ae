@@ -1,0 +1,5 @@
+## the two candidate activity sources, as the consumer sees them
+events.jsonl mtime_epoch=1767268800 utc=2026-01-01T12:00:00Z
+last_event_ts=2099-01-01T00:00:00Z
+events_sha256=64eef23e65658321f8db71040f679de580422755c571e63d6fc7fe5503ae5ad8 bytes=1754 lines=10
+harness_now_epoch=1787244632 utc=2026-08-20T16:50:32Z

@@ -1,0 +1,12 @@
+arm=A3 case=c07-competing rows=SC-017g,SC-017h template=G2b/competing clone_mode=ro session=tg2b
+template_fingerprint_pre_protection=0d7df5c73481c9aa92d568ac64990a0563e1f59dcce651b5a7237bd6d5c6debe
+template_fingerprint_protected=57f784caf0acc08884823490f6242c82d9f002fa3547f4e5e8a06397f89f9a86
+clone_fingerprint=57f784caf0acc08884823490f6242c82d9f002fa3547f4e5e8a06397f89f9a86
+clone_fingerprint_matches_template=yes
+live_topology=one pane per roster entry, the fixture's controllable fake binary, never a live model
+tmux_socket=/tmp/aecx/arms/A3/c07-competing-ro/live.sock
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+utc_start=2026-08-20T16:50:05Z
+manifest_diff_lines=0
+tmux_snapshot_identical=yes
+utc_end=2026-08-20T16:50:08Z

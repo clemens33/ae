@@ -1,0 +1,23 @@
+SESSION                   STATUS    MODE        ORIGIN
+tg2bl                     stopped   local       /tmp/aecx/tpl/g2bl/work
+  git:master · ae 0.2.1 · active >7d
+  fake:lead               -
+  fake:worker             -
+tg2un                     stopped   local       /tmp/aecx/tpl/g2un/work
+  git:master · ae 0.2.1 · active >7d
+  fake:lead               -
+  fake:worker             -
+tg6a                      stopped   local       /tmp/aecx/tpl/g6a/work
+  git:master · ae 0.2.1 · active >7d
+  fake:lead               -
+  fake:worker             -
+tg6b                      stopped   local       /tmp/aecx/tpl/g6b/work
+  git:master · ae 0.2.1 · active >7d
+  fake:lead               -
+  fake:worker             -
+twda2                     stopped   local       /tmp/aecx/twd/a2/work
+  git:master · ae 0.2.1 · active >7d
+  fake:probe              -
+twda3                     stopped   local       /tmp/aecx/twd/a3/work
+  git:master · ae 0.2.1 · active >7d
+  fake:probe              -

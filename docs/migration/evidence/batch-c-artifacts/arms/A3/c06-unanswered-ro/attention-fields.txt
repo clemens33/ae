@@ -1,0 +1,13 @@
+## attention fields, extracted from out/list-json.stdout
+"needs_attention":true
+"attention":"unanswered"
+"attention_rank":1
+## per-agent reasons
+"agents":[{"ref":"fake:lead"
+"alive":true
+"state":null
+"reason":null}
+{"ref":"fake:worker"
+"alive":true
+"state":null
+"reason":null}]}]}

@@ -18,7 +18,7 @@ statements, no classification. Seats classify.
 | host | `Darwin 25.6.0 arm64` |
 | interpreter | `/opt/homebrew/bin/bash` — GNU bash 5.3.15(1) — sha256 `6ba6319962b59831740a56aa5f65e91d6467c72997f5d0a18be1ba1a6d8d378b` |
 | tmux | `/opt/homebrew/bin/tmux` — `tmux 3.7b` |
-| per-arm environment | `TZ=UTC`, `LANG=LC_ALL=en_US.UTF-8` (UTF-8 is required — see the correction section), scrubbed `PATH`, fresh `HOME`/`AE_HOME`, own `TMPDIR`/`TMUX_TMPDIR`, dedicated tmux socket, cleaned per arm |
+| per-arm environment | `TZ=UTC`, `LANG=C`, `LC_ALL=C`, scrubbed `PATH`, fresh `HOME`/`AE_HOME`, own `TMPDIR`/`TMUX_TMPDIR`, dedicated tmux socket, cleaned per arm |
 | live models / network | none used |
 
 ## Lane status
@@ -34,6 +34,25 @@ statements, no classification. Seats classify.
   raw; no bash-vs-rust comparison or divergence verdict is produced here — divergences
   are paired raw artifacts. Sequencing: the bash lane completes per arm group first.
 
+## Where the admissibility evidence lives
+
+Captures are written DIRECTLY into this committed tree — there is no scratch-then-publish
+step for evidence, so no capture can exist here without its admissibility proof beside it.
+Only the sandboxes (template clones, tmux tmpdirs, sockets) live outside it.
+
+Every case keeps an append-only `admissibility-ledger.txt`: a monotonic `seq` plus UTC and
+epoch for each event — case open, rows, clone verification, the TAB round-trip
+START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the before/after manifests, and
+every consumer START/COMPLETE with its rc and its stdout / stderr / tmuxtrace sha256. The
+ledger is written by the checks themselves as they run, so it establishes ORDER — that
+both standing checks completed before the first consumer invocation — from the original
+durable content, with each capture's own hash tied into the same record. Filesystem
+mtimes and the `SHA256SUMS.txt` list are not relied on for ordering.
+
+`arms/*/harness/manifest-tree-gate.sh` is the MANIFEST-versus-tree gate: it fails if this
+file cites a path that is not in the tree, if a published file is missing from its
+directory's `SHA256SUMS.txt`, or if any recorded hash no longer verifies.
+
 ## Boundary as executed
 
 65 assignments (batch-c-design.md v3 at `8f21a48`, slice-1d, plus SC-021 — the `ls` alias arm — added to A2): A1 gains SC-510e/f;
@@ -47,8 +66,8 @@ note (1306a→D01/Design 2, 1306b→D04a/Design 5, 1306c→D04b/Design 6, 1306d�
 | section | status |
 |---|---|
 | Step 0 — T-WD producer precursor (feeds G2) | COMPLETE (below) |
-| Template groups G1–G11 (+G2b) + the A1 members | COMPLETE — 36 members, all fingerprinted and chmod-protected; REBUILT under the corrected locale (below) |
-| Arm group A1 (SC-509, 509b, 506, 510a–f, 511a–b, 405k) | COMPLETE, bash lane — 39 case runs, RE-RUN under the corrected locale |
+| Template groups G1–G11 (+G2b) | COMPLETE — 12 groups, 29 members, all fingerprinted and chmod-protected (below) |
+| Arm group A1 (SC-509, 509b, 506, 510a–f, 511a–b, 405k) | COMPLETE, bash lane — 39 case runs |
 | Arm groups A2–A9 | not started |
 
 ---
@@ -432,7 +451,7 @@ in the correction section above. `G2/dead`, `G2/stale` and `G2/throttled` are th
 members whose fingerprints are UNCHANGED: they are copies of the step-0 archive, which was
 ruled not to be rebuilt.
 
-| group | member | session | files | fingerprint (pre-protection) | fingerprint (protected) | superseded pre-protection fp |
+| group | member | session(s) | files | fingerprint (pre-protection) | fingerprint (protected) | superseded pre-protection fp |
 |---|---|---|---|---|---|---|
 | `A1` | `510b-empty-vs-omitted` | `ta1b` | 42 | `e16decdda8210de95018c5014443cd4a634969320fa3fdbba1a8bd51ff4b1163` | `a6740d4fc379cdb0b65f737fec64aeeebd9b5b8ad020d1e1f1d46cdea8ddaa04` | `(new member)` |
 | `A1` | `510c-recover-ref` | `ta1c` | 33 | `616f38cb9e59690b033ee07f6e8c95dacda1b70a72c9ea05f9a8570f2e92b10f` | `68721ca91ce8dc7c8b71859582be718fc5a657668181081992694d4e4dabdbf6` | `(new member)` |
@@ -441,6 +460,10 @@ ruled not to be rebuilt.
 | `A1` | `510f-dupkey-unknown-reversed` | `tg1` | 42 | `3fc90b2e6ace970f570a3c52f3c0c7bf5482745be24b311a99ab105455dd8f00` | `3a71a1286311ed968b85651dbfe2b6014f4e52e235cf900ea6f5dadb7889632a` | `(new member)` |
 | `A1` | `510f-dupkey-unknown` | `tg1` | 42 | `077199567900528338bcfd0cdb0f295ddfd29709bfdea0e5f2366adce18d15d9` | `470da1778b62611b4c09fa61cc19c6d2e71af2e45aba7331c89edc22440ed804` | `(new member)` |
 | `A1` | `511a-omitted-routing` | `ta1r` | 39 | `7d3465fc653cabc05248dd804ef354cf535780acca5eceb43a025903e2e03f27` | `d4852d1b4b5f683c55ebc400c4d3e9b316ae9f69d007c660a385d6a50ac13da8` | `(new member)` |
+| `A2` | `composite` | `tg1, tg2b, tg2bl, tg2un, tg2wu, tg6a, tg6b, twda1, twda2, twda3` | 317 | `a5b346582285e0b90f6aa3ebab5a5abf0faba841c384a077794b973ae95e4b0b` | `30d1803e4b1dffb513cab1c409cbfda50033411f60e9eefc4e8fe02c1fb2311f` | `(new member)` |
+| `A3` | `017g-unanswered-vs-agent-owned` | `ta3g` | 38 | `5a610303e96ad18a7ddbed4245e68e94617184336a290f4c276846e978b9375b` | `ccd721fb59bb9799c11e2a55bcec9906946400408aeb7f3610394a999763edcd` | `(new member)` |
+| `A3` | `524a-future-ts-ordinary-mtime` | `tg1` | 42 | `fe7dac214fc310d387f7d983bc5d1e8d17bc272a519efc8efc53b2d14152c49a` | `d56b99e4b85163d19d3967874a21d66f6397225e823a0053596bf459f24dd49b` | `(new member)` |
+| `A3` | `524b-ordinary-ts-future-mtime` | `tg1` | 42 | `075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667` | `c940ecaed0bba78bb6b78f7a286ed3c65f601aa18f5a0babda6d2910aa062f18` | `(new member)` |
 | `G1` | `healthy` | `tg1` | 42 | `075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667` | `c940ecaed0bba78bb6b78f7a286ed3c65f601aa18f5a0babda6d2910aa062f18` | `bbfdf6957bb62063e2c5c94fc36844bede3eeab190027799b5a11164ddeab5dd` |
 | `G10` | `display-only-legacy` | `tg1` | 42 | `6de723ca980e505cb9833c1931ce95474c17192b8aea051cbc906b7fdb78de98` | `6d2ecd219feb5a0e2f77a46f9bee6b2ea5bf01e6841a438e6e096b3a9fe05d52` | `8d30b9a41b173a80a55376c5f840f390e50bd88bdfb5ec4dde08dfea632fa372` |
 | `G10` | `same-display-diff-routing` | `tg10` | 39 | `285cd5137c196a605e32088c6ad4657096e6da8375fda6afc2fdf8bd88ed9785` | `296b9224a4903e3b783484f69eb46c286716ce6f1ecd7c88cd479ac2b75cfb06` | `ed4e8f498da25df8aebefec61ef278b4afcf2fbbbce5c2a9567eae7c28496bac` |
@@ -470,6 +493,7 @@ ruled not to be rebuilt.
 | `G8` | `no-trailing-newline` | `tg1` | 42 | `5ad4e8108ee97ba2d72176a1053be7f06d44f7967a47e400881d991b47e3091e` | `d644c1fc58dbfb2769cc2f06ddbf1aaab2d004a8300e8ead920ea1b0688d7b16` | `7981f19b685c649571d0dd6ce67a67700314083671d780a41e758d95b019448d` |
 | `G8` | `partial-trailing-record` | `tg1` | 42 | `46ff5fa69ee89099188b7c4e72c59f460618f70c92eaf95aaa2910f7c2638b74` | `f75a4ebe46759eae10217f00cbe1a93b321ceb46f02bab401a791d98accb5b3d` | `837c6bb0547a90bf59dbda97ce6dd6367f8662811478f91bc409a23a5468d53e` |
 | `G9` | `goals-distinct-ts` | `tg9` | 32 | `d7e477f10f217dcd10e9ccd418aa9af79e80222cb0e718165c1a208ebd9e1b72` | `48f844ec7dd5cde59a576e706375875462e3a56833bec4f29df0d31b8fbcb808` | `f8a991667313065e7c2db99cffacd14d0d2a51858b055fb85b08f7e535dc4d90` |
+
 
 ### How each member was constructed
 
@@ -546,101 +570,312 @@ legitimately advances with the clock, are compared over 20 back-to-back paired t
 the match count is reported. Results per group in `_meta/shim-inactive-equivalence.*.txt`.
 Shim log files are harness artifacts and are excluded from product-state manifests.
 
+
+### Composite and A3 members
+
+`A2/composite` is a COMPOSITION, not a mutation: ten whole producer-built session dirs
+copied byte-for-byte into one `AE_HOME`. `templates/A2/_meta/composite.txt` records, per
+session, which group/member it came from and that member's own protected fingerprint, plus
+the deliberately chosen `events.jsonl` mtime and why. The composite's own two fingerprints
+are in the table above and in `FINGERPRINTS.tsv`, and `templates/A2/fixture-bytes/composite/`
+carries the config plus every one of the ten sessions' `meta`, `events.jsonl` and
+`messages/`. The arms verify their clone against the protected fingerprint and record the
+comparison in the case ledger (`clone-VERIFIED`).
+
+| group | member | construction |
+|---|---|---|
+| `A2` | `composite` | ten producer-built session dirs copied byte-for-byte into one AE_HOME (config from G1/healthy); `events.jsonl` mtimes chosen deliberately — `tg1` recent, the other nine pinned to `2026-01-01T12:00:00` — because the frozen reader takes session activity from that mtime rather than from event ts |
+| `A3` | `017g-unanswered-vs-agent-owned` | 3-agent session under the clock hook: an AGENT-OWNED declaration (`blocked`, bravo) at T0 and a SESSION-LEVEL `ask` targeting a third agent at T1, never replied and aged past the 1800s default. Arrival order is descending in the frozen `_attn_rank` ladder, so a last-wins reader and a rank-wins reader are distinguishable |
+| `A3` | `524a-future-ts-ordinary-mtime` | G1/healthy byte copy; named mutation: the last event's `ts` set to a FUTURE value, the file's mtime pinned ordinary |
+| `A3` | `524b-ordinary-ts-future-mtime` | G1/healthy byte copy; event BYTES UNCHANGED (hash recorded against the base), only the file mtime set to a FUTURE value |
+
+The 524 pair starts from the same base member and differs only in WHICH of the two
+candidate activity sources is made anomalous, so the arm sees the incumbent's source
+choice directly instead of a fixture where both sources happen to agree.
+
 ## Arm group A1 — schema/document (bash lane)
 
-Rows executed: SC-509, SC-509b, SC-506, SC-510a, SC-510b, SC-510c, SC-510d, SC-510e,
-SC-510f, SC-511a, SC-511b, SC-405k. (SC-511c is B0's and is not run here.)
+### A1 — what the arm does
 
-Each document case is run TWICE from the same template member: once on a **protected**
+Rows: SC-509, SC-509b, SC-506, SC-510a, SC-510b, SC-510c, SC-510d, SC-510e, SC-510f,
+SC-511a, SC-511b, SC-405k. (SC-511c is B0's and is not run here.)
+
+Each document case runs TWICE from the same template member: once on a **protected**
 clone (the design's read-only vehicle) and once on a **writable** clone whose modes are
 restored to what the producer wrote. Both are published. The pair exists because a
 protected clone can turn a write into a refusal rather than revealing it, while the
-writable clone lets the manifest diff be the proof the design asks for; reporting only
-one of the two would hide which of those two things happened.
+writable clone lets the manifest diff be the proof the design asks for; publishing only
+one would hide which of the two happened.
 
-Consumer families per case, each captured as stdout + stderr + rc + byte counts +
-sha256: `ae list`, `ae list --json`, `ae list --all`, `ae list --all --json`, `ae ls`,
-`ae ls --all`, `ae status <session>`, `ae next`, the session's `requests all`, its
-`agents`, and its `events-tail`. `events-tail` is a streaming consumer with no one-shot
-mode, so it is bounded by the harness and the stop is recorded beside its bytes.
-Every consumer runs under `env -i` plus the documented minimum
-(`HOME`, `AE_HOME`, `PATH`, `TZ=UTC`, `LANG=LC_ALL=en_US.UTF-8`, `TERM`, `TMUX_TMPDIR`,
-`AE_TMUX_SERVER`+kind) — never inherited shell state. The exact env is published per
-case as `env.txt` and the exact argv per consumer in `consumers.tsv`.
+Consumer families per document case: `ae list`, `ae list --json`, `ae list --all`,
+`ae list --all --json`, `ae ls`, `ae ls --all`, `ae status <session>`, `ae next`, the
+session's `requests all`, its `agents`, and its `events-tail`. `events-tail` is a
+streaming consumer with no one-shot mode, so it is bounded by the harness and the stop is
+recorded beside its bytes and in the ledger. Every consumer runs under `env -i` plus the
+documented minimum (`HOME`, `AE_HOME`, `PATH`, `TZ=UTC`, `LANG=LC_ALL=en_US.UTF-8`,
+`TERM`, `TMUX_TMPDIR`, `AE_TMUX_SERVER`+kind) — never inherited shell state.
 
-| case | clone | rows | template | clone fp = template fp | manifest diff (lines) | tmux snapshot identical | consumers |
-|---|---|---|---|---|---|---|---|
-| `c01-healthy-ro` | ro | SC-509,SC-509b,SC-510a | `G1/healthy` | yes | 0 | yes | 11 |
-| `c01-healthy-rw` | rw | SC-509,SC-509b,SC-510a | `G1/healthy` | yes | 0 | yes | 11 |
-| `c02-meta-mode-000-ro` | ro | SC-506 | `G3/meta-mode-000` | yes | 0 | yes | 11 |
-| `c02-meta-mode-000-rw` | rw | SC-506 | `G3/meta-mode-000` | yes | 0 | yes | 11 |
-| `c03-malformed-line-ro` | ro | SC-506,SC-509b | `G3/malformed-complete-line` | yes | 0 | yes | 11 |
-| `c03-malformed-line-rw` | rw | SC-506,SC-509b | `G3/malformed-complete-line` | yes | 0 | yes | 11 |
-| `c04-empty-vs-omitted-ro` | ro | SC-510b | `A1/510b-empty-vs-omitted` | yes | 0 | yes | 11 |
-| `c04-empty-vs-omitted-rw` | rw | SC-510b | `A1/510b-empty-vs-omitted` | yes | 0 | yes | 11 |
-| `c05-recover-ref-ro` | ro | SC-510c | `A1/510c-recover-ref` | yes | 0 | yes | 11 |
-| `c05-recover-ref-rw` | rw | SC-510c | `A1/510c-recover-ref` | yes | 0 | yes | 11 |
-| `c06-escapes-ro` | ro | SC-510d | `G11/escapes` | yes | 0 | yes | 11 |
-| `c06-escapes-rw` | rw | SC-510d | `G11/escapes` | yes | 0 | yes | 11 |
-| `c07-dupkey-known-ro` | ro | SC-510e | `A1/510e-dupkey-known` | yes | 0 | yes | 11 |
-| `c07-dupkey-known-rw` | rw | SC-510e | `A1/510e-dupkey-known` | yes | 0 | yes | 11 |
-| `c08-dupkey-known-rev-ro` | ro | SC-510e | `A1/510e-dupkey-known-reversed` | yes | 0 | yes | 11 |
-| `c08-dupkey-known-rev-rw` | rw | SC-510e | `A1/510e-dupkey-known-reversed` | yes | 0 | yes | 11 |
-| `c09-dupkey-unknown-ro` | ro | SC-510f | `A1/510f-dupkey-unknown` | yes | 0 | yes | 11 |
-| `c09-dupkey-unknown-rw` | rw | SC-510f | `A1/510f-dupkey-unknown` | yes | 0 | yes | 11 |
-| `c10-dupkey-unknown-rev-ro` | ro | SC-510f | `A1/510f-dupkey-unknown-reversed` | yes | 0 | yes | 11 |
-| `c10-dupkey-unknown-rev-rw` | rw | SC-510f | `A1/510f-dupkey-unknown-reversed` | yes | 0 | yes | 11 |
-| `c11-routing-known-ro` | ro | SC-511a,SC-511b | `G5/m1-control` | yes | 0 | yes | 11 |
-| `c11-routing-known-rw` | rw | SC-511a,SC-511b | `G5/m1-control` | yes | 0 | yes | 11 |
-| `c12-routing-omitted-ro` | ro | SC-511a | `A1/511a-omitted-routing` | yes | 0 | yes | 11 |
-| `c12-routing-omitted-rw` | rw | SC-511a | `A1/511a-omitted-routing` | yes | 0 | yes | 11 |
-| `c13-same-display-routing-ro` | ro | SC-511b | `G10/same-display-diff-routing` | yes | 0 | yes | 11 |
-| `c13-same-display-routing-rw` | rw | SC-511b | `G10/same-display-diff-routing` | yes | 0 | yes | 11 |
-| `c14-display-only-legacy-ro` | ro | SC-511b | `G10/display-only-legacy` | yes | 0 | yes | 11 |
-| `c14-display-only-legacy-rw` | rw | SC-511b | `G10/display-only-legacy` | yes | 0 | yes | 11 |
-| `c15-meta-unknown-keys-ro` | ro | SC-509,SC-509b | `G7/meta-unknown-keys` | yes | 0 | yes | 11 |
-| `c15-meta-unknown-keys-rw` | rw | SC-509,SC-509b | `G7/meta-unknown-keys` | yes | 0 | yes | 11 |
-| `c16-events-unknown-keys-ro` | ro | SC-509b,SC-510a | `G7/events-unknown-keys` | yes | 0 | yes | 11 |
-| `c16-events-unknown-keys-rw` | rw | SC-509b,SC-510a | `G7/events-unknown-keys` | yes | 0 | yes | 11 |
-| `c17-unknown-action-ro` | ro | SC-509b,SC-510a | `G7/events-unknown-action` | yes | 0 | yes | 11 |
-| `c17-unknown-action-rw` | rw | SC-509b,SC-510a | `G7/events-unknown-action` | yes | 0 | yes | 11 |
-| `c18-no-trailing-newline-ro` | ro | SC-509b | `G8/no-trailing-newline` | yes | 0 | yes | 11 |
-| `c18-no-trailing-newline-rw` | rw | SC-509b | `G8/no-trailing-newline` | yes | 0 | yes | 11 |
-| `c19-partial-tail-ro` | ro | SC-509b | `G8/partial-trailing-record` | yes | 0 | yes | 11 |
-| `c19-partial-tail-rw` | rw | SC-509b | `G8/partial-trailing-record` | yes | 0 | yes | 11 |
-| `c20-405k-live` | live | SC-405k | `live/no-template (live 2-agent launch + two named topology manipulations)` | - | - | - | 44 |
-
-Artifact paths: `docs/migration/evidence/batch-c-artifacts/arms/A1/<case>/` —
-`case.txt` (template + both fingerprints + clone fingerprint + verification result +
-manifest-diff line count + timestamps), `env.txt`, `consumers.tsv` (label, rc, stdout
-and stderr sha256 + byte counts, bounded flag, exact argv), `out/<label>.stdout` and
-`out/<label>.stderr` verbatim, `manifest.before.tsv` / `manifest.after.tsv` /
-`manifest.diff.txt` (recursive: type, mode, content hash, symlink target, path across
-the cloned AE_HOME), `tmux.before.txt` / `tmux.after.txt`, and `A1/ledger.tsv`
-mapping every case to its row ids. `SHA256SUMS.txt` hashes every published file.
-
-### A1 additional template members
-
-See the template construction table above for `A1/510b-empty-vs-omitted`,
-`A1/510c-recover-ref`, `A1/510e-dupkey-known(-reversed)`,
-`A1/510f-dupkey-unknown(-reversed)` and `A1/511a-omitted-routing`. Their fingerprints and
-provenance sit in `templates/A1/_meta/` and in `templates/FINGERPRINTS.tsv`.
+The five A1-specific template members (`510b-empty-vs-omitted`, `510c-recover-ref`,
+`510e-dupkey-known(-reversed)`, `510f-dupkey-unknown(-reversed)`, `511a-omitted-routing`)
+are described in the template construction table above.
 
 ### SC-405k live sub-arm
 
 `c20-405k-live` is not a template clone: a live 2-agent launch on its own tmux server with
 two named topology manipulations, captured at three stages — `s0-baseline`,
 `s1-extra-pane` (an EXTRA runtime pane stamped `@ae_agent=fake:ghost`, `@ae_slot=ghost.0`,
-absent from meta), and `s2-extra-pane-and-missing-roster-pane` (the pane of roster slot
+absent from meta) and `s2-extra-pane-and-missing-roster-pane` (the pane of roster slot
 `worker.0` killed, its meta entry left in place). Each stage carries the full consumer
-battery, the tmux snapshot, the roster lines from meta, a recursive AE_HOME manifest, and
-a raw probe running the exact tmux query the frozen consumer makes from the same scrubbed
-environment and socket.
+battery under `out/<stage>/`, a tmux snapshot, the roster lines from meta, a recursive
+AE_HOME manifest, and a raw probe running the exact tmux query the frozen consumer makes
+from the same scrubbed environment and socket.
 
-Additional artifacts for this case: `env-tab-selfcheck.txt` (the TAB round-trip plus the
-paired C-locale probe), `tmux-shim-equivalence.txt` (the delegate-and-log shim proven
-byte-identical to the real binary on this arm's own topology), per-consumer
-`out/<stage>/<label>.tmuxtrace` (effective server, kind, locale and delegated argv), and
-`consumers.s0-baseline-clocale/` — the entire battery run a second time on the same
-unchanged topology with the locale pinned to C, published as a paired raw capture with no
-comparison verdict.
+`out/s0-baseline-clocale/` is the PAIRED RAW capture: the same consumers, the same
+unchanged topology, the same argv, with the locale pinned to C instead of UTF-8. Both
+halves are published raw; which, if either, is the product's intended behaviour is not
+decided here. It exists because the frozen script has seven TAB-separated tmux format
+sites — the two pane/alive walks at :3631 and :4207 and five pane-id/agent resolution
+sites at :6488, :12151, :12170, :12297 and :12962.
+### A1 case table
+
+`checks<first consumer` names the ledger sequence numbers of the TAB round-trip
+COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),
+and the first `consumer-START`. The ledger is append-only and written by the checks
+themselves, so the ordering is established by the original durable content — not by
+file mtimes and not by a hash list added afterwards.
+
+| case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
+|---|---|---|---|---|---|---|---|---|---|
+| `c01-healthy-ro` | ro | SC-509,SC-509b,SC-510a | `G1/healthy` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c01-healthy-rw` | rw | SC-509,SC-509b,SC-510a | `G1/healthy` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c02-meta-mode-000-ro` | ro | SC-506 | `G3/meta-mode-000` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c02-meta-mode-000-rw` | rw | SC-506 | `G3/meta-mode-000` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c03-malformed-line-ro` | ro | SC-506,SC-509b | `G3/malformed-complete-line` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c03-malformed-line-rw` | rw | SC-506,SC-509b | `G3/malformed-complete-line` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c04-empty-vs-omitted-ro` | ro | SC-510b | `A1/510b-empty-vs-omitted` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c04-empty-vs-omitted-rw` | rw | SC-510b | `A1/510b-empty-vs-omitted` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c05-recover-ref-ro` | ro | SC-510c | `A1/510c-recover-ref` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c05-recover-ref-rw` | rw | SC-510c | `A1/510c-recover-ref` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c06-escapes-ro` | ro | SC-510d | `G11/escapes` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c06-escapes-rw` | rw | SC-510d | `G11/escapes` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c07-dupkey-known-ro` | ro | SC-510e | `A1/510e-dupkey-known` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c07-dupkey-known-rw` | rw | SC-510e | `A1/510e-dupkey-known` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c08-dupkey-known-rev-ro` | ro | SC-510e | `A1/510e-dupkey-known-reversed` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c08-dupkey-known-rev-rw` | rw | SC-510e | `A1/510e-dupkey-known-reversed` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c09-dupkey-unknown-ro` | ro | SC-510f | `A1/510f-dupkey-unknown` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c09-dupkey-unknown-rw` | rw | SC-510f | `A1/510f-dupkey-unknown` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c10-dupkey-unknown-rev-ro` | ro | SC-510f | `A1/510f-dupkey-unknown-reversed` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c10-dupkey-unknown-rev-rw` | rw | SC-510f | `A1/510f-dupkey-unknown-reversed` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c11-routing-known-ro` | ro | SC-511a,SC-511b | `G5/m1-control` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c11-routing-known-rw` | rw | SC-511a,SC-511b | `G5/m1-control` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c12-routing-omitted-ro` | ro | SC-511a | `A1/511a-omitted-routing` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c12-routing-omitted-rw` | rw | SC-511a | `A1/511a-omitted-routing` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c13-same-display-routing-ro` | ro | SC-511b | `G10/same-display-diff-routing` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c13-same-display-routing-rw` | rw | SC-511b | `G10/same-display-diff-routing` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c14-display-only-legacy-ro` | ro | SC-511b | `G10/display-only-legacy` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c14-display-only-legacy-rw` | rw | SC-511b | `G10/display-only-legacy` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c15-meta-unknown-keys-ro` | ro | SC-509,SC-509b | `G7/meta-unknown-keys` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c15-meta-unknown-keys-rw` | rw | SC-509,SC-509b | `G7/meta-unknown-keys` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c16-events-unknown-keys-ro` | ro | SC-509b,SC-510a | `G7/events-unknown-keys` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c16-events-unknown-keys-rw` | rw | SC-509b,SC-510a | `G7/events-unknown-keys` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c17-unknown-action-ro` | ro | SC-509b,SC-510a | `G7/events-unknown-action` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c17-unknown-action-rw` | rw | SC-509b,SC-510a | `G7/events-unknown-action` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c18-no-trailing-newline-ro` | ro | SC-509b | `G8/no-trailing-newline` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c18-no-trailing-newline-rw` | rw | SC-509b | `G8/no-trailing-newline` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c19-partial-tail-ro` | ro | SC-509b | `G8/partial-trailing-record` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c19-partial-tail-rw` | rw | SC-509b | `G8/partial-trailing-record` | yes | 0 | yes | 11 | 6/-/8 | yes |
+| `c20-405k-live` | live | SC-405k | `live/no-template (live 2-agent launch + two named topology manipulations)` | - | - | - | 26 | 5/7/9 | yes |
+
+Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A1/<case>/`:
+
+- `admissibility-ledger.txt` — append-only, monotonic `seq` + UTC + epoch per event:
+  case open, rows, clone verification (clone vs expected fingerprint), the TAB
+  round-trip START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the
+  before/after manifests, and every consumer START/COMPLETE with its rc and its
+  stdout / stderr / tmuxtrace sha256
+- `env-tab-selfcheck.txt` — the TAB round-trip in this case's own scrubbed
+  environment, plus the paired `LANG=LC_ALL=C` probe on the same throwaway server
+- `tmux-shim-equivalence.txt` — live cases only: the delegate-and-log shim proven
+  byte-identical to the real binary on this arm's own stable topology
+- `case.txt`, `env.txt`, `consumers.tsv` (label, rc, stdout/stderr sha256 + bytes,
+  tmuxtrace sha256 + line count, bounded flag, exact argv)
+- `out/<label>.stdout`, `out/<label>.stderr` (present only when non-empty),
+  `out/<label>.tmuxtrace` — per invocation: the effective `AE_TMUX_SERVER` and kind,
+  the effective locale, and the DELEGATED tmux argv
+- `manifest.before.tsv` / `manifest.after.tsv` / `manifest.diff.txt` — recursive:
+  type, mode, content hash, symlink target, path across the cloned AE_HOME
+- `tmux.before.txt` / `tmux.after.txt`
+- `A1/ledger.tsv` (case -> row ids), `A1/harness/` (the exact scripts and the
+  tmux shim), `SHA256SUMS.txt` (every file above)
+
+## Arm group A2 — list filters (bash lane)
+
+### A2 — what the arm does
+
+Rows: SC-017a, SC-017b, SC-017c, SC-017d, SC-017e, SC-017f, SC-017i, SC-021 (the `ls`
+alias) and SC-521a.
+
+**Template `A2/composite`.** Ten whole producer-built session dirs copied byte-for-byte
+into ONE `AE_HOME`, so the list filters have something to discriminate between; not one
+byte inside any of them changes, and each member's source group/member and source
+protected fingerprint are recorded in `templates/A2/_meta/composite.txt`:
+`tg1` <- G1/healthy · `twda1` <- G2/dead · `twda2` <- G2/stale · `twda3` <- G2/throttled ·
+`tg2wu` <- G2/waiting-user · `tg2bl` <- G2/blocked · `tg2un` <- G2/unanswered ·
+`tg2b` <- G2b/competing · `tg6a` <- G6/stopped-plain · `tg6b` <- G6/stopped-attention.
+The config is taken from G1/healthy.
+
+**events.jsonl MTIME is load-bearing and is therefore chosen, not inherited.** The frozen
+reader takes session activity from that file's mtime rather than from event timestamps
+(ae@72c7293:3993-4009, 4220-4228). A plain copy stamps every session with "whenever the
+copy ran", which would make all ten look equally fresh and quietly destroy the
+`--active` / `--busy` discrimination. So the composite sets mtimes deliberately — `tg1`
+recent, the other nine pinned to a fixed `2026-01-01T12:00:00` — recorded per session in
+the composite's provenance and again per case in `fixture-mtimes.txt` as epoch and UTC
+exactly as the consumer sees them.
+
+**Harness change, recorded with its reason:** template cloning now preserves mtimes
+(`cp -Rp`), so a clone carries the fixture's chosen activity clock instead of the clone's
+own timestamp. Fingerprints are unaffected — mtime is deliberately not part of the
+manifest the fingerprint is taken over.
+
+**Live topology** (the design's "controlled panes, never live models" clause): a dedicated
+socket per case; `tg1`, `twda1`, `tg2wu` and `tg2b` each get a tmux session with one pane
+per roster entry from that session's own meta, running the fixture's controllable fake
+binary, stamped `@ae_agent`/`@ae_slot` and carrying the session environment ae itself
+writes at launch (`AE_SESSION`, `AE_ORIGIN`, `AE_DIR`, `AE_MODE`, `AE_HOME` —
+ae@72c7293:17311-17318; without `AE_SESSION` the frozen enumerator does not treat a tmux
+session as an ae session at all). `twda2`, `twda3`, `tg2bl`, `tg2un`, `tg6a` and `tg6b`
+get no tmux session. Every roster agent gets a pane, so the harness introduces no
+synthetic missing-pane `dead`: the only dead-family bytes in play are the ones the step-0
+watchdog really produced.
+
+**Consumers — one invocation per flag AND per documented alias**, plain and `--json`, on
+both `list` and `ls`: `(default)`, `--running`, `--all`, `--stopped`, `--needs-attn`,
+`--needs-me`, `--needs`, `--attn`, `--active`, `--busy` (10 x 2 x 2 = 40); plus the
+intersection arms in BOTH orders — `--needs-attn --all`, `--all --needs-attn`,
+`--active --all`, `--all --active`, `--needs-attn --stopped`, `--active --stopped`
+(6 x 2 = 12); plus an unknown flag and `--help` (2). 54 invocations per clone mode, run on
+both the protected and the writable clone.
+### A2 case table
+
+`checks<first consumer` names the ledger sequence numbers of the TAB round-trip
+COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),
+and the first `consumer-START`. The ledger is append-only and written by the checks
+themselves, so the ordering is established by the original durable content — not by
+file mtimes and not by a hash list added afterwards.
+
+| case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
+|---|---|---|---|---|---|---|---|---|---|
+| `c01-filters-ro` | ro | SC-017a,SC-017b,SC-017c,SC-017d,SC-017e,SC-017f,SC-017i,SC-021,SC-521a | `A2/composite` | yes | 0 | yes | 54 | 8/10/12 | yes |
+| `c01-filters-rw` | rw | SC-017a,SC-017b,SC-017c,SC-017d,SC-017e,SC-017f,SC-017i,SC-021,SC-521a | `A2/composite` | yes | 0 | yes | 54 | 8/10/12 | yes |
+
+Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A2/<case>/`:
+
+- `admissibility-ledger.txt` — append-only, monotonic `seq` + UTC + epoch per event:
+  case open, rows, clone verification (clone vs expected fingerprint), the TAB
+  round-trip START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the
+  before/after manifests, and every consumer START/COMPLETE with its rc and its
+  stdout / stderr / tmuxtrace sha256
+- `env-tab-selfcheck.txt` — the TAB round-trip in this case's own scrubbed
+  environment, plus the paired `LANG=LC_ALL=C` probe on the same throwaway server
+- `tmux-shim-equivalence.txt` — live cases only: the delegate-and-log shim proven
+  byte-identical to the real binary on this arm's own stable topology
+- `case.txt`, `env.txt`, `consumers.tsv` (label, rc, stdout/stderr sha256 + bytes,
+  tmuxtrace sha256 + line count, bounded flag, exact argv)
+- `out/<label>.stdout`, `out/<label>.stderr` (present only when non-empty),
+  `out/<label>.tmuxtrace` — per invocation: the effective `AE_TMUX_SERVER` and kind,
+  the effective locale, and the DELEGATED tmux argv
+- `manifest.before.tsv` / `manifest.after.tsv` / `manifest.diff.txt` — recursive:
+  type, mode, content hash, symlink target, path across the cloned AE_HOME
+- `tmux.before.txt` / `tmux.after.txt`
+- `A2/ledger.tsv` (case -> row ids), `A2/harness/` (the exact scripts and the
+  tmux shim), `SHA256SUMS.txt` (every file above)
+
+## Arm group A3 — rollup / severity (bash lane)
+
+### A3 — what the arm does
+
+Rows: SC-017g, SC-017h, SC-524.
+
+Every A3 case runs on a LIVE topology — the rollup reads panes as well as events, so a
+document-only clone could not exercise it. One tmux session per session dir on a dedicated
+socket, one pane per roster entry from that session's own meta, running the fixture's
+controllable fake binary, stamped `@ae_agent`/`@ae_slot` and carrying the session
+environment ae writes at launch. Never a live model.
+
+Cases c01–c07 walk the six G2 members and G2b, one attention reason each plus the
+competing set. Case c08 is the amended SC-017g cohort: a SESSION-LEVEL `ask` aged past the
+1800s default and never replied, competing against an AGENT-OWNED `blocked` declaration
+owned by a different agent, produced under the clock hook with the declaration arriving
+FIRST and the aged ask LAST — descending in the frozen `_attn_rank` ladder, so a last-wins
+reader and a rank-wins reader are distinguishable.
+
+Cases c09 and c10 are the SC-524 source-discrimination pair: identical cloned inputs from
+the same base member, differing only in WHICH candidate activity source is anomalous —
+`524a` a FUTURE event `ts` with an ordinary file mtime, `524b` UNCHANGED event bytes (hash
+recorded against the base) with a FUTURE file mtime.
+
+Consumers per case: `ae list`, `list --json`, `list --all --json`, `list --needs-attn`
+(plain and `--json`), `list --active` (plain and `--json`), `ae next`, `ae status`, and
+the session's `requests all`.
+
+Two extra per-case artifacts carry what these rows are about:
+`activity-sources.txt` records BOTH candidate activity sources as the consumer sees them —
+the `events.jsonl` mtime (epoch + UTC), the last event `ts`, the file hash/size/line count,
+and the harness's own clock at capture time. `attention-fields.txt` lifts the session
+`needs_attention` / `attention` / `attention_rank` and every per-agent `ref`/`alive`/
+`state`/`reason` verbatim out of the captured `list --json` bytes, so the two fields the
+row asks for are readable without re-parsing the JSON.
+### A3 case table
+
+`checks<first consumer` names the ledger sequence numbers of the TAB round-trip
+COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),
+and the first `consumer-START`. The ledger is append-only and written by the checks
+themselves, so the ordering is established by the original durable content — not by
+file mtimes and not by a hash list added afterwards.
+
+| case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
+|---|---|---|---|---|---|---|---|---|---|
+| `c01-dead-ro` | ro | SC-017g,SC-017h | `G2/dead` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c01-dead-rw` | rw | SC-017g,SC-017h | `G2/dead` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c02-stale-ro` | ro | SC-017g,SC-017h | `G2/stale` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c02-stale-rw` | rw | SC-017g,SC-017h | `G2/stale` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c03-throttled-ro` | ro | SC-017g,SC-017h | `G2/throttled` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c03-throttled-rw` | rw | SC-017g,SC-017h | `G2/throttled` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c04-waiting-user-ro` | ro | SC-017g,SC-017h | `G2/waiting-user` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c04-waiting-user-rw` | rw | SC-017g,SC-017h | `G2/waiting-user` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c05-blocked-ro` | ro | SC-017g,SC-017h | `G2/blocked` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c05-blocked-rw` | rw | SC-017g,SC-017h | `G2/blocked` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c06-unanswered-ro` | ro | SC-017g,SC-017h | `G2/unanswered` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c06-unanswered-rw` | rw | SC-017g,SC-017h | `G2/unanswered` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c07-competing-ro` | ro | SC-017g,SC-017h | `G2b/competing` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c07-competing-rw` | rw | SC-017g,SC-017h | `G2b/competing` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c08-unanswered-vs-agent-owned-ro` | ro | SC-017g | `A3/017g-unanswered-vs-agent-owned` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c08-unanswered-vs-agent-owned-rw` | rw | SC-017g | `A3/017g-unanswered-vs-agent-owned` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c09-524a-future-ts-ordinary-mtime-ro` | ro | SC-524 | `A3/524a-future-ts-ordinary-mtime` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c09-524a-future-ts-ordinary-mtime-rw` | rw | SC-524 | `A3/524a-future-ts-ordinary-mtime` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c10-524b-ordinary-ts-future-mtime-ro` | ro | SC-524 | `A3/524b-ordinary-ts-future-mtime` | yes | 0 | yes | 10 | 8/10/12 | yes |
+| `c10-524b-ordinary-ts-future-mtime-rw` | rw | SC-524 | `A3/524b-ordinary-ts-future-mtime` | yes | 0 | yes | 10 | 8/10/12 | yes |
+
+Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A3/<case>/`:
+
+- `admissibility-ledger.txt` — append-only, monotonic `seq` + UTC + epoch per event:
+  case open, rows, clone verification (clone vs expected fingerprint), the TAB
+  round-trip START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the
+  before/after manifests, and every consumer START/COMPLETE with its rc and its
+  stdout / stderr / tmuxtrace sha256
+- `env-tab-selfcheck.txt` — the TAB round-trip in this case's own scrubbed
+  environment, plus the paired `LANG=LC_ALL=C` probe on the same throwaway server
+- `tmux-shim-equivalence.txt` — live cases only: the delegate-and-log shim proven
+  byte-identical to the real binary on this arm's own stable topology
+- `case.txt`, `env.txt`, `consumers.tsv` (label, rc, stdout/stderr sha256 + bytes,
+  tmuxtrace sha256 + line count, bounded flag, exact argv)
+- `out/<label>.stdout`, `out/<label>.stderr` (present only when non-empty),
+  `out/<label>.tmuxtrace` — per invocation: the effective `AE_TMUX_SERVER` and kind,
+  the effective locale, and the DELEGATED tmux argv
+- `manifest.before.tsv` / `manifest.after.tsv` / `manifest.diff.txt` — recursive:
+  type, mode, content hash, symlink target, path across the cloned AE_HOME
+- `tmux.before.txt` / `tmux.after.txt`
+- `A3/ledger.tsv` (case -> row ids), `A3/harness/` (the exact scripts and the
+  tmux shim), `SHA256SUMS.txt` (every file above)
+

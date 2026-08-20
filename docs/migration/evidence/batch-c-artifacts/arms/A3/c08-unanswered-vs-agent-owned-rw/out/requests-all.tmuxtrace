@@ -1,0 +1,4 @@
+pid=4886	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c08-unanswered-vs-agent-owned-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a3g/s.sock display-message -p \#\{pane_id\} 
+pid=4889	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c08-unanswered-vs-agent-owned-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a3g/s.sock display-message -p \#\{pane_id\} 
+pid=4892	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c08-unanswered-vs-agent-owned-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a3g/s.sock display-message -p \#\{pane_id\} 
+pid=4893	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c08-unanswered-vs-agent-owned-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a3g/s.sock display-message -p -t '' \#S 

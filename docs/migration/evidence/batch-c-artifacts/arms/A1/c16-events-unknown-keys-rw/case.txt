@@ -1,13 +1,13 @@
-arm=A1 case=c16-events-unknown-keys template=G7/events-unknown-keys clone_mode=rw session=tg1
+arm=A1 case=c16-events-unknown-keys rows=SC-509b,SC-510a template=G7/events-unknown-keys clone_mode=rw session=tg1
 template_fingerprint_pre_protection=b6bf1820d37210e25d00a91fbc70d8b8117a6430cbde58ce5bac9f12851a318d
 template_fingerprint_protected=27f3dcb2d61df9482caab93330f5d4373842007e7d223ad1a8a114627f2c4495
 clone_fingerprint=b6bf1820d37210e25d00a91fbc70d8b8117a6430cbde58ce5bac9f12851a318d
 clone_fingerprint_matches_template=yes
 tmux_socket=/tmp/aecx/arms/A1/c16-events-unknown-keys-rw/none.sock (no server started for this case)
 frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-utc_start=2026-08-20T16:22:13Z
+utc_start=2026-08-20T16:41:17Z
 manifest_diff_lines=0
 manifest_before_sha256=b6bf1820d37210e25d00a91fbc70d8b8117a6430cbde58ce5bac9f12851a318d
 manifest_after_sha256=b6bf1820d37210e25d00a91fbc70d8b8117a6430cbde58ce5bac9f12851a318d
 tmux_snapshot_identical=yes
-utc_end=2026-08-20T16:22:19Z
+utc_end=2026-08-20T16:41:24Z

@@ -1,0 +1,8 @@
+pid=46930	AE_TMUX_SERVER=/tmp/aecx/tpl/a1405k/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1405k/s.sock display-message -p \#\{pane_id\} 
+pid=46932	AE_TMUX_SERVER=/tmp/aecx/tpl/a1405k/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1405k/s.sock display-message -p -t %0 \#\{@ae_agent\} 
+pid=46936	AE_TMUX_SERVER=/tmp/aecx/tpl/a1405k/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1405k/s.sock display-message -p \#\{pane_id\} 
+pid=46939	AE_TMUX_SERVER=/tmp/aecx/tpl/a1405k/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1405k/s.sock display-message -p -t %0 \#S 
+pid=46944	AE_TMUX_SERVER=/tmp/aecx/tpl/a1405k/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1405k/s.sock display-message -p \#\{pane_id\} 
+pid=46947	AE_TMUX_SERVER=/tmp/aecx/tpl/a1405k/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1405k/s.sock display-message -p -t %0 \#\{@ae_slot\} 
+pid=46952	AE_TMUX_SERVER=/tmp/aecx/tpl/a1405k/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1405k/s.sock display-message -p \#\{pane_id\} 
+pid=46962	AE_TMUX_SERVER=/tmp/aecx/tpl/a1405k/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a1405k/s.sock display-message -p -t %0 \#S 

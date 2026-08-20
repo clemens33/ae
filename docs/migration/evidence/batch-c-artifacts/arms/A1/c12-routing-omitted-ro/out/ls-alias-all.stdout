@@ -1,5 +1,5 @@
 SESSION                   STATUS    MODE        ORIGIN
 ta1r                      stopped   local       /tmp/aecx/tpl/a1511a/work
-  goal (6m ago): omitted-routing cohort goal · git:master · ae 0.2.1 · active 1s ago
+  goal (25m ago): omitted-routing cohort goal · git:master · ae 0.2.1 · active 25m ago
   fake:lead               -
   fake:worker             -

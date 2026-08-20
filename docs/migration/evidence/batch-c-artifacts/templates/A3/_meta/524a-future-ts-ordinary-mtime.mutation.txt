@@ -1,0 +1,13 @@
+## mutation: last event ts -> a FUTURE value; the file's mtime is left ordinary
+file: /tmp/aecx/templates/A3/524a-future-ts-ordinary-mtime/sessions/tg1/events.jsonl
+op: repl '10' '"ts":"2026-08-20T16:12:57Z"' '"ts":"2099-01-01T00:00:00Z"'
+detail: line 10: replace b'"ts":"2026-08-20T16:12:57Z"' -> b'"ts":"2099-01-01T00:00:00Z"' (first occurrence)
+before: sha256=ddb70b8ef48c68987338c34c742844d076eedfc9623e1e79820c7ec6eaed8539 bytes=1754
+after:  sha256=64eef23e65658321f8db71040f679de580422755c571e63d6fc7fe5503ae5ad8 bytes=1754
+byte-diff:
+  common_prefix_bytes=1653 common_suffix_bytes=84
+  removed=b'26-08-20T16:12:57'
+  inserted=b'99-01-01T00:00:00'
+
+## manipulation: events.jsonl mtime pinned ORDINARY
+mtime=202601011200.00 epoch=1767268800

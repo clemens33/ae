@@ -1,0 +1,4 @@
+pid=31299	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c19-partial-tail-ro/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
+pid=31303	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c19-partial-tail-ro/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
+pid=31308	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c19-partial-tail-ro/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p \#\{pane_id\} 
+pid=31310	AE_TMUX_SERVER=/tmp/aecx/arms/A1/c19-partial-tail-ro/none.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/g1/s.sock display-message -p -t '' \#S 

@@ -1,13 +1,13 @@
-arm=A1 case=c11-routing-known template=G5/m1-control clone_mode=rw session=tg5
+arm=A1 case=c11-routing-known rows=SC-511a,SC-511b template=G5/m1-control clone_mode=rw session=tg5
 template_fingerprint_pre_protection=28dc10300e4bb7b260b1e9273cf6bddf2189910ff4e783f4d8eb346436b4cc04
 template_fingerprint_protected=fad76e71451d28616d5fee1fa330a6ab23bf5a5545b0ea12a3a748f04ad72205
 clone_fingerprint=28dc10300e4bb7b260b1e9273cf6bddf2189910ff4e783f4d8eb346436b4cc04
 clone_fingerprint_matches_template=yes
 tmux_socket=/tmp/aecx/arms/A1/c11-routing-known-rw/none.sock (no server started for this case)
 frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-utc_start=2026-08-20T16:21:01Z
+utc_start=2026-08-20T16:39:58Z
 manifest_diff_lines=0
 manifest_before_sha256=28dc10300e4bb7b260b1e9273cf6bddf2189910ff4e783f4d8eb346436b4cc04
 manifest_after_sha256=28dc10300e4bb7b260b1e9273cf6bddf2189910ff4e783f4d8eb346436b4cc04
 tmux_snapshot_identical=yes
-utc_end=2026-08-20T16:21:08Z
+utc_end=2026-08-20T16:40:05Z

@@ -1,0 +1,5 @@
+SESSION                   STATUS    MODE        ORIGIN
+tg2wu                     running   local       /tmp/aecx/tpl/g2wu/work
+  git:master · ae 0.2.1 · active 36m ago · attn:waiting-user
+  fake:lead               -         working       
+  fake:worker             -         waiting-user  

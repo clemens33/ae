@@ -1,0 +1,3 @@
+pid=78574	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c03-throttled-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c03-throttled-rw/live.sock list-sessions -F \#\{session_name\} 
+pid=78591	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c03-throttled-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c03-throttled-rw/live.sock show-environment -t twda3 AE_SESSION 
+pid=78622	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c03-throttled-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c03-throttled-rw/live.sock list-panes -s -t twda3 -F $'#{@ae_agent}\t#{pane_current_command}' 

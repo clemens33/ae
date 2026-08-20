@@ -1,0 +1,5 @@
+pid=90470	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c06-unanswered-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c06-unanswered-ro/live.sock list-sessions -F \#\{session_name\} 
+pid=90472	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c06-unanswered-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c06-unanswered-ro/live.sock show-environment -t tg2un AE_SESSION 
+pid=90475	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c06-unanswered-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c06-unanswered-ro/live.sock show-environment -t tg2un 
+pid=90481	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c06-unanswered-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c06-unanswered-ro/live.sock list-panes -s -t tg2un -F $'#{@ae_agent}\t#{pane_current_command}' 
+pid=90504	AE_TMUX_SERVER=/tmp/aecx/arms/A3/c06-unanswered-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A3/c06-unanswered-ro/live.sock show-options -t tg2un -qv @ae_branch_name 

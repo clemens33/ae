@@ -1,13 +1,13 @@
-arm=A1 case=c07-dupkey-known template=A1/510e-dupkey-known clone_mode=rw session=tg1
+arm=A1 case=c07-dupkey-known rows=SC-510e template=A1/510e-dupkey-known clone_mode=rw session=tg1
 template_fingerprint_pre_protection=bb8d8aeaefeae66e260f0950cca159ccb891b6c858ce7cd138a09e0e1e0135b4
 template_fingerprint_protected=588c8d7d688e6bcf90045320b63caf955423750525c9f7ffde870742c2223b10
 clone_fingerprint=bb8d8aeaefeae66e260f0950cca159ccb891b6c858ce7cd138a09e0e1e0135b4
 clone_fingerprint_matches_template=yes
 tmux_socket=/tmp/aecx/arms/A1/c07-dupkey-known-rw/none.sock (no server started for this case)
 frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-utc_start=2026-08-20T16:20:02Z
+utc_start=2026-08-20T16:38:54Z
 manifest_diff_lines=0
 manifest_before_sha256=bb8d8aeaefeae66e260f0950cca159ccb891b6c858ce7cd138a09e0e1e0135b4
 manifest_after_sha256=bb8d8aeaefeae66e260f0950cca159ccb891b6c858ce7cd138a09e0e1e0135b4
 tmux_snapshot_identical=yes
-utc_end=2026-08-20T16:20:08Z
+utc_end=2026-08-20T16:39:01Z

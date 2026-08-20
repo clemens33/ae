@@ -1,0 +1,6 @@
+## panes
+tg2b|%0|fake:lead|main|aefake
+tg2b|%2|fake:charlie|worker.1|aefake
+tg2b|%1|fake:bravo|worker.0|aefake
+## sessions
+tg2b|1

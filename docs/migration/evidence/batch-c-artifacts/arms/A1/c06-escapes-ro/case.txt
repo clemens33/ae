@@ -1,13 +1,13 @@
-arm=A1 case=c06-escapes template=G11/escapes clone_mode=ro session=tg11
+arm=A1 case=c06-escapes rows=SC-510d template=G11/escapes clone_mode=ro session=tg11
 template_fingerprint_pre_protection=9d5b086599c350ac99003dbe4baa0b326af0874c421a54e28c58ab8f042f77b0
 template_fingerprint_protected=b72f31d61edfe9bcec5aad8dfe1e53c69122edc2cd63c74332366d9d75ca534d
 clone_fingerprint=b72f31d61edfe9bcec5aad8dfe1e53c69122edc2cd63c74332366d9d75ca534d
 clone_fingerprint_matches_template=yes
 tmux_socket=/tmp/aecx/arms/A1/c06-escapes-ro/none.sock (no server started for this case)
 frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-utc_start=2026-08-20T16:19:40Z
+utc_start=2026-08-20T16:38:30Z
 manifest_diff_lines=0
 manifest_before_sha256=b72f31d61edfe9bcec5aad8dfe1e53c69122edc2cd63c74332366d9d75ca534d
 manifest_after_sha256=b72f31d61edfe9bcec5aad8dfe1e53c69122edc2cd63c74332366d9d75ca534d
 tmux_snapshot_identical=yes
-utc_end=2026-08-20T16:19:46Z
+utc_end=2026-08-20T16:38:37Z

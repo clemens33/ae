@@ -1,0 +1,10 @@
+pid=68203	AE_TMUX_SERVER=/tmp/aecx/arms/A2/c01-filters-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A2/c01-filters-ro/live.sock has-session -t tg1 
+pid=68205	AE_TMUX_SERVER=/tmp/aecx/arms/A2/c01-filters-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A2/c01-filters-ro/live.sock has-session -t tg2b 
+pid=68207	AE_TMUX_SERVER=/tmp/aecx/arms/A2/c01-filters-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A2/c01-filters-ro/live.sock has-session -t tg2bl 
+pid=68212	AE_TMUX_SERVER=/tmp/aecx/arms/A2/c01-filters-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A2/c01-filters-ro/live.sock has-session -t tg2un 
+pid=68223	AE_TMUX_SERVER=/tmp/aecx/arms/A2/c01-filters-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A2/c01-filters-ro/live.sock has-session -t tg2wu 
+pid=68235	AE_TMUX_SERVER=/tmp/aecx/arms/A2/c01-filters-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A2/c01-filters-ro/live.sock has-session -t tg6a 
+pid=68249	AE_TMUX_SERVER=/tmp/aecx/arms/A2/c01-filters-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A2/c01-filters-ro/live.sock has-session -t tg6b 
+pid=68263	AE_TMUX_SERVER=/tmp/aecx/arms/A2/c01-filters-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A2/c01-filters-ro/live.sock has-session -t twda1 
+pid=68276	AE_TMUX_SERVER=/tmp/aecx/arms/A2/c01-filters-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A2/c01-filters-ro/live.sock has-session -t twda2 
+pid=68288	AE_TMUX_SERVER=/tmp/aecx/arms/A2/c01-filters-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A2/c01-filters-ro/live.sock has-session -t twda3 

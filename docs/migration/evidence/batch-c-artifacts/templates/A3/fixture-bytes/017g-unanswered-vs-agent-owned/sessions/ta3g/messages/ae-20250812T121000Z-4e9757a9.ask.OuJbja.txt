@@ -1,0 +1,6 @@
+⟦ae:msg from fake:lead⟧
+REQUEST ae-20250812T121000Z-4e9757a9 from fake:lead: A3 017g unanswered question (never replied)
+
+REQUIRED: When you have finished, you MUST run this exact command to reply:
+/tmp/aecx/tpl/a3g/home/.ae/sessions/ta3g/reply --as "fake:charlie" "ae-20250812T121000Z-4e9757a9" "<your reply>"
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

@@ -1,0 +1,12 @@
+arm=A3 case=c06-unanswered rows=SC-017g,SC-017h template=G2/unanswered clone_mode=rw session=tg2un
+template_fingerprint_pre_protection=e3b001a06f56b2635329ae424bbd55ce13e796a091ff11df9099ba5be8388981
+template_fingerprint_protected=82949f5e4b21565eef74b5e446c9d10723eabe3148c14b19fa15e9b739e262ab
+clone_fingerprint=e3b001a06f56b2635329ae424bbd55ce13e796a091ff11df9099ba5be8388981
+clone_fingerprint_matches_template=yes
+live_topology=one pane per roster entry, the fixture's controllable fake binary, never a live model
+tmux_socket=/tmp/aecx/arms/A3/c06-unanswered-rw/live.sock
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+utc_start=2026-08-20T16:50:00Z
+manifest_diff_lines=0
+tmux_snapshot_identical=yes
+utc_end=2026-08-20T16:50:03Z

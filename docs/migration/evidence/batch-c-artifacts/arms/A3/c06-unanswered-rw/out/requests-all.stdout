@@ -1,0 +1,2 @@
+STATUS   TYPE     ID                           FROM                 TO                   SUMMARY
+pending  ask      ae-20250812T120000Z-4b548852 fake:lead            fake:worker          G2 unanswered question (never replied)
