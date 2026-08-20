@@ -9,7 +9,7 @@ comprehension reads it — the filter then reads an empty file and writes nothin
 Read fully, then write. Never filter a file through a handle that has already truncated it.
 """
 import os, re, sys
-MODES = ("controlled-path","ro","rw","live","twin","barrier","attach","follow")
+MODES = ("controlled-path","fixed-clock","ro","rw","live","twin","barrier","attach","follow")
 d = sys.argv[1]
 rows, seen = [], set()
 for c in sorted(os.listdir(d)):

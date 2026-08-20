@@ -1,0 +1,5 @@
+pid=59782	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-threshold/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A6/a6-threshold/live.sock list-sessions -F \#\{session_name\} 
+pid=59784	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-threshold/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A6/a6-threshold/live.sock show-environment -t tg2un AE_SESSION 
+pid=59787	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-threshold/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A6/a6-threshold/live.sock show-environment -t tg2un 
+pid=59793	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-threshold/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A6/a6-threshold/live.sock list-panes -s -t tg2un -F $'#{@ae_agent}\t#{pane_current_command}' 
+pid=59820	AE_TMUX_SERVER=/tmp/aecx/arms/A6/a6-threshold/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A6/a6-threshold/live.sock show-options -t tg2un -qv @ae_branch_name 

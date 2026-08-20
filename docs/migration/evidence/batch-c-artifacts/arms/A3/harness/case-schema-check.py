@@ -97,7 +97,7 @@ for arm in sorted(os.listdir(arms)) if os.path.isdir(arms) else []:
                 if not ok:
                     bad.append((f"{arm}/{c}", f, f"required by kind '{k}' but absent or empty"))
         checked += 1
-        base = re.sub(r"-(controlled-path|ro|rw|live|twin|barrier|attach|follow)$", "", c)
+        base = re.sub(r"-(controlled-path|fixed-clock|ro|rw|live|twin|barrier|attach|follow)$", "", c)
         seen.add(base)
     # CASE INDEX membership, directory-exact and content-bound.
     idx = os.path.join(adir, "CASES.tsv")

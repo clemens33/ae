@@ -1,0 +1,23 @@
+## discrimination record — re-derived from the captured list --json bytes
+derivation=pure post-processing; every source file's sha256 is recorded below
+
+An equality-versus-strictly-past question can only be decided on this fixture if
+the sensor responds to the age AT ALL. Two controls far either side of the
+threshold, on the SAME fixture, differing only in the frozen clock:
+  age=10s      needs_attention=False attention=None rank=0   src_sha256=d790d5d85789615ec42e4cc55ec4313ea69eaef9fe87c62c915f6809b429755d
+  age=100000s  needs_attention=True attention=unanswered rank=1   src_sha256=3d917795a5f60d6fe741aaf78882b47fff590e36954ea136160ba0667eb89b52
+responsive=yes
+If responsive=no the boundary triple below cannot discriminate anything and this
+arm is INCONCLUSIVE for SC-522/523 rather than evidence of either answer.
+
+## boundary triple — one fixture, ask ts fixed at epoch 1755000000, three frozen nows
+  age=1799   needs_attention=False attention=None rank=0   src_sha256=d8e58daa0ff7105d996b71482ef1dded00c8709c126166dfe757d1b767f1b99f
+  age=1800   needs_attention=True attention=unanswered rank=1   src_sha256=de0e13f505ebf86075394622d052ce565b070971729f53c6c29ee5daf473d143
+  age=1801   needs_attention=True attention=unanswered rank=1   src_sha256=b9be42e55813987a9d1c696f29ab0942a54a243619f971c049f2d8a264858ae1
+
+## threshold taken from the environment — all read at age=1000s
+  AE_ATTN_REQUEST_SECS=unset  needs_attention=False attention=None rank=0   src_sha256=5784c45f6179cc259be25c0d83fe1414ce04c0b7a876906bf68674c79e01d631
+  AE_ATTN_REQUEST_SECS=500    needs_attention=True attention=unanswered rank=1   src_sha256=a22224fbe6299b8364e4abc2a99d583e14892c2a061ba807f61d32e5a22707a9
+  AE_ATTN_REQUEST_SECS=900x   needs_attention=False attention=None rank=0   src_sha256=5784c45f6179cc259be25c0d83fe1414ce04c0b7a876906bf68674c79e01d631
+
+No reading is interpreted here; the values are the record.

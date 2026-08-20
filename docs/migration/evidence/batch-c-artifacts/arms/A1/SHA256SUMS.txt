@@ -1384,8 +1384,8 @@ d9a44bcf67769a66eb83590c4ff9ddfb2935e9745cf1e2daf5ee75f1dad1c529  ./harness/arm-
 f24124182ddfd7b331e72d6eaf7faece97a200f793d5b630cb9f1916396e1b5f  ./harness/arm-d04a.sh
 0875a3e56be87276b034ebf0ba2402ce0e3ceb91ad059befa058e3d32a047af3  ./harness/arm-d04b.sh
 12f1e4be6b6e8684804905bd0c43327f87a80ff2ca539ff639e5040d25bdea2a  ./harness/arm-table.sh
-7d8d1bc5c90c4d682d747527f5934866746ced537da55a9e59ac51af661b6a4a  ./harness/armlib.sh
-ff33bed3b7fb53919cb6baa31e82479ef7e0d05c10b773971c48dcdc0b308fd0  ./harness/case-schema-check.py
+f0b8c37fb9528b6a629a8a505f2af1ce8861108447e1199b067223c3ff69b487  ./harness/armlib.sh
+88da53a15aea6ea84290661d825c0c721a661404c0f44471a03c6ec47fc1d161  ./harness/case-schema-check.py
 8757fc12520e9b67aea51b52ec6bffb2c86151523c69aa9de470cd60d36bbe1c  ./harness/case-schema.tsv
 f3f5a9f4a49025a3ced2b6db589af6ea95b4e818cc5ace629ef43c4fe994f6d3  ./harness/committed-bytes-check.py
 0966b9a210cf5b9915ae4c5b58795893f6d77789a4c3b842c1e47fcaa903b60c  ./harness/committed-bytes-redproof.sh
@@ -1393,13 +1393,13 @@ f3f5a9f4a49025a3ced2b6db589af6ea95b4e818cc5ace629ef43c4fe994f6d3  ./harness/comm
 88ce41b0229cb34910e7eb0cbb7bafd8df724db5131ccf548e988dc216f1a4d5  ./harness/finalize-arm.sh
 cc13069ea0bd035ea232df98bcb7e6751c12faf2e989b1eb203337c0d0c6a88d  ./harness/flock-spy
 0e744e1ae32b3f6b49885c9f48c37b60577fd60d4929c0ec326daecc0340eab9  ./harness/gate-redproof.sh
-7eab2e1b3924e2907eb91f40b5b934e5b01faa6ef192774e78daaa02095daeba  ./harness/gen_arm_manifest.py
+4a42db0f48b324f95e0278dc4de99237764aa8f80ac5592f10e781f0be38a8d4  ./harness/gen_arm_manifest.py
 2d6a83b0e90d81f7233a83588be328fb585b012e80c0c667dd4af8be7ca04414  ./harness/make-hook-patch.py
 85cc44364b49f1b3a7143acb7251abd5af5933e0fdfec01b76f84a128009d109  ./harness/manifest-tree-gate.sh
 560a7b1c03f47e767b9f1371dbbcf5ddc1a372a32461cf53056543ce2295fe04  ./harness/path-cite-resolver.py
 7e42638ef7a910671b80acce60b0a2852efb9719b88582354ad5512303b2a96a  ./harness/pty-attach.py
 39ddf804abce4d7a3aa8ff5ea9c61c9bd6ea8a6e456934fd3686d7b64ac39a7e  ./harness/rebuild-attention-fields.py
-efdc91246b785be87cc9c379d92c99d7303a50311bc1a09ba05b7f91a8f29193  ./harness/rebuild-ledger.py
+b61a49a01c5aafd7c1ba41e651428349146bb5716b17c7d2709059a34752d4b4  ./harness/rebuild-ledger.py
 a997adf811331efc7e2eadb77b226b7ed93a1f193a84cce9475100910d41ff65  ./harness/tlib.sh
 05cadb933aa636b7a6f3856aae55be50079c5cc06f1988b18bfa2b3dd754bd02  ./harness/tmux-shim
 f4f4e248e58798cdc4af6bd6d9acb5740d78c7f25dc07d8d874774045d649631  ./harness/write-sums.sh

@@ -45,6 +45,10 @@ consumer_env() { # <ae-home> <sock-or-empty> <trace-file-or-empty>
     # ARM_FAKE_NOW freezes the consumer's clock through the PATH-first date shim, for arms
     # whose row is about a TIME WINDOW and would otherwise be vacuous at whatever the wall
     # clock happens to be. The shim delegates every non-now-form.
+    # ARM_EXTRA_ENV adds ONE variable to the scrubbed set, for arms whose row IS an
+    # environment variable. It is added to the recorded env.txt like everything else, so the
+    # capture says exactly what the consumer carried.
+    [[ -n "${ARM_EXTRA_ENV:-}" ]] && CONSUMER_ENV+=("$ARM_EXTRA_ENV")
     if [[ -n "${ARM_FAKE_NOW:-}" ]]; then
         CONSUMER_ENV=("${CONSUMER_ENV[@]/#PATH=/PATH=/tmp/aecx/shim:}")
         CONSUMER_ENV+=("AE_FAKE_NOW=$ARM_FAKE_NOW" "AE_REAL_DATE=/bin/date")

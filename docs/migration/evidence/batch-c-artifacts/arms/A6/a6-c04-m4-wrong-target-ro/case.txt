@@ -1,0 +1,6 @@
+arm=A6 case=a6-c04-m4-wrong-target rows=SC-518 template=G5/m4-wrong-target clone_mode=ro session=tg5
+clone_fingerprint=7910a388cbfd7619f5fdce05d44707214a8d83adf4fa1dbfc9e04b983860eaaf clone_fingerprint_matches_template=yes
+mutation_recorded_at=templates/G5/_meta/m4-wrong-target.mutation.txt
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+utc_start=2026-08-20T19:48:36Z
+manifest_diff_lines=0

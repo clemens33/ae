@@ -1,0 +1,6 @@
+## sessions
+tg5
+## panes
+tg5|%0|fake:lead
+tg5|%2|fake:third
+tg5|%1|fake:worker

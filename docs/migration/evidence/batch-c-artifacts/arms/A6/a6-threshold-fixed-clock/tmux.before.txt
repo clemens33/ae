@@ -1,0 +1,5 @@
+## sessions
+tg2un
+## panes
+tg2un|%0|fake:lead
+tg2un|%1|fake:worker

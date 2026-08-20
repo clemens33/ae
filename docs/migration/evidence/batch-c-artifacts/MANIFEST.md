@@ -167,7 +167,8 @@ note (1306a→D01/Design 2, 1306b→D04a/Design 5, 1306c→D04b/Design 6, 1306d�
 | Arm group A3b (SC-017g adjacent pairs) | COMPLETE, bash lane — 12 case runs |
 | Arm group A4 (SC-016a–d, 513a–c, 019, 020a–c) | COMPLETE, bash lane — 7 case runs, incl. SC-020b on D04b's hook |
 | Arm group A5 (SC-514) | COMPLETE, bash lane — 7 case runs under a controlled PATH |
-| Arm groups A6–A9 | not started |
+| Arm group A6 (SC-518, 522, 523a–b) | COMPLETE, bash lane — 13 case runs |
+| Arm groups A7–A9 | not started |
 | D-record executions (b0-design Designs 2–6) + SC-1306a–e | COMPLETE, bash lane — D01, D02, D03, D04a, D04b, all with controller-only twins |
 
 ---
@@ -1256,13 +1257,13 @@ the ledger, and the before/at-barrier/after tmux snapshots bracket it.
 
 | case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
 |---|---|---|---|---|---|---|---|---|---|
-| `a5-clean-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 2 | - | 1 | 7/-/9 | yes |
-| `a5-no-bash-on-path-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 2 | - | 1 | 7/-/9 | yes |
-| `a5-no-config-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 4 | - | 1 | 8/-/10 | yes |
-| `a5-no-flock-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 2 | - | 1 | 7/-/9 | yes |
-| `a5-no-git-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 2 | - | 1 | 7/-/9 | yes |
-| `a5-no-tail-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 2 | - | 1 | 7/-/9 | yes |
-| `a5-no-tmux-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 2 | - | 1 | 7/-/9 | yes |
+| `a5-clean-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | yes | 2 | - | 1 | 7/-/9 | yes |
+| `a5-no-bash-on-path-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | yes | 2 | - | 1 | 7/-/9 | yes |
+| `a5-no-config-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | yes | 4 | - | 1 | 8/-/10 | yes |
+| `a5-no-flock-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | yes | 2 | - | 1 | 7/-/9 | yes |
+| `a5-no-git-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | yes | 2 | - | 1 | 7/-/9 | yes |
+| `a5-no-tail-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | yes | 2 | - | 1 | 7/-/9 | yes |
+| `a5-no-tmux-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | yes | 2 | - | 1 | 7/-/9 | yes |
 
 Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A5/<case>/`:
 
@@ -1284,6 +1285,93 @@ Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A5/<case>/`:
   type, mode, content hash, symlink target, path across the cloned AE_HOME
 - `tmux.before.txt` / `tmux.after.txt`
 - `A5/ledger.tsv` (case -> row ids), `A5/harness/` (the exact scripts and the
+  tmux shim), `SHA256SUMS.txt` (every file above)
+
+
+## Arm group A6 — requests / pairing and the unanswered threshold (bash lane)
+
+### A6 — what the arm does
+
+Rows: SC-518, SC-522, SC-523a, SC-523b.
+
+**SC-518** runs the request consumer on each of the six G5 request-pair members — the
+harvested control and its five named mutations — on both a protected and a writable clone,
+each on its own live topology. Every case copies the member's own
+`_meta/<member>.mutation.txt` in beside the captures as `member.mutation.txt`, so the byte
+diff that produced the fixture sits next to the consumer's answer to it. Consumers:
+`requests all`, `requests mine`, `requests inbox`, and `ae list --json`.
+
+**SC-522 / SC-523a-b** read ONE fixture — `G2/unanswered`, whose ask timestamp is a known
+epoch (1755000000) and which was never replied to — at several frozen clocks. Equality and
+strictly-past are separate inputs: age exactly 1800s, and 1799s / 1801s either side.
+
+The arm does not assume it can discriminate. Before the boundary triple means anything the
+sensor has to RESPOND to age at all, so two controls far either side of the threshold are
+read on the same fixture, differing only in the frozen clock, and `responsive=` is recorded
+from that comparison. If the two agreed, the record says so and the arm is INCONCLUSIVE for
+these rows rather than evidence of either answer. A threshold fixture whose readings all
+land the same way cannot tell `>=` from `>`.
+
+The threshold is also read from the environment at a fixed age under the scrubbed set:
+unset (the documented default), an explicit smaller value, and a malformed value.
+
+`discrimination.txt` carries every reading with the sha256 of the captured
+`list --json` bytes it was derived from. It is built by `derive-discrimination.py`, a
+tested helper, after the first version used sed BRE alternation — a GNU extension that
+matches NOTHING on BSD — and reported every reading as empty, which the record then
+rendered as `responsive=no`. The fixture was always responsive; the instrument was blind.
+That correction is appended to the case ledger rather than edited into it, because the
+ledger is append-only: the superseded line stays, and the correction names it, gives the
+reason, and carries the corrected artifact's hash.
+### A6 case table
+
+`checks<first consumer` names the ledger sequence numbers of the TAB round-trip
+COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),
+and the first `consumer-START`. The ledger is append-only and written by the checks
+themselves, so the ordering is established by the original durable content — not by
+file mtimes and not by a hash list added afterwards. For a barrier case the first
+consumer activity is `barrier-ARMED` (the hooked run has no `consumer-START` line).
+
+A case whose design includes a CONTROLLER MUTATION necessarily shows a tmux delta;
+what the controller did, when, and from where is in `controller-mutation.txt` and in
+the ledger, and the before/at-barrier/after tmux snapshots bracket it.
+
+| case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
+|---|---|---|---|---|---|---|---|---|---|
+| `a6-c01-m1-control-ro` | ro | SC-518 | `G5/m1-control` | yes | 0 | - | 4 | 7/9/11 | yes |
+| `a6-c01-m1-control-rw` | rw | SC-518 | `G5/m1-control` | yes | 0 | - | 4 | 7/9/11 | yes |
+| `a6-c02-m2-wrong-ref-ro` | ro | SC-518 | `G5/m2-wrong-ref` | yes | 0 | - | 4 | 7/9/11 | yes |
+| `a6-c02-m2-wrong-ref-rw` | rw | SC-518 | `G5/m2-wrong-ref` | yes | 0 | - | 4 | 7/9/11 | yes |
+| `a6-c03-m3-wrong-actor-ro` | ro | SC-518 | `G5/m3-wrong-actor` | yes | 0 | - | 4 | 7/9/11 | yes |
+| `a6-c03-m3-wrong-actor-rw` | rw | SC-518 | `G5/m3-wrong-actor` | yes | 0 | - | 4 | 7/9/11 | yes |
+| `a6-c04-m4-wrong-target-ro` | ro | SC-518 | `G5/m4-wrong-target` | yes | 0 | - | 4 | 7/9/11 | yes |
+| `a6-c04-m4-wrong-target-rw` | rw | SC-518 | `G5/m4-wrong-target` | yes | 0 | - | 4 | 7/9/11 | yes |
+| `a6-c05-m5-routed-vs-routed-mismatch-ro` | ro | SC-518 | `G5/m5-routed-vs-routed-mismatch` | yes | 0 | - | 4 | 7/9/11 | yes |
+| `a6-c05-m5-routed-vs-routed-mismatch-rw` | rw | SC-518 | `G5/m5-routed-vs-routed-mismatch` | yes | 0 | - | 4 | 7/9/11 | yes |
+| `a6-c06-m6-mixed-routed-display-ro` | ro | SC-518 | `G5/m6-mixed-routed-display` | yes | 0 | - | 4 | 7/9/11 | yes |
+| `a6-c06-m6-mixed-routed-display-rw` | rw | SC-518 | `G5/m6-mixed-routed-display` | yes | 0 | - | 4 | 7/9/11 | yes |
+| `a6-threshold-fixed-clock` | fixed-clock | SC-522,SC-523a,SC-523b | `G2/unanswered` | yes | 0 | - | 18 | 7/9/12 | yes |
+
+Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A6/<case>/`:
+
+- `admissibility-ledger.txt` — append-only, monotonic `seq` + UTC + epoch per event:
+  case open, rows, clone verification (clone vs expected fingerprint), the TAB
+  round-trip START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the
+  before/after manifests, and every consumer START/COMPLETE with its rc and its
+  stdout / stderr / tmuxtrace sha256
+- `env-tab-selfcheck.txt` — the TAB round-trip in this case's own scrubbed
+  environment, plus the paired `LANG=LC_ALL=C` probe on the same throwaway server
+- `tmux-shim-equivalence.txt` — live cases only: the delegate-and-log shim proven
+  byte-identical to the real binary on this arm's own stable topology
+- `case.txt`, `env.txt`, `consumers.tsv` (label, rc, stdout/stderr sha256 + bytes,
+  tmuxtrace sha256 + line count, bounded flag, exact argv)
+- `out/<label>.stdout`, `out/<label>.stderr` (present only when non-empty),
+  `out/<label>.tmuxtrace` — per invocation: the effective `AE_TMUX_SERVER` and kind,
+  the effective locale, and the DELEGATED tmux argv
+- `manifest.before.tsv` / `manifest.after.tsv` / `manifest.diff.txt` — recursive:
+  type, mode, content hash, symlink target, path across the cloned AE_HOME
+- `tmux.before.txt` / `tmux.after.txt`
+- `A6/ledger.tsv` (case -> row ids), `A6/harness/` (the exact scripts and the
   tmux shim), `SHA256SUMS.txt` (every file above)
 
 ## D-record executions (bash lane)
@@ -1360,17 +1448,17 @@ the ledger, and the before/at-barrier/after tmux snapshots bracket it.
 
 | case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
 |---|---|---|---|---|---|---|---|---|---|
-| `d01-controller-only-twin-twin` | twin | D01,SC-1306a | `G1/healthy` | - | 8 | - | 2 | 7/9/- | NO |
-| `d01-list-vs-goal-writer-barrier` | barrier | D01,SC-1306a | `G1/healthy` | - | 8 | - | 3 | 7/9/16 | yes |
-| `d02-controller-only-twin-twin` | twin | D02,SC-1306d | `D/d02-pending-with-harvested-reply` | - | 4 | - | 2 | 7/9/- | NO |
-| `d02-requests-vs-reply-writer-barrier` | barrier | D02,SC-1306d | `D/d02-pending-with-harvested-reply` | - | 4 | - | 3 | 7/9/19 | yes |
-| `d03-a1-initial-window-follow` | follow | D03,SC-1306e | `D/d03-31-numbered-events` | - | 0 | - | 0 | 6/-/- | NO |
-| `d03-a2-complete-append-follow` | follow | D03,SC-1306e | `D/d03-31-numbered-events` | - | 4 | - | 0 | 6/-/- | NO |
-| `d03-a2-twin-twin` | twin | D03,SC-1306e | `D/d03-31-numbered-events` | - | 4 | - | 0 | 6/-/- | NO |
-| `d03-a3-line-framing-follow` | follow | D03,SC-1306e | `D/d03-31-numbered-events` | - | 4 | - | 0 | 6/-/- | NO |
-| `d03-a3-twin-twin` | twin | D03,SC-1306e | `D/d03-31-numbered-events` | - | 4 | - | 0 | 6/-/- | NO |
-| `d03-a4-rotation-follow` | follow | D03,SC-1306e | `D/d03-31-numbered-events` | - | 6 | - | 0 | 6/-/- | NO |
-| `d03-a4-twin-twin` | twin | D03,SC-1306e | `D/d03-31-numbered-events` | - | 6 | - | 0 | 6/-/- | NO |
+| `d01-controller-only-twin-twin` | twin | D01,SC-1306a | `G1/healthy` | yes | 8 | - | 2 | 7/9/- | NO |
+| `d01-list-vs-goal-writer-barrier` | barrier | D01,SC-1306a | `G1/healthy` | yes | 8 | - | 3 | 7/9/16 | yes |
+| `d02-controller-only-twin-twin` | twin | D02,SC-1306d | `D/d02-pending-with-harvested-reply` | yes | 4 | - | 2 | 7/9/- | NO |
+| `d02-requests-vs-reply-writer-barrier` | barrier | D02,SC-1306d | `D/d02-pending-with-harvested-reply` | yes | 4 | - | 3 | 7/9/19 | yes |
+| `d03-a1-initial-window-follow` | follow | D03,SC-1306e | `D/d03-31-numbered-events` | yes | 0 | - | 0 | 6/-/- | NO |
+| `d03-a2-complete-append-follow` | follow | D03,SC-1306e | `D/d03-31-numbered-events` | yes | 4 | - | 0 | 6/-/- | NO |
+| `d03-a2-twin-twin` | twin | D03,SC-1306e | `D/d03-31-numbered-events` | yes | 4 | - | 0 | 6/-/- | NO |
+| `d03-a3-line-framing-follow` | follow | D03,SC-1306e | `D/d03-31-numbered-events` | yes | 4 | - | 0 | 6/-/- | NO |
+| `d03-a3-twin-twin` | twin | D03,SC-1306e | `D/d03-31-numbered-events` | yes | 4 | - | 0 | 6/-/- | NO |
+| `d03-a4-rotation-follow` | follow | D03,SC-1306e | `D/d03-31-numbered-events` | yes | 6 | - | 0 | 6/-/- | NO |
+| `d03-a4-twin-twin` | twin | D03,SC-1306e | `D/d03-31-numbered-events` | yes | 6 | - | 0 | 6/-/- | NO |
 | `d04a-exact-barrier-barrier` | barrier | D04a,SC-1306b | `live/no-template (live launch + pane-set cut)` | - | 0 | - | 2 | 5/7/10 | yes |
 | `d04a-exact-twin-twin` | twin | D04a,SC-1306b | `live/no-template (live launch + pane-set cut)` | - | 0 | - | 1 | 5/7/- | NO |
 | `d04a-prefix-barrier-barrier` | barrier | D04a,SC-1306b | `live/no-template (live launch + pane-set cut)` | - | 0 | - | 2 | 6/8/11 | yes |

@@ -4,10 +4,21 @@ import csv, os, sys
 ARM=sys.argv[1]
 DEST=f"/Users/ckriech/projects/clemens33/ae-rust/docs/migration/evidence/batch-c-artifacts/arms/{ARM}"
 def kv(p):
+    """Parse key=value facts from a case file.
+
+    The first pass takes the whole remainder of the line as the value, which is right for
+    values containing spaces. The second pass then picks up ADDITIONAL key=value tokens
+    that share a line with an earlier key — several arms write two facts on one line, and a
+    first-pass-only reader silently reported those keys as absent rather than wrong.
+    setdefault means the first pass always wins where both see the same key."""
+    import re as _re
     d={}
     for line in open(p, encoding="utf-8", errors="replace"):
+        line=line.rstrip("\n")
         if "=" in line:
-            k,v=line.rstrip("\n").split("=",1); d.setdefault(k,v)
+            k,v=line.split("=",1); d.setdefault(k,v)
+        for m in _re.finditer(r"(\b[A-Za-z_][A-Za-z0-9_.]*)=(\S+)", line):
+            d.setdefault(m.group(1), m.group(2))
     return d
 led={}
 with open(os.path.join(DEST,"ledger.tsv")) as fh:
@@ -20,7 +31,7 @@ for c in sorted(os.listdir(DEST)):
     # mode suffixes are a KNOWN set, not "whatever follows the last dash" — a mode like
     # controlled-path contains one, and splitting on the last dash silently renamed the
     # case and broke every ledger lookup for the arm.
-    MODES=("controlled-path","ro","rw","live","twin","barrier","attach","follow")
+    MODES=("controlled-path","fixed-clock","ro","rw","live","twin","barrier","attach","follow")
     base,mode=c,"?"
     for m in MODES:
         if c.endswith("-"+m): base,mode=c[:-(len(m)+1)],m; break

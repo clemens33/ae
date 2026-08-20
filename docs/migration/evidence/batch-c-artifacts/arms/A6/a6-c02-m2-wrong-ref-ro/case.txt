@@ -1,0 +1,6 @@
+arm=A6 case=a6-c02-m2-wrong-ref rows=SC-518 template=G5/m2-wrong-ref clone_mode=ro session=tg5
+clone_fingerprint=779e7deb29e2138092219022404412d7dab0582d8f826ed41d93697fc2efa394 clone_fingerprint_matches_template=yes
+mutation_recorded_at=templates/G5/_meta/m2-wrong-ref.mutation.txt
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+utc_start=2026-08-20T19:48:19Z
+manifest_diff_lines=0
