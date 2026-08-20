@@ -10,6 +10,8 @@
 
 Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Grok Build](https://github.com/xai-org/grok-build), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool.
 
+> 🦀 **Rewrite in progress** — on branch `rust-rewrite` ([epic #79](https://github.com/clemens33/ae/issues/79)), bash `ae` is **frozen at `72c7293`** and shrinks to tmux/pane glue, while the state core, lifecycle and daemons move into a single Rust binary. The install stays one file. Everything in this README describes shipped bash behavior and holds until each domain flips. Direction, reasons and phases: **[VISION.md](VISION.md)**.
+
 > 📖 **[Full documentation](docs/index.md)** — guides, command and helper reference, and internals. This README is the quick tour.
 
 ## Why ae
@@ -180,6 +182,8 @@ Everything else is an **optional companion** under `contrib/`, never required fo
 
 That last one is deliberate honesty rather than scope creep: the long-running daemon half (watchdog, bridge) is where bash hurts most, so it is being carved out under strict behavioral-parity testing -- per the revisit triggers in [AGENTS.md](AGENTS.md). The tmux-glue half, where bash is best-in-class, stays bash. Companions start automatically once you opt in; `AE_NO_AUTOSTART=1` skips.
 
+That carve-out is now the whole plan: this bash script is **frozen at `72c7293`** and the typed core takes over domain by domain on `rust-rewrite`. What carries over unchanged is the part you depend on — one file to install, no runtime, no repo pollution, `~/.ae/` as the only state. What goes away is bash as the implementation. See **[VISION.md](VISION.md)**.
+
 ## Requirements
 
 - **bash >= 4.0** (macOS ships 3.2 — `brew install bash` and put brew's bin dir ahead of `/bin` on `PATH`)
@@ -213,7 +217,16 @@ just test             # unit + integration tests
 just release          # check → test → CalVer bump → changelog → tag → gh release
 ```
 
-Conventions, test layout, and the release pipeline: **[docs/development.md](docs/development.md)**.
+The Rust lanes live beside them on `rust-rewrite`, prefixed `rust-` and touching nothing the bash recipes own. Prerequisites are honest: [rustup](https://rustup.rs) and just, nothing else.
+
+```bash
+just rust-setup       # pinned toolchain + dev tools (idempotent; installs nothing on a second run)
+just rust-check       # fmt check + clippy (-D warnings) + nextest + doctests
+just rust-deny        # supply chain: advisories, licenses, bans, sources
+just rust-mutants     # do the tests discriminate, or do they merely pass?
+```
+
+Conventions, test layout, and the release pipeline: **[docs/development.md](docs/development.md)**. The Rust toolchain contract — exact pins, lint policy, the no-`unwrap` rule — is in **[AGENTS.md](AGENTS.md#rust-era-rust-rewrite-branch)**.
 
 ## License
 

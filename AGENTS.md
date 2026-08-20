@@ -2,6 +2,13 @@
 
 Single bash script. No dependencies beyond bash and tmux. Keep it that way.
 
+> **Branch `rust-rewrite` (epic #79).** Bash `ae` is **frozen at `72c7293`** and shrinks to
+> tmux/pane glue; the state core, lifecycle and daemons become one Rust binary. This file is
+> **additive** for the duration: every bash section below still governs the frozen glue and
+> stays authoritative until its domain flips. The single-file / pure-bash rules retire at
+> **P5**, not now. Rust-era rules: [Rust era](#rust-era-rust-rewrite-branch). Direction and
+> phases: [VISION.md](VISION.md).
+
 ## Philosophy
 
 - ae is a thin wrapper around tmux — not a framework, not a platform.
@@ -11,9 +18,16 @@ Single bash script. No dependencies beyond bash and tmux. Keep it that way.
 - No build steps, no package managers, no abstractions.
 - Simplicity is the feature. The entire tool must remain understandable in one sitting.
 
+*Scope on `rust-rewrite`:* the first, second, third and sixth bullets are durable — they
+describe what ae **is**, and the Rust core inherits them unchanged (a thin wrapper, daily
+productivity, resist features, understandable in one sitting). "One file does everything"
+and "no build steps" describe the bash **implementation**: they govern the frozen glue and
+retire with it at P5. A crate with modules is not a violation of the doctrine; it is the
+doctrine applied to a language where one file is not how you stay readable.
+
 ## Rules
 
-- `ae` must remain a single bash script. No compiled languages, no runtimes. *(A decision, not dogma — see "Revisit triggers" below.)*
+- `ae` must remain a single bash script. No compiled languages, no runtimes. *(A decision, not dogma — see "Revisit triggers" below.)* **Scope on `rust-rewrite`: this now governs the frozen bash glue — the tracked `ae` script and its generated helpers — until the P5 entry flip. The Rust binary is the ratified consequence of triggers 1–3 firing, not a violation of this rule.**
 - Config is INI-style with a simple regex parser. Don't add TOML/YAML/JSON parsing.
 - Core ae requires only `bash >= 4.0`, `tmux`, and `git`. Optional features may declare their own hard dependencies (e.g. `ae telegram` needs `jq` + `curl`), but those deps must never be required for the rest of ae to work — `ae list`, `ae <name>`, etc. continue to function on a machine without them.
 - Session state lives in `~/.ae/sessions/`; archived session memory lives in
@@ -30,6 +44,12 @@ The single-file / pure-bash / tmux-runtime contract is a *decision with reasons*
 2. **State outgrows bash.** Core ae needs real data structures (nested, typed, or concurrent state), or a sidecar needs to *write* ae's state rather than read it → extract that component (the aemonitor precedent: Python sidecar in `contrib/`, optional dep).
 3. **The product changes shape.** The long-lived daemon side (watchdog, steward, telegram) outgrows the tmux-wrapper side → that half becomes a proper sidecar/daemon (uv/PEP 723 single-file Python or a small Go/Rust binary), integrated via the install script and `ae doctor` checks, with bash kept for the tmux glue where it is best-in-class. (Direction already agreed for watchdog + telegram.)
 4. **Someone besides the author uses it.** Contributor onboarding and packaging change the whole calculus — revisit everything above.
+
+**Fired (2026-08-20).** Triggers 1, 2 and 3 all fired: the `set -e`/framing bug class kept
+shipping *after* the hazards checklist existed, the events ledger and request/claim state
+outgrew what bash can hold safely, and the daemon half outgrew the wrapper half. The ruling
+is epic #79 — a Rust core, bash kept for the tmux glue where it is best-in-class. Trigger 4
+has not fired; nothing here is packaged for contributors yet.
 
 tmux as the runtime is no longer unchallenged: **herdr** (herdrdev/herdr, Rust, Apache-2.0, ~24k stars) is a credible agent multiplexer with its own renderer, agent-state sidebar, and a Unix socket API agents can drive programmatically — the first serious non-tmux substrate. It competes with ae's *plumbing*, not its coordination protocol or doctrine; a watchlist item, not a migration plan — migrate only when one of the triggers above fires, and if trigger 3 does, herdr's socket API is a candidate substrate to port the helpers onto. Watch alongside zellij's programmatic CLI (still no send-keys-stable API). Assessed 2026-08-03, cross-model research (secondary sources + repo metadata); read its source before any commitment.
 
@@ -52,7 +72,17 @@ tests/integration   — integration tests (requires tmux, git)
 install             — symlink or curl|bash installer
 docs/               — user + internals documentation (getting-started, reference, internals)
 contrib/            — optional sidecars: aewatch (Python watchdog+bridge), aesteward, aemonitor
+Cargo.toml          — Rust package: one crate, bin + lib, both named `ae` (no workspace)
+rust-toolchain.toml — compiler pin: channel, profile, components, both targets
+clippy.toml         — the tests-only relaxation of the unwrap/expect rule
+deny.toml           — supply-chain policy (advisories, licenses, bans, sources)
+taplo.toml          — TOML fmt/lint scope
+.cargo/             — repo-owned cargo config (aliases) + cargo-mutants config
+src/                — Rust sources: main.rs (thin) + lib.rs (everything testable)
+tests/it/           — the single integration-test target (main.rs + `mod` submodules)
+.github/workflows/  — rust lanes, both platforms (bash lanes deliberately not wired yet)
 README.md           — user docs
+VISION.md           — what ae is, and where it is going
 AGENTS.md           — this file
 CLAUDE.md           — @AGENTS.md
 ```
@@ -164,9 +194,192 @@ ae supports multiple coding agent CLIs. They differ significantly in session han
 - **Session names are an allowlist**, enforced at **every boundary where a name is created, imported, or mutated**: `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`. The grammar and the reasoning live in one place — `_validate_session_name` in `ae`; the error message echoes it verbatim. A name is simultaneously a tmux session, a directory under `~/.ae/sessions/`, part of the `.lifecycle.<name>.lock` filename, an rsync destination on both ends of `ae transfer`, and the target of the launch rollback's `rm -rf` — so it is allowlisted rather than filtered. The boundaries: **launch entry** (`ae [name]`, before the first tmux or filesystem side effect), **`default_session_name`** (which *guarantees* the grammar for any PWD rather than being checked against it), **`ae transfer`** (both directions, before any path, SSH probe, `mkdir`, or `rsync`), and **`ae rename`** (target strict). Consumers of an *existing* session use `_session_name_usable`, which also accepts a legacy name that is already a real direct-child directory — a migration path out of pre-grammar names, never a route to traversal. `ae end`/`ae stop` resolve through session lookup rather than raw path construction (measured), so they are not name boundaries. Widen only on a real name in the wild, never on speculation.
 - `launch.<slot>.sh` is **re-runnable** for the upfront-UUID tools. `--session-id` is create-once, so a human who exits the TUI and arrow-ups the script used to hit "Session ID … is already in use". The script now drops a `launch.<slot>.started` marker on its first run and `exec`s the `--resume` variant on every later one; ae clears the marker whenever it rewrites the script, so a fresh launch always creates. The decision happens BEFORE exec deliberately: a `cmd || fallback` chain would leave bash as the pane's process and `pane_current_command` would report `bash` instead of the tool, silently disabling the send path's TUI modelling (measured — and the reason today's `claude --resume … || --continue` resume launches already read as `bash`). The post-launch-capture tools have no baked id to collide with; re-running their script starts a fresh conversation instead of erroring, which is why they are out of scope rather than fixed.
 
+## Rust era (`rust-rewrite` branch)
+
+Read before editing anything Rust. **The files are the contract** — `rust-toolchain.toml`,
+`Cargo.toml`, `clippy.toml`, `deny.toml`, `taplo.toml`, `.cargo/`, and the `rust-*` block of
+the justfile — and each carries its reasoning at the pin site. This section is the map and
+the *why*, not a second source of truth: when they disagree, the file wins and this section
+is stale.
+
+### Toolchain: pins, not channels
+
+| What | Pin | Declared in |
+|---|---|---|
+| Compiler | `1.97.1` (exact release, not `stable`) | `rust-toolchain.toml` |
+| Edition / MSRV | `2024` / `rust-version = "1.97.1"` | `Cargo.toml` |
+| Profile + components | `minimal` + rustfmt, clippy, llvm-tools | `rust-toolchain.toml` |
+| Targets | `aarch64-apple-darwin` (native), `x86_64-unknown-linux-musl` (cross) | `rust-toolchain.toml`, justfile `RUST_CROSS_TARGET`, `deny.toml [graph]` |
+| Dev tools | cargo-nextest `0.9.143`, taplo-cli `0.10.0`, cargo-deny `0.20.2`, cargo-mutants `27.1.0`, cargo-llvm-cov `0.9.0` | justfile `*_VERSION` variables — the single source |
+| `just` | `1.57.0` | justfile `JUST_VERSION` — a prerequisite `rust-setup` cannot install (you cannot run the recipe that installs the tool running the recipe). CI **reads** the pin out of the justfile rather than restating it |
+
+- **`stable` is a channel, not a pin.** CI, laptop and agent sandboxes must resolve to the
+  same compiler, or a lint that gates a commit here is a lint that does not gate it there.
+  Bump deliberately, in its own commit.
+- **llvm-tools is pinned although only the coverage lane uses it**: cargo-llvm-cov otherwise
+  `rustup component add`s it on demand (measured) — a report lane silently mutating a pinned
+  toolchain, and needing the network to do it.
+- **Dev-tool pins live in the justfile and nowhere else** — all six, `JUST_VERSION`
+  included, so a bump changes one line and re-keys the CI tool cache (whose key greps the
+  `*_VERSION` lines). `rust-setup` version-checks each as a **whole word** before installing
+  (a prefix match accepts `0.9.1430`) and installs with `cargo install --locked --version`.
+- **`--locked` on every graph-consuming lane.** Without it cargo happily *updates*
+  `Cargo.lock` to satisfy a build and then reports green — a committed lockfile no lane
+  enforces is decoration. `cargo fmt` is the one exception: it does not resolve the graph.
+  Two spellings are not interchangeable, both measured: cargo-deny takes it as a **global**
+  option (`cargo deny --locked check`; `cargo deny check --locked` exits 2), and
+  cargo-mutants does not accept it at all — it is passed through as `--cargo-arg=--locked`.
+
+### Lanes
+
+| Recipe | What it is |
+|---|---|
+| `just rust-setup` | bootstrap: toolchain + pinned tools. Idempotent — a second run installs nothing |
+| `just rust-check` | **the gate**: `rust-fmt-check` + `rust-lint` + `rust-test` |
+| `just rust-fmt` / `rust-fmt-check` | `cargo fmt` + `taplo fmt` (both languages of the build) |
+| `just rust-lint` | `cargo clippy --locked --all-targets --all-features -- -D warnings` + `taplo lint` |
+| `just rust-test` | `cargo nextest run --locked` **and** `cargo test --doc --locked` |
+| `just rust-deny` | supply chain: advisories, licenses, bans, sources (`cargo deny --locked check`) |
+| `just rust-mutants` | does the suite discriminate, or does it merely pass? (`--cargo-arg=--locked`) |
+| `just rust-cov` | coverage **report**, not a gate |
+| `just rust-build-release` | native release binary (`--locked`) + foreign-target compile smoke |
+| `just rust-watch` | optional bacon loop; bacon is deliberately not part of the bootstrap |
+
+Coverage becomes a gate the day a threshold is ratified, and not before. An unratified
+number that blocks a merge is a number nobody agreed to.
+
+### Lint policy: `[lints]` + `-D warnings`
+
+- **`unsafe_code = "forbid"`** — the hard line. There is no scoped exception worth having in
+  a session multiplexer that shells out to tmux.
+- clippy `all` and `pedantic` at `warn`, `priority = -1`.
+- **`unwrap_used` / `expect_used` are `warn`, not `deny`** — `-D warnings` in `rust-lint`
+  gives the same gate strength, and `deny` would break a scoped, documented `#[allow]`. The
+  consequence is what matters: a production `.expect()` fails `just rust-check` (proven).
+  These two close the exact escape hatch an agent reaches for when the type system gets
+  inconvenient.
+- **Tests relax it in exactly one place**: `clippy.toml`
+  (`allow-unwrap-in-tests` / `allow-expect-in-tests` / `allow-panic-in-tests`). A test that
+  maps an error to a fallback instead of panicking hides the failure it exists to report.
+  Keep the rule where it belongs — do not scatter `#[allow]` through the suite.
+
+### Tests: nextest, kept doctests, and mutants
+
+- `rust-test` runs **two** commands: `cargo nextest run --all-features` and
+  `cargo test --doc --all-features`. **nextest does not run doctests.** Doctests are KEPT —
+  they are the executable half of the public docs. Deleting that second line silently
+  retires a whole lane.
+- **One integration-test target** (`[[test]] name = "it"`, `tests/it/main.rs` + `mod`
+  submodules): one binary to link, one home for shared helpers, no per-file target explosion.
+- **cargo-mutants is the agent-specific lane.** Agents write tests that *pass*; a green suite
+  is not evidence it would ever go red. `.cargo/mutants.toml` runs nextest (one test tool,
+  one set of semantics) with a timeout multiplier against the measured baseline, so a hanging
+  mutant cannot hang the lane. Doctests are out of this lane — documentation coverage is not
+  mutation coverage. Acceptance is **non-vacuous**: at least one viable mutant exists and is
+  caught, plus a control run against a deliberately weakened test that reports a missed
+  mutant — a lane that cannot fail proves nothing.
+
+### Supply chain: cargo-deny with committed policy
+
+**The policy is the check.** cargo-deny with a default config asserts almost nothing, so
+`deny.toml` is committed and every clause is a decision:
+
+- **advisories** — `yanked = "deny"`, `unmaintained = "all"`, `ignore = []`. Every future
+  ignore entry carries a reason and a reference; an empty list is the only state that needs
+  no justification.
+- **licenses** — permissive allow-list only. ae is MIT and ships as one binary, so a copyleft
+  dependency changes the distribution contract and needs a deliberate exception, not a silent
+  pass.
+- **bans** — `wildcards = "deny"` (pins-not-channels applies to dependencies too);
+  duplicate versions `warn`, because a duplicate is a smell worth seeing, not a defect worth
+  blocking.
+- **sources** — crates.io or nothing. A git dependency has no yank, no advisory mapping and
+  no immutable version.
+- **cargo-audit is deliberately absent**: cargo-deny covers RustSec directly, so a second
+  lane is duplication with a second failure mode.
+- `just rust-deny` passes `--allow license-not-encountered` **only because the crate has zero
+  dependencies**. Remove it at the first real dependency — from then on the warning is the
+  signal that the allow-list drifted.
+
+Dependencies arrive **with the feature that needs them**, never in the skeleton: "no error
+dependency exists until a real error does" generalises. `Cargo.lock` is committed.
+**Trigger:** cargo-fuzz is required *before* any hostile persisted-state parser cuts over
+(a P2/P3 entry condition, recorded so it is not rediscovered late).
+
+### Fresh-clone reproducibility
+
+The bootstrap contract, in full — nothing else is assumed to exist:
+
+**`rustup` + `just` installed → `just rust-setup` → `just rust-check` green.**
+
+- `rust-setup` is idempotent, and the workflow is **configured to assert it**: a second run
+  that installs anything fails the build. Idempotence is an acceptance criterion, not a
+  courtesy.
+- **`.cargo/config.toml` must hold on a bare clone.** No sccache, no alternative linker, no
+  brew. `build.rustc-wrapper` becomes a hard requirement the moment it is written — a clone
+  without sccache then fails to build. Machine-local speedups belong in
+  `~/.cargo/config.toml`, which cargo merges on top.
+- CI (`.github/workflows/rust.yml`) is **configured** to run that contract on `ubuntu-24.04`
+  and `macos-15` — pinned runner images, not `-latest`, for the same reason the compiler is
+  pinned — with `fail-fast: false` so one platform's failure cannot cancel the other's
+  evidence. Actions are first-party and SHA-pinned, version in a trailing comment.
+- **No CI run has executed on this branch yet.** Every CI statement in this section
+  describes *configuration*, not an observed result. Upgrade this wording only against a
+  green run, and name the run when you do.
+- The bash-era lanes are deliberately **not** wired there yet (blocked on the gate-integrity
+  issues #58/#67); adding them now would publish a red badge for a known, separately-tracked
+  gap.
+
+### The linux target is musl
+
+- **musl, not gnu.** The epic promises a static zero-dep binary; a glibc build is dynamically
+  linked against the build host's libc and is not the artifact ae's one-file install contract
+  describes.
+- **On a laptop the cross target is a compile smoke only** — `cargo check` never links, so
+  nothing produced here can be mistaken for a runnable artifact. Target-native proof belongs
+  on that target's own machine. The CI ubuntu leg is **configured** to upgrade it — build,
+  run, and assert static: no `PT_INTERP` segment in `readelf -l` (authoritative), `file` must
+  say static and must never say "dynamically", `ldd` informational only. A missing `readelf`
+  fails loudly rather than skipping the assertion, because a skipped assertion is a vacuous
+  gate. Configured, not yet observed — see the pending-first-run note above.
+- **NSS caveat — flagged for P4 (daemons).** musl has no NSS: user, group and host lookups do
+  not consult `/etc/nsswitch.conf`, so `getpwuid`/`getaddrinfo` behave differently than under
+  glibc — LDAP/SSSD-backed users and some resolver setups resolve differently or not at all.
+  Nothing in today's surface depends on it; the daemons that land in P4 might.
+
+### Code shape
+
+- **One crate, no workspace.** Dead-code analysis stops at crate boundaries, and cross-crate
+  dead code is the agent "reinvention" failure mode. Split on measured need, not on taste.
+- **2018-edition module style**: `cli.rs` beside a future `cli/`, never a `mod.rs`.
+- **`main.rs` is thin** — argv in, exit code out, presentation of the one top-level error.
+  Everything testable lives in the library, because a binary is not a unit-testable thing.
+- **Errors**: start with one top-level presentation error; a domain error type is permitted
+  where recovery or semantics differ. A single crate-wide enum is a default, not law.
+- **Exit codes are contract.** `0` success, `2` usage error — kept distinct from `1` so a
+  caller can tell "you asked wrong" from "it went wrong". The workflow asserts them on both
+  platforms (configured; first run still pending).
+
+### Deferred, with the trigger recorded
+
+- **Version scheme.** Bash CalVer (`AE_VERSION`) and Cargo semver (`0.0.0`) are *not*
+  reconciled, and `ae --version` prints the Cargo one. Unify at the **P5 entry flip** — the
+  moment the two can no longer disagree without a user seeing it.
+- **`panic = "abort"`** in the release profile forecloses `catch_unwind`. Revisit at **P4**:
+  a long-lived watchdog or telegram loop may want to survive a panic in one iteration rather
+  than take the process down. Cheap to flip; recorded so it stays a decision.
+- **`cliff.toml` is excluded from taplo** — a bash-era file whose reformat would be an
+  unrelated diff in a frozen area. It joins the lane when someone reformats it deliberately.
+
 ## Bash hazards (read before editing `ae`)
 
 Every bug class below has shipped at least once. Check new code against both lists.
+
+*Scope on `rust-rewrite`:* this section governs the frozen bash glue and the generated
+helpers — everything that stays bash until P5. It shrinks as domains flip; what survives P5
+is the pane-side remainder. The measured facts in it (TUI markers, tool behavior, userland
+divergences) are **empirical evidence** for the semantic contract, never its normative
+authority — see `docs/migration/semantic-contract.md`.
 
 ### Interpreted sinks
 
