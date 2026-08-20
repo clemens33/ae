@@ -98,9 +98,16 @@ s_equal_mtime()  { meta_set "launch_time.main" "$((NOW - 600))"
 s_diff_mtime()   { meta_set "launch_time.main" "$((NOW - 600))"
                    plant "$TODAY" cand-a $((NOW - 120)) "$(line "$ID_A" "$H_WORK" older)"
                    plant "$TODAY" cand-b $((NOW - 60))  "$(line "$ID_B" "$H_WORK" newer)"; }
-s_cwd_match()    { meta_set "launch_time.main" "$((NOW - 600))"
+# The cwd fallback (ae:14794-14812) runs ONLY when the token pass found nothing
+# (ae:14793 `if [ -z "$best_id" ]`). Built without forcing that, both cwd cases had their
+# fact never consulted and read identically — same output, different reason. A launch-id
+# token that NO candidate carries makes the token pass select nothing, so the fallback is
+# reached and cwd is what decides.
+s_cwd_match()    { meta_set "launch_id.main" "TOK-NOBODY-CARRIES-THIS"
+                   meta_set "launch_time.main" "$((NOW - 600))"
                    plant "$TODAY" cand-a $((NOW - 60)) "$(line "$ID_A" "$H_WORK" cwd-match)"; }
-s_cwd_differs()  { meta_set "launch_time.main" "$((NOW - 600))"
+s_cwd_differs()  { meta_set "launch_id.main" "TOK-NOBODY-CARRIES-THIS"
+                   meta_set "launch_time.main" "$((NOW - 600))"
                    plant "$TODAY" cand-a $((NOW - 60)) "$(line "$ID_A" /tmp cwd-differs)"; }
 s_malformed_id() { meta_set "launch_time.main" "$((NOW - 600))"
                    plant "$TODAY" cand-a $((NOW - 60)) '{"id":"NOT-A-UUID!!","cwd":"'"$H_WORK"'"}'; }

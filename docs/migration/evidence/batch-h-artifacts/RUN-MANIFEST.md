@@ -26,7 +26,7 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 |---|---|---|
 | `_harness/hlib.sh` | `b2cf84dd1990c01fdbfc9512c00834d10543d4745ed6a2dc2ad6c134ea27455d` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
-| `_harness/arm-h5.sh` | `cc6cfbd8abe690024bae907a7c87f28ce12c97a61212119d000cd461786735fb` | 2026-08-21 (registered BEFORE its first run) |
+| `_harness/arm-h5.sh` | `6f1d7e8123717aba8d66867080d7d6282251830a41717c6a8fa375aa611c2380` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h4.sh` | `5944b88c92acd4752addffabe9705ab087ff6c430bed0ea1d0bf6d8040693009` | 2026-08-20T21:51:16Z |
 
 ### A3 — `_harness/derive-h4-record.py` registered after A-H4's run
@@ -120,3 +120,23 @@ claim this arm cannot make about its candidates and should not appear to.
   registered against them — a ledger naming an event its script no longer emits is exactly
   the drift the hash registration exists to prevent.
 - arms reopened: A-H4.
+
+### A8 — `_harness/arm-h5.sh`, the cwd cases could not consult their own fact
+
+- `cc6cfbd8abe690024bae907a7c87f28ce12c97a61212119d000cd461786735fb` -> `6f1d7e8123717aba8d66867080d7d6282251830a41717c6a8fa375aa611c2380`
+- what changed: `h5-c09` and `h5-c10` planted a candidate whose recorded cwd matched or
+  differed, but the token pass selected it first, so `best_id` was non-empty and the cwd
+  fallback at ae:14794-14812 — guarded by `if [ -z "$best_id" ]` at ae:14793 — never ran.
+  Both cases reported identically because the cwd fact was NEVER CONSULTED, not because it
+  does not matter. They now set a launch-id token that no candidate carries, so the token
+  pass selects nothing and the fallback is what decides.
+- who found it: the worker flagged the identical readings as a capture and named the
+  fixture as one of two hypotheses rather than shipping the pair; the seat confirmed the
+  guard in frozen source and ruled the rebuild.
+- the mtime pair is NOT rebuilt: `h5-c07` and `h5-c08` already discriminate, and c07
+  reading like a single-candidate case follows from `-gt` at ae:14784 — equal mtimes means
+  first-wins, exactly as a lone candidate does. Same output, different mechanism; the
+  discriminating comparison is c07 against c08.
+- arms reopened: A-H5, whole. The other twelve cases are re-run under the amended script so
+  every committed ledger matches the hash registered against it, and their readings are
+  compared with the previous run rather than assumed to reproduce.
