@@ -206,6 +206,100 @@ then the writer the freeze needed. That is not an argument against the fixes but
 for the review cadence, and a reason to expect at least one more round after any
 correction that introduces a new mechanism on a destructive path.
 
+## The instrument taxonomy — how a probe lies to you
+
+*Added after the P0 migration cluster, where the ratio of INSTRUMENT failures to PRODUCT
+failures was not close. Five product defects were filed; the harnesses, probes and guards
+built to find them failed well over twenty times. That is not alarming — the incumbent is
+mature code whose author already paid for its bug classes, while a harness is new code
+written fast — but it means **most of the gate's work is proving the measurement, not
+reading it.** Budget accordingly.*
+
+**The central fact: probe failures are not uniformly detectable, and the undetectable ones
+are the common ones.**
+
+> A probe that returns something plausible is more dangerous than one that returns nothing,
+> because it does not announce itself.
+
+Of one lead's seven probe failures in a single session, six returned a plausible number —
+a checksum count of 134 (true: 140), a roster of 11 ids (true: 9), a field value read from
+the wrong file, a batch of 19 rows (true: 20), a process count, a correlation drawn from
+four rows that half of them refuted. Each looked like an answer and none announced itself.
+The seventh emitted 7.5MB of a file and was caught in two seconds.
+
+**Prefer probes whose failure mode is EMPTY over probes whose failure mode is PLAUSIBLE.**
+Walking forward from a known anchor to the thing you want fails loudly when the anchor is
+missing; grepping a fixed window around a line number returns whatever happens to be there.
+That is a difference in instrument design, not in care.
+
+### The recurring shapes, each observed more than once
+
+- **A filter that matches nothing looks exactly like a subject that produced nothing.**
+  A `grep '[OK]'` against output that prints `OK` unbracketed; a `sed` BRE alternation
+  `\(a\|b\)` that is a GNU extension and matches nothing on BSD; a prefix-anchored glob
+  that misses `*-SHA256SUMS.txt`. Make the helper fail loudly on zero matches.
+- **A guard that runs in the same breath as the action cannot gate it.** A duplicate-id
+  pre-check placed in the same shell invocation as the edit it guarded printed its warning
+  and the edit ran anyway.
+- **An enumeration will be beaten.** A field-name list, a method-name list, an
+  outer-attribute prefix, a lint-group name, a leak-vocabulary list — five in one cluster,
+  each fix correct, each closing less than it appeared to. **The way out is a mechanism
+  that resolves meaning, not a longer list**: ask the compiler (`--force-warn`), drop the
+  whole column rather than filtering words. And note which diagnoses: a lexical filter
+  scrubs the symptom, a structural one fails and tells you *where* the problem actually is.
+- **A recursive search that strips filenames returns a value with no provenance.**
+  `grep -rh` over a directory produced two confident findings sourced from the wrong file
+  and the wrong arm. The flag that cleaned the output suppressed the field that would have
+  caught it.
+- **A census whose own command line contains its search string counts itself.** The
+  `[t]ool` bracket trick stops `grep` matching itself, not the other processes in the same
+  pipeline carrying the literal.
+- **An instrument that depends on what the fixture breaks.** A topology builder that read
+  the fixture's own meta to learn its roster — for fixtures whose whole purpose was making
+  that meta absent or unreadable. It built nothing, silently, while the case file still
+  said it had.
+- **An artifact header is a claim.** `"ancestor walk … taken WHILE IT WAS ALIVE"` above an
+  empty walk; `supervisor_observed=yes` beside a post-hoc snapshot. Both written from what
+  the harness INTENDED to capture. **Derive headers from the content, never from the plan:
+  if a header cannot be computed from what was captured, it does not get written.**
+- **A claim classified one level up from where you were being careful.** A worker
+  disciplined about never classifying an OUTCOME stated a correlation ACROSS outcomes and
+  called it an observation. The framing said observation; the content said explanation.
+- **Rebuilding the thing a claim is about is exactly when the claim stops being true.**
+  Regenerating a harness snapshot overwrote the preserved pre-fix copy that a correction
+  notice asserted still existed.
+- **A one-shot process check cannot see a polling watcher**, and a before/after pair cannot
+  see a child that lived only between the samples. Census the long-lived ROOTS instead —
+  reach is inherited across fork, so a child cannot reach what its parent cannot.
+
+### What to demand instead
+
+1. **The arm must be able to produce the unwanted answer.** All-zero counts cannot
+   distinguish "preserved" from "lost then defaulted to zero"; seven cases that all agree
+   is a question about the fixture, not a finding. `ARM-INVALID` with the reason beats a
+   clean result — and an arm proven unable to discriminate *forecloses* the gap rather
+   than leaving it open.
+2. **A zero is a measurement only if THE RECORDER THAT REPORTS IT was demonstrated live in
+   the same arm** — not merely *a* recorder. One canary proved an `ssh` recorder and
+   inherited an unproven `rsync` one; the resulting zero meant nothing.
+3. **"All readings agree" is a question about the fixture, and the cheapest answer is
+   usually elsewhere in your own evidence.** One worker caught a bad fixture because a flat
+   result contradicted a corpus they had already captured.
+4. **A 0-byte diff means what its CONTENT means.** Over a pid and socket existence it
+   proves liveness; over a tree manifest it proves residue and is silent about the ordering
+   the row claims. A create-then-perfectly-roll-back mutant produces the same zero diff.
+5. **The product's own prose is not evidence for the product's behaviour.** `verified gone`
+   and `nothing was stopped, state preserved` are the product asserting properties, exactly
+   as strong as any other string it prints. The anti-oracle rule applies to messages, not
+   only to exit codes.
+6. **A citation is not a reading.** Line numbers pointing at a function's opening brace are
+   not the exit code inside it.
+7. **A check you learn to ignore is worse than no check** — a permanently-red guard trains
+   people to skip it and then looks like coverage. Fix the check or delete it.
+8. **Generate, then paste; derive, never hand-copy.** A table you generate and a reviewer
+   reads is still your word. A table the reviewer can regenerate is not. The same applies
+   one layer down to any document derived from another.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
