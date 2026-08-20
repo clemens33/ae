@@ -749,7 +749,7 @@ END {
 
   # A CRIT-ASSIGN table is opt-in.  Once one line exists, every CRITICAL id
   # must be assigned exactly once, and every assigned id must be CRITICAL.
-  if (default_assignment_file != "" && crit_assign_lines == 0) {
+  if (assignment_file != "" && crit_assign_lines == 0) {
     print "ASSIGN-GATE-DORMANT: assignment table exists but no CRIT-ASSIGN lines were parsed"
     assignment_gate_dormant_count++
   }

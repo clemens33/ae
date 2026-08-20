@@ -82,8 +82,8 @@ CRIT-ASSIGN: SC-502 | L-COMPACT | compact tree: `Recovery:` prints BEFORE the re
 CRIT-ASSIGN: SC-503a | L-COMPACT | compact tree: a typed `n` is an answer
 CRIT-ASSIGN: SC-503b | L-COMPACT | compact tree: end-of-input is not an answer
 CRIT-ASSIGN: SC-504b | L-COMPACT | compact tree: no altered SIGPIPE disposition leaks into the child
-CRIT-ASSIGN: SC-505a | L-COMPACT | compact tree: session-name validation error echoes its grammar verbatim
-CRIT-ASSIGN: SC-505b | L-COMPACT | compact tree: agent-name validation error echoes its grammar verbatim
+CRIT-ASSIGN: SC-505a | F-IDENTITY | multi-boundary identity arm: session-name grammar echo at a general boundary
+CRIT-ASSIGN: SC-505b | F-IDENTITY | multi-boundary identity arm: agent-name grammar echo at spawn/roster boundaries
 CRIT-ASSIGN: SC-506 | C | corrupt-session degradation arm: one broken fixture session, document still closes
 CRIT-ASSIGN: SC-507a | L-COMPACT | compact tree: `archive preview` stdout is exactly the digest
 CRIT-ASSIGN: SC-507b | B0 | fingerprint-barrier design: mutate each moving file between fingerprint A/render/fingerprint B via fault hook
@@ -175,7 +175,7 @@ CRIT-ASSIGN: SC-830 | L-END | end/archive tree: `--digest-only` is the one expli
 CRIT-ASSIGN: SC-831 | L-END | end/archive tree: a timed-out handover stops nothing
 CRIT-ASSIGN: SC-832a | L-RENTRANS | rename/transfer tree: rename's effect set
 CRIT-ASSIGN: SC-833a | L-RENTRANS | rename/transfer tree: transfer moves a stopped session both directions
-CRIT-ASSIGN: SC-834a | L-END | end/archive tree: `_recover-pending` re-attempts post-launch session-id capture
+CRIT-ASSIGN: SC-834a | T-WD | watchdog branch harness: watchdog-driven _recover-pending invocation arm
 CRIT-ASSIGN: SC-835a | L-STOP | stop matrix tree: stop addresses the recorded server and the exact session id
 CRIT-ASSIGN: SC-835b | L-STOP | stop matrix tree: stop reports stopped only after verifying the session is gone
 CRIT-ASSIGN: SC-835c | L-STOP | stop matrix tree: an unverifiable kill fails loudly and changes nothing
@@ -223,7 +223,7 @@ CRIT-ASSIGN: SC-955 | T-STORE | store/handoff harness: b2 — status reports per
 CRIT-ASSIGN: SC-956 | T-STORE | store/handoff harness: b1 — autostart failure warns one line and never blocks session launch
 CRIT-ASSIGN: SC-957 | T-STORE | store/handoff harness: b1 — supervision honors durable disabled state; can never revive after an
 CRIT-ASSIGN: SC-958 | T-STORE | store/handoff harness: b4 DR-003 — outbound delivery is at-least-once: cursor persistence is part
-CRIT-ASSIGN: SC-959 | T-AUTH | fake-updates auth harness: b2 — a first-seen session starts at EOF; no history flood
+CRIT-ASSIGN: SC-959 | T-STORE | store/handoff harness: first-seen session starts at EOF (outbound cursor)
 CRIT-ASSIGN: SC-960 | T-AUTH | fake-updates auth harness: b1 — the persisted getUpdates offset prevents inbound redispatch on
 CRIT-ASSIGN: SC-961 | T-AUTH | fake-updates auth harness: b1 — token file is owner-only 0600; wrong perms refuse start with a
 CRIT-ASSIGN: SC-962 | T-AUTH | fake-updates auth harness: b1 — the token never enters argv; logs redact it
@@ -236,11 +236,11 @@ CRIT-ASSIGN: SC-968 | T-STORE | store/handoff harness: b3 fix-known-defect(#88-G
 CRIT-ASSIGN: SC-969 | T-STORE | store/handoff harness: b3 fix-known-defect(#87-H) — setup publishes token/config with atomic
 CRIT-ASSIGN: SC-970 | T-STORE | store/handoff harness: b2 — setup persists enabled, token_file, chat_id, seeded allowlist (byte
 CRIT-ASSIGN: SC-971 | T-STORE | store/handoff harness: b2 — start persists `enabled=true`; stop persists `enabled=false`
-CRIT-ASSIGN: SC-972 | T-STORE | store/handoff harness: b2 — external actors are `<platform>:<id>`, opaque past the allowlisted
-CRIT-ASSIGN: SC-973a | T-STORE | store/handoff harness: b1 — event-only sinks (`telegram:`/`discord:`/`ae:compact:`) emit without
-CRIT-ASSIGN: SC-973b | T-STORE | store/handoff harness: b1 — an unknown non-allowlisted external target fails LOUDLY
-CRIT-ASSIGN: SC-974a | T-STORE | store/handoff harness: b2 — `AE_SENDER_OVERRIDE` sets the actor for send/ask/review
-CRIT-ASSIGN: SC-974b | T-STORE | store/handoff harness: b2 — reply caller identity comes from `--as`, not the override
+CRIT-ASSIGN: SC-972 | H-DELIVERY | delivery rig: external actor prefix grammar arm
+CRIT-ASSIGN: SC-973a | H-DELIVERY | delivery rig: event-only sink literal-target arm (telegram:/discord:/ae:compact:)
+CRIT-ASSIGN: SC-973b | H-DELIVERY | delivery rig: unknown external prefix loud-refusal arm
+CRIT-ASSIGN: SC-974a | H-DELIVERY | delivery rig: AE_SENDER_OVERRIDE actor arm (send/ask/review)
+CRIT-ASSIGN: SC-974b | H-DELIVERY | delivery rig: reply --as display-only arm
 CRIT-ASSIGN: SC-975a | T-STORE | store/handoff harness: b1 — bridge readers tolerate a missing event file
 CRIT-ASSIGN: SC-975b | T-STORE | store/handoff harness: b1 — malformed/unterminated trailing data is buffered until a complete
 CRIT-ASSIGN: SC-976a | T-STORE | store/handoff harness: b4 DR-001 — the reader cursor is generation-aware (generation + offset
@@ -305,3 +305,19 @@ CRIT-ASSIGN: SC-1412d | H-ENV | env sweep: `AE_DIR`
 CRIT-ASSIGN: SC-1412e | H-ENV | env sweep: `AE_MODE`
 CRIT-ASSIGN: SC-1412f | H-ENV | env sweep: `AE_ORIGIN`
 CRIT-ASSIGN: SC-1412g | H-ENV | env sweep: `AE_PATH`/`AE_PATH_BIN`
+CRIT-ASSIGN: SC-509b | C | read-side fixture cluster: degraded:true additive on read/parse loss, absent on normal entries
+CRIT-ASSIGN: SC-518 | C | read-side fixture cluster: full mirror-match closure arm (ref + actor/target both ways, mixed matches nothing)
+CRIT-ASSIGN: SC-519 | C | read-side fixture cluster: absent vs empty vs unreadable event-log arms
+CRIT-ASSIGN: SC-520 | C | read-side fixture cluster: malformed-complete-line skip observable arm
+CRIT-ASSIGN: SC-521 | C | read-side fixture cluster: filter intersection arms (stopped+needs-attn, stopped+active, all+either)
+CRIT-ASSIGN: SC-522 | C | read-side fixture cluster: threshold equality-vs-past boundary arm
+CRIT-ASSIGN: SC-523 | C | read-side fixture cluster: default-value confirmation arms (300s/1800s)
+CRIT-ASSIGN: SC-524 | C | read-side fixture cluster: future-timestamp counts-active arm
+CRIT-ASSIGN: SC-405a | C | read-side fixture cluster: meta first-equals/single-line parse arm
+CRIT-ASSIGN: SC-405b | C | read-side fixture cluster: session-context key arms (mode/origin/work_dir/goal)
+CRIT-ASSIGN: SC-405c | C | read-side fixture cluster: roster key arms (agent.slot, agent_bin.slot)
+CRIT-ASSIGN: SC-405d | C | read-side fixture cluster: unknown-meta-key probe arm
+CRIT-ASSIGN: SC-405e | C | read-side fixture cluster: malformed/duplicate-meta-key probe arm
+CRIT-ASSIGN: SC-405f | C | read-side fixture cluster: goal_set_epoch derived-from-latest-goal-event arm
+CRIT-ASSIGN: SC-405g | C | read-side fixture cluster: branch parameter seam arm (tmux/git fact)
+CRIT-ASSIGN: SC-980 | T-WD | watchdog branch harness: incumbent alert action/summary byte capture (legacy adapter IS only, never SHOULD)

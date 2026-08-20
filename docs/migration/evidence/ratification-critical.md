@@ -4,10 +4,10 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 
 - Canonical IDs: SC=398, D=42, total=440
 - Class counts (amended 2026-08-20, census-audit gate ae-20260820T115339Z-9905b9ec):
-  canonical 441 (D14 umbrella de-recorded; D05 replaced by D05a/b/c). CRITICAL=299,
+  canonical 441 (D14 umbrella de-recorded; D05 replaced by D05a/b/c). CRITICAL=315,
   DEFERRABLE=102, OBSERVED=40 (24 pin-audit PROVES + 13 census-audit + D05a/b/c;
   D24 non-observed pending its negative-evidence pointer — 298/41 when it lands).
-  Outstanding critical observations: 299. The earlier 290 was a double-subtraction,
+  Outstanding critical observations: 315 (slice-1 added 16). The earlier 290 was a double-subtraction,
   expunged; clusters build only from the regenerated remaining-ID manifest.
 - Critical-letter counts (overlaps counted): A=119, B=38, C=39, D=192
 - A includes explicit UNCLASSIFIED, authority=code-observation, literal Authority: UNRESOLVED(...) rows, and D records whose TBD fields feed a seat ruling; ALREADY-OBSERVED takes pin-audit PROVES priority.
@@ -453,3 +453,23 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-1412e — CRITICAL(A)
 - SC-1412f — CRITICAL(A)
 - SC-1412g — CRITICAL(A)
+
+## Slice-1 additions (2026-08-20, concurrent movement — 16 rows)
+
+- SC-509b — CRITICAL(C,D)
+- SC-518 — CRITICAL(C,D)
+- SC-519 — CRITICAL(C)
+- SC-520 — CRITICAL(C,D)
+- SC-521 — CRITICAL(C)
+- SC-522 — CRITICAL(C)
+- SC-523 — CRITICAL(C)
+- SC-524 — CRITICAL(C)
+- SC-405a — CRITICAL(C,D)
+- SC-405b — CRITICAL(C,D)
+- SC-405c — CRITICAL(C,D)
+- SC-405d — CRITICAL(A,C)
+- SC-405e — CRITICAL(A,C)
+- SC-405f — CRITICAL(C)
+- SC-405g — CRITICAL(C)
+- SC-980 — CRITICAL(B,D)
+
