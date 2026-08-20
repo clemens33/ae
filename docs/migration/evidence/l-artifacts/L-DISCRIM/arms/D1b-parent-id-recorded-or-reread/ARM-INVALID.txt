@@ -1,0 +1,37 @@
+ARM-INVALID AS AN ID DISCRIMINATOR. The reason is the finding, and it is stated as what
+THIS ARM can and cannot do — not as a claim about what the product does.
+
+WHAT WAS MEASURED
+  The ability-to-fail control PASSED: a --from against the replacement ALONE recorded
+  id=435063a9-64fc-41ec-a323-b60ff941dc40 with counts handover=5 pending=3. The replacement is a
+  readable, valid parent under its own id. The arm did not fail because the replacement
+  was broken.
+  The measurement then produced NO CHILD. op rc 1, and 2op.stderr carries the launch's
+  own words: "parent archive <first-id> stopped validating while this session was being
+  created", then the rollback. There is therefore no recorded id to read, and the arm
+  cannot show which id a surviving child would carry.
+
+WHY THIS ARM CANNOT PRODUCE ITS UNWANTED ANSWER
+  Three facts, all in source-trace.where-the-id-comes-from.txt with frozen line numbers:
+  1. the id in a proof tuple is derived from the ARGUMENT — _ar_canonical_uuid of the id
+     passed in — and is never read out of the archive meta;
+  2. the second proof is invoked with PARENT_ARCHIVE_ID, i.e. with the id the FIRST proof
+     already produced, so both proofs are asked about the SAME id string;
+  3. the frozen validator requires an archive meta archive_id to equal its directory
+     name, so an archive carrying a different id must live at a different path — while
+     the path the second proof looks at is the one named by the first id.
+  Consequently there is no way, WITHIN THIS CONSTRUCTION, to make the id the launch would
+  record differ from the id it would re-read: the swap can only remove the archive the
+  second proof is looking for, which is the rollback observed above.
+
+THE OTHER ROUTE, ALREADY CAPTURED ELSEWHERE — NOT RE-RUN HERE
+  Leaving the archive at the first path but rewriting its meta archive_id to a different
+  value is the remaining variant. Its behaviour is already recorded in
+  L-PURGE/arms/validator-taxonomy-f1-id-mismatch-{purge,from}/, whose --from side reports
+  "archive: meta archive_id '<other>' does not match '<want>'" and refuses to inherit.
+  That arm is cited rather than duplicated.
+
+WHAT IS REPORTED
+  No id observation. The counts half is D1's, and D1 stands. Whether these captures close
+  SC-824a's id half by another route is a seat question; this worker states only that the
+  arm as specified cannot separate the two behaviours, and why.

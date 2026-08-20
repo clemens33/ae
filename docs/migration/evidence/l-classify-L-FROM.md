@@ -138,6 +138,31 @@ ae:16987-16988, written ae:17575-17580, second proof at ae:17613-17626 never sub
 its own) plus the earlier deletion construction.
 **CONFIRMED AS COMPOSITE (D1 runtime for the counts + frozen source for the id).** Any
 citation must carry both halves.
+**The id half is now proven BY CONSTRUCTION, and D1b establishes that no runtime arm of
+that shape CAN close it** — which is a stronger result than the arm succeeding would have
+been, and it forecloses future attempts rather than leaving the gap open.
+D1b built the different-id variant and returned **ARM-INVALID with the reason**: the
+ability-to-fail control PASSED (a `--from` against the replacement alone records its own
+id and counts, so the replacement is valid and readable), and the measurement then produced
+**no child at all** — rc 1, `parent archive … stopped validating while this session was
+being created`, then rollback. With no child meta there is no recorded id to read.
+Three frozen facts explain why, each verified by the lead against `72c7293`:
+1. **the tuple's id comes from the ARGUMENT, never from archive meta** — `_ar_from_preflight`
+   at ae:5471-5472 is `local raw="$1" …; aid="$(_ar_canonical_uuid "$raw")"`;
+2. **both proofs are asked about the SAME id string** — the first is called with
+   `FROM_ARCHIVE` (ae:16987), the second with `PARENT_ARCHIVE_ID` (ae:17614), which is the
+   id the first proof produced;
+3. **a different-id archive must live at a different path** — the validator requires meta
+   `archive_id` to equal the directory name (ae:5242).
+So swapping in a different-id archive can only REMOVE the archive the second proof looks
+for, which is the rollback observed. **"Re-reading the id" is not a thing the code can do**:
+there is no path that reads an id from archive meta into the tuple. That is why the counts
+were discriminable (they come from the archive) and the id is not (it comes from the
+argument).
+*The remaining variant is CITED, not duplicated:* leaving the archive at the first path and
+rewriting its meta `archive_id` is already recorded in
+`L-PURGE/arms/validator-taxonomy-f1-id-mismatch-{purge,from}`, whose `--from` side refuses
+with `archive: meta archive_id … does not match …`.
 **Boundary stated by the producer and respected here:** this arm exercises the plain
 launch path only and *"carries no re-proof expectation and no rollback machinery of its
 own"*. Its `source-trace.*` file is a frozen-source extract with line numbers — every line

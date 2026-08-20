@@ -1,0 +1,25 @@
+cwd: /tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/w
+argv (bg):
+  /tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/b/ae
+  --local
+  child
+  --from
+  691a5bb5-e61d-4671-b14e-531076e467fe
+env:
+  HOME=/tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/h
+  AE_HOME=/tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/h/.ae
+  TMPDIR=/tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/tp
+  TMUX_TMPDIR=/tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/t
+  PATH=/tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/cap/tmux-argv.log
+  AE_L_HOOKS=b_from_proved
+  AE_L_TRACE=/tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/cap/hook-trace.tsv
+  AE_L_BLOCK=/tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/ctl
+  AE_L_BLOCK_MAX=1800

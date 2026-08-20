@@ -177,14 +177,27 @@ d5_common_setup() { # <session>
 }
 
 # The ancestor walk, taken from a pid WHILE IT IS ALIVE.
+# THE HEADER IS DERIVED FROM THE WALK, NEVER FROM THE INTENTION.
+# A previous version printed "taken WHILE IT WAS ALIVE" before walking, and when the
+# walk came back empty the file still carried the claim — the same defect shape this
+# arm family exists to remove, one artifact over. The walk is collected first and the
+# header reports the count it actually got, including zero.
 d5_lineage() { # <pid> <out>
-    local cur="$1" out="$2" depth=0
-    { printf '# ancestor walk from pid %s, taken WHILE IT WAS ALIVE\n' "$cur"
-      while [[ -n "$cur" && "$cur" != 0 && $depth -lt 12 ]]; do
-          printf '%d\t%s\n' "$depth" "$(ps -o pid=,ppid=,pgid=,tty=,stat=,command= -p "$cur" 2>/dev/null | head -1)"
-          cur="$(ps -o ppid= -p "$cur" 2>/dev/null | tr -d ' ')"
-          depth=$((depth + 1))
-      done
+    local cur="$1" out="$2" depth=0 rows=""
+    while [[ -n "$cur" && "$cur" != 0 && $depth -lt 12 ]]; do
+        local row; row="$(ps -o pid=,ppid=,pgid=,tty=,stat=,command= -p "$cur" 2>/dev/null | head -1)"
+        [[ -n "$row" ]] || break
+        rows+="$(printf '%d\t%s' "$depth" "$row")"$'\n'
+        cur="$(ps -o ppid= -p "$cur" 2>/dev/null | tr -d ' ')"
+        depth=$((depth + 1))
+    done
+    { if (( depth > 0 )); then
+          printf '# ancestor walk from pid %s: %d ancestor row(s) COLLECTED\n' "$1" "$depth"
+      else
+          printf '# ancestor walk from pid %s: 0 ancestor rows — NOTHING WAS COLLECTED.\n' "$1"
+          printf '# The process was not in the table when this walk ran. No lineage is recorded here.\n'
+      fi
+      printf '%s' "$rows"
     } >"$out" 2>&1
     return 0
 }
@@ -220,14 +233,26 @@ SAMP
     /opt/homebrew/bin/tmux -S "$SOCK" send-keys -t "$D5_SHELL" -l -- "$R/b/ae stop -y > $R/cap/stop.stdout 2> $R/cap/stop.stderr; echo \$? > $R/cap/stop.rc"
     /opt/homebrew/bin/tmux -S "$SOCK" send-keys -t "$D5_SHELL" Enter
     led measure typed "ae stop -y (implicit self-stop) typed into a shell pane inside the session"
+    # WALK AT FIRST SIGHT. Waiting for the sampler's whole window before walking put the
+    # walk after the subject's lifetime by construction, which is how D5a shipped an
+    # empty walk under a header claiming otherwise.
+    local FP="" w=0
+    while (( w < 800 )); do
+        if [[ -s "$R/cap/supervisor.firstpid" ]]; then
+            FP="$(cat "$R/cap/supervisor.firstpid")"
+            ps -ax -o pid=,ppid=,pgid=,tty=,stat=,command= 2>/dev/null | grep -F "$R" | grep -v '[g]rep' >"$R/cap/at-first-sight.ps.txt"
+            d5_lineage "$FP" "$R/cap/supervisor-lineage.txt"
+            break
+        fi
+        sleep 0.05; w=$((w + 1))
+    done
     wait "$SAMPLER" 2>/dev/null
-    local FP=""; [[ -s "$R/cap/supervisor.firstpid" ]] && FP="$(cat "$R/cap/supervisor.firstpid")"
+    [[ -z "$FP" && -s "$R/cap/supervisor.firstpid" ]] && FP="$(cat "$R/cap/supervisor.firstpid")"
     local HITS; HITS="$(grep -c . "$R/cap/supervisor-samples.txt" 2>/dev/null)"; HITS="${HITS:-0}"
     led measure sampler.rate "$(cat "$R/cap/sampler-rate.txt" 2>/dev/null)"
     led measure supervisor.hits "$HITS"
     led measure route.stdout "$(head -1 "$R/cap/stop.stdout" 2>/dev/null)"
     led measure stop.rc "$(cat "$R/cap/stop.rc" 2>/dev/null || echo '<none>')"
-    [[ -n "$FP" ]] && d5_lineage "$FP" "$R/cap/supervisor-lineage.txt"
     sleep 3
     ps -ax -o pid=,ppid=,command= 2>/dev/null | grep -F "$R" | grep -v '[g]rep' >"$R/cap/3post.ps.txt"
     l_manifest "$R/h/.ae/sessions" "$R/cap/3post.sessions.tsv"

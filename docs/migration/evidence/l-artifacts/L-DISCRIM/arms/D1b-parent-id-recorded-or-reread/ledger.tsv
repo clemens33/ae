@@ -1,0 +1,21 @@
+2026-08-20T20:39:58Z	setup	arm	D1b
+2026-08-20T20:40:07Z	fixture	planted.pane	%3
+2026-08-20T20:40:07Z	fixture	agent.ref	grok:grok
+2026-08-20T20:40:17Z	fixture	parent.uuid	691a5bb5-e61d-4671-b14e-531076e467fe
+2026-08-20T20:40:17Z	fixture	parent.handover_count	2
+2026-08-20T20:40:17Z	fixture	parent.pending_request_count	1
+2026-08-20T20:40:17Z	fixture	counts.nonzero	YES
+2026-08-20T20:40:17Z	fixture	counts.distinct	YES
+2026-08-20T20:40:17Z	setup	parent.uuid	691a5bb5-e61d-4671-b14e-531076e467fe
+2026-08-20T20:40:17Z	setup	replacement.uuid	435063a9-64fc-41ec-a323-b60ff941dc40
+2026-08-20T20:40:22Z	control	replacement.readable.id	435063a9-64fc-41ec-a323-b60ff941dc40
+2026-08-20T20:40:22Z	control	replacement.readable.counts	handover=5 pending=3
+2026-08-20T20:40:22Z	control	replacement.accepted	YES
+2026-08-20T20:40:22Z	setup	source-trace.sha256	eb05eda3901e5c225026892b1e8b6d322db7581e326f3b41ff12b035e64899e8
+2026-08-20T20:40:23Z	swap	barrier	b_from_proved.31724.1
+2026-08-20T20:40:23Z	swap	removed.id	691a5bb5-e61d-4671-b14e-531076e467fe
+2026-08-20T20:40:23Z	swap	installed.id	435063a9-64fc-41ec-a323-b60ff941dc40
+2026-08-20T20:40:27Z	measure	child.exists	NO
+2026-08-20T20:40:27Z	measure	child.parent_archive_id	<no child meta>
+2026-08-20T20:40:27Z	measure	child.counts	handover=<none> pending=<none>
+2026-08-20T20:40:27Z	measure	arm.could.produce.unwanted.answer	NO

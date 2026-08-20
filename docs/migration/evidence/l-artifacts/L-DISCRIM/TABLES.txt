@@ -3,6 +3,7 @@
 ## TABLE 1 — every arm, its ability-to-fail control, and whether it could fail
 ARM                                ARM_INVALID   PATCH         ability_to_fail_control
 D1-parent-tuple-recorded-not-reread no            L-HOOKS-v3    control_replacement_accepted=YES
+D1b-parent-id-recorded-or-reread   YES           L-HOOKS-v3    control_replacement_accepted=YES; could_produce_unwanted=NO
 D2-counts-survive-a-cycle          no            none (frozen  counts non-zero AND distinct: handover=2 pending=1
 D3-rsync-recorder-canary           YES           none (frozen  recorder proven live by direct invocation: 2 call(s)
 D4-sigpipe-ability-to-fail         no            none (frozen  leaked SIG_IGN detected: YES
@@ -12,6 +13,7 @@ D5b-supervisor-held-at-entry       no            L-HOOKS-v5    held at a barrier
 ## TABLE 2 — D1 and D2, the lineage tuples read BY EXACT KEY
 ARM                                parent_counts          other                    observed
 D1-parent-tuple-recorded-not-reread handover=2 pending=1   replacement: handover=5 pending=3 child recorded handover=2 pending=1
+D1b-parent-id-recorded-or-reread   handover=2 pending=1   replacement id: 435063a9 child exists=NO recorded id=<no child meta>
 D2-counts-survive-a-cycle          handover=2 pending=1   after_from: handover=2 pending=1 after_resume: handover=2 pending=1
 
 ## TABLE 3 — D3 reachability, per gate

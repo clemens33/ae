@@ -11,6 +11,7 @@ printf '%-34s %-13s %-13s %s\n' ARM ARM_INVALID PATCH ability_to_fail_control
 for d in "$A"/arms/*/; do
   n="$(basename "$d")"; a="$d/ARM.txt"; [[ -f "$a" ]] || continue
   case "$n" in
+    D1b*) ctl="control_replacement_accepted=$(f "$a" control_replacement_accepted | cut -c1-3); could_produce_unwanted=$(f "$a" arm_could_produce_the_unwanted_answer)" ;;
     D1*) ctl="control_replacement_accepted=$(f "$a" control_replacement_accepted | cut -c1-3)" ;;
     D2*) ctl="counts non-zero AND distinct: $(f "$a" parent_counts)" ;;
     D3*) ctl="recorder proven live by direct invocation: $(f "$a" recorder.direct.invocations) call(s)" ;;
@@ -30,6 +31,9 @@ for d in "$A"/arms/D1* "$A"/arms/D2*; do
   [[ -d "$d" ]] || continue
   n="$(basename "$d")"; a="$d/ARM.txt"
   case "$n" in
+    D1b*) printf '%-34s %-22s %-24s %s\n' "$n" "$(f "$a" parent_counts)" \
+           "replacement id: $(f "$a" replacement_uuid | cut -c1-8)" \
+           "child exists=$(f "$a" child_exists) recorded id=$(f "$a" child_recorded_id)" ;;
     D1*) printf '%-34s %-22s %-24s %s\n' "$n" "$(f "$a" parent_counts)" \
            "replacement: $(f "$a" replacement_counts)" \
            "child recorded handover=$(f "$a" child_recorded_handover) pending=$(f "$a" child_recorded_pending)" ;;

@@ -1,0 +1,76 @@
+FROZEN SOURCE, extracted verbatim with line numbers. A code observation, not a verdict.
+frozen commit	72c729343a0117af2968b66e1c43f89ad25fc0b2
+
+=== where the id in the proof tuple comes from (_ar_from_preflight) ===
+5470:_ar_from_preflight() { # <raw-uuid>
+5471:    local raw="$1" aid root path
+5472:    aid="$(_ar_canonical_uuid "$raw")"
+5473:    if [[ -z "$aid" ]]; then
+5474:        echo "Error: --from takes an archive UUID; '${raw}' is not one." >&2
+5475:        return 1
+5476:    fi
+5477:    if ! root="$(_ar_require_real_root)"; then
+5478:        echo "Error: no archive root at $(_ar_root)." >&2
+5479:        return 1
+5480:    fi
+5481:    path="${root}/${aid}"
+5482:    # A live claim means this exact id is being published or purged right now. Inheriting
+5483:    # from an archive mid-flight would freeze counts that are about to change or vanish.
+5484:    if [[ -e "${root}/.publishing.${aid}" ]]; then
+5485:        echo "Error: archive ${aid} is being published or purged right now (${root}/.publishing.${aid})." >&2
+5486:        return 1
+5487:    fi
+5488:    # A direct child of the archive root, and a real directory — never a link, which is
+5489:    # how a lineage pointer would otherwise reach outside the archive.
+5490:    if [[ ! -d "$path" || -L "$path" ]]; then
+5491:        echo "Error: no archive ${aid} in ${root}." >&2
+5492:        return 1
+5493:    fi
+5494:    _path_is_direct_child "$root" "$path" || {
+5495:        echo "Error: ${path} is not a direct child of ${root}." >&2
+5496:        return 1
+5497:    }
+5498:    local f
+5499:    for f in meta digest.md; do
+5500:        if [[ -L "${path}/${f}" || ! -f "${path}/${f}" || ! -r "${path}/${f}" ]]; then
+5501:            echo "Error: archive ${aid} has no readable ${f}." >&2
+5502:            return 1
+5503:        fi
+5504:    done
+5505:    _ar_validate_tree "$path" "$aid" || {
+5506:        echo "Error: archive ${aid} did not validate — refusing to inherit from it." >&2
+5507:        return 1
+5508:    }
+5509:    local h p
+5510:    h="$(_ar_meta_get "${path}/meta" handover_count)"
+5511:    p="$(_ar_meta_get "${path}/meta" pending_request_count)"
+5512:    if [[ ! "$h" =~ ^[0-9]+$ || ! "$p" =~ ^[0-9]+$ ]]; then
+5513:        echo "Error: archive ${aid} has incomplete counts (handover='${h}', pending='${p}')." >&2
+5514:        return 1
+5515:    fi
+5516:    # ONE OBSERVATION, FROZEN. The counts leave with the id they were proved against —
+5517:    # the caller re-reading them afterwards is a second observation of a file another
+5518:    # process may be deleting, and the child would then record counts that were never
+5519:    # proved (or empty ones defaulted to zero).
+5520:    printf '%s\t%s\t%s' "$aid" "$h" "$p"
+5521:    return 0
+5522:}
+
+=== every line naming PARENT_ARCHIVE_ID or _AE_FROM_EXPECTED in the launch ===
+6410:    export _AE_FROM_EXPECTED="$from_proof"
+16983:PARENT_ARCHIVE_ID=""
+16988:    IFS=$'\t' read -r PARENT_ARCHIVE_ID PARENT_ARCHIVE_HANDOVER PARENT_ARCHIVE_PENDING <<<"$_from_proof"
+16995:        echo "           ae <new-name> --from ${PARENT_ARCHIVE_ID}" >&2
+17131:# other possible setters has been done. If you reach here with PARENT_ARCHIVE_ID from some
+17134:if [[ -n "${_AE_FROM_ROSTER:-}" && -n "$PARENT_ARCHIVE_ID" && -z "$MAIN_OVERRIDE" ]]; then
+17524:[[ -n "$PARENT_ARCHIVE_ID" ]] || PARENT_ARCHIVE_ID="$PRESERVED_PARENT_ID"
+17530:if [[ -n "$PARENT_ARCHIVE_ID" && ! -f "$(_ar_root)/${PARENT_ARCHIVE_ID}/digest.md" ]]; then
+17531:    echo "note: parent archive ${PARENT_ARCHIVE_ID} is no longer on this machine — the lineage is recorded, but its digest cannot be read." >&2
+17575:if [[ -n "$PARENT_ARCHIVE_ID" ]]; then
+17577:        echo "parent_archive_id=${PARENT_ARCHIVE_ID}"
+17613:if [[ -n "$PARENT_ARCHIVE_ID" && "$RESUMING" != true ]]; then
+17614:    _from_proof_now="$(_ar_from_preflight "$PARENT_ARCHIVE_ID" 2>/dev/null || true)"
+17617:        echo "Error: parent archive ${PARENT_ARCHIVE_ID} stopped validating while this session was being created." >&2
+17620:    if [[ -n "${_AE_FROM_EXPECTED:-}" && "$_from_proof_now" != "${_AE_FROM_EXPECTED}" ]]; then
+17622:        echo "Error: parent archive ${PARENT_ARCHIVE_ID} changed while this session was being created." >&2
+17623:        echo "  Expected: ${_AE_FROM_EXPECTED//$'\t'/ | }" >&2

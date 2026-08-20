@@ -1,0 +1,4 @@
+note: parent archive 691a5bb5-e61d-4671-b14e-531076e467fe is no longer on this machine — the lineage is recorded, but its digest cannot be read.
+Error: parent archive 691a5bb5-e61d-4671-b14e-531076e467fe stopped validating while this session was being created.
+ae: launch failed — rolling back 'child'.
+ae: session state removed — this launch created it; nothing left to reattach to.

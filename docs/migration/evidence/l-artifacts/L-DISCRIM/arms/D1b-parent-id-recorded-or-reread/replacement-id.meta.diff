@@ -1,0 +1,9 @@
+--- /tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/cap/replacement-id.meta.before.txt	2026-08-20 22:40:17
++++ /tmp/aelx/L-DISCRIM/D1b-parent-id-recorded-or-reread/cap/replacement-id.meta.after.txt	2026-08-20 22:40:17
+@@ -1,5 +1,5 @@
+ archive_version=1
+-archive_id=691a5bb5-e61d-4671-b14e-531076e467fe
++archive_id=435063a9-64fc-41ec-a323-b60ff941dc40
+ archive_id_origin=session
+ archived_at=2026-08-20T20:40:15Z
+ source_session=p1

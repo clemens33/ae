@@ -66,6 +66,32 @@ The replacement's counts are set **consistently in both `meta` and `digest.md`**
 tree stays internally consistent and the frozen validator still accepts it; the mutation
 is mode-preserving and both byte diffs are recorded.
 
+### D1b — the id half: recorded, or re-read?
+
+| field | value |
+|---|---|
+| exists because | D1 holds the archive id CONSTANT by construction, so it discriminates on COUNTS only; a mutant re-reading the id while retaining proved counts emits identical artifacts |
+| construction | the same as D1, but at the barrier after the FIRST parent proof the archive at the parent id is REMOVED and a second VALID archive is installed at a **DIFFERENT id** with different counts; the child's recorded tuple is then read BY EXACT KEY |
+| ability to fail | the same control shape as D1: a `--from` against the replacement ALONE must record the replacement's **id and** counts. It did — `control_replacement_accepted YES` |
+| result | **`ARM-INVALID` as an id discriminator, and the reason is the finding** |
+
+The control passed, so the arm did not fail because the replacement was unreadable. The
+measurement produced **no child**: rc 1, with the launch's own words in `2op.stderr` —
+*parent archive … stopped validating while this session was being created* — and a
+rollback. With no child meta there is no recorded id to read.
+
+`ARM-INVALID.txt` states why the arm cannot produce its unwanted answer, from three frozen
+facts carried with line numbers in `source-trace.where-the-id-comes-from.txt`: the id in a
+proof tuple is derived from the ARGUMENT and never read out of the archive meta; the second
+proof is invoked with the id the first proof produced, so both are asked about the same
+string; and the validator requires an archive's meta `archive_id` to equal its directory
+name, so a different id means a different path — while the path the second proof examines
+is the one named by the first id. The remaining variant, rewriting `archive_id` in place,
+is already captured in `L-PURGE/arms/validator-taxonomy-f1-id-mismatch-*` and is **cited
+rather than duplicated**.
+
+**No id observation is reported.** D1's counts half stands unchanged.
+
 ### D2 — counts survive a cycle
 
 | field | value |
@@ -130,11 +156,22 @@ Both exist because the existing self-stop artifact is a post-hoc snapshot byte-i
 to `3post.ps.txt`, showing no supervisor at all while its `ARM.txt` asserts
 `supervisor_observed=yes`. D5a answers whether an external sampler can catch it at real
 timing and records the **achieved sampling rate** alongside the hit count; D5b removes the
-race entirely and is where a deterministic lineage comes from. Each records the full argv
-row, the live process table at that moment (`at-first-sight.ps.txt` / `at-barrier.ps.txt`)
-and an ancestor walk taken **while the process was alive**
-(`supervisor-lineage.txt`); D5b also diffs the live table against the post-hoc snapshot
-(`ps.at-barrier-vs-post.diff`). `ARM-INVALID` if nothing is caught.
+race entirely and is where the deterministic lineage comes from. `ARM-INVALID` if nothing
+is caught.
+
+**What each arm actually holds — corrected, and stated per file rather than for both at
+once:**
+
+| file | D5a | D5b |
+|---|---|---|
+| `supervisor-samples.txt` | **3 sightings**, each a full `ps -o pid=,ppid=,command=` row taken at the moment of the hit. These carry the pid AND the ppid, so D5a does record the parent — here, and nowhere else in this arm | not used (no sampling) |
+| `sampler-rate.txt` | the achieved rate, `iterations=1769 hits=3 window=40s` | not used |
+| `at-barrier.ps.txt` | **does not exist** | the whole live process table, captured while the supervisor was held |
+| `supervisor-lineage.txt` | **EMPTY WALK.** The file exists and its header claims the walk was taken while the process was alive, but it contains one bare row and no ancestors. See the Correction below | a real two-level walk: the supervisor, then `launchd` at PID 1 |
+| `ps.at-barrier-vs-post.diff` | not used | the live table diffed against the post-hoc snapshot the earlier artifact was |
+
+So: **D5a proves existence under real timing and records the parent in its samples. D5b is
+the only arm here carrying a live process table and an ancestor walk.**
 
 **Two superseded attempts are recorded rather than kept.** D5a's first version sampled
 with a forked `ps -ax` pipeline at a 50 ms sleep and recorded ZERO sightings across 600
@@ -158,3 +195,62 @@ reports a clean result from a control it could not fail.
 - D5a's hit count is a property of the sampler and the machine, not of the supervisor;
   the achieved rate is recorded alongside it so the two are never confused.
 - The agent is an unmodelled fake, so nothing here exercises a TUI-modelled send path.
+
+
+## Correction — D5a's `supervisor-lineage.txt` header is false
+
+Raised at the seat read and verified here against the file itself.
+
+**What is wrong.** `D5a-supervisor-real-timing/supervisor-lineage.txt` is 60 bytes: a
+header reading `# ancestor walk from pid 20573, taken WHILE IT WAS ALIVE` followed by a
+single bare `0<TAB>` row with no process on it. The walk is empty. The header is a claim
+the file does not support, and an earlier version of this manifest repeated that claim and
+additionally named an `at-first-sight.ps.txt` for D5a that **does not exist**.
+
+**Why.** In the version of `discrim-d345.sh` that produced this arm, D5a calls
+`wait "$SAMPLER"` and only then calls `d5_lineage`. The sampler runs a 40-second window,
+so by the time the walk executes the supervisor has been dead for most of a minute and
+every `ps -o … -p <pid>` returns nothing. The lineage was scheduled after the subject's
+lifetime by construction.
+
+**What is NOT affected.** D5a's existence claim stands on its own evidence:
+`supervisor-samples.txt` holds three full-argv rows captured at the moment of the hit,
+each carrying pid `20573` and ppid `1`, and `sampler-rate.txt` records the rate that
+produced them. D5b is unaffected and carries the live table and the real walk. No other
+arm in this section uses `d5_lineage`.
+
+**Not re-run**, on the lead's instruction: D5a's value is the real-timing existence proof,
+which its samples already carry, and D5b supplies the lineage.
+
+**The transferable lesson, and what changed because of it.** This is the same shape as the
+defect D5 exists to remove: SC-835g's original artifact was an `ARM.txt` asserting
+`supervisor_observed=yes` beside a post-hoc snapshot; D5a is an artifact whose own header
+asserts *taken while it was alive* beside an empty walk. Both times the assertion was
+written **at capture time from what the harness intended to capture**, not derived from
+what it actually got. The generate-then-paste rule already covers report sentences; it did
+not cover **artifact headers**, and a header that says what a file contains is a claim
+carrying exactly the same obligation.
+
+`_harness/discrim-d345.sh` has therefore been changed for any future use: `d5_lineage`
+now walks first and **derives its header from the result** — it emits the ancestor count it
+actually collected and says so plainly when that count is zero — and D5a takes the walk at
+FIRST SIGHT rather than after the sampler's window closes. **The version that produced the
+artifacts in this section is the one preserved in `L-DISCRIM/harness-snapshot/`, unchanged
+and still hashed by `HARNESS-SHA256SUMS.txt`.** The arms were not re-run, so nothing in
+`arms/` reflects the new version.
+
+## Snapshot composition after D1b, stated because it is mixed on purpose
+
+`L-DISCRIM/harness-snapshot/` was rebuilt when D1b landed, so it now also carries
+`discrim-d1b.sh` — the arm ran under it. One file in it is deliberately **not** the
+current shared copy: `discrim-d345.sh` is held at `0eee4eff…`, the version that actually
+produced D5a and D5b, while `_harness/discrim-d345.sh` is the fixed `6886e4d5…` described
+in the Correction above. A snapshot records what ran; the shared harness records what to
+use next, and here they differ by exactly one file.
+
+This was nearly lost: rebuilding the snapshot for D1b overwrote that file with the fixed
+version, which would have made the Correction's own claim false. It was caught by
+re-checking the two hashes against what the Correction asserts, and the pre-fix copy was
+restored from the commit. The lesson is the same one this section keeps producing — a
+statement about a file is a claim, and rebuilding the thing the claim is about is exactly
+when it silently stops being true.

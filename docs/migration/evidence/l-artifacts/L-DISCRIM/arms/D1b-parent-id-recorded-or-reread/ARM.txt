@@ -1,0 +1,18 @@
+arm	D1b-parent-id-recorded-or-reread
+section	L-DISCRIM
+roster_ids	SC-824a, id half
+exists_because	D1 holds the archive id CONSTANT by construction, so it discriminates on COUNTS only; a mutant re-reading the id while retaining proved counts emits identical artifacts
+construction	the same construction as D1, but at the barrier after the FIRST parent proof the archive at the parent id is REMOVED and a second VALID archive is installed at a DIFFERENT id with different counts; the child recorded tuple is then read BY EXACT KEY
+hook_patch_version	L-HOOKS-v3
+binary.sha256	b1b07709b01a66f7467333a151e641d2139b6950e58ca4cd53b47aa020afdfdd
+parent_uuid	691a5bb5-e61d-4671-b14e-531076e467fe
+parent_counts	handover=2 pending=1
+replacement_uuid	435063a9-64fc-41ec-a323-b60ff941dc40
+replacement_counts	handover=5 pending=3
+control_replacement_accepted	YES (a --from against the replacement alone records id=435063a9-64fc-41ec-a323-b60ff941dc40 handover=5 pending=3)
+child_exists	NO
+child_recorded_id	<no child meta>
+child_recorded_counts	handover=<none> pending=<none>
+op_rc	1
+arm_could_produce_the_unwanted_answer	NO
+OBSERVATION	child-tuple.txt, control-child-tuple.txt, the swap diff, and source-trace.where-the-id-comes-from.txt. No verdict is stated here.
