@@ -147,6 +147,13 @@ Authority: commands.md end section. Empirical: pending. Conflict: none.
 path) prints the command surface; inherits the M2 bootstrap caveat like every
 dispatcher entry. Authority: commands.md. Empirical: pending. Conflict: none.
 
+**classified_by (S1 preflight MARK, ae-20260820T115449Z-1b7ef041): SC-016a, SC-016b,
+SC-016c, SC-016d, SC-017a..i, SC-020a, SC-020b, SC-020c — fable5:lead +
+gpt56sol:colead, 2026-08-20. Normative/conflict lane only (SC-020b is bucket 1 — the
+existence re-check safety invariant; the rest of this exact set bucket 2;
+conflict=none throughout). Empirical remains pending C-cluster observation; this MARK
+does not ratify IS.**
+
 **SC-013 — `steward --help`/`--detach` flag surface.** `authority=code-observation`.
 Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 
