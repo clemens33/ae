@@ -374,6 +374,33 @@ running the wrong thing, and the reason was that the right thing had never been 
 cheaper and more reliable than probe N+1. Guessing feels like progress and is the same
 motion that produced the first N.
 
+### Reachable is not discriminating, and an amendment's blast radius is not what it names
+
+Two rules from one rebuild, both earned twice over.
+
+**A fix that makes a check REACHABLE is not a fix that makes it DISCRIMINATE.** A pair of
+cases meant to oppose on one fact reported identically; a seat found the guard that made
+the fact unreachable, and the fix opened it. The pair then reported identically **again, in
+the other direction** — because the compared value was taken from the invoking process's
+own `$PWD`, and the arm ran from wherever the controller happened to stand, so the MATCH
+case could not match *by construction*. **The arm's own invocation environment was a hidden
+input to the test.** Getting past a guard says nothing about whether the fact behind it is
+consulted meaningfully; re-check the pair discriminates after making it reachable, as a
+separate step.
+
+**An amendment moves readings in cases it does not name.** After the second fix, one case
+no amendment mentioned changed from `rc 1` to `rc 0` with nothing about its own fixture
+altered — its reading was a joint property of its fixture *and* the shared invocation
+directory, and it moved when that moved. So: **re-read every case after an amendment, not
+only the amended ones.** The worker's own framing is why it worked —
+
+> Twelve reproduced identically across the amendment, which is what made the one that did
+> not stand out.
+
+The unchanged majority is simultaneously the detector and the control. Re-reading only the
+named cases would have shipped a silently moved reading with a clean amendment record
+beside it.
+
 ### Closing layer 1 makes layer 2 HARDER to see
 
 Citation failure has three layers, all three hit in one cluster, each invisible from the
