@@ -191,10 +191,13 @@ Empirical: pending. Conflict: none.
 **SC-017f — `--json` honours the active filters.** Bucket 2. Authority:
 commands.md:88. Empirical: pending. Conflict: none.
 
-**SC-017g — the attention marker is the single most-actionable reason by documented
-severity.** Bucket 2 — dead > stale > waiting-user > blocked > throttled > unanswered,
-derived as a rollup across the session's agents. Authority: commands.md:60-76.
-Empirical: pending. Conflict: none.
+**SC-017g — the attention marker is the single most-actionable reason.** Bucket 2 —
+dead > stale > waiting-user > blocked > throttled > unanswered, derived as the MAX
+across agent reasons PLUS session-level unresolved-request facts (amended slice-1b:
+unanswered is a PAIR fact with no owning agent — cross-session ask/review makes
+target ownership non-local; agents[].reason never reads unanswered). Authority:
+commands.md:60-76 + slice-1b joint ruling. Empirical: pending. Conflict: none.
+**classified_by: RE-MARKED after amendment — both seats, 2026-08-20.**
 
 **SC-017h — the tabular view shows per-agent health, declared state, and the session
 attn marker.** Bucket 2. Authority: commands.md:56-59. Empirical: pending.
@@ -576,8 +579,37 @@ provider-session-id` (SC-1207b) and `agent_bin.<slot>` the recorded binary. Auth
 architecture.md roster + #46/#50 rulings (recorded agent_bin). Empirical: census.
 Conflict: none. **classified_by: both seats, 2026-08-20.**
 
-**SC-405d — unknown-key handling.** `authority=code-observation` — probe + seat
-closure; never guessed. UNCLASSIFIED pending closure.
+**SC-405d — unknown meta keys are tolerated and never degrade.** Bucket 2 —
+(slice-1b closure, both seats): the digest consumes only SC-405b/c; every other key is
+tolerated silently — unknown keys are the normal state of real metas (the builder's
+30-meta name census records MIGRATION-COMPATIBILITY pressure, not frozen IS; the
+C-cluster still captures incumbent behavior). Malformed and duplicate keys DO degrade
+interim per SC-509b's actual-loss test; SC-405e's probe still owes the exact malformed
+shapes. There is NO enumerating row for the writer-key population (SC-405h REJECTED —
+a live census never becomes contract; per-family S5 rows only when successor writers
+need a SHOULD; the inventory stays evidence). Authority: slice-1b joint ruling.
+Empirical: builder name-census + C-cluster pending. Conflict: none. **classified_by:
+both seats, 2026-08-20.**
+
+**SC-405i — a present session dir with MISSING meta is degraded.** Bucket 2 —
+(slice-1b Q8): identity beyond the directory name and the entire roster are lost at
+once — actual loss by SC-509b's own test; distinct from missing/empty EVENT logs,
+which SC-519 makes quiet. Authority: slice-1b joint ruling + SC-509b. Empirical:
+pending (C-cluster). Conflict: none. **classified_by: both seats, 2026-08-20.**
+
+**SC-405j — a routed event with a stale session stays UNASSOCIATED.** Bucket 2 —
+(slice-1b Q10, colead dissent adopted by lead ruling): when an event carries
+slot+session and the session mismatches after a rename, display-name fallback would
+create FALSE ATTRIBUTION against the SC-518/SC-511b loud-direction rulings; the event
+stays unassociated (loud false-negative), rename loss is the KNOWN LIMITATION, and
+SC-977's stable identity removes it at the P2 routing cutover. Authority: slice-1b
+joint ruling + SC-518/511b direction. Empirical: pending. Conflict: none.
+**classified_by: both seats, 2026-08-20.**
+
+**SC-405k — agents[] membership is roster-defined.** Bucket 2 — (slice-1b Q11):
+runtime-only panes/slots never invent agents; SC-509's agents[] fields are roster
+fields; a missing roster/meta routes through SC-405i. Authority: slice-1b joint
+ruling. Empirical: pending. Conflict: none. **classified_by: both seats, 2026-08-20.**
 
 **SC-405e — malformed/duplicate key handling.** `authority=code-observation` — probe +
 seat closure; never guessed. UNCLASSIFIED pending closure.

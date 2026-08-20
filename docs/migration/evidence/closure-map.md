@@ -480,3 +480,10 @@ SC-405g | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; is
 SC-980 | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures | manipulate=deterministic per C/T-WD design | barriers=frozen inputs, before/after barriers | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted
 
 SC-523b | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures | manipulate=deterministic per C design | barriers=frozen inputs, before/after barriers | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted
+
+## Slice-1B additions
+
+SC-405i | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures | manipulate=deterministic per C design | barriers=frozen inputs, before/after barriers | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted
+SC-405j | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures | manipulate=deterministic per C design | barriers=frozen inputs, before/after barriers | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted
+SC-405k | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures | manipulate=deterministic per C design | barriers=frozen inputs, before/after barriers | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted
+

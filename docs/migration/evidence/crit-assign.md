@@ -322,3 +322,7 @@ CRIT-ASSIGN: SC-405e | C | read-side fixture cluster: malformed/duplicate-meta-k
 CRIT-ASSIGN: SC-405f | C | read-side fixture cluster: goal_set_epoch derived-from-latest-goal-event arm
 CRIT-ASSIGN: SC-405g | C | read-side fixture cluster: branch resolution subarms — running tmux @ae_branch_name primary; git fallback when absent/stopped
 CRIT-ASSIGN: SC-980 | T-WD | watchdog branch harness: incumbent alert action/summary byte capture (legacy adapter IS only, never SHOULD)
+CRIT-ASSIGN: SC-405i | C | read-side fixture cluster: missing-meta-degrades arm (present dir, no meta; distinct from SC-519 quiet)
+CRIT-ASSIGN: SC-405j | C | read-side fixture cluster: stale-session routed event stays unassociated (renamed-session fixture, loud false-negative capture)
+CRIT-ASSIGN: SC-405k | C | read-side fixture cluster: runtime-only slot never invents an agent (roster-vs-runtime divergence fixture)
+

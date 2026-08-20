@@ -1,4 +1,8 @@
-# Batch C design v2 — read-side evidence run (59 assignments)
+# Batch C design v3 — read-side evidence run (62 assignments)
+
+BOUNDARY REOPENED per the standing contract-change rule (slice-1b added SC-405i/j/k
+to C; SC-405d reclassified in place, its arm unchanged). Delta: three arms appended
+to A7/A9; everything else stands as gated.
 
 Corrected per the seat gate (six blockers folded). NO evidence worker runs before this
 document AND its prerequisites are seat-green.
@@ -98,12 +102,17 @@ routing-preference arms with G10.
 
 ## Arms (nine groups, unchanged coverage, corrected mechanics)
 
-A1 schema/document (SC-509, 509b, 506, 510a-d, 511a-b): G1/G3/G7/G8/G11; 510c's
-recover-ref via the `_recover-pending`/`_register-sid` harvest; 511c REMOVED (B0).
+A1 schema/document (SC-509, 509b, 506, 510a-d, 511a-b, 405k): G1/G3/G7/G8/G11; 510c's
+recover-ref via the `_recover-pending`/`_register-sid` harvest; 511c REMOVED (B0);
+405k — live tmux topology with one EXTRA runtime pane absent from the roster AND one
+roster slot whose pane is absent: agents[] membership follows the roster while alive
+follows the runtime, both captured.
 A2 filters (SC-017a-f, 017i, 521): G1+G2+G6 clones; one invocation per flag/alias;
 the two intersection arms; ls alias.
-A3 rollup/severity (SC-017g, 017h, 524): G2 + G2b (competing/reversed); the SC-524
-source-discrimination pair.
+A3 rollup/severity (SC-017g, 017h, 524): G2 + G2b (competing/reversed); the amended
+017g additionally gets a SESSION-LEVEL unanswered request competing against at least
+one agent-owned reason — proving it participates in the max WITHOUT appearing in any
+agents[].reason; the SC-524 source-discrimination pair.
 A4 status/next (SC-016a-d, 513a-c, 019, 020a-c): live-tmux arms on dedicated servers;
 never-attaches via client-list snapshots; SC-020b per its named barrier.
 A5 exits (SC-514): doctor under a CONTROLLED PATH/capability fixture — clean arm and
@@ -112,16 +121,23 @@ planted dependency cannot remove the interpreter or other checklist items.
 A6 requests/pairing (SC-518, 522, 523a-b): G5 protocol; scrubbed-env defaults;
 fixed-clock thresholds. (SC-212c is H-HELPER's — removed per gate; no incidental
 closure.)
-A7 meta grammar (SC-405a-g): G1/G7 + malformed/duplicate-key producer-derived
+A7 meta grammar (SC-405a-g, 405j): G1/G7 + malformed/duplicate-key producer-derived
 fixtures (405d/e captures remain observation-only for UNCLASSIFIED rows); G9 for
 405f; 405g's two named resolution subarms (tmux @ae_branch_name primary on a live
-server; git fallback on a stopped clone).
+server; git fallback on a stopped clone); 405j identity arm — producer-derived routed
+state event, then the fixture session RENAMED so actor_session is stale while the
+display name would match; capture the UNASSOCIATED outcome, with a SAME-DISPLAY
+control and a FRESH-ROUTE control so both a no-event-recognized and an
+all-display-ignored implementation fail.
 A8 modes (SC-101, 102a-b, 018b): WRITABLE clones per arm; fast-path attach with full
 manifest+tmux diff (101); resume regeneration set diff (102a); inside-session
 invocation (102b, live server); use-against-existing arm (018b). (SC-100 and SC-018
 are DEFERRABLE — removed per gate; the batch boundary is exactly the 59 assigned.)
-A9 quiet-vs-degraded (SC-519, 520): G4 (quiet both ways) vs G3 (degraded + public
-JSON marker + retained generation/offset/reason capture).
+A9 quiet-vs-degraded (SC-519, 520, 405i): G4 (quiet both ways) vs G3 (degraded +
+public JSON marker + retained generation/offset/reason capture); 405i — a present
+session dir with META ABSENT (named mutation), distinct from G4's missing EVENTS and
+G3's unreadable meta; capture degraded:true with surviving directory identity and
+document closure.
 
 ## Per-row differentiators (gate B2 — the discriminating manipulation per row;
 common capture/barrier boilerplate applies to all)

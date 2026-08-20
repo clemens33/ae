@@ -472,3 +472,9 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-405g — CRITICAL(C)
 - SC-980 — CRITICAL(B,D)
 
+## Slice-1B additions (2026-08-20 — 3 rows; SC-405d reclassified in place)
+
+- SC-405i — CRITICAL(C,D)
+- SC-405j — CRITICAL(C,D)
+- SC-405k — CRITICAL(C)
+
