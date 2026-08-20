@@ -1,0 +1,48 @@
+stage	1 — the hermetic loopback rig
+sshd.start.rc	0
+sshd.pid	76331
+port	27124 (random high port)
+listen	127.0.0.1 only
+host_keypair	/tmp/aelx/L-RENTRANS/_preflight/rig/etc/ssh_host_ed25519_key (per-sandbox, generated here)
+client_keypair	/tmp/aelx/L-RENTRANS/_preflight/h/.ssh/id_ed25519 (per-sandbox, generated here)
+authorized_keys	/tmp/aelx/L-RENTRANS/_preflight/rig/etc/authorized_keys
+known_hosts	preseeded, StrictHostKeyChecking=yes
+forced_command	/tmp/aelx/L-RENTRANS/_preflight/rig/bin/forced.sh — sets a separate remote HOME=/tmp/aelx/L-RENTRANS/_preflight/rig/remote-home and PATH
+real_user_home	NOT used: HOME is the sandbox home for every client invocation
+
+# sshd_config, verbatim
+Port 27124
+ListenAddress 127.0.0.1
+HostKey /tmp/aelx/L-RENTRANS/_preflight/rig/etc/ssh_host_ed25519_key
+PidFile /tmp/aelx/L-RENTRANS/_preflight/rig/sshd.pid
+StrictModes no
+UsePAM no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile /tmp/aelx/L-RENTRANS/_preflight/rig/etc/authorized_keys
+PermitUserEnvironment no
+X11Forwarding no
+AllowTcpForwarding no
+PrintMotd no
+LogLevel VERBOSE
+ForceCommand /tmp/aelx/L-RENTRANS/_preflight/rig/bin/forced.sh
+Subsystem sftp internal-sftp
+
+# ssh client config, verbatim
+Host aepeer
+  HostName 127.0.0.1
+  Port 27124
+  User ckriech
+  IdentityFile /tmp/aelx/L-RENTRANS/_preflight/h/.ssh/id_ed25519
+  IdentitiesOnly yes
+  StrictHostKeyChecking yes
+  UserKnownHostsFile /tmp/aelx/L-RENTRANS/_preflight/h/.ssh/known_hosts
+  BatchMode yes
+  ConnectTimeout 5
+
+# sshd start stderr
+
+# listening sockets on that port
+COMMAND   PID    USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+sshd    76331 ckriech    7u  IPv4 0x1d3f4d3133e1af7c      0t0  TCP 127.0.0.1:27124 (LISTEN)

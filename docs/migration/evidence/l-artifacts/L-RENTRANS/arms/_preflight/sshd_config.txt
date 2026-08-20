@@ -1,0 +1,17 @@
+Port 27124
+ListenAddress 127.0.0.1
+HostKey /tmp/aelx/L-RENTRANS/_preflight/rig/etc/ssh_host_ed25519_key
+PidFile /tmp/aelx/L-RENTRANS/_preflight/rig/sshd.pid
+StrictModes no
+UsePAM no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile /tmp/aelx/L-RENTRANS/_preflight/rig/etc/authorized_keys
+PermitUserEnvironment no
+X11Forwarding no
+AllowTcpForwarding no
+PrintMotd no
+LogLevel VERBOSE
+ForceCommand /tmp/aelx/L-RENTRANS/_preflight/rig/bin/forced.sh
+Subsystem sftp internal-sftp

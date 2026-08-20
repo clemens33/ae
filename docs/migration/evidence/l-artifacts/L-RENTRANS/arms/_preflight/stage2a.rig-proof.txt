@@ -1,0 +1,74 @@
+stage	2a — RIG PROOF (harness-side, explicit -F; this is NOT the product call shape)
+
+# ssh -F <sandbox config> aepeer, through the ForceCommand wrapper
+ckriech
+HOME=/tmp/aelx/L-RENTRANS/_preflight/rig/remote-home
+PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+Darwin
+ssh.rc	0
+
+# the frozen probe SHAPE, but with -F so it can reach the rig
+probe.rc	0
+
+# rsync over that PROVEN channel with the EXACT flags the frozen code uses
+rsync: invalid option -- A
+usage: rsync [-0468BCDEFHIKLOPRSTWVabcdghiklnopqrtuvxyz] [-e program]
+	[-f filter] [--8-bit-output] [--address=sourceaddr] [--append]
+	[--backup-dir=dir] [--bwlimit=limit] [--cache | --no-cache]
+	[--checksum-seed=NUM] [--chmod=mode] [--compare-dest=dir] [--compress]
+	[--compress-level=NUM] [--contimeout] [--copy-dest=dir]
+	[--copy-unsafe-links] [--del]
+	[--delete-after | --delete-before | --delete-delay | --delete-during]
+	[--delete-excluded] [--delay-updates] [--dirs] [--no-dirs]
+	[--existing] [--exclude=pattern] [--exclude-from=file] [--executability]
+	[--extended-attributes]
+	[--existing] [--files-from=filespec] [--force] [--ignore-errors]
+	[--ignore-existing] [--ignore-non-existing] [--include=pattern]
+	[--include-from=file] [--inplace] [--itemize-changes]
+	[--keep-dirlinks] [--link-dest=dir] [--list-only]
+	[--max-delete=NUM] [--max-size=SIZE] [--min-size=SIZE]
+	[--modify-window=sec] [--no-implied-dirs] [--no-motd] [--numeric-ids]
+	[--out-format=FMT] [--partial] [--partial-dir] [--password-file=pwfile]
+	[--port=portnumber] [--progress] [--protocol=NUM] [--prune-empty-dirs]
+	[--read-batch=file] [--remove-source-files] [--rsync-path=program]
+	[--safe-links] [--size-only] [--sockopts=sockopts] [--specials]
+	[--stats] [--suffix] [--super] [--timeout=seconds]
+	[--only-write-batch=file | --write-batch=file]
+	source ... directory
+rsync.frozen-flags.rc	1
+
+# the same rsync with -A dropped, to isolate which flag fails first
+rsync: unrecognized option `--protect-args'
+usage: rsync [-0468BCDEFHIKLOPRSTWVabcdghiklnopqrtuvxyz] [-e program]
+	[-f filter] [--8-bit-output] [--address=sourceaddr] [--append]
+	[--backup-dir=dir] [--bwlimit=limit] [--cache | --no-cache]
+	[--checksum-seed=NUM] [--chmod=mode] [--compare-dest=dir] [--compress]
+	[--compress-level=NUM] [--contimeout] [--copy-dest=dir]
+	[--copy-unsafe-links] [--del]
+	[--delete-after | --delete-before | --delete-delay | --delete-during]
+	[--delete-excluded] [--delay-updates] [--dirs] [--no-dirs]
+	[--existing] [--exclude=pattern] [--exclude-from=file] [--executability]
+	[--extended-attributes]
+	[--existing] [--files-from=filespec] [--force] [--ignore-errors]
+	[--ignore-existing] [--ignore-non-existing] [--include=pattern]
+	[--include-from=file] [--inplace] [--itemize-changes]
+	[--keep-dirlinks] [--link-dest=dir] [--list-only]
+	[--max-delete=NUM] [--max-size=SIZE] [--min-size=SIZE]
+	[--modify-window=sec] [--no-implied-dirs] [--no-motd] [--numeric-ids]
+	[--out-format=FMT] [--partial] [--partial-dir] [--password-file=pwfile]
+	[--port=portnumber] [--progress] [--protocol=NUM] [--prune-empty-dirs]
+	[--read-batch=file] [--remove-source-files] [--rsync-path=program]
+	[--safe-links] [--size-only] [--sockopts=sockopts] [--specials]
+	[--stats] [--suffix] [--super] [--timeout=seconds]
+	[--only-write-batch=file | --write-batch=file]
+	source ... directory
+rsync.no-A.rc	1
+
+# and with both -A and --protect-args dropped: does the CHANNEL carry rsync at all?
+rsync.plain.rc	0
+
+# what landed on the remote side
+total 8
+drwxr-xr-x@ 3 ckriech  wheel  96 Aug 20 20:17 .
+drwxr-xr-x@ 3 ckriech  wheel  96 Aug 20 20:17 ..
+-rw-r--r--@ 1 ckriech  wheel  21 Aug 20 20:17 probe.txt

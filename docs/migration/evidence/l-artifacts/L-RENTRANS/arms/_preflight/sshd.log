@@ -1,0 +1,31 @@
+Server listening on 127.0.0.1 port 27124.
+Connection from 127.0.0.1 port 50275 on 127.0.0.1 port 27124
+Accepted key ED25519 SHA256:6VII8Be5dOdjL+cYCRotwcgVVWLGFjZ+waqCHUUQjAI found at /tmp/aelx/L-RENTRANS/_preflight/rig/etc/authorized_keys:1
+Postponed publickey for ckriech from 127.0.0.1 port 50275 ssh2 [preauth]
+Accepted key ED25519 SHA256:6VII8Be5dOdjL+cYCRotwcgVVWLGFjZ+waqCHUUQjAI found at /tmp/aelx/L-RENTRANS/_preflight/rig/etc/authorized_keys:1
+Accepted publickey for ckriech from 127.0.0.1 port 50275 ssh2: ED25519 SHA256:6VII8Be5dOdjL+cYCRotwcgVVWLGFjZ+waqCHUUQjAI
+BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted
+User child is on pid 76580
+Starting session: forced-command (config) '/tmp/aelx/L-RENTRANS/_preflight/rig/bin/forced.sh' for ckriech from 127.0.0.1 port 50275 id 0
+Received disconnect from 127.0.0.1 port 50275:11: disconnected by user
+Disconnected from user ckriech 127.0.0.1 port 50275
+Connection from 127.0.0.1 port 50278 on 127.0.0.1 port 27124
+Accepted key ED25519 SHA256:6VII8Be5dOdjL+cYCRotwcgVVWLGFjZ+waqCHUUQjAI found at /tmp/aelx/L-RENTRANS/_preflight/rig/etc/authorized_keys:1
+Postponed publickey for ckriech from 127.0.0.1 port 50278 ssh2 [preauth]
+Accepted key ED25519 SHA256:6VII8Be5dOdjL+cYCRotwcgVVWLGFjZ+waqCHUUQjAI found at /tmp/aelx/L-RENTRANS/_preflight/rig/etc/authorized_keys:1
+Accepted publickey for ckriech from 127.0.0.1 port 50278 ssh2: ED25519 SHA256:6VII8Be5dOdjL+cYCRotwcgVVWLGFjZ+waqCHUUQjAI
+BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted
+User child is on pid 76835
+Starting session: forced-command (config) '/tmp/aelx/L-RENTRANS/_preflight/rig/bin/forced.sh' for ckriech from 127.0.0.1 port 50278 id 0
+Received disconnect from 127.0.0.1 port 50278:11: disconnected by user
+Disconnected from user ckriech 127.0.0.1 port 50278
+Connection from 127.0.0.1 port 50280 on 127.0.0.1 port 27124
+Accepted key ED25519 SHA256:6VII8Be5dOdjL+cYCRotwcgVVWLGFjZ+waqCHUUQjAI found at /tmp/aelx/L-RENTRANS/_preflight/rig/etc/authorized_keys:1
+Postponed publickey for ckriech from 127.0.0.1 port 50280 ssh2 [preauth]
+Accepted key ED25519 SHA256:6VII8Be5dOdjL+cYCRotwcgVVWLGFjZ+waqCHUUQjAI found at /tmp/aelx/L-RENTRANS/_preflight/rig/etc/authorized_keys:1
+Accepted publickey for ckriech from 127.0.0.1 port 50280 ssh2: ED25519 SHA256:6VII8Be5dOdjL+cYCRotwcgVVWLGFjZ+waqCHUUQjAI
+BSM audit: bsm_audit_session_setup: setaudit_addr failed: Operation not permitted
+User child is on pid 76854
+Starting session: forced-command (config) '/tmp/aelx/L-RENTRANS/_preflight/rig/bin/forced.sh' for ckriech from 127.0.0.1 port 50280 id 0
+Received disconnect from 127.0.0.1 port 50280:11: disconnected by user
+Disconnected from user ckriech 127.0.0.1 port 50280

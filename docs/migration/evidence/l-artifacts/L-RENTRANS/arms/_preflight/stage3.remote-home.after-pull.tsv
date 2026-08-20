@@ -1,0 +1,5 @@
+# manifest-root	/tmp/aelx/L-RENTRANS/_preflight/rig/remote-home
+#path	type	mode	nlink	size	link	sha256
+.	dir	755	3	96	-	-
+rsyncdst	dir	755	3	96	-	-
+rsyncdst/probe.txt	file	644	1	21	-	f21bbe4076d49e6ea9ae7054816a41a30cfe43f584738d8b2338f87609456aa0

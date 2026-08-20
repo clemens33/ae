@@ -1,0 +1,186 @@
+--- /tmp/aelx/frozen/ae	2026-08-20 08:49:06
++++ /tmp/aelx/instr3/ae	2026-08-20 19:48:37
+@@ -52,6 +52,33 @@
+ # Unset → the normal ~/.ae. CONFIG_DIR derives from it; everything below derives
+ # from CONFIG_DIR, so this single knob is authoritative for the whole tool.
+ AE_HOME="${AE_HOME:-${HOME}/.ae}"
++
++# ─── BATCH-L INSTRUMENTATION (hook-only; inert unless AE_L_HOOKS is set) ───────
++# Blocks or emits a barrier ordinal. Never reads, hashes or computes over
++# product state. Writes only to harness paths (AE_L_TRACE / AE_L_BLOCK).
++_H() {
++    [[ -n "${AE_L_HOOKS:-}" ]] || return 0
++    case ":${AE_L_HOOKS}:" in
++        *":$1:"*) ;;
++        *) return 0 ;;
++    esac
++    _AE_L_N=$((${_AE_L_N:-0} + 1))
++    if [[ -n "${AE_L_TRACE:-}" ]]; then
++        printf '%s\t%s\t%s\t%s\n' "$_AE_L_N" "$1" "$$" "${EPOCHREALTIME:-0}" >>"$AE_L_TRACE" 2>/dev/null || true
++    fi
++    if [[ -n "${AE_L_BLOCK:-}" ]]; then
++        local _k="$1.${BASHPID:-$$}.${_AE_L_N}"
++        : >"${AE_L_BLOCK}/${_k}.reached" 2>/dev/null || true
++        local _i=0
++        while [[ ! -e "${AE_L_BLOCK}/${_k}.release" ]]; do
++            sleep 0.1
++            _i=$((_i + 1))
++            ((_i > ${AE_L_BLOCK_MAX:-1200})) && break
++        done
++    fi
++    return 0
++}
++# ─── END BATCH-L INSTRUMENTATION ──────────────────────────────────────────────
+ CONFIG_DIR="$AE_HOME"
+ # CONFIG_FILE honors a pre-set env var so tests + the generated daemon
+ # can point at a non-default config without rewriting the user's real one.
+@@ -3019,10 +3046,12 @@
+             # look empty, which the old check read as gone (4th review, B2).
+             _lifecycle_kill_verified "$session_name" end "$_es_sid" || return 1
+         fi
++        _H b_stop_local
+         # CAPTURE BEFORE DELETE. Local mode manages no branch of its own, so the archive
+         # records the git outcome honestly as not-managed rather than inventing a range
+         # from the human's own checkout.
+         _end_archive_step "$session_name" "not-managed" "-" "-" "" || return 1
++        _H b_pre_cleanup
+         cleanup_session "$session_name" "$mode" "$origin"
+         echo "Ended local session $session_name"
+         return 0
+@@ -3053,6 +3082,7 @@
+         _lifecycle_kill_verified "$session_name" end "$_es_sid" || return 1
+         _es_sid=""
+     fi
++    _H b_stop_git
+     # Check for uncommitted changes
+     if ! git -C "$wdir" diff --quiet 2>/dev/null || ! git -C "$wdir" diff --cached --quiet 2>/dev/null ||
+         [[ -n "$(git -C "$wdir" ls-files --others --exclude-standard 2>/dev/null)" ]]; then
+@@ -3123,14 +3153,18 @@
+     # the worktree). Removing it would silently destroy the work the prompt promised to
+     # keep — preserve the directory, remove only ae's session state.
+     if [[ "$_es_preserve_workdir" == true ]]; then
++        _H b_git_fixed
+         _end_archive_step "$session_name" "$_es_push_out" "$_es_push_ref" "$wdir" "$wdir" || return 1
++        _H b_pre_cleanup
+         cleanup_session "$session_name" "$mode" "$origin" preserve
+         echo "Ended $session_name — work committed locally (no origin remote to push to)."
+         echo "  Directory preserved: $wdir"
+         return 0
+     fi
+     # The last thing before the session stops existing: capture it, or fail and keep it.
++    _H b_git_fixed
+     _end_archive_step "$session_name" "$_es_push_out" "$_es_push_ref" "-" "$wdir" || return 1
++    _H b_pre_cleanup
+     cleanup_session "$session_name" "$mode" "$origin"
+     echo "Ended $session_name"
+     return 0
+@@ -5320,11 +5354,13 @@
+         echo "archive: ${target} appeared while staging — refusing to overwrite it." >&2
+         return 1
+     fi
++    _H b_pre_rename
+     if ! mv "$payload" "$target"; then
+         rm -rf "$claim"
+         echo "archive: could not publish ${target}." >&2
+         return 1
+     fi
++    _H b_post_rename
+     rmdir "$claim" 2>/dev/null || true
+     local files bytes
+     files="$(find "$target" -type f 2>/dev/null | _ar_count_lines)"
+@@ -5386,6 +5422,7 @@
+             chmod 0600 "${payload}/messages/${base}" || return 1
+         done
+     fi
++    _H b_stage_mid
+     _ar_render_digest "${payload}/meta" "${payload}/memo.tsv" "${payload}/events.jsonl" \
+         "${payload}/messages" "archived" >"${payload}/digest.md" || return 1
+     chmod 0600 "${payload}/digest.md" || return 1
+@@ -5645,6 +5682,7 @@
+ # primitive shipped and fixed; it does not get to reappear here.)
+ #   name  uuid  uuid_origin  mode  origin  config  purge  archive_path
+ _compact_freeze_source() { # <name> <keep-history:true|false>
++    _H b_cp_resolver_entry
+     local name="$1" keep_hist="${2:-false}"
+     local dir="${SESSIONS_DIR}/${name}"
+     if [[ ! -f "${dir}/meta" ]]; then
+@@ -6245,6 +6283,7 @@
+             return 0
+         fi
+     fi
++    _H b_cp_after_answer
+     # FIRST revalidation: between the freeze and the human's answer the session could have
+     # been replaced, and a replacement must never be MESSAGED. The second runs after the
+     # bounded wait, so a replacement is never STOPPED.
+@@ -6277,6 +6316,7 @@
+                 return 1
+             fi
+         fi
++        _H b_cp_reval_after_confirmation
+         _compact_revalidate "$c_name" "$tuple" "after confirmation" || return 1
+         # An outstanding request from a previous attempt is REUSED, never duplicated — and
+         # its baseline is reused with it, so a memo row written for the first attempt still
+@@ -6345,6 +6385,7 @@
+         fi
+         echo "compact: handover complete (reply ${ref} and a new handover memo)." >&2
+     fi
++    _H b_cp_after_handover
+     # ── phase (c): revalidate, then end under ONE lock ─────────────────────────
+     # The lock spans revalidation through teardown, and is RELEASED before the relaunch —
+     # the fresh session has the same name and takes the same lock, so holding it across
+@@ -6363,6 +6404,7 @@
+         if ((_cp_rc == 0)); then
+             # SECOND revalidation: a replacement is never STOPPED. The first ran before
+             # the handover request so a replacement is never MESSAGED.
++            _H b_cp_reval_after_wait
+             if _compact_revalidate "$c_name" "$tuple" "after the handover wait"; then
+                 # compact's frozen tuple IS end's authorization payload — one mechanism,
+                 # and `keep` because compact exists to keep the archive.
+@@ -6455,6 +6497,7 @@
+         echo "Error: cannot enter ${c_origin} to start the fresh session. Run the recovery command above." >&2
+         return 1
+     }
++    _H b_cp_pre_relaunch
+     exec env "${launch_env[@]}" "$(_ae_own_path)" "$mode_flag" "$c_name" --from "$c_uuid"
+ }
+ 
+@@ -6603,6 +6646,7 @@
+                 # F7 — wait on the RECORD, not on the loop. If this caller was one
+                 # of the targets it dies in here; that is the intended shape, not a
+                 # loss (everything it could report, it already reported).
++                _H b_stop_before_await
+                 _stop_fleet_await "$_opid" "$sessions" 30 || _all_rc=1
+             else
+                 _all_rc=1
+@@ -7255,6 +7299,7 @@
+     local opid="${1:-}"
+     shift || true
+     _stop_opid_valid "$opid" || return 1
++    _H b_stop_supervisor_entry
+     # F11 — THE WHOLE PAYLOAD IS ACCEPTED BEFORE ANY OF IT IS ACTED ON. The first
+     # version validated the odd tail AFTER the loop, so `opid oddone <id> dangling`
+     # killed oddone and recorded it verified-gone, and THEN returned 1 — a refusal
+@@ -7561,6 +7606,7 @@
+             echo "note: flock not found — lifecycle locking degraded (start/stop races unguarded)" >&2
+         fi
+         if [[ "$expect_set" == true ]]; then
++        _H b_stop_one_pre_kill
+             _stop_session_locked "$name" "$expect_sid"
+         else
+             _stop_session_locked "$name"
+@@ -8453,6 +8499,7 @@
+             return 0
+         fi
+     fi
++    _H b_confirm_answered
+     if [[ "$target" == "all" ]]; then
+         local found=false failures=0
+         if [[ "$_AE_END_TARGETS_CONFIRMED" == true ]]; then
+@@ -16986,6 +17033,7 @@
+ if [[ -n "$FROM_ARCHIVE" ]]; then
+     _from_proof="$(_ar_from_preflight "$FROM_ARCHIVE")" || exit 1
+     IFS=$'\t' read -r PARENT_ARCHIVE_ID PARENT_ARCHIVE_HANDOVER PARENT_ARCHIVE_PENDING <<<"$_from_proof"
++    _H b_from_proved
+     if tmux has-session -t "$SESSION" 2>/dev/null ||
+         [[ -d "${SESSIONS_DIR}/${SESSION}" || -d "${WORKTREES_DIR}/${SESSION}" ]]; then
+         echo "Error: --from is only valid for a NEW session, and '${SESSION}' already exists." >&2

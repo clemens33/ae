@@ -1,0 +1,17 @@
+stage	2b — the FROZEN call shape: plain ssh <target>, no -F, no shim
+
+# which config files the real client actually reads under this environment
+debug1: OpenSSH_10.3p1, LibreSSL 3.3.6
+debug1: Reading configuration data /Users/ckriech/.ssh/config
+debug1: Reading configuration data /Users/ckriech/.colima/ssh_config
+debug1: /Users/ckriech/.ssh/config line 6: include ~/.orbstack/ssh/config matched no files
+debug1: Reading configuration data /etc/ssh/ssh_config
+debug1: Reading configuration data /etc/ssh/ssh_config.d/100-macos.conf
+debug1: /etc/ssh/ssh_config.d/100-macos.conf line 1: Applying options for *
+debug1: Reading configuration data /etc/ssh/crypto.conf
+debug1: Authenticator provider $SSH_SK_PROVIDER did not resolve; disabling
+ssh: Could not resolve hostname aepeer: nodename nor servname provided, or not known
+plain.probe.rc	255
+
+# HOME as the client saw it	/tmp/aelx/L-RENTRANS/_preflight/h
+# the sandbox config the client did NOT read	/tmp/aelx/L-RENTRANS/_preflight/h/.ssh/config
