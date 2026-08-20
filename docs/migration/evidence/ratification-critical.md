@@ -3,15 +3,15 @@
 Derived mechanically from the canonical set reported by sweep-check.sh; letters are criteria only.
 
 - Canonical IDs (checker at HEAD): SC=427, D=43, total=470; manifest lines=470 (exact; SET_EXTRA=0, SET_MISSING=0)
-- Class counts (mechanically regenerated 2026-08-20 post slice-1d + SC-021 (ls-alias row, s2 Q4): SC-510e/f event-format heads + SC-021 added; earlier folds retained; SC-012b bare-invocation residue added 2026-08-20 per seat ruling ae-20260820T165746Z-fb9c4fb6, CRITICAL(A) in-class with SC-013/SC-014; SC-509c reason-null defect row added per ba95a5e seat read, CRITICAL(B) in-class with SC-1106): CRITICAL=326, DEFERRABLE=103, OBSERVED=41
-- Critical-letter counts (overlaps counted): A=125, B=40, C=61, D=198
-- D24 remains critical/non-observed pending its negative-evidence pointer; when it lands: CRITICAL=323, OBSERVED=42
-- Outstanding critical observations: 326. Clusters build only from the CRIT-ASSIGN table.
+- Class counts (mechanically regenerated 2026-08-20 post slice-1d + SC-021 (ls-alias row, s2 Q4): SC-510e/f event-format heads + SC-021 added; earlier folds retained; SC-012b bare-invocation residue added 2026-08-20 per seat ruling ae-20260820T165746Z-fb9c4fb6, CRITICAL(A) in-class with SC-013/SC-014; SC-509c reason-null defect row added per ba95a5e seat read, CRITICAL(B) in-class with SC-1106; D01/D02/SC-509c flipped to OBSERVED on the ba95a5e closure — evidence + both-seat transcription, second-gate ruling): CRITICAL=323, DEFERRABLE=103, OBSERVED=44
+- Critical-letter counts (overlaps counted): A=123, B=39, C=59, D=198
+- D24 remains critical/non-observed pending its negative-evidence pointer; when it lands: CRITICAL=322, OBSERVED=45
+- Outstanding critical observations: 323. Clusters build only from the CRIT-ASSIGN table.
 
 - A includes explicit UNCLASSIFIED, authority=code-observation, literal Authority: UNRESOLVED(...) rows, and D records whose TBD fields feed a seat ruling; ALREADY-OBSERVED takes pin-audit PROVES priority.
 
-- D01 — CRITICAL(A,C)
-- D02 — CRITICAL(A,C)
+- D01 — OBSERVED (ba95a5e barrier + controller-only twin; both-seat transcription into ownership.md, ba50a92)
+- D02 — OBSERVED (ba95a5e barrier + controller-only twin; both-seat transcription into ownership.md, ba50a92)
 - D03 — CRITICAL(A,C)
 - D04a — CRITICAL(A,C)
 - D04b — CRITICAL(A,C)
@@ -462,7 +462,7 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 ## Slice-1 additions (2026-08-20, concurrent movement — 17 rows after the 523a/b split; prose here must not name retired bare ids: every SC-token on any line of this file enters the checker's expected set)
 
 - SC-509b — CRITICAL(C,D)
-- SC-509c — CRITICAL(B)
+- SC-509c — OBSERVED (ba95a5e A3/A3b attention-fields + ae:3714 root cause; classified both seats, #97)
 - SC-518 — CRITICAL(C,D)
 - SC-519 — CRITICAL(C)
 - SC-520 — CRITICAL(C,D)
