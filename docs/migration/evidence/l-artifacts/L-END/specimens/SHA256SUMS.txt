@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 c91937b8ced43659bd6fb449f33021c1dce61df80e19a7ce0723222730ceacfc  ./clean-archive.manifest.tsv
 9d29143d0ecf022844dadc775db784eb859cb8260527e0acd52216b93bb71544  ./clean-archive.provenance.txt
 be3ca8f69e7d244ac2d4727ee0dbb944e1c817c5234091a8a0f0e35644415e10  ./clean-archive/6f750c87-5a5a-4bac-8ec7-d387596bf49b/digest.md

@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 5078151a4e3a7ea42aca1cde7d5fccf949dc7e4f9efd38d0b17e9239ecb0dda3  ./0end-parent.invocation
 9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa  ./0end-parent.rc
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./0end-parent.stderr
@@ -23,7 +25,6 @@ d6a4316ba183a3e02f95160d21e0abe0d0bebed89bd2722715539eb82f7790f2  ./3post.full-s
 e072cab99fec10f0639b2798f68eb889abcbad083ee5132b101de4214346919c  ./3post.tmux.txt
 237d9aae2ebe945a7807c2a4caa8054a8149680eb57c305336b0fb21556aeefe  ./3post.worktrees.tsv
 17d0e71d418e0915c6bb97a031a0b89d4e21ab66380bf46f44c582f4f873278a  ./ARM.txt
-767d1b4eb60317ef479c11e32ff871fcfaac98ba499e30d4ce0dfeaf597b9257  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 4ce109f477fcf3ef405ebad24a4eca7293a8eba49edc55e38d706b7d0dbdf043  ./child-lineage.txt
 3e9c67ecea23b04a3a859535f1b2fe01c4ab91f62a53ddb3509e7fee76acf11e  ./child-workspace.md

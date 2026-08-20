@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 8e87dd89973f5d55ab2f8d5485b23b660be12b9bac45a2d9ef44cd2f572aacea  ./0launch.invocation
 4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865  ./0launch.rc
 aed2a2288725bbca0235827903a1bcc0b8cd92e73ca7634ba261f937f0bb35f0  ./0launch.stderr
@@ -28,7 +30,6 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./3rerun.stdou
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./3rerun.stdout.od
 4d2bb42b62c8856898e87c53b0d3b7ea7910bbdf5ae947cb1e75590f8cc5d58f  ./3rerun.stream-sizes.txt
 c6a48fdc852657c4a29e974ae1ea6fe639baa37990fa09428ea82fea08d57e18  ./ARM.txt
-4c8aa891be46972fb0ca8c32ac64d439ec590042cb6b60472d3d9d7bc36743bf  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./baseline.diff
 b798670b53796a96727ee249b7ee4009a4d84e50dbdc9867350d9b5a0252c0e9  ./baseline.run1.txt

@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 4d36767a1954951d47b596d6ac898ff26016045d10c538894b0878c68a531882  ./0launch.invocation
 4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865  ./0launch.rc
 aed2a2288725bbca0235827903a1bcc0b8cd92e73ca7634ba261f937f0bb35f0  ./0launch.stderr
@@ -18,7 +20,6 @@ e8b02f7faa4af62204d0e567da7e3206472a642a171b87b3130fcc86a6c5c6bc  ./3post.aehome
 7a2e875159d3226cdb0134de96e05b46ff0a07b4ff4126dba40d7289a29bdf35  ./3post.sessions.tsv
 f2e5674c3ce577bce5d5deef7bf8d45872f863efd09ea007f44a178aefb596c0  ./3post.tmux.txt
 374507bfb30780d391ce4a52393342f13c9aa9c144a45bdbafda64927722851e  ./ARM.txt
-9922bbe3ec89279c646e76065fd1210d17cc95903d3bc217d28e1283f4da6462  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 4630f2b9870ff50e27ba2c1fc29efb498e6391bc278f251e7fda789b0a691093  ./archive-meta.pre-mutation.txt
 7898859e4808d2513e2729a16b94c633a477b693de91ef3510cc78e03be7f003  ./archive.mutation.diff

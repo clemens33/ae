@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 3c50c099adff1bc7d9f0423ff796352ba1901588e8050fff55de734464e8724e  ./0end-parent.invocation
 9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa  ./0end-parent.rc
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./0end-parent.stderr
@@ -22,7 +24,6 @@ a4cad6d6763aeea9afed4f2eb244975c2eecc5048378c265bb882948c48b36a1  ./3post.archiv
 32e1b106800e6292a9f7c7af827dca7424ffbced119d100da56b94a81cfd0749  ./3post.sessions.tsv
 db4b155c923118ea63981f2279ec885e5b7e31257d357dc70883f5fb0bb1658c  ./3post.tmux.txt
 fc436eb9c396ed197ab6203b409e081058b31ab0406cf9fb7169277836eb5e64  ./ARM.txt
-f630786effde508dd8509cb21fee65cf469f81d4092c164bf1e44d25cc9d1433  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 a531cadd745f3992f5be36e9a5322b93d327cc7ff3a480a4bd50e2f12b20f78a  ./child-meta.after.txt
 a531cadd745f3992f5be36e9a5322b93d327cc7ff3a480a4bd50e2f12b20f78a  ./child-meta.before.txt

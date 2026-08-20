@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 480530d4dfbb21cf23642bef1dd3fc5c2c4a29ed260ca075ebd8fba6cbd93e44  ./0end-parent.invocation
 9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa  ./0end-parent.rc
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./0end-parent.stderr
@@ -27,7 +29,6 @@ eba84b8cedf1b9c6cac1ccf770d05f0ac6a7d7459615bcae31ddad8fcf10f40f  ./3post.archiv
 504af8ece417a8aa52c2319940133c42835d3e1d17c46214c7c1ba7933118b91  ./3post.tmux.txt
 d358b7532e78135d636c9451477aac3365d32ad60e7c92f35de9245e0ba99dc9  ./3post.worktrees.tsv
 992f629c364bb6a86fc358955854784d5e4b7d65d8059fc2c77fab0896e89f8f  ./ARM.txt
-42d885b1e602f9f38642b4b91365185a6500c4d040febfe1e4a13d9a194207d4  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./aehome.before-after.diff
 bfa2f5b1070262fee51d0d1327e91e5da77d7ef899d1156609821ae78b724d0a  ./consumer-inproc.txt

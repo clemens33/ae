@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 0f4ec3d0318a9839f2a21c69e260d666fc007ef24caf02adbf26821f49724275  ./0launch.invocation
 4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865  ./0launch.rc
 aed2a2288725bbca0235827903a1bcc0b8cd92e73ca7634ba261f937f0bb35f0  ./0launch.stderr
@@ -17,7 +19,6 @@ cd90e6f16da61932cd9f48d4849d1bc97f6a449d753b6570c824ab2dac6d68a1  ./2op.stdout
 590080c933fa0fa7b092075ca0d2757da68a529a50c56185352756754f919ffc  ./3post.tmux.txt
 a4703be6751cdaf1d6588b2a07a03486cd631cf854fc7f4a441b03fc1420b4a7  ./3post.worktrees.tsv
 afcdec15cd4e3d9d78e59aec3f987ff68e2678aea33d7c802e9d3475e016da2f  ./ARM.txt
-b69f766813447f94b8b03f8a2a84b78b43b686f19eb28ee7747dde9906b0a351  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 081b7fd6f4917f08247dea15eeb2c1a62661649399f2d7141081df9bdb3932ba  ./archive-meta-id-keys.txt
 e81af9ec93e3365d16a07943d4897acdf22ae1bc6de3ba9b9844e32b9e3284a3  ./b01-b_pre_cleanup.74608.1.aehome.tsv

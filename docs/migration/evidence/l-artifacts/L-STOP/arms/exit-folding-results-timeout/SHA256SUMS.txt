@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 0d037b568deaecc344ee4a52e15cabffb446b07db42d3c2fc02faae63c729a07  ./0launch-other.invocation
 4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865  ./0launch-other.rc
 aed2a2288725bbca0235827903a1bcc0b8cd92e73ca7634ba261f937f0bb35f0  ./0launch-other.stderr
@@ -23,7 +25,6 @@ e621106d9d6ff56a2b0df978a6eb6e169bd9f4e2011f3f1ff53050f6cd012911  ./3post.ps.txt
 0c8af59786cc45ddb69ddecc61343bbebf02f7a15b041a7bbe0e628f2f742013  ./3post.sessions.tsv
 fef0f0c11e346195b77983c28e8bf78855811362800d01f7ab3921a0a16df859  ./3post.tmux.txt
 1757af79935982889d05b5b66e222366f56eabca68f9bf20faa6f2e746102bee  ./ARM.txt
-21f4f5d1706c7d3b9ab1fcd65e94128280e518507f4cab03668cc690ddaa8122  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 4d7ef14757852a11135d3ba5fa665c558ba1d865ee33a7f8d75c2bb3b78444ce  ./after-supervisor-kill.ps.txt
 2f14c6933ba9fbb014e650e19a9fedf191deceebb39dcfdbc9ddc4e76c2ef297  ./consumer-inproc.txt

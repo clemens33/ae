@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 3880a86e57cfeb2fb60957fecc300e331a173919ff2e95da70e980a742f9e6eb  ./0launch-other.invocation
 4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865  ./0launch-other.rc
 aed2a2288725bbca0235827903a1bcc0b8cd92e73ca7634ba261f937f0bb35f0  ./0launch-other.stderr
@@ -30,7 +32,6 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./3post.ps.txt
 d81d6360d8c0e19e07bd53323f1cc86f25c083b49868cdc350288ceb352ed650  ./3post.sessions.tsv
 70af8377f46904c23930a455a17494f045186c1b08889be20a683ebc2e06e74c  ./3post.tmux.txt
 f54a83ca7b01fd5c9297794a68437ba5153d85cf66dec3de1724d9c69922c3b5  ./ARM.txt
-32182e4ceda534e629f3a9f5d16700cc06ec5ef27201959e3bb0a19de13d574e  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 f2b72c7254f9f8f909fb2b1ce63803cc699e6f9ff7eeda672d4737b01e976f7e  ./at-barrierA.ps.txt
 22c02ffcbedc9eb1501a2f4d8e116915c0efa9dcefe1193fe8d0f395e0fd5e54  ./at-barrierB.ps.txt

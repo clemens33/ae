@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 15d3bd93ddf449d068bfeb91a297a11fd4433dfcec478354e819e00738171064  ./0launch.invocation
 4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865  ./0launch.rc
 aed2a2288725bbca0235827903a1bcc0b8cd92e73ca7634ba261f937f0bb35f0  ./0launch.stderr
@@ -22,7 +24,6 @@ b1d3c28c37c21ef2e9d7c30e2589278495112ae3933e2c5b42c73823c717af29  ./2after-compa
 00f7047e2b18a92dff03169f778051ce6f317f8cc3380488a261cf6718c3182d  ./3post.sessions.tsv
 b1d3c28c37c21ef2e9d7c30e2589278495112ae3933e2c5b42c73823c717af29  ./3post.tmux.txt
 cf0e17cd06d9e0c6a7b2ad7710630c122f48860533fb1a15728e3071393607b5  ./ARM.txt
-156decc494abd3f450398811b4f20ff5dcfa73b63af6f345d0741f6abfc544cb  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 2e2f10ce952bcba16e31be844b8148ee97513741f15fd6916c3f90bd2f33b42c  ./b01-b_cp_pre_relaunch.48466.1.aehome.tsv
 6a708f4e8eeeeb55674f525c5dd0ee392e1e8cd4124edeecf4026604c865137d  ./b01-b_cp_pre_relaunch.48466.1.archive.tsv

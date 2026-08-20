@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 7adcc97bc95d71b353c2326bf8384a2ffa7e60a58aade546a8ed3994e8ecda90  ./0pre.aehome.tsv
 33bc3733c36677e1dbc716ee92160643877c2f4aabde8469124929db6f792e95  ./0pre.linktarget.tsv
 aba77736377a9c1dcba44d2d5ffa5ad0b6a4adb15e39e6666abec19a3b2c97da  ./0pre.tmux.txt
@@ -13,7 +15,6 @@ fecfbdb3b8cb2155b472c880488306966a761e89e31f1f541d98d1c2f81a83fb  ./3post.aehome
 33bc3733c36677e1dbc716ee92160643877c2f4aabde8469124929db6f792e95  ./3post.linktarget.tsv
 015ebd7c2357513041c73fa32e49fb59ac68dcae08b145cbe6fce60ee34e733e  ./3post.tmux.txt
 b33e160c31945634586f5b12dbf4b149fd964dfde6087caa250c3ea330db52db  ./ARM.txt
-c7e4fa137e767604cc052c16b1073bed599448403329a311d7891b50b20c33db  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 730483ab96d2d40b231bb1e762ae55575447164188774ca776838133906077f8  ./consumer-inproc.txt
 98c94bc277bc614fd190fae74c69bf03de27b7beb10014e03db881d79a95a123  ./fake/fake.27520.argv.nul

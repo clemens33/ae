@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 bab30e65d4241f297f06bc15149547b726e0d1c235ab136937186b61da7fabf7  ./0launch-proj.invocation
 4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865  ./0launch-proj.rc
 aed2a2288725bbca0235827903a1bcc0b8cd92e73ca7634ba261f937f0bb35f0  ./0launch-proj.stderr
@@ -18,7 +20,6 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./2op.stdout
 a1390e05dabbb27f1c242fcb9c2375373b419e0496a0a46c78c3c9994aa19456  ./3post.sessions.tsv
 56985805f3ff5d79d3f0517970e4c528ccaf2eae2731d6e3a65aa46502ff864c  ./3post.tmux.txt
 4a250da3defeea8beeebd1205989b24b8d8b3bd1fae658b30b1fbf23588c4f8a  ./ARM.txt
-bd24c4b2611c998d676eadaaf72b1f47e4d8e2e2ffce22796f1c285e788904b7  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 d81b1dacc0d07b2c4eb1bb1de1e85974373e32594aead41dd621fa62f60125cc  ./consumer-inproc.txt
 9f0ca8d832db2c59880625c917384012fc220cd774a27abc9e17faee9da30cae  ./fake/fake.23355.argv.nul

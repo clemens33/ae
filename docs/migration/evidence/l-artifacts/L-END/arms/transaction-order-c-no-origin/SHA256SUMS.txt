@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 57fdd39f25e4c393ca7fd043c250f59606f9f8cc29a3973783bca21ede1011a1  ./0pre.aehome.tsv
 82e0eaa86f9d6a21c6ddfc1059b59171fbf648c47688dbdb3a9639e5ec2b43a4  ./0pre.archive.tsv
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./0pre.events.jsonl
@@ -21,7 +23,6 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./3post.events
 bad22709122c0c1d51a44426db330e01f911d2bd0b79f7920b62a81b5bcb4415  ./3post.tmux.txt
 6a86818bb011f55140f1f1f25ad4961510fe49725c719fb1eeac8f1517a278c0  ./3post.workdir.tsv
 80aabb952130edffcf837c6cc73dbc359a857923f494f5ad076457f2b336158b  ./ARM.txt
-fb5e47ca219152668eac7da3b03b4704e08f78afb10df8443b8c0d273efc76da  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 1bd71b895064b0c05550f1d487d28aae5f4c788fbc0f88c1ce8f982ab9d0e6d9  ./archive-meta-fields.txt
 57fdd39f25e4c393ca7fd043c250f59606f9f8cc29a3973783bca21ede1011a1  ./b01-b_confirm_answered.60071.1.aehome.tsv

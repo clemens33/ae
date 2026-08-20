@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 82b7abad7f1cc9e5319431b98ab6b2b1385ec8f455c6d988c63e348def9d76f0  ./0pre.aehome.tsv
 888a35621af7cf06fcf28ec9598a671437bb221a87de348ccc976f210e0e702a  ./0pre.archive.tsv
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./0pre.events.jsonl
@@ -22,7 +24,6 @@ dc7a0057fd118ba138d9d75b8912878a26a90f6ffc79c8b3d7e3b88eded24d7a  ./3post.livedi
 ddcfa4a17f05028afa9d683c2de6c8d6c66bb950f2ac358b297f0dfd85a4190c  ./3post.tmux.txt
 499d4d4c5ef7fbd3f4388af5a464291b12f702f300c5dac1739e2866c80dc3bb  ./3post.workdir.tsv
 36822812bfd6b772e72df21d2253639b0d2943c4b888789a061f012db877a4ee  ./ARM.txt
-2eccfd066fe708c7614d15b1e11e417b78d9140b18d2ea0b6f0121f4d08efd44  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 74111988a7de59ca2744fcfb896dbc3309fd23e46a62d58ae60b72a66f5dec82  ./archive-root.pre-chmod.tsv
 1ff3899c20043c7bd0d7b24d75cff7077564e59e3874bd4afba4d63962b049dd  ./canary.txt

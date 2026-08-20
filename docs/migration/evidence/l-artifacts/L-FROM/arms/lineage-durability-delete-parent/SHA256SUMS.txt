@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 02e66045bc71cb32458c121068ada3841a75bea897a2518719edfb3c31d8f772  ./0end-parent.invocation
 9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa  ./0end-parent.rc
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./0end-parent.stderr
@@ -30,7 +32,6 @@ ee762fb1b5e0ab44ef54e4eb1b65490356925b5997ce2c83ec53f805ecb88703  ./3post.sessio
 ed46b5e7fceb5598edeb0f99f64452c7d6da0a2429b74048aeca1e7a3906b74f  ./3resume.stderr
 a3c925faee792acfd990fbba0b7acea4a1dee8c736c87b619df93cdda4a2ba09  ./3resume.stdout
 4264e5654d25dd5ecb4adf5d77cfb3ea17d1fba8b272728b4f95cfacbd0348b7  ./ARM.txt
-59ccceb50f36606424e7f338b385cdcb533610aa9c6a5a18388c8790e04efd52  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 f79999eb34a7fab8ca3413d3e703c432bd55f6769a97fa37a7eb3678b01da5db  ./archive.after-delete.tsv
 6a297ad66e2468f117c1ced5b6587fd17e70f2064686c309e701f86e9724d354  ./archive.before-delete.tsv

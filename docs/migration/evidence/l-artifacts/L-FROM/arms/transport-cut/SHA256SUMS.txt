@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 0b8c7c821f4d56a543d9cab4b9916db9085ab453b11aa2a8e918fa15be813623  ./0end-parent.invocation
 9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa  ./0end-parent.rc
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./0end-parent.stderr
@@ -23,7 +25,6 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./2op.stdout
 11a40b18d4dff43129908955913578df4615567f5efea1377c59e2358ec1c24b  ./3post.tmux.txt
 9559f1b6cddcf5dff1a7fab1ff917a46a25c8a54e8cd9d3010342df9cc5025f6  ./3post.worktrees.tsv
 081daaa6f194b492859125ecfdef64cd2557997ac9f2bea10abfd302c00fcc29  ./ARM.txt
-a9f30c434afd19b3ef4d7583fd5d3842d4f1464dcca4aef13340f5b9601ae1c4  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 2a46a4a738bcd5b6e68fd5844a9d5d9948e556558da4d858c282eff6177568cb  ./b01-b_from_proved.99781.1.aehome.tsv
 5899583749cc1d386266dc0e594ac90125a735f4d9640b709c8367836d7fa991  ./b01-b_from_proved.99781.1.archive.after-delete.tsv

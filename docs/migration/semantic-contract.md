@@ -1382,8 +1382,22 @@ archive naming no session is absence of proof, not a wildcard; refused as malfor
 (and `--from` will not inherit from it either). Authority: commands.md:537-540 +
 architecture.md:134-137. Empirical: pending. Conflict: none.
 
-**SC-818e — purge refuses to delete a parent a live `--from` lineage points at.**
-Bucket 1. Authority: architecture.md:137-138. Empirical: pending. Conflict: none.
+**SC-818e — purge never deletes the parent archive referenced by a live `--from`
+lineage.** Bucket 1 — precised to OUTCOME grain by joint L-PURGE classification (both
+seats, 2026-08-20): the promise is the outcome, not the guard. NORMAL lineage
+satisfies it by ADDRESS SEPARATION, not by refusal — a real `--from` child receives a
+fresh session UUID, so `end --purge-history <child>` addresses the child's own archive
+and never the parent's; the operation SUCCEEDS on the child and the parent is
+untouched. The defensive guard (`_ar_purge_archive` 72c7293:5404-5408, which fires
+only when the purged aid equals the session's own `parent_archive_id`) is reachable
+only from CORRUPTED meta where those ids are equal, and there it refuses by name.
+Guard reachability is implementation evidence, not the normative claim.
+Authority: architecture.md:137-138. Empirical: observed (L-PURGE @c7f291b —
+`lineage-parent-literal` rc=0: real child purges its own archive, parent intact
+[address separation]; `lineage-parent-mutated` rc=1 with the named refusal "refusing
+to purge <aid> — it is the parent archive this session was launched from"
+[corrupted-meta case]). Conflict: none.
+**classified_by: both seats, 2026-08-20 (joint L-PURGE classification).**
 
 **SC-819 — an unidentifiable session is refused BEFORE anything is stopped.** Bucket 1
 — meta gone with memory remaining, or `session_id` unparseable: refused with the

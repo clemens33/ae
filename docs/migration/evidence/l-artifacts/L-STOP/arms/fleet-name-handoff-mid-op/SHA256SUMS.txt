@@ -1,3 +1,5 @@
+# verify from: this directory  (shasum -a 256 -c SHA256SUMS.txt)
+# this listing EXCLUDES itself; a file cannot carry its own hash
 ddd2dcbc53dcb7f15a0f304ee9f892b61e08ad98947fbe7c862c6e2d9d121463  ./0launch-other.invocation
 4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865  ./0launch-other.rc
 aed2a2288725bbca0235827903a1bcc0b8cd92e73ca7634ba261f937f0bb35f0  ./0launch-other.stderr
@@ -34,7 +36,6 @@ f523376ead0707a6844ed4eeb3004a02918e39849256a9c11fb9fd505fddee52  ./3post.ps.txt
 4c19d55fe5bc46e3f0e8c6a6cee34559de47f2732d0c380cd689385652c6336b  ./3post.sessions.tsv
 bc923b3e550b11681d5721a6aacdcc362d923d88a375f7809b6d07657aa590aa  ./3post.tmux.txt
 a8ebbdf2eb27ca2630a26f895957373e8205716f77e6d88c0f0f24d29614a5cc  ./ARM.txt
-7790a5a207bc88adc9902bb624614b4f34f5ea01b8ad2e20ca768cc019634784  ./SHA256SUMS.txt
 b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca  ./_ae_install_tmux_shim.extracted.sh
 fb37dd68d9da47640f590d850becc2761919a68c06436adaca3ab0b1c85a0bc4  ./after-handoff.sessions.tsv
 7bc0c0f4807a4661441d07388dc43d879f431cc705f4c739556950e1c21cddfe  ./after-handoff.tmux.txt
