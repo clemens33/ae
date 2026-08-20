@@ -102,6 +102,23 @@ default-name resolution (`default_session_name` guarantees the grammar).
 
 <!-- rows: SC-1xx -->
 
+**SC-100 — a derived default session name GUARANTEES the grammar.** Bucket 1 —
+`default_session_name` produces a valid name for ANY working directory rather than
+being checked against the grammar afterwards. Authority: AGENTS.md session-name bullet
+(ruling). Empirical: unit pins @72c7293. Conflict: none.
+
+**SC-101 — `ae <name>` on a running session is a pure attach.** Bucket 2 — the
+fast path attaches without taking the lifecycle lock or mutating session state
+(autostarts excepted, censused). Authority: architecture.md start-vs-resume +
+census-2 launch section. Empirical: census-2. Conflict: none.
+
+**SC-102 — remaining mode/state transitions.** `authority=code-observation` — the
+fresh/resume/stopped decision matrix beyond SC-101 and the S9 rows needs probe + seat
+ruling at the sweep. UNCLASSIFIED pending closure.
+
+(S1's dispatcher exit/refusal rows live in S6 SC-513..517; its transaction rows in S9;
+the public command surface itself is the censused `cmd_*` set — S1 header.)
+
 ### S3 — Generated helper CLIs (every one — census: `helper_*_main` at 72c7293)
 
 `send`, `ask`, `review`, `reply`, `requests`, `state`, `mark-done`, `say`, `memo`, `goal`,
@@ -117,12 +134,85 @@ per-agent inbox with coalesced notification replaces the paste-delivery model at
 the paste rows stand until that cutover. Authority: DR-004 (both seats).
 Conflict: DR-004.
 
+**SC-201 — dead-pane refusal.** Bucket 1 — a target pane fallen to a shell is refused
+with the named reason; nothing is pasted (a stray Enter would execute the message).
+Authority: helpers.md "How send delivers" 1. Empirical: pending. Conflict: none.
+
+**SC-202 — busy/human-input defer is fail-closed.** Bucket 1 — for a modelled TUI,
+send waits while the input box is non-empty, mid-generation, or unreadable, and
+ABANDONS loudly rather than clobbering a half-typed human question. Authority:
+helpers.md 2. Empirical: pending. Conflict: none.
+
+**SC-203 — submit is verified.** Bucket 1 — after pasting, send confirms the text left
+the input box (bounded Enter nudges); unconfirmable delivery fails loudly as
+UNCONFIRMED. Authority: helpers.md 3. Empirical: pending. Conflict: none.
+
+**SC-204 — no durable outbox (until DR-004).** Bucket 4 — DR-004: at 72c7293 a loud
+failure is the re-send signal ("ae is not a queue"); the P2 inbox makes the store the
+transport and this promise retires. Authority: helpers.md 4 + DR-004.
+Conflict: DR-004.
+
+**SC-205 — one helper touches tmux.** Bucket 1 — only `send` pastes; ask/review/reply/
+interrupt deliver through it and inherit every guard. Authority: helpers.md
+composition. Empirical: pending. Conflict: none.
+
+**SC-206 — one path mints request ids.** Bucket 1 — `ae_tracked_send` is the single
+mint point. Authority: helpers.md composition. Empirical: pending. Conflict: none.
+
+**SC-207 — one validator pairs replies.** Bucket 1 — reply pairing is verified in one
+place before delegation to send. Authority: helpers.md composition.
+Empirical: pending. Conflict: none.
+
+**SC-208 — every interaction crosses one emit point.** Bucket 1 — the surface is
+auditable in events.jsonl because all messaging passes the same emit call. Authority:
+helpers.md composition. Empirical: pending. Conflict: none.
+
+**SC-209 — the slot is the routing key.** Bucket 1 — requests and replies are
+addressed and VERIFIED by slot + session; the display name is never trusted for
+routing (`--as` is display only); slot survives display-name churn. Authority:
+helpers.md "Slot identity". Empirical: pending. Conflict: none.
+
+**SC-210 — unmodelled tools receive without busy protection.** Bucket 2 — documented
+degradation (only claude/codex expose a reliable input-state read at 72c7293); the
+per-tool boundary is empirical. Authority: helpers.md closing note. Empirical: matrix.
+Conflict: none.
+
 ### S4 — Config INI grammar
 
 Dialect, key grammar, defaults, precedence (incl. `AE_LOCAL_CONFIG`), malformed-line
 behavior.
 
 <!-- rows: SC-3xx -->
+
+**SC-300 — the config format is the closed four-section INI dialect.** Bucket 2 —
+`[agents]`/`[workspace]`/`[prompt]` (+ `[telegram]` written by setup), simple regex
+parse, and the AGENTS.md rule: don't extend the format (no TOML/YAML/JSON). Authority:
+AGENTS.md config section (ruling) + config.md. Empirical: pending. Conflict: none.
+
+**SC-301 — an `[agents]` alias value is the launch command, doctor-verified.** Bucket
+2 — the executable name is extracted and verified on PATH by doctor. Authority:
+config.md `[agents]`. Empirical: pending. Conflict: none.
+
+**SC-302 — env-prefixed alias commands are legal identity aliases.** Bucket 2 — one
+binary, several logins via inline env prefix; each alias is its own identity.
+Authority: config.md multiple-identities section. Empirical: pending. Conflict: none.
+
+**SC-303 — env-prefixed commands get full tool handling.** Bucket 3 — SHOULD:
+classification follows the actual executable (SC-705), so identity aliases keep
+session ids and exact resume. IS at 72c7293: raw prefix match degrades them to
+generic-tool handling — documented in config.md itself with its issue.
+Conflict: fix-known-defect(#32, intended per SC-705/DR-005). Empirical: config.md
+limitation note + matrix.
+
+**SC-304 — per-project `.ae/config` overrides the global for `[prompt]`.** Bucket 2.
+Authority: config.md `[prompt]`. Empirical: pending. Conflict: none.
+
+**SC-305 — a renamed/wrapper binary is deliberately an unknown tool.** Bucket 2 — ae
+keys on the exact executable name; wrappers get no session machinery. Authority:
+config.md trap note. Empirical: pending. Conflict: none.
+
+**SC-306 — the three copy modes are local (default) / full / worktree.** Bucket 2.
+Authority: config.md copy modes. Empirical: pending. Conflict: none.
 
 ### S5 — On-disk formats (live + archive + claims)
 
@@ -132,6 +222,29 @@ digests), claims (#71 — first Rust-native), `launch.<slot>.sh` + `.started` ma
 hub/steward dirs (`AE_HUB_DIR`, `AE_STEWARD_DIR`).
 
 <!-- rows: SC-4xx -->
+
+**SC-400 — the live session layout is the documented file set.** Bucket 2 — session
+state lives under `~/.ae/sessions/<name>/`: `meta`, `events.jsonl`, `memo.tsv`,
+`messages/`, lock files, `workspace.md`, generated helpers, `launch.<slot>.sh` (+
+`.started`). Authority: architecture.md per-session state + AGENTS.md. Empirical:
+census-1/2. Conflict: none.
+
+**SC-401 — the archive payload is the five-part set.** Bucket 2 — generated `meta`,
+rendered `digest.md`, `memo.tsv`, `events.jsonl`, `messages/*` bodies (#48 format;
+inertness proofs are SC-804/805). Authority: architecture.md:77-83. Empirical:
+census-2 end section. Conflict: none.
+
+**SC-402 — working directories stay clean.** Bucket 1 — ae writes its coordination
+state under `~/.ae`, never into the project tree (`.ae/config` is the one deliberate
+project-side file). Authority: AGENTS.md rules. Empirical: pending. Conflict: none.
+
+**SC-403 — request-record framing uses non-whitespace separators with free text last.**
+Bucket 1 — the `\x1f` framing rule after #48: an empty TSV field must not shift its
+row. Authority: AGENTS.md TSV-framing ruling. Empirical: unit pins @72c7293.
+Conflict: none.
+
+**SC-404 — state roots are `~/.ae/config`, `~/.ae/sessions/`, `~/.ae/archive/`.**
+Bucket 2. Authority: AGENTS.md + architecture.md. Empirical: pending. Conflict: none.
 
 ### S6 — Stdout/stderr/exit/refusal contracts
 
@@ -310,6 +423,23 @@ Options/format-string literalization (`_ae_tmux_format_literal`, `@ae_*` user op
 layout, pane/window naming, status surfaces, ae-monitor window.
 
 <!-- rows: SC-6xx -->
+
+**SC-600 — user text reaching a tmux format string is literalized or option-routed.**
+Bucket 1 — `#` and `%` are interpreted (`#()` RUNS SHELL); text is escaped or carried
+via `@ae_*` user options, which interpolate literally. Authority: AGENTS.md
+interpreted-sinks table (ruling). Empirical: pending. Conflict: none.
+
+**SC-601 — send-keys never receives user text as key names.** Bucket 1 — literal mode
+or paste-buffer only; the generated helpers are the boundary, raw send-keys is
+forbidden. Authority: AGENTS.md interpreted-sinks (ruling). Empirical: pending.
+Conflict: none.
+
+**SC-602 — `@ae_slot` carries identity; `@ae_agent` is display.** Bucket 2 — the slot
+option is the stable routing stamp (SC-209); pre-slot sessions are back-filled on
+refresh/resume. Authority: helpers.md slot identity. Empirical: pending.
+Conflict: none.
+
+(Monitor-window and status-bar rows live in S10: SC-922/923/924 and M-03.)
 
 ### S8 — Tool adapters (five tools)
 
@@ -885,6 +1015,31 @@ Install contract (symlink or curl|bash), `doctor --refresh` regeneration boundar
 
 <!-- rows: SC-10xx -->
 
+**SC-1000 — install is clone + symlink, both entry paths handled.** Bucket 2 — the
+one-liner clones to `~/.local/share/ae` and symlinks into `~/.local/bin`; running
+`install` from a clone just symlinks it. Authority: install.md. Empirical: pending.
+Conflict: none. (#57's installed-symlink-tracks-dev-checkout finding is its own B3
+row at the P5 flip.)
+
+**SC-1001 — upgrade is git pull; helpers self-heal.** Bucket 2 — existing sessions
+auto-regenerate helpers on next start/resume; `doctor --refresh [name]` forces it
+without reattaching. Authority: install.md upgrading. Empirical: pending.
+Conflict: none.
+
+**SC-1002 — doctor walks a fixed OK/WARN/FAIL checklist.** Bucket 2 — bash version,
+tmux/git, config, registered agent executables, sessions dir; exit contract is SC-514.
+Authority: install.md verify + commands.md:168. Empirical: pending. Conflict: none.
+
+**SC-1003 — published executables cross one atomic chokepoint.** Bucket 1 — every
+generated executable artifact outside a session's helper set is generated to temp,
+mode-set there, and renamed — with the generator run as a COMMAND, never piped (a
+producer dying mid-pipe must not publish a prefix). Authority: AGENTS.md M3 ruling.
+Empirical: unit guard @72c7293. Conflict: none.
+
+**SC-1004 — session helpers publish temp+chmod+mv, atomically per artifact.** Bucket 1
+— a generator failure can never truncate a live helper. Authority: AGENTS.md declare-f
+section (ruling; relocated A-03). Empirical: unit guards @72c7293. Conflict: none.
+
 ### S12 — Platform/dependency degradation
 
 GNU/BSD shims, optional `flock`/`timeout` degradation, `sun_path` limits, uuid case,
@@ -1018,6 +1173,25 @@ Externally observable ordering/atomicity promises only; protocol detail lives in
 
 <!-- rows: SC-13xx -->
 
+**SC-1300 — event appends are serialized per log.** Bucket 2 — one lock file beside
+each `events.jsonl`; concurrent appenders serialize (failure SEMANTICS are
+per-operation rows — M1). Authority: events.md + bridge-protocol.md. Empirical:
+census-1 M1. Conflict: none.
+
+**SC-1301 — session meta is written through one fail-closed writer.** Bucket 3 —
+SHOULD (architecture.md:158-166): one function, every step checked, missing meta
+refused, temp removed on error, rename only after complete content. IS at 72c7293:
+two additional DIRECT-APPEND writers exist under the same lock (`launch_time.*`
+capture ae:2068-2075; `_cmd_spawn` rows ae:11923-11945 — census-3 audit I5), so
+unlocked readers can observe partial canonical meta. Conflict: pending seat closure at
+the sweep (extend #88 or dedicated issue — the one-writer promise vs three writers).
+Empirical: census-3 I5.
+
+**SC-1302 — a session name's lifecycle operations serialize on one lock.** Bucket 1 —
+`.lifecycle.<name>.lock` serializes start/resume/end/compact for that name (degrade
+rule is SC-1101a's #75 conflict). Authority: architecture.md + census (fd8 launch /
+fd9 end, same file). Empirical: census-2. Conflict: none.
+
 ### S15 — Environment controls (census: `AE_*` at 72c7293)
 
 `AE_HOME`, `CONFIG_FILE`/`AE_LOCAL_CONFIG`, `AE_TMUX_SERVER`, `AE_WATCHDOG_IMPL`,
@@ -1029,7 +1203,31 @@ Externally observable ordering/atomicity promises only; protocol detail lives in
 (`AE_RESOLVED_*`, `AE_SESSION`, `AE_META`, `AE_DIR`, `AE_MODE`, `AE_ORIGIN`, `AE_PATH*`).
 Each row: default when unset, malformed-value behavior, failure mode.
 
-<!-- rows: SC-14xx -->
+<!-- rows: SC-14xx — the documented numeric defaults relocated from S10 (W-09..12) -->
+
+**SC-1400** b2 — `AE_WATCHDOG_INTERVAL_SEC` default 60. **SC-1401** b2 —
+`AE_WATCHDOG_STALE_MIN` default 15. **SC-1402** b2 — `AE_WATCHDOG_MAX_NUDGES` default
+2. **SC-1403** b2 — `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` default 5. **SC-1404** b2 —
+`AE_WATCHDOG_TG_SUPERVISE_SEC` default 120, `0` disables. **SC-1405** b2 —
+`AE_WATCHDOG_SWEEP_SEC` default 300, `0` falls back to normal watchdog. **SC-1406**
+b2 — `AE_WATCHDOG_SWEEP_RETRY_SEC` default 30, clamped to sweep cadence. **SC-1407**
+b2 — `AE_WATCHDOG_SWEEP_RETRY_MAX` default 6, then one unreachable alert.
+(Authority for 1400-1407: config.md watchdog-defaults table + watchdog.md:35-44.
+Empirical: pending. Conflict: none.)
+
+**SC-1408 — legacy `AE_LOOP_*` names are honoured as fallbacks.** Bucket 2 — per
+tunable. Authority: config.md. Empirical: pending. Conflict: none.
+
+**SC-1409 — malformed/non-numeric tunable values.** `authority=code-observation` —
+UNDOCUMENTED everywhere (S10 gap); probe + seat ruling per variable class at the
+sweep. UNCLASSIFIED pending closure.
+
+**SC-1410 — the remaining `AE_*` surface.** `authority=code-observation` — `AE_HOME`,
+`CONFIG_FILE`/`AE_LOCAL_CONFIG` (#87 names the intended authority), `AE_TMUX_SERVER`,
+`AE_NO_AUTOSTART`, `AE_END_SERVER`, hub/steward dirs, `AE_EVENTS_KEEP`, send/attn
+tunables, launch-token and resolution exports: semantics per variable need probe +
+seat ruling; rows split per variable AT the sweep from probe results. UNCLASSIFIED
+pending closure.
 
 ## Known-defect register (bucket 3)
 
