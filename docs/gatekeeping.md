@@ -586,6 +586,32 @@ worker receives a **neutral delta** produced by a seat. That costs a hop and put
 work on the seats, which is the price of a boundary that does not depend on everyone
 remembering it.
 
+### Put a blind spot's SIZE in the data, not in prose
+
+A containment census classified processes by reading their environment. It could not report
+its own deliberately in-range control, and the arm refused to run until it said why. Two
+measured causes, and the second is a platform fact worth knowing:
+
+**macOS exposes a process environment to `ps e` for only a subset of even one's own
+processes — 1 of 40 sampled** (independently reproduced: 40 sampled, 1 readable). So **a
+process whose environment cannot be read cannot be classified by reach at all.**
+
+The wrong response is a caveat sentence — *"the census may not see every process"* — which
+is unfalsifiable and shrinks in the reader's mind to nothing. The right one is a **third
+class carried as a number in every record**: `in_range 3–4`, `out_of_range ~435`,
+**`UNKNOWN-REACH 865–916`**. That last figure is the honest size of what the instrument
+cannot see, and because it sits in the ledger rather than in prose, a reader can weigh it
+and a checker can watch it move.
+
+**Never let an unreadable subject be counted as a negative.** An unclassifiable process
+counted as out-of-range converts ignorance into a clean result — the same shape as an
+absent file standing in for a recorded absence.
+
+*The first cause is its own lesson:* the control was `bash -c sleep 25`, which **execs**
+`sleep`, and the exec'd process exposes no environment. The control failed **for its own
+reasons**, and a control that fails for reasons unrelated to its subject reads exactly like
+the subject failing.
+
 ### A tool that makes a check CHEAP is not a tool that PERFORMS it
 
 The most easily forgotten limit, recorded because it is invisible once a tool reports
