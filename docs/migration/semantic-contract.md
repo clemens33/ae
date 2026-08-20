@@ -726,10 +726,44 @@ ruling. Empirical: pending. Conflict: none. **classified_by: both seats, 2026-08
 **SC-405e — malformed/duplicate key handling.** `authority=code-observation` — probe +
 seat closure; never guessed. UNCLASSIFIED pending closure.
 
-**SC-405f — `goal_set_epoch` is DERIVED from the latest goal event.** Bucket 2 — not a
-meta key; the digest derives it from the event stream. Authority: slice-1 Q1 ruling +
-commands.md (goal_set_epoch semantics). Empirical: pending. Conflict: none.
-**classified_by: both seats, 2026-08-20.**
+**SC-405f — `goal_set_epoch` is the `ts` of the LAST ACCEPTED goal event in canonical
+logical event-stream order.** Bucket 2 — not a meta key; the digest derives it from the
+event stream. **REOPENED AND PRECISED** (both seats, 2026-08-20) after A7's opposed-order
+arm exposed that "latest" was undecidable.
+**The precision:** the epoch is the `ts` of the last accepted goal event in **canonical
+logical event-stream order** (generation + offset under DR-001) — **not** the numerically
+greatest `ts` among goal events.
+**This is not IS becoming SHOULD.** The frozen authority already establishes the ordering
+model, and this row merely inherits it: `events.md:3` — *"Append-only, one JSON object per
+line"*; `events.md:7` — *"single writer … the append-only structure plus flock-serialized
+writes mean readers can scan safely"*; and decisively `events.md:110-128`, which **defines
+latest by BACKWARD STREAM SCAN** (*"walks `events.jsonl` backward via `tac`"*, *"The latest
+`ask` / `review` event per `ref`"*, *"Scan is newest-first via `tac`"*). `commands.md:125-126`
+defines the field as *"when the goal was last set"*. A max-timestamp fold would invent
+clock-order semantics absent from every one of those authorities and would let clock skew
+reorder committed state. SC-1300 + DR-001 preserve one logical total order across
+generations. A7 then resolves the ambiguity empirically: the incumbent IS last-appended.
+**Rationale, with the lead's first wording CORRECTED by colead:** append order is the
+system's **canonical committed serialization order**, and its virtue is narrow and exact —
+*it does not depend on clock correctness*. It is **not** "causal order" (concurrent
+producers have no causal relation established by stream position) and it **cannot** be
+called unforgeable (a writer or operator can alter ledger position). The lead's original
+"causal order … cannot be forged" overclaimed on both counts.
+Concurrency makes this real rather than hypothetical: the writer stamps `ts` at **ae:13214**
+but the flock is taken only inside `ae_log_append` at **ae:13174**, with the append at
+**ae:13256** — so two concurrent emitters can stamp in one order and append in the other.
+**SCOPE GUARD — required in-row.** This chooses **which EVENT supplies the epoch**. It does
+NOT bless goal/meta versus event-store tearing and does NOT claim both fields come from one
+snapshot; meta and events take **separate locks**, and that atomicity/coherence question is
+owned by **D08 + SC-1306a**. Without this guard the precision would accidentally ratify a
+distinct hole.
+Authority: `events.md:3,7` + `events.md:110-128` + `commands.md:125-126` + slice-1 Q1
+ruling + SC-1300/DR-001. Empirical: **observed** (A7 opposed-order arm, plus its AGREEING
+control and single-goal baseline — the opposed fixture makes the two candidate answers
+different strings by construction, so a last-record reader and a max-timestamp reader
+cannot both be right). Conflict: none.
+**classified_by: REOPENED by the A7 order finding and RE-MARKED on this exact text —
+fable5:lead + gpt56sol:colead, 2026-08-20.**
 
 **SC-405g — `branch` is the live tmux branch with a git fallback.** Bucket 2 — not a
 meta key; per commands.md:124-129 (the watchdog's status segment, git fallback).
