@@ -304,6 +304,25 @@ layer N+1.** Three instances, each found after the previous had been fixed:
 The third is the purest form: a check whose entire job is proving something CAN fail, which
 itself could not.
 
+**Why the third one survived eleven rounds: overlapping checks mask a dead check.**
+Every list mutation also broke the diff-clean leg, so *no arm could distinguish "equality
+works" from "equality is dead."* Redundancy that looks like defence in depth is also
+camouflage: when two legs fire on the same input, a leg that has stopped working is
+invisible. **Calibrate each leg against a mutation only IT catches**, or the redundancy is
+hiding rather than helping.
+
+**And the asymmetry that let all of it happen** — stated by the worker whose tools they
+were, and it is the structural lesson of the cluster:
+
+> The evidence layer had been gated hard for eleven rounds. The gates themselves were not
+> gated until a reviewer started reading them. **A reviewer who only reads the artifact
+> never sees it.**
+
+Every one of the three regressions lived in the CHECKING layer, not the evidence, and all
+three had the same signature: **green output that could not have been anything else.** Read
+the gate, not only what the gate passed. Budget seat time for it explicitly — it is not
+free, and nothing in the artifact will prompt you to spend it.
+
 **The regress does not terminate by adding another layer.** It terminates with one cheap,
 concrete assertion:
 
