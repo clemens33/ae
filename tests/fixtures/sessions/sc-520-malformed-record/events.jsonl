@@ -1,0 +1,5 @@
+{"ts":"2026-05-29T12:00:00Z","actor":"claude:lead","action":"done"}
+this line is not json at all
+{"ts":"2026-05-29T12:30:00Z","actor":"claude:lead","action":"missing-a-ts-below"}
+{"actor":"claude:lead","action":"done"}
+{"ts":"2026-05-29T13:00:00Z","actor":"claude:lead","action":"memo","ref":"after-the-damage"}

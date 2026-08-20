@@ -1,0 +1,2 @@
+{"ts":"2026-05-29T09:00:00Z","actor":"claude:lead","action":"ask","target":"codex:coworker","ref":"ae-20260529T090000Z-dddd4444","summary":"does the mirror hold?","actor_slot":"main","actor_session":"my-feature","target_slot":"worker.0","target_session":"my-feature"}
+{"ts":"2026-05-29T09:10:00Z","actor":"codex:coworker","action":"reply","target":"gemini:third-party","ref":"ae-20260529T090000Z-dddd4444","summary":"right responder, wrong recipient","actor_slot":"worker.0","actor_session":"my-feature","target_slot":"spawned.0","target_session":"my-feature"}

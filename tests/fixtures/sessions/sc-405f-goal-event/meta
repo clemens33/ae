@@ -1,0 +1,6 @@
+mode=local
+origin=/home/c/projects/ae
+work_dir=/home/c/projects/ae
+agent.main=claude:lead:e795c9e9
+agent_bin.main=claude
+goal=ship the login flow

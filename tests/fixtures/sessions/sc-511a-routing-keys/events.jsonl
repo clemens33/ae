@@ -1,0 +1,2 @@
+{"ts":"2026-05-29T09:00:00Z","actor":"claude:lead","action":"send","target":"codex:coworker","summary":"pre-routing-key event","actor_slot":"main","actor_session":"my-feature","target_slot":"worker.0","target_session":"my-feature"}
+{"ts":"2026-05-29T09:30:00Z","actor":"claude:lead","action":"send","target":"gemini:scout","summary":"no routing key on this one"}

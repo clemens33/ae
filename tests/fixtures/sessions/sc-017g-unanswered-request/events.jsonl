@@ -1,0 +1,2 @@
+{"ts":"2026-05-29T09:00:00Z","actor":"claude:lead","action":"ask","target":"codex:coworker","ref":"ae-20260529T090000Z-bbbb2222","summary":"is the cursor generation-aware?"}
+{"ts":"2026-05-29T09:05:00Z","actor":"gemini:bystander","action":"reply","target":"claude:lead","ref":"ae-20260529T090000Z-bbbb2222","summary":"a stray reply from the wrong agent"}

@@ -5,3 +5,4 @@
 //! also a test target.
 
 mod cli;
+mod fixtures;

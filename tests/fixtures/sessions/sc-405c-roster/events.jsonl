@@ -1,0 +1,3 @@
+{"ts":"2026-05-29T13:00:00Z","actor":"claude:lead","action":"state","ref":"working"}
+{"ts":"2026-05-29T13:30:00Z","actor":"codex:coworker","action":"state","ref":"blocked"}
+{"ts":"2026-05-29T13:40:00Z","actor":"claude:lead","action":"state","ref":"waiting-user"}

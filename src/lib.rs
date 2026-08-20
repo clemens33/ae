@@ -1,8 +1,39 @@
 //! `ae` — agent environment: a tmux-backed multi-agent session multiplexer.
 //!
-//! This is the P0 skeleton of the Rust rewrite (epic #79). It exists so every
-//! quality lane — fmt, clippy, nextest, doctests, coverage, mutants — runs
-//! against real code from the first commit rather than against a placeholder.
+//! The Rust rewrite (epic #79). P0 laid the skeleton so every quality lane —
+//! fmt, clippy, nextest, doctests, coverage, mutants — runs against real code;
+//! P1 is adding the read side, slice by slice.
+//!
+//! # Where the behavior comes from
+//!
+//! Every module here is built from RATIFIED rows of
+//! `docs/migration/semantic-contract.md`, and each names its rows in its own
+//! module docs. The bash implementation is **not** an oracle: it may be read to
+//! understand a mechanism, but it never defines an expected output. A behavior
+//! with no row stops the work and goes to the seats — which is why several
+//! fields of the `list --json` digest are *inputs* to [`session::entry_for`]
+//! rather than things it reads. See that module's docs for the list.
+//!
+//! # The read side so far (P1 slice 1: `list --json`)
+//!
+//! | Module | Rows |
+//! |---|---|
+//! | [`json`] | SC-510d — the escape set, both directions |
+//! | [`meta`] | SC-405a–e — the session meta keys, and only those |
+//! | [`time`] | SC-510a, SC-509 — the one timestamp spelling |
+//! | [`events`] | SC-510a–f, SC-511a–c, SC-405j, SC-519, SC-520, DR-001 — the record and the generation-aware reader |
+//! | [`attention`] | SC-017g, SC-509 — severity and the rollup |
+//! | [`digest`] | SC-509, SC-509b, SC-506 — the versioned document that always closes, and says when it lost something |
+//! | [`filters`] | SC-017a–f, SC-017i, SC-521, SC-523, SC-524 — which sessions a listing shows |
+//! | [`session`] | SC-017e, SC-017g, SC-405d/f/g/i/j/k, SC-518, SC-520, SC-980 — what a session directory establishes, and what it must be told |
+//!
+//! Most of those rows exist BECAUSE this code was written. Two slices stopped on
+//! eleven questions rather than inferring answers, and the seats ratified the
+//! results: eighteen rows from the first batch, five more and an amendment to
+//! SC-017g from the second, plus an amendment to SC-510c whose original text had
+//! dropped its own authority's hedge. Three of those rulings REVERSED what this
+//! crate first did, and one rejected a row this crate's own evidence might have
+//! justified — a live census is evidence, never contract.
 //!
 //! Module layout is 2018-edition style: `cli.rs` beside a future `cli/`, never
 //! a `mod.rs`.
@@ -13,8 +44,16 @@
 //! assert_eq!(request.exit_code(), 0);
 //! ```
 
+pub mod attention;
 pub mod cli;
+pub mod digest;
 pub mod error;
+pub mod events;
+pub mod filters;
+pub mod json;
+pub mod meta;
+pub mod session;
+pub mod time;
 
 use std::io::Write;
 

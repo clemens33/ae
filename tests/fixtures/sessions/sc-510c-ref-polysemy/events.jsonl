@@ -1,0 +1,5 @@
+{"ts":"2026-05-29T10:00:00Z","actor":"claude:lead","action":"ask","target":"codex:coworker","ref":"ae-20260529T100000Z-aaaa1111","summary":"does the reader drain before advancing?"}
+{"ts":"2026-05-29T10:05:00Z","actor":"codex:coworker","action":"reply","target":"claude:lead","ref":"ae-20260529T100000Z-aaaa1111","summary":"yes - DR-001 condition 3"}
+{"ts":"2026-05-29T11:00:00Z","actor":"claude:lead","action":"memo","ref":"reader-design"}
+{"ts":"2026-05-29T11:30:00Z","actor":"watchdog","action":"recover","target":"codex:coworker","ref":"0199c0de-1234-7890-abcd-ef0123456789"}
+{"ts":"2026-05-29T12:00:00Z","actor":"claude:lead","action":"state","ref":"working"}
