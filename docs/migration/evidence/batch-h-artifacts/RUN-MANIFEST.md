@@ -26,6 +26,8 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 |---|---|---|
 | `_harness/hlib.sh` | `0f838f7e89619358650f4ee99da31776f5351ef219c32f85c9b1546a0a8779e4` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
+| `_harness/make-h-hook-patch.py` | `b9b62f8ddf2a1db0fbadbb45e2b42a51573cb3976bc66990dec021e48da485be` | 2026-08-21 (registered BEFORE its first run) |
+| `_harness/arm-h1301.sh` | `7183ec11273bc311c145cb32ebeacc51e5b806b4d01f3ad18dccf74cddf273be` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h8.sh` | `a0382a9dc48123dd10a1034e85723fcbc3d06fb69d51f229331ebbe86061df71` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h1h2.sh` | `4c2c8cb2d71d8153a9efe102572596546780b8381fed2885d30ed0f13d0da720` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h7l.sh` | `dffe8d0a7a2101555a776887c66efa66ad7673994e2eb73f31163c344206da86` | 2026-08-21 (registered BEFORE its first run) |
@@ -142,6 +144,29 @@ product rc.
 
 - new sha256: `24206b9c24c8667269f42c3c595dbf7e2e58f86b89f85296f00f68c8fdc8c618`
 - post-capture reporting only.
+
+### A21 — SC-1301's instrumented copy, declared before any hooked capture
+
+ONE hook-only patch over an exact 72c7293 copy, three hook points, one per writer, because
+the three writers do not share a boundary:
+
+- `AH_META_TEMP_COMPLETE` — `ae_meta_set`, between the temp write and the rename, the
+  atomic writer's only window;
+- `AH_SPAWN_BETWEEN_APPENDS` — `_cmd_spawn`, between two of its OWN appends, a real
+  partial-generation window the frozen writer produces;
+- `AH_CAPTURE_APPEND_DONE` — `start_capture_session_id`, after its single append. There is
+  no mid-write window there, so this point exists only to sequence the controller and
+  NEVER to claim a writer tear.
+
+`_ae_hook` is guard-first: with `AE_HOOK` unset it returns 0 having done nothing. It rides
+the `_lib` `declare -f` emission list beside `ae_meta_set`, because the helper-side writer
+is emitted into every generated helper and would otherwise call a function it does not
+have — the D02 discovery from batch C, applied before it cost a run.
+
+The arm refuses to take a hooked capture until TWO things hold: the inactive hook is
+byte-equivalent to the unmodified control on the same scenario, AND the comparator reports
+a KNOWN difference (a copy with an altered version string) as different. A comparator that
+has never reported red cannot certify equivalence.
 
 ## Frozen source
 
