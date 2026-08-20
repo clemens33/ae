@@ -47,9 +47,14 @@ row, never a silent table entry.
 
 ### M1 — event append
 
-`ae_emit_event` / `_event_json_str`: TBD (lock target, serialization, JSON escaping,
-control-byte strip). Ported as a library primitive inside the Rust owner of each calling
-operation; never flips alone.
+`ae_emit_event` / `_event_json_str`: one lock file (`events.jsonl.lock`, fd8), but the
+writer is **duplicated at 72c7293 with divergent failure semantics** (colead finding,
+lead-verified): `_lib` `ae_log_append` = `flock -w 5 || exit 1` (hard exit, ae:13174);
+`_spawn_emit_event` = `flock -w 5 && printf` with return 0 (silent event loss on timeout,
+ae:12113); an inline copy near retire (ae:12262); and `flock -w 15` variants (ae:6275,
+ae:17294). A #76-style duplicated-writer defect family + #75 flock dependency — per-writer
+IS rows, never one global row. In Rust this becomes ONE library primitive with ONE ruled
+failure semantic, inside each owning operation; never flips alone.
 
 ### M2 — pre-dispatch config bootstrap (frozen #61; gate finding b29dac92, blocker 2)
 
@@ -149,13 +154,17 @@ consuming operation owns its own artifact publication and ports the chokepoint i
 
 ### D07 — agent state (`state` / `mark-done`)
 
-- **ruled exception to the grouped-cutover rule:** `mark-done` is a shim over `state done`
-  whose one extra effect is the legacy `done` event append — same store, same call path,
-  one operation family; it cuts over with `state` or not at all
-- effects: meta, events.jsonl append (incl. legacy `done` event via mark-done shim)
-- current writer/call path: `helper_state_main` + mark-done shim
-- locks (ordered): TBD
-- atomicity boundary: TBD
+- `mark-done` is an EXACT alias — it execs the `state` helper with `done` and adds no
+  effect of its own; no grouped-cutover question exists (colead correction, verified)
+- effects: events.jsonl appends ONLY — `helper_state_main` itself dual-emits on every
+  `state done`: the `state` event, then the legacy `done` event. State writes NO meta:
+  it is event-sourced (verified: only `ae_emit_event` calls in the function)
+- current writer/call path: `helper_state_main` (mark-done = exec shim)
+- locks (ordered): event lock fd8 (`events.jsonl.lock`) — acquired TWICE independently on
+  `state done` (once per emit)
+- atomicity boundary: the two appends are separate lock acquisitions — the `state` event
+  can persist while the legacy `done` append times out (`flock -w 5 || exit 1`): torn
+  outcome, contract row candidate
 - current owner: bash
 - planned owner/fate: **rust at P2**
 
@@ -188,9 +197,12 @@ consuming operation owns its own artifact publication and ports the chokepoint i
 
 ### D11 — `interrupt`
 
-- effects: pane key injection (cancel), optional follow-up delivery; events TBD
+- effects: pane key injection (cancel), optional follow-up delivery, `interrupt` event
 - current writer/call path: `helper_interrupt_main`
-- locks (ordered): TBD
+- locks (ordered): **target lock fd9 → event lock fd8, fd9 HELD across the event append**
+  — DIVERGES from D06 `send`, which releases fd9 before taking fd8 (colead finding,
+  lead-verified 2026-08-20: `ae_lock_target` with no release before `ae_emit_event`).
+  The Rust owner must pick ONE order for the pair — contract row candidate
 - atomicity boundary: TBD
 - current owner: bash
 - planned owner/fate: **rust at P2** — one operation including its tmux calls

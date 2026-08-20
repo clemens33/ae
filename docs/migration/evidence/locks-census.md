@@ -1,4 +1,11 @@
-# Lock/atomicity census for `ae`
+# Lock/atomicity census — helper/write-domain operations (P2 scope)
+
+> Scope (lead note, 2026-08-20): this census covers the ten briefed helper/write-domain
+> operations only. Lifecycle (launch/end/stop/rename/transfer/compact), archive
+> publication, watchdog/telegram/steward controls and daemons, doctor/refresh, and
+> interrupt/focus are a SEPARATE census. Known fact already verified outside this file:
+> `helper_interrupt_main` holds target fd9 across its fd8 event append, diverging from
+> `send`'s release-fd9-first order.
 
 - Source commit: `72c729343a0117af2968b66e1c43f89ad25fc0b2`
 - Source commit date: 2026-08-20T08:49:06+02:00
