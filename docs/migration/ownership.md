@@ -427,8 +427,11 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
   source while transcribing #102.)* Measured mid-operation: at the post-`mv` cut the
   directory is `sessions/<new>/` while its own meta still reads `session=<old>`.
   Rust at P3 must make any interrupted prefix a coherent generation.
-- gate (SC-832c, joint seats 2026-08-20): **empirical status is pending/CRITICAL and may
-  NOT be waived** — this record is destructive and identity-critical, so no pending-gap
+- gate (SC-832c): **SATISFIED 2026-08-20 by L-832C** — 13 arms, SIGKILL cuts with
+  descriptors released by death and preconditions proven per arm, fresh-process consumers.
+  Mixed generations survive the crash in 7 of 13 arms and `ae status` answers rc 0 for BOTH
+  the old and new name with contradictory results. *(Formerly: empirical status pending/
+  CRITICAL and may NOT be waived* — this record is destructive and identity-critical, so no pending-gap
   escape applies. Closing it requires deterministic **SIGKILL** cuts at post-tmux,
   post-dir and post-meta (entry cut as control), descriptors released **by death** rather
   than by a resumed process, then a **fresh-process** `list`/`status`/`stop` or a defined

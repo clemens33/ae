@@ -1631,17 +1631,26 @@ operation; this row and D20 own **fresh-process recovery and rollback** after it
 The concurrent live meta-writer serialization question stays with SC-832b, which is not
 crash recovery. *(Prose kept unbolded at line start — the sweep guard reads a line-initial
 bolded `SC-` as a row head; this is the second time it caught me.)*
-**EMPIRICAL STATUS: pending / CRITICAL — never `observed`, and NO pending-gap escape is
-permitted here** because the row is destructive and identity-critical. L-RENTRANS HELD and
-then RESUMED the same process at each cut; it never killed the writer, never started a
-fresh process, and never observed recovery or refusal. Census and frozen source prove the
-residue SHAPE and the absence of an explicit transaction marker — neither proves
-**post-crash re-entry behaviour**, which is the entire claim.
-**To close the IS lane (required before ratification):** deterministic **SIGKILL** cuts at
-post-tmux, post-dir and post-meta, with the entry cut as the control; descriptors released
-by death rather than by a resumed process; then a **fresh-process** `list`/`status`/`stop`
-or a defined recovery entry point. Capture the tuple, rc/stdout/stderr, a
-no-further-mutation manifest, the stable session id, and the prefix sibling.
+**EMPIRICAL STATUS: OBSERVED — the hold is LIFTED** (L-832C, 13 arms, 2026-08-20). The
+gate's conditions were met exactly: deterministic **SIGKILL** of the rename's whole process
+tree at post-tmux, post-dir and post-meta with the entry cut as control (`rename_rc 137`
+in all thirteen), descriptors released **by death** and proven so per arm (`kill -0` fails,
+every `.lifecycle.*.lock` freshly acquired and released, `precondition.met YES`), and a
+**fresh process** as the only thing touching the crashed state.
+**IS: VIOLATED, and now observed rather than argued.** The identity sources DISAGREE in
+**7 of 13 arms** — every tmux-cut and every dir-cut — and agree in the entry control and
+the meta cut, following the frozen phase order exactly (tmux ae:11635 → dir `mv` ae:11650
+→ meta ae:11655). The window is two cuts wide.
+*The ability to fail is satisfied POSITIVELY, not by control:* whether the sources agree is
+DERIVED from the captured tuple, and the recorder demonstrably registers a mixed generation
+where one exists, so the six agreeing arms report against an instrument shown capable of
+the opposite.
+**A supported product reader ACCEPTS the mixed generation.** At the tmux cut a fresh
+`ae status proj` returns **rc 0** reporting *"Session 'proj' is stopped"*, while
+`ae status proj2` returns **rc 0** rendering the LIVE PANE — running out of
+`sessions/proj/`. Both names answer successfully with contradictory answers about the same
+session and neither signals inconsistency. That is the row's prohibition violated at a
+consumer, not merely residue on disk.
 Authority: joint seat ruling. Conflict: fix-known-defect(#103).
 **classified_by: both seats, 2026-08-20 (normative concur, empirical hold).**
 
