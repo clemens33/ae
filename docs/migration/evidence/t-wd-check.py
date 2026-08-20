@@ -1,304 +1,405 @@
 #!/usr/bin/env python3
 """T-WD design consistency checker.
 
-WHY PYTHON, NOT AWK. The previous version used awk `\\<...\\>` word boundaries.
-BWK awk on macOS DOES NOT IMPLEMENT THEM: it matches nothing, silently. The
-checker printed `verifies that` in its own derived term list and then reported
-the document clean while that term sat in a worker-facing CANDIDATE SPACE field.
-That is the GNU-vs-BSD divergence class this repo documents at length, landing in
-the tool built to catch defects of exactly that shape. A checker must not be
+WHY THIS IS NOT AWK. The first version used awk `\\<...\\>` word boundaries, which
+BWK awk on macOS does not implement: it matched nothing, silently, and reported the
+document clean while printing the very term it failed to find. A checker must not be
 exposed to the portability class it exists to police.
 
-EVERY CHECK HERE HAS A RED-PROOF in --self-test: a neutral pass that must be
-clean, and a seeded mutation that must be caught, with the seed DIFFED against
-the original first. A seed that does not land is indistinguishable from a check
-that does not fire, and it errs in both directions.
+WHY THESE CHECKS ARE CONTRACTS, NOT SPELLING FILTERS. The second version matched the
+literal "worker draft **vN" and five count phrasings — so "worker draft v9" and
+"Execution units = 999" both passed. Worse, its self-test SEEDED EXACTLY THE SPELLINGS
+THE PREDICATES ACCEPTED, so the red-proof was circular: it proved the predicate matches
+what the predicate matches. Every check below is either a structural contract (an exact
+expected form, or a class of construct forbidden outright) or a join between two
+independently-parsed structures. The self-test seeds OPPOSED spellings on purpose.
+
+WHY EVERY FAILURE CARRIES A STABLE ID. The previous self-test credited ANY non-zero
+exit, so an unrelated failure could keep a dead check green. Each mutation now declares
+the id it must provoke and a bound on how many lines it may change; a mutation whose
+delta exceeds its bound is not a local test of one check.
 """
 import re, sys, os, difflib
 
+TITLE = "# T-WD design — watchdog cluster — worker draft (NOTHING APPROVED, NOTHING RUN)"
 CLASSES = {"RED", "**CAPTURE-ONLY**", "**GAP — does not run**"}
 LANES = {"—", "bash+uv"}
-
-class Doc:
-    def __init__(self, text):
-        self.text = text
-        self.lines = text.split("\n")
-
-def fail(out, msg):
-    out.append("FAIL  " + msg)
-
-# ---------- roster: a real parser, not substrings ----------
 ROSTER_HDR = "| # | arm id | row | class | lanes | M12 |"
-
-def parse_roster(doc, out):
-    try:
-        i = doc.lines.index(ROSTER_HDR)
-    except ValueError:
-        fail(out, "roster header absent — counts derived from a missing table are not facts")
-        return None
-    rows, j = [], i + 2
-    while j < len(doc.lines) and doc.lines[j].startswith("|"):
-        cells = [c.strip() for c in doc.lines[j].strip().strip("|").split("|")]
-        if len(cells) != 6:
-            fail(out, "roster row %d has %d cells, expected 6: %s" % (j + 1, len(cells), doc.lines[j][:60]))
-            return None
-        rows.append(cells)
-        j += 1
-    if not rows:
-        fail(out, "roster is EMPTY")
-        return None
-    ords, ids = [], []
-    for n, aid, row, cls, lane, m12 in rows:
-        if not n.isdigit():
-            fail(out, "roster ordinal not numeric: %r" % n); return None
-        ords.append(int(n)); ids.append(aid)
-        if cls not in CLASSES:
-            fail(out, "roster row %s: unknown class %r (allowed: %s)" % (n, cls, sorted(CLASSES)))
-        if lane not in LANES:
-            fail(out, "roster row %s: unknown lane %r" % (n, lane))
-        if m12 != "—" and not re.fullmatch(r"§4\.\d|baseline", m12):
-            fail(out, "roster row %s: malformed M12 field %r" % (n, m12))
-    if ords != list(range(1, len(ords) + 1)):
-        fail(out, "roster ordinals not unique-and-contiguous from 1")
-    dup = {x for x in ids if ids.count(x) > 1}
-    if dup:
-        fail(out, "duplicate arm ids in roster: %s" % sorted(dup))
-    return rows
-
-def derive(rows):
-    gap = [r for r in rows if "GAP" in r[3]]
-    cap = [r for r in rows if "CAPTURE-ONLY" in r[3]]
-    red = [r for r in rows if r[3] == "RED"]
-    two = [r for r in rows if r[4] == "bash+uv"]
-    m12 = [r for r in rows if r[5].startswith("§4.") and "GAP" not in r[3]]
-    runnable = len(rows) - len(gap)
-    return dict(specs=len(rows), red=len(red), capture=len(cap), gap=len(gap),
-                two=len(two), runnable=runnable, units=runnable + len(two), m12=len(m12))
-
-# ---------- counts: parse EVERY numeric claim, not one phrasing ----------
-COUNT_PATTERNS = [
-    (re.compile(r"all (\d+) executed units"), "units"),
-    (re.compile(r"executed unit count is (\d+)"), "units"),
-    (re.compile(r"(\d+) arm specs"), "specs"),
-    (re.compile(r"(\d+) arms \(rows SC-"), "m12"),
-    (re.compile(r"(\d+) RED\b"), "red"),
-]
-
-def check_counts(doc, d, out):
-    for pat, key in COUNT_PATTERNS:
-        for m in pat.finditer(doc.text):
-            n = int(m.group(1))
-            if n != d[key]:
-                ln = doc.text[:m.start()].count("\n") + 1
-                fail(out, "line %d: prose says %d for %s; roster yields %d" % (ln, n, key, d[key]))
-
-# ---------- self-version ----------
-def check_version(doc, out):
-    if re.search(r"worker draft \*\*v[0-9]", doc.text):
-        fail(out, "document carries its own version numeral — identity is the commit hash")
-
-# ---------- ordinals: paragraph-joined, case-insensitive, all spellings ----------
+BAR_HDR = "| id | site | frozen anchor |"
+SURFACE_HDR = "| row | neutral surface line | family |"
+HEAD = re.compile(r"^#### (\d+)\. `([^`]+)` — (.*)$")
+# ONLY the countables a table derives. A broader list flagged legitimate prose
+# ("two gates", "three-part requirement") and would have trained me to ignore it.
+COUNTABLE = r"(?:arms?|arm specs?|specs?|executed units?|units?|barriers?)"
+NUMWORD = r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty)"
+# (?<![-\w]) keeps "GATE-2 ARM LINTER" out: a digit inside a hyphenated identifier is
+# part of a name, not a count. At most ONE intervening word, so a number and a
+# countable three clauses apart are not paired by accident.
+# BOTH ORDERS. The first version only caught "N countable"; the self-test's opposed
+# spelling "units = 999" walked straight through it, which is the whole reason the
+# suite seeds spellings the predicate was NOT written around.
+COUNT_CLAIM = re.compile(
+    r"(?<![-\w])(?:\d+|%s)\s+(?:\w+\s+){0,1}%s\b"      # "44 arm specs"
+    r"|%s\s*(?:=|:|is|are|of)\s*(?:\d+|%s)\b"            # "units = 999"
+    % (NUMWORD, COUNTABLE, COUNTABLE, NUMWORD), re.I)
 ORD = re.compile(r"\barms?\s*(?:#|no\.\s*)?\d+", re.I)
 
-def permitted_zones(doc):
-    """Yield (start,end) line ranges where ordinals are allowed."""
-    z = []
-    try:
-        i = doc.lines.index(ROSTER_HDR); j = i
-        while j < len(doc.lines) and doc.lines[j].startswith("|"): j += 1
-        z.append((i, j))
-    except ValueError:
-        pass
-    for k, l in enumerate(doc.lines):
-        if l.startswith("**Execution order"):
-            e = k
-            while e < len(doc.lines) and doc.lines[e].strip(): e += 1
-            z.append((k, e))
-        if l.startswith("## 6."):
-            z.append((k, len(doc.lines)))
-        if l.startswith("> "):
-            z.append((k, k + 1))
-        if l.startswith("| ") and l.count("|") >= 3:
-            z.append((k, k + 1))   # any table row
-    return z
+class Out(list):
+    def add(self, cid, msg): self.append((cid, msg))
 
-def check_ordinals(doc, out):
-    zones = permitted_zones(doc)
-    def allowed(n):
-        return any(a <= n < b for a, b in zones)
-    # join paragraphs so a wrapped "(arms\n22-24)" is visible
-    para = []
-    for n, l in enumerate(doc.lines):
-        if not l.strip():
-            if para: scan_para(para, allowed, out)
-            para = []
-        else:
-            para.append((n, l))
-    if para: scan_para(para, allowed, out)
+# ---------------- structure parsing ----------------
+def table(lines, hdr, ncells):
+    try: i = lines.index(hdr)
+    except ValueError: return None, None, None
+    rows, j = [], i + 2
+    while j < len(lines) and lines[j].startswith("|"):
+        c = [x.strip() for x in lines[j].strip().strip("|").split("|")]
+        rows.append((j, c)); j += 1
+    return i, j, rows
 
-def scan_para(para, allowed, out):
-    joined = " ".join(l for _, l in para)
-    for m in ORD.finditer(joined):
-        # locate the line the match starts on
-        off, ln = 0, para[0][0]
-        for n, l in para:
-            if off + len(l) + 1 > m.start(): ln = n; break
-            off += len(l) + 1
-        if not allowed(ln):
-            fail(out, "line %d: ordinal arm reference %r — use a stable arm id" % (ln + 1, m.group(0)))
+def parse_roster(L, out):
+    i, j, rows = table(L, ROSTER_HDR, 6)
+    if rows is None: out.add("ROSTER-ABSENT", "roster header absent"); return None, None, None
+    if not rows: out.add("ROSTER-EMPTY", "roster is empty"); return None, None, None
+    parsed = []
+    for ln, c in rows:
+        if len(c) != 6:
+            out.add("ROSTER-ARITY", "row line %d has %d cells, expected 6" % (ln + 1, len(c))); return None, None, None
+        n, aid, row, cls, lane, m12 = c
+        aid = aid.strip("`")
+        if not n.isdigit(): out.add("ROSTER-ORD", "non-numeric ordinal %r" % n); return None, None, None
+        if cls not in CLASSES: out.add("ROSTER-CLASS", "row %s: unknown class %r" % (n, cls))
+        if lane not in LANES: out.add("ROSTER-LANE", "row %s: unknown lane %r" % (n, lane))
+        if m12 != "—" and not re.fullmatch(r"§4\.\d|baseline", m12):
+            out.add("ROSTER-M12", "row %s: malformed M12 field %r" % (n, m12))
+        parsed.append((int(n), aid, row, cls, lane, m12))
+    ords = [p[0] for p in parsed]
+    if ords != list(range(1, len(ords) + 1)):
+        out.add("ROSTER-SEQ", "ordinals are not unique-and-contiguous from 1")
+    ids = [p[1] for p in parsed]
+    dup = sorted({x for x in ids if ids.count(x) > 1})
+    if dup: out.add("ROSTER-DUPID", "duplicate arm ids: %s" % dup)
+    return parsed, i, j
 
-# ---------- barriers: BOTH directions, plus duplicate table ids ----------
-BAR_TBL_HDR = "| id | site | frozen anchor |"
+SECTION = re.compile(r"^#{1,3} ")
 
-def check_barriers(doc, out):
-    try:
-        i = doc.lines.index(BAR_TBL_HDR)
-    except ValueError:
-        fail(out, "typed barrier table absent"); return
-    ids, j = [], i + 2
-    while j < len(doc.lines) and doc.lines[j].startswith("|"):
-        m = re.match(r"\|\s*`([^`]+)`", doc.lines[j])
-        if m: ids.append(m.group(1))
-        j += 1
-    dup = {x for x in ids if ids.count(x) > 1}
-    if dup: fail(out, "duplicate ids in the barrier table: %s" % sorted(dup))
-    tbl = set(ids)
-    used = set()
-    for n, l in enumerate(doc.lines):
-        if l.startswith(">") or (i <= n < j): continue
-        used |= set(re.findall(r"`((?:CUT|BAR)-[A-Z0-9]+-[A-Z0-9-]+)`", l))
-    for x in sorted(used - tbl): fail(out, "barrier id used but absent from the typed table: %s" % x)
-    for x in sorted(tbl - used): fail(out, "barrier id in the typed table but never used: %s" % x)
+def body_end(L, start):
+    """An arm body ends at the next arm heading OR the next section heading.
+    Running it to EOF made the LAST arm swallow every later section — 151 false
+    BAR-ARM reports on the first run, all from one bound."""
+    for n in range(start + 1, len(L)):
+        if HEAD.match(L[n]) or SECTION.match(L[n]): return n
+    return len(L)
 
-# ---------- vocabulary: terms DERIVED from M1, portable boundaries ----------
-def derive_terms(doc, out):
-    m = re.search(r"A committed linter rejects the design.*?`([^`]*)`\.", doc.text, re.S)
-    if not m:
-        fail(out, "cannot derive lint terms from M1 — refusing to run a shorter list"); return []
-    raw = m.group(1).replace("\n", " ")
-    terms = [t.strip() for t in raw.split("|") if t.strip()]
-    return terms
+def field(block, name):
+    """A field runs from its bullet to the next bullet — Barriers fields WRAP,
+    and reading only the first line under-collects the declared set."""
+    acc, on = [], False
+    for l in block:
+        if l.startswith("- **%s**" % name): on = True; acc.append(l); continue
+        if on:
+            if l.startswith("- **"): break
+            acc.append(l)
+    return " ".join(acc)
 
-def arm_field_ranges(doc):
-    r, inz = [], False
-    for n, l in enumerate(doc.lines):
-        if l.startswith("## 3A"): inz = True
-        elif l.startswith("## 5. Fixture"): inz = False
-        elif re.match(r"^### 4\.", l): inz = True
-        elif l.startswith("## 5."): inz = False
-        if inz: r.append(n)
-    return set(r)
-
-def check_vocab(doc, terms, out):
-    if not terms: return
-    zone = arm_field_ranges(doc)
-    pat = re.compile(r"\b(" + "|".join(re.escape(t) for t in terms) + r")\b", re.I)
-    for n in sorted(zone):
-        l = doc.lines[n]
-        if l.startswith(">"): continue
-        stripped = re.sub(r"`[^`]*`", "", l)
-        m = pat.search(stripped)
-        if m:
-            fail(out, "line %d: banned term %r in an arm field" % (n + 1, m.group(1)))
-
-# ---------- candidate space: evaluated at EVERY RED boundary and at EOF ----------
-HEAD = re.compile(r"^#### (\d+)\. `([^`]+)` — (.*)$")
-
-def check_candidates(doc, out):
-    cur, buf = None, []
-    def close(h, b):
-        if not h: return
-        if "CAPTURE-ONLY" in h[2] or "DECLARED GAP" in h[2]: return
-        cs = [l for l in b if "**CANDIDATE SPACE**" in l]
-        if len(cs) != 1:
-            fail(out, "arm %s: expected exactly one CANDIDATE SPACE field, found %d" % (h[1], len(cs)))
-            return
-        idx = b.index(cs[0]); blob = " ".join(b[idx:idx + 8])
-        if re.search(r"`CS@[A-Z0-9-]+`", blob): return
-        if "**A:**" in blob and "**B:**" in blob: return
-        fail(out, "arm %s: candidate space names no A/B pair and no valid CS@ reference" % h[1])
-    for l in doc.lines:
+def parse_bodies(L, out):
+    bodies = []
+    for n, l in enumerate(L):
         m = HEAD.match(l)
         if m:
-            close(cur, buf); cur, buf = m.groups(), []
-        elif cur is not None:
-            buf.append(l)
-    close(cur, buf)
+            num, aid, tail = int(m.group(1)), m.group(2), m.group(3)
+            cls = ("**GAP — does not run**" if "DECLARED GAP" in tail
+                   else "**CAPTURE-ONLY**" if "CAPTURE-ONLY" in tail else "RED")
+            bodies.append((num, aid, cls, n))
+    ids = [b[1] for b in bodies]
+    dup = sorted({x for x in ids if ids.count(x) > 1})
+    if dup: out.add("BODY-DUPID", "duplicate arm ids among bodies: %s" % dup)
+    return bodies
 
-def run(path):
-    out = []
-    try:
-        text = open(path, encoding="utf-8").read()
+# ---------------- B1: the join ----------------
+def check_join(roster, bodies, out):
+    r = {(p[0], p[1], p[3]) for p in roster}
+    b = {(x[0], x[1], x[2]) for x in bodies}
+    for miss in sorted(r - b):
+        out.add("JOIN-ROSTER-ONLY", "roster row %s `%s` (%s) has no matching body heading" % miss)
+    for extra in sorted(b - r):
+        out.add("JOIN-BODY-ONLY", "body heading %s `%s` (%s) has no matching roster row" % extra)
+    rid = {p[1]: p for p in roster}; bid = {x[1]: x for x in bodies}
+    for aid in sorted(set(rid) & set(bid)):
+        if rid[aid][0] != bid[aid][0]:
+            out.add("JOIN-ORDINAL", "`%s`: roster ordinal %d, body ordinal %d" % (aid, rid[aid][0], bid[aid][0]))
+        if rid[aid][3] != bid[aid][2]:
+            out.add("JOIN-CLASS", "`%s`: roster class %r, body class %r" % (aid, rid[aid][3], bid[aid][2]))
+
+def derive(roster):
+    gap = [p for p in roster if "GAP" in p[3]]; cap = [p for p in roster if "CAPTURE-ONLY" in p[3]]
+    red = [p for p in roster if p[3] == "RED"]; two = [p for p in roster if p[4] == "bash+uv"]
+    m12 = [p for p in roster if p[5].startswith("§4.") and "GAP" not in p[3]]
+    runnable = len(roster) - len(gap)
+    return dict(specs=len(roster), red=len(red), capture=len(cap), gap=len(gap),
+                two=len(two), runnable=runnable, units=runnable + len(two), m12=len(m12))
+
+# ---------------- zones ----------------
+def zones(L, ri, rj):
+    """protected = everything normative; exempt = ONLY the exact roster and the exact
+    execution-order region. Arbitrary tables are NOT exempt — the previous version
+    exempted every table row, which un-protected the neutral surface table."""
+    exempt = set(range(ri, rj)) if ri is not None else set()
+    for k, l in enumerate(L):
+        if l.startswith("**Execution order"):
+            e = k
+            while e < len(L) and L[e].strip(): e += 1
+            exempt |= set(range(k, e))
+        if l.startswith("> "): exempt.add(k)
+    hist = next((k for k, l in enumerate(L) if l.startswith("## 6.")), len(L))
+    exempt |= set(range(hist, len(L)))
+    return exempt
+
+# ---------------- B3: structural contracts ----------------
+def check_title(L, out):
+    if not L or L[0] != TITLE:
+        out.add("TITLE", "title line is not the exact expected form (any version numeral or edit fails)")
+
+def check_counts(L, exempt, d, out):
+    for n, l in enumerate(L):
+        if n in exempt or l.startswith(">"): continue
+        s = re.sub(r"`[^`]*`", "", l)
+        m = COUNT_CLAIM.search(s)
+        if m:
+            out.add("COUNT-CLAIM", "line %d: numeric claim about a countable (%r) — counts are derived, never stated" % (n + 1, m.group(0).strip()))
+
+def check_ordinals(L, exempt, out):
+    para = []
+    def scan(p):
+        joined = " ".join(x[1] for x in p)
+        for m in ORD.finditer(joined):
+            off, ln = 0, p[0][0]
+            for n, l in p:
+                if off + len(l) + 1 > m.start(): ln = n; break
+                off += len(l) + 1
+            if ln not in exempt:
+                out.add("ORDINAL", "line %d: ordinal arm reference %r — use a stable arm id" % (ln + 1, m.group(0)))
+    for n, l in enumerate(L):
+        if not l.strip():
+            if para: scan(para)
+            para = []
+        elif n in exempt: 
+            if para: scan(para)
+            para = []
+        else: para.append((n, l))
+    if para: scan(para)
+
+# ---------------- vocabulary over the FULL protected scope ----------------
+def derive_terms(text, out):
+    m = re.search(r"A committed linter rejects the design.*?`([^`]*)`\.", text, re.S)
+    if not m:
+        out.add("TERMS", "cannot derive lint terms from M1 — refusing to run a shorter list"); return []
+    return [t.strip() for t in m.group(1).replace("\n", " ").split("|") if t.strip()]
+
+def blank_code(L):
+    """Backtick spans WRAP ACROSS LINES — M1's own term declaration is one. Blanking
+    per line leaves the tail of a wrapped span exposed, which reported M1's
+    declaration of the banned terms as a use of them."""
+    text = "\n".join(L)
+    out, i, n = [], 0, len(text)
+    while i < n:
+        j = text.find("`", i)
+        if j < 0: out.append(text[i:]); break
+        k = text.find("`", j + 1)
+        if k < 0: out.append(text[i:]); break
+        out.append(text[i:j]); out.append(re.sub(r"[^\n]", " ", text[j:k + 1])); i = k + 1
+    return "".join(out).split("\n")
+
+def check_vocab(L, exempt, terms, out):
+    if not terms: return
+    B = blank_code(L)
+    pat = re.compile(r"\b(" + "|".join(re.escape(t) for t in terms) + r")\b", re.I)
+    for n, l in enumerate(B):
+        if n in exempt or L[n].startswith(">"): continue
+        m = pat.search(l)
+        if m: out.add("VOCAB", "line %d: banned term %r in normative text" % (n + 1, m.group(1)))
+
+# ---------------- barriers: table, both directions, per-arm association ----------------
+def check_barriers(L, bodies, out):
+    i, j, rows = table(L, BAR_HDR, 3)
+    if rows is None: out.add("BAR-TABLE", "typed barrier table absent"); return
+    ids = []
+    for ln, c in rows:
+        m = re.match(r"`([^`]+)`", c[0])
+        if m: ids.append(m.group(1))
+    dup = sorted({x for x in ids if ids.count(x) > 1})
+    if dup: out.add("BAR-DUP", "duplicate ids in the barrier table: %s" % dup)
+    tbl = set(ids); used = set()
+    for n, l in enumerate(L):
+        if l.startswith(">") or (i <= n < j): continue
+        used |= set(re.findall(r"`((?:CUT|BAR)-[A-Z0-9]+-[A-Z0-9-]+)`", l))
+    for x in sorted(used - tbl): out.add("BAR-UNKNOWN", "barrier id used but not in the typed table: %s" % x)
+    for x in sorted(tbl - used): out.add("BAR-ORPHAN", "barrier id in the typed table but never used: %s" % x)
+    # per-arm association: any barrier named inside an arm must appear in its Barriers field
+    BID = r"`((?:CUT|BAR)-[A-Z0-9]+-[A-Z0-9-]+)`"
+    for (num, aid, cls, start) in bodies:
+        block = L[start:body_end(L, start)]
+        # An arm is its FIELD BULLETS. Section preambles and tables that happen to
+        # follow the last arm of a section are NOT part of it — reading raw block
+        # text attributed a whole section's barrier table to the arm above it.
+        fields, cur = {}, None
+        for l in block:
+            m = re.match(r"- \*\*([^*]+)\*\*", l)
+            if m: cur = m.group(1); fields.setdefault(cur, []).append(l)
+            elif cur and l.startswith("  "): fields[cur].append(l)
+            elif not l.strip(): cur = None
+            else: cur = None
+        declared = set(re.findall(BID, " ".join(fields.get("Barriers", []))))
+        mentioned = set()
+        for k, v in fields.items():
+            if k == "Barriers": continue
+            mentioned |= set(re.findall(BID, " ".join(v)))
+        for x in sorted(mentioned - declared):
+            out.add("BAR-ARM", "arm `%s` names %s in its fields but does not declare it under Barriers" % (aid, x))
+
+# ---------------- candidate space, keyed from the JOINED row ----------------
+def check_candidates(L, roster, bodies, out):
+    rid = {p[1]: p for p in roster}
+    for (num, aid, cls, start) in bodies:
+        r = rid.get(aid)
+        if r is None or r[3] != "RED": continue
+        block = L[start:body_end(L, start)]
+        cs = [x for x in block if "**CANDIDATE SPACE**" in x]
+        if len(cs) != 1:
+            out.add("CAND-COUNT", "arm `%s`: expected exactly one CANDIDATE SPACE field, found %d" % (aid, len(cs))); continue
+        idx = block.index(cs[0]); blob = " ".join(block[idx:idx + 8])
+        if re.search(r"`CS@[A-Z0-9-]+`", blob): continue
+        if "**A:**" in blob and "**B:**" in blob: continue
+        out.add("CAND-PAIR", "arm `%s`: no A/B pair and no valid CS@ reference" % aid)
+
+# ---------------- internal references ----------------
+def check_shadow_lists(L, bodies, out):
+    """A barrier id may appear ONLY in the typed table, in an arm's field bullets, or
+    in a blockquote. Anywhere else is a SHADOW LIST — a second copy someone must keep
+    in agreement with the table. The design shipped one whose own sentence read
+    "this paragraph names no ids of its own" directly above the enumeration."""
+    i, j, _ = table(L, BAR_HDR, 3)
+    allowed = set(range(i, j)) if i is not None else set()
+    for (num, aid, cls, start) in bodies:
+        allowed |= set(range(start, body_end(L, start)))
+    hist = next((k for k, l in enumerate(L) if l.startswith("## 6.")), len(L))
+    allowed |= set(range(hist, len(L)))   # the change log is history, not a live list
+    BID = r"`((?:CUT|BAR)-[A-Z0-9]+-[A-Z0-9-]+)`"
+    # A single id in context is a reference; THREE OR MORE in one paragraph is a LIST,
+    # and a list outside the typed table is a second copy someone must keep in
+    # agreement. Flagging every mention instead flagged the per-row matrices, which
+    # legitimately name the barrier an arm uses.
+    para, first = [], 0
+    def scan(para, first):
+        if not para: return
+        if all(n in allowed for n in range(first, first + len(para))): return
+        ids = set()
+        for l in para: ids |= set(re.findall(BID, l))
+        if len(ids) >= 3:
+            out.add("SHADOW-LIST", "line %d: %d barrier ids enumerated outside the typed table — shadow list" % (first + 1, len(ids)))
+    for n, l in enumerate(L):
+        if not l.strip():
+            scan(para, first); para, first = [], n + 1
+        else:
+            if not para: first = n
+            para.append(l)
+    scan(para, first)
+
+def check_internal_refs(L, out):
+    here = os.path.dirname(os.path.abspath(__file__))
+    for n, l in enumerate(L):
+        for f in re.findall(r"`(t-wd-[A-Za-z0-9._-]+)`", l):
+            if not os.path.exists(os.path.join(here, f)):
+                out.add("REF-FILE", "line %d: references `%s`, which does not exist" % (n + 1, f))
+
+def run(path, quiet=False):
+    out = Out()
+    try: text = open(path, encoding="utf-8").read()
     except OSError as e:
-        print("FAIL  cannot read %s: %s" % (path, e)); return 1
-    doc = Doc(text)
-    rows = parse_roster(doc, out)
-    if rows:
-        d = derive(rows)
-        print("derived: " + " ".join("%s=%s" % kv for kv in sorted(d.items())))
-        check_counts(doc, d, out)
-    check_version(doc, out)
-    check_ordinals(doc, out)
-    check_barriers(doc, out)
-    terms = derive_terms(doc, out)
-    print("derived lint terms: %s" % "|".join(terms))
-    check_vocab(doc, terms, out)
-    check_candidates(doc, out)
-    for o in out: print(o)
-    print("OK — all checks clean" if not out else "CHECKER REPORTED %d FAILURE(S)" % len(out))
-    return 1 if out else 0
+        print("FAIL  READ  cannot read %s: %s" % (path, e)); return 1, out
+    L = text.split("\n")
+    roster, ri, rj = parse_roster(L, out)
+    bodies = parse_bodies(L, out)
+    if roster:
+        d = derive(roster)
+        if not quiet: print("derived: " + " ".join("%s=%s" % kv for kv in sorted(d.items())))
+        check_join(roster, bodies, out)
+        ex = zones(L, ri, rj)
+        check_counts(L, ex, d, out)
+        check_ordinals(L, ex, out)
+        terms = derive_terms(text, out)
+        if not quiet: print("derived lint terms: %s" % "|".join(terms))
+        check_vocab(L, ex, terms, out)
+        check_candidates(L, roster, bodies, out)
+    check_title(L, out)
+    check_barriers(L, bodies, out)
+    check_shadow_lists(L, bodies, out)
+    check_internal_refs(L, out)
+    if not quiet:
+        for cid, msg in out: print("FAIL  %-18s %s" % (cid, msg))
+        print("OK — all checks clean" if not out else "CHECKER REPORTED %d FAILURE(S)" % len(out))
+    return (1 if out else 0), out
 
-# ---------- self-test: every check path, seed-diff-run ----------
-MUTATIONS = [
-    ("vocab", lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — none. The arm verifies that it landed.", 1)),
-    ("candspace-deleted", lambda s: re.sub(r"- \*\*CANDIDATE SPACE\*\* — \*\*A:\*\*.*?\n- \*\*Dimension\*\*", "- **Dimension**", s, count=1, flags=re.S)),
-    ("ordinal-lower", lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — as arm 5.", 1)),
-    ("ordinal-upper", lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — see Arm 5.", 1)),
-    ("ordinal-hash", lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — see arm #5.", 1)),
-    ("ordinal-wrapped", lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — see\n  arms 22.", 1)),
-    ("dup-arm-id", lambda s: s.replace("`WD-913-bash-submit-unverified` | SC-913", "`WD-913-bash-dead-pane` | SC-913", 1)),
-    ("bogus-class", lambda s: s.replace("| SC-913 | RED | — | — |", "| SC-913 | PURPLE | — | — |", 1)),
-    ("bogus-lane", lambda s: s.replace("| SC-913 | RED | — | — |", "| SC-913 | RED | uv | — |", 1)),
-    ("roster-deleted", lambda s: re.sub(r"\| # \| arm id \| row \| class \| lanes \| M12 \|.*?\n\n", "", s, count=1, flags=re.S)),
-    # The document deliberately prints NO counts, so a drift mutation must first
-    # INTRODUCE one. Mutating a phrase that is absent produces a seed that does not
-    # land, which the runner reports as an INVALID TEST rather than a pass.
-    ("count-drift", lambda s: s.replace("**Execution order.**", "There are 99 arm specs.\n\n**Execution order.**", 1)),
-    ("unused-barrier", lambda s: s.replace("| `BAR-920-SEND` |", "| `BAR-999-NEVER` | unused | ae:1 |\n| `BAR-920-SEND` |", 1)),
-    ("unknown-barrier", lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — `CUT-999-GHOST`.", 1)),
-    ("self-version", lambda s: s.replace("worker draft (NOTHING", "worker draft **v9** (NOTHING", 1)),
+# ---------------- self-test: named id, local delta, opposed spellings ----------------
+M = [
+ ("VOCAB", 8, "vocab-armfield",    lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — none. It verifies that it landed.", 1)),
+ ("VOCAB", 8, "vocab-surface",     lambda s: s.replace("| D25 | the watchdog daemon process itself", "| D25 | the watchdog daemon should process itself", 1)),
+ ("ORDINAL", 8, "ord-lower",       lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — as arm 5.", 1)),
+ ("ORDINAL", 8, "ord-upper",       lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — see Arm 5.", 1)),
+ ("ORDINAL", 8, "ord-hash",        lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — see arm #5.", 1)),
+ ("ORDINAL", 8, "ord-noword",      lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — see arm no. 5.", 1)),
+ ("ORDINAL", 8, "ord-wrapped",     lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — see\n  arms 22.", 1)),
+ ("ORDINAL", 8, "ord-surface",     lambda s: s.replace("| SC-834a | the `_recover-pending`", "| SC-834a | see arm 3, the `_recover-pending`", 1)),
+ ("TITLE", 4, "version-starred",   lambda s: s.replace("worker draft (NOTHING", "worker draft **v9** (NOTHING", 1)),
+ ("TITLE", 4, "version-natural",   lambda s: s.replace("worker draft (NOTHING", "worker draft v9 (NOTHING", 1)),
+ ("COUNT-CLAIM", 8, "count-phrase",lambda s: s.replace("**Execution order.**", "There are 99 arm specs.\n\n**Execution order.**", 1)),
+ ("COUNT-CLAIM", 8, "count-equals",lambda s: s.replace("**Execution order.**", "Execution units = 999 checks.\n\n**Execution order.**", 1)),
+ ("COUNT-CLAIM", 8, "count-word",  lambda s: s.replace("**Execution order.**", "There are four barriers.\n\n**Execution order.**", 1)),
+ ("ROSTER-DUPID", 6, "dup-id",     lambda s: s.replace("`WD-913-bash-submit-unverified` | SC-913", "`WD-913-bash-dead-pane` | SC-913", 1)),
+ ("ROSTER-CLASS", 6, "bad-class",  lambda s: s.replace("| SC-913 | RED | — | — |", "| SC-913 | PURPLE | — | — |", 1)),
+ ("ROSTER-LANE", 6, "bad-lane",    lambda s: s.replace("| SC-913 | RED | — | — |", "| SC-913 | RED | uv | — |", 1)),
+ ("ROSTER-ABSENT", 400, "no-roster", lambda s: re.sub(r"\| # \| arm id \| row \| class \| lanes \| M12 \|.*?\n\n", "", s, count=1, flags=re.S)),
+ ("JOIN-BODY-ONLY", 4, "ghost-body", lambda s: s.replace("#### 1. `WD-D25-serve-at-start`", "#### 1. `WD-D25-GHOST`", 1)),
+ ("JOIN-ROSTER-ONLY", 6, "ghost-row", lambda s: s.replace("| 1 | `WD-D25-serve-at-start`", "| 1 | `WD-D25-PHANTOM`", 1)),
+ ("BAR-ORPHAN", 6, "orphan-bar",   lambda s: s.replace("| `BAR-920-SEND` |", "| `BAR-999-NEVER` | unused | ae:1 |\n| `BAR-920-SEND` |", 1)),
+ ("BAR-UNKNOWN", 8, "ghost-bar",   lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — `CUT-999-GHOST`.", 1)),
+ ("BAR-ARM", 8, "undeclared-bar",  lambda s: s.replace("- **Named manipulation** — the fake agent process is exited once.", "- **Named manipulation** — at `CUT-928A-OPEN`, the fake agent process is exited once.", 1)),
+ ("SHADOW-LIST", 8, "shadow-list", lambda s: s.replace("**Execution order.**", "See `CUT-926-STOP-INTENT`, `CUT-928-LOCK` and `BAR-920-SEND`.\n\n**Execution order.**", 1)),
+ ("REF-FILE", 8, "dead-file-ref",  lambda s: s.replace("**Execution order.**", "See `t-wd-nonexistent.sh`.\n\n**Execution order.**", 1)),
+ # LOCAL: drop one arm's field MARKER, not a 244-line span. A mutation that rewrites
+ # a quarter of the document is not a test of one check — it is a test of whether
+ # anything at all still works.
+ ("CAND-COUNT", 4, "cand-removed", lambda s: s.replace("- **CANDIDATE SPACE** — **A:** the selector decides", "- **CANDIDATE-GONE** — **A:** the selector decides", 1)),
+ ("CAND-PAIR", 4, "cand-no-pair", lambda s: s.replace("- **CANDIDATE SPACE** — **A:** the selector decides which implementation serves", "- **CANDIDATE SPACE** — it decides which implementation serves", 1)),
 ]
 
 def self_test(path):
-    import io, contextlib
     orig = open(path, encoding="utf-8").read()
-    tmp = path + ".selftest.tmp"
-    bad = 0
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        neutral = run(path)
-    if neutral != 0:
-        print("SELF-TEST ABORT: neutral document is not clean (rc=%d)" % neutral)
-        print(buf.getvalue()); return 1
+    rc, _ = run(path, quiet=True)
+    if rc != 0:
+        print("SELF-TEST ABORT: neutral document is not clean"); run(path); return 1
     print("neutral: rc=0 clean")
-    for name, fn in MUTATIONS:
-        mutated = fn(orig)
-        if mutated == orig:
-            print("%-20s SEED-DID-NOT-LAND — test invalid, not a pass" % name); bad += 1; continue
-        d = sum(1 for _ in difflib.unified_diff(orig.split("\n"), mutated.split("\n"), n=0))
-        open(tmp, "w", encoding="utf-8").write(mutated)
-        b2 = io.StringIO()
-        with contextlib.redirect_stdout(b2):
-            rc = run(tmp)
-        os.unlink(tmp)
-        ok = "caught" if rc != 0 else "MISSED"
-        if rc == 0: bad += 1
-        print("%-20s seed landed (%d diff lines)  rc=%d  %s" % (name, d, rc, ok))
-    print("SELF-TEST: %s" % ("ALL CHECKS RED-PROVEN" if bad == 0 else "%d FAILURE(S)" % bad))
+    tmp = path + ".selftest.tmp"; bad = 0
+    for want, maxdelta, name, fn in M:
+        mut = fn(orig)
+        if mut == orig:
+            print("%-18s SEED-DID-NOT-LAND — invalid test, NOT a pass" % name); bad += 1; continue
+        delta = sum(1 for l in difflib.unified_diff(orig.split("\n"), mut.split("\n"), n=0) if l[:1] in "+-" and l[:3] not in ("+++", "---"))
+        open(tmp, "w", encoding="utf-8").write(mut)
+        rc, out = run(tmp, quiet=True); os.unlink(tmp)
+        ids = {c for c, _ in out}
+        ok = rc != 0 and want in ids
+        local = delta <= maxdelta
+        if not ok or not local: bad += 1
+        print("%-18s delta=%-4d %-9s rc=%d ids=%s %s" % (
+            name, delta, "local" if local else "TOO-BROAD", rc,
+            ",".join(sorted(ids)) or "-", "" if ok and local else "<-- FAIL"))
+    print("SELF-TEST: %s" % ("ALL CHECKS RED-PROVEN BY NAMED ID" if bad == 0 else "%d FAILURE(S)" % bad))
     return 1 if bad else 0
 
 if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
     args = [a for a in sys.argv[1:] if a != "--self-test"]
     doc = args[0] if args else os.path.join(here, "t-wd-design.md")
-    sys.exit(self_test(doc) if "--self-test" in sys.argv else run(doc))
+    if "--self-test" in sys.argv: sys.exit(self_test(doc))
+    sys.exit(run(doc)[0])
