@@ -374,6 +374,48 @@ running the wrong thing, and the reason was that the right thing had never been 
 cheaper and more reliable than probe N+1. Guessing feels like progress and is the same
 motion that produced the first N.
 
+### Closing layer 1 makes layer 2 HARDER to see
+
+Citation failure has three layers, all three hit in one cluster, each invisible from the
+one below:
+
+| layer | failure | caught by |
+|---|---|---|
+| 1 | an **unpinned** citation that reads exactly like a pinned one — recall wearing the costume of transcription | the author, resolving them |
+| 2 | a **pinned** citation that resolves to a real line which is the **wrong line for its claim** | a seat reading source |
+| 3 | the **pin tool**, which makes the check cheap and does not perform it | the tool's own author |
+
+The trap is that **fixing layer 1 camouflages layer 2.** A worker wrote the rule that a pin
+proves resolution and not aptness, corrected eight unpinned citations to earn their pins,
+and shipped a pinned-and-wrong one **in the same document** — a real function that really
+does the described operation and is simply not the code path the claim is about. Their own
+observation:
+
+> Layer 1 is cheap to close and closing it does not touch layer 2 at all — if anything it
+> makes layer 2 harder to see, because everything that survives now carries a verified line
+> number.
+
+Uniform verification hides the cases it does not cover. Once every citation is pinned they
+all *look* equally checked, and the ones that resolve-but-mislead are indistinguishable
+from the ones that are right. **Never let a pinning pass be reported as a correctness
+pass** — say which layer was checked.
+
+### A rule that is being followed and still failing is the wrong instrument
+
+Normative content crossed to a worker **twice while a channel rule forbidding it was in
+force**, both times from a seat behaving correctly: once inside a message *arguing* for the
+exclusion, once inside a legitimate scope correction on a gate. Neither was carelessness.
+
+> The rule is being followed and the channel is still leaking, which says the fix is the
+> typed projection and not more care.
+
+And the projection alone is **necessary but insufficient**, because free-form review prose
+is a leak surface no schema covers. The structural fix is to make the seat boundary a
+**filter rather than a rule**: outcome-bearing gate analysis routes seat-to-seat, and the
+worker receives a **neutral delta** produced by a seat. That costs a hop and puts filtering
+work on the seats, which is the price of a boundary that does not depend on everyone
+remembering it.
+
 ### A tool that makes a check CHEAP is not a tool that PERFORMS it
 
 The most easily forgotten limit, recorded because it is invisible once a tool reports
