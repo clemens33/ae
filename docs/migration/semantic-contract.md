@@ -557,6 +557,40 @@ field shift or phantom rows; typed Rust satisfies this by construction. Authorit
 AGENTS.md TSV-framing ruling (the invariant behind it). Empirical: unit pins @72c7293
 (the `\x1f` implementation). Conflict: none.
 
+Meta key grammar (slice-1 Q1 seat rulings, source ownership corrected — meta supplies
+what meta OWNS; derived facts cite their true sources):
+
+**SC-405a — meta parse grammar.** Bucket 2 — `key=value` split on the FIRST equals;
+single-line values. Authority: architecture.md:61-70 (layout/roster authority).
+Empirical: census-1/2 meta writers. Conflict: none. **classified_by: both seats,
+2026-08-20.**
+
+**SC-405b — the session-context keys.** Bucket 2 — `mode`, `origin`, `work_dir`,
+`goal` are meta keys (goal per AGENTS.md@72c7293:102 `goal=` locked write). Authority:
+architecture.md:61-70 + AGENTS.md:102. Empirical: pending. Conflict: none.
+**classified_by: both seats, 2026-08-20.**
+
+**SC-405c — the roster keys.** Bucket 2 — `agent.<slot>` carries `alias:name:
+provider-session-id` (SC-1207b) and `agent_bin.<slot>` the recorded binary. Authority:
+architecture.md roster + #46/#50 rulings (recorded agent_bin). Empirical: census.
+Conflict: none. **classified_by: both seats, 2026-08-20.**
+
+**SC-405d — unknown-key handling.** `authority=code-observation` — probe + seat
+closure; never guessed. UNCLASSIFIED pending closure.
+
+**SC-405e — malformed/duplicate key handling.** `authority=code-observation` — probe +
+seat closure; never guessed. UNCLASSIFIED pending closure.
+
+**SC-405f — `goal_set_epoch` is DERIVED from the latest goal event.** Bucket 2 — not a
+meta key; the digest derives it from the event stream. Authority: slice-1 Q1 ruling +
+commands.md (goal_set_epoch semantics). Empirical: pending. Conflict: none.
+**classified_by: both seats, 2026-08-20.**
+
+**SC-405g — `branch` is the live tmux branch with a git fallback.** Bucket 2 — not a
+meta key; per commands.md:124-129 (the watchdog's status segment, git fallback).
+Authority: commands.md:124-129. Empirical: pending. Conflict: none. **classified_by:
+both seats, 2026-08-20.**
+
 **SC-404 — state roots derive from `AE_HOME` (default `~/.ae`) with explicit override
 exceptions.** Bucket 2 — the DEFAULT derivation covers config, `sessions/`,
 `archive/`, worktrees, daemon dirs; the exceptions are explicit overrides only:
@@ -635,6 +669,64 @@ its own entry; the document always closes, never truncates. Authority: AGENTS.md
 bullet (long emitters must not abort mid-output; structural guard). Empirical: structural
 unit guard @72c7293. Conflict: none.
 
+**SC-509b — read/parse loss is visible in the digest.** Bucket 2 — additive schema
+(slice-1 Q5 seat ruling, both seats): a session entry whose data suffered ACTUAL
+read/parse loss carries `degraded: true` (additive key; normal entries may omit it);
+identity (name + status) always survives; unreadable optional facts are omitted, never
+fabricated, never null; `agents` remains an array. Damage is never rendered
+identically to legitimate sparsity — a machine digest that hides loss lies by
+omission. Authority: slice-1 joint ruling + SC-511c additive-evolution rule.
+Empirical: pending (builder implementation + C-cluster). Conflict: none.
+**classified_by: fable5:lead + gpt56sol:colead, 2026-08-20.**
+
+**SC-518 — request closure requires the full mirror match.** Bucket 1 — (slice-1 Q6
+seat ruling, reversing the lead's scope confirmation): an unanswered request closes
+only on same ref AND reply.actor = request.target AND reply.target = request.actor;
+routed identities (slot+session) compare when both sides carry them, display
+identities when neither does, and MIXED identity matches nothing — the loud
+false-pending direction is safer than silent false-closure by a reply sent to someone
+else. Authority: events.md:108-117 (normative dependency of SC-017g) + joint ruling.
+Empirical: pending (builder P1 implementation + C-cluster). Conflict: none.
+**classified_by: fable5:lead + gpt56sol:colead, 2026-08-20.**
+
+**SC-519 — absent and zero-byte event logs are quiet, not degraded.** Bucket 2 —
+(slice-1 Q7b seat ruling): a fresh session may have no events file until first write
+and readers tolerate ENOENT (bridge-protocol.md:90-92); missing and empty are both
+quiet empty streams. An EXISTING-but-unreadable file, malformed complete records, or
+other I/O failure degrades (SC-509b). Authority: bridge-protocol.md:90-92 + joint
+ruling. Empirical: pending. Conflict: none. **classified_by: both seats, 2026-08-20.**
+
+**SC-520 — a skipped malformed record is observable.** Bucket 1 — (slice-1 Q7a): skip
+the malformed COMPLETE line, continue, retain generation+offset+reason internally, and
+mark the session degraded in the public JSON (a buffered unterminated tail is not
+malformed — SC-975b). Authority: joint ruling + SC-975b. Empirical: pending.
+Conflict: none. **classified_by: both seats, 2026-08-20.**
+
+**SC-521 — filter combinations intersect literally.** Bucket 2 — (slice-1 Q7c):
+`--stopped --needs-attn` and `--stopped --active` select nothing (each attention/
+activity row reads "running sessions only" literally); `--all` with either keeps only
+matching running sessions; no invented usage error. Authority: commands.md filter
+rows + joint ruling. Empirical: pending. Conflict: none. **classified_by: both
+seats, 2026-08-20.**
+
+**SC-522 — the unanswered threshold is strictly past.** Bucket 2 — (slice-1 Q7e): age
+must EXCEED the threshold; equality is not past it. Authority: commands.md:60-76
+("past the threshold") + joint ruling. Empirical: pending. Conflict: none.
+**classified_by: both seats, 2026-08-20.**
+
+**SC-523 — the documented defaults are 1800s and 300s.** Bucket 2 — (slice-1 Q7f):
+`AE_ATTN_REQUEST_SECS` default 30 min and the activity window ~5 min are NORMATIVE
+values from commands.md; SC-1410j/k continue to own unset/override/malformed ENV
+behavior separately; implementations may take the values as caller parameters.
+Authority: commands.md:66,86. Empirical: pending. Conflict: none. **classified_by:
+both seats, 2026-08-20.**
+
+**SC-524 — a future timestamp counts as active.** Bucket 1 — (slice-1 Q7f seat
+ruling): clock skew fails toward the loud false-positive (a session shown active)
+rather than silently hiding a live session. Authority: joint ruling (loud-direction
+doctrine). Empirical: pending. Conflict: none. **classified_by: both seats,
+2026-08-20.**
+
 **SC-509 — `list --json` versioned object schema.** Bucket 2 — a single JSON object:
 `schema_version` (1), `generated_at`, `sessions[]` with the documented session fields
 (name/status/mode/origin/work_dir/goal/goal_set_epoch/branch/last_active_epoch/
@@ -650,9 +742,14 @@ Conflict: none.
 never appear as empty strings. Authority: events.md:49. Empirical: pending.
 Conflict: none.
 
-**SC-510c — `ref` polysemy follows the action table.** Bucket 2 — request id for
-ask/review/reply, topic for memo, captured session id for recover, absent otherwise.
-Authority: events.md:62-68. Empirical: pending. Conflict: none.
+**SC-510c — `ref` polysemy follows the COMPLETE action table.** Bucket 2 — request id
+for ask/review/reply, topic for memo, captured session id for recover, DECLARED STATE
+for `state` events, and for other actions USUALLY absent — never categorically absent
+(amended per slice-1 Q3: a contract transcription defect found during implementation —
+the original row dropped the doc's own hedge and the state entry; conflict=none, no
+bucket-3 fiction). Authority: events.md:62-68 + 86-106. Empirical: pending.
+Conflict: none. **classified_by: REOPENED by the amendment and RE-MARKED — fable5:lead
++ gpt56sol:colead, 2026-08-20.**
 
 **SC-510d — string values are JSON-escaped.** Bucket 2 — the escape set is `\"` `\\`
 `\n` `\t` `\r`. Authority: events.md:70. Empirical: pending. Conflict: none.
@@ -1462,6 +1559,13 @@ Telegram (authority: telegram.md @72c7293, cited per memo):
   Authority: UNRESOLVED(memo citation is only the unqualified line range 27-53). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Setup write sequence. Conflict: none.
   formats: S5/S15).
 - **SC-971** b2 — start persists `enabled=true`; stop persists `enabled=false`.
+- **SC-980 — successor alert events carry a typed reason.** Bucket 1 — (slice-1 Q2
+  seat ruling): alert events gain an ADDITIVE typed reason key sufficient to
+  discriminate dead | stale | throttled; free-text `summary` is never a discriminator.
+  Legal under SC-511c additive evolution. The INCUMBENT action/summary byte shapes are
+  T-WD probe material for the legacy adapter — empirical only, never SHOULD.
+  Authority: commands.md:60-76 + joint seat ruling 2026-08-20. Empirical: T-WD
+  pending. Conflict: none. **classified_by: both seats, 2026-08-20.**
   Authority: UNRESOLVED(memo citation is only the unqualified line range 148-165). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Start/stop write sequence. Conflict: none.
 
 Bridge protocol (authority: bridge-protocol.md @72c7293; lead splits per gate):
