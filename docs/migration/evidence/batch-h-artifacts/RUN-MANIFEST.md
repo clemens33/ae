@@ -26,6 +26,7 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 |---|---|---|
 | `_harness/hlib.sh` | `0f838f7e89619358650f4ee99da31776f5351ef219c32f85c9b1546a0a8779e4` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
+| `_harness/arm-h8.sh` | `288e0013679c4cc6c74c0e33f3ba422b775c7d9a2d139b3d98f60333b047a58a` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h1h2.sh` | `4c2c8cb2d71d8153a9efe102572596546780b8381fed2885d30ed0f13d0da720` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h7l.sh` | `dffe8d0a7a2101555a776887c66efa66ad7673994e2eb73f31163c344206da86` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/pty-run.py` | `04bb88cc25a4312a76e6cde62563aa5c18966a1ac17d3e6c9b06f02d7842c5c3` | 2026-08-21 (registered BEFORE its first run) |
@@ -119,6 +120,23 @@ second.
 
 - new sha256: `bc2c105a87f01788d6c83ac66fb4b98c7e6d98c810f087fc9ca9bc4025933cfb`
 - post-capture reporting only.
+
+### A18 — A-H8's guards enumerated before it was built
+
+The preventive rule applied for the first time. Between an invocation and the fact each
+case is about there sit: an unconditional banner (ae:14889-14894), which a barrier must not
+mistake for content; the file-existence wait (ae:14897-14899); the replay cut at
+`tail -n 30` (ae:14902); and `helper_events_tail_format_event` (ae:14862-14884), which
+RETURNS EARLY on an empty line and on a line not starting with `{`.
+
+That last one is the guard that would have cost a run: a planted line failing the formatter
+produces no output, which looks exactly like the replay cut dropping it. Every planted event
+is well-formed JSON carrying the fields the formatter reads, except the case that is
+deliberately about a partial line.
+
+Termination is a controller action after a named barrier — this surface never exits on its
+own, so a bound expiring here is an instrument artifact and is recorded as one, never as a
+product rc.
 
 ## Frozen source
 

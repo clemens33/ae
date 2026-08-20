@@ -4,10 +4,12 @@ citation	class	resolved_base	expansions	first_resolution
 ../batch-h-input-list.md	path	tree	1	../batch-h-input-list.md
 ../gate/	path	tree	1	../gate/
 ../gate/check-ledger-chronology.py	path	tree	1	../gate/check-ledger-chronology.py
+A-H2/ARM-GAPS.txt	path	tree	1	A-H2/ARM-GAPS.txt
 A-H4/<case>/	wildcard	tree	15	A-H4/h4-c01-pane-live/
 A-H4/fixture-validity.txt	path	tree	1	A-H4/fixture-validity.txt
 A-H4/resolution-record.txt	path	tree	1	A-H4/resolution-record.txt
 A-H5/<case>/	wildcard	tree	16	A-H5/h5-c01-no-slot-arg/
+ARM-GAPS.md	path	tree	1	ARM-GAPS.md
 RUN-MANIFEST.md	path	tree	1	RUN-MANIFEST.md
 SHA256SUMS.txt	context	harm-rel	6	A-H1/SHA256SUMS.txt
 admissibility-ledger.txt	context	hcase-rel	123	A-H1/h1-c01-dash-h/admissibility-ledger.txt
