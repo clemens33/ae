@@ -252,8 +252,15 @@ L-DISCRIM **D5b**, which holds the singular self-stop supervisor at an L-HOOKS-v
 at its entry (pid 48880), captures the live process table there, walks its ancestry while
 alive, and diffs that live table against the post-hoc snapshot this section's artifact was.
 The row now rests on source ordering AND a deterministic live capture.
-**D5a does NOT contribute lineage** (colead's finding, verified): it proves only
-existence-under-real-timing via three full-argv samples. Its `supervisor-lineage.txt`
+**D5a's LINEAGE FILE is empty, but D5a is not lineage-free — my first statement of this
+was too strong and lexec corrected it.** Its `supervisor-samples.txt` rows are
+`ps -o pid=,ppid=,command=` output, so all three real-timing sightings read
+`pid=20573 ppid=1 … ae _stop-supervisor s1`. **`ppid=1` is captured, while alive, three
+times.** That is the load-bearing out-of-pane fact — a process reparented to PID 1 is
+precisely what `nohup … & disown` produces.
+What D5a cannot support is a multi-level ANCESTOR WALK, and that is what its lineage file
+claims. So the correct scope is: D5a contributes existence under real timing **and the
+parent**; D5b contributes the deterministic live table and the two-level walk. Its `supervisor-lineage.txt`
 header claims an ancestor walk "taken WHILE IT WAS ALIVE" and contains `0<TAB>` — the
 harness `wait`s for the 40s sampler before calling the lineage step, by which time the
 supervisor is dead. **The arm built to close this defect reproduced it**, in its own
