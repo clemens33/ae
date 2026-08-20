@@ -42,16 +42,25 @@ Only the sandboxes (template clones, tmux tmpdirs, sockets) live outside it.
 
 Every case keeps an append-only `admissibility-ledger.txt`: a monotonic `seq` plus UTC and
 epoch for each event — case open, rows, clone verification, the TAB round-trip
-START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the before/after manifests, and
-every consumer START/COMPLETE with its rc and its stdout / stderr / tmuxtrace sha256. The
-ledger is written by the checks themselves as they run, so it establishes ORDER — that
-both standing checks completed before the first consumer invocation — from the original
-durable content, with each capture's own hash tied into the same record. Filesystem
-mtimes and the `SHA256SUMS.txt` list are not relied on for ordering.
+START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the inactive-hook equivalence
+START/COMPLETE with its measured volatility floor, the before/after manifests, any
+barrier ARMED/REACHED/RELEASED and controller mutation, and every consumer START/COMPLETE
+with its rc and its stdout / stderr / tmuxtrace sha256. The ledger is written by the
+checks themselves as they run, so it establishes ORDER — that the standing checks
+completed before the first consumer invocation — from the original durable content, with
+each capture's own hash tied into the same record. Filesystem mtimes and the
+`SHA256SUMS.txt` list are not relied on for ordering.
 
 `arms/*/harness/manifest-tree-gate.sh` is the MANIFEST-versus-tree gate: it fails if this
 file cites a path that is not in the tree, if a published file is missing from its
-directory's `SHA256SUMS.txt`, or if any recorded hash no longer verifies.
+directory's `SHA256SUMS.txt`, or if any recorded hash no longer verifies. The tree it
+audits is an ARGUMENT (first positional, then `$BATCH_C_ARTIFACTS`, then the live tree),
+so it can be red-proofed against a candidate copy instead of silently auditing the live
+one; it is proven to go red on a deleted listed file, on tampered bytes, and on a MANIFEST
+citation that does not resolve.
+
+`hook-patch/` holds the ONE hook-only patch used by the barrier arms and the D-record
+designs — the unified diff, its generator, and the unmodified / hooked / patch hashes.
 
 ## Boundary as executed
 
@@ -642,7 +651,12 @@ sites at :6488, :12151, :12170, :12297 and :12962.
 COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),
 and the first `consumer-START`. The ledger is append-only and written by the checks
 themselves, so the ordering is established by the original durable content — not by
-file mtimes and not by a hash list added afterwards.
+file mtimes and not by a hash list added afterwards. For a barrier case the first
+consumer activity is `barrier-ARMED` (the hooked run has no `consumer-START` line).
+
+A case whose design includes a CONTROLLER MUTATION necessarily shows a tmux delta;
+what the controller did, when, and from where is in `controller-mutation.txt` and in
+the ledger, and the before/at-barrier/after tmux snapshots bracket it.
 
 | case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
 |---|---|---|---|---|---|---|---|---|---|
@@ -762,7 +776,12 @@ both the protected and the writable clone.
 COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),
 and the first `consumer-START`. The ledger is append-only and written by the checks
 themselves, so the ordering is established by the original durable content — not by
-file mtimes and not by a hash list added afterwards.
+file mtimes and not by a hash list added afterwards. For a barrier case the first
+consumer activity is `barrier-ARMED` (the hooked run has no `consumer-START` line).
+
+A case whose design includes a CONTROLLER MUTATION necessarily shows a tmux delta;
+what the controller did, when, and from where is in `controller-mutation.txt` and in
+the ledger, and the before/at-barrier/after tmux snapshots bracket it.
 
 | case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
 |---|---|---|---|---|---|---|---|---|---|
@@ -832,7 +851,12 @@ row asks for are readable without re-parsing the JSON.
 COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),
 and the first `consumer-START`. The ledger is append-only and written by the checks
 themselves, so the ordering is established by the original durable content — not by
-file mtimes and not by a hash list added afterwards.
+file mtimes and not by a hash list added afterwards. For a barrier case the first
+consumer activity is `barrier-ARMED` (the hooked run has no `consumer-START` line).
+
+A case whose design includes a CONTROLLER MUTATION necessarily shows a tmux delta;
+what the controller did, when, and from where is in `controller-mutation.txt` and in
+the ledger, and the before/at-barrier/after tmux snapshots bracket it.
 
 | case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
 |---|---|---|---|---|---|---|---|---|---|
@@ -877,5 +901,97 @@ Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A3/<case>/`:
   type, mode, content hash, symlink target, path across the cloned AE_HOME
 - `tmux.before.txt` / `tmux.after.txt`
 - `A3/ledger.tsv` (case -> row ids), `A3/harness/` (the exact scripts and the
+  tmux shim), `SHA256SUMS.txt` (every file above)
+
+## Arm group A4 — status / next (bash lane)
+
+### A4 — what the arm does
+
+Rows: SC-016a, SC-016b, SC-016c, SC-016d, SC-513a, SC-513b, SC-513c, SC-019, SC-020a,
+SC-020b, SC-020c. Every case is live tmux on its own dedicated server; the never-attach
+rows are proven by `list-clients` snapshots taken before and after each run
+(`clients.before.txt` / `clients.after.txt`, both hashed into the ledger).
+
+`c01-status-live` and `c02-status-016b` run on a REAL `ae` launch rather than a template
+clone, because these rows are about what the live pane set renders.
+**SC-016b's discriminator**: each of the two panes is filled with 150 UNIQUELY NUMBERED
+lines through that pane's OWN control FIFO, so the two streams cannot be confused for one
+another. `pane-fill-summary.txt` records, per pane, the captured line count, the unique
+marker count and the first/last marker; `panefull.<pane>.txt` is the full pane scrollback;
+`out/status.stdout` is what the consumer rendered, with its per-pane binary/pane-id labels.
+
+`c03`–`c05` run on `A2/composite` with a deliberately SINGLE attention candidate:
+only `tg2wu` is given a live tmux session, so the session `next` resolves to is known by
+construction rather than by asking the product first. `c04` runs `next --attach` from
+outside any client — the frozen outside-tmux verb is a BLOCKING `attach-session`, so that
+invocation is harness-bounded and the bound is recorded beside its bytes.
+
+### SC-020b — the named barrier, on D04b's approved hook
+
+`c05-020b-barrier` consumes b0-design.md Design 6 (D04b): hook `H_NEXT_SELECTED`, placed
+after best-candidate resolution and BEFORE the exact recheck. That design names both the
+cut and the capture and self-declares that SC-020b's Batch C arm consumes it, which is
+batch-c-design.md's reuse condition.
+
+The sequence, all of it in the ledger: `barrier-ARMED` → the hooked `ae next` runs until
+the hook blocks → `barrier-REACHED` → the CONTROLLER kills the exact session `next` had
+already resolved to, from a separate connection, never from inside the process under test
+(`controller-mutation.txt`, with tmux state immediately before and after) →
+`barrier-RELEASED` → the run finishes and its stdout/stderr/rc and the hook's own log are
+captured. `tmux.at-barrier-before.txt` brackets the mutation on one side and
+`tmux.after.txt` on the other.
+
+Before any hooked capture, `hook-inactive-equivalence.txt` proves the patch inactive on
+THIS fixture: six invocations through the unmodified binary twice (control-A, control-B)
+and through the hooked binary once with `AE_HOOK` unset, clock frozen by the date shim so
+run-to-run volatility cannot masquerade as a binary difference. The control-control pass
+measures the volatility floor and the control-hooked comparison is read against it. Both
+counts are recorded in the ledger; for this fixture the floor was 0 and the
+control-versus-hooked divergence was 0. The patch itself is published at
+`hook-patch/hook.patch` with its generator and hashes, and copied into the case as
+`hook.patch`.
+### A4 case table
+
+`checks<first consumer` names the ledger sequence numbers of the TAB round-trip
+COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),
+and the first `consumer-START`. The ledger is append-only and written by the checks
+themselves, so the ordering is established by the original durable content — not by
+file mtimes and not by a hash list added afterwards. For a barrier case the first
+consumer activity is `barrier-ARMED` (the hooked run has no `consumer-START` line).
+
+A case whose design includes a CONTROLLER MUTATION necessarily shows a tmux delta;
+what the controller did, when, and from where is in `controller-mutation.txt` and in
+the ledger, and the before/at-barrier/after tmux snapshots bracket it.
+
+| case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
+|---|---|---|---|---|---|---|---|---|---|
+| `c01-status-live-live` | live | SC-016a,SC-016c,SC-016d,SC-019,SC-513a,SC-513b,SC-513c | `live/none (live 2-agent launch)` | - | 0 | yes | 7 | 5/7/10 | yes |
+| `c02-status-016b-live` | live | SC-016b | `live/none (live 2-agent launch, 150 uniquely numbered lines per pane)` | - | 0 | yes | 7 | 5/7/13 | yes |
+| `c03-next-noattach-ro` | ro | SC-019,SC-020a,SC-020c | `A2/composite` | yes | 0 | yes | 3 | 7/9/12 | yes |
+| `c03-next-noattach-rw` | rw | SC-019,SC-020a,SC-020c | `A2/composite` | yes | 0 | yes | 3 | 7/9/12 | yes |
+| `c04-next-attach-outside-ro` | ro | SC-020a,SC-020c | `A2/composite` | yes | 0 | yes | 1 | 7/9/12 | yes |
+| `c04-next-attach-outside-rw` | rw | SC-020a,SC-020c | `A2/composite` | yes | 0 | yes | 1 | 7/9/12 | yes |
+| `c05-020b-barrier-rw` | rw | SC-020b | `A2/composite` | yes | 0 | no | 1 | 7/9/15 | yes |
+
+Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A4/<case>/`:
+
+- `admissibility-ledger.txt` — append-only, monotonic `seq` + UTC + epoch per event:
+  case open, rows, clone verification (clone vs expected fingerprint), the TAB
+  round-trip START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the
+  before/after manifests, and every consumer START/COMPLETE with its rc and its
+  stdout / stderr / tmuxtrace sha256
+- `env-tab-selfcheck.txt` — the TAB round-trip in this case's own scrubbed
+  environment, plus the paired `LANG=LC_ALL=C` probe on the same throwaway server
+- `tmux-shim-equivalence.txt` — live cases only: the delegate-and-log shim proven
+  byte-identical to the real binary on this arm's own stable topology
+- `case.txt`, `env.txt`, `consumers.tsv` (label, rc, stdout/stderr sha256 + bytes,
+  tmuxtrace sha256 + line count, bounded flag, exact argv)
+- `out/<label>.stdout`, `out/<label>.stderr` (present only when non-empty),
+  `out/<label>.tmuxtrace` — per invocation: the effective `AE_TMUX_SERVER` and kind,
+  the effective locale, and the DELEGATED tmux argv
+- `manifest.before.tsv` / `manifest.after.tsv` / `manifest.diff.txt` — recursive:
+  type, mode, content hash, symlink target, path across the cloned AE_HOME
+- `tmux.before.txt` / `tmux.after.txt`
+- `A4/ledger.tsv` (case -> row ids), `A4/harness/` (the exact scripts and the
   tmux shim), `SHA256SUMS.txt` (every file above)
 

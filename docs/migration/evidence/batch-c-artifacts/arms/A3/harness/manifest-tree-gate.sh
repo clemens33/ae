@@ -3,16 +3,22 @@
 # a published file is missing from its directory's SHA256SUMS.txt, or if any recorded hash
 # no longer matches. Run before asking for a commit.
 set -uo pipefail
-A=/Users/ckriech/projects/clemens33/ae-rust/docs/migration/evidence/batch-c-artifacts
+# The tree under audit is an ARGUMENT, not a constant. Hardcoding it made the gate audit
+# the live tree no matter which copy you pointed it at, so a red-proof in a scratch copy
+# would report PASS with defects injected — the biased-probe class this workspace has a
+# rule about. First arg wins, then $BATCH_C_ARTIFACTS, then the live tree.
+A="${1:-${BATCH_C_ARTIFACTS:-/Users/ckriech/projects/clemens33/ae-rust/docs/migration/evidence/batch-c-artifacts}}"
+[[ -d "$A" ]] || { echo "gate: no such tree: $A" >&2; exit 2; }
+echo "## tree under audit: $A"
 rc=0
 echo "## cited paths"
 while read -r p; do
     case "$p" in *'<'*|*'*'*|'') continue;; esac
     if [[ ! -e "$A/$p" ]]; then echo "  MISSING: $p"; rc=1; fi
-done < <(grep -oE '`(templates|arms)/[A-Za-z0-9_./-]+`' "$A/MANIFEST.md" | tr -d '`' | sort -u)
+done < <(grep -oE '`(templates|arms|hook-patch)/[A-Za-z0-9_./-]+`' "$A/MANIFEST.md" | tr -d '`' | sort -u)
 echo "  cited-path check done"
 echo "## SHA256SUMS coverage + verification"
-for d in "$A"/templates "$A"/arms/*; do
+for d in "$A"/templates "$A"/hook-patch "$A"/arms/*; do
     [[ -d "$d" ]] || continue
     sums="$d/SHA256SUMS.txt"
     if [[ ! -f "$sums" ]]; then echo "  MISSING SHA256SUMS: ${d#$A/}"; rc=1; continue; fi

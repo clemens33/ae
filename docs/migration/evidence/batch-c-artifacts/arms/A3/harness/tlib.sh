@@ -28,6 +28,9 @@ t_sandbox() {
     export AEFAKE_LOG="$ROOT/ctl/agent-stdin.log"
     export AEFAKE_BANNER="aefake ❯ ready"   # contains the composed-UI marker the frozen unknown-tool readiness predicate greps for
     unset AEFAKE_CTL 2>/dev/null || true
+    # Per-pane control FIFOs: each fake agent creates and owns "<dir>/<TMUX_PANE>.ctl",
+    # so several agents in one session are independently drivable by the controller.
+    export AEFAKE_CTL_DIR="$ROOT/ctl"
     # UTF-8, not C: tmux decides its output encoding from LC_ALL/LC_CTYPE/LANG and
     # SANITISES the TAB in -F format output when none of them names UTF-8, which
     # silently corrupts the frozen consumer's own tab-separated pane queries.

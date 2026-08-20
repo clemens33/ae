@@ -1,0 +1,9 @@
+arm=A4 case=c01-status-live rows=SC-016a,SC-016c,SC-016d,SC-019,SC-513a,SC-513b,SC-513c clone_mode=live session=ta4c01statuslive socket=/tmp/aecx/tpl/a4c01-status-live/s.sock
+lead_pane=%0 worker_pane=%1
+fake_agent_sha256=3886d76ca54cee5a588d2d181e91e99626fa14ea8cba026fa7a22ae1b1ff1e5a
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+utc_start=2026-08-20T16:56:53Z
+manifest_diff_lines=0
+tmux_snapshot_identical=yes
+client_snapshot_identical=yes
+utc_end=2026-08-20T16:56:55Z

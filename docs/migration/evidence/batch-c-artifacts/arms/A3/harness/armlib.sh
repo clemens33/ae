@@ -207,3 +207,75 @@ build_live_topology() { # <ae-home> <sock> <session>...
     led live-topology-built "sessions=$*" "agent_binary=$FAKE_BIN" "socket=$sock" \
         "session_env=AE_SESSION/AE_ORIGIN/AE_DIR/AE_MODE/AE_HOME per ae@72c7293:17311-17318"
 }
+
+HOOKED_AE=/tmp/aecx/hooked/ae
+HOOK_PATCH=/tmp/aecx/hooked/hook.patch
+
+# INACTIVE-HOOK EQUIVALENCE, proven PER FIXTURE (cluster-plan global rule).
+# The clock is frozen by the date shim for the whole pass so run-to-run volatility
+# (generated_at, "active Ns ago") cannot masquerade as a binary difference; a
+# CONTROL-CONTROL pass runs first and records the residual volatility floor, so the
+# control-vs-hooked comparison is read against a measured baseline rather than an
+# assumption. Any inactive divergence outside that floor INVALIDATES the run.
+hook_inactive_equiv() { # <ae-home> <sock-or-empty> <session>
+    local aehome="$1" sock="$2" sess="$3"
+    local out="$ACAP/hook-inactive-equivalence.txt"
+    local wd="$ARM_TMUXTMP/hookeq"; rm -rf "$wd"; mkdir -p "$wd"
+    led hook-inactive-equivalence-START "unmodified_sha256=$(sha "$FROZEN_AE")" \
+        "hooked_sha256=$(sha "$HOOKED_AE")" "patch_sha256=$(sha "$HOOK_PATCH")"
+    local -a INV=(
+        "list" "list|--json" "list|--all" "list|--all|--json" "next" "status|$sess"
+    )
+    local -a pre=(env -i "HOME=$(dirname "$aehome")" "AE_HOME=$aehome"
+        "PATH=/tmp/aecx/shim:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        "TZ=UTC" "LANG=en_US.UTF-8" "LC_ALL=en_US.UTF-8" "TERM=xterm-256color"
+        "TMUX_TMPDIR=${ARM_TMUXTMP}" "AE_REAL_DATE=/bin/date" "AE_FAKE_NOW=1787000000")
+    [[ -n "$sock" ]] && pre+=("AE_TMUX_SERVER=$sock" "AE_TMUX_SERVER_KIND=socket")
+    local pass bin i inv
+    for pass in ctlA ctlB hooked; do
+        case "$pass" in ctlA|ctlB) bin="$FROZEN_AE" ;; hooked) bin="$HOOKED_AE" ;; esac
+        for inv in "${INV[@]}"; do
+            local IFSOLD="$IFS"; IFS='|'; local -a argv=($inv); IFS="$IFSOLD"
+            local tag="${inv//|/_}"
+            "${pre[@]}" "$HARNESS_BASH" "$bin" "${argv[@]}" </dev/null \
+                >"$wd/$pass.$tag.out" 2>"$wd/$pass.$tag.err"; echo $? >"$wd/$pass.$tag.rc"
+        done
+    done
+    local floor=0 diverge=0
+    { echo "## inactive-hook equivalence, per fixture"
+      echo "case=${ACASE:-?} clone_mode=${AMODE:-?} session=$sess"
+      echo "unmodified=$FROZEN_AE sha256=$(sha "$FROZEN_AE")"
+      echo "hooked=$HOOKED_AE sha256=$(sha "$HOOKED_AE")"
+      echo "patch=$HOOK_PATCH sha256=$(sha "$HOOK_PATCH") (added lines only; see the patch file)"
+      echo "AE_HOOK is UNSET for every invocation in this pass"
+      echo "clock frozen at AE_FAKE_NOW=1787000000 via the PATH-first date shim, so run-to-run"
+      echo "volatility cannot be mistaken for a binary difference"
+      echo
+      for inv in "${INV[@]}"; do
+          local tag="${inv//|/_}"
+          local ca cb ch
+          ca="$(sha "$wd/ctlA.$tag.out")$(sha "$wd/ctlA.$tag.err")$(cat "$wd/ctlA.$tag.rc")"
+          cb="$(sha "$wd/ctlB.$tag.out")$(sha "$wd/ctlB.$tag.err")$(cat "$wd/ctlB.$tag.rc")"
+          ch="$(sha "$wd/hooked.$tag.out")$(sha "$wd/hooked.$tag.err")$(cat "$wd/hooked.$tag.rc")"
+          printf 'invocation=ae %s\n' "${inv//|/ }"
+          printf '  control-A vs control-B : %s\n' "$( [[ "$ca" == "$cb" ]] && echo IDENTICAL || { echo DIFFERS; })"
+          printf '  control-A vs hooked    : %s\n' "$( [[ "$ca" == "$ch" ]] && echo IDENTICAL || echo DIFFERS)"
+          printf '  rc control=%s hooked=%s   stdout_bytes control=%s hooked=%s\n' \
+              "$(cat "$wd/ctlA.$tag.rc")" "$(cat "$wd/hooked.$tag.rc")" \
+              "$(stat -f %z "$wd/ctlA.$tag.out")" "$(stat -f %z "$wd/hooked.$tag.out")"
+          [[ "$ca" == "$cb" ]] || floor=$((floor+1))
+          [[ "$ca" == "$ch" ]] || diverge=$((diverge+1))
+          if [[ "$ca" != "$ch" ]]; then
+              echo "  --- control-vs-hooked stdout diff ---"
+              diff "$wd/ctlA.$tag.out" "$wd/hooked.$tag.out" | sed 's/^/    /' | head -40
+          fi
+      done
+      echo
+      echo "control_control_divergences=$floor (the measured run-to-run volatility floor)"
+      echo "control_hooked_divergences=$diverge"
+      echo "verdict_free_note=no interpretation is offered here; the byte comparisons are the record"
+    } >"$out"
+    led hook-inactive-equivalence-COMPLETE "control_control_divergences=$floor" \
+        "control_hooked_divergences=$diverge" "artifact_sha256=$(sha "$out")"
+    (( diverge == 0 && floor == 0 ))
+}

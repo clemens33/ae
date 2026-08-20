@@ -1,0 +1,5 @@
+SESSION                   STATUS    MODE        ORIGIN
+ta4c01statuslive          running   local       /tmp/aecx/tpl/a4c01-status-live/work
+  git:master · ae 0.2.1 · active 3s ago
+  fake:lead               -         -             
+  fake:worker             -         -             

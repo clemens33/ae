@@ -1,0 +1,18 @@
+── fake:lead (%0) ──
+ckriech@MacOS-ckriech work % /tmp/aecx/t
+pl/a4c01-status-live/home/.ae/sessions/t
+a4c01statuslive/launch.main.sh
+aefake ❯ ready
+
+── fake:worker (%1) ──
+ckriech@MacOS-ckriech work % /tmp/aecx/
+tpl/a4c01-status-live/home/.ae/sessions
+/ta4c01statuslive/launch.worker.0.sh
+aefake ❯ ready
+
+── _events (%2) ──
+╭─ ae events — session: ta4c01statuslive ───────────────────────────────╮
+│ date+time (UTC)  action   actor                  → target                 summ
+ary
+╰──────────────────────────────────────────────────────────────────────────╯
+

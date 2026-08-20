@@ -1,0 +1,5 @@
+pid=98951	AE_TMUX_SERVER=/tmp/aecx/tpl/a4c02-status-016b/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a4c02-status-016b/s.sock list-sessions -F \#\{session_name\} 
+pid=98953	AE_TMUX_SERVER=/tmp/aecx/tpl/a4c02-status-016b/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a4c02-status-016b/s.sock show-environment -t ta4c02status016b AE_SESSION 
+pid=98956	AE_TMUX_SERVER=/tmp/aecx/tpl/a4c02-status-016b/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a4c02-status-016b/s.sock show-environment -t ta4c02status016b 
+pid=98958	AE_TMUX_SERVER=/tmp/aecx/tpl/a4c02-status-016b/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a4c02-status-016b/s.sock list-panes -s -t ta4c02status016b -F $'#{@ae_agent}\t#{pane_current_command}' 
+pid=98962	AE_TMUX_SERVER=/tmp/aecx/tpl/a4c02-status-016b/s.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/tpl/a4c02-status-016b/s.sock show-options -t ta4c02status016b -qv @ae_branch_name 

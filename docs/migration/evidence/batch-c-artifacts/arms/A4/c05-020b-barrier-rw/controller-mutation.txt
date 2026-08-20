@@ -1,0 +1,5 @@
+mutation=kill the EXACT session next had already resolved to (tg2wu)
+issued_from=a separate controller connection, never from inside the process under test
+utc=2026-08-20T16:59:35Z
+## tmux immediately after the mutation
+no server running on /tmp/aecx/arms/A4/c05-020b-barrier-rw/live.sock

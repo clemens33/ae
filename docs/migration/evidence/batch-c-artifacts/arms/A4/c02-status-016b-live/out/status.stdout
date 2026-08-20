@@ -1,0 +1,40 @@
+── fake:lead (%0) ──
+PANE0-LINE-0136
+PANE0-LINE-0137
+PANE0-LINE-0138
+PANE0-LINE-0139
+PANE0-LINE-0140
+PANE0-LINE-0141
+PANE0-LINE-0142
+PANE0-LINE-0143
+PANE0-LINE-0144
+PANE0-LINE-0145
+PANE0-LINE-0146
+PANE0-LINE-0147
+PANE0-LINE-0148
+PANE0-LINE-0149
+PANE0-LINE-0150
+
+── fake:worker (%1) ──
+PANE1-LINE-0136
+PANE1-LINE-0137
+PANE1-LINE-0138
+PANE1-LINE-0139
+PANE1-LINE-0140
+PANE1-LINE-0141
+PANE1-LINE-0142
+PANE1-LINE-0143
+PANE1-LINE-0144
+PANE1-LINE-0145
+PANE1-LINE-0146
+PANE1-LINE-0147
+PANE1-LINE-0148
+PANE1-LINE-0149
+PANE1-LINE-0150
+
+── _events (%2) ──
+╭─ ae events — session: ta4c02status016b ───────────────────────────────╮
+│ date+time (UTC)  action   actor                  → target                 summ
+ary
+╰──────────────────────────────────────────────────────────────────────────╯
+

@@ -1,0 +1,17 @@
+seq=001	utc=2026-08-20T16:59:05Z	epoch=1787245145	event=case-OPEN	arm=A4 case=c04-next-attach-outside clone_mode=rw frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T16:59:05Z	epoch=1787245145	event=rows	rows=SC-020a,SC-020c template=A2/composite
+seq=003	utc=2026-08-20T16:59:10Z	epoch=1787245150	event=clone-VERIFIED	clone_fingerprint=a5b346582285e0b90f6aa3ebab5a5abf0faba841c384a077794b973ae95e4b0b expected=a5b346582285e0b90f6aa3ebab5a5abf0faba841c384a077794b973ae95e4b0b matches=yes
+seq=004	utc=2026-08-20T16:59:12Z	epoch=1787245152	event=live-topology-built	sessions=tg2wu agent_binary=/tmp/aecx/bin/aefake socket=/tmp/aecx/arms/A4/c04-next-attach-outside-rw/live.sock session_env=AE_SESSION/AE_ORIGIN/AE_DIR/AE_MODE/AE_HOME per ae@72c7293:17311-17318
+seq=005	utc=2026-08-20T16:59:12Z	epoch=1787245152	event=env-recorded	artifact_sha256=295956030e8702df3432071d5f39e21c78e5b0fc68f9592e7a32e80b0fd2ab75
+seq=006	utc=2026-08-20T16:59:12Z	epoch=1787245152	event=env-tab-selfcheck-START	artifact=env-tab-selfcheck.txt
+seq=007	utc=2026-08-20T16:59:12Z	epoch=1787245152	event=env-tab-selfcheck-COMPLETE	tab_survived=yes artifact_sha256=739ba532d97008ac8804282557d53a9c5bf4c1f6e6176a86ae195247ff654f7f
+seq=008	utc=2026-08-20T16:59:12Z	epoch=1787245152	event=tmux-shim-equivalence-START	socket=/tmp/aecx/arms/A4/c04-next-attach-outside-rw/live.sock session=tg2wu
+seq=009	utc=2026-08-20T16:59:12Z	epoch=1787245152	event=tmux-shim-equivalence-COMPLETE	all_identical=yes artifact_sha256=b0f2770ab6292e73a6b0760df0563f4b39589e83073ace38f0bba124a26a1d34
+seq=010	utc=2026-08-20T16:59:16Z	epoch=1787245156	event=manifest-before	artifact_sha256=a5b346582285e0b90f6aa3ebab5a5abf0faba841c384a077794b973ae95e4b0b
+seq=011	utc=2026-08-20T16:59:16Z	epoch=1787245156	event=clients-snapshot	label=before artifact_sha256=7af152d76e4b590f93f4a4dd467e69a3646898a75cf14c63d01d52a1018ae30a
+seq=012	utc=2026-08-20T16:59:16Z	epoch=1787245156	event=consumer-START	label=next-attach bounded_secs=8 argv=/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae next --attach 
+seq=013	utc=2026-08-20T16:59:16Z	epoch=1787245156	event=consumer-COMPLETE	label=next-attach rc=1 stdout_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 stderr_sha256=aed2a2288725bbca0235827903a1bcc0b8cd92e73ca7634ba261f937f0bb35f0 tmuxtrace_sha256=c6eff1cc3167dd175471e66769320eaff558f8966244570f6c71b4fea7c29eee harness_stopped=no
+seq=014	utc=2026-08-20T16:59:20Z	epoch=1787245160	event=manifest-after	artifact_sha256=a5b346582285e0b90f6aa3ebab5a5abf0faba841c384a077794b973ae95e4b0b
+seq=015	utc=2026-08-20T16:59:20Z	epoch=1787245160	event=clients-snapshot	label=after artifact_sha256=7af152d76e4b590f93f4a4dd467e69a3646898a75cf14c63d01d52a1018ae30a
+seq=016	utc=2026-08-20T16:59:20Z	epoch=1787245160	event=manifest-diff	lines=0
+seq=017	utc=2026-08-20T16:59:20Z	epoch=1787245160	event=case-CLOSE	case_txt_sha256=a5bdb4cab9b848efc005a8ee3b680450e3470d9b6dd8fcc452d3e249aab31bb5 consumers_tsv_sha256=8349624b0aaa46868408da95352a1064d854ac29a75c004c8803ef57966493aa

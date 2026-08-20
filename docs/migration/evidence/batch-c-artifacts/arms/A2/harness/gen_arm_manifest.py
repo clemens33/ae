@@ -25,7 +25,12 @@ for c in sorted(os.listdir(DEST)):
         for x in lg:
             if f"event={ev}" in x: return int(x.split("\t")[0].split("=")[1])
         return None
-    tab=seq_of("env-tab-selfcheck-COMPLETE"); eq=seq_of("tmux-shim-equivalence-COMPLETE"); first=seq_of("consumer-START")
+    tab=seq_of("env-tab-selfcheck-COMPLETE"); eq=seq_of("tmux-shim-equivalence-COMPLETE")
+    # "first consumer activity" is the earliest of a normal consumer START and a hooked
+    # barrier being ARMED — a barrier case launches its consumer through the hook, so it
+    # has no consumer-START line and must not read as unordered.
+    cands=[x for x in (seq_of("consumer-START"), seq_of("barrier-ARMED")) if x is not None]
+    first=min(cands) if cands else None
     order="yes" if first is not None and tab is not None and tab < first and (eq is None or eq < first) else "NO"
     rows.append((c,base,mode,l.get("rows","-"),l.get("group","-"),l.get("member","-"),
                  d.get("clone_fingerprint_matches_template","-"), d.get("manifest_diff_lines","-"),
@@ -37,7 +42,11 @@ o.append("`checks<first consumer` names the ledger sequence numbers of the TAB r
 o.append("COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),")
 o.append("and the first `consumer-START`. The ledger is append-only and written by the checks")
 o.append("themselves, so the ordering is established by the original durable content — not by")
-o.append("file mtimes and not by a hash list added afterwards.\n")
+o.append("file mtimes and not by a hash list added afterwards. For a barrier case the first")
+o.append("consumer activity is `barrier-ARMED` (the hooked run has no `consumer-START` line).\n")
+o.append("A case whose design includes a CONTROLLER MUTATION necessarily shows a tmux delta;")
+o.append("what the controller did, when, and from where is in `controller-mutation.txt` and in")
+o.append("the ledger, and the before/at-barrier/after tmux snapshots bracket it.\n")
 o.append("| case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |")
 o.append("|---|---|---|---|---|---|---|---|---|---|")
 for r in rows:

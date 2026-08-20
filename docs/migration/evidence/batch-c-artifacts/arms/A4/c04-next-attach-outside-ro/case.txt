@@ -1,0 +1,12 @@
+arm=A4 case=c04-next-attach-outside rows=SC-020a,SC-020c template=A2/composite clone_mode=ro
+clone_fingerprint=30d1803e4b1dffb513cab1c409cbfda50033411f60e9eefc4e8fe02c1fb2311f
+clone_fingerprint_matches_template=yes
+attention_candidates_by_construction=tg2wu (the only session given a live tmux session, so next's resolution is known without asking the product first)
+tmux_socket=/tmp/aecx/arms/A4/c04-next-attach-outside-ro/live.sock
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+utc_start=2026-08-20T16:58:57Z
+note=the frozen outside-tmux verb is a BLOCKING attach-session, so this invocation is harness-bounded and the bound is recorded
+manifest_diff_lines=0
+tmux_snapshot_identical=yes
+client_snapshot_identical=yes
+utc_end=2026-08-20T16:59:05Z

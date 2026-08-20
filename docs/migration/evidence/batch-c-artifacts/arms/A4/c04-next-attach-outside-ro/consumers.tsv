@@ -1,0 +1,2 @@
+consumer	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	tmuxtrace_sha256	tmuxtrace_lines	bounded	argv
+next-attach	1	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0	aed2a2288725bbca0235827903a1bcc0b8cd92e73ca7634ba261f937f0bb35f0	37	14f5a39e7ffeeec9cef980dee274c18fc502abe7ed6cce06efdd2cf82c84040f	5	8s=no	/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae next --attach 

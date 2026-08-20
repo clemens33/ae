@@ -1,0 +1,6 @@
+case	rows	group	member
+c01-status-live	SC-016a,SC-016c,SC-016d,SC-019,SC-513a,SC-513b,SC-513c	live	none (live 2-agent launch)
+c02-status-016b	SC-016b	live	none (live 2-agent launch, 150 uniquely numbered lines per pane)
+c03-next-noattach	SC-019,SC-020a,SC-020c	A2	composite
+c04-next-attach-outside	SC-020a,SC-020c	A2	composite
+c05-020b-barrier	SC-020b	A2	composite

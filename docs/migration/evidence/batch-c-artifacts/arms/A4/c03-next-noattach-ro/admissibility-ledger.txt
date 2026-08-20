@@ -1,0 +1,21 @@
+seq=001	utc=2026-08-20T16:58:21Z	epoch=1787245101	event=case-OPEN	arm=A4 case=c03-next-noattach clone_mode=ro frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T16:58:21Z	epoch=1787245101	event=rows	rows=SC-019,SC-020a,SC-020c template=A2/composite
+seq=003	utc=2026-08-20T16:58:25Z	epoch=1787245105	event=clone-VERIFIED	clone_fingerprint=30d1803e4b1dffb513cab1c409cbfda50033411f60e9eefc4e8fe02c1fb2311f expected=30d1803e4b1dffb513cab1c409cbfda50033411f60e9eefc4e8fe02c1fb2311f matches=yes
+seq=004	utc=2026-08-20T16:58:27Z	epoch=1787245107	event=live-topology-built	sessions=tg2wu agent_binary=/tmp/aecx/bin/aefake socket=/tmp/aecx/arms/A4/c03-next-noattach-ro/live.sock session_env=AE_SESSION/AE_ORIGIN/AE_DIR/AE_MODE/AE_HOME per ae@72c7293:17311-17318
+seq=005	utc=2026-08-20T16:58:27Z	epoch=1787245107	event=env-recorded	artifact_sha256=0cfbd01dd39ef4996c711c4972db9e43ad8f8f09d0a3482d52cf7f0d93acdf60
+seq=006	utc=2026-08-20T16:58:27Z	epoch=1787245107	event=env-tab-selfcheck-START	artifact=env-tab-selfcheck.txt
+seq=007	utc=2026-08-20T16:58:27Z	epoch=1787245107	event=env-tab-selfcheck-COMPLETE	tab_survived=yes artifact_sha256=fb2d4cd370b8f3b150bab058a1eb02013813f10a79b66baa04f3bb8a44697470
+seq=008	utc=2026-08-20T16:58:27Z	epoch=1787245107	event=tmux-shim-equivalence-START	socket=/tmp/aecx/arms/A4/c03-next-noattach-ro/live.sock session=tg2wu
+seq=009	utc=2026-08-20T16:58:27Z	epoch=1787245107	event=tmux-shim-equivalence-COMPLETE	all_identical=yes artifact_sha256=f472eee7218f86a500893454f711e67f779b3861e55dc33b386128790208daf1
+seq=010	utc=2026-08-20T16:58:31Z	epoch=1787245111	event=manifest-before	artifact_sha256=30d1803e4b1dffb513cab1c409cbfda50033411f60e9eefc4e8fe02c1fb2311f
+seq=011	utc=2026-08-20T16:58:31Z	epoch=1787245111	event=clients-snapshot	label=before artifact_sha256=7af152d76e4b590f93f4a4dd467e69a3646898a75cf14c63d01d52a1018ae30a
+seq=012	utc=2026-08-20T16:58:31Z	epoch=1787245111	event=consumer-START	label=next bounded_secs=0 argv=/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae next 
+seq=013	utc=2026-08-20T16:58:31Z	epoch=1787245111	event=consumer-COMPLETE	label=next rc=0 stdout_sha256=870293de0a89aa4f1974f50bb6749bb3a295d47392c699685cc12cc91e7a4bd6 stderr_sha256=- tmuxtrace_sha256=e7278eca40005c07bbad2039ee10bb1e30fac004cb23f914186b1eca45c94e24 harness_stopped=no
+seq=014	utc=2026-08-20T16:58:31Z	epoch=1787245111	event=consumer-START	label=next-again bounded_secs=0 argv=/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae next 
+seq=015	utc=2026-08-20T16:58:31Z	epoch=1787245111	event=consumer-COMPLETE	label=next-again rc=0 stdout_sha256=870293de0a89aa4f1974f50bb6749bb3a295d47392c699685cc12cc91e7a4bd6 stderr_sha256=- tmuxtrace_sha256=2202ba0bb04c45368c1d661b36c2ffae5597579e84bfb93d743a00cc43b43272 harness_stopped=no
+seq=016	utc=2026-08-20T16:58:31Z	epoch=1787245111	event=consumer-START	label=list-needsattn-json bounded_secs=0 argv=/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae list --needs-attn --json 
+seq=017	utc=2026-08-20T16:58:31Z	epoch=1787245111	event=consumer-COMPLETE	label=list-needsattn-json rc=0 stdout_sha256=45002f5c7e29f33c79b228d3de6403851af0b79dfd18790f63ec0c6319f88d6d stderr_sha256=- tmuxtrace_sha256=dc1615410d9b3f96364a6a1593b0d1c17fc5005968dd9585981c246c4e1a7e97 harness_stopped=no
+seq=018	utc=2026-08-20T16:58:35Z	epoch=1787245115	event=manifest-after	artifact_sha256=30d1803e4b1dffb513cab1c409cbfda50033411f60e9eefc4e8fe02c1fb2311f
+seq=019	utc=2026-08-20T16:58:35Z	epoch=1787245115	event=clients-snapshot	label=after artifact_sha256=7af152d76e4b590f93f4a4dd467e69a3646898a75cf14c63d01d52a1018ae30a
+seq=020	utc=2026-08-20T16:58:35Z	epoch=1787245115	event=manifest-diff	lines=0
+seq=021	utc=2026-08-20T16:58:35Z	epoch=1787245115	event=case-CLOSE	case_txt_sha256=cbf777b626c2df9bd30f71aa2ee0ff80cc1d5885aa169d9955a2bdf98b1c55d1 consumers_tsv_sha256=9299546e8b45dded8c54e8b0331af03e32bd8524f50857fbcbeb8b96d2464790

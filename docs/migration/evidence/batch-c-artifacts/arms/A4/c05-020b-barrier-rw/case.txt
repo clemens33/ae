@@ -1,0 +1,17 @@
+arm=A4 case=c05-020b-barrier rows=SC-020b template=A2/composite clone_mode=rw
+clone_fingerprint=a5b346582285e0b90f6aa3ebab5a5abf0faba841c384a077794b973ae95e4b0b
+clone_fingerprint_matches_template=yes
+attention_candidates_by_construction=tg2wu (the only session given a live tmux session, so next's resolution is known without asking the product first)
+tmux_socket=/tmp/aecx/arms/A4/c05-020b-barrier-rw/live.sock
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+utc_start=2026-08-20T16:59:26Z
+hook_design=b0-design.md Design 6 (D04b), H_NEXT_SELECTED — after best-candidate
+  resolution, BEFORE the exact recheck. The design self-declares that SC-020b's
+  Batch C arm consumes it, which is batch-c-design.md's reuse condition.
+unmodified_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+hooked_ae_sha256=2235e6b9f2505fdc1f4d1deaedadf05838e597b36f2c5a87971fdff635b2ab9d
+hook_patch_sha256=994f73e05334db61b087ddbca616806371207a75d282346cc1861cf2f191ea6a (22 added lines, 0 removed, 0 modified)
+manifest_diff_lines=0
+tmux_snapshot_identical=no
+client_snapshot_identical=no
+utc_end=2026-08-20T16:59:39Z

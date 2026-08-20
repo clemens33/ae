@@ -1,0 +1,2 @@
+Usage: ae status [session-name]
+(Run inside an ae tmux session to check status without specifying the name.)
