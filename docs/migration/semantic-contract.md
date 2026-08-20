@@ -137,78 +137,121 @@ validation-error grammar echoes (`_validate_session_name`, `_validate_agent_name
 
 Rows below: SHOULD frozen from normative sources BEFORE census consultation (lane
 discipline); `empirical` cites audited census/test evidence or is `pending`.
-`classified_by` fills at the joint pass — these are lead drafts.
+Revised per gate e3516d34 (sources extended to docs/reference/commands.md +
+docs/internals/events.md — a lead lane miss the gate caught). `classified_by` fills at
+the joint pass.
 
-**SC-500 — compact stdout is exactly four lines or empty.**
-- normative: bucket 2 (compat promise) — `Archived`, `Archive:`, `Digest:`, `Recovery:`,
-  that order, nothing else, and EMPTY unless the boundary was crossed; non-empty stdout
-  means the session really was archived and replaced. Authority:
-  docs/internals/architecture.md ("Its stdout is a contract"), normative doc contract.
-- empirical: pending (census-2 compact section + integration pins).
-- conflict: none (draft).
+**SC-500 — compact stdout byte format.** Bucket 2 — `Archived`, `Archive:`, `Digest:`,
+`Recovery:`: four lines, that order, nothing else, and EMPTY unless the boundary was
+crossed. Authority: architecture.md + commands.md:673-676. Empirical: pending.
+Conflict: none.
 
-**SC-501 — compact stderr carries everything else.**
-- normative: bucket 2 — end's progress, compact's frozen facts, the confirmation body,
-  the question, and `Aborted.` all go to stderr, so a caller can pipe stdout and parse
-  it. Authority: architecture.md, normative.
-- empirical: pending.
-- conflict: none (draft).
+**SC-512 — compact stdout truth claim.** Bucket 2 — non-empty stdout proves exactly:
+the archive EXISTS and the printed recovery command WORKS. It deliberately does NOT
+claim the fresh session started (the relaunch can still refuse; a stdout line asserting
+a launch that then failed would be worse than no line). Authority: commands.md:673-676 +
+architecture.md. Empirical: pending. Conflict: none.
 
-**SC-502 — `Recovery:` prints BEFORE the relaunch.**
-- normative: bucket 1 (invariant) — past the relaunch the archive is published, the
-  source is gone, and the process may exec and never return; a recovery command emitted
-  from a failure handler does not exist when needed. Authority: architecture.md,
-  normative.
-- empirical: pending.
-- conflict: none (draft).
+**SC-501 — compact stderr carries everything else.** Bucket 2 — frozen facts,
+confirmation + question, end's progress, handover chatter, `Aborted.`, the relaunch
+announcement, and a SECOND copy of the `Recovery:` line (a broken stdout cannot destroy
+the only route back). Authority: commands.md:678-683. Empirical: pending. Conflict: none.
 
-**SC-503 — compact confirmation treats EOF as no.**
-- normative: bucket 1 — a bare read returning 1 at end-of-input must refuse, not abort
-  between the question and any word about what happened. Rust shape: closed stdin =
-  refusal, never a crash or a yes. Authority: architecture.md, normative.
-- empirical: pending.
-- conflict: none (draft).
+**SC-502 — `Recovery:` prints BEFORE the relaunch.** Bucket 1 — past the relaunch the
+archive is published, the source is gone, and the process may exec and never return.
+Authority: architecture.md. Empirical: pending. Conflict: none.
 
-**SC-504 — the boundary report survives a departed consumer.**
-- normative: bucket 1 — SIGPIPE is ignored while the boundary report writes and restored
-  before exec; a consumer exiting early must not kill the process between archive and
-  launch, and the ignored disposition must not leak into children. Rust shape: report
-  write errors handled, never fatal at the boundary, no signal-disposition leak.
-  Authority: architecture.md, normative.
-- empirical: pending.
-- conflict: none (draft).
+**SC-503a — a typed `n` is an answer.** Bucket 1 — prints `Aborted.` and exits **0**.
+Authority: commands.md:692-697. Empirical: pending. Conflict: none.
 
-**SC-505 — validation errors echo the grammar verbatim.**
-- normative: bucket 2 — `_validate_session_name` / `_validate_agent_name` error messages
-  state the allowlist grammar exactly (`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$` /
-  `{0,63}$`), one definition each. Authority: #59 ruling + AGENTS.md allowlist bullets,
-  normative.
-- empirical: unit-test pins at 72c7293 (verification, not authority).
-- conflict: none (draft).
+**SC-503b — end-of-input is not an answer.** Bucket 1 — with no stdin, compact reports
+it could not obtain confirmation and exits **non-zero**; stdout is empty in both cases,
+so exit status is the caller's only way to tell "operator said no" from "the question
+never reached anyone". Authority: commands.md:692-697. Empirical: pending. Conflict: none.
 
-**SC-506 — `list --json` never truncates mid-document.**
-- normative: bucket 1 — one bad session degrades its entry; the JSON array always closes.
-  Authority: AGENTS.md set-e rule ("Long emitters must not abort mid-output", guarded by
-  a structural unit test — ruling bullet, normative). Shipped exhibit
-  `_agent_alert_reason` is the defect this rule answers.
-- empirical: structural unit guard at 72c7293 (verification).
-- conflict: none (draft).
+**SC-504a — a reporting failure never suppresses the relaunch.** Bucket 1 — a consumer
+that exits early (closed/broken stdout) must not kill the operation between archive and
+launch. Authority: commands.md:685-686 + architecture.md. Empirical: pending.
+Conflict: none.
 
-**SC-507 — `archive preview` stdout is the digest bytes and nothing else.**
-- normative: PENDING SOURCE CHECK — stated today only in a code comment at the M2
-  bootstrap site (weakest tier). If no doc-contract backing exists, flag
-  `authority=code-observation` and close via seat ruling (expected: preserve, bucket 2 —
-  the M2 stderr routing exists precisely to protect this).
-- empirical: M2 census citation (ae:344-352 comment).
-- conflict: pending normative closure.
+**SC-504b — no altered signal disposition leaks into the child.** Bucket 1 — semantic
+SHOULD: the child starts with default dispositions; the parent's boundary-survival
+mechanism (bash: ignore/restore SIGPIPE) is implementation, not the contract.
+Authority: architecture.md. Empirical: pending. Conflict: none.
 
-**SC-508 — bash `ae` exit codes.**
-- normative: `authority=code-observation` — no normative source names a dispatcher-wide
-  exit-code contract. Seats classify after evidence (probe: exit codes per refusal
-  family). Note: the Rust binary already pins 0 success / 2 usage (its own tests); the
-  seam between the two is a P1 decision row.
-- empirical: pending probe.
-- conflict: pending normative closure.
+**SC-505a — session-name validation error echoes its grammar verbatim.** Bucket 2 —
+the message states `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$` exactly. Authority: #59 ruling +
+AGENTS.md session-name bullet. (The bash one-definition structure is mechanism, not Rust
+SHOULD.) Empirical: unit pins @72c7293 (verification). Conflict: none.
+
+**SC-505b — agent-name validation error echoes its grammar verbatim.** Bucket 2 —
+`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`. Authority: #59 ruling + AGENTS.md agent-name bullet.
+Empirical: unit pins @72c7293. Conflict: none.
+
+**SC-506 — `list --json` partial-failure validity.** Bucket 1 — one bad session degrades
+its own entry; the document always closes, never truncates. Authority: AGENTS.md ruling
+bullet (long emitters must not abort mid-output; structural guard). Empirical: structural
+unit guard @72c7293. Conflict: none.
+
+**SC-509 — `list --json` versioned object schema.** Bucket 2 — a single JSON object:
+`schema_version` (1), `generated_at`, `sessions[]` with the documented session fields
+(name/status/mode/origin/work_dir/goal/goal_set_epoch/branch/last_active_epoch/
+needs_attention/attention/attention_rank) and `agents[]` fields (ref/alias/name/
+session_id/alive/state/reason); `schema_version` lets consumers gate on shape.
+Authority: commands.md:97-132. Empirical: pending. Conflict: none.
+
+**SC-510 — event object shape.** Bucket 2 — required keys `ts` (ISO 8601 UTC, second
+precision), `actor`, `action`; optional `target`/`ref`/`summary` OMITTED when empty;
+`ref` polysemy per action table; string values JSON-escaped (`\"` `\\` `\n` `\t` `\r`).
+Authority: events.md:47-70. Empirical: pending. Conflict: none.
+
+**SC-511 — event schema evolution is additive-only.** Bucket 2 — messaging events carry
+optional routing-key fields (`actor_slot`/`actor_session`/`target_slot`/
+`target_session`); readers ignore unknown keys and prefer slot+session for pairing;
+adding optional keys is fine, renaming/removing is BREAKING and requires a migration
+story (#21 lands at the first such change). Authority: events.md:71-84,142-144.
+Empirical: pending. Conflict: none.
+
+**SC-507 — `archive preview` stdout is exactly the digest.** Bucket 2 — every
+diagnostic to stderr; read-only by construction (writes nothing, no event, no archive,
+never enters the lifecycle). Authority: commands.md:544-560 (normative — the gate
+corrected an earlier code-observation flag; quick-start.md corroborates).
+Empirical: M2 census note. Conflict: none.
+
+**SC-507b — a live preview is never stitched from two moments.** Bucket 2 — the three
+moving files are fingerprinted before and after the render with one clean retry; if
+still moving, it says so instead. Authority: commands.md:556-560. Empirical: pending.
+Conflict: none.
+
+**SC-513 — `next` exit contract.** Bucket 2 — nothing-needs-attention exits non-zero
+with a message (composes in scripts); unknown argument exits non-zero; read-only by
+default. Authority: commands.md:150-159. Empirical: pending. Conflict: none.
+
+**SC-514 — `doctor` exit contract.** Bucket 2 — non-zero if any checklist item FAILed.
+Authority: commands.md:168. Empirical: pending. Conflict: none.
+
+**SC-515 — `stop all` folded exit.** Bucket 2 — per-target stop-result records are
+folded into the exit code after a bounded (~30s) wait; timeout reports `results
+pending` and keeps the handoff status rather than calling a working supervisor a
+failure; an ae-tagged session visible but absent from meta is named, NOT stopped, and
+makes the run a partial failure (non-zero). Authority: commands.md:365-395.
+Empirical: pending. Conflict: none.
+
+**SC-516 — `end` fails non-zero when the archive cannot be written.** Bucket 1 —
+capture-then-delete: publication happens after verified stop and git, before any live
+state is removed; a failed archive fails the end with the whole session still on disk.
+Authority: commands.md:499-501 + architecture.md publication protocol.
+Empirical: pending (census-2 end section). Conflict: none.
+
+**SC-517 — compact's exit status is the launch's.** Bucket 2 — compact execs into the
+launch; in a terminal it attaches and exits on detach; with no terminal the launch
+reports failure exactly as a plain `ae <name>` does, with archive and fresh session
+already in place. Authority: commands.md:687-691. Empirical: pending. Conflict: none.
+
+**SC-508 — residual undocumented exit codes.** `authority=code-observation` — only the
+cases NOT covered by SC-513..517 remain; probes then seat closure (preserve/fix/
+diverge). The Rust binary's 0/2 convention seam is a P1 decision row.
+Empirical: pending probe. Conflict: pending normative closure.
 
 ### S7 — tmux effects
 
