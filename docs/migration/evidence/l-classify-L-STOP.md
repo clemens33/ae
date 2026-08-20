@@ -298,8 +298,9 @@ The contract quotes as its illustration the behaviour of the rejected design.
 ae's own `<unattributed>` fallback asserts. It needs (a) scoping to the identity gate,
 where it holds, (b) a decision on the implicit route's discarded diagnosis, and (c) a new
 example taken from shipped behaviour. Both (a)/(c) are seat acts; (b) is a product
-question — filed separately, low severity, diagnosability not safety: nothing wrong is
-killed, the user is merely told less than ae knows.
+question — filed as **#101**, low severity, diagnosability not safety: nothing wrong is
+killed, the user is merely told less than ae knows. The stale-example half is recorded
+there too, flagged as a doc refresh rather than a code defect.
 
 **SC-839e — the no-name form keeps tmux-controlled text out of shell programs.** Bucket 1.
 Arm: `legacy-migration-injection` (**rc=0**). A valid session is launched, then migrated
