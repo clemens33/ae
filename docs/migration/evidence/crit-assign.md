@@ -311,7 +311,8 @@ CRIT-ASSIGN: SC-519 | C | read-side fixture cluster: absent vs empty vs unreadab
 CRIT-ASSIGN: SC-520 | C | read-side fixture cluster: malformed-complete-line skip observable arm
 CRIT-ASSIGN: SC-521 | C | read-side fixture cluster: filter intersection arms (stopped+needs-attn, stopped+active, all+either)
 CRIT-ASSIGN: SC-522 | C | read-side fixture cluster: threshold equality-vs-past boundary arm
-CRIT-ASSIGN: SC-523 | C | read-side fixture cluster: default-value confirmation arms (300s/1800s)
+CRIT-ASSIGN: SC-523a | C | read-side fixture cluster: unanswered-threshold default confirmation (1800s)
+CRIT-ASSIGN: SC-523b | C | read-side fixture cluster: activity-window default confirmation (300s)
 CRIT-ASSIGN: SC-524 | C | read-side fixture cluster: future-timestamp counts-active arm
 CRIT-ASSIGN: SC-405a | C | read-side fixture cluster: meta first-equals/single-line parse arm
 CRIT-ASSIGN: SC-405b | C | read-side fixture cluster: session-context key arms (mode/origin/work_dir/goal)
@@ -319,5 +320,5 @@ CRIT-ASSIGN: SC-405c | C | read-side fixture cluster: roster key arms (agent.slo
 CRIT-ASSIGN: SC-405d | C | read-side fixture cluster: unknown-meta-key probe arm
 CRIT-ASSIGN: SC-405e | C | read-side fixture cluster: malformed/duplicate-meta-key probe arm
 CRIT-ASSIGN: SC-405f | C | read-side fixture cluster: goal_set_epoch derived-from-latest-goal-event arm
-CRIT-ASSIGN: SC-405g | C | read-side fixture cluster: branch parameter seam arm (tmux/git fact)
+CRIT-ASSIGN: SC-405g | C | read-side fixture cluster: branch resolution subarms — running tmux @ae_branch_name primary; git fallback when absent/stopped
 CRIT-ASSIGN: SC-980 | T-WD | watchdog branch harness: incumbent alert action/summary byte capture (legacy adapter IS only, never SHOULD)

@@ -561,7 +561,8 @@ Meta key grammar (slice-1 Q1 seat rulings, source ownership corrected — meta s
 what meta OWNS; derived facts cite their true sources):
 
 **SC-405a — meta parse grammar.** Bucket 2 — `key=value` split on the FIRST equals;
-single-line values. Authority: architecture.md:61-70 (layout/roster authority).
+single-line values. Authority: slice-1 joint seat ruling 2026-08-20 (the exact parser
+semantics) + architecture.md:61-70 (layout authority — it says only INI-style).
 Empirical: census-1/2 meta writers. Conflict: none. **classified_by: both seats,
 2026-08-20.**
 
@@ -675,8 +676,10 @@ read/parse loss carries `degraded: true` (additive key; normal entries may omit 
 identity (name + status) always survives; unreadable optional facts are omitted, never
 fabricated, never null; `agents` remains an array. Damage is never rendered
 identically to legitimate sparsity — a machine digest that hides loss lies by
-omission. Authority: slice-1 joint ruling + SC-511c additive-evolution rule.
-Empirical: pending (builder implementation + C-cluster). Conflict: none.
+omission. Authority: slice-1 joint Q5 ruling + SC-509's `schema_version` consumer-
+gating design (the events evolution rule SC-511c is a different schema and is NOT the
+authority here). Empirical: pending (builder implementation + C-cluster).
+Conflict: none.
 **classified_by: fable5:lead + gpt56sol:colead, 2026-08-20.**
 
 **SC-518 — request closure requires the full mirror match.** Bucket 1 — (slice-1 Q6
@@ -714,12 +717,16 @@ must EXCEED the threshold; equality is not past it. Authority: commands.md:60-76
 ("past the threshold") + joint ruling. Empirical: pending. Conflict: none.
 **classified_by: both seats, 2026-08-20.**
 
-**SC-523 — the documented defaults are 1800s and 300s.** Bucket 2 — (slice-1 Q7f):
-`AE_ATTN_REQUEST_SECS` default 30 min and the activity window ~5 min are NORMATIVE
-values from commands.md; SC-1410j/k continue to own unset/override/malformed ENV
-behavior separately; implementations may take the values as caller parameters.
-Authority: commands.md:66,86. Empirical: pending. Conflict: none. **classified_by:
-both seats, 2026-08-20.**
+**SC-523a — the unanswered threshold default is 1800s.** Bucket 2 — (slice-1 Q7f):
+`AE_ATTN_REQUEST_SECS` defaults to 30 minutes, a NORMATIVE value; SC-1410j owns its
+unset/override/malformed ENV behavior separately; implementations may take it as a
+caller parameter. Authority: commands.md:71. Empirical: pending. Conflict: none.
+**classified_by: both seats, 2026-08-20.**
+
+**SC-523b — the activity window default is 300s.** Bucket 2 — (slice-1 Q7f):
+`AE_LIST_ACTIVE_SECS` defaults to ~5 minutes, a NORMATIVE value; SC-1410k owns its ENV
+behavior separately; caller-parameter transport permitted. Authority: commands.md:87.
+Empirical: pending. Conflict: none. **classified_by: both seats, 2026-08-20.**
 
 **SC-524 — a future timestamp counts as active.** Bucket 1 — (slice-1 Q7f seat
 ruling): clock skew fails toward the loud false-positive (a session shown active)
@@ -1559,14 +1566,15 @@ Telegram (authority: telegram.md @72c7293, cited per memo):
   Authority: UNRESOLVED(memo citation is only the unqualified line range 27-53). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Setup write sequence. Conflict: none.
   formats: S5/S15).
 - **SC-971** b2 — start persists `enabled=true`; stop persists `enabled=false`.
+  Authority: UNRESOLVED(memo citation is only the unqualified line range 148-165). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Start/stop write sequence. Conflict: none.
+
 - **SC-980 — successor alert events carry a typed reason.** Bucket 1 — (slice-1 Q2
   seat ruling): alert events gain an ADDITIVE typed reason key sufficient to
   discriminate dead | stale | throttled; free-text `summary` is never a discriminator.
-  Legal under SC-511c additive evolution. The INCUMBENT action/summary byte shapes are
-  T-WD probe material for the legacy adapter — empirical only, never SHOULD.
-  Authority: commands.md:60-76 + joint seat ruling 2026-08-20. Empirical: T-WD
+  Additive keys are legal per the events evolution rule. The INCUMBENT action/summary
+  byte shapes are T-WD probe material for the legacy adapter — empirical only, never
+  SHOULD. Authority: commands.md:60-76 + joint seat ruling 2026-08-20. Empirical: T-WD
   pending. Conflict: none. **classified_by: both seats, 2026-08-20.**
-  Authority: UNRESOLVED(memo citation is only the unqualified line range 148-165). Empirical: docs/migration/evidence/locks-census-2.md § Telegram setup/start/stop and daemon loop — Start/stop write sequence. Conflict: none.
 
 Bridge protocol (authority: bridge-protocol.md @72c7293; lead splits per gate):
 - **SC-972** b2 — external actors are `<platform>:<id>`, opaque past the allowlisted

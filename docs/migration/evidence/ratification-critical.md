@@ -2,14 +2,12 @@
 
 Derived mechanically from the canonical set reported by sweep-check.sh; letters are criteria only.
 
-- Canonical IDs: SC=398, D=42, total=440
-- Class counts (amended 2026-08-20, census-audit gate ae-20260820T115339Z-9905b9ec):
-  canonical 441 (D14 umbrella de-recorded; D05 replaced by D05a/b/c). CRITICAL=315,
-  DEFERRABLE=102, OBSERVED=40 (24 pin-audit PROVES + 13 census-audit + D05a/b/c;
-  D24 non-observed pending its negative-evidence pointer — 298/41 when it lands).
-  Outstanding critical observations: 315 (slice-1 added 16). The earlier 290 was a double-subtraction,
-  expunged; clusters build only from the regenerated remaining-ID manifest.
-- Critical-letter counts (overlaps counted): A=119, B=38, C=39, D=192
+- Canonical IDs (checker at HEAD): SC=415, D=43, total=458; manifest lines=458 (exact)
+- Class counts (mechanically regenerated 2026-08-20 post slice-1): CRITICAL=316, DEFERRABLE=102, OBSERVED=40
+- Critical-letter counts (overlaps counted): A=123, B=38, C=55, D=196
+- D24 remains critical/non-observed pending its negative-evidence pointer; when it lands: CRITICAL=315, OBSERVED=41
+- Outstanding critical observations: 316. Clusters build only from the CRIT-ASSIGN table.
+
 - A includes explicit UNCLASSIFIED, authority=code-observation, literal Authority: UNRESOLVED(...) rows, and D records whose TBD fields feed a seat ruling; ALREADY-OBSERVED takes pin-audit PROVES priority.
 
 - D01 — CRITICAL(A,C)
@@ -462,7 +460,8 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-520 — CRITICAL(C,D)
 - SC-521 — CRITICAL(C)
 - SC-522 — CRITICAL(C)
-- SC-523 — CRITICAL(C)
+- SC-523a — CRITICAL(C)
+- SC-523b — CRITICAL(C)
 - SC-524 — CRITICAL(C)
 - SC-405a — CRITICAL(C,D)
 - SC-405b — CRITICAL(C,D)
