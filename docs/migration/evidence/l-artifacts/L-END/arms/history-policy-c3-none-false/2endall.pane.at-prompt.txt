@@ -1,0 +1,50 @@
+End ALL ae sessions?
+  - Ends every running and stopped session (git/full ones commit any work, then push any unpushed commits if a remote is set).
+  - Session memory, per session:
+  - hp1: archive -> /tmp/aelx/L-END/history-policy-c3-none-false/h/.ae/archive/012958b7-dd7d-42c2-90f8-6266d7f49da1/ · conversation files KEPT
+  - hp2: archive -> /tmp/aelx/L-END/history-policy-c3-none-false/h/.ae/archive/20d7c545-0a50-4037-9d91-a3194a81be3a/ · conversation files KEPT
+  (Use 'ae stop' to resume later; it also preserves history.)
+Continue? [y/N]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

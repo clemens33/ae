@@ -1,0 +1,19 @@
+cwd: /tmp/aelx/L-END/transaction-order-b-push-fails/w
+argv:
+  /tmp/aelx/L-END/transaction-order-b-push-fails/b/ae
+  --worktree
+  txb-push-fails
+env:
+  HOME=/tmp/aelx/L-END/transaction-order-b-push-fails/h
+  AE_HOME=/tmp/aelx/L-END/transaction-order-b-push-fails/h/.ae
+  TMPDIR=/tmp/aelx/L-END/transaction-order-b-push-fails/tp
+  TMUX_TMPDIR=/tmp/aelx/L-END/transaction-order-b-push-fails/t
+  PATH=/tmp/aelx/L-END/transaction-order-b-push-fails/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-END/transaction-order-b-push-fails/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-END/transaction-order-b-push-fails/cap/tmux-argv.log

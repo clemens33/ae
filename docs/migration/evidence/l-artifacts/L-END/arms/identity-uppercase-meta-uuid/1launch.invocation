@@ -1,0 +1,19 @@
+cwd: /tmp/aelx/L-END/identity-uppercase-meta-uuid/w
+argv:
+  /tmp/aelx/L-END/identity-uppercase-meta-uuid/b/ae
+  --local
+  id2
+env:
+  HOME=/tmp/aelx/L-END/identity-uppercase-meta-uuid/h
+  AE_HOME=/tmp/aelx/L-END/identity-uppercase-meta-uuid/h/.ae
+  TMPDIR=/tmp/aelx/L-END/identity-uppercase-meta-uuid/tp
+  TMUX_TMPDIR=/tmp/aelx/L-END/identity-uppercase-meta-uuid/t
+  PATH=/tmp/aelx/L-END/identity-uppercase-meta-uuid/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-END/identity-uppercase-meta-uuid/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-END/identity-uppercase-meta-uuid/cap/tmux-argv.log

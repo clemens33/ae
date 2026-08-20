@@ -1,0 +1,10 @@
+# manifest-root	/tmp/aelx/L-PURGE/existing-archive-as-produced/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	4	128	-	-
+.publishing.a353968e-88e1-41a9-ba4e-0420cb9e5558	dir	700	2	64	-	-
+a353968e-88e1-41a9-ba4e-0420cb9e5558	dir	700	7	224	-	-
+a353968e-88e1-41a9-ba4e-0420cb9e5558/digest.md	file	600	1	1308	-	7b301069cd3a12c631e33fd15467a95d1edd7a5d01c42c0ee35bad0e707945c7
+a353968e-88e1-41a9-ba4e-0420cb9e5558/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+a353968e-88e1-41a9-ba4e-0420cb9e5558/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+a353968e-88e1-41a9-ba4e-0420cb9e5558/messages	dir	700	2	64	-	-
+a353968e-88e1-41a9-ba4e-0420cb9e5558/meta	file	600	1	661	-	f675f8b3af82619c1e749e9a3386f33a8ab5ac7827ca510f5988f7aefc1272a4

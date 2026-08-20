@@ -1,0 +1,9 @@
+arm	compact-relaunch-lock-control
+section	L-END
+roster_ids	SC-807
+fixture	--local family, real compact with --digest-only -f
+construction	no mutation; a delegate-and-log flock spy records every lock invocation across compact and the relaunch it execs into
+flock_spy	PATH shim delegating every invocation to /opt/homebrew/bin/flock
+parent_uuid	6d1474a3-4aba-45e0-ba45-529a225e9366
+compact_rc	1
+barrier_bound_sec	300

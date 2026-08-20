@@ -1,0 +1,26 @@
+cwd: /tmp/aelx/L-END/compact-relaunch-lock-control/w
+argv (bg):
+  /tmp/aelx/L-END/compact-relaunch-lock-control/b/ae
+  compact
+  -f
+  --digest-only
+  cr1
+env:
+  HOME=/tmp/aelx/L-END/compact-relaunch-lock-control/h
+  AE_HOME=/tmp/aelx/L-END/compact-relaunch-lock-control/h/.ae
+  TMPDIR=/tmp/aelx/L-END/compact-relaunch-lock-control/tp
+  TMUX_TMPDIR=/tmp/aelx/L-END/compact-relaunch-lock-control/t
+  PATH=/tmp/aelx/L-END/compact-relaunch-lock-control/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-END/compact-relaunch-lock-control/cap/fake
+  AE_L_FLOCK_LOG=/tmp/aelx/L-END/compact-relaunch-lock-control/cap/flock-spy.log
+  AE_L_TMUX_LOG=/tmp/aelx/L-END/compact-relaunch-lock-control/cap/tmux-argv.log
+  AE_L_HOOKS=b_cp_after_answer:b_cp_after_handover:b_cp_pre_relaunch:b_from_proved:b_pre_rename:b_post_rename:b_pre_cleanup
+  AE_L_TRACE=/tmp/aelx/L-END/compact-relaunch-lock-control/cap/hook-trace.tsv
+  AE_L_BLOCK=/tmp/aelx/L-END/compact-relaunch-lock-control/ctl
+  AE_L_BLOCK_MAX=1800

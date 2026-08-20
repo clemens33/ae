@@ -1,0 +1,8 @@
+## requests all
+STATUS   TYPE     ID                           FROM                 TO                   SUMMARY
+
+## requests inbox
+STATUS   TYPE     ID                           FROM                 TO                   SUMMARY
+
+## events.jsonl byte count	-
+## memo.tsv byte count	-

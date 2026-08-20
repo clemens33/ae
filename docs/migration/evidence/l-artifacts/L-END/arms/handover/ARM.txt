@@ -1,0 +1,9 @@
+arm	handover
+section	L-END
+roster_ids	SC-830 SC-831
+fixture	--local family, renamed-interpreter fake tool that accepts real sends
+construction	compact -f runs first under a SHORTENED handover bound (AE_COMPACT_HANDOVER_SECS=8) with no reply and no handover memo supplied; the same session is then compacted with --digest-only
+handover_bound_sec	8
+compact_bounded_rc	1
+compact_digest_only_rc	1
+inconclusive_discipline	a bounded wait that expires is recorded as the product's own reported outcome plus the state at expiry; no absence is inferred

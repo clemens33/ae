@@ -1,0 +1,4 @@
+mutation	session_id value case-folded a-f -> A-F
+before	75641b99-07f7-462b-874c-d3b27e80d047
+after	75641B99-07F7-462B-874C-D3B27E80D047
+writer_shape	temp file + rename (the shape ae itself uses)

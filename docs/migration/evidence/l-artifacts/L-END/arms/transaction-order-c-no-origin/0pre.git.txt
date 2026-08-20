@@ -1,0 +1,5 @@
+## HEAD (no branch)
+?? wip.txt
+--- log ---
+54dfd52 seed
+--- remote refs ---

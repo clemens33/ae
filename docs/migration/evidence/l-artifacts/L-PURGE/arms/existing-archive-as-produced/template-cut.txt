@@ -1,0 +1,2 @@
+template.cut.barrier	b_post_rename.84086.3
+template.cut.method	SIGKILL to the whole end process tree

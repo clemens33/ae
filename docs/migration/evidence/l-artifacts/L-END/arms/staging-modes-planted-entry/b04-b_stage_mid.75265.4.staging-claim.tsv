@@ -1,0 +1,8 @@
+# manifest-root	/tmp/aelx/L-END/staging-modes-planted-entry/h/.ae/archive/.publishing.90588254-30e9-4141-bef4-b333f5217ba4
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+payload	dir	700	6	192	-	-
+payload/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+payload/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+payload/messages	dir	700	2	64	-	-
+payload/meta	file	600	1	825	-	a2e9282eb878064373c5b89c53b5f77c430fcfd92c1bdea7cc20ad542e49b296

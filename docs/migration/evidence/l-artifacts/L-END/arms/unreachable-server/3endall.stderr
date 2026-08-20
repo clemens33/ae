@@ -1,0 +1,3 @@
+Error: cannot verify session 'us1' state (its recorded tmux server is unreachable) — state preserved.
+Error: cannot verify session 'us2' state (its recorded tmux server is unreachable) — state preserved.
+2 session(s) failed to end. See errors above.

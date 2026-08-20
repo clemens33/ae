@@ -1,0 +1,8 @@
+## HEAD (no branch)
+--- log ---
+afd5aa2 ae: end session pcpos
+6c0dafd seed
+--- branches -r ---
+  origin/HEAD -> origin/main
+  origin/ae/pcpos
+  origin/main

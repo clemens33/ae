@@ -1,0 +1,9 @@
+arm	compact-relaunch-lock-parent-mutated
+section	L-END
+roster_ids	SC-808
+fixture	--local family, real compact with --digest-only -f
+construction	at the barrier after the child launch parses its FIRST parent-archive proof, the controller rewrites the parent archive meta handover_count (temp+rename) before releasing
+flock_spy	PATH shim delegating every invocation to /opt/homebrew/bin/flock
+parent_uuid	d784bc1b-25eb-443b-927b-591982cb1ab8
+compact_rc	1
+barrier_bound_sec	300

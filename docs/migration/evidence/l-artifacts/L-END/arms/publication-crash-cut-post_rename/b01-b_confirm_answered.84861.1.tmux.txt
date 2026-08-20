@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-END/publication-crash-cut-post_rename/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|pcpos|2|0|1787243757
+## windows
+pcpos|@0|0|pcpos|1
+pcpos|@1|99|ae-monitor|2
+## panes
+pcpos|@0|%0|83206|claude|claude:claude|main|0
+pcpos|@1|%2|84220|bash|_watchdog||0
+pcpos|@1|%1|84165|bash|_events||0
+## clients

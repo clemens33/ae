@@ -1,0 +1,86 @@
+pid=15785 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <aw>
+pid=15958 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <aw> <-c> </tmp/aelx/L-END/archive-write-inability/h/.ae/worktrees/aw>
+pid=15976 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <aw> <-u> <CLAUDECODE>
+pid=15982 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <aw> <-u> <CLAUDE_CODE_SESSION>
+pid=15983 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <aw> <AE_SESSION> <1>
+pid=15993 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <aw> <AE_ORIGIN> </private/tmp/aelx/L-END/archive-write-inability/w>
+pid=16004 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <aw> <AE_DIR> </tmp/aelx/L-END/archive-write-inability/h/.ae/worktrees/aw>
+pid=16011 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <aw> <AE_MODE> <git>
+pid=16015 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <aw> <AE_HOME> </tmp/aelx/L-END/archive-write-inability/h/.ae>
+pid=16022 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <aw> <mouse> <on>
+pid=16030 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <aw> <focus-events> <on>
+pid=16039 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <aw> <history-limit> <50000>
+pid=16050 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <aw> <pane-border-status> <top>
+pid=16066 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <aw> <pane-border-format> < #{@ae_agent} >
+pid=16087 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <aw>
+pid=16118 ppid=16116 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=16161 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae aw] >
+pid=16201 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=16228 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…mp/aelx/L-END/archive-write-inability/w ⌁ ~/.ae/worktrees/aw#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=16260 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=16274 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=16313 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=16329 ppid=16328 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=16352 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=16370 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=16384 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=16410 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=16429 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <aw> <automatic-rename> <off>
+pid=16458 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <aw> <aw>
+pid=16469 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <aw> <-p> <#{pane_id}>
+pid=16488 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:claude:claude>
+pid=16516 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <claude:claude>
+pid=16535 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=16607 ppid=16606 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=16789 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <aw> <-F> <#{pane_id}	#{@ae_agent}>
+pid=16832 ppid=16830 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-panes> <-s> <-t> <aw> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=17055 ppid=17054 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=17059 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-15685-%0> <->
+pid=17063 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-15685-%0> <-t> <%0>
+pid=17278 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=17450 ppid=17448 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=17601 ppid=17599 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-panes> <-s> <-t> <aw> <-F> <#{pane_id} #{@ae_agent}>
+pid=17614 ppid=17612 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <new-window> <-d> <-t> <aw:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-END/archive-write-inability/h/.ae/sessions/aw/events-tail>
+pid=17619 ppid=17469 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=17626 ppid=17469 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=17642 ppid=17469 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <set-window-option> <-t> <aw:ae-monitor> <pane-border-status> <top>
+pid=17649 ppid=17469 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=17691 ppid=17689 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-panes> <-s> <-t> <aw> <-F> <#{pane_id} #{@ae_agent}>
+pid=17698 ppid=17696 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-panes> <-s> <-t> <aw> <-F> <#{pane_id} #{@ae_agent}>
+pid=17708 ppid=17706 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-panes> <-s> <-t> <aw> <-F> <#{pane_id} #{@ae_agent}>
+pid=17712 ppid=17709 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-END/archive-write-inability/h/.ae/sessions/aw/watchdog _run>
+pid=17715 ppid=17660 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=17717 ppid=17660 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=17730 ppid=17660 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <select-pane> <-t> <%2> <-d>
+pid=17760 ppid=15685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%0>
+pid=17764 ppid=17762 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S>pid=15685 ppid=15519 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <attach-session> <list-sessions> <-t> <-F> <aw> <#{session_id} #{session_name}>
+
+pid=17784 ppid=17713 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=17822 ppid=17820 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=17832 ppid=17795 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <2fb1054>
+pid=17862 ppid=17860 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=17870 ppid=17713 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < 2fb1054>
+pid=17873 ppid=17713 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <has-session> <-t> <aw>
+pid=17889 ppid=17713 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-panes> <-s> <-t> <aw> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=17897 ppid=17896 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=17907 ppid=17906 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=17984 ppid=17982 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=17990 ppid=17713 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=18020 ppid=18017 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=18023 ppid=17996 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <2fb1054>
+pid=18034 ppid=18032 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=18035 ppid=17713 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < 2fb1054>
+pid=18056 ppid=18054 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=18068 ppid=17713 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <claude●>
+pid=18078 ppid=18077 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-panes> <-s> <-t> <aw> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=18082 ppid=17713 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=18083 ppid=17713 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=20134 ppid=20124 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=20179 ppid=20164 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=20204 ppid=20195 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <show-environment> <-t> <$0> <AE_MODE>
+pid=20226 ppid=20210 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <show-environment> <-t> <$0> <AE_ORIGIN>
+pid=20256 ppid=20245 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=20274 ppid=20263 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <show-environment> <-t> <$0> <AE_DIR>
+pid=20315 ppid=20099 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <kill-session> <-t> <$0>
+pid=20349 ppid=20346 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S>pid=20345 ppid=20331 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <list-sessions> <-S> <-F> </private/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default> <#{session_id} #{session_name}> <list-sessions>
+ <-F> <#{session_name}>

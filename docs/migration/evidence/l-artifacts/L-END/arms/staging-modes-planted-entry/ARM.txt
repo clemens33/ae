@@ -1,0 +1,12 @@
+arm	staging-modes-planted-entry
+section	L-END
+roster_ids	SC-801
+fixture	managed (--worktree, local bare file:// origin)
+construction	the controller plants an unexpected file and directory into the staging payload at the mid-staging barrier
+session	smpl
+session_uuid	90588254-30e9-4141-bef4-b333f5217ba4
+binary	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
+hooks_active	b_confirm_answered:b_stop_local:b_stop_git:b_git_fixed:b_stage_mid:b_pre_rename:b_post_rename:b_pre_cleanup
+launch_rc	1
+end_rc	1
+barrier_bound_sec	240

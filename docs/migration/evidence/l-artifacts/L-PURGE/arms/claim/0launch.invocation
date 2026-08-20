@@ -1,0 +1,19 @@
+cwd: /tmp/aelx/L-PURGE/claim/w
+argv:
+  /tmp/aelx/L-PURGE/claim/b/ae
+  --local
+  pg
+env:
+  HOME=/tmp/aelx/L-PURGE/claim/h
+  AE_HOME=/tmp/aelx/L-PURGE/claim/h/.ae
+  TMPDIR=/tmp/aelx/L-PURGE/claim/tp
+  TMUX_TMPDIR=/tmp/aelx/L-PURGE/claim/t
+  PATH=/tmp/aelx/L-PURGE/claim/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-PURGE/claim/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-PURGE/claim/cap/tmux-argv.log

@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-END/handover/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|hv1|2|0|1787244631
+## windows
+hv1|@0|0|hv1|1
+hv1|@1|99|ae-monitor|2
+## panes
+hv1|@0|%0|9940|claude|claude:claude|main|0
+hv1|@1|%2|11043|bash|_watchdog||0
+hv1|@1|%1|10907|bash|_events||0
+## clients

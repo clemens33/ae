@@ -1,0 +1,6 @@
+recorded_socket	/private/tmp/aelx/L-END/unreachable-server/t/tmux-501/default
+socket_dir	/tmp/aelx/L-END/unreachable-server/t/tmux-501
+server_pid_before	20576
+manipulation	the directory holding the recorded socket is removed (the socket path becomes unreachable; the server process is left running)
+server_pid_after	20576
+server_alive_after	yes

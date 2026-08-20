@@ -1,0 +1,13 @@
+arm	archive-write-inability
+section	L-END
+roster_ids	SC-516
+fixture	managed (--worktree, local bare file:// origin)
+construction	the archive root is made mode 0500 and the inability canary (mkdir under it) is recorded refusing, then end runs
+session	aw
+session_uuid	01fff80c-96d5-4fa1-b136-37c21ac800a2
+binary	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
+hooks_active	<none>
+launch_rc	1
+end_rc	1
+canary_rc	1
+note	the post-run archive-root manifest is taken after restoring mode 0700 so the tree is readable; the pre-restore mode is in canary.txt

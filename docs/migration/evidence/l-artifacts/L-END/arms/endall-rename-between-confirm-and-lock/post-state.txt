@@ -1,0 +1,20 @@
+# tmux state after
+## socket	/tmp/aelx/L-END/endall-rename-between-confirm-and-lock/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$1|ef2-renamed|2|0|1787244428
+## windows
+ef2-renamed|@2|0|ef2|1
+ef2-renamed|@3|99|ae-monitor|2
+## panes
+ef2-renamed|@2|%3|26857|claude|claude:claude|main|0
+ef2-renamed|@3|%5|27517|bash|_watchdog||0
+ef2-renamed|@3|%4|27466|bash|_events||0
+## clients
+
+# session dirs after
+
+# archive dirs after
+04bdce1f-9643-4fb7-a5e4-1f9cc5b908f4
+390ff9c8-b2b9-47db-8e32-e5674f4b2572
+88bf81ae-86c1-4f98-a0dd-faae58acbc58

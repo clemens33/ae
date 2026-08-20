@@ -1,0 +1,6 @@
+# manifest-root	/tmp/aelx/L-PURGE/no-prior-archive/h/.ae
+#path	type	mode	nlink	size	link	sha256
+.	dir	755	4	128	-	-
+config	file	644	1	188	-	af35450dd435f29e02696802b0b7130f4e6d032379ffa818b8f151b446643eaf
+sessions	dir	755	3	96	-	-
+sessions/.lifecycle.np.lock	file	644	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

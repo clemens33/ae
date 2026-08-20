@@ -1,0 +1,9 @@
+arm	identity-uppercase-meta-uuid
+section	L-END
+roster_ids	SC-806b
+fixture	--local family, REAL LIVE session
+construction	the live session meta's session_id value is case-folded a-f -> A-F by a temp+rename write, then end runs
+session	id2
+uuid_before	75641b99-07f7-462b-874c-d3b27e80d047
+uuid_after	75641B99-07F7-462B-874C-D3B27E80D047
+end_rc	0

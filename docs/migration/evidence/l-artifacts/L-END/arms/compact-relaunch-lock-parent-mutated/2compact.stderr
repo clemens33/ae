@@ -1,0 +1,20 @@
+compact: cr1 (local) resolved and frozen.
+session: cr1
+uuid: d784bc1b-25eb-443b-927b-591982cb1ab8 (session)
+mode: local
+origin: /private/tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/w
+config: /tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/h/.ae/config
+conversation files: kept
+archive: /tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/h/.ae/archive/d784bc1b-25eb-443b-927b-591982cb1ab8
+compact: semantic handover skipped (--digest-only); the digest is the handover.
+Archived d784bc1b-25eb-443b-927b-591982cb1ab8
+  /tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/h/.ae/archive/d784bc1b-25eb-443b-927b-591982cb1ab8
+  4 file(s), 1983 byte(s)
+  kept agent conversation files (claude/codex token history; purge: ae end --purge-history)
+Cleaned up local session cr1
+Ended local session cr1
+Recovery: cd /private/tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/w && /tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/b/ae --local cr1 --from d784bc1b-25eb-443b-927b-591982cb1ab8
+Starting fresh session cr1 from archive d784bc1b-25eb-443b-927b-591982cb1ab8...
+Error: parent archive d784bc1b-25eb-443b-927b-591982cb1ab8 stopped validating while this session was being created.
+ae: launch failed — rolling back 'cr1'.
+ae: session state removed — this launch created it; nothing left to reattach to.

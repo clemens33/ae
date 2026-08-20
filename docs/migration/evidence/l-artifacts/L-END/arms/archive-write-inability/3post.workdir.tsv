@@ -1,0 +1,6 @@
+# manifest-root	/tmp/aelx/L-END/archive-write-inability/h/.ae/worktrees/aw
+#path	type	mode	nlink	size	link	sha256
+.	dir	755	5	160	-	-
+.git	file	644	1	76	-	99c4f0add67c42e13dd6f1c6591f81b052c976f2af3728fa4f12f0a378265922
+README.md	file	644	1	5	-	4a6689419b00b11700c9b6246bcfa8936c8f5e1e824db3a7e57030e2d1c1a684
+wip.txt	file	644	1	5	-	4c7a03f2c9a663a0678eef8293f7609a609c92a6b3bccb2e556301f8b290c7f2

@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|cr1|2|0|1787244543
+## windows
+cr1|@0|0|cr1|1
+cr1|@1|99|ae-monitor|2
+## panes
+cr1|@0|%0|57663|claude|claude:claude|main|0
+cr1|@1|%2|58776|bash|_watchdog||0
+cr1|@1|%1|58644|bash|_events||0
+## clients

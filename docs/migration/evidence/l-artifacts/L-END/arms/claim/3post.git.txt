@@ -1,0 +1,8 @@
+## HEAD (no branch)
+--- log ---
+259b02f ae: end session cl
+5921ab8 seed
+--- remote refs ---
+  origin/HEAD -> origin/main
+  origin/ae/cl
+  origin/main

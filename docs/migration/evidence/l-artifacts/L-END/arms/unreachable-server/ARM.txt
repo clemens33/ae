@@ -1,0 +1,8 @@
+arm	unreachable-server
+section	L-END
+roster_ids	SC-816
+fixture	--local family, two sessions on one recorded server
+construction	the directory holding the recorded tmux socket is removed, then end runs for one target and then for 'all'
+end_single_rc	1
+end_all_rc	1
+server_pid	20576

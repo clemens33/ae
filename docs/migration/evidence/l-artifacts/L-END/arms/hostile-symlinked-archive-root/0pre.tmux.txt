@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-END/hostile-symlinked-archive-root/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|sy1|2|0|1787243894
+## windows
+sy1|@0|0|sy1|1
+sy1|@1|99|ae-monitor|2
+## panes
+sy1|@0|%0|26773|claude|claude:claude|main|0
+sy1|@1|%2|27870|bash|_watchdog||0
+sy1|@1|%1|27744|bash|_events||0
+## clients

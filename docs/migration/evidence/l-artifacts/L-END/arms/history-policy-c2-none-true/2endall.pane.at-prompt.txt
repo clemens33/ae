@@ -1,0 +1,50 @@
+End ALL ae sessions?
+  - Ends every running and stopped session (git/full ones commit any work, then push any unpushed commits if a remote is set).
+  - Session memory, per session:
+  - hp1: NO archive, and /tmp/aelx/L-END/history-policy-c2-none-true/h/.ae/archive/da11f24a-cf5f-4d1f-8f34-ad60f2eb5b7b/ is DELETED if it exists · conversation files DELETED
+  - hp2: NO archive, and /tmp/aelx/L-END/history-policy-c2-none-true/h/.ae/archive/4239f6f3-1365-4da8-af4a-102dc14efeee/ is DELETED if it exists · conversation files DELETED
+  (Use 'ae stop' to resume later; it also preserves history.)
+Continue? [y/N]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

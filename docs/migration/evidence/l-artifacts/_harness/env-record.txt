@@ -1,0 +1,15 @@
+uname	Darwin 25.6.0 arm64
+bash	GNU bash, version 5.3.15(1)-release (aarch64-apple-darwin25.4.0)	6ba6319962b59831740a56aa5f65e91d6467c72997f5d0a18be1ba1a6d8d378b
+tmux	tmux 3.7b	d2c8cff1aeba41d4a63e29b62e8d16bf95512f8c835865028b990811f9207b2a
+git	git version 2.50.1 (Apple Git-155)	b8763cf250e607a778bb4603cecb5b90338814d0a3dfcba0d57b1de242f610e9
+flock	146f325fcbacf726b93dd8d5b4ff3b0ab12461eb4e960ab7e80c772b69986b95
+date	/bin/date	0c7f77e19bc79013bc5bc4e67beea3b9d546d6d09a36799c2eed2693967af8c6
+python3	Python 3.9.6
+locale.pinned	en_US.UTF-8
+frozen.commit	72c729343a0117af2968b66e1c43f89ad25fc0b2
+frozen.ae.blob	50e4f575baf3aa584b98b3eaaeec5264e4916161
+frozen.ae.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+instrumented.ae.sha256	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
+hooks.patch.sha256	00b06eaad573db298bd2d5c608a297e1aa6099f863fc3a819b05346c3ceeedde
+fake-tool.sh.sha256	df41fbe8367f7a6bfabce6369aec66916c47e86de982fdc129d59f509131e8ed
+fake-binary.sha256	6ba6319962b59831740a56aa5f65e91d6467c72997f5d0a18be1ba1a6d8d378b	(renamed copy of bash)

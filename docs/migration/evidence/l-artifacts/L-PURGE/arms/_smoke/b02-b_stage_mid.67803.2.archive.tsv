@@ -1,0 +1,9 @@
+# manifest-root	/tmp/aelx/L-PURGE/_smoke/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+.publishing.c25a4ab7-67c8-4e6b-949b-168d97bcee4e	dir	700	3	96	-	-
+.publishing.c25a4ab7-67c8-4e6b-949b-168d97bcee4e/payload	dir	700	6	192	-	-
+.publishing.c25a4ab7-67c8-4e6b-949b-168d97bcee4e/payload/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+.publishing.c25a4ab7-67c8-4e6b-949b-168d97bcee4e/payload/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+.publishing.c25a4ab7-67c8-4e6b-949b-168d97bcee4e/payload/messages	dir	700	2	64	-	-
+.publishing.c25a4ab7-67c8-4e6b-949b-168d97bcee4e/payload/meta	file	600	1	639	-	9df6e62766e237888c3386f594fdd26d827e251b761c9817c390fe9c8750a3f7

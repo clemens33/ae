@@ -1,0 +1,11 @@
+arm	existing-archive-as-produced
+section	L-PURGE
+roster_ids	SC-810b
+fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
+construction	the session-to-archive pairing is the NATURAL output of a real end cut at b_post_rename in this same sandbox: session directory, published archive and the publisher's still-standing .publishing.<uuid> claim, with no synthetic binding of any kind. end --purge-history then runs on it UNMODIFIED
+template_uuid	a353968e-88e1-41a9-ba4e-0420cb9e5558
+binary	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
+reading	(a) the specimen exactly as produced — the standing claim is part of what that cut produces, and the overlap with the claim arm is itself the observation
+claim_standing_at_op	yes
+op	ae end -f --purge-history pg
+op_rc	1

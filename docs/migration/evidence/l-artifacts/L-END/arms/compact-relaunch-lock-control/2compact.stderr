@@ -1,0 +1,18 @@
+compact: cr1 (local) resolved and frozen.
+session: cr1
+uuid: 6d1474a3-4aba-45e0-ba45-529a225e9366 (session)
+mode: local
+origin: /private/tmp/aelx/L-END/compact-relaunch-lock-control/w
+config: /tmp/aelx/L-END/compact-relaunch-lock-control/h/.ae/config
+conversation files: kept
+archive: /tmp/aelx/L-END/compact-relaunch-lock-control/h/.ae/archive/6d1474a3-4aba-45e0-ba45-529a225e9366
+compact: semantic handover skipped (--digest-only); the digest is the handover.
+Archived 6d1474a3-4aba-45e0-ba45-529a225e9366
+  /tmp/aelx/L-END/compact-relaunch-lock-control/h/.ae/archive/6d1474a3-4aba-45e0-ba45-529a225e9366
+  4 file(s), 1969 byte(s)
+  kept agent conversation files (claude/codex token history; purge: ae end --purge-history)
+Cleaned up local session cr1
+Ended local session cr1
+Recovery: cd /private/tmp/aelx/L-END/compact-relaunch-lock-control/w && /tmp/aelx/L-END/compact-relaunch-lock-control/b/ae --local cr1 --from 6d1474a3-4aba-45e0-ba45-529a225e9366
+Starting fresh session cr1 from archive 6d1474a3-4aba-45e0-ba45-529a225e9366...
+open terminal failed: not a terminal

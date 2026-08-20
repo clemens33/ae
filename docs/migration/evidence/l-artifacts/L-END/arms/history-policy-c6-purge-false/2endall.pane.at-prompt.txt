@@ -1,0 +1,50 @@
+End ALL ae sessions?
+  - Ends every running and stopped session (git/full ones commit any work, then push any unpushed commits if a remote is set).
+  - Session memory, per session:
+  - hp1: NO archive, and /tmp/aelx/L-END/history-policy-c6-purge-false/h/.ae/archive/fcdec371-b1b3-4a4c-9283-5172f1a2f5fe/ is DELETED if it exists · conversation files DELETED
+  - hp2: NO archive, and /tmp/aelx/L-END/history-policy-c6-purge-false/h/.ae/archive/9c547118-0f32-420c-b92c-4ae506c0b368/ is DELETED if it exists · conversation files DELETED
+  - DELETES claude/codex conversation files (--purge-history).
+  (Use 'ae stop' to resume later; it also preserves history.)
+Continue? [y/N]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

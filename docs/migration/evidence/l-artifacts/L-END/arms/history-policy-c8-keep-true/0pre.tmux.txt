@@ -1,0 +1,18 @@
+## socket	/tmp/aelx/L-END/history-policy-c8-keep-true/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|hp1|2|0|1787244133
+$1|hp2|2|0|1787244137
+## windows
+hp1|@0|0|hp1|1
+hp1|@1|99|ae-monitor|2
+hp2|@2|0|hp2|1
+hp2|@3|99|ae-monitor|2
+## panes
+hp1|@0|%0|38315|claude|claude:claude|main|0
+hp1|@1|%2|39239|bash|_watchdog||0
+hp1|@1|%1|39184|bash|_events||0
+hp2|@2|%3|39616|claude|claude:claude|main|0
+hp2|@3|%5|40334|bash|_watchdog||0
+hp2|@3|%4|40277|bash|_events||0
+## clients

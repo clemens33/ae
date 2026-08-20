@@ -1,0 +1,7 @@
+## HEAD (no branch)
+?? wip.txt
+--- log ---
+8b59adb seed
+--- branches -r ---
+  origin/HEAD -> origin/main
+  origin/main

@@ -1,0 +1,14 @@
+## socket	/tmp/aelx/L-END/unreachable-server/t/tmux-501/default
+## socket-exists	no
+## sessions
+error connecting to /tmp/aelx/L-END/unreachable-server/t/tmux-501/default (No such file or directory)
+(rc=1)
+## windows
+error connecting to /tmp/aelx/L-END/unreachable-server/t/tmux-501/default (No such file or directory)
+(rc=1)
+## panes
+error connecting to /tmp/aelx/L-END/unreachable-server/t/tmux-501/default (No such file or directory)
+(rc=1)
+## clients
+error connecting to /tmp/aelx/L-END/unreachable-server/t/tmux-501/default (No such file or directory)
+(rc=1)

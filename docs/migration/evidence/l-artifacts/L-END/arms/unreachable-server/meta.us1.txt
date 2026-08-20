@@ -1,0 +1,15 @@
+mode=local
+origin=/private/tmp/aelx/L-END/unreachable-server/w
+session=us1
+session_id=f4facd91-1674-4bcf-89f5-2e4e5a8e9651
+work_dir=/private/tmp/aelx/L-END/unreachable-server/w
+layout=vertical
+config=/tmp/aelx/L-END/unreachable-server/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-END/unreachable-server/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-END/unreachable-server/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:0910b92d-4170-4e70-aca4-3c8c1314039d
+agent_bin.main=claude
+watchdog=true

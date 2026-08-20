@@ -1,0 +1,2 @@
+planted.file	/tmp/aelx/L-END/staging-modes-planted-entry/h/.ae/archive/.publishing.90588254-30e9-4141-bef4-b333f5217ba4/payload/UNEXPECTED.txt
+planted.dir	/tmp/aelx/L-END/staging-modes-planted-entry/h/.ae/archive/.publishing.90588254-30e9-4141-bef4-b333f5217ba4/payload/unexpected.d

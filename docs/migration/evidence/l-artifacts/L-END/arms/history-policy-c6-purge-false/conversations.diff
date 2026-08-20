@@ -1,0 +1,10 @@
+--- /tmp/aelx/L-END/history-policy-c6-purge-false/cap/conversations.before.tsv	2026-08-20 18:41:53
++++ /tmp/aelx/L-END/history-policy-c6-purge-false/cap/conversations.after.tsv	2026-08-20 18:41:57
+@@ -2,6 +2,4 @@
+ #path	type	mode	nlink	size	link	sha256
+ .	dir	755	3	96	-	-
+ projects	dir	755	3	96	-	-
+-projects/-tmp-aelx-w	dir	755	4	128	-	-
+-projects/-tmp-aelx-w/b69c3767-e336-4fb4-b6be-675f1b108bf1.jsonl	file	644	1	84	-	3cb7d2ebac12b9f7e5c0b8a24fb0fcc01e70af472cedbb61a32391715595d097
+-projects/-tmp-aelx-w/b9b37f91-148b-449c-b03b-afdf2a4aad96.jsonl	file	644	1	84	-	7b68adb8ba86b804dfd8a971e17af02194953e1c2359ccc27f2724d24533216a
++projects/-tmp-aelx-w	dir	755	2	64	-	-

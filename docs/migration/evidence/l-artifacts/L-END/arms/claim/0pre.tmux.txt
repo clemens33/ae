@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-END/claim/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|cl|2|0|1787243613
+## windows
+cl|@0|0|cl|1
+cl|@1|99|ae-monitor|2
+## panes
+cl|@0|%0|23030|claude|claude:claude|main|0
+cl|@1|%2|24309|bash|_watchdog||0
+cl|@1|%1|24169|bash|_events||0
+## clients

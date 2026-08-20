@@ -1,0 +1,6 @@
+# manifest-root	/tmp/aelx/L-END/transaction-order-b-push-fails/h/.ae/worktrees/txb-push-fails
+#path	type	mode	nlink	size	link	sha256
+.	dir	755	5	160	-	-
+.git	file	644	1	95	-	d392739a3fe6c75ab8b6a866537eabca85efb12af5dacf9babb990cfff5557e8
+README.md	file	644	1	5	-	4a6689419b00b11700c9b6246bcfa8936c8f5e1e824db3a7e57030e2d1c1a684
+wip.txt	file	644	1	30	-	fac7d9bd0ce88b969c0f970b9b293a2d6e2266d9ff80361ab1d021fa81be9c9b

@@ -1,0 +1,5 @@
+Archived 40923946-e5cd-4d3a-9134-890e9e777d05
+Archive: /tmp/aelx/L-END/handover/h/.ae/archive/40923946-e5cd-4d3a-9134-890e9e777d05
+Digest: /tmp/aelx/L-END/handover/h/.ae/archive/40923946-e5cd-4d3a-9134-890e9e777d05/digest.md
+Recovery: cd /private/tmp/aelx/L-END/handover/w && /tmp/aelx/L-END/handover/b/ae --local hv1 --from 40923946-e5cd-4d3a-9134-890e9e777d05
+Watchdog started in hidden ae-monitor window. Use 'peek _watchdog' or 'peek _events' to inspect.

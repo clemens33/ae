@@ -1,0 +1,15 @@
+mode=local
+origin=/private/tmp/aelx/L-END/identity-uppercase-meta-uuid/w
+session=id2
+session_id=75641b99-07f7-462b-874c-d3b27e80d047
+work_dir=/private/tmp/aelx/L-END/identity-uppercase-meta-uuid/w
+layout=vertical
+config=/tmp/aelx/L-END/identity-uppercase-meta-uuid/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-END/identity-uppercase-meta-uuid/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-END/identity-uppercase-meta-uuid/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:a3e1cf12-db58-4c2d-a5a1-d965ea9742f8
+agent_bin.main=claude
+watchdog=true

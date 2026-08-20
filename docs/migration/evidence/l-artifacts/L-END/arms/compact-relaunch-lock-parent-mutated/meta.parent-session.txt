@@ -1,0 +1,15 @@
+mode=local
+origin=/private/tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/w
+session=cr1
+session_id=d784bc1b-25eb-443b-927b-591982cb1ab8
+work_dir=/private/tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/w
+layout=vertical
+config=/tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:6d98a821-5f32-4de5-a8d2-7cc0228b2f76
+agent_bin.main=claude
+watchdog=true

@@ -1,0 +1,3 @@
+controller.action	tmux rename-session -t ef2 ef2-renamed
+controller.barrier	b_confirm_answered.30634.1
+note	the on-disk session directory and meta are NOT touched; only the tmux session name

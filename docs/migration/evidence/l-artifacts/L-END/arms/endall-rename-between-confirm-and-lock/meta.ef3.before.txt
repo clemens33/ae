@@ -1,0 +1,15 @@
+mode=local
+origin=/private/tmp/aelx/L-END/endall-rename-between-confirm-and-lock/w
+session=ef3
+session_id=88bf81ae-86c1-4f98-a0dd-faae58acbc58
+work_dir=/private/tmp/aelx/L-END/endall-rename-between-confirm-and-lock/w
+layout=vertical
+config=/tmp/aelx/L-END/endall-rename-between-confirm-and-lock/h/.ae/config
+main_pane=%6
+ae_path=/tmp/aelx/L-END/endall-rename-between-confirm-and-lock/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-END/endall-rename-between-confirm-and-lock/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:8028b819-83a8-4d2b-a737-6d6ac289e78f
+agent_bin.main=claude
+watchdog=true

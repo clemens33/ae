@@ -1,0 +1,8 @@
+## HEAD (no branch)
+--- log ---
+fb670ba ae: end session smpl
+130ea66 seed
+--- remote refs ---
+  origin/HEAD -> origin/main
+  origin/ae/smpl
+  origin/main

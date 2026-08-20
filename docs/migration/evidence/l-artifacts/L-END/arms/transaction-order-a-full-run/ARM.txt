@@ -1,0 +1,11 @@
+arm	transaction-order-a-full-run
+section	L-END
+roster_ids	SC-817
+fixture	managed (--worktree, local bare file:// origin)
+construction	no manipulation; complete end on a managed session with a dirty tree
+binary	instrumented (hooks-only patch 84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18)
+hooks_active	b_confirm_answered:b_stop_local:b_stop_git:b_git_fixed:b_stage_mid:b_pre_rename:b_post_rename:b_pre_cleanup
+barrier_bound_sec	240
+launch_rc	1
+end_rc	0
+workdir	/tmp/aelx/L-END/transaction-order-a-full-run/h/.ae/worktrees/txa-full-run

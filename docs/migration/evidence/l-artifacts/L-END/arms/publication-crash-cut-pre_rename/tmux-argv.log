@@ -1,0 +1,86 @@
+pid=76973 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <pcpre>
+pid=76999 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <pcpre> <-c> </tmp/aelx/L-END/publication-crash-cut-pre_rename/h/.ae/worktrees/pcpre>
+pid=77003 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pcpre> <-u> <CLAUDECODE>
+pid=77005 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pcpre> <-u> <CLAUDE_CODE_SESSION>
+pid=77006 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pcpre> <AE_SESSION> <1>
+pid=77007 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pcpre> <AE_ORIGIN> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/w>
+pid=77008 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pcpre> <AE_DIR> </tmp/aelx/L-END/publication-crash-cut-pre_rename/h/.ae/worktrees/pcpre>
+pid=77009 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pcpre> <AE_MODE> <git>
+pid=77010 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <pcpre> <AE_HOME> </tmp/aelx/L-END/publication-crash-cut-pre_rename/h/.ae>
+pid=77011 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pcpre> <mouse> <on>
+pid=77012 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pcpre> <focus-events> <on>
+pid=77013 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pcpre> <history-limit> <50000>
+pid=77014 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pcpre> <pane-border-status> <top>
+pid=77015 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pcpre> <pane-border-format> < #{@ae_agent} >
+pid=77016 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <pcpre>
+pid=77018 ppid=77017 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=77028 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae pcpre] >
+pid=77029 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=77030 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…-END/publication-crash-cut-pre_rename/w ⌁ ~/.ae/worktrees/pcpre#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=77031 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=77032 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=77033 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=77035 ppid=77034 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=77037 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=77038 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=77039 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=77040 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=77041 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <pcpre> <automatic-rename> <off>
+pid=77044 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <pcpre> <pcpre>
+pid=77045 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <pcpre> <-p> <#{pane_id}>
+pid=77053 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:claude:claude>
+pid=77054 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <claude:claude>
+pid=77055 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=77078 ppid=77077 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=77164 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <pcpre> <-F> <#{pane_id}	#{@ae_agent}>
+pid=77185 ppid=77184 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-panes> <-s> <-t> <pcpre> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=77248 ppid=77247 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=77250 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-76971-%0> <->
+pid=77251 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-76971-%0> <-t> <%0>
+pid=77317 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=77546 ppid=77544 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=77607 ppid=77605 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-panes> <-s> <-t> <pcpre> <-F> <#{pane_id} #{@ae_agent}>
+pid=77609 ppid=77608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <new-window> <-d> <-t> <pcpre:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-END/publication-crash-cut-pre_rename/h/.ae/sessions/pcpre/events-tail>
+pid=77611 ppid=77559 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=77612 ppid=77559 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=77614 ppid=77559 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <set-window-option> <-t> <pcpre:ae-monitor> <pane-border-status> <top>
+pid=77615 ppid=77559 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=77649 ppid=77647 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-panes> <-s> <-t> <pcpre> <-F> <#{pane_id} #{@ae_agent}>
+pid=77657 ppid=77655 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-panes> <-s> <-t> <pcpre> <-F> <#{pane_id} #{@ae_agent}>
+pid=77662 ppid=77660 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-panes> <-s> <-t> <pcpre> <-F> <#{pane_id} #{@ae_agent}>
+pid=77664 ppid=77663 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-END/publication-crash-cut-pre_rename/h/.ae/sessions/pcpre/watchdog _run>
+pid=77666 ppid=77622 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=77671 ppid=77622 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=77682 ppid=77622 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <select-pane> <-t> <%2> <-d>
+pid=77702 ppid=76971 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%0>
+pid=77695 ppid=77693 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=77704 ppid=77665 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=76971 ppid=64865 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session> <-t> <pcpre>
+pid=77719 ppid=77717 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=77721 ppid=77706 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <2201f55>
+pid=77729 ppid=77727 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=77731 ppid=77665 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < 2201f55>
+pid=77732 ppid=77665 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <has-session> <-t> <pcpre>
+pid=77738 ppid=77665 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-panes> <-s> <-t> <pcpre> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=77742 ppid=77741 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=77745 ppid=77744 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=77782 ppid=77780 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=77783 ppid=77665 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=77797 ppid=77795 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=77798 ppid=77784 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <2201f55>
+pid=77806 ppid=77804 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=77807 ppid=77665 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < 2201f55>
+pid=77818 ppid=77816 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=77819 ppid=77665 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <claude●>
+pid=77824 ppid=77823 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-panes> <-s> <-t> <pcpre> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=77826 ppid=77665 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=77827 ppid=77665 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=78585 ppid=78576 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=78966 ppid=78957 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=78978 ppid=78968 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <show-environment> <-t> <$0> <AE_MODE>
+pid=78990 ppid=78981 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <show-environment> <-t> <$0> <AE_ORIGIN>
+pid=79002 ppid=78993 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=79014 ppid=79005 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <show-environment> <-t> <$0> <AE_DIR>
+pid=79037 ppid=78566 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <kill-session> <-t> <$0>
+pid=79049 ppid=79039 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=79053 ppid=79051 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-END/publication-crash-cut-pre_rename/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

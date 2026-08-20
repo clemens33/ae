@@ -1,0 +1,24 @@
+cwd: /tmp/aelx/L-END/staging-modes-planted-entry/w
+argv (bg):
+  /tmp/aelx/L-END/staging-modes-planted-entry/b/ae
+  end
+  -f
+  smpl
+env:
+  HOME=/tmp/aelx/L-END/staging-modes-planted-entry/h
+  AE_HOME=/tmp/aelx/L-END/staging-modes-planted-entry/h/.ae
+  TMPDIR=/tmp/aelx/L-END/staging-modes-planted-entry/tp
+  TMUX_TMPDIR=/tmp/aelx/L-END/staging-modes-planted-entry/t
+  PATH=/tmp/aelx/L-END/staging-modes-planted-entry/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-END/staging-modes-planted-entry/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-END/staging-modes-planted-entry/cap/tmux-argv.log
+  AE_L_HOOKS=b_confirm_answered:b_stop_local:b_stop_git:b_git_fixed:b_stage_mid:b_pre_rename:b_post_rename:b_pre_cleanup
+  AE_L_TRACE=/tmp/aelx/L-END/staging-modes-planted-entry/cap/hook-trace.tsv
+  AE_L_BLOCK=/tmp/aelx/L-END/staging-modes-planted-entry/ctl
+  AE_L_BLOCK_MAX=1800

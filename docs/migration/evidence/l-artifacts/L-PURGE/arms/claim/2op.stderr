@@ -1,0 +1,3 @@
+archive: /tmp/aelx/L-PURGE/claim/h/.ae/archive/.publishing.9f281764-2521-4d56-ad15-d80412083095 is standing — another publisher may be mid-publication of 9f281764-2521-4d56-ad15-d80412083095.
+  Refusing to purge behind it. Inspect that claim, then remove it by hand if it is stale.
+Error: purging the archive for 'pg' failed — the session is STOPPED and nothing was deleted.

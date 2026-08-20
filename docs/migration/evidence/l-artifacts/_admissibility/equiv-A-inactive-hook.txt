@@ -1,0 +1,25 @@
+# equivalence compare: A: INACTIVE-HOOK equivalence (frozen vs instrumented, AE_L_HOOKS unset, no shim)
+# A=/tmp/aelx/EQUIV/f-noshim01
+# B=/tmp/aelx/EQUIV/i-noshim01
+
+## 1launch.rc  A=1 B=1  SAME
+## 1launch.stdout normalized diff
+## 1launch.stderr normalized diff
+
+## 2list.rc  A=0 B=0  SAME
+## 2list.stdout normalized diff
+## 2list.stderr normalized diff
+
+## 3end.rc  A=0 B=0  SAME
+## 3end.stdout normalized diff
+## 3end.stderr normalized diff
+
+## m.before STRUCTURAL diff (path/type/mode/link; hashes dropped)
+
+## m.after STRUCTURAL diff (path/type/mode/link; hashes dropped)
+
+## t.before normalized diff
+
+## t.after normalized diff
+
+## comparator verdict: NO_DIFFERENCES

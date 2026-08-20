@@ -1,0 +1,2 @@
+48882 46659 bash /tmp/aelx/L-END/compact-relaunch-lock-control/b/ae compact -f --digest-only cr1
+50735 48882 bash /tmp/aelx/L-END/compact-relaunch-lock-control/b/ae compact -f --digest-only cr1

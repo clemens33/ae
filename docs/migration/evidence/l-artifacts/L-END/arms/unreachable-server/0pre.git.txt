@@ -1,0 +1,6 @@
+## main...origin/main
+--- log ---
+dd09b16 seed
+--- remote refs ---
+  origin/HEAD -> origin/main
+  origin/main

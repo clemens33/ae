@@ -1,0 +1,7 @@
+# sessions dir before
+total 0
+drwxr-xr-x@ 2 ckriech  wheel   64 Aug 20 18:47 .
+drwxr-xr-x@ 4 ckriech  wheel  128 Aug 20 18:47 ..
+
+# worktrees dir before
+ls: /tmp/aelx/L-END/endall-empty-plan/h/.ae/worktrees: No such file or directory

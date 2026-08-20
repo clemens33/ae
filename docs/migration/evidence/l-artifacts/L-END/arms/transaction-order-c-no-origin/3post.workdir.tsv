@@ -1,0 +1,6 @@
+# manifest-root	/tmp/aelx/L-END/transaction-order-c-no-origin/h/.ae/worktrees/txc-no-origin
+#path	type	mode	nlink	size	link	sha256
+.	dir	755	5	160	-	-
+.git	file	644	1	93	-	5b8de8d1e972722f894ca3892c813d24bcd387fed678ce919dfa677d52a17985
+README.md	file	644	1	5	-	4a6689419b00b11700c9b6246bcfa8936c8f5e1e824db3a7e57030e2d1c1a684
+wip.txt	file	644	1	29	-	db1b7c27eb6fd12ce869e9ce30466110e3cf4768d32eb36e208a18f0460e9c33

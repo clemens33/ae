@@ -1,0 +1,5 @@
+## HEAD (no branch)
+--- log ---
+a42ff92 ae: end session txc-no-origin
+54dfd52 seed
+--- remote refs ---

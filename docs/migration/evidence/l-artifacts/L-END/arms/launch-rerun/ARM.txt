@@ -1,0 +1,12 @@
+arm	launch-rerun
+section	L-END
+roster_ids	SC-811a SC-811b SC-812
+fixture	--local family, renamed-interpreter fake tool (a copy of bash named claude)
+construction	ae's OWN launch executes the generated launch.main.sh (frozen ae:12606), so execution 1 is ae's; the controller then executes the SAME script directly in a control pane (execution 2), kills that pane, and executes it once more (execution 3); afterwards ae is made to rewrite the script by stop + resume (which executes it again, execution 4)
+execution_ledger	marker-timeline.txt records fake.invocations.so_far at every label; fake-argv-both-runs.txt holds every execution's argv verbatim (NUL-separated), index.txt maps pid->start time
+script_path	/tmp/aelx/L-END/launch-rerun/h/.ae/sessions/lr1/launch.main.sh
+marker_path	/tmp/aelx/L-END/launch-rerun/h/.ae/sessions/lr1/launch.main.started
+launch_rc	1
+stop_rc	0
+resume_rc	1
+fake_invocation_bound_sec	40

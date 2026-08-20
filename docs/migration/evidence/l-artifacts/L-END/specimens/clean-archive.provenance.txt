@@ -1,0 +1,5 @@
+specimen	clean-archive
+produced_by	L-END transaction-order-a-full-run (a complete managed end, archive published and source cleaned up)
+source_sandbox	/tmp/aelx/L-END/transaction-order-a-full-run
+session	txa-full-run
+uuid	6f750c87-5a5a-4bac-8ec7-d387596bf49b

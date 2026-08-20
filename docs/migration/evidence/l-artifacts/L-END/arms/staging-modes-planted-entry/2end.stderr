@@ -1,0 +1,7 @@
+To file:///tmp/aelx/L-END/staging-modes-planted-entry/o.git
+ * [new branch]      HEAD -> ae/smpl
+archive: unexpected entry 'unexpected.d' — an archive holds only meta, digest.md, memo.tsv, events.jsonl and messages/*.txt.
+archive: unexpected entry 'UNEXPECTED.txt' — an archive holds only meta, digest.md, memo.tsv, events.jsonl and messages/*.txt.
+archive: the staged archive for 90588254-30e9-4141-bef4-b333f5217ba4 failed validation — nothing was published.
+Error: archiving session 'smpl' failed — the session is STOPPED and NOTHING was deleted.
+  Fix the cause reported above, then re-run: ae end smpl

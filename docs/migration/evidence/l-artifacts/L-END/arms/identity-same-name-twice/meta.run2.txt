@@ -1,0 +1,15 @@
+mode=local
+origin=/private/tmp/aelx/L-END/identity-same-name-twice/w
+session=id1
+session_id=a5a6124a-dfd3-4fd2-b923-8ad665116cf2
+work_dir=/private/tmp/aelx/L-END/identity-same-name-twice/w
+layout=vertical
+config=/tmp/aelx/L-END/identity-same-name-twice/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-END/identity-same-name-twice/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-END/identity-same-name-twice/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:7bfc27df-7ea2-48f9-96d1-b96eb0bdca2d
+agent_bin.main=claude
+watchdog=true

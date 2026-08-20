@@ -1,0 +1,15 @@
+End ALL ae sessions?
+  - Ends every running and stopped session (git/full ones commit any work, then push any unpushed commits if a remote is set).
+  - Session memory, per session:
+  - hp1: NO archive, and /tmp/aelx/L-END/history-policy-c2-none-true/h/.ae/archive/da11f24a-cf5f-4d1f-8f34-ad60f2eb5b7b/ is DELETED if it exists · conversation files DELETED
+  - hp2: NO archive, and /tmp/aelx/L-END/history-policy-c2-none-true/h/.ae/archive/4239f6f3-1365-4da8-af4a-102dc14efeee/ is DELETED if it exists · conversation files DELETED
+  (Use 'ae stop' to resume later; it also preserves history.)
+Continue? [y/N] 
+No archive written (--purge-history); none existed for da11f24a-cf5f-4d1f-8f34-ad60f2eb5b7b.
+  removed claude conversation: /tmp/aelx/L-END/history-policy-c2-none-true/h/.claude/projects/-tmp-aelx-w/72fba8a6-aff4-454b-a472-f84856d4007f.jsonl
+Cleaned up local session hp1
+Ended local session hp1
+No archive written (--purge-history); none existed for 4239f6f3-1365-4da8-af4a-102dc14efeee.
+  removed claude conversation: /tmp/aelx/L-END/history-policy-c2-none-true/h/.claude/projects/-tmp-aelx-w/77d580bb-7d0c-4c42-a99e-0bcbfcdde314.jsonl
+Cleaned up local session hp2
+Ended local session hp2

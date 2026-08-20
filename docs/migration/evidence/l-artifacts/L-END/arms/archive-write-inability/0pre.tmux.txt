@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-END/archive-write-inability/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|aw|2|0|1787243605
+## windows
+aw|@0|0|aw|1
+aw|@1|99|ae-monitor|2
+## panes
+aw|@0|%0|15975|claude|claude:claude|main|0
+aw|@1|%2|17713|bash|_watchdog||0
+aw|@1|%1|17617|bash|_events||0
+## clients

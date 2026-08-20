@@ -1,0 +1,9 @@
+arm	history-policy-c1-none-unset
+section	L-END
+roster_ids	SC-838a SC-838b
+fixture	managed-family clone, two --local sessions, end all under a real terminal
+cell	cli=none config.purge_agent_history=unset
+construction	CLI history flag x [workspace] purge_agent_history, one cell per cross, own clone
+end_all_rc	0
+prompt_bound_sec	60
+rc_bound_sec	120

@@ -1,0 +1,10 @@
+arm	endall-rename-between-confirm-and-lock
+section	L-END
+roster_ids	SC-820a
+fixture	--local family, THREE sessions on one server
+construction	ae end all runs on a real terminal; after the answer is accepted and before the per-target lifecycle lock, the controller renames ONE target tmux session (ef2 -> ef2-renamed) and leaves its on-disk state untouched
+barrier	b_confirm_answered (after the confirmation phase, before target dispatch)
+end_all_rc	0
+prompt_bound_sec	60
+barrier_bound_sec	300
+rc_bound_sec	120

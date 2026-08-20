@@ -1,0 +1,19 @@
+cwd: /tmp/aelx/L-END/history-policy-c9-keep-false/w
+argv:
+  /tmp/aelx/L-END/history-policy-c9-keep-false/b/ae
+  --local
+  hp1
+env:
+  HOME=/tmp/aelx/L-END/history-policy-c9-keep-false/h
+  AE_HOME=/tmp/aelx/L-END/history-policy-c9-keep-false/h/.ae
+  TMPDIR=/tmp/aelx/L-END/history-policy-c9-keep-false/tp
+  TMUX_TMPDIR=/tmp/aelx/L-END/history-policy-c9-keep-false/t
+  PATH=/tmp/aelx/L-END/history-policy-c9-keep-false/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-END/history-policy-c9-keep-false/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-END/history-policy-c9-keep-false/cap/tmux-argv.log

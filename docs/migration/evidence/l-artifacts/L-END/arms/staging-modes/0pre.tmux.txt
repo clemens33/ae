@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-END/staging-modes/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|smpl|2|0|1787243716
+## windows
+smpl|@0|0|smpl|1
+smpl|@1|99|ae-monitor|2
+## panes
+smpl|@0|%0|65139|claude|claude:claude|main|0
+smpl|@1|%2|65670|bash|_watchdog||0
+smpl|@1|%1|65615|bash|_events||0
+## clients

@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-END/transaction-order-a-full-run/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|txa-full-run|2|0|1787243932
+## windows
+txa-full-run|@0|0|txa-full-run|1
+txa-full-run|@1|99|ae-monitor|2
+## panes
+txa-full-run|@0|%0|41685|claude|claude:claude|main|0
+txa-full-run|@1|%2|42963|bash|_watchdog||0
+txa-full-run|@1|%1|42844|bash|_events||0
+## clients

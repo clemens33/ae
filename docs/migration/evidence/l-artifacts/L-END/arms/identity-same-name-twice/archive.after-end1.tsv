@@ -1,0 +1,9 @@
+# manifest-root	/tmp/aelx/L-END/identity-same-name-twice/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+ebf1f28b-7d27-4065-9df2-4ff673ccae3c	dir	700	7	224	-	-
+ebf1f28b-7d27-4065-9df2-4ff673ccae3c/digest.md	file	600	1	1303	-	d196ae38b56e25575bb69f37fadbbf92b57a01eb5db64e806e13c7cecabd9428
+ebf1f28b-7d27-4065-9df2-4ff673ccae3c/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ebf1f28b-7d27-4065-9df2-4ff673ccae3c/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ebf1f28b-7d27-4065-9df2-4ff673ccae3c/messages	dir	700	2	64	-	-
+ebf1f28b-7d27-4065-9df2-4ff673ccae3c/meta	file	600	1	656	-	472b62d37590a57949c6cc67a99fd2e3c79d3dda07357cfd6b1a1779874fea08

@@ -1,0 +1,11 @@
+arm	existing-archive-claim-released
+section	L-PURGE
+roster_ids	SC-810b
+fixture	REAL archive produced in THIS sandbox by a real frozen end cut at a barrier; the arm mutation is applied afterwards and diffed
+construction	the same natural pairing, produced by cutting the real end one barrier later (b_pre_cleanup): the archive is published and the publisher has ALREADY RELEASED its own claim, and the session directory is still on disk. NO controller manipulation was needed to clear the claim — the product released it
+template_uuid	07b39f4a-9ccd-46af-b789-6803b1c64212
+binary	84f68ac8f14bd9686d34a9153eaafbce575e6a4066e0d44c258423c9a9300f18
+reading	(b) archive present without a standing claim; reached by moving the CUT, not by a manipulation
+claim_standing_at_op	no
+op	ae end -f --purge-history pg
+op_rc	0
