@@ -4,6 +4,6 @@ roster_ids	SC-806b
 fixture	--local family, REAL LIVE session
 construction	the live session meta's session_id value is case-folded a-f -> A-F by a temp+rename write, then end runs
 session	id2
-uuid_before	75641b99-07f7-462b-874c-d3b27e80d047
-uuid_after	75641B99-07F7-462B-874C-D3B27E80D047
+uuid_before	ae326a1d-4960-4ab0-9efd-9ee401c2cc29
+uuid_after	AE326A1D-4960-4AB0-9EFD-9EE401C2CC29
 end_rc	0

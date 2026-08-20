@@ -64,12 +64,16 @@ arm_identity_uppercase() {
     local lower="$SESS_UUID" upper
     upper="$(printf '%s' "$lower" | tr 'a-f' 'A-F')"
     # NAMED BYTE DIFF, writer-shaped (temp + rename), on a REAL LIVE session's meta
-    sed "s/^session_id=${lower}\$/session_id=${upper}/" "$META" >"$META.tmp.$$" && mv "$META.tmp.$$" "$META"
+    MODE_BEFORE="$(stat -f '%Lp' "$META")"
+    l_rewrite_preserving_mode "$META" "s/^session_id=${lower}\$/session_id=${upper}/"
+    MODE_AFTER="$(stat -f '%Lp' "$META")"
     cp "$META" "$R/cap/meta.after-mutation.txt"
     diff -u "$R/cap/meta.before-mutation.txt" "$R/cap/meta.after-mutation.txt" >"$R/cap/meta.mutation.diff" 2>&1
     { printf 'mutation\tsession_id value case-folded a-f -> A-F\n'
       printf 'before\t%s\n' "$lower"; printf 'after\t%s\n' "$upper"
-      printf 'writer_shape\ttemp file + rename (the shape ae itself uses)\n'; } >"$R/cap/mutation.txt"
+      printf 'writer_shape\ttemp file + chmod-to-original-mode + rename — only the NAMED bytes change\n'
+      printf 'mode.before\t%s\n' "$MODE_BEFORE"
+      printf 'mode.after\t%s\n' "$MODE_AFTER"; } >"$R/cap/mutation.txt"
     l_snap 0pre
     l_ae 2end end -f id2
     sleep 1

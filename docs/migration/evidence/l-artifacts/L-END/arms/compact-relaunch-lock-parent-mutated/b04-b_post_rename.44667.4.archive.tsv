@@ -1,0 +1,10 @@
+# manifest-root	/tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	4	128	-	-
+.publishing.3a9baa20-abca-42ff-969f-2f22493af530	dir	700	2	64	-	-
+3a9baa20-abca-42ff-969f-2f22493af530	dir	700	7	224	-	-
+3a9baa20-abca-42ff-969f-2f22493af530/digest.md	file	600	1	1315	-	25ce21c7c5e0e0816acec8e57ab69097d91633b278b9b512ee28a66b5dcfa01d
+3a9baa20-abca-42ff-969f-2f22493af530/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+3a9baa20-abca-42ff-969f-2f22493af530/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+3a9baa20-abca-42ff-969f-2f22493af530/messages	dir	700	2	64	-	-
+3a9baa20-abca-42ff-969f-2f22493af530/meta	file	600	1	668	-	52dcedf1287d7878c57a7a7c35bd2ec7ee96aa403343524da1965325d102daaf

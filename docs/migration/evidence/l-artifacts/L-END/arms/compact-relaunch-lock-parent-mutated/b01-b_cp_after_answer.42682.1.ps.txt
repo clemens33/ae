@@ -1,0 +1,4 @@
+40921     1 /opt/homebrew/bin/tmux new-session -d -s cr1 -c /private/tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/w
+42682 40771 bash /tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/b/ae compact -f --digest-only cr1
+41684 40921 /opt/homebrew/bin/bash /tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/h/.ae/sessions/cr1/events-tail
+41747 40921 /opt/homebrew/bin/bash /tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/h/.ae/sessions/cr1/watchdog _run

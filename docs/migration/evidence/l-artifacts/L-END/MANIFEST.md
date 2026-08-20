@@ -208,3 +208,45 @@ hash that snapshot and the admissibility proofs it rests on. Later sections may 
 the shared `_harness/` libraries additively; this section does not depend on that
 top-level copy staying byte-identical, because its own snapshot is here. Nothing under
 `L-END/`, `L-END/specimens/` or `L-END/harness-snapshot/` changes after this point.
+
+## Correction (post-commit `7aab1b4`)
+
+**What was wrong.** The controller's mutation idiom was `sed … > f.tmp && mv f.tmp f`.
+That is writer-shaped, but the temp file is created under the default umask, so the
+rename lands mode `644`. On a SESSION meta that is inert — a session meta is `644`
+already. On an ARCHIVE meta it is not: archive members are mode `600` and the frozen
+validator asserts exactly that (`_ar_validate_tree`, 72c7293:5218-5224). The mutation
+therefore carried a SECOND, unnamed change that a content diff is structurally blind to.
+
+**Which arm.** `compact-relaunch-lock-parent-mutated` (SC-808), and only that one. Its
+parent archive meta ended at `644` where the control arm's is `600`, so the captured
+outcome — the launch reporting that the parent archive stopped validating — is
+attributable to EITHER the named `handover_count` diff OR the unnamed mode change. As
+first captured it is **INADMISSIBLE** and must not be classified.
+
+**Which arms are unaffected.** Every other arm in this section. The only other controller
+mutation of a product file was `identity-uppercase-meta-uuid`, on a session meta
+(`644` → `644`, measured against an unmutated session meta in a sibling arm), so its
+observation never depended on the defect. Arms that plant new entries
+(`staging-modes-planted-entry`, the `history-policy` conversation markers) create rather
+than rewrite; their modes are umask-derived by construction and are recorded in the
+recursive manifests rather than asserted.
+
+**The fix.** `_harness/arm.sh :: l_rewrite_preserving_mode` captures the target's mode,
+writes the temp, chmods the temp back to that mode, then renames — the same
+temp + chmod-to-target-mode + rename shape ae's own
+`_publish_executable_artifact` chokepoint uses. It is now used at EVERY site where the
+controller rewrites a product file, not only the two where the defect was observed.
+
+**What was re-run.** `compact-relaunch-lock-parent-mutated` (the affected arm) and
+`identity-uppercase-meta-uuid` (unaffected, re-run so the harness is uniform and the mode
+is explicitly recorded). Both now carry an explicit `mode.before` / `mode.after` record:
+`b*-b_from_proved.*.parent-meta.mode.txt` (`600` → `600`) and `mutation.txt`
+(`644` → `644`) respectively. The arm directories in this working tree hold the
+REPLACEMENT captures; the contaminated captures remain in commit `7aab1b4` and are
+superseded by these.
+
+**How it surfaced.** An L-PURGE arm found it, not a review of L-END: SC-818d's `--from`
+subarm reported `'meta' has mode 644, expected 600` instead of anything about the field
+it had emptied. A content diff could not have shown it, which is why it survived review
+here.

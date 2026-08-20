@@ -1,18 +1,18 @@
 # archive directory names (od of each name)
-75641b99-07f7-462b-874c-d3b27e80d047
-0000000    7   5   6   4   1   b   9   9   -   0   7   f   7   -   4   6
-0000020    2   b   -   8   7   4   c   -   d   3   b   2   7   e   8   0
-0000040    d   0   4   7                                                
+ae326a1d-4960-4ab0-9efd-9ee401c2cc29
+0000000    a   e   3   2   6   a   1   d   -   4   9   6   0   -   4   a
+0000020    b   0   -   9   e   f   d   -   9   e   e   4   0   1   c   2
+0000040    c   c   2   9                                                
 0000044
 
 # archive meta id keys, exact bytes
-=== /tmp/aelx/L-END/identity-uppercase-meta-uuid/h/.ae/archive/75641b99-07f7-462b-874c-d3b27e80d047/meta ===
-2:archive_id=75641b99-07f7-462b-874c-d3b27e80d047
+=== /tmp/aelx/L-END/identity-uppercase-meta-uuid/h/.ae/archive/ae326a1d-4960-4ab0-9efd-9ee401c2cc29/meta ===
+2:archive_id=ae326a1d-4960-4ab0-9efd-9ee401c2cc29
 3:archive_id_origin=session
 5:source_session=id2
-6:source_session_id=75641B99-07F7-462B-874C-D3B27E80D047
+6:source_session_id=AE326A1D-4960-4AB0-9EFD-9EE401C2CC29
 --- od of the archive_id line ---
-0000000    a   r   c   h   i   v   e   _   i   d   =   7   5   6   4   1
-0000020    b   9   9   -   0   7   f   7   -   4   6   2   b   -   8   7
-0000040    4   c   -   d   3   b   2   7   e   8   0   d   0   4   7  \n
+0000000    a   r   c   h   i   v   e   _   i   d   =   a   e   3   2   6
+0000020    a   1   d   -   4   9   6   0   -   4   a   b   0   -   9   e
+0000040    f   d   -   9   e   e   4   0   1   c   2   c   c   2   9  \n
 0000060

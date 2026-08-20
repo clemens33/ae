@@ -1,4 +1,6 @@
 mutation	session_id value case-folded a-f -> A-F
-before	75641b99-07f7-462b-874c-d3b27e80d047
-after	75641B99-07F7-462B-874C-D3B27E80D047
-writer_shape	temp file + rename (the shape ae itself uses)
+before	ae326a1d-4960-4ab0-9efd-9ee401c2cc29
+after	AE326A1D-4960-4AB0-9EFD-9EE401C2CC29
+writer_shape	temp file + chmod-to-original-mode + rename — only the NAMED bytes change
+mode.before	644
+mode.after	644

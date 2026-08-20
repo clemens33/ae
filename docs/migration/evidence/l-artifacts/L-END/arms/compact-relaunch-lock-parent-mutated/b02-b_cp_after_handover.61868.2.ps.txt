@@ -1,4 +1,0 @@
-57660     1 /opt/homebrew/bin/tmux new-session -d -s cr1 -c /private/tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/w
-61868 46659 bash /tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/b/ae compact -f --digest-only cr1
-58644 57660 /opt/homebrew/bin/bash /tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/h/.ae/sessions/cr1/events-tail
-58776 57660 /opt/homebrew/bin/bash /tmp/aelx/L-END/compact-relaunch-lock-parent-mutated/h/.ae/sessions/cr1/watchdog _run

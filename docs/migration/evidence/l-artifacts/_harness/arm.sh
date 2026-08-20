@@ -240,3 +240,16 @@ l_barriers_pane() { # <deadline-sec> <rcfile> [callback]
         sleep 0.1
     done
 }
+
+# Rewrite a file in the writer's shape (temp + rename) while preserving its
+# ORIGINAL mode, so a named byte diff carries no second, unnamed change. The
+# plain `> tmp && mv` idiom lands the umask's mode instead, which on a mode-600
+# archive member is an extra mutation the content diff cannot show.
+l_rewrite_preserving_mode() { # <file> <sed-expr>
+    local f="$1" expr="$2"
+    local mode; mode="$(stat -f '%Lp' "$f" 2>/dev/null)" || return 1
+    sed "$expr" "$f" >"$f.tmp.$$" || return 1
+    chmod "0$mode" "$f.tmp.$$" || return 1
+    mv "$f.tmp.$$" "$f" || return 1
+    return 0
+}

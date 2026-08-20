@@ -18,10 +18,12 @@ cp_cb() { # <barrier-key> <tag>
             cp "$m" "$R/cap/$tag.parent-meta.before.txt"
             local h; h="$(grep '^handover_count=' "$m" | head -1 | cut -d= -f2-)"
             local n=$(( ${h:-0} + 7 ))
-            sed "s/^handover_count=${h}\$/handover_count=${n}/" "$m" >"$m.tmp.$$" && mv "$m.tmp.$$" "$m"
+            local _pm; _pm="$(stat -f '%Lp' "$m")"
+            l_rewrite_preserving_mode "$m" "s/^handover_count=${h}\$/handover_count=${n}/"
+            printf 'mode.before\t%s\nmode.after\t%s\n' "$_pm" "$(stat -f '%Lp' "$m")" >"$R/cap/$tag.parent-meta.mode.txt"
             cp "$m" "$R/cap/$tag.parent-meta.after.txt"
             diff -u "$R/cap/$tag.parent-meta.before.txt" "$R/cap/$tag.parent-meta.after.txt" >"$R/cap/$tag.parent-meta.diff" 2>&1
-            { printf 'controller.action\tparent archive meta handover_count %s -> %s (temp+rename)\n' "${h:-<absent>}" "$n"
+            { printf 'controller.action\tparent archive meta handover_count %s -> %s (temp+rename, ORIGINAL MODE PRESERVED — only the named bytes change)\n' "${h:-<absent>}" "$n"
               printf 'controller.barrier\t%s\n' "$k"
               printf 'controller.target\t%s\n' "$m"; } >"$R/cap/$tag.controller.txt"
         done
@@ -73,6 +75,5 @@ run() { # <arm> <control|mutate>
     l_arm_end
 }
 
-run compact-relaunch-lock-control control
 run compact-relaunch-lock-parent-mutated mutate
 echo DONE
