@@ -1,14 +1,14 @@
 # Marks-pass queues (machine-derived)
 
-- Snapshot: contract sources read from `git show HEAD` at `c5f2a2ec07f327dfc0469dd6c19c1c422333e4ab`; worktree dirty: yes (non-contract changes present).
+- Snapshot: contract sources read from `git show HEAD` at `ba116fe3d11b6637e9ccf6e6bf1fb4c08cd88a84`; worktree dirty: yes (non-contract changes present).
 - Scope: SC rows only. Ownership D records are excluded from all queues: 43 canonical D records (D01–D31 with letter splits); their TBD-field closures remain in evidence batches.
-- Canonical SC rows: 424; raw qualifications Q1=179, Q2=32, Q3=122; Q2∩Q3=15.
-- Emitted queues after precedence Q2 > Q3 > Q1: Q1=179, Q2=32, Q3=107; already-closed=103; no-queue anomalies=3.
-- Reconciliation: 179 Q1 + 32 Q2 + 107 Q3 + 103 already-closed + 3 no-queue = 424 canonical SC rows. The 15 dual Q2/Q3 rows are resolved to Q2 and are not added twice.
-- Manifest cross-check (orthogonal criticality labels, not queue criteria): ratification-critical.md at this snapshot reports CRITICAL=323 + DEFERRABLE=103 + OBSERVED=41 = 467 total IDs (424 SC + 43 D).
+- Canonical SC rows: 425; raw qualifications Q1=148, Q2=35, Q3=122; Q2∩Q3=15.
+- Emitted queues after precedence Q2 > Q3 > Q1: Q1=148, Q2=35, Q3=107; already-closed=133; no-queue anomalies=2.
+- Reconciliation: 148 Q1 + 35 Q2 + 107 Q3 + 133 already-closed + 2 no-queue = 425 canonical SC rows. The 15 dual Q2/Q3 rows are resolved to Q2 and are not added twice. The canonical delta from the stale 424-row snapshot is SC-1106 (added in the current contract).
+- Manifest cross-check (orthogonal criticality labels, not queue criteria): ratification-critical.md at this snapshot reports CRITICAL=324 + DEFERRABLE=103 + OBSERVED=41 = 468 total IDs (425 SC + 43 D).
 - Derivation: Q1 requires an explicit docs/ruling anchor in Authority, conflict=none, and no per-row or block classified_by mark. Q2 includes every Bucket 3/4 row and preserves its fix-known-defect issue or DR reference, regardless of mark status. Q3 requires Authority beginning with code-observation, Authority beginning with UNRESOLVED, or an explicit UNCLASSIFIED conflict; each emitted Q3 row uses its CRIT-ASSIGN batch. Rows are read at row-paragraph grain; family/range marks are expanded only to their declared exact IDs.
-- Mark states: `block-marked` = S1 preflight, exact S6 frozen set, S9 SC-800..831, or S13 SC-1200..1209; `per-row-marked` = explicit row classified_by; otherwise `genuinely-unmarked`.
-- Anomalies: no-queue=SC-212s, SC-211k, SC-211m; dual Q2/Q3=SC-920, SC-921, SC-926, SC-927, SC-928, SC-929, SC-958, SC-963, SC-964, SC-965, SC-966, SC-967, SC-968, SC-969, SC-976a; Q3 rows without a CRIT-ASSIGN line=SC-832b, SC-832c, SC-833b, SC-833c, SC-833d, SC-834b, SC-834c.
+- Mark states: `block-marked` = S1 preflight, exact S6 frozen set, S9 SC-800..831, or S13 SC-1200..1209; `per-row-marked` = explicit row classified_by (including S1MAP/ratification-day marks and the S3 delivery/routing and helper-signature blocks); otherwise `genuinely-unmarked`.
+- Anomalies: no-queue=SC-211k, SC-211m; dual Q2/Q3=SC-920, SC-921, SC-926, SC-927, SC-928, SC-929, SC-958, SC-963, SC-964, SC-965, SC-966, SC-967, SC-968, SC-969, SC-976a; Q3 rows without a CRIT-ASSIGN line=SC-832b, SC-832c, SC-833b, SC-833c, SC-833d, SC-834b, SC-834c.
 
 ## Q1 — strong normative authority, conflict=none, genuinely unmarked
 
@@ -18,35 +18,6 @@ SC-011 | 2 | commands.md | none | — | genuinely-unmarked
 SC-012 | 2 | commands.md | none | — | genuinely-unmarked
 SC-018 | 2 | commands.md:5 | none | — | genuinely-unmarked
 SC-019 | 2 | commands.md:10-11 | none | — | genuinely-unmarked
-SC-201 | 1 | helpers.md | none | — | genuinely-unmarked
-SC-202 | 1 | helpers.md | none | — | genuinely-unmarked
-SC-203 | 1 | helpers.md + DR-004 | none | — | genuinely-unmarked
-SC-205 | 1 | helpers.md | none | — | genuinely-unmarked
-SC-206 | 1 | helpers.md | none | — | genuinely-unmarked
-SC-207 | 1 | helpers.md | none | — | genuinely-unmarked
-SC-208 | 1 | helpers.md | none | — | genuinely-unmarked
-SC-209a | 1 | helpers.md | none | — | genuinely-unmarked
-SC-209b | 1 | helpers.md | none | — | genuinely-unmarked
-SC-209c | 1 | helpers.md | none | — | genuinely-unmarked
-SC-209d | 1 | helpers.md | none | — | genuinely-unmarked
-SC-212a | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212b | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212c | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212d | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212e | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212f | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212g | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212h | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212i | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212j | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212k | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212l | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212m | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212n | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212o | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212p | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212q | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
-SC-212r | 2 | AGENTS.md@72c7293 | none | — | genuinely-unmarked
 SC-211o | 2 | commands.md:711-723 + DR-005 | none | — | genuinely-unmarked
 SC-211p | 2 | AGENTS.md | none | — | genuinely-unmarked
 SC-300a | 2 | AGENTS.md | none | — | genuinely-unmarked
@@ -71,8 +42,6 @@ SC-703 | 2 | AGENTS.md | none | — | genuinely-unmarked
 SC-704 | 1 | #81 + #79 | none | — | genuinely-unmarked
 SC-704a | 1 | S8 joint adapter ruling (SC-704 frame) | none | — | genuinely-unmarked
 SC-704e | 1 | S8 joint adapter ruling (SC-704 frame) + SC-811 pins context | none | — | genuinely-unmarked
-SC-705 | 1 | #46 + #30 | none | — | genuinely-unmarked
-SC-706 | 1 | AGENTS.md + #30 | none | — | genuinely-unmarked
 SC-804a | 1 | architecture.md:99-104 | none | — | genuinely-unmarked
 SC-804b | 1 | architecture.md:100 | none | — | genuinely-unmarked
 SC-804c | 1 | architecture.md:100-101 | none | — | genuinely-unmarked
@@ -205,6 +174,8 @@ SC-401b | 4 | DR-001 | DR-001 | — | genuinely-unmarked
 SC-704b | 3 | DR-005 | fix-known-defect(#56) | — | genuinely-unmarked
 SC-704c | 4 | DR-005 + #50 | DR-005 | — | genuinely-unmarked
 SC-704d | 4 | DR-005 | DR-005 | — | genuinely-unmarked
+SC-705 | 3 | S8 joint seat ruling (2026-08-20) grounded in the #46/#30 transported-fact rulings | fix-known-defect(#94) | — | per-row-marked
+SC-706 | 3 | #30-family ruling (commit 32719f5) + AGENTS.md | fix-known-defect(#94) | — | per-row-marked
 SC-900 | 4 | DR-001 | DR-001 | — | genuinely-unmarked
 SC-901 | 4 | DR-002 | DR-002 | — | genuinely-unmarked
 SC-913 | 3 | watchdog.md:77-78 + #44 | fix-known-defect(#45) | — | genuinely-unmarked
@@ -225,6 +196,7 @@ SC-969 | 3 | UNRESOLVED(memo s10-telegram gives no normative authority citation)
 SC-976a | 4 | UNRESOLVED(no SC-976a authority citation in requested S10 memos) | DR-001 | — | genuinely-unmarked; dual-Q3 batch=T-STORE
 SC-1006 | 3 | install.md + #57 | fix-known-defect(#57) | — | genuinely-unmarked
 SC-1101a | 3 | AGENTS.md + #75 | fix-known-defect(#75) | — | genuinely-unmarked
+SC-1106 | 3 | AGENTS.md TSV-framing + interpreted-sinks direction (ruling) | fix-known-defect(#95) | — | per-row-marked
 SC-1202 | 3 | AGENTS.md + #59 | fix-known-defect(#61) | — | block-marked
 SC-1301 | 3 | architecture.md:158-166 | fix-known-defect(#88-I) | — | genuinely-unmarked
 SC-1302 | 3 | architecture.md | fix-known-defect(#75) | — | genuinely-unmarked
@@ -339,3 +311,17 @@ SC-1412d | — | code-observation | UNCLASSIFIED | H-ENV | genuinely-unmarked
 SC-1412e | — | code-observation | UNCLASSIFIED | H-ENV | genuinely-unmarked
 SC-1412f | — | code-observation | UNCLASSIFIED | H-ENV | genuinely-unmarked
 SC-1412g | — | code-observation | — | H-ENV | genuinely-unmarked
+
+## Already closed — classified_by provenance
+
+source mark block | ruling | ids
+S1 preflight | ae-20260820T115449Z-1b7ef041 | SC-016a, SC-016b, SC-016c, SC-016d, SC-017a, SC-017b, SC-017c, SC-017d, SC-017e, SC-017f, SC-017g, SC-017h, SC-017i, SC-020a, SC-020b, SC-020c
+S1MAP/ratification-day | 2026-08-20 | SC-021, SC-022
+S5 per-row marks | 2026-08-20 | SC-404, SC-405a, SC-405b, SC-405c, SC-405d, SC-405f, SC-405g, SC-405i, SC-405j, SC-405k
+S6 exact frozen set | 76722eb/f4e93ef | SC-500, SC-501, SC-502, SC-503a, SC-503b, SC-504a, SC-504b, SC-505a, SC-505b, SC-506, SC-507a, SC-507b, SC-507c, SC-507d, SC-509, SC-510a, SC-510b, SC-510c, SC-510d, SC-511a, SC-511b, SC-511c, SC-512, SC-513a, SC-513b, SC-513c, SC-514, SC-515a, SC-515b, SC-515c, SC-516, SC-517a, SC-517b, SC-517c
+S6 per-row marks | 2026-08-20 | SC-509b, SC-510e, SC-510f, SC-518, SC-519, SC-520, SC-521a, SC-521b, SC-522, SC-523a, SC-523b, SC-524
+S9 exact frozen set | 7398f6de | SC-800, SC-801, SC-802, SC-803, SC-805, SC-807, SC-808, SC-809, SC-812, SC-813, SC-814, SC-816, SC-817, SC-819, SC-822, SC-823, SC-826, SC-827, SC-828, SC-830, SC-831
+S12 per-row mark | 2026-08-20 | SC-980
+S13 exact frozen set | 07e2770 | SC-1200, SC-1201, SC-1203, SC-1204, SC-1206, SC-1208, SC-1209
+S3 delivery/routing MARK batch 1 | ae-20260820T163523Z-e935697d | SC-201, SC-202, SC-203, SC-205, SC-206, SC-207, SC-208, SC-209a, SC-209b, SC-209c, SC-209d
+S3 helper-signature MARK batch 2A | ae-20260820T164044Z-f958a368 | SC-212a, SC-212b, SC-212c, SC-212d, SC-212e, SC-212f, SC-212g, SC-212h, SC-212i, SC-212j, SC-212k, SC-212l, SC-212m, SC-212n, SC-212o, SC-212p, SC-212q, SC-212r, SC-212s
