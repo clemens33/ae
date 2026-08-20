@@ -361,6 +361,31 @@ The rule: **red-proof every named check, on the host that will run it, with a
 neutral/mutated pair each.** One green mutation proves one path and licenses no statement
 about the tool.
 
+**And the deeper limit, stated by the author of the tool it indicts:**
+
+> My self-test seeded the exact literal my regex matched, and a count in one of the five
+> phrasings my pattern listed. **The red-proof proved the predicate matches what the
+> predicate matches.** A red-proof written by the same hand as the predicate inherits its
+> blind spot — and mine did so completely, while producing fourteen green lines that looked
+> like coverage.
+
+**A self-test cannot establish coverage.** It proves the predicate fires on inputs its
+author imagined, and its author's imagination is the same one that bounded the predicate.
+This is why a reviewer re-running someone's self-test is **not** performing an adversarial
+check — they are re-executing the author's assumptions with the author's fixtures, and will
+get the author's answer. A seat did exactly that here, twice, and cleared a checker that was
+blind to four classes.
+
+**Only a mutation the author did not anticipate tests anything.** The demonstration, from
+the round that followed: the rebuilt tool forbade *numerals* beside derived countables and
+its 26-mutation suite passed clean — then an outside probe wrote the count **in words**
+(*"There are forty-four executed units"*) and the checker returned `rc=0 OK`. A hand-typed
+word-count drifts exactly as a numeral does. The escape from filters to contracts had kept
+one representation as its subject, which is the enumeration treadmill wearing a contract's
+clothes. **A contract over one representation of a thing is still a filter;** the contract
+has to be over the *thing* — counts may appear only as generated markers, so any prose count
+is invalid whatever its spelling.
+
 **And note where that defect landed.** This repo's own hazard list documents the GNU-vs-BSD
 divergence class at length — `tac`, `stat -c`, `date -d`, `sed -i`, `grep -oP` — with the
 warning that every row *"shipped as a macOS bug"* and that they **fail silently**: the
