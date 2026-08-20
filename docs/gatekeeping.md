@@ -423,7 +423,10 @@ The seat had checked whether the **concept** was present. The condition was abou
 the **rule** was stated. The worker knew the concept was there because they had written it.
 **Both parties confirmed the same wrong thing from different directions**, and confirming
 would have cost nothing and left no trace, because the seat had already reached the
-conclusion independently.
+conclusion independently. Neither reading was careless and **neither was wrong on its own
+terms** — the seat's answer about the concept was correct, the worker's knowledge that the
+concept was present was correct. **The agreement was the artefact: two correct answers to
+two different questions, presented as one confirmation.**
 
 > Two independent wrong readings look exactly like verification.
 
@@ -433,9 +436,35 @@ check neither performed at the right grain. The defence is the worker's: when to
 already have X," **read for X as stated, not for X as remembered** — and treat a seat's
 confirmation as a claim about the document, checkable like any other.
 
-*Where the defect sat:* three lines below a sentence warning against prose counts, in a
-paragraph that cited a previous instance of the same defect. Fourth occurrence in the
-cluster of a rule broken inside its own statement.
+*Where the defect sat, measured:* not near the rule — **in the same sentence as it**, one
+semicolon away:
+
+> …derived from the typed rows by the checker, **never from a prose count**, which is how
+> v5 said fifteen while its own roster said eighteen; (v) **arms 1–37 in id order**;
+
+The clause forbidding prose counts and the prose count share a sentence, written in one
+pass, by someone who had just been shown that defect. "A few lines below" would let a
+reader imagine attention lapsing across a gap. **There was no gap.**
+
+### Why rules get broken inside their own statement
+
+Four times in one cluster a rule was violated by the commit that introduced it: a mechanism
+banning positional references shipped with seven; a lint vocabulary omitted one of its own
+terms; a cleanup removed the required delimiter along with the stray; an enumeration
+forbade prose counts mid-sentence and then used one. Calling this irony explains nothing.
+The worker who did the last one supplied the mechanism:
+
+> **Stating a rule and applying it are different cognitive acts, and doing the first does
+> not prime the second.** I was composing an enumeration and reached for the number I had.
+> The rule I had just written was about a *category* — prose counts — and the thing in my
+> hand did not present itself as a member of that category.
+
+**A rule is stored as a category; a violation arrives as an instance that does not announce
+its membership.** That is the whole reason every one of these has needed a *mechanism*
+rather than a resolution: a mechanism operates on instances — it sees the actual text and
+does not need the author to recognise the category — while a resolution operates on
+categories and requires exactly the recognition that fails. It also explains why *being
+told twice is not a mechanism either*.
 
 ### Hand-maintained redundancy, of which stale pointers are one instance
 
