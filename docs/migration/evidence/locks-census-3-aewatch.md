@@ -368,9 +368,11 @@ bypass. B3 (below) awaits a joint fix-vs-DR choice.
 
 bridge-protocol.md:90-95 and events.md:142-148 promise past lines never change, no
 rotation, lifetime growth. Frozen `ae:18046-18075` REPLACES `events.jsonl` with the
-newest N lines on resume. Joint resolution pending: fix-known-defect (preserve
-append-only) or a DR for explicit generations/rotation + reader-cursor migration; #21 is
-a candidate implementation vehicle but does not itself resolve the conflict.
+newest N lines on resume. **RESOLVED: DR-001 (both seats, 2026-08-20)** — explicit
+event-log generations with binding conditions (append-only within a generation, atomic
+handoff, drain-before-advance, generation+offset cursor, explicit retention/loss policy,
+same-protocol-or-disabled coexistence); see the DR register in semantic-contract.md.
+#21 is the implementation vehicle.
 
 ### I1 — event reader stat/open generation race (probe-verified, exit 0)
 

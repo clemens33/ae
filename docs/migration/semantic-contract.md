@@ -351,8 +351,11 @@ Empirical: pending. Conflict: none.
 **SC-804b — validator: no symlink or special file.** Bucket 1. Authority:
 architecture.md:100. Empirical: pending. Conflict: none.
 
-**SC-804c — validator: directories 0700, files 0600.** Bucket 1. Authority:
-architecture.md:100-101. Empirical: pending. Conflict: none.
+**SC-804c — validator: directories 0700.** Bucket 1. Authority: architecture.md:100-101.
+Empirical: pending. Conflict: none.
+
+**SC-804f — validator: files 0600.** Bucket 1. Authority: architecture.md:100-101.
+Empirical: pending. Conflict: none.
 
 **SC-804d — validator: no executable bit for user, group, OR other.** Bucket 1 — `-x`
 answers only for the current user; a group-executable file is still a program.
@@ -366,32 +369,42 @@ Conflict: none.
 validator is the proof, not intent. Authority: AGENTS.md rules bullet + architecture.md.
 Empirical: pending. Conflict: none.
 
-**SC-806 — archive key is the canonical lowercase session UUID.** Bucket 2 —
-addressable independently of the name (neither unique over time nor stable); legacy
-uppercase metas are normalized. Authority: architecture.md:81-83. Empirical: pending.
-Conflict: none.
+**SC-806a — archive identity is the session UUID, never the mutable name.** Bucket 1 —
+addressable independently of a name that is neither unique over time nor stable.
+Authority: architecture.md:81-83. Empirical: pending. Conflict: none.
+
+**SC-806b — canonical lowercase key; legacy uppercase normalized.** Bucket 2.
+Authority: architecture.md:81-82. Empirical: pending. Conflict: none.
 
 **SC-807 — the lifecycle lock is released before the relaunch.** Bucket 1 — the child
 takes the same lock under the same name; holding across both would deadlock ae against
 itself. Authority: architecture.md:230-232. Empirical: pending. Conflict: none.
 
-**SC-808 — the child re-proves the parent archive before publishing its meta.** Bucket
-1 — `_AE_FROM_EXPECTED` immediately before meta publication; mismatch rolls the launch
-back rather than creating a child with no lineage. Authority: architecture.md:232-234.
-Empirical: pending. Conflict: none.
+**SC-808 — the child re-proves the exact parent archive before publishing its state.**
+Bucket 1 — semantic invariant: re-prove immediately before publication, roll the launch
+back on mismatch rather than creating a child with no lineage. (The bash transport
+variable is mechanism — ownership/evidence, not SHOULD.) Authority:
+architecture.md:232-234. Empirical: pending. Conflict: none.
 
 **SC-809 — lineage is never inferred from a name.** Bucket 1 — a session continues an
 archive only via explicit `--from <uuid>`. Authority: AGENTS.md "How it works" (ruling
 text) + architecture.md. Empirical: pending. Conflict: none.
 
-**SC-810 — `--purge-history` inverts the archive contract.** Bucket 2 — no archive is
-written and any existing archive for that UUID is deleted. Authority: AGENTS.md "How it
-works". Empirical: pending. Conflict: none.
+**SC-810a — `--purge-history` writes no archive.** Bucket 2. Authority: AGENTS.md "How
+it works" + architecture.md:131-133. Empirical: pending. Conflict: none.
 
-**SC-811 — `launch.<slot>.sh` re-run resumes for upfront-UUID tools.** Bucket 2 —
-first run creates (drops the `.started` marker), later runs exec the resume variant; ae
-clears the marker when it rewrites the script so a fresh launch always creates.
-Authority: AGENTS.md launch-rerun bullet (ruling). Empirical: pending. Conflict: none.
+**SC-810b — `--purge-history` deletes any existing archive for the source UUID.**
+Bucket 2 — a purge that left memo and request payloads would only have looked like
+privacy. Delete PROOFS are SC-818a-e (bucket 1). Authority: architecture.md:131-133.
+Empirical: pending. Conflict: none.
+
+**SC-811a — `launch.<slot>.sh` re-run: first run creates, later runs resume.** Bucket 2
+— the `.started` marker decides. Authority: AGENTS.md launch-rerun bullet (ruling).
+Empirical: pending. Conflict: none.
+
+**SC-811b — ae clears the marker whenever it rewrites the script.** Bucket 2 — a fresh
+launch always creates. Authority: AGENTS.md launch-rerun bullet. Empirical: pending.
+Conflict: none.
 
 **SC-812 — the resume decision happens BEFORE exec.** Bucket 1 — a `cmd || fallback`
 chain leaves bash as the pane process and `pane_current_command` reports `bash`,
@@ -419,20 +432,128 @@ session and starting a new one under the same name mid-operation leaves the newc
 running, with a recorded failure explaining the name changed hands. Authority:
 commands.md:386-389. Empirical: pending. Conflict: none.
 
-**SC-815c — each fleet run tags its events with its own operation id.** Bucket 2 —
-`[op <uuid>]`, so two concurrent runs tell their results apart. Authority:
-commands.md:389-390. Empirical: pending. Conflict: none.
+**SC-815c — each fleet run has a unique operation identity and consumes ONLY its own
+results.** Bucket 1 — cross-run result folding is never permitted; the label alone is
+not the mechanism. Authority: commands.md:389-390. Empirical: pending. Conflict: none.
+
+**SC-815d — the visible representation is `[op <uuid>]` in the events.** Bucket 2.
+Authority: commands.md:389-390. Empirical: pending. Conflict: none.
 
 **SC-816 — an unverifiable session is still a target.** Bucket 1 — if its recorded tmux
 server is unreachable, ae does not know it is stopped: it is carried into the fleet and
 fails loudly in its own log rather than being silently counted as gone. Authority:
 commands.md:378-381. Empirical: pending. Conflict: none.
 
-**SC-817 — end runs git before capture.** Bucket 2 — managed modes commit + push to
-`ae/<session>` before the archive is captured; the archive therefore records
-`git_final_commit` facts that already exist on the remote. Authority: AGENTS.md "How it
-works" + commands.md end section. Empirical: census-2 end section (audited; sequence
-verify/kill → git → archive → cleanup). Conflict: none.
+**SC-817 — end's transaction order: stop, git-outcome-fixed, capture, cleanup.** Bucket
+1 (rewritten per gate 7398f6de) — verified stop precedes git; the ACTUAL commit/push
+outcome is fixed before capture and RECORDED in the archive (`push_outcome` — managed
+mode with no origin still archives, records `no-origin`, and preserves the work
+directory; a FAILED push returns before capture); cleanup follows only a successful
+archive. No promise that the final commit exists remotely except in the
+pushed/already-reachable outcomes. Authority: commands.md end section +
+architecture.md. Empirical: census-2 end section (audited). Conflict: none.
+
+**SC-818a — purge requires ae's REAL archive root, never a symlink.** Bucket 1.
+Authority: commands.md:625-631 + architecture.md:134-137. Empirical: pending.
+Conflict: none.
+
+**SC-818b — purge acquires the same `.publishing.<uuid>` claim.** Bucket 1 — a delete
+cannot race a publisher's rename. Authority: commands.md:627-629. Empirical: pending.
+Conflict: none.
+
+**SC-818c — purge validates the tree as an ae archive before deleting.** Bucket 1 — a
+tree ae cannot validate is a tree ae cannot claim to own; a hand-edited archive is
+refused (remove it yourself). Authority: commands.md:629-634. Empirical: pending.
+Conflict: none.
+
+**SC-818d — purge requires a NONEMPTY exact source-identity match.** Bucket 1 — an
+archive naming no session is absence of proof, not a wildcard; refused as malformed
+(and `--from` will not inherit from it either). Authority: commands.md:630-633 +
+architecture.md:134-137. Empirical: pending. Conflict: none.
+
+**SC-818e — purge refuses to delete a parent a live `--from` lineage points at.**
+Bucket 1. Authority: architecture.md:137-138. Empirical: pending. Conflict: none.
+
+**SC-819 — an unidentifiable session is refused BEFORE anything is stopped.** Bucket 1
+— meta gone with memory remaining, or `session_id` unparseable: refused with the
+reason, nothing deleted, regardless of history flag ("delete it" is not an answer to
+"which session is this"). Authority: commands.md:580-585 + architecture.md:139-143.
+Empirical: pending. Conflict: none.
+
+**SC-820 — end freezes the confirmed plan and re-proves it under the lock.** Bucket 1 —
+each target resolved exactly ONCE; the prompt renders from those fields and the freeze
+captures the same observation (a fork cannot carry a freeze back); re-proof under the
+lifecycle lock refuses on mismatch and prints both versions; `-f` freezes nothing
+because nothing was promised. Authority: commands.md:592-598 +
+architecture.md:146-149,158-166. Empirical: pending. Conflict: none.
+
+**SC-821 — `end all` carries the confirmed list; "a prompt ran" is its own fact.**
+Bucket 1 — the set can never grow between question and answer; an empty confirmed list
+means end NOTHING, which a count cannot distinguish from nobody-was-asked. Authority:
+architecture.md:150-155. Empirical: pending. Conflict: none.
+
+**SC-822 — `--from` is valid only for a session that does not exist in any form.**
+Bucket 1 — no tmux session, no session state, no worktree; onto an existing session it
+refuses ("resume this AND inherit that" has two meanings and no safe default).
+Authority: commands.md:598-604. Empirical: pending. Conflict: none.
+
+**SC-823 — the parent is proved before anything is created.** Bucket 1 — a refusal
+leaves no tmux session, no session state, no worktree. Authority: commands.md:604-607.
+Empirical: pending. Conflict: none.
+
+**SC-824 — proof facts are recorded as proved, never re-read.** Bucket 1 — id and
+handover/pending counts come back from the one proof; an archive mid-publication or
+mid-purge is refused outright. Authority: commands.md:607-611. Empirical: pending.
+Conflict: none.
+
+**SC-825 — the child records lineage durably and derives, never stores, the path.**
+Bucket 2 — `parent_archive_id` + parent counts preserved across resumes; the parent's
+absolute path is derived from root + id so moving `AE_HOME` cannot rot it; a deleted
+parent warns and continues. Authority: commands.md:612-617. Empirical: pending.
+Conflict: none.
+
+**SC-826 — a pre-id session gets one minted at end, recorded on both sides.** Bucket 2
+— `session_id_origin=minted-at-end` in live meta AND `archive_id_origin=minted-at-end`
+in the archive; the live record keeps a retry after failed publication honest.
+Authority: commands.md:586-591. Empirical: pending. Conflict: none.
+
+**SC-827 — compact freezes ONE authorization tuple.** Bucket 1 — the session resolves
+once into the eight-field tuple; everything downstream reads the tuple, never meta
+again; end takes compact's frozen plan as its confirmed authority instead of resolving
+a second one. Authority: architecture.md:177-184 + commands.md:626-630. Empirical:
+census-2 compact section (audited). Conflict: none.
+
+**SC-828 — two revalidations, positioned by what they protect.** Bucket 1 — first
+immediately after the human's answer (a replaced session is never MESSAGED); second
+under the lifecycle lock immediately before teardown (a replacement is never STOPPED);
+a mismatch names the field that moved. Authority: architecture.md:186-191 +
+commands.md:650-655. Empirical: pending. Conflict: none.
+
+**SC-829 — a handover is two facts.** Bucket 1 — a reply to the request AND a new
+`handover`-topic memo written after the request went out, polled from the event log and
+`memo.tsv`, never pane output; the memo baseline travels in the request's stored body so
+a re-run reuses the outstanding request. Authority: architecture.md:193-201.
+Empirical: pending. Conflict: none.
+
+**SC-830 — `--digest-only` is the one explicit degradation.** Bucket 2 — withdraws
+anything outstanding and treats the digest as the handover. Authority:
+architecture.md:202-203 + commands.md:640-642. Empirical: pending. Conflict: none.
+
+**SC-831 — a timed-out handover stops nothing.** Bucket 1 — nothing stopped, nothing
+archived, the request stays open so a re-run waits on the SAME request rather than
+sending a second. Authority: commands.md:656-658. Empirical: pending. Conflict: none.
+
+**SC-832 — rename semantics beyond name validation.** `authority=code-observation` —
+no normative source; census-2 evidence (meta rewritten without `meta.lock`, race
+window) stands as IS; seat closure pending. Conflict: pending normative closure.
+
+**SC-833 — transfer semantics beyond name validation.** `authority=code-observation` —
+partial-rsync and stop-first behavior have no normative source; census-2 evidence
+stands; seat closure pending. Conflict: pending normative closure.
+
+**SC-834 — `_recover-pending` semantics.** `authority=code-observation` — internal
+surface, no normative source; census evidence (fd200 check-then-set, recover event
+after) stands; seat closure pending. Conflict: pending normative closure.
 
 ### S10 — Daemons/sidecars + contrib boundary
 
@@ -480,10 +601,13 @@ arriving via `spawn` is validated fatally: violation refuses the spawn (the #59 
 was a legal-looking name carrying prose into the identity sentence).
 Empirical: pending. Conflict: none.
 
-**SC-1202 — the operator roster boundary fails the launch before side effects.** Bucket
-1 — `[workspace] main`/`workers` names are validated at launch-time parse; a violation
-fails the launch with the grammar echoed, before tmux or filesystem effects.
-Empirical: pending. Conflict: none.
+**SC-1202 — the operator roster boundary fails the launch before product mutation.**
+Bucket 3 (gate finding: known IS/SHOULD conflict) — SHOULD: a roster violation is
+rejected before any tmux, session-state, or config mutation (diagnostics permitted).
+IS at 72c7293: M2 writes the default config BEFORE dispatcher/roster validation, so an
+invalid fresh roster has a filesystem side effect before refusal.
+Conflict: fix-known-defect(#61, intended: read/validation paths never bootstrap).
+Empirical: M2 census + ae:344-352.
 
 **SC-1203 — enforcement follows provenance, not the variable.** Bucket 1 — FRESH input
 (config, CLI, spawn) is fatal on violation; RESTORED input (saved meta, compact's
@@ -491,37 +615,45 @@ frozen roster) is left to the interpolation guard — refusing restored input wo
 a pre-grammar session unresumable and kill a compact child whose source is already
 archived. Empirical: pending. Conflict: none.
 
-**SC-1204 — the interpolation site re-validates and fails quiet.** Bucket 1 —
-`build_ae_context` re-checks BOTH halves of `alias:name`; a non-conforming restored
-entry yields NO identity line rather than a hostile one, and the agent still launches.
-Empirical: pending. Conflict: none.
+**SC-1204 — the interpolation boundary re-validates and fails quiet.** Bucket 1 —
+semantic SHOULD: at the system-prompt interpolation boundary, alias and name are EACH
+revalidated under their respective allowlists; an invalid restored identity omits ONLY
+the identity sentence and the launch continues. (The bash function/call path is
+empirical/ownership material.) Empirical: pending. Conflict: none.
 
-**SC-1205 — a derived name is a fixed point of the grammar.** Bucket 1 — worker-name
-dedup truncates the base so its suffix fits the 64 cap, loops the suffix until unseen,
-and validates the FINAL value; suffixes count from `-2` (meaning, not array position).
-Naive suffixing produced 66-char names and duplicate `foo-2`s. Empirical: unit pins
-@72c7293. Conflict: none.
+**SC-1205a — every derived name is grammar-valid and unique after derivation.** Bucket
+1 — the FINAL value is validated, not the base it was derived from. Authority: #59
+durable ruling. Empirical: unit pins @72c7293. Conflict: none.
+
+**SC-1205b — dedup shape: truncate to fit, suffix from `-2`.** Bucket 2 — the suffix
+counts occurrences (meaning), not array position; the base is truncated so the suffix
+fits the 64 cap. Authority: #59 durable ruling. Empirical: unit pins @72c7293.
+Conflict: none.
 
 **SC-1206 — a leading underscore is a legal alias but never an agent name.** Bucket 2 —
 `workers = _foo` (alias as its own name) fails the launch with the grammar; internal
 `_`-prefixed helpers stay out of the agent namespace. Empirical: pending.
 Conflict: none.
 
-**SC-1207 — `:` is the meta delimiter and never appears in a name.** Bucket 2 — meta
-rows are `alias:name:session_id`; the allowlist excludes `:` by construction.
-Empirical: pending. Conflict: none.
+**SC-1207a — prompt identity facets are unambiguous.** Bucket 1 — neither the alias nor
+the name may contain the facet separator; identity parses one way only. Empirical:
+pending. Conflict: none.
 
-**SC-1208 — pane text and inter-agent messages are data, not instructions.** Bucket 1 —
-the LLM prompt is an interpreted sink; ae never promotes captured pane content or
-peer-message text into instruction position (steward charter injection boundary;
-authority: AGENTS.md interpreted-sinks table, ruling). Empirical: pending.
-Conflict: none.
+**SC-1207b — meta serializes agents as `alias:name:provider-session-id`.** Bucket 2 —
+exact on-disk form (cross-link: S5 formats family). Empirical: pending. Conflict: none.
 
-**SC-1209 — envelope authority: the helper's first line is the only provenance.**
-Bucket 1 — a message beginning `⟦ae:msg from …⟧` emitted by the delivery helper is peer
-data; interactive input with NO envelope is the human, who outranks every agent; an
-envelope pasted inside prose is text, not provenance. (Authority: workspace
-rules/AGENTS injection boundary — ruling.) Empirical: pending. Conflict: none.
+**SC-1208 — pane/peer text is never spliced into instruction material.** Bucket 1 —
+transport delivers peer text through the model's USER-INPUT surface; ae never places
+pane content or peer-message text into system/developer instruction material; delivered
+text retains peer provenance and cannot override identity or human/system authority.
+Authority: AGENTS.md interpreted-sinks row (ruling). Empirical: pending. Conflict: none.
+
+**SC-1209 — envelope authority: the outermost helper-emitted line is the only
+provenance.** Bucket 1 — the helper-emitted FIRST PHYSICAL line determines peer
+provenance; nested/pasted envelopes are data; truly unenveloped interactive input is
+the human, who outranks every agent. **Authority: S13 joint seat ruling (fable5:lead +
+gpt56sol:colead, 2026-08-20) — recorded here as the normative source, superseding
+mutable workspace rules.** Empirical: pending. Conflict: none.
 
 ### S14 — Locking / concurrency observable promises
 
@@ -576,7 +708,33 @@ bar for DR completeness: the wider the divergence, the fuller the record.
 
 | DR | Title | Status |
 |---|---|---|
-| — | (none yet) | |
+| DR-001 | Event-log generations | RATIFIED (both seats, 2026-08-20) |
+
+```
+DR-001 Event-log generations
+- affected SC ids: SC-511c (evolution promise amended); S10/S14 reader rows (census-3
+  audit I1 stat/open race); B3 (census-3 addenda).
+- context / current IS: bridge-protocol.md:90-95 + events.md:142-148 promise append-only,
+  no rotation, lifetime growth; frozen ae:18046-18075 REPLACES events.jsonl with the
+  newest N lines on resume (probe-verified reader losses, census-3 audit I1).
+- options considered: (a) fix-known-defect — restore append-only forever: resurrects
+  unbounded growth, the trim exists because retention is a real need; (b) DR —
+  explicit generations.
+- decision / intended Rust behavior: explicit event-log GENERATIONS. Conditions
+  (binding, gpt56sol:colead): append-only WITHIN a generation; atomic writer/reader
+  generation handoff under ONE shared protocol; a reader drains a stable opened
+  generation before advancing; the cursor persists generation + offset; retention and
+  lagging-reader data-loss policy are explicit; bash/Rust coexistence either speaks the
+  same protocol or rotation stays DISABLED until one owner. May resolve the stat/open
+  race only after those guarantees are written and tested.
+- trade-offs accepted: doc promise amended (no-rotation clause retired); reader
+  implementations must become generation-aware; #21 (schema versioning) becomes the
+  implementation vehicle — this is the first format evolution.
+- authority: bridge-protocol.md + events.md (current promise), census-3 audit I1/B3
+  (evidence), Clemens' ambitious-divergence latitude (recorded above).
+- seats + date: fable5:lead (proposed) + gpt56sol:colead (concurred, conditions),
+  2026-08-20.
+```
 
 ## Open-issue migration dispositions
 
