@@ -1059,17 +1059,33 @@ never a silent identity swap. Empirical: matrix rerun row + SC-811 pins.
 Conflict: none.
 
 **SC-705 — tool detection identifies the actual executable without interpreting
-injected prose.** Bucket 1 — semantic SHOULD under joint ruling: classification derives
+injected prose.** Bucket 3 — semantic SHOULD under joint ruling: classification derives
 from the real binary being launched, never from the kilobytes of injected context,
 wrapper prefixes, or launcher spellings. The concrete prefix/suffix exhibits
-(`env`/`VAR=val` stripping, `opencode.exe`) are empirical. Authority: S8 joint seat
-ruling (2026-08-20) grounded in the #46/#30 transported-fact rulings. Empirical:
-measured exhibits @72c7293. Conflict: none.
+(`env`/`VAR=val` stripping, `opencode.exe`) are empirical. IS at 72c7293 (B0 Design 8
+live observation, both-seats classified): a real Claude pane reports its VERSION
+STRING as `pane_current_command`, and `tmux_paste_submit` re-derives the tool from it
+(ae:412-417), so the spawn-brief and launch-prompt deliveries (ae:12024, 12678) run
+the unmodeled-tool arms of `_paste_input_busy`/`_paste_still_staged`
+(ae:13976-94, 13935-44) — Claude's paste protection silently bypassed; helper sends
+unaffected (they transport ae_target_tool); `wait_for_agent_start` tolerates via its
+non-shell fallback (ae:923-932). Authority: S8 joint seat ruling (2026-08-20)
+grounded in the #46/#30 transported-fact rulings. Empirical: measured exhibits
+@72c7293 + b0-artifacts/design8 fake-vs-real divergence record. Conflict:
+fix-known-defect(#94, intended: the canonical tool kind is transported from
+config/meta into every delivery call; a process title is liveness evidence only,
+never a classifier). **classified_by: REOPENED by the #94 observation and RE-MARKED —
+fable5:lead + gpt56sol:colead, 2026-08-20.**
 
-**SC-706 — a fact built upstream is transported, never re-parsed.** Bucket 1 — resume
+**SC-706 — a fact built upstream is transported, never re-parsed.** Bucket 3 — resume
 ids, injection boundaries, and tool kinds ride explicit parameters; the built command
-is downstream data — hostile input, not a source of truth. Authority: #30-family ruling
-(commit 32719f5) + AGENTS.md. Empirical: shipped exhibits. Conflict: none.
+is downstream data — hostile input, not a source of truth. IS at 72c7293:
+`tmux_paste_submit` violates this for the delivery tool kind (see SC-705's #94
+chain — the one shipped exception to the #30-family rule found by the evidence
+program). Authority: #30-family ruling (commit 32719f5) + AGENTS.md. Empirical:
+shipped exhibits + b0-artifacts/design8. Conflict: fix-known-defect(#94, intended as
+in SC-705). **classified_by: REOPENED by the #94 observation and RE-MARKED —
+fable5:lead + gpt56sol:colead, 2026-08-20.**
 
 **SC-707 — an unsupported launch command receives no context injection.**
 `authority=code-observation` — inject_ae_context and initial_prompt_for_cmd leave
