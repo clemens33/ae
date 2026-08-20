@@ -26,6 +26,7 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 |---|---|---|
 | `_harness/hlib.sh` | `b2cf84dd1990c01fdbfc9512c00834d10543d4745ed6a2dc2ad6c134ea27455d` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
+| `_harness/arm-h5.sh` | `cc6cfbd8abe690024bae907a7c87f28ce12c97a61212119d000cd461786735fb` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h4.sh` | `5944b88c92acd4752addffabe9705ab087ff6c430bed0ea1d0bf6d8040693009` | 2026-08-20T21:51:16Z |
 
 ### A3 — `_harness/derive-h4-record.py` registered after A-H4's run
@@ -42,6 +43,18 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 - new sha256: `3e6bdba0ccc314ebeb2700900d1c17b956623b8e07db5f9032a5a573ae6898de`
 - what it is: a post-capture indexer. It writes the content-bound case index (case dir ->
   ledger sha256, ledger lines, file count) and records no observation.
+
+### A6 — constructed inputs in A-H5, declared before the run
+
+`_register-sid` reads Codex session `.jsonl` files and the `launch_id`/`launch_time` meta
+keys. There is no offline producer for either — this batch runs with no live models and no
+network, and the fake agent is not a codex-kind tool, so ae never writes those keys.
+
+The candidate files and meta lines are therefore written by the CONTROLLER, and each case
+records the exact bytes it planted in `planted-inputs.txt` with their hashes. They are
+INPUT DATA the surface reads, not helper bytes: every helper byte still comes from a real
+frozen launch. Declared here rather than discovered later, because "producer-derived" is a
+claim this arm cannot make about its candidates and should not appear to.
 
 ## Frozen source
 
