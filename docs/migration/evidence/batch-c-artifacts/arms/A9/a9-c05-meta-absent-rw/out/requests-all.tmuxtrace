@@ -1,0 +1,4 @@
+pid=85044	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c05-meta-absent-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=display-message -p \#\{pane_id\} 
+pid=85047	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c05-meta-absent-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=display-message -p \#\{pane_id\} 
+pid=85050	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c05-meta-absent-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=display-message -p \#\{pane_id\} 
+pid=85051	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c05-meta-absent-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=display-message -p -t '' \#S 

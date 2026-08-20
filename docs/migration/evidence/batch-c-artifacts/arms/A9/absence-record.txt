@@ -1,0 +1,118 @@
+## A9 absence record — source state beside rendering (generated; nothing retyped)
+
+`meta rc` is the exit status of an actual read attempt as the consumer's own uid, so
+ABSENT (no such file) and PRESENT-BUT-UNREADABLE (mode 000) are different rows here
+even where the rendering cannot tell them apart.
+
+  case                                  meta    mode   rc   events   ev_size   status    goal   goal_epoch   last_active   agents  obj#         
+  ------------------------------------  ------  -----  ---  -------  --------  --------  -----  -----------  ------------  ------  -------------
+  a9-c01-no-events-ro                   yes     444    0    no       -         running   set    null         1787242451    2       63bfe9f83f34 
+  a9-c01-no-events-ro-noserver          yes     444    0    no       -         -         -      -            -             -       0444021764aa 
+  a9-c01-no-events-rw                   yes     644    0    no       -         running   set    null         1787242451    2       63bfe9f83f34 
+  a9-c02-zero-byte-events-ro            yes     444    0    yes      0         running   set    null         1787242452    2       fbde07256f12 
+  a9-c02-zero-byte-events-ro-noserver   yes     444    0    yes      0         -         -      -            -             -       0444021764aa 
+  a9-c02-zero-byte-events-rw            yes     644    0    yes      0         running   set    null         1787242452    2       fbde07256f12 
+  a9-c03-meta-mode-000-ro               yes     0      1    yes      1754      running   null   null         1787242377    0       33650bcee80d 
+  a9-c03-meta-mode-000-ro-noserver      yes     0      1    yes      1754      -         -      -            -             -       0444021764aa 
+  a9-c03-meta-mode-000-rw               yes     0      1    yes      1754      running   null   null         1787242377    0       33650bcee80d 
+  a9-c04-malformed-event-ro             yes     444    0    yes      1753      running   set    1787242373   1787242449    2       c48417b91a4a 
+  a9-c04-malformed-event-ro-noserver    yes     444    0    yes      1753      -         -      -            -             -       0444021764aa 
+  a9-c04-malformed-event-rw             yes     644    0    yes      1753      running   set    1787242373   1787242449    2       c48417b91a4a 
+  a9-c05-meta-absent-ro                 no      -      1    yes      1754      running   null   null         0             0       dc7330bd4677 
+  a9-c05-meta-absent-ro-noserver        no      -      1    yes      1754      -         -      -            -             -       0444021764aa 
+  a9-c05-meta-absent-rw                 no      -      1    yes      1754      running   null   null         0             0       dc7330bd4677 
+  a9-c06-healthy-control-ro             yes     444    0    yes      1754      running   set    1787242373   1787242377    2       1477f2d81c21 
+  a9-c06-healthy-control-ro-noserver    yes     444    0    yes      1754      -         -      -            -             -       0444021764aa 
+  a9-c06-healthy-control-rw             yes     644    0    yes      1754      running   set    1787242373   1787242377    2       1477f2d81c21 
+
+## the three-way discriminator the row needs
+
+Rendered `list --json` session objects, compared canonically (sorted keys). Reported
+as identical / differing-on-these-keys. No reading is called right here.
+
+  a9-c01-no-events-ro
+    vs a9-c02-zero-byte-events-ro: differs on: last_active_epoch
+  a9-c01-no-events-ro
+    vs a9-c03-meta-mode-000-ro: differs on: agents, goal, last_active_epoch
+  a9-c01-no-events-ro
+    vs a9-c04-malformed-event-ro: differs on: agents, goal_set_epoch, last_active_epoch
+  a9-c01-no-events-ro
+    vs a9-c05-meta-absent-ro: differs on: agents, goal, last_active_epoch
+  a9-c01-no-events-ro
+    vs a9-c06-healthy-control-ro: differs on: agents, goal_set_epoch, last_active_epoch
+  a9-c02-zero-byte-events-ro
+    vs a9-c03-meta-mode-000-ro: differs on: agents, goal, last_active_epoch
+  a9-c02-zero-byte-events-ro
+    vs a9-c04-malformed-event-ro: differs on: agents, goal_set_epoch, last_active_epoch
+  a9-c02-zero-byte-events-ro
+    vs a9-c05-meta-absent-ro: differs on: agents, goal, last_active_epoch
+  a9-c02-zero-byte-events-ro
+    vs a9-c06-healthy-control-ro: differs on: agents, goal_set_epoch, last_active_epoch
+  a9-c03-meta-mode-000-ro
+    vs a9-c04-malformed-event-ro: differs on: agents, goal, goal_set_epoch, last_active_epoch
+  a9-c03-meta-mode-000-ro
+    vs a9-c05-meta-absent-ro: differs on: last_active_epoch
+  a9-c03-meta-mode-000-ro
+    vs a9-c06-healthy-control-ro: differs on: agents, goal, goal_set_epoch
+  a9-c04-malformed-event-ro
+    vs a9-c05-meta-absent-ro: differs on: agents, goal, goal_set_epoch, last_active_epoch
+  a9-c04-malformed-event-ro
+    vs a9-c06-healthy-control-ro: differs on: last_active_epoch
+  a9-c05-meta-absent-ro
+    vs a9-c06-healthy-control-ro: differs on: agents, goal, goal_set_epoch, last_active_epoch
+
+## instrument control — did the reader look at all?
+
+`a9-c06-healthy-control` is the same consumer set on an intact fixture. Its readings:
+
+  a9-c06-healthy-control-ro: status=running goal=set agents=2 last_active_epoch=1787242377
+  a9-c06-healthy-control-ro-noserver: status=- goal=- agents=- last_active_epoch=-
+  a9-c06-healthy-control-rw: status=running goal=set agents=2 last_active_epoch=1787242377
+
+An empty rendering in another case is therefore a reading taken with a reader that is
+known to render agents and a goal when the fixture carries them.
+
+## distinct readings
+
+  mode ro           cases=6   distinct list --json objects=6  distinct list --all --json objects=6
+  mode rw           cases=6   distinct list --json objects=6  distinct list --all --json objects=6
+  mode ro-noserver  cases=6   distinct list --json objects=1  distinct list --all --json objects=6
+
+## sources
+
+  a9-c01-no-events-ro: meta-state.txt sha256=c0dac7b799e6a3d43641f075f294008cd0b90be76afc6e1682c5ca8ebd5954c8
+      out/list-json.stdout sha256=58bb45fe1c71d5d299e93f4a3e93eb159c39a34b751ba168e9a8c0bd299d8d28
+  a9-c01-no-events-ro-noserver: meta-state.txt sha256=dc24e2d7b0df193e54371767a5cbd10bd0f782156f6b42b566417097d384cc7a
+      out/list-json.stdout sha256=ae7bf968aeeb173df22784cc0276cf8874a2261c0cc360599546f288d80f112c
+  a9-c01-no-events-rw: meta-state.txt sha256=0abfcf3b9a3c8ca79ac4c5928c5d7aad90e5e705389046500846160c6f77996f
+      out/list-json.stdout sha256=a46d0a125ed895ed2265602ab0c82e563101128b1fe7b1ae834fd9e3f09299ba
+  a9-c02-zero-byte-events-ro: meta-state.txt sha256=150e847078d44deae7746620fb7f20de526dd505bc87a18ec35e17626d1b96fc
+      out/list-json.stdout sha256=c544d8f50a3835954719224fe8a6b2011e4d8a7595d46f74a2eb8196febd21cd
+  a9-c02-zero-byte-events-ro-noserver: meta-state.txt sha256=150e847078d44deae7746620fb7f20de526dd505bc87a18ec35e17626d1b96fc
+      out/list-json.stdout sha256=2d2397c639ca1f927255e652a84d222230dc21a7f1785433b9a398bc24d08957
+  a9-c02-zero-byte-events-rw: meta-state.txt sha256=73e09ad504d7f2d19c913d68b67606515e85e785b612f2588cc9fdd7b79616ac
+      out/list-json.stdout sha256=75ab6a41c53282999334a9e478c0312982a21e7410f4ccdc2443e525ddd7ca62
+  a9-c03-meta-mode-000-ro: meta-state.txt sha256=cfee429c34820fa84d7fd65dfb26765ea6bc8b54b86645d9d9b876dc2f06c10f
+      out/list-json.stdout sha256=148d8a5890e36c4bd0f20d566f9ecb376fc9dd582b18cd006ea30f0a43b6cb05
+  a9-c03-meta-mode-000-ro-noserver: meta-state.txt sha256=7917a89c653fef0ac93d1139e52b0ecde61e6df69aaccc53a94a0b9fd5c468b1
+      out/list-json.stdout sha256=4df5e064642f5155df87495f3502af3eb7eed060cf6f9f32040e178fe7460849
+  a9-c03-meta-mode-000-rw: meta-state.txt sha256=683e08b17dc2400b056aa8493e6017cf402502f1a3c221b2761d6a23e9ead5dd
+      out/list-json.stdout sha256=55ba6678d852884eaa4f22fce42fffccabe317d0e3ac836f825cb7d9f088c15a
+  a9-c04-malformed-event-ro: meta-state.txt sha256=4b24bf443433da8ad39fc47b90baee53f69b73e119b337d131aa06341a813c7c
+      out/list-json.stdout sha256=0838fa18a95eb245a09df867c7d7131d801bb20c6601c2cb0abe6dedaa92fc5c
+  a9-c04-malformed-event-ro-noserver: meta-state.txt sha256=4b24bf443433da8ad39fc47b90baee53f69b73e119b337d131aa06341a813c7c
+      out/list-json.stdout sha256=374f27f1624e849d4a523a5a356eaf931fc96be3b8962e75ac98148fb6349e59
+  a9-c04-malformed-event-rw: meta-state.txt sha256=752705500f03bd6907ca6082e0e38f17673cdddb9764fc25529e534885a176ff
+      out/list-json.stdout sha256=9411512f635b07ed9d8c22f0c037e8fadafc1653ee2759be35bb1bc5f69bebff
+  a9-c05-meta-absent-ro: meta-state.txt sha256=ec3758d648e10ca5fcd42cd15fcd4ccc2d1b6239b62a18b2e9d195aaf2478db5
+      out/list-json.stdout sha256=6ef113acf6c6ca1ba676753d1c94b078af759dab30b7e0afc538ce52f282a7f8
+  a9-c05-meta-absent-ro-noserver: meta-state.txt sha256=ab39a8bca68d38e545aac8771de1ab0e5e9cef08aca30c24966203cc9b9d8985
+      out/list-json.stdout sha256=73b0a9e73613fde330d0aecf2efb2b1fd57b7b2643fcaac8067c91b53c213282
+  a9-c05-meta-absent-rw: meta-state.txt sha256=f0c4068e438436b1b20acd9d38f68c808403cc895ec17712dbe4823af2ae8e32
+      out/list-json.stdout sha256=965475903395ef3b68e738a83d6aefe539985d4839fefc6dd4dbbc8dbf84c6a4
+  a9-c06-healthy-control-ro: meta-state.txt sha256=b73745658d31acd8444b92653f611430ae2ede33e445909a9a118a260d59a528
+      out/list-json.stdout sha256=570cb7f4a8685ba8eccb8d6af5efc06c5952a17acbeadd44a0f53d252f6b7b6c
+  a9-c06-healthy-control-ro-noserver: meta-state.txt sha256=b73745658d31acd8444b92653f611430ae2ede33e445909a9a118a260d59a528
+      out/list-json.stdout sha256=8f8dc5b7f19e81b0f3a57d31f490501cc5512a6cddd0b000aecd3da504a60764
+  a9-c06-healthy-control-rw: meta-state.txt sha256=16cf8ca986deabe392569ec165a3e93f24b57b753fbba9615b149d9b73ee3503
+      out/list-json.stdout sha256=8941bd1fce82e81ed608b9ac048f6ee61ed63fc414ef89e8056c493e496fdd88

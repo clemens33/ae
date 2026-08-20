@@ -170,7 +170,8 @@ note (1306a→D01/Design 2, 1306b→D04a/Design 5, 1306c→D04b/Design 6, 1306d�
 | Arm group A6 (SC-518, 522, 523a–b) | COMPLETE, bash lane — 13 case runs |
 | Arm group A7 (SC-405a–g, 405j) | COMPLETE, bash lane — 36 case runs |
 | Arm group A8 (SC-101, 102a, 102b, 018b) | COMPLETE, bash lane — 4 case runs, the first MUTATING group |
-| Arm group A9 | not started |
+| Arm group A9 (SC-519, SC-520, SC-405i) | COMPLETE, bash lane — 18 case runs incl. a positive control |
+| Template group A9 (`meta-absent`, SC-405i) | built, sealed and published |
 | D-record executions (b0-design Designs 2–6) + SC-1306a–e | COMPLETE, bash lane — D01, D02, D03, D04a, D04b, all with controller-only twins |
 
 ---
@@ -1607,6 +1608,109 @@ Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A8/<case>/`:
   the same partition, and the control reading
 - `A8/mode-record.txt` (the generated cross-case table), `A8/ledger.tsv`,
   `A8/harness/` (the exact scripts and the tmux shim), `SHA256SUMS.txt`
+
+## Arm group A9 — quiet vs degraded, and META ABSENT (bash lane)
+
+### A9 — what the arm does
+
+Rows: SC-519, SC-520 (quiet vs degraded) and SC-405i (a present session dir whose meta is
+absent). Six fixtures — quiet both ways (`G4/no-events`, `G4/zero-byte-events`), degraded
+both ways (`G3/meta-mode-000`, `G3/malformed-complete-line`), the absence fixture
+(`A9/meta-absent`), and `G1/healthy` as a positive control — each read three times: on a
+protected clone with a live server, on a writable clone with a live server, and on a
+protected clone with NO tmux server at all. 18 case runs, 8 consumer invocations each.
+
+**SC-405i is an absence claim, and three different states render the same emptiness.**
+Meta ABSENT, meta PRESENT BUT UNREADABLE, and a reader that never looked all produce a
+session object with no agents and no goal. The first two are separated at the SOURCE, not
+at the rendering: every case writes `meta-state.txt`, which records — from the filesystem,
+as the consumer's own uid — whether the file exists, its type, mode and size, the rc and
+stderr of an actual read attempt, and its hash when readable. The third is excluded by the
+control: `G1/healthy` goes through the identical consumer set, so a reader that looks is
+known to render two agents and a goal.
+
+**What the captures show, without classifying any of it:** `A9/meta-absent` and
+`G3/meta-mode-000` render session objects that differ on exactly one key
+(`last_active_epoch`), while their source states differ plainly — `exists=no` with read rc
+1 against `exists=yes mode=0` with read rc 1. That is the pair the carry-in was about, and
+it is why the source capture exists. All six fixtures produce six distinct `list --json`
+objects with a server, and six distinct `list --all --json` objects without one; with no
+server, `list --json` renders the same empty session set for all six. Every one of those
+counts is computed in `absence-record.txt` from the captured bytes.
+
+**One of my own instruments failed first, loudly, and only because it was made to.**
+`build_live_topology` reads the fixture's meta to learn the roster — which is exactly the
+file two of these fixtures make unreadable or absent by design. Its first A9 run silently
+built nothing for those four cases: no session on the socket, consumers pointed at a
+path that was never created, and `case.txt` still saying `live_topology=yes`. The builder
+now VERIFIES what it built (session present, pane count equal to the roster's agent count)
+and aborts the case otherwise, and a fixture that cannot supply its own roster must NAME a
+substitute — recorded as `topology-roster-SUBSTITUTED` with the substitute's hash, and the
+substitute is the member the fixture was derived from, so the topology is identical across
+the arm and only the fixture's files differ. All 12 live cases now record
+`panes_expected=2 panes_present=2`.
+
+### A9 case table
+
+`checks<first consumer` names the ledger sequence numbers of the TAB round-trip
+COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),
+and the first `consumer-START`. The ledger is append-only and written by the checks
+themselves, so the ordering is established by the original durable content — not by
+file mtimes and not by a hash list added afterwards. For a barrier case the first
+consumer activity is `barrier-ARMED` (the hooked run has no `consumer-START` line).
+
+A case whose design includes a CONTROLLER MUTATION necessarily shows a tmux delta;
+what the controller did, when, and from where is in `controller-mutation.txt` and in
+the ledger, and the before/at-barrier/after tmux snapshots bracket it.
+
+| case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
+|---|---|---|---|---|---|---|---|---|---|
+| `a9-c01-no-events-ro` | ro | SC-519,SC-520 | `G4/no-events` | yes | 0 | - | 8 | 9/11/13 | yes |
+| `a9-c01-no-events-ro-noserver` | ro-noserver | SC-519,SC-520 | `G4/no-events` | yes | 0 | - | 8 | 9/-/11 | yes |
+| `a9-c01-no-events-rw` | rw | SC-519,SC-520 | `G4/no-events` | yes | 0 | - | 8 | 9/11/13 | yes |
+| `a9-c02-zero-byte-events-ro` | ro | SC-519,SC-520 | `G4/zero-byte-events` | yes | 0 | - | 8 | 9/11/13 | yes |
+| `a9-c02-zero-byte-events-ro-noserver` | ro-noserver | SC-519,SC-520 | `G4/zero-byte-events` | yes | 0 | - | 8 | 9/-/11 | yes |
+| `a9-c02-zero-byte-events-rw` | rw | SC-519,SC-520 | `G4/zero-byte-events` | yes | 0 | - | 8 | 9/11/13 | yes |
+| `a9-c03-meta-mode-000-ro` | ro | SC-519,SC-520 | `G3/meta-mode-000` | yes | 0 | - | 8 | 10/12/14 | yes |
+| `a9-c03-meta-mode-000-ro-noserver` | ro-noserver | SC-519,SC-520 | `G3/meta-mode-000` | yes | 0 | - | 8 | 9/-/11 | yes |
+| `a9-c03-meta-mode-000-rw` | rw | SC-519,SC-520 | `G3/meta-mode-000` | yes | 0 | - | 8 | 10/12/14 | yes |
+| `a9-c04-malformed-event-ro` | ro | SC-519,SC-520 | `G3/malformed-complete-line` | yes | 0 | - | 8 | 9/11/13 | yes |
+| `a9-c04-malformed-event-ro-noserver` | ro-noserver | SC-519,SC-520 | `G3/malformed-complete-line` | yes | 0 | - | 8 | 9/-/11 | yes |
+| `a9-c04-malformed-event-rw` | rw | SC-519,SC-520 | `G3/malformed-complete-line` | yes | 0 | - | 8 | 9/11/13 | yes |
+| `a9-c05-meta-absent-ro` | ro | SC-405i | `A9/meta-absent` | yes | 0 | - | 8 | 10/12/14 | yes |
+| `a9-c05-meta-absent-ro-noserver` | ro-noserver | SC-405i | `A9/meta-absent` | yes | 0 | - | 8 | 9/-/11 | yes |
+| `a9-c05-meta-absent-rw` | rw | SC-405i | `A9/meta-absent` | yes | 0 | - | 8 | 10/12/14 | yes |
+| `a9-c06-healthy-control-ro` | ro | control | `G1/healthy` | yes | 0 | - | 8 | 9/11/13 | yes |
+| `a9-c06-healthy-control-ro-noserver` | ro-noserver | control | `G1/healthy` | yes | 0 | - | 8 | 9/-/11 | yes |
+| `a9-c06-healthy-control-rw` | rw | control | `G1/healthy` | yes | 0 | - | 8 | 9/11/13 | yes |
+
+Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A9/<case>/`:
+
+- `admissibility-ledger.txt` — append-only, monotonic `seq` + UTC + epoch per event:
+  case open, rows, clone verification (clone vs expected fingerprint), the TAB
+  round-trip START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the
+  before/after manifests, and every consumer START/COMPLETE with its rc and its
+  stdout / stderr / tmuxtrace sha256
+- `env-tab-selfcheck.txt` — the TAB round-trip in this case's own scrubbed
+  environment, plus the paired `LANG=LC_ALL=C` probe on the same throwaway server
+- `tmux-shim-equivalence.txt` — live cases only: the delegate-and-log shim proven
+  byte-identical to the real binary on this arm's own stable topology
+- `case.txt`, `env.txt`, `consumers.tsv` (label, rc, stdout/stderr sha256 + bytes,
+  tmuxtrace sha256 + line count, bounded flag, exact argv)
+- `out/<label>.stdout`, `out/<label>.stderr` (present only when non-empty),
+  `out/<label>.tmuxtrace` — per invocation: the effective `AE_TMUX_SERVER` and kind,
+  the effective locale, and the DELEGATED tmux argv
+- `manifest.before.tsv` / `manifest.after.tsv` / `manifest.diff.txt` — recursive:
+  type, mode, content hash, symlink target, path across the cloned AE_HOME
+- `tmux.before.txt` / `tmux.after.txt`
+- `A9/ledger.tsv` (case -> row ids), `A9/harness/` (the exact scripts and the
+  tmux shim), `SHA256SUMS.txt` (every file above)
+
+- `A9/absence-record.txt` — the generated source-state-beside-rendering table, the
+  pairwise rendering comparison, the control's readings, and the distinct-reading counts
+- `<case>/meta-state.txt` — the source state of `meta` and `events.jsonl` read from the
+  filesystem: exists, type, mode, size, the rc and stderr of a real read attempt, hash
+  when readable
 
 ## D-record executions (bash lane)
 

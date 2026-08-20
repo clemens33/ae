@@ -1,0 +1,3 @@
+pid=77063	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c04-malformed-event-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c04-malformed-event-ro/live.sock list-sessions -F \#\{session_name\} 
+pid=77065	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c04-malformed-event-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c04-malformed-event-ro/live.sock show-environment -t tg1 AE_SESSION 
+pid=77072	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c04-malformed-event-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c04-malformed-event-ro/live.sock list-panes -s -t tg1 -F $'#{@ae_agent}\t#{pane_current_command}' 

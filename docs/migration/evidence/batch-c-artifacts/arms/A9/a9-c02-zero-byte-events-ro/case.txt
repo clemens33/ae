@@ -1,0 +1,12 @@
+arm=A9 case=a9-c02-zero-byte-events
+rows=SC-519,SC-520
+template=G4/zero-byte-events
+clone_mode=ro
+session=tg1
+live_topology=yes
+clone_fingerprint=17ebdc098212cbd2459353d53f67b7dbab1284b852a1b14cc37685b5a4c0cdba
+clone_fingerprint_matches_template=yes
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+utc_start=2026-08-20T20:34:46Z
+manifest_diff_lines=0

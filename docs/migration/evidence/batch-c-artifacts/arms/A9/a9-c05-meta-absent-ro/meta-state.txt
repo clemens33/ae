@@ -1,0 +1,20 @@
+## source state of the files the rows are about, read from the FILESYSTEM
+session_dir=sessions/tg1
+session_dir_exists=yes
+session_dir_files=33
+### meta
+  exists=no
+  type=ABSENT
+  mode=-
+  size=-
+  read_attempt_rc=1
+  read_attempt_stderr=cat: /tmp/aecx/arms/A9/a9-c05-meta-absent-ro/home/.ae/sessions/tg1/meta: No such file or directory
+  sha256=- (not readable by the consumer's own uid)
+### events.jsonl
+  exists=yes
+  type=file
+  mode=444
+  size=1754
+  read_attempt_rc=0
+  read_attempt_stderr=<none>
+  sha256=ddb70b8ef48c68987338c34c742844d076eedfc9623e1e79820c7ec6eaed8539

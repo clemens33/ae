@@ -1,0 +1,4 @@
+## mutation: truncate events.jsonl to zero bytes
+file: sessions/tg1/events.jsonl
+before: sha256=ddb70b8ef48c68987338c34c742844d076eedfc9623e1e79820c7ec6eaed8539 bytes=1754
+after:  sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 bytes=0

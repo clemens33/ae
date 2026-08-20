@@ -315,6 +315,16 @@ d1e0b6d09bcc67e9fb8a6f3deda45881e4690a1553c67074b09d99109593da5f  ./A7/fixture-b
 d4bbe7b0645b161b60ad912eeee7c8887628c12351451046139522c7af4101b2  ./A7/fixture-bytes/pair-405j-stale-keys/sessions/tg5/messages/ae-20260820T161304Z-be61f143.ask.li6fOg.txt
 9cba3f9407de7d2326caadca00dd7adb15a702f2298b9bc14c1b7aadc7a88eb5  ./A7/fixture-bytes/pair-405j-stale-keys/sessions/tg5/messages/review-20260820T161305Z-dc302d09.review.Ro6ms7.txt
 d1e0b6d09bcc67e9fb8a6f3deda45881e4690a1553c67074b09d99109593da5f  ./A7/fixture-bytes/pair-405j-stale-keys/sessions/tg5/meta
+dec54789c607dba7abb9e3ce2bc561675e8adcb2671e46308aa1de003ba69a3e  ./A9/_meta/meta-absent.modes.tsv
+3b5bb87c46b15cf8ed9dcd1c86edd6ca1a70ef28e19912d25c1019b88320a6b4  ./A9/_meta/meta-absent.mutation.txt
+9c95b975917e11fcec42d1b51824bbf2e0150416eead89287399201536cf75ee  ./A9/_meta/meta-absent.removed-meta.bytes.txt
+67d8a031cc244a1401dce86afb56a975e8a6aa89f52e8678db1e75f9b7dbf098  ./A9/_meta/meta-absent.txt
+cbc25e77d5514c8436540e06d67ff2dfe076ccce705123018489ab914c0fb4a9  ./A9/fixture-bytes/meta-absent/config
+ddb70b8ef48c68987338c34c742844d076eedfc9623e1e79820c7ec6eaed8539  ./A9/fixture-bytes/meta-absent/sessions/tg1/events.jsonl
+1535a231e7647782eea69006d30a1297df2a044dc16261b285ede0bcaaec5d9a  ./A9/fixture-bytes/meta-absent/sessions/tg1/messages/ae-20260820T161254Z-6fb0847b.ask.9bMI6v.txt
+bf7f93cfb05d1bb3d46ee6d334eee56df460113a01bb52481040b2c1b6210552  ./A9/fixture-bytes/meta-absent/sessions/tg1/messages/ae-20260820T161254Z-6fb0847b.reply.SIj99J.txt
+6232e1e2f87109d19211814981fd4d896f6eabd6234f80556190c6c25b94b3ef  ./A9/fixture-bytes/meta-absent/sessions/tg1/messages/msg-20260820T161254Z.send.oJ8PWa.txt
+cd03efab2bbc30a4c4a5835295a6d18c47ae1ac556668175e62fc27e36d8aa5e  ./A9/fixture-bytes/meta-absent/sessions/tg1/meta.NOTE
 c5a47d626ffaf77aed1dcfd551e1c945a71d612f3ee9ffaa8d16aa40e8192f14  ./D/_meta/d02-pending-with-harvested-reply.modes.tsv
 26f81927ac3ff03c15b97715ed6b12ca6907a116f6638dc1c65572ff40e6a2d2  ./D/_meta/d02-pending-with-harvested-reply.mutation.txt
 a9aad4449acc31cbee3c8e06b4c7a2c5e13a91c2091dd88f9e64131d02b553f1  ./D/_meta/d02-pending-with-harvested-reply.txt
@@ -334,7 +344,7 @@ bd4a15977e271b2fa2fd2e28b6e7e4b3820961180e5245ac9c4fbf684b447a8c  ./D/fixture-by
 ad0ae7c9b6111a5eb93a2fb70c117ab62d72208130839a3da01551533dc7a775  ./D/fixture-bytes/d03-31-numbered-events/sessions/td03/meta
 525e3808ac9fd1c59db60330508d28c6fb656a15a028ceb887d7d7767b87c2ac  ./date-shim/date
 9ce5f043aee179b4fb62cd3876622a7a6fc06968ce94ca2f99fe78784cce8b52  ./FINGERPRINTS.superseded-pre-locale-fix.tsv
-ea51cb843b3f240918532c22eb1e97b2cfebb4ef23a2019a4a572e21c925216b  ./FINGERPRINTS.tsv
+96d6afa8e179be0abe4478c19bd62c1894124434070e7c461ce881f9e357b09c  ./FINGERPRINTS.tsv
 075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667  ./G1/_meta/healthy.modes.tsv
 82a471cdb1c368564982efa9b4f03636439090e9e705bcbaaf5e97adec59ecf7  ./G1/_meta/healthy.txt
 cbc25e77d5514c8436540e06d67ff2dfe076ccce705123018489ab914c0fb4a9  ./G1/fixture-bytes/healthy/config

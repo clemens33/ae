@@ -1,0 +1,2 @@
+pid=72059	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c03-meta-mode-000-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c03-meta-mode-000-ro/live.sock list-sessions -F \#\{session_name\} 
+pid=72061	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c03-meta-mode-000-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c03-meta-mode-000-ro/live.sock show-environment -t tg1 AE_SESSION 

@@ -1,0 +1,4 @@
+## sessions
+error connecting to /tmp/aecx/arms/A9/a9-c06-healthy-control-ro-noserver/live.sock (No such file or directory)
+## panes
+error connecting to /tmp/aecx/arms/A9/a9-c06-healthy-control-ro-noserver/live.sock (No such file or directory)

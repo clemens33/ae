@@ -1,0 +1,4 @@
+pid=78963	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c04-malformed-event-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c04-malformed-event-rw/live.sock has-session -t tg1 
+pid=78964	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c04-malformed-event-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c04-malformed-event-rw/live.sock list-panes -s -t tg1 -F $'#{pane_id}\t#{@ae_agent}' 
+pid=78967	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c04-malformed-event-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c04-malformed-event-rw/live.sock capture-pane -t %0 -p 
+pid=78971	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c04-malformed-event-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c04-malformed-event-rw/live.sock capture-pane -t %1 -p 

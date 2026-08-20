@@ -1,0 +1,20 @@
+## source state of the files the rows are about, read from the FILESYSTEM
+session_dir=sessions/tg1
+session_dir_exists=yes
+session_dir_files=34
+### meta
+  exists=yes
+  type=file
+  mode=0
+  size=555
+  read_attempt_rc=1
+  read_attempt_stderr=cat: /tmp/aecx/arms/A9/a9-c03-meta-mode-000-ro-noserver/home/.ae/sessions/tg1/meta: Permission denied
+  sha256=- (not readable by the consumer's own uid)
+### events.jsonl
+  exists=yes
+  type=file
+  mode=444
+  size=1754
+  read_attempt_rc=0
+  read_attempt_stderr=<none>
+  sha256=ddb70b8ef48c68987338c34c742844d076eedfc9623e1e79820c7ec6eaed8539

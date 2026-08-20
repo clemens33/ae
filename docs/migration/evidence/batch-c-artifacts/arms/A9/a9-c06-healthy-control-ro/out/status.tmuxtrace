@@ -1,0 +1,4 @@
+pid=88475	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c06-healthy-control-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c06-healthy-control-ro/live.sock has-session -t tg1 
+pid=88476	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c06-healthy-control-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c06-healthy-control-ro/live.sock list-panes -s -t tg1 -F $'#{pane_id}\t#{@ae_agent}' 
+pid=88479	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c06-healthy-control-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c06-healthy-control-ro/live.sock capture-pane -t %0 -p 
+pid=88483	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c06-healthy-control-ro/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c06-healthy-control-ro/live.sock capture-pane -t %1 -p 

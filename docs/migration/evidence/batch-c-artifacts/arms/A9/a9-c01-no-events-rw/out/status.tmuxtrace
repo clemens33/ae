@@ -1,0 +1,4 @@
+pid=62705	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c01-no-events-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c01-no-events-rw/live.sock has-session -t tg1 
+pid=62706	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c01-no-events-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c01-no-events-rw/live.sock list-panes -s -t tg1 -F $'#{pane_id}\t#{@ae_agent}' 
+pid=62713	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c01-no-events-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c01-no-events-rw/live.sock capture-pane -t %0 -p 
+pid=62720	AE_TMUX_SERVER=/tmp/aecx/arms/A9/a9-c01-no-events-rw/live.sock	AE_TMUX_SERVER_KIND=socket	LC_ALL=en_US.UTF-8	LANG=en_US.UTF-8	argv=-S /tmp/aecx/arms/A9/a9-c01-no-events-rw/live.sock capture-pane -t %1 -p 
