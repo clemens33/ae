@@ -102,8 +102,8 @@ echo "  inactive equivalence proven, comparator proven able to fail"
 case_open "$ARM" "h1301-c01-atomic-temp-rename"
 led rows "rows=SC-1301" "writer=ae_meta_set (atomic, temp+rename)" \
     "claim=what a concurrent reader observes across the boundary"
-h_sandbox c1 "cl:lead" "" || exit 1
-HSESSION=""; h_launch tc1301a || exit 1
+H_AE="$HOOKED" h_sandbox c1 "cl:lead" "" || exit 1
+H_AE="$HOOKED" h_launch tc1301a || exit 1
 M="$HMETA"
 surface_state "$M/goal" "$M/meta"
 cp "$M/meta" "$CASE_DIR/meta.before.txt"
@@ -116,6 +116,11 @@ env AE_HOOK=AH_META_TEMP_COMPLETE AE_HOOK_MARK="$MARK" AE_HOOK_WAIT="$WAIT" \
 GP=$!
 W=0; while (( W < 40 )); do [[ -s "$MARK" ]] && break; sleep 0.5; W=$((W+1)); done
 led barrier-ARMED "point=AH_META_TEMP_COMPLETE" "mark_seen=$( [[ -s "$MARK" ]] && echo yes || echo no )" "waited_s=$((W/2))"
+if [[ ! -s "$MARK" ]]; then
+    led OUTCOME-INCONCLUSIVE "reason=the barrier never armed; anything captured after this is a completed write, not a state at a boundary"
+    : >"$WAIT"; wait "$GP" 2>/dev/null; led case-CLOSE; command tmux -S "$SOCK" kill-server >/dev/null 2>&1
+    echo "  cut 1 INCONCLUSIVE"; exit 1
+fi
 cp "$M/meta" "$CASE_DIR/meta.at-barrier.txt"
 ls "$M" | grep 'meta.tmp' >"$CASE_DIR/temp-files-at-barrier.txt" 2>&1 || echo "(none)" >"$CASE_DIR/temp-files-at-barrier.txt"
 env TMUX="${SOCK},${HSRV_PID},0" TMUX_PANE="$(h_pane_of cl:lead)" "$M/goal" \
@@ -138,8 +143,8 @@ echo "  cut 1 done"
 case_open "$ARM" "h1301-c02-spawn-partial-generation"
 led rows "rows=SC-1301" "writer=_cmd_spawn (several direct appends)" \
     "claim=an observed partial-generation state, attributed to the product's own writes"
-h_sandbox c2 "cl:lead" "" || exit 1
-h_launch tc1301b || exit 1
+H_AE="$HOOKED" h_sandbox c2 "cl:lead" "" || exit 1
+H_AE="$HOOKED" h_launch tc1301b || exit 1
 M="$HMETA"
 surface_state "$M/spawn" "$M/meta"
 cp "$M/meta" "$CASE_DIR/meta.before.txt"
@@ -152,6 +157,11 @@ env AE_HOOK=AH_SPAWN_BETWEEN_APPENDS AE_HOOK_MARK="$MARK" AE_HOOK_WAIT="$WAIT" \
 SP=$!
 W=0; while (( W < 60 )); do [[ -s "$MARK" ]] && break; sleep 0.5; W=$((W+1)); done
 led barrier-ARMED "point=AH_SPAWN_BETWEEN_APPENDS" "mark_seen=$( [[ -s "$MARK" ]] && echo yes || echo no )" "waited_s=$((W/2))"
+if [[ ! -s "$MARK" ]]; then
+    led OUTCOME-INCONCLUSIVE "reason=the barrier never armed; a kill after a completed generation is not a partial-generation observation"
+    kill -KILL "$SP" 2>/dev/null; led case-CLOSE; command tmux -S "$SOCK" kill-server >/dev/null 2>&1
+    echo "  cut 2 INCONCLUSIVE"; exit 1
+fi
 cp "$M/meta" "$CASE_DIR/meta.at-barrier.txt"
 led controller-action "action=SIGKILL the spawning process at the barrier" \
     "note=the bytes already in meta are the FROZEN WRITER's own; the controller wrote none of them"
@@ -175,8 +185,8 @@ echo "  cut 2 done"
 case_open "$ARM" "h1301-c03-reader-fault-response"
 led rows "rows=SC-1301" "writer=start_capture_session_id (ONE append; no mid-write window)" \
     "claim=READER-FAULT RESPONSE — this is a controller-created state, NOT an observed writer tear"
-h_sandbox c3 "cl:lead" "" || exit 1
-h_launch tc1301c || exit 1
+H_AE="$HOOKED" h_sandbox c3 "cl:lead" "" || exit 1
+H_AE="$HOOKED" h_launch tc1301c || exit 1
 M="$HMETA"
 surface_state "$M/_lib" "$M/meta"
 cp "$M/meta" "$CASE_DIR/meta.before.txt"

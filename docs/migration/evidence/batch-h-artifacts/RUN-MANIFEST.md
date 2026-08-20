@@ -25,9 +25,9 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 | script | sha256 | registered (UTC) |
 |---|---|---|
 | `_harness/hlib.sh` | `0f838f7e89619358650f4ee99da31776f5351ef219c32f85c9b1546a0a8779e4` | 2026-08-20T21:51:16Z |
-| `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
+| `_harness/hfix.sh` | `51e401d354e20cd8332fb019d3a76122a669df482a87f9054cb68818d7a5c4b5` | 2026-08-20T21:51:16Z |
 | `_harness/make-h-hook-patch.py` | `b9b62f8ddf2a1db0fbadbb45e2b42a51573cb3976bc66990dec021e48da485be` | 2026-08-21 (registered BEFORE its first run) |
-| `_harness/arm-h1301.sh` | `7794562234bac7a4e1027c3ecea61935d7eea0d84c53c42ff14515a5e7882d1d` | 2026-08-21 (registered BEFORE its first run) |
+| `_harness/arm-h1301.sh` | `880047d483fe32a5bf05fb4f71a08f4a6a2de4842e8e37b26a073694a4aa815c` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h8.sh` | `a0382a9dc48123dd10a1034e85723fcbc3d06fb69d51f229331ebbe86061df71` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h1h2.sh` | `4c2c8cb2d71d8153a9efe102572596546780b8381fed2885d30ed0f13d0da720` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h7l.sh` | `dffe8d0a7a2101555a776887c66efa66ad7673994e2eb73f31163c344206da86` | 2026-08-21 (registered BEFORE its first run) |
@@ -366,3 +366,20 @@ re-read after an amendment instead of only the ones the amendment names.
 - the can-fail control is unchanged and still required: a copy with an altered version
   string must be reported as different, or the comparator has never shown it can report red.
 - arms reopened: A-H1301, which had produced no hooked capture.
+
+### A23 — the hooked binary has to BUILD the fixture, not merely be invoked against it
+
+- `hfix.sh`: `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` -> `51e401d354e20cd8332fb019d3a76122a669df482a87f9054cb68818d7a5c4b5`
+- `arm-h1301.sh`: `7794562234bac7a4e1027c3ecea61935d7eea0d84c53c42ff14515a5e7882d1d` -> `880047d483fe32a5bf05fb4f71a08f4a6a2de4842e8e37b26a073694a4aa815c`
+- what the run showed: cut 1's barrier reported `mark_seen=no` after waiting 20s, and the
+  case then recorded a reader seeing the COMPLETED write — a state at no boundary at all.
+  Cut 2 showed both of `_cmd_spawn`'s appends present, which is a complete generation
+  rather than a partial one.
+- cause: the fixtures were BUILT by the frozen copy, so their generated helpers carry a
+  `_lib` with no `_ae_hook` in it. Invoking the hooked binary afterwards cannot help — the
+  helper-side writer that owns the cut is the one the fixture already has. `H_AE` now names
+  the binary that builds the fixture and the three cut fixtures are built by the hooked copy.
+- and the case no longer proceeds past an unarmed barrier: it records OUTCOME-INCONCLUSIVE
+  and stops, because everything captured after an unarmed barrier is a completed write
+  wearing a barrier's label. The first run published exactly that and it read as a finding.
+- arms reopened: A-H1301, whole.

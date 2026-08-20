@@ -40,8 +40,11 @@ h_sandbox() { # <id> <main> <workers-csv-or-empty>
 }
 
 h_launch() { # <session-name>
+    # H_AE names the binary that BUILDS the fixture. It matters beyond provenance: the
+    # generated helpers are written BY that binary, so a fixture launched by the frozen
+    # copy carries a `_lib` with no hook in it however the hook is invoked afterwards.
     HSESSION="$1"
-    ( cd "$ROOT/work" && "$HARNESS_BASH" "$FROZEN_AE" --local "$HSESSION" </dev/null \
+    ( cd "$ROOT/work" && "$HARNESS_BASH" "${H_AE:-$FROZEN_AE}" --local "$HSESSION" </dev/null \
         >"$ROOT/cap/launch.$HSESSION.out" 2>"$ROOT/cap/launch.$HSESSION.err" )
     HMETA="$AE_HOME/sessions/$HSESSION"
     [[ -f "$HMETA/meta" ]] || return 1
