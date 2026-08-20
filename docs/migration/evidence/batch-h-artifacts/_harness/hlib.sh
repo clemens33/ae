@@ -101,7 +101,14 @@ capture() { # <label> <bound-seconds> -- <argv...>
 # BEFORE and AFTER every measured invocation: a post-only canary cannot show the capture
 # path was live while the product ran.
 canary() { # <when: pre|post> <tag>
-    local when="$1" tag="$2" label="canary-$when-$tag"
+    # Split assignments deliberately: bash expands EVERY word of a single `local`
+    # statement before any of its assignments take effect, so `local when="$1"
+    # label="...$when..."` reads the OLD (here: unset) `when` and aborts under set -u.
+    # This is the hazard AGENTS.md documents for `export HOME=... AE_HOME="$HOME/..."`,
+    # and it cost this arm its first run.
+    local when="$1"
+    local tag="$2"
+    local label="canary-$when-$tag"
     local token="AE-H-CANARY-$when-$tag-9f3c"
     capture "$label" 10 -- "$HARNESS_BASH" -c \
         "printf '%s\n' '$token'; printf '%s\n' '$token-stderr' >&2; exit 7"
