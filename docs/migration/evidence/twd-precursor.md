@@ -1,4 +1,6 @@
-# T-WD producer precursor — subdesign v1 (seat gate PENDING)
+# T-WD producer precursor — subdesign v2 (APPROVED: colead 2026-08-20,
+mechanics green; conditional citation corrections folded in this revision —
+runs as Batch C fixture-harvest step zero, parallel to B0)
 
 Batch C prerequisite 2 (batch-c-design.md): the ONLY legitimate source for G2's
 attention-event bytes (dead/stale/throttled) is the REAL frozen watchdog producing
@@ -16,7 +18,7 @@ manipulation→reason mapping lives in the seat annex only.
 - Isolated AE_HOME/HOME sandbox; a real `ae` launch at 72c7293 whose config's
   agent command is a CONTROLLABLE FAKE AGENT executable, never a live model and
   never a plain shell (gate correction: with agent_bin=bash the pane's own shell
-  satisfies the dead-check's descendant search at ae:16298-16318, and a shell
+  satisfies the dead-check's descendant search at ae:15815-15834, and a shell
   pane makes real sends hit shell-refusal or echo nudges back as fresh pane
   activity). The fake: a distinct non-shell foreground identity (its own comm/
   `pane_current_command` name), a stable no-echo pane (fixed prompt, reads stdin
@@ -39,7 +41,8 @@ watchdog log + pane snapshots + send rc + knob values, before/after manifests)
 1. **Child-killed pane** — controller kills ONLY the fake agent child, so the
    original pane shell returns as the foreground; observe N cycles. (The
    dead-check resolves the recorded agent_bin and searches for it under the
-   pane PID — ae:15895+ `_load_agent_bins`, ae:16298-16318 descendant walk.)
+   pane PID — ae:15895+ `_load_agent_bins`; the walk `_pane_has_descendant_named`
+   at ae:15815-15834; the dead branch using it at ae:16085-16108.)
 2. **Live-but-static pane past threshold** — the fake stays alive and its pane
    static; no further events; `AE_WATCHDOG_STALE_MIN` and
    `AE_WATCHDOG_MAX_NUDGES` shortened; observe enough cycles for the nudge cap
