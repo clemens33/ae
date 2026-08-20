@@ -65,6 +65,21 @@ empirical-only lane.
 **Authority freeze:** the empirical baseline and all @-references above are pinned at
 commit **72c7293** (the bash freeze), never branch HEAD.
 
+**Empirical-status amendment (binding split, both seats, 2026-08-20,
+ae-20260820T112501Z-d684b294):** every row's empirical field carries
+`empirical_status = observed(pointer)` — accepted evidence that can fail against the
+row — or `pending(owner + phase + probe-batch + protected gate)`. A pending row is NOT
+empirical closure and is never described as an IS observation. RATIFICATION-CRITICAL
+rows (IS-dependent seat rulings; bucket-3/4 baselines lacking accepted evidence; P1
+corpus/query surfaces; destructive/data-loss/security/identity/format/byte/exit
+boundaries) must reach `observed` BEFORE the #81 ratification comments — no scoped-gap
+escape. The deferrable lane exists only for bucket-1/2 rows with strong normative
+authority, no conflict, and no P1 fixture dependency. Ratification language states:
+normative/classification/conflict contract ratified; empirical baseline PARTIAL with
+exact observed/pending counts and the id manifest. Pending rows lend SHOULD as named
+authority only; a newly measured contradiction reopens the row for seat-only
+bucket-3/DR resolution — measurement never rewrites SHOULD.
+
 ## Buckets
 
 1. **Normative invariant** — must hold in Rust.
