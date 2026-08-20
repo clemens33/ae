@@ -325,17 +325,20 @@ Conflict: DR-004.
 invariant that SURVIVES DR-004: a target pane fallen to a shell is refused with the
 named reason; nothing is injected (a stray Enter would execute the message). Under the
 P2 inbox the same invariant governs the notification line. Authority: helpers.md "How
-send delivers" 1. Empirical: pending. Conflict: none.
+send delivers" §1 (dead-pane refusal: a shell pane is refused with the named reason;
+nothing is pasted). Empirical: pending. Conflict: none.
 
 **SC-202 — a human's unsent input is never clobbered.** Bucket 1 — survives DR-004:
 injection into a modelled TUI defers fail-closed while the input box is non-empty,
 mid-generation, or unreadable, and abandons loudly rather than clobbering. Authority:
-helpers.md 2. Empirical: pending. Conflict: none.
+helpers.md "How send delivers" §2 (busy/human-input defer, fail-closed; abandons
+rather than clobbering). Empirical: pending. Conflict: none.
 
 **SC-203 — delivery uncertainty is typed, never silent.** Bucket 1 — survives DR-004:
 submit is verified after injection (bounded nudges) and unconfirmable delivery is a
 LOUD typed outcome; after P2 the uncertainty applies to the NOTIFICATION only, while
-the stored body remains readable regardless. Authority: helpers.md 3 + DR-004
+the stored body remains readable regardless. Authority: helpers.md "How send
+delivers" §3 (submit verification, bounded nudges, loud UNCONFIRMED) + DR-004
 outcomes. Empirical: pending. Conflict: none.
 
 **SC-204 — no durable outbox (until DR-004).** Bucket 4 — DR-004: at 72c7293 a loud
@@ -350,32 +353,58 @@ interrupt issues its own cancel/Escape and focus selects panes): every MESSAGE
 delivery (send/ask/review/reply, and interrupt's optional message) flows through the
 one guarded primitive; pane actions that are not message delivery are their own
 operations. Under DR-004 the primitive becomes the store-commit + notification path.
-Authority: helpers.md composition + gate ruling. Empirical: census-1. Conflict: none.
+Authority: helpers.md "How they compose" (send is the only helper that pastes into a
+pane) + gate ruling. Empirical: census-1. Conflict: none.
 
-**SC-206 — one path mints request ids.** Bucket 1 — `ae_tracked_send` is the single
-mint point. Authority: helpers.md composition. Empirical: pending. Conflict: none.
+**SC-206 — request ids have exactly one minting authority.** Bucket 1 — every request
+id is minted by a single authority; no second mint path exists. (Frozen source, IS
+explanation only — not the SHOULD: at 72c7293 that authority is the shared
+`ae_tracked_send` in `_lib`.) Authority: helpers.md "How they compose" (only one path
+mints request ids). Empirical: pending. Conflict: none.
 
 **SC-207 — one validator pairs replies.** Bucket 1 — reply pairing is verified in one
-place before delegation to send. Authority: helpers.md composition.
+place before delegation to send. Authority: helpers.md "How they compose" (reply
+looks up the original request via one validator before delegating to send).
 Empirical: pending. Conflict: none.
 
-**SC-208 — every interaction crosses one emit point.** Bucket 1 — the surface is
-auditable in events.jsonl because all messaging passes the same emit call. Authority:
-helpers.md composition. Empirical: pending. Conflict: none.
+**SC-208 — every accepted delivery crosses one emit point.** Bucket 1 — every
+ACCEPTED message delivery is auditable in events.jsonl through the shared
+event-emission contract. Refused, abandoned, and unconfirmed attempts are loud typed
+errors (SC-201/202/203), not events: the frozen emitter fires only after verified
+submit, so failed attempts are deliberately absent from the log. Authority:
+helpers.md "How they compose" (same emit point), narrowed to accepted deliveries by
+seat ruling ae-20260820T163523Z-e935697d. Empirical: code-read ae:14283
+(`ae_emit_event` strictly after the `ae_submit_pasted_message` guard; UNCONFIRMED
+exits before emit); probe pending. Conflict: none.
 
 **SC-209a — requests and replies are addressed by slot + session.** Bucket 1.
-Authority: helpers.md "Slot identity". Empirical: pending. Conflict: none.
+Authority: helpers.md "Slot identity" (the slot is the routing key: requests and
+replies are addressed and verified by slot + session). Empirical: pending.
+Conflict: none.
 
 **SC-209b — reply verifies the sender's live slot against the stored slot.** Bucket 1
-— before delivering. Authority: helpers.md. Empirical: pending. Conflict: none.
+— before delivering. Authority: helpers.md "Slot identity" (reply checks the sender's
+live slot against the request's stored slot before delivering). Empirical: pending.
+Conflict: none.
 
 **SC-209c — the display name is never trusted for routing.** Bucket 1 — `--as` sets
-display only and cannot bypass slot verification. Authority: helpers.md.
-Empirical: pending. Conflict: none.
+display only and cannot bypass slot verification. Authority: helpers.md "Slot
+identity" (the name is display only; a name passed with `--as` is shown but never
+trusted for routing). Empirical: pending. Conflict: none.
 
 **SC-209d — routing survives display-name churn.** Bucket 1 — a reply reaches the
-right agent after its display name changes. Authority: helpers.md. Empirical: pending.
-Conflict: none.
+right agent after its display name changes. Authority: helpers.md "Slot identity" (a
+reply reaches the right agent even after its display name changes).
+Empirical: pending. Conflict: none.
+
+**classified_by (S3 delivery/routing MARK batch 1, ae-20260820T163523Z-e935697d):
+SC-201, SC-202, SC-203, SC-205, SC-206, SC-207, SC-208, SC-209a, SC-209b, SC-209c,
+SC-209d — fable5:lead + gpt56sol:colead, 2026-08-20. Exact enumeration; later rows
+never inherit this mark. All bucket 1, conflict=none. Marked with the colead
+conditions applied first: SC-206 rewritten outcome-level (one minting authority; the
+bash symbol demoted to frozen-source explanation) and SC-208 narrowed to accepted
+deliveries. Normative/conflict lane only; Empirical remains pending where so
+marked.**
 
 **SC-210 — the unprotected-delivery degradation retires.** Bucket 4 — **DR-004**
 (gate consistency rule: a b2 row must survive with conflict none, and this one
