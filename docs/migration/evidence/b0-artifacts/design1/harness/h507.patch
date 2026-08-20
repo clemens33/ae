@@ -1,0 +1,65 @@
+--- /tmp/aeb0/frozen/ae	2026-08-20 16:35:18
++++ /tmp/aeb0/instr/ae	2026-08-20 16:36:45
+@@ -4948,12 +4948,46 @@
+ # timing facts are arguments, never rediscovered here, so preview (pending /
+ # preview-not-run) and publication (a real timestamp / a real push outcome) differ in
+ # exactly those inputs and in nothing else.
++# >>> H507 EVIDENCE HOOKS (SC-507b probe patch; INERT unless AE_H507_DIR is set)
++# Barrier-only and ordinal-only by construction: these functions never read,
++# hash, or compute over any product state. The controller performs mutations.
++_h507_now() { printf '%s|%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${EPOCHREALTIME:-na}"; }
++_h507_barrier() { # H507_AFTER_FACTS: emit arrival ordinal, block until released
++    [[ -n "${AE_H507_DIR:-}" ]] || return 0
++    local n w=0
++    n="$(cat "${AE_H507_DIR}/facts.seq" 2>/dev/null || echo 0)"
++    n=$((n + 1))
++    printf '%s\n' "$n" >"${AE_H507_DIR}/facts.seq"
++    printf 'arrive\tafter_facts\t%s\t%s\n' "$n" "$(_h507_now)" >>"${AE_H507_DIR}/barrier.log"
++    : >"${AE_H507_DIR}/arrived.${n}"
++    while [[ ! -e "${AE_H507_DIR}/release.${n}" ]]; do
++        w=$((w + 1))
++        if [[ "$w" -gt "${AE_H507_MAXPOLL:-600}" ]]; then
++            printf 'timeout\tafter_facts\t%s\t%s\n' "$n" "$(_h507_now)" >>"${AE_H507_DIR}/barrier.log"
++            return 0
++        fi
++        sleep 0.1
++    done
++    printf 'release\tafter_facts\t%s\t%s\n' "$n" "$(_h507_now)" >>"${AE_H507_DIR}/barrier.log"
++    return 0
++}
++_h507_pass() { # H507_PASS: emit ONLY a pass ordinal to the evidence file
++    [[ -n "${AE_H507_DIR:-}" ]] || return 0
++    local n
++    n="$(cat "${AE_H507_DIR}/pass.seq" 2>/dev/null || echo 0)"
++    n=$((n + 1))
++    printf '%s\n' "$n" >"${AE_H507_DIR}/pass.seq"
++    printf '%s\t%s\n' "$n" "$(_h507_now)" >>"${AE_H507_DIR}/pass.log"
++    return 0
++}
++# <<< H507 EVIDENCE HOOKS
+ _ar_compose_meta() { # <meta-dir> <aid> <at> <base> <final> <range> <count> <out> <ref> <preserved>
+     local dir="$1" aid="$2" at="$3"
+     local g_base="${4:--}" g_final="${5:--}" g_range="${6:--}" g_count="${7:--}"
+     local g_out="${8:-not-managed}" g_ref="${9:--}" preserved="${10:--}" id_origin="${11:-}"
+     local ev_count ev_first ev_last handover topics pending
+     IFS=$'\t' read -r ev_count ev_first ev_last handover topics pending < <(_ar_facts_row "$dir")
++    _h507_barrier   # H507_AFTER_FACTS (evidence hook)
+     # NOT `return 0`: _ar_build_meta REFUSES a roster it cannot parse, and a composer
+     # that swallowed that status would hand publication a half-written meta with a
+     # success code.
+@@ -5027,6 +5061,7 @@
+         echo "ae: could not render a preview for '${target}'." >&2
+         return 1
+     }
++    _h507_pass      # H507_PASS (evidence hook, pass 1)
+     after="$(_ar_fingerprint "$dir")"
+     if [[ "$before" != "$after" ]]; then
+         # A live session writes while we read. One clean retry; if it is still moving,
+@@ -5036,6 +5071,7 @@
+             echo "ae: could not render a preview for '${target}'." >&2
+             return 1
+         }
++        _h507_pass  # H507_PASS (evidence hook, retry pass)
+         after="$(_ar_fingerprint "$dir")"
+         if [[ "$before" != "$after" ]]; then
+             echo "ae: session '${target}' changed while previewing; retry." >&2

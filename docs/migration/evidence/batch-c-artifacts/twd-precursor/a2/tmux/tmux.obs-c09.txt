@@ -1,0 +1,12 @@
+## server-info
+3.7b pid=70329
+## sessions
+twda2|2|0
+## windows
+twda2|0|twda2|1
+twda2|99|ae-monitor|2
+## panes
+%0|fake:probe|main|aefake|70338|0|80x23
+%2|_watchdog||bash|70931|0|80x11
+%1|_events||bash|70880|0|80x11
+## clients

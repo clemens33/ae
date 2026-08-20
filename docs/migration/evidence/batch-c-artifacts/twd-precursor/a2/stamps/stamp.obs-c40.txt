@@ -1,0 +1,7 @@
+label=obs-c40
+epoch=1787238266
+utc=2026-08-20T15:04:26Z
+pgrep_aefake=70841 
+events_lines=3
+events_bytes=640
+wd_log_bytes=4739

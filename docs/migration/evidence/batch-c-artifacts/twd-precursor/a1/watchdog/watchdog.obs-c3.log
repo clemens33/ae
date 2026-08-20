@@ -1,0 +1,20 @@
+╭─ ae watchdog — session: twda1 ─────────────────────────╮
+│ interval: 5s   stale: 1m   max nudges: 2
+│ read-only pane (input disabled). use peek _watchdog or stop with `watchdog stop`.
+╰────────────────────────────────────────────────────────╯
+
+[14:59:59] ── cycle 1 ──
+[14:59:59]   fake:probe  active (pane hash changed)
+[15:00:04] ── cycle 2 ──
+[15:00:04]   fake:probe  recently visible (5s ago) — skip
+[15:00:09] ── cycle 3 ──
+[15:00:09]   fake:probe  recently visible (10s ago) — skip
+[15:00:14] ── cycle 4 ──
+[15:00:14]   fake:probe  recently visible (15s ago) — skip
+[15:00:19] ── cycle 5 ──
+[15:00:19]   fake:probe  DEAD — process dropped to shell (alerted)
+[15:00:24] ── cycle 6 ──
+[15:00:25]   fake:probe  dead (no further checks)
+[15:00:30] ── cycle 7 ──
+[15:00:30]   fake:probe  dead (no further checks)
+

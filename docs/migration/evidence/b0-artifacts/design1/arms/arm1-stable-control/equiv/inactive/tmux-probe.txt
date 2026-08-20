@@ -1,0 +1,7 @@
+# tmux probe (TMUX_TMPDIR=/tmp/aeb0/arms/arm1-stable-control/equiv/inactive/tmuxtmp, -L aeb0-inactive)
+error connecting to /private/tmp/aeb0/arms/arm1-stable-control/equiv/inactive/tmuxtmp/tmux-501/aeb0-inactive (No such file or directory)
+list-sessions rc=1
+error connecting to /private/tmp/aeb0/arms/arm1-stable-control/equiv/inactive/tmuxtmp/tmux-501/aeb0-inactive (No such file or directory)
+list-panes rc=1
+error connecting to /private/tmp/aeb0/arms/arm1-stable-control/equiv/inactive/tmuxtmp/tmux-501/aeb0-inactive (No such file or directory)
+list-clients rc=1

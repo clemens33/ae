@@ -1,0 +1,10 @@
+arm=arm2-transient-meta mutation=meta-t1 start 2026-08-20T14:42:34Z|1787236954.302712
+controller start	2026-08-20T14:42:34Z|1787236954.313530	mutation=meta-t1
+controller saw arrival	1	2026-08-20T14:42:34Z|1787236954.430371
+MUTATE pass=1 file=meta	2026-08-20T14:42:34Z|1787236954.437386
+action: writer-shaped temp+rename of meta from payloads/meta.variant
+RELEASE pass=1	2026-08-20T14:42:34Z|1787236954.485806
+controller saw arrival	2	2026-08-20T14:42:34Z|1787236954.808266
+no mutation at pass 2	2026-08-20T14:42:34Z|1787236954.811097
+RELEASE pass=2	2026-08-20T14:42:34Z|1787236954.816220
+controller exit (ae finished before arrival 3)	2026-08-20T14:42:35Z|1787236955.257096

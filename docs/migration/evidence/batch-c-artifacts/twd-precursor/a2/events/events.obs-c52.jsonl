@@ -1,0 +1,3 @@
+{"ts":"2026-08-20T15:01:53Z","actor":"watchdog","action":"nudge","target":"fake:probe","summary":"no recent events, no recent ae activity","body_file":"/tmp/aecx/twd/a2/home/.ae/sessions/twda2/messages/msg-20260820T150153Z.nudge.Of9Q1B.txt"}
+{"ts":"2026-08-20T15:01:59Z","actor":"watchdog","action":"nudge","target":"fake:probe","summary":"no recent events, no recent ae activity","body_file":"/tmp/aecx/twd/a2/home/.ae/sessions/twda2/messages/msg-20260820T150159Z.nudge.X1xdht.txt"}
+{"ts":"2026-08-20T15:02:04Z","actor":"_watchdog","action":"alert","target":"fake:probe","summary":"max nudges reached (no recent events), needs attention"}

@@ -1,0 +1,83 @@
+## pane %0 agent=fake:probe  (capture-pane -p -J -S -40 -E -)
+                                                                                
+ckriech@MacOS-ckriech work % 
+ckriech@MacOS-ckriech work % /tmp/aecx/twd/a2/home/.ae/sessions/twda2/launch.mai
+n.sh
+aefake-ready-fixed-prompt
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## end %0
+## pane %2 agent=_watchdog  (capture-pane -p -J -S -40 -E -)
+╭─ ae watchdog — session: twda2 ─────────────────────────╮
+│ interval: 5s   stale: 1m   max nudges: 2
+│ read-only pane (input disabled). use peek _watchdog or stop with `watchdog stop`.
+╰────────────────────────────────────────────────────────╯
+
+[15:00:50] ── cycle 1 ──
+[15:00:50]   fake:probe  active (pane hash changed)
+[15:00:55] ── cycle 2 ──
+[15:00:55]   fake:probe  recently visible (5s ago) — skip
+[15:01:00] ── cycle 3 ──
+[15:01:01]   fake:probe  recently visible (10s ago) — skip
+[15:01:06] ── cycle 4 ──
+[15:01:06]   fake:probe  recently visible (16s ago) — skip
+[15:01:11] ── cycle 5 ──
+[15:01:11]   fake:probe  recently visible (21s ago) — skip
+[15:01:16] ── cycle 6 ──
+[15:01:16]   fake:probe  recently visible (26s ago) — skip
+[15:01:21] ── cycle 7 ──
+[15:01:21]   fake:probe  recently visible (31s ago) — skip
+[15:01:26] ── cycle 8 ──
+[15:01:26]   fake:probe  recently visible (36s ago) — skip
+[15:01:31] ── cycle 9 ──
+[15:01:31]   fake:probe  recently visible (41s ago) — skip
+[15:01:37] ── cycle 10 ──
+[15:01:37]   fake:probe  recently visible (47s ago) — skip
+[15:01:42] ── cycle 11 ──
+[15:01:42]   fake:probe  recently visible (52s ago) — skip
+[15:01:47] ── cycle 12 ──
+[15:01:47]   fake:probe  recently visible (57s ago) — skip
+[15:01:52] ── cycle 13 ──
+[15:01:53]   fake:probe  STALE (no recent events) — nudged (1/2)
+[15:01:58] ── cycle 14 ──
+[15:01:59]   fake:probe  STALE (no recent events) — nudged (2/2)
+[15:02:04] ── cycle 15 ──
+[15:02:04]   fake:probe  STALE — max nudges reached, alert raised
+[15:02:09] ── cycle 16 ──
+[15:02:09]   fake:probe  STALE — already alerted, waiting for activity
+[15:02:14] ── cycle 17 ──
+[15:02:14]   fake:probe  STALE — already alerted, waiting for activity
+[15:02:20] ── cycle 18 ──
+[15:02:20]   fake:probe  STALE — already alerted, waiting for activity
+[15:02:25] ── cycle 19 ──
+[15:02:25]   fake:probe  STALE — already alerted, waiting for activity
+
+## end %2
+## pane %1 agent=_events  (capture-pane -p -J -S -40 -E -)
+╭─ ae events — session: twda2 ───────────────────────────────╮
+│ date+time (UTC)  action   actor                  → target                 summary
+╰──────────────────────────────────────────────────────────────────────────╯
+
+08-20T15:01:53  nudge    watchdog               → fake:probe             no recent events, no recent ae activity
+08-20T15:01:59  nudge    watchdog               → fake:probe             no recent events, no recent ae activity
+08-20T15:02:04  alert    _watchdog              → fake:probe             max nudges reached (no recent events), needs attention
+
+## end %1

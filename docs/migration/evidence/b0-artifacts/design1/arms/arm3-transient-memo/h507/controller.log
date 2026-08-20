@@ -1,0 +1,10 @@
+arm=arm3-transient-memo mutation=memo-t1 start 2026-08-20T14:42:41Z|1787236961.201470
+controller start	2026-08-20T14:42:41Z|1787236961.212299	mutation=memo-t1
+controller saw arrival	1	2026-08-20T14:42:41Z|1787236961.322914
+MUTATE pass=1 file=memo.tsv	2026-08-20T14:42:41Z|1787236961.329267
+action: append payloads/memo.row to memo.tsv
+RELEASE pass=1	2026-08-20T14:42:41Z|1787236961.374003
+controller saw arrival	2	2026-08-20T14:42:41Z|1787236961.700325
+no mutation at pass 2	2026-08-20T14:42:41Z|1787236961.703336
+RELEASE pass=2	2026-08-20T14:42:41Z|1787236961.708096
+controller exit (ae finished before arrival 3)	2026-08-20T14:42:42Z|1787236962.143398

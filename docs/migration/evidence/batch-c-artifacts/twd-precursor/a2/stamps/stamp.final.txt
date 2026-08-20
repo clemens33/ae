@@ -1,0 +1,7 @@
+label=final
+epoch=1787238390
+utc=2026-08-20T15:06:30Z
+pgrep_aefake=70841 
+events_lines=3
+events_bytes=640
+wd_log_bytes=7307

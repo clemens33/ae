@@ -1,0 +1,57 @@
+## pane %0 agent=fake:probe  (capture-pane -p -J -S -40 -E -)
+                                                                                
+ckriech@MacOS-ckriech work % 
+ckriech@MacOS-ckriech work % /tmp/aecx/twd/a3/home/.ae/sessions/twda3/launch.mai
+n.sh
+aefake-ready-fixed-prompt
+429 Too Many Requests
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## end %0
+## pane %2 agent=_watchdog  (capture-pane -p -J -S -40 -E -)
+╭─ ae watchdog — session: twda3 ─────────────────────────╮
+│ interval: 5s   stale: 1m   max nudges: 2
+│ read-only pane (input disabled). use peek _watchdog or stop with `watchdog stop`.
+╰────────────────────────────────────────────────────────╯
+
+[15:06:35] ── cycle 1 ──
+[15:06:35]   fake:probe  active (pane hash changed)
+[15:06:40] ── cycle 2 ──
+[15:06:40]   fake:probe  recently visible (5s ago) — skip
+[15:06:45] ── cycle 3 ──
+[15:06:45]   fake:probe  recently visible (10s ago) — skip
+[15:06:50] ── cycle 4 ──
+[15:06:50]   fake:probe  recently visible (15s ago) — skip
+[15:06:55] ── cycle 5 ──
+[15:06:56]   fake:probe  THROTTLED — pausing nudges
+[15:07:01] ── cycle 6 ──
+[15:07:01]   fake:probe  THROTTLED — persistent (2 cycles), alert raised
+
+## end %2
+## pane %1 agent=_events  (capture-pane -p -J -S -40 -E -)
+╭─ ae events — session: twda3 ───────────────────────────────╮
+│ date+time (UTC)  action   actor                  → target                 summary
+╰──────────────────────────────────────────────────────────────────────────╯
+
+08-20T15:06:56  throttled _watchdog              → fake:probe             upstream throttling detected — pausing nudges
+08-20T15:07:01  alert    _watchdog              → fake:probe             throttled for 10s — may need attention
+
+
+## end %1

@@ -1,0 +1,7 @@
+[agents]
+dummy = "bash"
+dummy2 = "bash"
+
+[workspace]
+main = dummy
+layout = vertical

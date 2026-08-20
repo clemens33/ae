@@ -1,0 +1,107 @@
+arm_id=a2
+session=twda2
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+frozen_ae_path=/private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae
+frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+producer=generated-watchdog-from-this-launch (<meta>/watchdog _run)
+interpreter=/opt/homebrew/bin/bash
+interpreter_version=GNU bash, version 5.3.15(1)-release (aarch64-apple-darwin25.4.0)
+interpreter_sha256=6ba6319962b59831740a56aa5f65e91d6467c72997f5d0a18be1ba1a6d8d378b
+tmux_bin=/opt/homebrew/bin/tmux
+tmux_version=tmux 3.7b
+fake_agent_bin=/tmp/aecx/bin/aefake
+fake_agent_sha256=147363f35ae27912a9fb041dc06648f3d0e8da23111357325a05f49b67135940
+fake_agent_src_sha256=9f1d7503f021ff4c091a9736f43975ee1e45f704ab88c90e67baac3d39ecc841
+uname=Darwin 25.6.0 arm64
+clock_shim=none
+hook_patch=none (unmodified 72c7293 copy)
+knob.AE_WATCHDOG_INTERVAL_SEC=5
+knob.AE_WATCHDOG_STALE_MIN=1
+knob.AE_WATCHDOG_MAX_NUDGES=2
+knob.AE_WATCHDOG_THROTTLE_ALERT_CYCLES=2
+knob.AE_WATCHDOG_TG_SUPERVISE_SEC=0
+knob.AE_SEND_DEFER_SEC=5
+env.TZ=UTC
+env.LANG=C
+env.LC_ALL=C
+env.SHELL=/bin/zsh
+env.PATH=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+env.HOME=/tmp/aecx/twd/a2/home
+env.AE_HOME=/tmp/aecx/twd/a2/home/.ae
+env.AE_TMUX_SERVER=/tmp/aecx/twd/a2/s.sock
+start_utc=2026-08-20T15:00:48Z
+launch_rc=1
+wd_pane=%2
+agent_pane=%0
+instrument_selfcheck_positive_rc=0 (0 expected-shape: barrier reached)
+instrument_selfcheck_negative_rc=3 (3 expected-shape: bounded timeout)
+arm_manipulation=none-after-launch (fake agent alive, pane left static)
+observation_window_cycles=64
+barrier=obs-c01 cycles=3
+barrier=obs-c02 cycles=4
+barrier=obs-c03 cycles=5
+barrier=obs-c04 cycles=6
+barrier=obs-c05 cycles=7
+barrier=obs-c06 cycles=8
+barrier=obs-c07 cycles=9
+barrier=obs-c08 cycles=10
+barrier=obs-c09 cycles=11
+barrier=obs-c10 cycles=12
+barrier=obs-c11 cycles=13
+barrier=obs-c12 cycles=14
+barrier=obs-c13 cycles=15
+barrier=obs-c14 cycles=16
+barrier=obs-c15 cycles=17
+barrier=obs-c16 cycles=18
+barrier=obs-c17 cycles=19
+barrier=obs-c18 cycles=20
+barrier=obs-c19 cycles=21
+barrier=obs-c20 cycles=22
+barrier=obs-c21 cycles=23
+barrier=obs-c22 cycles=24
+barrier=obs-c23 cycles=25
+barrier=obs-c24 cycles=26
+barrier=obs-c25 cycles=27
+barrier=obs-c26 cycles=28
+barrier=obs-c27 cycles=29
+barrier=obs-c28 cycles=30
+barrier=obs-c29 cycles=31
+barrier=obs-c30 cycles=32
+barrier=obs-c31 cycles=33
+barrier=obs-c32 cycles=34
+barrier=obs-c33 cycles=35
+barrier=obs-c34 cycles=36
+barrier=obs-c35 cycles=37
+barrier=obs-c36 cycles=38
+barrier=obs-c37 cycles=39
+barrier=obs-c38 cycles=40
+barrier=obs-c39 cycles=41
+barrier=obs-c40 cycles=42
+barrier=obs-c41 cycles=43
+barrier=obs-c42 cycles=44
+barrier=obs-c43 cycles=45
+barrier=obs-c44 cycles=46
+barrier=obs-c45 cycles=47
+barrier=obs-c46 cycles=48
+barrier=obs-c47 cycles=49
+barrier=obs-c48 cycles=50
+barrier=obs-c49 cycles=51
+barrier=obs-c50 cycles=52
+barrier=obs-c51 cycles=53
+barrier=obs-c52 cycles=54
+barrier=obs-c53 cycles=55
+barrier=obs-c54 cycles=56
+barrier=obs-c55 cycles=57
+barrier=obs-c56 cycles=58
+barrier=obs-c57 cycles=59
+barrier=obs-c58 cycles=60
+barrier=obs-c59 cycles=61
+barrier=obs-c60 cycles=62
+barrier=obs-c61 cycles=63
+barrier=obs-c62 cycles=64
+barrier=obs-c63 cycles=65
+barrier=obs-c64 cycles=66
+agent_stdin_log_sha256=bb838301c4c0671d61d3dcf3c4805fb533596e5b770593088069ec0ad2a69f11
+agent_stdin_log_bytes=476
+final_aefake_pids=70841 
+end_utc=2026-08-20T15:06:31Z

@@ -1,0 +1,7 @@
+# tmux probe (TMUX_TMPDIR=/tmp/aeb0/arms/arm4-transient-events/active/tmuxtmp, -L aeb0-active)
+error connecting to /private/tmp/aeb0/arms/arm4-transient-events/active/tmuxtmp/tmux-501/aeb0-active (No such file or directory)
+list-sessions rc=1
+error connecting to /private/tmp/aeb0/arms/arm4-transient-events/active/tmuxtmp/tmux-501/aeb0-active (No such file or directory)
+list-panes rc=1
+error connecting to /private/tmp/aeb0/arms/arm4-transient-events/active/tmuxtmp/tmux-501/aeb0-active (No such file or directory)
+list-clients rc=1

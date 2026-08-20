@@ -1,0 +1,11 @@
+--- /tmp/aeb0/arms/arm3-transient-memo/home.manifest.before.tsv	2026-08-20 16:42:41
++++ /tmp/aeb0/arms/arm3-transient-memo/manifest.after.tsv	2026-08-20 16:42:42
+@@ -21,7 +21,7 @@
+ ./sessions/b0tmpl/loop	file	700	-	9ccb473ebd8d94e93b1b5963e3791abdf1c7a2f36d3a7c3cda5ca9ad7029e411
+ ./sessions/b0tmpl/mark-done	file	700	-	e6ac70ef4b06895da3c0c2c467bb516fe78d2e893edb68f8208f2a32b4fafe98
+ ./sessions/b0tmpl/memo	file	700	-	015b02d44e3f623ed36c0f5d562c8d17e562383c178b59898bd90e8c24aa3389
+-./sessions/b0tmpl/memo.tsv	file	644	-	f5d365124fc05cf0efd308d4c2deb295b8c43a8051530a387d887224ef1a5e4b
++./sessions/b0tmpl/memo.tsv	file	644	-	61b3b1a6346e9a5c7bd71e2130c5bdd4b88a8f34565da3d5ce7d8088b1d8c5ba
+ ./sessions/b0tmpl/memo.tsv.lock	file	644	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ ./sessions/b0tmpl/messages	dir	755	-	-
+ ./sessions/b0tmpl/messages/ae-20260820T143742Z-dc3cde5a.ask.6roaVP.txt	file	600	-	adc1364f13ab61bea92fa92564ab1b9c7ea693934380e2131071bb2b6348af32

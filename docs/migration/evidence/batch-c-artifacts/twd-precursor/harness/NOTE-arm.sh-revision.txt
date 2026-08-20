@@ -1,0 +1,10 @@
+harness/arm.sh in this directory is the post-run revision. It differs from the
+revision that produced a1/a2/a3 in exactly two string literals (labels written into
+run-manifest.txt), with no behavioral change:
+
+  -  echo "instrument_selfcheck_positive_rc=$_ic_pos (0 expected-shape: barrier reached)"
+  +  echo "instrument_selfcheck_positive_rc=$_ic_pos (harness positive control: barrier reached)"
+  -  echo "instrument_selfcheck_negative_rc=$_ic_neg (3 expected-shape: bounded timeout)"
+  +  echo "instrument_selfcheck_negative_rc=$_ic_neg (harness negative control: bounded timeout)"
+
+The a1/a2/a3 run-manifest.txt files carry the pre-revision label text verbatim.

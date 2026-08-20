@@ -1,0 +1,90 @@
+## pane %0 agent=fake:probe  (capture-pane -p -J -S -40 -E -)
+                                                                                
+ckriech@MacOS-ckriech work % 
+ckriech@MacOS-ckriech work % /tmp/aecx/twd/a2/home/.ae/sessions/twda2/launch.mai
+n.sh
+aefake-ready-fixed-prompt
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## end %0
+## pane %2 agent=_watchdog  (capture-pane -p -J -S -40 -E -)
+[15:04:19] ── cycle 41 ──
+[15:04:19]   fake:probe  STALE — already alerted, waiting for activity
+[15:04:24] ── cycle 42 ──
+[15:04:24]   fake:probe  STALE — already alerted, waiting for activity
+[15:04:29] ── cycle 43 ──
+[15:04:29]   fake:probe  STALE — already alerted, waiting for activity
+[15:04:34] ── cycle 44 ──
+[15:04:34]   fake:probe  STALE — already alerted, waiting for activity
+[15:04:39] ── cycle 45 ──
+[15:04:39]   fake:probe  STALE — already alerted, waiting for activity
+[15:04:44] ── cycle 46 ──
+[15:04:45]   fake:probe  STALE — already alerted, waiting for activity
+[15:04:50] ── cycle 47 ──
+[15:04:50]   fake:probe  STALE — already alerted, waiting for activity
+[15:04:55] ── cycle 48 ──
+[15:04:55]   fake:probe  STALE — already alerted, waiting for activity
+[15:05:00] ── cycle 49 ──
+[15:05:00]   fake:probe  STALE — already alerted, waiting for activity
+[15:05:05] ── cycle 50 ──
+[15:05:05]   fake:probe  STALE — already alerted, waiting for activity
+[15:05:10] ── cycle 51 ──
+[15:05:10]   fake:probe  STALE — already alerted, waiting for activity
+[15:05:16] ── cycle 52 ──
+[15:05:16]   fake:probe  STALE — already alerted, waiting for activity
+[15:05:21] ── cycle 53 ──
+[15:05:21]   fake:probe  STALE — already alerted, waiting for activity
+[15:05:26] ── cycle 54 ──
+[15:05:26]   fake:probe  STALE — already alerted, waiting for activity
+[15:05:31] ── cycle 55 ──
+[15:05:31]   fake:probe  STALE — already alerted, waiting for activity
+[15:05:36] ── cycle 56 ──
+[15:05:36]   fake:probe  STALE — already alerted, waiting for activity
+[15:05:42] ── cycle 57 ──
+[15:05:42]   fake:probe  STALE — already alerted, waiting for activity
+[15:05:47] ── cycle 58 ──
+[15:05:47]   fake:probe  STALE — already alerted, waiting for activity
+[15:05:52] ── cycle 59 ──
+[15:05:52]   fake:probe  STALE — already alerted, waiting for activity
+[15:05:57] ── cycle 60 ──
+[15:05:57]   fake:probe  STALE — already alerted, waiting for activity
+[15:06:02] ── cycle 61 ──
+[15:06:02]   fake:probe  STALE — already alerted, waiting for activity
+[15:06:08] ── cycle 62 ──
+[15:06:08]   fake:probe  STALE — already alerted, waiting for activity
+[15:06:13] ── cycle 63 ──
+[15:06:13]   fake:probe  STALE — already alerted, waiting for activity
+[15:06:18] ── cycle 64 ──
+[15:06:18]   fake:probe  STALE — already alerted, waiting for activity
+[15:06:23] ── cycle 65 ──
+[15:06:23]   fake:probe  STALE — already alerted, waiting for activity
+
+## end %2
+## pane %1 agent=_events  (capture-pane -p -J -S -40 -E -)
+╭─ ae events — session: twda2 ───────────────────────────────╮
+│ date+time (UTC)  action   actor                  → target                 summary
+╰──────────────────────────────────────────────────────────────────────────╯
+
+08-20T15:01:53  nudge    watchdog               → fake:probe             no recent events, no recent ae activity
+08-20T15:01:59  nudge    watchdog               → fake:probe             no recent events, no recent ae activity
+08-20T15:02:04  alert    _watchdog              → fake:probe             max nudges reached (no recent events), needs attention
+
+## end %1

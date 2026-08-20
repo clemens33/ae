@@ -1,0 +1,7 @@
+label=obs-c42
+epoch=1787238275
+utc=2026-08-20T15:04:35Z
+pgrep_aefake=70841 
+events_lines=3
+events_bytes=640
+wd_log_bytes=4953

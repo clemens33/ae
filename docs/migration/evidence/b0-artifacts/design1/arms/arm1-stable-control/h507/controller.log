@@ -1,0 +1,6 @@
+arm=arm1-stable-control mutation=none start 2026-08-20T14:42:30Z|1787236950.010569
+controller start	2026-08-20T14:42:30Z|1787236950.021485	mutation=none
+controller saw arrival	1	2026-08-20T14:42:30Z|1787236950.135944
+no mutation at pass 1	2026-08-20T14:42:30Z|1787236950.139129
+RELEASE pass=1	2026-08-20T14:42:30Z|1787236950.145243
+controller exit (ae finished before arrival 2)	2026-08-20T14:42:30Z|1787236950.478244

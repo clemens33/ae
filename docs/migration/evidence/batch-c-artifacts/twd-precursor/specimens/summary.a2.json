@@ -1,0 +1,15 @@
+{
+  "arm": "a2",
+  "source_events_file": "/tmp/aecx/twd/a2/cap/events.final.jsonl",
+  "source_events_sha256": "0553a5be84ee5c4b33b4f816447e8207dc7455cd87024ecf872123c9f6cd407c",
+  "source_events_bytes": 640,
+  "total_specimens": 3,
+  "alert_family_specimens": 1,
+  "alert_family_actions": [
+    "alert"
+  ],
+  "all_actions": [
+    "alert",
+    "nudge"
+  ]
+}

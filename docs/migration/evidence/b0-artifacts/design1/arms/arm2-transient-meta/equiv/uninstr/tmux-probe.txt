@@ -1,0 +1,7 @@
+# tmux probe (TMUX_TMPDIR=/tmp/aeb0/arms/arm2-transient-meta/equiv/uninstr/tmuxtmp, -L aeb0-uninstr)
+error connecting to /private/tmp/aeb0/arms/arm2-transient-meta/equiv/uninstr/tmuxtmp/tmux-501/aeb0-uninstr (No such file or directory)
+list-sessions rc=1
+error connecting to /private/tmp/aeb0/arms/arm2-transient-meta/equiv/uninstr/tmuxtmp/tmux-501/aeb0-uninstr (No such file or directory)
+list-panes rc=1
+error connecting to /private/tmp/aeb0/arms/arm2-transient-meta/equiv/uninstr/tmuxtmp/tmux-501/aeb0-uninstr (No such file or directory)
+list-clients rc=1

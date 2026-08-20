@@ -1,0 +1,10 @@
+arm=arm4-transient-events mutation=events-t1 start 2026-08-20T14:42:48Z|1787236968.074268
+controller start	2026-08-20T14:42:48Z|1787236968.085453	mutation=events-t1
+controller saw arrival	1	2026-08-20T14:42:48Z|1787236968.199756
+MUTATE pass=1 file=events.jsonl	2026-08-20T14:42:48Z|1787236968.207494
+action: append payloads/events.ask.1 to events.jsonl
+RELEASE pass=1	2026-08-20T14:42:48Z|1787236968.255723
+controller saw arrival	2	2026-08-20T14:42:48Z|1787236968.571904
+no mutation at pass 2	2026-08-20T14:42:48Z|1787236968.576856
+RELEASE pass=2	2026-08-20T14:42:48Z|1787236968.580393
+controller exit (ae finished before arrival 3)	2026-08-20T14:42:49Z|1787236969.026836

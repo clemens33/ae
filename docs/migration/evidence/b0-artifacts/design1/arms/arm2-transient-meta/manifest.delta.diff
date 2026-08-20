@@ -1,0 +1,11 @@
+--- /tmp/aeb0/arms/arm2-transient-meta/home.manifest.before.tsv	2026-08-20 16:42:34
++++ /tmp/aeb0/arms/arm2-transient-meta/manifest.after.tsv	2026-08-20 16:42:35
+@@ -27,7 +27,7 @@
+ ./sessions/b0tmpl/messages/ae-20260820T143742Z-dc3cde5a.ask.6roaVP.txt	file	600	-	adc1364f13ab61bea92fa92564ab1b9c7ea693934380e2131071bb2b6348af32
+ ./sessions/b0tmpl/messages/ae-20260820T143742Z-dc3cde5a.reply.WLyIHa.txt	file	600	-	d3eabc52463a4c5afa178700d7fc5052f6a0a1d3e8805399fad294fda8e62268
+ ./sessions/b0tmpl/messages/ae-20260820T143744Z-130cc381.ask.er0Tn5.txt	file	600	-	0f7fe0ee103e80ffcf4f5cf933e0580d1090f94d72b96dd6043fb6a92e001223
+-./sessions/b0tmpl/meta	file	644	-	897258c2dd031c265450554a98753bc683f3c21ca720eabbe209547063138783
++./sessions/b0tmpl/meta	file	644	-	e5e7f4a988363fe348eee887effdccf3eb18040a69cbfa5a6cf5af993df14a31
+ ./sessions/b0tmpl/meta.lock	file	644	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ ./sessions/b0tmpl/peak	file	700	-	e80cd4509934a5aa3cd1ed857cda8b359aad9f19f481a21fa6f21243b62442dd
+ ./sessions/b0tmpl/peek	file	700	-	aca933b1b14b03b1e277e28516a60928d6c24020fd6cc4af909ae1accb095759
