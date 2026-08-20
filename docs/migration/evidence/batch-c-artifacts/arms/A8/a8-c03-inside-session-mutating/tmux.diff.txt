@@ -1,0 +1,6 @@
+2c2
+< ta8a8c03insidesession|2|0
+---
+> ta8a8c03insidesession|3|0
+5a6
+> ta8a8c03insidesession|%3|||bash

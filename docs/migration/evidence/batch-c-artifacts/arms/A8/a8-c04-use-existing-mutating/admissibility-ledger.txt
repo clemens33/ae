@@ -1,0 +1,19 @@
+seq=001	utc=2026-08-20T20:21:59Z	epoch=1787257319	event=case-OPEN	arm=A8 case=a8-c04-use-existing clone_mode=mutating frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T20:21:59Z	epoch=1787257319	event=rows	rows=SC-018b template=none (live launch; modes are about the launch path)
+seq=003	utc=2026-08-20T20:22:02Z	epoch=1787257322	event=stage	the session is left RUNNING after launch
+seq=004	utc=2026-08-20T20:22:02Z	epoch=1787257322	event=harness-touched-DECLARED	paths=.a8-witness-probe-rewrite .a8-witness-probe-content note=declared BEFORE the run; a statement about the controller's own actions
+seq=005	utc=2026-08-20T20:22:02Z	epoch=1787257322	event=env-recorded	artifact_sha256=8653990a5421d373a43769bc084e1166ec547c1ae9562edbfadf9956877d3f40
+seq=006	utc=2026-08-20T20:22:02Z	epoch=1787257322	event=env-tab-selfcheck-START	artifact=env-tab-selfcheck.txt
+seq=007	utc=2026-08-20T20:22:02Z	epoch=1787257322	event=env-tab-selfcheck-COMPLETE	tab_survived=yes artifact_sha256=da3850fc9fcfac99b907087d13bf41310e0606c6e6147f4b490ec23859356912
+seq=008	utc=2026-08-20T20:22:02Z	epoch=1787257322	event=tmux-shim-equivalence-START	socket=/tmp/aecx/tpl/a8a8c04useexisting/s.sock session=ta8a8c04useexisting
+seq=009	utc=2026-08-20T20:22:02Z	epoch=1787257322	event=tmux-shim-equivalence-COMPLETE	all_identical=yes artifact_sha256=fec5623274f16fb60439597a68d7221058c87366a1d9c7a3929936fa567a57c4
+seq=010	utc=2026-08-20T20:22:02Z	epoch=1787257322	event=witness-control-PLANTED	paths=.a8-witness-probe-rewrite .a8-witness-probe-content note=planted BEFORE the before-snapshot so both are pre-existing paths
+seq=011	utc=2026-08-20T20:22:03Z	epoch=1787257323	event=manifest-before	artifact_sha256=6dc3fd6cfdb0c90cf6f09a8427e11cc223d2253d0274d8a358bc6f9151ec0c1c witness_sha256=fd25071914b4a9b6e2c38896433843cf4e550237faa5b27d09079f8b605faaad tmux_sha256=0a71b7b193caae2ae613b339b41f0b6cc71d37b8ce83d820f86c891efc41530e
+seq=012	utc=2026-08-20T20:22:03Z	epoch=1787257323	event=measured-invocation	argv=ae --local ta8a8c04useexisting context=an existing session dir of that name is present
+seq=013	utc=2026-08-20T20:22:03Z	epoch=1787257323	event=consumer-START	label=ae-local-existing bounded_secs=30 argv=/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae --local ta8a8c04useexisting 
+seq=014	utc=2026-08-20T20:22:03Z	epoch=1787257323	event=consumer-COMPLETE	label=ae-local-existing rc=1 stdout_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 stderr_sha256=4f7f246776f96497debe6df737ee867361c738f996812a03868875d0aba45c53 tmuxtrace_sha256=a5a38c5e8d81c333a50c2500b13c2bb29c8cc91a0d10c68c1a54fa64cabfa4d4 harness_stopped=no
+seq=015	utc=2026-08-20T20:22:03Z	epoch=1787257323	event=witness-control-FIRED	rewrite=byte-identical temp+mv content=one line changed
+seq=016	utc=2026-08-20T20:22:04Z	epoch=1787257324	event=manifest-after	artifact_sha256=dc05b6db6c004b9a13139d5a70545f6280335ecdce9915024fc106114451e3d2 witness_sha256=500a613c3491c4249ec9f6bb0b4c4ccd904c3751fd83b9dae88f87303926bbbd tmux_sha256=0a71b7b193caae2ae613b339b41f0b6cc71d37b8ce83d820f86c891efc41530e
+seq=017	utc=2026-08-20T20:22:04Z	epoch=1787257324	event=change-record	product_written_paths=0 harness_written_paths=1 artifact_sha256=d8ddae3651ee7ee7067afabd82c90fb3565d31ee083a250c6673497c4cb199e8
+seq=018	utc=2026-08-20T20:22:04Z	epoch=1787257324	event=write-witness	rewritten_paths=2 artifact_sha256=75582d08165a99236efcdb86e0e2b0201b9abcd9d1e7549bc9ed0db04ab3e74c
+seq=019	utc=2026-08-20T20:22:04Z	epoch=1787257324	event=case-CLOSE	case_txt_sha256=24084084d9db9b1745c2a08ec8d345867a9e76cc6e965f0bdd6000a485024ffd consumers_tsv_sha256=21f14af29aa8b049273e33b2219d9267f7073afafa6aa05c264179631023c87d

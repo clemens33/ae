@@ -169,7 +169,8 @@ note (1306a→D01/Design 2, 1306b→D04a/Design 5, 1306c→D04b/Design 6, 1306d�
 | Arm group A5 (SC-514) | COMPLETE, bash lane — 7 case runs under a controlled PATH |
 | Arm group A6 (SC-518, 522, 523a–b) | COMPLETE, bash lane — 13 case runs |
 | Arm group A7 (SC-405a–g, 405j) | COMPLETE, bash lane — 36 case runs |
-| Arm groups A8–A9 | not started |
+| Arm group A8 (SC-101, 102a, 102b, 018b) | COMPLETE, bash lane — 4 case runs, the first MUTATING group |
+| Arm group A9 | not started |
 | D-record executions (b0-design Designs 2–6) + SC-1306a–e | COMPLETE, bash lane — D01, D02, D03, D04a, D04b, all with controller-only twins |
 
 ---
@@ -1510,6 +1511,102 @@ Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A7/<case>/`:
 - `tmux.before.txt` / `tmux.after.txt`
 - `A7/ledger.tsv` (case -> row ids), `A7/harness/` (the exact scripts and the
   tmux shim), `SHA256SUMS.txt` (every file above)
+
+## Arm group A8 — launch modes (bash lane)
+
+### A8 — what the arm does
+
+Rows: SC-101, SC-102a, SC-102b, SC-018b. Four cases, each a LIVE launch of a real frozen
+`ae` into its own sandbox, then ONE measured invocation that is allowed to write. This is
+the first MUTATING group in Batch C, and that inverts a safety property the earlier arms
+relied on: until now a non-empty manifest diff meant something had gone wrong, and here it
+is the measurement. So each case DECLARES, before the run, which paths the controller
+itself will touch — `change-record.txt` enumerates every ADDED/REMOVED/MODIFIED path and
+partitions it `[harness]` against that declaration or `[PRODUCT]` against nothing. A
+mutation nobody predicted appears as a named `[PRODUCT]` path rather than as a number
+going up.
+
+**The content manifest alone could not see the thing the arm exists to measure.** The first
+run reported every case as writing nothing, including the resume case whose own stdout said
+`Resuming session ...`. Regenerating a session's helper set rewrites ~29 files with
+byte-identical content, and a content-hash manifest is blind to that by construction. A
+second instrument now reads the same tree by inode/mtime/size (`witness.before.tsv` /
+`witness.after.tsv` → `write-witness.txt`), and the two are reported side by side: the
+resume case shows 29 product paths rewritten and 0 with changed content, which is one
+reading from two instruments, not a contradiction.
+
+**Every case carries controls on the arm's own equipment.** Two harness-owned probes are
+planted before the before-snapshot and fired AFTER the measured invocation, so a control
+cannot perturb what it checks: one is rewritten byte-identically (only the write witness
+can see that) and one has its content changed (only then does the content manifest have
+anything to report). Both are declared harness-touched, so they are partitioned out of the
+product counts. A case whose control does not fire is aborted, not reported — a
+`product rewrites = 0` reading is otherwise uninterpretable, because a blind instrument and
+a quiet product produce the same zero. `case-schema.tsv` gains a `mutating` kind that
+requires the control READING (`witness_control_rewrite_seen=yes`), not merely the file that
+would carry it; the requirement is red-proved by flipping that line in a copy of the tree.
+
+**SC-102b needed a real pane, and the first attempt did not have one.** The case sends its
+invocation from inside the session, and the initial manipulation typed the script into the
+lead agent's pane — which runs the fake agent, and the fake agent CONSUMES stdin rather
+than executing it. The case waited its bounded 40s and recorded INCONCLUSIVE, which was
+honest and measured nothing. A forged `$TMUX` would not have fixed it either:
+`_ae_inside_tmux` (ae@72c7293:257) asks the inner server whether this tty is one of its
+panes. The controller now opens one window in the live session and runs the invocation from
+that real shell pane; the window is the controller's own topology change and is declared in
+the ledger. `out/inside.env` captures the `$TMUX` / `$TMUX_PANE` the pane was actually
+given.
+
+**What the four invocations ended on is captured as argv, not inferred from output.**
+ae@72c7293:2324/2326 ends both launch branches with an `exec tmux <verb>`; `exec` is not
+the shell function ae installs, so the verb and its flags reach the delegate-and-log shim
+exactly as the process spelled them. Those final delegated argv lines are in each case's
+`out/*.tmuxtrace` and collected in `mode-record.txt` together with rc, stdout and stderr.
+Nothing here is classified: the record names what each case invoked, what it printed, what
+it wrote, and what argv it ended on.
+
+### A8 case table
+
+Every case is a LIVE launch — there is no template and no clone, so the read-only arms'
+`clone fp = template fp` column has no meaning here and is replaced by what the
+invocation wrote. `product rewrites` counts paths whose inode/mtime/size changed with
+the harness's own declared probes partitioned out; `product content` counts paths whose
+CONTENT changed. The two differ on purpose: a byte-identical rewrite moves the first and
+not the second.
+
+`witness ctl` is this case's own positive control — the controller rewrites a declared
+harness path byte-identically AFTER the measured invocation, so a `product rewrites = 0`
+reading is known to come from a responsive instrument rather than a blind one. A case
+whose control does not fire is aborted rather than reported.
+
+`final tmux verb` is the last argv the delegate-and-log shim was handed. ae@72c7293:2324
+and :2326 end the launch paths with an `exec tmux <verb>`, so the verb is captured
+evidence of which branch the process ran off the end of.
+
+| case | clone | rows | rc | final tmux verb | product rewrites | product content | witness ctl | checks<first consumer | ordered |
+|---|---|---|---|---|---|---|---|---|---|
+| `a8-c01-fastpath-running-mutating` | mutating | SC-101 | 1 | `attach-session` | 0 | 0 | yes | 7/9/12 | yes |
+| `a8-c02-resume-stopped-mutating` | mutating | SC-102a | 1 | `attach-session` | 29 | 0 | yes | 7/9/12 | yes |
+| `a8-c03-inside-session-mutating` | mutating | SC-102b | 1 | `switch-client` | 0 | 0 | yes | 7/9/13 | yes |
+| `a8-c04-use-existing-mutating` | mutating | SC-018b | 1 | `attach-session` | 0 | 0 | yes | 7/9/12 | yes |
+
+Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A8/<case>/`:
+
+- `admissibility-ledger.txt` — append-only, monotonic `seq` + UTC + epoch per event:
+  case open, rows, the harness-touched DECLARATION (made before the run), the TAB
+  round-trip and tmux-shim equivalence START/COMPLETE, the before manifests and
+  witnesses, the measured invocation, the controls firing, and the after pair
+- `case.txt`, `env.txt`, `consumers.tsv`, `out/<label>.{stdout,stderr,tmuxtrace}`
+- `manifest.before.tsv` / `manifest.after.tsv` / `manifest.diff.txt` — type, mode,
+  content hash, symlink target, path across the live AE_HOME
+- `witness.before.tsv` / `witness.after.tsv` / `witness.diff.txt` — inode, mtime, size,
+  path: the same tree read by a different instrument
+- `change-record.txt` — every ADDED/REMOVED/MODIFIED path, partitioned `[harness]` vs
+  `[PRODUCT]` against the declaration made before the run
+- `write-witness.txt` — every REWRITTEN path with before/after inode, mtime and size,
+  the same partition, and the control reading
+- `A8/mode-record.txt` (the generated cross-case table), `A8/ledger.tsv`,
+  `A8/harness/` (the exact scripts and the tmux shim), `SHA256SUMS.txt`
 
 ## D-record executions (bash lane)
 

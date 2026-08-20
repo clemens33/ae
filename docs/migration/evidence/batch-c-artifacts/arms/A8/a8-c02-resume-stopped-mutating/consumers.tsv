@@ -1,0 +1,2 @@
+consumer	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	tmuxtrace_sha256	tmuxtrace_lines	bounded	argv
+ae-name-stopped	1	e7e83ac591c0dba8904e3968d5447a6eb71a28f177c41dcf708ec2856b74bb3b	89	4f7f246776f96497debe6df737ee867361c738f996812a03868875d0aba45c53	12	ff3afced94e9862b52f132d62ed6215cab31ba09421c34626f404692aa5a726d	57	40s=no	/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae ta8a8c02resumestopped 

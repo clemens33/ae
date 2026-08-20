@@ -1,0 +1,2 @@
+consumer	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	tmuxtrace_sha256	tmuxtrace_lines	bounded	argv
+ae-local-existing	1	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0	4f7f246776f96497debe6df737ee867361c738f996812a03868875d0aba45c53	12	a5a38c5e8d81c333a50c2500b13c2bb29c8cc91a0d10c68c1a54fa64cabfa4d4	3	30s=no	/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae --local ta8a8c04useexisting 

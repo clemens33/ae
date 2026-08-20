@@ -1,0 +1,6 @@
+1,2c1,2
+< 30384030	1787257304	66	./.a8-witness-probe-content
+< 30384029	1787257304	75	./.a8-witness-probe-rewrite
+---
+> 30384030	1787257305	66	./.a8-witness-probe-content
+> 30384062	1787257305	75	./.a8-witness-probe-rewrite

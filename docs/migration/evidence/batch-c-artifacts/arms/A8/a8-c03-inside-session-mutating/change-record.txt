@@ -1,0 +1,23 @@
+## change record — every changed path, partitioned by who wrote it
+before=manifest.before.tsv sha256=8dd309bdd3634cd0a213f3dc9d3bc08eb71874badd937046d9bfad8d287601a1
+after =manifest.after.tsv sha256=d7422a78778d9d7096363781e8d50a384349cecbac32b96cb863a62423319315
+
+harness-touched paths DECLARED by this arm before the run (a statement about the controller's own actions, not about what the product should do):
+  .a8-witness-probe-content
+  .a8-witness-probe-rewrite
+
+### ADDED (0)
+  (none)
+
+### REMOVED (0)
+  (none)
+
+### MODIFIED (1)
+  [harness] ./.a8-witness-probe-content
+        before type=file mode=644 hash=4d16869a5ff13367f330592f22be3134d4456e79bc9ed717d7278c4317490b3a
+        after  type=file mode=644 hash=cc703b0451baa1da07100b580bd198f59bc2fbedeb7353718d3f34880cf608c9
+
+product_written_paths=0
+harness_written_paths=1
+Every product-written path is named above. No path is summarised away, and no
+statement is made here about whether any of them should have changed.

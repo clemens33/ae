@@ -1,0 +1,5 @@
+case_dir	ledger_sha256	ledger_lines	files
+a8-c01-fastpath-running-mutating	a257c438c63684d999d630efa104ab43bf9d7606e882a90a2b9ecf470d25e703	19	21
+a8-c02-resume-stopped-mutating	244d9a30582c9e70ef25fd19ac6910c54d3d1ca316eb323104f8754972514530	19	23
+a8-c03-inside-session-mutating	6b1f50d598b4c0ba180eac1bef41f89b429d712d87f1f640dabbcb63efc695c5	20	23
+a8-c04-use-existing-mutating	ba7b570b5f90a7ee35e8221309cfdd9cc4b47912d03d1b1fbfb2f65f0a3f5f12	19	21

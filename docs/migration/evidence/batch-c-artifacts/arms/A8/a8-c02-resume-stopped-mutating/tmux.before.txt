@@ -1,0 +1,6 @@
+## sessions
+no server running on /tmp/aecx/tpl/a8a8c02resumestopped/s.sock
+## panes
+no server running on /tmp/aecx/tpl/a8a8c02resumestopped/s.sock
+## clients
+no server running on /tmp/aecx/tpl/a8a8c02resumestopped/s.sock

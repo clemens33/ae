@@ -1,0 +1,1 @@
+product_written_paths=0 harness_written_paths=1

@@ -1,0 +1,2 @@
+consumer	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	tmuxtrace_sha256	tmuxtrace_lines	bounded	argv
+inside-session	1	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0	25a1cdc33a1dc4c799ce9f9ba7ca5cafc136dfc2908755f909be99688911c321	18	c6b7efb94bf28cf0fafed1951a080f5645afd4242ab2847ce43eac9112498ea7	4	-	ae ta8a8c03insidesession from inside the session
