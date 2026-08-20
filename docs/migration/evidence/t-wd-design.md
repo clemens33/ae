@@ -1,11 +1,13 @@
-# T-WD design — watchdog cluster — worker draft **v6** (NOTHING APPROVED, NOTHING RUN)
+# T-WD design — watchdog cluster — worker draft (NOTHING APPROVED, NOTHING RUN)
 
 Drafted by `opus5:lexec` for seat gate by `fable5:lead` and `gpt56sol:colead`. Sole-writer
 draft; this file is mine and nothing else in the evidence tree is touched by it.
 
-**v6 answers the v5 gate: BLOCKER 1–9, IMPORTANT 1–2**, delivered as a neutral delta by the lead
-after colead's outcome-bearing analysis went seat-to-seat. Section 6 is the change log against
-each finding.
+**This draft carries no version numeral, deliberately.** The committed blob's hash is its
+identity, and a self-label is a number maintained by hand in three places (title, opening line,
+commit message) — the previous draft was committed as v7 while still calling itself v6 in both
+document positions. Where a number must be maintained by hand, stop having the number. Section 6
+is the change log, keyed by the gate it answers.
 
 **v5's clearance does not travel to this file.** Each version re-enters gate 1 from the beginning,
 both seats, on its own fixed hash. **v5 was gated FAIL** — the lead's half-clearance of v5 is void
@@ -173,9 +175,10 @@ frozen tree hash**; **and the generated-helper hashes**.
 
 **Scope is PROVENANCE-BOUNDED, not total (lead ruling, v4 gate BLOCKER 1).** v3's closure was
 too narrow (script identity only); v4's was too broad (everything hashed and frozen), which
-would have failed arms for the product doing the very thing they exist to observe — arm 5 resumes
-a session, and a resume rewrites session assets; arms 27–29 invoke `doctor --refresh`, whose
-defining action is `sync_session_assets` (ae:8610). Neither error is visible from inside the
+would have failed arms for the product doing the very thing they exist to observe —
+`WD-900-resume-overlimit` resumes a session, and a resume rewrites session assets; the
+`WD-929-*` arms invoke `doctor --refresh`, whose defining action is `sync_session_assets`
+(ae:8610). Neither error is visible from inside the
 other. The boundary the rule was missing is provenance:
 
 | provenance | treatment | rationale |
@@ -259,12 +262,20 @@ document has already shipped one prose count that disagreed with its own roster.
 
 ### M14 — shared blocks are machine-addressable, never prose inheritance *(colead v4 BLOCKER 6)*
 v4 claimed every RED arm was a standalone execution-grain spec and it was not: nine arms
-delegated fixture, barriers, captures or calibration to a sibling by prose ("as arm 22"), which
-gate 2 cannot expand and cannot prove closure over. **Corrected: every shared element is a named
-block in `SHARED-BLOCKS.tsv`** (`block_id`, `kind`, `owner_arm`, `body`), and an arm references
+delegated fixture, barriers, captures or calibration to a sibling by prose, which gate 2 cannot
+expand and cannot prove closure over.
+> *History:* the delegating form was `"as arm 22, with…"`, and nine arms used it.
+
+**Corrected: every shared element is a named block in `SHARED-BLOCKS.tsv`** (`block_id`, `kind`, `owner_arm`, `body`), and an arm references
 it by id in a typed field. **The checker expands every referenced block into every referencing
 arm and validates the expanded arm**, so per-arm closure and calibration are proven rather than
 inherited. An arm carrying a bare prose back-reference is a lint failure.
+
+**The ban covers EVERY normative section, not just arm fields.** v7 scoped M14's lint to arm
+fields and §4, and its own live counterexample sat in M2, stale since the roster renumbered.
+> *History:* that line read `"arms 27–29 invoke doctor --refresh"` after those arms had become 33–36. A mechanism that cannot see its own counterexample is scoped
+wrong. **Historical rationale that must cite an old ordinal goes in a blockquote**, which the
+checker skips; everything else is linted.
 
 **References are by NAME, never by ORDINAL.** v5 claimed this and reproduced the defect at seven
 sites, four of which had already gone **stale** when the roster renumbered — still parsing, still
@@ -277,10 +288,10 @@ field or in §4. Ordinals survive only in the roster table, which is generated f
 positional reference and must report it. A run that cannot go red proves nothing, and this rule
 has now been asserted twice with no mechanism behind it.
 
-**One manipulation per arm is enforced, not merely stated.** v4's arm 13 carried three failure
-sub-constructions and three manipulations against its own one-manipulation rule, with a single
-generic calibration covering all three. It is split into three arms (§3A). The linter counts
-declared manipulations per arm and rejects any arm declaring more than one.
+**One manipulation per arm is enforced, not merely stated.** The linter counts declared
+manipulations per arm and rejects any arm declaring more than one.
+> *History:* one draft's arm 13 carried three failure sub-constructions and three manipulations
+> against its own one-manipulation rule, under a single generic calibration. It is now three arms.
 
 ### M15 — the lane-unit contract *(lead ruling on the v6 judgment call, binding)*
 Where an arm runs under a pinned selector that is itself the controlled variable, **the unit of
@@ -305,10 +316,11 @@ having them:
 because it settles the question rather than the instance): the distinguishing test is
 **attribution** — can a result be attributed to exactly one manipulation? A lane pair is one
 manipulation under a pinned, recorded selector with nothing shared to confound it, so yes. v4's
-arm 13 bundled three manipulations, so no. **The test is the rule; the count of ids is not.** And
-sixteen hand-maintained near-copies would be worse: duplication invites drift, someone edits one
-and not the other, and nothing flags it — the same disease as the 62 retargeted references, with
-more surface.
+a bundled arm cannot. **The test is the rule; the count of ids is not.** And hand-maintained
+near-copies would be worse: duplication invites drift, someone edits one and not the other, and
+nothing flags it — the same disease as silently retargeted references, with more surface.
+> *History:* the bundled case was arm 13 with three manipulations; the retargeting case was 62
+> positional references, four of which had gone stale.
 
 ### M13 — equipment canaries are CONTROLLER-generated, never product outcomes *(colead v3 IMPORTANT 3)*
 v3's recorder-liveness controls were phrased as "a known daemon start", "a known delivery", "a
@@ -338,6 +350,14 @@ defect in the canary.
 |---|---|---|
 | **RED** | `CANDIDATE SPACE` with A and B named, neutral + mutated legs (M3), per-leg mutations (M8), landing check (M5), M13 canary | — |
 | **CAPTURE-ONLY** | provenance of the invocation, M13 canary, exact bytes with `od`, sha256, and an explicit in-artifact statement that it makes no comparison | no candidate space, no legs, no assertion of any kind |
+| **GAP** | `reason` (why no product-valid manipulation exists) and `what_would_lift_it`, both required, recorded in `ARM-GAPS.tsv` | **no candidate space, no legs, no canaries, no captures, and NO EXECUTION.** Excluded from the runnable set, the unit count and the M12 set **by class** |
+
+**The GAP class is typed, not narrated.** The previous draft introduced a gap arm in the roster
+while §2 defined only RED and CAPTURE-ONLY, so **no typed rule stopped a non-running arm entering
+execution** — it was excluded by prose alone. The runner dispatches on `class`, refuses to execute
+anything classed GAP, and `t-wd-check.sh` excludes GAP rows from every derived count. **Gate 2
+red-proves it**: a GAP arm is fed to the runner and must be refused; a run that cannot refuse one
+proves nothing.
 
 The linter and the calibration generator both dispatch on `class`, so a CAPTURE-ONLY arm is
 excluded structurally and a RED arm cannot silently become one.
@@ -363,10 +383,17 @@ Surface lines are the lead's verbatim except SC-980, rewritten on colead's instr
 | SC-929 | the state observable after a restart, and `doctor --refresh` serving-version ordering | F9 |
 | SC-980 | the incumbent alert's action and summary byte surface *(adapted per colead)* | F13 |
 
-**37 arm specs** — 35 RED, 1 CAPTURE-ONLY, 1 declared gap. 10 run in **two pinned lanes**
-(bash and uv), so the executed unit count is 47. Every arm gets its own disposable sandbox and its own
-fixture clone; no arm shares a sandbox. 18 arms (rows SC-920/921/926/927/928/929) carry M12 and take their A/B/C matrix
-from §4; the two bash baselines under SC-928 close nothing and say so in their own headers.
+**Every count in this document is DERIVED FROM THE ROSTER by `t-wd-check.sh`, which is committed
+beside it and which gate 2 runs.** No count is typed by hand here, because the previous draft
+printed a spec count where a unit count was meant and an M12 count that disagreed with its own
+typed rows — both of them numbers that *looked* generated. The checker recomputes
+specs / RED / CAPTURE-ONLY / GAP / two-lane / runnable / units / M12 from the roster rows and
+**exits non-zero on any disagreement with a printed figure**; a GAP spec is excluded from the
+runnable and unit totals by class.
+
+Every arm gets its own disposable sandbox and its own fixture clone; no arm shares a sandbox. The
+M12 set is the set of roster rows carrying a `§4.x` reference and not classed GAP — derived, never
+counted in prose. The bash baselines under SC-928 close nothing and say so in their own headers.
 
 | # | arm id | row | class | lanes | M12 |
 |---|---|---|---|---|---|
@@ -377,36 +404,43 @@ from §4; the two bash baselines under SC-928 close nothing and say so in their 
 | 5 | `WD-900-resume-overlimit` | SC-900 | RED | — | — |
 | 6 | `WD-900-run-overlimit` | SC-900 | RED | — | — |
 | 7 | `WD-901-two-sessions` | SC-901 | RED | bash+uv | — |
-| 8 | `WD-901-second-start` | SC-901 | RED | bash+uv | — |
-| 9 | `WD-913-lock-contention` | SC-913 | RED | bash+uv | — |
-| 10 | `WD-913-occupied-input` | SC-913 | RED | bash+uv | — |
-| 11 | `WD-913-dead-pane` | SC-913 | RED | bash+uv | — |
-| 12 | `WD-913-submit-unverified` | SC-913 | RED | bash+uv | — |
-| 13 | `WD-913-durable-occupied` | SC-913 | RED | bash+uv | — |
-| 14 | `WD-913-durable-dead` | SC-913 | RED | bash+uv | — |
-| 15 | `WD-913-durable-unverified` | SC-913 | RED | bash+uv | — |
-| 16 | `WD-913-delivery-count` | SC-913 | RED | bash+uv | — |
-| 17 | `WD-920-origin-matrix` | SC-920 | RED | — | §4.1 |
-| 18 | `WD-921-monitor-in-roster` | SC-921 | RED | — | §4.2 |
-| 19 | `WD-921-monitor-stamped` | SC-921 | RED | — | §4.2 |
-| 20 | `WD-926-start-cut-pre-intent` | SC-926 | RED | — | §4.3 |
-| 21 | `WD-926-start-cut-post-intent` | SC-926 | RED | — | §4.3 |
-| 22 | `WD-926-stop-cut-pre-intent` | SC-926 | RED | — | §4.3 |
-| 23 | `WD-926-stop-cut-post-intent` | SC-926 | RED | — | §4.3 |
-| 24 | `WD-927-residue-dead-pid` | SC-927 | RED | — | §4.4 |
-| 25 | `WD-927-residue-empty-pidfile` | SC-927 | RED | — | §4.4 |
-| 26 | `WD-927-residue-recycled-pid` | SC-927 | RED | — | §4.4 |
-| 27 | `WD-928A-lock-timeout` | SC-928 | RED | — | §4.5 |
-| 28 | `WD-928A-open-fault` | SC-928 | RED | — | §4.5 |
-| 29 | `WD-928A-write-fault` | SC-928 | RED | — | §4.5 |
-| 30 | `WD-928A-unlock-fault` | SC-928 | **GAP — does not run** | — | — |
-| 31 | `WD-928B-bash-writer-baseline` | SC-928 | RED | — | baseline |
-| 32 | `WD-928B-bash-lock-baseline` | SC-928 | RED | — | baseline |
-| 33 | `WD-929-refresh-running` | SC-929 | RED | — | §4.6 |
-| 34 | `WD-929-refresh-not-running` | SC-929 | RED | — | §4.6 |
-| 35 | `WD-929-refresh-fails` | SC-929 | RED | — | §4.6 |
-| 36 | `WD-929-restart-state` | SC-929 | RED | — | §4.6 |
-| 37 | `WD-980-alert-bytes` | SC-980 | **CAPTURE-ONLY** | — | — |
+| 8 | `WD-901-second-start` | SC-901 | RED | — | — |
+| 9 | `WD-901-uv-second-autostart` | SC-901 | RED | — | — |
+| 10 | `WD-913-bash-lock-contention` | SC-913 | RED | — | — |
+| 11 | `WD-913-bash-occupied-input` | SC-913 | RED | — | — |
+| 12 | `WD-913-bash-dead-pane` | SC-913 | RED | — | — |
+| 13 | `WD-913-bash-submit-unverified` | SC-913 | RED | — | — |
+| 14 | `WD-913-bash-delivery-count` | SC-913 | RED | — | — |
+| 15 | `WD-913-bash-durable-occupied` | SC-913 | RED | — | — |
+| 16 | `WD-913-bash-durable-dead` | SC-913 | RED | — | — |
+| 17 | `WD-913-bash-durable-unverified` | SC-913 | RED | — | — |
+| 18 | `WD-913-uv-paste-submit` | SC-913 | RED | — | — |
+| 19 | `WD-913-uv-dead-pane` | SC-913 | RED | — | — |
+| 20 | `WD-913-uv-occupied` | SC-913 | RED | — | — |
+| 21 | `WD-913-uv-target-lock` | SC-913 | RED | — | — |
+| 22 | `WD-913-uv-delivery-count` | SC-913 | RED | — | — |
+| 23 | `WD-913-uv-durable` | SC-913 | RED | — | — |
+| 24 | `WD-920-origin-matrix` | SC-920 | RED | — | §4.1 |
+| 25 | `WD-921-monitor-in-roster` | SC-921 | RED | — | §4.2 |
+| 26 | `WD-921-monitor-stamped` | SC-921 | RED | — | §4.2 |
+| 27 | `WD-926-start-cut-pre-intent` | SC-926 | RED | — | §4.3 |
+| 28 | `WD-926-start-cut-post-intent` | SC-926 | RED | — | §4.3 |
+| 29 | `WD-926-stop-cut-pre-intent` | SC-926 | RED | — | §4.3 |
+| 30 | `WD-926-stop-cut-post-intent` | SC-926 | RED | — | §4.3 |
+| 31 | `WD-927-residue-dead-pid` | SC-927 | RED | — | §4.4 |
+| 32 | `WD-927-residue-empty-pidfile` | SC-927 | RED | — | §4.4 |
+| 33 | `WD-927-residue-recycled-pid` | SC-927 | RED | — | §4.4 |
+| 34 | `WD-928A-lock-timeout` | SC-928 | RED | — | §4.5 |
+| 35 | `WD-928A-open-fault` | SC-928 | RED | — | §4.5 |
+| 36 | `WD-928A-write-fault` | SC-928 | RED | — | §4.5 |
+| 37 | `WD-928A-unlock-fault` | SC-928 | **GAP — does not run** | — | — |
+| 38 | `WD-928B-bash-writer-baseline` | SC-928 | RED | — | baseline |
+| 39 | `WD-928B-bash-lock-baseline` | SC-928 | RED | — | baseline |
+| 40 | `WD-929-refresh-running` | SC-929 | RED | — | §4.6 |
+| 41 | `WD-929-refresh-not-running` | SC-929 | RED | — | §4.6 |
+| 42 | `WD-929-refresh-fails` | SC-929 | RED | — | §4.6 |
+| 43 | `WD-929-restart-state` | SC-929 | RED | — | §4.6 |
+| 44 | `WD-980-alert-bytes` | SC-980 | **CAPTURE-ONLY** | — | — |
 
 **Uniform invalid / inconclusive conditions**, enforced by the runner for every arm:
 `ARM-INVALID` when — a **harness-provenance** closure entry mismatches, or a **harness-owned**
@@ -455,6 +489,7 @@ per arm.
 | `CUT-928A-WRITE` | the write on the already-open descriptor | aewatch `_locked_append`, aewatch:2380 |
 | `CUT-928A-UNLOCK` | the unlock in the call's cleanup path | aewatch `_locked_append`, aewatch:2382 |
 | `BAR-929-PUB` | the rename that publishes the regenerated **watchdog helper** — `watchdog.tmp.$$` + `chmod 0700` + `mv`. **NOT `_publish_executable_artifact` (ae:833)**: session helpers are exempt from that chokepoint by shape, so a hook there never fires for this artifact | ae:18007–18009 |
+| `BAR-929-PUB-POST` | immediately after that one rename ATTEMPT returns, so the manipulation binds to a single publication | ae:18009 |
 | `BAR-929-SERVE` | the first daemon cycle boundary after `BAR-929-PUB` | watchdog `_run` main loop, ae:16019 |
 | `BAR-929-RESTART` | the product's own stop/start pair, when the arm invokes it | `_watchdog_stop`/`_watchdog_start`, ae:15031/15073 |
 | `BAR-929-PRERETURN` | immediately before `doctor --refresh` returns to its caller | `doctor_refresh_sessions`, ae:8913–8917 |
@@ -482,7 +517,7 @@ repeated.
   implementation's process exists afterwards. **B:** the selector decides only which
   implementation is *started*, so a prior opposite-implementation state survives alongside it. Distinguishable because the arm captures the process
   census **and** both implementations' artifact sets as full sets (M4).
-- **Fixture facts** — block `FX-D25-PRIOR`. **The prior opposite state is PRODUCT-CREATED, not
+- **Fixture facts** — block `FX@D25-PRIOR`. **The prior opposite state is PRODUCT-CREATED, not
   planted** (colead v4 BLOCKER 5): the `AE_HOME` is first driven through a complete launch under
   the *other* implementation and stopped by the product's own path, leaving whatever artifacts
   that implementation genuinely leaves. Only then is the selector set for the leg under test and
@@ -512,7 +547,7 @@ repeated.
   flip followed by a *control* invocation changes nothing while a flip followed by a *resume*
   does. **B:** it is consulted more widely. Distinguishable because the arm exercises **both**
   call shapes against the same flip and captures the census after each.
-- **Fixture facts** — block `FX-D25-PRIOR`, launched in the non-`uv` leg with a running daemon;
+- **Fixture facts** — block `FX@D25-PRIOR`, launched in the non-`uv` leg with a running daemon;
   `AE_WATCHDOG_INTERVAL_SEC` pinned low so a cycle boundary is reached inside the bound.
   **The exact product call that re-enters the selector is named** (colead v4 BLOCKER 5): it is
   read in `_start_session_watchdog` (ae:10457–10466), which runs on the launch/resume path
@@ -526,9 +561,12 @@ repeated.
   shared one.
 - **Barriers** — none.
 - **Raw captures** — census + argv at four points: before the flip; after a control invocation
-  (`watchdog stop` then `start`); after a cycle boundary; after a **resume**. Both
-  implementations' artifact sets; serving pid and start time at each point; which call shape
-  preceded each.
+  (`watchdog stop` then `start`); after a cycle boundary; after a **resume**. Both implementations'
+  artifact sets; serving pid and start time at each point; which call shape preceded each — **and,
+  after EACH call shape, the same per-implementation CYCLE AND DECISION evidence KEYED TO THE
+  SESSION ID** the first D25 arm requires. The previous draft applied that correction to the first
+  arm only and left this one on census, artifacts, pid and start time, which cannot separate "a
+  process survives" from "that process serves this session".
 - **Calibration** — neutral: three censuses with no flip (`caught=NO`). mutated: a controller
   `sleep` started between points 2 and 3 under a nonce argv, which the census must newly report
   (`caught=YES`).
@@ -543,7 +581,7 @@ repeated.
   path (`doctor --refresh` calls `doctor_recover_pending_sessions`, ae:8820, called at ae:8887 / 8899 / 8913), so a running
   daemon alone produces no invocation. Distinguishable because the arm runs the daemon **without
   any doctor invocation** and captures caller pid/ppid/argv.
-- **Fixture facts** — block `FX-834A-PENDING`. **The pending object is an agent session-id slot,
+- **Fixture facts** — block `FX@834A-PENDING`. **The pending object is an agent session-id slot,
   not a tracked request** (colead v4 BLOCKER 2): `walk_pending_session_ids` iterates `agent.<slot>`
   keys in session meta and skips every entry whose stored id is not literally `pending`
   (ae:8745–8790); the watchdog invokes the helper at ae:16528–16536. **A tracked `ask` whose reply
@@ -575,20 +613,22 @@ repeated.
   is picked up without a restart. **B:** the pending set is read once at daemon start.
   Distinguishable because the item is planted **after** the daemon has completed at least one
   clean cycle, and the trace is captured across N further cycles.
-- **Fixture facts** — block `FX-834A-PENDING`, but the daemon is running and has completed at
-  least one clean cycle before the slot reaches its pending state; cycle boundaries observed at
-  `BAR-QS-ARM` or from the daemon log.
+- **Fixture facts** — block `FX@834A-PENDING`, whose pending slot **already exists at
+  `P-PREPARE`**; the daemon is running and has completed at least one clean cycle **before the
+  matching candidate appears**. Cycle boundaries observed at `BAR-QS-ARM` or from the daemon log.
+  The earlier phrasing ("before the slot reaches its pending state") contradicted this arm's own
+  correction and would have licensed a script implementing two manipulations.
 - **Named manipulation** — the matching tool-session candidate appears once, mid-run, with the
-  planted-versus-produced declaration `INV-834A` requires.
+  planted-versus-produced declaration `INV@834A` requires.
 - **Precondition versus manipulation, separated (colead v5 BLOCKER 6).** The pending slot must
-  already exist **before** the clean cycle — it is part of `FX-834A-PENDING`, established during
+  already exist **before** the clean cycle — it is part of `FX@834A-PENDING`, established during
   `P-PREPARE` — and this arm's single manipulation is the candidate's mid-run appearance and
   nothing else. v5 stated a precondition its sole manipulation did not create, which cannot
   satisfy one-manipulation attribution: either the slot pre-exists (this arm), or creating it is a
   second named product operation and therefore a different arm.
-- **Barriers** — block `BAR-834A`.
-- **Raw captures** — block `CAP-834A`, plus the cycle index at plant time and at each trace entry.
-- **Calibration** — block `CAL-834A`.
+- **Barriers** — block `BARS@834A`.
+- **Raw captures** — block `CAP@834A`, plus the cycle index at plant time and at each trace entry.
+- **Calibration** — block `CAL@834A`.
 - **ARM-INVALID** — if no clean cycle precedes the plant, the arm is invalid rather than
   re-timed.
 
@@ -617,15 +657,15 @@ repeated.
 - **ARM-INVALID** — if the product did not itself grow the log past the bound.
 
 #### 6. `WD-900-run-overlimit` — RED
-- **CANDIDATE SPACE** — block `CS-900`, with the distinguishing axis being **when**: **A:** the bound
+- **CANDIDATE SPACE** — block `CS@900`, with the distinguishing axis being **when**: **A:** the bound
   is enforced on any crossing, so an ordinary run behaves as a resume does. **B:** enforcement is
   bound to the resume path specifically, so an ordinary run crossing the same bound differs.
-- **Fixture facts** — block `FX-900`, but the bound is crossed **during an ordinary run with no
+- **Fixture facts** — block `FX@900`, but the bound is crossed **during an ordinary run with no
   stop and no resume**; identical knob value, identical growth mechanism.
 - **Named manipulation** — the same knob lowered once, before the growth, with no resume.
 - **Barriers** — none.
-- **Raw captures** — block `CAP-900`, sampled at the same three cycle offsets.
-- **Calibration** — block `CAL-900`.
+- **Raw captures** — block `CAP@900`, sampled at the same three cycle offsets.
+- **Calibration** — block `CAL@900`.
 - **ARM-INVALID** — if a resume occurs at any point, since the arm's whole axis is its absence.
 
 ### SC-901 — daemon count per `AE_HOME` and what each owns
@@ -660,187 +700,246 @@ repeated.
   collapses to the incumbent, leaving one process. **B:** it produces a second process.
   Distinguishable because the census is a full set before and after and the pidfile bytes are
   captured at both points.
-- **Fixture facts** — block `FX-901` but with a single session already served by a running daemon.
+- **Fixture facts** — block `FX@901` with a single session already served by a running **bash**
+  daemon. **This arm is bash-only.** Its operation is the generated helper's `watchdog start`,
+  which — as this design established from frozen source and then contradicted — **never re-enters
+  the selector** (`cmd_watchdog` executes the helper; the selector is read in
+  `_start_session_watchdog`, ae:10457–10466, on the launch/resume path, ae:18224). A `lane = uv`
+  tag on this call shape would name a path the call does not take.
 - **Named manipulation** — the product's own `watchdog start` is invoked a second time.
 - **Barriers** — none.
 - **Raw captures** — census before/after; pidfile bytes before/after; rc and stdout of the second
   start; any reap trace; the `_watchdog` pane set.
-- **Calibration** — block `CAL-901` (`caught=NO` / `caught=YES`).
+- **Calibration** — block `CAL@901` (`caught=NO` / `caught=YES`).
 - **ARM-INVALID** — if the incumbent daemon is not confirmed running before the second start.
+
+#### 9. `WD-901-uv-second-autostart` — RED
+- **CANDIDATE SPACE** — **A:** a second launch/resume for an `AE_HOME` already served under the
+  uv selector collapses to the incumbent, leaving one daemon. **B:** it produces a second.
+  Distinguishable because the census and both implementations' artifact sets are full sets before
+  and after.
+- **Fixture facts** — block `FX@901`, pinned `AE_WATCHDOG_IMPL=uv`, with an aewatch daemon already
+  serving, confirmed by census and heartbeat.
+- **Named manipulation** — **a second launch/resume**, once — the call shape that actually
+  re-enters the selector (`_start_session_watchdog`, ae:10457–10466, reached at ae:18224). This is
+  the uv counterpart of the bash second-start arm; `watchdog start` is *not* used here, because it
+  executes the generated bash helper and never consults the selector.
+- **Barriers** — none.
+- **Raw captures** — census with argv and ppid before and after; the `ae-aewatch` tmux session
+  list; heartbeat and `bridge-owner` marker bytes and mtimes; per-daemon ownership records; rc and
+  stdout of the second launch/resume.
+- **Calibration** — block `CAL@901`.
+- **ARM-INVALID** — if the incumbent aewatch daemon is not confirmed serving beforehand; if the uv
+  lane cannot be brought up, named as a shortfall rather than falling back to bash.
 
 ### SC-913 — the nudge delivery mechanism and what is verified about the path
 
-The neutral surface names **six independent dimensions**, and a two-cell arm cannot fail four of
-them, so each dimension gets a cell that can independently produce the unwanted answer. The cells
-share the **fixture builder** and nothing else: each runs in its own sandbox and takes its own
-captures, so a defect in one construction cannot propagate into another's reading.
+The neutral surface names several independent dimensions, and one cell cannot fail most of them,
+so each dimension gets a cell that can independently produce the unwanted answer. Each runs in its
+own sandbox with its own captures.
 
-**BOTH delivery lanes are exercised (colead v5 BLOCKER 4).** v5's cells drove only the generated
-`send` helper and the bash daemon path. Every dimension below is therefore run **twice** — once in
-the bash lane (`AE_WATCHDOG_IMPL` unset) and once in the **aewatch lane** (`AE_WATCHDOG_IMPL=uv`)
-— in separate sandboxes, with the aewatch lane additionally capturing its **invocation trace**:
-what the daemon invoked, with which argv, from which pid. **The unit of closure is `(arm_id, lane)`, not `arm_id`** — each pair gets its own sandbox, its
-own calibration legs, its own M13 canaries and its own artifact directory, and the checker
-expands, validates and counts per pair. Stated explicitly rather than left as one spec silently
-covering two executions, which is the defect shape this gate has rejected twice. **Flagged for the
-seats as a judgment call:** the alternative is sixteen arm ids for eight dimensions. Per-pair
-closure is equivalent and avoids sixteen near-identical blocks differing only in a selector value
-— if a seat prefers distinct ids, say so and they will be split.
+**LANE TAGS ARE REPLACED BY STABLE PER-LANE UNIT IDS** (seat ruling on the lane question). A pair
+id buys nothing if one member never reaches the subject its tag names, and that was the case here:
+these bodies are written against the generated `send` helper's machinery — `ae_lock_target`, the
+defer/staged-input protection, the dead-pane guard, submit verification — and **the aewatch daemon
+does not use that machinery at all.** Derived from the recorded aewatch blob: its nudge is a paste
+through its own port of `tmux_paste_submit` (aewatch:679–689) plus an event append through
+`_locked_append` (aewatch:2386–2395), with its own `nudge_count` / `max_nudges` accounting
+(aewatch:1894, 1909, 1926). Setting `lane = uv` on a bash-shaped spec would have tagged a path
+that is never taken.
 
-**THE DURABLE SINK NAMED IN v5 IS NOT REACHABLE FROM THE DAEMON NUDGE PATH.**
-`undelivered.launch-<slot>.txt` is written on the **launch** delivery path (ae:12689–12691); the
-nudge path invokes the session's `send` helper, whose refusal, abandonment and unconfirmed
-branches all exit before any store is written. Capturing that file therefore cannot evidence
-durable nudge failure. **Corrected: the arms capture the full CANDIDATE DURABLE-STORE SET
-reachable from each nudge path**, as a set, with each member's presence, bytes and mtime:
-`events.jsonl` (the daemon's own alert emission at ae:16495 sits on the failure side, unlike the
-send helper's); the message-body store `${META_DIR}/messages/` (`ae_store_message_body`, one
-artifact per delivery); the watchdog's own daemon log; the tmux `display-message` surface
-(ae:16496), captured as the transient it is; and in the uv lane, aewatch's own recorder log,
-heartbeat and backoff files. **`undelivered.launch-<slot>.txt` is retained as an explicitly
-OUT-OF-SCOPE control** — captured, labelled not-reachable-from-this-path in its own artifact
-header, and excluded from every set comparison.
+**The uv arms therefore state their candidates as EXISTENCE questions** — whether an equivalent
+guard exists on that path — rather than assuming the bash guard is there or assuming it is absent.
+Neither assumption is this worker's to make, and an arm that presumed absence could not produce
+the unwanted answer.
 
-#### 9. `WD-913-lock-contention` — RED
-- **CANDIDATE SPACE** — **A:** the target lock (`ae_lock_target`, ae:14235) excludes concurrent
-  writers to one pane, so two deliveries are serialised and their pasted bytes are whole. **B:**
-  exclusion is absent or advisory, so the two interleave. Distinguishable because both deliveries
-  carry distinct nonce payloads and the pane bytes are captured as a full sequence.
-- **Fixture facts** — one launched session; target is the unmodelled `grok`-shaped fake pane
-  rendering every received line verbatim; two senders, each issuing a nonce payload through the
-  session's own generated `send` helper.
-- **Named manipulation** — the two sends are issued concurrently at a controller-held barrier
-  released once.
-- **Barriers** — a controller release barrier only; no hook.
-- **Raw captures** — pane bytes with `od`; per-sender rc, stdout, stderr; lock file state and
-  acquisition timestamps from each sender's own trace; event rows as a full set.
-- **Calibration** — neutral: the two sends issued sequentially, second after the first returns
-  (`caught=NO`). mutated: the controller writes an interleaving nonce to its **own scratch pane**
-  and the capture primitive must show the interleave (`caught=YES`, M13).
-- **ARM-INVALID** — if the two sends do not overlap in wall-clock, the arm reports
-  `INCONCLUSIVE` with both intervals recorded.
+#### 10. `WD-913-bash-lock-contention` — RED
+- **CANDIDATE SPACE** — **A:** the target lock (`ae_lock_target`, ae:14235) excludes concurrent writers to one pane, so two deliveries are serialised and their pasted bytes are whole. **B:** exclusion is absent or advisory, so the two interleave. Distinguishable because the arm captures the
+  facts below as full sets rather than as a verdict.
+- **Dimension** — target lock.
+- **Fixture facts** — two senders each issue a nonce payload through the session's own generated `send` helper.
+- **Named manipulation** — the two sends are issued concurrently at a controller-held barrier released once.
+- **Barriers** — none.
+- **Raw captures** — pane bytes with `od`; per-sender rc, stdout, stderr; lock file state and acquisition timestamps from each sender's own trace; event rows as a full set.
+- **Calibration** — block `CAL@913`.
+- **ARM-INVALID** — if the two sends do not overlap in wall-clock, the arm is `INCONCLUSIVE` with both intervals recorded.
 
-#### 10. `WD-913-occupied-input` — RED
-- **CANDIDATE SPACE** — **A:** an occupied input region defers delivery within a bound and then
-  aborts loudly with a non-zero rc, leaving the occupying text intact. **B:** delivery proceeds
-  and the occupying text is altered. Distinguishable because the occupying text is a nonce and is
-  captured byte-for-byte before and after.
-- **Fixture facts** — the fake pane holds staged, unsubmitted nonce text; `AE_SEND_DEFER_SEC`
-  pinned to a low documented value so the bound is reached inside the arm's own bound.
+#### 11. `WD-913-bash-occupied-input` — RED
+- **CANDIDATE SPACE** — **A:** an occupied input region defers delivery within a bound and then aborts loudly with a non-zero rc, leaving the occupying text intact. **B:** delivery proceeds and the occupying text is altered. Distinguishable because the arm captures the
+  facts below as full sets rather than as a verdict.
+- **Dimension** — occupied / human input.
+- **Fixture facts** — the fake pane holds staged, unsubmitted nonce text; `AE_SEND_DEFER_SEC` pinned to a low documented value.
 - **Named manipulation** — the nonce text is staged in the target's input region once.
 - **Barriers** — none.
-- **Raw captures** — rc, stdout, stderr of the send; pane bytes with `od` before and after; the
-  staged text's bytes at both points; elapsed time against the configured bound; event rows as a
-  full set.
-- **Calibration** — neutral: the same send against the same pane with nothing staged
-  (`caught=NO`). mutated: the controller stages a nonce in its own scratch pane and the capture
-  primitive must report it (`caught=YES`, M13).
+- **Raw captures** — rc, stdout, stderr; pane bytes with `od` before and after; the staged text's bytes at both points; elapsed time against the configured bound; event rows as a full set.
+- **Calibration** — block `CAL@913`.
 - **ARM-INVALID** — if the staged text cannot be confirmed present immediately before the send.
 
-#### 11. `WD-913-dead-pane` — RED
-- **CANDIDATE SPACE** — **A:** a pane whose agent process is gone is refused before anything is
-  pasted, so the pane's byte sequence is unchanged and no shell command is executed. **B:** the
-  paste proceeds into the shell. Distinguishable because the payload is a nonce that would leave
-  an observable trace if executed as a command, and the arm captures both the pane bytes and the
-  filesystem effect that trace would produce.
-- **Fixture facts** — the fake agent is exited so its pane drops to a shell, confirmed via
-  `pane_current_command` before the send; the payload is a nonce whose execution would create a
-  uniquely-named file in a controller-owned scratch directory.
+#### 12. `WD-913-bash-dead-pane` — RED
+- **CANDIDATE SPACE** — **A:** a pane whose agent process is gone is refused before anything is pasted, so the pane's byte sequence is unchanged and no shell command runs. **B:** the paste proceeds into the shell. Distinguishable because the arm captures the
+  facts below as full sets rather than as a verdict.
+- **Dimension** — dead pane.
+- **Fixture facts** — the fake agent is exited so its pane drops to a shell, confirmed via `pane_current_command`; the payload is a nonce whose execution would create a uniquely-named file in a controller-owned scratch directory.
 - **Named manipulation** — the fake agent process is exited once.
 - **Barriers** — none.
-- **Raw captures** — rc, stdout, stderr; pane bytes with `od`; `pane_current_command` before and
-  after; presence or absence of the scratch file as a raw fact; event rows as a full set.
-- **Calibration** — neutral: the same send against the same pane with the fake still running
-  (`caught=NO`). mutated: the controller executes the nonce payload itself in its own scratch
-  shell, and the scratch-file primitive must report the effect (`caught=YES`, M13).
+- **Raw captures** — rc, stdout, stderr; pane bytes with `od`; `pane_current_command` before and after; presence or absence of the scratch file as a raw fact; event rows as a full set.
+- **Calibration** — block `CAL@913`.
 - **ARM-INVALID** — if the pane is not confirmed a shell before the send.
 
-#### 12. `WD-913-submit-unverified` — RED
-- **CANDIDATE SPACE** — **A:** submission is verified, so a paste that never submits is reported
-  as unconfirmed with a non-zero rc. **B:** submission is assumed, so the same state is reported
-  as delivered. Distinguishable because the fake is run in a mode where it renders received text
-  but never echoes a submitted line.
-- **Fixture facts** — the fake's own documented non-echo mode (a property of the harness fake,
-  never a change to the product); target otherwise identical to `WD-913-lock-contention`'s.
+#### 13. `WD-913-bash-submit-unverified` — RED
+- **CANDIDATE SPACE** — **A:** submission is verified, so a paste that never submits is reported unconfirmed with a non-zero rc. **B:** submission is assumed, so the same state is reported as delivered. Distinguishable because the arm captures the
+  facts below as full sets rather than as a verdict.
+- **Dimension** — submit verification.
+- **Fixture facts** — the fake's own documented non-echo mode, a property of the harness fake and never a change to the product.
 - **Named manipulation** — the fake is started in non-echo mode, once, at fixture build.
 - **Barriers** — none.
-- **Raw captures** — rc, stdout, stderr; pane bytes with `od`; paste-buffer state; event rows as
-  a full set; the stored message body's presence as a raw fact.
-- **Calibration** — neutral: the same send against the fake in ordinary echo mode (`caught=NO`).
-  mutated: the controller drives the same verification primitive against its own scratch pane
-  with a known-absent marker (`caught=YES`, M13).
-- **ARM-INVALID** — if the fake's non-echo mode cannot be confirmed by a controller probe before
-  the send.
+- **Raw captures** — rc, stdout, stderr; pane bytes with `od`; paste-buffer state; event rows as a full set; the stored message body's presence as a raw fact.
+- **Calibration** — block `CAL@913`.
+- **ARM-INVALID** — if the fake's non-echo mode cannot be confirmed by a controller probe before the send.
 
-#### 13. `WD-913-durable-occupied` — RED
-- **CANDIDATE SPACE** — **A:** a delivery abandoned on an occupied target leaves **no**
-  success-shaped record and **does** leave a durable error record at a named sink. **B:** it
-  leaves one, both, or neither. **The two are separate facts and are captured separately**
-  (colead v4 IMPORTANT 1): `D1` no-success-record — the event set and body-store set as full sets
-  before and after, with symmetric difference; `D2` durable-error-record — the presence, bytes and
-  mode of the named sink.
-- **The durable sink is NAMED** — `${META_DIR}/undelivered.launch-<slot>.txt`, written mode 600
-  at ae:12689–12691 with a `launch-delivery-failed` event at ae:12692, and the sibling
-  `spawn-failed` event at ae:12071–12072. Whether the *nudge/send* path writes to any sink at all
-  is precisely what candidate A and B differ on, so the arm captures the sink's state rather than
-  assuming its use.
-- **Fixture facts** — block `FX-913-OCCUPIED`, in its **own sandbox**. Shares the fixture builder
-  with `WD-913-occupied-input` and reads none of its artifacts.
-- **Named manipulation** — nonce text is staged in the target's input region, once (exactly one).
-- **Barriers** — none.
-- **Raw captures** — `D1` and `D2` as separately-headed artifacts; rc and stderr; **persistence
-  after caller and pane loss**: the sink and event set are re-read after the calling process is
-  terminated and after the target pane is killed, each as its own fact with the loss event
-  timestamped.
-- **Calibration** — neutral: the same attempt allowed to land normally (`caught=NO`). mutated:
-  the controller appends a nonce row to a **scratch** event file and writes a nonce sink file in a
-  scratch directory; the set-difference and sink primitives must report both (`caught=YES`, M13).
-- **ARM-INVALID** — if the occupied class is not reached; if the sink path is not registered in
-  `PREREGISTRATION.tsv` with `provenance=product` and its pre-state recorded (M2).
-
-#### 14. `WD-913-durable-dead` — RED
-- **CANDIDATE SPACE** — block `CS-913`'s `D1`/`D2` pair, over the **refused-on-dead-pane** class. The
-  classes are separate arms because a sink written on one failure class and not another is the
-  distinction the surface names, and one arm covering three classes could not attribute a sink to
-  a class.
-- **Fixture facts** — block `FX-913-DEAD`, own sandbox.
-- **Named manipulation** — the fake agent process is exited, once (exactly one).
-- **Barriers** — none.
-- **Raw captures** — block `CAP-913`, including persistence after caller and pane loss.
-- **Calibration** — block `CAL-913`.
-- **ARM-INVALID** — block `INV-913`, with the dead class substituted.
-
-#### 15. `WD-913-durable-unverified` — RED
-- **CANDIDATE SPACE** — block `CS-913`'s `D1`/`D2` pair, over the **submit-unverified** class.
-- **Fixture facts** — block `FX-913-NOECHO`, own sandbox.
-- **Named manipulation** — the fake is started in non-echo mode, once (exactly one).
-- **Barriers** — none.
-- **Raw captures** — block `CAP-913`, including persistence after caller and pane loss.
-- **Calibration** — block `CAL-913`.
-- **ARM-INVALID** — block `INV-913`, with the unverified class substituted.
-
-#### 16. `WD-913-delivery-count` — RED
-- **CANDIDATE SPACE** — **A:** the daemon's counter counts **deliveries**, so attempts that did
-  not land do not advance it. **B:** it counts **attempts**, so they do. Distinguishable because
-  the arm runs a known number of non-landing attempts followed by a landing one and captures the
-  counter's rendered value and the alert set at every cycle.
-- **Fixture facts** — a real daemon; a target constructed to refuse (`WD-913-dead-pane`'s class);
-  `AE_WATCHDOG_MAX_NUDGES`, `AE_WATCHDOG_UNDELIVERED_MAX`, `AE_WATCHDOG_STALE_MIN` and
-  `AE_WATCHDOG_INTERVAL_SEC` pinned to documented low values so the bounds are reached inside
-  the arm's bound.
+#### 14. `WD-913-bash-delivery-count` — RED
+- **CANDIDATE SPACE** — **A:** the daemon's counter counts **deliveries**, so attempts that did not land do not advance it. **B:** it counts **attempts**, so they do. Distinguishable because the arm captures the
+  facts below as full sets rather than as a verdict.
+- **Dimension** — delivery accounting.
+- **Fixture facts** — a real bash daemon; a target in the dead-pane class; `AE_WATCHDOG_MAX_NUDGES`, `AE_WATCHDOG_UNDELIVERED_MAX`, `AE_WATCHDOG_STALE_MIN` and `AE_WATCHDOG_INTERVAL_SEC` pinned to documented low values.
 - **Named manipulation** — the target is put into the refusing class once.
 - **Barriers** — none.
-- **Raw captures** — daemon log bytes per cycle; the rendered counter and streak at each cycle;
-  event set as a full set; the alert set with each alert's action and target; cycle indices.
-- **Calibration** — neutral: the same daemon against a target that accepts every nudge
-  (`caught=NO`). mutated: an M13 canary — the controller emits a nonce line through the same log
-  primitive, which the per-cycle capture must report (`caught=YES`).
-- **ARM-INVALID** — if the configured bounds are not reached within the arm's wait, which is
-  `INCONCLUSIVE` with the bound and the state at expiry recorded.
+- **Raw captures** — daemon log bytes per cycle; the rendered counter and streak at each cycle; event set as a full set; the alert set with each alert's action and target; cycle indices.
+- **Calibration** — block `CAL@913`.
+- **ARM-INVALID** — if the configured bounds are not reached within the arm's wait, which is `INCONCLUSIVE` with the bound and the state at expiry recorded.
+
+#### 15. `WD-913-bash-durable-occupied` — RED
+- **CANDIDATE SPACE** — **A:** a delivery that did not land leaves **no** success-shaped record
+  and **does** leave a durable error record at a store reachable from this path. **B:** it leaves
+  one, both, or neither. `D1` no-success-record and `D2` durable-error-record are **separate
+  facts**, captured separately.
+- **Dimension** — durable failure evidence, over the occupied class.
+- **Fixture facts** — block `FX@913-OCCUPIED`, in its own sandbox.
+- **Named manipulation** — nonce text is staged in the target's input region, once.
+- **Barriers** — none.
+- **Raw captures** — `D1` and `D2` as separately-headed artifacts over **this lane's** candidate
+  store set: `events.jsonl` (the bash daemon's own alert emission at ae:16495 sits on the failure
+  side, unlike the send helper's), the message-body store `${META_DIR}/messages/`, the watchdog's
+  daemon log, and the tmux `display-message` surface (ae:16496) captured as the transient it is.
+  **`undelivered.launch-<slot>.txt` is NOT in this set** — it is written on the *launch* delivery
+  path (ae:12689–12691), which this path does not reach, and it is captured only as the labelled
+  out-of-scope control promised in the preamble, excluded from every set comparison. Plus
+  persistence after caller and pane loss, each re-read with the loss event timestamped.
+- **Calibration** — block `CAL@913`.
+- **ARM-INVALID** — if the occupied class is not reached; if any store in the declared candidate set
+  is not registered `provenance=product` with its pre-state (M2).
+
+#### 16. `WD-913-bash-durable-dead` — RED
+- **CANDIDATE SPACE** — **A:** a delivery that did not land leaves **no** success-shaped record
+  and **does** leave a durable error record at a store reachable from this path. **B:** it leaves
+  one, both, or neither. `D1` no-success-record and `D2` durable-error-record are **separate
+  facts**, captured separately.
+- **Dimension** — durable failure evidence, over the dead-pane class.
+- **Fixture facts** — block `FX@913-DEAD`, in its own sandbox.
+- **Named manipulation** — the fake agent process is exited, once.
+- **Barriers** — none.
+- **Raw captures** — `D1` and `D2` as separately-headed artifacts over **this lane's** candidate
+  store set: `events.jsonl` (the bash daemon's own alert emission at ae:16495 sits on the failure
+  side, unlike the send helper's), the message-body store `${META_DIR}/messages/`, the watchdog's
+  daemon log, and the tmux `display-message` surface (ae:16496) captured as the transient it is.
+  **`undelivered.launch-<slot>.txt` is NOT in this set** — it is written on the *launch* delivery
+  path (ae:12689–12691), which this path does not reach, and it is captured only as the labelled
+  out-of-scope control promised in the preamble, excluded from every set comparison. Plus
+  persistence after caller and pane loss, each re-read with the loss event timestamped.
+- **Calibration** — block `CAL@913`.
+- **ARM-INVALID** — if the dead class is not reached; if any store in the declared candidate set
+  is not registered `provenance=product` with its pre-state (M2).
+
+#### 17. `WD-913-bash-durable-unverified` — RED
+- **CANDIDATE SPACE** — **A:** a delivery that did not land leaves **no** success-shaped record
+  and **does** leave a durable error record at a store reachable from this path. **B:** it leaves
+  one, both, or neither. `D1` no-success-record and `D2` durable-error-record are **separate
+  facts**, captured separately.
+- **Dimension** — durable failure evidence, over the submit-unverified class.
+- **Fixture facts** — block `FX@913-UNVERIFIED`, in its own sandbox.
+- **Named manipulation** — the fake is started in non-echo mode, once.
+- **Barriers** — none.
+- **Raw captures** — `D1` and `D2` as separately-headed artifacts over **this lane's** candidate
+  store set: `events.jsonl` (the bash daemon's own alert emission at ae:16495 sits on the failure
+  side, unlike the send helper's), the message-body store `${META_DIR}/messages/`, the watchdog's
+  daemon log, and the tmux `display-message` surface (ae:16496) captured as the transient it is.
+  **`undelivered.launch-<slot>.txt` is NOT in this set** — it is written on the *launch* delivery
+  path (ae:12689–12691), which this path does not reach, and it is captured only as the labelled
+  out-of-scope control promised in the preamble, excluded from every set comparison. Plus
+  persistence after caller and pane loss, each re-read with the loss event timestamped.
+- **Calibration** — block `CAL@913`.
+- **ARM-INVALID** — if the unverified class is not reached; if any store in the declared candidate set
+  is not registered `provenance=product` with its pre-state (M2).
+
+#### 18. `WD-913-uv-paste-submit` — RED
+- **CANDIDATE SPACE** — **A:** the daemon's own paste path verifies that the message was submitted before accounting it delivered. **B:** it treats a completed paste as a delivery. Distinguishable because the arm captures the
+  facts below as full sets rather than as a verdict.
+- **Dimension** — paste / submit boundary.
+- **Fixture facts** — an aewatch daemon serving under `AE_WATCHDOG_IMPL=uv`; the target is the unmodelled fake in its documented non-echo mode.
+- **Named manipulation** — the fake is started in non-echo mode, once, at fixture build.
+- **Barriers** — none.
+- **Raw captures** — the daemon's own invocation trace (what it invoked, argv, pid); pane bytes with `od`; paste-buffer state; the recorder log; the event set as a full set.
+- **Calibration** — block `CAL@913`.
+- **ARM-INVALID** — if the aewatch lane cannot be brought up (missing `uv` runtime or `contrib/aewatch`), named as a shortfall rather than falling back to bash.
+
+#### 19. `WD-913-uv-dead-pane` — RED
+- **CANDIDATE SPACE** — **A:** an equivalent refusal exists on this path, so a pane whose agent is gone receives nothing. **B:** no equivalent refusal exists and the paste proceeds. Distinguishable because the arm captures the
+  facts below as full sets rather than as a verdict.
+- **Dimension** — dead pane.
+- **Fixture facts** — as the uv fixture above, with the fake exited so its pane drops to a shell, confirmed via `pane_current_command`; the payload is a nonce whose execution would create a uniquely-named scratch file.
+- **Named manipulation** — the fake agent process is exited, once.
+- **Barriers** — none.
+- **Raw captures** — invocation trace; pane bytes with `od`; `pane_current_command` before and after; the scratch file's presence as a raw fact; event set as a full set.
+- **Calibration** — block `CAL@913`.
+- **ARM-INVALID** — as the uv fixture above; and if the pane is not confirmed a shell before the cycle.
+
+#### 20. `WD-913-uv-occupied` — RED
+- **CANDIDATE SPACE** — **A:** an equivalent protection exists on this path, so staged unsubmitted text survives a nudge cycle intact. **B:** no equivalent protection exists and the staged text is altered. Distinguishable because the arm captures the
+  facts below as full sets rather than as a verdict.
+- **Dimension** — occupied / human input.
+- **Fixture facts** — as the uv fixture above, with staged unsubmitted nonce text in the target's input region.
+- **Named manipulation** — the nonce text is staged, once.
+- **Barriers** — none.
+- **Raw captures** — invocation trace; pane bytes and the staged text's bytes before and after; elapsed time; event set as a full set.
+- **Calibration** — block `CAL@913`.
+- **ARM-INVALID** — as the uv fixture above; and if the staged text is not confirmed present immediately before the cycle.
+
+#### 21. `WD-913-uv-target-lock` — RED
+- **CANDIDATE SPACE** — **A:** this path serialises against a concurrent writer to the same pane, so both payloads land whole. **B:** it does not, and the two interleave. Distinguishable because the arm captures the
+  facts below as full sets rather than as a verdict.
+- **Dimension** — concurrent writer.
+- **Fixture facts** — as the uv fixture above; a controller-owned writer issues a distinct nonce payload to the same pane at the barrier.
+- **Named manipulation** — the controller's write is released concurrently with the daemon's cycle, once.
+- **Barriers** — none.
+- **Raw captures** — invocation trace; pane bytes with `od` as a full sequence; both payloads' nonces; any lock artifact the path touches, captured as a set.
+- **Calibration** — block `CAL@913`.
+- **ARM-INVALID** — as the uv fixture above; and `INCONCLUSIVE` if the two writes do not overlap in wall-clock.
+
+#### 22. `WD-913-uv-delivery-count` — RED
+- **CANDIDATE SPACE** — **A:** this daemon's counter counts **deliveries**, so attempts that did not land do not advance it. **B:** it counts **attempts**, so they do. Distinguishable because the arm captures the
+  facts below as full sets rather than as a verdict.
+- **Dimension** — delivery accounting.
+- **Fixture facts** — as the uv fixture above, with the documented `AE_WATCHDOG_*` bounds pinned low and a target in the dead-pane class.
+- **Named manipulation** — the target is put into the refusing class, once.
+- **Barriers** — none.
+- **Raw captures** — the recorder log per cycle; the counter and streak as the daemon renders them; event set as a full set; the alert set; cycle indices.
+- **Calibration** — block `CAL@913`.
+- **ARM-INVALID** — as the uv fixture above; `INCONCLUSIVE` if the bounds are not reached inside the arm's wait.
+
+#### 23. `WD-913-uv-durable` — RED
+- **CANDIDATE SPACE** — **A:** a nudge that did not land leaves no success-shaped record (`D1`) and does leave a durable error record at some store reachable from THIS path (`D2`). **B:** it leaves one, both, or neither. Distinguishable because the arm captures the
+  facts below as full sets rather than as a verdict.
+- **Dimension** — durable failure evidence.
+- **Fixture facts** — as the uv fixture above, driven to the dead-pane class.
+- **Named manipulation** — the fake agent process is exited, once.
+- **Barriers** — none.
+- **Raw captures** — `D1` and `D2` as separately-headed artifacts over **this lane's** candidate store set — `events.jsonl`, aewatch's recorder log, its heartbeat and backoff files — each with presence, bytes and mtime; plus persistence after caller and pane loss.
+- **Calibration** — block `CAL@913`.
+- **ARM-INVALID** — as the uv fixture above; and if any store in the declared candidate set is not registered `provenance=product` with its pre-state (M2).
 
 ### SC-920 — quiet stabilization and the ORIGIN of pane evidence
 
-#### 17. `WD-920-origin-matrix` — RED, **M12 §4.1**
+#### 24. `WD-920-origin-matrix` — RED, **M12 §4.1**
 - **CANDIDATE SPACE** — **A:** quiet stabilization reads pane evidence without regard to which
   process produced it, so two byte-identical pane states of different origin are treated alike.
   **B:** origin participates, so they are not. Distinguishable **only** if two specimens are
@@ -854,7 +953,7 @@ header, and excluded from every set comparison.
 
 ### SC-921 — monitor panes in roster and branch logic
 
-#### 18. `WD-921-monitor-in-roster` — RED, **M12 §4.2**
+#### 25. `WD-921-monitor-in-roster` — RED, **M12 §4.2**
 - **CANDIDATE SPACE** — **A:** internal monitor panes are excluded from the agent roster, so the
   roster set and health denominator count only real agent panes. **B:** they participate, so the
   denominator includes them. Distinguishable because the roster set, the per-branch verdict map
@@ -875,20 +974,20 @@ header, and excluded from every set comparison.
   pollutes the roster it is meant to observe, so the canary pane lives outside it and any planted
   window is killed before the measurement cycle.
 
-#### 19. `WD-921-monitor-stamped` — RED, **M12 §4.2**
+#### 26. `WD-921-monitor-stamped` — RED, **M12 §4.2**
 - **CANDIDATE SPACE** — **A:** participation is decided by the pane's `@ae_agent` stamp alone, so
   adding or removing a stamp moves a pane in or out of the roster. **B:** it is decided by
   something else (pane provenance, window, or process), so the stamp does not move it.
   Distinguishable because the stamp is the single thing manipulated and the roster is a full set
   before and after.
-- **Fixture facts** — block `FX-921`, with the monitor panes present and the daemon running.
+- **Fixture facts** — block `FX@921`, with the monitor panes present and the daemon running.
 - **Named manipulation** — one monitor pane's `@ae_agent` stamp is added or removed, once, by the
   controller, with the byte diff of the pane-option set recorded.
 - **Barriers** — `BAR-QS-ARM`.
-- **Raw captures** — block `CAP-921`, before and after the stamp change, with the symmetric difference
+- **Raw captures** — block `CAP@921`, before and after the stamp change, with the symmetric difference
   of the roster sets emitted.
 - **Calibration** — neutral: the same before/after capture with no stamp change (`caught=NO`).
-  mutated: the mutated leg of block `CAL-921` (`caught=YES`, M13).
+  mutated: the mutated leg of block `CAL@921` (`caught=YES`, M13).
 - **ARM-INVALID** — as §4.2, plus: if the stamp change cannot be confirmed landed by re-reading
   the pane-option set (M5).
 
@@ -902,7 +1001,7 @@ intent write (`_set_meta_watchdog`, ae:14961) are **separate steps in a fixed or
 between them and a cut after them are different states of the world. Four arms: {start, stop} ×
 {pre-intent cut, post-intent cut}.
 
-#### 20. `WD-926-start-cut-pre-intent` — RED, **M12 §4.3**
+#### 27. `WD-926-start-cut-pre-intent` — RED, **M12 §4.3**
 - **CANDIDATE SPACE** — **A:** the durable intent and the runtime state are written as one
   effective unit, so a cut before the intent write leaves neither. **B:** they are independent,
   so a cut there leaves a running runtime with no durable intent. Distinguishable because the
@@ -923,19 +1022,19 @@ between them and a cut after them are different states of the world. Four arms: 
   with a working known-difference control; if the cut cannot be confirmed to have landed at the
   named site.
 
-#### 21. `WD-926-start-cut-post-intent` — RED, **M12 §4.3**
-- **CANDIDATE SPACE** — block `CS-926`, at the opposite side of the same boundary: **A:** the success
+#### 28. `WD-926-start-cut-post-intent` — RED, **M12 §4.3**
+- **CANDIDATE SPACE** — block `CS@926`, at the opposite side of the same boundary: **A:** the success
   report is emitted only after the durable intent write, so a cut after it leaves intent written
   and no report. **B:** the report precedes the durable write. Distinguishable because rc, the
   emitted bytes and the durable key are three separate captures.
-- **Fixture facts** — block `FX-926`; instrumented copy carrying only the `CUT-926-START-INTENT` hook.
+- **Fixture facts** — block `FX@926`; instrumented copy carrying only the `CUT-926-START-INTENT` hook.
 - **Named manipulation** — the controller signals at `CUT-926-START-INTENT`.
 - **Barriers** — `CUT-926-START-INTENT`.
-- **Raw captures** — block `CAP-926`.
-- **Calibration** — block `CAL-926`.
-- **ARM-INVALID** — block `INV-926`.
+- **Raw captures** — block `CAP@926`.
+- **Calibration** — block `CAL@926`.
+- **ARM-INVALID** — block `INV@926`.
 
-#### 22. `WD-926-stop-cut-pre-intent` — RED, **M12 §4.3**
+#### 29. `WD-926-stop-cut-pre-intent` — RED, **M12 §4.3**
 - **CANDIDATE SPACE** — **A:** stopping writes durable intent and mutates runtime as one
   effective unit, so a cut before the intent write leaves both untouched or both done. **B:** the
   runtime mutation (kill, pidfile removal, pane kill) completes and the durable key does not
@@ -944,26 +1043,26 @@ between them and a cut after them are different states of the world. Four arms: 
   pidfile before the arm; instrumented copy carrying only `CUT-926-STOP-RUNTIME`.
 - **Named manipulation** — the controller signals at `CUT-926-STOP-RUNTIME`.
 - **Barriers** — `CUT-926-STOP-RUNTIME`.
-- **Raw captures** — block `CAP-926`, plus: the killed pid's liveness, the `_watchdog` pane's presence,
+- **Raw captures** — block `CAP@926`, plus: the killed pid's liveness, the `_watchdog` pane's presence,
   and the tmux user options the stop path clears, each as its own fact.
-- **Calibration** — block `CAL-926`.
-- **ARM-INVALID** — block `INV-926`, plus: if the daemon is not confirmed running before the cut.
+- **Calibration** — block `CAL@926`.
+- **ARM-INVALID** — block `INV@926`, plus: if the daemon is not confirmed running before the cut.
 
-#### 23. `WD-926-stop-cut-post-intent` — RED, **M12 §4.3**
-- **CANDIDATE SPACE** — block `CS-926` at the opposite side: **A:** the durable key and the reported
+#### 30. `WD-926-stop-cut-post-intent` — RED, **M12 §4.3**
+- **CANDIDATE SPACE** — block `CS@926` at the opposite side: **A:** the durable key and the reported
   outcome agree once the intent write has returned. **B:** they can disagree at that point.
-- **Fixture facts** — block `FX-926`; instrumented copy carrying only `CUT-926-STOP-INTENT`.
+- **Fixture facts** — block `FX@926`; instrumented copy carrying only `CUT-926-STOP-INTENT`.
 - **Named manipulation** — the controller signals at `CUT-926-STOP-INTENT`.
 - **Barriers** — `CUT-926-STOP-INTENT`.
-- **Raw captures** — block `CAP-926`.
-- **Calibration** — block `CAL-926`.
-- **ARM-INVALID** — block `INV-926`.
+- **Raw captures** — block `CAP@926`.
+- **Calibration** — block `CAL@926`.
+- **ARM-INVALID** — block `INV@926`.
 
 ### SC-927 — the status surface's read/write behaviour and where cleanup is performed
 
 The three pid-residue fixtures live here, per colead. Each is its own arm with its own sandbox.
 
-#### 24. `WD-927-residue-dead-pid` — RED, **M12 §4.4**
+#### 31. `WD-927-residue-dead-pid` — RED, **M12 §4.4**
 - **CANDIDATE SPACE** — **A:** the status surface is a pure read, so the meta directory's file
   set and bytes are identical before and after. **B:** it performs cleanup, so the residue is
   removed by the read. Distinguishable because the arm captures a full manifest (path, size,
@@ -981,35 +1080,35 @@ The three pid-residue fixtures live here, per colead. Each is its own arm with i
 - **ARM-INVALID** — if the pid is not confirmed dead immediately before the read; if a real
   daemon is running in the sandbox.
 
-#### 25. `WD-927-residue-empty-pidfile` — RED, **M12 §4.4**
+#### 32. `WD-927-residue-empty-pidfile` — RED, **M12 §4.4**
 - **CANDIDATE SPACE** — **A:** cleanup is keyed on the recorded pid's liveness, so an **empty**
   pidfile — which names no pid at all — is a distinct case from a dead pid and the meta file set
   is unchanged by the read. **B:** cleanup is keyed on the pidfile being unusable for any reason,
   so emptiness and a dead pid are handled alike. Distinguishable because this arm and
   `WD-927-residue-dead-pid` differ in exactly this one property and in nothing else; they are separate arms because one arm
   covering both classes could not tell the two mechanisms apart.
-- **Fixture facts** — block `FX-927` but `.watchdog.pid` is zero bytes, confirmed by size and hash.
+- **Fixture facts** — block `FX@927` but `.watchdog.pid` is zero bytes, confirmed by size and hash.
 - **Named manipulation** — the pidfile is truncated to zero bytes, once, byte diff recorded.
 - **Barriers** — none.
-- **Raw captures** — block `CAP-927`.
-- **Calibration** — block `CAL-927`.
-- **ARM-INVALID** — block `INV-927`.
+- **Raw captures** — block `CAP@927`.
+- **Calibration** — block `CAL@927`.
+- **ARM-INVALID** — block `INV@927`.
 
-#### 26. `WD-927-residue-recycled-pid` — RED, **M12 §4.4**
+#### 33. `WD-927-residue-recycled-pid` — RED, **M12 §4.4**
 - **CANDIDATE SPACE** — **A:** liveness of the recorded pid is sufficient, so a pidfile naming
   **any** live process leaves the meta file set unchanged by the read. **B:** liveness is not
   sufficient and the daemon's own stamped pane is also required, so a live but unrelated pid is
   treated as residue. Distinguishable because the named process is alive and demonstrably not
   this session's daemon, and no `_watchdog`-stamped pane exists in the session.
-- **Fixture facts** — block `FX-927`, but `.watchdog.pid` names a controller-owned `sleep` under a
+- **Fixture facts** — block `FX@927`, but `.watchdog.pid` names a controller-owned `sleep` under a
   nonce argv, confirmed alive immediately before the read, and **no `_watchdog`-stamped pane
   exists** in the session.
 - **Named manipulation** — the pidfile is written with the live non-daemon pid, once, byte diff
   recorded.
 - **Barriers** — none.
-- **Raw captures** — block `CAP-927`, plus the nonce process's liveness before and after the read as
+- **Raw captures** — block `CAP@927`, plus the nonce process's liveness before and after the read as
   its own fact.
-- **Calibration** — block `CAL-927`.
+- **Calibration** — block `CAL@927`.
 - **ARM-INVALID** — if the nonce process is not confirmed alive immediately before the read, or
   if a `_watchdog`-stamped pane exists in the session.
 
@@ -1020,10 +1119,11 @@ separate the dimensions the surface names, and an unwritable container also brea
 alongside the writer, so the fault was not bound to the append at all. **Rebuilt: the fault is
 writer-bound, at a named cut, against a named implementation.**
 
-**The implementation under test is named: the bash per-session watchdog** (`_watchdog _run`,
-emitted into `${META_DIR}/watchdog`), with `AE_WATCHDOG_IMPL` unset so the bash implementation
-is the one serving (ae:10462). The aewatch sidecar is out of scope for these two arms and the
-exclusion is recorded rather than left implicit.
+**The subject of this row is the aewatch daemon's `_locked_append`.** The bash arms below are
+**baselines that close no part of the row** and say so in their own artifact headers. The earlier
+preamble named bash as the implementation under test and put aewatch out of scope — the exact
+inverse of the row's assigned surface, contradicting both the arms that follow and §4.5. Removed
+rather than reconciled.
 
 **Four raw facts are captured separately** in both arms, never merged into one verdict:
 `F1` the emitting process's identity and liveness (pid, ppid, argv, start time, alive/gone);
@@ -1033,11 +1133,11 @@ fault, identified by cycle index in the daemon log);
 effect if it has one);
 `F4` the **nudge state** (counter, undelivered streak, alert set) before and after.
 
-#### 27. `WD-928A-lock-timeout` — RED, **M12 §4.5**
+#### 34. `WD-928A-lock-timeout` — RED, **M12 §4.5**
 - **CANDIDATE SPACE** — **A:** a bounded lock-acquisition timeout is a contained outcome at the
   emit boundary, so the emitting daemon is unaffected past that call. **B:** it is not contained.
   `F1`–`F4` are captured separately so both readings stay reachable.
-- **Fixture facts** — block `FX-928A-DAEMON`: an aewatch daemon serving under
+- **Fixture facts** — block `FX@928A-DAEMON`: an aewatch daemon serving under
   `AE_WATCHDOG_IMPL=uv`, with the instrumented aewatch copy carrying **only** the
   `CUT-928A-LOCK` hook.
 - **Named manipulation** — a controller-owned process holds `events.jsonl.lock` for longer than
@@ -1053,25 +1153,25 @@ effect if it has one);
 - **ARM-INVALID** — inactive equivalence unproven for this hook/fixture pair; `F2` unreachable
   inside the bound, which is `INCONCLUSIVE` for `F2` alone.
 
-#### 28. `WD-928A-open-fault` — RED, **M12 §4.5**
-- **CANDIDATE SPACE** — block `CS-928A`, over the **open-for-append** error class rather than the lock
+#### 35. `WD-928A-open-fault` — RED, **M12 §4.5**
+- **CANDIDATE SPACE** — block `CS@928A`, over the **open-for-append** error class rather than the lock
   class. Separate arms because the two classes sit on opposite sides of the lock acquisition and
   a single arm could not attribute an outcome to one of them.
-- **Fixture facts** — block `FX-928A-DAEMON`; instrumented copy carrying only `CUT-928A-OPEN`.
+- **Fixture facts** — block `FX@928A-DAEMON`; instrumented copy carrying only `CUT-928A-OPEN`.
 - **Named manipulation** — with the lock **already held by the daemon**, the controller makes the
   target events file alone un-openable for append, once, leaving the lock file and the containing
   directory intact; mode diff recorded and reverted after the capture.
 - **Barriers** — `CUT-928A-OPEN`.
-- **Raw captures** — block `CAP-928A`.
-- **Calibration** — block `CAL-928A`, against a scratch file.
-- **ARM-INVALID** — block `INV-928A`, plus: if the lock file or directory is not intact at fault time,
+- **Raw captures** — block `CAP@928A`.
+- **Calibration** — block `CAL@928A`, against a scratch file.
+- **ARM-INVALID** — block `INV@928A`, plus: if the lock file or directory is not intact at fault time,
   which would unbind the fault from the open.
 
-#### 29. `WD-928A-write-fault` — RED, **M12 §4.5**
-- **CANDIDATE SPACE** — block `CS-928A`, over the **write** error class, with the descriptor already
+#### 36. `WD-928A-write-fault` — RED, **M12 §4.5**
+- **CANDIDATE SPACE** — block `CS@928A`, over the **write** error class, with the descriptor already
   open. Separate from `WD-928A-open-fault` because open-time and write-time errors are different
   classes.
-- **Fixture facts** — block `FX-928A-DAEMON`; instrumented copy carrying only `CUT-928A-WRITE`.
+- **Fixture facts** — block `FX@928A-DAEMON`; instrumented copy carrying only `CUT-928A-WRITE`.
 - **Named manipulation** — **ENOSPC on a dedicated filesystem.** The session's events directory
   sits on its own small filesystem the controller creates during `P-PREPARE`; at the barrier the
   controller fills it to capacity with one named filler file, once, removing it after the capture.
@@ -1080,6 +1180,12 @@ effect if it has one);
   manufacturing an `errno` — **neither of which a hook is permitted to do**, and both of which are
   why `chmod` and rename cannot serve here: once a process holds an open descriptor, permission
   and name changes cannot make *that descriptor's* write err.
+- **BLOCKING HOST PREFLIGHT, recorded at gate 2.** Before this arm is admitted, the harness must
+  demonstrate on the actual host that a **dedicated non-root filesystem can be created**, that it
+  can be **filled after the descriptor and the lock are established**, and that it can be
+  **relieved after the capture** — each step recorded with its command and rc. **If the preflight
+  does not pass, the arm stays `ARM-INVALID`**; permissions and rename are **not** substitutes and
+  are forbidden here, because neither can make an already-open descriptor's write err.
 - **Constructibility caveats, at gate 1 rather than deferred to the artifact.** (i) The writer is
   a buffered Python text handle, so `ENOSPC` may surface at the implicit flush/close inside the
   same block rather than at the `write` call; the arm captures **where it surfaced** as a fact and
@@ -1089,11 +1195,11 @@ effect if it has one);
   is `ARM-INVALID` with the shortfall named — **not** substituted with a whole-container
   permission change, which is the unbound fault v4 already had.
 - **Barriers** — `CUT-928A-WRITE`.
-- **Raw captures** — block `CAP-928A`.
-- **Calibration** — block `CAL-928A`.
-- **ARM-INVALID** — block `INV-928A`, plus: if the descriptor is not confirmed open at fault time.
+- **Raw captures** — block `CAP@928A`.
+- **Calibration** — block `CAL@928A`.
+- **ARM-INVALID** — block `INV@928A`, plus: if the descriptor is not confirmed open at fault time.
 
-#### 30. `WD-928A-unlock-fault` — **ARM-INVALID AT GATE 1 — DECLARED GAP, NOT A CAPTURE**
+#### 37. `WD-928A-unlock-fault` — **ARM-INVALID AT GATE 1 — DECLARED GAP, NOT A CAPTURE**
 - **This arm does not run, and the reason is recorded rather than worked around.** The unlock
   class would be the cleanup-path counterpart to the write class, but **no controller-performed,
   product-valid mechanism exists to make `LOCK_UN` on a live, valid descriptor err** on either
@@ -1108,12 +1214,12 @@ effect if it has one);
   process, which this cluster's admissibility rule deliberately forbids. Lifting it is a seat
   decision about that rule, not a fixture problem.
 
-#### 31. `WD-928B-bash-writer-baseline` — RED, **BASELINE — closes nothing**
+#### 38. `WD-928B-bash-writer-baseline` — RED, **BASELINE — closes nothing**
 - **CANDIDATE SPACE** — **A:** the bash appender's writer-error handling is contained at the emit
   site. **B:** it is not. **This arm is a BASELINE and closes no part of SC-928** (colead v4
   BLOCKER 3): the row's assigned empirical mechanism is aewatch's, so bash evidence is a
   comparison point and is labelled as such in its own artifact header.
-- **Fixture facts** — block `FX-928B-BASH`: the bash per-session watchdog, `AE_WATCHDOG_IMPL`
+- **Fixture facts** — block `FX@928B-BASH`: the bash per-session watchdog, `AE_WATCHDOG_IMPL`
   unset; instrumented `ae` copy carrying only `CUT-928-APPEND`, which blocks **with the flock
   already held** so the fault cannot be attributed to lock acquisition.
 - **Named manipulation** — the controller makes the target events file alone unappendable, once,
@@ -1122,18 +1228,18 @@ effect if it has one);
 - **Raw captures** — `F1`–`F4`; events file bytes and hash; daemon log across two cycle indices.
 - **Calibration** — neutral: the barrier reached with the manipulation not applied (`caught=NO`).
   mutated: a scratch file made unappendable, reported by the same write primitive (`caught=YES`).
-- **ARM-INVALID** — block `INV-928B`; **plus** the artifact header must state that this arm closes no
+- **ARM-INVALID** — block `INV@928B`; **plus** the artifact header must state that this arm closes no
   part of the row, and a missing statement is an invalid artifact.
 
-#### 32. `WD-928B-bash-lock-baseline` — RED, **BASELINE — closes nothing**
-- **CANDIDATE SPACE** — block `CS-928B`, over the bash lock-acquisition class (`CUT-928-LOCK`, frozen
+#### 39. `WD-928B-bash-lock-baseline` — RED, **BASELINE — closes nothing**
+- **CANDIDATE SPACE** — block `CS@928B`, over the bash lock-acquisition class (`CUT-928-LOCK`, frozen
   `ae_log_append`, ae:13174). Baseline; closes nothing.
-- **Fixture facts** — block `FX-928B-BASH`; instrumented copy carrying only `CUT-928-LOCK`.
+- **Fixture facts** — block `FX@928B-BASH`; instrumented copy carrying only `CUT-928-LOCK`.
 - **Named manipulation** — a controller-owned process holds the lock past the wait bound, once.
 - **Barriers** — `CUT-928-LOCK`.
-- **Raw captures** — block `CAP-928B`, plus the holder's identity and hold interval.
-- **Calibration** — block `CAL-928B`.
-- **ARM-INVALID** — block `INV-928B`.
+- **Raw captures** — block `CAP@928B`, plus the holder's identity and hold interval.
+- **Calibration** — block `CAL@928B`.
+- **ARM-INVALID** — block `INV@928B`.
 
 **Barriers are declared per arm as REQUIRED or EXCLUDED-BY-CONSTRUCTION** (colead v5 BLOCKER 3).
 v5 required all four on every `WD-929-*` arm; two cannot occur under the stopped-watchdog
@@ -1151,7 +1257,7 @@ excludes.**
 | `WD-929-refresh-fails` | `BAR-929-PUB`, `BAR-929-PRERETURN` | — | `BAR-929-RESTART`, `BAR-929-SERVE`, whose occurrence depends on how far the interrupted refresh proceeds |
 | `WD-929-restart-state` | `BAR-929-RESTART`, `BAR-929-SERVE` | `BAR-929-PUB` — no publication is invoked | one, with its bound |
 
-#### 33. `WD-929-refresh-running` — RED, **M12 §4.6**
+#### 40. `WD-929-refresh-running` — RED, **M12 §4.6**
 - **CANDIDATE SPACE** — **A:** the process serving after a refresh of a **running** watchdog is a
   different process from the one serving before it. **B:** it is the same process. Distinguishable
   because process identity and helper identity are captured independently at all four barriers.
@@ -1160,49 +1266,61 @@ excludes.**
   serving process's pid and start time versus the published helper's inode, mtime and sha256);
   `G3` whether a restart occurred (pid change, `_watchdog` pane id change, pidfile bytes);
   `G4` durable state (`watchdog=` meta bytes).
-- **Fixture facts** — block `FX-929-RUNNING`: a running bash watchdog whose liveness satisfies the
+- **Fixture facts** — block `FX@929-RUNNING`: a running bash watchdog whose liveness satisfies the
   frozen gate at ae:8627–8649 — a pidfile, a `kill -0`-live pid, **and** a live
   `@ae_agent=_watchdog` pane — since that gate is what selects the restart path.
   `AE_WATCHDOG_INTERVAL_SEC` pinned low so `BAR-929-SERVE` is reachable inside the bound.
 - **Named manipulation** — `ae doctor --refresh <session>` is invoked once.
 - **Barriers** — `barriers_required` = all four `BAR-929-*`; `barriers_excluded` = none.
 - **Raw captures** — `G1`–`G4` at each barrier, separately headed.
-- **Calibration** — neutral: the four barriers reached with **no** refresh invoked (`caught=NO`).
+- **Calibration** — neutral: **an identical before/after capture with no refresh invoked**
+  (`caught=NO`). The previous draft calibrated on "the four barriers reached with no refresh",
+  unreachable by definition — `BAR-929-PUB`, `BAR-929-RESTART` and `BAR-929-PRERETURN` are
+  refresh-specific sites and cannot fire without one. **Barrier reachability and inactive
+  equivalence are a SEPARATE instrument proof**, run once per hook/fixture pair into its own
+  artifact, never folded into a product calibration.
   mutated: the controller republishes a **scratch** artifact through the same temp+chmod+mv shape
   and the inode/hash primitive must report the change (`caught=YES`, M13).
 - **ARM-INVALID** — if the liveness gate's three conditions are not all confirmed before the
   invocation; if `BAR-929-SERVE` is unreached inside the bound (`INCONCLUSIVE` for that barrier);
   if inactive equivalence is unproven for this fixture.
 
-#### 34. `WD-929-refresh-not-running` — RED, **M12 §4.6**
-- **CANDIDATE SPACE** — block `CS-929`, against a session whose watchdog is **not** running, so the
+#### 41. `WD-929-refresh-not-running` — RED, **M12 §4.6**
+- **CANDIDATE SPACE** — block `CS@929`, against a session whose watchdog is **not** running, so the
   frozen liveness gate selects the other path. This is the **product-valid opposed construction**:
   v4 paired "refresh with restart" against "refresh with no restart" **on a running watchdog**,
   which the frozen product forecloses — a running watchdog is stopped and started as part of the
   refresh (ae:8621–8679). A no-restart refresh is reachable only when there is nothing to restart.
-- **Fixture facts** — block `FX-929-STOPPED`: the same session with the watchdog stopped by the
+- **Fixture facts** — block `FX@929-STOPPED`: the same session with the watchdog stopped by the
   product's own path, confirmed absent by census, pidfile and pane set.
 - **Named manipulation** — `ae doctor --refresh <session>` is invoked once.
 - **Barriers** — `barriers_required` = `BAR-929-PUB`, `BAR-929-PRERETURN`; `barriers_excluded` =
   `BAR-929-RESTART`, `BAR-929-SERVE`, each captured as a bounded non-occurrence.
-- **Raw captures** — block `CAP-929`.
-- **Calibration** — block `CAL-929`.
+- **Raw captures** — block `CAP@929`.
+- **Calibration** — block `CAL@929`.
 - **ARM-INVALID** — if any of the three liveness conditions is still satisfied at invocation time.
 
-#### 35. `WD-929-refresh-fails` — RED, **M12 §4.6**
+#### 42. `WD-929-refresh-fails` — RED, **M12 §4.6**
 - **CANDIDATE SPACE** — **A:** a refresh interrupted partway leaves the previous artifact whole, so
   the helper's hash at `BAR-929-PRERETURN` equals its hash before the invocation. **B:** it leaves
   a partial or absent artifact. Distinguishable because the helper's bytes and hash are captured
   at every barrier, and `G1`–`G4` stay separate.
-- **Fixture facts** — block `FX-929-RUNNING`. **The failure injection is named and sited at the
+- **Fixture facts** — block `FX@929-RUNNING`. **The failure injection is named and sited at the
   real publication**: the watchdog helper is **not** published through
   `_publish_executable_artifact` (ae:833) — session helpers are exempt from that chokepoint by
   shape — but by `>"${AE_META}/watchdog.tmp.$$"` then `chmod 0700` then `mv` at ae:18007–18009.
   v4 hooked ae:833 and the hook would never have fired.
 - **Named manipulation** — at `BAR-929-PUB`, with the temp artifact already written and before the
-  rename, the controller makes the destination directory non-renameable-into for that one
-  publication, once, then restores it. The generator is untouched — the product is not made to
-  produce bad bytes.
+  rename, the controller makes the destination directory non-renameable-into, **and a second
+  barrier `BAR-929-PUB-POST` fires immediately after that one rename ATTEMPT returns**, where the
+  controller restores it — before any later writer reaches the directory. The generator is
+  untouched; the product is not made to produce bad bytes.
+- **Why the second barrier is required, not a refinement.** With one barrier the manipulation
+  cannot be bound to a single publication: restoring **before** release lets the `mv` succeed, so
+  there is no fault at all, and restoring **after** release leaves a window in which later
+  publications in the same refresh also cannot land — the arm would then measure an unbounded
+  number of blocked writes and attribute them to one. `BAR-929-PUB-POST` carries its own hook
+  version, hash triple and inactive-equivalence proof; without it this arm is `ARM-INVALID`.
 - **Barriers** — `barriers_required` = `BAR-929-PUB`, `BAR-929-PRERETURN`; `BAR-929-RESTART` and
   `BAR-929-SERVE` are recorded if observed and bounded if not, never required.
 - **Raw captures** — `G1`–`G4`; the temp artifact's presence and bytes at each barrier; the full
@@ -1210,15 +1328,15 @@ excludes.**
 - **Calibration** — neutral: the same barriers with the permission change not applied
   (`caught=NO`). mutated: the same rename-blocked publication against a **scratch** directory,
   reported by the same primitive (`caught=YES`, M13).
-- **ARM-INVALID** — block `INV-929`, plus: if the destination permission change is not confirmed landed
+- **ARM-INVALID** — block `INV@929`, plus: if the destination permission change is not confirmed landed
   **and** reverted (M5).
 
-#### 36. `WD-929-restart-state` — RED, **M12 §4.6**
+#### 43. `WD-929-restart-state` — RED, **M12 §4.6**
 - **CANDIDATE SPACE** — **A:** the state observable after a restart is reconstructed from durable
   facts, so it matches the pre-restart state on every captured key. **B:** some of it lives only in
   the process, so it does not survive. Distinguishable because the arm captures the same key set
   before and after as a full set with the symmetric difference emitted.
-- **Fixture facts** — block `FX-929-RUNNING`, additionally driven to a non-initial nudge/streak
+- **Fixture facts** — block `FX@929-RUNNING`, additionally driven to a non-initial nudge/streak
   state **by the product** through the refusing-target class, never by planting counters.
 - **Named manipulation** — the product's own `watchdog stop` followed by `watchdog start`, once.
 - **Barriers** — `barriers_required` = `BAR-929-RESTART`, `BAR-929-SERVE`; `barriers_excluded` =
@@ -1232,7 +1350,7 @@ excludes.**
 - **ARM-INVALID** — if the pre-restart state is not confirmed non-initial by the product's own
   path; if either control invocation returns non-zero, which is recorded rather than retried.
 
-#### 37. `WD-980-alert-bytes` — **CAPTURE-ONLY**
+#### 44. `WD-980-alert-bytes` — **CAPTURE-ONLY**
 - **No candidate space, no legs, no assertion.** This arm records bytes and provenance and makes
   no comparison; the artifact says so in its own header.
 - **Fixture facts** — a real daemon reaching an alert through its own cadence, with the
@@ -1367,7 +1485,11 @@ the `BAR-920-SEND` patch on this fixture with a working known-difference control
 - **Gate C** — the three residue fixture builders with their recorded byte diffs, both synthetics,
   the manifest primitive, libraries, frozen hashes.
 - **`ARM-INVALID`** — residue class not confirmed immediately before the read (dead pid still
-  dead, pidfile still empty, nonce process still alive); a real daemon running in the sandbox.
+  dead, pidfile still empty, nonce process still alive). **The daemon-running condition is scoped
+  to the RESIDUE legs only**: the previous draft invalidated any arm with a real daemon running in
+  the sandbox, while this matrix's own agreement construction *requires* a live confirmed daemon —
+  no checker could satisfy both. On the residue legs a running daemon invalidates; on the
+  agreement leg a running daemon is required and its absence invalidates.
 
 ### 4.5 SC-928 — the aewatch arms (and the two bash baselines, which close nothing)
 
@@ -1389,9 +1511,10 @@ say so or the artifact is invalid.
 - **Gate C** — the instrumented aewatch copies (one hook each) and their patches, the frozen
   aewatch blob hash, the fault appliers, both synthetics, the four fact primitives, libraries and
   frozen hashes — registered in `P-REGISTER`, recomputed in `P-CAPTURE`.
-- **The four cuts are separate arms** because the error classes sit at different points of the
-  same call — lock acquisition, open, write, unlock — and one arm covering them could not
-  attribute an outcome to a class.
+- **Three executable cut arms plus ONE TYPED GAP.** The error classes sit at different points of
+  the same call — lock acquisition, open, write, unlock — and one arm covering them could not
+  attribute an outcome to a class. The unlock class has no product-valid manipulation, is classed
+  GAP, does not run, and is not counted as an arm that does.
 - **`ARM-INVALID`** — the lock file or directory not intact when the fault is bound to open/write;
   inactive equivalence unproven for the aewatch hook on this fixture with a working
   known-difference control; `F2` unreachable inside the bound, which is `INCONCLUSIVE` for `F2`
@@ -1413,7 +1536,9 @@ say so or the artifact is invalid.
   of the refresh (ae:8621–8679). The reachable opposed pair is therefore **B1:** refresh against a
   **running** watchdog, where that gate selects the restart path; **B2:** refresh against a
   **stopped** watchdog, where it does not, because there is nothing to restart. **Agreeing
-  control:** the four barriers reached with no refresh invoked at all.
+  control:** an identical before/after capture with **no refresh invoked** — not "the four
+  barriers reached without a refresh", which cannot occur, since three of the four are
+  refresh-specific sites. Barrier reachability is proven separately as an instrument property.
 - **Barriers per arm** — the required/excluded table in §3A governs; this matrix asserts no
   uniform four-barrier requirement.
 - **Gate C** — the instrumented copy carrying all four `BAR-929-*` hooks (with `BAR-929-PUB` at
@@ -1446,18 +1571,22 @@ one tree alone is short by three files, so `PREREGISTRATION.tsv` enumerates by p
 roots and the runner recomputes both.
 
 **Shared blocks are files, not prose (M14).** `SHARED-BLOCKS.tsv` carries every block an arm
-references, keyed `<KIND>-<ROW>`: `CS-*` candidate space, `FX-*` fixture, `BAR-*` barriers,
-`CAP-*` captures, `CAL-*` calibration, `INV-*` invalid conditions. The checker expands each
+references, keyed `<KIND>@<ROW>`: `CS@*` candidate space, `FX@*` fixture, `BARS@*` barrier sets,
+`CAP@*` captures, `CAL@*` calibration, `INV@*` invalid conditions. **The `@` is a namespace
+separator, not decoration**: block ids and barrier ids both wanted a `BAR-` prefix, and the
+checker could not tell a barrier-set BLOCK from a BARRIER id — both wanted `BAR-`. Blocks are
+`BARS@…`, barriers are `BAR-…`. **The collision existed in prose for two drafts and was found by
+the checker's first run**, which is the argument for the checker in one sentence. The checker expands each
 referenced block into each referencing arm and validates the **expanded** arm, so gate 2 proves
 per-arm closure and calibration rather than trusting prose inheritance.
 
 **Why this is not cosmetic, demonstrated on this document.** v4's arms carried 62 prose
-back-references of the form "as arm 16". Splitting one arm into three and rebuilding two rows
-renumbered the roster — and **every one of those references silently retargeted**: "as arm 16" in
-an SC-921 arm came to point at an SC-913 arm, with nothing to flag it. A back-reference by
+back-references by position. Splitting one arm into three and rebuilding two rows renumbered the
+roster — and **every one of those references silently retargeted**, with nothing to flag it.
+> *History:* an SC-921 arm's `"as arm 16"` came to point at an SC-913 arm. A back-reference by
 position is a pointer into a list that changes; a block id is a name that does not. The
-`FX-D25-PRIOR`, `FX-834A-PENDING`, `FX-913-OCCUPIED`, `FX-913-DEAD`, `FX-913-NOECHO`,
-`FX-928A-DAEMON`, `FX-928B-BASH`, `FX-929-RUNNING` and `FX-929-STOPPED` fixtures are the blocks
+`FX@D25-PRIOR`, `FX@834A-PENDING`, `FX@913-OCCUPIED`, `FX@913-DEAD`, `FX@913-NOECHO`,
+`FX@928A-DAEMON`, `FX@928B-BASH`, `FX@929-RUNNING` and `FX@929-STOPPED` fixtures are the blocks
 that carry real construction detail; the rest are shared field bodies.
 
 **A second product source enters the closure.** The `CUT-928A-*` family instruments
@@ -1466,7 +1595,10 @@ that carry real construction detail; the rest are shared field bodies.
 inactive-equivalence proofs. The aewatch arms additionally require a `uv` runtime, whose absence
 is `ARM-INVALID` with the shortfall named rather than a silent bash fallback.
 
-**New barrier sites at v5** — `CUT-926-START-RUNTIME`, `CUT-926-START-INTENT`,
+**New barrier sites** — enumerated ONLY in the typed barrier table above; this paragraph names no
+ids of its own. The previous draft carried a second, shorter list here that omitted the
+`CUT-928A-*` family, and a shadow list is a copy someone must keep in agreement. Every id in that
+table — `CUT-926-START-RUNTIME`, `CUT-926-START-INTENT`,
 `CUT-926-STOP-RUNTIME`, `CUT-926-STOP-INTENT`, `CUT-928-APPEND`, `CUT-928-LOCK`, `BAR-929-PUB`,
 `BAR-929-SERVE`, `BAR-929-RESTART`, `BAR-929-PRERETURN`, `BAR-920-SEND`, and the four
 `CUT-928A-*` cuts in aewatch. Each needs its own
@@ -1476,27 +1608,39 @@ is not a control.
 
 ---
 
-## 6. Change log against colead's v5 gate
+## 6. Change log against the previous gate
 
-Delivered as a neutral delta by the lead. Where a rebuild needed a product fact, it was derived
-from `72c7293` (or the recorded aewatch blob) by this worker, not requested back.
+Delivered as a neutral delta. Every source claim was re-verified against `72c7293` and the
+recorded aewatch blob before acceptance; all of them held.
+
+**The structural response is `t-wd-check.sh`, committed beside this file.** Four of the fourteen
+findings were classes this document had already shipped more than once — stale ordinals, a spec
+count where a unit count was meant, a stale self-version, a barrier list disagreeing with the
+typed table. Those are not defects a further promise closes. The checker derives every count from
+the roster, rejects ordinals outside permitted zones, compares barrier ids against the typed
+table, reads its lint vocabulary **out of M1's own declaration** rather than carrying a copy, and
+requires a named candidate pair on every RED arm. It reproduces four of the gate's findings from
+the bytes alone, and **it found one the gate did not**: block ids and barrier ids both wanted a
+`BAR-` prefix, so `BAR-834A` (a block) was indistinguishable from `BAR-929-PUB` (a barrier). Blocks
+are now `BARS@…`, barriers `BAR-…`.
 
 | finding | disposition |
 |---|---|
-| **B1** M14 still false; seven live positional references, several stale | **Accepted; confirmed worse than stated.** Four had already gone stale when the roster renumbered — still parsing, still reading sensibly, pointing at the wrong arm — and two were unresolved placeholders my own conversion script left behind. All replaced with stable arm ids or block ids. **M14 now bans ordinals outright** in arm fields and §4, and **gate 2 must RED-PROVE the rejection** against a deliberately seeded reference, because this rule has now been asserted twice with no mechanism behind it. |
-| **B2** `WD-928A-write` / `-unlock` are not execution grain | **Accepted, and the constructibility is answered at gate 1, not deferred.** Write becomes **ENOSPC on a dedicated filesystem** the controller creates at prepare and fills at the barrier — no descriptor closing, no manufactured `errno`, both forbidden to a hook — with the buffering caveat stated (the error may surface at flush/close, so the arm captures *where* it surfaced). **Unlock is declared `ARM-INVALID` at gate 1 and does not run**: no controller-performed, product-valid mechanism can make `LOCK_UN` on a live descriptor err. It is recorded in `ARM-GAPS.tsv` with what would lift it. A declared gap is evidence; a quietly dropped one is not. |
-| **B3** SC-929 per-arm barrier sets are impossible | **Accepted.** Barriers are typed `barriers_required` / `barriers_excluded` per arm, with a table showing which are excluded **by construction** and which are captured as bounded non-occurrences. Gate 2 rejects an arm requiring a barrier its own construction excludes. §4.6 no longer asserts a uniform four-barrier requirement. |
-| **B4** SC-913 exercises the wrong surface; the named sink is unreachable | **Accepted.** Both delivery lanes are exercised, the uv lane additionally capturing its invocation trace, with `(arm_id, lane)` as the unit of closure. The sink correction is derived and confirmed: `undelivered.launch-<slot>.txt` is written on the **launch** path (ae:12689–12691), while the nudge path's refusal, abandonment and unconfirmed branches all exit before any store is written. The arms now capture the **full candidate durable-store set reachable from each nudge path**, and the launch sink is retained only as an explicitly out-of-scope control excluded from every set comparison. |
-| **B5** SC-901 never pins the selector | **Accepted.** Explicit bash and uv lanes in separate sandboxes, `AE_WATCHDOG_IMPL` pinned per lane, every process and ownership record tagged with the pinned lane so attribution is a field rather than an inference. |
-| **B6** SC-834a captures the wrong object; arm 4's precondition | **Accepted.** Captures become the `agent.<slot>` row byte-for-byte before and after, the resolved alias / tool kind / config command the walk reads (ae:8757–8776), the `launch_id` and `launch_time` inputs, the candidate bytes **with per-range provenance**, and the post-recovery row. The pending slot is moved into the fixture, established at prepare, so the arm's single manipulation is the candidate's mid-run appearance and nothing else. |
-| **B7** D25 captures presence, which collapses two readings | **Accepted.** Per-implementation **cycle and decision evidence keyed to the new session's id** is now required; pid, heartbeat and pane existence are demoted to context and explicitly named insufficient. The flipped selector reaches each invocation through a recorded env-file replayed by `env -i`, captured and hashed per invocation — "shared environment" is not an artifact. |
-| **B8** two M12 agreeing controls are misidentified | **Accepted.** SC-926's agreement case becomes the **ordinary uncut invocation**; the post-intent cuts stay discriminators, since a cut cannot be both. SC-927's becomes the **no-residue live-daemon construction** where both candidates coincide; the different-surface capture is kept under its own label as source discrimination, not as the control. |
-| **B9** the old M2 scope bug survives in the uniform runner rule | **Accepted.** The uniform `ARM-INVALID` line is scoped to **harness-provenance** mismatches and **harness-owned** regenerating entry points, restoring the provenance boundary the lead ruled. Separately, the M12 set is now **derived from the typed `m12` field** rather than a prose count — which is how v5 said fifteen while its own roster said eighteen. |
-| **I1** SC-920's byte-identical replay is dynamically sourced | **Accepted.** Gate C names the regime: **harvest-at-prepare**, S1's bytes registered `provenance=both` and hash-pinned before gate 2, S2 replaying that registered file. If S1's live bytes differ at capture time the arm is `ARM-INVALID` and the difference is reported — **never absorbed by re-pinning**, which would make registration vacuous. |
-| **I2** the no-implementation-statement claim is false | **Accepted.** Narrowed to **no expected outcome in any worker-facing arm field**, with the reason stated: reachability cannot be established without reading the frozen source, and an arm that cannot say what the product forecloses is the arm that names an unreachable candidate. The gate-2 linter's scope matches the narrowed claim — arm fields and surface lines, not change-log rationale. |
-
-**37 arm specs; 47 executed units** (10 specs run in two pinned lanes). 35 RED, 1 CAPTURE-ONLY,
-1 declared gap.
+| **lane ruling** — the expanded unit must be independently executable and must reach its lane's subject | **Accepted; pair ids withdrawn except where the ruling allows them.** Derived from the aewatch blob: its nudge is a paste through its own port of `tmux_paste_submit` (aewatch:679–689) plus an append through `_locked_append` (aewatch:2386–2395), with its own `nudge_count`/`max_nudges` accounting (aewatch:1894, 1909, 1926). It does **not** use `ae_lock_target`, the defer/staged-input protection, the dead-pane guard or submit verification, so `lane = uv` on those bodies tagged a path never taken. SC-913 is now stable per-lane unit ids with standalone bodies; the uv arms state their candidates as **existence questions** about an equivalent guard, since assuming presence *or* absence would make them unable to produce the unwanted answer. `WD-901-two-sessions` keeps its pair, as ruled. |
+| **B1** M15 fails its own unit arithmetic; GAP is untyped | **Accepted.** Counts are derived by the checker and no longer typed in prose; a GAP row is excluded from runnable, unit and M12 totals **by class**. §2 now types the GAP class with required `reason` / `what_would_lift_it` and forbidden candidate space, legs, canaries, captures and execution. Gate 2 red-proves that a GAP arm fed to the runner is refused. |
+| **B2** M14's live stale ordinal sits outside its own lint scope | **Accepted.** The ban covers every normative section; historical rationale citing an old ordinal goes in a blockquote the checker skips. The stale M2 reference is replaced with arm names. |
+| **B3** SC-834a's fixture contradicts its own correction | **Accepted.** The pending slot exists at `P-PREPARE`; the clean cycle precedes **the candidate's appearance**, which is the arm's single manipulation. |
+| **B4** the uv second-start unit names a call shape that never reaches the selector | **Accepted, and it is this design contradicting a fact it derived itself.** The bash arm is bash-only; the uv counterpart is a separate arm whose manipulation is a **second launch/resume** (ae:10457–10466, reached at ae:18224). |
+| **B5** SC-913 bodies are written against one delivery implementation | **Accepted** — see the lane ruling row. |
+| **B6** the durable arms name a sink the preamble excludes | **Accepted; a direct internal contradiction.** `D2` is now **this lane's** reachable candidate store set, and `undelivered.launch-<slot>.txt` appears only as the labelled out-of-scope control the preamble already promised, excluded from every set comparison. |
+| **B7** the SC-928 preamble contradicts its own arms | **Accepted.** The preamble named bash as the subject and aewatch as out of scope — the inverse of the row's surface. Removed. §4.5 now says three executable cut arms plus one typed GAP. |
+| **B8** SC-927's agreement construction invalidates itself | **Accepted.** The daemon-running invalidity is scoped to the residue legs; on the agreement leg a live daemon is required and its absence invalidates. |
+| **B9** SC-929's control is unreachable by definition | **Accepted.** The agreement case is an identical before/after capture with no refresh; barrier reachability and inactive equivalence become a separate instrument proof rather than a product calibration. |
+| **B10** the permission manipulation cannot bind to one publication | **Accepted.** New `BAR-929-PUB-POST` fires immediately after that one rename attempt returns, where the controller restores — restoring before release means no fault at all, restoring after release blocks later publications too. Without the second barrier the arm is `ARM-INVALID`. |
+| **B11** the D25 fix landed in one arm only | **Accepted.** Session-keyed cycle and decision evidence is required after **each** call shape in the second arm too. |
+| **I1** the committed artifact still names the previous version | **Accepted, and the fix is to stop having the number.** The document carries no self-version; the commit hash is its identity, and the checker rejects a version numeral in the title. |
+| **I2** a shadow barrier list disagrees with the complete one | **Accepted.** One typed barrier table; the prose paragraph names no ids of its own, and the checker compares every used id against that table. |
+| **I3** ENOSPC needs a host preflight | **Accepted.** A blocking preflight recorded at gate 2 must show a dedicated non-root filesystem can be created, filled after the descriptor and lock are established, and relieved after capture. If it does not pass, the arm stays `ARM-INVALID`; permissions and rename are forbidden substitutes. |
 
 ## 7. What this design does not contain
 
