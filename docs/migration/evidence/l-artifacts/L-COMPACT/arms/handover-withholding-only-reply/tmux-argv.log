@@ -1,0 +1,101 @@
+pid=12318 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <cp1>
+pid=12386 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <cp1> <-c> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/w>
+pid=12398 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <-u> <CLAUDECODE>
+pid=12401 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <-u> <CLAUDE_CODE_SESSION>
+pid=12406 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_SESSION> <1>
+pid=12413 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_ORIGIN> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/w>
+pid=12421 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_DIR> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/w>
+pid=12438 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_MODE> <local>
+pid=12453 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_HOME> </tmp/aelx/L-COMPACT/handover-withholding-only-reply/h/.ae>
+pid=12479 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <mouse> <on>
+pid=12501 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <focus-events> <on>
+pid=12531 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <history-limit> <50000>
+pid=12553 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <pane-border-status> <top>
+pid=12572 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <pane-border-format> < #{@ae_agent} >
+pid=12587 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <cp1>
+pid=12604 ppid=12602 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12636 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae cp1] >
+pid=12660 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=12678 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…MPACT/handover-withholding-only-reply/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=12693 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=12709 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=12726 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=12745 ppid=12744 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=12760 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=12776 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=12794 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=12809 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=12828 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <automatic-rename> <off>
+pid=12846 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <cp1> <cp1>
+pid=12861 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <cp1> <-p> <#{pane_id}>
+pid=12905 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:claude:claude>
+pid=12935 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <claude:claude>
+pid=12941 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=12981 ppid=12980 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=13162 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}	#{@ae_agent}>
+pid=13199 ppid=13198 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=13420 ppid=13419 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=13425 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-12262-%0> <->
+pid=13431 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-12262-%0> <-t> <%0>
+pid=13571 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=13881 ppid=13878 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=13998 ppid=13995 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id} #{@ae_agent}>
+pid=14007 ppid=14005 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <new-window> <-d> <-t> <cp1:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-COMPACT/handover-withholding-only-reply/h/.ae/sessions/cp1/events-tail>
+pid=14016 ppid=13902 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=14024 ppid=13902 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=14030 ppid=13902 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <set-window-option> <-t> <cp1:ae-monitor> <pane-border-status> <top>
+pid=14036 ppid=13902 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=14090 ppid=14088 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id} #{@ae_agent}>
+pid=14103 ppid=14100 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id} #{@ae_agent}>
+pid=14113 ppid=14111 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id} #{@ae_agent}>
+pid=14121 ppid=14119 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-COMPACT/handover-withholding-only-reply/h/.ae/sessions/cp1/watchdog _run>
+pid=14128 ppid=14048 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=14129 ppid=14048 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=14146 ppid=14048 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <select-pane> <-t> <%2> <-d>
+pid=14173 ppid=12262 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%0>
+pid=14180 ppid=14177 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S>pid=12262 ppid=12104 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-sessions> <attach-session> <-F> <-t> <#{session_id} #{session_name}>
+ <cp1>
+pid=14189 ppid=14124 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=14217 ppid=14215 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=14223 ppid=14195 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=14255 ppid=14253 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=14261 ppid=14124 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=14267 ppid=14124 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <has-session> <-t> <cp1>
+pid=14279 ppid=14124 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=14285 ppid=14284 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=14293 ppid=14292 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=14357 ppid=14355 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=14364 ppid=14124 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=14390 ppid=14388 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=14396 ppid=14371 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=14414 ppid=14411 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=14417 ppid=14124 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=14436 ppid=14434 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=14444 ppid=14124 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <claude●>
+pid=14455 ppid=14454 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=14469 ppid=14124 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=14476 ppid=14124 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=17062 ppid=16996 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}	#{@ae_agent}>
+pid=17069 ppid=17068 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=17076 ppid=17075 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#S>
+pid=17161 ppid=16996 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}	#{@ae_agent}>
+pid=17168 ppid=17167 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=17175 ppid=17174 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#S>
+pid=17179 ppid=17177 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=17195 ppid=17193 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-panes> <-a> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}>
+pid=17199 ppid=17198 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=9 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <capture-pane> <-e> <-p> <-t> <%0> <-S> <0>
+pid=17212 ppid=17210 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-clients> <-F> <#{pane_id}|#{client_activity}>
+pid=17213 ppid=16996 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <send-keys> <-t> <%0> <-X> <cancel>
+pid=17223 ppid=17222 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <load-buffer> <-b> <ae-send-16996> <->
+pid=17226 ppid=16996 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <paste-buffer> <-d> <-b> <ae-send-16996> <-t> <%0>
+pid=17350 ppid=16996 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <send-keys> <-t> <%0> <Enter>
+pid=17641 ppid=17640 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=9 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <capture-pane> <-e> <-p> <-t> <%0> <-S> <0>
+pid=31089 ppid=31088 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <#{pane_id}>
+pid=31098 ppid=31086 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_agent}>
+pid=31115 ppid=31113 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <#{pane_id}>
+pid=31131 ppid=31130 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#S>
+pid=31145 ppid=31144 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <#{pane_id}>
+pid=31158 ppid=31157 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=31173 ppid=31171 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <#{pane_id}>
+pid=31184 ppid=31170 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#S>
+pid=32753 ppid=32749 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

@@ -1,0 +1,78 @@
+pid=72663 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <cp1>
+pid=72681 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <cp1> <-c> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/w>
+pid=72685 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <-u> <CLAUDECODE>
+pid=72687 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <-u> <CLAUDE_CODE_SESSION>
+pid=72688 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_SESSION> <1>
+pid=72689 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_ORIGIN> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/w>
+pid=72690 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_DIR> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/w>
+pid=72691 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_MODE> <local>
+pid=72692 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_HOME> </tmp/aelx/L-COMPACT/revalidation-after-answer/h/.ae>
+pid=72693 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <mouse> <on>
+pid=72694 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <focus-events> <on>
+pid=72695 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <history-limit> <50000>
+pid=72696 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <pane-border-status> <top>
+pid=72697 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <pane-border-format> < #{@ae_agent} >
+pid=72698 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <cp1>
+pid=72700 ppid=72699 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=72709 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae cp1] >
+pid=72710 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=72711 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…x/L-COMPACT/revalidation-after-answer/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=72712 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=72713 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=72714 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=72716 ppid=72715 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=72717 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=72718 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=72719 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=72720 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=72724 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <automatic-rename> <off>
+pid=72730 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <cp1> <cp1>
+pid=72731 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <cp1> <-p> <#{pane_id}>
+pid=72732 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:claude:claude>
+pid=72733 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <claude:claude>
+pid=72734 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=72752 ppid=72751 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=72838 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}	#{@ae_agent}>
+pid=72859 ppid=72858 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=72920 ppid=72919 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=72922 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-72662-%0> <->
+pid=72923 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-72662-%0> <-t> <%0>
+pid=72942 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=73196 ppid=73194 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=73275 ppid=73273 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id} #{@ae_agent}>
+pid=73277 ppid=73276 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <new-window> <-d> <-t> <cp1:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-COMPACT/revalidation-after-answer/h/.ae/sessions/cp1/events-tail>
+pid=73279 ppid=73208 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=73280 ppid=73208 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=73281 ppid=73208 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <set-window-option> <-t> <cp1:ae-monitor> <pane-border-status> <top>
+pid=73282 ppid=73208 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=73318 ppid=73316 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id} #{@ae_agent}>
+pid=73325 ppid=73323 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id} #{@ae_agent}>
+pid=73337 ppid=73335 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id} #{@ae_agent}>
+pid=73345 ppid=73344 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-COMPACT/revalidation-after-answer/h/.ae/sessions/cp1/watchdog _run>
+pid=73347 ppid=73289 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=73348 ppid=73289 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=73359 ppid=73289 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <select-pane> <-t> <%2> <-d>
+pid=73380 ppid=72662 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%0>
+pid=73384 ppid=73382 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S>pid=72662 ppid=72527 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-sessions> <attach-session> <-F> <-t> <#{session_id} #{session_name}> <cp1>
+
+pid=73386 ppid=73346 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=73400 ppid=73398 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=73401 ppid=73388 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=73412 ppid=73410 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=73414 ppid=73346 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=73416 ppid=73346 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <has-session> <-t> <cp1>
+pid=73422 ppid=73346 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=73424 ppid=73423 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=73427 ppid=73426 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=73458 ppid=73456 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=73465 ppid=73346 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=73497 ppid=73495 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=73509 ppid=73478 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=73530 ppid=73528 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=73534 ppid=73346 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=73552 ppid=73550 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=73562 ppid=73346 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <claude●>
+pid=73567 ppid=73566 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=73569 ppid=73346 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=73570 ppid=73346 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=79385 ppid=79383 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/revalidation-after-answer/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

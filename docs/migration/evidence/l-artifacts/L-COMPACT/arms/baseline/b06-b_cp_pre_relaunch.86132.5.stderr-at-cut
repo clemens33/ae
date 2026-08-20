@@ -1,0 +1,17 @@
+compact: cp1 (local) resolved and frozen.
+session: cp1
+uuid: bdaead9e-9041-4e87-937f-9b6cac6ace9d (session)
+mode: local
+origin: /private/tmp/aelx/L-COMPACT/baseline/w
+config: /tmp/aelx/L-COMPACT/baseline/h/.ae/config
+conversation files: kept
+archive: /tmp/aelx/L-COMPACT/baseline/h/.ae/archive/bdaead9e-9041-4e87-937f-9b6cac6ace9d
+compact: semantic handover skipped (--digest-only); the digest is the handover.
+Archived bdaead9e-9041-4e87-937f-9b6cac6ace9d
+  /tmp/aelx/L-COMPACT/baseline/h/.ae/archive/bdaead9e-9041-4e87-937f-9b6cac6ace9d
+  4 file(s), 1935 byte(s)
+  kept agent conversation files (claude/codex token history; purge: ae end --purge-history)
+Cleaned up local session cp1
+Ended local session cp1
+Recovery: cd /private/tmp/aelx/L-COMPACT/baseline/w && /tmp/aelx/L-COMPACT/baseline/b/ae --local cp1 --from bdaead9e-9041-4e87-937f-9b6cac6ace9d
+Starting fresh session cp1 from archive bdaead9e-9041-4e87-937f-9b6cac6ace9d...

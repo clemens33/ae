@@ -1,0 +1,11 @@
+arm	exit-identity-terminal-attach
+section	L-COMPACT
+roster_ids	SC-517a SC-517b
+construction	compact runs on a REAL terminal (a driver pane on a dedicated control server), so the relaunch it execs into reaches a terminal attach; the controller then detaches the inner client with the tmux prefix and d, and the exit status is captured
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+session_uuid	7197bf57-c4d6-4bfe-94d0-23f2ae3280af
+op	ae compact -f --digest-only cp1 (pty)
+op_rc	0
+attach_bound_sec	90
+rc_bound_sec	120

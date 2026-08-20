@@ -1,0 +1,10 @@
+arm	exit-identity-no-terminal
+section	L-COMPACT
+roster_ids	SC-517c
+construction	compact is invoked with -f (so it does not exit at confirmation EOF) and with no stream attached to a terminal; the fresh session is created but nothing can attach to it. The report bytes and the exit status are captured
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+session_uuid	bb3e4eaa-eae1-4ed6-b97c-40effb369648
+op	ae compact -f --digest-only cp1 with stdin /dev/null and both outputs to files
+op_rc	1
+note	an unlaunchable-binary construction is deliberately NOT this row's specimen

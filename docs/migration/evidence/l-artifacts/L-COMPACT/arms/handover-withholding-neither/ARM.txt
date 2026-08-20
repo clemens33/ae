@@ -1,0 +1,13 @@
+arm	handover-withholding-neither
+section	L-COMPACT
+roster_ids	SC-829a
+construction	a real compact -f runs under a shortened handover bound (AE_COMPACT_HANDOVER_SECS=25); once the handover request row is observed the controller supplies NOTHING, and the wait then runs to its bound
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+session_uuid	80c88153-099d-4086-8ae3-d449153f0c9b
+mode	neither
+handover_bound_sec	25
+request_ref	ae-20260820T180138Z-15e53c71
+op_rc	1
+source_trace	source-trace.what-completion-polls.txt (frozen source of _compact_wait_handover and the facts it polls, hashed)
+planted_pane	none

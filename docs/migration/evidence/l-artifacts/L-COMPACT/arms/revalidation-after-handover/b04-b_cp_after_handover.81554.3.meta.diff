@@ -1,0 +1,11 @@
+--- /tmp/aelx/L-COMPACT/revalidation-after-handover/cap/b04-b_cp_after_handover.81554.3.meta.before.txt	2026-08-20 19:58:02
++++ /tmp/aelx/L-COMPACT/revalidation-after-handover/cap/b04-b_cp_after_handover.81554.3.meta.after.txt	2026-08-20 19:58:12
+@@ -1,7 +1,7 @@
+ mode=local
+ origin=/private/tmp/aelx/L-COMPACT/revalidation-after-handover/w
+ session=cp1
+-session_id=b66c9f18-a790-4298-9457-4784fd633da2
++session_id=3e113123-0a0f-490a-8ce6-46ea7a6d71c6
+ work_dir=/private/tmp/aelx/L-COMPACT/revalidation-after-handover/w
+ layout=vertical
+ config=/tmp/aelx/L-COMPACT/revalidation-after-handover/h/.ae/config

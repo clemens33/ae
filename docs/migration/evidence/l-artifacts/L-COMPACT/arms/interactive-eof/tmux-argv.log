@@ -1,0 +1,78 @@
+pid=6833 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <cp1>
+pid=6851 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <cp1> <-c> </private/tmp/aelx/L-COMPACT/interactive-eof/w>
+pid=6855 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <-u> <CLAUDECODE>
+pid=6857 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <-u> <CLAUDE_CODE_SESSION>
+pid=6858 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_SESSION> <1>
+pid=6859 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_ORIGIN> </private/tmp/aelx/L-COMPACT/interactive-eof/w>
+pid=6860 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_DIR> </private/tmp/aelx/L-COMPACT/interactive-eof/w>
+pid=6861 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_MODE> <local>
+pid=6862 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <cp1> <AE_HOME> </tmp/aelx/L-COMPACT/interactive-eof/h/.ae>
+pid=6863 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <mouse> <on>
+pid=6864 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <focus-events> <on>
+pid=6865 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <history-limit> <50000>
+pid=6866 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <pane-border-status> <top>
+pid=6867 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <pane-border-format> < #{@ae_agent} >
+pid=6868 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <cp1>
+pid=6870 ppid=6869 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=6879 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae cp1] >
+pid=6880 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=6881 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…te/tmp/aelx/L-COMPACT/interactive-eof/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=6882 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=6883 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=6884 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=6886 ppid=6885 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=6887 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=6888 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=6889 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=6890 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=6891 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <cp1> <automatic-rename> <off>
+pid=6894 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <cp1> <cp1>
+pid=6901 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <cp1> <-p> <#{pane_id}>
+pid=6908 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:claude:claude>
+pid=6916 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <claude:claude>
+pid=6924 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=6963 ppid=6961 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=7179 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}	#{@ae_agent}>
+pid=7211 ppid=7210 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=7273 ppid=7272 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=7275 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-6832-%0> <->
+pid=7276 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-6832-%0> <-t> <%0>
+pid=7278 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=7284 ppid=7283 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=7323 ppid=7321 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id} #{@ae_agent}>
+pid=7325 ppid=7324 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <new-window> <-d> <-t> <cp1:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-COMPACT/interactive-eof/h/.ae/sessions/cp1/events-tail>
+pid=7328 ppid=7290 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=7329 ppid=7290 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=7331 ppid=7290 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <set-window-option> <-t> <cp1:ae-monitor> <pane-border-status> <top>
+pid=7333 ppid=7290 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=7371 ppid=7369 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id} #{@ae_agent}>
+pid=7376 ppid=7374 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id} #{@ae_agent}>
+pid=7384 ppid=7382 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id} #{@ae_agent}>
+pid=7386 ppid=7385 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-COMPACT/interactive-eof/h/.ae/sessions/cp1/watchdog _run>
+pid=7388 ppid=7343 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=7389 ppid=7343 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=7398 ppid=7343 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <select-pane> <-t> <%2> <-d>
+pid=7421 ppid=6832 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%0>
+pid=7425 ppid=7423 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=6832 ppid=3186 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session> <-t> <cp1>
+pid=7426 ppid=7387 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=7441 ppid=7438 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=7442 ppid=7428 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=7450 ppid=7448 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=7451 ppid=7387 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=7452 ppid=7387 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <has-session> <-t> <cp1>
+pid=7458 ppid=7387 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=7460 ppid=7459 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=7463 ppid=7462 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=7495 ppid=7493 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=7496 ppid=7387 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=7510 ppid=7508 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=7511 ppid=7497 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=7519 ppid=7517 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=7520 ppid=7387 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=7532 ppid=7529 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=7533 ppid=7387 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <claude●>
+pid=7538 ppid=7537 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-panes> <-s> <-t> <cp1> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=7540 ppid=7387 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=7541 ppid=7387 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=9374 ppid=9372 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-COMPACT/interactive-eof/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

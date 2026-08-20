@@ -1,0 +1,12 @@
+--- /tmp/aelx/L-COMPACT/preview/cap/twin-meta.before.txt	2026-08-20 19:53:06
++++ /tmp/aelx/L-COMPACT/preview/cap/twin-meta.after.txt	2026-08-20 19:53:13
+@@ -1,7 +1,7 @@
+ mode=local
+ origin=/private/tmp/aelx/L-COMPACT/preview/w
+-session=cp1
+-session_id=93639068-6059-4946-95ea-dceb6f0fbcae
++session=twin
++session_id=76c19da0-9cad-49f5-844d-aaef79f2b65a
+ work_dir=/private/tmp/aelx/L-COMPACT/preview/w
+ layout=vertical
+ config=/tmp/aelx/L-COMPACT/preview/h/.ae/config

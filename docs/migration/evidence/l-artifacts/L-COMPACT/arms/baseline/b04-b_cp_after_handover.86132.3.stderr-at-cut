@@ -1,0 +1,9 @@
+compact: cp1 (local) resolved and frozen.
+session: cp1
+uuid: bdaead9e-9041-4e87-937f-9b6cac6ace9d (session)
+mode: local
+origin: /private/tmp/aelx/L-COMPACT/baseline/w
+config: /tmp/aelx/L-COMPACT/baseline/h/.ae/config
+conversation files: kept
+archive: /tmp/aelx/L-COMPACT/baseline/h/.ae/archive/bdaead9e-9041-4e87-937f-9b6cac6ace9d
+compact: semantic handover skipped (--digest-only); the digest is the handover.

@@ -1,0 +1,6 @@
+# manifest-root	/tmp/aelx/L-COMPACT/config-keephistory-without-keep/h/.claude
+#path	type	mode	nlink	size	link	sha256
+.	dir	755	3	96	-	-
+projects	dir	755	3	96	-	-
+projects/-tmp-aelx-w	dir	755	3	96	-	-
+projects/-tmp-aelx-w/86378805-705b-4329-b334-489c95ee4723.jsonl	file	644	1	22	-	db7a690bb3a7c8c628c2866586e528890389ad9bf34304d0414a2ce9e8d8098d

@@ -1,0 +1,11 @@
+arm	sigpipe
+section	L-COMPACT
+roster_ids	SC-504b
+construction	the producer (a real compact -f --digest-only) and an early-closing consumer are SEPARATELY SUPERVISED processes: the consumer creates an explicit pipe, hands the write end to the producer, reads exactly ONE line, closes the read end, then reaps the producer. No shell pipeline is placed over the subject
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+session_uuid	13e38f63-67b0-4e2f-9774-fae5ea96523a
+consumer_harness	sigpipe-harness.py (byte copy of what ran)
+record	sigpipe-record.json — both statuses, the producer's signal disposition, and the one line the consumer read
+relaunch_state	3post.tmux.txt and 3post.sessions.tsv
+harness_rc	0

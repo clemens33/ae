@@ -1,0 +1,15 @@
+mode=local
+origin=/private/tmp/aelx/L-COMPACT/revalidation-after-handover/w
+session=cp1
+session_id=3e113123-0a0f-490a-8ce6-46ea7a6d71c6
+work_dir=/private/tmp/aelx/L-COMPACT/revalidation-after-handover/w
+layout=vertical
+config=/tmp/aelx/L-COMPACT/revalidation-after-handover/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-COMPACT/revalidation-after-handover/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-COMPACT/revalidation-after-handover/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:1482a40a-5fb1-4cc4-8325-5cb865ff32e8
+agent_bin.main=claude
+watchdog=true

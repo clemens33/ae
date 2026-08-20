@@ -1,0 +1,21 @@
+compact: cp1 (local) resolved and frozen.
+session: cp1
+uuid: c700f029-3cf6-4025-8894-c907ca6dcb12 (session)
+mode: local
+origin: /private/tmp/aelx/L-COMPACT/interactive-eof/w
+config: /tmp/aelx/L-COMPACT/interactive-eof/h/.ae/config
+conversation files: kept
+archive: /tmp/aelx/L-COMPACT/interactive-eof/h/.ae/archive/c700f029-3cf6-4025-8894-c907ca6dcb12
+Compact session 'cp1'?
+  - Session id: c700f029-3cf6-4025-8894-c907ca6dcb12 (session), mode: local
+  - Origin:     /private/tmp/aelx/L-COMPACT/interactive-eof/w
+  - ARCHIVES its memory to /tmp/aelx/L-COMPACT/interactive-eof/h/.ae/archive/c700f029-3cf6-4025-8894-c907ca6dcb12/, then ENDS it.
+  - Then starts a FRESH session 'cp1' that inherits that archive's digest.
+  - The fresh session starts the roster your config names now: main=claude workers=-
+  - NOT carried over: provider conversations, panes, spawned agents, launch scratch.
+  - KEPT: the archive, and the claude/codex conversation files on disk.
+  - No handover will be requested (--digest-only); the digest is the handover.
+Continue? [y/N] 
+Error: could not obtain confirmation — no input on stdin.
+  Nothing was stopped, archived or changed. Run it from a terminal, or
+  pass -f if you mean to proceed without being asked.

@@ -1,0 +1,15 @@
+mode=local
+origin=/private/tmp/aelx/L-COMPACT/preview/w
+session=twin
+session_id=76c19da0-9cad-49f5-844d-aaef79f2b65a
+work_dir=/private/tmp/aelx/L-COMPACT/preview/w
+layout=vertical
+config=/tmp/aelx/L-COMPACT/preview/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-COMPACT/preview/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-COMPACT/preview/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:20cd974c-35c5-4956-a88c-557de3f2629b
+agent_bin.main=claude
+watchdog=true

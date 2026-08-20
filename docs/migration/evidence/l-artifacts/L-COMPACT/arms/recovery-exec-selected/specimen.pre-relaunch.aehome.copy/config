@@ -1,0 +1,7 @@
+[agents]
+claude = "claude /tmp/aelx/L-COMPACT/recovery-exec-selected/b/fake-tool.sh"
+codex = "codex /tmp/aelx/L-COMPACT/recovery-exec-selected/b/fake-tool.sh"
+
+[workspace]
+main = claude
+layout = vertical

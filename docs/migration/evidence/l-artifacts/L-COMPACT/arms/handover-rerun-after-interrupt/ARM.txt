@@ -1,0 +1,13 @@
+arm	handover-rerun-after-interrupt
+section	L-COMPACT
+roster_ids	SC-829b
+construction	a real compact -f is interrupted (SIGKILL to the whole tree) AFTER its handover request is published, then compact is run again on the same session; the request events (count and refs) and the baseline bytes carried in each request body are captured across both runs
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+session_uuid	ecf71b1b-cc33-4328-a049-f2342c06dd28
+handover_bound_sec	25
+run1_rc	137
+run2_rc	1
+run1_request_ref	ae-20260820T180219Z-64ea1b5f
+run2_request_ref	ae-20260820T180219Z-64ea1b5f
+source_trace	source-trace.what-completion-polls.txt

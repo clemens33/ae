@@ -1,0 +1,9 @@
+# manifest-root	/tmp/aelx/L-COMPACT/preview/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+76c19da0-9cad-49f5-844d-aaef79f2b65a	dir	700	7	224	-	-
+76c19da0-9cad-49f5-844d-aaef79f2b65a/digest.md	file	600	1	1291	-	d59ac97d26f9b46c509f85e776fca6c4aef505468963dc5074f69c9e765f7c18
+76c19da0-9cad-49f5-844d-aaef79f2b65a/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+76c19da0-9cad-49f5-844d-aaef79f2b65a/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+76c19da0-9cad-49f5-844d-aaef79f2b65a/messages	dir	700	2	64	-	-
+76c19da0-9cad-49f5-844d-aaef79f2b65a/meta	file	600	1	644	-	efcd947c2c44bb2cf7f28f958ae5b4c1e32ba2a176da2f7a584a8b64a9665912

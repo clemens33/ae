@@ -1,0 +1,10 @@
+arm	recovery-exec-selected
+section	L-COMPACT
+roster_ids	SC-512
+construction	the compact is cut at the pre-relaunch barrier so the archive is published and the source removed but the relaunch never runs; the printed Recovery: command is then extracted and executed VERBATIM against that state
+hook_patch_version	L-HOOKS-v3
+binary.sha256	b1b07709b01a66f7467333a151e641d2139b6950e58ca4cd53b47aa020afdfdd
+session_uuid	ed830d55-354c-4e71-b8c9-949f38af8cad
+mode	selected
+op_rc	137
+recovery_rc	1

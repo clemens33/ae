@@ -1,0 +1,9 @@
+arm	interactive-eof
+section	L-COMPACT
+roster_ids	SC-503b
+construction	ae compact --digest-only runs with stdin closed by the controller (/dev/null) and no terminal
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+session_uuid	c700f029-3cf6-4025-8894-c907ca6dcb12
+mode	eof
+op_rc	1

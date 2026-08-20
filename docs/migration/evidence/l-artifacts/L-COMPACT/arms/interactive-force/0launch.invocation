@@ -1,0 +1,19 @@
+cwd: /tmp/aelx/L-COMPACT/interactive-force/w
+argv:
+  /tmp/aelx/L-COMPACT/interactive-force/b/ae
+  --local
+  cp1
+env:
+  HOME=/tmp/aelx/L-COMPACT/interactive-force/h
+  AE_HOME=/tmp/aelx/L-COMPACT/interactive-force/h/.ae
+  TMPDIR=/tmp/aelx/L-COMPACT/interactive-force/tp
+  TMUX_TMPDIR=/tmp/aelx/L-COMPACT/interactive-force/t
+  PATH=/tmp/aelx/L-COMPACT/interactive-force/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-COMPACT/interactive-force/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-COMPACT/interactive-force/cap/tmux-argv.log

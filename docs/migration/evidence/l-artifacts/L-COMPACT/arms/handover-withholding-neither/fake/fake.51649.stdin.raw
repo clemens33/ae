@@ -1,0 +1,20 @@
+⟦ae:msg from ae:compact:80c88153-099d-4086-8ae3-d449153f0c9b⟧
+REQUEST ae-20260820T180138Z-15e53c71 from ae:compact:80c88153-099d-4086-8ae3-d449153f0c9b: COMPACT HANDOVER — this session is about to be archived and restarted fresh from its
+digest. You are its main agent; what you write now is what the next session begins with.
+
+1. Stop accepting new work.
+2. Quiesce your configured workers and consume their results.
+3. Persist the load-bearing continuation with:
+       /tmp/aelx/L-COMPACT/handover-withholding-neither/h/.ae/sessions/cp1/memo add --topic handover "<what the next session must know>"
+   Write what cannot be re-derived from the code: decisions and their reasons, what was
+   ruled out, what is in flight, what will bite. Not a summary of the diff.
+4. Retire every agent you spawned. compact refuses while any spawned slot remains, and it
+   will not retire them for you.
+5. Reply with the exact command in this message.
+6. Do no further work after replying.
+
+AE-COMPACT-MEMO-BASELINE=0
+
+REQUIRED: When you have finished, you MUST run this exact command to reply:
+/tmp/aelx/L-COMPACT/handover-withholding-neither/h/.ae/sessions/cp1/reply --as "claude:claude" "ae-20260820T180138Z-15e53c71" "<your reply>"
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

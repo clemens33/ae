@@ -1,0 +1,18 @@
+compact: cp1 (local) resolved and frozen.
+session: cp1
+uuid: bb3e4eaa-eae1-4ed6-b97c-40effb369648 (session)
+mode: local
+origin: /private/tmp/aelx/L-COMPACT/exit-identity-no-terminal/w
+config: /tmp/aelx/L-COMPACT/exit-identity-no-terminal/h/.ae/config
+conversation files: kept
+archive: /tmp/aelx/L-COMPACT/exit-identity-no-terminal/h/.ae/archive/bb3e4eaa-eae1-4ed6-b97c-40effb369648
+compact: semantic handover skipped (--digest-only); the digest is the handover.
+Archived bb3e4eaa-eae1-4ed6-b97c-40effb369648
+  /tmp/aelx/L-COMPACT/exit-identity-no-terminal/h/.ae/archive/bb3e4eaa-eae1-4ed6-b97c-40effb369648
+  4 file(s), 1969 byte(s)
+  kept agent conversation files (claude/codex token history; purge: ae end --purge-history)
+Cleaned up local session cp1
+Ended local session cp1
+Recovery: cd /private/tmp/aelx/L-COMPACT/exit-identity-no-terminal/w && /tmp/aelx/L-COMPACT/exit-identity-no-terminal/b/ae --local cp1 --from bb3e4eaa-eae1-4ed6-b97c-40effb369648
+Starting fresh session cp1 from archive bb3e4eaa-eae1-4ed6-b97c-40effb369648...
+open terminal failed: not a terminal

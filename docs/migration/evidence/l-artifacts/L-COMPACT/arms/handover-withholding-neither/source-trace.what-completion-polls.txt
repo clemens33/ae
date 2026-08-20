@@ -1,0 +1,82 @@
+FROZEN SOURCE, extracted verbatim. A code observation, not a verdict.
+frozen commit	72c729343a0117af2968b66e1c43f89ad25fc0b2
+
+===== _compact_wait_handover  (ae:5933) =====
+_compact_wait_handover() { # <session-dir> <ref> <session> <baseline> <seconds>
+    local dir="$1" ref="$2" session="$3" baseline="$4" secs="$5"
+    local waited=0 saw_reply=false saw_memo=false
+    while ((waited < secs)); do
+        saw_reply=false
+        saw_memo=false
+        _compact_reply_seen "${dir}/events.jsonl" "$ref" "$session" && saw_reply=true
+        _compact_memo_after "${dir}/memo.tsv" "$baseline" && saw_memo=true
+        if [[ "$saw_reply" == true && "$saw_memo" == true ]]; then
+            _AE_CP_SAW="both"
+            return 0
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    if [[ "$saw_reply" == true ]]; then
+        _AE_CP_SAW="reply"
+    elif [[ "$saw_memo" == true ]]; then
+        _AE_CP_SAW="memo"
+    else
+        _AE_CP_SAW="neither"
+    fi
+    return 1
+}
+
+===== _compact_memo_offset  (ae:5806) =====
+_compact_memo_offset() { # <memo.tsv>
+    local f="$1" n
+    if [[ -f "$f" ]]; then
+        n="$(_ae_stat size "$f")"
+        [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    else
+        n=0
+    fi
+    printf '%s' "$n"
+    return 0
+}
+
+===== _compact_baseline_of  (ae:5875) =====
+_compact_baseline_of() { # <body-file>
+    local f="$1" line
+    [[ -f "$f" ]] || return 1
+    while IFS= read -r line; do
+        if [[ "$line" == "AE-COMPACT-MEMO-BASELINE="* ]]; then
+            printf '%s' "${line#AE-COMPACT-MEMO-BASELINE=}"
+            return 0
+        fi
+    done <"$f"
+    return 1
+}
+
+===== _compact_find_outstanding  (ae:5859) =====
+_compact_find_outstanding() { # <events.jsonl> <actor>
+    local file="$1" actor="$2" status kind ref from body
+    [[ -f "$file" ]] || return 1
+    while IFS=$'\x1f' read -r status kind ref from _ _ body _ _ _ _ _; do
+        [[ "$status" == "pending" ]] || continue
+        [[ "$from" == "$actor" ]] || continue
+        printf '%s\t%s' "$ref" "$body"
+        return 0
+    done < <(_ar_request_states "$file")
+    return 1
+}
+
+===== _compact_handover_secs  (ae:5619) =====
+_compact_handover_secs() {
+    local v="${AE_COMPACT_HANDOVER_SECS:-}"
+    if [[ -n "$v" && "$v" =~ ^[0-9]+$ ]] && ((v > 0)); then
+        printf '%s' "$v"
+        return 0
+    fi
+    if [[ -n "$v" ]]; then
+        echo "note: AE_COMPACT_HANDOVER_SECS='${v}' is not a positive number of seconds — using 300." >&2
+    fi
+    printf '300'
+    return 0
+}
+

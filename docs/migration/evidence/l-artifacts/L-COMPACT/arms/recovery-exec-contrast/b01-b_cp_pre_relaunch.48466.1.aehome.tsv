@@ -1,0 +1,13 @@
+# manifest-root	/tmp/aelx/L-COMPACT/recovery-exec-contrast/h/.ae
+#path	type	mode	nlink	size	link	sha256
+.	dir	755	5	160	-	-
+archive	dir	700	3	96	-	-
+archive/12361e0e-4254-4dcf-bd13-32a2c53230f0	dir	700	7	224	-	-
+archive/12361e0e-4254-4dcf-bd13-32a2c53230f0/digest.md	file	600	1	1305	-	4b3aa86b9ff0265d695c6919bc0add35c46517ca288183a898568437d5ac463d
+archive/12361e0e-4254-4dcf-bd13-32a2c53230f0/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+archive/12361e0e-4254-4dcf-bd13-32a2c53230f0/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+archive/12361e0e-4254-4dcf-bd13-32a2c53230f0/messages	dir	700	2	64	-	-
+archive/12361e0e-4254-4dcf-bd13-32a2c53230f0/meta	file	600	1	658	-	2781d88669dd692ba5185b09387fd3bf05b6203a63a36211981212683e733f8f
+config	file	644	1	204	-	20030476308c8c71ec856aef1cc1792e2d2875493208f3285c348a8560b181b2
+sessions	dir	755	3	96	-	-
+sessions/.lifecycle.cp1.lock	file	644	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

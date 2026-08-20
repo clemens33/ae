@@ -1,0 +1,18 @@
+compact: cp1 (local) resolved and frozen.
+session: cp1
+uuid: 8bc901fb-e2db-4179-9342-458ed0d7ec94 (session)
+mode: local
+origin: /private/tmp/aelx/L-COMPACT/interactive-force/w
+config: /tmp/aelx/L-COMPACT/interactive-force/h/.ae/config
+conversation files: kept
+archive: /tmp/aelx/L-COMPACT/interactive-force/h/.ae/archive/8bc901fb-e2db-4179-9342-458ed0d7ec94
+compact: semantic handover skipped (--digest-only); the digest is the handover.
+Archived 8bc901fb-e2db-4179-9342-458ed0d7ec94
+  /tmp/aelx/L-COMPACT/interactive-force/h/.ae/archive/8bc901fb-e2db-4179-9342-458ed0d7ec94
+  4 file(s), 1953 byte(s)
+  kept agent conversation files (claude/codex token history; purge: ae end --purge-history)
+Cleaned up local session cp1
+Ended local session cp1
+Recovery: cd /private/tmp/aelx/L-COMPACT/interactive-force/w && /tmp/aelx/L-COMPACT/interactive-force/b/ae --local cp1 --from 8bc901fb-e2db-4179-9342-458ed0d7ec94
+Starting fresh session cp1 from archive 8bc901fb-e2db-4179-9342-458ed0d7ec94...
+open terminal failed: not a terminal

@@ -1,0 +1,3 @@
+Error: session 'cp1' has purge_agent_history enabled, which contradicts compact.
+  compact keeps the archive and the conversation history. To proceed anyway:
+      ae compact --keep-history cp1

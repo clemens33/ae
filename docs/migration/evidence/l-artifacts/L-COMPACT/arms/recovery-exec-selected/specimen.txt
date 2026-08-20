@@ -1,0 +1,3 @@
+specimen	the PRE-RELAUNCH clone: archive published, source session removed, relaunch not yet exec()d
+taken.at	b_cp_pre_relaunch.42056.1
+method	the controller SIGKILLs the whole compact process tree at this barrier, so the relaunch never runs and the live state IS the specimen at its own path

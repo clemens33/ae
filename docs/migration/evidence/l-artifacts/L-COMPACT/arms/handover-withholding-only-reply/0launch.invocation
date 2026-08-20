@@ -1,0 +1,19 @@
+cwd: /tmp/aelx/L-COMPACT/handover-withholding-only-reply/w
+argv:
+  /tmp/aelx/L-COMPACT/handover-withholding-only-reply/b/ae
+  --local
+  cp1
+env:
+  HOME=/tmp/aelx/L-COMPACT/handover-withholding-only-reply/h
+  AE_HOME=/tmp/aelx/L-COMPACT/handover-withholding-only-reply/h/.ae
+  TMPDIR=/tmp/aelx/L-COMPACT/handover-withholding-only-reply/tp
+  TMUX_TMPDIR=/tmp/aelx/L-COMPACT/handover-withholding-only-reply/t
+  PATH=/tmp/aelx/L-COMPACT/handover-withholding-only-reply/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-COMPACT/handover-withholding-only-reply/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-COMPACT/handover-withholding-only-reply/cap/tmux-argv.log

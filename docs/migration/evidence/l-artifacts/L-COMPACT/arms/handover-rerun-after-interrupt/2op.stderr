@@ -1,0 +1,9 @@
+compact: cp1 (local) resolved and frozen.
+session: cp1
+uuid: ecf71b1b-cc33-4328-a049-f2342c06dd28 (session)
+mode: local
+origin: /private/tmp/aelx/L-COMPACT/handover-rerun-after-interrupt/w
+config: /tmp/aelx/L-COMPACT/handover-rerun-after-interrupt/h/.ae/config
+conversation files: kept
+archive: /tmp/aelx/L-COMPACT/handover-rerun-after-interrupt/h/.ae/archive/ecf71b1b-cc33-4328-a049-f2342c06dd28
+compact: handover requested as ae-20260820T180219Z-64ea1b5f; waiting for the reply AND a new handover memo.

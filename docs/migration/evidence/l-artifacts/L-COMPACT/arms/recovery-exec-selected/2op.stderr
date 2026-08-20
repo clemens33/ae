@@ -1,0 +1,17 @@
+compact: cp1 (local) resolved and frozen.
+session: cp1
+uuid: ed830d55-354c-4e71-b8c9-949f38af8cad (session)
+mode: local
+origin: /private/tmp/aelx/L-COMPACT/recovery-exec-selected/w
+config: /tmp/aelx/L-COMPACT/recovery-exec-selected/h/.ae/config
+conversation files: kept
+archive: /tmp/aelx/L-COMPACT/recovery-exec-selected/h/.ae/archive/ed830d55-354c-4e71-b8c9-949f38af8cad
+compact: semantic handover skipped (--digest-only); the digest is the handover.
+Archived ed830d55-354c-4e71-b8c9-949f38af8cad
+  /tmp/aelx/L-COMPACT/recovery-exec-selected/h/.ae/archive/ed830d55-354c-4e71-b8c9-949f38af8cad
+  4 file(s), 1963 byte(s)
+  kept agent conversation files (claude/codex token history; purge: ae end --purge-history)
+Cleaned up local session cp1
+Ended local session cp1
+Recovery: cd /private/tmp/aelx/L-COMPACT/recovery-exec-selected/w && /tmp/aelx/L-COMPACT/recovery-exec-selected/b/ae --local cp1 --from ed830d55-354c-4e71-b8c9-949f38af8cad
+Starting fresh session cp1 from archive ed830d55-354c-4e71-b8c9-949f38af8cad...

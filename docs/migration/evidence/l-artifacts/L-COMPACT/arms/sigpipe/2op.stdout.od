@@ -1,0 +1,28 @@
+0000000    {   "   p   r   o   d   u   c   e   r   _   a   r   g   v   "
+0000020    :       [   "   /   t   m   p   /   a   e   l   x   /   L   -
+0000040    C   O   M   P   A   C   T   /   s   i   g   p   i   p   e   /
+0000060    b   /   a   e   "   ,       "   c   o   m   p   a   c   t   "
+0000100    ,       "   -   f   "   ,       "   -   -   d   i   g   e   s
+0000120    t   -   o   n   l   y   "   ,       "   c   p   1   "   ]   ,
+0000140        "   c   o   n   s   u   m   e   r   _   r   e   a   d   _
+0000160    f   i   r   s   t   _   l   i   n   e   "   :       "   A   r
+0000200    c   h   i   v   e   d       1   3   e   3   8   f   6   3   -
+0000220    6   7   b   0   -   4   e   2   f   -   9   7   7   4   -   f
+0000240    a   e   5   e   a   9   6   5   2   3   a   \   n   "   ,    
+0000260    "   c   o   n   s   u   m   e   r   _   c   l   o   s   e   d
+0000300    _   r   e   a   d   _   e   n   d   _   a   f   t   e   r   "
+0000320    :       "   o   n   e       l   i   n   e   "   ,       "   r
+0000340    a   w   _   w   a   i   t   _   s   t   a   t   u   s   "   :
+0000360        3   6   0   9   6   ,       "   p   r   o   d   u   c   e
+0000400    r   _   e   x   i   t   e   d   _   n   o   r   m   a   l   l
+0000420    y   "   :       t   r   u   e   ,       "   p   r   o   d   u
+0000440    c   e   r   _   e   x   i   t   _   c   o   d   e   "   :    
+0000460    1   4   1   ,       "   p   r   o   d   u   c   e   r   _   s
+0000500    i   g   n   a   l   l   e   d   "   :       f   a   l   s   e
+0000520    ,       "   p   r   o   d   u   c   e   r   _   t   e   r   m
+0000540    _   s   i   g   n   a   l   "   :       n   u   l   l   ,    
+0000560    "   p   r   o   d   u   c   e   r   _   t   e   r   m   _   s
+0000600    i   g   n   a   l   _   n   a   m   e   "   :       n   u   l
+0000620    l   ,       "   c   o   n   s   u   m   e   r   _   e   x   i
+0000640    t   _   c   o   d   e   "   :       0   }  \n                
+0000654

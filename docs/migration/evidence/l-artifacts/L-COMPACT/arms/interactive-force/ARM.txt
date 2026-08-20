@@ -1,0 +1,9 @@
+arm	interactive-force
+section	L-COMPACT
+roster_ids	SC-837
+construction	ae compact -f --digest-only runs, so no confirmation is asked at all
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+session_uuid	8bc901fb-e2db-4179-9342-458ed0d7ec94
+mode	force
+op_rc	1

@@ -1,0 +1,4 @@
+stdout.bytes	589
+stderr.bytes	1061
+stdout.sha256	a8ed9837ad94afffdbb7e575652519ca77fd2e799776e1deac0c1240d8efbf2b
+stderr.sha256	3b356032ae4fcd1caa9c5d2c47d6698495f3541816606289a47db526083b4c89

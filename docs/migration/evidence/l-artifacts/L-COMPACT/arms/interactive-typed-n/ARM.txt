@@ -1,0 +1,9 @@
+arm	interactive-typed-n
+section	L-COMPACT
+roster_ids	SC-503a
+construction	ae compact --digest-only runs on a real terminal and the controller types n at the confirmation
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+session_uuid	179fa891-ca04-4f2a-9669-2cb1812a94ab
+mode	typed-n
+op_rc	0

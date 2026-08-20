@@ -1,0 +1,5 @@
+Archived d58e551d-9b0d-4e29-a900-089ef740fdd3
+Archive: /tmp/aelx/L-COMPACT/config-keephistory-with-keep/h/.ae/archive/d58e551d-9b0d-4e29-a900-089ef740fdd3
+Digest: /tmp/aelx/L-COMPACT/config-keephistory-with-keep/h/.ae/archive/d58e551d-9b0d-4e29-a900-089ef740fdd3/digest.md
+Recovery: cd /private/tmp/aelx/L-COMPACT/config-keephistory-with-keep/w && /tmp/aelx/L-COMPACT/config-keephistory-with-keep/b/ae --local cp1 --from d58e551d-9b0d-4e29-a900-089ef740fdd3
+Watchdog started in hidden ae-monitor window. Use 'peek _watchdog' or 'peek _events' to inspect.

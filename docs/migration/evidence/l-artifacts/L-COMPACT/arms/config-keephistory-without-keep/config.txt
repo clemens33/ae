@@ -1,0 +1,8 @@
+[agents]
+claude = "claude /tmp/aelx/L-COMPACT/config-keephistory-without-keep/b/fake-tool.sh"
+codex = "codex /tmp/aelx/L-COMPACT/config-keephistory-without-keep/b/fake-tool.sh"
+
+[workspace]
+main = claude
+layout = vertical
+purge_agent_history = true

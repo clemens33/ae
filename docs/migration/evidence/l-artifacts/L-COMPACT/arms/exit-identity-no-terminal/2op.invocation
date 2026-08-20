@@ -1,0 +1,11 @@
+cwd: /tmp/aelx/L-COMPACT/exit-identity-no-terminal/w
+argv:
+  /tmp/aelx/L-COMPACT/exit-identity-no-terminal/b/ae
+  compact
+  -f
+  --digest-only
+  cp1
+stdin: /dev/null; stdout and stderr: regular files — no stream is a terminal
+is_a_tty.stdin	no
+is_a_tty.stdout	no
+is_a_tty.stderr	no

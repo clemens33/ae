@@ -1,0 +1,13 @@
+compact: cp1 (local) resolved and frozen.
+session: cp1
+uuid: b66c9f18-a790-4298-9457-4784fd633da2 (session)
+mode: local
+origin: /private/tmp/aelx/L-COMPACT/revalidation-after-handover/w
+config: /tmp/aelx/L-COMPACT/revalidation-after-handover/h/.ae/config
+conversation files: kept
+archive: /tmp/aelx/L-COMPACT/revalidation-after-handover/h/.ae/archive/b66c9f18-a790-4298-9457-4784fd633da2
+compact: semantic handover skipped (--digest-only); the digest is the handover.
+Error: 'cp1' is not the session that was authorized (after the handover wait).
+  Authorized session id: b66c9f18-a790-4298-9457-4784fd633da2
+  On disk now:           3e113123-0a0f-490a-8ce6-46ea7a6d71c6
+  Nothing was stopped and nothing was archived.

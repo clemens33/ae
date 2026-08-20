@@ -1,0 +1,11 @@
+arm	baseline
+section	L-COMPACT
+roster_ids	SC-500 SC-501 SC-502 SC-827 SC-1305
+construction	a real compact -f --digest-only under the v3 trace channels, blocking at every named compact cut; both output streams are captured separately and byte-exactly, snapshotted AGAIN at each cut, and a concurrent ae list --json plus the generated requests helper run from a separate process at every cut
+hook_patch_version	L-HOOKS-v3
+binary.sha256	b1b07709b01a66f7467333a151e641d2139b6950e58ca4cd53b47aa020afdfdd
+session_uuid	bdaead9e-9041-4e87-937f-9b6cac6ace9d
+op	ae compact -f --digest-only cp1
+op_rc	1
+barrier_bound_sec	300
+note	the three trace channels are SITES, named separately so one authoritative resolution and the permitted revalidation reads are separable; this worker records which channel fired and when, nothing about what that means

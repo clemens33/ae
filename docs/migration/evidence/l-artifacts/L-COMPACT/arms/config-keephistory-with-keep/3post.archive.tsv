@@ -1,0 +1,9 @@
+# manifest-root	/tmp/aelx/L-COMPACT/config-keephistory-with-keep/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+d58e551d-9b0d-4e29-a900-089ef740fdd3	dir	700	7	224	-	-
+d58e551d-9b0d-4e29-a900-089ef740fdd3/digest.md	file	600	1	1311	-	31be30603abadd3317456ee5748d1aa2e228652de4896963a800e3e1600a1bc6
+d58e551d-9b0d-4e29-a900-089ef740fdd3/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+d58e551d-9b0d-4e29-a900-089ef740fdd3/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+d58e551d-9b0d-4e29-a900-089ef740fdd3/messages	dir	700	2	64	-	-
+d58e551d-9b0d-4e29-a900-089ef740fdd3/meta	file	600	1	664	-	f6bc5aef5fdd3b36432076a57df74479efced85a800be91aa3107d6c6541f222

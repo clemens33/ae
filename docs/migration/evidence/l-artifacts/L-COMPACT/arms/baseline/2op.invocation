@@ -1,0 +1,25 @@
+cwd: /tmp/aelx/L-COMPACT/baseline/w
+argv (bg):
+  /tmp/aelx/L-COMPACT/baseline/b/ae
+  compact
+  -f
+  --digest-only
+  cp1
+env:
+  HOME=/tmp/aelx/L-COMPACT/baseline/h
+  AE_HOME=/tmp/aelx/L-COMPACT/baseline/h/.ae
+  TMPDIR=/tmp/aelx/L-COMPACT/baseline/tp
+  TMUX_TMPDIR=/tmp/aelx/L-COMPACT/baseline/t
+  PATH=/tmp/aelx/L-COMPACT/baseline/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-COMPACT/baseline/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-COMPACT/baseline/cap/tmux-argv.log
+  AE_L_HOOKS=b_cp_resolver_entry:b_cp_reval_after_confirmation:b_cp_reval_after_wait:b_cp_after_answer:b_cp_after_handover:b_cp_pre_relaunch
+  AE_L_TRACE=/tmp/aelx/L-COMPACT/baseline/cap/hook-trace.tsv
+  AE_L_BLOCK=/tmp/aelx/L-COMPACT/baseline/ctl
+  AE_L_BLOCK_MAX=1800

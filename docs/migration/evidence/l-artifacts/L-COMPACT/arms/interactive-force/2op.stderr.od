@@ -1,0 +1,66 @@
+0000000    c   o   m   p   a   c   t   :       c   p   1       (   l   o
+0000020    c   a   l   )       r   e   s   o   l   v   e   d       a   n
+0000040    d       f   r   o   z   e   n   .  \n   s   e   s   s   i   o
+0000060    n   :       c   p   1  \n   u   u   i   d   :       8   b   c
+0000100    9   0   1   f   b   -   e   2   d   b   -   4   1   7   9   -
+0000120    9   3   4   2   -   4   5   8   e   d   0   d   7   e   c   9
+0000140    4       (   s   e   s   s   i   o   n   )  \n   m   o   d   e
+0000160    :       l   o   c   a   l  \n   o   r   i   g   i   n   :    
+0000200    /   p   r   i   v   a   t   e   /   t   m   p   /   a   e   l
+0000220    x   /   L   -   C   O   M   P   A   C   T   /   i   n   t   e
+0000240    r   a   c   t   i   v   e   -   f   o   r   c   e   /   w  \n
+0000260    c   o   n   f   i   g   :       /   t   m   p   /   a   e   l
+0000300    x   /   L   -   C   O   M   P   A   C   T   /   i   n   t   e
+0000320    r   a   c   t   i   v   e   -   f   o   r   c   e   /   h   /
+0000340    .   a   e   /   c   o   n   f   i   g  \n   c   o   n   v   e
+0000360    r   s   a   t   i   o   n       f   i   l   e   s   :       k
+0000400    e   p   t  \n   a   r   c   h   i   v   e   :       /   t   m
+0000420    p   /   a   e   l   x   /   L   -   C   O   M   P   A   C   T
+0000440    /   i   n   t   e   r   a   c   t   i   v   e   -   f   o   r
+0000460    c   e   /   h   /   .   a   e   /   a   r   c   h   i   v   e
+0000500    /   8   b   c   9   0   1   f   b   -   e   2   d   b   -   4
+0000520    1   7   9   -   9   3   4   2   -   4   5   8   e   d   0   d
+0000540    7   e   c   9   4  \n   c   o   m   p   a   c   t   :       s
+0000560    e   m   a   n   t   i   c       h   a   n   d   o   v   e   r
+0000600        s   k   i   p   p   e   d       (   -   -   d   i   g   e
+0000620    s   t   -   o   n   l   y   )   ;       t   h   e       d   i
+0000640    g   e   s   t       i   s       t   h   e       h   a   n   d
+0000660    o   v   e   r   .  \n   A   r   c   h   i   v   e   d       8
+0000700    b   c   9   0   1   f   b   -   e   2   d   b   -   4   1   7
+0000720    9   -   9   3   4   2   -   4   5   8   e   d   0   d   7   e
+0000740    c   9   4  \n           /   t   m   p   /   a   e   l   x   /
+0000760    L   -   C   O   M   P   A   C   T   /   i   n   t   e   r   a
+0001000    c   t   i   v   e   -   f   o   r   c   e   /   h   /   .   a
+0001020    e   /   a   r   c   h   i   v   e   /   8   b   c   9   0   1
+0001040    f   b   -   e   2   d   b   -   4   1   7   9   -   9   3   4
+0001060    2   -   4   5   8   e   d   0   d   7   e   c   9   4  \n    
+0001100        4       f   i   l   e   (   s   )   ,       1   9   5   3
+0001120        b   y   t   e   (   s   )  \n           k   e   p   t    
+0001140    a   g   e   n   t       c   o   n   v   e   r   s   a   t   i
+0001160    o   n       f   i   l   e   s       (   c   l   a   u   d   e
+0001200    /   c   o   d   e   x       t   o   k   e   n       h   i   s
+0001220    t   o   r   y   ;       p   u   r   g   e   :       a   e    
+0001240    e   n   d       -   -   p   u   r   g   e   -   h   i   s   t
+0001260    o   r   y   )  \n   C   l   e   a   n   e   d       u   p    
+0001300    l   o   c   a   l       s   e   s   s   i   o   n       c   p
+0001320    1  \n   E   n   d   e   d       l   o   c   a   l       s   e
+0001340    s   s   i   o   n       c   p   1  \n   R   e   c   o   v   e
+0001360    r   y   :       c   d       /   p   r   i   v   a   t   e   /
+0001400    t   m   p   /   a   e   l   x   /   L   -   C   O   M   P   A
+0001420    C   T   /   i   n   t   e   r   a   c   t   i   v   e   -   f
+0001440    o   r   c   e   /   w       &   &       /   t   m   p   /   a
+0001460    e   l   x   /   L   -   C   O   M   P   A   C   T   /   i   n
+0001500    t   e   r   a   c   t   i   v   e   -   f   o   r   c   e   /
+0001520    b   /   a   e       -   -   l   o   c   a   l       c   p   1
+0001540        -   -   f   r   o   m       8   b   c   9   0   1   f   b
+0001560    -   e   2   d   b   -   4   1   7   9   -   9   3   4   2   -
+0001600    4   5   8   e   d   0   d   7   e   c   9   4  \n   S   t   a
+0001620    r   t   i   n   g       f   r   e   s   h       s   e   s   s
+0001640    i   o   n       c   p   1       f   r   o   m       a   r   c
+0001660    h   i   v   e       8   b   c   9   0   1   f   b   -   e   2
+0001700    d   b   -   4   1   7   9   -   9   3   4   2   -   4   5   8
+0001720    e   d   0   d   7   e   c   9   4   .   .   .  \n   o   p   e
+0001740    n       t   e   r   m   i   n   a   l       f   a   i   l   e
+0001760    d   :       n   o   t       a       t   e   r   m   i   n   a
+0002000    l  \n                                                        
+0002002

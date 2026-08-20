@@ -1,0 +1,4 @@
+Archived ed830d55-354c-4e71-b8c9-949f38af8cad
+Archive: /tmp/aelx/L-COMPACT/recovery-exec-selected/h/.ae/archive/ed830d55-354c-4e71-b8c9-949f38af8cad
+Digest: /tmp/aelx/L-COMPACT/recovery-exec-selected/h/.ae/archive/ed830d55-354c-4e71-b8c9-949f38af8cad/digest.md
+Recovery: cd /private/tmp/aelx/L-COMPACT/recovery-exec-selected/w && /tmp/aelx/L-COMPACT/recovery-exec-selected/b/ae --local cp1 --from ed830d55-354c-4e71-b8c9-949f38af8cad

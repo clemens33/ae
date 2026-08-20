@@ -1,0 +1,14 @@
+compact: cp1 (local) resolved and frozen.
+session: cp1
+uuid: 4d23206a-ced4-4dab-8aa8-f0abf8d312d5 (session)
+mode: local
+origin: /private/tmp/aelx/L-COMPACT/handover-withholding-only-memo/w
+config: /tmp/aelx/L-COMPACT/handover-withholding-only-memo/h/.ae/config
+conversation files: kept
+archive: /tmp/aelx/L-COMPACT/handover-withholding-only-memo/h/.ae/archive/4d23206a-ced4-4dab-8aa8-f0abf8d312d5
+compact: handover requested as ae-20260820T180100Z-c037aab4; waiting for the reply AND a new handover memo.
+Error: no complete handover within 25s — a reply AND a new handover memo are both required.
+  The handover memo was written; the reply did not arrive.
+  Nothing was stopped and nothing was archived. The request stays open: re-run
+  'ae compact cp1' to keep waiting on it, or 'ae compact --digest-only cp1'
+  to withdraw it and archive the digest as it stands.

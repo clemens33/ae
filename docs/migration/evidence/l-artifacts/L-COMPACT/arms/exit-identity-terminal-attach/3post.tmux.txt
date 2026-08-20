@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-COMPACT/exit-identity-terminal-attach/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|cp1|2|0|1787248644
+## windows
+cp1|@0|0|cp1|1
+cp1|@1|99|ae-monitor|2
+## panes
+cp1|@0|%0|64489|claude|claude:claude|main|0
+cp1|@1|%2|65133|bash|_watchdog||0
+cp1|@1|%1|65075|bash|_events||0
+## clients

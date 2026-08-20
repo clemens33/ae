@@ -1,0 +1,21 @@
+cwd: /tmp/aelx/L-COMPACT/handover-withholding-neither/w
+argv (bg):
+  /tmp/aelx/L-COMPACT/handover-withholding-neither/b/ae
+  compact
+  -f
+  cp1
+env:
+  HOME=/tmp/aelx/L-COMPACT/handover-withholding-neither/h
+  AE_HOME=/tmp/aelx/L-COMPACT/handover-withholding-neither/h/.ae
+  TMPDIR=/tmp/aelx/L-COMPACT/handover-withholding-neither/tp
+  TMUX_TMPDIR=/tmp/aelx/L-COMPACT/handover-withholding-neither/t
+  PATH=/tmp/aelx/L-COMPACT/handover-withholding-neither/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-COMPACT/handover-withholding-neither/cap/fake
+  AE_COMPACT_HANDOVER_SECS=25
+  AE_L_TMUX_LOG=/tmp/aelx/L-COMPACT/handover-withholding-neither/cap/tmux-argv.log
