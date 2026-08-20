@@ -221,13 +221,26 @@ Authority: commands.md:83. Empirical: pending. Conflict: none.
 is its alias. Authority: commands.md:155-157. Empirical: pending. Conflict: none.
 
 **SC-021 — `ls` is an alias of `list`.** Bucket 2 — same operation, both spellings
-(SC-011/SC-019 precedent). NOTE the authority honestly: `ls` appears NOWHERE in
-commands.md — the alias exists only in the dispatcher and in this contract's S1
-surface inventory, which named `ls` as a surface at ratification; the inventory
-line (S1MAP `ls ->`) is the normative commitment that the surface survives.
-Authority: S1 surface inventory (joint, ratification day) — commands.md is
-SILENT, a doc gap worth closing bash-side or noting at P5. Empirical:
-observed(dispatcher `list | ls)` ae@72c7293:16663). Conflict: none.
+(SC-011/SC-019 precedent). `ls` appears NOWHERE in commands.md — a doc gap worth
+closing bash-side or noting at P5. Authority: the joint S1 spelling-alias ruling
++ the ratification-day S1MAP `ls ->` inventory line (colead countersign
+precision — never inventory alone). Empirical: observed(dispatcher `list | ls)`
+ae@72c7293:16663). Conflict: none. **classified_by: both seats, 2026-08-20.**
+
+**SC-022 — the usage-error surface: unknown OPTIONS are refused loudly on stderr.**
+Bucket 2 — an unknown top-level OPTION (a `-`/`--` token the dispatcher does not
+define) and an unknown `list`/`ls` TAIL token are usage errors: diagnostic on
+STDERR, stdout EMPTY, exit 2 (the crate exit contract keeps 2 distinct from 1).
+SCOPE, ruled precisely (colead veto of the lead's broader draft): a top-level
+NON-option token is a session-name/launch candidate under the S1 start grammar —
+it is NEVER an unknown-subcommand error, and no such phrase becomes contract.
+Trailing tokens after `help`/`version` are explicitly UNRULED — out of any
+acceptance claim until their own row exists; silently ignoring them is not a
+pinnable behavior. Authority: joint seat ruling (s2 Q3 + colead refinement,
+2026-08-20) + the crate exit-code contract; SC-508 (residual exit codes) stays
+its own code-observation row at final grain. Empirical: pending (rust-side
+acceptance; bash incumbent measurable later). Conflict: none. **classified_by:
+both seats, 2026-08-20.**
 
 **SC-020b — `--attach` re-checks the session still exists first.** Bucket 1.
 Authority: commands.md:157-158. Empirical: pending. Conflict: none.
