@@ -39,9 +39,17 @@ at the joint pass — the binding schema (ruling 7c2ce445) is acknowledged, not 
 | 49 | RR(P2) +B3 | epic-folded; ask-vs-done join |
 | 50 | RR(P3) +B3 | resume preflights recorded agent_bin |
 | 51 | RR(P4) | origin evidence for quiet stabilization |
-| 26 | RR(P2/send) | locale-sensitive border detector is product surface, not erased by the freeze; DR-candidate (colead correction, accepted) |
+| 26 | RR(P2/send) +B3 | fix-known-defect(#26): measured locale defect with clear intended Rust behavior — DR-candidate label removed (dispositions gate) |
 | 54 | RR(post-core) | fleet message board |
 | 61 | RR(P1) +B3 | pre-dispatch bootstrap = mechanism M2 in ownership.md; reads never write |
+| 78 | RR byC | closure phase named (gate): by construction per-domain as each cuts over, complete by P5 |
+| 82 | RR(P2) +DR | durable inbox + coalesced pane notification deliberately changes paste delivery — DR-004 reserved at P2 entry (contract S3 delivery-semantics row) |
+| 83 | RR(P4) +B3 | fix-known-defect: explicit-start single-sender (SC-963) |
+| 84 | RR(P4) +B3 | fix-known-defect: proven-complete takeover; DR-002 implementation (SC-964) |
+| 85 | RR(P4) +B3 | fix-known-defect: exact tmux identity before destruction (SC-965) |
+| 86 | RR(P4) +B3 | durable-clear fix (SC-966) + DR-003 outbound policy + DR-002 single writer |
+| 87 | RR(P4) +B3 | one effective-config authority + atomic setup publication (SC-967/969) |
+| 88 | RR(P4) +B3 | daemon control/state committed-truth findings A/B/C/G (SC-926/927/928/968) |
 | 55 | RR(P4) | watchdog fairness test contract |
 | 56 | RR(P2/adapter) +B3 | opencode capture disambiguation |
 | 57 | RR(P5) +B3 | installer flip defines installed-artifact contract (B3 per colead, accepted) |
@@ -61,17 +69,21 @@ at the joint pass — the binding schema (ruling 7c2ce445) is acknowledged, not 
 
 ## migration-enabler (owner TBD per brief; gate = 811 integration suite unless noted)
 
-| # | Phase needed | Gate-impact | Note |
-|---|---|---|---|
-| 10 | **P0-close** | gate-cost | Linux CI runner; phase raised because #80 acceptance needs target-native Linux proof (rust workflow created under #80 covers the rust half) |
-| 37 | pre-P1 gate | gate-integrity | SIGPIPE flake, undiagnosed |
-| 41 | pre-P1 gate | gate-integrity | SPAWN INCOMPLETE seed swallows status |
-| 58 | pre-P1 gate | gate-integrity | always-red just check is not a gate |
-| 64 | none (cost-only) | gate-cost | name filter; inner-loop tax |
-| 67 | pre-P1 gate | gate-integrity | shellcheck wedge on agent-run gates |
-| 68 | pre-P1 gate | gate-integrity | same class as #37, 30 sites |
-| 69 | pre-P1 gate | gate-integrity | dummy agent executes pastes — suite may measure its own echo; may also spawn a B3 row |
-| 70 | pre-P1 gate | gate-integrity | socket-dir hermeticity |
+Owner lanes (gate ruling): `gate-tooling`, `integration-harness`, `CI/toolchain`,
+`test-infra` — spawned as worker lanes at P1 entry. Protected gate for every
+gate-integrity row: the FIRST P1 811-suite invocation; integrity rows resolve first.
+
+| # | Owner lane | Phase needed | Gate-impact | Note |
+|---|---|---|---|---|
+| 10 | CI/toolchain | opportunistic, by P1/P5 | gate-cost | recast (gate): the P0-close label was already missed — #80's Rust-native Linux proof landed without the issue's bash just-check+integration acceptance; remaining scope is the bash CI half |
+| 37 | integration-harness | pre-P1 gate | gate-integrity | SIGPIPE flake, undiagnosed |
+| 41 | integration-harness | pre-P1 gate | gate-integrity | SPAWN INCOMPLETE seed swallows status |
+| 58 | gate-tooling | pre-P1 gate | gate-integrity | always-red just check is not a gate |
+| 64 | test-infra | none (cost-only) | gate-cost | name filter; inner-loop tax |
+| 67 | gate-tooling | pre-P1 gate | gate-integrity | shellcheck wedge on agent-run gates |
+| 68 | integration-harness | pre-P1 gate | gate-integrity | same class as #37, 30 sites |
+| 69 | integration-harness | pre-P1 gate | gate-integrity | dummy agent executes pastes — suite may measure its own echo; may also spawn a B3 row |
+| 70 | integration-harness | pre-P1 gate | gate-integrity | socket-dir hermeticity |
 
 ## wontfix-by-policy (bash frozen / superseded)
 
@@ -81,7 +93,14 @@ at the joint pass — the binding schema (ruling 7c2ce445) is acknowledged, not 
 | 3 | shellcheck-closure lint tier — bash-era tooling, class dies with the core |
 | 25 | tmux facelift — feature work in frozen bash; revisit post-P5 |
 | 42 | superseded — #58's acceptance delivers it (colead correction, accepted); class dies in Rust regardless |
-| 52 | ruled: steward NAME is retained by policy through the migration; rename revisited at P4 daemon work (a decision, not a deferral) |
+| 52 | ruled (both seats): steward NAME retained through P5, CLOSED — any later rename is a new post-rewrite decision; the P4-revisit clause is removed as internally contradictory |
+
+## administrative (tracking, not bash behavior)
+
+| # | Note |
+|---|---|
+| 79 | the epic itself — tracking; no disposition |
+| 81 | the P0 gate deliverable — closes on ratification |
 
 ## stays-python-contrib
 

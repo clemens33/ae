@@ -112,6 +112,12 @@ busy/human-typed, verify submit, fail loud).
 
 <!-- rows: SC-2xx -->
 
+**SC-200 — delivery-model evolution (reserved).** Bucket 4 candidate — **DR-004
+reserved at P2 entry** (#82): a durable agent inbox with decoupled, coalesced pane
+notification deliberately changes the paste-delivery model. The DR is written when the
+messaging domain cuts over; until then the paste model's rows stand. Authority: #82 +
+disposition ruling (both seats). Conflict: DR-004 pending.
+
 ### S4 — Config INI grammar
 
 Dialect, key grammar, defaults, precedence (incl. `AE_LOCAL_CONFIG`), malformed-line
@@ -340,16 +346,22 @@ a tool without readiness/busy modelling (grok at 72c7293) delivers ungated, and 
 status is DOCUMENTED, not silently faked. Authority: AGENTS.md grok row (ruling
 framing). Empirical: matrix. Conflict: none.
 
-**SC-704 — adapter behavior is pinned by table-driven tests from measured facts.**
-Bucket 1 — the capability matrix ports as test tables; upstream tool drift is detected
-(canary class, #22), never silently absorbed. Authority: epic #79 (folded
-requirements). Empirical: the matrix itself. Conflict: none.
+**SC-704 — adapter expectations are seat-ruled, never measurement-promoted.** Bucket 1
+— the capability matrix stays IS; each normative adapter expectation (launch context
+route, capture, exact resume/fallback, rerun, readiness/busy modelling) gets either its
+own row or a cell in a JOINTLY RULED adapter table whose cells carry an explicit
+preserve/adapt disposition — measurements never become expected outputs without that
+ruling (the anti-oracle rule). The ruled table is produced at the P1 adapter port;
+upstream drift is detected (canary class, #22), never silently absorbed. Authority:
+#81 source-lane rule + epic #79. Empirical: the matrix. Conflict: none.
 
-**SC-705 — tool detection never parses the injected tail.** Bucket 1 — classification
-looks only at the first word after stripping `env`/`-u`/`-i`/`VAR=val` prefixes and
-tolerates launcher suffixes (`opencode.exe`); the kilobytes of injected prose are data.
-Authority: AGENTS.md ruling bullets (tool_kind_from_cmd + pane_current_command).
-Empirical: measured exhibits @72c7293. Conflict: none.
+**SC-705 — tool detection identifies the actual executable without interpreting
+injected prose.** Bucket 1 — semantic SHOULD under joint ruling: classification derives
+from the real binary being launched, never from the kilobytes of injected context,
+wrapper prefixes, or launcher spellings. The concrete prefix/suffix exhibits
+(`env`/`VAR=val` stripping, `opencode.exe`) are empirical. Authority: S8 joint seat
+ruling (2026-08-20) grounded in the #46/#30 transported-fact rulings. Empirical:
+measured exhibits @72c7293. Conflict: none.
 
 **SC-706 — a fact built upstream is transported, never re-parsed.** Bucket 1 — resume
 ids, injection boundaries, and tool kinds ride explicit parameters; the built command
@@ -853,29 +865,34 @@ bash >= 4.0 floor for the remaining glue.
 
 <!-- rows: SC-11xx -->
 
-**SC-1100 — behavior is identical on GNU and BSD userlands.** Bucket 1 — the bash era
-enforces this via the shim table (never call the raw divergent tool); the Rust core
-gets it by construction (std lib), and the class of silent `|| fallback` platform bugs
-dies. Authority: AGENTS.md GNU/BSD section (ruling: use the shim) — the per-tool rows
-are empirical exhibits. Empirical: shipped macOS bugs @72c7293. Conflict: none.
+**SC-1100 — the enumerated divergence class behaves identically on GNU and BSD.**
+Bucket 1 — narrowed per gate: for the operations in the divergence table (reverse-cat,
+stat fields, date parsing, in-place sed, JSON extraction, wc padding, uuid case, sed
+alternation), observable command/format semantics are platform-identical — via shims in
+bash, by construction in Rust. NOT a promise that every product behavior is identical.
+Authority: AGENTS.md shim rule (use the shim, never the raw tool). Empirical: shipped
+macOS bugs @72c7293. Conflict: none.
 
-**SC-1101 — `flock` and `timeout` are optional dependencies.** Bucket 3 — SHOULD:
-guard with `command -v` and DEGRADE, never hard-require (core ae runs on a bare
-bash+tmux+git machine). IS at 72c7293: `ae_meta_set` and `_lib` paths hard-require
-flock and die `command not found` (#75); the missing-flock matrix (census-2 addenda)
-shows divergent per-path outcomes. Conflict: fix-known-defect(#75, intended: the Rust
-core needs NO external flock — native locking; remaining glue degrades loudly).
-Empirical: census-2 missing-flock matrix.
+**SC-1101a — `flock` is an optional dependency.** Bucket 3 — SHOULD: absence degrades
+loudly, never hard-fails core commands. IS at 72c7293: `ae_meta_set`/`_lib` paths die
+`command not found` (#75); per-path outcomes diverge (census-2 matrix).
+Conflict: fix-known-defect(#75, intended: the Rust core needs no external flock —
+native locking; surviving glue degrades loudly). Empirical: census-2 missing-flock
+matrix.
+
+**SC-1101b — `timeout` is an optional dependency.** Bucket 2 — guard with `command -v`
+and degrade. Authority: AGENTS.md. Empirical: pending. Conflict: none.
 
 **SC-1102 — session/archive UUIDs are canonical lowercase.** Bucket 2 — `gen_uuid`
 normalizes (macOS `uuidgen` is uppercase); validators and filenames are
 lowercase-only. Authority: AGENTS.md bullet (ruling). Empirical: pending.
 Conflict: none.
 
-**SC-1103 — unix socket paths fit `sun_path` on both platforms.** Bucket 1 — 104 bytes
-macOS / 108 Linux; anything creating sockets accounts for the tighter bound.
-Authority: AGENTS.md bullet. Empirical: measured mktemp overflow exhibit.
-Conflict: none.
+**SC-1103 — a socket path stays within the active platform's limit or fails loud
+before creation.** Bucket 1 — seat-ruled semantic SHOULD (2026-08-20): the limit is
+respected or the failure is explicit pre-creation; the exact byte limits (104 macOS /
+108 Linux) are measured platform facts, empirical only. Empirical: measured mktemp
+overflow exhibit @72c7293. Conflict: none.
 
 **SC-1104 — process introspection works without `/proc`.** Bucket 1 — parent walking
 and process facts come from portable interfaces (bash: `ps -o ppid=`; Rust: proper
