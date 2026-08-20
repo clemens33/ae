@@ -1,0 +1,23 @@
+[1;36m╭─ ae watchdog — session: b0d7 ─────────────────────────╮
+│ interval: 2s   stale: 1m   max nudges: 1
+│ read-only pane (input disabled). use peek _watchdog or stop with `watchdog stop`.
+╰────────────────────────────────────────────────────────╯
+[0m
+[15:32:05] ── cycle 1 ──
+[15:32:05]   dummy:dummy  active (pane hash changed)
+[15:32:06]   dummy2:helper  done (reported complete) — skip
+[15:32:08] ── cycle 2 ──
+[15:32:08]   dummy:dummy  recently visible (3s ago) — skip
+[15:32:09]   dummy2:helper  done (reported complete) — skip
+[15:32:11] ── cycle 3 ──
+[15:32:11]   dummy:dummy  recently visible (6s ago) — skip
+[15:32:11]   dummy2:helper  done (reported complete) — skip
+[15:32:14] ── cycle 4 ──
+[15:32:14]   dummy:dummy  recently visible (9s ago) — skip
+[15:32:14]   dummy2:helper  done (reported complete) — skip
+[15:32:17] ── cycle 5 ──
+[15:32:17]   dummy:dummy  recently visible (12s ago) — skip
+[15:32:17]   dummy2:helper  done (reported complete) — skip
+[15:32:19] ── cycle 6 ──
+[15:32:20]   dummy:dummy  recently visible (15s ago) — skip
+[15:32:20]   dummy2:helper  done (reported complete) — skip

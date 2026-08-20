@@ -1,0 +1,18 @@
+label=aewatch-once
+started=2026-08-20T15:42:16Z|1787240536.790252
+argv: /usr/bin/python3 /tmp/aeb0/d7/arms/additive-last/aewatch/aewatch.frozen daemon --once --ae-home /tmp/aeb0/d7/arms/additive-last/aewatch/home/.ae
+env (allowlisted):
+  PATH=/tmp/aeb0/d7/shim:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  HOME=/tmp/aeb0/d7/arms/additive-last/aewatch/home
+  AE_HOME=/tmp/aeb0/d7/arms/additive-last/aewatch/home/.ae
+  TERM=dumb
+  TZ=UTC
+  LANG=en_US.UTF-8
+  TMUX_TMPDIR=/tmp/aeb0/d7/arms/additive-last/aewatch/home/../tmuxtmp
+  AE_TMUX_SERVER=d7837e23eab0
+  AE_TMUX_SERVER_KIND=name
+  AE_DATE_REAL=/bin/date
+  AE_DATE_SHIM_STATE=/tmp/aeb0/d7/arms/additive-last/aewatch/home/../clock
+  AE_DATE_SHIM_LOG=/tmp/aeb0/d7/arms/additive-last/aewatch/date-shim.aewatch-once.log
+  AE_DATE_SHIM_SUBSTITUTE=1
+finished=2026-08-20T15:42:17Z|1787240537.016581 rc=0

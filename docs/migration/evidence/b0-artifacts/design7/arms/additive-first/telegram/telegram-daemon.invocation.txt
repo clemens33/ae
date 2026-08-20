@@ -1,0 +1,20 @@
+argv: /opt/homebrew/bin/bash /tmp/aeb0/d7/arms/additive-first/telegram/home/.ae/telegram-daemon
+bound: SIGTERM after 6s (the daemon loop is infinite by design)
+env:
+  PATH=/tmp/aeb0/d7/arms/additive-first/telegram/curlshim:/tmp/aeb0/d7/shim:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  HOME=/tmp/aeb0/d7/arms/additive-first/telegram/home
+  AE_HOME=/tmp/aeb0/d7/arms/additive-first/telegram/home/.ae
+  TERM=dumb
+  TZ=UTC
+  LANG=en_US.UTF-8
+  TMUX_TMPDIR=/tmp/aeb0/d7/arms/additive-first/telegram/home/../tmuxtmp
+  AE_TMUX_SERVER=d7ab4bee2773
+  AE_TMUX_SERVER_KIND=name
+  AE_DATE_REAL=/bin/date
+  AE_DATE_SHIM_STATE=/tmp/aeb0/d7/arms/additive-first/telegram/home/../clock
+  AE_DATE_SHIM_LOG=/tmp/aeb0/d7/arms/additive-first/telegram/date-shim.telegram.log
+  AE_DATE_SHIM_SUBSTITUTE=1
+  AE_CURL_SHIM_LOG=/tmp/aeb0/d7/arms/additive-first/telegram/curl-shim.log
+  AE_TELEGRAM_DISCOVERY_INTERVAL=0
+  AE_TELEGRAM_POLL_INTERVAL=0
+  CONFIG_FILE=/tmp/aeb0/d7/arms/additive-first/telegram/home/.ae/config

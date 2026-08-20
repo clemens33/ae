@@ -1,0 +1,28 @@
+--- /tmp/aeb0/d7/arms/key-action-remove/telegram/manifest.before.tsv	2026-08-20 17:29:20
++++ /tmp/aeb0/d7/arms/key-action-remove/telegram/manifest.after.tsv	2026-08-20 17:30:06
+@@ -1,5 +1,5 @@
+ .	dir	755	-	-
+-./config	file	644	-	7e785e9a48d58d7c8729b3c461c5415abb6845282ae8c53ab3a6de43f3ce4511
++./config	file	644	-	fefcba41facd0cd0cd9fd9ca3b48da6c0241242165d842cce708df57912aaabb
+ ./sessions	dir	755	-	-
+ ./sessions/.lifecycle.b0d7.lock	file	644	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ ./sessions/.lifecycle.xpartner.lock	file	644	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+@@ -13,7 +13,7 @@
+ ./sessions/b0d7/agents	file	700	-	e97fd815e17b2c05af59e74dff8e86a7a4758699bf440f83508ff6601207cff6
+ ./sessions/b0d7/ask	file	700	-	b9e34f5a19049f490477578df6890a104eece6212ab71c7252599ba08a23f67e
+ ./sessions/b0d7/events-tail	file	700	-	3a238f619cef096f841b46154f733cf69c02ed692140f476d0d922a9920f1f79
+-./sessions/b0d7/events.jsonl	file	644	-	0c6bca17fe243ff616f2d50d148231f7a1a6e2b35d9fe7a4f8af7780a1c56dd2
++./sessions/b0d7/events.jsonl	file	644	-	f5480b31ab695fdbab2e01406303e3b883a3f3136273c45462e1fdbb0c276db2
+ ./sessions/b0d7/events.jsonl.lock	file	644	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ ./sessions/b0d7/focus	file	700	-	b99c064fc6d6cedb48a4ac6506bc7eadb91eb78784976c7e8aa8b37a71c1ae34
+ ./sessions/b0d7/goal	file	700	-	19aaeae31baaeb7683213c5d796e00f0791d5c2ca575a66663e113d1970f811d
+@@ -76,3 +76,9 @@
+ ./sessions/xpartner/state	file	700	-	986a6441f22f3f13385a5a492779081d28aaf38e7239f440078c8ff395cc9100
+ ./sessions/xpartner/watchdog	file	700	-	d84a15e45271d9ea64fb4f188c0be59f7be2c898c95e18b4ec3b46e25de06cc1
+ ./sessions/xpartner/workspace.md	file	644	-	56bf7da996a6f7e84d26dfacd09168142eb817d3bd3ba16edaccfe491fdf44ff
++./telegram	dir	755	-	-
++./telegram-daemon	file	700	-	671c9b9afb4b2479cda22ee3f57f900162f29f35795e804251f860db8dff99ad
++./telegram/daemon.lock	file	644	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
++./telegram/daemon.log	file	600	-	486d10c062ca34fdc903f9fbcaf84b67ee0c49b0e031e2977e6fd22643056998
++./telegram/state.tsv	file	644	-	8f6ac4fb8486fcba43c1e646efeb78e090945d65a9fedfff6989d8c75801b0e6
++./tg.token	file	600	-	084deae38965e79606ff96a56bc7fa5a500f6f82ca4784d8f9ea38517219eb04

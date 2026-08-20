@@ -1,0 +1,3 @@
+Stopping 1 session(s) out of process; this pane may be one of them.
+  Each outcome is recorded durably in its own
+  /tmp/aeb0/d7/arms/key-summary-rename/stop/home/.ae/sessions/<name>/events.jsonl (action: stop-result).

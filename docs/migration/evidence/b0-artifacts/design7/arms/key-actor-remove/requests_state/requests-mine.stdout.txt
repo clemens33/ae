@@ -1,0 +1,5 @@
+STATUS   TYPE     ID                           FROM                 TO                   SUMMARY
+replied  ask      ae-20260820T001200Z-f2a3cc47                      dummy2:helper        fixture answer
+pending  review   review-20260820T001400Z-56974f89                      dummy2:helper        fixture review request, left open
+pending  ask      ae-20260820T001500Z-bba72cc7                      dummy2:helper        fixture second ask, left open
+pending  ask      ae-20260820T001600Z-4c779d53                      @xpartner:dummy:dummy fixture cross-session ask

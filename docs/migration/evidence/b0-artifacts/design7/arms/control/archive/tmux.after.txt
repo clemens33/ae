@@ -1,0 +1,9 @@
+# tmux snapshot (after) server -L d7225332dcf1
+error connecting to /private/tmp/aeb0/d7/arms/control/archive/tmuxtmp/tmux-501/d7225332dcf1 (No such file or directory)
+list-sessions rc=1
+error connecting to /private/tmp/aeb0/d7/arms/control/archive/tmuxtmp/tmux-501/d7225332dcf1 (No such file or directory)
+list-windows rc=1
+error connecting to /private/tmp/aeb0/d7/arms/control/archive/tmuxtmp/tmux-501/d7225332dcf1 (No such file or directory)
+list-panes rc=1
+error connecting to /private/tmp/aeb0/d7/arms/control/archive/tmuxtmp/tmux-501/d7225332dcf1 (No such file or directory)
+list-clients rc=1

@@ -1,0 +1,3 @@
+runner: /tmp/aeb0/d7/arms/key-ref-remove/watchdog/home/.ae/sessions/b0d7/watchdog _run  (the generated watchdog script, executed)
+knobs: AE_WATCHDOG_INTERVAL_SEC=2 AE_WATCHDOG_STALE_MIN=1 AE_WATCHDOG_MAX_NUDGES=1 AE_WATCHDOG_THROTTLE_ALERT_CYCLES=2
+window: SIGTERM after 15s (~7 cycles at INTERVAL=2)

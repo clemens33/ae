@@ -1,0 +1,421 @@
+=== curl invocation 2026-08-20T15:40:05Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.1pFEuL
+text-file /tmp/ae-telegram-msg.1pFEuL:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:05Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.jFS0Hm
+text-file /tmp/ae-telegram-msg.jFS0Hm:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:05Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.hLKD1b
+text-file /tmp/ae-telegram-msg.hLKD1b:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:05Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.fAtU3y
+text-file /tmp/ae-telegram-msg.fAtU3y:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:06Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.BFl9QM
+text-file /tmp/ae-telegram-msg.BFl9QM:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:06Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.GtcUFn
+text-file /tmp/ae-telegram-msg.GtcUFn:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:06Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.YRqiHs
+text-file /tmp/ae-telegram-msg.YRqiHs:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:06Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.bzAOX5
+text-file /tmp/ae-telegram-msg.bzAOX5:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:06Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.FR3s5y
+text-file /tmp/ae-telegram-msg.FR3s5y:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:06Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.WQMt7p
+text-file /tmp/ae-telegram-msg.WQMt7p:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:06Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.unYS3l
+text-file /tmp/ae-telegram-msg.unYS3l:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:07Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.kNx5P3
+text-file /tmp/ae-telegram-msg.kNx5P3:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:07Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.xYUHIy
+text-file /tmp/ae-telegram-msg.xYUHIy:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:07Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.f4XnJ1
+text-file /tmp/ae-telegram-msg.f4XnJ1:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:07Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.C5Rzno
+text-file /tmp/ae-telegram-msg.C5Rzno:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:07Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.1fm2I9
+text-file /tmp/ae-telegram-msg.1fm2I9:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:07Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.7XX92w
+text-file /tmp/ae-telegram-msg.7XX92w:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:07Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.5VpUdi
+text-file /tmp/ae-telegram-msg.5VpUdi:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:08Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.fZqSpI
+text-file /tmp/ae-telegram-msg.fZqSpI:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:08Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.V7OC4g
+text-file /tmp/ae-telegram-msg.V7OC4g:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:08Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.Oy1Jlz
+text-file /tmp/ae-telegram-msg.Oy1Jlz:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:08Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.b8GGJN
+text-file /tmp/ae-telegram-msg.b8GGJN:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:08Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.VhD3Z6
+text-file /tmp/ae-telegram-msg.VhD3Z6:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:09Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.2wk7hT
+text-file /tmp/ae-telegram-msg.2wk7hT:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:09Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.ACLbLG
+text-file /tmp/ae-telegram-msg.ACLbLG:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:09Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.XmBjA9
+text-file /tmp/ae-telegram-msg.XmBjA9:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:09Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.QIkVDb
+text-file /tmp/ae-telegram-msg.QIkVDb:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:09Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.3wXnPT
+text-file /tmp/ae-telegram-msg.3wXnPT:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:09Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.OfST3u
+text-file /tmp/ae-telegram-msg.OfST3u:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:09Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.dsCdj1
+text-file /tmp/ae-telegram-msg.dsCdj1:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:10Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.4yell5
+text-file /tmp/ae-telegram-msg.4yell5:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:10Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.xvotjb
+text-file /tmp/ae-telegram-msg.xvotjb:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:10Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.lnL3ws
+text-file /tmp/ae-telegram-msg.lnL3ws:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:10Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.vrpl2S
+text-file /tmp/ae-telegram-msg.vrpl2S:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:10Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.jZybqE
+text-file /tmp/ae-telegram-msg.jZybqE:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:10Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.TAXvH1
+text-file /tmp/ae-telegram-msg.TAXvH1:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:10Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.L9eiHx
+text-file /tmp/ae-telegram-msg.L9eiHx:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:11Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.yKid7Z
+text-file /tmp/ae-telegram-msg.yKid7Z:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:11Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.4DNgT8
+text-file /tmp/ae-telegram-msg.4DNgT8:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:11Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.zl4xlV
+text-file /tmp/ae-telegram-msg.zl4xlV:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:11Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.nJNLSS
+text-file /tmp/ae-telegram-msg.nJNLSS:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe=== curl invocation 2026-08-20T15:40:11Z ===
+argv: -sS -K -
+stdin:
+  silent
+  fail-with-body
+  url = https://api.telegram.org/botb0-fixture-not-a-real-token/sendMessage
+  data-urlencode = chat_id=1234567890
+  data-urlencode = text@/tmp/ae-telegram-msg.gOIThW
+text-file /tmp/ae-telegram-msg.gOIThW:
+  | [b0d7] send  dummy:dummy → dummy2:helper
+  | ⟦ae:msg from unverified⟧ fixture settle probe

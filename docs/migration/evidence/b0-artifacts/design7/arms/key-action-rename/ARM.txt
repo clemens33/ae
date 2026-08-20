@@ -1,0 +1,8 @@
+arm=key-action-rename
+op=rename
+key=action
+extra=action_x
+where=
+families=list_next archive requests_state telegram
+started=2026-08-20T15:30:06Z
+finished=2026-08-20T15:31:10Z

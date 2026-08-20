@@ -1,0 +1,4 @@
+SUBSTITUTED	+%Y%m%dT%H%M%SZ	argv=-u +%Y%m%dT%H%M%SZ 
+SUBSTITUTED	+%s	argv=+%s 
+SUBSTITUTED	+%FT%TZ	argv=-u +%FT%TZ 
+DELEGATED	-	argv=-u +%Y-%m-%dT%H:%M:%SZ 

@@ -1,0 +1,14 @@
+--- /tmp/aeb0/d7/arms/control/aewatch/manifest.before.tsv	2026-08-20 17:26:12
++++ /tmp/aeb0/d7/arms/control/aewatch/manifest.after.tsv	2026-08-20 17:26:13
+@@ -1,5 +1,10 @@
+ .	dir	755	-	-
+-./config	file	644	-	7e785e9a48d58d7c8729b3c461c5415abb6845282ae8c53ab3a6de43f3ce4511
++./aewatch	dir	700	-	-
++./aewatch/aewatch.lock	file	600	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
++./aewatch/backoff.json	file	644	-	f9d1c011a8dd2f6d1cc9715d61ce35b87fa4a10ad56587252b7e3ce3dba43f2b
++./aewatch/daemon.log	file	644	-	abb611fadf994c49e6cc99fc6360fabe97972076cb5f4d89ff2409f05c6e58e2
++./aewatch/heartbeat	file	644	-	53e4d4c5598ed3e03054de684e1056c5d452f9fd8ce79d539bc59259e0e7c387
++./config	file	644	-	12a5c27142f2d90ea2c0e70394cb18cd91aab82e2844bfeabc487b85bc68ac09
+ ./sessions	dir	755	-	-
+ ./sessions/.lifecycle.b0d7.lock	file	644	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ ./sessions/.lifecycle.xpartner.lock	file	644	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

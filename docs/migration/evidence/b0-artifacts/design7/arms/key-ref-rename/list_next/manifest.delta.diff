@@ -1,0 +1,29 @@
+--- /tmp/aeb0/d7/arms/key-ref-rename/list_next/manifest.before.tsv	2026-08-20 17:32:34
++++ /tmp/aeb0/d7/arms/key-ref-rename/list_next/manifest.after.tsv	2026-08-20 17:32:39
+@@ -13,7 +13,7 @@
+ ./sessions/b0d7/agents	file	700	-	e97fd815e17b2c05af59e74dff8e86a7a4758699bf440f83508ff6601207cff6
+ ./sessions/b0d7/ask	file	700	-	b9e34f5a19049f490477578df6890a104eece6212ab71c7252599ba08a23f67e
+ ./sessions/b0d7/events-tail	file	700	-	3a238f619cef096f841b46154f733cf69c02ed692140f476d0d922a9920f1f79
+-./sessions/b0d7/events.jsonl	file	644	-	0c6bca17fe243ff616f2d50d148231f7a1a6e2b35d9fe7a4f8af7780a1c56dd2
++./sessions/b0d7/events.jsonl	file	644	-	259183369222579833a071a0f5c500009cef3a877e3a6b9d470b1e2d558307a7
+ ./sessions/b0d7/events.jsonl.lock	file	644	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ ./sessions/b0d7/focus	file	700	-	b99c064fc6d6cedb48a4ac6506bc7eadb91eb78784976c7e8aa8b37a71c1ae34
+ ./sessions/b0d7/goal	file	700	-	19aaeae31baaeb7683213c5d796e00f0791d5c2ca575a66663e113d1970f811d
+@@ -32,7 +32,7 @@
+ ./sessions/b0d7/messages/ae-20260820T001600Z-4c779d53.ask.jCWOBp.txt	file	600	-	946809d2707d5e6332418887a7e868de12cbf2c51a2d360e0bab988757832f8a
+ ./sessions/b0d7/messages/msg-20260820T000300Z.send.l9wnf8.txt	file	600	-	97ff4bf4166812203e40a8fae4e0c1607115fe88ea8d15fc28757d281e446f04
+ ./sessions/b0d7/messages/review-20260820T001400Z-56974f89.review.bAlanU.txt	file	600	-	d22edf9b06cae04d507af8e5b30124e7607673f350d1774df9260b859550950b
+-./sessions/b0d7/meta	file	644	-	d6f3b1f7c7e40237a0ec169831afebadf162eb7758448585c5457dc8bda3081c
++./sessions/b0d7/meta	file	644	-	350da7ec73ceccaaf8d169d41b17cb504ff9c19364e3e4aa55710e2bfd4671ed
+ ./sessions/b0d7/meta.lock	file	644	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ ./sessions/b0d7/peak	file	700	-	e80cd4509934a5aa3cd1ed857cda8b359aad9f19f481a21fa6f21243b62442dd
+ ./sessions/b0d7/peek	file	700	-	aca933b1b14b03b1e277e28516a60928d6c24020fd6cc4af909ae1accb095759
+@@ -46,7 +46,7 @@
+ ./sessions/b0d7/state	file	700	-	986a6441f22f3f13385a5a492779081d28aaf38e7239f440078c8ff395cc9100
+ ./sessions/b0d7/undelivered.dummy2-helper.txt	file	600	-	5a3a0ac39b1c767d877f078e21788895a089310cde229e39fdf89d10799c7304
+ ./sessions/b0d7/watchdog	file	700	-	d84a15e45271d9ea64fb4f188c0be59f7be2c898c95e18b4ec3b46e25de06cc1
+-./sessions/b0d7/workspace.md	file	644	-	fc7a553173d6e86d31a67806393a61e457697a826d76f00ba1f44f373c9295d2
++./sessions/b0d7/workspace.md	file	644	-	828762bac76d2c832d7ae219e7d93e82ff7c3b0b3588f7eca1c7de930ba2ffcf
+ ./sessions/xpartner	dir	700	-	-
+ ./sessions/xpartner/_lib	file	700	-	91da0d9b5bcd6d3c8abcd5c974fe7be0c63a329ba5971cbbb57b6fd8e71a2d40
+ ./sessions/xpartner/_register-sid	file	700	-	c721ca5febeedffb03db2f4fc0b50034e3e4674d1a95fac7715e345242ad1811

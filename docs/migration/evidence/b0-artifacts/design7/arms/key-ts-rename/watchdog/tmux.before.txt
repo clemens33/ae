@@ -1,0 +1,12 @@
+# tmux snapshot (before) server -L d789a66fc227
+b0d7: 3 windows (created Thu Aug 20 15:27:19 2026)
+list-sessions rc=0
+@0 b0d7 b0d7
+@1 b0d7 helper
+@2 b0d7 ae-monitor
+list-windows rc=0
+%0 b0d7 dummy:dummy main bash
+%1 b0d7 dummy2:helper spawned.0 bash
+%2 b0d7 _events  fish
+list-panes rc=0
+list-clients rc=0

@@ -1,0 +1,4 @@
+2026-08-20T02:00:00Z daemon started — include=send,ask,review,reply,done,alert,throttled,chat exclude=<none> inbound=off (no allowed_user_ids)
+2026-08-20T02:00:00Z daemon exiting (rc=129, signal=SIGHUP)
+2026-08-20T02:00:00Z daemon started — include=send,ask,review,reply,done,alert,throttled,chat exclude=<none> inbound=off (no allowed_user_ids)
+2026-08-20T02:00:00Z daemon exiting (rc=143, signal=SIGTERM)

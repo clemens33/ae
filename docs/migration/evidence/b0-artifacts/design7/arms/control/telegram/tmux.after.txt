@@ -1,0 +1,9 @@
+# tmux snapshot (after) server -L d75ac160791b
+no server running on /private/tmp/aeb0/d7/arms/control/telegram/tmuxtmp/tmux-501/d75ac160791b
+list-sessions rc=1
+no server running on /private/tmp/aeb0/d7/arms/control/telegram/tmuxtmp/tmux-501/d75ac160791b
+list-windows rc=1
+no server running on /private/tmp/aeb0/d7/arms/control/telegram/tmuxtmp/tmux-501/d75ac160791b
+list-panes rc=1
+no server running on /private/tmp/aeb0/d7/arms/control/telegram/tmuxtmp/tmux-501/d75ac160791b
+list-clients rc=1

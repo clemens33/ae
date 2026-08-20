@@ -1,0 +1,12 @@
+⟦ae:msg from unverified⟧
+REVIEW REQUEST review-20260820T001400Z-56974f89 from dummy:dummy: fixture review request, left open
+
+Review instructions:
+    - Focus on correctness, regressions, edge cases, missing tests, and callers/docs needing updates.
+    - Findings first. Keep summaries brief.
+    - Use severity labels: BLOCKER, IMPORTANT, NIT.
+    - If no issues are found, say "No findings" explicitly.
+
+REQUIRED: When you have finished, you MUST run this exact command to reply:
+/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/reply --as "dummy2:helper" "review-20260820T001400Z-56974f89" "<your review>"
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

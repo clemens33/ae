@@ -1,0 +1,53 @@
+
+$ /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/spawn dummy2:helper fixture worker
+ae: SPAWN INCOMPLETE — dummy2:helper exists in pane %4, brief NOT delivered
+ae: reason: input never reached a confirmed-idle state (busy, modal, or unreadable)
+ae: do NOT respawn (the pane is live) — send to the existing agent:
+ae:   /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/send dummy2:helper "$(cat /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/undelivered.dummy2-helper.txt)"
+(rc=1)
+
+$ [settle probe 1] TMUX_PANE=%2 send dummy2:helper
+(settle probe succeeded on attempt 1)
+
+$ TMUX_PANE=%2 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/goal fixture goal one
+Goal set: fixture goal one
+
+$ TMUX_PANE=%2 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/goal fixture goal two
+Goal set: fixture goal two
+
+$ TMUX_PANE=%2 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/state working main working
+Marked dummy:dummy working: main working
+
+$ TMUX_PANE=%4 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/state working helper working
+Marked dummy2:helper working: helper working
+
+$ TMUX_PANE=%4 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/state waiting-user helper waiting on the human
+Marked dummy2:helper waiting-user: helper waiting on the human
+
+$ TMUX_PANE=%2 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/memo add --topic design fixture memo row
+
+$ TMUX_PANE=%4 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/memo add --topic handover fixture handover row
+
+$ TMUX_PANE=%2 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/say fixture chat line
+Sent to Telegram bridge (chat): fixture chat line
+
+$ TMUX_PANE=%2 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/ask dummy2:helper fixture question, closed by a reply   (attempt 1)
+
+$ TMUX_PANE=%4 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/reply ae-20260820T001200Z-f2a3cc47 fixture answer   (attempt 1)
+
+$ TMUX_PANE=%2 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/review dummy2:helper fixture review request, left open   (attempt 1)
+
+$ TMUX_PANE=%2 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/ask dummy2:helper fixture second ask, left open   (attempt 1)
+
+$ TMUX_PANE=%2 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/ask @xpartner:dummy fixture cross-session ask   (attempt 1)
+
+$ TMUX_PANE=%2 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/state blocked main blocked on a fixture dependency
+Marked dummy:dummy blocked: main blocked on a fixture dependency
+
+$ TMUX_PANE=%4 /tmp/aeb0/d7/build/home/.ae/sessions/b0d7/state done helper finished the fixture task
+Marked dummy2:helper done: helper finished the fixture task
+
+$ ae stop all -y
+Stopping 2 session(s) out of process; this pane may be one of them.
+  Each outcome is recorded durably in its own
+  /tmp/aeb0/d7/build/home/.ae/sessions/<name>/events.jsonl (action: stop-result).

@@ -1,0 +1,18 @@
+argv: /tmp/aeb0/frozen/ae compact b0d7 --force
+env:
+  PATH=/tmp/aeb0/d7/shim:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  HOME=/tmp/aeb0/d7/arms/ext-body_file-remove/compact/home
+  AE_HOME=/tmp/aeb0/d7/arms/ext-body_file-remove/compact/home/.ae
+  TERM=dumb
+  TZ=UTC
+  LANG=en_US.UTF-8
+  TMUX_TMPDIR=/tmp/aeb0/d7/arms/ext-body_file-remove/compact/home/../tmuxtmp
+  AE_TMUX_SERVER=d7f7a2c3a6a0
+  AE_TMUX_SERVER_KIND=name
+  AE_DATE_REAL=/bin/date
+  AE_DATE_SHIM_STATE=/tmp/aeb0/d7/arms/ext-body_file-remove/compact/home/../clock
+  AE_DATE_SHIM_LOG=/tmp/aeb0/d7/arms/ext-body_file-remove/compact/date-shim.compact.log
+  AE_DATE_SHIM_SUBSTITUTE=1
+  AE_COMPACT_HANDOVER_SECS=45
+handover: controller drives the REAL reply helper from pane %0
+handover_ref=ae-20260820T020000Z-23a5cb77 (found after 5 polls)

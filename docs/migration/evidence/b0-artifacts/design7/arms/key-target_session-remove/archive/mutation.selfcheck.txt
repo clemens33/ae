@@ -1,0 +1,2 @@
+cohort=5 failures=0
+mutate.py rc=0 (0 = every mutated line passed its validity self-check; 3 = harness defect, arm INVALID)

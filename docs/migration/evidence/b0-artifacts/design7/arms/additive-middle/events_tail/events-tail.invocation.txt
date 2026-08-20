@@ -1,0 +1,22 @@
+label=events-tail
+started=2026-08-20T15:39:21Z|1787240361.943382
+argv: /tmp/aeb0/d7/arms/additive-middle/events_tail/home/.ae/sessions/b0d7/events-tail
+env (allowlisted):
+  PATH=/tmp/aeb0/d7/shim:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  HOME=/tmp/aeb0/d7/arms/additive-middle/events_tail/home
+  AE_HOME=/tmp/aeb0/d7/arms/additive-middle/events_tail/home/.ae
+  TERM=dumb
+  TZ=UTC
+  LANG=en_US.UTF-8
+  TMUX_TMPDIR=/tmp/aeb0/d7/arms/additive-middle/events_tail/home/../tmuxtmp
+  AE_TMUX_SERVER=d7825fec7c40
+  AE_TMUX_SERVER_KIND=name
+  AE_DATE_REAL=/bin/date
+  AE_DATE_SHIM_STATE=/tmp/aeb0/d7/arms/additive-middle/events_tail/home/../clock
+  AE_DATE_SHIM_LOG=/tmp/aeb0/d7/arms/additive-middle/events_tail/date-shim.events-tail.log
+  AE_DATE_SHIM_SUBSTITUTE=1
+launch barrier: banner line + >=1 rendered record; bounded poll 25s
+window closure: SIGTERM after the barrier (the helper is tail -f and never exits)
+launch_barrier_reached=1 after_polls=2
+closed_by=SIGTERM (by construction)
+finished=2026-08-20T15:39:25Z|1787240365.705008

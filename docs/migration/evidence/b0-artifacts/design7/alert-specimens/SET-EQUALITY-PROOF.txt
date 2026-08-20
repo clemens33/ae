@@ -1,0 +1,40 @@
+## 1. Source file integrity (specimens/SHA256SUMS.txt)
+  alert-specimens.a1.jsonl     recorded=b3659d6aee643cf494d0bc0549fede6bf0e405004550021dea7c49e99a7b0ace recomputed=b3659d6aee643cf494d0bc0549fede6bf0e405004550021dea7c49e99a7b0ace MATCH
+  alert-specimens.a2.jsonl     recorded=8f4e8bc1a23be1aa58e4e2ee86bbbd4af5dc22db1eee9e8879569a31a07ae67d recomputed=8f4e8bc1a23be1aa58e4e2ee86bbbd4af5dc22db1eee9e8879569a31a07ae67d MATCH
+  alert-specimens.a3.jsonl     recorded=31fc09b8241915a6b149aceb7628744497ed19c28d3d6922d93b368844021d67 recomputed=31fc09b8241915a6b149aceb7628744497ed19c28d3d6922d93b368844021d67 MATCH
+
+## 2. Specimen records read from alert-specimens.*.jsonl: 5
+## 3. Hashes tabulated in batch-c-artifacts/MANIFEST.md: 5
+
+## 4. Per-specimen recomputation over the raw bytes B0 will use
+  arm=a1 line_no=1 action=alert            recomputed_no_nl=eebbacd1a49fff567274f76ad68d644a06248168961cdc257c45339861c82435 recorded_no_nl=eebbacd1a49fff567274f76ad68d644a06248168961cdc257c45339861c82435 MATCH
+      with_nl recomputed=95a330470df9c871d60ee25e540a2d55ccebdcd3b0bfd4cb2c439d09bce49b13 recorded=95a330470df9c871d60ee25e540a2d55ccebdcd3b0bfd4cb2c439d09bce49b13 MATCH  byte_len_no_nl=140(recomputed 140)
+  arm=a2 line_no=3 action=alert            recomputed_no_nl=913a7a3ebed0a14ad34cee292e7bbfa706111ac9c45977849833e6f3dbdc3f9b recorded_no_nl=913a7a3ebed0a14ad34cee292e7bbfa706111ac9c45977849833e6f3dbdc3f9b MATCH
+      with_nl recomputed=5a75a8bff2d7630402069cfb01b4aa5b1b781ed3182eb7aa3c5c5f2e47d89202 recorded=5a75a8bff2d7630402069cfb01b4aa5b1b781ed3182eb7aa3c5c5f2e47d89202 MATCH  byte_len_no_nl=155(recomputed 155)
+  arm=a3 line_no=1 action=throttled        recomputed_no_nl=928a41591fce09a30408eb9a34dae36a90dfc3b4f74f21434a6be2d90f4a9ee9 recorded_no_nl=928a41591fce09a30408eb9a34dae36a90dfc3b4f74f21434a6be2d90f4a9ee9 MATCH
+      with_nl recomputed=3ae9826242d1f49132e082f4d189be4bb9007be241c32b988f2779b9498af6a4 recorded=3ae9826242d1f49132e082f4d189be4bb9007be241c32b988f2779b9498af6a4 MATCH  byte_len_no_nl=152(recomputed 152)
+  arm=a3 line_no=2 action=alert            recomputed_no_nl=3af565f24c621cbdf3dd1700d811dacc1338516f5ef35e88cd0f78ba9d016370 recorded_no_nl=3af565f24c621cbdf3dd1700d811dacc1338516f5ef35e88cd0f78ba9d016370 MATCH
+      with_nl recomputed=7006737ee01edfcd55256b6206cfc73a6d0f4ec6af0216558f586a38a65dcf9d recorded=7006737ee01edfcd55256b6206cfc73a6d0f4ec6af0216558f586a38a65dcf9d MATCH  byte_len_no_nl=141(recomputed 141)
+  arm=a3 line_no=3 action=throttle-cleared recomputed_no_nl=7505a850bb7e8b9766c9d4478cee48407827f38f590caf9a63a499af8b999299 recorded_no_nl=7505a850bb7e8b9766c9d4478cee48407827f38f590caf9a63a499af8b999299 MATCH
+      with_nl recomputed=fca5bab4399940577530932c3bcf403be87f129713328bc606013d0546bd94a1 recorded=fca5bab4399940577530932c3bcf403be87f129713328bc606013d0546bd94a1 MATCH  byte_len_no_nl=145(recomputed 145)
+
+## 5. SET EQUALITY — B0 specimen set vs cexec's enumeration
+  |B0 set| = 5   |cexec enumeration| = 5
+  in cexec but not in B0 (DROPPED): none
+  in B0 but not in cexec (ADDED):   none
+  SET EQUALITY: PROVEN (both sets have 5 members and are identical)
+    3af565f24c621cbdf3dd1700d811dacc1338516f5ef35e88cd0f78ba9d016370  arm=a3 action=alert
+    7505a850bb7e8b9766c9d4478cee48407827f38f590caf9a63a499af8b999299  arm=a3 action=throttle-cleared
+    913a7a3ebed0a14ad34cee292e7bbfa706111ac9c45977849833e6f3dbdc3f9b  arm=a2 action=alert
+    928a41591fce09a30408eb9a34dae36a90dfc3b4f74f21434a6be2d90f4a9ee9  arm=a3 action=throttled
+    eebbacd1a49fff567274f76ad68d644a06248168961cdc257c45339861c82435  arm=a1 action=alert
+
+## 6. Emitted /tmp/aeb0/d7/alerts/alert.lines.jsonl — 5 lines, ordered by (arm, line_no), unaltered
+  file sha256 = f3da7beb8edfef78574b08d30ff039cc6e1b03f8900866c29a83cf0fe4b12cbe
+  order: a1/1:alert, a2/3:alert, a3/1:throttled, a3/2:alert, a3/3:throttle-cleared
+
+## 7. Provenance recorded by cexec and carried forward unchanged
+  every specimen: actor=_watchdog, ref=ABSENT (NUL-prefixed sentinel, distinct from emitted-empty)
+  the throttle-cleared specimen (a3/3) is PROCESS-MEMORY-DERIVED (one running
+  watchdog, subarm B) and cannot be re-derived from a fresh clone; there is no
+  re-harvest without a full cexec re-run.

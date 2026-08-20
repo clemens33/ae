@@ -1,0 +1,11 @@
+--- /tmp/aeb0/d7/arms/key-actor-remove/archive/manifest.before.tsv	2026-08-20 17:28:20
++++ /tmp/aeb0/d7/arms/key-actor-remove/archive/manifest.after.tsv	2026-08-20 17:28:21
+@@ -13,7 +13,7 @@
+ ./sessions/b0d7/agents	file	700	-	e97fd815e17b2c05af59e74dff8e86a7a4758699bf440f83508ff6601207cff6
+ ./sessions/b0d7/ask	file	700	-	b9e34f5a19049f490477578df6890a104eece6212ab71c7252599ba08a23f67e
+ ./sessions/b0d7/events-tail	file	700	-	3a238f619cef096f841b46154f733cf69c02ed692140f476d0d922a9920f1f79
+-./sessions/b0d7/events.jsonl	file	644	-	0c6bca17fe243ff616f2d50d148231f7a1a6e2b35d9fe7a4f8af7780a1c56dd2
++./sessions/b0d7/events.jsonl	file	644	-	da924cf8e4a4da3051f41df888bd749e92dcc3e43be5b37394cd3bb690efc3d6
+ ./sessions/b0d7/events.jsonl.lock	file	644	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ ./sessions/b0d7/focus	file	700	-	b99c064fc6d6cedb48a4ac6506bc7eadb91eb78784976c7e8aa8b37a71c1ae34
+ ./sessions/b0d7/goal	file	700	-	19aaeae31baaeb7683213c5d796e00f0791d5c2ca575a66663e113d1970f811d

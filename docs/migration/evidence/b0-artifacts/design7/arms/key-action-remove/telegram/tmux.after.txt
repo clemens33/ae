@@ -1,0 +1,9 @@
+# tmux snapshot (after) server -L d7a5d83224ed
+no server running on /private/tmp/aeb0/d7/arms/key-action-remove/telegram/tmuxtmp/tmux-501/d7a5d83224ed
+list-sessions rc=1
+no server running on /private/tmp/aeb0/d7/arms/key-action-remove/telegram/tmuxtmp/tmux-501/d7a5d83224ed
+list-windows rc=1
+no server running on /private/tmp/aeb0/d7/arms/key-action-remove/telegram/tmuxtmp/tmux-501/d7a5d83224ed
+list-panes rc=1
+no server running on /private/tmp/aeb0/d7/arms/key-action-remove/telegram/tmuxtmp/tmux-501/d7a5d83224ed
+list-clients rc=1

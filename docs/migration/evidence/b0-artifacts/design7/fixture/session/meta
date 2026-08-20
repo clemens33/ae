@@ -1,0 +1,17 @@
+mode=local
+origin=/tmp/aeb0/d7/repo
+session=b0d7
+session_id=565af20b-a9ad-4de9-8266-896fffce4bcc
+work_dir=/tmp/aeb0/d7/repo
+layout=vertical
+config=/tmp/aeb0/d7/build/home/.ae/config
+main_pane=%2
+ae_path=/tmp/aeb0/frozen/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aeb0/d7/build/sock/tmux-501/aeb0d7b
+tmux_server_kind=socket
+agent.main=dummy:dummy:pending
+agent_bin.main=bash
+agent.spawned.0=dummy2:helper:pending
+agent_bin.spawned.0=bash
+goal=fixture goal two

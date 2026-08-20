@@ -1,0 +1,11 @@
+SUBSTITUTED	+%s	argv=+%s 
+SUBSTITUTED	+%FT%TZ	argv=-u +%FT%TZ 
+SUBSTITUTED	+%s	argv=+%s 
+DELEGATED	-	argv=-d 2026-08-20T00:16:00Z +%s 
+DELEGATED	-	argv=-u -j -f %Y-%m-%dT%H:%M:%SZ 2026-08-20T00:16:00Z +%s 
+DELEGATED	-	argv=-d 2026-08-20T00:15:00Z +%s 
+DELEGATED	-	argv=-u -j -f %Y-%m-%dT%H:%M:%SZ 2026-08-20T00:15:00Z +%s 
+DELEGATED	-	argv=-d 2026-08-20T00:14:00Z +%s 
+DELEGATED	-	argv=-u -j -f %Y-%m-%dT%H:%M:%SZ 2026-08-20T00:14:00Z +%s 
+DELEGATED	-	argv=-d 2026-08-20T00:05:00Z +%s 
+DELEGATED	-	argv=-u -j -f %Y-%m-%dT%H:%M:%SZ 2026-08-20T00:05:00Z +%s 

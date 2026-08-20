@@ -1,0 +1,9 @@
+# tmux snapshot (after) server -L d7837e23eab0
+error connecting to /private/tmp/aeb0/d7/arms/additive-last/aewatch/tmuxtmp/tmux-501/d7837e23eab0 (No such file or directory)
+list-sessions rc=1
+error connecting to /private/tmp/aeb0/d7/arms/additive-last/aewatch/tmuxtmp/tmux-501/d7837e23eab0 (No such file or directory)
+list-windows rc=1
+error connecting to /private/tmp/aeb0/d7/arms/additive-last/aewatch/tmuxtmp/tmux-501/d7837e23eab0 (No such file or directory)
+list-panes rc=1
+error connecting to /private/tmp/aeb0/d7/arms/additive-last/aewatch/tmuxtmp/tmux-501/d7837e23eab0 (No such file or directory)
+list-clients rc=1

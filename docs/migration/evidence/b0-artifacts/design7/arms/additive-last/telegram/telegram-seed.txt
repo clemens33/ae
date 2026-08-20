@@ -1,0 +1,2 @@
+controller seeded /tmp/aeb0/d7/arms/additive-last/telegram/home/.ae/telegram/state.tsv with session_id=565af20b-a9ad-4de9-8266-896fffce4bcc inode=28365022 offset=0
+reason: ae:10133-10138 initialises an unseen session at EOF

@@ -1,0 +1,40 @@
+op=rename key=body_file newkey=body_file_x value=None where=None
+input=/tmp/aeb0/d7/arms/ext-body_file-rename/compact/events.control.jsonl output=/tmp/aeb0/d7/arms/ext-body_file-rename/compact/events.mutated.jsonl
+lines=25 cohort=6 selfcheck_failures=0
+line 1: not in cohort (no 'body_file')
+line 2: cohort member; selfcheck=PASS (decoded(mutated) == decoded(control) with 'body_file' renamed to 'body_file_x')
+  pre : {"ts":"2026-08-20T00:03:00Z","actor":"dummy:dummy","action":"send","target":"dummy2:helper","summary":"⟦ae:msg from unverified⟧ fixture settle probe","body_file":"/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/messages/msg-20260820T000300Z.send.l9wnf8.txt"}
+  post: {"ts":"2026-08-20T00:03:00Z","actor":"dummy:dummy","action":"send","target":"dummy2:helper","summary":"⟦ae:msg from unverified⟧ fixture settle probe","body_file_x":"/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/messages/msg-20260820T000300Z.send.l9wnf8.txt"}
+line 3: not in cohort (no 'body_file')
+line 4: not in cohort (no 'body_file')
+line 5: not in cohort (no 'body_file')
+line 6: not in cohort (no 'body_file')
+line 7: not in cohort (no 'body_file')
+line 8: not in cohort (no 'body_file')
+line 9: not in cohort (no 'body_file')
+line 10: not in cohort (no 'body_file')
+line 11: cohort member; selfcheck=PASS (decoded(mutated) == decoded(control) with 'body_file' renamed to 'body_file_x')
+  pre : {"ts":"2026-08-20T00:12:00Z","actor":"dummy:dummy","action":"ask","target":"dummy2:helper","ref":"ae-20260820T001200Z-f2a3cc47","actor_slot":"main","actor_session":"b0d7","target_slot":"spawned.0","target_session":"b0d7","summary":"fixture question, closed by a reply","body_file":"/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/messages/ae-20260820T001200Z-f2a3cc47.ask.JrfR4u.txt"}
+  post: {"ts":"2026-08-20T00:12:00Z","actor":"dummy:dummy","action":"ask","target":"dummy2:helper","ref":"ae-20260820T001200Z-f2a3cc47","actor_slot":"main","actor_session":"b0d7","target_slot":"spawned.0","target_session":"b0d7","summary":"fixture question, closed by a reply","body_file_x":"/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/messages/ae-20260820T001200Z-f2a3cc47.ask.JrfR4u.txt"}
+line 12: cohort member; selfcheck=PASS (decoded(mutated) == decoded(control) with 'body_file' renamed to 'body_file_x')
+  pre : {"ts":"2026-08-20T00:13:00Z","actor":"dummy2:helper","action":"reply","target":"dummy:dummy","ref":"ae-20260820T001200Z-f2a3cc47","actor_slot":"spawned.0","actor_session":"b0d7","target_slot":"main","target_session":"b0d7","summary":"fixture answer","body_file":"/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/messages/ae-20260820T001200Z-f2a3cc47.reply.xLm7p4.txt"}
+  post: {"ts":"2026-08-20T00:13:00Z","actor":"dummy2:helper","action":"reply","target":"dummy:dummy","ref":"ae-20260820T001200Z-f2a3cc47","actor_slot":"spawned.0","actor_session":"b0d7","target_slot":"main","target_session":"b0d7","summary":"fixture answer","body_file_x":"/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/messages/ae-20260820T001200Z-f2a3cc47.reply.xLm7p4.txt"}
+line 13: cohort member; selfcheck=PASS (decoded(mutated) == decoded(control) with 'body_file' renamed to 'body_file_x')
+  pre : {"ts":"2026-08-20T00:14:00Z","actor":"dummy:dummy","action":"review","target":"dummy2:helper","ref":"review-20260820T001400Z-56974f89","actor_slot":"main","actor_session":"b0d7","target_slot":"spawned.0","target_session":"b0d7","summary":"fixture review request, left open","body_file":"/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/messages/review-20260820T001400Z-56974f89.review.bAlanU.txt"}
+  post: {"ts":"2026-08-20T00:14:00Z","actor":"dummy:dummy","action":"review","target":"dummy2:helper","ref":"review-20260820T001400Z-56974f89","actor_slot":"main","actor_session":"b0d7","target_slot":"spawned.0","target_session":"b0d7","summary":"fixture review request, left open","body_file_x":"/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/messages/review-20260820T001400Z-56974f89.review.bAlanU.txt"}
+line 14: cohort member; selfcheck=PASS (decoded(mutated) == decoded(control) with 'body_file' renamed to 'body_file_x')
+  pre : {"ts":"2026-08-20T00:15:00Z","actor":"dummy:dummy","action":"ask","target":"dummy2:helper","ref":"ae-20260820T001500Z-bba72cc7","actor_slot":"main","actor_session":"b0d7","target_slot":"spawned.0","target_session":"b0d7","summary":"fixture second ask, left open","body_file":"/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/messages/ae-20260820T001500Z-bba72cc7.ask.pA1oA7.txt"}
+  post: {"ts":"2026-08-20T00:15:00Z","actor":"dummy:dummy","action":"ask","target":"dummy2:helper","ref":"ae-20260820T001500Z-bba72cc7","actor_slot":"main","actor_session":"b0d7","target_slot":"spawned.0","target_session":"b0d7","summary":"fixture second ask, left open","body_file_x":"/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/messages/ae-20260820T001500Z-bba72cc7.ask.pA1oA7.txt"}
+line 15: cohort member; selfcheck=PASS (decoded(mutated) == decoded(control) with 'body_file' renamed to 'body_file_x')
+  pre : {"ts":"2026-08-20T00:16:00Z","actor":"dummy:dummy","action":"ask","target":"@xpartner:dummy:dummy","ref":"ae-20260820T001600Z-4c779d53","actor_slot":"main","actor_session":"b0d7","target_slot":"main","target_session":"xpartner","summary":"fixture cross-session ask","body_file":"/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/messages/ae-20260820T001600Z-4c779d53.ask.jCWOBp.txt"}
+  post: {"ts":"2026-08-20T00:16:00Z","actor":"dummy:dummy","action":"ask","target":"@xpartner:dummy:dummy","ref":"ae-20260820T001600Z-4c779d53","actor_slot":"main","actor_session":"b0d7","target_slot":"main","target_session":"xpartner","summary":"fixture cross-session ask","body_file_x":"/tmp/aeb0/d7/build/home/.ae/sessions/b0d7/messages/ae-20260820T001600Z-4c779d53.ask.jCWOBp.txt"}
+line 16: not in cohort (no 'body_file')
+line 17: not in cohort (no 'body_file')
+line 18: not in cohort (no 'body_file')
+line 19: not in cohort (no 'body_file')
+line 20: not in cohort (no 'body_file')
+line 21: not in cohort (no 'body_file')
+line 22: not in cohort (no 'body_file')
+line 23: not in cohort (no 'body_file')
+line 24: not in cohort (no 'body_file')
+line 25: not in cohort (no 'body_file')
