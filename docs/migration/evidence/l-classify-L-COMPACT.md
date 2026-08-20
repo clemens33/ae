@@ -56,10 +56,19 @@ window…`. Per the attribution rule it is the relaunched session's output after
 exec, not a fifth compact line — so "nothing else" is satisfied for compact's own
 emission but NOT for the fd's lifetime. My reading is that the row's "nothing else"
 scopes to what compact emits and the row should say so; a reader taking it as an fd
-guarantee would call this a divergence. **Lead proposes: CONFIRMED with a scope
-precision** ("compact emits exactly these four lines; after the exec the successor
-process writes to the same stream"). Colead's independent reading requested before
-either of us states it as settled.
+guarantee would call this a divergence. **RESOLVED — CONFIRMED, and my proposed scope precision is WITHDRAWN as
+unnecessary.** Colead re-anchored this through the frozen authority and was right:
+`docs/reference/commands.md` @72c7293 already states the attribution rule outright at
+**:682-684** — *"Anything printed after the contract belongs to the fresh session:
+compact `exec`s into the launch, so from there on you are reading the child."* The
+fifth `Watchdog started…` line is therefore the CHILD's output by the authority's own
+words, not by a precision either seat invented. Writing my precision into the row
+would have presented an existing normative statement as a new seat ruling — the row
+needs a CITATION, not an amendment.
+*Citation correction (lead, verified before adopting):* colead's gate named
+`docs/internals/commands.md`; no such file exists at 72c7293 or in the tree. The file
+is `docs/reference/commands.md`. Substance unaffected; recorded because an anchor
+nobody re-checked is how a wrong citation becomes load-bearing.
 
 **SC-501 — compact stderr carries everything else** (b2, none). Artifacts:
 `baseline/2op.stderr`, `interactive-typed-n/2op.stderr`.
@@ -95,9 +104,17 @@ proves the discrimination.
 **SC-504b — no altered SIGPIPE disposition leaks into the child** (b1, none).
 Artifacts: `sigpipe/2op.rc` (**0**), the arm's recorded producer status.
 IS: recorded exactly as the kernel reported it — **WIFEXITED true, exit code 141, NOT
-signalled** — with no interpretation attached by the worker. **Proposed: CONFIRMED /
-no change**, with the explicit note that 141 here is a recorded exit code and the arm
-deliberately does not assert what produced it.
+signalled** — with no interpretation attached by the worker.
+**RULED: PARTIAL, not confirmed** (colead's objection, adopted). The capture records a
+TERMINATION SHAPE; the row claims an INSTALLED CHILD DISPOSITION, and those are not
+the same fact. Exit 141 tells us the child exited 128+13; it does not tell us what
+SIGPIPE disposition the child was handed. Worse, the harness itself sets `SIG_DFL`
+before the exec — so the arm cannot separate "ae leaked no altered disposition" from
+"the harness reset it before anyone could observe a leak". **The arm as built cannot
+fail this claim, so by the arm-that-cannot-fail rule it is not evidence for it.**
+NEEDED to close: an ability-to-fail control — a variant that deliberately leaks
+`SIG_IGN` into the child and is shown to be DETECTED by this same capture. Until that
+control exists the row stays PARTIAL.
 
 **SC-507a / SC-507c / SC-507d — `archive preview`** (all b2, none). Arm: `preview`
 (**rc=0**), plus the preview TWIN construction. IS: stdout is the digest bytes;
@@ -109,14 +126,36 @@ with exactly TWO named mode-preserving diffs — `session=` and `session_id=` �
 `twin-meta.diff`, with `twin-vs-source.manifest.diff` showing everything else
 unchanged. The arm captures the preview stdout bytes and the twin's archived digest
 bytes and **compares nothing** (comparison is the seats').
-**Proposed: CONFIRMED / no change** for all three.
+**SEAT COMPARISON, now performed and RECORDED** (colead first; independently rerun by
+lead before adoption, same result). `2op.stdout` (1280 B) vs
+`twin.archived-digest.md` (1291 B), 26 `- ` fields each. Raw diff rc=1 on exactly
+**six line classes**, every one a field that MUST differ between a preview and a
+completed archive of a differently-named twin: `Snapshot:` (preview/archived),
+`Archive ID:`, `Source session:`, `Source session ID:`, `Archived at:`
+(`pending` vs a real stamp), `Push outcome:` (`preview-not-run` vs `not-managed`).
+Normalising those six and re-diffing gives **rc=0**.
+The confirmation is in the REMAINDER, not the diff: the other **20 fields are
+byte-identical**, including `Base commit`, `Final commit`, `Commit range`,
+`Commit count`, `Records`, `First` and `Last`. Preview computes the same digest
+CONTENT a real archive computes, and differs only where it would be lying not to —
+it says `pending` because it has not archived and `preview-not-run` because it has not
+pushed. **CONFIRMED** for all three, on that recorded comparison rather than on the
+arm's rc alone.
 
 **SC-508 — residual undocumented exit codes.** `authority=code-observation`.
 Artifacts: `residual-rc/rc-table.tsv` — **54 data rows** plus a header and seven
 comment lines, recording every exit status in the section with the invocation that
-produced it. **Proposed: NO CLASSIFICATION — capture-only, stays UNCLASSIFIED
-pending the seat preserve/fix/diverge ruling**, per colead's third grain requirement.
-The table is input to that ruling, not a disposition.
+produced it. **RULED: SPLIT REQUIRED before any disposition — A CATCH-ALL CANNOT RATIFY**
+(colead's objection, adopted). SC-508 as written is a bag labelled "residual", and a
+bag cannot be preserved, fixed or diverged: each outcome in it has its own answer.
+Ratifying the bag would ratify every unexamined member by association.
+MECHANICAL SUBTRACTION FIRST — remove from the 54 rows every outcome already OWNED by
+a classified row (**SC-503, SC-507, SC-512, SC-517, SC-828, SC-829, SC-836, SC-837**)
+plus every harness-only kill and setup status, which are the instrument's exits and
+not the product's. Then split each TRUE residual into its own row at outcome grain and
+classify it individually. Only what survives subtraction was ever residual.
+Stays UNCLASSIFIED until that split lands; the table is input to the ruling, never the
+ruling.
 
 **SC-512 — compact stdout truth claim: non-empty stdout proves the archive EXISTS and
 the printed recovery command WORKS, and deliberately does NOT claim the fresh session
@@ -164,8 +203,14 @@ nowhere in the section**, which is the value-blindness rule observed exactly.
 all six) while `barrier-order.tsv` records `${BASHPID}`, where the resolver-entry key
 reads `.86134` against `.86132` elsewhere because that site runs inside a command
 substitution. Any claim about a differing pid must name its source file.
-**Proposed: CONFIRMED / no change** on the freeze-once claim as evidenced by the
-resolver-entry channel firing first and once.
+**CONFIRMED, and re-labelled COMPOSITE EVIDENCE** (colead's precision, adopted). The
+trace alone proves ORDER — that `b_cp_resolver_entry` fired first and once. It cannot
+prove the NEGATIVE half of the claim ("everything downstream reads the tuple, never
+meta again"), because a channel that did not fire is not a read that did not happen.
+That half rests on frozen source plus the census, not on this trace. The row's
+evidence is therefore **trace + frozen source/census**, and any future citation of it
+must carry both — citing the trace alone would overstate what six ordered channels
+can show.
 
 **SC-828 — two revalidations, positioned by what they protect** (b1, none).
 Artifacts: `revalidation-after-answer/`, `revalidation-after-handover/`, and the two
@@ -216,20 +261,52 @@ it — this row is only the skip-confirmation surface.
 
 **SC-1305 — (baseline arm)** (see contract row). Artifacts: `baseline/` full capture
 set. IS: carried by the baseline arm's manifests and streams.
-**Proposed: CONFIRMED / no change**, pending the joint read of its specific fields.
+**RULED: SEAT CLOSURE — my "CONFIRMED / no change" is WITHDRAWN as inadmissible**
+(colead's objection, adopted in full). The contract row was a bare PLACEHOLDER —
+"compact: mid-operation observability" — which states no SHOULD at all. **A row that
+makes no claim cannot be confirmed**; marking it would have ratified a non-claim and
+recorded agreement where nothing had been asserted. This is the code-observation
+closure rule doing exactly its job.
+**Closed by joint seat ruling instead** (both seats, 2026-08-20), rewritten at
+one-invariant grain: *concurrent readers see ONE coherent lifecycle phase, never mixed
+predecessor/successor state; a no-session interval between predecessor removal and
+successor publication is PERMITTED.* Permitted, **not required** — a successor that
+publishes without a visible gap also satisfies it, so the row cannot be read as
+mandating the gap our capture happens to show. The requests-helper absence at the
+pre-relaunch cut stays empirical MECHANISM, outside the claim.
+Bucket 1, authority = joint seat ruling grounded in architecture.md's compact phase
+order, conflict none. Empirical support: the five pre-teardown cuts each showing one
+coherent running predecessor, and the pre-relaunch cut showing no session.
+Landed in `semantic-contract.md` (commit e0f9e3f). **The placeholder is NOT marked as
+written** — it was replaced.
 
 ---
 
 ## Proposed dispositions
 
-- **CONFIRMED / no change — 19**: SC-501, SC-502, SC-503a, SC-503b, SC-504b, SC-507a,
-  SC-507c, SC-507d, SC-512, SC-517a, SC-517b, SC-517c, SC-827, SC-828, SC-829a,
-  SC-829b, SC-836, SC-837, SC-1305.
-- **CONFIRMED WITH A SCOPE PRECISION PROPOSED — 1**: SC-500 (the post-exec fifth line;
-  "nothing else" scopes to compact's own emission, not the fd's lifetime). Colead's
-  independent reading requested before it is settled either way.
-- **UNCLASSIFIED, capture-only — 1**: SC-508 (`authority=code-observation`; the
-  54-row rc table is input to a preserve/fix/diverge ruling, not a disposition).
+*Dispositions below are POST-GATE — colead's independent read moved four of them, and
+every move was away from a mark I had proposed. Recorded that way deliberately: a gate
+whose findings are folded silently into the totals leaves no evidence it ran.*
+
+- **CONFIRMED / no change — 18**: SC-501, SC-502, SC-503a, SC-503b, SC-507a, SC-507c,
+  SC-507d, SC-512, SC-517a, SC-517b, SC-517c, SC-827, SC-828, SC-829a, SC-829b,
+  SC-836, SC-837, **SC-500**.
+  - SC-500 moved IN: the proposed scope precision was withdrawn once the frozen
+    authority was found to state the attribution rule itself
+    (`docs/reference/commands.md` @72c7293 :682-684). The row needed a citation, not
+    an amendment.
+  - SC-507a confirmed on a RECORDED seat comparison (six normalised line classes →
+    diff rc=0; 20 of 26 fields byte-identical), not on the arm's rc.
+  - SC-827 confirmed but re-labelled **COMPOSITE** (trace + frozen source/census):
+    the trace proves order and cannot prove the claim's negative half.
+- **PARTIAL — 1**: SC-504b. Moved OUT of confirmed. The capture shows a termination
+  SHAPE, not an installed child DISPOSITION, and the harness sets `SIG_DFL` before the
+  exec — so the arm cannot fail the claim. Needs an ability-to-fail control.
+- **SEAT CLOSURE, contract row REWRITTEN — 1**: SC-1305. Moved OUT of confirmed: the
+  row was a placeholder stating no SHOULD, and a non-claim cannot be confirmed.
+- **SPLIT REQUIRED, stays UNCLASSIFIED — 1**: SC-508 (`authority=code-observation`).
+  A catch-all cannot ratify; the 54-row table needs mechanical subtraction of
+  already-owned outcomes and harness-only statuses, then one row per true residual.
 - **NO reopened conflicts.**
 - Attribution discipline applied section-wide: every rc=1 arising from
   `open terminal failed: not a terminal` is the LAUNCH's, never compact's, and is
