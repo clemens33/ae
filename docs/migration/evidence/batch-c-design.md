@@ -109,17 +109,39 @@ never-attaches via client-list snapshots; SC-020b per its named barrier.
 A5 exits (SC-514): doctor under a CONTROLLED PATH/capability fixture — clean arm and
 planted-failure arm both run the frozen script through a known bash; removing the one
 planted dependency cannot remove the interpreter or other checklist items.
-A6 requests/pairing (SC-518, 522, 523a-b, SC-212c): G5 protocol; scrubbed-env
-defaults; fixed-clock thresholds.
+A6 requests/pairing (SC-518, 522, 523a-b): G5 protocol; scrubbed-env defaults;
+fixed-clock thresholds. (SC-212c is H-HELPER's — removed per gate; no incidental
+closure.)
 A7 meta grammar (SC-405a-g): G1/G7 + malformed/duplicate-key producer-derived
 fixtures (405d/e captures remain observation-only for UNCLASSIFIED rows); G9 for
 405f; 405g's two named resolution subarms (tmux @ae_branch_name primary on a live
 server; git fallback on a stopped clone).
-A8 modes (SC-100, 101, 102a-b, 018, 018b): WRITABLE clones per arm; default-name
-derivation capture; fast-path attach with full manifest+tmux diff (101); resume
-regeneration set diff (102a); inside-session invocation (102b, live server); use arms.
+A8 modes (SC-101, 102a-b, 018b): WRITABLE clones per arm; fast-path attach with full
+manifest+tmux diff (101); resume regeneration set diff (102a); inside-session
+invocation (102b, live server); use-against-existing arm (018b). (SC-100 and SC-018
+are DEFERRABLE — removed per gate; the batch boundary is exactly the 59 assigned.)
 A9 quiet-vs-degraded (SC-519, 520): G4 (quiet both ways) vs G3 (degraded + public
 JSON marker + retained generation/offset/reason capture).
+
+## Per-row differentiators (gate B2 — the discriminating manipulation per row;
+common capture/barrier boilerplate applies to all)
+
+| Row | Discriminator |
+|---|---|
+| SC-016b | each of >=2 panes filled with >80 UNIQUELY NUMBERED lines; capture proves the ~80 tail boundary (which numbers survive) AND the binary/pane-id labels |
+| SC-405a | a producer-derived meta value containing MULTIPLE `=` characters — first-equals split distinguishable from any-equals split |
+| SC-405f | goal APPEND ORDER OPPOSED to timestamp order (clock hook writes an older ts after a newer one) — last-record vs max-ts implementations become distinguishable |
+| SC-405g | tmux `@ae_branch_name` and the git branch populated with DIFFERENT values before capture — source ownership observable, not just transport |
+| SC-510b | producer cases with genuinely EMPTY target/ref/summary at the producer input — omission-vs-empty-string observable in emitted bytes |
+| SC-511a | one producer case with KNOWN routing (both slots/sessions resolvable) and one with genuinely OMITTED routing — presence and omission both exercised |
+
+## Date shim contract (gate IMPORTANT)
+
+The PATH-first `date` shim DELEGATES EVERY invocation to the real binary EXCEPT the
+exact frozen now-form(s) it substitutes; the real date's path and hash are recorded in
+the run manifest — the shim must never become the parsing/formatting behavior under
+test. Protected read-only clones are built WITH a prebuilt config so the M2 bootstrap
+cannot turn chmod protection into a synthetic failure.
 
 ## Lanes, ordering, environment
 
