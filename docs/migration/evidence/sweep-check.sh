@@ -3,12 +3,13 @@
 # Deterministic, presence-only migration evidence checker.
 #
 # Usage:
-#   sweep-check.sh [semantic-contract] [ownership] [closure-map] [expected-id-set]
+#   sweep-check.sh [semantic-contract] [ownership] [closure-map] [expected-id-set] [assignment-file]
 #
-# The expected-id-set is one SC id per line.  When omitted, the closure map's
-# canonical mapping ids are used as the expected set.  The checker deliberately
-# does not try to judge the quality of evidence, only the presence and shape of
-# the fields it can identify.
+# The expected-id-set is one SC/D id per line.  When omitted, crit-assign.md is
+# not used as an expected set: it is a distinct assignment-file input (arg 5),
+# selected by default when present.  The closure map remains the expected set
+# fallback.  The checker deliberately does not try to judge evidence quality,
+# only presence and shape of fields it can identify.
 
 set -u
 
@@ -23,14 +24,31 @@ semantic_file=${1:-$repo_root/docs/migration/semantic-contract.md}
 ownership_file=${2:-$repo_root/docs/migration/ownership.md}
 closure_file=${3:-$repo_root/docs/migration/evidence/closure-map.md}
 expected_file=${4:-$closure_file}
+default_assignment_path=$script_dir/crit-assign.md
+if [ -e "$default_assignment_path" ]; then
+  default_assignment_file=$default_assignment_path
+else
+  default_assignment_file=
+fi
+if [ "$#" -ge 5 ]; then
+  assignment_file=$5
+elif [ -n "$default_assignment_file" ]; then
+  assignment_file=$default_assignment_file
+else
+  assignment_file=
+fi
 critical_file=$script_dir/ratification-critical.md
 
-if [ "$#" -gt 4 ]; then
-  echo "usage: $0 [semantic-contract] [ownership] [closure-map] [expected-id-set]" >&2
+if [ "$#" -gt 5 ]; then
+  echo "usage: $0 [semantic-contract] [ownership] [closure-map] [expected-id-set] [assignment-file]" >&2
   exit 2
 fi
 
-for input_file in "$semantic_file" "$ownership_file" "$closure_file" "$expected_file" "$critical_file"; do
+input_files=("$semantic_file" "$ownership_file" "$closure_file" "$expected_file" "$critical_file")
+if [ -n "$assignment_file" ]; then
+  input_files+=("$assignment_file")
+fi
+for input_file in "${input_files[@]}"; do
   if [ ! -r "$input_file" ]; then
     echo "ERROR: unreadable input: $input_file" >&2
     exit 2
@@ -43,12 +61,17 @@ awk_input_files=("$semantic_file" "$ownership_file" "$closure_file")
 if [ "$expected_file" != "$closure_file" ]; then
   awk_input_files+=("$expected_file")
 fi
+if [ -n "$assignment_file" ] && [ "$assignment_file" != "$closure_file" ] && [ "$assignment_file" != "$expected_file" ]; then
+  awk_input_files+=("$assignment_file")
+fi
 awk_input_files+=("$critical_file")
 awk \
   -v semantic_file="$semantic_file" \
   -v ownership_file="$ownership_file" \
   -v closure_file="$closure_file" \
   -v expected_file="$expected_file" \
+  -v assignment_file="$assignment_file" \
+  -v default_assignment_file="$default_assignment_file" \
   -v critical_file="$critical_file" \
   '
 function row_head(line, t, close_pos, dash_pos) {
@@ -478,21 +501,42 @@ function add_expected_line(line, token) {
   }
 }
 
-function parse_crit_assign(line, rest, fields, field_count, id) {
-  if (line !~ /^[[:space:]]*CRIT-ASSIGN:[[:space:]]*[^|[:space:]]+[[:space:]]*\|[[:space:]]*[^|]*[[:space:]]*\|[[:space:]]*[^|]*[[:space:]]*$/)
-    return
-  rest = line
-  sub(/^[[:space:]]*CRIT-ASSIGN:[[:space:]]*/, "", rest)
-  field_count = split(rest, fields, /\|/)
-  if (field_count != 3)
-    return
-  id = fields[1]
-  gsub(/^[[:space:]]+|[[:space:]]+$/, "", id)
-  if (id == "")
+function trim(value) {
+  gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+  return value
+}
+
+function known_assignment_batch(batch) {
+  return batch ~ /^(B0|C|L-END|L-PURGE|L-STOP|L-COMPACT|L-FROM|L-RENTRANS|T-AUTH|T-WD|T-CTRL|T-STORE|H-HELPER|H-DELIVERY|H-ENV|F-CONFIG|F-FORMAT|F-TMUX|F-ADAPTER|F-IDENTITY|F-INSTALL|F-PLATFORM|F-CONTRIB)$/
+}
+
+function parse_crit_assign(line, rest, fields, field_count, id, batch, arm, malformed_reason) {
+  if (line !~ /^[[:space:]]*CRIT-ASSIGN:/)
     return
   crit_assign_present = 1
   crit_assign_lines++
-  crit_assign_counts[id]++
+  rest = line
+  sub(/^[[:space:]]*CRIT-ASSIGN:[[:space:]]*/, "", rest)
+  field_count = split(rest, fields, /\|/)
+  id = trim(fields[1])
+  batch = field_count >= 2 ? trim(fields[2]) : ""
+  arm = field_count >= 3 ? trim(fields[3]) : ""
+  if (id != "")
+    crit_assign_counts[id]++
+  if (field_count != 3)
+    malformed_reason = "expected exactly three pipe-separated fields"
+  else if (id == "")
+    malformed_reason = "id is empty"
+  else if (batch == "")
+    malformed_reason = "batch is empty"
+  else if (arm == "")
+    malformed_reason = "arm is empty"
+  else if (!known_assignment_batch(batch))
+    malformed_reason = "unknown batch " batch
+  if (malformed_reason != "") {
+    print "ASSIGN-MALFORMED: " line " (" malformed_reason ")"
+    assignment_malformed_count++
+  }
 }
 
 function surface_present(family, item, i) {
@@ -576,7 +620,8 @@ FILENAME == ownership_file {
 
 FILENAME == closure_file {
   # Mapping entries begin with their canonical id.  Body prose is not map data.
-  parse_crit_assign($0)
+  if (assignment_file == closure_file)
+    parse_crit_assign($0)
   if ($0 ~ /^(SC-[0-9]|D[0-9])/) {
     candidate = $1
     sub(/\(.*/, "", candidate)
@@ -592,10 +637,15 @@ FILENAME == closure_file {
 FILENAME == expected_file {
   # Explicit expected sets may contain one id per line or whitespace-separated
   # ids.  The closure-map mapping-entry parser above remains stricter.
-  if (expected_file != closure_file) {
-    parse_crit_assign($0)
+  if (expected_file != closure_file)
     add_expected_line($0)
-  }
+  if (assignment_file == expected_file)
+    parse_crit_assign($0)
+  next
+}
+
+FILENAME == assignment_file {
+  parse_crit_assign($0)
   next
 }
 
@@ -699,6 +749,10 @@ END {
 
   # A CRIT-ASSIGN table is opt-in.  Once one line exists, every CRITICAL id
   # must be assigned exactly once, and every assigned id must be CRITICAL.
+  if (default_assignment_file != "" && crit_assign_lines == 0) {
+    print "ASSIGN-GATE-DORMANT: assignment table exists but no CRIT-ASSIGN lines were parsed"
+    assignment_gate_dormant_count++
+  }
   if (crit_assign_present) {
     for (id in critical_ids)
       assignment_universe[id] = 1
@@ -753,9 +807,9 @@ END {
   print "NOTE: presence checks cannot certify evidence FIDELITY; the separate pin audit must verify evidence fidelity."
   print "NOTE: line/block parsing may misparse prose-form or wrapped fields; implicit family authority and complex classified_by prose are not inferred."
   print "NOTE: surface coverage only sees list-shaped S3/S15 headers; S1 coverage only sees backtick-shaped inventory items and S1MAP lines inside the recognized machine-readable table fence. Neither check can certify omitted, renamed, or prose-only surfaces."
-  printf "SUMMARY: SC_ROWS=%d D_RECORDS=%d MISSING_FIELDS=%d MISSING_D_FIELDS=%d MISSING_SURFACES=%d MISSING_S1MAP_ITEMS=%d S1MAP_BAD_TARGETS=%d S1MAP_EMPTY_TARGETS=%d GRAIN_VIOLATIONS=%d DUPLICATE_IDS=%d MALFORMED_ROW_HEADS=%d DUPLICATE_D_IDS=%d MALFORMED_D_HEADS=%d CLOSURE_ORPHANS=%d CLOSURE_MISSING=%d CLOSURE_D_ORPHANS=%d CLOSURE_D_MISSING=%d SET_EXTRA=%d SET_MISSING=%d CRIT_ASSIGN_LINES=%d ASSIGN_MISSING=%d ASSIGN_DUP=%d ASSIGN_UNKNOWN=%d\n", \
+  printf "SUMMARY: SC_ROWS=%d D_RECORDS=%d MISSING_FIELDS=%d MISSING_D_FIELDS=%d MISSING_SURFACES=%d MISSING_S1MAP_ITEMS=%d S1MAP_BAD_TARGETS=%d S1MAP_EMPTY_TARGETS=%d GRAIN_VIOLATIONS=%d DUPLICATE_IDS=%d MALFORMED_ROW_HEADS=%d DUPLICATE_D_IDS=%d MALFORMED_D_HEADS=%d CLOSURE_ORPHANS=%d CLOSURE_MISSING=%d CLOSURE_D_ORPHANS=%d CLOSURE_D_MISSING=%d SET_EXTRA=%d SET_MISSING=%d CRIT_ASSIGN_LINES=%d ASSIGN_MISSING=%d ASSIGN_DUP=%d ASSIGN_UNKNOWN=%d ASSIGN_MALFORMED=%d ASSIGN_GATE_DORMANT=%d\n", \
     row_count, d_count, missing_count, missing_d_count, missing_surface_count, missing_s1map_count, s1map_bad_target_count, empty_s1map_count, grain_count, duplicate_count, malformed_count, duplicate_d_count, malformed_d_count, \
-    closure_orphan_count, closure_missing_count, closure_d_orphan_count, closure_d_missing_count, expected_extra_count, expected_missing_count, crit_assign_lines, assignment_missing_count, assignment_duplicate_count, assignment_unknown_count
+    closure_orphan_count, closure_missing_count, closure_d_orphan_count, closure_d_missing_count, expected_extra_count, expected_missing_count, crit_assign_lines, assignment_missing_count, assignment_duplicate_count, assignment_unknown_count, assignment_malformed_count, assignment_gate_dormant_count
   printf "SUMMARY SC_IDS:"
   if (sorted_count == 0)
     printf " (none)"
@@ -764,7 +818,7 @@ END {
   printf "\n"
 
   if (missing_count || missing_d_count || missing_surface_count || missing_s1map_count || s1map_bad_target_count || empty_s1map_count || grain_count || duplicate_count || malformed_count || duplicate_d_count || malformed_d_count || \
-      closure_orphan_count || closure_missing_count || expected_extra_count || expected_missing_count || assignment_missing_count || assignment_duplicate_count || assignment_unknown_count)
+      closure_orphan_count || closure_missing_count || expected_extra_count || expected_missing_count || assignment_missing_count || assignment_duplicate_count || assignment_unknown_count || assignment_malformed_count || assignment_gate_dormant_count)
     exit 1
   exit 0
 }
