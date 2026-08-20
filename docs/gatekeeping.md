@@ -365,6 +365,15 @@ count quoted in prose has lost its invocation.** Two honest runs of the same too
 different document sets returned 234 and 257; neither was wrong and only one matched the
 claim. Generate the number with its inputs recorded; never retype it into a sentence.
 
+**A count is also a fact about a PREDICATE — and when it characterises a defect, the
+predicate must be the defect's own.** Two seats counted the same anchor string in the same
+file and got 10 and 12: one matched `^- no args$` exactly, the other tested substring
+membership. Both correct. But the defective code under discussion used **substring
+membership**, so 12 was the relevant baseline and the exact-match count *understated the
+defect's reach by two strings that could satisfy the broken check.* Measuring a bug with a
+predicate other than the bug's own does not merely produce a different number — it
+misdescribes how much surface the bug has.
+
 ### Bounding your own result
 
 A guard that becomes able to fail and immediately finds something proves exactly one thing:
