@@ -28,8 +28,14 @@ snapshots rows must match unwrapped output on the same stable topology before it
 active barrier is admissible. Equivalence and manifests speak about PRODUCT-VISIBLE
 paths only: delegate-and-log shims and hooks necessarily create trace bytes, so
 harness artifacts (barrier/log files) are segregated from product-state equivalence
-and separately hashed/captured. This section is the normative home; batch designs
-CITE it and add only batch-local specifics.
+and separately hashed/captured. THE ENVIRONMENT IS AN INSTRUMENT TOO (the A1 locale
+incident, 2026-08-20): tmux changes its -F output encoding based on the locale (a
+non-UTF-8 locale sanitises TAB to underscore), so a scrubbed env can silently alter
+the bytes the product reads. Scrubbed environments pin a UTF-8 locale, and every
+LIVE arm must prove the consumer's own tmux query round-trips a real TAB in that
+arm's environment BEFORE any capture is taken through it — the both-directions
+instrument discipline applied to the environment. This section is the normative
+home; batch designs CITE it and add only batch-local specifics.
 
 ## Batch 0 — bespoke designs (seat-gated FIRST, as ruled)
 
