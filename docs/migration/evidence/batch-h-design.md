@@ -195,9 +195,21 @@ forward what the arm writes — and containment has to address that path, not th
    the fixture) and must report it. A census that cannot report an in-range watcher cannot
    report their absence, and the arm is INCONCLUSIVE rather than contained.
 
-`lsof` is deliberately NOT the containment check: the bridge polls rather than holding the
-events file open, so a single-instant probe would report nothing while a watcher was
-active — a zero that means nothing.
+**Rejected approach, kept with its reason:** `lsof` on the fixture's `events.jsonl` was the
+first containment check proposed here, and it is wrong. The bridge POLLS rather than
+holding the file open, so a single-instant probe returns nothing WHILE A WATCHER IS FULLY
+ACTIVE — a zero that means nothing, presented as containment. It could only ever return
+the reassuring answer. The census-with-an-in-range-control replaces it.
+
+**What the surface says about delivery — captured, not classified.** `say` prints
+`Sent to Telegram bridge (chat): …` from its own `printf` (ae:14485) after appending the
+event. The arm therefore captures that line's presence and bytes under an OPPOSED PAIR:
+once with NO in-range watcher at all (the census reporting zero, itself demonstrated
+against the control), and once with the controlled logging-only watcher of layer 3 in
+range — a process that reads the fixture's events file and writes to a local log, never to
+a network. The two captures sit beside the appended event bytes and the watcher's log.
+Nothing here states what that line means or should mean; the pair exists so a seat can see
+whether the surface's own report varies with whether anything is listening.
 
 **A-H4 name resolution grammar (SC-211p).** H5's colliding fixture, invoked through a
 helper that resolves and then refuses cheaply (`focus`).
