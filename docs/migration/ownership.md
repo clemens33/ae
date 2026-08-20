@@ -50,11 +50,16 @@ row, never a silent table entry.
 `ae_emit_event` / `_event_json_str`: one lock file (`events.jsonl.lock`, fd8), but the
 writer is **duplicated at 72c7293 with divergent failure semantics** (colead finding,
 lead-verified): `_lib` `ae_log_append` = `flock -w 5 || exit 1` (hard exit, ae:13174);
-`_spawn_emit_event` = `flock -w 5 && printf` with return 0 (silent event loss on timeout,
-ae:12113); an inline copy near retire (ae:12262); and `flock -w 15` variants (ae:6275,
-ae:17294). A #76-style duplicated-writer defect family + #75 flock dependency — per-writer
-IS rows, never one global row. In Rust this becomes ONE library primitive with ONE ruled
-failure semantic, inside each owning operation; never flips alone.
+`_spawn_emit_event` = `flock -w 5 && printf` with unconditional `return 0` (silent event
+loss on timeout, ae:12113); an inline copy near retire (ae:12262). (Correction from
+colead's citation audit: ae:6275/ae:17294 are NOT event writers — they are
+`.lifecycle.<name>.lock` acquisitions that merely reuse fd number 8; attributed under
+D17/D18/D22.) A #76-style duplicated-writer defect family + #75 flock dependency — per-writer
+IS rows, never one global row. In Rust this becomes ONE library primitive with one typed
+return contract (a `Result` — never process-exit, never silent success); what a caller
+DOES with a failed append stays a per-operation ruling (authoritative-event ops,
+audit-event-after-primary writes, and irreversible tmux delivery need different
+partial-success handling — that is where the SHOULD/DR rows land). Never flips alone.
 
 ### M2 — pre-dispatch config bootstrap (frozen #61; gate finding b29dac92, blocker 2)
 
@@ -62,9 +67,13 @@ failure semantic, inside each owning operation; never flips alone.
 every top-level dispatcher entry inherits on a config-less home (`list`, `status`,
 `next`, `help`, `version`, `archive preview`, `doctor`, …), not a list-local effect.
 Generated session helpers are explicitly OUTSIDE this path (measured contrast: `requests`
-does not bootstrap). Every dispatcher record below carries this effect implicitly until
-the intended P1 fix (reads never write; bootstrap moves to an explicit init path —
-contract row, bucket 3, #61).
+does not bootstrap). Atomicity (lead-verified, ae:344-352): `mkdir -p` + direct
+`printf > "$CONFIG_FILE"` — UNLOCKED, no temp+rename; crash residue is an absent or
+partially written config; the "Created default config" notice goes to stderr precisely
+because stdout is a contract for some commands (the code comment names `archive
+preview`). Every dispatcher record below carries this effect implicitly until the
+intended P1 fix (reads never write; bootstrap moves to an explicit init path — contract
+row, bucket 3, #61).
 
 ### M3 — executable-artifact publication chokepoint
 
@@ -143,6 +152,9 @@ consuming operation owns its own artifact publication and ports the chokepoint i
   body write, then event fd8
 - atomicity boundary: delivered-but-unlogged and body-without-event residues are real
   (#66 rows); unlocked read in `ae_find_request` can race an append
+- withdraw (named per citation audit): `_compact_cancel_outstanding` (ae:5958-5969)
+  delegates to send's external `ae:compact` path — fd8 event append ONLY; an append
+  timeout means the withdrawal was never recorded
 - current owner: bash
 - planned owner/fate: **rust at P2**
 
@@ -171,7 +183,9 @@ consuming operation owns its own artifact publication and ports the chokepoint i
   `state done` (once per emit)
 - atomicity boundary: the two appends are separate lock acquisitions — the `state` event
   can persist while the legacy `done` append times out (`flock -w 5 || exit 1`): torn
-  outcome, contract row candidate
+  outcome, contract row candidate. Also: the helper prints "Marked …" BEFORE its
+  authoritative append (success surface precedes the proof — completion-without-delivery
+  class; citation-audit finding)
 - current owner: bash
 - planned owner/fate: **rust at P2**
 
@@ -234,7 +248,9 @@ consuming operation owns its own artifact publication and ports the chokepoint i
   capture process (reconciliation)
 - locks (ordered): staging = none; reconciliation = meta.lock
 - atomicity boundary: staging file can exist unconsumed (process died between);
-  unlocked in-place staging write can be torn — contract row candidates
+  unlocked in-place staging write can be torn — contract row candidates. Full sequence
+  (citation audit): capture child REMOVES the staging file, then rewrites `agent.<slot>`
+  under meta.lock; the watchdog may later reconcile and emit a `recover` event
 - current owner: bash (both paths — the domain is the full transaction; it flips whole)
 - planned owner/fate: **rust at P2**
 
@@ -269,17 +285,22 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 - effects: meta entry, `workspace.md` manifest, tmux window/pane creation, launch script,
   brief delivery (readiness-gated), events
 - current writer/call path: `_cmd_spawn` / `helper_spawn_main`
-- locks (ordered): TBD
-- atomicity boundary: TBD (pane created but meta write fails → ?)
+- locks (ordered): TBD (meta lock; event via `_spawn_emit_event`)
+- atomicity boundary (citation-audit findings, verified): meta-lock timeout occurs AFTER
+  `tmux new-window` — an unregistered live pane with no rollback; `_spawn_emit_event`
+  swallows append failure (`return 0`, ae:12113-12114) — spawn can REPORT SUCCESS with no
+  event recorded (completion-without-delivery class). Both are contract row candidates
 - current owner: bash
 - planned owner/fate: **rust at P3**
 
 ### D16 — `retire`
 
-- effects: pane kill, meta removal, manifest update, events
+- effects: pane kill, meta removal, manifest update, events (inline writer, ae:12262)
 - current writer/call path: `helper_retire_main`
 - locks (ordered): TBD
-- atomicity boundary: TBD
+- atomicity boundary: event append failure returns NONZERO — but only after pane, meta,
+  and artifact mutations already landed (citation-audit finding): the operation fails
+  loudly yet leaves its effects
 - current owner: bash
 - planned owner/fate: **rust at P3**
 
@@ -289,7 +310,9 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
   ae-monitor window (`_monitor_ensure_events_pane`), worktree/copy creation, launch
   rollback (`rm -rf` of the validated name), archive inheritance
 - current writer/call path: launch family
-- locks (ordered): `.lifecycle.<name>.lock` + TBD
+- locks (ordered): `.lifecycle.<name>.lock` on fd 8 (NOT the event lock — fd number
+  reuse), `flock -w 15`, and **degrades to UNLOCKED with a one-line note when flock is
+  absent** (ae:17288-17298; #75 material) + TBD
 - atomicity boundary: rollback contract on failed launch — TBD
 - current owner: bash
 - planned owner/fate: **rust at P3 — OPEN-DESIGN, due at P3 entry (narrowed per gate
@@ -311,7 +334,8 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
   (MANDATORY on keep; ordering: after verified stop + git, before live-state removal;
   failed archive fails the end), session dir removal, tmux teardown, events
 - current writer/call path: `cmd_end`
-- locks (ordered): `.lifecycle.<name>.lock` + TBD
+- locks (ordered): `.lifecycle.<name>.lock` fd8 `flock -w 15`, degrade-to-unlocked
+  without flock (the ae:17288-17298 block names end explicitly) + TBD
 - atomicity boundary: archive-before-removal is the load-bearing promise (contract row)
 - current owner: bash
 - planned owner/fate: **rust at P3**
@@ -350,7 +374,8 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
   archive/digest and REFERENCED by the successor — never copied into the child's live
   memo), request-state disposition, events, predecessor teardown, successor launch
 - current writer/call path: `cmd_compact`
-- locks (ordered): TBD
+- locks (ordered): `.lifecycle.<name>.lock` fd8 `flock -w 15` at the
+  revalidate-after-confirmation boundary (ae:6272-6280) + TBD
 - atomicity boundary: TBD
 - current owner: bash
 - planned owner/fate: **rust at P3**
@@ -462,7 +487,9 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 
 ### D30b — python aemonitor (analytics)
 
-- effects / call path / locks / atomicity: TBD (optional sidecar, own process)
+- effects: writes its OWN state via fcntl `state.lock` + temp/`os.replace` (citation
+  audit) — a distinct writer, but on aemonitor-owned files outside ae's state; excluded
+  from the ae censuses by name, contrib census if ever needed
 - current owner: **python contrib**
 - planned owner/fate: **stays contrib indefinitely** (epic: optional analytics stay Python)
 

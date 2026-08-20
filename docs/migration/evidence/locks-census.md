@@ -2,8 +2,10 @@
 
 > Scope (lead note, 2026-08-20): this census covers the ten briefed helper/write-domain
 > operations only. Lifecycle (launch/end/stop/rename/transfer/compact), archive
-> publication, watchdog/telegram/steward controls and daemons, doctor/refresh, and
-> interrupt/focus are a SEPARATE census. Known fact already verified outside this file:
+> publication, watchdog/telegram/steward controls and daemons, doctor/refresh,
+> interrupt/focus, `_recover-pending`, request WITHDRAW (`_compact_cancel_outstanding`),
+> and the M2 pre-dispatch config bootstrap are a SEPARATE census (census-2); python
+> aemonitor's own state writer is excluded by name (contrib). Known fact already verified outside this file:
 > `helper_interrupt_main` holds target fd9 across its fd8 event append, diverging from
 > `send`'s release-fd9-first order.
 
