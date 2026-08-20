@@ -1,0 +1,6 @@
+⟦ae:msg from grok:grok⟧
+REQUEST ae-20260820T193502Z-e785ae92 from grok:grok: discriminator fixture question 1
+
+REQUIRED: When you have finished, you MUST run this exact command to reply:
+/tmp/aelx/L-DISCRIM/D2-counts-survive-a-cycle/h/.ae/sessions/p1/reply --as "grok:grok" "ae-20260820T193502Z-e785ae92" "<your reply>"
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

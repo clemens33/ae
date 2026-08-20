@@ -1,0 +1,1 @@
+iterations=1769 hits=3 window=40s

@@ -17,3 +17,4 @@ d27ca92a439d3f81f8eb117b7d5fe918db1c3425f046c8f77d890d1797a8f1f7  ../_admissibil
 4fe7b700172e8221a462c0220fca201246ad862b04303aaff20b7bb310c06c05  ../_admissibility/equiv-J-v4-inactive-rename.txt
 c73a2b0dc2d0e1445e1f1cb6787c77194d0470ab791d899d3d29ff21363dafa4  ../_admissibility/equiv-K-known-difference.txt
 1a97ad53572c02c816ca6fed92989e9de3bcb2bf1d78afa8e91f95b286b571af  ../_admissibility/equiv-K-ssh-rsync-shims.txt
+28ef0292066eca255c2322de2d76a8cede4d1be5655867e3b9bd48a9c73fdade  ../_admissibility/equiv-L-v5-inactive-stop.txt

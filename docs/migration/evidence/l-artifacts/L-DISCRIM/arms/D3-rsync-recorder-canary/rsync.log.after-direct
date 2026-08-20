@@ -1,0 +1,2 @@
+pid=90884 ppid=88090 argc=3 <-a> </tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/src/> </tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/dst/>
+pid=90899 ppid=90884 argc=12 <--server> <-g> <-l> <-o> <-p> <-D> <-r> <-t> <-W> <--dirs> <.> </tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/dst/>

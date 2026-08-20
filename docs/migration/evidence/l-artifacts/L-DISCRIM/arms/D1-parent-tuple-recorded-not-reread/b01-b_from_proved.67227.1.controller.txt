@@ -1,0 +1,4 @@
+controller.barrier	b_from_proved.67227.1
+controller.action	the parent archive directory is REPLACED, at the same id, by a second VALID archive whose counts are 5/3 instead of 2/1
+controller.replacement.source	/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/replacement/59fe7548-e865-4143-b629-870c6ec2ccba
+timing	after the launch has parsed its FIRST parent proof and before it publishes the child meta

@@ -1,0 +1,13 @@
+--- /tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/cap/b01-b_from_proved.67227.1.parent-meta.before-swap.txt	2026-08-20 21:35:47
++++ /tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/cap/b01-b_from_proved.67227.1.parent-meta.after-swap.txt	2026-08-20 21:35:50
+@@ -20,8 +20,8 @@
+ event_count=3
+ event_first_at=2026-08-20T19:35:41Z
+ event_last_at=2026-08-20T19:35:44Z
+-handover_count=2
++handover_count=5
+ memo_topic_count=1
+-pending_request_count=1
++pending_request_count=3
+ agent.main=grok:grok
+ agent_bin.main=grok

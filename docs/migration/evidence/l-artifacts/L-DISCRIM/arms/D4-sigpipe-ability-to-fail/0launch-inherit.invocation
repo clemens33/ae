@@ -1,0 +1,19 @@
+cwd: /tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/w
+argv:
+  /tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/b/ae
+  --local
+  cpinherit
+env:
+  HOME=/tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/h
+  AE_HOME=/tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/h/.ae
+  TMPDIR=/tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/tp
+  TMUX_TMPDIR=/tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/t
+  PATH=/tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/cap/tmux-argv.log

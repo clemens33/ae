@@ -1,0 +1,20 @@
+{
+  "mode": "inherit",
+  "disposition_set_by_harness": "(nothing set)",
+  "producer_argv": [
+    "/tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/b/ae",
+    "compact",
+    "-f",
+    "--digest-only",
+    "cpinherit"
+  ],
+  "consumer_read_first_line": "Archived 8d6b3ba2-257a-4deb-8aec-9165316bd822\n",
+  "consumer_closed_read_end_after": "one line",
+  "raw_wait_status": 256,
+  "producer_exited_normally": true,
+  "producer_exit_code": 1,
+  "producer_signalled": false,
+  "producer_term_signal": null,
+  "producer_term_signal_name": null,
+  "attribution_limit": "this harness set the disposition before exec, so this record reports what the HARNESS handed the producer, never what ae would have leaked"
+}

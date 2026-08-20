@@ -1,0 +1,17 @@
+compact: cpdfl (local) resolved and frozen.
+session: cpdfl
+uuid: baa43286-4ffb-4a5b-a098-21f4bc7b1548 (session)
+mode: local
+origin: /private/tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/w
+config: /tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/h/.ae/config
+conversation files: kept
+archive: /tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/h/.ae/archive/baa43286-4ffb-4a5b-a098-21f4bc7b1548
+compact: semantic handover skipped (--digest-only); the digest is the handover.
+Archived baa43286-4ffb-4a5b-a098-21f4bc7b1548
+  /tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/h/.ae/archive/baa43286-4ffb-4a5b-a098-21f4bc7b1548
+  4 file(s), 1963 byte(s)
+  kept agent conversation files (claude/codex token history; purge: ae end --purge-history)
+Cleaned up local session cpdfl
+Ended local session cpdfl
+Recovery: cd /private/tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/w && /tmp/aelx/L-DISCRIM/D4-sigpipe-ability-to-fail/b/ae --local cpdfl --from baa43286-4ffb-4a5b-a098-21f4bc7b1548
+Starting fresh session cpdfl from archive baa43286-4ffb-4a5b-a098-21f4bc7b1548...

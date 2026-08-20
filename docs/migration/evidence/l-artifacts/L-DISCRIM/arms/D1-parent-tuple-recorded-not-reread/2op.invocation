@@ -1,0 +1,25 @@
+cwd: /tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/w
+argv (bg):
+  /tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/b/ae
+  --local
+  child
+  --from
+  59fe7548-e865-4143-b629-870c6ec2ccba
+env:
+  HOME=/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/h
+  AE_HOME=/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/h/.ae
+  TMPDIR=/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/tp
+  TMUX_TMPDIR=/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/t
+  PATH=/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/cap/tmux-argv.log
+  AE_L_HOOKS=b_from_proved
+  AE_L_TRACE=/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/cap/hook-trace.tsv
+  AE_L_BLOCK=/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/ctl
+  AE_L_BLOCK_MAX=1800

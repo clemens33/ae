@@ -1,0 +1,2 @@
+# ancestor walk from pid 20573, taken WHILE IT WAS ALIVE
+0	

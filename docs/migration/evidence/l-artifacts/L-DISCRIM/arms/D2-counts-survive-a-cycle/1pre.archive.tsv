@@ -1,0 +1,10 @@
+# manifest-root	/tmp/aelx/L-DISCRIM/D2-counts-survive-a-cycle/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+03db6eac-da84-465d-901f-77431a222e1b	dir	700	7	224	-	-
+03db6eac-da84-465d-901f-77431a222e1b/digest.md	file	600	1	1886	-	7bcec46e1e7d7211f31b4abfc322e846c5e19a132fa716d4261a7c126aae7456
+03db6eac-da84-465d-901f-77431a222e1b/events.jsonl	file	600	1	651	-	2e380c0e3da94f7485c187e7eb9420a3c7602d3257a186a72b4f1270e33e7633
+03db6eac-da84-465d-901f-77431a222e1b/memo.tsv	file	600	1	158	-	fa3981d0bafe2bc671f747eddf6df24b2a9e5d4174f5e34534b3b6bea7822437
+03db6eac-da84-465d-901f-77431a222e1b/messages	dir	700	3	96	-	-
+03db6eac-da84-465d-901f-77431a222e1b/messages/ae-20260820T193502Z-e785ae92.ask.4RXNFP.txt	file	600	1	394	-	71406ddb1fd6ed527bedea433cb63d8440feac83e66bfcbfc82d8365185356c6
+03db6eac-da84-465d-901f-77431a222e1b/meta	file	600	1	692	-	9d985855d015096cc668783bde073898fdb84b75af219e2b252546b1299739fe

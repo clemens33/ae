@@ -1,0 +1,2 @@
+mutation	the archive handover and pending counts are set to 5 and 3 in BOTH meta and digest.md, so the tree stays internally consistent and the frozen validator still accepts it
+mode.preserved	yes (temp + chmod-to-original-mode + rename)

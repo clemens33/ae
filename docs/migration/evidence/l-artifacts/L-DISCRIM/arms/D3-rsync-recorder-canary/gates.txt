@@ -1,0 +1,16 @@
+# GATE 1 — the SSH probe, the frozen call shape (ae:_transfer_ssh_probe)
+ssh -o BatchMode=yes -o ConnectTimeout=5 <target> true
+result on this host, from the valid-name transfer above:
+ssh: Could not resolve hostname nosuchpeer.invalid: nodename nor servname provided, or not known
+Error: SSH probe to 'nosuchpeer.invalid' failed (check ssh config, keys, network)
+
+# GATE 2 — the local rsync capability gate, which the frozen code checks
+#          AFTER the probe and BEFORE any rsync invocation
+rsync --protect-args --version -> NOT SUPPORTED (rc 1)
+rsync --version, line 1: openrsync: protocol version 29
+
+# every rsync binary on this host
+  /usr/bin/rsync	openrsync: protocol version 29
+  /usr/local/bin/rsync	(absent)
+  /opt/homebrew/bin/rsync	(absent)
+  /opt/local/bin/rsync	(absent)

@@ -1,0 +1,12 @@
+arm	D4-sigpipe-ability-to-fail
+section	L-DISCRIM
+roster_ids	SC-504b discriminator
+exists_because	the existing SC-504b arm sets SIG_DFL in the child before exec, so its clean reading cannot be told apart from the harness having reset the disposition itself
+construction	the SAME capture is run three times against three deliberately different dispositions handed to the producer: SIG_DFL reset by the harness, SIG_IGN LEAKED by the harness, and nothing set at all
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+leaked_ign_detected	YES
+dfl.exit_code	141
+ign.exit_code	1
+ATTRIBUTION LIMIT, stated	the harness sets the disposition before exec in the dfl and ign runs, so those runs report what the HARNESS handed the producer. They demonstrate the capture CAN fail — a leaked SIG_IGN is detected — but they cannot separate 'ae leaked nothing' from 'the harness reset it first'. Reading a live process's ignored-signal mask is what would separate them, and macOS has no /proc equivalent for it, so this construction cannot answer that question on this platform. That is the finding, not a clean result.
+OBSERVATION	disposition-table.txt is generated from the three records. No verdict is stated here.

@@ -1,0 +1,14 @@
+arm	D5a-supervisor-real-timing
+section	L-DISCRIM
+roster_ids	SC-835e-h discriminator, real-timing half
+exists_because	the existing self-stop artifact is a post-hoc snapshot byte-identical to 3post.ps.txt, so it shows no supervisor at all while its ARM.txt asserts supervisor_observed=yes
+construction	a dedicated sampler process running pgrep -f with NO sleep is started BEFORE the implicit self-stop is typed into a shell pane inside the session; every sighting is recorded with the full argv row, and the achieved sampling rate is recorded too
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+sampler_rate	iterations=1769 hits=3 window=40s
+supervisor_hits	3
+supervisor_first_pid	20573
+caught_alive	YES
+self_stop_route_ran	Stopping 's1' out of pane; this pane will close.
+OBSERVATION	supervisor-samples.txt, sampler-rate.txt, stop.stdout and stop-results.txt. No verdict is stated here.
+superseded_attempt	a first version of this arm sampled with `ps -ax` + two greps at a 50ms sleep and recorded ZERO sightings across 600 iterations, while the same run's stop-results.txt showed the supervisor had done its work. The directory is not kept — it measured the sampler, not the product. Replacing the forked `ps -ax` pipeline with a `pgrep -f` loop carrying NO sleep raised the achieved rate to the figure in sampler_rate and caught it. The sampling METHOD, not the supervisor, was the variable.

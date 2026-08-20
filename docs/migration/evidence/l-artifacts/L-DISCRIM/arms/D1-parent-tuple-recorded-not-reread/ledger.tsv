@@ -1,0 +1,15 @@
+2026-08-20T19:35:33Z	setup	arm	D1
+2026-08-20T19:35:40Z	fixture	planted.pane	%3
+2026-08-20T19:35:40Z	fixture	agent.ref	grok:grok
+2026-08-20T19:35:49Z	fixture	parent.uuid	59fe7548-e865-4143-b629-870c6ec2ccba
+2026-08-20T19:35:49Z	fixture	parent.handover_count	2
+2026-08-20T19:35:49Z	fixture	parent.pending_request_count	1
+2026-08-20T19:35:49Z	fixture	counts.nonzero	YES
+2026-08-20T19:35:49Z	fixture	counts.distinct	YES
+2026-08-20T19:35:55Z	control	replacement.readable.handover	5
+2026-08-20T19:35:55Z	control	replacement.readable.pending	3
+2026-08-20T19:35:55Z	control	replacement.accepted	YES
+2026-08-20T19:35:56Z	swap	barrier	b_from_proved.67227.1
+2026-08-20T19:35:56Z	swap	replacement.counts	handover=5 pending=3
+2026-08-20T19:36:02Z	measure	child.handover_count	2
+2026-08-20T19:36:02Z	measure	child.pending_count	1

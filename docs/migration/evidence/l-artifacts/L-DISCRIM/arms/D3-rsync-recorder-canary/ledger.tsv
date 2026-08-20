@@ -1,0 +1,8 @@
+2026-08-20T19:38:18Z	setup	arm	D3
+2026-08-20T19:38:30Z	recorder	direct.rsync.rc	0
+2026-08-20T19:38:30Z	recorder	direct.rsync.invocations	2
+2026-08-20T19:38:30Z	recorder	direct.note	a DIRECT rsync invocation, not the ae path; it answers only whether the recorder records
+2026-08-20T19:38:30Z	reach	valid-name.rc	1
+2026-08-20T19:38:30Z	reach	valid-name.ssh.invocations	1
+2026-08-20T19:38:30Z	reach	valid-name.rsync.invocations	0
+2026-08-20T19:38:31Z	canary	result	NOT AVAILABLE — see ARM-INVALID.txt; the finding is the unreachability, not a zero

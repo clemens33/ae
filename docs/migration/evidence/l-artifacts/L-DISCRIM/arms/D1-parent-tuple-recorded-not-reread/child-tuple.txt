@@ -1,0 +1,32 @@
+# the child recorded lineage tuple, BY EXACT KEY, from /tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/h/.ae/sessions/child/meta
+4:session_id=15ae99eb-e3e1-4527-ab13-b35ad6a0ff63
+15:parent_archive_id=59fe7548-e865-4143-b629-870c6ec2ccba
+16:parent_archive_handover_count=2
+17:parent_archive_pending_count=1
+
+# od of each lineage line
+0000000    p   a   r   e   n   t   _   a   r   c   h   i   v   e   _   h
+0000020    a   n   d   o   v   e   r   _   c   o   u   n   t   =   2  \n
+0000040    p   a   r   e   n   t   _   a   r   c   h   i   v   e   _   p
+0000060    e   n   d   i   n   g   _   c   o   u   n   t   =   1  \n    
+0000077
+
+# the whole meta, verbatim
+mode=local
+origin=/private/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/w
+session=child
+session_id=15ae99eb-e3e1-4527-ab13-b35ad6a0ff63
+work_dir=/private/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/w
+layout=vertical
+config=/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-DISCRIM/D1-parent-tuple-recorded-not-reread/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=grok:grok:cb9c298c-25bc-4380-b394-f0b724dc3db5
+agent_bin.main=grok
+parent_archive_id=59fe7548-e865-4143-b629-870c6ec2ccba
+parent_archive_handover_count=2
+parent_archive_pending_count=1
+watchdog=true

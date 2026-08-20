@@ -1,0 +1,80 @@
+pid=88159 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <tf1>
+pid=88191 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <tf1> <-c> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/w>
+pid=88195 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <-u> <CLAUDECODE>
+pid=88197 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <-u> <CLAUDE_CODE_SESSION>
+pid=88198 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <AE_SESSION> <1>
+pid=88203 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <AE_ORIGIN> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/w>
+pid=88210 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <AE_DIR> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/w>
+pid=88216 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <AE_MODE> <local>
+pid=88226 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <AE_HOME> </tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/h/.ae>
+pid=88231 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <tf1> <mouse> <on>
+pid=88241 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <tf1> <focus-events> <on>
+pid=88246 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <tf1> <history-limit> <50000>
+pid=88255 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <tf1> <pane-border-status> <top>
+pid=88261 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <tf1> <pane-border-format> < #{@ae_agent} >
+pid=88262 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <tf1>
+pid=88270 ppid=88267 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=88280 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae tf1] >
+pid=88284 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=88292 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…lx/L-DISCRIM/D3-rsync-recorder-canary/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=88294 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=88301 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=88304 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=88312 ppid=88311 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=88317 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=88322 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=88324 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=88335 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=88342 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <tf1> <automatic-rename> <off>
+pid=88349 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <tf1> <tf1>
+pid=88353 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <tf1> <-p> <#{pane_id}>
+pid=88355 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:grok:grok>
+pid=88357 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <grok:grok>
+pid=88358 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=88376 ppid=88375 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=88550 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id}	#{@ae_agent}>
+pid=88588 ppid=88586 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=88817 ppid=88816 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=88819 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-88151-%0> <->
+pid=88820 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-88151-%0> <-t> <%0>
+pid=88836 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=89678 ppid=89676 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id} #{@ae_agent}>
+pid=89690 ppid=89689 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <new-window> <-d> <-t> <tf1:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/h/.ae/sessions/tf1/events-tail>
+pid=89706 ppid=88851 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=89721 ppid=88851 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=89737 ppid=88851 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <set-window-option> <-t> <tf1:ae-monitor> <pane-border-status> <top>
+pid=89752 ppid=88851 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=89856 ppid=89853 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id} #{@ae_agent}>
+pid=89876 ppid=89873 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id} #{@ae_agent}>
+pid=89901 ppid=89898 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id} #{@ae_agent}>
+pid=89914 ppid=89912 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/h/.ae/sessions/tf1/watchdog _run>
+pid=89926 ppid=89776 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=89936 ppid=89776 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=89980 ppid=89978 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S>pid=89958 ppid=89776 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-sessions> <-S> <-F> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <#{session_id} #{session_name}> <select-pane>
+ <-t> <%2> <-d>
+pid=90001 ppid=89923 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=90009 ppid=88151 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%0>
+pid=88151 ppid=88090 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session> <-t> <tf1>
+pid=90037 ppid=90035 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=90038 ppid=90013 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=90046 ppid=90044 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=90047 ppid=89923 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=90048 ppid=89923 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <has-session> <-t> <tf1>
+pid=90054 ppid=89923 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=90056 ppid=90055 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=90059 ppid=90058 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=90090 ppid=90088 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=90091 ppid=89923 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=90104 ppid=90102 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=90105 ppid=90092 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=90113 ppid=90111 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=90114 ppid=89923 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=90125 ppid=90123 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=90126 ppid=89923 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <grok●>
+pid=90131 ppid=90130 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=90133 ppid=89923 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=90134 ppid=89923 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=90236 ppid=90223 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=90271 ppid=90200 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <kill-session> <-t> <$0>
+pid=90307 ppid=90289 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5pid=90311 ppid=90309 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <-S> <list-sessions> </private/tmp/aelx/L-DISCRIM/D3-rsync-recorder-canary/t/tmux-501/default> <-F> <list-sessions> <#{session_name}> <-F>
+ <#{session_id} #{session_name}>

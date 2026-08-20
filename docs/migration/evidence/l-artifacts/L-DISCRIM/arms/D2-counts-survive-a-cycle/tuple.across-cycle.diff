@@ -1,0 +1,23 @@
+--- /tmp/aelx/L-DISCRIM/D2-counts-survive-a-cycle/cap/tuple.1after-from.txt	2026-08-20 21:35:14
++++ /tmp/aelx/L-DISCRIM/D2-counts-survive-a-cycle/cap/tuple.3after-resume.txt	2026-08-20 21:35:23
+@@ -1,8 +1,8 @@
+ # the child recorded lineage tuple, BY EXACT KEY, from /tmp/aelx/L-DISCRIM/D2-counts-survive-a-cycle/h/.ae/sessions/child/meta
+ 4:session_id=d5097489-a6fd-45b0-b374-1898fff585e4
+-15:parent_archive_id=03db6eac-da84-465d-901f-77431a222e1b
+-16:parent_archive_handover_count=2
+-17:parent_archive_pending_count=1
++16:parent_archive_id=03db6eac-da84-465d-901f-77431a222e1b
++17:parent_archive_handover_count=2
++18:parent_archive_pending_count=1
+ 
+ # od of each lineage line
+ 0000000    p   a   r   e   n   t   _   a   r   c   h   i   v   e   _   h
+@@ -26,7 +26,7 @@
+ tmux_server_kind=socket
+ agent.main=grok:grok:11ddfd5f-d354-4b16-8668-b04ff19d4ac8
+ agent_bin.main=grok
++watchdog=true
+ parent_archive_id=03db6eac-da84-465d-901f-77431a222e1b
+ parent_archive_handover_count=2
+ parent_archive_pending_count=1
+-watchdog=true

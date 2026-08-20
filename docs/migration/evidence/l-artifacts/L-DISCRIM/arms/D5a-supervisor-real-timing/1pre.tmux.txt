@@ -1,0 +1,14 @@
+## socket	/tmp/aelx/L-DISCRIM/D5a-supervisor-real-timing/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|s1|3|0|1787255209
+## windows
+s1|@0|0|s1|1
+s1|@2|1|bash|1
+s1|@1|99|ae-monitor|2
+## panes
+s1|@0|%0|18417|grok|grok:grok|main|0
+s1|@2|%3|19582|bash|||0
+s1|@1|%2|18983|bash|_watchdog||0
+s1|@1|%1|18819|bash|_events||0
+## clients
