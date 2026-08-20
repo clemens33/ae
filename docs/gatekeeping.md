@@ -283,6 +283,47 @@ That is a difference in instrument design, not in care.
   see a child that lived only between the samples. Census the long-lived ROOTS instead —
   reach is inherited across fork, so a child cannot reach what its parent cannot.
 
+### The vacuity regress — every layer can be blind, independently
+
+The hardest lesson of the cluster, because each fix looks like the end of the problem.
+
+A guard proves a property. A **red-proof** proves the guard can fail. But the red-proof is
+itself code, and it can be vacuous in its own right — and **fixing layer N does not validate
+layer N+1.** Three instances, each found after the previous had been fixed:
+
+1. A capability guard that enumerated forbidden spellings — beaten four times in sequence,
+   each fix correct and narrower than it looked.
+2. A red-proof that computed `ok` from its red arms, PRINTED it, and exited on failures
+   only — so a blind arm returned `0` and the whole red-proof reported success.
+3. Six red arms comparing a 2-tuple against a 3-tuple: `eq = pairs(v) == census_pairs(c)`,
+   where one returns `(set, duplicates)` and the other `(set, duplicates, scope_errors)`.
+   A 2-tuple never equals a 3-tuple, so `not eq` was always true, so **`caught` was
+   unconditionally `YES` for every arm** — six red-proofs that could not fail, reporting
+   perfect coverage.
+
+The third is the purest form: a check whose entire job is proving something CAN fail, which
+itself could not.
+
+**The regress does not terminate by adding another layer.** It terminates with one cheap,
+concrete assertion:
+
+> **Every red arm must be shown to report NO at least once.**
+
+Invert one injection — run the arm against an UNMODIFIED input — and require `caught=NO`.
+A red-proof set in which no arm has ever reported `NO` is indistinguishable from one that
+is structurally incapable of it. That single control is what separates "these six arms all
+pass" from "these six arms are wired to a constant."
+
+The same shape appears wherever a checker writes what it reads: a `--check` mode that
+**regenerates its output before comparing against it** compares the file to itself. An empty
+stale artifact returned `rc 0` and was silently overwritten by the very run meant to detect
+it. **A verifier must not be able to repair the thing it is verifying.**
+
+And when an injection harness reports a pass, confirm the injection actually LANDED: one
+column-drop arm anchored on a pre-change row, corrupted the original, and passed anyway
+because the generator's `rc 2` was never inspected. A red arm that passes because the
+generator crashed is a red arm that tested nothing.
+
 ### A tool that makes a check CHEAP is not a tool that PERFORMS it
 
 The most easily forgotten limit, recorded because it is invisible once a tool reports
