@@ -718,8 +718,10 @@ closed by process exit, while the lock-file path created by redirection remains 
 - generated telegram DAEMON `acquire_lock`: UNGUARDED `flock -n` (ae:10177-10185) —
   with flock ABSENT the failed command is logged as the FALSE diagnosis "another daemon
   already running" and the daemon exits 1 (ae:10225-10228), AFTER start already
-  persisted `enabled=true`, published the artifact, created the tmux session, passed
-  its presence check, and reported started (distinct partial-success row; lead-verified).
+  persisted `enabled=true`, published the artifact, and created the tmux session — and
+  start CAN then pass its presence recheck and report started (the daemon's failure is
+  asynchronous with the recheck: a race, not a deterministic ordering — colead precision
+  note). Distinct partial-success row; lead-verified.
 - aewatch: fcntl is mandatory; its event timeout drops and continues (contrib census
   pending).
 

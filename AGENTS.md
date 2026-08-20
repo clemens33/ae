@@ -312,20 +312,22 @@ The bootstrap contract, in full — nothing else is assumed to exist:
 
 **`rustup` + `just` installed → `just rust-setup` → `just rust-check` green.**
 
-- `rust-setup` is idempotent, and the workflow is **configured to assert it**: a second run
-  that installs anything fails the build. Idempotence is an acceptance criterion, not a
-  courtesy.
+- `rust-setup` is idempotent, and the workflow **asserts it** (proven, run 32350969851): a
+  second run that installs anything fails the build. Idempotence is an acceptance
+  criterion, not a courtesy.
 - **`.cargo/config.toml` must hold on a bare clone.** No sccache, no alternative linker, no
   brew. `build.rustc-wrapper` becomes a hard requirement the moment it is written — a clone
   without sccache then fails to build. Machine-local speedups belong in
   `~/.cargo/config.toml`, which cargo merges on top.
-- CI (`.github/workflows/rust.yml`) is **configured** to run that contract on `ubuntu-24.04`
-  and `macos-15` — pinned runner images, not `-latest`, for the same reason the compiler is
+- CI (`.github/workflows/rust.yml`) **runs that contract** on `ubuntu-24.04` and
+  `macos-15` — pinned runner images, not `-latest`, for the same reason the compiler is
   pinned — with `fail-fast: false` so one platform's failure cannot cancel the other's
   evidence. Actions are first-party and SHA-pinned, version in a trailing comment.
-- **No CI run has executed on this branch yet.** Every CI statement in this section
-  describes *configuration*, not an observed result. Upgrade this wording only against a
-  green run, and name the run when you do.
+- **Proven by run 32350969851 (2026-08-20, green on both platforms):** bootstrap contract,
+  idempotence assert, all lanes, native `ae --version` + exit-code proof on real
+  x86_64 Linux and arm64 macOS, and the **static musl binary built, run, and asserted
+  static on Linux** (artifact `ae-linux-x86_64-musl`) — the musl target links on stock
+  `ubuntu-24.04` with no extra packages.
 - The bash-era lanes are deliberately **not** wired there yet (blocked on the gate-integrity
   issues #58/#67); adding them now would publish a red badge for a known, separately-tracked
   gap.
@@ -358,7 +360,7 @@ The bootstrap contract, in full — nothing else is assumed to exist:
   where recovery or semantics differ. A single crate-wide enum is a default, not law.
 - **Exit codes are contract.** `0` success, `2` usage error — kept distinct from `1` so a
   caller can tell "you asked wrong" from "it went wrong". The workflow asserts them on both
-  platforms (configured; first run still pending).
+  platforms (proven, run 32350969851).
 
 ### Deferred, with the trigger recorded
 
