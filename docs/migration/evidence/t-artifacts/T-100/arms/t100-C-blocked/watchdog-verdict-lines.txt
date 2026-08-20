@@ -1,0 +1,33 @@
+# the watchdog own log for the observed agent, from its _watchdog pane
+[19:20:09]   grok:grok  active (pane hash changed)
+[19:20:15]   grok:grok  active (pane hash changed)
+[19:20:21]   grok:grok  blocked (declared) — skip
+[19:20:26]   grok:grok  active (pane hash changed)
+[19:20:31]   grok:grok  recently visible (5s ago) — skip
+[19:20:37]   grok:grok  recently visible (11s ago) — skip
+[19:20:42]   grok:grok  recently visible (16s ago) — skip
+[19:20:47]   grok:grok  recently visible (21s ago) — skip
+[19:20:52]   grok:grok  recently visible (26s ago) — skip
+[19:20:58]   grok:grok  recently visible (32s ago) — skip
+[19:21:03]   grok:grok  recently visible (37s ago) — skip
+[19:21:08]   grok:grok  recently visible (42s ago) — skip
+[19:21:14]   grok:grok  recently visible (47s ago) — skip
+[19:21:19]   grok:grok  recently visible (53s ago) — skip
+[19:21:24]   grok:grok  recently visible (58s ago) — skip
+[19:21:30]   grok:grok  STALE (idle 1m) — nudged (1/2)
+[19:21:36]   grok:grok  STALE (idle 1m) — nudged (2/2)
+[19:21:42]   grok:grok  STALE — max nudges reached, alert raised
+[19:21:47]   grok:grok  STALE — already alerted, waiting for activity
+[19:21:52]   grok:grok  STALE — already alerted, waiting for activity
+[19:21:58]   grok:grok  STALE — already alerted, waiting for activity
+[19:22:03]   grok:grok  STALE — already alerted, waiting for activity
+[19:22:08]   grok:grok  STALE — already alerted, waiting for activity
+[19:22:14]   grok:grok  STALE — already alerted, waiting for activity
+[19:22:19]   grok:grok  STALE — already alerted, waiting for activity
+[19:22:24]   grok:grok  STALE — already alerted, waiting for activity
+[19:22:29]   grok:grok  STALE — already alerted, waiting for activity
+[19:22:35]   grok:grok  STALE — already alerted, waiting for activity
+[19:22:40]   grok:grok  STALE — already alerted, waiting for activity
+[19:22:45]   grok:grok  STALE — already alerted, waiting for activity
+[19:22:51]   grok:grok  STALE — already alerted, waiting for activity
+[19:22:56]   grok:grok  STALE — already alerted, waiting for activity

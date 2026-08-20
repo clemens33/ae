@@ -1,0 +1,12 @@
+write.label	ctl
+write.tty	/dev/ttys028
+write.text	INSTRUMENT-CONTROL-MARKER-82841
+write.label	yield
+write.tty	/dev/ttys028
+write.text	FORCED-INITIAL-YIELD-MARKER-82841
+write.label	declaration-echo
+write.tty	/dev/ttys028
+write.text	Marked grok:grok waiting-user: T-100 arm C
+write.label	unowned
+write.tty	/dev/ttys028
+write.text	HUMAN-TYPED-REPLY: yes, go ahead with option two.

@@ -13,7 +13,9 @@ a sandbox-only config. The transport-dependent rows were **not run and nothing w
 substituted for them**.
 
 Grain requirements carried forward, all four honoured. Added this section:
-5. **A zero is only a measurement if the recorder was demonstrated live in the same arm.**
+5. **A zero is only a measurement if THE RECORDER THAT REPORTS IT was demonstrated live in
+   the same arm** — not merely *a* recorder. SC-814 proved its ssh recorder and inherited
+   an unproven rsync one; the wording had to be tightened after colead found it.
 6. **A capture's claim is read from the artifact, never from the producer's summary.**
 
 ---
@@ -54,11 +56,29 @@ an embedded sentinel, scanned recursively across the sandbox before and after.
 The ssh and rsync shims are delegate-and-log with argv passed through UNCHANGED, proven by
 equiv-K (NO_DIFFERENCES) against a control (DIFFERENCES_PRESENT).
 
-**This is the section's model of how to measure an absence.** The recorder was
-demonstrated working, in the same arm, minutes before it reported nothing — so the zero is
-a measurement and not an absence. Compare SC-835f and SC-835g in L-STOP, where an absent
-file and a post-hoc snapshot had to stand in for observations.
-**CONFIRMED.**
+**RULED: COMPOSITE — and my praise of this arm was itself the overclaim** (colead's
+finding, verified). I called it "the section's model of how to measure an absence". **The
+canary is HALF a canary.** `shim-invocations.2after-canary.txt` records
+`ssh.log.exists yes / ssh.log.lines 1` but **`rsync.log.exists no / rsync.log.lines 0`**:
+the valid-name transfer died at the SSH probe (`canary_rc 1`, probing
+`nosuchpeer.invalid`) and **never reached rsync**. So the rsync recorder was never
+demonstrated live, and `rsync_invocations 0` in the measurement is an ABSENCE — a dead
+rsync recorder produces the identical zero.
+The zero-byte `AE_HOME` diff has the SC-823 problem too: it proves **no residue**, not
+temporal **no-mkdir / no-path-construction**. Create-then-remove passes it.
+**What the arms DO prove, directly:** hostile-name refusal (rc=1, both directions, both
+shapes, `od`-exact), **no SSH invocation** — that recorder WAS demonstrated — and no
+durable residue.
+**What frozen source proves:** ae:11184-11188 runs `_validate_session_name` then
+`_require_session_path_safe`, under a comment stating validation happens *"BEFORE any path
+is built, any SSH probe fires, anything is stopped, and — decisively — before the pull
+path's `mkdir -p` + `rsync --delete` and the push path's remote create."* That is the
+temporal half.
+**CONFIRMED AS COMPOSITE.** A direct-only confirmation would need a live **rsync** recorder
+canary and a writer barrier.
+*Harness note:* `rentrans-814.sh` lines 16-17 emit `printf: --: invalid option` into the
+capture. Noise, not corruption — the `label`/`exists`/`lines` fields are intact — but it
+should be fixed before this protocol is reused.
 
 ## SC-832a — rename's effect set
 
@@ -109,20 +129,44 @@ Three facts fall out, and only the first is invariant:
 3. **There is a real intermediate disagreement on disk**: at `b_rn_dir_moved` the
    directory is `sessions/proj2/` while its meta still says `session=proj`.
 
-**PROPOSED SEAT CLOSURE, at one-invariant grain — colead's concurrence required, as with
-SC-1305:**
+**RULED: BUCKET 3 — fix-known-defect(#103). My proposed closure was WITHDRAWN after
+colead's dissent, and they were right.**
 
-> *"Throughout a rename, a concurrent observer sees the session exactly ONCE and
-> continuously running — never absent, never under both names at the same time. Which name
-> is reported MAY be the old or the new one depending on when the observer looks, and the
-> on-disk directory name and the meta `session=` key MAY briefly disagree. Neither
-> transitional state is required."*
+*What I proposed and why it was wrong.* I wrote a bucket-1 closure permitting the
+disagreement: *"the on-disk directory name and the meta `session=` key MAY briefly
+disagree."* That is **measurement editing the contract** — I observed bash leaving
+`sessions/proj2/` holding `session=proj` and wrote it into the SHOULD as permitted. The
+`MAY` felt safe because it permits rather than requires, but **permitting a hole is still
+writing the hole into the contract**, and I did not see it because the permissive
+formulation was the one I had been rewarding all day (SC-1305, SC-835d). A formulation
+that is right in one place is not a licence.
+Colead's decisive argument: it would have **blessed D20's atomicity hole**. If mixed
+generations are contractually fine, a crash between the tmux rename and the meta rewrite
+leaves a session that is *legitimately* un-findable, and the P3 Rust owner inherits no
+requirement to do better.
+No DR is required: a DR would be needed to rule mixed generations ACCEPTABLE. They are
+ruled a DEFECT, and bucket 3 is the home for a SHOULD the incumbent violates — SC-1302/#75
+is the precedent three rows away.
 
-`MAY`, not `does`: permitted, not required — an implementation that renames atomically
-also satisfies this. The tmux-first ordering and the directory/meta window stay **empirical
-mechanism**, outside the claim. Bucket 1 on closure; authority joint seat ruling grounded
-in the rename effect set; conflict none.
-**Until colead concurs this stays UNCLASSIFIED.**
+**The adopted SHOULD, with colead's scope precision:** every **product reader or
+operation** takes ONE COHERENT LOGICAL SNAPSHOT of the identity generation — old or new,
+never mixed. Deliberately **not** "every external reader": tmux and four filesystem facts
+live in different stores and cannot be made atomic against an arbitrary lock-free reader
+that does not participate in the protocol, and a SHOULD requiring the impossible is
+untestable. **Live-reader linearizability lives here; crash recovery and rollback
+semantics belong to SC-832c and D20.**
+
+**Note what the evidence actually says**, because it supports colead more than it supported
+me: `ae list` — the product's own reader — was COHERENT at all four cuts. The violation is
+visible only to a direct filesystem reader. That makes the mixed window a **defect
+observation**, not a permission, which is the reverse of how I framed it.
+
+**Landed in the contract; filed as #103.** Two related items travel with it: **D20**
+(`ownership.md:422`) recorded the crash family BACKWARDS — *"dir moved but tmux rename
+fails"* cannot occur, since tmux renames first (ae:11635) and the directory moves second
+(ae:11650); corrected in the same pass. And the pre-existing **SC-832c** ("rename crash
+cuts") is the crash-side view of this same window — flagged for seat closure alongside
+#103, **not closed here**.
 
 ## SC-1302 — a session name's lifecycle operations serialize on one lock
 
@@ -195,14 +239,28 @@ seat closures even with captures in hand.
 
 ---
 
-## Dispositions
+## Dispositions — POST-GATE
 
-- **CONFIRMED — 2**: SC-814, SC-832a.
-- **PARTIAL — 1**: SC-1302 (transfer cells not run; bucket-3 row unchanged).
-- **SEAT CLOSURE PROPOSED, pending colead — 1**: SC-1303.
-- **NOT RUN, UNCLASSIFIED — 5**: SC-833a, SC-1304a, SC-1304b, SC-1304c, SC-1304d.
+*Colead's read moved two of the four live rows, including one where my own praise was the
+overclaim. Conditional pass granted after these corrections; no rerun required.*
+
+- **CONFIRMED AS COMPOSITE — 2**: SC-814 (arms prove hostile-name refusal, no SSH, no
+  residue; frozen ae:11184-11188 proves the temporal path/mkdir/rsync halves),
+  SC-832a (independently re-read by colead — no finding; the pid/socket/exact-id liveness
+  observation IS fail-capable and is *not* SC-823's overclaim class).
+- **BUCKET 3, fix-known-defect(#103) — 1**: SC-1303, scoped to product readers, with crash
+  semantics delegated to SC-832c/D20.
+- **PARTIAL — 1**: SC-1302. Table independently verified by colead from all four
+  ARM/rc/stdout/stderr/final-state files; PARTIAL is correct because the transfer cells did
+  not run. Bucket-3 row untouched.
+- **NOT RUN, UNCLASSIFIED — 5**: SC-833a, SC-1304a-d.
 
 **Section total: 9.** No INCONCLUSIVE arms, no ARM-INVALID.
+
+**New contract rows from #102** (colead's grain, ids corrected to avoid collision with the
+existing SC-832b/c placeholders): **SC-832d** — rename addresses its SOURCE by recorded
+server and exact live session id; **SC-832e** — rename's DESTINATION occupancy check is an
+exact-name check. Both bucket 3, fix-known-defect(#102). SC-1302 and SC-832a untouched.
 
 ## What this section changed about how we read rows
 

@@ -1,0 +1,5 @@
+plant.reason	the frozen state helper resolves the declaring agent from the CURRENT PANE; a controller process needs a pane it accepts
+plant.source_pane	%0 (@ae_agent=grok:grok @ae_slot=main)
+plant.new_pane	%3
+plant.window	a SEPARATE window, so the AGENT pane under observation is never written to by the plant
+plant.not_changed	the agent pane, its process, and every file under AE_HOME

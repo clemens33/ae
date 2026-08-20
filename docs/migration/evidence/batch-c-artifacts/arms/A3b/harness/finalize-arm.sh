@@ -24,7 +24,7 @@ cp "$S/harness/finalize-arm.sh" "$DEST/harness/"
       "$(find "$d" -type f | wc -l | tr -d ' ')"
   done
 } > "$DEST/CASES.tsv"
-( cd "$DEST" && find . -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 shasum -a 256 ) > /tmp/aecx/asums && mv /tmp/aecx/asums "$DEST/SHA256SUMS.txt"
+"$S/harness/write-sums.sh" "$DEST"
 echo "$ARM finalized: $(find "$DEST" -type f | wc -l | tr -d ' ') files, $(du -sh "$DEST" | cut -f1)"
 echo "  admissibility artifacts: ledgers=$(find "$DEST" -name admissibility-ledger.txt | wc -l | tr -d ' ') tab-selfchecks=$(find "$DEST" -name env-tab-selfcheck.txt | wc -l | tr -d ' ') shim-equiv=$(find "$DEST" -name tmux-shim-equivalence.txt | wc -l | tr -d ' ') tmuxtraces=$(find "$DEST" -name '*.tmuxtrace' | wc -l | tr -d ' ')"
 echo "  in SHA256SUMS: $(grep -c 'admissibility-ledger.txt' "$DEST/SHA256SUMS.txt") ledger lines, $(grep -c 'env-tab-selfcheck.txt' "$DEST/SHA256SUMS.txt") selfcheck lines, $(grep -c 'tmuxtrace' "$DEST/SHA256SUMS.txt") trace lines"

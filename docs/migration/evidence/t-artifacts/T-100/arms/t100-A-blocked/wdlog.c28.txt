@@ -1,0 +1,64 @@
+╭─ ae watchdog — session: t1 ─────────────────────────╮
+│ interval: 5s   stale: 1m   max nudges: 2
+│ read-only pane (input disabled). use peek _watchdog or stop with `watchdog stop`.
+╰────────────────────────────────────────────────────────╯
+
+[19:11:09] ── cycle 1 ──
+[19:11:09]   grok:grok  active (pane hash changed)
+[19:11:14] ── cycle 2 ──
+[19:11:14]   grok:grok  active (pane hash changed)
+[19:11:19] ── cycle 3 ──
+[19:11:20]   grok:grok  blocked (declared) — skip
+[19:11:26] ── cycle 4 ──
+[19:11:26]   grok:grok  blocked (declared) — skip
+[19:11:31] ── cycle 5 ──
+[19:11:31]   grok:grok  blocked (declared) — skip
+[19:11:36] ── cycle 6 ──
+[19:11:36]   grok:grok  blocked (declared) — skip
+[19:11:42] ── cycle 7 ──
+[19:11:42]   grok:grok  blocked (declared) — skip
+[19:11:47] ── cycle 8 ──
+[19:11:47]   grok:grok  blocked (declared) — skip
+[19:11:52] ── cycle 9 ──
+[19:11:52]   grok:grok  blocked (declared) — skip
+[19:11:58] ── cycle 10 ──
+[19:11:58]   grok:grok  blocked (declared) — skip
+[19:12:03] ── cycle 11 ──
+[19:12:03]   grok:grok  blocked (declared) — skip
+[19:12:08] ── cycle 12 ──
+[19:12:08]   grok:grok  blocked (declared) — skip
+[19:12:13] ── cycle 13 ──
+[19:12:13]   grok:grok  blocked (declared) — skip
+[19:12:19] ── cycle 14 ──
+[19:12:19]   grok:grok  blocked (declared) — skip
+[19:12:24] ── cycle 15 ──
+[19:12:24]   grok:grok  blocked (declared) — skip
+[19:12:29] ── cycle 16 ──
+[19:12:30]   grok:grok  blocked (declared) — skip
+[19:12:35] ── cycle 17 ──
+[19:12:35]   grok:grok  blocked (declared) — skip
+[19:12:40] ── cycle 18 ──
+[19:12:40]   grok:grok  blocked (declared) — skip
+[19:12:45] ── cycle 19 ──
+[19:12:45]   grok:grok  blocked (declared) — skip
+[19:12:51] ── cycle 20 ──
+[19:12:51]   grok:grok  blocked (declared) — skip
+[19:12:56] ── cycle 21 ──
+[19:12:56]   grok:grok  blocked (declared) — skip
+[19:13:01] ── cycle 22 ──
+[19:13:01]   grok:grok  blocked (declared) — skip
+[19:13:06] ── cycle 23 ──
+[19:13:07]   grok:grok  blocked (declared) — skip
+[19:13:12] ── cycle 24 ──
+[19:13:12]   grok:grok  blocked (declared) — skip
+[19:13:17] ── cycle 25 ──
+[19:13:17]   grok:grok  blocked (declared) — skip
+[19:13:22] ── cycle 26 ──
+[19:13:22]   grok:grok  blocked (declared) — skip
+[19:13:28] ── cycle 27 ──
+[19:13:28]   grok:grok  blocked (declared) — skip
+[19:13:33] ── cycle 28 ──
+[19:13:33]   grok:grok  blocked (declared) — skip
+[19:13:38] ── cycle 29 ──
+[19:13:38]   grok:grok  blocked (declared) — skip
+

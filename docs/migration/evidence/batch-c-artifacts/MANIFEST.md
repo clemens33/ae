@@ -59,6 +59,10 @@ against a candidate copy instead of silently auditing the live one. It runs thre
 that guarantee three DIFFERENT things. None of them subsumes another, and none of them
 alone proves the tree is complete.
 
+The SUMS half discovers every directory carrying a `SHA256SUMS.txt` rather than walking a
+hardcoded list — the hardcoded list silently skipped `twd-precursor/`, whose checksum files
+went unverified for the whole run.
+
 **1. Citation resolution** (`path-cite-resolver.py`) — guarantees that every backticked
 path-shaped token in this file RESOLVES somewhere: against the tree root, `arms/`,
 `templates/`, `twd-precursor/`, the repository root, the
@@ -88,6 +92,37 @@ completes that binds every case DIRECTORY to the sha256 of that case's own ledge
 whole case removed with its hash lines still fails, and a ledger edited and re-hashed into
 `SHA256SUMS` fails too, because the index disagrees.
 
+**4. Committed bytes / clone fidelity** (`committed-bytes-check.py`) — guarantees that
+the bytes the repository would hand a fresh clone are the bytes that were hashed. The other
+three all read the WORKING TREE and cannot see a tree that passes locally and fails on
+clone. At commit ce8965e a text filter (`autocrlf=input`) rewrote four D04b pty logs on the
+way into the object database: the working file hashed `8320a0a5`, the stored blob hashed
+`20fffc72`, and all three working-tree checks passed while a fresh clone would have failed
+verification on four evidence artifacts. `.gitattributes` now marks both evidence trees
+`-text`, but that is PREVENTION; this check is DETECTION, and it is non-invasive — nothing
+is staged, committed, or written to the object database. Part A (pre-commit, the blocking
+one) compares the object id git WOULD create from the working bytes with attributes and
+clean filters applied against the id of the RAW bytes; any difference means what reaches
+the repository is not what was hashed, whatever the cause — autocrlf, a smudge/clean
+filter, a new path outside the `-text` globs. Part B (post-commit) compares the sha256 of
+`git show HEAD:<path>` against the recorded hash for every file already at HEAD; files
+modified since HEAD are counted and named, not failed.
+
+### What the checksum files themselves guarantee
+
+Measured rather than assumed, after a parallel finding in the L-artifacts where 119 of 132
+checksum files listed THEMSELVES — a hash that necessarily changes when it is written, so
+the file could never verify from its own listing — and 12 more used paths relative to a
+different root than they sat in. Batch C: **13 checksum files, 4480 entries, zero
+self-listed, zero entries that fail to resolve from their own directory.** Each now carries
+a three-line header naming the exact directory to verify from
+(`cd <tree-relative dir> && shasum -a 256 -c SHA256SUMS.txt`) and stating that it is
+deliberately not listed in itself; the gate counts checksum lines rather than file lines so
+the header cannot inflate coverage. `write-sums.sh` is the single writer, and it writes its
+temp file OUTSIDE the directory being hashed — writing it inside is how three phantom
+sums-temp entries reached the committed T-WD archive, an entry for a file that never
+existed anywhere, which the widened gate found and which is now repaired.
+
 **The honest limit.** These three make an omission require coordinated edits across three
 independent records — the ledger-derived schema, the content-bound case index, and the
 hash list. They do not, and cannot, defend against an editor who rewrites all three
@@ -95,12 +130,19 @@ consistently; that is what git history and seat review are for. The claim here i
 completeness against ACCIDENT and against single-record tampering, not against a
 determined forger.
 
-All three are red-proved together by `arms/*/harness/gate-redproof.sh`: a green control
-plus fifteen injections — one per citation base, the group/member mapping, an empty
+All four are red-proved. `arms/*/harness/gate-redproof.sh` runs a green control plus
+seventeen injections — one per citation base, the group/member mapping, an empty
 wildcard, a case-relative token, a slash-less file citation, a deleted listed file,
 tampered bytes, a file deleted with its SUMS line, a case directory removed with its SUMS
-lines, a deleted case index, and a ledger edited and re-hashed. Every one turns the gate
-red; the control stays green.
+lines, a deleted case index, a ledger edited and re-hashed, a file whose bytes change while its
+SUMS entry is updated to match, and a phantom entry in `twd-precursor/` (invisible to the
+old hardcoded directory list). Every one turns the gate red; the control stays green.
+Clone fidelity is red-proved separately by
+`arms/*/harness/committed-bytes-redproof.sh`, in an ISOLATED scratch repository so the live
+index is never touched: it reproduces the exact ce8965e shape — a CRLF pty log under
+`core.autocrlf=input` with no `-text` attribute — shows part A going red on it, shows the
+`-text` attribute turning it green, then commits and corrupts one recorded hash to show
+part B going red on a HEAD blob that disagrees.
 
 `hook-patch/` holds the ONE hook-only patch used by the barrier arms and the D-record
 designs — the unified diff, its generator, and the unmodified / hooked / patch hashes.

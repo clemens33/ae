@@ -5,6 +5,10 @@ Author: `opus5:s2builder`. Design only — no code was written and no file outsi
 this one was touched. Stage 2 is seat-gated and is not being entered by this
 document.
 
+**G1 is discharged** — this document is reconciled against
+`s2-schema-inventory.md` (§1a), which corrected it in three places, one of them
+substantially.
+
 **The contamination boundary in §0 and §9 is ratified house doctrine** (lead,
 2026-08-20) and binds every future builder, with the §9 narrowing: it attaches
 to recorded output **values**, never to schema.
@@ -78,6 +82,54 @@ references below are **illustrative only**.
 
 ---
 
+## 1a. Reconciliation against the real corpus — **G1 DISCHARGED**
+
+`docs/migration/evidence/s2-schema-inventory.md` (structure-only, 45 grouped file
+kinds, 11,593 files) closed G1. I read it after an **independent** leak check of
+my own — no long hex runs but the declared 64-zero stand-in, no absolute user
+paths, no UUID-shaped tokens, and the synthetic vocabulary counts matching the
+lead's independently (`987654321` ×29, `2999-12-31T23:59:59Z` ×12). Three
+separate checks agreeing is the control; a worker certifying its own containment
+would not have been.
+
+It corrects this document in three places, one of them badly.
+
+### C1 — Import is a TRANSLATION, not an inverse. §1 was too clean.
+
+There is **no `manifest.json` in either tree**, and the corpus does not use
+stage 1's layout at all. It uses two *different* layouts, which are also
+different from each other:
+
+| | manifest dialect | capture layout | invocation record |
+|---|---|---|---|
+| **stage 1** | JSON array | `<lane>/{stdout,stderr,exit,manifest.json}` | `command.json` |
+| **batch C** | 5-col positional TSV: `entry_type, mode, sha256-or-dash, link_target-or-dash, relative_path` | `out/<LABEL>.{stdout,stderr,tmuxtrace}` indexed by `consumers.tsv` | `argv` column in `consumers.tsv` |
+| **L** | 7-col headed TSV with a `# manifest-root` preamble: `path, type, mode, nlink, size, link, sha256` | sibling `<STEP>.{invocation,rc,stdout,stderr}` | `.invocation` files |
+
+So import is a **translation from two foreign dialects into stage 1's layout**,
+and §1's "inverse of stage 1's writer" describes the destination only. The
+layout is still the right interface — it is the target of the translation — but
+the mapping is not 1:1 and no single decoder serves both trees (inventory #2:
+"Do not reuse one decoder for both").
+
+### C2 — The dialects carry DIFFERENT fields. Import must take the union, never the intersection.
+
+L records `nlink` and `size`; batch C records neither. Normalising to a common
+shape would either **lose** L's fields or **fabricate** them for batch C.
+Neither is acceptable, and the rule is one this project already ratified:
+SC-509b — a fact that was never recorded must be **omitted and visible as
+omitted**, never defaulted into a value that reads as measured. An imported
+entry from batch C has no `nlink`; it does not have `nlink = 1`.
+
+### C3 — The corpus's own emptiness vocabulary is three-valued (inventory #8).
+
+`-` (non-applicable), `ABSENT` (a two-column record for an absent
+archive/worktree), and a genuinely zero-byte file are **three different facts**.
+Import must not collapse them. This is R3's doctrine meeting real data before
+any code was written, which is the best possible time to meet it.
+
+---
+
 ## 2. Two run modes — **RULED: both, and they answer different questions**
 
 | Mode | Lane A | Lane B | Uses the committed corpus? |
@@ -119,7 +171,27 @@ one.
 **Every replay-backed row must carry `capture_platform` in its evidence
 string**, so a reader can see which question the evidence answered rather than
 having to reconstruct it. This is why `capture_platform` is a required
-provenance field in §6 and not a nice-to-have.
+provenance field in §6 and not a nice-to-have. (§6 flags an open problem: the
+schema inventory surfaces no per-entry source for that field.)
+
+### A second narrowing, from G1: replay is also silent about anything mtime-dependent
+
+F2 establishes that **neither corpus dialect records mtimes at all**. Replay
+therefore cannot reproduce a file's modification time, and by the same
+arm-that-cannot-fail rule it is not evidence for any row whose behavior turns on
+one — which, per the A2 finding, includes the activity clock and staleness.
+
+So the replay lane has **two** blind spots, and they should be stated together
+wherever it is cited:
+
+| Replay cannot speak to | Because |
+|---|---|
+| Linux/musl behavior | the corpus is macOS/arm64 only |
+| anything reading a file mtime | no dialect recorded one |
+
+Both route to live/live. Neither is a defect in the corpus — the captures were
+taken for their own purposes — but both are limits on what replay may be cited
+for, and a limit nobody wrote down is a limit that gets exceeded.
 
 ---
 
@@ -243,6 +315,37 @@ with it. FNV is a fast in-run lookup aid with acknowledged collisions; evidence
 integrity needs a cryptographic digest. They answer different questions and
 should stay separate fields with separate names.
 
+### Three corrections G1 forces on this section
+
+**The exit record needs a third class.** Stage 1 writes `code <n>` or
+`signalled`. The inventory says L's `.rc` "is not guaranteed to be numeric text
+because harness failures and cut records are represented too". A two-valued
+enum cannot hold that, and coercing it to a number would fabricate a status
+nobody recorded. Import needs an unparsed-but-preserved class carrying the raw
+bytes.
+
+**`admissibility_ref` cannot be one shape** (inventory #4). Batch C records
+admissibility **per case** (`admissibility-ledger.txt`); L records it at
+**section** level (`_admissibility/equiv-*.txt` plus
+`ADMISSIBILITY-SHA256SUMS.txt`). The field must be able to name either
+granularity, and it must say which — a section-level admission is a weaker
+statement about an individual file than a per-case one, and flattening them
+would hide that.
+
+**Checksums are layered, not flat** (inventory #11). Batch C has arm, template,
+hook and T-WD `SHA256SUMS.txt`. L adds section-root admissibility and harness
+ledgers alongside arm and specimen ones. Import must record **which ledger
+admitted a given file**, not merely that some ledger did.
+
+**Open: where does `capture_platform` come from?** §2's ruling makes it required
+in every replay-backed evidence string, but the inventory surfaces no explicit
+platform key — `ARM.txt` carries `binary`/`binary.sha256`, `construction`,
+`fixture`; `env.txt` carries locale (and the existence of
+`FINGERPRINTS.superseded-pre-locale-fix.tsv` shows locale already bit once). If
+platform is recorded only at batch level rather than per entry, import must
+attach it from the batch's own provenance and say that is where it came from.
+**Flagged for the lead: this is a required field with no identified source.**
+
 ### Integrity refusal is not judgement
 
 Import must refuse a corpus entry whose checksums do not match. I want to be
@@ -270,7 +373,11 @@ lying by omission. Either refuse the entry loudly, or import it flagged
 These are the findings I most want ruled on, because each one lets a run look
 clean while comparing something other than behavior.
 
-**F1 — directory modes are not reproduced. RULED: FIX in stage 1 post-verdict.**
+**F1 — directory modes. RULED fix — and G1 confirms the corpus HAS the data.**
+Both dialects record `mode`, for directories as well as files (L's example row
+is literally `dir<TAB>0755<TAB>…`). So this is not a speculative fidelity gap:
+the corpus carries directory modes that stage 1 would silently discard on
+clone. The fix restores information that genuinely exists.
 Stage 1's `clone_to` preserves *file* permission bits but creates directories
 with the process umask. Cheap to fix, and load-bearing here specifically:
 L-PURGE's validator taxonomy carries explicit **directory-0755 vs file-0644**
@@ -278,7 +385,34 @@ classes, and the `_publish_executable_artifact` chokepoint story is entirely
 about modes. A corpus that silently umasks directory modes cannot replay a
 permission row.
 
-**F2 — mtimes are not captured at all. RULED: FIX in stage 1 post-verdict.**
+**F2 — mtimes. RULED fix in stage 1 — but G1 shows the fix CANNOT reach the
+existing corpus. ESCALATED; needs a seat decision this document cannot make.**
+
+> **The corpus does not record mtimes either.** Batch C's manifest is
+> `entry_type, mode, sha256, link_target, relative_path`. L's is `path, type,
+> mode, nlink, size, link, sha256`. **Neither dialect carries a timestamp.**
+>
+> Fixing stage 1 to capture and restore mtimes therefore helps **future**
+> captures and the **live/live** lane. It cannot retroactively give the
+> *existing* corpus mtime fidelity, because the data was never written down.
+>
+> By the lead's own ruling — a corpus that cannot reproduce mtimes replays
+> staleness and activity rows *silently wrong* — the consequence is direct:
+> **any row whose behavior depends on a file mtime is NOT replayable from this
+> corpus.** Such rows must be routed to the live/live lane, or the replay lane
+> must refuse them outright. What it must not do is run them and report clean.
+>
+> One lead worth chasing, which I cannot chase myself because it needs value
+> access: `batch-c-artifacts/twd-precursor/<ARM>/stamps/` is an opaque snapshot
+> channel whose *name* suggests timestamps. If it carries file mtimes, part of
+> the gap may be recoverable for the T-WD arms specifically. Someone with a
+> spent contamination budget should look. I am recording it as a lead, not a
+> finding.
+
+Everything below remains correct for the **forward-looking** half — what stage 1
+must record from now on, and what live/live gets. It is the *retrospective* half
+that G1 removed.
+
 The stage-1 manifest records path, kind, length, mode, symlink target and digest
 — no mtime. The grounds are harder than "ae reads mtimes somewhere": the **A2
 work established that `events.jsonl`'s mtime IS the frozen reader's activity
@@ -319,10 +453,28 @@ rendered as legitimate sparsity. Quarantine is acceptable; silently following
 the link is not. It stays inside what import may answer because it is an
 integrity question (§6), not a judgement about behavior.
 
-**F4 — non-UTF-8 paths are lossy.** Stage 1 records paths through
-`to_string_lossy` and declares non-UTF-8 names out of scope. If any real corpus
-entry carries one, import cannot round-trip it and must say so rather than
-mangle it.
+**G1 makes the check cheap and safe.** Both dialects record the link target as a
+field (`link_target-or-dash`; `link`). The escape test therefore runs against
+*metadata*, and import can refuse an entry **without ever dereferencing the
+link** — the safest possible order of operations, since dereferencing is the
+exact act being guarded against.
+
+**F4 — hostile path names. REFRAMED by G1: the live hazard is shell
+metacharacters, not non-UTF-8.** Stage 1 records paths through
+`to_string_lossy` and declares non-UTF-8 out of scope; the inventory reports no
+non-UTF-8 name, but does report (inventory #12) **one L event-capture basename
+containing shell metacharacters — an intentional hostile-name case** — with the
+explicit instruction: *import by directory entry, never by shell interpolation.*
+
+A Rust importer working in `OsStr`/`Path` is structurally safe here, which is a
+reason to keep it in Rust rather than shell out for any part of the walk. The
+hostile name graduates from a hypothetical to a **required fixture** (§8).
+
+**F6 — hard links are not preserved. NEW, from G1.** L's manifest records
+`nlink`; stage 1's `clone_to` uses `fs::copy`, which turns two names for one
+inode into two independent files. Any corpus entry with `nlink > 1` has its
+file-identity graph silently changed by the clone. Whether ae behavior depends
+on it is unknown to me; recorded so it is a decision rather than a discovery.
 
 **F5 — uid/gid are not captured. RULED: ACCEPTED as a declared limitation.**
 
@@ -381,6 +533,12 @@ One instance of each, so that each decision is proven rather than documented:
 | a file with a distinctive **non-now** mtime | F2 — mtime is restored, not stamped at import |
 | a corpus-**internal** symlink | links round-trip as links |
 | a corpus-**escaping** symlink | **F3 — refusal** |
+| a hard-linked pair (`nlink > 1`) | F6 — link identity, or its declared loss |
+| a basename with **shell metacharacters** | F4 — import by directory entry, never by interpolation (inventory #12) |
+| a `-`, an `ABSENT` record, and a **zero-byte** file | C3 — three different facts, not collapsed (inventory #8) |
+| a TSV row whose last field contains a **literal tab** | inventory #7 — the invocation tail is joined, not split into phantom columns |
+| a non-numeric `.rc` | the exit record has a third class beyond code/signalled (§6a) |
+| a JSONL file with a **partial final record** and one with **no final newline** | byte-level states the inventory says import must preserve |
 
 The escaping link is the only fixture whose expected outcome is a **failure**,
 which makes it the only one that proves F3 is real rather than merely written
@@ -450,10 +608,11 @@ Resolved since first draft, recorded so the gap list stays honest: the self-test
 lane literals are **not** a finding (§4), and the on-disk layout is endorsed as
 the stage-1/stage-2 interface by both the lead and reviewer4.
 
-Dependent on **schemas I have not read (G1)**: the real shape of `MANIFEST.md`,
-`SHA256SUMS.txt`, `PATH-CITES.tsv` and `_admissibility/`. Everything in §6 is a
-proposal for what import *needs*; reconciling it to what those files *are* is
-unstarted and is not something I should do myself (§0, §9).
+**G1 is DISCHARGED** (§1a) — `s2-schema-inventory.md` supplied the structure and
+this document is reconciled against it. What remains unknown is deliberately
+value-shaped, not schema-shaped: whether `twd-precursor/*/stamps/` carries file
+mtimes (F2's open lead), and where `capture_platform` is recorded (§6). Both
+need value access and therefore belong to someone else.
 
 Dependent on **seat rulings**: R1 and R3 are now ruled (§12); R2 and R4 remain
 open in wording; **R5 stays deliberately unassigned**. See §11.

@@ -1,0 +1,12 @@
+write.label	ctl
+write.tty	/dev/ttys028
+write.text	INSTRUMENT-CONTROL-MARKER-54539
+write.label	yield
+write.tty	/dev/ttys028
+write.text	FORCED-INITIAL-YIELD-MARKER-54539
+write.label	declaration-echo
+write.tty	/dev/ttys028
+write.text	Marked grok:grok waiting-user: T-100 arm B
+write.label	induced
+write.tty	/dev/ttys028
+write.text	CANNED-AGENT-LINE: continuing to wait; nothing new to report.

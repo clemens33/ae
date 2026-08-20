@@ -419,7 +419,14 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 - locks (ordered): BOTH names' lifecycle locks — and then rewrites meta WITHOUT
   `meta.lock` (ae:11597-11667): unserialized against helper meta writers (fd200),
   empirical race window, own contract row
-- atomicity boundary: TBD (dir moved but tmux rename fails → ?)
+- atomicity boundary: **NOT linearizable — #103.** The frozen order is tmux rename
+  (ae:11635) → dir `mv` (ae:11650) → meta rewrite (ae:11655) → manifest/status
+  (ae:11665-67), so the crash family is **tmux renamed while dir/meta/manifest remain old
+  or partial** — not the reverse. *(This line previously read "dir moved but tmux rename
+  fails", a failure that cannot occur in that order; corrected 2026-08-20 against frozen
+  source while transcribing #102.)* Measured mid-operation: at the post-`mv` cut the
+  directory is `sessions/<new>/` while its own meta still reads `session=<old>`.
+  Rust at P3 must make any interrupted prefix a coherent generation.
 - current owner: bash
 - planned owner/fate: **rust at P3**
 

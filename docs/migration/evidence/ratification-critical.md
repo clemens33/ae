@@ -261,6 +261,8 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-832a — CRITICAL(D)
 - SC-832b — ALREADY-OBSERVED(pin-audit PROVES pointer)
 - SC-832c — ALREADY-OBSERVED(pin-audit PROVES pointer)
+- SC-832d — CRITICAL(D)
+- SC-832e — CRITICAL(D)
 - SC-833a — CRITICAL(D)
 - SC-833b — ALREADY-OBSERVED(pin-audit PROVES pointer)
 - SC-833c — ALREADY-OBSERVED(pin-audit PROVES pointer)

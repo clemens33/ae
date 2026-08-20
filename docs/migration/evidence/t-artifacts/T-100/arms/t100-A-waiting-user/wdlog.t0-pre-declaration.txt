@@ -1,0 +1,10 @@
+╭─ ae watchdog — session: t1 ─────────────────────────╮
+│ interval: 5s   stale: 1m   max nudges: 2
+│ read-only pane (input disabled). use peek _watchdog or stop with `watchdog stop`.
+╰────────────────────────────────────────────────────────╯
+
+[19:08:19] ── cycle 1 ──
+[19:08:19]   grok:grok  active (pane hash changed)
+[19:08:24] ── cycle 2 ──
+[19:08:24]   grok:grok  active (pane hash changed)
+

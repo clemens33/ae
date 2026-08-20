@@ -126,6 +126,7 @@ arm1.sh	context	twdarm-rel	1	twd-precursor/harness/arm1.sh
 arm2.sh	context	twdarm-rel	1	twd-precursor/harness/arm2.sh
 arm3.sh	context	twdarm-rel	1	twd-precursor/harness/arm3.sh
 arms/	path	tree	1	arms/
+arms/*/harness/committed-bytes-redproof.sh	wildcard	tree	6	arms/A1/harness/committed-bytes-redproof.sh
 arms/*/harness/gate-redproof.sh	wildcard	tree	6	arms/A1/harness/gate-redproof.sh
 arms/*/harness/manifest-tree-gate.sh	wildcard	tree	6	arms/A1/harness/manifest-tree-gate.sh
 arms/<ARM>/CASES.tsv	wildcard	tree	6	arms/A1/CASES.tsv
@@ -135,6 +136,7 @@ case-schema.tsv	context	case-rel	6	arms/A1/harness/case-schema.tsv
 case.txt	context	case-rel	99	arms/A1/c01-healthy-ro/case.txt
 clients.after.txt	context	case-rel	11	arms/A4/c01-status-live-live/clients.after.txt
 clients.before.txt	context	case-rel	11	arms/A4/c01-status-live-live/clients.before.txt
+committed-bytes-check.py	context	case-rel	6	arms/A1/harness/committed-bytes-check.py
 consumers.tsv	context	case-rel	99	arms/A1/c01-healthy-ro/consumers.tsv
 controller-mutation.txt	context	case-rel	19	arms/A4/c05-020b-barrier-rw/controller-mutation.txt
 date-shim.log	context	case-rel	2	arms/A2/c01-filters-ro/date-shim.log
@@ -202,3 +204,4 @@ twd-precursor/harness/	path	tree	1	twd-precursor/harness/
 twd-precursor/specimens/alert-specimens.*.jsonl	wildcard	tree	3	twd-precursor/specimens/alert-specimens.a1.jsonl
 twd-precursor/specimens/alert-specimens.<arm>.jsonl	wildcard	tree	3	twd-precursor/specimens/alert-specimens.a1.jsonl
 twd-precursor/specimens/specimens.<arm>.jsonl	wildcard	tree	3	twd-precursor/specimens/specimens.a1.jsonl
+write-sums.sh	context	case-rel	6	arms/A1/harness/write-sums.sh

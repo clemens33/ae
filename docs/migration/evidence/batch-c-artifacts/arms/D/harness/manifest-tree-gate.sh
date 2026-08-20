@@ -38,16 +38,30 @@ else
 fi
 
 echo "## SHA256SUMS coverage + verification"
-for d in "$A"/templates "$A"/hook-patch "$A"/arms/*; do
-    [[ -d "$d" ]] || continue
-    sums="$d/SHA256SUMS.txt"
-    if [[ ! -f "$sums" ]]; then echo "  MISSING SHA256SUMS: ${d#$A/}"; rc=1; continue; fi
+# EVERY directory that carries a SHA256SUMS.txt, discovered rather than listed: a
+# hardcoded list silently skipped twd-precursor/, whose SUMS files went unverified for the
+# whole run and were carrying three entries for files that do not exist.
+while IFS= read -r sums; do
+    d="$(dirname "$sums")"
     n_files="$(find "$d" -type f ! -name SHA256SUMS.txt | wc -l | tr -d ' ')"
-    n_sums="$(wc -l <"$sums" | tr -d ' ')"
+    # count only checksum lines: the header comment lines are not entries
+    n_sums="$(grep -c '^[0-9a-f]\{64\}  ' "$sums" | tr -d ' ')"
     bad="$( ( cd "$d" && shasum -a 256 -c SHA256SUMS.txt 2>/dev/null | grep -cv 'OK$' ) || true )"
     echo "  ${d#$A/}: files=$n_files listed=$n_sums failed_verify=$bad"
     [[ "$n_files" == "$n_sums" ]] || { echo "    COVERAGE MISMATCH"; rc=1; }
     [[ "$bad" == 0 ]] || { echo "    HASH MISMATCH"; rc=1; }
-done
+done < <(find "$A" -name SHA256SUMS.txt | sort)
+echo "## committed bytes (what a fresh clone yields)"
+# The three checks above all read the WORKING TREE, so none of them can see a tree that
+# passes locally and fails on clone: a text filter can make the committed BLOB differ from
+# both the working file and the recorded hash. Verified real at commit ce8965e.
+CB_CHK="$(dirname "${BASH_SOURCE[0]}")/committed-bytes-check.py"
+[[ -f "$CB_CHK" ]] || CB_CHK="$A/arms/A1/harness/committed-bytes-check.py"
+if [[ -f "$CB_CHK" ]]; then
+    python3 "$CB_CHK" "$A" "${REPO_ROOT:-/Users/ckriech/projects/clemens33/ae-rust}"         "${TREE_PREFIX:-docs/migration/evidence/batch-c-artifacts}" || rc=1
+else
+    echo "  COMMITTED-BYTES CHECK MISSING — clone reproducibility cannot be checked"; rc=1
+fi
+
 echo "## result: $( ((rc==0)) && echo PASS || echo FAIL )"
 exit $rc

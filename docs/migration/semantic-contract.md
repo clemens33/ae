@@ -1586,6 +1586,45 @@ seat closure. UNCLASSIFIED pending closure.
 point (dir moved / tmux renamed / meta updated) per census-2; seat closure pending.
 UNCLASSIFIED pending closure.
 
+**SC-832d — rename addresses its SOURCE by recorded server and exact live session id.**
+Bucket 3 — fix-known-defect(#102). SHOULD: rename resolves the target on the session's
+**recorded** tmux server and addresses the **exact live session id**; when no exact
+instance exists it refuses **loudly, with zero effects**, and never touches a prefix
+sibling. IS at 72c7293: **VIOLATED** — ae:11635 is
+`tmux rename-session -t "$old_name" "$new_name"`, by NAME and on the AMBIENT server, and
+`tmux -t <name>` prefix-matches. Observed: with `proj` already stopped and `projx` live,
+`ae rename proj proj2` renamed **`projx`** and returned 0.
+**Serialization is innocent** — the cell had `flock` present with both lifecycle locks
+acquired; *it serialized the wrong identity decision.* Do not file this against the
+lifecycle-lock work.
+*Evidence lane:* source-name prefix corruption is **observed** (L-RENTRANS
+`samename-matrix-stop-first-flock-with`); the **ambient-server** half is **source-proven
+only** (ae:11617/11635) because that arm ran on a single server, and needs a multi-server
+arm before its empirical field says observed.
+Authority: joint seat ruling grounded in the SC-835a hazard, which `stop` already
+addresses with `-S` plus an exact id. Conflict: fix-known-defect(#102).
+**classified_by: both seats, 2026-08-20.**
+
+**SC-832e — rename's DESTINATION occupancy check is an exact-name check.**
+Bucket 3 — fix-known-defect(#102). SHOULD: the destination-taken gate tests the **exact
+name on that same recorded server** — a prefix-only sibling does **not** block the rename,
+an exact match does. IS at 72c7293: **VIOLATED** — ae:11622 uses
+`tmux has-session -t "$new_name"`, which prefix-matches, so renaming to `proj` while
+`projx` exists falsely reports `session 'proj' already exists`. The mirror of SC-832d:
+one defect refuses what it should allow, the other mutates what it should refuse.
+*Id note:* these are **d/e**, not b/c — SC-832b (rename vs concurrent meta writers) and
+SC-832c (rename crash cuts) already existed as code-observation placeholders. The crash-cut
+placeholder *overlaps #103*: it asks what residue each cut leaves, which is the crash-side
+view of the same window SC-1303 now governs from the reader side. Flagged for seat closure
+together, NOT closed here. *(Prose kept unbolded at line start deliberately — the sweep
+guard reads a line-initial bolded `SC-` as a row head, and this note tripped it once.)*
+*Evidence lane:* **source-proven only** — no arm exercised a destination whose prefix
+sibling exists. Needs a destination-prefix arm.
+*Consequence recorded with the row:* post-rename window and status calls should continue
+from **captured exact ids**, not from `<new_name>:0`.
+Authority: joint seat ruling. Conflict: fix-known-defect(#102).
+**classified_by: both seats, 2026-08-20.**
+
 **SC-833a — transfer moves a stopped session both directions.** Bucket 2 — including
 Claude/Codex conversation files; `--pull` is the reverse direction. Authority:
 commands.md:24. Empirical: census-2 transfer section. Conflict: none.
@@ -2195,8 +2234,37 @@ Externally visible atomicity, one head per surface (each:
 `authority=code-observation`; Empirical: census-2 + deterministic probes per the
 closure-map gate designs; Conflict: pending seat closure; UNCLASSIFIED):
 
-**SC-1303 — rename: what a concurrent observer may see mid-operation.**
-  Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
+**SC-1303 — rename is LINEARIZABLE: every external reader sees ONE coherent identity
+generation.** Bucket 3 — fix-known-defect(#103).
+**SHOULD, scoped to be testable:** every **product reader or operation** — anything ae
+ships that resolves a session (`list`, `stop`, `send`, the helpers, a concurrent `ae`
+process) — takes ONE COHERENT LOGICAL SNAPSHOT of the identity generation: the old one or
+the new one, **never mixed**. A generation is the tuple (tmux session name, state
+directory name, meta `session=` key, `workspace.md`).
+**Scope precision (colead, adopted):** the claim is deliberately NOT "every external
+reader". tmux plus four filesystem facts live in different stores and cannot be made
+atomic against an arbitrary lock-free reader that does not participate in the protocol;
+a SHOULD that requires the impossible is untestable and would be quietly ignored. The
+requirement binds **supported readers**, which must participate.
+**Boundary with the crash case:** this row governs **LIVE READER LINEARIZABILITY** only.
+**Crash recovery and rollback semantics — what residue an interrupted rename leaves and
+how it is repaired — belong to SC-832c and D20**, not here.
+IS at 72c7293: **VIOLATED** — the four are mutated in sequence with no barrier (tmux
+ae:11635, dir `mv` ae:11650, meta ae:11655, manifest/status ae:11665-67), and at the
+post-`mv` cut the directory is `sessions/<new>/` while its own meta still reads
+`session=<old>`.
+*Seat history, recorded because the first attempt was wrong:* lead proposed closing this
+at bucket 1 with the disagreement PERMITTED ("the directory name and meta key MAY briefly
+disagree"). Colead dissented and carried it — that would have promoted an observed bash
+mechanism into a SHOULD and **blessed D20's atomicity hole**, leaving the P3 owner no
+requirement to do better. Permitting a hole is still writing the hole into the contract.
+No DR is needed because mixed generations are ruled a DEFECT, not an acceptable outcome.
+*Note what the evidence says:* `ae list` — the product's own reader — was COHERENT at all
+four observed cuts; the violation is visible only to a direct filesystem reader, which is
+why it survives casual inspection.
+Authority: joint seat ruling (lead ruling on colead's dissent, 2026-08-20). Empirical:
+observed (L-RENTRANS `rename-observer`, four cuts). Conflict: fix-known-defect(#103).
+**classified_by: both seats, 2026-08-20 (dissent ruled).**
 **SC-1304a — transfer push: after stop completes, the source remains present and no
   Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
 destination write has yet occurred; stop effects may be visible on the source**

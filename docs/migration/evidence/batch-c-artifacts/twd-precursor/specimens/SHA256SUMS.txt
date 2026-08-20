@@ -1,3 +1,6 @@
+# sha256 checksums for the files in THIS directory, paths relative to it.
+# verify with:  cd twd-precursor/specimens && shasum -a 256 -c SHA256SUMS.txt
+# this file is deliberately NOT listed in itself.
 b3659d6aee643cf494d0bc0549fede6bf0e405004550021dea7c49e99a7b0ace  ./alert-specimens.a1.jsonl
 8f4e8bc1a23be1aa58e4e2ee86bbbd4af5dc22db1eee9e8879569a31a07ae67d  ./alert-specimens.a2.jsonl
 31fc09b8241915a6b149aceb7628744497ed19c28d3d6922d93b368844021d67  ./alert-specimens.a3.jsonl

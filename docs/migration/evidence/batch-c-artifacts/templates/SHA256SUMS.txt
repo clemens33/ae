@@ -1,3 +1,6 @@
+# sha256 checksums for the files in THIS directory, paths relative to it.
+# verify with:  cd templates && shasum -a 256 -c SHA256SUMS.txt
+# this file is deliberately NOT listed in itself.
 e16decdda8210de95018c5014443cd4a634969320fa3fdbba1a8bd51ff4b1163  ./A1/_meta/510b-empty-vs-omitted.modes.tsv
 b56ea0fb281533078bf51a51003b482436534c0fc1a489e8a53fd1cdd1aad232  ./A1/_meta/510b-empty-vs-omitted.txt
 616f38cb9e59690b033ee07f6e8c95dacda1b70a72c9ea05f9a8570f2e92b10f  ./A1/_meta/510c-recover-ref.modes.tsv

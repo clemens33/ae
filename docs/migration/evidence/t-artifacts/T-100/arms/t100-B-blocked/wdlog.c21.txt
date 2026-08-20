@@ -1,0 +1,52 @@
+╭─ ae watchdog — session: t1 ─────────────────────────╮
+│ interval: 5s   stale: 1m   max nudges: 2
+│ read-only pane (input disabled). use peek _watchdog or stop with `watchdog stop`.
+╰────────────────────────────────────────────────────────╯
+
+[19:17:08] ── cycle 1 ──
+[19:17:08]   grok:grok  active (pane hash changed)
+[19:17:13] ── cycle 2 ──
+[19:17:13]   grok:grok  active (pane hash changed)
+[19:17:19] ── cycle 3 ──
+[19:17:20]   grok:grok  blocked (declared) — skip
+[19:17:25] ── cycle 4 ──
+[19:17:25]   grok:grok  blocked (declared) — skip
+[19:17:30] ── cycle 5 ──
+[19:17:30]   grok:grok  blocked (declared) — skip
+[19:17:35] ── cycle 6 ──
+[19:17:36]   grok:grok  blocked (declared) — skip
+[19:17:41] ── cycle 7 ──
+[19:17:41]   grok:grok  blocked (declared) — skip
+[19:17:46] ── cycle 8 ──
+[19:17:46]   grok:grok  blocked (declared) — skip
+[19:17:51] ── cycle 9 ──
+[19:17:51]   grok:grok  blocked (declared) — skip
+[19:17:57] ── cycle 10 ──
+[19:17:57]   grok:grok  blocked (declared) — skip
+[19:18:02] ── cycle 11 ──
+[19:18:02]   grok:grok  blocked (declared) — skip
+[19:18:07] ── cycle 12 ──
+[19:18:07]   grok:grok  active (pane hash changed)
+[19:18:12] ── cycle 13 ──
+[19:18:13]   grok:grok  recently visible (5s ago) — skip
+[19:18:18] ── cycle 14 ──
+[19:18:18]   grok:grok  recently visible (11s ago) — skip
+[19:18:23] ── cycle 15 ──
+[19:18:23]   grok:grok  recently visible (16s ago) — skip
+[19:18:28] ── cycle 16 ──
+[19:18:28]   grok:grok  recently visible (21s ago) — skip
+[19:18:33] ── cycle 17 ──
+[19:18:34]   grok:grok  recently visible (27s ago) — skip
+[19:18:39] ── cycle 18 ──
+[19:18:39]   grok:grok  recently visible (32s ago) — skip
+[19:18:44] ── cycle 19 ──
+[19:18:44]   grok:grok  recently visible (37s ago) — skip
+[19:18:50] ── cycle 20 ──
+[19:18:50]   grok:grok  recently visible (43s ago) — skip
+[19:18:55] ── cycle 21 ──
+[19:18:55]   grok:grok  recently visible (48s ago) — skip
+[19:19:00] ── cycle 22 ──
+[19:19:00]   grok:grok  recently visible (53s ago) — skip
+[19:19:05] ── cycle 23 ──
+[19:19:05]   grok:grok  recently visible (58s ago) — skip
+

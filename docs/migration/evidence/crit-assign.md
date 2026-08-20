@@ -273,6 +273,8 @@ CRIT-ASSIGN: SC-1208 | B0 | argv/context capture design: constructed injection b
 CRIT-ASSIGN: SC-1209 | F-IDENTITY | identity boundary probe: envelope authority arm — nested/pasted envelopes treated as data, unenveloped input as human
 CRIT-ASSIGN: SC-1301 | H-HELPER | meta-writer fault arm: fault hooks on each of the three writers, reader observes complete-or-old only
 CRIT-ASSIGN: SC-1302 | L-RENTRANS | cross-lifecycle concurrency arm: concurrent stop/rename/transfer on one name, serialization observed
+CRIT-ASSIGN: SC-832d | L-RENTRANS | rename source targeting: old name absent with a live prefix sibling present; and old name on its recorded named server while the ambient server holds a same-or-prefix name
+CRIT-ASSIGN: SC-832e | L-RENTRANS | rename destination occupancy: prefix-only sibling must NOT block; exact name must refuse with zero effects
 CRIT-ASSIGN: SC-1303 | L-RENTRANS | rename/transfer tree: rename: what a concurrent observer may see mid-operation
 CRIT-ASSIGN: SC-1304a | L-RENTRANS | rename/transfer tree: push mid-op arm — source present post-stop, no destination write yet
 CRIT-ASSIGN: SC-1304b | L-RENTRANS | rename/transfer tree: push destination-partial arm — crash-cut leaves partial remote state

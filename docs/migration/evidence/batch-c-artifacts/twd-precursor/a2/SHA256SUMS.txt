@@ -1,4 +1,6 @@
-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./.sums.tmp
+# sha256 checksums for the files in THIS directory, paths relative to it.
+# verify with:  cd twd-precursor/a2 && shasum -a 256 -c SHA256SUMS.txt
+# this file is deliberately NOT listed in itself.
 4f7f246776f96497debe6df737ee867361c738f996812a03868875d0aba45c53  ./ae-launch.err
 e3d4d94def65cb9358cdd77e3a0f4f86e5c1814eb0567c55ceb628da70bd9aec  ./ae-launch.out
 bb838301c4c0671d61d3dcf3c4805fb533596e5b770593088069ec0ad2a69f11  ./agent-stdin.log

@@ -7,11 +7,14 @@ S="$(dirname "$0")"
 A="${1:-/Users/ckriech/projects/clemens33/ae-rust/docs/migration/evidence/batch-c-artifacts}"
 RP=/tmp/aecx/gate-redproof; rm -rf "$RP"; mkdir -p "$RP"
 cp -R "$A" "$RP/base"; chmod -R u+w "$RP/base"
-mkdir -p "$RP/repo"; cp -R /Users/ckriech/projects/clemens33/ae-rust/docs "$RP/repo/docs" 2>/dev/null
+# The candidate TREE is a copy; the REPO must stay the REAL one, because that is where
+# .gitattributes and HEAD live. A stand-in directory is not a work tree and the clone-
+# fidelity check refuses to answer from one — deliberately.
+REAL_REPO=/Users/ckriech/projects/clemens33/ae-rust
 run() { # <label> <mutator-fn>
     rm -rf "$RP/t"; cp -R "$RP/base" "$RP/t"; chmod -R u+w "$RP/t"
     "$2" "$RP/t"
-    local out; out="$(BATCH_C_ARTIFACTS="$RP/t" REPO_ROOT="$RP/repo" "$S/manifest-tree-gate.sh" "$RP/t" 2>&1)"
+    local out; out="$(BATCH_C_ARTIFACTS="$RP/t" REPO_ROOT="$REAL_REPO" "$S/manifest-tree-gate.sh" "$RP/t" 2>&1)"
     printf '%-34s -> %s\n' "$1" "$(printf '%s' "$out" | grep '## result' | sed 's/## result: //')"
     printf '%s' "$out" | grep -E 'UNRESOLVED|SCHEMA-FAIL|COVERAGE MISMATCH|HASH MISMATCH' | head -2 | sed 's/^/      /'
 }
@@ -54,6 +57,31 @@ for l in open(p):
         l=h+'  ./c01-dead-over-stale-ro/admissibility-ledger.txt\n'
     out.append(l)
 open(p,'w').writelines(out)"; }
+# NEW IN v4 — the class the working-tree checks cannot see.
+m_normalized() {
+    # A tracked evidence file whose BYTES are changed and whose SUMS entry is updated to
+    # match: coverage balances, every recorded hash verifies against the working file, and
+    # only a comparison against the committed blob can tell that a clone would differ.
+    local f="$1/arms/A4/c01-status-live-live/case.txt"
+    printf 'normalized-by-a-filter
+' >>"$f"
+    python3 -c "
+import hashlib,sys
+f='$f'; d='$1/arms/A4'
+h=hashlib.sha256(open(f,'rb').read()).hexdigest()
+p=d+'/SHA256SUMS.txt'; out=[]
+for l in open(p):
+    if l.endswith('./c01-status-live-live/case.txt\n'):
+        l=h+'  ./c01-status-live-live/case.txt\n'
+    out.append(l)
+open(p,'w').writelines(out)"
+}
+m_twd_sums() {
+    # twd-precursor was invisible to the old hardcoded SUMS loop.
+    printf 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./phantom.txt
+'         >>"$1/twd-precursor/a1/SHA256SUMS.txt"
+}
+
 echo "## gate red-proof suite"
 run "control (untouched)"            m_control
 run "citation: tree base"            m_cite_tree
@@ -71,3 +99,5 @@ run "schema: file+SUMS line deleted" m_paired_delete
 run "schema: case dir + SUMS gone"   m_case_removed
 run "schema: case index deleted"     m_index_gone
 run "schema: ledger edited + rehashed" m_ledger_edit
+run "committed: bytes changed + SUMS updated" m_normalized
+run "sums: twd-precursor phantom entry"  m_twd_sums

@@ -1,0 +1,9 @@
+write.label	ctl
+write.tty	/dev/ttys028
+write.text	INSTRUMENT-CONTROL-MARKER-3685
+write.label	yield
+write.tty	/dev/ttys028
+write.text	FORCED-INITIAL-YIELD-MARKER-3685
+write.label	declaration-echo
+write.tty	/dev/ttys028
+write.text	Marked grok:grok blocked: T-100 arm A

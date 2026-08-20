@@ -1,3 +1,6 @@
+# sha256 checksums for the files in THIS directory, paths relative to it.
+# verify with:  cd arms/A4 && shasum -a 256 -c SHA256SUMS.txt
+# this file is deliberately NOT listed in itself.
 ed942ae2ac38f836b9f0b8175795a4c11be8e066da8ea5185a6d28475d778f4d  ./c01-status-live-live/admissibility-ledger.txt
 6b4351c79ce738f6bdf05d1ad04e0bad48d1ffca5ecf95d1f2a6b74795642ebb  ./c01-status-live-live/case.txt
 98529cf28d1dc021b2bf80a87506aa528bbf685559c767d7b1f77b92170a9c69  ./c01-status-live-live/clients.after.txt
@@ -164,16 +167,19 @@ f24124182ddfd7b331e72d6eaf7faece97a200f793d5b630cb9f1916396e1b5f  ./harness/arm-
 7d8d1bc5c90c4d682d747527f5934866746ced537da55a9e59ac51af661b6a4a  ./harness/armlib.sh
 a39faaae9570f147e448a9bf7bc7e3d7b795e105921e67fed088f726c293c205  ./harness/case-schema-check.py
 c4c1df53134e454d928898d005455e04d2da3ecb95042bf1f1288b4dfe137f4a  ./harness/case-schema.tsv
+b44aae970cd54fa0e1261c60102ecc5fe87fcd6af38e45902390cc531ac230aa  ./harness/committed-bytes-check.py
+0966b9a210cf5b9915ae4c5b58795893f6d77789a4c3b842c1e47fcaa903b60c  ./harness/committed-bytes-redproof.sh
 4f0d45210750821e463ddf1b6eeeb8c023a52959a2236b78ce6f3ea97230f972  ./harness/dlib.sh
-1610f7bd066c7d2b5ffb88d55ecda003a0ebfa0b7b3bcb2fdfebd30366911bf8  ./harness/finalize-arm.sh
+88ce41b0229cb34910e7eb0cbb7bafd8df724db5131ccf548e988dc216f1a4d5  ./harness/finalize-arm.sh
 cc13069ea0bd035ea232df98bcb7e6751c12faf2e989b1eb203337c0d0c6a88d  ./harness/flock-spy
-319aa05fbe78121167e032fc8ebe1716970212a2241c4a4fe44a1838ca9e71be  ./harness/gate-redproof.sh
+0e744e1ae32b3f6b49885c9f48c37b60577fd60d4929c0ec326daecc0340eab9  ./harness/gate-redproof.sh
 38668d4ef1640310a5d63beee459addc3a5aaa86e4a61d505ff11b3b2ccba539  ./harness/gen_arm_manifest.py
 2d6a83b0e90d81f7233a83588be328fb585b012e80c0c667dd4af8be7ca04414  ./harness/make-hook-patch.py
-bbd5b32ed82af5367f262af05e3c52778103afcc57e30e7888dcbcf4cd98a029  ./harness/manifest-tree-gate.sh
+85cc44364b49f1b3a7143acb7251abd5af5933e0fdfec01b76f84a128009d109  ./harness/manifest-tree-gate.sh
 560a7b1c03f47e767b9f1371dbbcf5ddc1a372a32461cf53056543ce2295fe04  ./harness/path-cite-resolver.py
 7e42638ef7a910671b80acce60b0a2852efb9719b88582354ad5512303b2a96a  ./harness/pty-attach.py
 39ddf804abce4d7a3aa8ff5ea9c61c9bd6ea8a6e456934fd3686d7b64ac39a7e  ./harness/rebuild-attention-fields.py
 a997adf811331efc7e2eadb77b226b7ed93a1f193a84cce9475100910d41ff65  ./harness/tlib.sh
 05cadb933aa636b7a6f3856aae55be50079c5cc06f1988b18bfa2b3dd754bd02  ./harness/tmux-shim
+f4f4e248e58798cdc4af6bd6d9acb5740d78c7f25dc07d8d874774045d649631  ./harness/write-sums.sh
 5f9917f98f2a489dba2db5cbb344c625d767d4bc4cdbe1152d7d220ae06f9b65  ./ledger.tsv

@@ -191,6 +191,8 @@ SC-604 | — | code-observation | UNCLASSIFIED | F-TMUX | genuinely-unmarked
 SC-707 | — | code-observation | UNCLASSIFIED | F-ADAPTER | genuinely-unmarked
 SC-832b | — | code-observation | UNCLASSIFIED | MISSING-CRIT-ASSIGN | genuinely-unmarked; anomaly: no CRIT-ASSIGN line
 SC-832c | — | code-observation | UNCLASSIFIED | MISSING-CRIT-ASSIGN | genuinely-unmarked; anomaly: no CRIT-ASSIGN line
+SC-832d | 3 | joint seat ruling (SC-835a hazard) | fix-known-defect(#102) | — | marked 2026-08-20
+SC-832e | 3 | joint seat ruling | fix-known-defect(#102) | — | marked 2026-08-20
 SC-833b | — | code-observation | — | MISSING-CRIT-ASSIGN | genuinely-unmarked; anomaly: no CRIT-ASSIGN line
 SC-833c | — | code-observation | — | MISSING-CRIT-ASSIGN | genuinely-unmarked; anomaly: no CRIT-ASSIGN line
 SC-833d | — | code-observation | — | MISSING-CRIT-ASSIGN | genuinely-unmarked; anomaly: no CRIT-ASSIGN line

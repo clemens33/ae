@@ -1,0 +1,3 @@
+t1|@0|%0|grok|grok:grok|/dev/ttys028|0
+t1|@1|%2|bash|_watchdog|/dev/ttys073|0
+t1|@1|%1|bash|_events|/dev/ttys071|0
