@@ -26,7 +26,7 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 |---|---|---|
 | `_harness/hlib.sh` | `0f838f7e89619358650f4ee99da31776f5351ef219c32f85c9b1546a0a8779e4` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
-| `_harness/arm-h7l.sh` | `03b0d8b6a964c8f570595a0b8a76f68450b572aa25e3192d70a434c8f305b825` | 2026-08-21 (registered BEFORE its first run) |
+| `_harness/arm-h7l.sh` | `dffe8d0a7a2101555a776887c66efa66ad7673994e2eb73f31163c344206da86` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/pty-run.py` | `04bb88cc25a4312a76e6cde62563aa5c18966a1ac17d3e6c9b06f02d7842c5c3` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h3.sh` | `453421717eaf23a711d303a65e63016e95ba1d4ea99c093e4ab0ede98d721ce1` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h5.sh` | `0977a5fdf505de288518175c882fe78837249fe473fe41f8d12ed6eb8110e400` | 2026-08-21 (registered BEFORE its first run) |
@@ -253,3 +253,24 @@ re-read after an amendment instead of only the ones the amendment names.
   monotonicity, with a neutral leg reporting caught=NO and four mutated legs reporting YES,
   including the exact subshell shape. Batch C's 177 ledgers pass it unchanged.
 - arms reopened: A-H5 and A-H3, both whole.
+
+### A15 — the census cannot classify most processes on this platform, and now says so
+
+- `03b0d8b6a964c8f570595a0b8a76f68450b572aa25e3192d70a434c8f305b825` -> `dffe8d0a7a2101555a776887c66efa66ad7673994e2eb73f31163c344206da86`
+- what the first run showed: every case returned INCONCLUSIVE because the census did not
+  report its own in-range control. Two causes, both measured:
+  1. `bash -c 'sleep 25'` EXECS `sleep`, and macOS then exposes no environment for it — the
+     control was unreportable for a reason unrelated to the census. A trailing `:` prevents
+     the exec optimisation.
+  2. macOS exposes a process's environment to `ps e` for only a SUBSET of even one's own
+     processes: 1 of 40 sampled here. A process whose environment cannot be read CANNOT BE
+     CLASSIFIED BY REACH.
+- what changed: the census reports three classes — IN-RANGE, out-of-range, and
+  UNKNOWN-REACH — with counts, and an unreadable process is UNKNOWN, never quietly counted
+  as out of range. The containment claim is bounded accordingly: layer 2 cannot enumerate
+  all watchers on this platform, so it corroborates rather than carries, layer 1
+  (a randomly named `AE_HOME` created after the system census, with reach inherited across
+  fork) carries the claim, and layer 3 covers only what the arm spawns.
+- the guard worked: every case aborted rather than reporting a contained run on a census
+  that could not see its own control.
+- arms reopened: A-H7L, which had produced no reading.

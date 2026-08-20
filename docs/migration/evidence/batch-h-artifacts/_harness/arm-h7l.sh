@@ -38,26 +38,43 @@ STUB
     chmod +x "$STUBDIR/$tool"
 done
 
-# THE CENSUS. Classification is by REACH, never by name; the arm's own processes are
-# excluded by the token they carry, and the exclusion must be DEMONSTRATED to fire.
+# THE CENSUS, AND WHAT IT CANNOT DO ON THIS PLATFORM.
+#
+# Classification is by REACH — a process's own AE_HOME — never by name, because a census
+# whose command line contains its search string counts itself. But macOS exposes a
+# process's environment to `ps e` only for a SUBSET of even one's own processes: measured
+# here, 1 of 40 sampled. A process whose environment cannot be read CANNOT BE CLASSIFIED,
+# so the census reports three classes and a count of the unclassifiable, and it does not
+# claim zero in-range watchers — only zero AMONG THOSE IT CAN READ. Layer 1 carries the
+# containment claim; this layer corroborates it and states its own blind spot.
 census() { # <out-file> <fixture-ae-home>
     local out="$1" fixture="$2"
     { echo "## every process of this uid, classified by REACH (its own AE_HOME), not by name"
       echo "fixture_ae_home=$fixture"
       echo "arm_token=$ARM_TOKEN"
+      echo "## macOS exposes an environment to ps e for only some processes; one it cannot"
+      echo "## read is UNKNOWN-REACH, not out-of-range."
       printf 'pid\tppid\treach\ttoken\tae_home\n'
       while read -r pid ppid; do
           [[ "$pid" =~ ^[0-9]+$ ]] || continue
           local env_txt home tok reach
-          env_txt="$(ps eww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n')"
+          env_txt="$(ps eww -p "$pid" 2>/dev/null | tail -1 | tr ' ' '\n')"
+          if ! printf '%s\n' "$env_txt" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*='; then
+              printf '%s\t%s\t%s\t%s\t%s\n' "$pid" "$ppid" "UNKNOWN-REACH" "unknown" "<env unreadable>"
+              continue
+          fi
           home="$(printf '%s\n' "$env_txt" | grep '^AE_HOME=' | head -1 | cut -d= -f2-)"
           tok=no; printf '%s\n' "$env_txt" | grep -q "^AE_H_ARM_TOKEN=$ARM_TOKEN$" && tok=yes
           reach=out-of-range
           [[ -n "$home" && "$fixture" == "$home"* ]] && reach=IN-RANGE
-          [[ "$reach" == IN-RANGE || "$tok" == yes ]] && \
-              printf '%s\t%s\t%s\t%s\t%s\n' "$pid" "$ppid" "$reach" "$tok" "${home:-<none>}"
+          printf '%s\t%s\t%s\t%s\t%s\n' "$pid" "$ppid" "$reach" "$tok" "${home:-<none>}"
       done < <(ps -eo pid=,ppid=)
     } >"$out"
+}
+
+census_counts() { # <census-file>
+    awk -F'\t' 'NR>5 {c[$3]++} END {printf "in_range=%d out_of_range=%d unknown_reach=%d",
+        c["IN-RANGE"]+0, c["out-of-range"]+0, c["UNKNOWN-REACH"]+0}' "$1"
 }
 
 run_case() { # <case-id> <note> <invoker...>
@@ -76,9 +93,12 @@ run_case() { # <case-id> <note> <invoker...>
 
     # LAYER 2, BOTH DIRECTIONS: an in-range control the census MUST report, and the arm's
     # own token-carrying process it MUST exclude.
-    env AE_HOME="$AE_HOME/control-in-range" /opt/homebrew/bin/bash -c 'sleep 25' &
+    # `bash -c 'sleep 25'` EXECS sleep and the environment stops being readable — the
+    # control would then be unreportable for a reason that has nothing to do with the
+    # census. The trailing `:` prevents the exec optimisation.
+    env AE_HOME="$AE_HOME/control-in-range" /opt/homebrew/bin/bash -c 'sleep 25; :' &
     local ctl=$!
-    env AE_H_ARM_TOKEN="$ARM_TOKEN" AE_HOME="$AE_HOME" /opt/homebrew/bin/bash -c 'sleep 25' &
+    env AE_H_ARM_TOKEN="$ARM_TOKEN" AE_HOME="$AE_HOME" /opt/homebrew/bin/bash -c 'sleep 25; :' &
     local mine=$!
     sleep 1
     census "$CASE_DIR/census.control.txt" "$AE_HOME"
@@ -92,16 +112,15 @@ run_case() { # <case-id> <note> <invoker...>
     [[ "${saw_ctl:-0}" -ge 1 ]] || { led OUTCOME-INCONCLUSIVE "reason=the census did not report its own in-range control"; return 1; }
 
     census "$CASE_DIR/census.pre.txt" "$AE_HOME"
-    led census-pre "artifact_sha256=$(sha "$CASE_DIR/census.pre.txt")" \
-        "in_range_rows=$(awk -F'\t' '$3=="IN-RANGE"{n++} END{print n+0}' "$CASE_DIR/census.pre.txt")"
+    led census-pre "artifact_sha256=$(sha "$CASE_DIR/census.pre.txt")" "$(census_counts "$CASE_DIR/census.pre.txt")" \
+        "note=unknown_reach are processes whose environment this platform will not expose; they are NOT counted as out of range"
     cp "$SAY_META/events.jsonl" "$CASE_DIR/events.before.jsonl" 2>/dev/null || : >"$CASE_DIR/events.before.jsonl"
     led measured-input "note=$note" "argv=$*"
     run_in "$SAY_WORK" measured "$cid" "say" 20 -- "$@"
     cp "$SAY_META/events.jsonl" "$CASE_DIR/events.after.jsonl" 2>/dev/null || : >"$CASE_DIR/events.after.jsonl"
     diff "$CASE_DIR/events.before.jsonl" "$CASE_DIR/events.after.jsonl" >"$CASE_DIR/events.diff.txt" 2>&1
     census "$CASE_DIR/census.post.txt" "$AE_HOME"
-    led census-post "artifact_sha256=$(sha "$CASE_DIR/census.post.txt")" \
-        "in_range_rows=$(awk -F'\t' '$3=="IN-RANGE"{n++} END{print n+0}' "$CASE_DIR/census.post.txt")"
+    led census-post "artifact_sha256=$(sha "$CASE_DIR/census.post.txt")" "$(census_counts "$CASE_DIR/census.post.txt")"
     led stub-log-after "lines=$(wc -l <"$CASE_DIR/stub.log" | tr -d ' ')"
     led case-CLOSE "events_diff_lines=$(wc -l <"$CASE_DIR/events.diff.txt" | tr -d ' ')"
     echo "  $cid"
