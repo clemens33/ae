@@ -26,6 +26,7 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 |---|---|---|
 | `_harness/hlib.sh` | `0f838f7e89619358650f4ee99da31776f5351ef219c32f85c9b1546a0a8779e4` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
+| `_harness/arm-h1h2.sh` | `4c2c8cb2d71d8153a9efe102572596546780b8381fed2885d30ed0f13d0da720` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h7l.sh` | `dffe8d0a7a2101555a776887c66efa66ad7673994e2eb73f31163c344206da86` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/pty-run.py` | `04bb88cc25a4312a76e6cde62563aa5c18966a1ac17d3e6c9b06f02d7842c5c3` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h3.sh` | `453421717eaf23a711d303a65e63016e95ba1d4ea99c093e4ab0ede98d721ce1` | 2026-08-21 (registered BEFORE its first run) |
