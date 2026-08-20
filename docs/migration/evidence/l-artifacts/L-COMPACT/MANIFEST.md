@@ -26,8 +26,10 @@ renamed-interpreter fake tool (a copy of `bash` named `claude`) that accepts rea
 `_H` is unchanged across v1/v2/v3: it returns 0 immediately when `AE_L_HOOKS` is unset,
 and when active it only appends a barrier ordinal to a harness file and optionally blocks
 on a release file. It never reads, hashes or computes over product state. Every `ARM.txt`
-carries `hook_patch_version` and the binary's own sha256; 6 of 18 arms ran under v3, the
-other 12 under the unmodified frozen binary.
+carries `hook_patch_version` and the binary's own sha256. **Measured from the tree: 5 of
+the 18 arms ran under v3** — `baseline`, `recovery-exec-selected`, `recovery-exec-contrast`,
+`revalidation-after-answer`, `revalidation-after-handover` — and the other 13 ran on the
+unmodified frozen binary.
 
 This v3 is unrelated to the SC-515b bound question ruled on in L-STOP: no constant was
 patched anywhere. The three additions are barrier calls at three sites.
@@ -44,7 +46,15 @@ v1's and v2's proofs are untouched.
 ## The named trace channels (SC-827 material)
 
 `baseline/trace-channels.txt` records the channels in the order they fired, with pid and
-monotonic clock, plus a legend that names each channel's SITE and nothing else. The
+monotonic clock, plus a legend that names each channel's SITE and nothing else.
+
+**Two pid columns exist and they are not the same number.** `hook-trace.tsv` (and the copy
+inside `trace-channels.txt`) records `$$` — the shell's own pid, identical for every
+channel of one invocation. `barrier-order.tsv`'s barrier KEY records `${BASHPID}`, which
+differs when a site runs inside a command substitution: in this arm the resolver-entry key
+reads `.86134.` while every other key and every trace line reads `86132`. Both artifacts
+are correct; they answer different questions, and any claim about "a different pid" has to
+name which of the two it comes from. The
 resolver entry is a separate channel from the two revalidation sites, so one authoritative
 resolution and the permitted revalidation reads are separable without counting raw meta
 reads. What that ordering MEANS is not stated anywhere in this section.
@@ -89,7 +99,7 @@ Plus one section-level artifact:
 
 | path | roster id | content |
 |---|---|---|
-| `residual-rc/rc-table.tsv` | SC-508 | the capture-only exit-status table across EVERY arm in the section — arm, step, rc, and the argv that produced it — assembled from each arm's own recorded `.rc` and `.invocation` files. 53 rows. No status is compared with another and no arm is interpreted |
+| `residual-rc/rc-table.tsv` | SC-508 | the capture-only exit-status table across EVERY arm in the section — arm, step, rc, and the argv that produced it — assembled from each arm's own recorded `.rc` and `.invocation` files. 54 data rows (plus a header and seven comment lines). No status is compared with another and no arm is interpreted |
 
 ### The twin construction, stated exactly
 
