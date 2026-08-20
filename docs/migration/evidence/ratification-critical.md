@@ -3,7 +3,10 @@
 Derived mechanically from the canonical set reported by sweep-check.sh; letters are criteria only.
 
 - Canonical IDs: SC=398, D=42, total=440
-- Class counts: CRITICAL=302, DEFERRABLE=114, ALREADY-OBSERVED=24
+- Class counts: CRITICAL=314, DEFERRABLE=102, ALREADY-OBSERVED=24 (amended
+  2026-08-20, ae-20260820T114105Z-f9ad4b82: the SC deferrable predicate is a type
+  error over ownership records — no D record is deferrable by it; every non-PROVES
+  D record is critical for this P0. 290 critical observations outstanding.)
 - Critical-letter counts (overlaps counted): A=119, B=38, C=39, D=192
 - A includes explicit UNCLASSIFIED, authority=code-observation, literal Authority: UNRESOLVED(...) rows, and D records whose TBD fields feed a seat ruling; ALREADY-OBSERVED takes pin-audit PROVES priority.
 
@@ -12,21 +15,21 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - D03 — CRITICAL(A,C)
 - D04a — CRITICAL(A,C)
 - D04b — CRITICAL(A,C)
-- D05 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
-- D06 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
-- D07 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
+- D05 — CRITICAL(A,D) — grouping-provisional: A until the grouping is ruled; the unlocked request lookup and delivered/body/event residues are the operation model behind #66
+- D06 — CRITICAL(D) — delivered-pane + body-without-event residue is the irreversible delivery boundary
+- D07 — CRITICAL(D)
 - D08 — ALREADY-OBSERVED(pin-audit PROVES pointer)
 - D09 — ALREADY-OBSERVED(pin-audit PROVES pointer)
 - D10 — ALREADY-OBSERVED(pin-audit PROVES pointer)
 - D11 — ALREADY-OBSERVED(pin-audit PROVES pointer)
 - SC-011 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
-- D12 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
+- D12 — CRITICAL(A)
 - SC-012 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
 - D13 — CRITICAL(B)
 - SC-013 — CRITICAL(A)
-- D14 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
+- D14 — CRITICAL(D)
 - SC-014 — CRITICAL(A)
-- D14a — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
+- D14a — CRITICAL(D)
 - D14b — CRITICAL(D)
 - D15 — ALREADY-OBSERVED(pin-audit PROVES pointer)
 - D16 — ALREADY-OBSERVED(pin-audit PROVES pointer)
@@ -65,13 +68,13 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - D27 — CRITICAL(A,B)
 - D28a — ALREADY-OBSERVED(pin-audit PROVES pointer)
 - D28b — ALREADY-OBSERVED(pin-audit PROVES pointer)
-- D28c — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
-- D29a — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
+- D28c — CRITICAL(B)
+- D29a — CRITICAL(D)
 - D29b — ALREADY-OBSERVED(pin-audit PROVES pointer)
-- D30a — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
-- D30b — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
-- D30c — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
-- D31 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
+- D30a — CRITICAL(A)
+- D30b — CRITICAL(A)
+- D30c — CRITICAL(B,D)
+- D31 — CRITICAL(D)
 - SC-100 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
 - SC-101 — CRITICAL(A)
 - SC-102a — CRITICAL(A)
