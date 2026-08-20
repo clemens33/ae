@@ -247,8 +247,18 @@ ordering is stated rather than assumed:
   its rc — `out="$(_stop_one_session …)" || rc=$?` then `if ((rc == 0))` → the
   `stop-result` event.
 - The post-kill event proves that path survived the dying session.
-**CONFIRMED AS COMPOSITE.** Runtime lineage is not mandatory given the above; if a future
-seat requires it, the barrier capture is still the way to get it.
+**CONFIRMED AS COMPOSITE — and the runtime lineage has since been obtained** by
+L-DISCRIM **D5b**, which holds the singular self-stop supervisor at an L-HOOKS-v5 barrier
+at its entry (pid 48880), captures the live process table there, walks its ancestry while
+alive, and diffs that live table against the post-hoc snapshot this section's artifact was.
+The row now rests on source ordering AND a deterministic live capture.
+**D5a does NOT contribute lineage** (colead's finding, verified): it proves only
+existence-under-real-timing via three full-argv samples. Its `supervisor-lineage.txt`
+header claims an ancestor walk "taken WHILE IT WAS ALIVE" and contains `0<TAB>` — the
+harness `wait`s for the 40s sampler before calling the lineage step, by which time the
+supervisor is dead. **The arm built to close this defect reproduced it**, in its own
+manifest, one artifact over. That is the sharpest possible demonstration that the class is
+not about carelessness.
 **Evidence-integrity note, retained deliberately:** `supervisor.ps-lineage.txt` is
 byte-identical to `3post.ps.txt` in both arms while `ARM.txt` asserts
 `supervisor_observed yes`. The row closes on other evidence; the arm's claim does not,

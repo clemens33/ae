@@ -124,10 +124,20 @@ SC-825c's arm. I attributed cross-arm evidence to a row whose own arm holds none
 ae:16987-16988 and written at ae:17575-17580, and the second proof at ae:17613-17626 never
 substitutes its own tuple — so the row may close as CODE-COMPOSITE. **Deletion cannot
 prove it.**
-**To close it at runtime** the discriminating arm is: after the first proof, replace the
-parent with a second VALID archive of the SAME id carrying DIFFERENT non-zero
-handover/pending counts; a successful child must retain the FIRST tuple. Until then,
-PARTIAL.
+**CLOSED AS COMPOSITE by L-DISCRIM D1** — with the scope colead required, because D1
+does not close the whole row on its own.
+D1 built exactly the discriminator specified: parent at handover=2/pending=1, replaced at
+the barrier after the first proof with a VALID archive **at the same id** carrying
+handover=5/pending=3. A control ran first — `--from` against the replacement ALONE records
+5/3 — so the arm could have shown 5/3. The child recorded **2/1**.
+**What D1 proves DIRECTLY: the COUNTS come from the first proof.**
+**What it does NOT prove: the ID half.** The replacement holds the archive id CONSTANT by
+construction, so a mutant that re-reads the id after the barrier while retaining the proved
+counts emits byte-identical artifacts. The id half rides frozen source (tuple assigned
+ae:16987-16988, written ae:17575-17580, second proof at ae:17613-17626 never substituting
+its own) plus the earlier deletion construction.
+**CONFIRMED AS COMPOSITE (D1 runtime for the counts + frozen source for the id).** Any
+citation must carry both halves.
 **Boundary stated by the producer and respected here:** this arm exercises the plain
 launch path only and *"carries no re-proof expectation and no rollback machinery of its
 own"*. Its `source-trace.*` file is a frozen-source extract with line numbers — every line
@@ -171,8 +181,12 @@ capture **plus both claim-writer source paths**, not on two-arm direct evidence.
 
 Bucket 2. Arm: `lineage-durability-stop-resume` (`stop_rc 0`; launch/resume rc are the
 attach, per limit 1).
-**RULED: PARTIAL — ID preservation is proven, COUNT preservation is not** (colead's
-BLOCKER, adopted). **Every captured `parent_archive_handover_count` and
+**CLOSED by L-DISCRIM D2** (seat-verified). D2 ran the cycle with counts asserted
+NON-ZERO and DISTINCT (handover=2, pending=1) before proceeding, and both counts plus the
+exact id survive `--from` → stop → resume. The fixture that could not discriminate is
+replaced by one that can: its first attempt FAILED the non-zero assertion and wrote
+ARM-INVALID rather than passing a zero through. **CONFIRMED.**
+*The original finding, kept for the record:* **Every captured `parent_archive_handover_count` and
 `parent_archive_pending_count` in this section is 0**, so an implementation that LOSES
 both and defaults them to zero passes all three captures identically. The arm cannot fail
 the count half of the claim.
@@ -238,15 +252,21 @@ observed on both sides, not inferred from one.
 cases showed I had quoted evidence from the wrong FILE or the wrong ARM. This section
 does **not** converge. My pre-gate worksheet claimed 9/9 and was wrong.*
 
-- **CONFIRMED, direct — 4**: SC-809, SC-822, SC-825c, SC-826.
-- **CONFIRMED AS COMPOSITE — 2**: SC-823 (frozen ordering + tree manifests),
-  SC-824b (refusal capture + both claim-writer source paths).
+*Updated after L-DISCRIM: both PARTIALs are closed by purpose-built discriminators, and
+the section now converges. The route mattered — neither closed by re-reading the original
+captures; each needed an arm that could produce the unwanted answer.*
+
+- **CONFIRMED, direct — 5**: SC-809, SC-822, SC-825c, SC-826, **SC-825a** (closed by
+  L-DISCRIM D2: counts asserted non-zero AND distinct before the arm proceeds, then
+  surviving `--from` → stop → resume).
+- **CONFIRMED AS COMPOSITE — 3**: SC-823 (frozen ordering + tree manifests), SC-824b
+  (refusal capture + both claim-writer source paths), **SC-824a** (L-DISCRIM D1 runtime
+  for the COUNTS + frozen source for the ID — D1 holds the archive id constant by
+  construction, so it cannot discriminate that half).
 - **CONFIRMED WITH A NORMATIVE PRECISION — 1**: SC-825b — persistent lineage state stores
   the parent id and counts, never an absolute parent path; rendered paths are derived from
   the current archive root plus the id.
-- **PARTIAL — 2**: SC-824a (its own arm deletes the child, so no recorded tuple exists;
-  needs the same-id/different-counts discriminator), SC-825a (every captured count is 0,
-  so an implementation that loses them and defaults to zero passes identically).
+- **PARTIAL — 0.**
 
 **Section total: 9.**
 

@@ -112,9 +112,17 @@ SIGPIPE disposition the child was handed. Worse, the harness itself sets `SIG_DF
 before the exec — so the arm cannot separate "ae leaked no altered disposition" from
 "the harness reset it before anyone could observe a leak". **The arm as built cannot
 fail this claim, so by the arm-that-cannot-fail rule it is not evidence for it.**
-NEEDED to close: an ability-to-fail control — a variant that deliberately leaks
-`SIG_IGN` into the child and is shown to be DETECTED by this same capture. Until that
-control exists the row stays PARTIAL.
+**The ability-to-fail control now EXISTS (L-DISCRIM D4) — and the row STILL stays
+PARTIAL**, which is the honest outcome rather than a disappointing one.
+D4 shows the capture DOES discriminate: dispositions handed to the producer give
+`dfl → 141`, `ign → 1`, `inherit → 1`, so a deliberately leaked `SIG_IGN` is DETECTED.
+The arm can therefore fail, which is what the row needed.
+**What it still cannot do is ATTRIBUTE.** The harness sets the disposition before the
+exec, so these runs report what the HARNESS handed the producer; separating "ae leaked
+nothing" from "the harness reset it first" requires reading a live process's ignored-signal
+mask, and macOS has no `/proc` equivalent. That is a PLATFORM limit, not a harness one.
+**PARTIAL stands.** Closing it needs a platform where the live mask is readable, or a
+construction nobody has proposed yet.
 
 **SC-507a / SC-507c / SC-507d — `archive preview`** (all b2, none). Arm: `preview`
 (**rc=0**), plus the preview TWIN construction. IS: stdout is the digest bytes;
