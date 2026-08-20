@@ -1233,6 +1233,24 @@ mod tests {
     /// the mutation lane cannot see the gap. This literal is the second opinion
     /// that makes the pin mean something — the same lesson as counting fixtures
     /// instead of naming them.
+    ///
+    /// **The class, for whoever adds the eleventh key.** This suite shipped
+    /// three tests that looked like constraints and were not: one asserted the
+    /// fixture COUNT where it meant the fixture NAMES, so deleting one fixture
+    /// and adding another passed; one asserted an accessor only in the
+    /// direction where it returns nothing, so replacing its body with that
+    /// nothing passed; and this one iterated the production key list to check a
+    /// rejection that consulted the production key list, so a bogus name
+    /// substituted on both sides passed. One signature underneath all three:
+    /// **the expected value and the actual value came from the same place.** A
+    /// test shaped that way cannot fail, and it is worse than no test, because
+    /// it reports coverage of the thing it does not check. Mutation testing
+    /// caught the first two and structurally CANNOT catch this one — const
+    /// membership has no mutant to generate — so the only defence here is a
+    /// second, independent statement of the expectation, which is what the list
+    /// below is. So: adding a key means adding it in BOTH places, and if that
+    /// ever feels like pointless duplication, that feeling is the bug. The
+    /// duplication is the test.
     const DOCUMENTED_EVENT_KEYS: [&str; 10] = [
         "ts",
         "actor",
