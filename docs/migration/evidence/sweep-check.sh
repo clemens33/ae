@@ -44,21 +44,31 @@ awk \
   -v closure_file="$closure_file" \
   -v expected_file="$expected_file" \
   '
-function row_head(line, t) {
+function row_head(line, t, close_pos, dash_pos) {
   if (line ~ /^[[:space:]]*-[[:space:]]+\*\*SC-/) {
     t = line
     sub(/^[[:space:]]*-[[:space:]]+\*\*SC-/, "SC-", t)
-    sub(/\*\*.*/, "", t)
-    sub(/[[:space:]]+—.*/, "", t)
-    sub(/[[:space:]].*/, "", t)
+    close_pos = index(t, "**")
+    dash_pos = match(t, /[[:space:]]+—/)
+    if (close_pos && (!dash_pos || close_pos < dash_pos))
+      t = substr(t, 1, close_pos - 1)
+    else if (dash_pos)
+      t = substr(t, 1, dash_pos - 1)
+    else
+      sub(/[[:space:]].*/, "", t)
     return t
   }
   if (line ~ /^[[:space:]]*\*\*SC-/) {
     t = line
     sub(/^[[:space:]]*\*\*SC-/, "SC-", t)
-    sub(/\*\*.*/, "", t)
-    sub(/[[:space:]]+—.*/, "", t)
-    sub(/[[:space:]].*/, "", t)
+    close_pos = index(t, "**")
+    dash_pos = match(t, /[[:space:]]+—/)
+    if (close_pos && (!dash_pos || close_pos < dash_pos))
+      t = substr(t, 1, close_pos - 1)
+    else if (dash_pos)
+      t = substr(t, 1, dash_pos - 1)
+    else
+      sub(/[[:space:]].*/, "", t)
     return t
   }
   return ""
@@ -120,13 +130,24 @@ function process_semantic_line(line,    rest, next_part, prefix, segment, candid
 }
 
 function add_surface_item(family, item, key) {
-  if (family != "S1")
-    sub(/[[:space:]].*$/, "", item)
-  sub(/[[:space:]]+$/, "", item)
   if (family == "S1") {
-    if (item !~ /^[A-Za-z_][A-Za-z0-9_-]*( [A-Za-z_][A-Za-z0-9_-]*)?$/)
+    sub(/[[:space:]]+$/, "", item)
+    if (item !~ /^[A-Za-z_][A-Za-z0-9_-]*$/ && \
+        item !~ /^[A-Za-z_][A-Za-z0-9_-]* [A-Za-z_][A-Za-z0-9_-]*$/ && \
+        item !~ /^[A-Za-z_][A-Za-z0-9_-]* --[A-Za-z0-9][A-Za-z0-9_-]*$/ && \
+        item !~ /^--[A-Za-z0-9][A-Za-z0-9_-]*$/ && \
+        item !~ /^--[A-Za-z0-9][A-Za-z0-9_-]*(\/--[A-Za-z0-9][A-Za-z0-9_-]*)+$/)
       return
-  } else if (item !~ /^[A-Za-z_][A-Za-z0-9_-]*$/) {
+    key = item
+    if (!s1_inventory_seen[key]) {
+      s1_inventory_seen[key] = 1
+      s1_inventory_count++
+      s1_inventory_items[s1_inventory_count] = item
+    }
+    return
+  }
+  sub(/[[:space:]]+$/, "", item)
+  if (item !~ /^[A-Za-z_][A-Za-z0-9_-]*$/) {
     return
   }
   key = family SUBSEP item
@@ -138,7 +159,7 @@ function add_surface_item(family, item, key) {
   }
 }
 
-function parse_surface_header(family, line, rest, token, count, i) {
+function parse_surface_header(family, line, rest, token, count, i, part, prefix) {
   if (family == "S3") {
     rest = line
     while (match(rest, /`[^`]+`/)) {
@@ -160,40 +181,108 @@ function parse_surface_header(family, line, rest, token, count, i) {
       rest = substr(rest, RSTART + RLENGTH)
     }
   } else if (family == "S1") {
+    # Compare map and inventory by exact spelling: the combined leading-flag
+    # item remains --local/--copy/--worktree on both sides.
     rest = line
     while (match(rest, /`[^`]+`/)) {
       token = substr(rest, RSTART + 1, RLENGTH - 2)
-      gsub(/[\/|]/, "\n", token)
-      count = split(token, surface_parts, /\n/)
+      if (token == "--local/--copy/--worktree") {
+        count = 1
+        surface_parts[1] = token
+      } else {
+        prefix = ""
+        if (token ~ /^telegram[[:space:]]+/)
+          prefix = "telegram "
+        else if (token ~ /^steward[[:space:]]+/)
+          prefix = "steward "
+        gsub(/[\/|]/, "\n", token)
+        count = split(token, surface_parts, /\n/)
+      }
       for (i = 1; i <= count; i++) {
         token = surface_parts[i]
-        sub(/^[[:space:]]*ae[[:space:]]+/, "", token)
+        sub(/^[[:space:]]+/, "", token)
+        sub(/[[:space:]]+$/, "", token)
+        if (prefix != "" && token !~ /^telegram[[:space:]]/ && token !~ /^steward[[:space:]]/)
+          token = prefix token
+        if (token ~ /^ae[[:space:]]+\[/)
+          token = "launch"
+        else
+          sub(/^[[:space:]]*ae[[:space:]]+/, "", token)
         sub(/[[:space:]]*\[.*/, "", token)
-        sub(/[[:space:]]+--.*/, "", token)
         sub(/[[:space:]]+\.\.\.$/, "", token)
         sub(/[[:space:]]+…$/, "", token)
-        if (token !~ /^--/ && token !~ /^</ && token != "ae")
+        sub(/[[:space:]]+<[^>]*>$/, "", token)
+        if (token !~ /^</ && token != "ae")
           add_surface_item(family, token)
+        if (token == "doctor")
+          add_surface_item(family, "doctor --refresh")
       }
       rest = substr(rest, RSTART + RLENGTH)
     }
   }
 }
 
-function d_head(line, t) {
+function add_s1map_item(item,    key) {
+  gsub(/[[:space:]]+/, " ", item)
+  sub(/^[[:space:]]+/, "", item)
+  sub(/[[:space:]]+$/, "", item)
+  if (item == "")
+    return
+  key = item
+  s1map_seen[key] = 1
+}
+
+function parse_s1map(line, rest, arrow, item, target_text, target, target_count) {
+  rest = line
+  sub(/^S1MAP:[[:space:]]*/, "", rest)
+  arrow = index(rest, "->")
+  if (!arrow)
+    return
+  item = substr(rest, 1, arrow - 1)
+  sub(/^[[:space:]]+/, "", item)
+  sub(/[[:space:]]+$/, "", item)
+  target_text = substr(rest, arrow + 2)
+  add_s1map_item(item)
+  target_count = 0
+  while (match(target_text, /SC-[0-9][0-9]*[A-Za-z0-9\/,\.]*|SC-[^[:space:]]+/)) {
+    target = substr(target_text, RSTART, RLENGTH)
+    target_count++
+    if (!(target in s1map_target_seen)) {
+      s1map_target_seen[target] = 1
+      s1map_target_count++
+      s1map_targets[s1map_target_count] = target
+      s1map_target_items[target] = item
+    }
+    target_text = substr(target_text, RSTART + RLENGTH)
+  }
+  if (target_count == 0) {
+    print "S1MAP-EMPTY-TARGET: " item
+    empty_s1map_count++
+  }
+}
+
+function d_head(line, t, close_pos, dash_pos) {
   if (line ~ /^[[:space:]]*###[[:space:]]+D[A-Za-z0-9._\/-]+/) {
     t = line
     sub(/^[[:space:]]*###[[:space:]]+/, "", t)
-    sub(/[[:space:]]+—.*/, "", t)
-    sub(/[[:space:]].*/, "", t)
+    dash_pos = match(t, /[[:space:]]+—/)
+    if (dash_pos)
+      t = substr(t, 1, dash_pos - 1)
+    else
+      sub(/[[:space:]].*/, "", t)
     return t
   }
   if (line ~ /^[[:space:]]*\*\*D[A-Za-z0-9._\/-]+/) {
     t = line
     sub(/^[[:space:]]*\*\*/, "", t)
-    sub(/\*\*.*/, "", t)
-    sub(/[[:space:]]+—.*/, "", t)
-    sub(/[[:space:]].*/, "", t)
+    close_pos = index(t, "**")
+    dash_pos = match(t, /[[:space:]]+—/)
+    if (close_pos && (!dash_pos || close_pos < dash_pos))
+      t = substr(t, 1, close_pos - 1)
+    else if (dash_pos)
+      t = substr(t, 1, dash_pos - 1)
+    else
+      sub(/[[:space:]].*/, "", t)
     return t
   }
   return ""
@@ -384,6 +473,7 @@ FILENAME == semantic_file {
   if ($0 ~ /^### S1[[:space:]]/) {
     current_family = "S1"
     surface_header_active = 1
+    s1map_candidate = 1
   } else if ($0 ~ /^### S3[[:space:]]/) {
     current_family = "S3"
     surface_header_active = 1
@@ -393,7 +483,24 @@ FILENAME == semantic_file {
   } else if ($0 ~ /^### /) {
     current_family = ""
     surface_header_active = 0
+    if (!s1map_fence_active && !s1map_marker_seen)
+      s1map_candidate = 0
   }
+  if ($0 ~ /^Machine-readable S1 .*declaration table/) {
+    s1map_candidate = 1
+    s1map_marker_seen = 1
+  }
+  if ($0 ~ /^[[:space:]]*```[[:alnum:]_-]*[[:space:]]*$/) {
+    if (s1map_fence_active) {
+      s1map_fence_active = 0
+      s1map_candidate = 0
+    } else if (s1map_candidate) {
+      s1map_fence_active = 1
+      s1map_candidate = 0
+    }
+  }
+  if (s1map_fence_active && $0 ~ /^S1MAP:/)
+    parse_s1map($0)
   if (surface_header_active && $0 !~ /<!-- rows:/)
     parse_surface_header(current_family, $0)
   if ($0 ~ /<!-- rows:/)
@@ -474,6 +581,22 @@ END {
     }
   }
 
+  for (i = 1; i <= s1_inventory_count; i++) {
+    item = s1_inventory_items[i]
+    if (!(item in s1map_seen)) {
+      print "MISSING-S1MAP-ITEM: " item
+      missing_s1map_count++
+    }
+  }
+
+  for (i = 1; i <= s1map_target_count; i++) {
+    id = s1map_targets[i]
+    if (!canonical_sc_id(id) || !(id in seen_ids)) {
+      print "S1MAP-BAD-TARGET: " s1map_target_items[id] " -> " id
+      s1map_bad_target_count++
+    }
+  }
+
   # Build one natural-sorted universe first so every set-difference report is
   # stable across awk hash-table iteration orders.
   for (id in seen_ids)
@@ -533,9 +656,9 @@ END {
 
   print "NOTE: presence checks cannot certify evidence FIDELITY; the separate pin audit must verify evidence fidelity."
   print "NOTE: line/block parsing may misparse prose-form or wrapped fields; implicit family authority and complex classified_by prose are not inferred."
-  print "NOTE: surface coverage only sees list-shaped S1/S3/S15 headers and token mentions (S1 may be covered by rows in another family); it cannot certify omitted, renamed, or prose-only surfaces."
-  printf "SUMMARY: SC_ROWS=%d D_RECORDS=%d MISSING_FIELDS=%d MISSING_D_FIELDS=%d MISSING_SURFACES=%d GRAIN_VIOLATIONS=%d DUPLICATE_IDS=%d MALFORMED_ROW_HEADS=%d DUPLICATE_D_IDS=%d MALFORMED_D_HEADS=%d CLOSURE_ORPHANS=%d CLOSURE_MISSING=%d SET_EXTRA=%d SET_MISSING=%d\n", \
-    row_count, d_count, missing_count, missing_d_count, missing_surface_count, grain_count, duplicate_count, malformed_count, duplicate_d_count, malformed_d_count, \
+  print "NOTE: surface coverage only sees list-shaped S3/S15 headers; S1 coverage only sees backtick-shaped inventory items and S1MAP lines inside the recognized machine-readable table fence. Neither check can certify omitted, renamed, or prose-only surfaces."
+  printf "SUMMARY: SC_ROWS=%d D_RECORDS=%d MISSING_FIELDS=%d MISSING_D_FIELDS=%d MISSING_SURFACES=%d MISSING_S1MAP_ITEMS=%d S1MAP_BAD_TARGETS=%d S1MAP_EMPTY_TARGETS=%d GRAIN_VIOLATIONS=%d DUPLICATE_IDS=%d MALFORMED_ROW_HEADS=%d DUPLICATE_D_IDS=%d MALFORMED_D_HEADS=%d CLOSURE_ORPHANS=%d CLOSURE_MISSING=%d SET_EXTRA=%d SET_MISSING=%d\n", \
+    row_count, d_count, missing_count, missing_d_count, missing_surface_count, missing_s1map_count, s1map_bad_target_count, empty_s1map_count, grain_count, duplicate_count, malformed_count, duplicate_d_count, malformed_d_count, \
     closure_orphan_count, closure_missing_count, expected_extra_count, expected_missing_count
   printf "SUMMARY SC_IDS:"
   if (sorted_count == 0)
@@ -544,7 +667,7 @@ END {
     printf " %s", sorted_ids[i]
   printf "\n"
 
-  if (missing_count || missing_d_count || missing_surface_count || grain_count || duplicate_count || malformed_count || duplicate_d_count || malformed_d_count || \
+  if (missing_count || missing_d_count || missing_surface_count || missing_s1map_count || s1map_bad_target_count || empty_s1map_count || grain_count || duplicate_count || malformed_count || duplicate_d_count || malformed_d_count || \
       closure_orphan_count || closure_missing_count || expected_extra_count || expected_missing_count)
     exit 1
   exit 0
