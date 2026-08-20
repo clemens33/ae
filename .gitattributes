@@ -5,4 +5,8 @@
 # recorded hashes (caught at commit ce8965e; a fresh clone would have failed
 # the gate). Never remove without re-verifying every SHA256SUMS from a clone.
 docs/migration/evidence/batch-c-artifacts/** -text
+# Batch H captures include pty output, and a pty turns every newline into CRLF. Without
+# this the committed blob differs from the working bytes the SHA256SUMS were taken over —
+# the exact incident that made the committed-bytes check exist.
+docs/migration/evidence/batch-h-artifacts/** -text
 docs/migration/evidence/l-artifacts/** -text
