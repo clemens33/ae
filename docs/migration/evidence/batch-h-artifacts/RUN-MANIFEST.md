@@ -26,6 +26,8 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 |---|---|---|
 | `_harness/hlib.sh` | `0f838f7e89619358650f4ee99da31776f5351ef219c32f85c9b1546a0a8779e4` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
+| `_harness/arm-h7l.sh` | `03b0d8b6a964c8f570595a0b8a76f68450b572aa25e3192d70a434c8f305b825` | 2026-08-21 (registered BEFORE its first run) |
+| `_harness/pty-run.py` | `04bb88cc25a4312a76e6cde62563aa5c18966a1ac17d3e6c9b06f02d7842c5c3` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h3.sh` | `453421717eaf23a711d303a65e63016e95ba1d4ea99c093e4ab0ede98d721ce1` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h5.sh` | `0977a5fdf505de288518175c882fe78837249fe473fe41f8d12ed6eb8110e400` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h4.sh` | `5944b88c92acd4752addffabe9705ab087ff6c430bed0ea1d0bf6d8040693009` | 2026-08-20T21:51:16Z |
@@ -81,6 +83,31 @@ claim this arm cannot make about its candidates and should not appear to.
 
 - new sha256: `91e8872e7876a1aa0be1344da184057aa8f7bf43f2210e19138cf883bc50eb15`
 - post-capture reporting only; reads the committed captures and records no observation.
+
+### A14 — SC-211l's containment, declared before the run
+
+Layer 1 is STRUCTURAL and load-bearing: the bridge takes its root from `AE_HOME`
+(telegram-daemon:10-11) and this fixture's `AE_HOME` is randomly named and created AFTER
+the system-root census. Reach is inherited across fork — the live daemon forks a child per
+poll cycle — so a child cannot reach what its parent cannot, and the census enumerates
+long-lived ROOTS rather than trying to catch transient children.
+
+Layer 2 is the census, corroborating. It does not match on argv, because a census whose own
+command line contains its search string counts itself. It classifies by REACH (each
+process's own `AE_HOME`) and excludes the arm's own processes by a token they carry, which
+no foreign process can hold. Both directions are demonstrated per case: an in-range control
+the census MUST report, and a token-carrying process it MUST exclude. A case whose census
+cannot report its own control is INCONCLUSIVE, not contained.
+
+Layer 3 is PATH-first refusing `curl`/`wget` stubs, and its scope is stated rather than
+overstated: they contain only what the ARM spawns. An already-running bridge never
+inherited this PATH and is NOT contained by them. The stub is fired deliberately in each
+case and its log must carry the attempt — a recorder nobody has seen fire is not evidence
+of silence.
+
+`pty-run.py` exists because `say` branches on whether stdin is a terminal (ae:14473): a
+redirected empty stdin and a real TTY are different inputs and only a pty presents the
+second.
 
 ## Frozen source
 

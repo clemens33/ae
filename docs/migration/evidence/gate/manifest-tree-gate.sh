@@ -9,6 +9,35 @@ set -uo pipefail
 # rule about. First arg wins, then $BATCH_C_ARTIFACTS, then the live tree.
 A="${1:-${BATCH_C_ARTIFACTS:-/Users/ckriech/projects/clemens33/ae-rust/docs/migration/evidence/batch-c-artifacts}}"
 [[ -d "$A" ]] || { echo "gate: no such tree: $A" >&2; exit 2; }
+# THE GATE'S OWN COVERAGE, printed first and kept beside the checks it describes.
+#
+# The list of what a gate measures used to exist only as the order of its output sections,
+# so nobody could look at the gate and see what it does NOT measure — and a fix that moved
+# in an unmeasured dimension was invisible by construction. Reachability and chronology
+# were both discovered that way, three arms apart. The second list is the more useful half:
+# it is where those two would have been written down before they bit.
+cat <<'DIMS'
+## dimensions CHECKED by this gate
+   citations       every path cited by the tree's MANIFEST resolves to something in it
+   schema          every case carries the artifacts its kind requires, plus a case index
+                   bound to each ledger's content
+   sums            every file is listed in a SHA256SUMS and verifies against it
+   committed-bytes what a fresh clone yields matches what is here, prefix derived from the
+                   tree under audit
+   chronology      ledger sequence identities are unique and monotonic
+## dimensions KNOWN NOT TO BE CHECKED (and why)
+   discrimination  whether a case's inputs could have produced a different reading. A pair
+                   that cannot discriminate passes every check above. Seat review and the
+                   arm's own opposed pairs carry this.
+   reachability    whether the code path a case names was actually entered. The xtrace twin
+                   and the guard witnesses carry it per case, not here.
+   one-variable    whether a pair differs in exactly the field it claims. Held by design
+                   review; two pairs have already failed it.
+   semantic-fit    whether a citation points at the line that BEARS the claim beside it.
+                   The pin file makes a seat's reading cheap; it does not perform it.
+   liveness        whether a fixture presented the input class it names. fixture-validity
+                   artifacts carry it per arm.
+DIMS
 echo "## tree under audit: $A"
 rc=0
 echo "## cited paths (multi-base resolver)"
