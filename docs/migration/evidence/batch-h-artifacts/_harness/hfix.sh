@@ -27,6 +27,7 @@ h_sandbox() { # <id> <main> <workers-csv-or-empty>
       echo "cl = \"$FAKE_BIN\""
       echo "cx = \"$FAKE_BIN\""
       echo "zz = \"$FAKE_BIN\""
+      echo "qq = \"$FAKE_BIN\""
       echo
       echo "[workspace]"
       echo "main = $main"
@@ -54,3 +55,20 @@ h_pane_of() { # <agent-ref>
 }
 
 h_roster() { grep '^agent\.' "$HMETA/meta"; }
+
+# Rewrite the roster between launches. The second session needs a DIFFERENT roster from the
+# first — reusing one config gave both sessions identical agents, so a cross-session probe
+# resolved nothing and measured "agent absent" while claiming to measure "agent present".
+h_reconfig() { # <main> <workers-csv-or-empty>
+    { echo "[agents]"
+      echo "cl = \"$FAKE_BIN\""
+      echo "cx = \"$FAKE_BIN\""
+      echo "zz = \"$FAKE_BIN\""
+      echo "qq = \"$FAKE_BIN\""
+      echo
+      echo "[workspace]"
+      echo "main = $1"
+      [[ -n "${2:-}" ]] && echo "workers = $2"
+      echo "layout = vertical"
+      echo "watchdog = false"; } >"$AE_HOME/config"
+}

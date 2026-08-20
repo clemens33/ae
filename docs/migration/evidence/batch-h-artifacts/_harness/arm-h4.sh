@@ -16,15 +16,29 @@ source "$HERE/hfix.sh"
 ARM=A-H4
 mkdir -p "$ADEST/$ARM"
 
-########## fixture H5 — two live sessions on one server, built by a real launch ##########
-h_sandbox h5 "cl:lead" "cx:lead,cx:solo,zz:only" || exit 1
+########## fixture H5 — two live sessions on one server, built by real launches ##########
+# The first attempt did not carry the collisions this row needs, and three of its fifteen
+# cases therefore measured a different input class than the one they named:
+#   * `workers = cx:lead` was RENAMED to `cx:lead-2` by the frozen launcher's own worker
+#     dedup, so the "bare name ambiguous" case had no collision at all. The collision is
+#     built with the real `spawn` helper instead, which is the path that can create one.
+#   * the second session reused the first's config, so both had identical rosters and the
+#     cross-session probe resolved nothing while claiming to resolve an agent that exists.
+#   * the dead-pane case killed the only `zz`-alias agent, which is also the fixture for
+#     "alias-only unique" — one manipulation destroying another case's precondition.
+h_sandbox h5 "cl:lead" "cx:solo,cx:other,zz:only,qq:spare" || exit 1
 h_launch th5a || { echo "launch A failed"; exit 1; }
 A_META="$HMETA"; A_SESSION="$HSESSION"; A_SRV="$HSRV_PID"; A_HOME="$AE_HOME"; A_SOCK="$SOCK"
+# the bare-name collision, created by the product's own spawn path
+env TMUX="${A_SOCK},${A_SRV},0" TMUX_PANE="$(h_pane_of cl:lead)" \
+    "$A_META/spawn" cx:lead "fixture agent" >"$ROOT/cap/spawn.out" 2>"$ROOT/cap/spawn.err"
+# the second session gets its OWN roster
+h_reconfig "cl:remote" ""
 ( cd "$ROOT/work" && "$HARNESS_BASH" "$FROZEN_AE" --local th5b </dev/null \
     >"$ROOT/cap/launch.th5b.out" 2>"$ROOT/cap/launch.th5b.err" )
 B_META="$AE_HOME/sessions/th5b"
 LIVE_PANE="$(h_pane_of cl:lead)"
-DEAD_PANE="$(h_pane_of zz:only)"
+DEAD_PANE="$(h_pane_of qq:spare)"
 command tmux -S "$A_SOCK" kill-pane -t "$DEAD_PANE" 2>/dev/null
 
 ########## the probe: source the generated _lib, call ae_resolve, print the outputs ##########
@@ -90,6 +104,17 @@ run_case() { # <case-id> <input-literal-or-EMPTY> <note>
     echo "  $cid done"
 }
 
+{ echo "## fixture validity — what the roster and the server actually carry"
+  echo "session_a=$A_SESSION"; echo "session_b=th5b"
+  echo "live_pane=$LIVE_PANE"; echo "dead_pane=$DEAD_PANE"
+  echo "## session A roster (meta)"; grep '^agent\.' "$A_META/meta"
+  echo "## session B roster (meta)"; grep '^agent\.' "$B_META/meta" 2>/dev/null
+  echo "## panes on the server"
+  command tmux -S "$A_SOCK" list-panes -a -F '#{session_name}|#{pane_id}|#{@ae_agent}' 2>&1
+  echo "## spawn stdout"; cat "$ROOT/cap/spawn.out" 2>/dev/null
+  echo "## spawn stderr"; cat "$ROOT/cap/spawn.err" 2>/dev/null
+} >"$ADEST/$ARM/fixture-validity.txt"
+
 run_case h4-c01-pane-live       "$LIVE_PANE"     "a live pane id"
 run_case h4-c02-pane-dead       "$DEAD_PANE"     "a pane id whose pane was killed"
 run_case h4-c03-xsession-ok     "@th5b:cl:remote" "cross-session, session exists"
@@ -100,7 +125,7 @@ run_case h4-c07-at-empty-sess   "@:lead"         "@:agent"
 run_case h4-c08-at-empty-agent  "@th5b:"         "@session:"
 run_case h4-c09-bare-unique     "solo"           "a bare name carried by one agent"
 run_case h4-c10-bare-ambiguous  "lead"           "a bare name carried by two agents"
-run_case h4-c11-alias-unique    "zz"             "an alias carried by one agent"
+run_case h4-c11-alias-unique    "zz"             "an alias carried by one live agent"
 run_case h4-c12-alias-ambiguous "cx"             "an alias carried by two agents"
 run_case h4-c13-exact-present   "cx:solo"        "an exact alias:name present"
 run_case h4-c14-name-absent     "cl:nosuch"      "a name absent from the session"

@@ -25,8 +25,8 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 | script | sha256 | registered (UTC) |
 |---|---|---|
 | `_harness/hlib.sh` | `40ace86d757f5e0f27734472a25d6f4658875140720b85499bce2b6f90f0cb5f` | 2026-08-20T21:51:16Z |
-| `_harness/hfix.sh` | `73c287312f99824b00450e24da687bb756e5c3a376fcd5d0192ed5dd05a3feda` | 2026-08-20T21:51:16Z |
-| `_harness/arm-h4.sh` | `6f6208234ea3d46c11c4d9493554d05008650f1b3752f7361515f5299d49b91b` | 2026-08-20T21:51:16Z |
+| `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
+| `_harness/arm-h4.sh` | `5944b88c92acd4752addffabe9705ab087ff6c430bed0ea1d0bf6d8040693009` | 2026-08-20T21:51:16Z |
 
 ## Frozen source
 
@@ -48,3 +48,27 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 - arms reopened: A-H4 (it had not completed; nothing ran under the previous hash).
 - note: this is the exact class AGENTS.md documents for `export HOME=... AE_HOME=...`. A
   documented hazard does not prevent itself.
+
+### A2 — `_harness/hfix.sh` and `_harness/arm-h4.sh`, after a run whose fixture was wrong
+
+- `hfix.sh`: `73c287312f99824b00450e24da687bb756e5c3a376fcd5d0192ed5dd05a3feda` -> `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0`
+- `arm-h4.sh`: `6f6208234ea3d46c11c4d9493554d05008650f1b3752f7361515f5299d49b91b` -> `5944b88c92acd4752addffabe9705ab087ff6c430bed0ea1d0bf6d8040693009`
+- what changed: the H5 fixture did not carry the collisions three of its cases name, and
+  the run was discarded rather than published. Specifically:
+  1. `workers = cx:lead` was RENAMED to `cx:lead-2` by the frozen launcher's own worker
+     dedup, so the bare-name-AMBIGUOUS case had no collision — it measured a unique name.
+     The collision is now created through the real `spawn` helper, the product path that
+     can make one.
+  2. the second session reused the first's config and came up with an identical roster, so
+     the cross-session case that names "session exists, agent present" resolved nothing and
+     measured the same thing as the "agent absent" case beside it. The second session now
+     gets its own roster via `h_reconfig`.
+  3. the dead-pane manipulation killed `zz:only` — which is also the fixture for
+     "alias-only unique". One case's manipulation destroyed another case's precondition. A
+     fourth alias (`qq:spare`) exists solely to be killed.
+- why it is not adaptive capture: nothing from the first run is published. The defect is in
+  the FIXTURE's ability to present the input class, not in what any reading said, and it was
+  found by reading the roster the arm itself captured — which is why the arm now writes
+  `fixture-validity.txt` naming what the roster and the server actually carry, before any
+  case runs.
+- arms reopened: A-H4, entirely.
