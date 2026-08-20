@@ -131,9 +131,49 @@ Authority: commands.md end section. Empirical: pending. Conflict: none.
 path) prints the command surface; inherits the M2 bootstrap caveat like every
 dispatcher entry. Authority: commands.md. Empirical: pending. Conflict: none.
 
-(S1's dispatcher exit/refusal rows live in S6 SC-513..517; its transaction rows in S9;
-`telegram setup` rows live in S10 SC-969/SC-970; the public command surface itself is
-the censused `cmd_*` set — S1 header.)
+**SC-013 — `steward --help`/`--detach` flag surface.** `authority=code-observation`.
+Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
+
+**SC-014 — `version` output surface.** `authority=code-observation` — prints the
+CalVer `AE_VERSION`; exact format unpinned by docs. Empirical: pending probe.
+Conflict: pending seat closure (UNCLASSIFIED).
+
+Machine-readable S1 surface→row declaration table (checker-validated: every inventory
+item declared, every target id must exist):
+
+```
+S1MAP: launch -> SC-100 SC-101 SC-102a SC-102b SC-813
+S1MAP: --local/--copy/--worktree -> SC-306
+S1MAP: --from -> SC-822 SC-823 SC-824a SC-824b SC-825a
+S1MAP: list -> SC-509 SC-506 SC-1306a
+S1MAP: status -> SC-1306b
+S1MAP: next -> SC-513a SC-513b SC-513c SC-1306c
+S1MAP: end -> SC-516 SC-817 SC-819 SC-820a SC-820b SC-821a SC-821b SC-826
+S1MAP: rm -> SC-011
+S1MAP: --purge-history -> SC-810a SC-810b SC-818a SC-818b SC-818c SC-818d SC-818e
+S1MAP: stop -> SC-515a SC-515b SC-515c SC-816 SC-1302
+S1MAP: rename -> SC-832a SC-832b SC-832c SC-1303 SC-813
+S1MAP: transfer -> SC-833a SC-833b SC-833c SC-833d SC-814 SC-1304a SC-1304b SC-1304c SC-1304d
+S1MAP: compact -> SC-500 SC-501 SC-502 SC-503a SC-503b SC-504a SC-504b SC-512 SC-517a SC-517b SC-517c SC-827 SC-828 SC-829a SC-829b SC-830 SC-831 SC-1305
+S1MAP: archive preview -> SC-507a SC-507b SC-507c SC-507d
+S1MAP: _recover-pending -> SC-834a SC-834b SC-834c
+S1MAP: doctor -> SC-514 SC-1002
+S1MAP: doctor --refresh -> SC-1001 SC-929
+S1MAP: watchdog -> SC-902 SC-904 SC-926 SC-927
+S1MAP: telegram setup -> SC-969 SC-970
+S1MAP: telegram start -> SC-953 SC-956 SC-963 SC-971
+S1MAP: telegram stop -> SC-954 SC-957 SC-971
+S1MAP: telegram status -> SC-955
+S1MAP: steward --init -> SC-932
+S1MAP: steward --attach -> SC-931
+S1MAP: steward --help -> SC-013
+S1MAP: steward --detach -> SC-013
+S1MAP: hub -> SC-939f
+S1MAP: help -> SC-012
+S1MAP: version -> SC-014
+S1MAP: exit codes -> SC-513a SC-514 SC-515a SC-516 SC-517a SC-508
+S1MAP: refusal contracts -> SC-819 SC-813
+```
 
 ### S3 — Generated helper CLIs (every one — census: `helper_*_main` at 72c7293)
 
