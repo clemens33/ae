@@ -1,0 +1,15 @@
+seq=001	utc=2026-08-20T23:27:40Z	epoch=1787268460	event=case-OPEN	arm=A-H8	case=h8-c06-partial-final-line	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T23:27:40Z	epoch=1787268460	event=rows	rows=SC-211n	surface=events-tail	claim_type=long-lived query, not a refusal row
+seq=003	utc=2026-08-20T23:27:40Z	epoch=1787268460	event=guards-enumerated	g1=banner unconditional ae:14889	g2=file-existence wait ae:14897	g3=replay cut tail -n 30 ae:14902	g4=formatter drops empty and non-{ lines ae:14864-14865
+seq=004	utc=2026-08-20T23:27:40Z	epoch=1787268460	event=surface-state-captured	artifact_sha256=b67d422ea5fad42615675b905bc7daae123452db6ebdde96d121da63257355d1	paths=/tmp/aecx/h/h8/home/.ae/sessions/th8/events-tail /tmp/aecx/h/h8/home/.ae/sessions/th8/_lib
+seq=005	utc=2026-08-20T23:27:40Z	epoch=1787268460	event=measured-input	note=a final line written in two steps with a barrier between them
+seq=006	utc=2026-08-20T23:27:41Z	epoch=1787268461	event=invocation	label=canary-pre-h8c06	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=609678e4ef3fa32712a0a0fd5cd9e861341eb3337d56661891e1e64307ef1660	stderr_sha256=58aed13e01828aeda3c4d3c92983228a412aca2cd336d9923151d91634f1f785
+seq=007	utc=2026-08-20T23:27:41Z	epoch=1787268461	event=canary	when=pre	tag=h8c06	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=008	utc=2026-08-20T23:27:41Z	epoch=1787268461	event=PRODUCT-START	label=tail
+seq=009	utc=2026-08-20T23:27:43Z	epoch=1787268463	event=partial-step-1	note=the line is written WITHOUT its newline; the capture at this barrier is kept separately	artifact_sha256=155421510d261408d67339e9b0afe342373a725974b0c7e48905ae65ee05778e
+seq=010	utc=2026-08-20T23:27:44Z	epoch=1787268464	event=partial-step-2	barrier=PARTIAL-HALFWRITTEN	seen=yes
+seq=011	utc=2026-08-20T23:27:44Z	epoch=1787268464	event=controller-termination	label=tail
+seq=012	utc=2026-08-20T23:27:44Z	epoch=1787268464	event=PRODUCT-COMPLETE	label=tail
+seq=013	utc=2026-08-20T23:27:45Z	epoch=1787268465	event=invocation	label=canary-post-h8c06	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=7a40e0a3c3e458d9c37b61375b8d81e3c29cdcbbb8cc2a5a28e379c7471bba90	stderr_sha256=5fd57204cc38133d8028f158f7ad9b9901f5307d2613148cd6b1b63077152cff
+seq=014	utc=2026-08-20T23:27:45Z	epoch=1787268465	event=canary	when=post	tag=h8c06	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=015	utc=2026-08-20T23:27:45Z	epoch=1787268465	event=case-CLOSE

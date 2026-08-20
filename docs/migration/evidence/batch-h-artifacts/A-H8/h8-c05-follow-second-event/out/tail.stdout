@@ -1,0 +1,9 @@
+[1;36m╭─ ae events — session: th8 ───────────────────────────────╮
+│ date+time (UTC)  action   actor                  → target                 summary
+╰──────────────────────────────────────────────────────────────────────────╯
+[0m
+08-21T00:00:01  memo     fake:lead                                       FOLLOW-FIRST
+08-21T00:00:02  memo     fake:lead                                       FOLLOW-SECOND
+08-21T00:00:01  memo     fake:lead                                       PARTIAL-BASE
+08-21T00:00:05  memo     fake:lead                                       PARTIAL-HALFWRITTEN
+08-21T00:00:01  memo     fake:lead                                       ARGV-IGNORED

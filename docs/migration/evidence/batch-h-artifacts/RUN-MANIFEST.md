@@ -138,6 +138,11 @@ Termination is a controller action after a named barrier — this surface never 
 own, so a bound expiring here is an instrument artifact and is recorded as one, never as a
 product rc.
 
+### A20 — `_harness/derive-h8-record.py` registered after A-H8's run
+
+- new sha256: `24206b9c24c8667269f42c3c595dbf7e2e58f86b89f85296f00f68c8fdc8c618`
+- post-capture reporting only.
+
 ## Frozen source
 
 `72c7293`, verified by hash at every case open and recorded in each case's ledger.

@@ -1,0 +1,16 @@
+seq=001	utc=2026-08-20T23:27:35Z	epoch=1787268455	event=case-OPEN	arm=A-H8	case=h8-c04-replay-31	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T23:27:35Z	epoch=1787268455	event=rows	rows=SC-211n	surface=events-tail	claim_type=long-lived query, not a refusal row
+seq=003	utc=2026-08-20T23:27:35Z	epoch=1787268455	event=guards-enumerated	g1=banner unconditional ae:14889	g2=file-existence wait ae:14897	g3=replay cut tail -n 30 ae:14902	g4=formatter drops empty and non-{ lines ae:14864-14865
+seq=004	utc=2026-08-20T23:27:35Z	epoch=1787268455	event=surface-state-captured	artifact_sha256=b67d422ea5fad42615675b905bc7daae123452db6ebdde96d121da63257355d1	paths=/tmp/aecx/h/h8/home/.ae/sessions/th8/events-tail /tmp/aecx/h/h8/home/.ae/sessions/th8/_lib
+seq=005	utc=2026-08-20T23:27:35Z	epoch=1787268455	event=measured-input	note=a file holding exactly 31 events before any follow begins
+seq=006	utc=2026-08-20T23:27:35Z	epoch=1787268455	event=planted	events=31	artifact_sha256=ccabd97237526a255c1ae3a30367f794fa2f7badc0438dd6d8b010e7175f5b8f
+seq=007	utc=2026-08-20T23:27:36Z	epoch=1787268456	event=invocation	label=canary-pre-h8r31	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=4fe5fad1f9e8d75043fb6216fde3b28d0cb48bda943ab01e0c0efce6e275ed60	stderr_sha256=2042a7f64b36da003a60e044dd353d12377fa720d171e1f22f6b58710bd6bda3
+seq=008	utc=2026-08-20T23:27:36Z	epoch=1787268456	event=canary	when=pre	tag=h8r31	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=009	utc=2026-08-20T23:27:36Z	epoch=1787268456	event=PRODUCT-START	label=tail
+seq=010	utc=2026-08-20T23:27:36Z	epoch=1787268456	event=follow-barrier	label=tail	barrier=REPLAY-031-OF-31	seen=yes	waited_s=0
+seq=011	utc=2026-08-20T23:27:37Z	epoch=1787268457	event=controller-termination	label=tail	note=this surface never exits on its own; termination is the controller's act, never a product rc
+seq=012	utc=2026-08-20T23:27:37Z	epoch=1787268457	event=PRODUCT-COMPLETE	label=tail
+seq=013	utc=2026-08-20T23:27:37Z	epoch=1787268457	event=invocation	label=canary-post-h8r31	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=aee1051e420d6b578c29f3bc9ae16535da362c43f4c769059e4cd8e535b82d2e	stderr_sha256=cf8dccf35da19927fb7a6869dabbbdaf59fdaadc36656ccfb6ec0bbedde4e069
+seq=014	utc=2026-08-20T23:27:37Z	epoch=1787268457	event=canary	when=post	tag=h8r31	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=015	utc=2026-08-20T23:27:37Z	epoch=1787268457	event=replay-record	artifact_sha256=553e4ed6ecb9db2e59f9ada5e6cc2e5bff124e40c1054dc8cc9cc1394030e06b	rendered_lines=30
+seq=016	utc=2026-08-20T23:27:37Z	epoch=1787268457	event=case-CLOSE

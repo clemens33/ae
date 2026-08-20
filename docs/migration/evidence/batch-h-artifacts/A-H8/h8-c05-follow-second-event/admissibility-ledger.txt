@@ -1,0 +1,15 @@
+seq=001	utc=2026-08-20T23:27:37Z	epoch=1787268457	event=case-OPEN	arm=A-H8	case=h8-c05-follow-second-event	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T23:27:37Z	epoch=1787268457	event=rows	rows=SC-211n	surface=events-tail	claim_type=long-lived query, not a refusal row
+seq=003	utc=2026-08-20T23:27:37Z	epoch=1787268457	event=guards-enumerated	g1=banner unconditional ae:14889	g2=file-existence wait ae:14897	g3=replay cut tail -n 30 ae:14902	g4=formatter drops empty and non-{ lines ae:14864-14865
+seq=004	utc=2026-08-20T23:27:37Z	epoch=1787268457	event=surface-state-captured	artifact_sha256=b67d422ea5fad42615675b905bc7daae123452db6ebdde96d121da63257355d1	paths=/tmp/aecx/h/h8/home/.ae/sessions/th8/events-tail /tmp/aecx/h/h8/home/.ae/sessions/th8/_lib
+seq=005	utc=2026-08-20T23:27:38Z	epoch=1787268458	event=measured-input	note=a second event emitted while the follower runs
+seq=006	utc=2026-08-20T23:27:38Z	epoch=1787268458	event=invocation	label=canary-pre-h8c05	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=eafd5fa3828dc1f2c976df9af0448dcbc98dba2b56699b6d8be358fc08f597f0	stderr_sha256=6f473f53e62f843e95c42613e9da8ab5a4da1951fc6fec127f116045ce075ffa
+seq=007	utc=2026-08-20T23:27:38Z	epoch=1787268458	event=canary	when=pre	tag=h8c05	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=008	utc=2026-08-20T23:27:38Z	epoch=1787268458	event=PRODUCT-START	label=tail
+seq=009	utc=2026-08-20T23:27:39Z	epoch=1787268459	event=follow-barrier	label=first	barrier=FOLLOW-FIRST	seen=yes
+seq=010	utc=2026-08-20T23:27:39Z	epoch=1787268459	event=follow-barrier	label=second	barrier=FOLLOW-SECOND	seen=yes
+seq=011	utc=2026-08-20T23:27:39Z	epoch=1787268459	event=controller-termination	label=tail
+seq=012	utc=2026-08-20T23:27:40Z	epoch=1787268460	event=PRODUCT-COMPLETE	label=tail
+seq=013	utc=2026-08-20T23:27:40Z	epoch=1787268460	event=invocation	label=canary-post-h8c05	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=d18b95d7b41c57010563d24ef4b22244df59450a53e4f38607df48eb453aad44	stderr_sha256=cc3524166f550af57048120336061fed02d977bc734fe7f3efb6b8be99989858
+seq=014	utc=2026-08-20T23:27:40Z	epoch=1787268460	event=canary	when=post	tag=h8c05	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=015	utc=2026-08-20T23:27:40Z	epoch=1787268460	event=case-CLOSE

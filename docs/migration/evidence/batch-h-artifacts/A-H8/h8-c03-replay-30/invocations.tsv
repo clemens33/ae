@@ -1,0 +1,4 @@
+label	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	bound_s	timed_out	argv
+canary-pre-h8r30	7	971afec9baa41fe34b806bb8f1bbee6d911fffd801edd86deec614cb628b15ef	27	ae53b50c3c473c944acce38df60c207c2646d5b5c708b53e9832a888c50f63cb	34	10	no	/opt/homebrew/bin/bash -c printf '%s\n' 'AE-H-CANARY-pre-h8r30-9f3c'; printf '%s\n' 'AE-H-CANARY-pre-h8r30-9f3c-stderr' >&2; exit 7
+tail	controller-terminated	07a93e8d092b22014619dfc995e5393393f89a8afef6b6ec36f84bb75d62cb31	3160	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0	20	yes	/tmp/aecx/h/h8/home/.ae/sessions/th8/events-tail
+canary-post-h8r30	7	9c6712553208b9836c69b8889df8ae37e0bc4cce274764f11a19684d3e6d3748	28	a4adf998700daef250e54a3ecee95fa52423afbf3469a196cdd00f27dd4b337b	35	10	no	/opt/homebrew/bin/bash -c printf '%s\n' 'AE-H-CANARY-post-h8r30-9f3c'; printf '%s\n' 'AE-H-CANARY-post-h8r30-9f3c-stderr' >&2; exit 7

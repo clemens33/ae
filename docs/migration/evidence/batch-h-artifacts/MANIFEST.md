@@ -15,7 +15,7 @@ accepts it.
 | A-H3 — the argument surface (SC-211a-j, SC-212c) | COMPLETE — 72 case runs |
 | A-H1 — dispatch and version spellings (SC-012b, SC-014) | COMPLETE — 6 case runs |
 | A-H2 — steward help and detach spellings (SC-013) | COMPLETE — 9 case runs |
-| A-H8 — the long-lived query | not started |
+| A-H8 — the long-lived query (SC-211n) | COMPLETE — 7 case runs |
 | SC-211l — `say` under its containment | COMPLETE — 5 case runs |
 | SC-1301 — hooks and barriers | not started |
 | D14b | HELD and EXCLUDED pending the ownership-record split |
@@ -162,3 +162,21 @@ orders, or a repeated selector differ. Five spellings with one reading here is n
 that the spellings are equivalent; the question was never asked. `A-H2/ARM-GAPS.txt` says
 so beside the captures, and `ARM-GAPS.md` collects every arm's gaps with what would lift
 each.
+
+## A-H8 — SC-211n, the long-lived query
+
+Seven cases. This surface never exits on its own, so refusal semantics do not apply: every
+case is closed by a NAMED barrier and then terminated by the controller, and a termination
+is recorded as a controller action rather than as a product rc. A barrier not seen within
+its bound is INCONCLUSIVE and says so in its own artifact.
+
+The guards between an invocation and each case's fact were enumerated BEFORE the arm was
+built (`RUN-MANIFEST.md` A18) — the unconditional banner, the file-existence wait, the
+replay cut, and a formatter that returns early on an empty line or a line not starting with
+a brace. The formatter is the one that would have cost a run: a planted line failing it
+produces no output, which looks exactly like the cut dropping it.
+
+Three replay cohorts of 29, 30 and 31 events sit either side of the cut and at it, with
+`planted_lines` recorded beside `planted_events` — the first run's cohorts held ONE
+unterminated line however many events were written, and nothing in the output would have
+shown it (`RUN-MANIFEST.md` A19).

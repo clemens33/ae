@@ -1,0 +1,4 @@
+label	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	bound_s	timed_out	argv
+canary-pre-h8c05	7	eafd5fa3828dc1f2c976df9af0448dcbc98dba2b56699b6d8be358fc08f597f0	27	6f473f53e62f843e95c42613e9da8ab5a4da1951fc6fec127f116045ce075ffa	34	10	no	/opt/homebrew/bin/bash -c printf '%s\n' 'AE-H-CANARY-pre-h8c05-9f3c'; printf '%s\n' 'AE-H-CANARY-pre-h8c05-9f3c-stderr' >&2; exit 7
+tail	controller-terminated	018e051e9dd753dcd3741fd7107ebcd9bdff615ef5416c81d109687e3115067e	633	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0	20	-	events-tail
+canary-post-h8c05	7	d18b95d7b41c57010563d24ef4b22244df59450a53e4f38607df48eb453aad44	28	cc3524166f550af57048120336061fed02d977bc734fe7f3efb6b8be99989858	35	10	no	/opt/homebrew/bin/bash -c printf '%s\n' 'AE-H-CANARY-post-h8c05-9f3c'; printf '%s\n' 'AE-H-CANARY-post-h8c05-9f3c-stderr' >&2; exit 7
