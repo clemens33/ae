@@ -1,0 +1,2 @@
+1a2
+> {"ts":"2026-08-20T23:08:31Z","actor":"cl:lead","action":"chat","summary":"a line via stdin"}

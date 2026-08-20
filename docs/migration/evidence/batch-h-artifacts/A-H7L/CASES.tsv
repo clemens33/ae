@@ -1,0 +1,6 @@
+case_dir	ledger_sha256	ledger_lines	files
+h7l-c01-argv-text	ee44f0d9de68e858b7734055f740665a0cc771ddf94d974cdd0485f625c415bb	17	18
+h7l-c02-whitespace	b4235b84b9d604d13d3139bd05bbebe4de5e5d15af6c64c5ed8f91925aa84a23	17	18
+h7l-c03-no-args-pipe	cff1c3d07574f12a841f85bf1b015d4aadfbe5703feb334e1bd4a4552e28d351	17	18
+h7l-c04-stdin-text	3d2be620cc6e2847bd34d9dfacdc23cb6abbdb17056eae95a6bdf687ac92bb06	17	18
+h7l-c05-no-args-tty	58e5a7a63f41fa748c0db715e662b5e63a997382cce3748c1a43ba1517d29a43	17	18

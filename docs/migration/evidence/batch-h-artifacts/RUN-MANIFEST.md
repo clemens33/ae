@@ -109,6 +109,11 @@ of silence.
 redirected empty stdin and a real TTY are different inputs and only a pty presents the
 second.
 
+### A16 — `_harness/derive-h7l-record.py` registered after A-H7L's run
+
+- new sha256: `42fba8e4e625e6c8b5633b0b096c6fbe3d56d39081b67983f56852e0fd0ca93e`
+- post-capture reporting only.
+
 ## Frozen source
 
 `72c7293`, verified by hash at every case open and recorded in each case's ledger.

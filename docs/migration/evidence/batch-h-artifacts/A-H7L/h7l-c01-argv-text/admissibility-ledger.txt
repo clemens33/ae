@@ -1,0 +1,17 @@
+seq=001	utc=2026-08-20T23:06:18Z	epoch=1787267178	event=case-OPEN	arm=A-H7L	case=h7l-c01-argv-text	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T23:06:18Z	epoch=1787267178	event=rows	rows=SC-211l	surface=say	containment=layer1 structural, layer2 census, layer3 refusing stubs
+seq=003	utc=2026-08-20T23:06:19Z	epoch=1787267179	event=surface-state-captured	artifact_sha256=3908eac19633192caec3a879c53700d0ee7776ccd2dc238d45dc40c5915429e9	paths=/tmp/aecx/h/l1787267177/home/.ae/sessions/th7l/say /tmp/aecx/h/l1787267177/home/.ae/sessions/th7l/_lib
+seq=004	utc=2026-08-20T23:06:19Z	epoch=1787267179	event=stub-demonstrated	log_lines=1	note=a recorder nobody has seen fire is not evidence of silence
+seq=005	utc=2026-08-20T23:06:31Z	epoch=1787267191	event=census-control	in_range_control_pid=28174	reported=1	harness_pid=28175	carries_token=1	note=a census that cannot report a KNOWN in-range watcher cannot report their absence
+seq=006	utc=2026-08-20T23:06:42Z	epoch=1787267202	event=census-pre	artifact_sha256=8304d241bcc449d2cfaba64b7f4ce6a4b87e8e97e2e9d7b7e6fb169d9a278ed8	in_range=3 out_of_range=435 unknown_reach=916	note=unknown_reach are processes whose environment this platform will not expose; they are NOT counted as out of range
+seq=007	utc=2026-08-20T23:06:42Z	epoch=1787267202	event=measured-input	note=text via argv	argv=env TMUX=/tmp/aecx/h/l1787267177/s.sock,27158,0 TMUX_PANE=%0 AE_H_STUB_LOG=/tmp/aecx/h/stub.log /tmp/aecx/h/l1787267177/home/.ae/sessions/th7l/say a line via argv
+seq=008	utc=2026-08-20T23:06:42Z	epoch=1787267202	event=invocation	label=canary-pre-h7l-c01-argv-text	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=ea595d9378710dc40125a6523a04db86684be6f1a2a1ffd9541554c14354e33a	stderr_sha256=633bd4ca6818050326dce029b98ae915f4183664216fb9e93fb60540ae5b7210
+seq=009	utc=2026-08-20T23:06:42Z	epoch=1787267202	event=canary	when=pre	tag=h7l-c01-argv-text	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=010	utc=2026-08-20T23:06:42Z	epoch=1787267202	event=PRODUCT-START	label=20
+seq=011	utc=2026-08-20T23:06:43Z	epoch=1787267203	event=invocation	label=say	rc=0	elapsed_s=1	timed_out=no	stdout_sha256=54d31784701278f5ab921ebb77135c5d9760cb298d1ff6758df01a0d94b5ec21	stderr_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+seq=012	utc=2026-08-20T23:06:43Z	epoch=1787267203	event=PRODUCT-COMPLETE	label=20
+seq=013	utc=2026-08-20T23:06:43Z	epoch=1787267203	event=invocation	label=canary-post-h7l-c01-argv-text	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=7f31299cb1a6ce943faf153e1e69b91b8bddb22a8913ea0d6a219d895ff2b1cd	stderr_sha256=fa2d50f12be5721cf54c92e2b556bef03f292674567607f324d8daf96938274d
+seq=014	utc=2026-08-20T23:06:43Z	epoch=1787267203	event=canary	when=post	tag=h7l-c01-argv-text	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=015	utc=2026-08-20T23:06:54Z	epoch=1787267214	event=census-post	artifact_sha256=be9eff1d11b8f79f6cb655e672f200b64a639a6f912415198bb68ebfb088fba7	in_range=4 out_of_range=434 unknown_reach=916
+seq=016	utc=2026-08-20T23:06:54Z	epoch=1787267214	event=stub-log-after	lines=1
+seq=017	utc=2026-08-20T23:06:54Z	epoch=1787267214	event=case-CLOSE	events_diff_lines=2

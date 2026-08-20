@@ -15,7 +15,7 @@ accepts it.
 | A-H3 — the argument surface (SC-211a-j, SC-212c) | COMPLETE — 72 case runs |
 | A-H1 / A-H2 — dispatch, version, steward | not started |
 | A-H8 — the long-lived query | not started |
-| SC-211l — under its containment | not started |
+| SC-211l — `say` under its containment | COMPLETE — 5 case runs |
 | SC-1301 — hooks and barriers | not started |
 | D14b | HELD and EXCLUDED pending the ownership-record split |
 
@@ -111,3 +111,29 @@ Every ledger in this tree passes `../gate/check-ledger-chronology.py`: sequence 
 unique and monotonic. The check exists because they were not — see `RUN-MANIFEST.md` A12,
 where a subshell introduced to fix an invocation directory silently broke the ordering
 record in two arms, with presence and hash both passing.
+
+## A-H7L — SC-211l (`say`) under containment
+
+Five cases: text via argv, whitespace-only text, no args with redirected empty stdin, text
+via a pipe, and no args on a REAL TTY (a pty, because the surface branches on whether stdin
+is a terminal and a redirected stdin cannot present that input).
+
+Containment, in the order of what carries the claim:
+
+- **Layer 1, structural, load-bearing.** The bridge takes its root from `AE_HOME`
+  (telegram-daemon:10-11). This fixture's `AE_HOME` is randomly named and created AFTER the
+  system-root census, so nothing that predates the fixture could have been started with it.
+  Reach is inherited across fork, so a child cannot reach what its parent cannot.
+- **Layer 2, the census, corroborating — and it states its own blind spot.** It classifies
+  by REACH rather than by name, and reports three classes: IN-RANGE, out-of-range, and
+  UNKNOWN-REACH. macOS exposes a process's environment to `ps e` for only a subset of even
+  one's own processes, so a process it cannot read is UNKNOWN, never counted as out of
+  range. Each case's census reports between 865 and 916 unknown-reach processes; the claim
+  this layer supports is bounded accordingly. The in-range rows are the fixture's own tmux
+  server and panes, traceable by the pid/ppid columns in the census artifact.
+- **Layer 3, refusing `curl`/`wget` stubs, arm-spawned processes only.** An already-running
+  bridge never inherited this PATH and is NOT contained by them. The stub is fired
+  deliberately in every case and its log must carry the attempt.
+
+Every case's census must report its own deliberately in-range control; a case whose census
+cannot see its control is INCONCLUSIVE rather than contained. `RUN-MANIFEST.md` A14-A15.
