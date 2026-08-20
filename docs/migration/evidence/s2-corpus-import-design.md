@@ -337,14 +337,29 @@ hook and T-WD `SHA256SUMS.txt`. L adds section-root admissibility and harness
 ledgers alongside arm and specimen ones. Import must record **which ledger
 admitted a given file**, not merely that some ledger did.
 
-**Open: where does `capture_platform` come from?** §2's ruling makes it required
-in every replay-backed evidence string, but the inventory surfaces no explicit
+**`capture_platform` has no per-entry source. RULED: attach it from BATCH
+provenance, and say so IN THE FIELD.** The inventory surfaces no explicit
 platform key — `ARM.txt` carries `binary`/`binary.sha256`, `construction`,
-`fixture`; `env.txt` carries locale (and the existence of
-`FINGERPRINTS.superseded-pre-locale-fix.tsv` shows locale already bit once). If
-platform is recorded only at batch level rather than per entry, import must
-attach it from the batch's own provenance and say that is where it came from.
-**Flagged for the lead: this is a required field with no identified source.**
+`fixture`; `env.txt` carries locale (and
+`FINGERPRINTS.superseded-pre-locale-fix.tsv` shows locale already bit once). So
+the fact exists at batch level and nowhere finer.
+
+Rendering a batch-level fact as though it were per-entry is **exactly the
+flattening rejected for `admissibility_ref`**, and it gets the same answer.
+
+### The general rule these two cases establish
+
+> **A provenance field must name its own granularity.**
+
+A required field whose provenance is invisible **will be read as stronger than
+it is** — that is not a risk, it is what readers reasonably do with a field that
+does not qualify itself. And if a per-entry source appears later, the
+granularity marker is the thing that lets the two be told apart instead of
+silently merged into one column of mixed strength.
+
+Applies to `capture_platform` (batch) and `admissibility_ref` (per-case in batch
+C, section-level in L), and to any field added later that can be recorded at
+more than one level.
 
 ### Integrity refusal is not judgement
 
@@ -402,12 +417,47 @@ existing corpus. ESCALATED; needs a seat decision this document cannot make.**
 > corpus.** Such rows must be routed to the live/live lane, or the replay lane
 > must refuse them outright. What it must not do is run them and report clean.
 >
-> One lead worth chasing, which I cannot chase myself because it needs value
-> access: `batch-c-artifacts/twd-precursor/<ARM>/stamps/` is an opaque snapshot
-> channel whose *name* suggests timestamps. If it carries file mtimes, part of
-> the gap may be recoverable for the T-WD arms specifically. Someone with a
-> spent contamination budget should look. I am recording it as a lead, not a
-> finding.
+> **The `stamps/` lead: CHASED, NEGATIVE — the gap is not recoverable.** I
+> raised `batch-c-artifacts/twd-precursor/<ARM>/stamps/` as a possible partial
+> source and could not check it myself. The lead did. Those files hold
+> `label=` / `epoch=` / `utc=` / `pgrep_aefake=` / `events_lines=` /
+> `events_bytes=` / `wd_log_bytes=` — **capture-moment wall clock plus event
+> counters: when the harness LOOKED, not when any file was WRITTEN.** Not file
+> mtimes, not per-entry, and present for only three arms.
+>
+> A checked-and-negative lead is worth as much as a positive one, and this one
+> closes the question rather than leaving it open.
+>
+> **One adjacency, recorded without overselling it:** `events_lines` and
+> `events_bytes` at labelled time points do form a **size-over-time series** for
+> `events.jsonl` — information about *change* that is not mtime. If some future
+> row needs only "did this file grow between these two moments", that series
+> answers it, for three arms. It does not restore mtime fidelity and must never
+> be presented as doing so.
+
+### F2's ruling: a per-row PREDICATE, and refusal as a first-class outcome
+
+**RULED (lead, 2026-08-20).** Any row whose behavior depends on a file mtime is
+**not replayable from this corpus** and routes to live/live. The replay lane
+must **REFUSE** such a row — loudly, naming the reason — and must never run it
+and report clean. That is SC-506/SC-509b applied to a whole *capability* rather
+than to one field: damage visible, never rendered as legitimate sparsity.
+
+Two design consequences, and the first is the one that matters:
+
+1. **Make it a per-row predicate, not a convention.** A row **declares** whether
+   it depends on mtime; replay refuses any row so marked. A convention is the
+   thing the fourth enumeration gets beaten on — it survives exactly as long as
+   everyone who touches it remembers it, which is not a property a guard may
+   depend on.
+2. **Refusal is an OUTCOME, not an ERROR.** "This row is not answerable by this
+   lane" is a correct, expected, reportable result. Modelling it as a failure
+   would push implementers toward suppressing it, which is precisely the
+   run-and-report-clean behavior the ruling forbids.
+
+This makes the mtime predicate a candidate contract row (**R6**, §11): what a
+row declares about its own mtime dependence is metadata the seats own, not
+something an importer may infer.
 
 Everything below remains correct for the **forward-looking** half — what stage 1
 must record from now on, and what live/live gets. It is the *retrospective* half
@@ -456,8 +506,19 @@ integrity question (§6), not a judgement about behavior.
 **G1 makes the check cheap and safe.** Both dialects record the link target as a
 field (`link_target-or-dash`; `link`). The escape test therefore runs against
 *metadata*, and import can refuse an entry **without ever dereferencing the
-link** — the safest possible order of operations, since dereferencing is the
-exact act being guarded against.
+link**.
+
+> **The ordering is the property. Do not refactor it away.**
+>
+> Dereferencing is *the exact act being guarded against*. A guard that must
+> dereference in order to decide has already done the dangerous thing, and its
+> verdict arrives after the damage it was meant to prevent. Deciding from the
+> recorded target string keeps the decision strictly before the act.
+>
+> This is written as a warning because it is the kind of property that looks
+> like an inefficiency to someone who did not see why it was chosen — "why read
+> the manifest when you could just `canonicalize()` it?" — and the answer is
+> that `canonicalize()` IS the breach.
 
 **F4 — hostile path names. REFRAMED by G1: the live hazard is shell
 metacharacters, not non-UTF-8.** Stage 1 records paths through
@@ -539,6 +600,7 @@ One instance of each, so that each decision is proven rather than documented:
 | a TSV row whose last field contains a **literal tab** | inventory #7 — the invocation tail is joined, not split into phantom columns |
 | a non-numeric `.rc` | the exit record has a third class beyond code/signalled (§6a) |
 | a JSONL file with a **partial final record** and one with **no final newline** | byte-level states the inventory says import must preserve |
+| a row **declaring mtime dependence** | R6 — replay REFUSES it, and the refusal is reported as an outcome rather than swallowed as an error |
 
 The escaping link is the only fixture whose expected outcome is a **failure**,
 which makes it the only one that proves F3 is real rather than merely written
@@ -623,10 +685,11 @@ open in wording; **R5 stays deliberately unassigned**. See §11.
 
 | Id | Row | Status |
 |---|---|---|
-| **R1** | Replay-mode admissibility, and for which question. | **RULED** — admissible *because the incumbent is frozen*; macOS/arm64 only, so never citable for platform divergence; `capture_platform` required in every replay-backed evidence string (§2). Still owes a written row. |
+| **R1** | Replay-mode admissibility, and for which question. | **RULED** — admissible *because the incumbent is frozen*. TWO blind spots, always cited together: macOS/arm64 only, and no dialect recorded mtimes (§2). `capture_platform` required in every replay-backed evidence string, at **batch** granularity, saying so (§6). Still owes a written row. |
 | **R2** | Producer/lane neutrality in the corpus. | Open — may merely restate reviewer4's rule (§4). |
 | **R3** | What a failed integrity check does. | **RULED** — refuse loudly or quarantine; never silent, never rendered as legitimate sparsity, following SC-506/SC-509b. F3's escaping symlink is the hard-refusal case (§6, §7). |
-| **R4** | What a corpus entry MUST carry to be importable. | Open in wording; the §6 minimum now also carries `capture_platform` (R1) and the mtime + granularity fields (F2). |
+| **R4** | What a corpus entry MUST carry to be importable. | Open in wording. The §6 minimum now also carries `capture_platform` at declared batch granularity (R1), the three-class exit record, and the rule that **every provenance field names its own granularity** (§6). |
+| **R6** | **Per-row mtime dependence, and refusal as an outcome.** A row declares whether its behavior depends on a file mtime; the replay lane refuses any row so marked, loudly and by name. | **RULED in substance** (§7 F2) — owes a written row. The declaration is seat metadata: an importer may not infer it. |
 | **R5** | **What counts as agreement.** | **Deliberately unassigned.** Not this document's, not the harness's, not the importer's. Named so its absence stays a recorded gap rather than a silent one. |
 
 ---
@@ -664,6 +727,16 @@ with three attached requirements: red-proof it against a corrupted byte, mode
 and mtime; instantiate every fidelity class in the fixture set including the
 escaping-symlink refusal case; and make the raw-handle denial a compile-time
 acceptance criterion rather than prose. See §8.
+
+### Closed since the rulings
+
+- **The `stamps/` lead is chased and NEGATIVE** (§7 F2). F2's gap is not
+  recoverable, and the question is closed rather than left hanging. A bounded
+  adjacency survives — a size-over-time series for `events.jsonl` across three
+  arms — recorded without being oversold.
+- **`capture_platform`'s source** — batch granularity, declared in the field
+  (§6), which generalised into the rule that every provenance field names its
+  own granularity.
 
 ### Still open
 
