@@ -1,0 +1,41 @@
+# Per-case artifact schema. Each row: <kind> TAB <required path within the case dir>.
+# A trailing / means "a directory that must exist AND be non-empty".
+# A leading glob: means "at least N files matching this glob", written glob:<n>:<pattern>.
+# Kinds are derived from the case's OWN admissibility ledger — see case-schema-check.py.
+kind	required
+any	case.txt
+any	admissibility-ledger.txt
+any	consumers.tsv
+any	env.txt
+any	env-tab-selfcheck.txt
+unstaged	manifest.before.tsv
+unstaged	manifest.after.tsv
+unstaged	manifest.diff.txt
+staged	glob:2:manifest.*.tsv
+consumer-run	out/
+pane-follow	glob:1:pane.*.txt
+tmux-bound-unstaged	tmux.before.txt
+tmux-bound-unstaged	tmux.after.txt
+tmux-bound-staged	glob:2:tmux.*.txt
+live	tmux-shim-equivalence.txt
+barrier	controller-mutation.txt
+twin	controller-mutation.txt
+hooked	hook.patch
+hooked	hook-inactive-equivalence.txt
+mutating	witness.before.tsv
+mutating	witness.after.tsv
+mutating	witness.diff.txt
+mutating	write-witness.txt
+mutating	change-record.txt
+mutating	change-counts.txt
+mutating	contains:write-witness.txt:witness_control_rewrite_seen=yes
+mutating	contains:change-record.txt:[harness] ./.a8-witness-probe-content
+source-state	meta-state.txt
+surface-state	surface-state.txt
+h-invocation	invocations.tsv
+h-invocation	out/
+canaried	glob:2:out/canary-*.stdout
+canaried	glob:2:out/canary-*.stderr
+h-any	admissibility-ledger.txt
+h-any	invocations.tsv
+h-any	surface-state.txt

@@ -1,0 +1,14 @@
+seq=001	utc=2026-08-20T22:18:51Z	epoch=1787264331	event=case-OPEN	arm=A-H5	case=h5-c12-empty-first-line	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T22:18:51Z	epoch=1787264331	event=rows	rows=SC-211o	surface=_register-sid	fixture=H6 cohorts
+seq=003	utc=2026-08-20T22:18:52Z	epoch=1787264332	event=surface-state-captured	artifact_sha256=deac995cec707199e0a636d9087bf6f9c15ea4b569577890092615be78187796	paths=/tmp/aecx/h/h6/home/.ae/sessions/th6/_register-sid /tmp/aecx/h/h6/home/.ae/sessions/th6/meta
+seq=004	utc=2026-08-20T22:18:52Z	epoch=1787264332	event=planted	artifact_sha256=6caaaae20544b1ef398bb444da434ef9bae83e75ac1afda2b7471315f0da3714	note=candidate files and meta keys are CONTROLLER-constructed input data, listed with their bytes
+seq=005	utc=2026-08-20T22:18:52Z	epoch=1787264332	event=measured-input	slot_argv=main	note=an empty first line
+seq=006	utc=2026-08-20T22:18:52Z	epoch=1787264332	event=invocation	label=canary-pre-h5-c12-empty-first-line	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=28f395b334696639948f697d668bfbf689c0010f127ef0a2271f69bd5e8468ba	stderr_sha256=15a9963c6148f14704ca4e5b184cd1d735afda721006fca980d6cdc003fc5034
+seq=007	utc=2026-08-20T22:18:52Z	epoch=1787264332	event=canary	when=pre	tag=h5-c12-empty-first-line	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=008	utc=2026-08-20T22:18:52Z	epoch=1787264332	event=PRODUCT-START	label=25
+seq=009	utc=2026-08-20T22:18:53Z	epoch=1787264333	event=invocation	label=register	rc=1	elapsed_s=1	timed_out=no	stdout_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	stderr_sha256=bb4720951e84ffde4fbc530113cc6c44ec127a0683120967aa3e3e694639e49f
+seq=010	utc=2026-08-20T22:18:53Z	epoch=1787264333	event=PRODUCT-COMPLETE	label=25
+seq=011	utc=2026-08-20T22:18:53Z	epoch=1787264333	event=invocation	label=canary-post-h5-c12-empty-first-line	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=de0353f53babf32bdf2f0da77443f414a96aca3e3edce8dcf0dbc1f7e1726b2f	stderr_sha256=e4c12b376cda793dec183e82ca273c9b8544f2c1e8785a46392e0c21812013eb
+seq=012	utc=2026-08-20T22:18:53Z	epoch=1787264333	event=canary	when=post	tag=h5-c12-empty-first-line	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=013	utc=2026-08-20T22:18:53Z	epoch=1787264333	event=sid-artifact	artifact_sha256=ff1ff77cab65a5749b6254ee349304f30b29a416cbb802a0d4f82546e5015b56	meta_diff_lines=0
+seq=014	utc=2026-08-20T22:18:53Z	epoch=1787264333	event=case-CLOSE	invocations_sha256=db0a1a0eb5b327798963079b4afddc50b83d8719592ae18a8c8b6c6a0370ddeb

@@ -11,7 +11,7 @@ accepts it.
 | section | status |
 |---|---|
 | A-H4 — SC-211p, `_lib` name resolution | COMPLETE — 15 case runs |
-| A-H5 — SC-211o, codex identity registration | not started |
+| A-H5 — SC-211o, codex identity registration | COMPLETE — 14 case runs |
 | A-H3 — the argument surface | not started |
 | A-H1 / A-H2 — dispatch, version, steward | not started |
 | A-H8 — the long-lived query | not started |
@@ -53,3 +53,28 @@ Artifact paths — `A-H4/<case>/`:
 - `env.helper-domain.txt`, `env.controller-domain.txt`, `env.domain-diff.txt`
 - `roster.txt` — the session's `agent.*` lines as the case saw them
 - `A-H4/resolution-record.txt` (generated), `A-H4/fixture-validity.txt`, `SHA256SUMS.txt`
+
+## A-H5 — SC-211o (`_register-sid`)
+
+Rows: SC-211o. Fourteen cases, each varying ONE fixture fact and capturing the artifact the
+surface writes. `_register-sid` takes a SLOT (ae@72c7293:14752), reads `launch_id.<slot>`
+and `launch_time.<slot>` from meta, scans today's and yesterday's Codex session directories,
+and writes what it selects to `codex.<slot>.sid`.
+
+**Constructed inputs, declared.** The candidate `.jsonl` files and the `launch_id` /
+`launch_time` meta lines are written by the CONTROLLER — there is no offline producer for
+either, and the fake agent is not a codex-kind tool, so ae never writes those keys. Each
+case records the exact planted bytes and their hashes in `planted-inputs.txt`. They are
+input DATA the surface reads; every helper byte still comes from a real frozen launch. See
+`RUN-MANIFEST.md` A6.
+
+Artifact paths — `A-H5/<case>/`: `admissibility-ledger.txt`, `surface-state.txt`,
+`invocations.tsv`, `planted-inputs.txt`, `meta.before.txt`, `meta.after.txt`,
+`meta.diff.txt`, `sid-artifact.txt`, and `out/` carrying the measured invocation's streams
+and both canaries'.
+
+## The gate
+
+`../gate/` holds the canonical gate. Per-arm `harness/` directories are provenance
+snapshots of the version each arm ran under; an older snapshot reports violations the
+current gate does not, so a reader reproducing a gate result runs the canonical copy.

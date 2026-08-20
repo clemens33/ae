@@ -6,13 +6,13 @@ A-H4/<case>/	wildcard	tree	15	A-H4/h4-c01-pane-live/
 A-H4/fixture-validity.txt	path	tree	1	A-H4/fixture-validity.txt
 A-H4/resolution-record.txt	path	tree	1	A-H4/resolution-record.txt
 RUN-MANIFEST.md	path	tree	1	RUN-MANIFEST.md
-SHA256SUMS.txt	path	UNRESOLVED	0	does not resolve under any base, context, or the group/member mapping
-admissibility-ledger.txt	path	UNRESOLVED	0	does not resolve under any base, context, or the group/member mapping
-env.controller-domain.txt	path	UNRESOLVED	0	does not resolve under any base, context, or the group/member mapping
-env.domain-diff.txt	path	UNRESOLVED	0	does not resolve under any base, context, or the group/member mapping
-env.helper-domain.txt	path	UNRESOLVED	0	does not resolve under any base, context, or the group/member mapping
-invocations.tsv	path	UNRESOLVED	0	does not resolve under any base, context, or the group/member mapping
-out/resolve.stderr	path	UNRESOLVED	0	does not resolve under any base, context, or the group/member mapping
-out/resolve.stdout	path	UNRESOLVED	0	does not resolve under any base, context, or the group/member mapping
-roster.txt	path	UNRESOLVED	0	does not resolve under any base, context, or the group/member mapping
-surface-state.txt	path	UNRESOLVED	0	does not resolve under any base, context, or the group/member mapping
+SHA256SUMS.txt	context	harm-rel	2	A-H4/SHA256SUMS.txt
+admissibility-ledger.txt	context	hcase-rel	29	A-H4/h4-c01-pane-live/admissibility-ledger.txt
+env.controller-domain.txt	context	hcase-rel	15	A-H4/h4-c01-pane-live/env.controller-domain.txt
+env.domain-diff.txt	context	hcase-rel	15	A-H4/h4-c01-pane-live/env.domain-diff.txt
+env.helper-domain.txt	context	hcase-rel	15	A-H4/h4-c01-pane-live/env.helper-domain.txt
+invocations.tsv	context	hcase-rel	29	A-H4/h4-c01-pane-live/invocations.tsv
+out/resolve.stderr	context	hcase-rel	15	A-H4/h4-c01-pane-live/out/resolve.stderr
+out/resolve.stdout	context	hcase-rel	15	A-H4/h4-c01-pane-live/out/resolve.stdout
+roster.txt	context	hcase-rel	15	A-H4/h4-c01-pane-live/roster.txt
+surface-state.txt	context	hcase-rel	29	A-H4/h4-c01-pane-live/surface-state.txt

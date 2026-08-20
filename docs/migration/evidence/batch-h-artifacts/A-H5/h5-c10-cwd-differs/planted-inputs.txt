@@ -1,0 +1,3 @@
+  meta line appended: launch_time.main=1787263709
+  planted 2026/08/20/cand-a.jsonl mtime=1787264249 sha256=4504098f3318c75bedee700e417e6bf66a2b19f1efb7fbcf68127f86e33eef5d
+    first_line={"id":"aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa","cwd":"/tmp","marker":"cwd-differs"}

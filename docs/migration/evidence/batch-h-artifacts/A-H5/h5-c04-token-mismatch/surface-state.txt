@@ -1,0 +1,21 @@
+## source state of the surfaces under test, read from the filesystem
+### /tmp/aecx/h/h6/home/.ae/sessions/th6/_register-sid
+  exists=yes
+  type=file
+  mode=700
+  size=4618
+  interpreter=#!/opt/homebrew/bin/bash
+  sources_lib=0
+  read_attempt_rc=0
+  read_attempt_stderr=<none>
+  sha256=c721ca5febeedffb03db2f4fc0b50034e3e4674d1a95fac7715e345242ad1811
+### /tmp/aecx/h/h6/home/.ae/sessions/th6/meta
+  exists=yes
+  type=file
+  mode=644
+  size=503
+  interpreter=<none>
+  sources_lib=0
+  read_attempt_rc=0
+  read_attempt_stderr=<none>
+  sha256=bbd3eb6dfa04ae548a1b370d09e02fb74b41fb2b5329e548751a25cfc566fdd7
