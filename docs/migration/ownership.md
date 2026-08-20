@@ -481,8 +481,8 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
   stands down**; otherwise the bash daemon owns it.
 - **known defect (both seats, 2026-08-20):** `ae telegram start` under a live aewatch
   WARNS AND PROCEEDS, creating a double-sender state (ae:10639-10648). Classified
-  fix-known-defect — intended behavior: the single-sender invariant holds against
-  explicit operator start (refuse or take over cleanly); not a DR.
+  fix-known-defect(**#83**, intended: the single-sender invariant holds against explicit
+  operator start — refuse or take over cleanly); not a DR.
 - effects: chat event consumption, Telegram send/receive, reply routing to panes
 - current writer/call path: bash telegram daemon; aewatch bridge (mode above)
 - locks / atomicity: TBD per mode — the marker+heartbeat handoff itself is a contract
@@ -499,9 +499,11 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 
 ### D28b — telegram start/stop (+ autostart)
 
-- effects: machine-global telegram-daemon script publication via M3 (ae:9305-9308,
-  ae:10315-10346, ae:10628-10655 — moved here from setup per census-2 audit), tmux
-  creation, daemon lifecycle, machine-global control lock
+- effects: the AUTHORITATIVE config mutation `telegram.enabled` persisted BEFORE
+  spawn/kill (ae:10288-10310, ae:10628-10678 — the durable effect and residue; the
+  control-lock file is mechanism), machine-global telegram-daemon script publication via
+  M3 (ae:9305-9308, ae:10315-10346, ae:10628-10655 — moved here from setup per census-2
+  audit), tmux creation, daemon lifecycle
 - current writer/call path: `cmd_telegram_start` / `cmd_telegram_stop` / autostart path
 - locks / atomicity: TBD
 - current owner: bash
