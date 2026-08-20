@@ -4,3 +4,7 @@ site/
 __pycache__/
 *.pyc
 .serena/
+
+# Rust build artifacts (Cargo.lock is COMMITTED — see rust-toolchain.toml/#80)
+/target/
+/mutants.out*/

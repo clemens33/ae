@@ -1,0 +1,7 @@
+# `unwrap_used` / `expect_used` are the production rule (Cargo.toml [lints]).
+# They are NOT the test rule: a test that maps an error to a fallback instead of
+# panicking hides the failure it exists to report. Clippy's own switch keeps the
+# rule where it belongs rather than scattering `#[allow]` through the suite.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

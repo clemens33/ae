@@ -1,0 +1,11 @@
+# cargo-mutants: does the suite DISCRIMINATE, or does it merely pass?
+#
+# nextest is the runner here for the same reason it is the runner in
+# `just rust-test` — one test tool, one set of semantics. Doctests are not run
+# by this lane; they are documentation coverage, not mutation coverage.
+test_tool = "nextest"
+
+# A mutant that hangs must not hang the lane. The multiplier is against the
+# measured baseline run, so it scales with the suite instead of being a guess.
+timeout_multiplier = 5.0
+minimum_test_timeout = 20.0

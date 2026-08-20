@@ -184,3 +184,155 @@ docs-build:
 # Show available recipes
 help:
     @just --list
+
+# ── Rust (rewrite branch, epic #79 / #80) ────────────────────────────
+# The bash-era recipes above stay while bash ae is frozen. Everything below is
+# prefixed `rust-` and touches nothing they own.
+#
+# PINS ARE THE CONTRACT. This block is the single source of truth for dev-tool
+# versions; `rust-setup` installs exactly these and nothing else. The compiler
+# pin lives in rust-toolchain.toml (cargo/rustup read it, just does not).
+#
+# EVERY graph-consuming cargo invocation below passes `--locked`. Without it
+# cargo will happily UPDATE Cargo.lock to satisfy a build and then report green —
+# a committed lockfile that no lane ever enforces is decoration. `cargo fmt` is
+# the one exception: it does not resolve the dependency graph.
+# Two spellings differ and are not interchangeable:
+#   cargo-deny takes it as a GLOBAL option  -> `cargo deny --locked check`
+#     (`cargo deny check --locked` exits 2 — measured)
+#   cargo-mutants does not accept it at all -> `--cargo-arg=--locked` passes it
+#     through to the cargo it drives (measured; bare `--locked` is rejected)
+
+# `just` is a PREREQUISITE of the bootstrap contract, not something rust-setup
+# installs — you cannot run a recipe that installs the tool running the recipe.
+# The pin is recorded HERE anyway so CI has ONE source of truth to read, and so a
+# bump re-keys the CI tool cache instead of silently reusing the old binary.
+JUST_VERSION := "1.57.0"
+
+NEXTEST_VERSION := "0.9.143"
+TAPLO_VERSION := "0.10.0"
+DENY_VERSION := "0.20.2"
+MUTANTS_VERSION := "27.1.0"
+LLVM_COV_VERSION := "0.9.0"
+
+# The foreign target. musl, not gnu — the epic promises a STATIC zero-dep binary
+# and gnu is not that (see rust-toolchain.toml for the NSS caveat). Compile-smoke
+# only: `cargo check` never links, so nothing produced here can be mistaken for a
+# runnable artifact.
+
+RUST_CROSS_TARGET := "x86_64-unknown-linux-musl"
+
+# Bootstrap: rustup toolchain + the pinned dev tools. Idempotent — every tool is
+# version-checked first, so a second run installs nothing. Honest prerequisites:
+# rustup and just, nothing else.
+
+# Install the pinned Rust toolchain + dev tools (idempotent)
+rust-setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    command -v rustup >/dev/null || { echo "error: rustup is required (https://rustup.rs)" >&2; exit 1; }
+
+    # No toolchain argument: rustup resolves the ACTIVE toolchain, which in this
+    # directory is rust-toolchain.toml — channel, profile, components and both
+    # targets come from the pin rather than being restated here.
+    echo "==> toolchain (rust-toolchain.toml)"
+    rustup toolchain install --no-self-update
+
+    # `cargo install` compiles from source and is slow, so it runs only on an
+    # actual version mismatch. Each probe prints the tool's own reported version
+    # and matches the pin as a WHOLE WORD — a prefix match would accept 0.9.1430.
+    ensure() {
+        local crate="$1" want="$2" probe="$3"
+        local have
+        have="$(eval "$probe" 2>/dev/null | tr -c '0-9A-Za-z.' '\n' | grep -Fx "$want" || true)"
+        if [ -n "$have" ]; then
+            printf '    ok   %-16s %s\n' "$crate" "$want"
+            return 0
+        fi
+        printf '    ==>  %-16s installing %s\n' "$crate" "$want"
+        cargo install --locked --version "$want" "$crate"
+    }
+
+    echo "==> pinned dev tools"
+    ensure cargo-nextest  "{{ NEXTEST_VERSION }}"  'cargo nextest --version'
+    ensure taplo-cli      "{{ TAPLO_VERSION }}"    'taplo --version'
+    ensure cargo-deny     "{{ DENY_VERSION }}"     'cargo deny --version'
+    ensure cargo-mutants  "{{ MUTANTS_VERSION }}"  'cargo mutants --version'
+    ensure cargo-llvm-cov "{{ LLVM_COV_VERSION }}" 'cargo llvm-cov --version'
+
+    echo "==> ready — run: just rust-check"
+
+# The gate: everything a change must pass before it is offered for review
+rust-check: rust-fmt-check rust-lint rust-test
+
+# Check formatting in both languages of the build: Rust and TOML
+rust-fmt-check:
+    cargo fmt --all --check
+    taplo fmt --check
+
+# Auto-format Rust + TOML
+rust-fmt:
+    cargo fmt --all
+    taplo fmt
+
+# `-D warnings` is what makes [lints] a gate rather than a suggestion — which is
+# also why unwrap_used/expect_used are declared "warn" in Cargo.toml and still
+# fail here. --all-targets so tests are linted too.
+
+# Clippy (-D warnings) + taplo lint
+rust-lint:
+    cargo clippy --locked --all-targets --all-features -- -D warnings
+    taplo lint
+
+# nextest does NOT run doctests. Doctests are KEPT — they are the executable half
+# of the public docs — so they get their own invocation. Dropping that second
+# line silently retires a whole lane.
+
+# Run the test suite: nextest + doctests
+rust-test:
+    cargo nextest run --locked --all-features
+    cargo test --doc --locked --all-features
+
+# Coverage is a REPORT, not a gate. It becomes a gate the day a threshold is
+# ratified, and not before.
+
+# Coverage report (not a gate)
+rust-cov:
+    cargo llvm-cov nextest --locked --all-features
+
+# The lane that asks whether the tests DISCRIMINATE, not just whether they pass.
+# Agents write tests that pass; this is the check that costs them something.
+
+# Mutation testing
+rust-mutants *args:
+    cargo mutants --cargo-arg=--locked {{ args }}
+
+# `license-not-encountered` is allowed because the license allow-list is
+# deliberately forward-looking; with zero dependencies every entry is unmatched.
+# REMOVE THE --allow AT THE FIRST REAL DEPENDENCY: once a dep exists the warning
+# stops being noise and starts being the signal that the allow-list drifted.
+
+# Supply chain: advisories, licenses, bans, sources (policy in deny.toml)
+rust-deny:
+    cargo deny --locked check --allow license-not-encountered
+
+# NATIVE is a real, runnable binary and is run here to prove it. The foreign
+# target is a COMPILE SMOKE — `cargo check` does not link, and a foreign binary
+# this host could produce would not be proven runnable anyway. Target-native
+# proof belongs on that target's own machine or CI runner.
+
+# Release build: native binary + foreign-target compile smoke
+rust-build-release:
+    cargo build --release --locked
+    @echo "==> native binary: target/release/ae"
+    @./target/release/ae --version
+    @echo "==> compile smoke ONLY (not a runnable artifact): {{ RUST_CROSS_TARGET }}"
+    cargo check --release --locked --target {{ RUST_CROSS_TARGET }} --all-targets
+
+# bacon is deliberately NOT installed by rust-setup: a personal dev loop is not
+# part of the bootstrap contract.
+
+# Optional watch loop (requires bacon, installed separately)
+rust-watch:
+    bacon clippy-all

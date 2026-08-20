@@ -1,0 +1,69 @@
+# Supply-chain policy for `ae`. Committed, because the policy IS the check —
+# cargo-deny with a default config asserts almost nothing.
+#
+# cargo-deny covers the RustSec advisory database directly, so cargo-audit is a
+# duplicate lane and is deliberately absent (#80).
+
+[graph]
+# Both targets of the epic. Restricting the graph keeps the check honest: a
+# platform we do not ship is a platform whose advisories are noise.
+targets = [
+  { triple = "aarch64-apple-darwin" },
+  { triple = "x86_64-unknown-linux-musl" },
+]
+all-features = true
+
+[output]
+feature-depth = 1
+
+[advisories]
+# RustSec. A known-vulnerable or yanked dependency fails the lane; there is no
+# "warn" that survives contact with a release.
+yanked = "deny"
+unmaintained = "all"
+# Every entry here must carry a reason and a reference. An empty list is the
+# only state that needs no justification.
+ignore = []
+
+[licenses]
+# Permissive only. ae is MIT and ships as one binary — a copyleft dependency
+# changes the distribution contract, so it needs a deliberate exception rather
+# than a silent pass.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+]
+confidence-threshold = 0.9
+exceptions = []
+
+[licenses.private]
+# `ae` itself is `publish = false`; it is still MIT and still checked.
+ignore = false
+
+[bans]
+# A duplicate version is a smell worth seeing, not a defect worth blocking.
+multiple-versions = "warn"
+# A wildcard version is a reproducibility hole, and this repo's whole toolchain
+# doctrine is pins-not-channels.
+wildcards = "deny"
+highlight = "all"
+external-default-features = "allow"
+workspace-default-features = "allow"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+# crates.io or nothing. A git dependency is a dependency with no yank, no
+# advisory mapping and no immutable version.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

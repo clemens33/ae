@@ -1,0 +1,63 @@
+# Single crate, bin + lib, named `ae` from day one (epic #79). No workspace:
+# dead-code analysis stops at crate boundaries, and cross-crate dead code is the
+# agent "reinvention" failure mode. Split later only on measured need.
+[package]
+name = "ae"
+# 0.0.0 stands for now. The bash era versions ae with CalVer (`AE_VERSION` in the
+# `ae` script, bumped by `just bump`); Cargo wants semver. The two schemes are
+# NOT reconciled and `ae --version` currently prints the Cargo one.
+# TRIGGER (P5, entry flip): unify the version scheme when the installer points
+# the public `ae` path at this binary — that is the moment the two can no longer
+# disagree without a user seeing it.
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+description = "Agent environment: tmux-backed multi-agent session multiplexer"
+license = "MIT"
+repository = "https://github.com/clemens33/ae"
+publish = false
+
+[lib]
+name = "ae"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ae"
+path = "src/main.rs"
+
+# Single integration-test target with `mod` submodules — one binary to link,
+# one place for shared helpers, no per-file target explosion.
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
+# No runtime dependencies. Per #80: "no error dependency exists until a real
+# error does" — the same restraint applies to everything else. Deps arrive with
+# the feature that needs them, not in the skeleton.
+[dependencies]
+
+[dev-dependencies]
+
+[lints.rust]
+# The hard line. Not "warn": there is no scoped exception worth having in a
+# session multiplexer that shells out to tmux.
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# The exact escape hatch agents reach for when the type system gets
+# inconvenient. WARN, not deny: `-D warnings` in CI gives the same gate
+# strength, and deny would break a scoped, documented `#[allow]`.
+unwrap_used = "warn"
+expect_used = "warn"
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
+# REVISIT AT P4 (daemons). `panic = "abort"` forecloses `catch_unwind`: a
+# long-lived watchdog/telegram loop may want to survive a panic in one iteration
+# rather than take the process down. Cheap to flip; recorded so the trade is a
+# decision at P4 rather than a discovery.
+panic = "abort"

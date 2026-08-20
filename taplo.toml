@@ -1,0 +1,8 @@
+# taplo's scope. Default-on for every TOML in the repo so a new one is covered
+# the day it lands — with one exclusion.
+include = ["**/*.toml"]
+
+# cliff.toml is a bash-era file and is NOT taplo-formatted. Reformatting it here
+# would be an unrelated diff in a frozen area; it joins the lane when someone
+# deliberately reformats it.
+exclude = ["cliff.toml", "target/**"]

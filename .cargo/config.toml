@@ -1,0 +1,30 @@
+# Repo-owned cargo config. Anything here must hold on a FRESH CLONE with only
+# rustup + just — no brew, no sccache, no alternative linker. Machine-local
+# speedups belong in ~/.cargo/config.toml, which cargo merges on top of this.
+
+[alias]
+# Shorthands for the inner loop and for agents that reach for cargo directly.
+#
+# `lint` carries `-D warnings` so it AGREES with `just rust-lint`: without it the
+# alias reports success on the very warnings the gate rejects, which is worse
+# than having no alias — a false green is trusted, a missing tool is noticed.
+# It is still NOT the whole lane: `just rust-lint` also runs `taplo lint`, and
+# nothing here can check TOML.
+#
+# `--locked` for the same reason it is on every justfile lane: a lane that lets
+# cargo rewrite Cargo.lock to succeed is not enforcing the committed lockfile.
+lint = "clippy --locked --all-targets --all-features -- -D warnings"
+xcheck = "check --locked --target x86_64-unknown-linux-musl"
+
+# LINKER: stock. macOS ships a fast enough `ld` for a crate this size, and a
+# custom linker (mold/lld/zld) is a machine dependency the bootstrap contract
+# does not promise. Revisit when a measured link time justifies it.
+
+# sccache: deliberately NOT enabled here. `build.rustc-wrapper` is a hard
+# requirement the moment it is written — a clone without sccache then fails to
+# build. Enable it per-machine in ~/.cargo/config.toml:
+#     [build]
+#     rustc-wrapper = "sccache"
+
+[future-incompat-report]
+frequency = "always"

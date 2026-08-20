@@ -1,0 +1,258 @@
+# Rust lanes only.
+#
+# The bash-era lanes (`just check`, `just test`) are deliberately NOT wired here:
+# they are blocked on the gate-integrity enablers (#58/#67) and get their own
+# workflow later. Adding them now would publish a red badge for a known,
+# separately-tracked gap.
+#
+# This workflow is also the TARGET-NATIVE PROOF the #80 acceptance asks for:
+# `ae --version` is executed on real x86_64 Linux and real arm64 macOS, not
+# cross-built and assumed.
+
+name: rust
+
+on:
+  push:
+    branches: [rust-rewrite, main]
+  pull_request:
+    branches: [rust-rewrite, main]
+  workflow_dispatch:
+
+# A new push supersedes an in-flight run on the same ref.
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # A CI failure must be readable without a local repro.
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      # One platform's failure must not cancel the other's evidence — the whole
+      # point of this matrix is proving BOTH natively.
+      fail-fast: false
+      matrix:
+        include:
+          # Runner images are pins too. `ubuntu-latest` and `macos-latest` are
+          # moving channels — the same doctrine that rejects `stable` in
+          # rust-toolchain.toml rejects them here.
+          - os: ubuntu-24.04
+            name: linux-x86_64
+          - os: macos-15
+            name: macos-arm64
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pinned dev tools install into a dedicated root, NOT ~/.cargo/bin: caching
+      # ~/.cargo/bin would archive and later restore the runner's own
+      # rustup/cargo/rustc shims, so a cache saved against one preinstalled
+      # rustup could be replayed over a different one.
+      #
+      # Exported from a STEP, not from job-level `env`: the `runner` context is
+      # not available there, and referencing it makes the whole workflow invalid
+      # — no job starts at all, so the failure looks like nothing ran.
+      - name: Point cargo install at a cacheable root
+        run: |
+          echo "CARGO_INSTALL_ROOT=$RUNNER_TEMP/ci-tools" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/ci-tools/bin" >> "$GITHUB_PATH"
+
+      # rustup is preinstalled on GitHub runners. The toolchain, its components
+      # and its targets all come from rust-toolchain.toml — the same file the
+      # laptop resolves — so CI cannot silently drift onto another compiler.
+      - name: Show rustup
+        run: rustup --version
+
+      # Cache key derives from the PINS THEMSELVES, not from the whole justfile:
+      # editing a recipe comment must not evict a slow tool build. Read with grep
+      # so no tool is needed before the cache that holds the tools.
+      - name: Compute pin hash
+        id: pins
+        run: |
+          set -euo pipefail
+          hash="$( { grep -E '^[A-Z_]+_VERSION := ' justfile; cat rust-toolchain.toml; } \
+                   | shasum -a 256 | cut -d' ' -f1 )"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+      # `just` plus the five pinned dev tools, all built from source by
+      # `cargo install --locked`. Slow exactly once per pin change; after that
+      # this cache makes rust-setup a no-op.
+      - name: Cache pinned dev tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/ci-tools
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: tools-${{ matrix.name }}-${{ steps.pins.outputs.hash }}
+
+      - name: Cache build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: build-${{ matrix.name }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            build-${{ matrix.name }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}-
+            build-${{ matrix.name }}-
+
+      # `just` is a PREREQUISITE of the bootstrap contract, not something
+      # rust-setup installs — CI reproduces the prerequisite rather than
+      # pretending it is part of the repo's own setup. This is the one pin that
+      # must live here, because it has to exist before the justfile can be read.
+      - name: Install just (pinned)
+        run: |
+          set -euo pipefail
+          # READ the pin, never restate it: JUST_VERSION lives in the justfile's
+          # pins block with the other five, so a bump changes one line and
+          # re-keys the tool cache (the pin hash greps *_VERSION lines).
+          want="$(grep -m1 -E '^JUST_VERSION := ' justfile | cut -d'"' -f2)"
+          [ -n "$want" ] || { echo "::error::JUST_VERSION not found in justfile"; exit 1; }
+          if just --version 2>/dev/null | grep -Fqx "just $want"; then
+            echo "just $want already present"
+          else
+            cargo install --locked --version "$want" just
+          fi
+
+      # The bootstrap contract, exercised for real: rustup + just -> rust-setup.
+      - name: just rust-setup
+        run: just rust-setup
+
+      # Idempotence is an ACCEPTANCE CRITERION, so CI asserts it rather than
+      # trusting it: a second run must install nothing.
+      - name: just rust-setup is idempotent
+        run: |
+          set -euo pipefail
+          just rust-setup 2>&1 | tee "$RUNNER_TEMP/setup2.log"
+          if grep -q 'installing' "$RUNNER_TEMP/setup2.log"; then
+            echo "::error::rust-setup installed something on its second run — not idempotent"
+            exit 1
+          fi
+          echo "second run installed nothing"
+
+      - name: just rust-check
+        run: just rust-check
+
+      - name: just rust-deny
+        run: just rust-deny
+
+      # The lane that asks whether the tests discriminate. Run on both platforms:
+      # a mutant caught on macOS is not evidence about Linux.
+      - name: just rust-mutants
+        run: just rust-mutants
+
+      # Native build + the musl compile smoke. On ubuntu the "cross" smoke is
+      # same-arch (gnu host, musl target) and still never links — by design.
+      - name: just rust-build-release
+        run: just rust-build-release
+
+      # THE target-native proof: this binary was built by this machine, for this
+      # machine, and is executed here.
+      - name: Native ae runs on this platform
+        run: |
+          set -euo pipefail
+          want="ae $(grep -m1 -E '^version = ' Cargo.toml | cut -d'"' -f2)"
+          got="$(./target/release/ae --version)"
+          [ "$got" = "$want" ] || { echo "::error::--version printed '$got', want '$want'"; exit 1; }
+
+          # Exit codes are part of the contract. Capture the status explicitly:
+          # under `set -e` a bare failing command aborts, and wrapping it in
+          # `cmd && { ... }` to dodge that makes the status the reader sees
+          # depend on short-circuit rules rather than on the binary.
+          set +e
+          ./target/release/ae --frobnicate >/dev/null 2>&1
+          code=$?
+          set -e
+          [ "$code" -eq 2 ] || { echo "::error::unknown arg exited $code, want 2"; exit 1; }
+
+          echo "native proof ok on ${{ matrix.name }}: $got"
+
+      # Evidence, not a release channel — hence the short retention.
+      #
+      # HONEST LABEL: on ubuntu this is the NATIVE host build, which is
+      # x86_64-unknown-linux-GNU and dynamically linked. The static musl artifact
+      # the epic promises is built and proven separately, below.
+      - name: Upload native binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ae-${{ matrix.name }}-native
+          path: target/release/ae
+          retention-days: 7
+          if-no-files-found: error
+
+      # ── The epic's promise, proven rather than asserted ────────────────────
+      #
+      # Only on Linux: a musl target can actually LINK here, so this leg upgrades
+      # musl from compile-smoke to a real artifact. macOS keeps the check-smoke
+      # (it has no musl linker), and the justfile is unchanged for the same
+      # reason — a laptop cannot produce this.
+      #
+      # A musl-static binary runs fine on a glibc host, so it is EXECUTED here,
+      # not just built.
+      - name: Build, run and prove the static musl binary
+        if: matrix.name == 'linux-x86_64'
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target x86_64-unknown-linux-musl
+          bin=target/x86_64-unknown-linux-musl/release/ae
+
+          # Same proof shape as the native lane: it prints what it should, and
+          # its exit codes are the contract.
+          want="ae $(grep -m1 -E '^version = ' Cargo.toml | cut -d'"' -f2)"
+          got="$("$bin" --version)"
+          [ "$got" = "$want" ] || { echo "::error::musl --version printed '$got', want '$want'"; exit 1; }
+
+          set +e
+          "$bin" --frobnicate >/dev/null 2>&1
+          code=$?
+          set -e
+          [ "$code" -eq 2 ] || { echo "::error::musl unknown arg exited $code, want 2"; exit 1; }
+
+          # STATIC IS ASSERTED, NOT PRINTED. A skipped assertion is a vacuous
+          # gate, so a missing readelf is a failure rather than a silent pass.
+          command -v readelf >/dev/null || { echo "::error::readelf missing — cannot prove static"; exit 1; }
+
+          # The authoritative test is the absence of a PT_INTERP segment: no
+          # program interpreter means no dynamic loader is involved. Capture
+          # first so a readelf that FAILS aborts here — piping straight into
+          # grep would turn a broken readelf into "no INTERP found", i.e. a pass.
+          headers="$(readelf -l "$bin")"
+          if printf '%s\n' "$headers" | grep -q 'INTERP'; then
+            echo "::error::musl binary has a PT_INTERP segment — it is dynamically linked"
+            printf '%s\n' "$headers"
+            exit 1
+          fi
+
+          # Second, independent signal. Rust musl builds are static-pie, which
+          # `file` spells "static-pie linked" or "statically linked" depending on
+          # version — both contain "static"; a dynamic build says "dynamically".
+          described="$(file -b "$bin")"
+          case "$described" in
+            *dynamically*) echo "::error::file reports dynamic: $described"; exit 1 ;;
+            *static*)      : ;;
+            *)             echo "::error::file does not report static: $described"; exit 1 ;;
+          esac
+
+          # Third signal, informational: on glibc, ldd exits non-zero for a
+          # static binary, so it must not be allowed to abort the step.
+          ldd "$bin" 2>&1 || true
+
+          echo "static musl proof ok: $got — $described"
+
+      - name: Upload static musl binary
+        if: matrix.name == 'linux-x86_64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ae-linux-x86_64-musl
+          path: target/x86_64-unknown-linux-musl/release/ae
+          retention-days: 7
+          if-no-files-found: error

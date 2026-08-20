@@ -1,0 +1,24 @@
+# Pin, not channel. "stable" moves; CI, laptop and agent sandboxes must resolve
+# to the SAME compiler or a lint that gates a commit here is a lint that does
+# not gate it there. Bump deliberately, in its own commit.
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"
+# llvm-tools is listed even though only the coverage lane uses it: cargo-llvm-cov
+# otherwise `rustup component add`s it ON DEMAND (measured), silently mutating a
+# pinned toolchain from inside a "report" lane and requiring the network to do it.
+components = ["rustfmt", "clippy", "llvm-tools"]
+# Both targets of the epic. aarch64-apple-darwin is native here; the linux
+# target is CROSS and is only ever compile-smoked from macOS (`cargo check`,
+# no link step) — a foreign binary produced here would not be proven runnable.
+#
+# musl, NOT gnu: the epic promises a STATIC zero-dep binary, and on Linux musl
+# is that promise — a glibc build is dynamically linked against the build host's
+# libc and is not the artifact ae's one-file install contract describes.
+#
+# CAVEAT (flagged for P4 daemon work): musl has no NSS. User, group and host
+# lookups do not consult /etc/nsswitch.conf, so getpwuid/getaddrinfo behave
+# differently than under glibc — LDAP/SSSD-backed users and some resolver setups
+# resolve differently or not at all. ae's current surface does not depend on any
+# of it; the daemons that land in P4 might.
+targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-musl"]
