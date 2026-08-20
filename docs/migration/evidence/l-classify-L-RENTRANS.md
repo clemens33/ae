@@ -156,10 +156,25 @@ that does not participate in the protocol, and a SHOULD requiring the impossible
 untestable. **Live-reader linearizability lives here; crash recovery and rollback
 semantics belong to SC-832c and D20.**
 
-**Note what the evidence actually says**, because it supports colead more than it supported
-me: `ae list` — the product's own reader — was COHERENT at all four cuts. The violation is
-visible only to a direct filesystem reader. That makes the mixed window a **defect
-observation**, not a permission, which is the reverse of how I framed it.
+**Note what the evidence actually says — and my SECOND reading of it was also wrong**
+(colead, adopted). I wrote that `ae list` was coherent at all four cuts and that the
+violation was visible only to a direct filesystem reader. **It was only NAME-CARDINALITY
+coherent.** I had read `name` and `running` out of the observer JSON and never looked at
+`agents` or `last_active_epoch`. They are decisive:
+
+| cut | `ae list` for the renamed session |
+|---|---|
+| `b_rn_locked_entry` | `proj` — `agents=[claude:claude ce989983]`, `last_active_epoch=1787250880` |
+| `b_rn_tmux_renamed` | `proj2` — **`agents=[]`, `last_active_epoch=0`** |
+| `b_rn_dir_moved` | `proj2` — agents restored, read from `sessions/proj2` whose meta still says `session=proj` |
+| `b_rn_meta_updated` | `proj2` — coherent |
+
+At the tmux-renamed cut the reader took the NEW name from tmux and the (missing) state from
+the new path, and reported the result at rc0 as an ordinary session with no agents and no
+activity. **That is a mixed generation accepted by a supported product reader**, which is
+exactly what SC-1303 now forbids. The defect is user-visible, not filesystem-only.
+*Method note:* this is the third time today a claim of mine rested on fields I chose to
+extract rather than on the record. I looked at two keys and concluded about the object.
 
 **Landed in the contract; filed as #103.** Two related items travel with it: **D20**
 (`ownership.md:422`) recorded the crash family BACKWARDS — *"dir moved but tmux rename

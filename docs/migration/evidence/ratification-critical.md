@@ -260,7 +260,7 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-831 — CRITICAL(D)
 - SC-832a — CRITICAL(D)
 - SC-832b — ALREADY-OBSERVED(pin-audit PROVES pointer)
-- SC-832c — ALREADY-OBSERVED(pin-audit PROVES pointer)
+- SC-832c — CRITICAL(D) — empirical HOLD: never `observed` until the SIGKILL/fresh-process re-entry arms land
 - SC-832d — CRITICAL(D)
 - SC-832e — CRITICAL(D)
 - SC-833a — CRITICAL(D)

@@ -1582,9 +1582,34 @@ earlier no-source claim). Empirical: census-2 rename section. Conflict: none.
 meta rewrite runs without `meta.lock` (census-2, ae:11597-11667); race semantics need
 seat closure. UNCLASSIFIED pending closure.
 
-**SC-832c — rename crash cuts.** `authority=code-observation` — residue at each cut
-point (dir moved / tmux renamed / meta updated) per census-2; seat closure pending.
-UNCLASSIFIED pending closure.
+**SC-832c — an interrupted rename never leaves a mixed generation ACCEPTED as
+committed.** Bucket 3 — fix-known-defect(#103). **NORMATIVE CONCUR / EMPIRICAL HOLD**
+(joint seat closure, 2026-08-20).
+SHOULD, one invariant: after interruption at ANY rename cut, **no product reader or
+operation accepts a mixed generation as committed**. Before any further effects, ae must —
+under the rename identity protocol — either complete or roll back to exactly ONE coherent
+old/new generation, or **refuse loudly without further identity mutation**.
+**The recovery STRATEGY is deliberately not frozen; the ACCEPTANCE of mixed state is
+what is forbidden.** Completing forward, rolling back, and refusing are all conforming;
+proceeding as though a half-renamed session were whole is not.
+**Boundary with SC-1303:** SC-1303 owns **live-reader linearizability** during the
+operation; this row and D20 own **fresh-process recovery and rollback** after it dies.
+The concurrent live meta-writer serialization question stays with SC-832b, which is not
+crash recovery. *(Prose kept unbolded at line start — the sweep guard reads a line-initial
+bolded `SC-` as a row head; this is the second time it caught me.)*
+**EMPIRICAL STATUS: pending / CRITICAL — never `observed`, and NO pending-gap escape is
+permitted here** because the row is destructive and identity-critical. L-RENTRANS HELD and
+then RESUMED the same process at each cut; it never killed the writer, never started a
+fresh process, and never observed recovery or refusal. Census and frozen source prove the
+residue SHAPE and the absence of an explicit transaction marker — neither proves
+**post-crash re-entry behaviour**, which is the entire claim.
+**To close the IS lane (required before ratification):** deterministic **SIGKILL** cuts at
+post-tmux, post-dir and post-meta, with the entry cut as the control; descriptors released
+by death rather than by a resumed process; then a **fresh-process** `list`/`status`/`stop`
+or a defined recovery entry point. Capture the tuple, rc/stdout/stderr, a
+no-further-mutation manifest, the stable session id, and the prefix sibling.
+Authority: joint seat ruling. Conflict: fix-known-defect(#103).
+**classified_by: both seats, 2026-08-20 (normative concur, empirical hold).**
 
 **SC-832d — rename addresses its SOURCE by recorded server and exact live session id.**
 Bucket 3 — fix-known-defect(#102). SHOULD: rename resolves the target on the session's
@@ -2259,9 +2284,17 @@ disagree"). Colead dissented and carried it — that would have promoted an obse
 mechanism into a SHOULD and **blessed D20's atomicity hole**, leaving the P3 owner no
 requirement to do better. Permitting a hole is still writing the hole into the contract.
 No DR is needed because mixed generations are ruled a DEFECT, not an acceptable outcome.
-*Note what the evidence says:* `ae list` — the product's own reader — was COHERENT at all
-four observed cuts; the violation is visible only to a direct filesystem reader, which is
-why it survives casual inspection.
+*Note what the evidence says — CORRECTED (colead, 2026-08-20; lead's first reading was
+wrong).* `ae list` was only **NAME-CARDINALITY coherent**, never **generation-coherent**,
+and the supported product reader **did accept mixed generations**:
+- at `b_rn_tmux_renamed` it returned rc0 for `proj2` with **`agents=[]` and
+  `last_active_epoch=0`**, while the complete state still lived under `sessions/proj`;
+- at `b_rn_dir_moved` it returned rc0 reading `sessions/proj2` whose own meta still said
+  `session=proj`.
+So the violation is **user-visible through the product's own reader**, not confined to a
+direct filesystem inspection — an `ae list` during a rename can show a live session as
+having zero agents and no activity. This **strengthens** the bucket-3 conflict rather than
+softening it.
 Authority: joint seat ruling (lead ruling on colead's dissent, 2026-08-20). Empirical:
 observed (L-RENTRANS `rename-observer`, four cuts). Conflict: fix-known-defect(#103).
 **classified_by: both seats, 2026-08-20 (dissent ruled).**
