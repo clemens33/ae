@@ -2140,41 +2140,61 @@ One head per claim, fields per head (gate: no range-level association; A = Autho
 `config.md watchdog table + watchdog.md:35-44`, E = Empirical pending, C = Conflict
 none — spelled per row):
 
-**SC-1400** — `AE_WATCHDOG_INTERVAL_SEC` defaults to 60. Bucket 2. Authority: config.md table
-+ watchdog.md:35. Empirical: pending. Conflict: none.
-**SC-1401** — `AE_WATCHDOG_STALE_MIN` defaults to 15. Bucket 2. Authority: config.md table +
-watchdog.md:36. Empirical: pending. Conflict: none.
-**SC-1402** — `AE_WATCHDOG_MAX_NUDGES` defaults to 2. Bucket 2. Authority: config.md table +
-watchdog.md:37. Empirical: pending. Conflict: none.
-**SC-1403** — `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` defaults to 5. Bucket 2. A:
-  Authority: config.md table + watchdog.md:38. Empirical: pending. Conflict: none.
-config.md table + watchdog.md:38. E: pending. C: none.
-**SC-1404a** — `AE_WATCHDOG_TG_SUPERVISE_SEC` defaults to 120. Bucket 2. Authority: config.md
-table + watchdog.md:41. Empirical: pending. Conflict: none.
-**SC-1404b** — tg-supervise `0` disables supervision. Bucket 2. Authority: config.md table +
-watchdog.md:41. Empirical: pending. Conflict: none.
-**SC-1405a** — `AE_WATCHDOG_SWEEP_SEC` defaults to 300. Bucket 2. Authority: config.md table +
-watchdog.md:42. Empirical: pending. Conflict: none.
-**SC-1405b** — sweep `0` falls back to normal watchdog behavior. Bucket 2. A:
-  Authority: config.md table + watchdog.md:42. Empirical: pending. Conflict: none.
-config.md table + watchdog.md:42. E: pending. C: none.
-**SC-1406a** — `AE_WATCHDOG_SWEEP_RETRY_SEC` defaults to 30. Bucket 2. Authority: config.md
-table + watchdog.md:43. Empirical: pending. Conflict: none.
+**SC-1400** — `AE_WATCHDOG_INTERVAL_SEC` defaults to 60. Bucket 2. Authority:
+config.md:120 + watchdog.md:37 (anchor corrected: the frozen tunables table header
+occupies :35-36; rows run :37-44). Empirical: pending. Conflict: none.
+**SC-1401** — `AE_WATCHDOG_STALE_MIN` defaults to 15. Bucket 2. Authority:
+config.md:121 + watchdog.md:38 (anchor corrected, same offset). Empirical: pending.
+Conflict: none.
+**SC-1402** — `AE_WATCHDOG_MAX_NUDGES` defaults to 2. Bucket 2. Authority:
+config.md:122 + watchdog.md:39 (anchor corrected, same offset). Empirical: pending.
+Conflict: none.
+**SC-1403** — `AE_WATCHDOG_THROTTLE_ALERT_CYCLES` defaults to 5. Bucket 2. Authority:
+config.md:123 + watchdog.md:40 (anchor corrected, same offset; row normalized from
+interleaved fragments). Empirical: pending. Conflict: none.
+**SC-1404a** — `AE_WATCHDOG_TG_SUPERVISE_SEC` defaults to 120. Bucket 2. Authority:
+config.md:124 + watchdog.md:41. Empirical: pending. Conflict: none.
+**SC-1404b** — tg-supervise `0` disables supervision. Bucket 2. Authority:
+config.md:124 + watchdog.md:41 ("`0` disables"). Empirical: pending. Conflict: none.
+**SC-1405a** — `AE_WATCHDOG_SWEEP_SEC` defaults to 300. Bucket 2. Authority:
+config.md:125 + watchdog.md:42. Empirical: pending. Conflict: none.
+**SC-1405b** — sweep `0` falls back to normal watchdog behavior. Bucket 2. Authority:
+config.md:125 + watchdog.md:42 ("`0` falls back to the normal watchdog"; row
+normalized from interleaved fragments). Empirical: pending. Conflict: none.
+**SC-1406a** — `AE_WATCHDOG_SWEEP_RETRY_SEC` defaults to 30. Bucket 2. Authority:
+config.md:126 + watchdog.md:43. Empirical: pending. Conflict: none.
 **SC-1406b** — sweep-retry is clamped to the sweep cadence (floor: next poll). Bucket
-2. Authority: config.md table + watchdog.md:43. Empirical: pending. Conflict: none.
-**SC-1407a** — `AE_WATCHDOG_SWEEP_RETRY_MAX` defaults to 6. Bucket 2. Authority: config.md
-table + watchdog.md:44. Empirical: pending. Conflict: none.
-**SC-1407b** — exhausting retry-max escalates exactly as SC-938 rules (cross-reference,
-  Authority: config.md table + SC-938 cross-reference. Empirical: pending. Conflict: none.
-not a duplicate behavior row). Bucket 2. A: config.md table + SC-938. E: pending.
-C: none.
+2. Authority: config.md:126 + watchdog.md:43 ("clamped to it; floor — lands on the
+next poll"). Empirical: pending. Conflict: none.
+**SC-1407a** — `AE_WATCHDOG_SWEEP_RETRY_MAX` defaults to 6. Bucket 2. Authority:
+config.md:127 + watchdog.md:44. Empirical: pending. Conflict: none.
+**SC-1407b** — reaching the configured retry maximum ends fast retry, returns to
+normal cadence, and raises one `meta-agent unreachable` alert. Bucket 2 — rewritten
+self-contained by seat grain condition (ae-20260820T173732Z-95db692d): the former
+"exactly as SC-938" wording would have imported the still-unmarked SC-938 contract
+through a marked row. Clearing the alert on landed delivery remains owned ONLY by
+SC-938 and is not claimed here; SC-938 gains no inherited mark. Authority:
+config.md:127 + watchdog.md:44. Empirical: pending. Conflict: none.
 
 **SC-1408a — an explicit `AE_WATCHDOG_*` value wins over its `AE_LOOP_*` legacy name.**
-Bucket 2. Authority: config.md. Empirical: pending. Conflict: none.
+Bucket 2. Authority: config.md:129 ("the legacy `AE_LOOP_*` names are still honoured
+as fallbacks for each tunable" — fallback semantics directly make an explicit primary
+value authoritative; seat-confirmed reading). Empirical: pending. Conflict: none.
 
 **SC-1408b — each documented tunable honours its `AE_LOOP_*` name when the primary is
 unset.** Bucket 2 — per-mapping verification is one probe matrix. Authority:
-config.md. Empirical: pending. Conflict: none.
+config.md:129 (verbatim sentence). Empirical: pending. Conflict: none.
+
+**classified_by (S15 env/config MARK batch 4, ae-20260820T173732Z-95db692d):
+SC-1400, SC-1401, SC-1402, SC-1403, SC-1404a, SC-1404b, SC-1405a, SC-1405b,
+SC-1406a, SC-1406b, SC-1407a, SC-1407b, SC-1408a, SC-1408b — fable5:lead +
+gpt56sol:colead, 2026-08-20. Exact enumeration; later rows never inherit; SC-938
+explicitly gains NO inherited mark from SC-1407b's rewrite. All bucket 2,
+conflict=none. Marked with the countersign conditions applied first: four watchdog.md
+anchors corrected for the +2 table-header offset, config.md anchors made exact
+(:120-127, :129), three malformed rows (SC-1403/1405b/1407b) normalized, SC-1407b
+rewritten self-contained. Normative/conflict lane only; Empirical remains pending
+(H-batch env matrix).**
 
 Malformed-value classes, one head each (`authority=code-observation`; Empirical:
 pending probe; Conflict: pending seat closure; UNCLASSIFIED):
