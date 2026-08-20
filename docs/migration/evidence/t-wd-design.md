@@ -456,9 +456,17 @@ counted in prose. The bash baselines under SC-928 close nothing and say so in th
 | 43 | `WD-929-restart-state` | SC-929 | RED | — | §4.6 |
 | 44 | `WD-980-alert-bytes` | SC-980 | **CAPTURE-ONLY** | — | — |
 
-**Counts live ONLY in the generated block below.** This is a rule about **provenance**, not
-spelling: a count in a representation nobody enumerated is invalid **by construction** rather than
-by recognition. The previous contract took NUMERALS as its subject and a hand-typed
+**Counts live only in the generated block below — and here is exactly what that does and does
+not enforce.** The block is emitted by `t-wd-check.py --emit-counts` and regenerated and compared
+on every run, so **the block's own figures cannot drift**. Exclusion of counts from prose is a
+**RECOGNIZER BELT, NOT PROVENANCE ENFORCEMENT**, and the previous draft called it the latter,
+which was false: the belt reads decimal integers and English cardinals (composed by grammar, so
+`forty-four` and `one hundred` need no listing) adjacent to any derived key or countable noun.
+**It does not read other representations** — Roman numerals and hexadecimal are the two the gate
+demonstrated — so it cannot honestly claim an unknown representation is impossible. Closing that
+would require count-bearing prose to be generated too. Until it is, the claim is exactly:
+**the block is authoritative and self-checking; prose counts are caught in decimal and English
+only.** The previous contract took NUMERALS as its subject and a hand-typed
 `forty-four executed units` walked through it — a contract over one representation of a thing is
 still a filter, and the enumeration treadmill in a contract's clothing. The block is emitted by
 `t-wd-check.py --emit-counts` and the checker regenerates and compares it; a quantity adjacent to
@@ -520,7 +528,8 @@ per arm.
 | `CUT-926-STOP-INTENT` | after `_set_meta_watchdog "false"` returns, before `exit 0` | `_watchdog_stop`, ae:15060 |
 | `CUT-928-APPEND` | with the flock already held, immediately before the append writer | `ae_log_append`, ae:13175 |
 | `CUT-928-LOCK` | at the lock acquisition itself, before the writer is reached | `ae_log_append`, ae:13174 |
-| `CUT-913A-PRE-PASTE` | the aewatch nudge site: **branch committed, delivery call NOT yet entered**. On release the call is entered; a pane killed then raises inside the write path rather than returning | aewatch `_run_cycle`, aewatch:2691 |
+| `BAR-913-RELEASE` | the controller-held release point where two concurrent deliveries are unblocked together | harness-side; no product line |
+| `CUT-913A-PRE-PASTE` | the aewatch nudge site: **branch committed, delivery call NOT yet entered**. On release the call is entered; a pane killed then raises inside the write path rather than returning | aewatch `run_watchdog_cycle` (defined aewatch:2499), site aewatch:2691 |
 | `CUT-928A-LOCK` | the bounded lock-acquisition loop, at its timeout return | aewatch `_locked_append`, aewatch:2372–2376 |
 | `CUT-928A-OPEN` | opening the target file for append, lock already held | aewatch `_locked_append`, aewatch:2379 |
 | `CUT-928A-WRITE` | the write on the already-open descriptor | aewatch `_locked_append`, aewatch:2380 |
@@ -716,7 +725,7 @@ repeated.
   prefix of the other (the `#102` topology lesson); both with the watchdog enabled. **The
   implementation is PINNED and the lanes are separate** (colead v5 BLOCKER 5): `AE_WATCHDOG_IMPL`
   is set explicitly — unset for the bash lane, `uv` for the aewatch lane — and each lane runs in
-  its **own sandbox**. An unpinned selector means one capture cannot attribute a topology to an
+  its **own sandbox**. An unpinned selector means a single observation cannot attribute a topology to an
   implementation, since either could have produced it. **Every process record and every ownership
   record is tagged with the pinned lane** in the captured TSV, so attribution is a field rather
   than an inference. **The unit of closure here is `(arm_id, lane)` as well**, with its own
@@ -795,8 +804,11 @@ the unwanted answer.
   facts below as full sets rather than as a verdict.
 - **Dimension** — target lock.
 - **Fixture facts** — two senders each issue a nonce payload through the session's own generated `send` helper.
-- **Named manipulation** — the two sends are issued concurrently at a controller-held barrier released once.
-- **Barriers** — none.
+- **Named manipulation** — the two sends are issued concurrently at `BAR-913-RELEASE`, released
+  once.
+- **Barriers** — `BAR-913-RELEASE`. **A named synchronization mechanism IS a barrier** and carries
+  a registered identity, hash and inactive-equivalence proof like any other; declaring "none"
+  beside "a controller-held barrier" left a seam outside preregistration.
 - **Raw captures** — pane bytes with `od`; per-sender rc, stdout, stderr; lock file state and acquisition timestamps from each sender's own trace; event rows as a full set.
 - **Calibration** — block `CAL@913`.
 - **ARM-INVALID** — if the two sends do not overlap in wall-clock, the arm is `INCONCLUSIVE` with both intervals recorded.
@@ -953,9 +965,9 @@ the unwanted answer.
   helper delivering a distinct nonce payload to the same pane, which is a real product path with
   real coordination.
 - **Named manipulation** — the `send` invocation is released concurrently with the daemon's nudge
-  cycle, once, at a controller-held barrier. **Overlap is PROVEN, not assumed**: both intervals are
+  cycle, once, at `BAR-913-RELEASE`. **Overlap is PROVEN, not assumed**: both intervals are
   captured and the arm is `INCONCLUSIVE` if they do not intersect.
-- **Barriers** — none.
+- **Barriers** — `BAR-913-RELEASE`.
 - **Raw captures** — invocation trace; pane bytes with `od` as a full sequence; both payloads'
   nonces; both writers' start and end timestamps with their intersection computed; every lock
   artifact either path touches, captured as a set before, during and after.
@@ -981,12 +993,17 @@ the unwanted answer.
   barrier. What actually follows release is derivable from the recorded blob: the delivery stages
   and submits through the daemon's own write path and **records its effect only after the whole
   logical mutation succeeds** (aewatch:679–699), so a pane killed on release makes the call
-  terminate **by raising, not by returning**, and the component contains it per session
-  (aewatch:1618). The arm therefore records **call ENTRY**, then **termination mode — raised or
+  terminate **by raising, not by returning**.
+- **THE CONTAINMENT CLAIM IS WITHDRAWN, NOT RE-ANCHORED.** The previous draft cited aewatch:1618
+  for per-session containment; that line is the **Telegram outbound drain** (`outbound drain error
+  for {session.name}`) — a different subsystem entirely, and a citation that resolved while being
+  wrong for its claim. **Where containment lives is not asserted here at all**: it is a product
+  behaviour, so the arm CAPTURES it rather than the design claiming it. The arm therefore records
+  **call ENTRY**, then **termination mode — raised or
   returned**, then whether the effect was recorded, then the component's containment and backoff
-  state. **It does not name a normal return**, which need not exist. If the row's candidate
-  requires a genuinely POST-ENTRY cut, this barrier does not supply one, and that shortfall is
-  named here rather than papered over.
+  state. **It does not name a normal return**, which need not exist. **Post-entry sufficiency is
+  UNRESOLVED**: this barrier is committed-but-not-entered, and whether the row's candidate needs a
+  genuinely post-entry cut is a seat question this worker cannot settle. Recorded as open.
 - **Barriers** — `CUT-913A-PRE-PASTE`.
 - **Raw captures** — the recorder log per cycle; the counter and streak as the daemon renders
   them; event set as a full set; the alert set; cycle indices; the pane's liveness at the barrier;
@@ -1709,11 +1726,16 @@ parsed structures, and gives every failure a **stable id** that its mutation mus
 | **B3** the version and count checks are spelling filters, and the self-tests seed the accepted spellings | **Accepted, and this is the sharpest finding of the round.** The title is now compared to an exact expected string, so any numeral fails; counts are forbidden structurally next to derived countables **in both orders**, and the opposed spelling `units = 999` failed on first run of the new suite — the check was written and the seed still caught it out. |
 | **B4** the red-proof harness credits any non-zero and one mutation is not local | **Accepted** — see the clearance row. |
 | **B5** the new cut is not wired per arm | **Accepted.** Barrier association is validated per arm: any id an arm names in its fields must be declared under its Barriers field. It immediately found `WD-913-uv-durable` naming the cut in its manipulation while declaring none, plus a glob field that enumerated nothing. `CUT-913A-PRE-PASTE` joins the typed table and the hook/hash/equivalence obligation. |
-| **B6** the cut sits before the call, so "after the attempt begins" is false at the barrier | **Accepted; derived and corrected.** The boundary is now stated as **branch committed, call not yet entered**. From the blob: the delivery stages and submits through the daemon's own write path and records its effect only after the whole logical mutation succeeds (aewatch:679–699), so a pane killed on release makes the call terminate **by raising, not returning**, contained per session (aewatch:1618). The arm records call entry, termination mode, whether the effect was recorded, and containment/backoff — and **no longer names a normal return**. If the row needs a genuinely post-entry cut, this barrier does not supply one, and that is now said. |
+| **B6** the cut sits before the call, so "after the attempt begins" is false at the barrier | **Accepted; derived and corrected.** The boundary is now stated as **branch committed, call not yet entered**. From the blob: the delivery stages and submits through the daemon's own write path and records its effect only after the whole logical mutation succeeds (aewatch:679–699), so a pane killed on release makes the call terminate **by raising, not returning**. The arm records call entry, termination mode, whether the effect was recorded, and containment/backoff as CAPTURED facts — the design no longer claims where containment lives. |
 | **I1** two stale references to the deleted checker | **Accepted, and made a standing check.** `REF-FILE` verifies every `t-wd-*` filename the document names actually exists. |
 | **I2** the shadow-list defect recurs verbatim | **Accepted, and this one is worth naming.** The paragraph read "this paragraph names no ids of its own" **directly above an enumeration that omitted two ids** — the correction landed where it was written and the list three lines below did not change. The enumeration is deleted and `SHADOW-LIST` now forbids three or more barrier ids in any paragraph outside the typed table, an arm's fields, or history. |
 | **I3** four-versus-five | **Accepted.** The barrier fields enumerate their ids; no hand count survives anywhere, and the count contract would reject one. |
 | **count contract** — a word-count passes; a contract over one representation is still a filter | **Accepted, and the first fix was not enough.** I widened the contract to the *category* — a quantity adjacent to a derived countable, in either order, with the cardinal grammar as a generative acceptor rather than a list, so `forty-four`, `one hundred` and `twenty-three` are accepted by rule. That caught the probe, but it is still **recognition**. The prescription was **provenance**: counts now live only in a generated block that the checker emits and regenerates, so a representation nobody enumerated is invalid **by construction**. The adjacency check remains as a belt over the contract, not as the contract. My own lookbehind was the hole, incidentally — `(?<![-\\w])`, added to stop `GATE-2 ARM` false-firing, is exactly what let a hyphenated number word through. |
+| **B1** the generated block proves the block, not the exclusivity | **Built for the keys, CLAIM SHRUNK for the representations.** The belt now covers every derived key (`runnable`, `m12`, `gap`, `capture`, `red`, `two`, `specs`, `units`) plus `population`, so the five key-shaped mutations are caught. Roman and hexadecimal are **not** covered and the document no longer says otherwise: the block is authoritative and self-checking, and prose exclusion is a **recognizer belt, not provenance enforcement**. Both repairs applied where each is proportionate, per the ratified rule. |
+| **B2** five earlier bypasses remain live | **All five built.** An unrecognised body class no longer defaults to RED (default-to-valid is what makes a type check decorative); CANDIDATE SPACE must be a **field bullet**, with a stray mention its own named failure; `table()` now enforces the `ncells` it previously accepted and ignored; the neutral surface table is **consumed** — its row set is joined against the roster both ways; the shadow threshold stays at three-plus and **the claim is narrowed to say so**, which is the alternative colead offered. |
+| **B3** source relations wrong | **Citation fixed and the containment claim WITHDRAWN rather than re-anchored.** `aewatch:2691`'s containing function is `run_watchdog_cycle` (defined aewatch:2499), not `_run_cycle`. And aewatch:1618 is the **Telegram outbound drain** — a different subsystem — so the per-session containment claim was a resolving citation hung on unrelated code. Where containment lives is now **captured by the arm, not asserted by the design**, which is where a product behaviour belongs. **Post-entry sufficiency is recorded UNRESOLVED**; this barrier is committed-but-not-entered and settling it is a seat question. |
+| **B4** two specs name a controller-held barrier while declaring none | **Built.** `BAR-913-RELEASE` is a typed barrier with a registered identity, hash and inactive-equivalence proof. A named synchronization mechanism **is** a barrier — the third appearance of the untyped-seam class, and the per-arm association check now sees it. |
+| **IMPORTANT** coverage overstated | **Built to 36/36 and the number is now printed by the tool.** Both ids I expected to drop turned out to have cheap local seeds, so the honest answer was build rather than narrow. The suite prints `COVERAGE: n/m stable ids have a local target` and names any unowned id, so the document cannot claim more than the tool proves. **"Complete path proof" is gone**; incidental firing is not a red proof of a predicate. |
 | **I4** the checker does not check internal references and associations | **Accepted, as standing regressions rather than prose corrections** — `JOIN-*`, `BAR-ARM`, `SHADOW-LIST` and `REF-FILE`, each red-proven by named id. |
 
 ## 7. What this design does not contain

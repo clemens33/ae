@@ -30,7 +30,11 @@ SURFACE_HDR = "| row | neutral surface line | family |"
 HEAD = re.compile(r"^#### (\d+)\. `([^`]+)` — (.*)$")
 # ONLY the countables a table derives. A broader list flagged legitimate prose
 # ("two gates", "three-part requirement") and would have trained me to ignore it.
-COUNTABLE = r"(?:arms?|arm specs?|specs?|executed units?|units?|barriers?)"
+DERIVED_KEYS = ["specs", "red", "capture", "gap", "two", "runnable", "units", "m12"]
+# Every key the block derives, plus the prose nouns. The belt previously covered the
+# nouns and NONE of the keys, so "Runnable population = 999" passed while the design
+# claimed unknown representations were impossible.
+COUNTABLE = r"(?:arms?|arm specs?|specs?|executed units?|units?|barriers?|%s|populations?)" % "|".join(DERIVED_KEYS)
 
 # ---- quantities, as a GENERATIVE grammar rather than a list ----
 # English cardinals are a CLOSED GENERATIVE SYSTEM, so the acceptor is built from the
@@ -92,12 +96,15 @@ class Out(list):
     def add(self, cid, msg): self.append((cid, msg))
 
 # ---------------- structure parsing ----------------
-def table(lines, hdr, ncells):
+def table(lines, hdr, ncells, out=None, name=""):
+    """ncells was ACCEPTED AND IGNORED, so an extra cell in the barrier table passed."""
     try: i = lines.index(hdr)
     except ValueError: return None, None, None
     rows, j = [], i + 2
     while j < len(lines) and lines[j].startswith("|"):
         c = [x.strip() for x in lines[j].strip().strip("|").split("|")]
+        if out is not None and len(c) != ncells:
+            out.add("TABLE-ARITY", "%s row line %d has %d cells, expected %d" % (name, j + 1, len(c), ncells))
         rows.append((j, c)); j += 1
     return i, j, rows
 
@@ -152,8 +159,15 @@ def parse_bodies(L, out):
         m = HEAD.match(l)
         if m:
             num, aid, tail = int(m.group(1)), m.group(2), m.group(3)
-            cls = ("**GAP — does not run**" if "DECLARED GAP" in tail
-                   else "**CAPTURE-ONLY**" if "CAPTURE-ONLY" in tail else "RED")
+            # STRICT: an unrecognised heading tail previously DEFAULTED to RED, so a
+            # body class nobody defined passed as the commonest one. Default-to-valid is
+            # the shape that makes a type check decorative.
+            if "DECLARED GAP" in tail: cls = "**GAP — does not run**"
+            elif "CAPTURE-ONLY" in tail: cls = "**CAPTURE-ONLY**"
+            elif re.match(r"RED\b", tail): cls = "RED"
+            else:
+                cls = None
+                out.add("BODY-CLASS", "arm `%s`: heading tail names no known class: %r" % (aid, tail[:40]))
             bodies.append((num, aid, cls, n))
     ids = [b[1] for b in bodies]
     dup = sorted({x for x in ids if ids.count(x) > 1})
@@ -290,7 +304,7 @@ def check_vocab(L, exempt, terms, out):
 
 # ---------------- barriers: table, both directions, per-arm association ----------------
 def check_barriers(L, bodies, out):
-    i, j, rows = table(L, BAR_HDR, 3)
+    i, j, rows = table(L, BAR_HDR, 3, out, "barrier table")
     if rows is None: out.add("BAR-TABLE", "typed barrier table absent"); return
     ids = []
     for ln, c in rows:
@@ -333,7 +347,11 @@ def check_candidates(L, roster, bodies, out):
         r = rid.get(aid)
         if r is None or r[3] != "RED": continue
         block = L[start:body_end(L, start)]
-        cs = [x for x in block if "**CANDIDATE SPACE**" in x]
+        # A FIELD BULLET, not any line: the field was previously satisfied by the
+        # phrase appearing anywhere in the arm, including controller prose.
+        cs = [x for x in block if x.startswith("- **CANDIDATE SPACE**")]
+        stray = [x for x in block if "**CANDIDATE SPACE**" in x and not x.startswith("- **CANDIDATE SPACE**")]
+        if stray: out.add("CAND-STRAY", "arm `%s`: CANDIDATE SPACE appears outside its field bullet" % aid)
         if len(cs) != 1:
             out.add("CAND-COUNT", "arm `%s`: expected exactly one CANDIDATE SPACE field, found %d" % (aid, len(cs))); continue
         idx = block.index(cs[0]); blob = " ".join(block[idx:idx + 8])
@@ -374,6 +392,16 @@ def check_shadow_lists(L, bodies, out):
             para.append(l)
     scan(para, first)
 
+def check_surface(L, roster, out):
+    """SURFACE_HDR was defined and consumed NOWHERE — deleting a row passed. The
+    surface table must carry exactly the row set the roster covers."""
+    i, j, rows = table(L, SURFACE_HDR, 3, out, "surface table")
+    if rows is None: out.add("SURFACE-ABSENT", "neutral surface table absent"); return
+    have = {c[0] for _, c in rows}
+    want = {p[2] for p in roster}
+    for x in sorted(want - have): out.add("SURFACE-MISSING", "row %s has arms but no neutral surface line" % x)
+    for x in sorted(have - want): out.add("SURFACE-EXTRA", "surface line for %s, which no arm covers" % x)
+
 def check_internal_refs(L, out):
     here = os.path.dirname(os.path.abspath(__file__))
     for n, l in enumerate(L):
@@ -403,6 +431,7 @@ def run(path, quiet=False):
         check_candidates(L, roster, bodies, out)
     check_title(L, out)
     check_barriers(L, bodies, out)
+    if roster: check_surface(L, roster, out)
     check_shadow_lists(L, bodies, out)
     check_internal_refs(L, out)
     if not quiet:
@@ -440,6 +469,25 @@ M = [
  ("BAR-UNKNOWN", 8, "ghost-bar",   lambda s: s.replace("- **Barriers** — none.", "- **Barriers** — `CUT-999-GHOST`.", 1)),
  ("BAR-ARM", 8, "undeclared-bar",  lambda s: s.replace("- **Named manipulation** — the fake agent process is exited once.", "- **Named manipulation** — at `CUT-928A-OPEN`, the fake agent process is exited once.", 1)),
  ("SHADOW-LIST", 8, "shadow-list", lambda s: s.replace("**Execution order.**", "See `CUT-926-STOP-INTENT`, `CUT-928-LOCK` and `BAR-920-SEND`.\n\n**Execution order.**", 1)),
+ # --- one local target per stable id (the coverage ruling). Ids without a cheap
+ # local mutation are NOT claimed; the suite prints owned/total and names the gap.
+ ("BODY-CLASS", 4, "body-class-bogus", lambda s: s.replace("#### 1. `WD-D25-serve-at-start` — RED", "#### 1. `WD-D25-serve-at-start` — PURPLE", 1)),
+ ("CAND-STRAY", 6, "cand-stray", lambda s: s.replace("- **Dimension** — target lock.", "The **CANDIDATE SPACE** is discussed here.\n- **Dimension** — target lock.", 1)),
+ ("TABLE-ARITY", 4, "bar-extra-cell", lambda s: s.replace("| `BAR-920-SEND` | the daemon's nudge-se", "| `BAR-920-SEND` | x | the daemon's nudge-se", 1)),
+ ("SURFACE-MISSING", 4, "surface-row-gone", lambda s: re.sub(r"\n\| SC-980 \| the incumbent alert[^\n]*\|", "", s, count=1)),
+ ("SURFACE-EXTRA", 4, "surface-row-extra", lambda s: s.replace("| SC-980 | the incumbent alert", "| SC-999 | a row no arm covers | F0 |\n| SC-980 | the incumbent alert", 1)),
+ ("BAR-DUP", 4, "bar-dup-id", lambda s: s.replace("| `BAR-920-SEND` |", "| `BAR-929-PUB` | dup | ae:1 |\n| `BAR-920-SEND` |", 1)),
+ ("BAR-TABLE", 30, "bar-table-gone", lambda s: re.sub(r"\| id \| site \| frozen anchor \|.*?\n\n", "", s, count=1, flags=re.S)),
+ ("BODY-DUPID", 4, "body-dup-id", lambda s: s.replace("#### 2. `WD-D25-serve-after-flip`", "#### 2. `WD-D25-serve-at-start`", 1)),
+ ("JOIN-ORDINAL", 4, "join-ordinal", lambda s: s.replace("#### 2. `WD-D25-serve-after-flip`", "#### 3. `WD-D25-serve-after-flip`", 1)),
+ ("JOIN-CLASS", 4, "join-class", lambda s: s.replace("| 1 | `WD-D25-serve-at-start` | D25 | RED |", "| 1 | `WD-D25-serve-at-start` | D25 | **CAPTURE-ONLY** |", 1)),
+ ("ROSTER-ARITY", 4, "roster-arity", lambda s: s.replace("| 1 | `WD-D25-serve-at-start` | D25 | RED | — | — |", "| 1 | `WD-D25-serve-at-start` | D25 | RED | — |", 1)),
+ ("ROSTER-ORD", 4, "roster-ord", lambda s: s.replace("| 1 | `WD-D25-serve-at-start`", "| x | `WD-D25-serve-at-start`", 1)),
+ ("ROSTER-SEQ", 4, "roster-seq", lambda s: s.replace("| 2 | `WD-D25-serve-after-flip`", "| 9 | `WD-D25-serve-after-flip`", 1)),
+ ("ROSTER-M12", 4, "roster-m12", lambda s: s.replace("| SC-920 | RED | — | §4.1 |", "| SC-920 | RED | — | 4.1 |", 1)),
+ ("TERMS", 40, "terms-gone", lambda s: s.replace("A committed linter rejects the design", "A committed linter examines the design", 1)),
+ ("ROSTER-EMPTY", 4, "roster-empty", lambda s: s.replace("| # | arm id | row | class | lanes | M12 |\n|---|---|---|---|---|---|\n", "| # | arm id | row | class | lanes | M12 |\n|---|---|---|---|---|---|\n\n", 1)),
+ ("SURFACE-ABSENT", 4, "surface-gone", lambda s: s.replace("| row | neutral surface line | family |", "| row | neutral surface text | family |", 1)),
  ("REF-FILE", 8, "dead-file-ref",  lambda s: s.replace("**Execution order.**", "See `t-wd-nonexistent.sh`.\n\n**Execution order.**", 1)),
  # LOCAL: drop one arm's field MARKER, not a 244-line span. A mutation that rewrites
  # a quarter of the document is not a test of one check — it is a test of whether
@@ -469,7 +517,14 @@ def self_test(path):
         print("%-18s delta=%-4d %-9s rc=%d ids=%s %s" % (
             name, delta, "local" if local else "TOO-BROAD", rc,
             ",".join(sorted(ids)) or "-", "" if ok and local else "<-- FAIL"))
-    print("SELF-TEST: %s" % ("ALL CHECKS RED-PROVEN BY NAMED ID" if bad == 0 else "%d FAILURE(S)" % bad))
+    # COVERAGE, stated as the tool proves it. "Complete path proof" was a claim the
+    # suite did not support: incidental firing is not a red proof of a predicate.
+    ids = set(re.findall(r'out\.add\("([A-Z0-9-]+)"', open(__file__, encoding="utf-8").read()))
+    owned = {w for w, _, _, _ in M}
+    unowned = sorted(ids - owned)
+    print("COVERAGE: %d/%d stable ids have a local target" % (len(ids & owned), len(ids)))
+    if unowned: print("UNOWNED (not claimed): %s" % ", ".join(unowned))
+    print("SELF-TEST: %s" % ("ALL TARGETED PATHS RED-PROVEN BY NAMED ID" if bad == 0 else "%d FAILURE(S)" % bad))
     return 1 if bad else 0
 
 if __name__ == "__main__":
