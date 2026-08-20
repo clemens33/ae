@@ -24,24 +24,49 @@ usage: check-input-list.py <census.md> <list.md> [--redproof]
 import os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from importlib.machinery import SourceFileLoader
+_gen_mod = SourceFileLoader("_gen", os.path.join(HERE, "derive-input-list.py"))
+# The splitter must be THE generator's, not a copy: two copies of a rule drift, and this
+# one decides whether a spelling group is one entry or three.
+split_spellings = None
 GEN = os.path.join(HERE, "derive-input-list.py")
+if len(sys.argv) < 3:
+    sys.stderr.write(__doc__.strip().splitlines()[-1] + "\n")
+    sys.exit(2)
 census, listing = sys.argv[1], sys.argv[2]
 redproof = "--redproof" in sys.argv
 
+def _load_splitter():
+    import types, re as _re
+    src = open(os.path.join(HERE, "derive-input-list.py")).read()
+    ns = {"re": _re}
+    body = src[src.index("def split_spellings"):src.index("body, keep, seen, dupes")]
+    exec(compile(body, "derive-input-list.py", "exec"), ns)
+    return ns["split_spellings"]
+
+split_spellings = _load_splitter()
+
 def generate(census_path, out_path):
-    subprocess.run([sys.executable, GEN, census_path, out_path], check=True,
+    # rc 2 means the generator itself found duplicates; that is reported by the caller.
+    subprocess.run([sys.executable, GEN, census_path, out_path],
                    stdout=subprocess.DEVNULL)
 
 def pairs(md):
-    out, cur = set(), None
+    """Returns (set, duplicates). A duplicate record is a defect: it hides an ambiguity in
+    the census and it makes set equality pass while the two files differ in content."""
+    out, cur, dup = set(), None, []
     for ln in open(md, encoding="utf-8"):
         ln = ln.rstrip("\n")
         if ln.startswith("## Surface:"): cur = ln[len("## Surface:"):].strip()
-        elif ln.startswith("- ") and cur: out.add((cur, ln[2:].strip()))
-    return out
+        elif ln.startswith("- ") and cur:
+            k = (cur, ln[2:].strip())
+            if k in out: dup.append(k)
+            out.add(k)
+    return out, dup
 
 def census_pairs(md):
-    out, cur = set(), None
+    out, cur, dup = set(), None, []
     for ln in open(md, encoding="utf-8"):
         ln = ln.rstrip("\n")
         if ln.startswith("## ") or ln.startswith("### "):
@@ -52,9 +77,13 @@ def census_pairs(md):
         elif ln.startswith("|") and cur:
             c = [x.strip() for x in ln.strip("|").split("|")]
             if c and c[0] and not c[0].lower().startswith("input") and not set(c[0]) <= set("-: "):
-                for part in [p.strip() for p in c[0].split(" / ")]:
-                    if part: out.add((cur, part))
-    return out
+                if any("OUT-OF-BATCH" in x for x in c):
+                    continue
+                for part in split_spellings(c[0]):
+                    k = (cur, part)
+                    if k in out: dup.append(k)
+                    out.add(k)
+    return out, dup
 
 fails = []
 tmp = tempfile.mkdtemp()
@@ -64,7 +93,10 @@ generate(census, gen_path)
 if open(gen_path, encoding="utf-8").read() != open(listing, encoding="utf-8").read():
     fails.append("DIFF-CLEAN: the committed list is not what the generator produces")
 
-lp, cp = pairs(listing), census_pairs(census)
+lp, lp_dupes = pairs(listing)
+cp, cp_dupes = census_pairs(census)
+for d in lp_dupes: fails.append(f"DUPLICATE_LIST: {d}")
+for d in cp_dupes: fails.append(f"DUPLICATE_CENSUS: {d}")
 for extra in sorted(lp - cp): fails.append(f"EXTRA in list, absent from census: {extra}")
 for miss in sorted(cp - lp): fails.append(f"MISSING from list, present in census: {miss}")
 
@@ -109,13 +141,20 @@ if redproof:
         caught = (not same) or (not eq) or belt
         print(f"  {label:34s} caught={'YES' if caught else 'NO'}")
         return caught
-    ok = True
-    ok &= run_variant(lambda t: t.replace("- `--help`\n", "", 1), "dropped class")
-    ok &= run_variant(lambda t: t + "- `--invented-flag`\n", "extra class")
-    ok &= run_variant(lambda t: t.replace("- `-h`", "- `-h` | ACCEPTED", 1), "outcome column smuggled in")
-    ok &= run_variant(lambda t: t.replace("- `help`", "- an unresolvable target", 1), "outcome-labelled adjective")
-    ok &= run_variant(lambda t: t.replace("- `version`", "- `version` (ae:16845)", 1), "citation leakage")
-    print(f"  ALL CAUGHT: {'yes' if ok else 'NO — a check is blind'}")
+    arms = [
+        (lambda t: t.replace("- `--help`\n", "", 1), "dropped class"),
+        (lambda t: t + "- `--invented-flag`\n", "extra class"),
+        (lambda t: t.replace("- `-h`", "- `-h` | ACCEPTED", 1), "outcome column smuggled in"),
+        (lambda t: t.replace("- `help`", "- an unresolvable target", 1), "outcome-labelled adjective"),
+        (lambda t: t.replace("- `version`", "- `version` (ae:16845)", 1), "citation leakage"),
+        (lambda t: t.replace("- `mine`\n", "- `mine`\n- `mine`\n", 1), "duplicate record"),
+    ]
+    for mutate, label in arms:
+        if not run_variant(mutate, label):
+            # A red arm that reports caught=NO and leaves rc 0 is a red-proof that cannot
+            # fail — the exact shape this whole batch exists to eliminate. It is a FAILURE.
+            fails.append(f"RED-PROOF BLIND: the '{label}' injection was not caught")
+    print(f"  ALL CAUGHT: {'yes' if not any(f.startswith('RED-PROOF') for f in fails) else 'NO — a check is blind'}")
 
 print(f"census_pairs={len(cp)} list_pairs={len(lp)} failures={len(fails)}")
 for f in fails: print(f"  FAIL {f}")

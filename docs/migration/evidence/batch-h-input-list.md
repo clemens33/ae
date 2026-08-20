@@ -20,8 +20,6 @@ construct, not an argument to pass.
 - `version`
 - `--version`
 - `-V`
-- an unknown LONG OPTION (`--nosuchflag`)
-- a non-option word (`nosuchthing`)
 
 ## Surface: `steward` (SC-013)
 
@@ -31,15 +29,9 @@ construct, not an argument to pass.
 - `--detach`
 - `--no-attach`
 - help with trailing args
-- `--detach --attach` (both orders)
+- `--detach --attach`
+- `--attach --detach`
 - `--detach --detach`
-- `--init`
-- `--init extra`
-- `--attach`
-- `--switch`
-- bare `steward` (no flags)
-- `hub` spelling
-- a positional argument
 
 ## Surface: `state` (SC-211a)
 
@@ -71,7 +63,8 @@ construct, not an argument to pass.
 - `add <text>`
 - `add` with no text
 - `add --topic <t> <text>`
-- `add --topic` with no topic/text
+- `add --topic` with no topic and no text
+- `add --topic <t>` with a topic but no text
 - `read`
 - `read --topic <t>`
 - `read --topic` alone
@@ -90,7 +83,8 @@ construct, not an argument to pass.
 - `inbox`
 - `all`
 - unknown mode
-- `mine`/`inbox` where identity is undetectable
+- `mine` where identity is undetectable
+- `inbox` where identity is undetectable
 - `all` where identity is undetectable
 - extra args after the mode
 
@@ -147,9 +141,8 @@ construct, not an argument to pass.
 - an alias not defined in the config
 - a session absent from meta
 - a session named in meta but not running
-- meta present but unlockable
+- a complete meta/config/session fixture with `meta.lock` HELD BEYOND THE 5s WAIT
 - a legal `alias` with no `:name`
-- a name violating the agent-name grammar
 
 ## Surface: `retire` (SC-211j)
 
@@ -184,12 +177,15 @@ construct, not an argument to pass.
 - candidate with matching launch-id token
 - candidate with a mismatched token
 - no token match anywhere
-- malformed
-- missing first-line id
+- a malformed first-line id
+- a missing first-line id
 - yesterday's directory
 - two candidates with EQUAL mtimes
-- a candidate whose recorded cwd differs from the invoking cwd
-- a slot other than the invoking pane's
+- two candidates with DIFFERENT mtimes
+- a candidate whose recorded cwd MATCHES the invoking cwd
+- a candidate whose recorded cwd DIFFERS from the invoking cwd
+- an explicitly named slot that is the invoking pane's
+- an explicitly named slot that is NOT the invoking pane's
 
 ## Surface: `ae_resolve` (SC-211p)
 

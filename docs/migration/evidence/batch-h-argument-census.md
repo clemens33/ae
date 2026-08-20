@@ -11,10 +11,12 @@ the arms capture behaviour independently, and **a capture that contradicts a row
 finding, not an error in the arm**. The census exists so the input matrix is COMPLETE, not
 so the outcome is known in advance.
 
-**Spellings are invoked separately.** Where a row lists spellings separated by `/`, EVERY
-spelling is invoked as its own capture — the executor list is generated with them expanded,
-so "103 classes" cannot legally collapse to one chosen spelling per group. Rows that list
-alternatives of a VALUE rather than a spelling say so.
+**Spellings are invoked separately, and the count is not typed here.** Where a row is a
+list of alternative spellings, EVERY spelling becomes its own entry in the generated
+executor list, so a group cannot collapse to one chosen spelling. The splitter is anchored
+to the whole cell: a description that merely contains a slash is one input, not two. The
+number of entries is whatever the generator reports — an earlier version of this file typed
+a count that was already stale when the tool disagreed with it.
 
 **Executor scoping.** Per seat ruling the executor receives
 `batch-h-input-list.md` — the same input classes with no class labels and no outcome
@@ -30,17 +32,18 @@ citations. This document stays with the seats.
 | `version` | outer case arm, ae:16845-16847 | ACCEPTED |
 | `--version` | same arm, ae:16845 | ACCEPTED |
 | `-V` | same arm, ae:16845 | ACCEPTED |
-| an unknown LONG OPTION (`--nosuchflag`) | the launch parser's `--*)` arm, ae:16928-16930 | REJECTED |
-| a non-option word (`nosuchthing`) | the launch parser's `*)` arm, ae:16932-16934 — bound to `_LP_NAME` as a launch candidate | ACCEPTED (as a launch candidate, not as a command) |
+| an unknown LONG OPTION (`--nosuchflag`) | the launch parser's `--*)` arm, ae:16928-16930 | REJECTED | OUT-OF-BATCH — SC-022 |
+| a non-option word (`nosuchthing`) | the launch parser's `*)` arm, ae:16932-16934 — bound to `_LP_NAME` | ACCEPTED (launch candidate) | OUT-OF-BATCH — launch |
 
-**The option/non-option split is the point of this row** and the earlier census collapsed
-it into "an unknown first word". A non-option word is not rejected: it becomes the session
-name a launch would use.
+**SC-012b owns the help aliases only.** The unknown-OPTION class is SC-022's and a
+non-option word enters the launch path rather than the command dispatch; neither can close
+SC-012b, both are marked OUT-OF-BATCH, and the generator therefore keeps them out of this
+batch's executor brief. They remain in this census so the split is on the record: an
+earlier version collapsed them into "an unknown first word", which erased it.
 
 ## `steward` (SC-013) — a wider surface than the row's wording implies
 
-`steward | hub)` at ae:16722 opens an ITERATIVE parser (`while` at ae:16730, `case` at
-ae:16731) in which `--attach`/`--detach` are selectors that `shift` and continue, so a
+`steward | hub)` at ae:16722 opens an ITERATIVE parser (`while` at ae:16730, `case` at ae:16731) in which `--attach`/`--detach` are selectors that `shift` and continue, so a
 later selector overrides an earlier one.
 
 **Row ownership (S1MAP):** SC-013 owns the HELP and DETACH spellings only. `--init` is
@@ -50,20 +53,21 @@ OUT-OF-BATCH; **they are not SC-013 evidence and no H arm closes them.**
 
 | Input | Reaches | Class | Row |
 |---|---|---|---|
-| `-h` | ae:16748-16750 | ACCEPTED (exit 0) | SC-013 |
-| `--help` | ae:16748 | ACCEPTED (exit 0) | SC-013 |
-| `help` | ae:16748 | ACCEPTED (exit 0) | SC-013 |
-| `--detach` | selector, ae:16756-16758 | ACCEPTED | SC-013 |
-| `--no-attach` | same arm, ae:16756 | ACCEPTED | SC-013 |
-| help with trailing args | the help arm ignores the remainder, ae:16748-16750 | IGNORED | SC-013 |
-| `--detach --attach` (both orders) | iterative parser, last selector wins, ae:16730-16758 | ACCEPTED | SC-013 boundary; attach half is SC-931 |
-| `--detach --detach` | repeated selector | ACCEPTED | SC-013 |
-| `--init` | ae:16740-16746 | ACCEPTED | OUT-OF-BATCH — SC-932 |
-| `--init extra` | ae:16742-16744 | REJECTED | OUT-OF-BATCH — SC-932 |
-| `--attach` / `--switch` | ae:16752-16754 | ACCEPTED | OUT-OF-BATCH — SC-931 |
+| `-h` | ae:16740-16742 | ACCEPTED (exit 0) | SC-013 |
+| `--help` | ae:16740 | ACCEPTED (exit 0) | SC-013 |
+| `help` | ae:16740 | ACCEPTED (exit 0) | SC-013 |
+| `--detach` | selector, ae:16748-16750 | ACCEPTED | SC-013 |
+| `--no-attach` | same arm, ae:16748 | ACCEPTED | SC-013 |
+| help with trailing args | the help arm ignores the remainder, ae:16740-16742 | IGNORED | SC-013 |
+| `--detach --attach` | iterative parser, ae:16730-16750 | ACCEPTED | SC-013 boundary; attach half is SC-931 |
+| `--attach --detach` | iterative parser, ae:16730-16750 | ACCEPTED | SC-013 boundary; attach half is SC-931 |
+| `--detach --detach` | repeated selector, ae:16748-16750 | ACCEPTED | SC-013 |
+| `--init` | ae:16732-16738 | ACCEPTED | OUT-OF-BATCH — SC-932 |
+| `--init extra` | ae:16733-16735 | REJECTED | OUT-OF-BATCH — SC-932 |
+| `--attach` / `--switch` | ae:16744-16746 | ACCEPTED | OUT-OF-BATCH — SC-931 |
 | bare `steward` (no flags) | parser loop never entered | ACCEPTED | OUT-OF-BATCH — SC-930 |
 | `hub` spelling | ae:16722 | ACCEPTED | OUT-OF-BATCH — SC-939f |
-| a positional argument | ae:16766-16769 | REJECTED | OUT-OF-BATCH — SC-930 |
+| a positional argument | ae:16752-16761 | REJECTED | OUT-OF-BATCH — SC-930 |
 
 **Finding for the seats:** `contrib/aesteward` at `72c7293` contains only `CHARTER.md`,
 `README.md` and `steward.config` — no executable. Whatever `ae steward` does at these flags
@@ -104,7 +108,8 @@ SC-013's arm must capture that rather than assume a steward program exists.
 | `add <text>` | ae:14511-14523 | ACCEPTED |
 | `add` with no text | ae:14511 | REJECTED |
 | `add --topic <t> <text>` | ae:14506-14510 | ACCEPTED |
-| `add --topic` with no topic/text | ae:14507 | REJECTED |
+| `add --topic` with no topic and no text | ae:14507 | REJECTED |
+| `add --topic <t>` with a topic but no text | ae:14507 | REJECTED |
 | `read` | ae:14525-14534 | ACCEPTED |
 | `read --topic <t>` | ae:14527-14529 | ACCEPTED |
 | `read --topic` alone | ae:14528 | REJECTED |
@@ -123,7 +128,8 @@ SC-013's arm must capture that rather than assume a steward program exists.
 | no args | `mode` defaults to `mine`, ae:14409 | ACCEPTED |
 | `mine` / `inbox` / `all` | ae:14412 | ACCEPTED |
 | unknown mode | ae:14412-14414 | REJECTED |
-| `mine`/`inbox` where identity is undetectable | ae:14417-14419 | REJECTED |
+| `mine` where identity is undetectable | ae:14417-14419 | REJECTED |
+| `inbox` where identity is undetectable | ae:14417-14419 | REJECTED |
 | `all` where identity is undetectable | passes the guard, ae:14417 | ACCEPTED |
 | extra args after the mode | never read | IGNORED |
 
@@ -194,7 +200,7 @@ SC-013's arm must capture that rather than assume a steward program exists.
 | an alias not defined in the config | ae:11912 | REJECTED |
 | a session absent from meta | ae:11895 | REJECTED |
 | a session named in meta but not running | ae:11899 | REJECTED |
-| meta present but unlockable | ae:11929 | REJECTED |
+| a complete meta/config/session fixture with `meta.lock` HELD BEYOND THE 5s WAIT | ae:11928-11930, which is reached AFTER `tmux new-window` at ae:11920-11921 — the case captures pane/window residue as well as the refusal | REJECTED |
 | a legal `alias` with no `:name` | prompt/default path, ae:11879 | ACCEPTED |
 | a name violating the agent-name grammar | ae:11857 | OUT-OF-BATCH — SC-1201 |
 
@@ -242,11 +248,15 @@ makes it exit on its own.
 | candidate with matching launch-id token | token pass | (selection fact) |
 | candidate with a mismatched token | token fail | (selection fact) |
 | no token match anywhere | CWD-fallback scan | (selection fact) |
-| malformed / missing first-line id | that candidate contributes nothing | (selection fact) |
+| a malformed first-line id | that candidate contributes nothing, ae:14780 | (selection fact) |
+| a missing first-line id | that candidate contributes nothing, ae:14780 | (selection fact) |
 | yesterday's directory | scanned after today's, ae:14770 | (selection fact) |
 | two candidates with EQUAL mtimes | the scan compares with strict `>`, ae:14783 | (selection fact) |
-| a candidate whose recorded cwd differs from the invoking cwd | fallback scan, ae:14803 | (selection fact) |
-| a slot other than the invoking pane's | `SLOT` is taken from argv, ae:14752 | (input class) |
+| two candidates with DIFFERENT mtimes | same comparison, ae:14783 | (selection fact) |
+| a candidate whose recorded cwd MATCHES the invoking cwd | fallback scan, ae:14803 | (selection fact) |
+| a candidate whose recorded cwd DIFFERS from the invoking cwd | fallback scan, ae:14803 | (selection fact) |
+| an explicitly named slot that is the invoking pane's | `SLOT` from argv, ae:14752 | (input class) |
+| an explicitly named slot that is NOT the invoking pane's | `SLOT` from argv, ae:14752 | (input class) |
 
 Selection facts are inputs to vary, not outcomes; the arm captures which sid is written.
 
@@ -310,19 +320,19 @@ family is read as a family.
 | SC-012b | dispatcher | help trio + unknown LONG OPTION + non-option launch candidate |
 | SC-014 | dispatcher | version trio |
 | SC-013 | `steward` | help spellings + detach spellings + help-with-trailing-args + selector order/repetition (the OUT-OF-BATCH rows belong to SC-930/931/932/939f) |
-| SC-211a | `state` | eight |
-| SC-211b | `goal` | seven |
-| SC-211c | `memo` | fifteen |
-| SC-211d, SC-212c | `requests` | six |
-| SC-211e | `peek` | nine |
-| SC-211f | `agents` | four |
-| SC-211g | `focus` | four |
-| SC-211h | `interrupt` | five |
-| SC-211i | `spawn` + delegated `_cmd_spawn` | three wrapper + five delegated (name grammar excluded — SC-1201) |
-| SC-211j | `retire` + delegated `_cmd_retire` | three wrapper + nine delegated |
-| SC-211l | `say` | five |
-| SC-211n | `events-tail` | three, all long-lived |
-| SC-211o | `_register-sid` | thirteen (nine fixture facts + equal-mtime + cwd mismatch + explicit slot + default slot) |
-| SC-211p | `ae_resolve` | thirteen |
+| SC-211a | `state` | see the generated list |
+| SC-211b | `goal` | see the generated list |
+| SC-211c | `memo` | see the generated list |
+| SC-211d, SC-212c | `requests` | see the generated list |
+| SC-211e | `peek` | see the generated list |
+| SC-211f | `agents` | see the generated list |
+| SC-211g | `focus` | see the generated list |
+| SC-211h | `interrupt` | see the generated list |
+| SC-211i | `spawn` + delegated `_cmd_spawn` | see the generated list |
+| SC-211j | `retire` + delegated `_cmd_retire` | see the generated list |
+| SC-211l | `say` | see the generated list |
+| SC-211n | `events-tail` | see the generated list |
+| SC-211o | `_register-sid` | see the generated list |
+| SC-211p | `ae_resolve` | see the generated list |
 | D14b | held pending record correction | — |
 | SC-1301 | three meta writers | per-writer cuts, not argument classes |

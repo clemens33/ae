@@ -7,9 +7,15 @@ This generator keeps column 1 and discards every other column outright, so no wo
 outcome column can reach the brief whatever its spelling. A vocabulary filter would have to
 enumerate the leak words, and an enumeration is beaten by the first word nobody listed.
 
-Spellings separated by " / " are EXPANDED into separate entries: a brief that groups them
+Spellings separated by "/" are EXPANDED into separate entries: a brief that groups them
 would let one chosen spelling stand for the group, and spelling parity is exactly what
 several of these rows are about.
+
+OWNERSHIP IS APPLIED BEFORE THE DROP. A census row that any cell marks OUT-OF-BATCH belongs
+to another row's batch and must not reach this batch's executor: it is excluded here, by
+machine, rather than left to the executor to notice a note that the drop has already
+removed. Duplicate (surface, input) records are a FAILURE, not something to dedupe
+silently — the checker reports them.
 
 usage: derive-input-list.py <census.md> <out.md>
 """
@@ -30,7 +36,26 @@ HEAD = ["# Batch H — executor input list (BRIEF-FACING)", "",
         "A row that names a fixture property rather than an argv is a fixture fact to",
         "construct, not an argument to pass.", ""]
 
-body, keep, seen = [], False, set()
+def split_spellings(cell):
+    """Expand alternative spellings into separate entries.
+
+    Splits on a slash that separates two code spans or bare tokens, with or without
+    surrounding spaces — `mine`/`inbox`/`all` and `--attach` / `--switch` are the same
+    construction and an executor list that expanded only one of them would keep the
+    promise for half the rows.
+    """
+    cell = cell.strip()
+    # A spelling list is the WHOLE cell being alternatives — `mine` / `inbox` / `all`,
+    # `--attach` / `--switch`. Anything else stays whole: "malformed / missing first-line
+    # id" is one input whose description contains a slash, and an earlier, looser rule
+    # split it into "malformed" and "missing first-line id", inventing an input and
+    # dropping the real one. The rule is anchored end to end for exactly that reason.
+    part = r"(?:`[^`]+`|[A-Za-z0-9_.:+-]+)"
+    if re.fullmatch(rf"{part}(?:\s*/\s*{part})+", cell):
+        return [x.strip() for x in re.split(r"\s*/\s*", cell)]
+    return [cell]
+
+body, keep, seen, dupes = [], False, set(), []
 for ln in lines:
     if ln.startswith("## ") or ln.startswith("### "):
         title = re.sub(r"\s+—.*$", "", ln)          # drop the heading tail
@@ -51,10 +76,18 @@ for ln in lines:
     inp = cells[0] if cells else ""
     if not inp or inp.lower().startswith("input") or set(inp) <= set("-: "):
         continue
-    for part in [p.strip() for p in inp.split(" / ")]:
-        if part and (title, part) not in seen:
-            seen.add((title, part)); body.append(f"- {part}")
+    if any("OUT-OF-BATCH" in c for c in cells):      # owned by another row's batch
+        continue
+    for part in split_spellings(inp):
+        key = (title, part)
+        if key in seen:
+            dupes.append(key)
+        seen.add(key)
+        body.append(f"- {part}")
 
 txt = "\n".join(HEAD + body) + "\n"
 open(out, "w", encoding="utf-8").write(txt)
+if dupes:
+    print(f"DUPLICATE_CENSUS: {len(dupes)} duplicate (surface, input) records: {dupes[:5]}")
 print(f"{len(seen)} input entries written to {out}")
+sys.exit(2 if dupes else 0)
