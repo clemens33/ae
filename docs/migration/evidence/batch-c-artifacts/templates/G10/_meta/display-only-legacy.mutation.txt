@@ -2,8 +2,8 @@
 file: /tmp/aecx/templates/G10/display-only-legacy/sessions/tg1/events.jsonl
 op: delkey '6' 'actor_slot'
 detail: line 6: delete member b',"actor_slot":"main"'
-before: sha256=2974d3a187a0223cdd7ce0addedb064fa350ce5c16d6eab821b5bbff93679893 bytes=1754
-after:  sha256=1c0a8107fc13a71adeab0c68e07ec4ceaa331828cc6680b45b0f3395cc0aaa97 bytes=1734
+before: sha256=ddb70b8ef48c68987338c34c742844d076eedfc9623e1e79820c7ec6eaed8539 bytes=1754
+after:  sha256=8a292ea44d90de8ba1ba6f2af7204d593bcbe0a4e14de645b2dd6b7cca248338 bytes=1734
 byte-diff:
   common_prefix_bytes=852 common_suffix_bytes=882
   removed=b'lot":"main","actor_s'
@@ -13,8 +13,8 @@ byte-diff:
 file: /tmp/aecx/templates/G10/display-only-legacy/sessions/tg1/events.jsonl
 op: delkey '6' 'actor_session'
 detail: line 6: delete member b',"actor_session":"tg1"'
-before: sha256=1c0a8107fc13a71adeab0c68e07ec4ceaa331828cc6680b45b0f3395cc0aaa97 bytes=1734
-after:  sha256=e5d28364e953ab62451f510424309b195a88bf383202a700c06b6101514b4608 bytes=1712
+before: sha256=8a292ea44d90de8ba1ba6f2af7204d593bcbe0a4e14de645b2dd6b7cca248338 bytes=1734
+after:  sha256=3747d814f84fe48d87b23419b3e216e33ea2d4cb826fa3886a7debec14daaa76 bytes=1712
 byte-diff:
   common_prefix_bytes=845 common_suffix_bytes=867
   removed=b'actor_session":"tg1","'
@@ -24,8 +24,8 @@ byte-diff:
 file: /tmp/aecx/templates/G10/display-only-legacy/sessions/tg1/events.jsonl
 op: delkey '6' 'target_slot'
 detail: line 6: delete member b',"target_slot":"worker.0"'
-before: sha256=e5d28364e953ab62451f510424309b195a88bf383202a700c06b6101514b4608 bytes=1712
-after:  sha256=7e2544213d772e04fee148b547b05b886f3b7e5ffe0263510123b897924d28d4 bytes=1687
+before: sha256=3747d814f84fe48d87b23419b3e216e33ea2d4cb826fa3886a7debec14daaa76 bytes=1712
+after:  sha256=e6abaf115ac69945af15f9c5e2778fcf84f87b23fb32c7f4fa71bb90c1443569 bytes=1687
 byte-diff:
   common_prefix_bytes=853 common_suffix_bytes=834
   removed=b'lot":"worker.0","target_s'
@@ -35,8 +35,8 @@ byte-diff:
 file: /tmp/aecx/templates/G10/display-only-legacy/sessions/tg1/events.jsonl
 op: delkey '6' 'target_session'
 detail: line 6: delete member b',"target_session":"tg1"'
-before: sha256=7e2544213d772e04fee148b547b05b886f3b7e5ffe0263510123b897924d28d4 bytes=1687
-after:  sha256=61ad1b6ca32e0e14a3be6ec45d5741daa3e3c117df90b46dec28a9a0d495f3ba bytes=1664
+before: sha256=e6abaf115ac69945af15f9c5e2778fcf84f87b23fb32c7f4fa71bb90c1443569 bytes=1687
+after:  sha256=db1debd1890a2cf473766ef7f2961a86f574400421ab82db081735bd25cccde9 bytes=1664
 byte-diff:
   common_prefix_bytes=845 common_suffix_bytes=819
   removed=b'target_session":"tg1","'
@@ -46,8 +46,8 @@ byte-diff:
 file: /tmp/aecx/templates/G10/display-only-legacy/sessions/tg1/events.jsonl
 op: delkey '7' 'actor_slot'
 detail: line 7: delete member b',"actor_slot":"worker.0"'
-before: sha256=61ad1b6ca32e0e14a3be6ec45d5741daa3e3c117df90b46dec28a9a0d495f3ba bytes=1664
-after:  sha256=6185bc6ed90d8c0c2594f8c257d3a3ad481d8aa7114115b7b4855b74a82750b8 bytes=1640
+before: sha256=db1debd1890a2cf473766ef7f2961a86f574400421ab82db081735bd25cccde9 bytes=1664
+after:  sha256=68c527b37de6887038e09225e3393d57b13a54e8160c11505cf83a36510c754c bytes=1640
 byte-diff:
   common_prefix_bytes=1122 common_suffix_bytes=518
   removed=b'lot":"worker.0","actor_s'
@@ -57,8 +57,8 @@ byte-diff:
 file: /tmp/aecx/templates/G10/display-only-legacy/sessions/tg1/events.jsonl
 op: delkey '7' 'actor_session'
 detail: line 7: delete member b',"actor_session":"tg1"'
-before: sha256=6185bc6ed90d8c0c2594f8c257d3a3ad481d8aa7114115b7b4855b74a82750b8 bytes=1640
-after:  sha256=2f5f49206dea4af1e6c0a7b0446703a6d42414e9acc98fe1d7be2f14cd9c9b86 bytes=1618
+before: sha256=68c527b37de6887038e09225e3393d57b13a54e8160c11505cf83a36510c754c bytes=1640
+after:  sha256=08a0b6288ab62b085fb4dd3641b0367a27b17249f392f806c6d5aea39eb7cd32 bytes=1618
 byte-diff:
   common_prefix_bytes=1115 common_suffix_bytes=503
   removed=b'actor_session":"tg1","'
@@ -68,8 +68,8 @@ byte-diff:
 file: /tmp/aecx/templates/G10/display-only-legacy/sessions/tg1/events.jsonl
 op: delkey '7' 'target_slot'
 detail: line 7: delete member b',"target_slot":"main"'
-before: sha256=2f5f49206dea4af1e6c0a7b0446703a6d42414e9acc98fe1d7be2f14cd9c9b86 bytes=1618
-after:  sha256=1da720cd385b638724f17187b1e6098a20e99363489e8e11efb45fda528a162e bytes=1597
+before: sha256=08a0b6288ab62b085fb4dd3641b0367a27b17249f392f806c6d5aea39eb7cd32 bytes=1618
+after:  sha256=b1271b7b966dc9b20060a7dea75b0fdfbd323f83fd687f6c81d53ca62811f85e bytes=1597
 byte-diff:
   common_prefix_bytes=1123 common_suffix_bytes=474
   removed=b'lot":"main","target_s'
@@ -79,8 +79,8 @@ byte-diff:
 file: /tmp/aecx/templates/G10/display-only-legacy/sessions/tg1/events.jsonl
 op: delkey '7' 'target_session'
 detail: line 7: delete member b',"target_session":"tg1"'
-before: sha256=1da720cd385b638724f17187b1e6098a20e99363489e8e11efb45fda528a162e bytes=1597
-after:  sha256=d080f1dcba0d2f96d9417bfcde28415a001998840a1f1709e04e8320f6129f10 bytes=1574
+before: sha256=b1271b7b966dc9b20060a7dea75b0fdfbd323f83fd687f6c81d53ca62811f85e bytes=1597
+after:  sha256=b0c1bc90dc4ba533a2cf3d9ca7d6397332f484b329d800bcac65735de3fe7865 bytes=1574
 byte-diff:
   common_prefix_bytes=1115 common_suffix_bytes=459
   removed=b'target_session":"tg1","'

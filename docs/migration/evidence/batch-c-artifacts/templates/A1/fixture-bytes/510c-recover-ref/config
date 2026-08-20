@@ -1,0 +1,7 @@
+[agents]
+fake = "/tmp/aecx/bin/codex"
+
+[workspace]
+main = fake:lead
+layout = vertical
+watchdog = true

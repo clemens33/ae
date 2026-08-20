@@ -1,0 +1,11 @@
+## mutation: line 1: KNOWN key 'summary' appears twice, conflicting values, MEMBER ORDER REVERSED (B then A)
+file: /tmp/aecx/templates/A1/510e-dupkey-known-reversed/sessions/tg1/events.jsonl
+op: repl '1' ',"summary":"building the healthy fixture"}' ',"summary":"lead continues","summary":"building the healthy fixture"}'
+detail: line 1: replace b',"summary":"building the healthy fixture"}' -> b',"summary":"lead continues","summary":"building the healthy fixture"}' (first occurrence)
+before: sha256=ddb70b8ef48c68987338c34c742844d076eedfc9623e1e79820c7ec6eaed8539 bytes=1754
+after:  sha256=d89edc07e473c0df5bec2bc3150a725d8f4522f373c6ab095f202114e3796076 bytes=1781
+byte-diff:
+  common_prefix_bytes=93 common_suffix_bytes=1661
+  removed=b''
+  inserted=b'lead continues","summary":"'
+

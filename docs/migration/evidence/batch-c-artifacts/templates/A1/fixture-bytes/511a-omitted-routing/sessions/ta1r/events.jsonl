@@ -1,0 +1,6 @@
+{"ts":"2026-08-20T16:14:53Z","actor":"fake:lead","action":"state","ref":"working","summary":"omitted-routing cohort"}
+{"ts":"2026-08-20T16:14:53Z","actor":"fake:lead","action":"goal","summary":"omitted-routing cohort goal"}
+{"ts":"2026-08-20T16:14:54Z","actor":"fake:lead","action":"memo","ref":"omit","summary":"omitted-routing memo"}
+{"ts":"2026-08-20T16:14:54Z","actor":"fake:lead","action":"chat","summary":"omitted-routing chat"}
+{"ts":"2026-08-20T16:14:55Z","actor":"fake:lead","action":"send","target":"fake:worker","summary":"⟦ae:msg from fake:lead⟧ omitted-routing send","body_file":"/tmp/aecx/tpl/a1511a/home/.ae/sessions/ta1r/messages/msg-20260820T161455Z.send.PLxnz6.txt"}
+{"ts":"2026-08-20T16:14:55Z","actor":"fake:worker","action":"state","ref":"blocked","summary":"omitted-routing worker state"}

@@ -2,16 +2,13 @@ arm=A1 case=c20-405k-live rows=SC-405k
 live session=ta1k socket=/tmp/aecx/tpl/a1405k/s.sock
 frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
 lead_pane=%0 worker_pane=%1
-utc_start=2026-08-20T16:03:35Z
+utc_start=2026-08-20T16:24:04Z
+## paired-locale capture
+consumers.s0-baseline        = LANG=LC_ALL=en_US.UTF-8
+consumers.s0-baseline-clocale = LANG=LC_ALL=C
+identical AE_HOME, identical socket, identical live topology, identical argv
 manipulation_1=extra runtime pane %3 stamped @ae_agent=fake:ghost @ae_slot=ghost.0, NOT present in meta
 meta_has_ghost=0
 manipulation_2=killed the pane of roster slot worker.0 (%1); the meta entry remains
 meta_worker_line=agent.worker.0=fake:worker:pending
-utc_end=2026-08-20T16:03:53Z
-admissibility_note=Harness visibility is proven independently at every stage: rawprobe.<stage>.txt
-  runs the exact tmux query the frozen consumer makes, from the SAME scrubbed environment and the
-  SAME socket the consumers are given, and the session's own `agents` helper is in the consumer
-  battery. Both observed the panes and their commands at each stage, and both show the two
-  manipulations (the ghost pane appearing, the worker slot's pane disappearing). Whatever the
-  consumer's own rendering shows is therefore a capture of the consumer, not of harness blindness.
-  No claim is made here about what the rendering should be.
+utc_end=2026-08-20T16:24:29Z

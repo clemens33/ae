@@ -1,0 +1,22 @@
+group=A1
+member=511a-omitted-routing
+fingerprint_pre_protection=7d3465fc653cabc05248dd804ef354cf535780acca5eceb43a025903e2e03f27
+source_sandbox=/tmp/aecx/tpl/a1511a
+source_session=ta1r
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T16:14:56Z
+--- provenance ---
+cohort: only helpers whose emitter never sets the routing members (state/goal/memo/say/send).
+  as=%0 helper='state working omitted-routing cohort'
+    rc=0
+  as=%0 helper='goal omitted-routing cohort goal'
+    rc=0
+  as=%0 helper='memo add --topic omit omitted-routing memo'
+    rc=0
+  as=%0 helper='say omitted-routing chat'
+    rc=0
+  as=%0 helper='send fake:worker omitted-routing send'
+    rc=0
+  as=%1 helper='state blocked omitted-routing worker state'
+    rc=0
+fingerprint_protected=d4852d1b4b5f683c55ebc400c4d3e9b316ae9f69d007c660a385d6a50ac13da8

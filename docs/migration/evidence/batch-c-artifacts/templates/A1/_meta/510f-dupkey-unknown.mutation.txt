@@ -1,0 +1,11 @@
+## mutation: line 1: UNKNOWN key 'zzz_unknown' appears twice, conflicting values, order A then B
+file: /tmp/aecx/templates/A1/510f-dupkey-unknown/sessions/tg1/events.jsonl
+op: repl '1' ',"summary":"building the healthy fixture"}' ',"zzz_unknown":"building the healthy fixture","zzz_unknown":"lead continues","summary":"building the healthy fixture"}'
+detail: line 1: replace b',"summary":"building the healthy fixture"}' -> b',"zzz_unknown":"building the healthy fixture","zzz_unknown":"lead continues","summary":"building the healthy fixture"}' (first occurrence)
+before: sha256=ddb70b8ef48c68987338c34c742844d076eedfc9623e1e79820c7ec6eaed8539 bytes=1754
+after:  sha256=ca8275c58b783436ca8727361676ae613b76845a092ef1a4555305fae3b510a8 bytes=1830
+byte-diff:
+  common_prefix_bytes=83 common_suffix_bytes=1671
+  removed=b''
+  inserted=b'zzz_unknown":"building the healthy fixture","zzz_unknown":"lead continues","'
+

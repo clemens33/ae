@@ -28,7 +28,10 @@ t_sandbox() {
     export AEFAKE_LOG="$ROOT/ctl/agent-stdin.log"
     export AEFAKE_BANNER="aefake ❯ ready"   # contains the composed-UI marker the frozen unknown-tool readiness predicate greps for
     unset AEFAKE_CTL 2>/dev/null || true
-    export TZ=UTC; export LANG=C; export LC_ALL=C
+    # UTF-8, not C: tmux decides its output encoding from LC_ALL/LC_CTYPE/LANG and
+    # SANITISES the TAB in -F format output when none of them names UTF-8, which
+    # silently corrupts the frozen consumer's own tab-separated pane queries.
+    export TZ=UTC; export LANG=en_US.UTF-8; export LC_ALL=en_US.UTF-8
     export SHELL=/bin/zsh
     export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     export AE_NO_AUTOSTART=1
@@ -102,6 +105,7 @@ dir_fingerprint() { dir_manifest "$1" | shasum -a 256 | cut -d' ' -f1; }
 t_store() { # <group> <member> <provenance-text-file-or-->
     local grp="$1" mem="$2" prov="${3:--}"
     local dst="$TSTORE/$grp/$mem"
+    [[ -e "$dst" ]] && chmod -R u+w "$dst" 2>/dev/null
     rm -rf "$dst"; mkdir -p "$TSTORE/$grp/_meta"
     mkdir -p "$(dirname "$dst")"
     cp -R "$AE_HOME" "$dst"
@@ -128,3 +132,44 @@ t_protect() { # <group> <member>
     echo "fingerprint_protected=$fp" >>"$TSTORE/$1/_meta/$2.txt"
     printf '%s' "$fp"
 }
+
+# Clone a stored template member into a fresh AE_HOME for one ARM × LANE.
+# mode=ro  -> keep the store's protection (read-only arms)
+# mode=rw  -> restore each path's ORIGINAL producer-written mode from modes.tsv
+t_clone() { # <group> <member> <dest-ae-home> <ro|rw>
+    local grp="$1" mem="$2" dst="$3" mode="$4"
+    [[ -e "$dst" ]] && chmod -R u+w "$dst" 2>/dev/null
+    rm -rf "$dst"; mkdir -p "$(dirname "$dst")"
+    if ! cp -R "$TSTORE/$grp/$mem" "$dst" 2>/dev/null; then
+        # A member can legitimately hold a file the OWNER cannot read (a mode-000
+        # named mutation), which no copy tool can read either. Rebuild it from the
+        # readable ancestor it is a byte copy of, then apply the member's recorded
+        # mode map; the clone is checked against the member's stored fingerprint by
+        # the caller, so the reconstruction is proven, not assumed.
+        [[ -e "$dst" ]] && chmod -R u+w "$dst" 2>/dev/null
+        rm -rf "$dst"
+        local parent
+        parent="$(grep '^derived_from=' "$TSTORE/$grp/_meta/$mem.txt" | sed 's/^derived_from=//; s/ (byte copy)//')"
+        [[ -n "$parent" ]] || return 1
+        cp -R "$TSTORE/${parent%% *}" "$dst" || return 1
+        chmod -R u+w "$dst" || return 1
+        local _t _m _h _l _p
+        while IFS=$'\t' read -r _t _m _h _l _p; do
+            [[ "$_m" == "-" ]] && continue
+            chmod "$_m" "$dst/${_p#./}" 2>/dev/null || true
+        done < <(_ae_tac_file "$TSTORE/$grp/_meta/$mem.modes.tsv")
+    fi
+    chmod -R u+w "$dst" 2>/dev/null
+    if [[ "$mode" == "rw" ]]; then
+        local typ md hash lnk path
+        while IFS=$'\t' read -r typ md hash lnk path; do
+            [[ "$md" == "-" ]] && continue
+            chmod "$md" "$dst/${path#./}" 2>/dev/null || true
+        done < <(_ae_tac_file "$TSTORE/$grp/_meta/$mem.modes.tsv")
+    else
+        chmod -R a-w "$dst" 2>/dev/null || true
+    fi
+    return 0
+}
+# deepest-first so a directory's mode is set after its children are written
+_ae_tac_file() { tail -r "$1" 2>/dev/null || tac "$1"; }

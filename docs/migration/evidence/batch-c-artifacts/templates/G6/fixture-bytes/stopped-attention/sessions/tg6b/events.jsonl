@@ -1,2 +1,2 @@
-{"ts":"2026-08-20T15:21:48Z","actor":"fake:lead","action":"state","ref":"working","summary":"work before the stop"}
-{"ts":"2026-08-20T15:21:48Z","actor":"fake:worker","action":"state","ref":"blocked","summary":"blocked before the stop"}
+{"ts":"2026-08-20T16:14:05Z","actor":"fake:lead","action":"state","ref":"working","summary":"work before the stop"}
+{"ts":"2026-08-20T16:14:05Z","actor":"fake:worker","action":"state","ref":"blocked","summary":"blocked before the stop"}

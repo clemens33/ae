@@ -1,0 +1,11 @@
+## mutation: line 1: UNKNOWN key 'zzz_unknown' appears twice, conflicting values, MEMBER ORDER REVERSED (B then A)
+file: /tmp/aecx/templates/A1/510f-dupkey-unknown-reversed/sessions/tg1/events.jsonl
+op: repl '1' ',"summary":"building the healthy fixture"}' ',"zzz_unknown":"lead continues","zzz_unknown":"building the healthy fixture","summary":"building the healthy fixture"}'
+detail: line 1: replace b',"summary":"building the healthy fixture"}' -> b',"zzz_unknown":"lead continues","zzz_unknown":"building the healthy fixture","summary":"building the healthy fixture"}' (first occurrence)
+before: sha256=ddb70b8ef48c68987338c34c742844d076eedfc9623e1e79820c7ec6eaed8539 bytes=1754
+after:  sha256=4e98499e22c13bb6537ae4438ec0f57b2eba177e530fc18e67e7e5f83e826888 bytes=1830
+byte-diff:
+  common_prefix_bytes=83 common_suffix_bytes=1671
+  removed=b''
+  inserted=b'zzz_unknown":"lead continues","zzz_unknown":"building the healthy fixture","'
+

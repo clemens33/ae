@@ -1,6 +1,0 @@
-⟦ae:msg from fake:lead⟧
-REQUEST ae-20260820T152408Z-148d38f5 from fake:lead: G10 question from the main-slot holder of the display name
-
-REQUIRED: When you have finished, you MUST run this exact command to reply:
-/tmp/aecx/tpl/g10/home/.ae/sessions/tg10/reply --as "fake:worker" "ae-20260820T152408Z-148d38f5" "<your reply>"
-Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

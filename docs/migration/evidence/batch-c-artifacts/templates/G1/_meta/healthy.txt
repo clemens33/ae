@@ -1,10 +1,10 @@
 group=G1
 member=healthy
-fingerprint_pre_protection=bbfdf6957bb62063e2c5c94fc36844bede3eeab190027799b5a11164ddeab5dd
+fingerprint_pre_protection=075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667
 source_sandbox=/tmp/aecx/tpl/g1
 source_session=tg1
 frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
-built_utc=2026-08-20T15:19:14Z
+built_utc=2026-08-20T16:12:58Z
 --- provenance ---
 producers (all real generated helpers of session tg1, run with the pane environment of the named agent):
   as=%0 helper='state working building the healthy fixture'
@@ -19,11 +19,11 @@ producers (all real generated helpers of session tg1, run with the pane environm
     rc=0
   as=%0 helper='ask fake:worker healthy fixture question'
     rc=0
-  harvested_request_id=ae-20260820T151911Z-5fc4e1ba
-  as=%1 helper='reply ae-20260820T151911Z-5fc4e1ba healthy fixture answer'
+  harvested_request_id=ae-20260820T161254Z-6fb0847b
+  as=%1 helper='reply ae-20260820T161254Z-6fb0847b healthy fixture answer'
     rc=0
   as=%1 helper='state done worker finished'
     rc=0
   as=%0 helper='state working lead continues'
     rc=0
-fingerprint_protected=07def20c11115339748598d834b4240ac0ea2c817cf713c68fc4cd09d8c38152
+fingerprint_protected=c940ecaed0bba78bb6b78f7a286ed3c65f601aa18f5a0babda6d2910aa062f18

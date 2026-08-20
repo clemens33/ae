@@ -1,0 +1,12 @@
+group=A1
+member=510f-dupkey-unknown
+derived_from=G1/healthy (byte copy)
+source_fingerprint_protected=c940ecaed0bba78bb6b78f7a286ed3c65f601aa18f5a0babda6d2910aa062f18
+session=tg1
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+both duplicate values are PRODUCER-DERIVED byte values taken verbatim from real
+summaries already present in this same events.jsonl (lines 1 and 10).
+built_utc=2026-08-20T16:17:10Z
+fingerprint_pre_protection=077199567900528338bcfd0cdb0f295ddfd29709bfdea0e5f2366adce18d15d9
+named_mutations=see _meta/510f-dupkey-unknown.mutation.txt
+fingerprint_protected=470da1778b62611b4c09fa61cc19c6d2e71af2e45aba7331c89edc22440ed804

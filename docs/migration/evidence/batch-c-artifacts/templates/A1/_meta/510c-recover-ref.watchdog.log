@@ -1,0 +1,10 @@
+╭─ ae watchdog — session: ta1c ─────────────────────────╮
+│ interval: 5s   stale: 15m   max nudges: 2
+│ read-only pane (input disabled). use peek _watchdog or stop with `watchdog stop`.
+╰────────────────────────────────────────────────────────╯
+
+[16:17:03] ── cycle 1 ──
+[16:17:03]   fake:lead  active (pane hash changed)
+[16:17:03]   fake:lead  RECOVERED codex session id 11111111
+
+

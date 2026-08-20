@@ -1,10 +1,10 @@
 group=G11
 member=escapes
-fingerprint_pre_protection=aac57e86f0e04b92777d0bd5364470148958dabc79e83cd386a4e5bece0597f3
+fingerprint_pre_protection=9d5b086599c350ac99003dbe4baa0b326af0874c421a54e28c58ab8f042f77b0
 source_sandbox=/tmp/aecx/tpl/g11
 source_session=tg11
 frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
-built_utc=2026-08-20T15:19:36Z
+built_utc=2026-08-20T16:13:21Z
 --- provenance ---
   class=quote input_file=inputs/quote.bin input_sha256=cc4cfa67128386ad32ab0a8722ed3ea1c1c597ac05690f0d33b52f750159e3cf input_bytes=38
     say rc=0
@@ -26,4 +26,4 @@ built_utc=2026-08-20T15:19:36Z
     say rc=0
     memo rc=0
     send rc=0
-fingerprint_protected=84b2df23b1fdaadc629f79332a3d956e294a0e88a09cfd8a9e0b362cfffb6d5a
+fingerprint_protected=b72f31d61edfe9bcec5aad8dfe1e53c69122edc2cd63c74332366d9d75ca534d

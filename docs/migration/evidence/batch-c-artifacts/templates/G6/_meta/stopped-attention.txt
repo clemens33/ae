@@ -1,10 +1,10 @@
 group=G6
 member=stopped-attention
-fingerprint_pre_protection=efe1955bfc91cd0218f0245267896eef75d037554d75d47ad4a2c2892fe07ee6
+fingerprint_pre_protection=568271e35faf9872d49ea35517bc3b0e6f21193fa1f9bdfd0daf293457cb6ce3
 source_sandbox=/tmp/aecx/tpl/g6b
 source_session=tg6b
 frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
-built_utc=2026-08-20T15:21:49Z
+built_utc=2026-08-20T16:14:06Z
 --- provenance ---
   as=%0 helper='state working work before the stop'
     rc=0
@@ -12,4 +12,4 @@ built_utc=2026-08-20T15:21:49Z
     rc=0
   ae stop tg6b
     rc=0
-fingerprint_protected=5c55b704019a8dc261d17d467e804584c70deaf8a451ae5a8b9dd361a184d1ec
+fingerprint_protected=77273b71fc99506fe4eb2b535ee890470753d2973c96f15bd50d6046e1dfc4f5

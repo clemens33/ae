@@ -1,1 +1,21 @@
-No agent panes in session 'ta1k'.
+── fake:lead (%0) ──
+ckriech@MacOS-ckriech work % /tmp/aecx/t
+pl/a1405k/home/.ae/sessions/ta1k/launch.
+main.sh
+aefake ❯ ready
+
+── fake:ghost (%3) ──
+ckriech@MacOS-ckriech work %
+
+── fake:worker (%1) ──
+ckriech@MacOS-ckriech work % /tmp/aecx/
+tpl/a1405k/home/.ae/sessions/ta1k/launc
+h.worker.0.sh
+aefake ❯ ready
+
+── _events (%2) ──
+╭─ ae events — session: ta1k ───────────────────────────────╮
+│ date+time (UTC)  action   actor                  → target                 summ
+ary
+╰──────────────────────────────────────────────────────────────────────────╯
+

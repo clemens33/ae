@@ -1,8 +1,8 @@
 ## panes
-%0|fake:lead|main|aefake|66056|0|ta1k
-%3|fake:ghost|ghost.0|zsh|68329|0|ta1k
-%1|fake:worker|worker.0|aefake|66114|0|ta1k
-%2|_events||bash|66835|99|ae-monitor
+%0|fake:lead|main|aefake|33528|0|ta1k
+%3|fake:ghost|ghost.0|zsh|38850|0|ta1k
+%1|fake:worker|worker.0|aefake|33574|0|ta1k
+%2|_events||bash|34206|99|ae-monitor
 ## windows
 ta1k|0|ta1k|3
 ta1k|99|ae-monitor|1

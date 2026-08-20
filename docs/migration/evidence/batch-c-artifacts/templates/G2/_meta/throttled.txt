@@ -4,6 +4,6 @@ fingerprint_pre_protection=5d3bae39c512c4415200e3729347171f62e8a6a9d95efbcd49831
 source=T-WD producer precursor arm a3 (AE_HOME snapshot), session twda3
 producer=the REAL generated watchdog of that launch
 frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
-built_utc=2026-08-20T15:21:18Z
+built_utc=2026-08-20T16:13:32Z
 named_manipulation=see _meta/throttled.mutation.txt
 fingerprint_protected=23c0a792899cf4bb169a391cdbf1ed1adf7fb2e8df5a2232f37e17c9152a3dc2

@@ -2,8 +2,8 @@
 file: /tmp/aecx/templates/G8/partial-trailing-record/sessions/tg1/events.jsonl
 op: droptail '40'
 detail: truncate 40 trailing byte(s): b'":"working","summary":"lead continues"}\n'
-before: sha256=2974d3a187a0223cdd7ce0addedb064fa350ce5c16d6eab821b5bbff93679893 bytes=1754
-after:  sha256=b6e838111133a77e0123325fa9404b22d53d8438aabf196d3c2d7fe10ab5d855 bytes=1714
+before: sha256=ddb70b8ef48c68987338c34c742844d076eedfc9623e1e79820c7ec6eaed8539 bytes=1754
+after:  sha256=393695ce6905511773b5715d13f0b6ab6d483b93daebecc9997a94561c2e0813 bytes=1714
 byte-diff:
   common_prefix_bytes=1714 common_suffix_bytes=0
   removed=b'":"working","summary":"lead continues"}\n'

@@ -1,0 +1,16 @@
+mode=local
+origin=/tmp/aecx/tpl/a1510b/work
+session=ta1b
+session_id=7333d3be-8ef5-4bac-a4db-ecc1f6744d05
+work_dir=/tmp/aecx/tpl/a1510b/work
+layout=vertical
+config=/tmp/aecx/tpl/a1510b/home/.ae/config
+main_pane=%0
+ae_path=/private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae
+ae_version=0.2.1
+tmux_server=/tmp/aecx/tpl/a1510b/s.sock
+tmux_server_kind=socket
+agent.main=fake:lead:pending
+agent_bin.main=aefake
+agent.worker.0=fake:worker:pending
+agent_bin.worker.0=aefake

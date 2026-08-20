@@ -1,11 +1,11 @@
 ## mutation: reply ref -> a different well-formed producer-derived request id (line 4's review ref)
 file: /tmp/aecx/templates/G5/m2-wrong-ref/sessions/tg5/events.jsonl
-op: repl '2' '"ref":"ae-20260820T151918Z-a3ec9238"' '"ref":"review-20260820T151921Z-2e6f3ac8"'
-detail: line 2: replace b'"ref":"ae-20260820T151918Z-a3ec9238"' -> b'"ref":"review-20260820T151921Z-2e6f3ac8"' (first occurrence)
-before: sha256=450d53f62a358c277b946e3de1470bff98f520618743fe06c44f002c762b0b34 bytes=1478
-after:  sha256=a413f941d14761481ed13ed09815c6007ba8aa9ac263577fc34ff1544456959d bytes=1482
+op: repl '2' '"ref":"ae-20260820T161302Z-c2c01848"' '"ref":"review-20260820T161305Z-dc302d09"'
+detail: line 2: replace b'"ref":"ae-20260820T161302Z-c2c01848"' -> b'"ref":"review-20260820T161305Z-dc302d09"' (first occurrence)
+before: sha256=8fe76b4cc5e3459ffbcc1d241896d3963cb1291f0d8157c6df1d51d4a3f3a539 bytes=1478
+after:  sha256=a99afdb89c68da46e6006dd56c9ac65ef88666022f9b58e66066ab4b6795ae63 bytes=1482
 byte-diff:
-  common_prefix_bytes=448 common_suffix_bytes=1003
-  removed=b'ae-20260820T151918Z-a3ec923'
-  inserted=b'review-20260820T151921Z-2e6f3ac'
+  common_prefix_bytes=448 common_suffix_bytes=1002
+  removed=b'ae-20260820T161302Z-c2c01848'
+  inserted=b'review-20260820T161305Z-dc302d09'
 

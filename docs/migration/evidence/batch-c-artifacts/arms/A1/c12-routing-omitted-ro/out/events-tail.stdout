@@ -2,9 +2,9 @@
 │ date+time (UTC)  action   actor                  → target                 summary
 ╰──────────────────────────────────────────────────────────────────────────╯
 [0m
-08-20T15:30:45  state    fake:lead                                       omitted-routing cohort
-08-20T15:30:45  goal     fake:lead                                       omitted-routing cohort goal
-08-20T15:30:45  memo     fake:lead                                       omitted-routing memo
-08-20T15:30:46  chat     fake:lead                                       omitted-routing chat
-08-20T15:30:47  send     fake:lead              → fake:worker            ⟦ae:msg from fake:lead⟧ omitted-routing send
-08-20T15:30:47  state    fake:worker                                     omitted-routing worker state
+08-20T16:14:53  state    fake:lead                                       omitted-routing cohort
+08-20T16:14:53  goal     fake:lead                                       omitted-routing cohort goal
+08-20T16:14:54  memo     fake:lead                                       omitted-routing memo
+08-20T16:14:54  chat     fake:lead                                       omitted-routing chat
+08-20T16:14:55  send     fake:lead              → fake:worker            ⟦ae:msg from fake:lead⟧ omitted-routing send
+08-20T16:14:55  state    fake:worker                                     omitted-routing worker state

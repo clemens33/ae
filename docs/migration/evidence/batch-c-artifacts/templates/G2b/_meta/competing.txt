@@ -1,18 +1,18 @@
 group=G2b
 member=competing
-fingerprint_pre_protection=58311be71fd4a5bc2db5cd2668ffe90cfba530f353dfe4c85b3729e59cbeea66
+fingerprint_pre_protection=0d7df5c73481c9aa92d568ac64990a0563e1f59dcce651b5a7237bd6d5c6debe
 source_sandbox=/tmp/aecx/tpl/g2b
 source_session=tg2b
 frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
-built_utc=2026-08-20T15:21:40Z
+built_utc=2026-08-20T16:13:56Z
 --- provenance ---
 construction: three agents, one reason each, produced in ARRIVAL order T0<T1<T2.
 arrival order is DESCENDING in the frozen _attn_rank ladder (ae@72c7293:3571-3581,
 comment at :3586): dead=6 arrives first, waiting-user=4 second, unanswered=1 last.
 clock hook active throughout; real date=/bin/date sha256=0c7f77e19bc79013bc5bc4e67beea3b9d546d6d09a36799c2eed2693967af8c6
 panes: lead=%0 bravo=%1 charlie=%2
-  T0=1755000000 manipulation: kill the fake-agent child under bravo's pane (41196); the REAL watchdog is the producer
-    killed aefake pid 41528 under 41196
+  T0=1755000000 manipulation: kill the fake-agent child under bravo's pane (72646); the REAL watchdog is the producer
+    killed aefake pid 73010 under 72646
   dead_alert_present=1
   watchdog stopped (no further producer cycles)
   T1=1755000600: lead declares waiting-user
@@ -21,4 +21,4 @@ panes: lead=%0 bravo=%1 charlie=%2
   T2=1755001200: bravo->charlie ask, never replied (aged)
   as=%1 helper='ask fake:charlie G2b unanswered question (never replied)'
     rc=0
-fingerprint_protected=8636f234a0c5dddbcf5944f9c18d215c041d4b8f07343c4e19298437b9f8b391
+fingerprint_protected=57f784caf0acc08884823490f6242c82d9f002fa3547f4e5e8a06397f89f9a86

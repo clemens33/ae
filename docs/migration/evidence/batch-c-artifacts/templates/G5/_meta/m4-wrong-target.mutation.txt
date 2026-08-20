@@ -2,8 +2,8 @@
 file: /tmp/aecx/templates/G5/m4-wrong-target/sessions/tg5/events.jsonl
 op: repl '2' '"target":"fake:lead"' '"target":"fake:third"'
 detail: line 2: replace b'"target":"fake:lead"' -> b'"target":"fake:third"' (first occurrence)
-before: sha256=450d53f62a358c277b946e3de1470bff98f520618743fe06c44f002c762b0b34 bytes=1478
-after:  sha256=eed2b05fc766e688a7ab2c8eb5f323fa880c9bf0b0aeeec6f3bf5617161e5853 bytes=1479
+before: sha256=8fe76b4cc5e3459ffbcc1d241896d3963cb1291f0d8157c6df1d51d4a3f3a539 bytes=1478
+after:  sha256=f5d78222f780da2ebb19c3c44f643a68a829daf185e640d119f124129598ddd1 bytes=1479
 byte-diff:
   common_prefix_bytes=435 common_suffix_bytes=1040
   removed=b'lea'
@@ -13,8 +13,8 @@ byte-diff:
 file: /tmp/aecx/templates/G5/m4-wrong-target/sessions/tg5/events.jsonl
 op: repl '2' '"target_slot":"main"' '"target_slot":"worker.1"'
 detail: line 2: replace b'"target_slot":"main"' -> b'"target_slot":"worker.1"' (first occurrence)
-before: sha256=eed2b05fc766e688a7ab2c8eb5f323fa880c9bf0b0aeeec6f3bf5617161e5853 bytes=1479
-after:  sha256=cd56b0f8cfbf83d065a445a7ab17b70382af8482dc13d8dd40e4a9749f9ae17e bytes=1483
+before: sha256=f5d78222f780da2ebb19c3c44f643a68a829daf185e640d119f124129598ddd1 bytes=1479
+after:  sha256=655372d780024be20f06b224b6d9fb333ea514693679518d522d594336424f39 bytes=1483
 byte-diff:
   common_prefix_bytes=540 common_suffix_bytes=935
   removed=b'main'

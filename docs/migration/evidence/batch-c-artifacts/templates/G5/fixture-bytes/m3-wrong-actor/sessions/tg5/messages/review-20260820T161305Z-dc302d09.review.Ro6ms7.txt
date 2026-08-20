@@ -1,0 +1,12 @@
+⟦ae:msg from fake:lead⟧
+REVIEW REQUEST review-20260820T161305Z-dc302d09 from fake:lead: G5 review request (second well-formed ref donor)
+
+Review instructions:
+    - Focus on correctness, regressions, edge cases, missing tests, and callers/docs needing updates.
+    - Findings first. Keep summaries brief.
+    - Use severity labels: BLOCKER, IMPORTANT, NIT.
+    - If no issues are found, say "No findings" explicitly.
+
+REQUIRED: When you have finished, you MUST run this exact command to reply:
+/tmp/aecx/tpl/g5/home/.ae/sessions/tg5/reply --as "fake:worker" "review-20260820T161305Z-dc302d09" "<your review>"
+Do not reply any other way. Do NOT use peek/peak as a reply mechanism.

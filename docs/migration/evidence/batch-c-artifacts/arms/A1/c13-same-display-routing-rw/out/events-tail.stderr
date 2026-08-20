@@ -1,3 +1,3 @@
-Terminated: 15             tail -n 30 -f "$EVENTS_FILE" 2> /dev/null | while IFS= read -r line; do
+Done                       tail -n 30 -f "$EVENTS_FILE" 2> /dev/null | while IFS= read -r line; do
     helper_events_tail_format_event "$line";
 done

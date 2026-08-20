@@ -2,8 +2,8 @@
 file: /tmp/aecx/templates/G8/no-trailing-newline/sessions/tg1/events.jsonl
 op: droptail '1'
 detail: truncate 1 trailing byte(s): b'\n'
-before: sha256=2974d3a187a0223cdd7ce0addedb064fa350ce5c16d6eab821b5bbff93679893 bytes=1754
-after:  sha256=8335710d370903cd71f450efcac5bc2e526d3bee3848d43928ed4167a44fc7d4 bytes=1753
+before: sha256=ddb70b8ef48c68987338c34c742844d076eedfc9623e1e79820c7ec6eaed8539 bytes=1754
+after:  sha256=439c481f787cc07ad252a72ca9aaf9176a1e938ad1b27e4b9c1d35d40c0df4a5 bytes=1753
 byte-diff:
   common_prefix_bytes=1753 common_suffix_bytes=0
   removed=b'\n'

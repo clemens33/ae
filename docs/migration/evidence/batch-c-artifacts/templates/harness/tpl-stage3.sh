@@ -11,6 +11,7 @@ derive() {
     local grp="$1" mem="$2" sg="$3" sm="$4"
     mkdir -p "$TSTORE/$grp/_meta"
     DST="$TSTORE/$grp/$mem"
+    [[ -e "$DST" ]] && chmod -R u+w "$DST" 2>/dev/null
     rm -rf "$DST"; cp -R "$TSTORE/$sg/$sm" "$DST"; chmod -R u+w "$DST"
     DIFF="$TSTORE/$grp/_meta/$mem.mutation.txt"; : >"$DIFF"
     SESS="$(ls "$DST/sessions" | head -1)"
@@ -70,9 +71,16 @@ seal G4 zero-byte-events
 
 ########## G5 m2-m6 ##########
 banner G5-mutations
+# The donor byte values are READ OUT of the rebuilt control member, never hardcoded:
+# every rebuild mints fresh request ids, and a hardcoded id would silently stop matching.
+G5EV="$TSTORE/G5/m1-control/sessions/$(ls "$TSTORE/G5/m1-control/sessions" | head -1)/events.jsonl"
+MIRROR_REF="$(sed -n '1p' "$G5EV" | sed -n 's/.*"ref":"\([^"]*\)".*/\1/p')"
+REVIEW_REF="$(sed -n '4p' "$G5EV" | sed -n 's/.*"ref":"\([^"]*\)".*/\1/p')"
+echo "donors: mirror_ref=$MIRROR_REF review_ref=$REVIEW_REF"
+[[ -n "$MIRROR_REF" && -n "$REVIEW_REF" ]] || { echo "HARNESS-ABORT: could not read G5 donor refs"; exit 9; }
 derive G5 m2-wrong-ref G5 m1-control
 python3 "$MUT" "$DST/sessions/$SESS/events.jsonl" "$DIFF" "reply ref -> a different well-formed producer-derived request id (line 4's review ref)" \
-    repl 2 '"ref":"ae-20260820T151918Z-a3ec9238"' '"ref":"review-20260820T151921Z-2e6f3ac8"'
+    repl 2 "\"ref\":\"$MIRROR_REF\"" "\"ref\":\"$REVIEW_REF\""
 seal G5 m2-wrong-ref
 
 derive G5 m3-wrong-actor G5 m1-control
