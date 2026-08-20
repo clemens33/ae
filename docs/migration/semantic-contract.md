@@ -315,6 +315,47 @@ quirks (`opencode.exe`, `env` prefix), re-run semantics of `launch.<slot>.sh`.
 
 <!-- rows: SC-7xx -->
 
+The per-tool capability matrix is NOT expanded into per-cell rows: it is classified
+WHOLESALE as empirical pins — the fixture source for the adapter test tables (SC-704).
+The rows below are the normative rules that govern every adapter.
+
+**SC-700 — delivery gates on readiness, initialization checked first.** Bucket 1 — both
+launch-delivery moments (spawn task, launch/resume prompt) gate on input-readiness, and
+a tool that is provably still initializing is not ready however idle its input box
+looks. Authority: AGENTS.md readiness ruling ("an idle input box is not an initialized
+application"). Empirical: measured codex timings @72c7293. Conflict: none.
+
+**SC-701 — readiness markers are negative evidence only.** Bucket 1 — a marker's
+absence is never proof of readiness; a predicate that demands a positive banner breaks
+the day a tool stops printing one. Authority: AGENTS.md readiness ruling. Empirical:
+codex `model: loading` / MCP progress measurements. Conflict: none.
+
+**SC-702 — a readiness timeout fails loud and durable.** Bucket 1 — the pane text is
+preserved next to the session and an event is emitted, because launch delivery runs
+detached where stderr reaches nobody. Authority: AGENTS.md readiness ruling.
+Empirical: pending. Conflict: none.
+
+**SC-703 — an unmodelled TUI is an accepted risk, never a pretend gate.** Bucket 2 —
+a tool without readiness/busy modelling (grok at 72c7293) delivers ungated, and that
+status is DOCUMENTED, not silently faked. Authority: AGENTS.md grok row (ruling
+framing). Empirical: matrix. Conflict: none.
+
+**SC-704 — adapter behavior is pinned by table-driven tests from measured facts.**
+Bucket 1 — the capability matrix ports as test tables; upstream tool drift is detected
+(canary class, #22), never silently absorbed. Authority: epic #79 (folded
+requirements). Empirical: the matrix itself. Conflict: none.
+
+**SC-705 — tool detection never parses the injected tail.** Bucket 1 — classification
+looks only at the first word after stripping `env`/`-u`/`-i`/`VAR=val` prefixes and
+tolerates launcher suffixes (`opencode.exe`); the kilobytes of injected prose are data.
+Authority: AGENTS.md ruling bullets (tool_kind_from_cmd + pane_current_command).
+Empirical: measured exhibits @72c7293. Conflict: none.
+
+**SC-706 — a fact built upstream is transported, never re-parsed.** Bucket 1 — resume
+ids, injection boundaries, and tool kinds ride explicit parameters; the built command
+is downstream data — hostile input, not a source of truth. Authority: #30-family ruling
+(commit 32719f5) + AGENTS.md. Empirical: shipped exhibits. Conflict: none.
+
 ### S9 — Lifecycle transactions
 
 git commit/push on end, archive capture ordering (archive-before-removal, failed archive
@@ -633,6 +674,40 @@ GNU/BSD shims, optional `flock`/`timeout` degradation, `sun_path` limits, uuid c
 bash >= 4.0 floor for the remaining glue.
 
 <!-- rows: SC-11xx -->
+
+**SC-1100 — behavior is identical on GNU and BSD userlands.** Bucket 1 — the bash era
+enforces this via the shim table (never call the raw divergent tool); the Rust core
+gets it by construction (std lib), and the class of silent `|| fallback` platform bugs
+dies. Authority: AGENTS.md GNU/BSD section (ruling: use the shim) — the per-tool rows
+are empirical exhibits. Empirical: shipped macOS bugs @72c7293. Conflict: none.
+
+**SC-1101 — `flock` and `timeout` are optional dependencies.** Bucket 3 — SHOULD:
+guard with `command -v` and DEGRADE, never hard-require (core ae runs on a bare
+bash+tmux+git machine). IS at 72c7293: `ae_meta_set` and `_lib` paths hard-require
+flock and die `command not found` (#75); the missing-flock matrix (census-2 addenda)
+shows divergent per-path outcomes. Conflict: fix-known-defect(#75, intended: the Rust
+core needs NO external flock — native locking; remaining glue degrades loudly).
+Empirical: census-2 missing-flock matrix.
+
+**SC-1102 — session/archive UUIDs are canonical lowercase.** Bucket 2 — `gen_uuid`
+normalizes (macOS `uuidgen` is uppercase); validators and filenames are
+lowercase-only. Authority: AGENTS.md bullet (ruling). Empirical: pending.
+Conflict: none.
+
+**SC-1103 — unix socket paths fit `sun_path` on both platforms.** Bucket 1 — 104 bytes
+macOS / 108 Linux; anything creating sockets accounts for the tighter bound.
+Authority: AGENTS.md bullet. Empirical: measured mktemp overflow exhibit.
+Conflict: none.
+
+**SC-1104 — process introspection works without `/proc`.** Bucket 1 — parent walking
+and process facts come from portable interfaces (bash: `ps -o ppid=`; Rust: proper
+APIs), never `/proc` paths. Authority: AGENTS.md bullet. Empirical: pending.
+Conflict: none.
+
+**SC-1105 — the bash floor is 4.0, scoped to the surviving glue.** Bucket 2 — the
+requirement applies to what remains bash after each flip; the binary imposes no bash
+requirement at all. Authority: AGENTS.md rules + epic end state. Empirical: pending.
+Conflict: none.
 
 ### S13 — Identity/provenance security surface
 
