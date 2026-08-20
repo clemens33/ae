@@ -34,11 +34,16 @@ written them. Two remedies are available and the choice is the seats':
 
 - **(a) A fresh executor.** The annex-free region above is a complete brief; hand it to a
   worker who has not read the annex.
-- **(b) A pre-registered, non-adaptive capture program.** Every arm script is committed
-  BEFORE its first run, its sha256 recorded in the run manifest, and any post-hoc change
-  requires an amendment record naming what changed and why. Adaptive capture — choosing
-  what to record after seeing a reading — is then mechanically visible rather than
-  promised.
+- **(b) A pre-registered, non-adaptive capture program — RULED LOAD-BEARING.** Every arm
+  script is committed and hash-registered BEFORE its first run, its sha256 in the run
+  manifest; any amendment is durable and REOPENS the affected arms. Adaptive capture is
+  then a diff rather than a promise. A fresh executor is additive where cheap.
+
+**Exposure record (required).** The run manifest records that this design's author saw
+answer-labelled source outcomes in v1-v3 — `interrupt`'s silent non-refusal path, `goal`'s
+arity guard, the `%*` branch's return, `_register-sid`'s selection order, and `say`'s exact
+stdout — before they were moved to the annex, so a seat reading the captures knows what the
+author knew.
 
 The author's view, offered as input and not as a ruling: (b) is the stronger guarantee of
 the two, because a fresh executor can adapt just as easily and leaves no trace when it
@@ -60,6 +65,13 @@ Governed by `cluster-plan.md`'s global rule; batch-local specifics, no exception
   controls fired AFTER the measured invocation.
 - **Every invocation is BOUNDED.** A timeout produces its own INCONCLUSIVE artifact naming
   the bound; it is never reported as a refusal or as a product rc.
+- **Controls fire BEFORE and AFTER every measured invocation, not after only.** A post-run
+  canary cannot show the capture and witness paths were live WHILE the product ran — the
+  chronology failure already seen in A1. The pre-canary COMPLETES before PRODUCT-START and
+  the post-canary begins after PRODUCT-COMPLETE, both content-bound to that case in the
+  append-only ledger, and BOTH must pass for the observation to be admissible. This
+  supersedes A8's post-only construction, which proved the instrument responsive at the
+  after-snapshot rather than across the run.
 
 ## What an empty capture can mean — the state set, and how each is separated
 
@@ -90,8 +102,9 @@ says so by name and keeps the other legs.
 
 **Leg 4 — controller canaries, not product controls.** The earlier draft used "an
 invocation known to take the non-refusal path" as the capture-path control. That is
-unusable twice over: it states a product expectation, and a successful helper may
-legitimately emit nothing at all (`interrupt` without a message is one). The control is
+unusable twice over: it states a product expectation, and a non-refusal path may
+legitimately emit nothing at all, which makes "the control printed nothing" uninterpretable
+as a canary. The control is
 therefore CONTROLLER-GENERATED: a canary process writes known bytes to stdout, known bytes
 to stderr and exits with a known rc THROUGH THE EXACT capture wrapper the arm uses, in the
 same case, and the captured artifacts must carry those bytes and that rc. It tests the
@@ -131,8 +144,10 @@ down, and the earlier construction was not admissible:
 
 ## Required pre-step — the argument census
 
-Before any arm is written, each frozen helper's argument handling is enumerated into a
-committed table: for every input class, whether it is ACCEPTED, REJECTED, IGNORED, or
+Before any arm is written, the argument handling of each frozen helper AND of the top-level
+dispatcher and the `steward` flag surface is enumerated into a committed table, returned for
+a seat gate with an explicit row -> input-class mapping. The executor receives the
+seat-approved INPUT LIST; the classified labels stay with the seats. The table records: for every input class, whether it is ACCEPTED, REJECTED, IGNORED, or
 HANGS, derived from the frozen function itself with line citations — not from prose. The
 arms are then built from that table. This exists because the v3 matrix was freehand and
 carried two direct row/source mismatches (below); a census makes the omission visible
@@ -166,14 +181,13 @@ process reaped in teardown, file manifest before/after.
 invoked from a real pane, with the input classes drawn from the argument census. Known
 corrections to the v3 matrix, all from the review and all verified against frozen source:
 
-- **SC-211b `goal`:** `goal foo bar` is a VALID set (`*) text="$*"`, ae:14577-14590); the
-  `$# -eq 1` guard at ae:14569 belongs to `--clear`. The case therefore exercises
-  `--clear extra`, not "two positionals", and adds `-h`/`--help` as distinct paths.
-- **SC-211i `spawn`:** the row is `spawn` NON-NAME argument errors. Name-grammar inputs
-  belong to SC-1201 (F-IDENTITY, "the spawn boundary treats a peer name as hostile") and
-  are routed there, not used to close 211i. 211i exercises wrapper and delegate errors: no
-  args, missing/unknown alias, absent or malformed `meta`/`config`, and the pre-main
-  `AE_PATH` guard (ae:14711-14716).
+- **SC-211b `goal`:** input classes include multi-word text, `--clear` alone, `--clear`
+  with a trailing argument, empty text, and `-h`/`--help` as their own inputs. (v3's
+  "two positionals" class rested on a source misreading; the census supersedes it.)
+- **SC-211i `spawn`:** the row is `spawn` NON-NAME argument errors, so name-grammar inputs
+  are routed to SC-1201 (F-IDENTITY) rather than used here. Input classes: no args,
+  missing alias, unknown alias, absent `meta`, malformed `meta`/`config`, and an
+  environment in which the pre-main `AE_PATH` guard (ae:14711-14716) is reachable.
 - **SC-211d `requests`, SC-211j `retire`, SC-211c `memo`, SC-211e `peek`, SC-211f
   `agents`, SC-211l `say`:** input classes come from the census, including no-arg
   defaults, extra-arg handling, ambiguous and out-of-session targets, negative and
@@ -183,50 +197,72 @@ corrections to the v3 matrix, all from the review and all verified against froze
 **A-H4 `_lib` name resolution grammar (SC-211p).** Observed on the generated `_lib`
 DIRECTLY — the case sources the exact producer-derived `_lib`, calls `ae_resolve`, and
 captures its rc together with `AE_RESOLVED_PANE/AGENT/SLOT/SESSION`. `focus` is NOT the
-observation surface: it mutates client focus, emits an event, and its failure can come
-from the downstream tmux operation rather than the grammar. In particular the raw `%*`
-branch returns 0 unconditionally (ae:12885-12901), so a dead pane id is resolved by the
-grammar and only the later operation fails — a `focus`-based pair would have measured
-liveness and labelled it grammar. Inputs cover each branch and the malformed cross-session
-forms `@session`, `@:agent`, `@session:`; session-exists-but-agent-missing is kept
-distinct from session-missing. The `tmux has-session -t <name>` prefix behaviour is
+observation surface: it mutates client focus, emits an event, and a failure it reports can
+originate downstream of the grammar rather than in it, so grammar and liveness would be
+confounded in a single rc. Inputs cover every branch of the resolver plus the malformed
+cross-session forms `@session`, `@:agent`, `@session:`; session-exists-but-agent-missing is
+kept distinct from session-missing. **Environment-equivalence control:** the controller
+shell that sources the generated `_lib` records its effective `_AE_SESSION`,
+`_AE_SESSIONS_DIR`, tmux selector, cwd and exported globals beside those of a real
+generated-helper invocation from the same sealed fixture, so a correct function observed in
+a different resolution domain is visible as such. The `tmux has-session -t <name>` prefix behaviour is
 recorded as a separate confounder rather than being allowed into the fixture.
 
-**A-H5 codex identity registration (SC-211o).** `_register-sid` takes a SLOT
-(ae:14750-14824): it reads `launch_id.<slot>` / `launch_time.<slot>` from meta, scans
-today's and yesterday's Codex JSONL directories, selects by launch-id token then by CWD
-fallback with an mtime preference, and writes the discovered UUID to `codex.<slot>.sid`.
-The v3 arm modelled an API that does not exist (an id argument, a malformed id, pane
-identity) and is discarded. The arm invokes `_register-sid <slot>` against H6's cohorts,
-varying one fact at a time — matching vs wrong launch-id token, mtime before vs after
-`launch_time`, two eligible files with different mtimes, a malformed or missing first-line
-id, today vs yesterday, and the CWD-fallback path — and captures the resulting
-`codex.<slot>.sid`, the meta bytes before/after, and the candidate files' facts. Whether a
-caller may name another slot is captured as its own observation, not treated as pane
-identity.
+**A-H5 codex identity registration (SC-211o).** `_register-sid` is invoked as
+`_register-sid <slot>` (ae:14750-14824) against H6's cohorts. The fixture varies ONE fact
+at a time across the candidate Codex JSONL files and the slot's meta: launch-id token
+absent / matching / mismatched, file mtime before vs after `launch_time.<slot>`, two
+eligible files with different mtimes, first-line id malformed or missing, today vs
+yesterday directory, and the working directory the invocation is made from. Captures: the
+`codex.<slot>.sid` artifact, meta bytes before and after, and every candidate file's own
+facts (path, mtime, first line). Invoking with a slot other than the invoking pane's is its
+own input class. The v3 arm's id-argument inputs are discarded: they do not exist in this
+surface.
 
-**A-H6 launch-artifact publication (D14b) — SPLIT, because the v3 arm grouped two writer
-classes.** `write_launch_script` has exactly ONE call site, `send_agent_cmd` at ae:12602;
-`doctor --refresh` calls `sync_session_assets` (ae:8610), whose body writes helpers and
-shims and whose own comment records that `send_agent_cmd` writes `launch.<slot>.sh`
-afterwards (ae:17631-17632). So the arm is two arms: **(i)** the launch-script and
-`.started` marker publication, exercised on a real `send_agent_cmd` launch write; **(ii)**
-`doctor --refresh` helper/shim publication, exercised on the refresh path. Both are
-mutating arms with the write witness beside the content manifest, because a byte-identical
-regeneration is invisible to a content hash (A8). A before/after pair showing no write is
-not evidence of regeneration in either arm, and any zero-writer reading requires the
-recorder to be demonstrated on a write that is known to occur — the demonstration is
-performed on arm (i)'s real launch write.
+**A-H6 launch-artifact publication (D14b) — HELD: the RECORD needs correcting before this
+arm can gate anything.** The v3 arm grouped artifact classes with different writers,
+effects and phase owners, and splitting the ARM does not split the RECORD. Four distinct
+write events are in play — launch-script generation, marker CLEAR, marker CREATE (by the
+generated script's own execution), and helper/shim publication — and they differ in writer,
+atomicity and phase owner. Until the ownership record and its manifest/map/assignment are
+corrected by the seat that owns them, this design carries them as separately-attributed
+mutating probes with NO shared claim, and runs none of them. Each, when unblocked, uses the
+write witness beside the content manifest; a before/after pair showing no write is not
+evidence of regeneration, and any zero-write reading requires the recorder demonstrated on
+a write known to occur.
 
-**A-H7 meta-writer fault arm (SC-1301) — writer-shaped cuts, not one shared cut.** The
-three writers do not share a boundary: `start_capture_session_id` (ae:2068-2075) and
-`_cmd_spawn` (ae:11938-11945) APPEND directly to canonical `meta` under `flock 200`, and
-only the typed writer publishes via temp+rename. A hook may block or emit; it may not turn
-a direct append into an atomic publication, which is what a single temp/rename cut would
-have done. So: for the atomic writer, a barrier at temp-complete/pre-rename; for each
-direct-append writer, controller-applied partial canonical-byte states at a barrier, with
-the writer named in every artifact. Each cut carries a can-fail control. One hook-only
-patch over an exact 72c7293 copy, inactive-equivalence proven before any capture.
+**A-H7 meta-writer fault arm (SC-1301) — three writer-shaped cuts, three DIFFERENT evidence
+claims.** The writers do not share a boundary, so neither the cut nor the claim can be
+shared:
+
+- **The atomic writer:** barrier at temp-complete / pre-rename, controller-performed abort.
+  Claim: what a concurrent reader observes across that boundary.
+- **`_cmd_spawn` (ae:11938-11945):** it performs SEVERAL of its own appends, so a hook
+  BETWEEN two of them plus a controller SIGKILL yields a partial logical generation the
+  FROZEN WRITER produced. Claim: an observed partial-generation state, attributed to the
+  product's own writes.
+- **`start_capture_session_id` (ae:2068-2075):** one append, so no such window exists. A
+  controller-created partial line is admissible only as a READER-FAULT RESPONSE probe,
+  labelled that way in every artifact, and is never reported as an observed writer tear.
+  The untouched source writer is captured separately in the same case.
+
+Every controller mutation names the exact writer-shaped bytes it wrote (the intended row's
+prefix; newline present or absent) and carries a can-fail control. One hook-only patch over
+an exact 72c7293 copy; a hook may block or emit and may not convert an append into an
+atomic publication. Inactive equivalence proven before any capture.
+
+**A-H8 long-lived query (SC-211n).** `events-tail` is not a refusal row: it is a long-lived
+query, so refusal semantics do not apply and a generic timeout must never be read as a
+product rc. The arm uses NAMED barriers and controller termination: (i) invoked against a
+session directory whose events file does not yet exist, with the controller CREATING it as
+a named transition that the capture brackets; (ii) a replay capture closed by a named event
+barrier — the controller emits a known event and the capture closes when it appears; (iii)
+a follow capture across a second named event; (iv) a partial final line written in TWO
+steps with a barrier between them, so what the follower emits at each step is captured
+separately; (v) an unknown-argv invocation captured beside the plain one. Termination is
+performed by the controller AFTER the named capture barrier and recorded as a controller
+action — never as an rc, never as a timeout. SC-1306e's snapshot claim is cross-referenced,
+not classified here.
 
 ### SC-211l containment — the one row whose blast radius leaves the sandbox
 
@@ -243,8 +279,14 @@ what its parent cannot. The census therefore enumerates long-lived ROOTS and the
 `AE_HOME`-derived `SESSIONS_DIR`, which is what makes it sound despite the child
 population changing between samples.
 
-**Layer 2 — the census, corroborating.** Run before AND after the measured invocation,
-because a new root can appear mid-arm. Two hazards are designed out rather than filtered:
+**Layer 2 — the census, corroborating.** The chronology is fixed and recorded in the
+ledger: system-root census -> creation of the randomly-named isolated `AE_HOME` and the
+producer launch -> immediate pre-invocation root census -> the measured invocation ->
+immediate post-invocation census. A fixture bridge, if one is started at all, inherits the
+refusing stubs before it starts and appears in the pre-invocation census with its own
+environment captured. A root that both appears and exits between the two immediate censuses
+remains a stated LIMIT, bounded only by the parent-root inheritance argument, which is
+proven for each bridge mode this batch uses. Two hazards are designed out rather than filtered:
 
 - **A census whose own command line contains its search string counts itself.** The
   bracket trick protects `grep` alone, not the other processes in its pipeline. This
@@ -270,17 +312,19 @@ this design's first containment check and is wrong — the bridge POLLS rather t
 the file open, so a single-instant probe returns nothing while a watcher is fully active.
 It could only ever return the reassuring answer.
 
-**What the surface says about delivery — captured, not classified.** `say` prints
-`Sent to Telegram bridge (chat): …` (ae:14485) after appending the event. The arm captures
-that line's bytes with NO in-range watcher, and with the controlled logging-only watcher
-in range, beside the appended event bytes and the watcher's log.
+**What the surface says about delivery — captured, not classified.** The arm captures
+`say`'s own stdout bytes (ae:14485) under an opposed pair — with NO in-range watcher, and
+with the controlled logging-only watcher in range — beside the appended event bytes and the
+watcher's log.
 
 ## Ordering within the batch — dependency order, not consumption order
 
 Batches are sequenced by which phase consumes them; rows inside a batch by what everything
-else depends on. SC-211p (`_lib` name resolution) and SC-211o (identity registration) run
-FIRST — the `send`/`ask` path stands on both — then the argument surface, then dispatch and
-version, then D14b's two arms, then SC-1301.
+else depends on. SC-211p (`_lib` name resolution) runs FIRST — the `send`/`ask` delivery path stands on it.
+SC-211o is NOT a prerequisite for delivery: `_register-sid` owns Codex resume identity, and
+the earlier draft's ordering repeated the API conflation in prose. It runs with the
+argument surface. Then dispatch and version, then D14b's probes once its record is
+corrected, then SC-1301.
 
 ## Lanes and environment
 
@@ -309,7 +353,20 @@ without it.
 - **SC-1301.** The interesting window for the atomic writer is between temp-complete and
   rename; for the direct-append writers there is no such window, and the question is what
   a reader observes mid-append.
-- **D14b.** The two arms exist because a byte-identical regeneration and no write at all
-  are indistinguishable to a content hash.
+- **Leg 4.** Which helpers have a silent non-refusal path is an answer label; the brief
+  needs only that the canary is controller-generated.
 - **SC-012b/SC-014.** The three help spellings and the three version spellings are
   captured separately so that any divergence between them is observable.
+- **SC-211b / SC-211i.** That `goal <two words>` reaches the set branch and that the arity
+  guard belongs to `--clear` are answer labels; the brief carries input classes only.
+- **SC-211p.** The `%*` branch's unconditional `return 0` (ae:12885-12901) is the answer
+  label that motivates observing `_lib` directly.
+- **SC-211o.** The selection ORDER and what the helper writes are answer labels; the brief
+  varies the facts and captures the artifact.
+- **D14b.** The writer attributions — `write_launch_script`'s single call site (ae:12602),
+  the clear-vs-create split, the helper/shim path (ae:8610, ae:17631-17632) — are
+  source-derived ownership findings, reported to the record's owner.
+- **SC-1301.** Which writer appends and which publishes atomically is a source-derived
+  ownership reading; the brief carries the cut shapes and the evidence labels.
+- **SC-211l.** The exact text `say` prints, and that it prints it before any forwarding has
+  occurred, are the answer labels.
