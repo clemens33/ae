@@ -1866,8 +1866,11 @@ non-UTF-8 locale, and ae parses TAB-framed tmux formats at seven sites (ae:3631,
 live agents render alive:false, the rollup reports attn:dead, status reports no
 panes. Distinct from the harness lesson (baselines pin UTF-8); the C-locale failure
 is the product's own (colead dissent, adopted). Authority: AGENTS.md TSV-framing +
-interpreted-sinks direction (ruling). Empirical: observed(A1 incident isolation,
-cexec 2026-08-20; the dedicated C-vs-UTF-8 negative arm rides F-PLATFORM).
+interpreted-sinks direction (ruling). Empirical: observed(committed artifacts @605cbb6
+— batch-c-artifacts/MANIFEST.md "Correction" section (the four-way isolation matrix);
+per-case arms/A1/*/env-tab-selfcheck.txt UTF-8/C paired probes; the 405k paired
+consumer battery consumers.s0-baseline vs consumers.s0-baseline-clocale on one
+unchanged topology. The dedicated C-vs-UTF-8 negative arm still rides F-PLATFORM).
 Conflict: fix-known-defect(#95, intended: locale-independent tmux-format reads —
 guaranteed encoding or an unsanitisable separator). **classified_by: both seats,
 2026-08-20 (dissent adopted as the ruling).**
