@@ -26,6 +26,7 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 |---|---|---|
 | `_harness/hlib.sh` | `b2cf84dd1990c01fdbfc9512c00834d10543d4745ed6a2dc2ad6c134ea27455d` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
+| `_harness/arm-h3.sh` | `6c5c7fc06eadff0360cb7411a4e26bbf584d75df199d51e3612cf9cc06e7277b` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h5.sh` | `8796a1023a4dd211732cb8e0e95e183543908861defa1552d1de2622dba00921` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h4.sh` | `5944b88c92acd4752addffabe9705ab087ff6c430bed0ea1d0bf6d8040693009` | 2026-08-20T21:51:16Z |
 
@@ -60,6 +61,21 @@ claim this arm cannot make about its candidates and should not appear to.
 
 - new sha256: `f71e06aea76925ad10e036ad1830afb4a618324d10486e28be1e44602a7e09d4`
 - post-capture reporting only; reads the committed captures and records no observation.
+
+### A11 — A-H3's scope and its per-group sandboxes, declared before the run
+
+- SC-211l (`say`) is NOT in A-H3. It runs under its own containment section, and putting
+  it here would mean invoking a surface whose effect can leave the machine before the
+  containment that governs it exists.
+- Each helper group gets its OWN launched sandbox. A-H4 taught this the expensive way: a
+  manipulation made for one case destroyed another case's precondition. Cases inside a
+  group run in the listed order and some of them mutate — `spawn` adds an agent, `retire`
+  removes one, `state`/`goal`/`memo` write — so the order is part of each group's fixture
+  and is recorded in every ledger.
+- Four cases need a controller manipulation the input class itself names: an unreadable
+  `meta` (mode 000), an emptied `meta`, a malformed `config`, and a pane respawned as a
+  plain shell. Each is applied immediately before its case and reverted immediately after
+  where the group continues.
 
 ## Frozen source
 
