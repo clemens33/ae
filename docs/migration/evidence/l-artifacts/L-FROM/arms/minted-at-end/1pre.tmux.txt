@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-FROM/minted-at-end/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|leg|2|0|1787249340
+## windows
+leg|@0|0|leg|1
+leg|@1|99|ae-monitor|2
+## panes
+leg|@0|%0|72117|claude|claude:claude|main|0
+leg|@1|%2|72866|bash|_watchdog||0
+leg|@1|%1|72812|bash|_events||0
+## clients

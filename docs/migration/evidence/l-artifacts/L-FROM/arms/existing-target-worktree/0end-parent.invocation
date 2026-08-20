@@ -1,0 +1,20 @@
+cwd: /tmp/aelx/L-FROM/existing-target-worktree/w
+argv:
+  /tmp/aelx/L-FROM/existing-target-worktree/b/ae
+  end
+  -f
+  par
+env:
+  HOME=/tmp/aelx/L-FROM/existing-target-worktree/h
+  AE_HOME=/tmp/aelx/L-FROM/existing-target-worktree/h/.ae
+  TMPDIR=/tmp/aelx/L-FROM/existing-target-worktree/tp
+  TMUX_TMPDIR=/tmp/aelx/L-FROM/existing-target-worktree/t
+  PATH=/tmp/aelx/L-FROM/existing-target-worktree/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-FROM/existing-target-worktree/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-FROM/existing-target-worktree/cap/tmux-argv.log

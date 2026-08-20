@@ -1,0 +1,9 @@
+# manifest-root	/tmp/aelx/L-FROM/lineage-durability-stop-resume/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+a3f54fee-fcf3-481c-a312-16648ad893f5	dir	700	7	224	-	-
+a3f54fee-fcf3-481c-a312-16648ad893f5/digest.md	file	600	1	1310	-	d04d3b680aeeb18d5d7bef2a5ed95d274240168e6c79ace8290f9610ecf56bd7
+a3f54fee-fcf3-481c-a312-16648ad893f5/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+a3f54fee-fcf3-481c-a312-16648ad893f5/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+a3f54fee-fcf3-481c-a312-16648ad893f5/messages	dir	700	2	64	-	-
+a3f54fee-fcf3-481c-a312-16648ad893f5/meta	file	600	1	663	-	0d43e1ec6604ff6cf930b4500dc2e526007fc60f96c17a0ee59fcc5b64503027

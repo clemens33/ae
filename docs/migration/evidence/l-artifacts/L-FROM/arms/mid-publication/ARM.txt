@@ -1,0 +1,9 @@
+arm	mid-publication
+section	L-FROM
+roster_ids	SC-824b
+construction	a claim for the parent archive's own uuid is planted under the archive root, then --from runs against that parent
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+parent_uuid	2814388f-602c-42e5-85da-9920f1e8e1aa
+op	ae --local child --from 2814388f-602c-42e5-85da-9920f1e8e1aa
+op_rc	1

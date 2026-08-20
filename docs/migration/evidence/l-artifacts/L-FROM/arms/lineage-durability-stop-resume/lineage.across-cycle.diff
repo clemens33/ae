@@ -1,0 +1,37 @@
+--- /tmp/aelx/L-FROM/lineage-durability-stop-resume/cap/lineage.1after-from.txt	2026-08-20 20:11:43
++++ /tmp/aelx/L-FROM/lineage-durability-stop-resume/cap/lineage.3after-resume.txt	2026-08-20 20:11:51
+@@ -1,10 +1,10 @@
+-# lineage fields BY EXACT KEY from /tmp/aelx/L-FROM/lineage-durability-stop-resume/h/.ae/sessions/child/meta
++# lineage fields BY EXACT KEY after the resume, from /tmp/aelx/L-FROM/lineage-durability-stop-resume/h/.ae/sessions/child/meta
+ 2:origin=/private/tmp/aelx/L-FROM/lineage-durability-stop-resume/w
+ 3:session=child
+ 4:session_id=2a5b0aa6-a0cf-46a7-a80d-776f1aebf230
+-15:parent_archive_id=a3f54fee-fcf3-481c-a312-16648ad893f5
+-16:parent_archive_handover_count=0
+-17:parent_archive_pending_count=0
++16:parent_archive_id=a3f54fee-fcf3-481c-a312-16648ad893f5
++17:parent_archive_handover_count=0
++18:parent_archive_pending_count=0
+ 
+ # the whole meta, verbatim
+ mode=local
+@@ -21,11 +21,18 @@
+ tmux_server_kind=socket
+ agent.main=claude:claude:fc1cd8af-9bda-42b2-9fc6-fda15d042566
+ agent_bin.main=claude
++watchdog=true
+ parent_archive_id=a3f54fee-fcf3-481c-a312-16648ad893f5
+ parent_archive_handover_count=0
+ parent_archive_pending_count=0
+-watchdog=true
+ 
++# od of the parent_archive_id line
++0000000    p   a   r   e   n   t   _   a   r   c   h   i   v   e   _   i
++0000020    d   =   a   3   f   5   4   f   e   e   -   f   c   f   3   -
++0000040    4   8   1   c   -   a   3   1   2   -   1   6   6   4   8   a
++0000060    d   8   9   3   f   5  \n                                    
++0000067
++
+ # workspace.md lineage lines
+ 4:Origin: /private/tmp/aelx/L-FROM/lineage-durability-stop-resume/w
+ 5:Directory: /private/tmp/aelx/L-FROM/lineage-durability-stop-resume/w

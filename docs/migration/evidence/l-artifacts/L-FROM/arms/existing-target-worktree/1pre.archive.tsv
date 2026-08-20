@@ -1,0 +1,9 @@
+# manifest-root	/tmp/aelx/L-FROM/existing-target-worktree/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+fac9d7c4-f884-4887-90cc-4b3e0247a10d	dir	700	7	224	-	-
+fac9d7c4-f884-4887-90cc-4b3e0247a10d/digest.md	file	600	1	1304	-	4a322798859b750d94313ee440accf51e1b47adeca4181d28127892501351598
+fac9d7c4-f884-4887-90cc-4b3e0247a10d/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+fac9d7c4-f884-4887-90cc-4b3e0247a10d/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+fac9d7c4-f884-4887-90cc-4b3e0247a10d/messages	dir	700	2	64	-	-
+fac9d7c4-f884-4887-90cc-4b3e0247a10d/meta	file	600	1	657	-	4ab08170ca63177c7d70f1ab1fbe62341c4d4dd1144b1721181b0a5cfd926182

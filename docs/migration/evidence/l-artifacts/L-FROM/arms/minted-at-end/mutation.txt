@@ -1,0 +1,4 @@
+mutation	the session_id KEY is REMOVED entirely from a real live session meta (legacy shape), temp + chmod-to-original-mode + rename
+distinct_from	SC-819 unparseable class, where the key is PRESENT and its value is unparseable
+mode.before	644
+mode.after	644

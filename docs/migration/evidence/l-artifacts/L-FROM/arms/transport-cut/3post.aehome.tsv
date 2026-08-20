@@ -1,0 +1,8 @@
+# manifest-root	/tmp/aelx/L-FROM/transport-cut/h/.ae
+#path	type	mode	nlink	size	link	sha256
+.	dir	755	5	160	-	-
+archive	dir	700	2	64	-	-
+config	file	644	1	180	-	bbf4c91bf78e1dcee5f63443d0b945c2bacdfb84ba8bc1fab36d388e3a6dd852
+sessions	dir	755	4	128	-	-
+sessions/.lifecycle.child.lock	file	644	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+sessions/.lifecycle.par.lock	file	644	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

@@ -1,0 +1,2 @@
+construction	ONE named mutation makes the real parent archive fail validation: the archive meta handover_count is set to 99 so meta and digest disagree, temp + chmod-to-original-mode + rename
+mode.preserved	yes

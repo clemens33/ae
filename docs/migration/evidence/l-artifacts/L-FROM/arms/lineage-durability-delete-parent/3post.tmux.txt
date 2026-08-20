@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|child|2|0|1787249563
+## windows
+child|@0|0|child|1
+child|@1|99|ae-monitor|2
+## panes
+child|@0|%0|24108|claude|claude:claude|main|0
+child|@1|%2|24497|bash|_watchdog||0
+child|@1|%1|24448|bash|_events||0
+## clients

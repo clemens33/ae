@@ -1,0 +1,9 @@
+arm	name-never-infers
+section	L-FROM
+roster_ids	SC-809
+construction	a real parent archive is produced by a real end of a session named 'same'; a NEW session is then launched under that SAME name WITHOUT --from
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+parent_uuid	c83db248-e951-426a-885e-0ed8989285ff
+op	ae --local same (no --from)
+op_rc	1

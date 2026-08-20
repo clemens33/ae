@@ -1,0 +1,1 @@
+construction	a .publishing.<parent-uuid> claim directory (mode 0700) is planted on the PARENT under the archive root, then --from runs against that parent

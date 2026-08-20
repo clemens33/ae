@@ -1,0 +1,21 @@
+cwd: /tmp/aelx/L-FROM/existing-target-stopped/w
+argv:
+  /tmp/aelx/L-FROM/existing-target-stopped/b/ae
+  --local
+  tgt
+  --from
+  2a5164ee-5475-4b9b-abd8-e92be056e17e
+env:
+  HOME=/tmp/aelx/L-FROM/existing-target-stopped/h
+  AE_HOME=/tmp/aelx/L-FROM/existing-target-stopped/h/.ae
+  TMPDIR=/tmp/aelx/L-FROM/existing-target-stopped/tp
+  TMUX_TMPDIR=/tmp/aelx/L-FROM/existing-target-stopped/t
+  PATH=/tmp/aelx/L-FROM/existing-target-stopped/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-FROM/existing-target-stopped/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-FROM/existing-target-stopped/cap/tmux-argv.log

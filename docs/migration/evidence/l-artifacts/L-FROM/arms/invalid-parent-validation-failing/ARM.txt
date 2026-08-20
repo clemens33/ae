@@ -1,0 +1,10 @@
+arm	invalid-parent-validation-failing
+section	L-FROM
+roster_ids	SC-823
+construction	--from names a real archive made to fail validation by ONE named mutation; after it, a FULL sweep of session dirs, worktrees, tmux sessions, the archive root, AE_HOME and the work dir is taken and diffed against the same sweep taken before
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+shape	validation-failing
+from_id	35ae42c1-2251-4ba6-9f3e-7d79cbe04243
+op	ae --local child --from 35ae42c1-2251-4ba6-9f3e-7d79cbe04243
+op_rc	1

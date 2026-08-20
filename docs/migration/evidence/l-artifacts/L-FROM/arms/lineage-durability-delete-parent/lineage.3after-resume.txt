@@ -1,0 +1,74 @@
+# lineage fields BY EXACT KEY after the resume, from /tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/meta
+2:origin=/private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w
+3:session=child
+4:session_id=e1145f8a-6a91-4720-ab95-f6d5ffe0ce4e
+16:parent_archive_id=2a3a6787-1ddf-47ce-9904-2c8b9ebb7b0f
+17:parent_archive_handover_count=0
+18:parent_archive_pending_count=0
+
+# the whole meta, verbatim
+mode=local
+origin=/private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w
+session=child
+session_id=e1145f8a-6a91-4720-ab95-f6d5ffe0ce4e
+work_dir=/private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w
+layout=vertical
+config=/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-FROM/lineage-durability-delete-parent/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:8e05e644-d39f-4393-81c2-5bca2aad7a1c
+agent_bin.main=claude
+watchdog=true
+parent_archive_id=2a3a6787-1ddf-47ce-9904-2c8b9ebb7b0f
+parent_archive_handover_count=0
+parent_archive_pending_count=0
+
+# od of the parent_archive_id line
+0000000    p   a   r   e   n   t   _   a   r   c   h   i   v   e   _   i
+0000020    d   =   2   a   3   a   6   7   8   7   -   1   d   d   f   -
+0000040    4   7   c   e   -   9   9   0   4   -   2   c   8   b   9   e
+0000060    b   b   7   b   0   f  \n                                    
+0000067
+
+# workspace.md lineage lines
+4:Origin: /private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w
+5:Directory: /private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w
+10:## Parent archive
+13:- Digest: /tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/archive/2a3a6787-1ddf-47ce-9904-2c8b9ebb7b0f/digest.md
+17:- NOTE: that digest is no longer on this machine — the archive was removed after this session was created.
+29:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/send "<agent_name>" "your message"
+34:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/ask <agent_name> "your question"
+39:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/review <agent_name> "review request"
+44:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/reply <request_id> "your reply"
+49:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/requests
+50:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/requests inbox
+55:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/state working "starting on X"
+56:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/state waiting-user "need clarification on Y"
+57:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/state blocked "waiting for codex review on req-Z"   # reason required
+58:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/state done "shipped X"
+59:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/state                                                # print current state
+66:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/memo add "important shared fact"
+67:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/memo add --topic arch "we chose SQLite over Postgres"
+68:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/memo read
+69:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/memo read --topic arch
+70:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/memo tail 5
+73:Memo entries are append-only and stored in `/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/memo.tsv`. Use memo for durable shared context, not full chat transcripts.
+77:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/goal                       # show the current session goal
+78:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/goal "ship the PR for X"   # set it
+79:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/goal --clear               # remove it
+84:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/send "<their_agent_name>" "your reply"
+94:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/say "done — the menu is live, tested end to end"
+95:echo "a longer, multi-line reply" | /tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/say   # stdin for long text
+105:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/peek <agent_name> [lines]
+108:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/peak <agent_name> [lines]
+117:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/agents
+124:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/focus <agent_name>
+131:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/interrupt <agent_name> [message]
+141:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/spawn <alias>:<name> [prompt]
+194:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/retire <agent_name|pane_id>
+203:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/peek @other-session:claude:lead 20
+204:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/send @other-session:codex:reviewer "check the API"
+209:/tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/agents --all

@@ -1,0 +1,24 @@
+# lineage fields BY EXACT KEY from /tmp/aelx/L-FROM/name-never-infers/h/.ae/sessions/same/meta
+2:origin=/private/tmp/aelx/L-FROM/name-never-infers/w
+3:session=same
+4:session_id=3879f64c-8831-41da-8ed9-27e3297f8d04
+
+# the whole meta, verbatim
+mode=local
+origin=/private/tmp/aelx/L-FROM/name-never-infers/w
+session=same
+session_id=3879f64c-8831-41da-8ed9-27e3297f8d04
+work_dir=/private/tmp/aelx/L-FROM/name-never-infers/w
+layout=vertical
+config=/tmp/aelx/L-FROM/name-never-infers/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-FROM/name-never-infers/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-FROM/name-never-infers/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:3b84d588-5f2a-4bec-85d2-0b2787e1e347
+agent_bin.main=claude
+watchdog=true
+
+# workspace.md lineage lines
+(no matching line)

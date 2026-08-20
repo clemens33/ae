@@ -1,0 +1,10 @@
+arm	existing-target-worktree
+section	L-FROM
+roster_ids	SC-822
+construction	--from a real parent archive onto a name that already exists as worktree; full before/after manifests and a full sweep are captured on both sides
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+shape	worktree
+parent_uuid	fac9d7c4-f884-4887-90cc-4b3e0247a10d
+op	ae --local tgt --from fac9d7c4-f884-4887-90cc-4b3e0247a10d
+op_rc	1

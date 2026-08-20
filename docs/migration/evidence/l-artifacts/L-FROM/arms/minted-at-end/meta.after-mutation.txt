@@ -1,0 +1,14 @@
+mode=local
+origin=/private/tmp/aelx/L-FROM/minted-at-end/w
+session=leg
+work_dir=/private/tmp/aelx/L-FROM/minted-at-end/w
+layout=vertical
+config=/tmp/aelx/L-FROM/minted-at-end/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-FROM/minted-at-end/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-FROM/minted-at-end/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:2a350523-38a1-4fe4-a6e3-0e49580aa8ad
+agent_bin.main=claude
+watchdog=true

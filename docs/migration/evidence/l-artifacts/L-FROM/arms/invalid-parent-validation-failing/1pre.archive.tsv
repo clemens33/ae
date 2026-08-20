@@ -1,0 +1,9 @@
+# manifest-root	/tmp/aelx/L-FROM/invalid-parent-validation-failing/h/.ae/archive
+#path	type	mode	nlink	size	link	sha256
+.	dir	700	3	96	-	-
+35ae42c1-2251-4ba6-9f3e-7d79cbe04243	dir	700	7	224	-	-
+35ae42c1-2251-4ba6-9f3e-7d79cbe04243/digest.md	file	600	1	1313	-	ea08fd1a16a33cb68efe6523a68cf35a48f4cf6f6ba19adc8cf090f83b6e2df0
+35ae42c1-2251-4ba6-9f3e-7d79cbe04243/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+35ae42c1-2251-4ba6-9f3e-7d79cbe04243/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+35ae42c1-2251-4ba6-9f3e-7d79cbe04243/messages	dir	700	2	64	-	-
+35ae42c1-2251-4ba6-9f3e-7d79cbe04243/meta	file	600	1	667	-	e0b9cb4df20d7bda17cfd792d5a9f55c9ec77bfafd8cb1c9550c58e5d1fa2037

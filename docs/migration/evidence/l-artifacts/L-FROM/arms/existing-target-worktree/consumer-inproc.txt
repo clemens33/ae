@@ -1,0 +1,13 @@
+source	frozen 72c7293 ae, awk-extracted _ae_install_tmux_shim
+extract.sha256	b1f2b50dacde41281aad28cead1cf5965285327f80d2e98d7958d179481443ca
+meta.tmux_server	/private/tmp/aelx/L-FROM/existing-target-worktree/t/tmux-501/default
+meta.tmux_server_kind	socket
+--- reconstruction under those values ---
+declare -F tmux	tmux
+type tmux	tmux is a function|tmux () |{ |    command tmux -S "$AE_TMUX_SERVER" "$@"|}|
+AE_TMUX_SERVER	/private/tmp/aelx/L-FROM/existing-target-worktree/t/tmux-501/default
+AE_TMUX_SERVER_KIND	socket
+tmux () 
+{ 
+    command tmux -S "$AE_TMUX_SERVER" "$@"
+}

@@ -1,0 +1,10 @@
+--- /tmp/aelx/L-FROM/minted-at-end/cap/meta.before-mutation.txt	2026-08-20 20:09:02
++++ /tmp/aelx/L-FROM/minted-at-end/cap/meta.after-mutation.txt	2026-08-20 20:09:05
+@@ -1,7 +1,6 @@
+ mode=local
+ origin=/private/tmp/aelx/L-FROM/minted-at-end/w
+ session=leg
+-session_id=10170e36-32ff-445c-850a-69e602789f86
+ work_dir=/private/tmp/aelx/L-FROM/minted-at-end/w
+ layout=vertical
+ config=/tmp/aelx/L-FROM/minted-at-end/h/.ae/config

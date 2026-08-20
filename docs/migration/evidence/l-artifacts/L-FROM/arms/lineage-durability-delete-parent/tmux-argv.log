@@ -1,0 +1,246 @@
+pid=19041 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <par>
+pid=19073 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <par> <-c> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w>
+pid=19077 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <par> <-u> <CLAUDECODE>
+pid=19079 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <par> <-u> <CLAUDE_CODE_SESSION>
+pid=19080 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <par> <AE_SESSION> <1>
+pid=19081 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <par> <AE_ORIGIN> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w>
+pid=19082 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <par> <AE_DIR> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w>
+pid=19083 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <par> <AE_MODE> <local>
+pid=19084 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <par> <AE_HOME> </tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae>
+pid=19085 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <par> <mouse> <on>
+pid=19086 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <par> <focus-events> <on>
+pid=19087 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <par> <history-limit> <50000>
+pid=19088 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <par> <pane-border-status> <top>
+pid=19089 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <par> <pane-border-format> < #{@ae_agent} >
+pid=19090 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <par>
+pid=19092 ppid=19091 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=19101 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae par] >
+pid=19102 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=19103 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…FROM/lineage-durability-delete-parent/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=19104 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=19105 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=19106 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=19108 ppid=19107 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=19109 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=19110 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=19111 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=19112 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=19113 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <par> <automatic-rename> <off>
+pid=19115 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <par> <par>
+pid=19116 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <par> <-p> <#{pane_id}>
+pid=19117 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:claude:claude>
+pid=19118 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <claude:claude>
+pid=19119 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=19137 ppid=19136 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=19226 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <par> <-F> <#{pane_id}	#{@ae_agent}>
+pid=19248 ppid=19247 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <par> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=19363 ppid=19362 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=19377 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-18946-%0> <->
+pid=19398 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-18946-%0> <-t> <%0>
+pid=19637 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=19671 ppid=19670 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=19818 ppid=19816 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <par> <-F> <#{pane_id} #{@ae_agent}>
+pid=19832 ppid=19831 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <new-window> <-d> <-t> <par:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/par/events-tail>
+pid=19840 ppid=19687 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=19843 ppid=19687 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=19845 ppid=19687 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-window-option> <-t> <par:ae-monitor> <pane-border-status> <top>
+pid=19846 ppid=19687 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=19882 ppid=19880 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <par> <-F> <#{pane_id} #{@ae_agent}>
+pid=19888 ppid=19886 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <par> <-F> <#{pane_id} #{@ae_agent}>
+pid=19893 ppid=19891 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <par> <-F> <#{pane_id} #{@ae_agent}>
+pid=19895 ppid=19894 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/par/watchdog _run>
+pid=19897 ppid=19853 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=19898 ppid=19853 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=19907 ppid=19853 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <select-pane> <-t> <%2> <-d>
+pid=19932 ppid=19930 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F>pid=19933 ppid=18946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <#{session_id} #{session_name}>
+ <select-pane> <-t> <%0>
+pid=18946 ppid=18895 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session> <-t> <par>
+pid=19934 ppid=19896 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=19948 ppid=19946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=19949 ppid=19936 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=19957 ppid=19955 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=19958 ppid=19896 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=19959 ppid=19896 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <has-session> <-t> <par>
+pid=19965 ppid=19896 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <par> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=19967 ppid=19966 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=19970 ppid=19969 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=20002 ppid=20000 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=20004 ppid=19896 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=20021 ppid=20016 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=20024 ppid=20005 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=20034 ppid=20032 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=20035 ppid=19896 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=20046 ppid=20044 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=20047 ppid=19896 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <claude●>
+pid=20052 ppid=20051 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <par> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=20054 ppid=19896 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=20055 ppid=19896 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=20664 ppid=20655 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=20683 ppid=20674 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=20694 ppid=20685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <show-environment> <-t> <$0> <AE_MODE>
+pid=20705 ppid=20696 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <show-environment> <-t> <$0> <AE_ORIGIN>
+pid=20717 ppid=20708 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=20728 ppid=20719 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <show-environment> <-t> <$0> <AE_DIR>
+pid=20752 ppid=20646 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <kill-session> <-t> <$0>
+pid=20766 ppid=20755 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S>pid=20769 ppid=20767 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-S> <-F> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <#{session_name}> <list-sessions>
+ <-F> <#{session_id} #{session_name}>
+pid=21123 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <child>
+pid=21124 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <child>
+pid=21142 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <child> <-c> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w>
+pid=21147 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <-u> <CLAUDECODE>
+pid=21149 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <-u> <CLAUDE_CODE_SESSION>
+pid=21150 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <AE_SESSION> <1>
+pid=21151 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <AE_ORIGIN> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w>
+pid=21152 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <AE_DIR> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w>
+pid=21153 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <AE_MODE> <local>
+pid=21154 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <AE_HOME> </tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae>
+pid=21155 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <child> <mouse> <on>
+pid=21156 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <child> <focus-events> <on>
+pid=21157 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <child> <history-limit> <50000>
+pid=21158 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <child> <pane-border-status> <top>
+pid=21159 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <child> <pane-border-format> < #{@ae_agent} >
+pid=21160 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <child>
+pid=21162 ppid=21161 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=21176 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae child] >
+pid=21186 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=21187 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…FROM/lineage-durability-delete-parent/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=21188 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=21189 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=21190 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=21192 ppid=21191 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=21193 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=21194 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=21195 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=21196 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=21197 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <child> <automatic-rename> <off>
+pid=21199 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <child> <child>
+pid=21200 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <child> <-p> <#{pane_id}>
+pid=21201 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:claude:claude>
+pid=21202 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <claude:claude>
+pid=21203 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=21222 ppid=21221 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=21598 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <child> <-F> <#{pane_id}	#{@ae_agent}>
+pid=21655 ppid=21653 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=21798 ppid=21797 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=21800 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-21061-%0> <->
+pid=21801 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-21061-%0> <-t> <%0>
+pid=21803 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=21820 ppid=21819 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=21853 ppid=21851 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id} #{@ae_agent}>
+pid=21855 ppid=21854 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <new-window> <-d> <-t> <child:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/events-tail>
+pid=21857 ppid=21826 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=21859 ppid=21826 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=21869 ppid=21826 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-window-option> <-t> <child:ae-monitor> <pane-border-status> <top>
+pid=21881 ppid=21826 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=21980 ppid=21977 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id} #{@ae_agent}>
+pid=22120 ppid=22118 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id} #{@ae_agent}>
+pid=22137 ppid=22134 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id} #{@ae_agent}>
+pid=22151 ppid=22148 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/watchdog _run>
+pid=22162 ppid=21912 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=22173 ppid=21912 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=22196 ppid=21912 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <select-pane> <-t> <%2> <-d>
+pid=22218 ppid=22215 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=22229 ppid=21061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%0>
+pid=22232 ppid=22160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=21061 ppid=18895 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session> <-t> <child>
+pid=22262 ppid=22260 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=22281 ppid=22239 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=22289 ppid=22287 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=22290 ppid=22160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=22291 ppid=22160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <has-session> <-t> <child>
+pid=22297 ppid=22160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=22304 ppid=22303 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=22316 ppid=22315 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=22355 ppid=22353 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=22356 ppid=22160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=22370 ppid=22368 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=22371 ppid=22357 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=22379 ppid=22377 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=22380 ppid=22160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=22391 ppid=22389 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=22392 ppid=22160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <claude●>
+pid=22397 ppid=22396 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=22399 ppid=22160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=22400 ppid=22160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=23573 ppid=23564 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=23590 ppid=23553 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <kill-session> <-t> <$0>
+pid=23612 ppid=23610 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=23608 ppid=23595 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=24083 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <child>
+pid=24105 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <child> <-c> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w>
+pid=24109 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <-u> <CLAUDECODE>
+pid=24111 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <-u> <CLAUDE_CODE_SESSION>
+pid=24112 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <AE_SESSION> <1>
+pid=24113 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <AE_ORIGIN> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w>
+pid=24114 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <AE_DIR> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/w>
+pid=24115 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <AE_MODE> <local>
+pid=24116 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <child> <AE_HOME> </tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae>
+pid=24117 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <child> <mouse> <on>
+pid=24118 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <child> <focus-events> <on>
+pid=24119 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <child> <history-limit> <50000>
+pid=24120 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <child> <pane-border-status> <top>
+pid=24121 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <child> <pane-border-format> < #{@ae_agent} >
+pid=24122 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <child>
+pid=24124 ppid=24123 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=24133 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae child] >
+pid=24134 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=24135 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…FROM/lineage-durability-delete-parent/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=24136 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=24137 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=24138 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=24140 ppid=24139 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=24141 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=24142 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=24143 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=24145 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=24146 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <child> <automatic-rename> <off>
+pid=24148 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <child> <child>
+pid=24149 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <child> <-p> <#{pane_id}>
+pid=24150 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:claude:claude>
+pid=24151 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <claude:claude>
+pid=24152 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=24200 ppid=24199 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=24286 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <child> <-F> <#{pane_id}	#{@ae_agent}>
+pid=24316 ppid=24315 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=24385 ppid=24384 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=24387 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-24082-%0> <->
+pid=24388 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-24082-%0> <-t> <%0>
+pid=24390 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=24412 ppid=24411 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=24445 ppid=24443 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id} #{@ae_agent}>
+pid=24447 ppid=24446 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <new-window> <-d> <-t> <child:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/events-tail>
+pid=24449 ppid=24418 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=24450 ppid=24418 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=24451 ppid=24418 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-window-option> <-t> <child:ae-monitor> <pane-border-status> <top>
+pid=24452 ppid=24418 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=24481 ppid=24479 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id} #{@ae_agent}>
+pid=24486 ppid=24484 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id} #{@ae_agent}>
+pid=24494 ppid=24492 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id} #{@ae_agent}>
+pid=24496 ppid=24495 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-FROM/lineage-durability-delete-parent/h/.ae/sessions/child/watchdog _run>
+pid=24498 ppid=24454 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=24499 ppid=24454 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=24508 ppid=24454 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <select-pane> <-t> <%2> <-d>
+pid=24530 ppid=24082 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%0>
+pid=24535 ppid=24533 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=24082 ppid=18895 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session> <-t> <child>
+pid=24536 ppid=24497 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=24550 ppid=24548 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=24551 ppid=24538 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=24559 ppid=24557 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=24560 ppid=24497 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=24561 ppid=24497 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <has-session> <-t> <child>
+pid=24567 ppid=24497 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=24569 ppid=24568 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=24572 ppid=24571 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=24610 ppid=24608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=24611 ppid=24497 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=24624 ppid=24622 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=24625 ppid=24612 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=24633 ppid=24631 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=24634 ppid=24497 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=24645 ppid=24643 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=24646 ppid=24497 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <claude●>
+pid=24651 ppid=24650 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-panes> <-s> <-t> <child> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=24653 ppid=24497 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=24654 ppid=24497 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=26246 ppid=26244 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-FROM/lineage-durability-delete-parent/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

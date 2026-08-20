@@ -1,0 +1,28 @@
+## session dirs
+.
+..
+.lifecycle.par.lock
+
+## worktree dirs
+ls: /tmp/aelx/L-FROM/invalid-parent-validation-failing/h/.ae/worktrees: No such file or directory
+
+## archive dirs
+.
+..
+35ae42c1-2251-4ba6-9f3e-7d79cbe04243
+
+## tmux sessions
+no server running on /tmp/aelx/L-FROM/invalid-parent-validation-failing/t/tmux-501/default
+
+## AE_HOME top level
+.
+..
+archive
+config
+sessions
+
+## work dir
+.
+..
+.git
+README.md

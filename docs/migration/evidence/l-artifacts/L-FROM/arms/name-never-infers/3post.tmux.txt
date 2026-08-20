@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-FROM/name-never-infers/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|same|2|0|1787249226
+## windows
+same|@0|0|same|1
+same|@1|99|ae-monitor|2
+## panes
+same|@0|%0|42978|claude|claude:claude|main|0
+same|@1|%2|43827|bash|_watchdog||0
+same|@1|%1|43773|bash|_events||0
+## clients

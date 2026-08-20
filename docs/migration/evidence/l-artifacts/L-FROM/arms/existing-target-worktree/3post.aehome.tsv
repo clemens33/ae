@@ -1,0 +1,18 @@
+# manifest-root	/tmp/aelx/L-FROM/existing-target-worktree/h/.ae
+#path	type	mode	nlink	size	link	sha256
+.	dir	755	6	192	-	-
+archive	dir	700	3	96	-	-
+archive/fac9d7c4-f884-4887-90cc-4b3e0247a10d	dir	700	7	224	-	-
+archive/fac9d7c4-f884-4887-90cc-4b3e0247a10d/digest.md	file	600	1	1304	-	4a322798859b750d94313ee440accf51e1b47adeca4181d28127892501351598
+archive/fac9d7c4-f884-4887-90cc-4b3e0247a10d/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+archive/fac9d7c4-f884-4887-90cc-4b3e0247a10d/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+archive/fac9d7c4-f884-4887-90cc-4b3e0247a10d/messages	dir	700	2	64	-	-
+archive/fac9d7c4-f884-4887-90cc-4b3e0247a10d/meta	file	600	1	657	-	4ab08170ca63177c7d70f1ab1fbe62341c4d4dd1144b1721181b0a5cfd926182
+config	file	644	1	202	-	b652c090e5c5ca66b2ab50ac77237a90a16940a7ecd24b72ce828363c494ee16
+sessions	dir	755	4	128	-	-
+sessions/.lifecycle.par.lock	file	644	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+sessions/.lifecycle.tgt.lock	file	644	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+worktrees	dir	755	3	96	-	-
+worktrees/tgt	dir	755	4	128	-	-
+worktrees/tgt/.git	file	644	1	79	-	4c8d1889cff87cdb803eed4feff3d41a9d59ebee22649f1fa8ec6f8c5e7c2c17
+worktrees/tgt/README.md	file	644	1	5	-	4a6689419b00b11700c9b6246bcfa8936c8f5e1e824db3a7e57030e2d1c1a684

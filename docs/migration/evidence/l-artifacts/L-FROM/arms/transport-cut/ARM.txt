@@ -1,0 +1,13 @@
+arm	transport-cut
+section	L-FROM
+roster_ids	SC-824a
+construction	the PLAIN launch path: ae --local child --from <parent>. An instrumented barrier sits immediately after the launch parses its FIRST parent proof; the controller deletes the parent archive there and releases, and the launch resumes
+hook_patch_version	L-HOOKS-v3
+binary.sha256	b1b07709b01a66f7467333a151e641d2139b6950e58ca4cd53b47aa020afdfdd
+barrier	b_from_proved
+parent_uuid	22685cdf-baa8-48ae-b493-bbe00cbb7a01
+op	ae --local child --from 22685cdf-baa8-48ae-b493-bbe00cbb7a01
+op_rc	1
+source_trace	source-trace.parent-archive-reads-after-the-barrier.txt (every frozen line after the first proof that names the parent archive, with line numbers, plus _ar_from_preflight in full)
+ref_only	SC-808 re-proof surface is L-END compact-relaunch-lock-parent-mutated; it is REFERENCED here and NOT re-executed. This path carries no re-proof expectation and no rollback machinery of its own
+barrier_bound_sec	300

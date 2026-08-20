@@ -1,0 +1,12 @@
+arm	lineage-durability-move-aehome
+section	L-FROM
+roster_ids	SC-825b
+construction	a successful --from child of a real parent archive is stopped and then resumed, with the WHOLE AE_HOME moved to a new absolute path in between and the resume run against that path
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+mode	move-aehome
+parent_uuid	9a325c6e-8f5c-4cfa-9591-69372cd9cab6
+child_launch_rc	1
+stop_rc	0
+resume_rc	1
+lineage_captures	lineage.1after-from.txt, lineage.2after-stop.txt, lineage.3after-resume.txt, lineage.across-cycle.diff

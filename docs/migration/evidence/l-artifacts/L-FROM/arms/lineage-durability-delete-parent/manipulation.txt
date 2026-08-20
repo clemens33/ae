@@ -1,0 +1,1 @@
+manipulation	the PARENT archive directory is removed while the child is stopped, then the child is resumed

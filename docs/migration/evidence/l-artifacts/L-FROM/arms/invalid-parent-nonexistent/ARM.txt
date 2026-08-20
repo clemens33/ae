@@ -1,0 +1,10 @@
+arm	invalid-parent-nonexistent
+section	L-FROM
+roster_ids	SC-823
+construction	--from names a nonexistent archive id; after it, a FULL sweep of session dirs, worktrees, tmux sessions, the archive root, AE_HOME and the work dir is taken and diffed against the same sweep taken before
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+shape	nonexistent
+from_id	00000000-0000-4000-8000-000000000000
+op	ae --local child --from 00000000-0000-4000-8000-000000000000
+op_rc	1

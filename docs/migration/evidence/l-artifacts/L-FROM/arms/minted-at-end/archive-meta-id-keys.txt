@@ -1,0 +1,12 @@
+# the ARCHIVE meta id keys BY EXACT KEY
+=== /tmp/aelx/L-FROM/minted-at-end/h/.ae/archive/0c2a9ea4-987b-45d4-982e-3ec7ee769dba/meta ===
+2:archive_id=0c2a9ea4-987b-45d4-982e-3ec7ee769dba
+3:archive_id_origin=minted-at-end
+5:source_session=leg
+6:source_session_id=-
+
+# every key containing the string origin in this archive meta
+3:archive_id_origin=minted-at-end
+8:source_origin=/private/tmp/aelx/L-FROM/minted-at-end/w
+
+# NOTE the repository key origin= is a DIFFERENT key and is shown above only so the two are visibly distinct

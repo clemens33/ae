@@ -1,0 +1,11 @@
+--- /tmp/aelx/L-FROM/invalid-parent-validation-failing/cap/mutation.before.txt	2026-08-20 20:08:41
++++ /tmp/aelx/L-FROM/invalid-parent-validation-failing/cap/mutation.after.txt	2026-08-20 20:08:42
+@@ -20,7 +20,7 @@
+ event_count=0
+ event_first_at=-
+ event_last_at=-
+-handover_count=0
++handover_count=99
+ memo_topic_count=0
+ pending_request_count=0
+ agent.main=claude:claude

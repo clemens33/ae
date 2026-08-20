@@ -1,0 +1,13 @@
+# manifest-root	/tmp/aelx/L-FROM/invalid-parent-validation-failing/h/.ae
+#path	type	mode	nlink	size	link	sha256
+.	dir	755	5	160	-	-
+archive	dir	700	3	96	-	-
+archive/35ae42c1-2251-4ba6-9f3e-7d79cbe04243	dir	700	7	224	-	-
+archive/35ae42c1-2251-4ba6-9f3e-7d79cbe04243/digest.md	file	600	1	1313	-	ea08fd1a16a33cb68efe6523a68cf35a48f4cf6f6ba19adc8cf090f83b6e2df0
+archive/35ae42c1-2251-4ba6-9f3e-7d79cbe04243/events.jsonl	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+archive/35ae42c1-2251-4ba6-9f3e-7d79cbe04243/memo.tsv	file	600	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+archive/35ae42c1-2251-4ba6-9f3e-7d79cbe04243/messages	dir	700	2	64	-	-
+archive/35ae42c1-2251-4ba6-9f3e-7d79cbe04243/meta	file	600	1	667	-	e0b9cb4df20d7bda17cfd792d5a9f55c9ec77bfafd8cb1c9550c58e5d1fa2037
+config	file	644	1	220	-	654ddabcfa6104b4b98c48af0bf49da71d4f9c648719150f10734512d923c290
+sessions	dir	755	3	96	-	-
+sessions/.lifecycle.par.lock	file	644	1	0	-	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855

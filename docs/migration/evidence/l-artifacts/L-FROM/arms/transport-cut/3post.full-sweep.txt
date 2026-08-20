@@ -1,0 +1,28 @@
+## session dirs
+.
+..
+.lifecycle.child.lock
+.lifecycle.par.lock
+
+## worktree dirs
+ls: /tmp/aelx/L-FROM/transport-cut/h/.ae/worktrees: No such file or directory
+
+## archive dirs
+.
+..
+
+## tmux sessions
+no server running on /tmp/aelx/L-FROM/transport-cut/t/tmux-501/default
+
+## AE_HOME top level
+.
+..
+archive
+config
+sessions
+
+## work dir
+.
+..
+.git
+README.md

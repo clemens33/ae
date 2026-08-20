@@ -1,0 +1,30 @@
+## session dirs
+.
+..
+.lifecycle.child.lock
+.lifecycle.par.lock
+child
+
+## worktree dirs
+ls: /tmp/aelx/L-FROM/lineage-durability-move-aehome/h/.ae/worktrees: No such file or directory
+
+## archive dirs
+.
+..
+9a325c6e-8f5c-4cfa-9591-69372cd9cab6
+
+## tmux sessions
+$0|child
+
+## AE_HOME top level
+.
+..
+archive
+config
+sessions
+
+## work dir
+.
+..
+.git
+README.md

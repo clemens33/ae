@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-FROM/existing-target-running/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|tgt|2|0|1787249242
+## windows
+tgt|@0|0|tgt|1
+tgt|@1|99|ae-monitor|2
+## panes
+tgt|@0|%0|47008|claude|claude:claude|main|0
+tgt|@1|%2|47732|bash|_watchdog||0
+tgt|@1|%1|47681|bash|_events||0
+## clients

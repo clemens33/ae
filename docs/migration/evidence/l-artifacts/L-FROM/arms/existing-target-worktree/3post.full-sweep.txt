@@ -1,0 +1,32 @@
+## session dirs
+.
+..
+.lifecycle.par.lock
+.lifecycle.tgt.lock
+
+## worktree dirs
+.
+..
+tgt
+
+## archive dirs
+.
+..
+fac9d7c4-f884-4887-90cc-4b3e0247a10d
+
+## tmux sessions
+no server running on /tmp/aelx/L-FROM/existing-target-worktree/t/tmux-501/default
+
+## AE_HOME top level
+.
+..
+archive
+config
+sessions
+worktrees
+
+## work dir
+.
+..
+.git
+README.md

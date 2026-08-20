@@ -1,0 +1,3 @@
+manipulation	the WHOLE AE_HOME is moved: a mode-preserving copy at a new absolute path, and the resume runs with AE_HOME pointing there
+from	/tmp/aelx/L-FROM/lineage-durability-move-aehome/h/.ae
+to	/tmp/aelx/L-FROM/lineage-durability-move-aehome/h2/.ae
