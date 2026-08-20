@@ -106,10 +106,14 @@ consuming operation owns its own artifact publication and ports the chokepoint i
 - current owner: bash
 - planned owner/fate: **rust at P1**
 
-### D03 — events queries (`events-tail` helper, dispatcher event reads)
+### D03 — events queries (`events-tail` helper ONLY; narrowed by B0 preflight ruling
+ae-20260820T132251Z-09009761)
 
+- scope note: list/next/requests/archive readers OWN their event reads inside their
+  operations (D01/D04/D02/L records), sharing the event-read mechanism per M1 — no
+  separate flip; the former TBD-dispatcher-readers umbrella is dissolved
 - effects: none
-- current writer/call path: `helper_events_tail_main` + TBD dispatcher readers
+- current writer/call path: `helper_events_tail_main`
 - locks (ordered): TBD
 - atomicity boundary: TBD (tail vs concurrent append)
 - current owner: bash

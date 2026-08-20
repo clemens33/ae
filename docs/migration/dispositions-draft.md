@@ -86,6 +86,7 @@ gate-integrity row: the FIRST P1 811-suite invocation; integrity rows resolve fi
 | 68 | integration-harness | pre-P1 gate | gate-integrity | same class as #37, 30 sites |
 | 69 | integration-harness | pre-P1 gate | gate-integrity | dummy agent executes pastes — suite may measure its own echo; may also spawn a B3 row |
 | 70 | integration-harness | pre-P1 gate | gate-integrity | socket-dir hermeticity |
+| 92 | integration-harness | pre-P1 gate | gate-integrity | suite non-determinism + unrecoverable-by-design failure labels (end-only ERRORS flush); #37-family, explicitly not #37; streaming-FAIL remedy proposed in-issue |
 
 ## wontfix-by-policy (bash frozen / superseded)
 

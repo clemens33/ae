@@ -14,12 +14,25 @@ inputs, without importing an expected value.
 ## Prerequisites (hard gates, both PENDING — nothing here is approved yet)
 
 1. **B0 designs** (SC-507b, SC-511c, D01–D04 concurrency, SC-1208): separate seat
-   gate. C consumes their approved artifacts; it never redesigns or runs them.
+   gate. EXECUTION OWNERSHIP (B0 preflight ruling): B0 owns the DESIGNS for D01–D04
+   concurrency; the C worker EXECUTES those approved designs and returns their
+   evidence; the B0 worker itself executes only SC-507b/511c/1208. C consumes approved
+   DESIGNS; it never redesigns them.
    SC-511c is REMOVED from this batch's arms (B0 owns it).
 2. **T-WD producer precursor** (narrow): real watchdog runs against controlled panes
    producing incumbent dead/stale/throttled alert event bytes with provenance — the
    only legitimate source for FX2's attention bytes (SC-980's incumbent-capture task,
    run first under its own approved subdesign).
+
+## Instrumentation admissibility (B0 preflight ruling — GLOBAL for every batch)
+
+Frozen code has no hooks, so deterministic cuts use minimal instrumentation under this
+contract: an exact 72c7293 copy plus ONE hook-only patch, with the patch and its hash
+recorded in the run manifest; the INACTIVE hook must be byte/rc/file/tmux-equivalent
+to the unmodified control (any inactive divergence INVALIDATES the run); an ACTIVE
+hook only blocks/emits its barrier — the CONTROLLER performs the named writer-shaped
+mutation; PATH shims delegate-and-log per the date-shim contract. Recorded here and
+binding via the cluster plan for all batches.
 
 ## Template groups and per-arm sandboxes
 
