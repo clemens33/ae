@@ -1,7 +1,8 @@
-# Probe cluster plan — closing the 299 (lead draft for colead stress-test)
+# Probe cluster plan — closing the 319 (seat-gated; refreshed from the manifest)
 
-Built ONLY from the regenerated ratification-critical.md labels (299 CRITICAL lines,
-machine-counted; header and lines now agree). Rules inherited: dependency closure (a
+Built ONLY from the regenerated ratification-critical.md labels (319 CRITICAL lines,
+machine-counted 2026-08-20 post slice-1c; header and lines agree, manifest↔canonical
+SET_EXTRA=0/SET_MISSING=0). Rules inherited: dependency closure (a
 critical SC row pulls its interpreting D record/mechanism into the same batch unless
 independently proven); probe designs are VALUE-BLIND (manipulation/barriers + captured
 stdout/stderr/rc/files/tmux; expected values omitted — seats classify); deterministic
@@ -9,9 +10,26 @@ per the closure-map gate (no timing races, no live-model queries); every capture
 CANDIDATE observation until seat acceptance (never a builder oracle before scoped
 ratification — P1-start condition 2).
 
-Family spread of the 299: S9=71, S10=57, S6=34, S15=25, S3=24, S1=20, S14=13, S13=12,
-S5=8, S8=7, S7=5, S2=3, S12=3, S4=2, S11=2, +13 D records (D01-D04 read side; D14b
-half; D24 negative pointer; D25/27/30x gates; D28c).
+Family spread of the 319 (id-range convention, machine-joined): S9=71, S10=58,
+S6=43, S15=25, S3=24, S1=20, S5=18, S14=13, S13=12, S8=7, S7=5, S2=3, S12=3, S4=2,
+S11=2, +13 D records (D01-D04 read side; D14b half; D24 negative pointer;
+D25/27/30x gates; D28c).
+
+## Global rule — instrumentation admissibility (B0 preflight ruling, binding for EVERY batch)
+
+Frozen code has no hooks, so deterministic cuts use minimal instrumentation under this
+contract: an exact 72c7293 copy plus ONE hook-only patch, with the patch and its hash
+recorded in the run manifest; the INACTIVE hook must be byte/rc/file/tmux-equivalent
+to the unmodified control (any inactive divergence INVALIDATES the run); an ACTIVE
+hook only blocks/emits its barrier — the CONTROLLER performs the named writer-shaped
+mutation; PATH shims delegate-and-log per the date-shim contract. Inactive equivalence
+is proven PER hook/shim fixture, not by one token control: a tmux wrapper that
+snapshots rows must match unwrapped output on the same stable topology before its
+active barrier is admissible. Equivalence and manifests speak about PRODUCT-VISIBLE
+paths only: delegate-and-log shims and hooks necessarily create trace bytes, so
+harness artifacts (barrier/log files) are segregated from product-state equivalence
+and separately hashed/captured. This section is the normative home; batch designs
+CITE it and add only batch-local specifics.
 
 ## Batch 0 — bespoke designs (seat-gated FIRST, as ruled)
 

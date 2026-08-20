@@ -309,7 +309,7 @@ CRIT-ASSIGN: SC-509b | C | read-side fixture cluster: degraded:true additive on 
 CRIT-ASSIGN: SC-518 | C | read-side fixture cluster: full mirror-match closure arm (ref + actor/target both ways, mixed matches nothing)
 CRIT-ASSIGN: SC-519 | C | read-side fixture cluster: absent vs empty vs unreadable event-log arms
 CRIT-ASSIGN: SC-520 | C | read-side fixture cluster: malformed-complete-line skip observable arm
-CRIT-ASSIGN: SC-521 | C | read-side fixture cluster: filter intersection arms (stopped+needs-attn, stopped+active, all+either)
+CRIT-ASSIGN: SC-521a | C | read-side fixture cluster: filter intersection arms (stopped+needs-attn, stopped+active, all+either)
 CRIT-ASSIGN: SC-522 | C | read-side fixture cluster: threshold equality-vs-past boundary arm
 CRIT-ASSIGN: SC-523a | C | read-side fixture cluster: unanswered-threshold default confirmation (1800s)
 CRIT-ASSIGN: SC-523b | C | read-side fixture cluster: activity-window default confirmation (300s)

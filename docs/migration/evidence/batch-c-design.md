@@ -24,15 +24,10 @@ inputs, without importing an expected value.
    only legitimate source for FX2's attention bytes (SC-980's incumbent-capture task,
    run first under its own approved subdesign).
 
-## Instrumentation admissibility (B0 preflight ruling — GLOBAL for every batch)
+## Instrumentation admissibility
 
-Frozen code has no hooks, so deterministic cuts use minimal instrumentation under this
-contract: an exact 72c7293 copy plus ONE hook-only patch, with the patch and its hash
-recorded in the run manifest; the INACTIVE hook must be byte/rc/file/tmux-equivalent
-to the unmodified control (any inactive divergence INVALIDATES the run); an ACTIVE
-hook only blocks/emits its barrier — the CONTROLLER performs the named writer-shaped
-mutation; PATH shims delegate-and-log per the date-shim contract. Recorded here and
-binding via the cluster plan for all batches.
+Governed by cluster-plan.md's global rule "Instrumentation admissibility" (the
+normative home for every batch); this batch adds no local exceptions.
 
 ## Template groups and per-arm sandboxes
 
@@ -145,7 +140,8 @@ The prior stale-only arm is insufficient for the precised total-decision row.
 A8 modes (SC-101, 102a-b, 018b): WRITABLE clones per arm; fast-path attach with full
 manifest+tmux diff (101); resume regeneration set diff (102a); inside-session
 invocation (102b, live server); use-against-existing arm (018b). (SC-100 and SC-018
-are DEFERRABLE — removed per gate; the batch boundary is exactly the 59 assigned.)
+are DEFERRABLE — removed per gate; the batch boundary is exactly the 62 assigned
+after the slice-1b reopening.)
 A9 quiet-vs-degraded (SC-519, 520, 405i): G4 (quiet both ways) vs G3 (degraded +
 public JSON marker + retained generation/offset/reason capture); 405i — a present
 session dir with META ABSENT (named mutation), distinct from G4's missing EVENTS and

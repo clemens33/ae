@@ -744,12 +744,23 @@ mark the session degraded in the public JSON (a buffered unterminated tail is no
 malformed — SC-975b). Authority: joint ruling + SC-975b. Empirical: pending.
 Conflict: none. **classified_by: both seats, 2026-08-20.**
 
-**SC-521 — filter combinations intersect literally.** Bucket 2 — (slice-1 Q7c):
-`--stopped --needs-attn` and `--stopped --active` select nothing (each attention/
-activity row reads "running sessions only" literally); `--all` with either keeps only
-matching running sessions; no invented usage error. Authority: commands.md filter
-rows + joint ruling. Empirical: pending. Conflict: none. **classified_by: both
-seats, 2026-08-20.**
+**SC-521a — cross-dimension filter combinations intersect literally.** Bucket 2 —
+(slice-1 Q7c; split from SC-521 at slice-1c for row grain): `--stopped --needs-attn`
+and `--stopped --active` select nothing (each attention/activity row reads "running
+sessions only" literally); `--all` with either keeps only matching running sessions;
+no invented usage error. Authority: commands.md filter rows + joint ruling.
+Empirical: pending (Batch C A2). Conflict: none. **classified_by: both seats,
+2026-08-20.**
+
+**SC-521b — same-dimension scope flags are alternatives: last distinct selector
+wins.** Bucket 2 — (slice-1c, seat ruling on reviewer3 I7):
+`--running`/`--stopped`/`--all` are ALTERNATIVE modes per commands.md:81-87, not
+independent predicates; the last distinct selector wins and a repeated flag is
+idempotent. The lead's set-intersection alternative was rejected as inventing
+semantics the docs do not state and failing silently on `--stopped --running`.
+Authority: commands.md:81-87 + joint ruling. Empirical: observed(ae@72c7293:4077-4089
+— case loop reassigns show_running/show_stopped per selector). Conflict: none.
+**classified_by: both seats, 2026-08-20.**
 
 **SC-522 — the unanswered threshold is strictly past.** Bucket 2 — (slice-1 Q7e): age
 must EXCEED the threshold; equality is not past it. Authority: commands.md:60-76
@@ -1832,11 +1843,22 @@ pending. Conflict: none.
   Authority: #59 ruling + meta format (S5).
 exact on-disk form (cross-link: S5 formats family). Empirical: pending. Conflict: none.
 
-**SC-1208 — pane/peer text is never spliced into instruction material.** Bucket 1 —
+**SC-1208 — untrusted pane bytes and peer message-body prose are never spliced into
+instruction material.** Bucket 1 — (precised, B0-census reopening 2026-08-20):
 transport delivers peer text through the model's USER-INPUT surface; ae never places
-pane content or peer-message text into system/developer instruction material; delivered
-text retains peer provenance and cannot override identity or human/system authority.
-Authority: AGENTS.md interpreted-sinks row (ruling). Empirical: pending. Conflict: none.
+pane content or peer MESSAGE-BODY prose into system/developer instruction material;
+delivered text retains peer provenance (authority/envelope semantics are SC-1209's
+row — cross-link, not this row's claim: B0 evidence closes only the structural
+boundary and could never fail against a model-compliance clause). The invariant
+holds at the TYPE boundary, not the actor boundary:
+schema-typed, allowlist-validated identity facts MAY enter instruction material — a
+peer-supplied spawn name, after `_validate_agent_name`, is intentionally interpolated
+into the fixed identity slot (its own AGENTS authority, #59). The B0 probe carries
+both controls: a hostile free-text sentinel absent from every instruction channel,
+AND a hostile-looking-but-grammar-valid spawn name present ONLY in the fixed identity
+slot. Probe evidence proves ae's transport separation only — never a claim that a
+vendor model obeys instruction hierarchy. Authority: AGENTS.md interpreted-sinks row
++ agent-name allowlist section (ruling). Empirical: pending (B0). Conflict: none.
 
 **SC-1209 — envelope authority: the outermost helper-emitted line is the only
 provenance.** Bucket 1 — the helper-emitted FIRST PHYSICAL line determines peer

@@ -2,11 +2,11 @@
 
 Derived mechanically from the canonical set reported by sweep-check.sh; letters are criteria only.
 
-- Canonical IDs (checker at HEAD): SC=415, D=43, total=458; manifest lines=458 (exact)
-- Class counts (mechanically regenerated 2026-08-20 post slice-1): CRITICAL=316, DEFERRABLE=102, OBSERVED=40
-- Critical-letter counts (overlaps counted): A=123, B=38, C=55, D=196
-- D24 remains critical/non-observed pending its negative-evidence pointer; when it lands: CRITICAL=315, OBSERVED=41
-- Outstanding critical observations: 316. Clusters build only from the CRIT-ASSIGN table.
+- Canonical IDs (checker at HEAD): SC=419, D=43, total=462; manifest lines=462 (exact; SET_EXTRA=0, SET_MISSING=0)
+- Class counts (mechanically regenerated 2026-08-20 post slice-1c: SC-405i/j/k folded, 521a/b split, stale bare-523 prose removed): CRITICAL=319, DEFERRABLE=102, OBSERVED=41
+- Critical-letter counts (overlaps counted): A=123, B=38, C=58, D=198
+- D24 remains critical/non-observed pending its negative-evidence pointer; when it lands: CRITICAL=318, OBSERVED=42
+- Outstanding critical observations: 319. Clusters build only from the CRIT-ASSIGN table.
 
 - A includes explicit UNCLASSIFIED, authority=code-observation, literal Authority: UNRESOLVED(...) rows, and D records whose TBD fields feed a seat ruling; ALREADY-OBSERVED takes pin-audit PROVES priority.
 
@@ -452,13 +452,14 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-1412f — CRITICAL(A)
 - SC-1412g — CRITICAL(A)
 
-## Slice-1 additions (2026-08-20, concurrent movement — 17 rows after the SC-523 split)
+## Slice-1 additions (2026-08-20, concurrent movement — 17 rows after the 523a/b split; prose here must not name retired bare ids: every SC-token on any line of this file enters the checker's expected set)
 
 - SC-509b — CRITICAL(C,D)
 - SC-518 — CRITICAL(C,D)
 - SC-519 — CRITICAL(C)
 - SC-520 — CRITICAL(C,D)
-- SC-521 — CRITICAL(C)
+- SC-521a — CRITICAL(C)
+- SC-521b — OBSERVED (slice-1c seat ruling; code citation ae@72c7293:4077-4089 verified by both seats)
 - SC-522 — CRITICAL(C)
 - SC-523a — CRITICAL(C)
 - SC-523b — CRITICAL(C)
