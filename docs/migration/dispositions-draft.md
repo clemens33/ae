@@ -9,8 +9,9 @@ Pre-ratification gate of #81: every open bash-era issue carries a disposition, r
 `RR(Pn)` = rust-requirement landing at phase n; `+B3` = also a bucket-3 contract row
 (known defect with intended Rust behavior); `byC` = fixed by construction in Rust.
 
-Schema note: `owner` and `protected gate` fields for migration-enabler rows are assigned
-at the joint pass — the binding schema (ruling 7c2ce445) is acknowledged, not yet filled.
+Schema note: `owner` (role lane) and `protected gate` fields for migration-enabler rows
+are FILLED below (gate ruling 2026-08-20): integrity rows protect the first P1 811-suite
+invocation; cost-only rows carry `protected gate: none (cost)`.
 
 ## rust-requirement
 
@@ -42,8 +43,7 @@ at the joint pass — the binding schema (ruling 7c2ce445) is acknowledged, not 
 | 26 | RR(P2/send) +B3 | fix-known-defect(#26): measured locale defect with clear intended Rust behavior — DR-candidate label removed (dispositions gate) |
 | 54 | RR(post-core) | fleet message board |
 | 61 | RR(P1) +B3 | pre-dispatch bootstrap = mechanism M2 in ownership.md; reads never write |
-| 78 | RR byC | closure phase named (gate): by construction per-domain as each cuts over, complete by P5 |
-| 82 | RR(P2) +DR | durable inbox + coalesced pane notification deliberately changes paste delivery — DR-004 reserved at P2 entry (contract S3 delivery-semantics row) |
+| 82 | RR(P2) +DR-004 | durable inbox + coalesced notification — DR-004 RATIFIED (contract S3 SC-200; implementation at P2) |
 | 83 | RR(P4) +B3 | fix-known-defect: explicit-start single-sender (SC-963) |
 | 84 | RR(P4) +B3 | fix-known-defect: proven-complete takeover; DR-002 implementation (SC-964) |
 | 85 | RR(P4) +B3 | fix-known-defect: exact tmux identity before destruction (SC-965) |
@@ -65,7 +65,7 @@ at the joint pass — the binding schema (ruling 7c2ce445) is acknowledged, not 
 | 75 | RR(P2) +B3 | epic-folded; no hard flock dependency |
 | 76 | RR(P2) byC | helper drift class dies; epic-folded |
 | 77 | RR(P3) +B3 | compact roster must satisfy launch grammar |
-| 78 | RR byC | empty-key class unrepresentable; epic-folded |
+| 78 | RR byC | empty-key class unrepresentable; epic-folded; closure by construction per-domain as each cuts over, complete by P5 |
 
 ## migration-enabler (owner TBD per brief; gate = 811 integration suite unless noted)
 
@@ -75,11 +75,11 @@ gate-integrity row: the FIRST P1 811-suite invocation; integrity rows resolve fi
 
 | # | Owner lane | Phase needed | Gate-impact | Note |
 |---|---|---|---|---|
-| 10 | CI/toolchain | opportunistic, by P1/P5 | gate-cost | recast (gate): the P0-close label was already missed — #80's Rust-native Linux proof landed without the issue's bash just-check+integration acceptance; remaining scope is the bash CI half |
+| 10 | CI/toolchain | opportunistic, by P1/P5 | gate-cost (protected gate: none — cost) | recast (gate): the P0-close label was already missed — #80's Rust-native Linux proof landed without the issue's bash just-check+integration acceptance; remaining scope is the bash CI half |
 | 37 | integration-harness | pre-P1 gate | gate-integrity | SIGPIPE flake, undiagnosed |
 | 41 | integration-harness | pre-P1 gate | gate-integrity | SPAWN INCOMPLETE seed swallows status |
 | 58 | gate-tooling | pre-P1 gate | gate-integrity | always-red just check is not a gate |
-| 64 | test-infra | none (cost-only) | gate-cost | name filter; inner-loop tax |
+| 64 | test-infra | none (cost-only) | gate-cost (protected gate: none — cost) | name filter; inner-loop tax |
 | 67 | gate-tooling | pre-P1 gate | gate-integrity | shellcheck wedge on agent-run gates |
 | 68 | integration-harness | pre-P1 gate | gate-integrity | same class as #37, 30 sites |
 | 69 | integration-harness | pre-P1 gate | gate-integrity | dummy agent executes pastes — suite may measure its own echo; may also spawn a B3 row |
@@ -111,7 +111,7 @@ requirements and the sidecar retires at P4)
 
 - Colead's round-3 corrections (#26, #42, #45, #52, #57, #61, #71) are applied above;
   the joint pass confirms them.
-- #10 is the one enabler whose phase-needed is P0-close (blocks #80 acceptance), per
-  colead condition (1) on ae-20260820T075607Z-f0d46071.
+- #10's original P0-close phase was missed and honestly recast (see its row) — the
+  rust CI half landed under #80; the bash half is opportunistic.
 - Owners for enabler fixes: propose spawning builders per item post-P0; gate-integrity
   items must land before the first P1 gate invocation (ruling 7c2ce445).

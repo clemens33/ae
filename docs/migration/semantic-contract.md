@@ -112,11 +112,10 @@ busy/human-typed, verify submit, fail loud).
 
 <!-- rows: SC-2xx -->
 
-**SC-200 — delivery-model evolution (reserved).** Bucket 4 candidate — **DR-004
-reserved at P2 entry** (#82): a durable agent inbox with decoupled, coalesced pane
-notification deliberately changes the paste-delivery model. The DR is written when the
-messaging domain cuts over; until then the paste model's rows stand. Authority: #82 +
-disposition ruling (both seats). Conflict: DR-004 pending.
+**SC-200 — delivery-model evolution.** Bucket 4 — **DR-004** (ratified): the durable
+per-agent inbox with coalesced notification replaces the paste-delivery model at P2;
+the paste rows stand until that cutover. Authority: DR-004 (both seats).
+Conflict: DR-004.
 
 ### S4 — Config INI grammar
 
@@ -347,13 +346,35 @@ status is DOCUMENTED, not silently faked. Authority: AGENTS.md grok row (ruling
 framing). Empirical: matrix. Conflict: none.
 
 **SC-704 — adapter expectations are seat-ruled, never measurement-promoted.** Bucket 1
-— the capability matrix stays IS; each normative adapter expectation (launch context
-route, capture, exact resume/fallback, rerun, readiness/busy modelling) gets either its
-own row or a cell in a JOINTLY RULED adapter table whose cells carry an explicit
-preserve/adapt disposition — measurements never become expected outputs without that
-ruling (the anti-oracle rule). The ruled table is produced at the P1 adapter port;
-upstream drift is detected (canary class, #22), never silently absorbed. Authority:
-#81 source-lane rule + epic #79. Empirical: the matrix. Conflict: none.
+— the capability matrix stays IS; measurements never become expected outputs without an
+explicit seat ruling (the anti-oracle rule). The generic product outcomes are frozen
+NOW as SC-704a-e (gate ruling — classification is not deferred to P1); exact flags,
+markers, and per-tool capabilities remain empirical/adaptable. Upstream drift is
+detected (canary class, #22), never silently absorbed. Authority: #81 source-lane rule
++ epic #79. Empirical: the matrix. Conflict: none.
+
+**SC-704a — injected ae context never replaces a vendor's own agent prompt.** Bucket 1
+— context rides an append/positional/config surface per tool; a replace-style flag is
+forbidden (the grok `--system-prompt-override` trap). Empirical: matrix rows.
+Conflict: none.
+
+**SC-704b — an exactly-owned identity is used whenever the tool offers one.** Bucket 1
+— upfront UUID where accepted; otherwise capture binds only a positively-owned signal
+(never ambient context — the #59-adjacent confidentiality rule). Empirical: matrix +
+capture exhibits. Conflict: none.
+
+**SC-704c — resume never cross-wires.** Bucket 1 — a resume targets only an identity
+positively owned by this agent slot; an unowned or ambiguous identity falls back,
+never guesses. Empirical: matrix resume rows. Conflict: none.
+
+**SC-704d — fallback semantics are explicit per tool.** Bucket 1 — each adapter's
+degradation (continue/fresh/latest) is a documented decision surfaced to the operator,
+never a silent substitution. Empirical: matrix fallback rows. Conflict: none.
+
+**SC-704e — rerun truth is explicit.** Bucket 1 — re-running a launch script either
+resumes the same conversation or honestly starts fresh; never a collision error,
+never a silent identity swap. Empirical: matrix rerun row + SC-811 pins.
+Conflict: none.
 
 **SC-705 — tool detection identifies the actual executable without interpreting
 injected prose.** Bucket 1 — semantic SHOULD under joint ruling: classification derives
@@ -737,9 +758,11 @@ Watchdog + monitor (authority: watchdog.md / monitor.md @72c7293, cited per memo
 - **SC-928** b3 fix-known-defect(#88-C) — an event-append error is surfaced and
   contained to its operation; it never stops the combined daemon or spends nudge state.
   IS: census-3 I2 crash/backoff.
-- **SC-929** b4 DR-002 — `doctor --refresh` vs the running daemon follows DR-002's
-  explicit restart contract (the bash keeps-loaded-body behavior retires with the
-  topology).
+- **SC-929** b4 DR-002 — the restart outcome (gate ruling, testable): after a
+  successful `doctor --refresh` the serving daemon runs the INSTALLED version before
+  the command returns; a failed refresh returns nonzero and leaves the previous daemon
+  serving; the restart emits durable before/after/failure facts. Implementation may
+  re-exec. (The bash keeps-loaded-body behavior retires with the topology.)
 
 Steward (authority: commands.md/telegram.md @72c7293, cited per memo):
 - **SC-930** b2 — bare `ae steward` ensures the detached steward, never attaches.
@@ -1040,6 +1063,36 @@ bar for DR completeness: the wider the divergence, the fuller the record.
 | DR-001 | Event-log generations | RATIFIED (both seats, 2026-08-20) |
 | DR-002 | One daemon per AE_HOME | RATIFIED (both seats, 2026-08-20) |
 | DR-003 | At-least-once outbound Telegram delivery | RATIFIED (both seats, 2026-08-20) |
+| DR-004 | Durable inbox, coalesced notification | RATIFIED (both seats, 2026-08-20) |
+
+```
+DR-004 Durable inbox, coalesced notification
+- affected SC ids: SC-200; the S3 paste-delivery rows (stand until the P2 messaging
+  cutover implements this); S5 mailbox persistence + S6 `msg` CLI output rows (drafted
+  at P2 under this DR); #82 disposition RR(P2)+DR-004.
+- context / current IS: delivery conflates notification with payload in a pane a human
+  reads; worker fan-in floods the human lane (#82 problem statement).
+- options considered (per #82): topology restrictions (rejected — breaks tracked
+  replies, compact handover, dissent lane; makes the challenger the channel); pull
+  model (rejected — reintroduces polling); presentation fix (chosen).
+- decision / binding outcomes (from #82 acceptance, refinable in implementation only):
+  every message body persists to the ONE existing ledger/body store; pane notification
+  is edge-triggered and coalesced — at most ONE input-safe line per unread epoch,
+  carrying trusted metadata only (origin, type, ref, count), NEVER sender-authored text
+  (the #59 injection-sink class); bodies render only via msg read inside the origin
+  envelope; the body is stored BEFORE any notification (the store is the transport —
+  pane failure loses no body); N queued messages yield N ordered authenticated bodies
+  with ≤1 pane line before ack, an exact unread count, and exactly one NEW edge after
+  ack; reply routing, origin envelope, and request tracking unchanged; per-agent
+  delivery policy with full-paste compatibility retained — any DEFAULT change requires
+  its own ruled row after the coalesced gate; NO agent-to-lead write prohibition, ever.
+- trade-offs accepted: a second read step (msg read/ack) for coalesced agents; extra
+  ack state.
+- authority: #82 (acceptance section = the binding outcomes), both-seat design record
+  therein.
+- seats + date: fable5:lead + gpt56sol:colead, 2026-08-20 (written at P0 per gate — P2
+  refines implementation, never these outcomes).
+```
 
 ```
 DR-003 At-least-once outbound Telegram delivery
@@ -1052,10 +1105,12 @@ DR-003 At-least-once outbound Telegram delivery
   duplicates for LOST notifications.
 - options considered: (a) fix-known-defect preserving no-replay via at-most-once —
   explicitly accepts silent alert loss; (b) at-least-once with explicit policy.
-- decision / intended Rust behavior: at-least-once. Duplicates possible ONLY within the
-  crash window; the event id rides the outbound text/log for human/system dedupe;
-  cursor-commit failure is LOUD and retry-safe (cursor persistence is part of committed
-  outbound progress, never ignored).
+- decision / intended Rust behavior: at-least-once, with the crash-window bound made
+  MECHANICAL (gate ruling): after remote success with a failed cursor commit, the
+  pending cursor is retained and the COMMIT ALONE is retried — the message is never
+  re-sent while the process lives; only a restart can duplicate. Cursor-commit failure
+  is LOUD. The dedupe id is stable and sourced: `session_id + generation + offset`
+  (the DR-001 cursor triple), carried in the outbound text/log.
 - trade-offs accepted: occasional visible duplicate over silent alert loss — for a
   notification bridge, a lost alert is the worse failure; doc no-replay promise amended
   for outbound.
@@ -1066,9 +1121,10 @@ DR-003 At-least-once outbound Telegram delivery
 
 ```
 DR-002 One daemon per AE_HOME
-- affected SC ids: SC-901; W-04..08 and M-01's _watchdog-pane half (bash-era SHOULDs
-  retired at P4); interacts with #83/#84 (the handoff protocol they afflict ceases to
-  exist under one owner).
+- affected SC ids: SC-901 (topology), SC-929 (restart contract), SC-924 (the
+  `_watchdog` pane retires, `_events` survives); interacts with SC-963/964 (#83/#84 —
+  the handoff protocol they afflict ceases to exist under one owner) and SC-957
+  (supervision honors explicit stop — preserved).
 - context / current IS: two daemon runtimes (bash per-session _watchdog process/pane +
   machine bridge; python aewatch machine singleton under AE_WATCHDOG_IMPL=uv) with a
   marker/heartbeat handoff protocol between them — probe-proven fail-open (#84),
