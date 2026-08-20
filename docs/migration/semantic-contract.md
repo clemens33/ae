@@ -597,12 +597,15 @@ once — actual loss by SC-509b's own test; distinct from missing/empty EVENT lo
 which SC-519 makes quiet. Authority: slice-1b joint ruling + SC-509b. Empirical:
 pending (C-cluster). Conflict: none. **classified_by: both seats, 2026-08-20.**
 
-**SC-405j — a routed event with a stale session stays UNASSOCIATED.** Bucket 2 —
-(slice-1b Q10, colead dissent adopted by lead ruling): when an event carries
-slot+session and the session mismatches after a rename, display-name fallback would
-create FALSE ATTRIBUTION against the SC-518/SC-511b loud-direction rulings; the event
-stays unassociated (loud false-negative), rename loss is the KNOWN LIMITATION, and
-SC-977's stable identity removes it at the P2 routing cutover. Authority: slice-1b
+**SC-405j — an event carrying ANY routing key that does not fully and freshly match
+stays UNASSOCIATED.** Bucket 2 — (slice-1b Q10, colead dissent adopted; PRECISED after
+the builder's premise correction — the pre-existing code already refused stale
+full-key events, and the actual change was the PARTIAL-key case): stale full keys,
+mismatched keys, and partial keys (slot without session or session without slot) all
+identify nobody; display-name matching exists ONLY for events with NO routing keys at
+all (pre-SC-511a records depend on that surviving). Display fallback for keyed events
+would create FALSE ATTRIBUTION against the SC-518/SC-511b loud direction; rename loss
+is the KNOWN LIMITATION until SC-977's P2 stable identity. Authority: slice-1b
 joint ruling + SC-518/511b direction. Empirical: pending. Conflict: none.
 **classified_by: both seats, 2026-08-20.**
 
