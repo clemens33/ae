@@ -1856,7 +1856,10 @@ exact on-disk form (cross-link: S5 formats family). Empirical: pending. Conflict
 **SC-1208 — untrusted pane bytes and peer message-body prose are never spliced into
 instruction material.** Bucket 1 — (precised, B0-census reopening 2026-08-20):
 transport delivers peer text through the model's USER-INPUT surface; ae never places
-pane content or peer MESSAGE-BODY prose into system/developer instruction material;
+pane content or peer MESSAGE-BODY prose into AE-CONSTRUCTED CONTEXT MATERIAL —
+build_ae_context output on whatever vendor surface carries it: a system/developer
+flag for claude/codex/opencode, the initial user-turn slot (-i / positional) for
+gemini/grok; the vendor lane is an annotation, never an upgrade of the guarantee;
 delivered text retains peer provenance (authority/envelope semantics are SC-1209's
 row — cross-link, not this row's claim: B0 evidence closes only the structural
 boundary and could never fail against a model-compliance clause). The invariant

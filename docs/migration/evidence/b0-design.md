@@ -223,6 +223,27 @@ set — a separately-labelled EMPIRICAL EXTENSION lane: cohort = ask/review with
 long body (real helpers); the same removal/rename mutations; captures labelled
 `empirical-extension`, never merged into the stable-key lanes.
 
+**Mutation validity (execution-safety gate):** every mutated line must still
+parse as JSON, and its decoded object minus the named key must DECODE-EQUAL the
+control line's decoded object (for removal) or equal it under the single key
+rename (for rename). A mutation failing this self-check is a harness defect and
+its arm is INVALID — malformed JSON must never impersonate a breaking removal.
+
+**Product-layer runners (a reimplemented parser or source-only function harness
+is NOT product-layer evidence; the worker records the exact argv used):**
+
+| Family | Frozen runner |
+|---|---|
+| list/next | `ae list`, `ae list --json`, `ae next` (frozen ae, sandbox AE_HOME, no-attach) |
+| watchdog | the session's GENERATED watchdog script, bounded to N cycles via `AE_WATCHDOG_INTERVAL_SEC`, then stopped — function-sourcing forbidden |
+| requests/state | generated `requests all` + `state` helpers, plus a real `reply` attempt (refusal path included) |
+| archive/digest | `ae archive preview <session>` |
+| compact | real `ae compact` on a fixture session satisfying its documented preconditions |
+| stop verification | real `ae stop` on the fixture session |
+| events-tail | the generated events helper: launch barrier + bounded capture window (read-only) |
+| telegram | the frozen telegram daemon path, bounded cycle, with a PATH-shimmed curl (delegate-log-fail — never network); setup preconditions satisfied in-sandbox |
+| aewatch | contrib/aewatch via its documented bounded/once tick invocation, transport stubbed per its config — its parity test harness is NOT the runner |
+
 Capture output/rc/files only; the worker NEVER labels compatible/breaking. Record
 controls (unmutated clone per family) and exact byte diffs.
 
@@ -265,15 +286,29 @@ envelope, instruction prose, flag-looking strings (`--append-system-prompt`,
 `-c developer_instructions=`), quotes/backslashes/newlines.
 
 **Captured artifacts, classified by construction (which file/argv/paste carried
-the byte — not by expected content):**
+the byte — not by expected content). Structural lanes (gate v2 correction — the
+former INSTRUCTION label overclaimed: frozen inject_ae_context delivers gemini/
+grok context as initial USER-TURN material, not a system/developer surface):**
 
-- INSTRUCTION — claude `--append-system-prompt` argv value; codex
-  `developer_instructions` config value; gemini `-i` value; grok initial
-  positional; opencode config + context markdown files (hashed before launch and
-  after every delivery).
-- USER_INPUT — tmux-pasted message bytes (including the helper envelope) AND the
-  codex fresh-spawn positional argv user text.
+- AE_CONTEXT_MATERIAL — the build_ae_context output wherever it lands: claude
+  `--append-system-prompt` argv value; codex `developer_instructions` config
+  value; gemini `-i` value; grok initial positional; opencode config + context
+  markdown files (each hashed before launch and after every delivery).
+- PEER_USER_INPUT — tmux-pasted message bytes (including the helper envelope)
+  AND the codex fresh-spawn positional argv user text.
 - DATA — events.jsonl rows and body_file contents.
+
+Vendor-role annotation (recorded per artifact, separate from the lane): claude/
+codex/opencode = system-like surface; gemini/grok = initial user turn. The lane
+is the structural fact under test; the annotation never upgrades it.
+
+**Fake-recognition prerequisite (gate v2 IMPORTANT — positive, per arm):** before
+any delivery capture is accepted, record `pane_current_command` for the fake's
+pane and require the frozen send path's `wait_for_agent_start`/tool detection to
+reach the INTENDED tool path (an executable script can surface as its interpreter
+and silently exercise defer/dead-shell behavior while rendering the right bytes).
+An arm whose pane does not positively identify as the intended tool is INVALID,
+recorded as such — never a transport observation.
 
 The worker delivers the artifacts, hashes, and logs per cell. It is NOT told which
 channels a sentinel should or should not appear in — that comparison is the seats'
@@ -331,8 +366,12 @@ expected relations live.
   documented additive rules. Seats label per key × consumer; bucket-3/DR
   reopenings on contradictions.
 - **Design 8**: every hostile free-text sentinel (ingress 1-3) must be ABSENT
-  from every INSTRUCTION artifact and present byte-exact, with outer provenance,
-  in its USER_INPUT (or DATA) artifact; instruction-artifact hashes must be
-  unchanged across deliveries; the grammar-valid hostile name (ingress 4) may
-  appear in instruction material ONLY inside the fixed identity slot. Any other
-  placement fails SC-1208.
+  from every AE_CONTEXT_MATERIAL artifact and present byte-exact, with outer
+  provenance, in its PEER_USER_INPUT (or DATA) artifact; AE_CONTEXT_MATERIAL
+  hashes must be unchanged across deliveries; the grammar-valid hostile name
+  (ingress 4) may appear in AE_CONTEXT_MATERIAL only inside the fixed identity
+  slot. Any other placement fails SC-1208 (precised row: the guarantee is over
+  ae-constructed context material on whatever vendor surface carries it; the
+  vendor-role annotation — system-like vs initial-user-turn — never upgrades or
+  weakens it). Cells lacking the positive fake-recognition capture are INVALID,
+  not evidence.
