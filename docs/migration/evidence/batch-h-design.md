@@ -63,7 +63,9 @@ streams per invocation, never merged. The rc is captured as the helper's own exi
 distinguished from the shell's `126`/`127`, which are reports about the invocation rather
 than from the surface.
 
-**Leg 2 — the SOURCE state and an execution witness.** Each case writes
+**Leg 2 — the SOURCE state and an execution witness.** *(Twin admissibility is governed by
+"The xtrace twin" below; a helper whose twin fails equivalence keeps leg 1 and leg 3 and
+loses this leg, explicitly.)* Each case writes
 `surface-state.txt`: for the helper under test, its resolved path, whether it exists, its
 type, mode, size and sha256, its interpreter line, and the `_lib` it sources — read from
 the filesystem, as the invoking uid, exactly as A9's `meta-state.txt` separated "absent"
@@ -81,6 +83,32 @@ whose control produces nothing is INCONCLUSIVE, not a refusal finding.
 
 Nothing in these three legs states which outcome is correct. They exist so that a seat
 reading "stdout empty, rc non-zero" knows whether it is reading a refusal at all.
+
+## The xtrace twin — admissible only where it is proven inert
+
+The twin is the execution witness of leg 2, and it is INSTRUMENTATION, so cluster-plan's
+inactive-equivalence rule applies one layer down: **the twin must be proven equivalent per
+HELPER, not once for the batch.**
+
+- **The fd is chosen against a measurement, and then asserted at run time.** Frozen `ae`
+  uses low fds and two high ones for locking: the seat's census records 2, 7, 8, 9, 10,
+  200 and 201, with fd 9 fourteen times, fd 200 thirteen and fd 8 nine; my own narrower
+  census (exec/append/dup/flock-argument forms only) independently finds 8 and 9 and
+  misses 200/201, which is a fact about my patterns, not a disagreement about the code.
+  Both censuses agree on the only claim this design needs: **nothing at or above 250 is
+  used by any measurement.** `BASH_XTRACEFD` is therefore set at 250+, and the arm
+  ASSERTS the descriptor is closed in the invoking shell before use rather than trusting
+  either census. The hazard is concrete: fds 8/9 are `flock` descriptors and 200/201 are
+  the meta writers', so a twin that landed on one would collide with the locking the
+  helper is performing and the trace would describe the twin rather than the primary.
+- **Equivalence is proven, per helper, on the same case**: the twin must produce
+  byte-identical stdout, byte-identical stderr and an identical rc to the untraced
+  primary. The comparison is over the PRIMARY's own captures, not a re-run pair.
+- **A helper whose output differs under trace has INADMISSIBLE trace evidence**, recorded
+  as such by name. Its primary capture still stands; the case simply loses leg 2's witness
+  and says so, rather than quietly reporting a trace that describes a different execution.
+- The twin is controller-only output: hashed and manifested separately from product state,
+  never merged into the primary capture, per the global admissibility rule.
 
 ## Fixture groups
 
@@ -128,7 +156,7 @@ the pane environment are genuine), with an argument matrix per helper:
 | SC-211h | `interrupt` | no args; unknown agent; a DEAD pane; a SHELL pane with a message (ae:14673 — H3 exists for this); with and without a message |
 | SC-211i | `spawn` | no args (ae:14718); a name violating the agent-name grammar; a name containing `:` twice; a 64+ character name; an unknown alias |
 | SC-211j | `retire` | no args (ae:14740); unknown agent; `%pane-id`; an agent that is not spawned |
-| SC-211l | `say` | no args with an empty stdin; whitespace-only text (ae:14480); text via argv; text via stdin |
+| SC-211l | `say` | no args with an empty stdin; whitespace-only text (ae:14480); text via argv; text via stdin — **runs only under the containment of the SC-211l section** |
 | SC-211n | `events-tail` | plain; against a session with no `events.jsonl` yet (ae:14897); bounded follow with a produced event; an unknown argument |
 | SC-212c | `requests` | the three-mode signature captured as a set, from an agent that is both a sender and a target (H7) |
 
@@ -136,14 +164,68 @@ Every case captures per invocation: stdout, stderr, rc, the delegated tmux argv,
 before/after file manifest, and — for the writing helpers — the write witness and change
 record. Each case also runs its own positive control invocation through the same helper.
 
+### SC-211l containment — the one row whose blast radius leaves the sandbox
+
+Every other write in this batch lands inside the fixture's `AE_HOME`. `say` does not stop
+there, and A8's mutation machinery — harness-touched set, content record, write witness —
+covers filesystem writes and says nothing about a network side effect.
+
+**Measured mechanism first.** `helper_say_main` (ae:14470-14486) performs no network call:
+it appends a `chat` event via `ae_emit_event` and prints one line. The hop that leaves the
+machine belongs to a SEPARATE bridge process which tails a session's events file. The
+blast radius is therefore INDIRECT — a bridge whose watch root contains the fixture would
+forward what the arm writes — and containment has to address that path, not the helper.
+
+**Three layers, and none of them is trusted without a demonstration.**
+
+1. **Structural.** The bridge takes its root from `AE_HOME` (`telegram-daemon:10-11`:
+   `AE_HOME="${AE_HOME:-$HOME/.ae}"`, `SESSIONS_DIR="$AE_HOME/sessions"`), and this batch's
+   fixtures set `HOME` and `AE_HOME` into the arm's own temp tree. The arm CAPTURES, per
+   run, every live bridge process with its own environment read from the process (not from
+   this design's assumption), and the fixture path, so "outside the watch root" is a
+   recorded comparison rather than a claim. Recorded before the measured invocation AND
+   after it, because a bridge can start mid-arm.
+2. **Behavioral.** The arm runs under PATH-first `curl`/`wget` stubs that REFUSE and log
+   rather than delegate. Nothing in the arm's environment can reach the network even if a
+   surface tried.
+3. **Demonstrated.** A recorder nobody has seen fire is not evidence of silence — the
+   SC-814 canary lesson. Before any zero is relied on: the `curl` stub is invoked
+   deliberately in the same arm and its log line captured, and the bridge census is run
+   against a deliberately IN-RANGE control process (a throwaway process whose `AE_HOME` is
+   the fixture) and must report it. A census that cannot report an in-range watcher cannot
+   report their absence, and the arm is INCONCLUSIVE rather than contained.
+
+`lsof` is deliberately NOT the containment check: the bridge polls rather than holding the
+events file open, so a single-instant probe would report nothing while a watcher was
+active — a zero that means nothing.
+
 **A-H4 name resolution grammar (SC-211p).** H5's colliding fixture, invoked through a
-helper that resolves and then refuses cheaply (`focus`), across: exact `alias:name`;
-alias-only where unique; alias-only where AMBIGUOUS; bare name where unique; bare name
-where ambiguous; `%pane-id` live and dead; `@session:agent` for both sessions; a
-`@session:agent` naming a session that does not exist; an empty string. The fixture is
-built so that a resolver that takes the first match and one that requires uniqueness
-give DIFFERENT answers — without the ambiguous pair the arm cannot produce the wrong
-answer, and "all readings agree" would be a fact about the fixture.
+helper that resolves and then refuses cheaply (`focus`).
+
+SC-211p is a GRAMMAR row, and grammar evidence has to show the grammar DISCRIMINATING
+rather than merely refusing: distinct causes that collapse into one refusal message would
+be faithfully reproduced as a collapse by anyone reimplementing from the evidence. So each
+resolution branch gets an OPPOSED PAIR — one input that the branch can resolve and one it
+cannot, differing only in the property that branch is about:
+
+| Branch | Resolves | Does not resolve |
+|---|---|---|
+| bare name | a bare name unique across the fixture | a bare name carried by two agents |
+| `%pane-id` | a live pane id | a pane id whose pane is dead (retained in meta) |
+| `@session:agent` | an agent that exists in the named session | a session that exists with NO such agent |
+| `@session:agent`, session leg | the other live session | a session name that does not exist |
+| alias-only | an alias unique in the fixture | an alias carried by two agents |
+| exact `alias:name` | the exact pair | an exact pair whose name is not in that alias |
+
+**Scope ruling on the lead's open question:** cross-session `@session:agent` and
+alias-only-when-unique DO get their own pairs, for the same reason as the other three —
+each is a distinct branch of the same grammar (ae:12878 onward) whose failure lands in the
+same refusal, so dropping them would leave exactly the collapse this row exists to prevent.
+They are not out of scope; they are two more rows in the table above, and H5 already
+carries two live sessions, so they cost fixtures nothing.
+
+An empty string and a name containing the `:` delimiter twice are captured as inputs that
+belong to no branch.
 
 **A-H5 codex identity (SC-211o).** H6. `_register-sid` invoked from the codex-shaped
 pane with a well-formed id; from a pane whose slot differs from the one named; twice with
