@@ -129,7 +129,7 @@ or defect report may become authority.
 
 ---
 
-## 1. The method — thirteen enforced mechanisms
+## 1. The method — the enforced mechanisms (M1–M15)
 
 ### M1 — candidate space stated, outcome absent; the lint covers the surface table
 Every RED arm carries a mandatory `CANDIDATE SPACE:` field **naming candidate A and candidate B
@@ -253,6 +253,10 @@ not exist yet, so **M11 is `PENDING-DEPENDENCY` and no arm runs until it lands.*
 ### M12 — symmetry as a mechanism
 As §0, instantiated per row in §4, for all six L2 rows.
 
+*(M13 canaries, M14 named blocks and M15 the lane-unit contract follow below. The heading names
+the range rather than a spelled-out total: a hand-maintained count is a transcription, and this
+document has already shipped one prose count that disagreed with its own roster.)*
+
 ### M14 — shared blocks are machine-addressable, never prose inheritance *(colead v4 BLOCKER 6)*
 v4 claimed every RED arm was a standalone execution-grain spec and it was not: nine arms
 delegated fixture, barriers, captures or calibration to a sibling by prose ("as arm 22"), which
@@ -277,6 +281,34 @@ has now been asserted twice with no mechanism behind it.
 sub-constructions and three manipulations against its own one-manipulation rule, with a single
 generic calibration covering all three. It is split into three arms (§3A). The linter counts
 declared manipulations per arm and rejects any arm declaring more than one.
+
+### M15 — the lane-unit contract *(lead ruling on the v6 judgment call, binding)*
+Where an arm runs under a pinned selector that is itself the controlled variable, **the unit of
+closure is `(arm_id, lane)`**, and three conditions bind — stated here as a general rule because
+v6 carried them only as incidental phrasing inside two row sections, which is not the same as
+having them:
+
+1. **The checker expands, validates and COUNTS per pair.** No number anywhere in this design, in
+   any generated table, or in any artifact header may state a spec count where a unit count is
+   meant. v6 had exactly that defect in its execution order, which named 37 in a context that
+   means 47.
+2. **The lane is visible per unit and NO AGGREGATE READING IS AVAILABLE.** Every artifact
+   directory, every captured TSV row, every calibration row and every canary record carries its
+   `lane` field. **The generators emit no cross-lane total, union or merged set** — a number that
+   spans lanes is a lint failure, because an aggregate silently re-creates the confound the
+   pinning exists to remove.
+3. **Calibration legs and M13 canaries are per unit and NEVER shared.** A canary registered in one
+   lane says nothing about the other; a neutral leg that reported `NO` in one lane does not
+   satisfy M3 for the other.
+
+**Why this is a matrix rather than the inheritance shape twice rejected** (the lead's test, kept
+because it settles the question rather than the instance): the distinguishing test is
+**attribution** — can a result be attributed to exactly one manipulation? A lane pair is one
+manipulation under a pinned, recorded selector with nothing shared to confound it, so yes. v4's
+arm 13 bundled three manipulations, so no. **The test is the rule; the count of ids is not.** And
+sixteen hand-maintained near-copies would be worse: duplication invites drift, someone edits one
+and not the other, and nothing flags it — the same disease as the 62 retargeted references, with
+more surface.
 
 ### M13 — equipment canaries are CONTROLLER-generated, never product outcomes *(colead v3 IMPORTANT 3)*
 v3's recorder-liveness controls were phrased as "a known daemon start", "a known delivery", "a
@@ -389,7 +421,8 @@ state at expiry are recorded and no absence is inferred.
 (iii) per-arm M13 canaries; (iv) M12 Gate A + Gate B reachability for **every arm whose typed
 `m12` field is set** — derived from the typed rows by the checker, never from a prose count, which
 is how v5 said fifteen while its own roster said eighteen;
-(v) arms 1–37 in id order; (vi) generated tables. Any failure at (i)–(iv) stops the arms it
+(v) **all 47 executed units** — every `(arm_id, lane)` pair — in id order, lane-minor;
+(vi) generated tables. Any failure at (i)–(iv) stops the units it
 gates.
 
 **Named cut sites and barriers used below**, each a pinned citation (M9) against
