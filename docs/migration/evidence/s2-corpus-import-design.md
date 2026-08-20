@@ -5,6 +5,10 @@ Author: `opus5:s2builder`. Design only — no code was written and no file outsi
 this one was touched. Stage 2 is seat-gated and is not being entered by this
 document.
 
+**The contamination boundary in §0 and §9 is ratified house doctrine** (lead,
+2026-08-20) and binds every future builder, with the §9 narrowing: it attaches
+to recorded output **values**, never to schema.
+
 **What this rests on, as of 2026-08-20.** Stage 1 is under review round 5 and is
 NOT settled; `opus5:fixer2` holds the pen on both parity files, `gpt56sol:reviewer4`
 is read-only, and at least one more structural change (the raw-`Output` newtype,
@@ -74,7 +78,7 @@ references below are **illustrative only**.
 
 ---
 
-## 2. Two run modes; the seats must choose which is admissible
+## 2. Two run modes — **RULED: both, and they answer different questions**
 
 | Mode | Lane A | Lane B | Uses the committed corpus? |
 |---|---|---|---|
@@ -85,10 +89,37 @@ Only Mode B consumes batch-C/L. The two are not interchangeable: in Mode A both
 sides are reproducible and re-runnable; in Mode B one side is frozen history
 that can never be re-derived, only checked for integrity.
 
-**Row needed (R1): is Mode B admissible evidence at all, and for which
-question?** A replayed capture proves what the incumbent *did on the capture
-host at the capture commit*, not what it does now. That may be exactly what is
-wanted for a frozen-at-`72c7293` incumbent — but it is a seat call, not mine.
+**R1 — RULED (lead, 2026-08-20): both are admissible, and neither substitutes
+for the other.**
+
+### Why replay is admissible HERE, which is not the same as replay being fine
+
+A replayed capture proves what the incumbent *did on the capture host at the
+capture commit*, not what it does now. In general that gap makes replay weak
+evidence. It does not here, and the reason is specific and load-bearing: **the
+incumbent is FROZEN at `72c7293`.** "What does bash do" therefore has ONE
+immutable answer, and a recorded answer is as good as a fresh one.
+
+State the justification that way. "Replay is fine" would be a claim about replay;
+what is true is a claim about the freeze, and it stops being true the moment the
+incumbent unfreezes.
+
+### The constraint: replay is SILENT about the second platform
+
+The corpus was captured on **macOS/arm64**. Replay therefore cannot say anything
+about Linux/musl — and an arm that cannot fail a claim is not evidence for it.
+Replay cannot fail a platform-divergence claim, so it must never be cited for
+one.
+
+| Lane | What it is for |
+|---|---|
+| **live/live** | the **PLATFORM** lane, and the **acceptance** lane for any parity claim |
+| **replay** | the **BREADTH** lane — many surfaces cheaply, one platform only |
+
+**Every replay-backed row must carry `capture_platform` in its evidence
+string**, so a reader can see which question the evidence answered rather than
+having to reconstruct it. This is why `capture_platform` is a required
+provenance field in §6 and not a nice-to-have.
 
 ---
 
@@ -200,7 +231,8 @@ because they *cannot* be re-derived, descriptions are re-derived because they
 | `admissibility_ref` | the ledger row admitting this capture |
 | `checksums` | per-file, cryptographic |
 | `capture_platform` | GNU vs BSD userland changes behavior; a capture without it cannot be interpreted |
-| `captured_at` | ordering, and staleness against `source_commit` |
+| `captured_at` | ordering, staleness against `source_commit`, **and the base a replay harness needs to compute an mtime offset (F2)** |
+| `mtime_granularity` | the capture filesystem's real timestamp resolution. A per-capture fact, not a per-file one: APFS and ext4 differ, and a corpus that rounded has destroyed the difference before anyone could measure it (F2) |
 
 Per-arm `SHA256SUMS.txt` and an `_admissibility/` directory already exist, so
 the proposal is to **consume them**, not to invent a second scheme. That keeps
@@ -238,34 +270,74 @@ lying by omission. Either refuse the entry loudly, or import it flagged
 These are the findings I most want ruled on, because each one lets a run look
 clean while comparing something other than behavior.
 
-**F1 — directory modes are not reproduced.** Stage 1's `clone_to` preserves
-*file* permission bits but creates directories with the process umask. A corpus
-whose fidelity depends on directory modes cannot round-trip today. For ae this
-is not hypothetical: the whole `_publish_executable_artifact` chokepoint story
-is about modes. **Blocks faithful import until decided.**
+**F1 — directory modes are not reproduced. RULED: FIX in stage 1 post-verdict.**
+Stage 1's `clone_to` preserves *file* permission bits but creates directories
+with the process umask. Cheap to fix, and load-bearing here specifically:
+L-PURGE's validator taxonomy carries explicit **directory-0755 vs file-0644**
+classes, and the `_publish_executable_artifact` chokepoint story is entirely
+about modes. A corpus that silently umasks directory modes cannot replay a
+permission row.
 
-**F2 — mtimes are not captured at all.** The stage-1 manifest records path,
-kind, length, mode, symlink target and digest — no mtime. Bash ae reads mtimes
-(`_ae_stat mtime`, the staleness and activity paths). A replayed corpus whose
-mtimes are all "whenever import ran" can drive a lane down a different branch
-than the producer took, and the run would still look clean. **I rate this the
-highest-risk gap in the design.** It may need a manifest field, and therefore a
-stage-1 change after the review.
+**F2 — mtimes are not captured at all. RULED: FIX in stage 1 post-verdict.**
+The stage-1 manifest records path, kind, length, mode, symlink target and digest
+— no mtime. The grounds are harder than "ae reads mtimes somewhere": the **A2
+work established that `events.jsonl`'s mtime IS the frozen reader's activity
+clock**, and staleness reads pane and meta mtimes. A corpus that cannot
+reproduce mtimes cannot replay any staleness or activity row — and crucially it
+does not FAIL on them, it replays them **silently wrong**, which is this
+document's own "looks clean while comparing something other than behavior".
 
-**F3 — absolute symlinks escape the corpus.** Stage 1 copies symlinks verbatim
-rather than following them. Correct for capture; for *import* it means a corpus
-containing an absolute link (`/Users/...`, `~/.ae/...`) would point a lane at the
-real machine instead of at the clone. That is both a fidelity hole and a safety
-one. Proposal: import must detect corpus-escaping links and refuse or quarantine
-them — an integrity question (§6), not a judgement.
+Three refinements from the ruling, all of which change what stage 1 must record:
+
+1. **Capturing an mtime and RESTORING it are different problems, and restoring
+   is the one that matters.** A manifest field that is only ever read by humans
+   fixes nothing.
+2. **Do not assume second granularity.** APFS and ext4 differ. Capture at the
+   platform's real granularity and **record that granularity as its own field** —
+   a corpus that rounds has destroyed the difference before anyone could measure
+   it, and no later stage can recover it.
+3. **Staleness is RELATIVE** (`now - mtime`), so a faithful replay may need an
+   offset rather than an absolute stamp. Stage 1 owes the **data**, not the
+   policy: capture absolute mtime, record granularity, restore absolute on
+   import, and keep `captured_at` so a replay harness can compute the offset.
+   **Whether to shift the clock is stage 3's decision.** The job here is to make
+   sure stage 3 still HAS that decision instead of finding it foreclosed.
+
+**F3 — corpus-escaping symlinks. RULED: HARD REFUSAL, upgraded from fidelity to
+safety.** Stage 1 copies symlinks verbatim rather than following them — correct
+for capture. On *import* it means a corpus containing an absolute link
+(`/Users/…`, `~/.ae/…`) points a replay lane at **the human's real live state**:
+the lane could read it, and depending on the row, **write** it.
+
+The ruling goes past this document's first framing, and correctly. I called it a
+fidelity hole and a safety one; **the safety half dominates**. This is not a
+question about faithful replay, it is a question about blast radius, and it is
+answered before fidelity is even considered.
+
+**Import MUST refuse such an entry, loudly** — per R3: damage visible, never
+rendered as legitimate sparsity. Quarantine is acceptable; silently following
+the link is not. It stays inside what import may answer because it is an
+integrity question (§6), not a judgement about behavior.
 
 **F4 — non-UTF-8 paths are lossy.** Stage 1 records paths through
 `to_string_lossy` and declares non-UTF-8 names out of scope. If any real corpus
 entry carries one, import cannot round-trip it and must say so rather than
 mangle it.
 
-**F5 — uid/gid are not captured.** Probably out of scope; recorded so it is a
-decision rather than a discovery.
+**F5 — uid/gid are not captured. RULED: ACCEPTED as a declared limitation.**
+
+### Where F4 and F5 must be declared
+
+**Not only here.** A limitation a future reader can find only by reading a
+300-line design document is a limitation nobody will find. F4 and F5 belong in
+**the corpus's own README**, next to the data they constrain, so that anyone who
+opens the corpus meets them before they trust it.
+
+The corpus does not exist yet — stage 2 creates it — so this is a **stage-2
+deliverable requirement**, not an edit anyone can make today: whatever import
+produces must carry a README declaring its own fidelity limits. (If an existing
+file was meant instead, name it and I will write it; I am not guessing at
+someone else's file.)
 
 ---
 
@@ -288,6 +360,43 @@ A round-trip that loses mtimes, directory modes, or a symlink target fails
 visibly — which is why F1–F4 above are worth settling first: the acceptance test
 is exactly the thing that would catch them.
 
+**RULED (lead, 2026-08-20): sufficient for stage-2 acceptance; stage 3 stays a
+separate gate.** Three requirements attach, and none is optional.
+
+### (a) Red-proof the round-trip
+
+Deliberately corrupt **one byte, one mode, and one mtime** in the synthetic
+fixture and prove the round-trip reports each one. A round-trip that cannot fail
+proves nothing. That principle has already cost this session a rerun and five
+review rounds; it is not a formality, and "the test passes" is not evidence that
+it would ever have failed.
+
+### (b) The fixture set must instantiate every fidelity class we decided to fix
+
+One instance of each, so that each decision is proven rather than documented:
+
+| Fixture | Proves |
+|---|---|
+| a directory whose mode is **not** 0755 | F1 — directory modes survive |
+| a file with a distinctive **non-now** mtime | F2 — mtime is restored, not stamped at import |
+| a corpus-**internal** symlink | links round-trip as links |
+| a corpus-**escaping** symlink | **F3 — refusal** |
+
+The escaping link is the only fixture whose expected outcome is a **failure**,
+which makes it the only one that proves F3 is real rather than merely written
+down. A refusal path with no fixture exercising it is a paragraph, not a
+behavior.
+
+### (c) The raw-handle denial must be STRUCTURAL, not prose
+
+Per §4's generalisation, and as an acceptance criterion rather than a
+recommendation: **the round-trip must fail to COMPILE if import hands back a raw
+handle to a recorded observation.** Prose asking a future implementer to
+remember is not a guard; a type that cannot express the mistake is.
+
+Match whatever newtype `fixer2` settles on in round 5 — and take the **current**
+shape at implementation time, not the shape recorded here.
+
 ---
 
 ## 9. Contamination boundary — who may read what
@@ -302,6 +411,23 @@ that can contaminate a builder. Proposal:
 
 This document is a small proof the second is workable: it was written without
 opening a single artifact.
+
+### RULED — the boundary is narrower than this document first drew it
+
+**SCHEMA IS NOT VALUE.** The contamination risk is recorded **output values**,
+not field names: knowing that `manifest.json` has a digest field does not tell
+anyone what bash printed. This document drew the line too conservatively.
+
+So **G1 is dischargeable by a schema document** — field inventory, types,
+cardinality, and one synthetic example per field with **invented** values —
+which the design author may read without contamination. A dedicated worker is
+being spawned whose only job is that inventory; it becomes contaminated by the
+reading and therefore never implements product rows, which costs nothing,
+because inventory is all it will ever do. The pen on this design stays here.
+
+The general form is worth keeping: **contamination attaches to values, not to
+structure.** A builder can know the shape of the evidence without knowing the
+evidence.
 
 ---
 
@@ -329,29 +455,61 @@ Dependent on **schemas I have not read (G1)**: the real shape of `MANIFEST.md`,
 proposal for what import *needs*; reconciling it to what those files *are* is
 unstarted and is not something I should do myself (§0, §9).
 
-Dependent on **seat rulings**: R1–R5 below.
+Dependent on **seat rulings**: R1 and R3 are now ruled (§12); R2 and R4 remain
+open in wording; **R5 stays deliberately unassigned**. See §11.
 
 ---
 
 ## 11. Contract rows this would need
 
-| Id | Row |
-|---|---|
-| **R1** | Is replay-mode evidence admissible, and for which question? |
-| **R2** | Producer/lane neutrality in the corpus (may just restate reviewer4's rule). |
-| **R3** | What a failed integrity check does — refuse, or import visibly degraded? Proposed to follow SC-506/SC-509b. |
-| **R4** | What a corpus entry MUST carry to be importable (the §6 minimum). |
-| **R5** | **What counts as agreement.** Explicitly not mine, not the harness's, not the importer's. Named here only so that its absence is a recorded gap rather than a silent one. |
+| Id | Row | Status |
+|---|---|---|
+| **R1** | Replay-mode admissibility, and for which question. | **RULED** — admissible *because the incumbent is frozen*; macOS/arm64 only, so never citable for platform divergence; `capture_platform` required in every replay-backed evidence string (§2). Still owes a written row. |
+| **R2** | Producer/lane neutrality in the corpus. | Open — may merely restate reviewer4's rule (§4). |
+| **R3** | What a failed integrity check does. | **RULED** — refuse loudly or quarantine; never silent, never rendered as legitimate sparsity, following SC-506/SC-509b. F3's escaping symlink is the hard-refusal case (§6, §7). |
+| **R4** | What a corpus entry MUST carry to be importable. | Open in wording; the §6 minimum now also carries `capture_platform` (R1) and the mtime + granularity fields (F2). |
+| **R5** | **What counts as agreement.** | **Deliberately unassigned.** Not this document's, not the harness's, not the importer's. Named so its absence stays a recorded gap rather than a silent one. |
 
 ---
 
-## 12. Questions for the lead
+## 12. Questions for the lead — **ALL FOUR RULED (2026-08-20)**
 
-1. Mode A, Mode B, or both (R1)? It decides whether the committed corpus is on
-   the critical path at all.
-2. Do F1 (directory modes) and F2 (mtimes) get fixed in stage 1 post-verdict, or
-   accepted as declared corpus limitations? I recommend fixing F2 — a lane that
-   branches on mtime makes a clean-looking run meaningless.
-3. Who reconciles G1 against the real schemas, given §9's contamination boundary?
-4. Is the round-trip acceptance test in §8 sufficient for stage 2, so that stage
-   3 stays a separate gate?
+Recorded inline so this document stands alone.
+
+**1. Which mode? — BOTH, with a provenance constraint.** They answer different
+questions and neither substitutes. Replay is admissible *because the incumbent
+is frozen at `72c7293`*, which gives "what does bash do" one immutable answer —
+not because replay is generally sound. The corpus is macOS/arm64 only, so replay
+is silent about Linux/musl and can never be cited for a platform-divergence
+claim. **live/live is the platform and acceptance lane; replay is the breadth
+lane; every replay-backed row carries `capture_platform`.** See §2.
+
+**2. F1 and F2? — FIX BOTH in stage 1 post-verdict, and F3 too, upgraded.**
+F2's grounds are harder than first stated (A2: `events.jsonl` mtime IS the
+frozen reader's activity clock) and the ruling adds three requirements —
+restoring matters more than capturing, granularity is its own recorded field
+because APFS and ext4 differ, and `captured_at` must survive so stage 3 can
+still choose whether to shift the clock. F1 is load-bearing via L-PURGE's
+directory-0755/file-0644 taxonomy. **F3 is upgraded from fidelity to a hard
+refusal on blast-radius grounds.** F4 and F5 are accepted as declared
+limitations and must appear in the corpus's own README. See §7.
+
+**3. Who reconciles G1? — not the design author, and the boundary is narrower
+than this document drew it.** Schema is not value; contamination attaches to
+recorded output values, not to field names. A dedicated worker produces a schema
+inventory with invented example values, which the design author may read safely.
+See §9.
+
+**4. Is the §8 round-trip sufficient? — YES**, with stage 3 a separate gate, and
+with three attached requirements: red-proof it against a corrupted byte, mode
+and mtime; instantiate every fidelity class in the fixture set including the
+escaping-symlink refusal case; and make the raw-handle denial a compile-time
+acceptance criterion rather than prose. See §8.
+
+### Still open
+
+- **R5 — what counts as agreement.** Unassigned by design. Named so its absence
+  stays a recorded gap.
+- **R2** — whether producer-neutrality needs its own row or merely restates
+  reviewer4's rule.
+- The **stage-1 verdict**, which can still move the layout (§10).
