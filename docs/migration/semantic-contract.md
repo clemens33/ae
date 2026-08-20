@@ -188,6 +188,19 @@ Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-019 — `jump` is an alias of `next`.** Bucket 2. Authority: commands.md:10-11.
 Empirical: pending. Conflict: none.
 
+**SC-017i — `--running` is the explicit spelling of the default filter.** Bucket 2.
+Authority: commands.md:83. Empirical: pending. Conflict: none.
+
+**SC-020a — `next --attach` switches inside tmux, attaches outside.** Bucket 2 —
+`tmux switch-client` when already in tmux, `tmux attach-session` otherwise; `--switch`
+is its alias. Authority: commands.md:155-157. Empirical: pending. Conflict: none.
+
+**SC-020b — `--attach` re-checks the session still exists first.** Bucket 1.
+Authority: commands.md:157-158. Empirical: pending. Conflict: none.
+
+**SC-020c — `--attach` no-ops with a message when already current.** Bucket 2.
+Authority: commands.md:158. Empirical: pending. Conflict: none.
+
 **SC-014 — `version` output surface.** `authority=code-observation` — prints the
 CalVer `AE_VERSION`; exact format unpinned by docs. Empirical: pending probe.
 Conflict: pending seat closure (UNCLASSIFIED).
@@ -199,17 +212,17 @@ item declared, every target id must exist):
 S1MAP: launch -> SC-100 SC-101 SC-102a SC-102b SC-813
 S1MAP: --local/--copy/--worktree -> SC-306
 S1MAP: --from -> SC-822 SC-823 SC-824a SC-824b SC-825a
-S1MAP: list -> SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-509 SC-506 SC-1306a
-S1MAP: ls -> SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-509 SC-506 SC-1306a
+S1MAP: list -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-509 SC-506 SC-1306a
+S1MAP: ls -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-509 SC-506 SC-1306a
 S1MAP: status -> SC-016a SC-016b SC-016c SC-016d SC-1306b
-S1MAP: next -> SC-513a SC-513b SC-513c SC-1306c
+S1MAP: next -> SC-513a SC-513b SC-513c SC-020a SC-020b SC-020c SC-1306c
 S1MAP: jump -> SC-019
 S1MAP: use -> SC-018 SC-018b
-S1MAP: end -> SC-516 SC-817 SC-819 SC-820a SC-820b SC-821a SC-821b SC-826
+S1MAP: end -> SC-516 SC-817 SC-819 SC-820a SC-820b SC-821a SC-821b SC-826 SC-838a SC-838b
 S1MAP: rm -> SC-011
 S1MAP: --purge-history -> SC-810a SC-810b SC-818a SC-818b SC-818c SC-818d SC-818e
-S1MAP: stop -> SC-835a SC-835b SC-835c SC-835d SC-835e SC-835f SC-835g SC-835h SC-1302
-S1MAP: stop all -> SC-515a SC-515b SC-515c SC-816
+S1MAP: stop -> SC-835a SC-835b SC-835c SC-835d SC-835e SC-835f SC-835g SC-835h SC-839a SC-839b SC-839c SC-839d SC-839e SC-1302
+S1MAP: stop all -> SC-515a SC-515b SC-515c SC-815a SC-815b SC-815c SC-815d SC-816
 S1MAP: rename -> SC-832a SC-832b SC-832c SC-1303 SC-813
 S1MAP: transfer -> SC-833a SC-833b SC-833c SC-833d SC-814 SC-1304a SC-1304b SC-1304c SC-1304d
 S1MAP: compact -> SC-500 SC-501 SC-502 SC-503a SC-503b SC-504a SC-504b SC-512 SC-517a SC-517b SC-517c SC-827 SC-828 SC-829a SC-829b SC-830 SC-831 SC-836 SC-837 SC-1305
@@ -235,11 +248,15 @@ S1MAP: -V/--version -> SC-014
 S1MAP: exit codes -> SC-513a SC-514 SC-515a SC-516 SC-517a SC-508
 ```
 
-Alias rule — JOINT NORMATIVE RULING (both seats, 2026-08-20): an alias inherits the
-FULL canonical target set of its surface, always (`ls`→list, `jump`→next,
-`loop`→watchdog, help/version flags→SC-012/SC-014); a partial alias mapping is a
-finding. `use` is NOT an alias (own rows SC-018/018b). The aggregate "refusal
-contracts" pseudo-item is DELETED — per-surface rows own their refusals (gate ruling).
+Alias rule — JOINT NORMATIVE RULING (both seats, 2026-08-20, revised per confirmation
+gate): TWO alias models, consistently applied. (a) PASS-THROUGH aliases with an own
+identity row (`rm`→SC-011, `jump`→SC-019, `hub`→SC-939f): the row asserts operation
+identity and equivalence is TRANSITIVE to the canonical surface's full set — the map
+lists the identity row only. (b) SPELLING aliases without own rows (`ls`, `loop`,
+`-h/--help`, `-V/--version`): the map lists the FULL canonical target set; a partial
+spelling-alias mapping is a finding. `use` is NOT an alias (own rows SC-018/018b).
+The aggregate "refusal contracts" pseudo-item is DELETED — per-surface rows own their
+refusals (gate ruling).
 
 ### S3 — Generated helper CLIs (every one — census: `helper_*_main` at 72c7293)
 
@@ -1098,6 +1115,40 @@ commands.md:325-330. Empirical: census-2. Conflict: none.
 
 **SC-835f — `-y` skips the self-stop confirmation.** Bucket 2 — required when no
 terminal can ask. Authority: commands.md:333-334. Empirical: pending. Conflict: none.
+
+**SC-838a — end history policy precedence is CLI > session config > keep.** Bucket 2 —
+`--purge-history`/`--keep-history` force this run; `[workspace] purge_agent_history`
+is the session default; unset means KEEP. Authority: commands.md:459-465. Empirical:
+pending. Conflict: none.
+
+**SC-838b — `end all` resolves and lists both decisions per session.** Bucket 2 — one
+line each: which archive path (or none, and which archive is deleted) and whether
+conversation files are kept — the purge default is per-session config, so no single
+sentence covers all. Authority: commands.md:453-458. Empirical: pending.
+Conflict: none.
+
+**SC-839a — `--self` waives exactly one check.** Bucket 1 — the controlling-terminal
+proof (C5) and NOTHING else; server and pane identity are still proven. Authority:
+commands.md:417-421. Empirical: pending. Conflict: none.
+
+**SC-839b — `--pane` accepts only a shape-checked tmux pane id.** Bucket 1 — `%N`
+form, tmux-generated; nothing attacker-influenced enters the command ($TMUX_PANE in a
+run-shell child names some other pane — measured). Authority: commands.md:423-430.
+Empirical: measured exhibit in the doc. Conflict: none.
+
+**SC-839c — the stop identity checks are C1–C5.** Bucket 1 — inside tmux with a pane
+id; the server answers for itself; it is the session's recorded server; the pane is in
+that session; the controlling terminal is that pane's (the one C5 `--self` waives).
+Authority: commands.md:431-434. Empirical: pending. Conflict: none.
+
+**SC-839d — a stop refusal names the failed check.** Bucket 1 — e.g. `refusing: C4 —
+pane %0 is in 'alpha', not 'beta'`; the named fact says what to fix. Authority:
+commands.md:430-434. Empirical: pending. Conflict: none.
+
+**SC-839e — the no-name form keeps tmux-controlled text out of shell programs.** Bucket
+1 — ae resolves the target itself; no tmux-expanded text (session names with quotes or
+`$(…)`) enters a shell string. Authority: commands.md:408-414. Empirical: pending.
+Conflict: none.
 
 **SC-836 — `purge_agent_history` refuses compact unless `--keep-history`.** Bucket 1 —
 the config contradicts an operation whose purpose is keeping the record; the override
