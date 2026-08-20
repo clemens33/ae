@@ -11,6 +11,7 @@ CRIT-ASSIGN: D02 | C | read-side fixture cluster: `requests` query (generated he
 CRIT-ASSIGN: D03 | C | read-side fixture cluster: events queries (`events-tail` helper, dispatcher event reads)
 CRIT-ASSIGN: D04a | C | read-side fixture cluster: `status`
 CRIT-ASSIGN: D04b | C | read-side fixture cluster: `next`
+CRIT-ASSIGN: SC-012b | H-HELPER | bare/flag-invocation help-path probe: capture dispatcher stdout/stderr/rc for top-level -h/--help and dispatcher-fallback invocations (ae help itself is SC-012, marked)
 CRIT-ASSIGN: SC-013 | H-HELPER | steward --help/--detach invocation arm, captured usage/rc
 CRIT-ASSIGN: SC-014 | H-HELPER | version output capture arm
 CRIT-ASSIGN: D14b | H-HELPER | doctor --refresh launch-artifact half: regenerate and diff launch.<slot>.sh publication path

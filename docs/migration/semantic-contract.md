@@ -120,8 +120,10 @@ default-name resolution (`default_session_name` guarantees the grammar).
 
 **SC-100 — a derived default session name GUARANTEES the grammar.** Bucket 1 —
 `default_session_name` produces a valid name for ANY working directory rather than
-being checked against the grammar afterwards. Authority: AGENTS.md session-name bullet
-(ruling). Empirical: unit pins @72c7293. Conflict: none.
+being checked against the grammar afterwards. Authority: AGENTS.md@72c7293:164
+session-names bullet ("`default_session_name` (which *guarantees* the grammar for any
+PWD rather than being checked against it)") (ruling). Empirical: unit pins @72c7293.
+Conflict: none.
 
 **SC-101 — the running-session fast path's mutation exclusion.**
   Empirical: census-2 launch section. Conflict: pending seat closure (UNCLASSIFIED).
@@ -141,11 +143,24 @@ ruling. UNCLASSIFIED pending closure.
 inside-session decision surface; probe + seat ruling. UNCLASSIFIED pending closure.
 
 **SC-011 — `rm` is an alias of `end`.** Bucket 2 — same operation, both spellings.
-Authority: commands.md end section. Empirical: pending. Conflict: none.
+Authority: commands.md@72c7293:33 usage synopsis ("ae end|rm [-f]
+[--purge-history|--keep-history] [name]") — anchor corrected: the frozen doc has no
+dedicated end section; the synopsis line is the claim-bearing sentence.
+Empirical: pending. Conflict: none.
 
-**SC-012 — `help` prints usage.** Bucket 2 — `ae help` (and the bare-invocation help
-path) prints the command surface; inherits the M2 bootstrap caveat like every
-dispatcher entry. Authority: commands.md. Empirical: pending. Conflict: none.
+**SC-012 — `ae help` prints the short command surface.** Bucket 2 — narrowed to the
+documented outcome only (seat ruling ae-20260820T165746Z-fb9c4fb6): `ae help` prints
+the short command surface; inherits the M2 bootstrap caveat like every dispatcher
+entry. This row does NOT cover bare invocation — commands.md:4 owns bare `ae [name]`
+as launch/reattach, not help (residue: SC-012b). Authority: commands.md@72c7293:39
+("ae help — Show short help"). Empirical: pending. Conflict: none.
+
+**SC-012b — help-path reachability outside `ae help`.** `authority=code-observation`
+— which invocations other than the literal `ae help` reach the help output (top-level
+`-h`/`--help`, or any dispatcher fallback) is undocumented in the frozen docs; bare
+`ae [name]` is launch/reattach per commands.md:4, and SC-022 separately owns the
+unknown-OPTION usage-error surface. Probe + seat ruling. Empirical: pending probe.
+Conflict: pending seat closure (UNCLASSIFIED).
 
 **classified_by (S1 preflight MARK, ae-20260820T115449Z-1b7ef041): SC-016a, SC-016b,
 SC-016c, SC-016d, SC-017a..i, SC-020a, SC-020b, SC-020c — fable5:lead +
@@ -204,14 +219,25 @@ attn marker.** Bucket 2. Authority: commands.md:56-59. Empirical: pending.
 Conflict: none.
 
 **SC-018 — `ae [name] use <alias>` starts the session with that agent as main.**
-Bucket 2. Authority: commands.md:5. Empirical: pending. Conflict: none.
+Bucket 2. Authority: commands.md@72c7293:5 ("ae [name] use <alias> — Start session
+with a specific agent as main"). Empirical: pending. Conflict: none.
 
 **SC-018b — `use` interaction with resume.** `authority=code-observation` — what
 `use` does against an existing/resumable session is undocumented; probe + seat ruling.
 Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 
-**SC-019 — `jump` is an alias of `next`.** Bucket 2. Authority: commands.md:10-11.
-Empirical: pending. Conflict: none.
+**SC-019 — `jump` is an alias of `next`.** Bucket 2. Authority: commands.md@72c7293:10-11
+("alias: ae jump" in the next synopsis) + section head :138 ("ae next (alias
+ae jump)"). Empirical: pending. Conflict: none.
+
+**classified_by (S1/S2 MARK batch 3, ae-20260820T165746Z-fb9c4fb6): SC-100, SC-011,
+SC-012, SC-018, SC-019 — fable5:lead + gpt56sol:colead, 2026-08-20. Exact
+enumeration; later rows never inherit this mark. SC-100 bucket 1, the rest bucket 2;
+conflict=none throughout. Marked with the countersign condition applied first:
+SC-012 narrowed to the documented `ae help` outcome, with bare-invocation help-path
+reachability split out as the NEW code-observation residue SC-012b (NOT marked;
+UNCLASSIFIED, Q3, CRIT-ASSIGN H-HELPER in-class with SC-013/SC-014).
+Normative/conflict lane only; Empirical remains pending where so marked.**
 
 **SC-017i — `--running` is the explicit spelling of the default filter.** Bucket 2.
 Authority: commands.md:83. Empirical: pending. Conflict: none.

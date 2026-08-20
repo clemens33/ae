@@ -2,10 +2,10 @@
 
 - Snapshot: contract sources read from `git show HEAD` at `ba116fe3d11b6637e9ccf6e6bf1fb4c08cd88a84`; worktree dirty: yes (non-contract changes present).
 - Scope: SC rows only. Ownership D records are excluded from all queues: 43 canonical D records (D01–D31 with letter splits); their TBD-field closures remain in evidence batches.
-- Canonical SC rows: 425; raw qualifications Q1=148, Q2=35, Q3=122; Q2∩Q3=15.
-- Emitted queues after precedence Q2 > Q3 > Q1: Q1=148, Q2=35, Q3=107; already-closed=133; no-queue anomalies=2.
-- Reconciliation: 148 Q1 + 35 Q2 + 107 Q3 + 133 already-closed + 2 no-queue = 425 canonical SC rows. The 15 dual Q2/Q3 rows are resolved to Q2 and are not added twice. The canonical delta from the stale 424-row snapshot is SC-1106 (added in the current contract).
-- Manifest cross-check (orthogonal criticality labels, not queue criteria): ratification-critical.md at this snapshot reports CRITICAL=324 + DEFERRABLE=103 + OBSERVED=41 = 468 total IDs (425 SC + 43 D).
+- Canonical SC rows: 426; raw qualifications Q1=143, Q2=35, Q3=123; Q2∩Q3=15.
+- Emitted queues after precedence Q2 > Q3 > Q1: Q1=143, Q2=35, Q3=108; already-closed=138; no-queue anomalies=2.
+- Reconciliation: 143 Q1 + 35 Q2 + 108 Q3 + 138 already-closed + 2 no-queue = 426 canonical SC rows. The 15 dual Q2/Q3 rows are resolved to Q2 and are not added twice. Canonical deltas from the stale 424-row snapshot: SC-1106, then SC-012b (bare-invocation residue split from SC-012 by seat ruling ae-20260820T165746Z-fb9c4fb6).
+- Manifest cross-check (orthogonal criticality labels, not queue criteria): ratification-critical.md at this snapshot reports CRITICAL=325 + DEFERRABLE=103 + OBSERVED=41 = 469 total IDs (426 SC + 43 D).
 - Derivation: Q1 requires an explicit docs/ruling anchor in Authority, conflict=none, and no per-row or block classified_by mark. Q2 includes every Bucket 3/4 row and preserves its fix-known-defect issue or DR reference, regardless of mark status. Q3 requires Authority beginning with code-observation, Authority beginning with UNRESOLVED, or an explicit UNCLASSIFIED conflict; each emitted Q3 row uses its CRIT-ASSIGN batch. Rows are read at row-paragraph grain; family/range marks are expanded only to their declared exact IDs.
 - Mark states: `block-marked` = S1 preflight, exact S6 frozen set, S9 SC-800..831, or S13 SC-1200..1209; `per-row-marked` = explicit row classified_by (including S1MAP/ratification-day marks and the S3 delivery/routing and helper-signature blocks); otherwise `genuinely-unmarked`.
 - Anomalies: no-queue=SC-211k, SC-211m; dual Q2/Q3=SC-920, SC-921, SC-926, SC-927, SC-928, SC-929, SC-958, SC-963, SC-964, SC-965, SC-966, SC-967, SC-968, SC-969, SC-976a; Q3 rows without a CRIT-ASSIGN line=SC-832b, SC-832c, SC-833b, SC-833c, SC-833d, SC-834b, SC-834c.
@@ -13,11 +13,6 @@
 ## Q1 — strong normative authority, conflict=none, genuinely unmarked
 
 id | bucket | exact claim-bearing authority anchor | conflict enum | batch (Q3 only) | annotation
-SC-100 | 1 | AGENTS.md | none | — | genuinely-unmarked
-SC-011 | 2 | commands.md | none | — | genuinely-unmarked
-SC-012 | 2 | commands.md | none | — | genuinely-unmarked
-SC-018 | 2 | commands.md:5 | none | — | genuinely-unmarked
-SC-019 | 2 | commands.md:10-11 | none | — | genuinely-unmarked
 SC-211o | 2 | commands.md:711-723 + DR-005 | none | — | genuinely-unmarked
 SC-211p | 2 | AGENTS.md | none | — | genuinely-unmarked
 SC-300a | 2 | AGENTS.md | none | — | genuinely-unmarked
@@ -207,6 +202,7 @@ id | bucket | exact claim-bearing authority anchor | conflict enum | batch (Q3 o
 SC-101 | — | code-observation | UNCLASSIFIED | C | genuinely-unmarked
 SC-102a | — | code-observation | UNCLASSIFIED | C | genuinely-unmarked
 SC-102b | — | code-observation | UNCLASSIFIED | C | genuinely-unmarked
+SC-012b | — | code-observation | UNCLASSIFIED | H-HELPER | genuinely-unmarked
 SC-013 | — | code-observation | UNCLASSIFIED | H-HELPER | genuinely-unmarked
 SC-018b | — | code-observation | UNCLASSIFIED | C | genuinely-unmarked
 SC-014 | — | code-observation | UNCLASSIFIED | H-HELPER | genuinely-unmarked
@@ -325,3 +321,4 @@ S12 per-row mark | 2026-08-20 | SC-980
 S13 exact frozen set | 07e2770 | SC-1200, SC-1201, SC-1203, SC-1204, SC-1206, SC-1208, SC-1209
 S3 delivery/routing MARK batch 1 | ae-20260820T163523Z-e935697d | SC-201, SC-202, SC-203, SC-205, SC-206, SC-207, SC-208, SC-209a, SC-209b, SC-209c, SC-209d
 S3 helper-signature MARK batch 2A | ae-20260820T164044Z-f958a368 | SC-212a, SC-212b, SC-212c, SC-212d, SC-212e, SC-212f, SC-212g, SC-212h, SC-212i, SC-212j, SC-212k, SC-212l, SC-212m, SC-212n, SC-212o, SC-212p, SC-212q, SC-212r, SC-212s
+S1/S2 MARK batch 3 | ae-20260820T165746Z-fb9c4fb6 | SC-100, SC-011, SC-012, SC-018, SC-019

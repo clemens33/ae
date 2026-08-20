@@ -2,11 +2,11 @@
 
 Derived mechanically from the canonical set reported by sweep-check.sh; letters are criteria only.
 
-- Canonical IDs (checker at HEAD): SC=425, D=43, total=468; manifest lines=468 (exact; SET_EXTRA=0, SET_MISSING=0)
-- Class counts (mechanically regenerated 2026-08-20 post slice-1d + SC-021 (ls-alias row, s2 Q4): SC-510e/f event-format heads + SC-021 added; earlier folds retained): CRITICAL=324, DEFERRABLE=103, OBSERVED=41
-- Critical-letter counts (overlaps counted): A=124, B=39, C=61, D=198
+- Canonical IDs (checker at HEAD): SC=426, D=43, total=469; manifest lines=469 (exact; SET_EXTRA=0, SET_MISSING=0)
+- Class counts (mechanically regenerated 2026-08-20 post slice-1d + SC-021 (ls-alias row, s2 Q4): SC-510e/f event-format heads + SC-021 added; earlier folds retained; SC-012b bare-invocation residue added 2026-08-20 per seat ruling ae-20260820T165746Z-fb9c4fb6, CRITICAL(A) in-class with SC-013/SC-014): CRITICAL=325, DEFERRABLE=103, OBSERVED=41
+- Critical-letter counts (overlaps counted): A=125, B=39, C=61, D=198
 - D24 remains critical/non-observed pending its negative-evidence pointer; when it lands: CRITICAL=323, OBSERVED=42
-- Outstanding critical observations: 324. Clusters build only from the CRIT-ASSIGN table.
+- Outstanding critical observations: 325. Clusters build only from the CRIT-ASSIGN table.
 
 - A includes explicit UNCLASSIFIED, authority=code-observation, literal Authority: UNRESOLVED(...) rows, and D records whose TBD fields feed a seat ruling; ALREADY-OBSERVED takes pin-audit PROVES priority.
 
@@ -27,6 +27,7 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-011 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
 - D12 — OBSERVED (census-audit, two-lane closure)
 - SC-012 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
+- SC-012b — CRITICAL(A)
 - D13 — OBSERVED (census-audit, two-lane closure)
 - SC-013 — CRITICAL(A)
 - SC-014 — CRITICAL(A)
