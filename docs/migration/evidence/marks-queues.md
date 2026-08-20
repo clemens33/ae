@@ -2,9 +2,9 @@
 
 - Snapshot: contract sources read from `git show HEAD` at `ba116fe3d11b6637e9ccf6e6bf1fb4c08cd88a84`; worktree dirty: yes (non-contract changes present).
 - Scope: SC rows only. Ownership D records are excluded from all queues: 43 canonical D records (D01–D31 with letter splits); their TBD-field closures remain in evidence batches.
-- Canonical SC rows: 426; raw qualifications Q1=129, Q2=36, Q3=123; Q2∩Q3=15.
-- Emitted queues after precedence Q2 > Q3 > Q1: Q1=129, Q2=36, Q3=108; already-closed=151; no-queue anomalies=2.
-- Reconciliation: 129 Q1 + 36 Q2 + 108 Q3 + 151 already-closed + 2 no-queue = 426 canonical SC rows. SC-521a sits in Q2 (bucket-3 reclass, #96) although re-marked - Q2 membership is mark-independent by derivation. The 15 dual Q2/Q3 rows are resolved to Q2 and are not added twice. Canonical deltas from the stale 424-row snapshot: SC-1106, then SC-012b (bare-invocation residue split from SC-012 by seat ruling ae-20260820T165746Z-fb9c4fb6).
+- Canonical SC rows: 427; raw qualifications Q1=129, Q2=37, Q3=123; Q2∩Q3=15.
+- Emitted queues after precedence Q2 > Q3 > Q1: Q1=129, Q2=37, Q3=108; already-closed=151; no-queue anomalies=2.
+- Reconciliation: 129 Q1 + 37 Q2 + 108 Q3 + 151 already-closed + 2 no-queue = 427 canonical SC rows. Canonical delta three: SC-509c (reason-null defect row, ba95a5e seat read, #97). SC-521a sits in Q2 (bucket-3 reclass, #96) although re-marked - Q2 membership is mark-independent by derivation. The 15 dual Q2/Q3 rows are resolved to Q2 and are not added twice. Canonical deltas from the stale 424-row snapshot: SC-1106, then SC-012b (bare-invocation residue split from SC-012 by seat ruling ae-20260820T165746Z-fb9c4fb6).
 - Manifest cross-check (orthogonal criticality labels, not queue criteria): ratification-critical.md at this snapshot reports CRITICAL=325 + DEFERRABLE=103 + OBSERVED=41 = 469 total IDs (426 SC + 43 D).
 - Derivation: Q1 requires an explicit docs/ruling anchor in Authority, conflict=none, and no per-row or block classified_by mark. Q2 includes every Bucket 3/4 row and preserves its fix-known-defect issue or DR reference, regardless of mark status. Q3 requires Authority beginning with code-observation, Authority beginning with UNRESOLVED, or an explicit UNCLASSIFIED conflict; each emitted Q3 row uses its CRIT-ASSIGN batch. Rows are read at row-paragraph grain; family/range marks are expanded only to their declared exact IDs.
 - Mark states: `block-marked` = S1 preflight, exact S6 frozen set, S9 SC-800..831, or S13 SC-1200..1209; `per-row-marked` = explicit row classified_by (including S1MAP/ratification-day marks and the S3 delivery/routing and helper-signature blocks); otherwise `genuinely-unmarked`.
@@ -152,6 +152,7 @@ SC-210 | 4 | helpers.md + DR-004 | DR-004 | — | genuinely-unmarked
 SC-400b | 4 | DR-001 | DR-001 | — | genuinely-unmarked
 SC-400c | 4 | DR-006 + #79 + #76 | DR-006 | — | genuinely-unmarked
 SC-401b | 4 | DR-001 | DR-001 | — | genuinely-unmarked
+SC-509c | 3 | commands.md:124-125 + seat read ruling | fix-known-defect(#97) | — | per-row-marked (seat-read adoption)
 SC-521a | 3 | commands.md filter rows + joint ruling | fix-known-defect(#96) | — | per-row-marked (RE-MARKED after reclass)
 SC-704b | 3 | DR-005 | fix-known-defect(#56) | — | genuinely-unmarked
 SC-704c | 4 | DR-005 + #50 | DR-005 | — | genuinely-unmarked

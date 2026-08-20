@@ -93,6 +93,7 @@ CRIT-ASSIGN: SC-507c | L-COMPACT | compact tree: `archive preview` diagnostics g
 CRIT-ASSIGN: SC-507d | L-COMPACT | compact tree: `archive preview` is read-only by construction
 CRIT-ASSIGN: SC-508 | L-COMPACT | compact tree: residual undocumented exit codes
 CRIT-ASSIGN: SC-509 | C | read-side fixture cluster: list --json versioned object schema against fixture sessions
+CRIT-ASSIGN: SC-509c | C | ALREADY-OBSERVED (A3/A3b attention-fields @ba95a5e + code-read ae:3714); no new arm — seat classification done
 CRIT-ASSIGN: SC-510a | C | read-side fixture cluster: event required keys
 CRIT-ASSIGN: SC-510b | C | read-side fixture cluster: optional keys are omitted when empty
 CRIT-ASSIGN: SC-510c | C | read-side fixture cluster: `ref` polysemy follows the action table

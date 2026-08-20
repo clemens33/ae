@@ -833,6 +833,23 @@ authority here). Empirical: pending (builder implementation + C-cluster).
 Conflict: none.
 **classified_by: fable5:lead + gpt56sol:colead, 2026-08-20.**
 
+**SC-509c — `agents[].reason` carries the agent's own attention contribution.**
+Bucket 3 — fix-known-defect(#97) (final-grain row added by seat read of ba95a5e):
+SHOULD: agent-owned active contributions (dead, stale, waiting-user, blocked,
+throttled) populate THAT agent's `reason`; `reason: null` means no agent-owned
+contribution exists; session-only reasons (the aged-unanswered-request rank of
+SC-017g) remain session-level and never fabricate a per-agent reason. IS at 72c7293:
+every agent-owned reason renders null while session `attention` is non-null —
+ae:3714's `[[ -n "${_areason+x}" ]]` is false for a declared-but-empty associative
+array, so the FIRST contribution is never written (reproduced under
+/opt/homebrew/bin/bash). Documented contract broken: commands.md:124-125 (each
+agent's reason is its own contribution). Authority: commands.md:124-125 + seat read
+ruling. Empirical: observed (A3/A3b attention-fields @ba95a5e — null per-agent reason
+beside non-null session attention across all five reason classes; root cause
+code-read ae:3714). Conflict: fix-known-defect(#97, intended: populate per-agent
+reason; null = no contribution). SC-017g is NOT contaminated — its total-order IS is
+closed by A3b. **classified_by: both seats, 2026-08-20 (seat-read finding adopted).**
+
 **SC-518 — request closure requires the full mirror match.** Bucket 1 — (slice-1 Q6
 seat ruling, reversing the lead's scope confirmation): an unanswered request closes
 only on same ref AND reply.actor = request.target AND reply.target = request.actor;

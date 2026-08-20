@@ -92,8 +92,13 @@ consuming operation owns its own artifact publication and ports the chokepoint i
 
 - effects: read-only EXCEPT the inherited pre-dispatch bootstrap (M2, frozen #61)
 - current writer/call path: `cmd_list` (bootstrap: M2, pre-dispatch)
-- locks (ordered): TBD (incl. what torn states readers may observe)
-- atomicity boundary: snapshot semantics mid-write — TBD, becomes contract rows (S14)
+- locks (ordered): OBSERVED (D01 @ba95a5e, seat-transcribed): `list` takes NO lock.
+  M2's own lock chain stays census-owned (the D01 harvest does not speak to it).
+- atomicity boundary: OBSERVED (D01 barrier + controller-only twin @ba95a5e,
+  seat-transcribed): a reader past the meta-capture cut can emit the OLD goal value
+  beside the NEW `goal_set_epoch`/`last_active` after the fd200+event-fd8 goal writer
+  completes — a torn read across meta fields is a real observable state; a clean rerun
+  sees the new goal. Contract rows: S14 (SC-1306a family).
 - current owner: bash
 - planned owner/fate: **rust at P1**; M2 removed per #61 intended fix
 
@@ -101,8 +106,13 @@ consuming operation owns its own artifact publication and ports the chokepoint i
 
 - effects: none (helpers are outside the M2 bootstrap path — measured contrast; contract row)
 - current writer/call path: `helper_requests_main`
-- locks (ordered): TBD
-- atomicity boundary: TBD
+- locks (ordered): OBSERVED (D02 @ba95a5e, seat-transcribed): the request-scan reader
+  takes NO lock. The reply WRITER's lock chain is census-owned — classify it from the
+  census, not from D02's directly-harvested controller append.
+- atomicity boundary: OBSERVED (D02 barrier + controller-only twin @ba95a5e,
+  seat-transcribed): the scan is snapshot-semantic — a reply appended after the scan
+  completed leaves the CURRENT invocation's output `pending`; a clean rerun from the
+  resulting state reports `replied`. Contract row: SC-1306d.
 - current owner: bash
 - planned owner/fate: **rust at P1**
 
