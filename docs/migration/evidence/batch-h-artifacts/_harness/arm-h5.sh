@@ -104,17 +104,28 @@ s_equal_mtime()  { meta_set "launch_time.main" "$((NOW - 600))"
 s_diff_mtime()   { meta_set "launch_time.main" "$((NOW - 600))"
                    plant "$TODAY" cand-a $((NOW - 120)) "$(line "$ID_A" "$H_WORK" older)"
                    plant "$TODAY" cand-b $((NOW - 60))  "$(line "$ID_B" "$H_WORK" newer)"; }
-# The cwd fallback (ae:14794-14812) runs ONLY when the token pass found nothing
-# (ae:14793 `if [ -z "$best_id" ]`). Built without forcing that, both cwd cases had their
-# fact never consulted and read identically — same output, different reason. A launch-id
-# token that NO candidate carries makes the token pass select nothing, so the fallback is
-# reached and cwd is what decides.
-s_cwd_match()    { meta_set "launch_id.main" "TOK-NOBODY-CARRIES-THIS"
-                   meta_set "launch_time.main" "$((NOW - 600))"
-                   plant "$TODAY" cand-a $((NOW - 60)) "$(line "$ID_A" "$H_WORK" cwd-match)"; }
-s_cwd_differs()  { meta_set "launch_id.main" "TOK-NOBODY-CARRIES-THIS"
-                   meta_set "launch_time.main" "$((NOW - 600))"
-                   plant "$TODAY" cand-a $((NOW - 60)) "$(line "$ID_A" /tmp cwd-differs)"; }
+# TWO PAIRS, because they answer two different questions (seat disposition):
+#
+#   c09/c10 — TOKEN-PRECEDENCE CONTROLS. The candidate carries the matching token and the
+#   cwd differs between them. The cwd fallback at ae:14794-14812 is guarded by
+#   `if [ -z "$best_id" ]` (ae:14793), so while the token path selects, cwd is never read.
+#   These record that precedence; they are not a cwd test and are not labelled as one.
+#
+#   c15/c16 — THE CWD FALLBACK PAIR. A launch-id token that NO candidate carries makes the
+#   token pass select nothing, so the fallback IS reached and cwd is what decides. Every
+#   other byte and time is held constant between the two.
+s_tok_cwd_match()  { meta_set "launch_id.main" "TOK-MATCH"
+                     meta_set "launch_time.main" "$((NOW - 600))"
+                     plant "$TODAY" cand-a $((NOW - 60)) "{\"id\":\"$ID_A\",\"cwd\":\"$H_WORK\",\"x\":\"AE_CODEX_LAUNCH_ID=TOK-MATCH\"}"; }
+s_tok_cwd_diff()   { meta_set "launch_id.main" "TOK-MATCH"
+                     meta_set "launch_time.main" "$((NOW - 600))"
+                     plant "$TODAY" cand-a $((NOW - 60)) "{\"id\":\"$ID_A\",\"cwd\":\"/tmp\",\"x\":\"AE_CODEX_LAUNCH_ID=TOK-MATCH\"}"; }
+s_fb_cwd_match()   { meta_set "launch_id.main" "TOK-NOBODY-CARRIES-THIS"
+                     meta_set "launch_time.main" "$((NOW - 600))"
+                     plant "$TODAY" cand-a $((NOW - 60)) "$(line "$ID_A" "$H_WORK" fallback-cwd-match)"; }
+s_fb_cwd_differs() { meta_set "launch_id.main" "TOK-NOBODY-CARRIES-THIS"
+                     meta_set "launch_time.main" "$((NOW - 600))"
+                     plant "$TODAY" cand-a $((NOW - 60)) "$(line "$ID_A" /tmp fallback-cwd-differs)"; }
 s_malformed_id() { meta_set "launch_time.main" "$((NOW - 600))"
                    plant "$TODAY" cand-a $((NOW - 60)) '{"id":"NOT-A-UUID!!","cwd":"'"$H_WORK"'"}'; }
 s_empty_first()  { meta_set "launch_time.main" "$((NOW - 600))"
@@ -132,10 +143,12 @@ run_case h5-c05-older-than-launch  "main"     s_older_than   "a candidate older 
 run_case h5-c06-nonnumeric-time    "main"     s_nonnumeric   "a non-numeric launch time"
 run_case h5-c07-equal-mtimes       "main"     s_equal_mtime  "two candidates with equal mtimes"
 run_case h5-c08-different-mtimes   "main"     s_diff_mtime   "two candidates with different mtimes"
-run_case h5-c09-cwd-match          "main"     s_cwd_match    "a candidate whose cwd matches the invoking cwd"
-run_case h5-c10-cwd-differs        "main"     s_cwd_differs  "a candidate whose cwd differs"
+run_case h5-c09-token-precedence-cwd-match  "main" s_tok_cwd_match  "TOKEN-PRECEDENCE CONTROL: token matches, candidate cwd matches"
+run_case h5-c10-token-precedence-cwd-diff   "main" s_tok_cwd_diff   "TOKEN-PRECEDENCE CONTROL: token matches, candidate cwd differs"
 run_case h5-c11-malformed-id       "main"     s_malformed_id "a malformed first-line id"
 run_case h5-c12-empty-first-line   "main"     s_empty_first  "an empty first line"
 run_case h5-c13-yesterday          "main"     s_yesterday    "a candidate in yesterday's directory"
 run_case h5-c14-other-slot         "worker.0" s_other_slot   "a slot other than the invoking pane's"
+run_case h5-c15-fallback-cwd-match   "main" s_fb_cwd_match   "FALLBACK PAIR: no candidate carries the token, candidate cwd matches"
+run_case h5-c16-fallback-cwd-differs "main" s_fb_cwd_differs "FALLBACK PAIR: no candidate carries the token, candidate cwd differs"
 echo "A-H5 DONE"

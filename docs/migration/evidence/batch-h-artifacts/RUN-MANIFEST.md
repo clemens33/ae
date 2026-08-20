@@ -26,7 +26,7 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 |---|---|---|
 | `_harness/hlib.sh` | `b2cf84dd1990c01fdbfc9512c00834d10543d4745ed6a2dc2ad6c134ea27455d` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
-| `_harness/arm-h5.sh` | `3055a8c98121a2c940e103a9e4d854d945d7375c08e59fd6df8fa70519984889` | 2026-08-21 (registered BEFORE its first run) |
+| `_harness/arm-h5.sh` | `8796a1023a4dd211732cb8e0e95e183543908861defa1552d1de2622dba00921` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h4.sh` | `5944b88c92acd4752addffabe9705ab087ff6c430bed0ea1d0bf6d8040693009` | 2026-08-20T21:51:16Z |
 
 ### A3 — `_harness/derive-h4-record.py` registered after A-H4's run
@@ -155,3 +155,28 @@ claim this arm cannot make about its candidates and should not appear to.
   identical-again readings rather than the opposed pair the fix predicted — which is why a
   rebuilt case is re-read rather than assumed fixed.
 - arms reopened: A-H5, whole.
+
+### A10 — `_harness/arm-h5.sh`, two pairs instead of one rebuilt pair (seat disposition)
+
+- `3055a8c98121a2c940e103a9e4d854d945d7375c08e59fd6df8fa70519984889` -> `8796a1023a4dd211732cb8e0e95e183543908861defa1552d1de2622dba00921`
+- what changed: both seats reached the c09/c10 non-discrimination independently and the
+  reviewing seat's disposition was adopted over the lead's own. Rather than REBUILDING the
+  cwd cases, the original token-carrying pair is RETAINED as TOKEN-PRECEDENCE CONTROLS —
+  they record that while the token path selects, the cwd fallback at ae:14794-14812 is
+  never reached, which is what ae:14793 encodes and which nothing else in the batch
+  captures — and a new pair (`h5-c15`, `h5-c16`) carries a token no candidate holds so the
+  fallback IS reached and cwd decides. Every other byte and time is held constant across
+  each pair.
+- why it is better than the rebuild it replaces: rebuilding would have deleted evidence for
+  a true fact in order to test a different one.
+
+### A9 note — the cwd fix changed a SECOND case's reading, and the reason is mechanical
+
+`h5-c04-token-mismatch` read rc 1 with no artifact before A9 and rc 0 with an artifact
+after it. Nothing about that case's own fixture changed. Its token matches no candidate, so
+the token pass selects nothing and the fallback runs; before A9 the invocation stood in the
+controller's directory so the fallback's cwd compare (ae:14807) could not match, and after
+A9 it stands in the session work dir, where the planted candidate's recorded cwd does
+match. The reading is a joint property of the case's fixture and the invocation's cwd, and
+it moved when the cwd did. Recorded rather than smoothed: it is the reason every case is
+re-read after an amendment instead of only the ones the amendment names.
