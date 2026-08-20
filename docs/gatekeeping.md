@@ -343,6 +343,37 @@ column-drop arm anchored on a pre-change row, corrupted the original, and passed
 because the generator's `rc 2` was never inspected. A red arm that passes because the
 generator crashed is a red arm that tested nothing.
 
+### A green gate a reader cannot reproduce is a claim, not evidence
+
+The longest-running defect of the cluster, and the one that hid best: a worker ended every
+handover for **eleven rounds** with *"gate PASS, tree clean."* The result was correct every
+time. It was also **unverifiable by anyone but them** — the gate they ran lived in a scratch
+harness and was never published. The only committed copies were per-arm snapshots, each
+deliberately frozen with the captures it audited.
+
+Freezing a tool beside its evidence is **right for provenance** — an arm's snapshot records
+the version that arm actually ran under, and it must not drift. It is **insufficient for
+reproducibility**: with only snapshots committed, the newest published copy is always older
+than the working one, and a reader who runs it audits a previous era. The seat who tried
+got 14 schema violations on a clean tree (kinds the old gate had never heard of) and
+`present_at_HEAD=0` on a fully committed tree (the prefix hardcoded to the other batch).
+
+**You need both: the frozen per-arm snapshot AND a canonical current copy**, with a README
+naming which is which and why they disagree. Publishing the tool is part of publishing the
+result.
+
+The seat's handling is the reusable half. Three eliminations — copies all hash identically,
+checkout is current, no gate exists under the audited tree — none of which could find the
+cause, because *the version that mattered was never in the tree at all.* After three failed
+probes they **asked rather than filed**: exact command, exact output, three named hypotheses,
+and an explicit statement that a false blocker against freshly-gated work costs more than a
+question. The answer was hypothesis (b), and both parties were right — it *was* a reader
+running the wrong thing, and the reason was that the right thing had never been published.
+
+**Corollary, general:** after N failed probes, asking the person who built the instrument is
+cheaper and more reliable than probe N+1. Guessing feels like progress and is the same
+motion that produced the first N.
+
 ### A tool that makes a check CHEAP is not a tool that PERFORMS it
 
 The most easily forgotten limit, recorded because it is invisible once a tool reports
