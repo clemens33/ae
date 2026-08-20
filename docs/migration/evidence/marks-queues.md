@@ -2,9 +2,9 @@
 
 - Snapshot: contract sources read from `git show HEAD` at `ba116fe3d11b6637e9ccf6e6bf1fb4c08cd88a84`; worktree dirty: yes (non-contract changes present).
 - Scope: SC rows only. Ownership D records are excluded from all queues: 43 canonical D records (D01–D31 with letter splits); their TBD-field closures remain in evidence batches.
-- Canonical SC rows: 427; raw qualifications Q1=122, Q2=37, Q3=123; Q2∩Q3=15.
-- Emitted queues after precedence Q2 > Q3 > Q1: Q1=122, Q2=37, Q3=108; already-closed=158; no-queue anomalies=2.
-- Reconciliation: 122 Q1 + 37 Q2 + 108 Q3 + 158 already-closed + 2 no-queue = 427 canonical SC rows. Canonical delta three: SC-509c (reason-null defect row, ba95a5e seat read, #97). SC-521a sits in Q2 (bucket-3 reclass, #96) although re-marked - Q2 membership is mark-independent by derivation. The 15 dual Q2/Q3 rows are resolved to Q2 and are not added twice. Canonical deltas from the stale 424-row snapshot: SC-1106, then SC-012b (bare-invocation residue split from SC-012 by seat ruling ae-20260820T165746Z-fb9c4fb6).
+- Canonical SC rows: 427; raw qualifications Q1=105, Q2=37, Q3=123; Q2∩Q3=15.
+- Emitted queues after precedence Q2 > Q3 > Q1: Q1=105, Q2=37, Q3=108; already-closed=175; no-queue anomalies=2.
+- Reconciliation: 105 Q1 + 37 Q2 + 108 Q3 + 175 already-closed + 2 no-queue = 427 canonical SC rows. Canonical delta three: SC-509c (reason-null defect row, ba95a5e seat read, #97). SC-521a sits in Q2 (bucket-3 reclass, #96) although re-marked - Q2 membership is mark-independent by derivation. The 15 dual Q2/Q3 rows are resolved to Q2 and are not added twice. Canonical deltas from the stale 424-row snapshot: SC-1106, then SC-012b (bare-invocation residue split from SC-012 by seat ruling ae-20260820T165746Z-fb9c4fb6).
 - Manifest cross-check (orthogonal criticality labels, not queue criteria): ratification-critical.md at this snapshot reports CRITICAL=323 + DEFERRABLE=103 + OBSERVED=44 = 470 total IDs (427 SC + 43 D).
 - Derivation: Q1 requires an explicit docs/ruling anchor in Authority, conflict=none, and no per-row or block classified_by mark. Q2 includes every Bucket 3/4 row and preserves its fix-known-defect issue or DR reference, regardless of mark status. Q3 requires Authority beginning with code-observation, Authority beginning with UNRESOLVED, or an explicit UNCLASSIFIED conflict; each emitted Q3 row uses its CRIT-ASSIGN batch. Rows are read at row-paragraph grain; family/range marks are expanded only to their declared exact IDs.
 - Mark states: `block-marked` = S1 preflight, exact S6 frozen set, S9 SC-800..831, or S13 SC-1200..1209; `per-row-marked` = explicit row classified_by (including S1MAP/ratification-day marks and the S3 delivery/routing and helper-signature blocks); otherwise `genuinely-unmarked`.
@@ -23,13 +23,6 @@ SC-303 | 2 | #32 | none | — | genuinely-unmarked
 SC-304 | 2 | config.md:3 | none | — | genuinely-unmarked
 SC-305 | 2 | config.md | none | — | genuinely-unmarked
 SC-306 | 2 | config.md | none | — | genuinely-unmarked
-SC-400a | 2 | architecture.md + AGENTS.md | none | — | genuinely-unmarked
-SC-401a | 2 | architecture.md:77-83 | none | — | genuinely-unmarked
-SC-402 | 1 | AGENTS.md | none | — | genuinely-unmarked
-SC-403 | 1 | AGENTS.md | none | — | genuinely-unmarked
-SC-600 | 1 | AGENTS.md | none | — | genuinely-unmarked
-SC-601 | 1 | AGENTS.md | none | — | genuinely-unmarked
-SC-602 | 2 | helpers.md | none | — | genuinely-unmarked
 SC-804a | 1 | architecture.md:99-104 | none | — | genuinely-unmarked
 SC-804b | 1 | architecture.md:100 | none | — | genuinely-unmarked
 SC-804c | 1 | architecture.md:100-101 | none | — | genuinely-unmarked
@@ -119,22 +112,12 @@ SC-939d | 2 | telegram.md:69-77 | none | — | genuinely-unmarked
 SC-939e | 2 | telegram.md:73-77 | none | — | genuinely-unmarked
 SC-939f | 2 | commands.md:264-272 + #52 | none | — | genuinely-unmarked
 SC-940 | 1 | telegram.md@72c7293:19-24 | none | — | genuinely-unmarked
-SC-1000 | 2 | install.md | none | — | genuinely-unmarked
-SC-1001 | 2 | install.md | none | — | genuinely-unmarked
-SC-1002 | 2 | install.md + commands.md:168 | none | — | genuinely-unmarked
-SC-1003 | 1 | AGENTS.md | none | — | genuinely-unmarked
-SC-1004 | 1 | AGENTS.md | none | — | genuinely-unmarked
 SC-1100 | 1 | AGENTS.md | none | — | genuinely-unmarked
 SC-1101b | 2 | AGENTS.md | none | — | genuinely-unmarked
 SC-1102 | 2 | AGENTS.md | none | — | genuinely-unmarked
 SC-1103 | 1 | S12 seat ruling 2026-08-20 (semantic limit-or-loud) | none | — | genuinely-unmarked
 SC-1104 | 1 | AGENTS.md | none | — | genuinely-unmarked
 SC-1105 | 2 | AGENTS.md | none | — | genuinely-unmarked
-SC-1205a | 1 | #59 | none | — | genuinely-unmarked
-SC-1205b | 2 | #59 | none | — | genuinely-unmarked
-SC-1207a | 1 | #59 | none | — | genuinely-unmarked
-SC-1207b | 2 | #59 | none | — | genuinely-unmarked
-SC-1300 | 1 | events.md + bridge-protocol.md | none | — | genuinely-unmarked
 
 ## Q2 — bucket 3/4 baseline audit
 
@@ -305,3 +288,4 @@ S3 helper-signature MARK batch 2A | ae-20260820T164044Z-f958a368 | SC-212a, SC-2
 S1/S2 MARK batch 3 | ae-20260820T165746Z-fb9c4fb6 | SC-100, SC-011, SC-012, SC-018, SC-019
 S15 env/config MARK batch 4 | ae-20260820T173732Z-95db692d | SC-1400, SC-1401, SC-1402, SC-1403, SC-1404a, SC-1404b, SC-1405a, SC-1405b, SC-1406a, SC-1406b, SC-1407a, SC-1407b, SC-1408a, SC-1408b
 S8 adapter-frame MARK batch 5 | ae-20260820T174651Z-400d70f4 | SC-700, SC-701, SC-702, SC-703, SC-704, SC-704a, SC-704e
+mixed-tail MARK batch 6 | ae-20260820T175119Z-faaf0b3f | SC-400a, SC-401a, SC-402, SC-403, SC-600, SC-601, SC-602, SC-1000, SC-1001, SC-1002, SC-1003, SC-1004, SC-1205a, SC-1205b, SC-1207a, SC-1207b, SC-1300

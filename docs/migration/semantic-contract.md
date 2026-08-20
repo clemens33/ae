@@ -610,8 +610,11 @@ hub/steward dirs (`AE_HUB_DIR`, `AE_STEWARD_DIR`).
 **SC-400a — the bash-era session layout remains READABLE.** Bucket 2 — legacy-read
 compatibility survives every flip: a pre-flip session dir (`meta`, `events.jsonl`,
 `memo.tsv`, `messages/`, locks, `workspace.md`, helpers, `launch.<slot>.sh` +
-`.started`) is consumable by the successor. Authority: architecture.md + AGENTS.md.
-Empirical: census-1/2. Conflict: none.
+`.started`) is consumable by the successor. Authority: two explicit lanes —
+architecture.md@72c7293:61-71 (the documented frozen layout) + joint family-gate
+ruling f869b66/#79/#81 (legacy readability across flips). The exact full artifact
+inventory (notably messages/locks/`.started`) remains empirical census scope, never
+promoted from measurement. Empirical: census-1/2. Conflict: none.
 
 **SC-400b — the event store's written layout changes under DR-001.** Bucket 4 —
 **DR-001**: generations replace the single `events.jsonl`, with legacy-read/migration/
@@ -641,13 +644,15 @@ ruling. Empirical: n/a (successor design). Conflict: DR-001.
 
 **SC-402 — working directories stay clean.** Bucket 1 — ae writes its coordination
 state under `~/.ae`, never into the project tree (`.ae/config` is the one deliberate
-project-side file). Authority: AGENTS.md rules. Empirical: pending. Conflict: none.
+project-side file). Authority: AGENTS.md@72c7293:19-21 Rules bullet ("Working
+directories stay clean"). Empirical: pending. Conflict: none.
 
 **SC-403 — record framing round-trips every field faithfully.** Bucket 1 — semantic
 (gate correction — the `\x1f` choice is the bash mechanism, empirical): an empty
 field, free text with separators, and embedded-newline handling all round-trip without
 field shift or phantom rows; typed Rust satisfies this by construction. Authority:
-AGENTS.md TSV-framing ruling (the invariant behind it). Empirical: unit pins @72c7293
+AGENTS.md@72c7293:188-199 TSV-framing section (the invariant bullets behind the
+`\x1f` mechanism). Empirical: unit pins @72c7293
 (the `\x1f` implementation). Conflict: none.
 
 Meta key grammar (slice-1 Q1 seat rulings, source ownership corrected — meta supplies
@@ -1053,18 +1058,19 @@ layout, pane/window naming, status surfaces, ae-monitor window.
 
 **SC-600 — user text reaching a tmux format string is literalized or option-routed.**
 Bucket 1 — `#` and `%` are interpreted (`#()` RUNS SHELL); text is escaped or carried
-via `@ae_*` user options, which interpolate literally. Authority: AGENTS.md
-interpreted-sinks table (ruling). Empirical: pending. Conflict: none.
+via `@ae_*` user options, which interpolate literally. Authority:
+AGENTS.md@72c7293:177 interpreted-sinks row (verbatim). Empirical: pending.
+Conflict: none.
 
 **SC-601 — send-keys never receives user text as key names.** Bucket 1 — literal mode
 or paste-buffer only; the generated helpers are the boundary, raw send-keys is
-forbidden. Authority: AGENTS.md interpreted-sinks (ruling). Empirical: pending.
-Conflict: none.
+forbidden. Authority: AGENTS.md@72c7293:178 interpreted-sinks row (verbatim).
+Empirical: pending. Conflict: none.
 
 **SC-602 — `@ae_slot` carries identity; `@ae_agent` is display.** Bucket 2 — the slot
 option is the stable routing stamp (SC-209); pre-slot sessions are back-filled on
-refresh/resume. Authority: helpers.md slot identity. Empirical: pending.
-Conflict: none.
+refresh/resume. Authority: helpers.md@72c7293:57-59 "Slot identity". Empirical:
+pending. Conflict: none.
 
 **SC-603 — layout application semantics.** `authority=code-observation` — how
 `layout =` maps to pane arrangement, and its failure mode; probe + seat ruling at the
@@ -1880,14 +1886,18 @@ Install contract (symlink or curl|bash), `doctor --refresh` regeneration boundar
 outcome-level (gate: the clone+symlink mechanism is the bash era's, empirical): the
 one-liner and the local-clone path both yield a working `ae` on PATH; the P5 binary
 install preserves the same outcome with its mechanism ruled via #57/SC-1006.
-Authority: install.md. Empirical: pending. Conflict: none.
+Authority: install.md@72c7293:12-27 (One-line install + From-a-local-clone).
+Empirical: pending. Conflict: none.
 
 **SC-1001 — an upgrade preserves existing sessions and refreshes/migrates phase-owned
 assets.** Bucket 2 — outcome-level (gate correction: helper REGENERATION is the
 bash-era asset mechanism and retires at P2 — it is not frozen as a P5 promise):
 sessions keep working across an upgrade, and whatever assets the current phase owns
 are refreshed or migrated on next start/resume (`doctor --refresh [name]` forces it).
-Authority: install.md upgrading (outcome). Empirical: pending. Conflict: none.
+Authority: install.md@72c7293:37-50 Upgrading (:46 — frozen BASELINE: it proves only
+the bash helper mechanism) + joint gate ruling f869b66 and the epic frame for the
+phase-owned refresh/migrate successor abstraction. Empirical: pending.
+Conflict: none.
 
 **SC-1002 — doctor reports environment health as a fixed OK/WARN/FAIL checklist.**
 Bucket 2 — dependency presence, config, registered agent executables, sessions dir;
@@ -1910,12 +1920,15 @@ install.md.
 **SC-1003 — published executables cross one atomic chokepoint.** Bucket 1 — every
 generated executable artifact outside a session's helper set is generated to temp,
 mode-set there, and renamed — with the generator run as a COMMAND, never piped (a
-producer dying mid-pipe must not publish a prefix). Authority: AGENTS.md M3 ruling.
+producer dying mid-pipe must not publish a prefix). Authority: AGENTS.md@72c7293:119
+(`_publish_executable_artifact` chokepoint paragraph, verbatim; M3 ruling).
 Empirical: unit guard @72c7293. Conflict: none.
 
 **SC-1004 — session helpers publish temp+chmod+mv, atomically per artifact.** Bucket 1
-— a generator failure can never truncate a live helper. Authority: AGENTS.md declare-f
-section (ruling; relocated A-03). Empirical: unit guards @72c7293. Conflict: none.
+— a generator failure can never truncate a live helper. Authority:
+AGENTS.md@72c7293:117 declare-f paragraph ("written atomically (temp + chmod + mv) so
+a generator failure can never truncate a live session's helper" — verbatim; relocated
+A-03). Empirical: unit guards @72c7293. Conflict: none.
 
 ### S12 — Platform/dependency degradation
 
@@ -2041,12 +2054,15 @@ empirical/ownership material.) Empirical: pending. Conflict: none.
 
 **SC-1205a — every derived name is grammar-valid and unique after derivation.** Bucket
 1 — the FINAL value is validated, not the base it was derived from. Authority: #59
-durable ruling. Empirical: unit pins @72c7293. Conflict: none.
+closing ruling + AGENTS.md@72c7293:163 (a name ae DERIVES must be a fixed point of
+the grammar) + the 72c7293 commit body. Empirical: unit pins @72c7293.
+Conflict: none.
 
 **SC-1205b — dedup shape: truncate to fit, suffix from `-2`.** Bucket 2 — the suffix
 counts occurrences (meaning), not array position; the base is truncated so the suffix
-fits the 64 cap. Authority: #59 durable ruling. Empirical: unit pins @72c7293.
-Conflict: none.
+fits the 64 cap. Authority: #59 closing ruling + AGENTS.md@72c7293:163 (dedup
+truncates the base, suffixes from -2, validates the FINAL value) + the 72c7293 commit
+body. Empirical: unit pins @72c7293. Conflict: none.
 
 **SC-1206 — a leading underscore is a legal alias but never an agent name.** Bucket 2 —
   Authority: #59 ruling (closing comment + 72c7293 commit message + AGENTS.md allowlist bullets).
@@ -2054,14 +2070,15 @@ Conflict: none.
 `_`-prefixed helpers stay out of the agent namespace. Empirical: pending.
 Conflict: none.
 
-**SC-1207a — prompt identity facets are unambiguous.** Bucket 1 — neither the alias nor
-  Authority: #59 ruling.
-the name may contain the facet separator; identity parses one way only. Empirical:
-pending. Conflict: none.
+**SC-1207a — prompt identity facets are unambiguous.** Bucket 1 — neither the alias
+nor the name may contain the facet separator; identity parses one way only.
+Authority: #59 ruling + AGENTS.md@72c7293:162-163. Empirical: pending.
+Conflict: none.
 
-**SC-1207b — meta serializes agents as `alias:name:provider-session-id`.** Bucket 2 —
-  Authority: #59 ruling + meta format (S5).
-exact on-disk form (cross-link: S5 formats family). Empirical: pending. Conflict: none.
+**SC-1207b — meta serializes agents as `alias:name:provider-session-id`.** Bucket 2
+— exact on-disk form (cross-link: S5 formats family). Authority: #59 ruling +
+AGENTS.md@72c7293:162 + architecture.md@72c7293:65. Empirical: pending.
+Conflict: none.
 
 **SC-1208 — untrusted pane bytes and peer message-body prose are never spliced into
 instruction material.** Bucket 1 — (precised, B0-census reopening 2026-08-20):
@@ -2097,16 +2114,30 @@ Externally observable ordering/atomicity promises only; protocol detail lives in
 
 <!-- rows: SC-13xx -->
 
-**SC-1300 — concurrent event appends yield complete, non-interleaved, ordered
-records.** Bucket 1 — promise-level (gate: the adjacent lock file is the bash
-mechanism, empirical; DR-001's one-generation protocol supersedes the mechanism, not
-the promise). Failure SEMANTICS are per-operation rows (M1). Authority: events.md +
-bridge-protocol.md. Empirical: census-1 M1. Conflict: none (DR-001 affected —
-mechanism only).
+**SC-1300 — concurrent event appends yield complete, non-interleaved records in one
+stable append order.** Bucket 1 — promise-level ("ordered" precised by seat ruling
+ae-20260820T175119Z-faaf0b3f: one stable append order, not any cross-generation
+claim — DR-001 governs successor generation ordering; the adjacent lock file is the
+bash mechanism, empirical; DR-001's one-generation protocol supersedes the mechanism,
+not the promise). Failure SEMANTICS are per-operation rows (M1). Authority:
+events.md@72c7293:7 + bridge-protocol.md@72c7293:90. Empirical: census-1 M1.
+Conflict: none (DR-001 affected — mechanism only).
+
+**classified_by (mixed-tail MARK batch 6, ae-20260820T175119Z-faaf0b3f): SC-400a,
+SC-401a, SC-402, SC-403, SC-600, SC-601, SC-602, SC-1000, SC-1001, SC-1002, SC-1003,
+SC-1004, SC-1205a, SC-1205b, SC-1207a, SC-1207b, SC-1300 — fable5:lead +
+gpt56sol:colead, 2026-08-20. Exact enumeration; later rows never inherit; SC-1301
+was normalized in the same pass but gains NO mark (bucket-3 Q2 row). Marked with the
+countersign conditions applied first: SC-400a's two authority lanes explicit
+(frozen layout vs f869b66/#79/#81 readability frame, artifact inventory left
+empirical), SC-1001's successor abstraction anchored to f869b66 + epic frame with
+install.md as frozen baseline, the four #59 anchors made precise, SC-1300's
+"ordered" precised to one stable append order with DR-001 owning cross-generation
+ordering, SC-1207a/b normalized. Normative/conflict lane only.**
 
 **SC-1301 — session meta is written through one fail-closed writer.** Bucket 3 —
-  Authority: architecture.md:158-166 (the one-writer doc contract).
-SHOULD (architecture.md:158-166): one function, every step checked, missing meta
+SHOULD (architecture.md:158-166, the one-writer doc contract): one function, every
+step checked, missing meta
 refused, temp removed on error, rename only after complete content. IS at 72c7293:
 two additional DIRECT-APPEND writers exist under the same lock (`launch_time.*`
 capture ae:2068-2075; `_cmd_spawn` rows ae:11923-11945 — census-3 audit I5), so
