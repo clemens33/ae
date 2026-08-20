@@ -8,6 +8,11 @@ four explicit surfacing requirements are honoured below (SC-819's two layers as
 SEPARATE observations; the SC-810b claim-release cut; every SC-804 validator class at
 one-row grain; the mode-preserving correction provenance).
 
+**STATUS: CONVERGED 2026-08-20** — colead's independent gate returned 12 rows green
+unchanged and two evidence-boundary corrections, both applied below: SC-818e precised
+to OUTCOME grain (no defect) and SC-819's row evidence narrowed to the four front-door
+arms. 14/14 confirm; zero reopened conflicts.
+
 Preflight rules restated: pointers reach the claim-bearing RAW captures; empirical
 acceptance and normative `classified_by` stay ORTHOGONAL; mismatches route through
 fix-known-defect or DR, never measurement-over-contract. **No marks proposed here.**
@@ -158,14 +163,17 @@ parent's; no sequence of real operations reaches the guard. The mutated arm appl
 ONE named byte mutation (`session_id` := `parent_archive_id`) to make the guard
 reachable; the literal arm shows what real construction does instead.
 IS: the guard, when reached, refuses and names the lineage. Verified: **bytes**.
-**Proposed: CONFIRMED / no change on the SHOULD** — and a seat question recorded, not
-answered here: does SC-818e's SHOULD track the GUARD (unreachable by real
-construction) or the reachable behavior (a child purging its own archive never
-threatens the parent)? If the seats read the SHOULD as promising protection that the
-frozen guard cannot actually deliver for real lineages, that is a bucket-3 candidate;
-if the reachable behavior already satisfies the promise, the row confirms as written.
-**Lead does not propose a disposition on that question — it is a normative reading,
-and I want colead's independent view before either of us states one.**
+**RESOLVED — CONFIRMED / no change, NO defect (colead ruling, lead concurs).** The
+open question is answered: the SHOULD is the OUTCOME, not the guard. Reachable
+behavior satisfies the safety promise BY CONSTRUCTION — a real `--from` child receives
+a fresh UUID, so a child purge never addresses the parent's archive; the operation
+SUCCEEDS on the child (`lineage-parent-literal` rc=0) and the parent is untouched. The
+equal-id corrupted-meta case separately proves the defensive guard
+(`lineage-parent-mutated` rc=1, named refusal). Guard reachability is IMPLEMENTATION
+EVIDENCE, not the normative claim. The row's SHOULD is precised accordingly in the
+contract to "purge never deletes the parent archive referenced by a live `--from`
+lineage", bucket 1, conflict none. **Explicitly NOT to be stated: that normal lineage
+"refuses" the operation — it succeeds on the child.**
 
 ## SC-819 — an unidentifiable session is refused BEFORE anything is stopped
 (b1, none) — **two layers, SEPARATE observations, per colead's requirement.** Six
@@ -199,10 +207,16 @@ at the repo precondition. Both frozen cites colead supplied (ae:2911-2955 for th
 flag's scope, ae:8039-8052 for the plan-layer classification) are recorded verbatim as
 `frozen-cites.txt` in all four missing-meta arms, framed as POINTERS with no verdict
 attached. Verified: **bytes** (all six rc + first stderr lines).
-**Proposed: CONFIRMED / no change** on the SHOULD, with the archive-plan-layer
-classification explicitly NOT claimed as observed. If a seat wants that layer
-exercised, the construction is a repo-satisfying sandbox plus `--assume-stopped` —
-two more clones, and lexec has offered them.
+**CONFIRMED / no conflict at PUBLIC-CONTRACT grain (colead ruling, lead concurs),
+with the row evidence NARROWED:** only the FOUR front-door arms are evidence for this
+row — missing-meta keep/purge (refused before stop/delete with the no-positive-record
+identity reason) and unparseable-id keep/purge (refused with the named invalid id).
+The two `--assume-stopped` arms stop at the non-git-repo precondition and therefore
+**cannot fail SC-819**; they are labelled CONTROLS / OUT-OF-SCOPE for this row, not
+supporting observations. An arm that cannot fail a claim is not evidence for it.
+No repo-satisfying clones are needed: the row promises a PUBLIC refusal, not
+`_end_archive_plan` branch coverage. The internal missing-meta classification remains
+explicitly UNOBSERVED — and that is a scope statement, not a gap.
 
 ---
 
@@ -215,15 +229,16 @@ two more clones, and lexec has offered them.
 
 ## Proposed dispositions
 
-- **CONFIRMED / no change — 14 of 14 roster ids**: SC-804a, SC-804b, SC-804c,
+- **CONFIRMED — 14 of 14 roster ids (both seats)**: SC-804a, SC-804b, SC-804c,
   SC-804d, SC-804e, SC-804f, SC-805, SC-810a, SC-810b, SC-818b, SC-818c, SC-818d,
   SC-818e (SHOULD), SC-819 (SHOULD).
 - **NO reopened conflicts in this section.**
-- **One normative question deliberately left open for colead** — SC-818e's SHOULD
-  versus the guard's real-construction unreachability. Lead states no position.
-- **Two scope statements recorded rather than papered over**: SC-810b's as-produced
+- **The one open normative question is RESOLVED**: SC-818e is outcome-grain, satisfied
+  by address separation; no defect. Contract row precised.
+- **Three scope statements recorded rather than papered over**: SC-810b's as-produced
   arm is an SC-818b observation and not SC-810b evidence; SC-819's archive-plan-layer
-  classification is not observed by any of the six arms.
+  classification is observed by no arm; and SC-819's two `--assume-stopped` arms are
+  controls, not row evidence, because they cannot fail the claim.
 - Fidelity: mode-preserving correction provenance carried (see the SC-804 note); the
   two SC-818d arms are post-fix re-runs.
 - No INCONCLUSIVE arms in section.
