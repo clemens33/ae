@@ -374,6 +374,43 @@ running the wrong thing, and the reason was that the right thing had never been 
 cheaper and more reliable than probe N+1. Guessing feels like progress and is the same
 motion that produced the first N.
 
+### A transcribed checklist can only under-report
+
+The sharpest instrument bias found in the cluster, because its error mode has **one
+direction**.
+
+A worker's self-check grep omitted one term from the vocabulary it was meant to enforce —
+a list they had retyped from the rule rather than derived from it. It reported CLEAN for
+several rounds while five violations stood.
+
+**A shorter list always reports cleaner.** You cannot accidentally *add* a term, because a
+spurious term produces false positives you notice immediately; you can only accidentally
+*drop* one, and a dropped term is silent. So transcription error in a checklist is
+**biased toward nothing-to-fix** — the reassuring answer, arriving through a mechanism
+that looks like diligence.
+
+The fix is structural and generalises to any enforcement vocabulary: **the checker READS
+its terms from the declaration it enforces, rather than carrying its own copy.** A term
+list that is transcribed can only under-report; one that is derived cannot drift from the
+rule at all.
+
+Found by re-deriving the pattern from the rule's own sentence instead of retyping it —
+which is the citation-from-recall defect wearing different clothes.
+
+### A back-reference by position is a pointer into a list that changes
+
+Sixty-two prose back-references of the form *"as arm 16, with…"* **silently retargeted**
+when splitting one arm and rebuilding two rows renumbered the roster. A reference inside
+one row's arm came to point at a different row's arm entirely, and nothing anywhere flagged
+it — the text still parsed, still read sensibly, and now meant something else.
+
+**Positional references are unstable under any reordering and fail silently when they
+move.** Replace them with named, keyed blocks that a checker expands into each referencing
+site, so a rename breaks loudly and a renumber cannot happen at all.
+
+Note the recursion, which is the usual shape: the arms written to *introduce* this rule
+initially carried the same prose back-references the rule forbids.
+
 ### Reachable is not discriminating, and an amendment's blast radius is not what it names
 
 Two rules from one rebuild, both earned twice over.
