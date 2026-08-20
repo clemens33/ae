@@ -37,7 +37,10 @@ for ln in lines:
         title = re.sub(r"^#+\s*", "", title)          # drop the heading marker
         title = re.sub(r"\s*\(ae:[^)]*\)", "", title)  # drop the source location
         low = title.lower()
-        if any(k in low for k in ("argument census", "row -> input-class", "row ->")):
+        # A section marked (seat-only) carries source-derived material that is not an
+        # input at all — a family comparison, a mapping table. It is skipped by the
+        # SECTION, not by inspecting its rows: the same columnar principle one level up.
+        if "(seat-only)" in low or any(k in low for k in ("argument census", "row -> input-class", "row ->")):
             keep = False; continue
         keep = True
         body += ["", f"## Surface: {title.strip()}", ""]

@@ -47,7 +47,8 @@ def census_pairs(md):
         if ln.startswith("## ") or ln.startswith("### "):
             t = re.sub(r"\s+—.*$", "", ln); t = re.sub(r"^#+\s*", "", t)
             t = re.sub(r"\s*\(ae:[^)]*\)", "", t).strip()
-            cur = None if any(k in t.lower() for k in ("argument census", "row ->")) else t
+            tl = t.lower()
+            cur = None if ("(seat-only)" in tl or any(k in tl for k in ("argument census", "row ->"))) else t
         elif ln.startswith("|") and cur:
             c = [x.strip() for x in ln.strip("|").split("|")]
             if c and c[0] and not c[0].lower().startswith("input") and not set(c[0]) <= set("-: "):

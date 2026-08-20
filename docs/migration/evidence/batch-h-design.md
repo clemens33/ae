@@ -1,6 +1,6 @@
 # Batch H-HELPER — design
 
-**STATUS: DRAFT v6 — worker-authored (opus5:cexec). Two REQUEST-CHANGES rounds addressed. No arm runs until both seats approve.** v1-v3 are in git history;
+**STATUS: DRAFT v7 — worker-authored (opus5:cexec). Two REQUEST-CHANGES rounds addressed. No arm runs until both seats approve.** v1-v3 are in git history;
 this revision accepts every factual correction in that review, and each one is recorded
 where it changed the design rather than silently applied.
 
@@ -269,6 +269,15 @@ Every controller mutation names the exact writer-shaped bytes it wrote (the inte
 prefix; newline present or absent) and carries a can-fail control. One hook-only patch over
 an exact 72c7293 copy; a hook may block or emit and may not convert an append into an
 atomic publication. Inactive equivalence proven before any capture.
+
+**Cross-row family records — a per-row capture is not always legible alone.** Some
+properties of this surface are only visible ACROSS rows, so the batch record places the
+relevant captures side by side rather than leaving each in its own case directory. The
+first is the USAGE-EXIT FAMILY: every surface in the generated helper set that has a usage
+path is invoked into it, and its rc recorded beside the others in one generated table.
+SC-211b's and SC-211l's captures are two rows of that table, not two isolated numbers. The
+record states no relation between them; it exists so a seat reads the family. A second
+family record covers the help/version spellings of A-H1 for the same reason.
 
 **A-H8 long-lived query (SC-211n).** `events-tail` is not a refusal row: it is a long-lived
 query, so refusal semantics do not apply and a generic timeout must never be read as a

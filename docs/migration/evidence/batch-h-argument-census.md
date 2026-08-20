@@ -273,6 +273,32 @@ to the identity boundary rows, not to SC-211o.
 | name absent | ae:12978 | REJECTED |
 | empty string | branch 3 with an empty target | (capture) |
 
+## Usage-exit family (seat-only) — measured across the whole generated helper set
+
+Raised because one row's finding is only legible beside the others. `goal`'s usage path
+exits 1 and `say`'s exits 2; the rest of the family splits the same two ways, and no single
+row's capture would show it.
+
+| Surface | Usage path | Exit |
+|---|---|---|
+| `state` | `helper_state_usage`, ae:12818 | 2 |
+| `say` | `helper_say_usage`, ae:14459 | 2 |
+| `goal` | `helper_goal_usage`, ae:14551 | 1 |
+| `memo` | `helper_memo_usage`, ae:14489 | 1 |
+| `requests` | inline usage, ae:14407 | 1 |
+| `peek` | inline usage, ae:14596 | 1 |
+| `focus` | inline usage, ae:14641 | 1 |
+| `interrupt` | inline usage, ae:14657 | 1 |
+| `spawn` | inline usage, ae:14704 | 1 |
+| `retire` | inline usage, ae:14726 | 1 |
+
+Eight surfaces exit 1 and two exit 2, and the two that exit 2 are the two with a dedicated
+usage FUNCTION rather than an inline block — which is an observation about shape, not a
+claim about intent. The arms capture each surface's usage rc, and the batch record places
+them SIDE BY SIDE so a seat reads the family rather than ten isolated numbers. Nothing here
+classifies the split: it may be deliberate, and it is exactly the kind of thing a rewrite
+regularises without anyone noticing.
+
 ## Row -> input-class mapping (for the seat gate)
 
 | Row | Surface | Input classes |
