@@ -2211,8 +2211,19 @@ and no destination write has yet occurred; stop effects may be visible.**
   Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
 mid-operation** (frozen ae:11443-11457 + census-2:329-345 — gate correction: the
 data-residue surface is the destination, per direction).
-**SC-1305 — compact: mid-operation observability.**
-  Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
+**SC-1305 — concurrent readers see ONE coherent lifecycle phase during compact.**
+Bucket 1 — seat closure of a placeholder head (joint L-COMPACT classification, both
+seats 2026-08-20; the previous text was "mid-operation observability", which stated no
+SHOULD and could not be ratified as written). A reader observing compact mid-operation
+sees one coherent phase and NEVER mixed predecessor/successor state; a no-session
+interval between predecessor removal and successor publication is PERMITTED (permitted,
+not required — a successor that publishes without a visible gap also satisfies this).
+The requests-helper absence observed at the pre-relaunch cut is empirical MECHANISM,
+not part of the claim. Authority: joint seat ruling (L-COMPACT closure) grounded in
+architecture.md's compact phase order. Empirical: observed (L-COMPACT @abaeb4f —
+five pre-teardown cuts each showing one coherent running predecessor; the pre-relaunch
+cut showing no session). Conflict: none.
+**classified_by: both seats, 2026-08-20 (joint L-COMPACT closure).**
 **SC-1306a — `list` snapshot cut under concurrent writes.**
   Authority: code-observation. Empirical: census-2 + deterministic probes per closure-map gate. Conflict: pending seat closure (UNCLASSIFIED).
 **SC-1306b — `status` snapshot cut.**
