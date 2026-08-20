@@ -51,6 +51,7 @@ invocation; cost-only rows carry `protected gate: none (cost)`.
 | 87 | RR(P4) +B3 | one effective-config authority + atomic setup publication (SC-967/969) |
 | 88 | RR(P4) +B3 | daemon control/state committed-truth findings A/B/C/G (SC-926/927/928/968) |
 | 89 | RR byC | SC2329 gives ae no dead-top-level-function coverage (scope check by design, sourceable script) — rustc dead_code closes the gap structurally per domain cutover, complete by P5; bash-side spend bounded per the issue's own framing |
+| 90 | RR | doctor-owned dead-socket sweep (the un-closed human half of #70; suite half done) — rust doctor at its phase; report-first/--fix opt-in, ae-created sockets only, answer+liveness rule per the issue |
 | 55 | RR(P4) | watchdog fairness test contract |
 | 56 | RR(P2/adapter) +B3 | opencode capture disambiguation |
 | 57 | RR(P5) +B3 | installer flip defines installed-artifact contract (B3 per colead, accepted) |
