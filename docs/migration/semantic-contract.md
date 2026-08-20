@@ -134,6 +134,54 @@ dispatcher entry. Authority: commands.md. Empirical: pending. Conflict: none.
 **SC-013 — `steward --help`/`--detach` flag surface.** `authority=code-observation`.
 Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
 
+**SC-016a — `ae status [name]` signature and current-session default.** Bucket 2 —
+inside a session the name defaults to the current one; never attaches. Authority:
+commands.md:134-136 + :42. Empirical: pending. Conflict: none.
+
+**SC-016b — status prints ~80 labeled lines per agent.** Bucket 2 — last ~80 pane
+lines per agent, each marked with binary name and pane id. Authority:
+commands.md:134-136. Empirical: pending. Conflict: none.
+
+**SC-017a — `list` shows running sessions only by default.** Bucket 2 — stopped
+history is opt-in noise. Authority: commands.md:78-81. Empirical: pending.
+Conflict: none.
+
+**SC-017b — `--all` shows running sessions, then stopped.** Bucket 2. Authority:
+commands.md:82-84. Empirical: pending. Conflict: none.
+
+**SC-017c — `--stopped` shows stopped sessions only.** Bucket 2. Authority:
+commands.md:84. Empirical: pending. Conflict: none.
+
+**SC-017d — `--needs-attn` filters to attention sessions; aliases accepted.** Bucket 2
+— `--needs-me`/`--needs`/`--attn`. Authority: commands.md:85. Empirical: pending.
+Conflict: none.
+
+**SC-017e — `--active` filters on recent activity.** Bucket 2 — an ae event within
+~5min, `AE_LIST_ACTIVE_SECS` tunes, `--busy` alias. Authority: commands.md:86.
+Empirical: pending. Conflict: none.
+
+**SC-017f — `--json` honours the active filters.** Bucket 2. Authority:
+commands.md:87. Empirical: pending. Conflict: none.
+
+**SC-017g — the attention marker is the single most-actionable reason by documented
+severity.** Bucket 2 — dead > stale > waiting-user > blocked > throttled > unanswered,
+derived as a rollup across the session's agents. Authority: commands.md:60-76.
+Empirical: pending. Conflict: none.
+
+**SC-017h — the tabular view shows per-agent health, declared state, and the session
+attn marker.** Bucket 2. Authority: commands.md:56-59. Empirical: pending.
+Conflict: none.
+
+**SC-018 — `ae [name] use <alias>` starts the session with that agent as main.**
+Bucket 2. Authority: commands.md:5. Empirical: pending. Conflict: none.
+
+**SC-018b — `use` interaction with resume.** `authority=code-observation` — what
+`use` does against an existing/resumable session is undocumented; probe + seat ruling.
+Empirical: pending probe. Conflict: pending seat closure (UNCLASSIFIED).
+
+**SC-019 — `jump` is an alias of `next`.** Bucket 2. Authority: commands.md:10-11.
+Empirical: pending. Conflict: none.
+
 **SC-014 — `version` output surface.** `authority=code-observation` — prints the
 CalVer `AE_VERSION`; exact format unpinned by docs. Empirical: pending probe.
 Conflict: pending seat closure (UNCLASSIFIED).
@@ -145,16 +193,20 @@ item declared, every target id must exist):
 S1MAP: launch -> SC-100 SC-101 SC-102a SC-102b SC-813
 S1MAP: --local/--copy/--worktree -> SC-306
 S1MAP: --from -> SC-822 SC-823 SC-824a SC-824b SC-825a
-S1MAP: list -> SC-509 SC-506 SC-1306a
-S1MAP: status -> SC-1306b
+S1MAP: list -> SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-509 SC-506 SC-1306a
+S1MAP: ls -> SC-017a SC-017h
+S1MAP: status -> SC-016a SC-016b SC-1306b
 S1MAP: next -> SC-513a SC-513b SC-513c SC-1306c
+S1MAP: jump -> SC-019
+S1MAP: use -> SC-018 SC-018b
 S1MAP: end -> SC-516 SC-817 SC-819 SC-820a SC-820b SC-821a SC-821b SC-826
 S1MAP: rm -> SC-011
 S1MAP: --purge-history -> SC-810a SC-810b SC-818a SC-818b SC-818c SC-818d SC-818e
-S1MAP: stop -> SC-515a SC-515b SC-515c SC-816 SC-1302
+S1MAP: stop -> SC-835a SC-835b SC-835c SC-835d SC-835e SC-835f SC-1302
+S1MAP: stop all -> SC-515a SC-515b SC-515c SC-816
 S1MAP: rename -> SC-832a SC-832b SC-832c SC-1303 SC-813
 S1MAP: transfer -> SC-833a SC-833b SC-833c SC-833d SC-814 SC-1304a SC-1304b SC-1304c SC-1304d
-S1MAP: compact -> SC-500 SC-501 SC-502 SC-503a SC-503b SC-504a SC-504b SC-512 SC-517a SC-517b SC-517c SC-827 SC-828 SC-829a SC-829b SC-830 SC-831 SC-1305
+S1MAP: compact -> SC-500 SC-501 SC-502 SC-503a SC-503b SC-504a SC-504b SC-512 SC-517a SC-517b SC-517c SC-827 SC-828 SC-829a SC-829b SC-830 SC-831 SC-836 SC-837 SC-1305
 S1MAP: archive preview -> SC-507a SC-507b SC-507c SC-507d
 S1MAP: _recover-pending -> SC-834a SC-834b SC-834c
 S1MAP: doctor -> SC-514 SC-1002
@@ -171,9 +223,13 @@ S1MAP: steward --detach -> SC-013
 S1MAP: hub -> SC-939f
 S1MAP: help -> SC-012
 S1MAP: version -> SC-014
+S1MAP: loop -> SC-902 SC-904
 S1MAP: exit codes -> SC-513a SC-514 SC-515a SC-516 SC-517a SC-508
-S1MAP: refusal contracts -> SC-819 SC-813
 ```
+
+Alias rule: the table canonicalizes aliases (`ls`→list, `jump`→next, `loop`→watchdog,
+help/version flags→SC-012/SC-014); the aggregate "refusal contracts" pseudo-item is
+DELETED — per-surface rows own their refusals (gate ruling).
 
 ### S3 — Generated helper CLIs (every one — census: `helper_*_main` at 72c7293)
 
@@ -1000,6 +1056,40 @@ commands.md:634-638 + architecture.md:201-203. Empirical: pending. Conflict: non
 **SC-831 — a timed-out handover stops nothing.** Bucket 1 — nothing stopped, nothing
 archived, the request stays open so a re-run waits on the SAME request rather than
 sending a second. Authority: commands.md:656-658. Empirical: pending. Conflict: none.
+
+**SC-835a — stop addresses the recorded server and the exact session id.** Bucket 1 —
+never the ambient server, never a name (`tmux kill-session -t` prefix-matches: a
+name-based stop could kill a sibling). Authority: commands.md:299-308. Empirical:
+census-2 stop section. Conflict: none.
+
+**SC-835b — stop reports stopped only after verifying the session is gone.** Bucket 1.
+Authority: commands.md:300-303. Empirical: pending. Conflict: none.
+
+**SC-835c — an unverifiable kill fails loudly and changes nothing.** Bucket 1 — the
+recorded server unreachable means no success report and no state change. Authority:
+commands.md:302-304. Empirical: pending. Conflict: none.
+
+**SC-835d — stop never deletes anything.** Bucket 1 — ae state, working tree, and
+provider conversation files are preserved either way. Authority: commands.md:304-306.
+Empirical: pending. Conflict: none.
+
+**SC-835e — self-stop confirms, then hands to an out-of-pane supervisor with a durable
+result.** Bucket 1 — the process inside the session cannot kill it and verify; ae
+confirms (recoverability, not mid-write atomicity, is the stated guarantee), a
+short-lived supervisor outside the pane does the work, and the outcome is recorded as
+a durable `stop-result` event. Authority: commands.md:311-330. Empirical: census-2.
+Conflict: none.
+
+**SC-835f — `-y` skips the self-stop confirmation.** Bucket 2 — required when no
+terminal can ask. Authority: commands.md:333-334. Empirical: pending. Conflict: none.
+
+**SC-836 — `purge_agent_history` refuses compact unless `--keep-history`.** Bucket 1 —
+the config contradicts an operation whose purpose is keeping the record; the override
+is explicit. Authority: commands.md:651-652. Empirical: pending. Conflict: none.
+
+**SC-837 — `compact -f` proceeds without asking.** Bucket 2 — the explicit
+skip-confirmation surface (distinct from end's `-f` freeze semantics, SC-820b).
+Authority: commands.md:698. Empirical: pending. Conflict: none.
 
 **SC-832a — rename's effect set.** Bucket 2 — renames the tmux session, moves the
 session directory, updates `session=` in meta, regenerates `workspace.md`; a running
