@@ -343,6 +343,24 @@ column-drop arm anchored on a pre-change row, corrupted the original, and passed
 because the generator's `rc 2` was never inspected. A red arm that passes because the
 generator crashed is a red arm that tested nothing.
 
+**A red-proof's coverage must match the tool's, and reporting otherwise is its own defect.**
+A seat red-proofed a newly committed checker with **one** seeded mutation on **one** of its
+six check paths, watched it go red, and reported the instrument verified in both
+directions — both directions of one check. The other seat then seeded seven mutations
+across every path: *forbidden vocabulary, missing candidate field, uppercase ordinal,
+duplicate id, unknown class, unused typed barrier, deleted roster.* **All seven returned
+`rc=0 OK`.** The tool caught exactly the one spelling the first seat happened to try.
+
+Worse, the vocabulary check was dead on the supported host: the pattern used GNU `\<…\>`
+word boundaries, which **macOS awk does not implement** — it silently matches nothing
+(probe: boundary `0`, plain `1`). The checker printed the forbidden term in its own derived
+term list and reported clean while two live instances sat in the document. **The term-list
+defect one layer later: the derivation was fixed, and the predicate never matched.**
+
+The rule: **red-proof every named check, on the host that will run it, with a
+neutral/mutated pair each.** One green mutation proves one path and licenses no statement
+about the tool.
+
 **Point the same rule at the INSTRUMENT, not only the product.** A seed that does not land
 is indistinguishable from a check that does not fire, and it errs in **both** directions
 depending on how the harness is coded. A seat red-proving someone else's checker seeded a
