@@ -155,3 +155,10 @@ tables side by side.
 The detach cases run under a longer bound, and the arm records what was running under the
 fixture's own AE_HOME at teardown before reaping it — a detach starts something, and what
 it started is part of the reading.
+
+**A-H2's five selector cases stop at a config-presence check**, so they establish the
+refusal and its bytes and NOTHING about whether the detach spellings, the two selector
+orders, or a repeated selector differ. Five spellings with one reading here is not evidence
+that the spellings are equivalent; the question was never asked. `A-H2/ARM-GAPS.txt` says
+so beside the captures, and `ARM-GAPS.md` collects every arm's gaps with what would lift
+each.

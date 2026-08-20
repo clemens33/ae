@@ -1,6 +1,7 @@
 # sha256 checksums for the files in THIS directory, paths relative to it.
 # verify with:  cd A-H2 && shasum -a 256 -c SHA256SUMS.txt
 # this file is deliberately NOT listed in itself.
+2b96c141d6d535a512dc538b7d1fefcd889f90b873c4dde1929ba0c87fc1bc40  ./ARM-GAPS.txt
 554a0ff5182f5d1f49d3260a0889fed4185f19ea63276edb0adfdebc785e9658  ./CASES.tsv
 f4db5f322ff1ea6badece5a6015811f9a008020cd252ee1b6d3d30b199adb64b  ./h2-c01-dash-h/admissibility-ledger.txt
 e557e0763dd58b932405f87c7447fd3f5f92591654feb0f49bc6c8117354d418  ./h2-c01-dash-h/home-bytes.after.tsv
