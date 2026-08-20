@@ -100,7 +100,7 @@ cleanup) — hooks block/emit only; the controller observes state at each.
   content + the outcome record (SC-821a/b).
 - **history-policy (managed, SC-838a, SC-838b)** — CLI flag x `[workspace]
   purge_agent_history` x unset, one arm per cell (each cell its own clone);
-  capture surviving conversation files + `end all` per-session decision lines.
+  capture the conversation-file manifest + `end all` per-session decision lines.
 - **handover (SC-830, SC-831)** — a compact-driven end with `--digest-only`
   (capture request states before/after — SC-830); a handover under a shortened
   bound (bounded poll, INCONCLUSIVE discipline; capture session/tmux/archive +
@@ -148,10 +148,11 @@ the same mutation (a broken purge that deletes the tree must not turn the
   mutation); purge on one clone, `--from` on another; capture both.
 - **lineage-parent (SC-818e)** — child via real --from; purge the parent's
   archive; capture.
-- **unidentifiable (SC-819; ref SC-818a)** — two classes: (a) meta removed
-  (memory intact); (b) meta present with an UNPARSEABLE session_id (named byte
-  mutation), distinct from the legacy MISSING-id mint path (SC-826); end with
-  and without --purge-history on each; capture outputs + full manifests. The
+- **unidentifiable (SC-819; ref SC-818a)** — two classes on FOUR fresh clones,
+  the {missing meta, unparseable id} construction crossed with {keep, purge},
+  ONE invocation per clone: (a) meta removed (memory intact); (b) meta present
+  with an UNPARSEABLE session_id (named byte mutation), distinct from the legacy
+  MISSING-id mint path (SC-826); capture outputs + full manifests per clone. The
   symlinked-archive-ROOT construction (SC-818a, ALREADY-OBSERVED — a non-roster
   safety control, ref only) runs here as a control: purge with the root a
   symlink; capture — it is NOT a coverage arm.
@@ -208,7 +209,7 @@ LARM: L-COMPACT | interactive | SC-503a SC-503b SC-837
 LARM: L-COMPACT | sigpipe | SC-504b
 LARM: L-COMPACT | revalidation | SC-828
 LARM: L-COMPACT | handover-facts | SC-829a SC-829b
-LARM: L-COMPACT | config-refusal | SC-836
+LARM: L-COMPACT | config-keephistory | SC-836
 LARM: L-COMPACT | exit-identity | SC-517a SC-517b SC-517c
 LARM: L-COMPACT | preview | SC-507a SC-507c SC-507d
 LARM: L-COMPACT | residual-rc | SC-508
@@ -226,8 +227,9 @@ helper.
   the discriminator (SC-827).
 - **recovery-exec (SC-512)** — capture a clone taken AFTER archive publication
   and source removal but BEFORE the relaunch (a post-relaunch clone already
-  holds the replacement session, so the printed command would correctly refuse
-  under SC-822 and prove nothing); extract the printed `Recovery:` command;
+  contains the replacement session and is not the selected specimen — SC-822's
+  territory, captured for the contrast, never the SC-512 clone); extract the
+  printed `Recovery:` command;
   execute it VERBATIM on that pre-relaunch clone; capture its full outcome.
 - **interactive (SC-503a, SC-503b, SC-837)** — typed `n` arm; EOF arm
   (controller closes stdin); capture rc + post-state (SC-503a/b). `-f` arm
@@ -244,7 +246,7 @@ helper.
   capture the wait state at the bound (SC-829a). Re-run arm: interrupt
   post-request, re-run; capture request events (count, refs) + baseline bytes
   used (SC-829b).
-- **config-refusal (SC-836)** — `purge_agent_history` set; compact with and
+- **config-keephistory (SC-836)** — `purge_agent_history` set; compact with and
   without `--keep-history`; capture.
 - **exit-identity (SC-517a, SC-517b, SC-517c)** — (a) relaunch reaching a
   terminal attach (pty-wrapped), then detach; capture rc propagation
@@ -253,7 +255,11 @@ helper.
   stdin/stdout not a tty; capture the report bytes + rc (SC-517c). An
   unlaunchable-binary arm is NOT this row's specimen.
 - **preview (SC-507a, SC-507c, SC-507d)** — capture stdout bytes, stderr bytes,
-  recursive manifest before/after, events delta.
+  recursive manifest before/after, events delta. Twin-artifact construction for
+  SC-507a: build an IDENTICAL frozen twin of the session, run REAL end on it,
+  and capture the twin's archived digest.md bytes alongside the preview stdout
+  bytes — the worker captures both; the normalized equality and the raw
+  volatile-value expectations are annex-only.
 - **residual-rc (SC-508)** — the capture-only rc table across every arm.
 - **mid-op (SC-1305)** — at each compact barrier, a concurrent `ae list --json`
   + `requests` from a separate process; capture observer outputs per cut.

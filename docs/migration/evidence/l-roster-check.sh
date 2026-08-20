@@ -49,28 +49,41 @@ fileno == 1 && /^LARM: / {
     line = $0; sub(/^LARM: */, "", line)
     n = index(line, "|"); sec = substr(line, 1, n-1); gsub(/ /, "", sec)
     rest = substr(line, n+1)
-    m = index(rest, "|"); rest = substr(rest, m+1)          # drop arm-label
+    m = index(rest, "|"); label = substr(rest, 1, m-1); gsub(/^ +| +$/, "", label)
+    rest = substr(rest, m+1)
     if (!(sec in allow)) { print "L-UNKNOWN-BATCH: " sec " (LARM)"; unknown++ }
-    # split off a trailing "| ref: ..." segment: ref ids are not coverage
-    refpos = index(rest, "| ref:")
+    refpos = index(rest, "| ref:")                          # ref ids not coverage
     if (refpos > 0) rest = substr(rest, 1, refpos-1)
     c = split(rest, ids, /[[:space:]]+/)
     for (i=1;i<=c;i++) {
         id = ids[i]; if (id !~ /^SC-/) continue
-        if (id in armof) { print "L-ARM-DUP: " id " (" armof[id] " and " sec ")"; adup++ }
+        if (id in armof) { print "L-ARM-DUP: " id " (" armof[id] " and " sec ") "; adup++ }
         else armof[id] = sec
         armsec[sec, id] = 1
+        armlabelof[sec, id] = label                          # the declared owning arm
         primary[id] = 1
     }
     next
 }
-# body lines: everything in the design that is not a declaration line
+# The seat annex is not worker-arm body: stop attributing ids once it starts.
+fileno == 1 && /^## SEAT CLASSIFICATION ANNEX/ { in_annex = 1; next }
+fileno == 1 && in_annex { next }
+# Track the current section and the current worker-arm label from its bold head.
+fileno == 1 && /^## Section (L-[A-Z]+)/ { cur_sec = $3; cur_arm = ""; next }
+fileno == 1 && /^- \*\*/ {
+    h = $0; sub(/^- \*\*/, "", h)
+    cur_arm = h; sub(/[ (*].*$/, "", cur_arm)               # first token before space/paren/**
+    # attribute the heading and prose ids to THIS arm; the check is per
+    # (section,arm,id), so an id that vanishes from its declared arm or moves to
+    # a different arm/the annex fires BODY-MISSING even if it survives elsewhere.
+    while (match(h, /SC-[0-9]+[a-z]?/)) { armbody[cur_sec, cur_arm, substr(h, RSTART, RLENGTH)] = 1; h = substr(h, RSTART+RLENGTH) }
+    next
+}
+# body/continuation lines: attribute ids to the current section+arm
 fileno == 1 {
+    if (cur_sec == "" || cur_arm == "") next
     b = $0
-    while (match(b, /SC-[0-9]+[a-z]?/)) {
-        bodyseen[substr(b, RSTART, RLENGTH)] = 1
-        b = substr(b, RSTART + RLENGTH)
-    }
+    while (match(b, /SC-[0-9]+[a-z]?/)) { armbody[cur_sec, cur_arm, substr(b, RSTART, RLENGTH)] = 1; b = substr(b, RSTART+RLENGTH) }
     next
 }
 
@@ -91,8 +104,14 @@ END {
     # arm coverage vs roster
     for (k in roster) { split(k, p, SUBSEP); if (!((p[1] SUBSEP p[2]) in armsec)) { print "L-ARM-MISSING: " p[2] " (roster " p[1] ", no primary arm)"; amiss++ } }
     for (k in armsec) { split(k, p, SUBSEP); if (!((p[1] SUBSEP p[2]) in roster)) { print "L-ARM-EXTRA: " p[2] " (arm " p[1] ", not in roster)"; axtra++ } }
-    # body presence of every primary id
-    for (id in primary) if (!(id in bodyseen)) { print "L-BODY-MISSING: " id " (declared as an arm primary, absent from body text)"; bmiss++ }
+    # every primary id must appear in the body of ITS declared arm (not merely
+    # somewhere in the file, and not in the annex): the wrong-arm/erasure catch
+    for (k in armsec) {
+        split(k, p, SUBSEP); sec = p[1]; id = p[2]; lbl = armlabelof[sec, id]
+        if (!((sec SUBSEP lbl SUBSEP id) in armbody)) {
+            print "L-BODY-MISSING: " id " (primary of " sec " arm [" lbl "], absent from that arm body)"; bmiss++
+        }
+    }
     printf "L-SUMMARY: ROSTER_VS_ASSIGN=%d ARM_MISSING=%d ARM_EXTRA=%d ARM_DUP=%d BODY_MISSING=%d UNKNOWN_BATCH=%d\n", rva, amiss, axtra, adup, bmiss, unknown
     exit (rva+amiss+axtra+adup+bmiss+unknown) > 0 ? 1 : 0
 }
