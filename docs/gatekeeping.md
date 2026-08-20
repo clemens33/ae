@@ -733,6 +733,43 @@ absent file standing in for a recorded absence.
 reasons**, and a control that fails for reasons unrelated to its subject reads exactly like
 the subject failing.
 
+### An overstated claim is the defect — and it has TWO repairs
+
+The bound a verification project needs, and the reason one can otherwise grow forever.
+
+A checker was rebuilt eight times across successive gates. Every round found real blindness,
+every round added checks, and the tool's scope had no ceiling — because every finding was
+being read as **"a check is missing"**, which has exactly one repair.
+
+It is not the only repair. The defect is not the missing check; **the defect is the gap
+between what the document CLAIMS and what the tool ENFORCES**, and a gap closes from either
+side:
+
+1. **build the check**, or
+2. **narrow the claim** to what is actually enforced.
+
+**A document that says exactly what it enforces is correct even if it enforces little. One
+that says more than it enforces is the thing that keeps getting found.** Reaching only for
+repair (1) guarantees unbounded growth, and the growth is invisible because each individual
+addition is justified.
+
+The operating rule that follows: **build a check when its class has shipped twice; otherwise
+narrow the claim.** Twice, because one occurrence is an incident and two is a pattern, and
+because a reviewer offering *"or narrow the claim"* as an alternative — as good reviewers do
+— is telling you which repair they consider proportionate.
+
+### A narrowing needs its own red-proof for what it now lets through
+
+Precision and recall move in opposite directions and **nothing in an edit records which way
+it went.** A checker's author added a lookbehind to stop a false positive; that narrowing is
+exactly what later let a real violation through — same predicate, same file, twenty minutes
+apart, with nothing connecting the two edits. **A fix for a false positive became a false
+negative, untracked.**
+
+So when a check is tightened to stop noise, the obligation is not only to show the noise
+stopped: **prove what it still catches.** A narrowing without a red-proof of its surviving
+coverage is a silent widening of the hole.
+
 ### A tool that makes a check CHEAP is not a tool that PERFORMS it
 
 The most easily forgotten limit, recorded because it is invisible once a tool reports
