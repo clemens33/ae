@@ -1,6 +1,26 @@
 #!/usr/bin/env bash
 # Test suite for ae pure functions
 # shellcheck disable=SC2016
+#
+# SC2329 ("this function is never invoked") is suppressed SITE BY SITE below, and
+# deliberately NOT file-wide. The suite's central idiom is to define a test double
+# (tmux(), ssh(), rsync(), _transfer_*(), a pane-capture stub) and then let ae's
+# own code call it, and that code arrives via `eval "$(awk ... ae)"` — the call
+# site lives inside a STRING, so no static analyser can see it. That makes the
+# check unanswerable AT THOSE SITES, which is a statement about 175 censused
+# doubles (2026-08-20), not about the file.
+# A file-wide disable would be FAIL-OPEN: it also silences the check for every
+# double written after today, including ones that really are dead. Site-scoped
+# keeps each suppression next to the thing it excuses and leaves the rest of the
+# file analyzable — the difference is measurable, and a new dead function added
+# below is still reported.
+# Note what is NOT bought back, so nobody over-reads a green run: SC2329 is a
+# SCOPE check, not a dead-code detector. Measured on shellcheck 0.11.0, it
+# reports a function only where nothing could reach it — inside a `$( )`/subshell,
+# nested in another body, in unreachable code, or in a script that provably
+# terminates. A plain dead TOP-LEVEL function in a script that might be sourced is
+# reported in NO file, `ae` included (measured at ae:120, ae:2180, ae:14934,
+# ae:14963 and at EOF) — see issue #89.
 # Run: ./test (or: bash test)
 # No dependencies beyond bash.
 
@@ -1871,11 +1891,11 @@ eval "$(awk '/^helper_state_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 
 _state_evlog="$(mktemp)"
 # Stubs are invoked indirectly through the eval'd helper functions.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 ae_current_agent_ref() { printf 'claude:tester'; }
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 ae_latest_state_for() { printf '%s' "${STUB_LATEST:-}"; }
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 ae_emit_event() { printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" >>"$_state_evlog"; }
 
 # Match the helper's real runtime options exactly: plain bash — clear errexit,
@@ -2180,9 +2200,9 @@ assert_eq "next-focus: verb is a single word (argv-safe with spacey targets)" "1
 _IT_TTY=""
 _IT_PANES=""
 _IT_SESSION="stub-session"
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 ps() { printf '  %s\n' "$_IT_TTY"; } # leading blanks: BSD ps pads its columns
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 tmux() {
     case "$*" in
         *list-panes*)
@@ -2734,13 +2754,13 @@ assert_eq "list: --json carries goal_set_epoch + branch context fields" "1" \
 # @ae_branch_name side channel VERBATIM (never the 24-char display segment);
 # fallback path asks git.
 eval "$(awk '/^_session_branch\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 tmux() { printf 'feature/x\n'; }
 assert_eq "branch: running session reads @ae_branch_name" \
     "feature/x" "$(_session_branch any /nonexistent running)"
 # Regression (codex IMPORTANT): a long branch must come through FULL — the
 # display option is trimmed to 24 chars and must never be echoed as data.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 tmux() { printf 'feature/session-context-list-slice-long\n'; }
 assert_eq "branch: long branch is NOT display-trimmed in list context" \
     "feature/session-context-list-slice-long" "$(_session_branch any /nonexistent running)"
@@ -2752,9 +2772,9 @@ assert_eq "branch: long branch is NOT display-trimmed in list context" \
 assert_eq "branch: watchdog publishes untrimmed @ae_branch_name" "1" \
     "$([[ "$AE_SOURCE" == *'_watchdog_set_status @ae_branch_name "$full"'* \
         && "$AE_SOURCE" == *'for _o in @ae_branch_status @ae_branch_name @ae_watchdog_status @ae_agents_status; do'* ]] && echo 1 || echo 0)"
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 tmux() { printf '\n'; }
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 git() { [[ "$3" == "symbolic-ref" ]] && printf 'main-from-git\n'; }
 _sb_dir="$(mktemp -d)"
 assert_eq "branch: empty option falls back to git on the work_dir" \
@@ -2892,11 +2912,11 @@ assert_eq "attn: unanswered rank is lowest actionable (below throttled)" "1" \
 eval "$(awk '/^_session_attn_rollup\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_attn_rank\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_parse_agent_entry\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 _agent_alert_reason() { printf ''; }
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 _session_states() { printf 'codex:w\tdone\n'; }
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 tmux() { printf 'codex:w\tbash\n'; }
 _sr_dir="$(mktemp -d)"
 _sr_old="$(_utc_ago 7200)"
@@ -2932,7 +2952,7 @@ assert_eq "autostart: steward companion fn exists with all four guards" "1" \
 # and that refusal matters more here than at its original call sites: there,
 # reading an unlinked-but-LIVE server as dead deletes state; here it would
 # create a SECOND SERVER on that socket path, and the two never see each other.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 _dsr_tmux_ok() { tmux() { printf 'aedev\nsteward\nsteward-old\n'; }; }
 assert_eq "dsr: running session -> 0" "0" \
     "$(_dsr_tmux_ok; daemon_session_running steward; echo $?)"
@@ -2940,19 +2960,24 @@ assert_eq "dsr: exact match only (prefix must not count)" "1" \
     "$(_dsr_tmux_ok; daemon_session_running stew; echo $?)"
 assert_eq "dsr: successful listing without the name -> absent" "1" \
     "$(_dsr_tmux_ok; daemon_session_running hub; echo $?)"
+# shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
 assert_eq "dsr: server exited cleanly (stale socket) -> absent, autostart may proceed" "1" \
     "$(tmux() { echo 'no server running on /tmp/tmux-501/default' >&2; return 1; }; daemon_session_running steward; echo $?)"
 # THE LIVE-UNLINKED CASE (round-2 BLOCKER). Unlinking a running server's socket
 # yields ENOENT while the server and its sessions keep running. Treating that as
 # absence is what starts a second server — so it is UNKNOWN, and nothing fires.
+# shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
 assert_eq "dsr: ENOENT is UNKNOWN, not absence (unlinked LIVE server)" "2" \
     "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (No such file or directory)' >&2; return 1; }; daemon_session_running steward; echo $?)"
+# shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
 assert_eq "dsr: permission error -> UNKNOWN" "2" \
     "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (Permission denied)' >&2; return 1; }; daemon_session_running steward; echo $?)"
+# shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
 assert_eq "dsr: tmux failed for any other reason -> UNKNOWN, not absent" "2" \
     "$(tmux() { echo 'lost server' >&2; return 1; }; daemon_session_running steward; echo $?)"
 # ...and the consequence, end to end: an unlinked LIVE server must not produce a
 # second one. (The steward caller's own note is asserted further down.)
+# shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
 assert_eq "dsr: ENOENT never reaches the create path" "no-launch" \
     "$(tmux() { echo 'error connecting to /tmp/tmux-501/default (No such file or directory)' >&2; return 1; }
        _rc=0; daemon_session_running steward || _rc=$?
@@ -2963,6 +2988,7 @@ assert_eq "dsr: ENOENT never reaches the create path" "no-launch" \
 # its own subshell, so a shell variable would reset between the two attempts and
 # the test would prove nothing.
 _dsr_ctr="$(mktemp)"
+# shellcheck disable=SC2329  # tmux() is a double; daemon_session_running calls it inside this $( )
 assert_eq "dsr: retries once, so a first-call-only failure still answers" "0" \
     "$(tmux() {
            printf 'x' >>"$_dsr_ctr"
@@ -2986,7 +3012,7 @@ _as_sc="$(mktemp -d)"
 mkdir -p "$_as_sc/steward"
 : >"$_as_sc/steward/steward.config"
 eval "$(awk '/^_steward_autostart_if_scaffolded\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 daemon_session_running() { return "${_AS_RC:-1}"; }
 assert_eq "autostart: tmux UNKNOWN -> no launch, legible note" "skipped" \
     "$(_AS_RC=2
@@ -3030,7 +3056,7 @@ assert_eq "autostart: set-but-missing AE_STEWARD_DIR is authoritative (no legacy
     "$(SESSION=x CONFIG_DIR="$_as_tmp" AE_STEWARD_DIR="$_as_tmp/nonexistent" _steward_autostart_if_scaffolded 2>/dev/null)"
 # AE_HUB_DIR-only legacy scaffold IS honoured (mirrors the trampoline) — the
 # probe passes; the fn then reaches daemon_session_running (stub it running).
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 daemon_session_running() { return 0; }
 assert_eq "autostart: AE_HUB_DIR legacy scaffold honoured (reaches running-check)" "0" \
     "$(SESSION=x CONFIG_DIR="$(mktemp -d)" AE_STEWARD_DIR="" AE_HUB_DIR="$_as_tmp/meta-hub" _steward_autostart_if_scaffolded 2>/dev/null; echo $?)"
@@ -4244,7 +4270,7 @@ assert_eq "cycle: dead roster_order accumulator is gone" "1" \
 # recorded a same-named decoy). Result is a TYPED PAIR in globals: kind|value.
 _rls() { # $1 = query answer ('' = query fails), env via _RLS_*
     local ans="$1"
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     tmux() { [[ -n "$ans" ]] && printf '%s' "$ans"; [[ -n "$ans" ]]; }
     AE_TMUX_SERVER="${_RLS_SHIM:-}" TMUX="${_RLS_TMUX:-}" resolve_launch_tmux_server
     unset -f tmux
@@ -4282,7 +4308,7 @@ assert_eq "srv-args: empty pair → nothing" "" "$(_srv_tmux_args '' '')"
 # by _end_target_server, and ONLY for a legacy-empty record (never over a typed one).
 _eot() { # $1 = stubbed meta value, then env-passed AE_END_SERVER
     local metaval="$1"
-    # shellcheck disable=SC2317  # invoked indirectly by _end_target_server
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly by _end_target_server
     read_session_meta() { printf '%s' "$metaval"; }
     _end_target_server ghost
     unset -f read_session_meta
@@ -4293,7 +4319,7 @@ assert_eq "end override: AE_END_SERVER honored for a legacy-empty record" "L:res
 assert_eq "end override: AE_END_SERVER ignored when meta has a typed record" "S:/real" \
     "$(AE_END_SERVER='L:rescue' _eot 'S:/real')"
 _eok() { local mv="$1" kv="$2"
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     read_session_meta() { case "$2" in tmux_server) printf '%s' "$mv" ;; tmux_server_kind) printf '%s' "$kv" ;; esac; }
     _end_target_kind ghost; unset -f read_session_meta; return 0
 }
@@ -4453,9 +4479,9 @@ assert_eq "chokepoint: the data sibling publishes mode 0600" "1" \
 # renamed — a pipeline producer can die after emitting a prefix, and a `cat`
 # downstream would publish that prefix over a live artifact.
 _pub_dir="$(mktemp -d)"
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 _pub_good() { printf '%s\n' '#!/bin/sh' 'echo NEW'; }
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 _pub_partial() { printf '%s\n' '#!/bin/sh' 'echo HALF'; return 1; }
 printf '%s\n' '#!/bin/sh' 'echo OLD' >"$_pub_dir/art"
 chmod 0700 "$_pub_dir/art"
@@ -4737,9 +4763,9 @@ if command -v flock >/dev/null 2>&1; then
     printf '%s\n' 'session=x' 'agent.spawned.0=dummy:ours:sid1' 'agent_bin.spawned.0=dummy' \
         'agent.spawned.1=dummy:theirs:sid2' >"$_sr_dir/meta"
     _sr_before="$(cksum <"$_sr_dir/meta")"
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     tmux() { return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     regenerate_manifest() { return 0; }
     # A sentinel holds meta.lock for longer than the rollback is willing to wait.
     (flock 201; sleep 8) 201>"$_sr_dir/meta.lock" &
@@ -4778,18 +4804,18 @@ assert_eq "caller: send_agent_cmd checks the write_launch_script assignment" "1"
 # "autostart failed" warning was unreachable while a cosmetic `|| true` tail
 # forced rc 0.
 eval "$(awk '/^_telegram_spawn_daemon\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 _telegram_write_daemon() { return 1; }
 assert_eq "caller: spawn returns non-zero when the daemon artifact cannot be written" "1" \
     "$(CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 _telegram_write_daemon() { return 0; }
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 tmux() { case "$*" in new-session*) return 1 ;; *) return 0 ;; esac; }
 assert_eq "caller: spawn returns non-zero when tmux refuses the session" "1" \
     "$(_TELEGRAM_TMUX_SESSION=ae-telegram CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
 # ...and with both healthy it still reports success, cosmetic tmux calls or not.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 tmux() { case "$*" in set-option* | rename-window*) return 1 ;; *) return 0 ;; esac; }
 assert_eq "caller: cosmetic tmux failures do NOT make a started bridge look failed" "0" \
     "$(_TELEGRAM_TMUX_SESSION=ae-telegram CONFIG_FILE=/dev/null CONFIG_DIR="$(mktemp -d)" _telegram_spawn_daemon 2>/dev/null; echo $?)"
@@ -4827,7 +4853,7 @@ assert_eq "lifecycle-lock (12th I1): released BEFORE the async SID-capture child
 # suite green. Stubbing the verifier is the only way to reach all three arms
 # without racing a server into unreachability between the kill and the check.
 eval "$(awk '/^_lifecycle_kill_verified\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 _end_tmux() { return 0; }
 assert_eq "kill-verified: gone -> 0 silently; alive -> 1 loudly; unverifiable -> 1 loudly" \
     "0|1|1" \
@@ -4844,10 +4870,10 @@ assert_eq "kill-verified: gone -> 0 silently; alive -> 1 loudly; unverifiable ->
 # call for different human action, and collapsing them is how an unverified kill
 # starts reading as success.
 assert_eq "kill-verified: the two failures say different things" "1|1" \
-    "$(# shellcheck disable=SC2317
+    "$(# shellcheck disable=SC2317,SC2329
        _end_verify_gone() { return 1; }
        _alive="$(_lifecycle_kill_verified sess stop '$3' 2>&1 >/dev/null)"
-       # shellcheck disable=SC2317
+       # shellcheck disable=SC2317,SC2329
        _end_verify_gone() { return 2; }
        _unsure="$(_lifecycle_kill_verified sess stop '$3' 2>&1 >/dev/null)"
        printf '%s|%s' \
@@ -5692,7 +5718,7 @@ assert_eq "sweep (10th B1): end_session calls the sweep BARE and reads the globa
 # Behavioral: a stubbed unreachable socket sets _SWEEP_UNSURE in THIS shell.
 _swp() {
     local mode="$1"
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     command() { # intercept `command tmux -S ...`
         if [[ "$mode" == unreachable ]]; then
             printf 'error connecting to /tmp/x (Permission denied)\n'; return 1
@@ -5754,7 +5780,7 @@ assert_eq "invariant: enumerably-LIVE target refuses even --assume-stopped" "1" 
 # 0 verified-gone / 1 verified-alive / 2 cannot-verify. Stub _end_tmux per case.
 _evg() { # fixture-mode _end_verify_gone: $1 = stub behavior
     local mode="$1"
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     _end_tmux() {
         case "$mode" in
             alive) printf 'victim\nother\n'; return 0 ;;
@@ -7132,7 +7158,7 @@ echo "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$_orch_codex_uuid\",\"cwd
 
 # Mock function bodies and globals below are reached at runtime via cmd_transfer
 # (eval'd through awk extraction), not statically reachable from shellcheck's view.
-# shellcheck disable=SC2317,SC2034
+# shellcheck disable=SC2317,SC2034,SC2329
 {
     # Single chronological call log — captures every ssh + rsync in order.
     # SSH calls record both argv and the stdin-streamed heredoc body, so tests
@@ -7280,7 +7306,7 @@ done
 assert_eq "transfer-orch: spaces-variant — path check was reached" "1" "$_orch_path_check_seen"
 
 # Self-stop guard regression: detect_current_session returns target → exit 2.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 detect_current_session() { echo "$_orch_session"; return 0; }
 ORCH_CALL_LOG=()
 HOME="$_orch_home"
@@ -7319,7 +7345,7 @@ mkdir -p "$_pull_home/.claude/projects/proj-pull"
 mkdir -p "$_pull_home/.codex/sessions/2026/05/26"
 
 declare -ag ORCH_CALL_LOG=()
-# shellcheck disable=SC2317  # mock fn bodies are reached via cmd_transfer (extracted via awk eval), not visible statically
+# shellcheck disable=SC2317,SC2329  # mock fn bodies are reached via cmd_transfer (extracted via awk eval), not visible statically
 {
     ssh() {
         local script=""
@@ -7661,7 +7687,7 @@ assert_eq "telegram: cmd_telegram_help defined"    "1" "$([[ "$AE_SOURCE" == *'c
 # 'steward' > 'hub' > any. Extract it + stub daemon_session_running.
 eval "$(awk '/^tg_find_steward\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 # stub: all mock sessions "running" (called indirectly by the eval'd fn → SC2317)
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 daemon_session_running() { return 0; }
 _tgs_dir="$(mktemp -d)"
 # SESSIONS_DIR is read by the eval'd tg_find_steward (shellcheck can't see through eval)
@@ -9003,13 +9029,13 @@ _end_sdir="$(mktemp -d)"; _end_wdir="$(mktemp -d)"
 # `command tmux` on the target's OWN server, bypassing any tmux() shim), so stub
 # _end_live_id itself: one exact live session 'livesess', nothing else. A prefix like
 # 'livese' must NOT match (review B1: exact id, never a prefix).
-# shellcheck disable=SC2317  # invoked indirectly by _end_target_class
+# shellcheck disable=SC2317,SC2329  # invoked indirectly by _end_target_class
 _end_live_id() { [[ "$1" == livesess ]] && printf '$0'; return 0; }
 # Under the Option-B invariant the classifier consults the RECORD first: only a
 # positive record earns a live probe; blank/ambiguous classifies from dirs alone.
-# shellcheck disable=SC2317  # invoked indirectly by _end_target_class
+# shellcheck disable=SC2317,SC2329  # invoked indirectly by _end_target_class
 _end_target_server() { [[ "$1" == livesess || "$1" == livese ]] && printf 'somesrv'; return 0; }
-# shellcheck disable=SC2317  # invoked indirectly by _end_target_class
+# shellcheck disable=SC2317,SC2329  # invoked indirectly by _end_target_class
 _end_target_kind() { [[ "$1" == livesess || "$1" == livese ]] && printf 'name'; return 0; }
 mkdir -p "$_end_sdir/stopped-one" "$_end_wdir/wt-one"
 _ec() { SESSIONS_DIR="$_end_sdir" WORKTREES_DIR="$_end_wdir" _end_target_class "$1"; }
@@ -9156,7 +9182,7 @@ _sw_run() {  # <impl> <enabled> -> "bash" | "aewatch" | "none"
     printf '#!/usr/bin/env bash\necho bash >>"%s/rec"\n' "$d" >"$d/meta/watchdog"
     chmod +x "$d/meta/watchdog"
     : >"$d/rec"
-    # shellcheck disable=SC2317  # invoked indirectly by the eval'd _start_session_watchdog
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly by the eval'd _start_session_watchdog
     _aewatch_autostart_if_available() { echo aewatch >>"$d/rec"; }
     AE_META="$d/meta" AE_WATCHDOG_IMPL="$impl" _start_session_watchdog "$enabled"
     if [[ -s "$d/rec" ]]; then cat "$d/rec"; else echo none; fi
@@ -9224,7 +9250,7 @@ _rw_run() {  # <mode: resume|resume-empty|fresh> <config_workers> -> "alias:name
         mkdir -p "$_rw_tmp_root/s"
         printf 'session=s\n' >"$_rw_tmp_root/s/meta"
     fi
-    # shellcheck disable=SC2317  # invoked indirectly by the eval'd _resolve_workers
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly by the eval'd _resolve_workers
     read_session_meta() {
         [[ "$mode" == resume ]] || return 0
         case "$2" in
@@ -9233,7 +9259,7 @@ _rw_run() {  # <mode: resume|resume-empty|fresh> <config_workers> -> "alias:name
         esac
         return 0
     }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     get_config() { case "$1" in agents.*) echo "cmd-for-$1" ;; esac; return 0; }
     MAIN_NAME="lead" WORKERS_RAW="$cfg_workers" SESSION="s" \
         SESSIONS_DIR="$_rw_tmp_root" WORKTREES_DIR="$_rw_tmp_root/wt" _resolve_workers
@@ -9259,9 +9285,9 @@ _rw_wt() {
     rm -rf "$_rw_tmp_root/s" "$_rw_tmp_root/wt"
     mkdir -p "$_rw_tmp_root/wt/s/.ae/s"
     printf 'session=s\n' >"$_rw_tmp_root/wt/s/.ae/s/meta"
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     read_session_meta() { return 0; } # no workers recorded
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     get_config() { case "$1" in agents.*) echo "cmd" ;; esac; return 0; }
     MAIN_NAME="lead" WORKERS_RAW="cfg:w1" SESSION="s" \
         SESSIONS_DIR="$_rw_tmp_root" WORKTREES_DIR="$_rw_tmp_root/wt" _resolve_workers
@@ -9276,7 +9302,7 @@ _rw_resume_missing() {
     _rwm_tmp="$(mktemp -d)"
     mkdir -p "$_rwm_tmp/s"
     printf 'session=s\n' >"$_rwm_tmp/s/meta" # resume decision keys on meta existence
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     read_session_meta() {
         case "$2" in
             agent.worker.0) echo "opus48:builder:uuid-a" ;;
@@ -9284,7 +9310,7 @@ _rw_resume_missing() {
         esac
         return 0
     }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     get_config() { case "$1" in agents.opus48) echo "cmd" ;; *) echo "" ;; esac; return 0; }
     MAIN_NAME="lead" WORKERS_RAW="" SESSION="s" \
         SESSIONS_DIR="$_rwm_tmp" WORKTREES_DIR="$_rwm_tmp/wt" _resolve_workers
@@ -9305,9 +9331,9 @@ _rs_run() {  # <session>; meta on stdin -> "idx:alias:name;idx:alias:name;..." (
     local sess="$1" metadir="$_rs_tmp/$1" i out=""
     mkdir -p "$metadir"
     cat >"$metadir/meta"
-    # shellcheck disable=SC2317  # invoked indirectly by _resolve_spawned
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly by _resolve_spawned
     get_config() { case "$1" in agents.gone*) echo "" ;; agents.*) echo "cmd-$1" ;; esac; return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     resolve_agent_session_id() { echo "sid"; return 0; }
     SESSIONS_DIR="$_rs_tmp" WORKTREES_DIR="$_rs_tmp/.wt" SESSION="$sess" _resolve_spawned
     for i in "${!SPAWNED_ALIASES[@]}"; do out+="${SPAWNED_IDX[$i]}:${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]};"; done
@@ -9340,9 +9366,9 @@ _rs_unres_idx() {  # runs _resolve_spawned in THIS subshell so UNRESOLVED_IDX is
     local metadir="$_rs_tmp/un2"
     mkdir -p "$metadir"
     printf 'agent.spawned.0=goneAlias:builderA:uuida\nagent.spawned.3=codex:builderC:uuidc\n' >"$metadir/meta"
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     get_config() { case "$1" in agents.gone*) echo "" ;; agents.*) echo "cmd-$1" ;; esac; return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     resolve_agent_session_id() { echo "sid"; return 0; }
     SESSIONS_DIR="$_rs_tmp" WORKTREES_DIR="$_rs_tmp/.wt" SESSION="un2" _resolve_spawned 2>/dev/null
     echo "${UNRESOLVED_IDX[*]:-none}"
@@ -9364,7 +9390,7 @@ agent.main=claude:lead:uuidm
 agent.worker.0=optimal:builder:uuidw
 agent.spawned.1=codex:helper:uuids
 META
-    # shellcheck disable=SC2317  # invoked indirectly by _stamp_live_slots
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly by _stamp_live_slots
     tmux() {
         if [[ "$1" == list-panes ]]; then
             # %1 already stamped (idempotent skip); %2/%3 unstamped mapped panes;
@@ -9413,9 +9439,9 @@ assert_eq "slot-stamp: spawn -> slot var" "yes" "$([[ "$AE_SOURCE" == *'@ae_slot
 # empty (slotless name-fallback), never mints a bogus slotted event.
 eval "$(awk '/^ae_current_slot\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _cs_run() {
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_current_pane() { echo "%9"; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     tmux() { [[ "$1" == display-message ]] && printf '%s' "$_SLOTVAL"; return 0; }
     ae_current_slot
 }
@@ -9449,15 +9475,15 @@ eval "$(awk '/^helper_reply_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _reply_verify() {  # <row> <self_slot> <self_session> <_AE_SESSION> -> exit status (1 = rejected)
     local _row="$1" _self_slot="$2" _self_session="$3"
     _AE_SESSION="$4"
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_find_request() { printf '%s\n' "$_row"; return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_current_agent_ref() { echo "replier"; return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_current_slot() { printf '%s' "$_self_slot"; return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_current_pane() { echo "%1"; return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     tmux() { [[ "$1" == display-message ]] && printf '%s' "$_self_session"; return 0; }
     helper_reply_main "req-1" "msg"
 }
@@ -9481,7 +9507,7 @@ eval "$(awk '/^ae_slot_resolver\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _slotres_run() {  # <want_session> <want_slot> -> resolved ref
     local ws="$1" wslot="$2"
     _AE_SESSION="s1"
-    # shellcheck disable=SC2317  # '|' delimiter — matches the resolver's -F
+    # shellcheck disable=SC2317,SC2329  # '|' delimiter — matches the resolver's -F
     tmux() { [[ "$1" == list-panes ]] || return 0; printf '%%1|main|claude:lead\n%%2|worker.0|opus48:builder\n'; return 0; }
     ae_slot_resolver "$ws" "$wslot"
 }
@@ -9493,7 +9519,7 @@ assert_eq "slot-resolver: unknown slot -> empty (routing falls back to name)" ""
 # IFS and mis-route — the resolver still finds the stamped worker.0 pane.
 _slotres_unstamped() {
     _AE_SESSION="s1"
-    # shellcheck disable=SC2317  # %3 is unstamped: empty slot field between '|'s
+    # shellcheck disable=SC2317,SC2329  # %3 is unstamped: empty slot field between '|'s
     tmux() { [[ "$1" == list-panes ]] || return 0; printf '%%3||someone:external\n%%2|worker.0|opus48:builder\n'; return 0; }
     ae_slot_resolver '' worker.0
 }
@@ -9519,7 +9545,7 @@ eval "$(awk '/^ae_submit_pasted_message\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _occ() { # <tool> <region-printf_b> -> occupied|idle|indeterminate
     local _R
     _R="$(printf '%b' "$2")"
-    # shellcheck disable=SC2317  # the sensor calls this
+    # shellcheck disable=SC2317,SC2329  # the sensor calls this
     _capture_input_region() { printf '%s' "$_R"; }
     _input_region_occupied "%1" "$1"
     case $? in 0) echo occupied ;; 1) echo idle ;; *) echo indeterminate ;; esac
@@ -9538,7 +9564,7 @@ _occ() { # <tool> <region-printf_b> -> occupied|idle|indeterminate
 eval "$(awk '/^_tool_initializing\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _ti() { # <captured-pane-text> -> initializing|settled
     local _C="$1"
-    # shellcheck disable=SC2317  # invoked through _tool_initializing below
+    # shellcheck disable=SC2317,SC2329  # invoked through _tool_initializing below
     tmux() { printf '%s' "$_C"; }
     if _tool_initializing "%1" codex; then echo initializing; else echo settled; fi
     unset -f tmux
@@ -9590,6 +9616,7 @@ assert_eq "#36: an ASCII-pipe table row is not the header box" "settled" \
     "$(_ti '| model:       loading   /model to change |
 › Write tests for @filename')"
 # A tool with no modelled start-up markers must not be blocked by this sensor at all.
+# shellcheck disable=SC2329  # tmux() is a double; _tool_initializing calls it inside this $( )
 assert_eq "#36: an unmodelled tool is never 'provably initializing'" "1" \
     "$(_C='• Starting MCP servers (0/7): whatever'
        tmux() { printf '%s' "$_C"; }
@@ -9869,13 +9896,13 @@ _prov() ( # <TMUX> <TMUX_PANE> <recorded-server> <live-servers> <pane-answers-id
     eval "$(awk '/^ae_provenance_sender\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
     _AE_SESSION=s
     local _tmux="$1" _tp="$2" _rec="$3" _live="$4" _ans="$5" _stamp="$6"
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_meta_get() { case "$1" in tmux_server) printf '%s' "$_rec" ;; tmux_server_kind) printf 'socket' ;; esac; }
     # EACH SOCKET ANSWERS FOR ITSELF. The first spelling returned one canned answer to
     # every server query, so C3 compared a value with itself and the foreign-server
     # case "passed" — a fixture that could not express the very shape it was written
     # for. _live is "sock:pid,sock:pid": each socket reports its OWN identity.
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     command() {
         local _q="$*" _s _e
         case "$_q" in
@@ -9890,7 +9917,7 @@ _prov() ( # <TMUX> <TMUX_PANE> <recorded-server> <live-servers> <pane-answers-id
             *"#S"*) printf 's' ;;
         esac
     }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     tmux() { printf 'fable5:lead'; }   # ambient answers as the FOCUSED pane
     TMUX="$_tmux" TMUX_PANE="$_tp" AE_SENDER_OVERRIDE="" ae_provenance_sender
     printf ''
@@ -10641,7 +10668,7 @@ assert_eq "nb2: REAL prompt row + raw typed text -> occupied" "occupied" \
 _pss() { # <tool> <region-printf_b> -> staged|clear
     local _R
     _R="$(printf '%b' "$2")"
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     _capture_input_region() { printf '%s' "$_R"; }
     _paste_still_staged "%1" "$1" "msg" && echo staged || echo clear
 }
@@ -10745,9 +10772,9 @@ eval "$(awk '/^_spawn_input_ready\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _spr() {  # <tool_kind> <capture-fixture-printf_b> -> ready|not-ready
     local _R
     _R="$(printf '%b' "$2")"
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     _capture_input_region() { printf '%s' "$_R"; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     tmux() { [[ "$1" == capture-pane ]] && printf '%s' "$_R"; return 0; }
     _spawn_input_ready "%1" "$1" && echo ready || echo not-ready
 }
@@ -10825,39 +10852,39 @@ _spawn_probe() { # <ready:1|0> <paste_rc> -> "rc=? spawned=? task_event=? failed
     printf 'session=probe\nwork_dir=%s\nlayout=vertical\nconfig=%s/cfg\nmain_pane=%%0\norigin=\nmode=local\n' "$md" "$md" >"$md/meta"
     : >"$md/cfg"
     (
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         get_config() { [[ "$1" == agents.* ]] && printf 'claude --model haiku'; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         resolve_agent_session_id() { printf '11111111-2222-3333-4444-555555555555'; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         tool_kind_from_cmd() { printf 'claude'; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         inject_ae_context() { printf '%s' "$1"; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         build_launch_command() { printf '%s' "$1"; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         send_agent_cmd() { return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         start_capture_session_id() { return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         wait_for_agent_start() { return 0; }
         # the rest of _cmd_spawn's collaborators — stubbed so the probe exercises the
         # delivery decision on a clean path, not one littered with command-not-found.
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         extract_binary_from_cmd() { printf 'claude'; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         tool_kind_supports_launch_id() { return 1; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         _ae_tmux_format_literal() { printf '%s' "$1"; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         regenerate_manifest() { return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         inject_session_id() { printf '%s' "$1"; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         initial_prompt_for_cmd() { printf ''; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         sleep() { :; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         tmux() {
             case "$1" in
                 new-window) printf '%%9' ;;
@@ -10867,14 +10894,14 @@ _spawn_probe() { # <ready:1|0> <paste_rc> -> "rc=? spawned=? task_event=? failed
             return 0
         }
         # the two states under test, injected where the real code asks them:
-        # shellcheck disable=SC2317,SC2031
+        # shellcheck disable=SC2317,SC2031,SC2329
         _spawn_input_ready() { [[ "${_READY:-0}" == 1 ]]; }
         # #36 put a bounded WAIT between the spawn path and the predicate. Stubbed
         # rather than eval'd so the not-ready arm stays instant: the real one polls
         # 30 times at 0.5s, which would add 15s per not-ready case for no extra fact.
-        # shellcheck disable=SC2317,SC2031
+        # shellcheck disable=SC2317,SC2031,SC2329
         _wait_input_ready() { _spawn_input_ready "$1" "$2"; }
-        # shellcheck disable=SC2317,SC2031
+        # shellcheck disable=SC2317,SC2031,SC2329
         tmux_paste_submit() { return "${_PRC:-0}"; }
         _READY="$_ready" _PRC="$_prc" _cmd_spawn "$md" "sonnet5:probe" "run the sweep and report findings-first"
     ) >"$md/out" 2>"$md/err" || rc=$?
@@ -10896,48 +10923,48 @@ _spawn_probe_pastes() { # <ready:1|0> -> "paste_calls=N"
     printf 'session=probe\nwork_dir=%s\nlayout=vertical\nconfig=%s/cfg\nmain_pane=%%0\norigin=\nmode=local\n' "$md" "$md" >"$md/meta"
     : >"$md/cfg"
     (
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         get_config() { [[ "$1" == agents.* ]] && printf 'claude --model haiku'; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         resolve_agent_session_id() { printf '11111111-2222-3333-4444-555555555555'; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         tool_kind_from_cmd() { printf 'claude'; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         inject_ae_context() { printf '%s' "$1"; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         build_launch_command() { printf '%s' "$1"; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         send_agent_cmd() { return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         start_capture_session_id() { return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         wait_for_agent_start() { return 0; }
         # the rest of _cmd_spawn's collaborators — stubbed so the probe exercises the
         # delivery decision on a clean path, not one littered with command-not-found.
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         extract_binary_from_cmd() { printf 'claude'; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         tool_kind_supports_launch_id() { return 1; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         _ae_tmux_format_literal() { printf '%s' "$1"; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         regenerate_manifest() { return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         inject_session_id() { printf '%s' "$1"; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         initial_prompt_for_cmd() { printf ''; return 0; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         sleep() { :; }
-        # shellcheck disable=SC2317
+        # shellcheck disable=SC2317,SC2329
         tmux() { [[ "$1" == new-window ]] && printf '%%9'; return 0; }
-        # shellcheck disable=SC2317,SC2031
+        # shellcheck disable=SC2317,SC2031,SC2329
         _spawn_input_ready() { [[ "${_READY:-0}" == 1 ]]; }
         # #36 put a bounded WAIT between the spawn path and the predicate. Stubbed
         # rather than eval'd so the not-ready arm stays instant: the real one polls
         # 30 times at 0.5s, which would add 15s per not-ready case for no extra fact.
-        # shellcheck disable=SC2317,SC2031
+        # shellcheck disable=SC2317,SC2031,SC2329
         _wait_input_ready() { _spawn_input_ready "$1" "$2"; }
-        # shellcheck disable=SC2317,SC2031
+        # shellcheck disable=SC2317,SC2031,SC2329
         tmux_paste_submit() { printf 'x' >>"${_MD}/pastes"; return 0; }
         _READY="$_ready" _MD="$md" _cmd_spawn "$md" "sonnet5:probe" "brief" >/dev/null 2>&1 || true
     )
@@ -10967,7 +10994,7 @@ assert_eq "b6: submit UNCONFIRMED -> rc=1, no Spawned line, no task event, expli
 _pib() { # <tool> <region-printf_b> -> safe|unsafe
     local _R
     _R="$(printf '%b' "$2")"
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     _capture_input_region() { printf '%s' "$_R"; }
     _paste_input_busy "%1" "$1" && echo unsafe || echo safe
 }
@@ -11032,11 +11059,11 @@ assert_eq "geometry: _capture_input_region never queries the cursor" "1" \
 # stay staged for the first N checks; count Enter keystrokes.
 _asp() {  # <staged-for-N-checks> -> "rc=? enters=? checks=?"
     local staged_for="$1" checks=0 enters=0 rc
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     sleep() { :; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     _paste_still_staged() { checks=$((checks + 1)); ((checks <= staged_for)) && return 0 || return 1; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     tmux() { [[ "$1" == send-keys && "$*" == *Enter* ]] && enters=$((enters + 1)); return 0; }
     ae_submit_pasted_message "%1" "codex" "buf" "hi" 2>/dev/null
     rc=$?
@@ -11047,11 +11074,11 @@ assert_eq "submit-verify: staged once then clears -> rc=0, retry Enter" "rc=0 en
 assert_eq "submit-verify: never submits -> rc=1 LOUD after bounded 2 retries" "rc=1 enters=3 checks=3" "$(_asp 9)"
 # The loud failure writes a warning to stderr.
 _asp_loud() {  # always-staged -> emits the LOUD warning to stderr
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     sleep() { :; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     _paste_still_staged() { return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     tmux() { return 0; }
     ae_submit_pasted_message "%1" codex buf hi
 }
@@ -11072,9 +11099,9 @@ eval "$(awk '/^pane_current_command\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^tmux_paste_submit\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _tps_staged() {  # modeled tool stays staged -> propagated nonzero
     local rc
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     sleep() { :; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     tmux() {
         case "$1" in
             display-message) printf 'claude' ;;                     # pane_current_command
@@ -11099,7 +11126,7 @@ eval "$(awk '/^_pane_has_descendant_named\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 eval "$(awk '/^_pane_agent_is_dead\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _pad() {  # <pane-foreground-command> <agent_bin> [agent-in-tree: 0=yes 1=no] -> dead|alive
     local _PROC="$1" _ABIN="$2" _INTREE="${3:-1}" # default 1 = agent NOT in the tree
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     tmux() {
         [[ "$1" == display-message ]] || return 0
         case "$*" in
@@ -11108,9 +11135,9 @@ _pad() {  # <pane-foreground-command> <agent_bin> [agent-in-tree: 0=yes 1=no] ->
         esac
         return 0
     }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     _agent_bin_for_pane() { printf '%s' "$_ABIN"; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     _pane_has_descendant_named() { return "$_INTREE"; } # 0=agent alive in tree, 1=not found
     _pane_agent_is_dead "%1" && echo dead || echo alive
 }
@@ -11140,7 +11167,7 @@ mkdir -p "$_abfp_tmp/sessX"
 printf 'agent_bin.main=claude\nagent_bin.worker.0=codex\n' >"$_abfp_tmp/sessX/meta"
 _abfp() {  # <slot> -> agent_bin
     local _SLOT="$1" _AE_SESSIONS_DIR="$_abfp_tmp"
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     tmux() {
         [[ "$1" == display-message ]] || return 0
         case "$*" in
@@ -11178,9 +11205,9 @@ assert_eq "send-focus: defer also gates on _pane_recently_viewed" "1" \
 eval "$(awk '/^_pane_recently_viewed\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _prv() {  # <client-pane> <activity-age-s> <target> -> viewed|clear
     local _CP="$1" _AGE="$2"
-    # shellcheck disable=SC2317  # invoked indirectly by _pane_recently_viewed
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly by _pane_recently_viewed
     date() { printf '1000000'; }
-    # shellcheck disable=SC2317  # invoked indirectly by _pane_recently_viewed
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly by _pane_recently_viewed
     tmux() { printf '%s|%s\n' "$_CP" "$((1000000 - _AGE))"; }
     _pane_recently_viewed "$3" && echo viewed || echo clear
 }
@@ -11188,9 +11215,9 @@ assert_eq "presence: client at target pane, 1s-old activity -> viewed (defer)" "
 assert_eq "presence: client at target pane, 60s-old activity -> clear" "clear" "$(_prv %5 60 %5)"
 assert_eq "presence: client at ANOTHER pane, fresh activity -> clear" "clear" "$(_prv %7 1 %5)"
 _prv_none() {
-    # shellcheck disable=SC2317  # invoked indirectly by _pane_recently_viewed
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly by _pane_recently_viewed
     tmux() { :; }
-    # shellcheck disable=SC2317  # invoked indirectly by _pane_recently_viewed
+    # shellcheck disable=SC2317,SC2329  # invoked indirectly by _pane_recently_viewed
     date() { printf '1000000'; }
     _pane_recently_viewed %5 && echo viewed || echo clear
 }
@@ -11209,25 +11236,25 @@ assert_eq "interrupt-guard: message interrupt to a dead-shell pane refuses (same
 eval "$(awk '/^helper_interrupt_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _int_dead() {  # -> "rc=? pasted=?"
     local rc pasted=0
-    # shellcheck disable=SC2317,SC2034  # AE_RESOLVED_AGENT read by helper_interrupt_main
+    # shellcheck disable=SC2317,SC2034,SC2329  # AE_RESOLVED_AGENT read by helper_interrupt_main
     ae_resolve() {
         AE_RESOLVED_PANE="%9"
         AE_RESOLVED_AGENT="claude:ghost"
         return 0
     }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     _pane_agent_is_dead() { return 0; } # dead real agent
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_lock_target() { return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_submit_pasted_message() { pasted=1; return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_unlock_target() { return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_emit_event() { return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     tmux() { return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     sleep() { :; }
     ( helper_interrupt_main claude:ghost "stop and run rm -rf" ) 2>/dev/null
     rc=$?
@@ -11239,30 +11266,30 @@ assert_eq "interrupt-guard: dead-agent message interrupt exits 1, pastes nothing
 _int_unconfirmed() {  # live target, submit fails -> "rc=? emitted=?"
     local rc evfile
     evfile="$(mktemp)" # a FILE survives the subshell fork (a var would not)
-    # shellcheck disable=SC2317,SC2034  # AE_RESOLVED_AGENT read by helper_interrupt_main
+    # shellcheck disable=SC2317,SC2034,SC2329  # AE_RESOLVED_AGENT read by helper_interrupt_main
     ae_resolve() {
         AE_RESOLVED_PANE="%9"
         AE_RESOLVED_AGENT="claude:live"
         return 0
     }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     _pane_agent_is_dead() { return 1; } # alive
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_lock_target() { return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_target_tool() { echo claude; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_submit_pasted_message() { return 1; } # submit UNCONFIRMED
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_unlock_target() { return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     ae_emit_event() {
         echo x >>"$evfile"
         return 0
     }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     tmux() { return 0; }
-    # shellcheck disable=SC2317
+    # shellcheck disable=SC2317,SC2329
     sleep() { :; }
     ( helper_interrupt_main claude:live "stop now" ) 2>/dev/null
     rc=$?
@@ -13128,6 +13155,161 @@ assert_eq "launch: the parent is proved AGAIN immediately before the child's met
     "$([[ "$AE_SOURCE" == *'_from_proof_now="$(_ar_from_preflight "$PARENT_ARCHIVE_ID"'*'mv "${AE_META}/meta.tmp.$$" "${AE_META}/meta"'* ]] && echo 1 || echo 0)"
 assert_eq "launch: a changed parent rolls the launch back rather than publishing a lineage-free child" "1" \
     "$([[ "$AE_SOURCE" == *'changed while this session was being created'*'_launch_rollback 1'* ]] && echo 1 || echo 0)"
+
+# ── the gate's own hazard: shellcheck must never be able to read stdin (#67) ─────
+# The linter reads stdin when fd 0 is open, and an agent harness hands its tool
+# calls a UNIX SOCKET. If that socket's peer has not closed by the time the read
+# happens, it never returns EOF and the process blocks FOREVER at 0.0% CPU —
+# wedges observed at 4h40m, 8h40m, 16h52m and 18h33m beside successful runs of
+# the same command, with NOTHING in between (a race on the peer's close, not
+# slowness). Every input is already on the argv, so `< /dev/null` costs nothing
+# and removes the race. It also looks like line-noise to anyone tidying the
+# recipe, which is exactly why it is pinned here.
+#
+# SOURCE SHAPE ONLY, and the label says so: this proves the redirect is WRITTEN,
+# not that a wedge cannot occur. The behaviour is falsifiable only against a fifo
+# that is never closed — a rig no unit test can own without risking the very hang
+# it is testing for; run it by hand (see #67) when changing the recipe.
+#
+# Two ways a source-shape guard of this kind lies, both closed below because both
+# were demonstrated against the first version of it:
+#   * A COMMENT is not evidence. `# shellcheck ... < /dev/null` in the recipe
+#     satisfies any grep over raw text while the real command runs unprotected.
+#     Full-line comments are stripped before anything is asserted.
+#   * A SECOND CALL on the same logical line hides behind the first. The tail
+#     test alone passes `shellcheck ae; shellcheck install < /dev/null`, where
+#     the protected command is not the one doing the work. So the count of
+#     `shellcheck` tokens in EXECUTABLE text must be exactly one, that one line
+#     must BE the command (not contain it), and it must carry the redirect.
+# The predicate is a pure function of justfile text precisely so both lies can be
+# asserted here as red inputs, instead of living in a rig someone has to remember
+# to run.
+#
+# shfmt's redirect in `format-check` is deliberately NOT pinned: it is insurance
+# (shfmt only reads stdin when given no paths), and pinning insurance as contract
+# invites the next reader to treat the two as equally load-bearing. They are not.
+
+# Executable text of the `lint` recipe: body lines only, full-line comments and
+# blanks dropped, backslash continuations folded so one command is one line.
+# A `#` line is only a comment when no fold is in progress — mid-continuation it
+# is argument text, not commentary.
+_gate_lint_exec_text() { # stdin: justfile text
+    awk '
+        /^lint:/ { p = 1; next }
+        p && /^[^ \t]/ { p = 0 }
+        p {
+            line = $0
+            if (buf == "") {
+                sub(/^[ \t]+/, "", line)
+                if (line ~ /^#/ || line == "") next
+            } else {
+                sub(/^[ \t]+/, " ", line)
+            }
+            if (sub(/\\[ \t]*$/, "", line)) { buf = buf line; next }
+            print buf line
+            buf = ""
+        }
+    '
+}
+
+# 1 when the recipe protects shellcheck's stdin, 0 otherwise.
+_gate_lint_redirect_ok() { # stdin: justfile text
+    local text tokens bearing
+    text="$(_gate_lint_exec_text)"
+    # The bare word `shellcheck`, however many times it appears in real commands.
+    tokens="$(grep -oE '(^|[^A-Za-z0-9_.@/-])shellcheck([^A-Za-z0-9_.@/-]|$)' <<<"$text" | wc -l | tr -d '[:space:]')"
+    [[ "${tokens:-0}" == 1 ]] || { echo 0; return 0; }
+    # That one occurrence must BE the command that owns the redirect. Starting the
+    # line is not enough: every shell control operator hands the redirect to a
+    # LATER command while shellcheck keeps the inherited fd — `&& true`, `|| true`,
+    # `| cat` and `& wait` all did exactly that against the previous version of
+    # this predicate. So the SIMPLE-COMMAND segment between the token and the
+    # redirect must contain none of `;`, `&`, `|` (which also covers `&&` and
+    # `||`, since the class matches their single characters), and the segment must
+    # end at the redirect.
+    # The `<` must also be BARE — at a token boundary, or the explicit `0<`. A
+    # NUMERIC fd prefix redirects the wrong descriptor and leaves stdin exactly as
+    # inherited: measured, `printf X | bash -c 'cat 2< /dev/null'` still prints X,
+    # and `1< /dev/null` only makes stdout read-only, which a run with no findings
+    # never notices. Both spellings end in `< /dev/null` and both keep the wedge.
+    # Deliberately loud in the false-positive direction, twice over: a legitimate
+    # `2>&1` on this line is rejected (its `&` is indistinguishable here from a
+    # backgrounding one), and so is `shellcheck ae< /dev/null` with no space,
+    # which is valid shell. If either day comes, split the redirection onto its
+    # own construct or widen this with a case that is MEASURED, not assumed — do
+    # not delete the check to make a recipe pass.
+    bearing="$(grep -cE '^shellcheck[^;&|]*[[:space:]]0?<[[:space:]]*/dev/null[[:space:]]*$' <<<"$text" | tr -d '[:space:]')"
+    [[ "${bearing:-0}" == 1 ]] && echo 1 || echo 0
+    return 0
+}
+
+_gate_justfile="$(cat "$(dirname "$AE_BIN")/justfile")"
+assert_eq "gate (#67, source shape): the real lint recipe protects shellcheck's stdin" "1" \
+    "$(_gate_lint_redirect_ok <<<"$_gate_justfile")"
+# RED 1 — the comment-as-evidence lie: the only protected text is a comment.
+assert_eq "gate (#67) red: a commented-out redirect is not evidence" "0" \
+    "$(_gate_lint_redirect_ok <<<'lint:
+    # shellcheck -x ae tests/unit install < /dev/null
+    shellcheck -x ae tests/unit install
+')"
+# RED 2 — the second-call lie: the redirect sits on a command that does no work.
+assert_eq "gate (#67) red: a second shellcheck on the same logical line is caught" "0" \
+    "$(_gate_lint_redirect_ok <<<'lint:
+    shellcheck ae; shellcheck install < /dev/null
+')"
+# RED 3 — the plain regression this exists to catch.
+assert_eq "gate (#67) red: no redirect at all" "0" \
+    "$(_gate_lint_redirect_ok <<<'lint:
+    shellcheck -x ae tests/unit install
+')"
+# RED 4-7 — the control-operator family: exactly one `shellcheck` token, the line
+# starts with it, and it still ends in `< /dev/null` — but the redirect belongs to
+# the command AFTER the operator, so shellcheck keeps the inherited socket. Each
+# of these passed the `;`-only version of the predicate.
+assert_eq "gate (#67) red: '&& true' takes the redirect" "0" \
+    "$(_gate_lint_redirect_ok <<<'lint:
+    shellcheck -x ae && true < /dev/null
+')"
+assert_eq "gate (#67) red: '|| true' takes the redirect" "0" \
+    "$(_gate_lint_redirect_ok <<<'lint:
+    shellcheck -x ae || true < /dev/null
+')"
+assert_eq "gate (#67) red: a pipeline gives the redirect to the downstream command" "0" \
+    "$(_gate_lint_redirect_ok <<<'lint:
+    shellcheck -x ae | cat < /dev/null
+')"
+assert_eq "gate (#67) red: backgrounding leaves shellcheck with the inherited fd" "0" \
+    "$(_gate_lint_redirect_ok <<<'lint:
+    shellcheck -x ae & wait < /dev/null
+')"
+# RED 8-9 — the numeric-fd family: the line ends in `< /dev/null` and has no
+# control operator, but the descriptor redirected is not stdin. `2< /dev/null`
+# leaves stdin fully inherited (measured: `printf X | bash -c 'cat 2< /dev/null'`
+# still prints X); `1< /dev/null` only makes stdout read-only, which a run that
+# finds nothing never notices. Both return the #67 wedge while reading green.
+assert_eq "gate (#67) red: '1<' redirects stdout, not stdin" "0" \
+    "$(_gate_lint_redirect_ok <<<'lint:
+    shellcheck -x ae 1< /dev/null
+')"
+assert_eq "gate (#67) red: '2<' redirects stderr, not stdin" "0" \
+    "$(_gate_lint_redirect_ok <<<'lint:
+    shellcheck -x ae 2< /dev/null
+')"
+# GREEN — the explicit spelling of the same thing IS stdin, and is accepted.
+assert_eq "gate (#67) green: explicit '0<' is stdin and is accepted" "1" \
+    "$(_gate_lint_redirect_ok <<<'lint:
+    shellcheck -x ae 0< /dev/null
+')"
+# GREEN control — a folded multi-line invocation is still recognised, so the
+# guard does not pass by being blind to the shape the recipe actually uses.
+assert_eq "gate (#67) green: a folded multi-line invocation is recognised" "1" \
+    "$(_gate_lint_redirect_ok <<<'lint:
+    shellcheck -x ae \
+        tests/unit \
+        install < /dev/null
+')"
+unset _gate_justfile
+unset -f _gate_lint_exec_text _gate_lint_redirect_ok
 
 # ── BARE-CALL PROBES under set -euo pipefail ─────────────────────────
 # The ONLY shape that proves errexit safety. Every call site in ae today sits behind

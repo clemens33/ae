@@ -10,17 +10,34 @@ default_branch := "main"
 # Run all quality checks
 check: lint format-check
 
-# Lint with shellcheck (the contrib aemonitor/aewatch helpers are Python, not
-# shell; only their bash runners are linted here).
-# The e2e-ai harness + scenario drivers are linted here but NEVER run by `check`.
+# The contrib aemonitor/aewatch helpers are Python, not shell; only their bash
+# runners are linted here. The e2e-ai harness + scenario drivers are linted but
+# NEVER run by `check`.
+#
+# `< /dev/null` IS THE FIX FOR #67, not tidiness. shellcheck reads stdin when fd
+# 0 is open, and an agent harness hands its tool calls a UNIX SOCKET. If that
+# socket's peer has not closed by the time the read happens, it never returns
+# EOF and the process blocks FOREVER at 0.0% CPU — wedges observed at 4h40m,
+# 8h40m, 16h52m and 18h33m beside successful runs of the same command, with
+# nothing in between: a race on the peer's close, not slowness. Every input is
+# already named on the argv, so this costs nothing and removes the race.
+# Reproduce on demand with a fifo no one ever closes; a plain rerun passes by
+# luck most of the time. tests/unit pins the redirect structurally, because it
+# reads like line-noise to the next person tidying the recipe.
+
+# Lint with shellcheck
 lint:
     shellcheck -x ae tests/unit tests/integration tests/aemonitor tests/aewatch install \
         tests/e2e/ai/lib.sh tests/e2e/ai/run_scenario.sh \
-        $(find tests/e2e/ai/scenarios -name steps.sh)
+        $(find tests/e2e/ai/scenarios -name steps.sh) < /dev/null
+
+# `< /dev/null` here is insurance, not a fix: shfmt reads stdin only when given
+# no paths, and it is given two. Deliberately NOT pinned by a test — pinning
+# insurance as contract makes the next reader treat it as load-bearing.
 
 # Check formatting (shfmt, diff mode)
 format-check:
-    shfmt -d -i 4 -ci ae install
+    shfmt -d -i 4 -ci ae install < /dev/null
 
 # Auto-format
 format:
