@@ -268,6 +268,17 @@ That is a difference in instrument design, not in care.
 - **Rebuilding the thing a claim is about is exactly when the claim stops being true.**
   Regenerating a harness snapshot overwrote the preserved pre-fix copy that a correction
   notice asserted still existed.
+- **Verifying the tool RAN is not verifying the edit LANDED.** A patch script threw on a
+  bad anchor at its last edit and wrote nothing; the commit went out with an accurate
+  description of *intent* and the wrong *content*. The operator had checked the tool's
+  report, not the tool's effect. Diff what you committed against what you meant, or make
+  the tool's exit status depend on the edit applying.
+- **Fake precision is worse than an obvious error.** Line offsets read inside a
+  window-relative grep were written down as ABSOLUTE line numbers and then described as
+  exact frozen verification. The output was not merely wrong — it was wrong while wearing
+  the costume of a checked result. Structural fix: resolve every citation against the
+  frozen source and emit **the cited line's own text** beside it. A line number is a claim;
+  the line is the evidence.
 - **A one-shot process check cannot see a polling watcher**, and a before/after pair cannot
   see a child that lived only between the samples. Census the long-lived ROOTS instead —
   reach is inherited across fork, so a child cannot reach what its parent cannot.
