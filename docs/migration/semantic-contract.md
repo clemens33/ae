@@ -323,8 +323,12 @@ fails the end), `--purge-history`, transfer (both directions), rename, compact/h
 
 <!-- rows: SC-8xx -->
 
-Lead drafts, SHOULD frozen from architecture.md + commands.md + AGENTS.md ruling
-bullets; one testable SHOULD per row. `classified_by` pending joint pass.
+SHOULD frozen from architecture.md + commands.md + AGENTS.md ruling bullets; one
+testable SHOULD per row.
+
+**classified_by: all S9 normative rows (SC-800..831 including letter-splits) —
+fable5:lead + gpt56sol:colead, 2026-08-20 (gate 7398f6de + mechanical batch applied).
+UNCLASSIFIED pending seat closure: SC-832b/c, SC-833b/c/d, SC-834b/c.**
 
 **SC-800 — archive publication claims by `mkdir`.** Bucket 1 — the atomic claim is
 `mkdir .publishing.<uuid>`; mkdir failing IS the mutual exclusion (no flock required —
@@ -454,21 +458,21 @@ pushed/already-reachable outcomes. Authority: commands.md end section +
 architecture.md. Empirical: census-2 end section (audited). Conflict: none.
 
 **SC-818a — purge requires ae's REAL archive root, never a symlink.** Bucket 1.
-Authority: commands.md:625-631 + architecture.md:134-137. Empirical: pending.
+Authority: commands.md:534-535 + architecture.md:134-137. Empirical: pending.
 Conflict: none.
 
 **SC-818b — purge acquires the same `.publishing.<uuid>` claim.** Bucket 1 — a delete
-cannot race a publisher's rename. Authority: commands.md:627-629. Empirical: pending.
+cannot race a publisher's rename. Authority: commands.md:534-536. Empirical: pending.
 Conflict: none.
 
 **SC-818c — purge validates the tree as an ae archive before deleting.** Bucket 1 — a
 tree ae cannot validate is a tree ae cannot claim to own; a hand-edited archive is
-refused (remove it yourself). Authority: commands.md:629-634. Empirical: pending.
+refused (remove it yourself). Authority: commands.md:536-542. Empirical: pending.
 Conflict: none.
 
 **SC-818d — purge requires a NONEMPTY exact source-identity match.** Bucket 1 — an
 archive naming no session is absence of proof, not a wildcard; refused as malformed
-(and `--from` will not inherit from it either). Authority: commands.md:630-633 +
+(and `--from` will not inherit from it either). Authority: commands.md:537-540 +
 architecture.md:134-137. Empirical: pending. Conflict: none.
 
 **SC-818e — purge refuses to delete a parent a live `--from` lineage points at.**
@@ -477,45 +481,60 @@ Bucket 1. Authority: architecture.md:137-138. Empirical: pending. Conflict: none
 **SC-819 — an unidentifiable session is refused BEFORE anything is stopped.** Bucket 1
 — meta gone with memory remaining, or `session_id` unparseable: refused with the
 reason, nothing deleted, regardless of history flag ("delete it" is not an answer to
-"which session is this"). Authority: commands.md:580-585 + architecture.md:139-143.
+"which session is this"). Authority: commands.md:513-518 + architecture.md:139-143.
 Empirical: pending. Conflict: none.
 
-**SC-820 — end freezes the confirmed plan and re-proves it under the lock.** Bucket 1 —
-each target resolved exactly ONCE; the prompt renders from those fields and the freeze
-captures the same observation (a fork cannot carry a freeze back); re-proof under the
-lifecycle lock refuses on mismatch and prints both versions; `-f` freezes nothing
-because nothing was promised. Authority: commands.md:592-598 +
-architecture.md:146-149,158-166. Empirical: pending. Conflict: none.
+**SC-820a — end freezes the confirmed plan and re-proves it under the lock.** Bucket 1
+— each target resolved exactly ONCE; the prompt renders from those fields and the
+freeze captures the same observation (a fork cannot carry a freeze back); re-proof
+under the lifecycle lock refuses on mismatch and prints both versions. Authority:
+commands.md:526-532 + architecture.md:146-149,158-166. Empirical: pending.
+Conflict: none.
 
-**SC-821 — `end all` carries the confirmed list; "a prompt ran" is its own fact.**
-Bucket 1 — the set can never grow between question and answer; an empty confirmed list
-means end NOTHING, which a count cannot distinguish from nobody-was-asked. Authority:
-architecture.md:150-155. Empirical: pending. Conflict: none.
+**SC-820b — `-f` freezes nothing.** Bucket 2 — nothing was promised, so nothing is
+frozen or re-proved. Authority: commands.md:526-532. Empirical: pending. Conflict: none.
+
+**SC-821a — `end all` acts on the confirmed target set only.** Bucket 1 — the set can
+never grow between question and answer. Authority: architecture.md:150-155.
+Empirical: pending. Conflict: none.
+
+**SC-821b — "a prompt ran" is its own fact, never a count.** Bucket 1 — an empty
+confirmed list means end NOTHING, which a count cannot distinguish from
+nobody-was-asked. Authority: architecture.md:150-155. Empirical: pending.
+Conflict: none.
 
 **SC-822 — `--from` is valid only for a session that does not exist in any form.**
 Bucket 1 — no tmux session, no session state, no worktree; onto an existing session it
 refuses ("resume this AND inherit that" has two meanings and no safe default).
-Authority: commands.md:598-604. Empirical: pending. Conflict: none.
+Authority: commands.md:580-584. Empirical: pending. Conflict: none.
 
 **SC-823 — the parent is proved before anything is created.** Bucket 1 — a refusal
-leaves no tmux session, no session state, no worktree. Authority: commands.md:604-607.
+leaves no tmux session, no session state, no worktree. Authority: commands.md:586-592.
 Empirical: pending. Conflict: none.
 
-**SC-824 — proof facts are recorded as proved, never re-read.** Bucket 1 — id and
-handover/pending counts come back from the one proof; an archive mid-publication or
-mid-purge is refused outright. Authority: commands.md:607-611. Empirical: pending.
-Conflict: none.
+**SC-824a — proof facts are recorded as proved, never re-read.** Bucket 1 — id and
+handover/pending counts come back from the one proof, not from a file another process
+may be deleting. Authority: commands.md:589-592. Empirical: pending. Conflict: none.
 
-**SC-825 — the child records lineage durably and derives, never stores, the path.**
-Bucket 2 — `parent_archive_id` + parent counts preserved across resumes; the parent's
-absolute path is derived from root + id so moving `AE_HOME` cannot rot it; a deleted
-parent warns and continues. Authority: commands.md:612-617. Empirical: pending.
-Conflict: none.
+**SC-824b — an archive mid-publication or mid-purge is refused outright.** Bucket 1.
+Authority: commands.md:589-592. Empirical: pending. Conflict: none.
+
+**SC-825a — the child records lineage durably.** Bucket 2 — `parent_archive_id` +
+parent handover/pending counts, preserved across resumes. Authority:
+commands.md:594-598. Empirical: pending. Conflict: none.
+
+**SC-825b — the parent path is derived, never stored.** Bucket 2 — from archive root +
+id, so moving `AE_HOME` cannot rot it. Authority: commands.md:594-598.
+Empirical: pending. Conflict: none.
+
+**SC-825c — a deleted parent warns and continues on resume.** Bucket 2 — the lineage
+fact is still true; workspace.md says the digest is gone. Authority:
+commands.md:594-598. Empirical: pending. Conflict: none.
 
 **SC-826 — a pre-id session gets one minted at end, recorded on both sides.** Bucket 2
 — `session_id_origin=minted-at-end` in live meta AND `archive_id_origin=minted-at-end`
 in the archive; the live record keeps a retry after failed publication honest.
-Authority: commands.md:586-591. Empirical: pending. Conflict: none.
+Authority: commands.md:520-524. Empirical: pending. Conflict: none.
 
 **SC-827 — compact freezes ONE authorization tuple.** Bucket 1 — the session resolves
 once into the eight-field tuple; everything downstream reads the tuple, never meta
@@ -529,31 +548,61 @@ under the lifecycle lock immediately before teardown (a replacement is never STO
 a mismatch names the field that moved. Authority: architecture.md:186-191 +
 commands.md:650-655. Empirical: pending. Conflict: none.
 
-**SC-829 — a handover is two facts.** Bucket 1 — a reply to the request AND a new
-`handover`-topic memo written after the request went out, polled from the event log and
-`memo.tsv`, never pane output; the memo baseline travels in the request's stored body so
-a re-run reuses the outstanding request. Authority: architecture.md:193-201.
-Empirical: pending. Conflict: none.
+**SC-829a — handover completion is two facts.** Bucket 1 — a reply to the request AND a
+new `handover`-topic memo written after the request went out, polled from the event log
+and `memo.tsv`, never pane output. Authority: architecture.md:193-199. Empirical:
+pending. Conflict: none.
+
+**SC-829b — a re-run reuses the outstanding request and its baseline.** Bucket 1 — the
+memo baseline travels in the request's own stored body, so re-running waits on the SAME
+request instead of sending a second, and the fact survives into the archive.
+Authority: architecture.md:198-201. Empirical: pending. Conflict: none.
 
 **SC-830 — `--digest-only` is the one explicit degradation.** Bucket 2 — withdraws
 anything outstanding and treats the digest as the handover. Authority:
-architecture.md:202-203 + commands.md:640-642. Empirical: pending. Conflict: none.
+commands.md:634-638 + architecture.md:201-203. Empirical: pending. Conflict: none.
 
 **SC-831 — a timed-out handover stops nothing.** Bucket 1 — nothing stopped, nothing
 archived, the request stays open so a re-run waits on the SAME request rather than
 sending a second. Authority: commands.md:656-658. Empirical: pending. Conflict: none.
 
-**SC-832 — rename semantics beyond name validation.** `authority=code-observation` —
-no normative source; census-2 evidence (meta rewritten without `meta.lock`, race
-window) stands as IS; seat closure pending. Conflict: pending normative closure.
+**SC-832a — rename's effect set.** Bucket 2 — renames the tmux session, moves the
+session directory, updates `session=` in meta, regenerates `workspace.md`; a running
+tmux server stays up. Authority: commands.md:287-290 (normative — the gate corrected an
+earlier no-source claim). Empirical: census-2 rename section. Conflict: none.
 
-**SC-833 — transfer semantics beyond name validation.** `authority=code-observation` —
-partial-rsync and stop-first behavior have no normative source; census-2 evidence
-stands; seat closure pending. Conflict: pending normative closure.
+**SC-832b — rename vs concurrent meta writers.** `authority=code-observation` — the
+meta rewrite runs without `meta.lock` (census-2, ae:11597-11667); race semantics need
+seat closure. UNCLASSIFIED pending closure.
 
-**SC-834 — `_recover-pending` semantics.** `authority=code-observation` — internal
-surface, no normative source; census evidence (fd200 check-then-set, recover event
-after) stands; seat closure pending. Conflict: pending normative closure.
+**SC-832c — rename crash cuts.** `authority=code-observation` — residue at each cut
+point (dir moved / tmux renamed / meta updated) per census-2; seat closure pending.
+UNCLASSIFIED pending closure.
+
+**SC-833a — transfer moves a stopped session both directions.** Bucket 2 — including
+Claude/Codex conversation files; `--pull` is the reverse direction. Authority:
+commands.md:24. Empirical: census-2 transfer section. Conflict: none.
+
+**SC-833b — transfer requires the stopped state first.** `authority=code-observation` —
+stop-before-rsync ordering; seat closure pending. UNCLASSIFIED.
+
+**SC-833c — per-direction partial-rsync residue.** `authority=code-observation` —
+census-2 evidence; seat closure pending. UNCLASSIFIED.
+
+**SC-833d — transfer's audit event is best-effort.** `authority=code-observation` —
+warned, success still reported (census-2 addenda, ae:11530-11535); seat closure
+pending. UNCLASSIFIED.
+
+**SC-834a — `_recover-pending` re-attempts post-launch session-id capture.** Bucket 2 —
+internal helper, called by the watchdog. Authority: commands.md:713-715 (normative
+purpose/caller — gate correction). Empirical: census evidence. Conflict: none.
+
+**SC-834b — recovery meta reconciliation.** `authority=code-observation` — fd200
+check-then-set rewriting `agent.<slot>` (census, ae:8717-8732); seat closure pending.
+UNCLASSIFIED.
+
+**SC-834c — the `recover` event follows success separately.** `authority=code-observation`
+— separate append after the meta write (census); seat closure pending. UNCLASSIFIED.
 
 ### S10 — Daemons/sidecars + contrib boundary
 
@@ -563,7 +612,13 @@ injection boundaries; bash daemon vs aewatch runtime handoff via marker + fresh
 heartbeat), `ae steward` + ae-monitor window (bash product surfaces) vs contrib
 templates/sidecars.
 
-<!-- rows: SC-9xx -->
+<!-- rows: SC-9xx — colead drafting (seat split 2026-08-20); lead remains sole writer -->
+
+**SC-900 — event-log container lifecycle.** Bucket 4 — **DR-001**: the container is NOT
+append-only forever; explicit generations with rotation under DR-001's binding
+conditions replace both the frozen resume-trim behavior and the docs' no-rotation
+promise. Authority: DR-001 (both seats). Empirical: ae:18046-18075 (trim) + census-3
+audit I1 (reader race). Conflict: DR-001.
 
 ### S11 — Installer / doctor / refresh
 
@@ -587,9 +642,13 @@ fixed points, message-envelope authority (human = no envelope).
 
 <!-- rows: SC-12xx -->
 
-Lead drafts; authority for all rows is the #59 ruling (closing comment + 72c7293 commit
-message + AGENTS.md allowlist bullets) unless noted — normative role. Session-name
-boundary rows live in S9 (SC-813/814).
+Authority for all rows is the #59 ruling (closing comment + 72c7293 commit message +
+AGENTS.md allowlist bullets) unless noted — normative role. Session-name boundary rows
+live in S9 (SC-813/814).
+
+**classified_by: SC-1200..1209 including all splits — fable5:lead + gpt56sol:colead,
+2026-08-20 (confirmed on 07e2770), including SC-1202 bucket 3/#61 and the SC-1209 joint
+ruling.**
 
 **SC-1200 — agent names are allowlisted, not screened.** Bucket 1 —
 `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, because a name reaches a privileged sink: it is
@@ -712,8 +771,11 @@ bar for DR completeness: the wider the divergence, the fuller the record.
 
 ```
 DR-001 Event-log generations
-- affected SC ids: SC-511c (evolution promise amended); S10/S14 reader rows (census-3
-  audit I1 stat/open race); B3 (census-3 addenda).
+- affected SC ids: SC-900 (S10 event-log container lifecycle, bucket 4 under this DR);
+  S10/S14 reader rows (census-3 audit I1 stat/open race); B3 (census-3 addenda).
+  SC-511c (additive event-OBJECT keys) is NOT affected — the conflict is with the
+  no-rotation CONTAINER promise, and SC-511c stays bucket 2 conflict=none (consistency
+  hold resolved 2026-08-20).
 - context / current IS: bridge-protocol.md:90-95 + events.md:142-148 promise append-only,
   no rotation, lifetime growth; frozen ae:18046-18075 REPLACES events.jsonl with the
   newest N lines on resume (probe-verified reader losses, census-3 audit I1).
