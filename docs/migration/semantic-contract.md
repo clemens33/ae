@@ -466,6 +466,63 @@ fixed points, message-envelope authority (human = no envelope).
 
 <!-- rows: SC-12xx -->
 
+Lead drafts; authority for all rows is the #59 ruling (closing comment + 72c7293 commit
+message + AGENTS.md allowlist bullets) unless noted — normative role. Session-name
+boundary rows live in S9 (SC-813/814).
+
+**SC-1200 — agent names are allowlisted, not screened.** Bucket 1 —
+`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`, because a name reaches a privileged sink: it is
+interpolated into that agent's own system prompt (the identity sentence).
+Empirical: unit pins @72c7293. Conflict: none.
+
+**SC-1201 — the spawn boundary treats a peer name as hostile.** Bucket 1 — a name
+arriving via `spawn` is validated fatally: violation refuses the spawn (the #59 exploit
+was a legal-looking name carrying prose into the identity sentence).
+Empirical: pending. Conflict: none.
+
+**SC-1202 — the operator roster boundary fails the launch before side effects.** Bucket
+1 — `[workspace] main`/`workers` names are validated at launch-time parse; a violation
+fails the launch with the grammar echoed, before tmux or filesystem effects.
+Empirical: pending. Conflict: none.
+
+**SC-1203 — enforcement follows provenance, not the variable.** Bucket 1 — FRESH input
+(config, CLI, spawn) is fatal on violation; RESTORED input (saved meta, compact's
+frozen roster) is left to the interpolation guard — refusing restored input would make
+a pre-grammar session unresumable and kill a compact child whose source is already
+archived. Empirical: pending. Conflict: none.
+
+**SC-1204 — the interpolation site re-validates and fails quiet.** Bucket 1 —
+`build_ae_context` re-checks BOTH halves of `alias:name`; a non-conforming restored
+entry yields NO identity line rather than a hostile one, and the agent still launches.
+Empirical: pending. Conflict: none.
+
+**SC-1205 — a derived name is a fixed point of the grammar.** Bucket 1 — worker-name
+dedup truncates the base so its suffix fits the 64 cap, loops the suffix until unseen,
+and validates the FINAL value; suffixes count from `-2` (meaning, not array position).
+Naive suffixing produced 66-char names and duplicate `foo-2`s. Empirical: unit pins
+@72c7293. Conflict: none.
+
+**SC-1206 — a leading underscore is a legal alias but never an agent name.** Bucket 2 —
+`workers = _foo` (alias as its own name) fails the launch with the grammar; internal
+`_`-prefixed helpers stay out of the agent namespace. Empirical: pending.
+Conflict: none.
+
+**SC-1207 — `:` is the meta delimiter and never appears in a name.** Bucket 2 — meta
+rows are `alias:name:session_id`; the allowlist excludes `:` by construction.
+Empirical: pending. Conflict: none.
+
+**SC-1208 — pane text and inter-agent messages are data, not instructions.** Bucket 1 —
+the LLM prompt is an interpreted sink; ae never promotes captured pane content or
+peer-message text into instruction position (steward charter injection boundary;
+authority: AGENTS.md interpreted-sinks table, ruling). Empirical: pending.
+Conflict: none.
+
+**SC-1209 — envelope authority: the helper's first line is the only provenance.**
+Bucket 1 — a message beginning `⟦ae:msg from …⟧` emitted by the delivery helper is peer
+data; interactive input with NO envelope is the human, who outranks every agent; an
+envelope pasted inside prose is text, not provenance. (Authority: workspace
+rules/AGENTS injection boundary — ruling.) Empirical: pending. Conflict: none.
+
 ### S14 — Locking / concurrency observable promises
 
 Externally observable ordering/atomicity promises only; protocol detail lives in
