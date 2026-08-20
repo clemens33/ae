@@ -1,0 +1,20 @@
+cwd: /tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/w
+argv:
+  /tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/b/ae
+  stop
+  all
+  -y
+env:
+  HOME=/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/h
+  AE_HOME=/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/h/.ae
+  TMPDIR=/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/tp
+  TMUX_TMPDIR=/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/t
+  PATH=/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/cap/tmux-argv.log

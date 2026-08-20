@@ -1,0 +1,12 @@
+arm	exit-folding-planted-failure
+section	L-STOP
+roster_ids	SC-515a
+construction	ae stop all -y runs over three sessions; the detached supervisor is held at its entry barrier and then killed so it writes nothing, and the controller supplies EVERY per-target record itself from PRODUCER-HARVESTED stop-result lines with only the op id and the target name substituted — one target's record is the harvested FAILURE line, the other two the harvested SUCCESS line. The caller's bounded wait then folds them
+hook_patch_version	L-HOOKS-v2
+binary.sha256	4cc428e955a1e390bdb7afb6f71e4ce86847b4b5cf98e7f8a45599401378f845
+topology	proj + projx (prefix-sibling pair) + other, one recorded server
+planted_failure_target	proj
+planted_success_targets	projx, other
+opid	ead55934-2d9d-43da-bcfe-fdbe46c878bf
+op_rc	1
+fixtures	stop-result.success.harvested, stop-result.failure.harvested (+ PROVENANCE.txt), byte diffs in planted.diff

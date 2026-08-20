@@ -1,0 +1,6 @@
+pid=10719 ppid=10718 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </tmp/aelx/L-STOP/identity-c2-foreign-server/t/tmux-501/default> <display-message> <-p> <#{socket_path} #{pid}>
+pid=10725 ppid=10724 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <list-panes> <-a> <-F> <#{pane_tty}>
+pid=10727 ppid=10726 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{session_name}>
+pid=10729 ppid=10728 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </tmp/aelx/L-STOP/identity-c2-foreign-server/t/tmux-501/default> <display-message> <-p> <#{socket_path} #{pid}>
+pid=12562 ppid=12558 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c2-foreign-server/t/tmux-501/default> <list-sessions>pid=12561 ppid=12557 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-F> <#{session_id} #{session_name}> <-S>
+ </private/tmp/aelx/L-STOP/identity-c2-foreign-server/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

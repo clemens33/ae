@@ -1,0 +1,9 @@
+reproof.C1	$TMUX and $TMUX_PANE in the new shell pane
+reproof.C2/C3	server socket_path + pid, round-tripped from this socket
+/private/tmp/aelx/L-STOP/legacy-migration-injection/t/tmux-501/default 74222
+reproof.C4	the new pane resolves to session id + name:
+$0 leg'"$(touch SENTINEL_TOUCHED)"'x
+reproof.C5	the pane tty:
+/dev/ttys045
+first_agent_pane	%0
+shell_pane	%6

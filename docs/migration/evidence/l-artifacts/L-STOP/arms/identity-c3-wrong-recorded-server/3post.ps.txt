@@ -1,0 +1,5 @@
+12632     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/identity-c3-wrong-recorded-server/w
+13267 12632 ttys019  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c3-wrong-recorded-server/h/.ae/sessions/proj/events-tail
+13420 12632 ttys020  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c3-wrong-recorded-server/h/.ae/sessions/proj/watchdog _run
+15364 12632 ttys033  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c3-wrong-recorded-server/h/.ae/sessions/projx/events-tail
+15479 12632 ttys039  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c3-wrong-recorded-server/h/.ae/sessions/projx/watchdog _run

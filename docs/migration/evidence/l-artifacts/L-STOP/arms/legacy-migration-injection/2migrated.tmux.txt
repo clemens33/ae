@@ -1,0 +1,18 @@
+## socket	/tmp/aelx/L-STOP/legacy-migration-injection/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|leg'"$(touch SENTINEL_TOUCHED)"'x|2|0|1787247524
+$1|legx|2|0|1787247528
+## windows
+leg'"$(touch SENTINEL_TOUCHED)"'x|@0|0|leg|1
+leg'"$(touch SENTINEL_TOUCHED)"'x|@1|99|ae-monitor|2
+legx|@2|0|legx|1
+legx|@3|99|ae-monitor|2
+## panes
+leg'"$(touch SENTINEL_TOUCHED)"'x|@0|%0|74223|claude|claude:claude|main|0
+leg'"$(touch SENTINEL_TOUCHED)"'x|@1|%2|74784|bash|_watchdog||0
+leg'"$(touch SENTINEL_TOUCHED)"'x|@1|%1|74733|bash|_events||0
+legx|@2|%3|75273|claude|claude:claude|main|0
+legx|@3|%5|76429|bash|_watchdog||0
+legx|@3|%4|76375|bash|_events||0
+## clients

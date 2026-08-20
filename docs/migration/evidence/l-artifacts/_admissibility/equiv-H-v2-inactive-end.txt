@@ -1,0 +1,29 @@
+# equivalence compare: H: v2 INACTIVE-HOOK equivalence on the END fixture (frozen vs v2, AE_L_HOOKS unset)
+# A=/tmp/aelx/EQUIV/end-frozen01
+# B=/tmp/aelx/EQUIV/end-v2inact1
+
+## 1launch.rc  A=1 B=1  SAME
+## 1launch.stdout normalized diff
+## 1launch.stderr normalized diff
+
+## 1blaunch.rc  A=0 B=0  SAME
+## 1blaunch.stdout normalized diff
+## 1blaunch.stderr normalized diff
+
+## 2op.rc  A=0 B=0  SAME
+## 2op.stdout normalized diff
+## 2op.stderr normalized diff
+
+## 3op.rc  A=0 B=0  SAME
+## 3op.stdout normalized diff
+## 3op.stderr normalized diff
+
+## m.before STRUCTURAL diff (path/type/mode/link)
+
+## m.after STRUCTURAL diff (path/type/mode/link)
+
+## t.before normalized diff
+
+## t.after normalized diff
+
+## comparator verdict: NO_DIFFERENCES

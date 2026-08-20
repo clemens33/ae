@@ -1,0 +1,13 @@
+arm	legacy-migration-injection
+section	L-STOP
+roster_ids	SC-839e
+construction	a VALID real session is launched, then a named controller mutation moves it into the LEGACY physical direct-child shape under a name carrying quoting and command-substitution syntax with an embedded sentinel: tmux rename-session, a matching state-directory move, and a meta session= rewrite (mode preserved). C1-C4 are re-proved from a shell pane inside the migrated session, then the implicit no-name stop route runs there. Identified as the legacy-migration arm; this is never an allowlisted launch
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+topology	leg + legx (prefix-sibling pair), one recorded server
+hostile_name_file	hostile-name.raw (byte-exact) and hostile-name.od.txt
+op	ae stop -y typed into a shell pane of the migrated session (implicit no-name route)
+op_rc	0
+sentinel_before	0
+sentinel_after	0
+bound_sec	40

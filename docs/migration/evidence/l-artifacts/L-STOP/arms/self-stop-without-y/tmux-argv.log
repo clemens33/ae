@@ -1,0 +1,2 @@
+pid=82461 ppid=82459 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/self-stop-without-y/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=84998 ppid=84996 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/self-stop-without-y/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

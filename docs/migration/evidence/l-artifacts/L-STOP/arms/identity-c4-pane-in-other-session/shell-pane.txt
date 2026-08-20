@@ -1,0 +1,2 @@
+plain_tmux_session	plainsess (created directly by the controller; ae has no session directory for it)
+shell_pane	%6

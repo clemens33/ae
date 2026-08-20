@@ -1,0 +1,5 @@
+19663     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/fleet-name-handoff-mid-op/w
+26115 19663 ttys065  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/fleet-name-handoff-mid-op/h/.ae/sessions/other/events-tail
+28203 26115 ttys065  tail -n 30 -f /tmp/aelx/L-STOP/fleet-name-handoff-mid-op/h/.ae/sessions/other/events.jsonl
+28204 26115 ttys065  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/fleet-name-handoff-mid-op/h/.ae/sessions/other/events-tail
+26170 19663 ttys069  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/fleet-name-handoff-mid-op/h/.ae/sessions/other/watchdog _run

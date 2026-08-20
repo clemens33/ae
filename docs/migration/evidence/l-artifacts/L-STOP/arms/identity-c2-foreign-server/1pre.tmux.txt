@@ -1,0 +1,18 @@
+## socket	/tmp/aelx/L-STOP/identity-c2-foreign-server/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|proj|2|0|1787247303
+$1|projx|2|0|1787247308
+## windows
+proj|@0|0|proj|1
+proj|@1|99|ae-monitor|2
+projx|@2|0|projx|1
+projx|@3|99|ae-monitor|2
+## panes
+proj|@0|%0|7680|claude|claude:claude|main|0
+proj|@1|%2|8319|bash|_watchdog||0
+proj|@1|%1|8265|bash|_events||0
+projx|@2|%3|8508|claude|claude:claude|main|0
+projx|@3|%5|9166|bash|_watchdog||0
+projx|@3|%4|9106|bash|_events||0
+## clients

@@ -1,0 +1,5 @@
+42360     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/identity-malformed-pane-token/w
+42650 42360 ttys019  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-malformed-pane-token/h/.ae/sessions/proj/events-tail
+42704 42360 ttys020  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-malformed-pane-token/h/.ae/sessions/proj/watchdog _run
+43684 42360 ttys033  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-malformed-pane-token/h/.ae/sessions/projx/events-tail
+43738 42360 ttys039  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-malformed-pane-token/h/.ae/sessions/projx/watchdog _run

@@ -1,0 +1,9 @@
+arm	identity-c5-no-controlling-tty
+section	L-STOP
+roster_ids	SC-839a SC-839b SC-839c SC-839d
+construction	the stop runs as a tmux run-shell child of the target's own pane, passing --pane=#{pane_id}; a run-shell child has no controlling terminal
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+topology	proj + projx (prefix-sibling pair), one recorded server
+cell	c5-no-controlling-tty
+op_rc	1

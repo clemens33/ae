@@ -1,0 +1,3 @@
+# stop-result rows
+=== /tmp/aelx/L-STOP/legacy-migration-injection/h/.ae/sessions/leg'"$(touch SENTINEL_TOUCHED)"'x/events.jsonl ===
+{"ts":"2026-08-20T17:38:59Z","actor":"human","action":"stop-result","target":"leg'\"$(touch SENTINEL_TOUCHED)\"'x","summary":"stopped: verified gone on its recorded server"}

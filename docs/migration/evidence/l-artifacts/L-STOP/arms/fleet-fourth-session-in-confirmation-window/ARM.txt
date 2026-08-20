@@ -1,0 +1,11 @@
+arm	fleet-fourth-session-in-confirmation-window
+section	L-STOP
+roster_ids	SC-815a
+construction	ae stop all runs on a real terminal over three sessions; while the confirmation prompt is displayed the controller launches a FOURTH real session, then answers y
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+topology	proj + projx (prefix-sibling pair) + other, one recorded server
+fourth_launch_rc	1
+op_rc	0
+prompt_bound_sec	60
+rc_bound_sec	120

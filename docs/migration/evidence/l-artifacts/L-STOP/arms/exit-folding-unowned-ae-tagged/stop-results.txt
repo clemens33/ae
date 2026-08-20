@@ -1,0 +1,5 @@
+# stop-result rows, per session
+=== /tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/h/.ae/sessions/proj/events.jsonl ===
+{"ts":"2026-08-20T17:44:41Z","actor":"human","action":"stop-result","target":"proj","summary":"[op ec597813-30a4-4a61-b0ef-9e29675fc063] stopped: verified gone on its recorded server"}
+=== /tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/h/.ae/sessions/projx/events.jsonl ===
+{"ts":"2026-08-20T17:44:41Z","actor":"human","action":"stop-result","target":"projx","summary":"[op ec597813-30a4-4a61-b0ef-9e29675fc063] stopped: verified gone on its recorded server"}

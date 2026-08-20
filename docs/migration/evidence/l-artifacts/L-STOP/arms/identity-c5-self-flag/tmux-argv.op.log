@@ -1,0 +1,14 @@
+pid=61512 ppid=61511 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <display-message> <-p> <#{socket_path} #{pid}>
+pid=61514 ppid=61513 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{session_name}>
+pid=61519 ppid=61516 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <display-message> <-p> <#{socket_path} #{pid}>
+pid=61532 ppid=61524 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <display-message> <-p> <#{socket_path} #{pid}>
+pid=61534 ppid=61533 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{session_id} #{session_name}>
+pid=61545 ppid=61536 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=61547 ppid=61546 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <display-message> <-p> <#{socket_path} #{pid}>
+pid=61556 ppid=61548 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <display-message> <-p> <#{socket_path} #{pid}>
+pid=61558 ppid=61557 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{session_id} #{session_name}>
+pid=61569 ppid=61560 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=61600 ppid=61590 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=61611 ppid=61580 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <kill-session> <-t> <$0>
+pid=61624 ppid=61613 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=61628 ppid=61626 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c5-self-flag/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

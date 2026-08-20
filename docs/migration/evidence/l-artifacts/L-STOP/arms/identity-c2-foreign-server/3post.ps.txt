@@ -1,0 +1,5 @@
+ 7679     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/identity-c2-foreign-server/w
+ 8265  7679 ttys019  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c2-foreign-server/h/.ae/sessions/proj/events-tail
+ 8319  7679 ttys020  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c2-foreign-server/h/.ae/sessions/proj/watchdog _run
+ 9106  7679 ttys033  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c2-foreign-server/h/.ae/sessions/projx/events-tail
+ 9166  7679 ttys039  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c2-foreign-server/h/.ae/sessions/projx/watchdog _run

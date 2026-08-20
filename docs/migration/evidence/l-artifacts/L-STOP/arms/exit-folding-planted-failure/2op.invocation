@@ -1,0 +1,24 @@
+cwd: /tmp/aelx/L-STOP/exit-folding-planted-failure/w
+argv (bg):
+  /tmp/aelx/L-STOP/exit-folding-planted-failure/b/ae
+  stop
+  all
+  -y
+env:
+  HOME=/tmp/aelx/L-STOP/exit-folding-planted-failure/h
+  AE_HOME=/tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae
+  TMPDIR=/tmp/aelx/L-STOP/exit-folding-planted-failure/tp
+  TMUX_TMPDIR=/tmp/aelx/L-STOP/exit-folding-planted-failure/t
+  PATH=/tmp/aelx/L-STOP/exit-folding-planted-failure/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-STOP/exit-folding-planted-failure/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-STOP/exit-folding-planted-failure/cap/tmux-argv.log
+  AE_L_HOOKS=b_stop_supervisor_entry
+  AE_L_TRACE=/tmp/aelx/L-STOP/exit-folding-planted-failure/cap/hook-trace.tsv
+  AE_L_BLOCK=/tmp/aelx/L-STOP/exit-folding-planted-failure/ctl
+  AE_L_BLOCK_MAX=1800

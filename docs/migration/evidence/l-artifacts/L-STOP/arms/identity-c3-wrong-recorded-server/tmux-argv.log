@@ -1,0 +1,2 @@
+pid=21740 ppid=21737 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c3-wrong-recorded-server/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=21741 ppid=21736 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/identity-c3-wrong-recorded-server/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

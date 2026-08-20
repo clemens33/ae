@@ -1,0 +1,2 @@
+controller.action.1	ae end -f other  (rc 0)
+controller.action.2	ae --local other (rc 1) — the SAME name, a different session id

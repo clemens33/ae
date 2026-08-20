@@ -1,0 +1,15 @@
+Producer-derived stop-result fixtures (batch-c-design.md producer-derivation rule).
+Both lines were EMITTED BY THE FROZEN PRODUCT during real runs in this worker's own
+sandboxes; neither was hand-authored. They are used only as the BASE for a named byte
+diff (the op id and the target name are substituted for the consuming run's own values;
+nothing else is changed, and the diff is recorded per arm).
+
+stop-result.success.harvested
+  producer : frozen `ae stop all -y` (fleet supervisor), sandbox /tmp/aelx/EQUIV/stp-frozen01
+  shape    : a fleet stop-result carrying an [op <uuid>] tag and the success phrase
+
+stop-result.failure.harvested
+  producer : frozen `ae stop all -y` (fleet supervisor), sandbox /tmp/aelx/L-STOP/unverifiable-kill,
+             where the recorded tmux socket directory had been removed so the kill could
+             not be verified — a REAL per-target failure, not a fabricated one
+  shape    : a fleet stop-result carrying an [op <uuid>] tag and the FAILED (rc N) phrase

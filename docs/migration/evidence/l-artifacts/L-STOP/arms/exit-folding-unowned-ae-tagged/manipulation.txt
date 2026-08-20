@@ -1,0 +1,5 @@
+construction	a plain tmux session "ghost" is created directly on the recorded server and given AE_SESSION in its environment; ae has NO session directory for it
+AE_SESSION=1
+session_dirs
+proj
+projx

@@ -1,0 +1,241 @@
+pid=51564 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <proj>
+pid=51614 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <proj> <-c> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/w>
+pid=51618 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <proj> <-u> <CLAUDECODE>
+pid=51620 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <proj> <-u> <CLAUDE_CODE_SESSION>
+pid=51624 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <proj> <AE_SESSION> <1>
+pid=51626 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <proj> <AE_ORIGIN> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/w>
+pid=51628 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <proj> <AE_DIR> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/w>
+pid=51629 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <proj> <AE_MODE> <local>
+pid=51630 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <proj> <AE_HOME> </tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae>
+pid=51631 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <proj> <mouse> <on>
+pid=51632 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <proj> <focus-events> <on>
+pid=51633 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <proj> <history-limit> <50000>
+pid=51634 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <proj> <pane-border-status> <top>
+pid=51635 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <proj> <pane-border-format> < #{@ae_agent} >
+pid=51637 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <proj>
+pid=51640 ppid=51639 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=51649 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae proj] >
+pid=51656 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=51658 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…x/L-STOP/exit-folding-planted-failure/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=51659 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=51662 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=51665 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=51675 ppid=51673 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=51676 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=51677 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=51678 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=51679 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=51680 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <proj> <automatic-rename> <off>
+pid=51682 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <proj> <proj>
+pid=51683 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <proj> <-p> <#{pane_id}>
+pid=51684 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:claude:claude>
+pid=51685 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <claude:claude>
+pid=51686 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=51708 ppid=51707 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=51804 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <proj> <-F> <#{pane_id}	#{@ae_agent}>
+pid=51825 ppid=51824 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <proj> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=51901 ppid=51900 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=51903 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-51555-%0> <->
+pid=51904 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-51555-%0> <-t> <%0>
+pid=52038 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=52254 ppid=52253 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=52357 ppid=52355 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <proj> <-F> <#{pane_id} #{@ae_agent}>
+pid=52359 ppid=52358 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <new-window> <-d> <-t> <proj:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae/sessions/proj/events-tail>
+pid=52361 ppid=52260 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=52362 ppid=52260 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=52363 ppid=52260 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-window-option> <-t> <proj:ae-monitor> <pane-border-status> <top>
+pid=52364 ppid=52260 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=52398 ppid=52396 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <proj> <-F> <#{pane_id} #{@ae_agent}>
+pid=52403 ppid=52401 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <proj> <-F> <#{pane_id} #{@ae_agent}>
+pid=52408 ppid=52406 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <proj> <-F> <#{pane_id} #{@ae_agent}>
+pid=52413 ppid=52412 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae/sessions/proj/watchdog _run>
+pid=52415 ppid=52371 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=52416 ppid=52371 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=52424 ppid=52371 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <select-pane> <-t> <%2> <-d>
+pid=52447 ppid=51555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%0>
+pid=52451 ppid=52449 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=51555 ppid=51510 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session> <-t> <proj>
+pid=52452 ppid=52414 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=52466 ppid=52464 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=52467 ppid=52454 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=52475 ppid=52473 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=52476 ppid=52414 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=52477 ppid=52414 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <has-session> <-t> <proj>
+pid=52483 ppid=52414 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <proj> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=52485 ppid=52484 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=52491 ppid=52490 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=52523 ppid=52521 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=52524 ppid=52414 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=52537 ppid=52535 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=52538 ppid=52525 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=52546 ppid=52544 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=52547 ppid=52414 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=52558 ppid=52556 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=52559 ppid=52414 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <claude●>
+pid=52564 ppid=52563 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <proj> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=52566 ppid=52414 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=52567 ppid=52414 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=52788 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <projx>
+pid=52806 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <projx> <-c> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/w>
+pid=52808 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <projx> <-u> <CLAUDECODE>
+pid=52810 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <projx> <-u> <CLAUDE_CODE_SESSION>
+pid=52811 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <projx> <AE_SESSION> <1>
+pid=52812 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <projx> <AE_ORIGIN> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/w>
+pid=52813 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <projx> <AE_DIR> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/w>
+pid=52814 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <projx> <AE_MODE> <local>
+pid=52815 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <projx> <AE_HOME> </tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae>
+pid=52816 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <projx> <mouse> <on>
+pid=52817 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <projx> <focus-events> <on>
+pid=52818 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <projx> <history-limit> <50000>
+pid=52819 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <projx> <pane-border-status> <top>
+pid=52820 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <projx> <pane-border-format> < #{@ae_agent} >
+pid=52821 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <projx>
+pid=52823 ppid=52822 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=52834 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$1> <status-left> <[ae projx] >
+pid=52837 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$1> <status-left-length> <40>
+pid=52838 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$1> <status-right> <[…x/L-STOP/exit-folding-planted-failure/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=52839 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$1> <status-right-length> <100>
+pid=52840 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$1> <status-interval> <5>
+pid=52841 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$1> <status> <2>
+pid=52843 ppid=52842 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=52844 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$1> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=52845 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$1> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=52846 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$1> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=52847 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$1> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=52848 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <projx> <automatic-rename> <off>
+pid=52850 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <projx> <projx>
+pid=52851 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <projx> <-p> <#{pane_id}>
+pid=52852 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%3> <-T> <ae:claude:claude>
+pid=52853 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%3> <@ae_agent> <claude:claude>
+pid=52854 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%3> <@ae_slot> <main>
+pid=52873 ppid=52872 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=52959 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <projx> <-F> <#{pane_id}	#{@ae_agent}>
+pid=52980 ppid=52979 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <projx> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=53047 ppid=53046 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%3> <#{pane_current_command}>
+pid=53049 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-52787-%3> <->
+pid=53050 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-52787-%3> <-t> <%3>
+pid=53059 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%3> <Enter>
+pid=53078 ppid=53077 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%3> <#{pane_current_command}>
+pid=53116 ppid=53114 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <projx> <-F> <#{pane_id} #{@ae_agent}>
+pid=53118 ppid=53117 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <new-window> <-d> <-t> <projx:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae/sessions/projx/events-tail>
+pid=53120 ppid=53084 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-p> <-t> <%4> <@ae_agent> <_events>
+pid=53121 ppid=53084 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <select-pane> <-t> <%4> <-T> <ae events>
+pid=53122 ppid=53084 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-window-option> <-t> <projx:ae-monitor> <pane-border-status> <top>
+pid=53123 ppid=53084 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <select-pane> <-t> <%4> <-d>
+pid=53157 ppid=53155 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <projx> <-F> <#{pane_id} #{@ae_agent}>
+pid=53162 ppid=53160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <projx> <-F> <#{pane_id} #{@ae_agent}>
+pid=53167 ppid=53165 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <projx> <-F> <#{pane_id} #{@ae_agent}>
+pid=53172 ppid=53171 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%4> <-P> <-F> <#{pane_id}> </tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae/sessions/projx/watchdog _run>
+pid=53174 ppid=53130 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-p> <-t> <%5> <@ae_agent> <_watchdog>
+pid=53175 ppid=53130 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <select-pane> <-t> <%5> <-T> <ae watchdog>
+pid=53184 ppid=53130 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <select-pane> <-t> <%5> <-d>
+pid=53224 ppid=53222 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S>pid=53220 ppid=52787 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <select-pane> <list-sessions> <-t> <-F> <%3> <#{session_id} #{session_name}>
+
+pid=52787 ppid=51510 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session> <-t> <projx>
+pid=53227 ppid=53173 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$1> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=53245 ppid=53243 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=53246 ppid=53231 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$1> <@ae_branch_name> <main>
+pid=53272 ppid=53270 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=53273 ppid=53173 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$1> <@ae_branch_status> < main>
+pid=53276 ppid=53173 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <has-session> <-t> <projx>
+pid=53283 ppid=53173 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <projx> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=53285 ppid=53284 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <display-message> <-p> <-t> <%3> <#{@ae_slot}>
+pid=53288 ppid=53287 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%3>
+pid=53319 ppid=53317 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=53320 ppid=53173 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$1> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=53333 ppid=53331 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=53334 ppid=53321 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$1> <@ae_branch_name> <main>
+pid=53343 ppid=53341 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=53344 ppid=53173 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$1> <@ae_branch_status> < main>
+pid=53355 ppid=53353 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=53356 ppid=53173 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$1> <@ae_agents_status> <claude●>
+pid=53361 ppid=53360 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <projx> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=53363 ppid=53173 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-w> <-t> <@2> <@ae_window_status> <●>
+pid=53364 ppid=53173 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-w> <-t> <@3> <@ae_window_status> <>
+pid=53959 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <other>
+pid=53988 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <other> <-c> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/w>
+pid=53995 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <other> <-u> <CLAUDECODE>
+pid=54002 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <other> <-u> <CLAUDE_CODE_SESSION>
+pid=54006 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <other> <AE_SESSION> <1>
+pid=54009 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <other> <AE_ORIGIN> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/w>
+pid=54015 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <other> <AE_DIR> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/w>
+pid=54021 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <other> <AE_MODE> <local>
+pid=54025 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <other> <AE_HOME> </tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae>
+pid=54028 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <other> <mouse> <on>
+pid=54034 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <other> <focus-events> <on>
+pid=54040 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <other> <history-limit> <50000>
+pid=54044 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <other> <pane-border-status> <top>
+pid=54047 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <other> <pane-border-format> < #{@ae_agent} >
+pid=54053 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <other>
+pid=54060 ppid=54059 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=54074 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$2> <status-left> <[ae other] >
+pid=54080 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$2> <status-left-length> <40>
+pid=54083 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$2> <status-right> <[…x/L-STOP/exit-folding-planted-failure/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=54089 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$2> <status-right-length> <100>
+pid=54095 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$2> <status-interval> <5>
+pid=54099 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$2> <status> <2>
+pid=54105 ppid=54102 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=54110 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$2> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=54116 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$2> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=54122 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$2> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=54123 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$2> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=54129 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <other> <automatic-rename> <off>
+pid=54136 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <other> <other>
+pid=54139 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <other> <-p> <#{pane_id}>
+pid=54143 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%6> <-T> <ae:claude:claude>
+pid=54149 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%6> <@ae_agent> <claude:claude>
+pid=54155 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%6> <@ae_slot> <main>
+pid=54183 ppid=54182 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=54350 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <other> <-F> <#{pane_id}	#{@ae_agent}>
+pid=54385 ppid=54383 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <other> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=54783 ppid=54782 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%6> <#{pane_current_command}>
+pid=54797 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-53952-%6> <->
+pid=54800 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-53952-%6> <-t> <%6>
+pid=54936 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%6> <Enter>
+pid=55074 ppid=55073 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%6> <#{pane_current_command}>
+pid=55170 ppid=55168 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <other> <-F> <#{pane_id} #{@ae_agent}>
+pid=55177 ppid=55176 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <new-window> <-d> <-t> <other:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae/sessions/other/events-tail>
+pid=55184 ppid=55086 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-p> <-t> <%7> <@ae_agent> <_events>
+pid=55185 ppid=55086 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <select-pane> <-t> <%7> <-T> <ae events>
+pid=55191 ppid=55086 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-window-option> <-t> <other:ae-monitor> <pane-border-status> <top>
+pid=55197 ppid=55086 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <select-pane> <-t> <%7> <-d>
+pid=55249 ppid=55247 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <other> <-F> <#{pane_id} #{@ae_agent}>
+pid=55259 ppid=55257 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <other> <-F> <#{pane_id} #{@ae_agent}>
+pid=55270 ppid=55268 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <other> <-F> <#{pane_id} #{@ae_agent}>
+pid=55278 ppid=55277 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%7> <-P> <-F> <#{pane_id}> </tmp/aelx/L-STOP/exit-folding-planted-failure/h/.ae/sessions/other/watchdog _run>
+pid=55286 ppid=55209 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-p> <-t> <%8> <@ae_agent> <_watchdog>
+pid=55292 ppid=55209 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <select-pane> <-t> <%8> <-T> <ae watchdog>
+pid=55304 ppid=55209 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <select-pane> <-t> <%8> <-d>
+pid=55336 ppid=53952 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%6>
+pid=55340 ppid=55338 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=53952 ppid=51510 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session> <-t> <other>
+pid=55346 ppid=55285 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$2> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=55372 ppid=55370 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=55376 ppid=55353 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$2> <@ae_branch_name> <main>
+pid=55394 ppid=55392 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=55400 ppid=55285 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$2> <@ae_branch_status> < main>
+pid=55406 ppid=55285 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <has-session> <-t> <other>
+pid=55417 ppid=55285 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <other> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=55424 ppid=55423 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <display-message> <-p> <-t> <%6> <#{@ae_slot}>
+pid=55432 ppid=55431 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%6>
+pid=55490 ppid=55488 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=55496 ppid=55285 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$2> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=55525 ppid=55522 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=55533 ppid=55506 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$2> <@ae_branch_name> <main>
+pid=55555 ppid=55553 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=55561 ppid=55285 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$2> <@ae_branch_status> < main>
+pid=55578 ppid=55576 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=55584 ppid=55285 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-t> <$2> <@ae_agents_status> <claude●>
+pid=55594 ppid=55593 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-panes> <-s> <-t> <other> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=55601 ppid=55285 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-w> <-t> <@4> <@ae_window_status> <●>
+pid=55604 ppid=55285 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <set-option> <-w> <-t> <@5> <@ae_window_status> <>
+pid=58501 ppid=58493 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=58514 ppid=58506 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=58527 ppid=58519 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=58535 ppid=58534 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_name}>
+pid=58537 ppid=58536 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <other> <AE_SESSION>
+pid=58539 ppid=58538 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <proj> <AE_SESSION>
+pid=58542 ppid=58541 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <projx> <AE_SESSION>
+pid=61119 ppid=61114 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S>pid=61118 ppid=61113 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-S> <-F> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <#{session_id} #{session_name}> <list-sessions>
+ <-F>pid=61121 ppid=61116 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <#{session_id} #{session_name}>
+ <-S> </private/tmp/aelx/L-STOP/exit-folding-planted-failure/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

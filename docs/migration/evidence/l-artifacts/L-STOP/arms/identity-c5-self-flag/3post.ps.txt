@@ -1,0 +1,3 @@
+57957     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/identity-c5-self-flag/w
+59710 57957 ttys033  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c5-self-flag/h/.ae/sessions/projx/events-tail
+59816 57957 ttys039  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/identity-c5-self-flag/h/.ae/sessions/projx/watchdog _run

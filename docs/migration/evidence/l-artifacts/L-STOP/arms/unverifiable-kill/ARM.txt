@@ -1,0 +1,12 @@
+arm	unverifiable-kill
+section	L-STOP
+roster_ids	SC-835c
+construction	the directory holding the recorded tmux socket is removed while the server process keeps running, then a singular stop and a fleet stop each run against it
+hook_patch_version	none (frozen, unmodified)
+binary.sha256	b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+topology	proj + projx (prefix-sibling pair) + other, one recorded server
+op1	ae stop -y proj
+op1_rc	1
+op2	ae stop all -y
+op2_rc	1
+server_pid	71738

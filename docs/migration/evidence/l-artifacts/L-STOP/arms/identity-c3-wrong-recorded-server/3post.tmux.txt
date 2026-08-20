@@ -1,0 +1,20 @@
+## socket	/tmp/aelx/L-STOP/identity-c3-wrong-recorded-server/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|proj|3|0|1787247318
+$1|projx|2|0|1787247323
+## windows
+proj|@0|0|proj|1
+proj|@4|1|bash|1
+proj|@1|99|ae-monitor|2
+projx|@2|0|projx|1
+projx|@3|99|ae-monitor|2
+## panes
+proj|@0|%0|12633|claude|claude:claude|main|0
+proj|@4|%6|19292|bash|||0
+proj|@1|%2|13420|bash|_watchdog||0
+proj|@1|%1|13267|bash|_events||0
+projx|@2|%3|14399|claude|claude:claude|main|0
+projx|@3|%5|15479|bash|_watchdog||0
+projx|@3|%4|15364|bash|_events||0
+## clients

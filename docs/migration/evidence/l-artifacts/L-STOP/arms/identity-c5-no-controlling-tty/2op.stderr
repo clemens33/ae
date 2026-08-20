@@ -1,0 +1,6 @@
+Error: cannot confirm 'proj' is the session you are in.
+  refusing: C5 — this process has no controlling terminal (pass --self if it genuinely is the session, e.g. from run-shell)
+  ae resolved that name from your current tmux server, but could not prove
+  it is the session ae has recorded under it — stopping it could kill a
+  different session of the same name on another server.
+  Name it explicitly if that is what you want: ae stop proj

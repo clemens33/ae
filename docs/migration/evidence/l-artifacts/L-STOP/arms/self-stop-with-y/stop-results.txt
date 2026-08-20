@@ -1,0 +1,3 @@
+# stop-result rows, per session
+=== /tmp/aelx/L-STOP/self-stop-with-y/h/.ae/sessions/proj/events.jsonl ===
+{"ts":"2026-08-20T17:33:35Z","actor":"human","action":"stop-result","target":"proj","summary":"stopped: verified gone on its recorded server"}

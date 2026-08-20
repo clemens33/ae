@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$3|fourth|2|0|1787247689
+## windows
+fourth|@6|0|fourth|1
+fourth|@7|99|ae-monitor|2
+## panes
+fourth|@6|%9|11707|claude|claude:claude|main|0
+fourth|@7|%11|12122|bash|_watchdog||0
+fourth|@7|%10|12017|bash|_events||0
+## clients

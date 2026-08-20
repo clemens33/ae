@@ -1,0 +1,12 @@
+## socket	/tmp/aelx/L-STOP/self-stop-without-y/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$1|projx|2|0|1787247187
+## windows
+projx|@2|0|projx|1
+projx|@3|99|ae-monitor|2
+## panes
+projx|@2|%3|78742|claude|claude:claude|main|0
+projx|@3|%5|79388|bash|_watchdog||0
+projx|@3|%4|79235|bash|_events||0
+## clients

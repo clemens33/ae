@@ -1,0 +1,19 @@
+cwd: /tmp/aelx/L-STOP/identity-c2-foreign-server/w
+argv:
+  /tmp/aelx/L-STOP/identity-c2-foreign-server/b/ae
+  --local
+  projx
+env:
+  HOME=/tmp/aelx/L-STOP/identity-c2-foreign-server/h
+  AE_HOME=/tmp/aelx/L-STOP/identity-c2-foreign-server/h/.ae
+  TMPDIR=/tmp/aelx/L-STOP/identity-c2-foreign-server/tp
+  TMUX_TMPDIR=/tmp/aelx/L-STOP/identity-c2-foreign-server/t
+  PATH=/tmp/aelx/L-STOP/identity-c2-foreign-server/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-STOP/identity-c2-foreign-server/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-STOP/identity-c2-foreign-server/cap/tmux-argv.log

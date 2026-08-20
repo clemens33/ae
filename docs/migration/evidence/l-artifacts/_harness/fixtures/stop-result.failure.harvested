@@ -1,0 +1,1 @@
+{"ts":"2026-08-20T17:32:57Z","actor":"human","action":"stop-result","target":"projx","summary":"[op c5e1e118-6af4-4cca-8dc7-0979d277140e] FAILED (rc 1): Error: cannot verify session 'projx' (its recorded tmux server is unreachable) — nothing was stopped, state preserved."}

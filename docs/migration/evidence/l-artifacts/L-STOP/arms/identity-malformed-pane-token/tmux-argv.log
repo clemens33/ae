@@ -1,0 +1,2 @@
+pid=47436 ppid=47432 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S>pid=47435 ppid=47431 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 </private/tmp/aelx/L-STOP/identity-malformed-pane-token/t/tmux-501/default> <list-sessions> <-F> <-S> <#{session_id} #{session_name}> </private/tmp/aelx/L-STOP/identity-malformed-pane-token/t/tmux-501/default>
+ <list-sessions> <-F> <#{session_id} #{session_name}>

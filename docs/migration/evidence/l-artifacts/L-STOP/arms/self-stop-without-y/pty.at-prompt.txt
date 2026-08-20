@@ -1,0 +1,24 @@
+MacOS-ckriech:w ckriech$ /tmp/aelx/L-STOP/self-stop-without-y/b/ae stop
+Stop 'proj'? This kills the session you are working in.
+  Agents may be mid-turn: active writes and partial turns can be interrupted.
+  Your ae state, working tree and provider conversation files are PRESERVED —
+  the guarantee is recoverability (resume from the provider's own checkpoint),
+  not mid-write atomicity.
+Continue? [y/N]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

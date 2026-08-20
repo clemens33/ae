@@ -1,0 +1,11 @@
+arm	fleet-concurrent-ops
+section	L-STOP
+roster_ids	SC-815c SC-815d
+construction	two ae stop all -y runs over the same three sessions; run A is held at the supervisor-entry barrier while run B is started, both op ids are read from the process table, then both are released
+hook_patch_version	L-HOOKS-v2
+binary.sha256	4cc428e955a1e390bdb7afb6f71e4ce86847b4b5cf98e7f8a45599401378f845
+topology	proj + projx (prefix-sibling pair) + other, one recorded server
+barrier	b_stop_supervisor_entry (both runs)
+opA_rc	0
+opB_rc	1
+barrier_bound_sec	60

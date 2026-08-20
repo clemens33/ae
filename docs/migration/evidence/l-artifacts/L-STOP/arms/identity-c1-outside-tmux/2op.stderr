@@ -1,0 +1,3 @@
+Usage: ae stop [session-name] [-y]
+       ae stop all
+(Run inside an ae tmux session to stop it without specifying the name.)

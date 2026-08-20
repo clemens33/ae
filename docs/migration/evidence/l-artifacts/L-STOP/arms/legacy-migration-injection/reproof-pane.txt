@@ -1,0 +1,24 @@
+MacOS-ckriech:w ckriech$ printf "TMUX=%s TMUX_PANE=%s\n" "$TMUX" "$TMUX_PANE"
+TMUX=/private/tmp/aelx/L-STOP/legacy-migration-injection/t/tmux-501/default,7422
+2,0 TMUX_PANE=%6
+MacOS-ckriech:w ckriech$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

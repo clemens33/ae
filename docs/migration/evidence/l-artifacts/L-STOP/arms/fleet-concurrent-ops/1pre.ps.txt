@@ -1,0 +1,7 @@
+32211     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/fleet-concurrent-ops/w
+32826 32211 ttys028  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/fleet-concurrent-ops/h/.ae/sessions/proj/events-tail
+32900 32211 ttys033  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/fleet-concurrent-ops/h/.ae/sessions/proj/watchdog _run
+33785 32211 ttys045  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/fleet-concurrent-ops/h/.ae/sessions/projx/events-tail
+33847 32211 ttys047  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/fleet-concurrent-ops/h/.ae/sessions/projx/watchdog _run
+36676 32211 ttys065  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/fleet-concurrent-ops/h/.ae/sessions/other/events-tail
+36781 32211 ttys069  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/fleet-concurrent-ops/h/.ae/sessions/other/watchdog _run

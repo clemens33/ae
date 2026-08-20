@@ -1,0 +1,3 @@
+mutation	the target session meta tmux_server value is repointed at a different socket path on the same server directory
+mode.before	644
+mode.after	644

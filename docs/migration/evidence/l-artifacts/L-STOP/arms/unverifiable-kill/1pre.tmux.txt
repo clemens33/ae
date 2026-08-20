@@ -1,0 +1,18 @@
+## socket	/tmp/aelx/L-STOP/unverifiable-kill/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|proj|2|0|1787247166
+$1|projx|2|0|1787247170
+## windows
+proj|@0|0|proj|1
+proj|@1|99|ae-monitor|2
+projx|@2|0|projx|1
+projx|@3|99|ae-monitor|2
+## panes
+proj|@0|%0|71743|claude|claude:claude|main|0
+proj|@1|%2|72484|bash|_watchdog||0
+proj|@1|%1|72430|bash|_events||0
+projx|@2|%3|72708|claude|claude:claude|main|0
+projx|@3|%5|73366|bash|_watchdog||0
+projx|@3|%4|73307|bash|_events||0
+## clients

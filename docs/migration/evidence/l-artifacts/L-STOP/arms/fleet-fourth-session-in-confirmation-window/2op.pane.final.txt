@@ -1,0 +1,50 @@
+Stop ALL 3 ae session(s)?
+  Agents may be mid-turn: active writes and partial turns can be interrupted.
+  ae state, working trees and provider conversation files are PRESERVED.
+Continue? [y/N] y
+Stopping 3 session(s) out of process; this pane may be one of them.
+  Each outcome is recorded durably in its own
+  /tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/h/.ae/sessions/<name>/events.jsonl (action: stop-result).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

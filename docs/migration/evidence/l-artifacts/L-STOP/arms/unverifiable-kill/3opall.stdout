@@ -1,0 +1,3 @@
+Stopping 2 session(s) out of process; this pane may be one of them.
+  Each outcome is recorded durably in its own
+  /tmp/aelx/L-STOP/unverifiable-kill/h/.ae/sessions/<name>/events.jsonl (action: stop-result).

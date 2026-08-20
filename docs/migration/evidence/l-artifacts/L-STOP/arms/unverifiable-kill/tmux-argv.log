@@ -1,0 +1,11 @@
+pid=75337 ppid=75327 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/unverifiable-kill/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=75354 ppid=75343 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/unverifiable-kill/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=75394 ppid=75380 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/unverifiable-kill/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=75443 ppid=75423 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/unverifiable-kill/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=75475 ppid=75474 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_name}>
+pid=75597 ppid=75584 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/unverifiable-kill/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=75618 ppid=75607 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/unverifiable-kill/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=75689 ppid=75676 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/unverifiable-kill/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=75711 ppid=75699 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/unverifiable-kill/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=77489 ppid=77486 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5pid=77490 ppid=77485 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> <-S> </private/tmp/aelx/L-STOP/unverifiable-kill/t/tmux-501/default> </private/tmp/aelx/L-STOP/unverifiable-kill/t/tmux-501/default> <list-sessions> <list-sessions> <-F> <-F> <#{session_id} #{session_name}> <#{session_id} #{session_name}>
+

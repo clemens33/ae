@@ -1,0 +1,7 @@
+migration.step.1	tmux rename-session -t "=leg" -> the hostile name
+migration.step.2	mv /tmp/aelx/L-STOP/legacy-migration-injection/h/.ae/sessions/leg -> /tmp/aelx/L-STOP/legacy-migration-injection/h/.ae/sessions/<hostile>
+migration.step.3	the session meta key session= is rewritten to the hostile name (mode preserved)
+migration.note	argv-safe throughout: every controller invocation passes the name as ONE argv word, never through a shell string
+sentinel.mechanism	the name embeds $(touch SENTINEL_TOUCHED); a shell that EVALUATES it creates that file in its cwd, and the whole sandbox is scanned for it
+meta.mode.before	644
+meta.mode.after	644

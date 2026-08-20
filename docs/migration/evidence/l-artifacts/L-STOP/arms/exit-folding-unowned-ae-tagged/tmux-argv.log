@@ -1,0 +1,14 @@
+pid=82026 ppid=82017 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=82040 ppid=82032 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=82048 ppid=82047 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_name}>
+pid=82050 ppid=82049 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <ghost> <AE_SESSION>
+pid=82052 ppid=82051 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <proj> <AE_SESSION>
+pid=82054 ppid=82053 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <projx> <AE_SESSION>
+pid=82108 ppid=82099 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=82119 ppid=82088 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/t/tmux-501/default> <kill-session> <-t> <$0>
+pid=82136 ppid=82134 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/t/tmux-501/default> <list-sessions> <-F>pid=82133 ppid=82122 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <#{session_id} #{session_name}>
+ <-S> </private/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=82176 ppid=82167 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=82187 ppid=82154 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/t/tmux-501/default> <kill-session> <-t> <$1>
+pid=82203 ppid=82201 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=82199 ppid=82189 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/exit-folding-unowned-ae-tagged/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>

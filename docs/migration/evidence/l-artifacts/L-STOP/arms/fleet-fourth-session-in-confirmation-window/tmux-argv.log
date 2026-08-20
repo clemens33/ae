@@ -1,0 +1,97 @@
+pid=11619 ppid=11610 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=11634 ppid=11626 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=11647 ppid=11639 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=11655 ppid=11654 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_name}>
+pid=11657 ppid=11656 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <other> <AE_SESSION>
+pid=11659 ppid=11658 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <proj> <AE_SESSION>
+pid=11665 ppid=11664 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <projx> <AE_SESSION>
+pid=11688 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <fourth>
+pid=11706 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <fourth> <-c> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/w>
+pid=11708 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <fourth> <-u> <CLAUDECODE>
+pid=11710 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <fourth> <-u> <CLAUDE_CODE_SESSION>
+pid=11711 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <fourth> <AE_SESSION> <1>
+pid=11712 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <fourth> <AE_ORIGIN> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/w>
+pid=11713 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <fourth> <AE_DIR> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/w>
+pid=11714 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <fourth> <AE_MODE> <local>
+pid=11716 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <fourth> <AE_HOME> </tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/h/.ae>
+pid=11717 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <fourth> <mouse> <on>
+pid=11718 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <fourth> <focus-events> <on>
+pid=11719 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <fourth> <history-limit> <50000>
+pid=11721 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <fourth> <pane-border-status> <top>
+pid=11722 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <fourth> <pane-border-format> < #{@ae_agent} >
+pid=11723 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <fourth>
+pid=11725 ppid=11724 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=11734 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$3> <status-left> <[ae fourth] >
+pid=11736 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$3> <status-left-length> <40>
+pid=11738 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$3> <status-right> <[…fourth-session-in-confirmation-window/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=11739 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$3> <status-right-length> <100>
+pid=11740 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$3> <status-interval> <5>
+pid=11741 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$3> <status> <2>
+pid=11743 ppid=11742 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=11744 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$3> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=11745 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$3> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=11746 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$3> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=11747 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$3> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=11748 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <fourth> <automatic-rename> <off>
+pid=11750 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <fourth> <fourth>
+pid=11751 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <fourth> <-p> <#{pane_id}>
+pid=11752 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%9> <-T> <ae:claude:claude>
+pid=11753 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%9> <@ae_agent> <claude:claude>
+pid=11754 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%9> <@ae_slot> <main>
+pid=11772 ppid=11771 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=11860 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <fourth> <-F> <#{pane_id}	#{@ae_agent}>
+pid=11881 ppid=11880 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-panes> <-s> <-t> <fourth> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=11955 ppid=11954 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%9> <#{pane_current_command}>
+pid=11957 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-11685-%9> <->
+pid=11958 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-11685-%9> <-t> <%9>
+pid=11967 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%9> <Enter>
+pid=11979 ppid=11978 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%9> <#{pane_current_command}>
+pid=12014 ppid=12012 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-panes> <-s> <-t> <fourth> <-F> <#{pane_id} #{@ae_agent}>
+pid=12016 ppid=12015 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <new-window> <-d> <-t> <fourth:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/h/.ae/sessions/fourth/events-tail>
+pid=12018 ppid=11985 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <set-option> <-p> <-t> <%10> <@ae_agent> <_events>
+pid=12019 ppid=11985 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <select-pane> <-t> <%10> <-T> <ae events>
+pid=12020 ppid=11985 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <set-window-option> <-t> <fourth:ae-monitor> <pane-border-status> <top>
+pid=12021 ppid=11985 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <select-pane> <-t> <%10> <-d>
+pid=12057 ppid=12055 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-panes> <-s> <-t> <fourth> <-F> <#{pane_id} #{@ae_agent}>
+pid=12064 ppid=12061 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-panes> <-s> <-t> <fourth> <-F> <#{pane_id} #{@ae_agent}>
+pid=12089 ppid=12086 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-panes> <-s> <-t> <fourth> <-F> <#{pane_id} #{@ae_agent}>
+pid=12105 ppid=12104 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%10> <-P> <-F> <#{pane_id}> </tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/h/.ae/sessions/fourth/watchdog _run>
+pid=12123 ppid=12028 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <set-option> <-p> <-t> <%11> <@ae_agent> <_watchdog>
+pid=12142 ppid=12028 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <select-pane> <-t> <%11> <-T> <ae watchdog>
+pid=12171 ppid=12028 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <select-pane> <-t> <%11> <-d>
+pid=12201 ppid=12198 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12220 ppid=11685 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%9>
+pid=12224 ppid=12122 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <set-option> <-t> <$3> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=11685 ppid=6014 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session> <-t> <fourth>
+pid=12259 ppid=12257 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12269 ppid=12233 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <set-option> <-t> <$3> <@ae_branch_name> <main>
+pid=12292 ppid=12290 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12304 ppid=12122 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <set-option> <-t> <$3> <@ae_branch_status> < main>
+pid=12314 ppid=12122 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <has-session> <-t> <fourth>
+pid=12335 ppid=12122 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-panes> <-s> <-t> <fourth> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=12347 ppid=12345 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <display-message> <-p> <-t> <%9> <#{@ae_slot}>
+pid=12361 ppid=12359 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%9>
+pid=12445 ppid=12442 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12453 ppid=12122 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <set-option> <-t> <$3> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=12480 ppid=12478 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12488 ppid=12460 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <set-option> <-t> <$3> <@ae_branch_name> <main>
+pid=12504 ppid=12502 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12510 ppid=12122 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <set-option> <-t> <$3> <@ae_branch_status> < main>
+pid=12521 ppid=12519 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12531 ppid=12122 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <set-option> <-t> <$3> <@ae_agents_status> <claude●>
+pid=12536 ppid=12535 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-panes> <-s> <-t> <fourth> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=12538 ppid=12122 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <set-option> <-w> <-t> <@6> <@ae_window_status> <●>
+pid=12539 ppid=12122 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <set-option> <-w> <-t> <@7> <@ae_window_status> <>
+pid=14051 ppid=14038 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=14064 ppid=14020 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <kill-session> <-t> <$2>
+pid=14077 ppid=14066 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=14080 ppid=14078 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=14119 ppid=14110 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=14131 ppid=14099 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <kill-session> <-t> <$0>
+pid=14143 ppid=14133 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>pid=14147 ppid=14145 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5
+ <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=14188 ppid=14179 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=14199 ppid=14167 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <kill-session> <-t> <$1>
+pid=14211 ppid=14201 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S>pid=14215 ppid=14213 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <-S> <list-sessions> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <-F> <list-sessions> <#{session_name}> <-F>
+ <#{session_id} #{session_name}>
+pid=18515 ppid=18513 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-fourth-session-in-confirmation-window/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>

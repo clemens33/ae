@@ -1,0 +1,32 @@
+pid=42001 ppid=41991 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=42022 ppid=42011 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=42040 ppid=42032 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=42056 ppid=42055 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_name}>
+pid=42063 ppid=42062 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <other> <AE_SESSION>
+pid=42070 ppid=42069 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <proj> <AE_SESSION>
+pid=42072 ppid=42071 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <projx> <AE_SESSION>
+pid=42230 ppid=42218 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=42250 ppid=42239 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=42269 ppid=42261 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=42282 ppid=42281 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_name}>
+pid=42289 ppid=42288 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <other> <AE_SESSION>
+pid=42296 ppid=42295 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <proj> <AE_SESSION>
+pid=42301 ppid=42299 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <show-environment> <-t> <projx> <AE_SESSION>
+pid=46600 ppid=46582 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=46624 ppid=46551 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <kill-session> <-t> <$2>
+pid=46655 ppid=46653 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default>pid=46652 ppid=46639 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <list-sessions> <-F> <-S> <#{session_id} #{session_name}> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default>
+ <list-sessions> <-F> <#{session_name}>
+pid=46706 ppid=46691 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=46748 ppid=46727 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=46765 ppid=46751 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=46801 ppid=46722 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <kill-session> <-t> <$0>
+pid=46840 ppid=46837 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions>pid=46838 ppid=46820 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-F> <#{session_id} #{session_name}> <-S>
+ </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=46888 ppid=46874 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=46931 ppid=46912 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=46947 ppid=46933 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=46983 ppid=46904 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <kill-session> <-t> <$1>
+pid=47037 ppid=47034 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S>pid=47035 ppid=47012 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-S> <-F> <#{session_id} #{session_name}>
+ </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>
+pid=47064 ppid=47052 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=47080 ppid=47069 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-STOP/fleet-concurrent-ops/t/tmux-501/default> <list-sessions> <-F> <#{session_name}>

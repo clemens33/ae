@@ -1,0 +1,5 @@
+71738     1 ??       /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-STOP/unverifiable-kill/w
+72430 71738 ttys019  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/unverifiable-kill/h/.ae/sessions/proj/events-tail
+72484 71738 ttys020  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/unverifiable-kill/h/.ae/sessions/proj/watchdog _run
+73307 71738 ttys033  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/unverifiable-kill/h/.ae/sessions/projx/events-tail
+73366 71738 ttys039  /opt/homebrew/bin/bash /tmp/aelx/L-STOP/unverifiable-kill/h/.ae/sessions/projx/watchdog _run
