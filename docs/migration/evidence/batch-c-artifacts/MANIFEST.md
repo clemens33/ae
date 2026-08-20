@@ -36,7 +36,7 @@ statements, no classification. Seats classify.
 
 ## Boundary as executed
 
-64 assignments (batch-c-design.md v3 at `8f21a48`, slice-1d): A1 gains SC-510e/f;
+65 assignments (batch-c-design.md v3 at `8f21a48`, slice-1d, plus SC-021 — the `ls` alias arm — added to A2): A1 gains SC-510e/f;
 A7's SC-405j gains case 5 (empty-member subcases). D01–D04 concurrency cuts execute
 the approved b0-design.md Designs 2–6; SC-1306a–e ride those designs per the mapping
 note (1306a→D01/Design 2, 1306b→D04a/Design 5, 1306c→D04b/Design 6, 1306d→D02/Design 3,
@@ -48,7 +48,8 @@ note (1306a→D01/Design 2, 1306b→D04a/Design 5, 1306c→D04b/Design 6, 1306d�
 |---|---|
 | Step 0 — T-WD producer precursor (feeds G2) | COMPLETE (below) |
 | Template groups G1–G11 (+G2b) | COMPLETE — 12 groups, 29 members, all fingerprinted and chmod-protected (below) |
-| Arm groups A1–A9 (64 assignments) | not started |
+| Arm group A1 (SC-509, 509b, 506, 510a–f, 511a–b, 405k) | COMPLETE, bash lane — 39 case runs |
+| Arm groups A2–A9 | not started |
 
 ---
 
@@ -420,3 +421,105 @@ advances with the clock, are compared over 20 back-to-back paired trials and the
 count is reported. Results: `<group>/_meta/shim-inactive-equivalence.*.txt`. The shim's
 own log files are harness artifacts and are excluded from the product-state manifests.
 
+## Arm group A1 — schema/document (bash lane)
+
+Rows executed: SC-509, SC-509b, SC-506, SC-510a, SC-510b, SC-510c, SC-510d, SC-510e,
+SC-510f, SC-511a, SC-511b, SC-405k. (SC-511c is B0's and is not run here.)
+
+Each document case is run TWICE from the same template member: once on a **protected**
+clone (the design's read-only vehicle) and once on a **writable** clone whose modes are
+restored to what the producer wrote. Both are published. The pair exists because a
+protected clone can turn a write into a refusal rather than revealing it, while the
+writable clone lets the manifest diff be the proof the design asks for; reporting only
+one of the two would hide which of those two things happened.
+
+Consumer families per case, each captured as stdout + stderr + rc + byte counts +
+sha256: `ae list`, `ae list --json`, `ae list --all`, `ae list --all --json`, `ae ls`,
+`ae ls --all`, `ae status <session>`, `ae next`, the session's `requests all`, its
+`agents`, and its `events-tail`. `events-tail` is a streaming consumer with no one-shot
+mode, so it is bounded by the harness and the stop is recorded beside its bytes.
+Every consumer runs under `env -i` plus the documented minimum
+(`HOME`, `AE_HOME`, `PATH`, `TZ=UTC`, `LANG=C`, `LC_ALL=C`, `TERM`, `TMUX_TMPDIR`,
+`AE_TMUX_SERVER`+kind) — never inherited shell state. The exact env is published per
+case as `env.txt` and the exact argv per consumer in `consumers.tsv`.
+
+| case | clone | rows | template | clone fp = template fp | manifest diff (lines) | tmux snapshot identical | consumers |
+|---|---|---|---|---|---|---|---|
+| `c01-healthy-ro` | ro | SC-509,SC-509b,SC-510a | `G1/healthy` | yes | 0 | yes | 11 |
+| `c01-healthy-rw` | rw | SC-509,SC-509b,SC-510a | `G1/healthy` | yes | 0 | yes | 11 |
+| `c02-meta-mode-000-ro` | ro | SC-506 | `G3/meta-mode-000` | yes | 0 | yes | 11 |
+| `c02-meta-mode-000-rw` | rw | SC-506 | `G3/meta-mode-000` | yes | 0 | yes | 11 |
+| `c03-malformed-line-ro` | ro | SC-506,SC-509b | `G3/malformed-complete-line` | yes | 0 | yes | 11 |
+| `c03-malformed-line-rw` | rw | SC-506,SC-509b | `G3/malformed-complete-line` | yes | 0 | yes | 11 |
+| `c04-empty-vs-omitted-ro` | ro | SC-510b | `A1/510b-empty-vs-omitted` | yes | 0 | yes | 11 |
+| `c04-empty-vs-omitted-rw` | rw | SC-510b | `A1/510b-empty-vs-omitted` | yes | 0 | yes | 11 |
+| `c05-recover-ref-ro` | ro | SC-510c | `A1/510c-recover-ref` | yes | 0 | yes | 11 |
+| `c05-recover-ref-rw` | rw | SC-510c | `A1/510c-recover-ref` | yes | 0 | yes | 11 |
+| `c06-escapes-ro` | ro | SC-510d | `G11/escapes` | yes | 0 | yes | 11 |
+| `c06-escapes-rw` | rw | SC-510d | `G11/escapes` | yes | 0 | yes | 11 |
+| `c07-dupkey-known-ro` | ro | SC-510e | `A1/510e-dupkey-known` | yes | 0 | yes | 11 |
+| `c07-dupkey-known-rw` | rw | SC-510e | `A1/510e-dupkey-known` | yes | 0 | yes | 11 |
+| `c08-dupkey-known-rev-ro` | ro | SC-510e | `A1/510e-dupkey-known-reversed` | yes | 0 | yes | 11 |
+| `c08-dupkey-known-rev-rw` | rw | SC-510e | `A1/510e-dupkey-known-reversed` | yes | 0 | yes | 11 |
+| `c09-dupkey-unknown-ro` | ro | SC-510f | `A1/510f-dupkey-unknown` | yes | 0 | yes | 11 |
+| `c09-dupkey-unknown-rw` | rw | SC-510f | `A1/510f-dupkey-unknown` | yes | 0 | yes | 11 |
+| `c10-dupkey-unknown-rev-ro` | ro | SC-510f | `A1/510f-dupkey-unknown-reversed` | yes | 0 | yes | 11 |
+| `c10-dupkey-unknown-rev-rw` | rw | SC-510f | `A1/510f-dupkey-unknown-reversed` | yes | 0 | yes | 11 |
+| `c11-routing-known-ro` | ro | SC-511a,SC-511b | `G5/m1-control` | yes | 0 | yes | 11 |
+| `c11-routing-known-rw` | rw | SC-511a,SC-511b | `G5/m1-control` | yes | 0 | yes | 11 |
+| `c12-routing-omitted-ro` | ro | SC-511a | `A1/511a-omitted-routing` | yes | 0 | yes | 11 |
+| `c12-routing-omitted-rw` | rw | SC-511a | `A1/511a-omitted-routing` | yes | 0 | yes | 11 |
+| `c13-same-display-routing-ro` | ro | SC-511b | `G10/same-display-diff-routing` | yes | 0 | yes | 11 |
+| `c13-same-display-routing-rw` | rw | SC-511b | `G10/same-display-diff-routing` | yes | 0 | yes | 11 |
+| `c14-display-only-legacy-ro` | ro | SC-511b | `G10/display-only-legacy` | yes | 0 | yes | 11 |
+| `c14-display-only-legacy-rw` | rw | SC-511b | `G10/display-only-legacy` | yes | 0 | yes | 11 |
+| `c15-meta-unknown-keys-ro` | ro | SC-509,SC-509b | `G7/meta-unknown-keys` | yes | 0 | yes | 11 |
+| `c15-meta-unknown-keys-rw` | rw | SC-509,SC-509b | `G7/meta-unknown-keys` | yes | 0 | yes | 11 |
+| `c16-events-unknown-keys-ro` | ro | SC-509b,SC-510a | `G7/events-unknown-keys` | yes | 0 | yes | 11 |
+| `c16-events-unknown-keys-rw` | rw | SC-509b,SC-510a | `G7/events-unknown-keys` | yes | 0 | yes | 11 |
+| `c17-unknown-action-ro` | ro | SC-509b,SC-510a | `G7/events-unknown-action` | yes | 0 | yes | 11 |
+| `c17-unknown-action-rw` | rw | SC-509b,SC-510a | `G7/events-unknown-action` | yes | 0 | yes | 11 |
+| `c18-no-trailing-newline-ro` | ro | SC-509b | `G8/no-trailing-newline` | yes | 0 | yes | 11 |
+| `c18-no-trailing-newline-rw` | rw | SC-509b | `G8/no-trailing-newline` | yes | 0 | yes | 11 |
+| `c19-partial-tail-ro` | ro | SC-509b | `G8/partial-trailing-record` | yes | 0 | yes | 11 |
+| `c19-partial-tail-rw` | rw | SC-509b | `G8/partial-trailing-record` | yes | 0 | yes | 11 |
+| `c20-405k-live` | live | SC-405k | `live/no-template (live 2-agent launch + two named topology manipulations)` | - | - | - | 33 |
+
+Artifact paths: `docs/migration/evidence/batch-c-artifacts/arms/A1/<case>/` —
+`case.txt` (template + both fingerprints + clone fingerprint + verification result +
+manifest-diff line count + timestamps), `env.txt`, `consumers.tsv` (label, rc, stdout
+and stderr sha256 + byte counts, bounded flag, exact argv), `out/<label>.stdout` and
+`out/<label>.stderr` verbatim, `manifest.before.tsv` / `manifest.after.tsv` /
+`manifest.diff.txt` (recursive: type, mode, content hash, symlink target, path across
+the cloned AE_HOME), `tmux.before.txt` / `tmux.after.txt`, and `A1/ledger.tsv`
+mapping every case to its row ids. `SHA256SUMS.txt` hashes every published file.
+
+### A1 additional template members built for this arm
+
+| member | rows | construction |
+|---|---|---|
+| `A1/510b-empty-vs-omitted` | SC-510b | the same real `send` helper run with its documented event overrides set to a genuinely EMPTY STRING versus left UNSET, plus `state` with an empty vs absent reason argument and `memo` with an empty vs absent topic. Producer input recorded per case in `_meta/510b-empty-vs-omitted.txt` |
+| `A1/510c-recover-ref` | SC-510c | recover-ref bytes from the REAL producer: the generated watchdog running `ae _recover-pending`. The agent binary is the controllable fake copied to `codex` so the frozen tool classifier reports `tool_kind=codex`; a codex-shaped session log is planted as external PRODUCER INPUT (hashed and reproduced in the provenance file), written after launch so its mtime is newer than `launch_time.main` and carrying the launch marker ae itself injected. No harness probe of `_recover-pending` is run beforehand — it CLAIMS the pending slot, which would consume the very recovery the producer must emit |
+| `A1/510e-dupkey-known` / `-reversed` | SC-510e | a KNOWN key (`summary`) appearing twice with conflicting values on one event line, in both member orders. Both values are producer-derived byte values taken verbatim from real summaries already in that same file |
+| `A1/510f-dupkey-unknown` / `-reversed` | SC-510f | the identical construction with an UNKNOWN key (`zzz_unknown`), in both member orders |
+| `A1/511a-omitted-routing` | SC-511a | a cohort produced only by helpers whose emitter never sets the routing members (`state`/`goal`/`memo`/`say`/`send`), so routing is genuinely OMITTED at the producer rather than removed afterwards. The KNOWN-routing half of the pair is `G5/m1-control` |
+
+Fingerprints and provenance for these members are in `templates/A1/_meta/` alongside the
+other groups, and they appear in `templates/FINGERPRINTS.tsv`.
+
+### SC-405k live sub-arm
+
+`c20-405k-live` is not a template clone: it is a live 2-agent launch on its own tmux
+server with two named topology manipulations, captured at three stages —
+`s0-baseline`, `s1-extra-pane` (an EXTRA runtime pane stamped `@ae_agent=fake:ghost`,
+`@ae_slot=ghost.0`, absent from meta), and
+`s2-extra-pane-and-missing-roster-pane` (the pane of roster slot `worker.0` killed, its
+meta entry left in place). Each stage carries the full consumer battery, the tmux
+snapshot, the roster lines from meta, a recursive AE_HOME manifest, and a RAW PROBE.
+
+The raw probe runs the exact tmux query the frozen consumer makes, from the SAME
+scrubbed environment and the SAME socket the consumers are given. It is there so the
+consumer's rendering is captured against an independently established view of the
+topology rather than against an assumption: at every stage the probe and the session's
+own `agents` helper both observed the panes and their commands, and both show the two
+manipulations landing. No claim is made about what any rendering should be.

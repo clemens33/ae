@@ -1,0 +1,6 @@
+SESSION                   STATUS    MODE        ORIGIN
+tg5                       stopped   local       /tmp/aecx/tpl/g5/work
+  git:master · ae 0.2.1 · active 2s ago
+  fake:lead               -
+  fake:worker             -
+  fake:third              -

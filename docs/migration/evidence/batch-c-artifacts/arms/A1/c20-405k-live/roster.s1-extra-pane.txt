@@ -1,0 +1,4 @@
+agent.main=fake:lead:pending
+agent_bin.main=aefake
+agent.worker.0=fake:worker:pending
+agent_bin.worker.0=aefake

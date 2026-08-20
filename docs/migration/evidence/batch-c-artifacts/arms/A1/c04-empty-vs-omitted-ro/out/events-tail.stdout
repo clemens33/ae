@@ -1,0 +1,12 @@
+[1;36m╭─ ae events — session: ta1b ───────────────────────────────╮
+│ date+time (UTC)  action   actor                  → target                 summary
+╰──────────────────────────────────────────────────────────────────────────╯
+[0m
+08-20T15:30:38  send     fake:lead              → fake:worker            ⟦ae:msg from fake:lead⟧ b1 body: both overrides absent
+08-20T15:30:39  send     fake:lead              → fake:worker            ⟦ae:msg from fake:lead⟧ b2 body: empty summary override
+08-20T15:30:40  send     fake:lead              → fake:worker            b3 summary present
+08-20T15:30:40  send     fake:lead              → fake:worker            ⟦ae:msg from fake:lead⟧ b4 body
+08-20T15:30:41  state    fake:lead                                       
+08-20T15:30:41  state    fake:lead                                       
+08-20T15:30:41  memo     fake:lead                                       b7 memo body
+08-20T15:30:41  memo     fake:lead                                       b8 memo body

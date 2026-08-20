@@ -1,0 +1,13 @@
+[1;36m╭─ ae events — session: tg1 ───────────────────────────────╮
+│ date+time (UTC)  action   actor                  → target                 summary
+╰──────────────────────────────────────────────────────────────────────────╯
+[0m
+08-20T15:19:09  state    fake:lead                                       building the healthy fixture
+08-20T15:19:09  goal     fake:lead                                       healthy fixture session goal
+08-20T15:19:10  memo     fake:lead                                       healthy fixture memo body
+08-20T15:19:11  send     fake:lead              → fake:worker            ⟦ae:msg from fake:lead⟧ healthy fixture send body
+08-20T15:19:11  state    fake:worker                                     worker acknowledging
+08-20T15:19:12  ask      fake:lead              → fake:worker            healthy fixture question
+08-20T15:19:13  reply    fake:worker            → fake:lead              healthy fixture answer
+08-20T15:19:13  state    fake:worker                                     worker finished
+08-20T15:19:13  done     fake:worker                                     worker finished

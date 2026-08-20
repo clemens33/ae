@@ -1,0 +1,5 @@
+SESSION                   STATUS    MODE        ORIGIN
+tg11                      stopped   local       /tmp/aecx/tpl/g11/work
+  git:master · ae 0.2.1 · active 2s ago
+  fake:lead               -
+  fake:worker             -
