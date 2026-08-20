@@ -733,6 +733,47 @@ absent file standing in for a recorded absence.
 reasons**, and a control that fails for reasons unrelated to its subject reads exactly like
 the subject failing.
 
+### An instrument must be present when the fixture is BUILT, not only when it is READ
+
+A hooked copy of the product was used to observe a mid-write boundary. The hook was
+invoked correctly, against a real fixture, and the run produced a clean-looking capture.
+It was measuring nothing.
+
+**ae's generated helpers are written BY the launching binary.** The fixture had been built
+by the *unhooked* copy, so the `_lib` inside it carried no hook — and no amount of invoking
+the hooked binary afterwards could put one there. The barrier reported `mark_seen=no`, and
+the case went on to record a reader observing the **completed** write: a state at no
+boundary at all. **The previous run had published exactly that.**
+
+This is the plausible failure mode in its most expensive form: you get a reading, the
+reading has the shape of a barrier observation, and it is a completed write wearing a
+barrier's label. Nothing about it looks empty.
+
+So for any system that **generates its own surfaces**, ask where the instrumented artifact
+comes from, not just where the instrument is pointed. An instrument that must exist at
+construction time cannot be added at observation time.
+
+And the structural remedy is the one that generalises: **an unarmed barrier is not a null
+result — it invalidates everything captured after it.** The case now records INCONCLUSIVE
+and *stops*, because a run that continues past an unarmed barrier does not produce less
+evidence, it produces confident wrong evidence.
+
+### When the instrument necessarily perturbs, PROVE the difference set — do not assert it
+
+The same arm needed to show its hooked copy was otherwise equivalent to the frozen one, and
+reached for byte-identity. Byte-identity was the **wrong bar**: the hook writes itself into
+every generated `_lib`, so `_lib` and the two files quoting it *must* differ. A bar the
+instrument cannot clear is not a strict bar, it is one that gets waived.
+
+The repair is not a looser assertion — it is a **proof obligation**. Equivalence became the
+enumerated form (identical except files whose only difference is the hook's own bytes), and
+the arm **diffs each differing file and fails on any non-hook line**, rather than asserting
+the difference set is what it expects. It also proved the comparator can report red, against
+a copy with an altered version string.
+
+**A known, bounded perturbation is admissible; an unexamined one is not — and the boundary
+between them is whether the run measures the difference or merely expects it.**
+
 ### An overstated claim is the defect — and it has TWO repairs
 
 The bound a verification project needs, and the reason one can otherwise grow forever.
