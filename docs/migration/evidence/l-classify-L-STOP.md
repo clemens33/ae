@@ -117,10 +117,15 @@ prefix. Directly observed, no inference.
 Bucket 1. Arm: `plain-stop` (**rc=0**), three real sessions on one recorded server
 **including the prefix-sibling pair `proj`/`projx`**, with a delegate-and-log tmux shim
 tracing every argv.
-IS — both halves of the row in one recorded argv line:
-`<-S> </private/tmp/…/tmux-501/default> <kill-session> <-t> <$0>`
-The **`-S`** names the recorded socket (not the ambient server) and the target is
-**`$0` — a session ID, not the name**. The hazard the row exists to prevent is that
+IS — one recorded argv line: `<-S> </private/tmp/…/tmux-501/default> <kill-session>
+<-t> <$0>`, the target being **`$0` — a session ID, not the name**.
+**COMPOSITE (colead's finding, adopted — my "both halves in one line" was wrong).** The
+argv proves EXPLICIT TARGETING; it cannot prove WHERE that socket was selected from,
+because in `plain-stop` the recorded and ambient servers COINCIDE. An
+ambient-selector implementation would emit a byte-identical line. The **exact-id /
+prefix-sibling half is directly confirmed**; the **recorded-not-ambient half rests on
+the frozen `_end_target_server` call path**, or would need a two-server discriminator
+arm to be shown at runtime. The hazard the row exists to prevent is that
 `tmux kill-session -t proj` prefix-matches `projx`; `3post.tmux.txt` shows **`projx`
 still alive** after `proj` was stopped. The sibling was present, the id was used, and the
 sibling survived.
@@ -128,17 +133,33 @@ sibling survived.
 *could* have killed the wrong session.
 
 **SC-835b — stop reports stopped only after verifying the session is gone.** Bucket 1.
-IS: every success record in the section reads `stopped: verified gone on its recorded
-server`. The claim of verification is in the durable record, not only in the stdout line.
-**CONFIRMED.**
+**COMPOSITE (colead's finding, adopted).** Every success record reads `stopped:
+verified gone on its recorded server` — but that is **ae's own prose asserting the
+property, not evidence of it**. A message claiming verification is exactly as strong as
+a message claiming anything else. The anti-oracle rule applies to the product's strings,
+not only to its exit codes.
+The ordering is proved by **sequence in frozen source**, ae:7948-7950:
+```
+kill_heartbeat "$name"
+_lifecycle_kill_verified "$name" stop "$sid" || return 1
+echo "Stopped $name"
+```
+The success line is unreachable unless `_lifecycle_kill_verified` returned 0. That, plus
+the post-op tmux state, is the confirmation.
+**CONFIRMED AS COMPOSITE (frozen source ordering + state snapshot).**
 
 **SC-835c — an unverifiable kill fails loudly and changes nothing.** Bucket 1.
 Arm: `unverifiable-kill` (**rc=1**) — the directory holding the recorded tmux socket is
 removed while the server process keeps running.
 IS: `Error: cannot verify session 'proj' (its recorded tmux server is unreachable) —
-nothing was stopped, state preserved.` Loud (rc=1, named cause), no success report, and
-the no-change half asserted in the message itself.
-**CONFIRMED.**
+nothing was stopped, state preserved.` rc=1 with a named cause and no success report —
+the **loud half is directly confirmed**.
+**COMPOSITE for the no-change half (colead's finding, adopted).** "nothing was stopped,
+state preserved" is an ASSERTION IN THE MESSAGE, not a proof of no change — the same
+error I made on SC-835b. And the arm's `AE_HOME` diff cannot stand in for it: it
+contains **concurrent event-file changes**, so it is not a clean no-change witness.
+The no-change half rests on the frozen early-return path, which exits before the kill.
+**CONFIRMED AS COMPOSITE.**
 
 **SC-835d — stop never deletes anything.** Bucket 1.
 Arm: `plain-stop`, `1pre.aehome.tsv` vs `3post.aehome.tsv`.
@@ -150,10 +171,18 @@ provider conversation files are preserved either way". The body is satisfied exa
 pid file is runtime bookkeeping for a process that no longer exists, not user state. The
 headline is falsified by one file.
 This is not a product divergence — it is a contract-text defect, and a reader checking the
-headline literally would file a false divergence. **Proposed precision:** *"stop deletes
-no user state — ae state, working tree and provider conversation files are preserved;
-runtime bookkeeping for the stopped session (e.g. its watchdog pid file) is cleaned up."*
-Colead's ruling requested; this is a b1 row so the rewrite is a seat act.
+headline literally would file a false divergence. **My proposed precision was itself self-contradictory and is WITHDRAWN** (colead's
+BLOCKER, adopted). `.watchdog.pid` lives **under the documented ae-state directory**, so
+"ae state is preserved" while that file is removed is false — I fixed the headline by
+writing a body that repeats the same error one level down. It also **froze cleanup as a
+REQUIREMENT** inferred from one observed mechanism.
+**Adopted rewrite, at outcome grain:** *"stop preserves all state required for full
+resume — durable session metadata, working tree, and provider conversation files. It MAY
+remove ephemeral runtime bookkeeping for the processes it stops."* `May`, not `does`:
+permitted, not required — the same discipline as SC-1305's permitted no-session interval.
+**COMPOSITE:** the `AE_HOME` manifest proves the pid-file exception; the manifest does
+**not** capture the working tree or provider conversation domains at all, so those rest
+on frozen source showing the stop path never touches them.
 *(Generalised into grain requirement 4 at the top of this worksheet.)*
 
 **SC-835e — self-stop confirms with the recoverability warning.** Bucket 1.
@@ -176,12 +205,16 @@ Arms: the `self-stop-without-y` / `self-stop-with-y` pair — identical construc
 flag differing.
 IS: `without-y` captures the prompt (`Continue? [y/N]`, 1 occurrence). `with-y` has **no
 `pty.at-prompt.txt` at all** and its `pty.after-answer.txt` reads `(pane gone)`.
-**CONFIRMED BY PAIRED CONTRAST, with the evidence weakness stated.** The paired control
-is the right design and it carries the claim. But an **absent file is not a recorded
-absence of prompt**: the harness did not capture "we looked and there was none", it
-captured nothing. And the manifest names `pty.at-prompt.txt` as a key artifact for *both*
-self-stop arms, so it names a file that does not exist for one of them.
-Weak, not wrong — see the gate item below, which is the same class in the same arms.
+**NOT confirmed by paired contrast — RELABELLED COMPOSITE** (colead's finding, adopted).
+My paired-contrast reading fails to a specific mutant: **a build that briefly prompts and
+then proceeds passes the `with-y` side**, because that side never records a
+prompt-ABSENCE observation. An absent file is not a recorded absence, and the manifest
+names `pty.at-prompt.txt` as a key artifact for an arm that has none.
+The `without-y` transcript is a sound CONTROL, and the claim closes structurally on
+frozen source at **ae:7022**: the entire prompt branch sits inside
+`if [[ "${_AE_STOP_YES:-}" != true ]]; then`, so `-y` bypasses it by shape and cannot
+prompt-then-proceed.
+**CONFIRMED AS COMPOSITE.** No rerun needed unless direct runtime evidence is required.
 
 **SC-835g — self-stop executes via a short-lived out-of-pane supervisor.** Bucket 1,
 declared empirical basis **census-2** (not this arm).
@@ -197,13 +230,29 @@ So `supervisor_observed yes` is either an observation whose evidence was not kep
 INFERENCE ("the stop succeeded, so a supervisor must have run") recorded in a field that
 reads as a measurement. Neither can be distinguished from the committed tree, which is
 why it is a gate item rather than a mark.
-**The row itself is not unsupported** — its declared empirical basis is census-2, and the
-composite argument survives independently: the durable `stop-result` reading `verified
-gone on its recorded server` was written **after** the session died, so the verifier
-cannot have been living inside it. That is a real out-of-pane proof. It is just not the
-proof the arm claims to have made.
-**NEEDED to close:** a capture that catches the supervisor while it exists and shows its
-parent is not the dying pane. Raised to lexec.
+**My proposed rescue does NOT rehabilitate the field** (colead's finding, adopted). I
+argued the durable event proves an out-of-pane writer. It does not: **an event cannot
+identify its own writer or that writer's parentage**. I reasoned to a conclusion the
+artifact does not carry — the exact failure I had flagged in others three rows earlier.
+`supervisor_observed  yes` has no retained lineage evidence and is **WITHDRAWN as an
+observation**; the arm defect is preserved below as an evidence-integrity note.
+**The ROW closes as COMPOSITE on frozen source ordering**, which is sound because the
+ordering is stated rather than assumed:
+- **ae:7052** launches the detached one-shot worker —
+  `nohup "$_ae_self" "$0" _stop-supervisor "$name" </dev/null >/dev/null 2>&1 &` followed
+  by `disown`, with the comment *"the supervisor must own no end of the dying pane's
+  tty"* and *"The detached worker. It — not the dying caller — owns the lock, the
+  identity…"*.
+- **ae:7380-7388** emits the result only AFTER `_stop_one_session` returns and only on
+  its rc — `out="$(_stop_one_session …)" || rc=$?` then `if ((rc == 0))` → the
+  `stop-result` event.
+- The post-kill event proves that path survived the dying session.
+**CONFIRMED AS COMPOSITE.** Runtime lineage is not mandatory given the above; if a future
+seat requires it, the barrier capture is still the way to get it.
+**Evidence-integrity note, retained deliberately:** `supervisor.ps-lineage.txt` is
+byte-identical to `3post.ps.txt` in both arms while `ARM.txt` asserts
+`supervisor_observed yes`. The row closes on other evidence; the arm's claim does not,
+and the defect stays on the record so the artifact is never cited for it.
 
 **SC-835h — the self-stop outcome is a durable `stop-result` event.** Bucket 1.
 IS: `3post.events.proj.jsonl` carries
@@ -226,10 +275,20 @@ load-bearing.** The arm demonstrates the waiver; **no arm combines `--self` with
 or C4 violation**, so the "and NOTHING else" half is empirically untested here — the arm
 cannot fail that half of the claim.
 It is carried instead by frozen source, which closes it structurally rather than by
-sampling: C1–C4 run unconditionally inside `_stop_self_target_from_pane` (ae:6869-…),
-`--self` affects only the tty branch that follows (ae:6854-6855, *"the tty branch then
-adds C5, and `--self` bypasses C5 alone"*), and ae:6550-6553 refuses `--self` combined
-with an explicit target outright — a guard whose comment records the bug it exists to
+sampling. **My source account was inaccurate and is corrected here** (colead's finding,
+verified by lead against the frozen tree): `_stop_self_target_from_pane` does **not**
+carry C1–C4 — it handles C1/C2 plus constructive name resolution. The full C1–C4 proof
+lives in **`_stop_current_target_proven` (ae:6904-6960)**, which produces C1 ×2, C2 ×1,
+C3 ×2 and C4 ×3 named refusals. `--self` is then consulted at **ae:6964-6968**, and the
+shape is the proof:
+```
+_stop_current_target_proven "$name" || return 1
+# C5, and only C5, is what --self may bypass.
+[[ "${_AE_STOP_SELF_FLAG:-}" == true ]] && return 0
+```
+C1–C4 have already run and returned before the flag is read, so `--self` structurally
+cannot reach them. ae:6550-6553 additionally refuses `--self` combined with an explicit
+target outright — a guard whose comment records the bug it exists to
 prevent (`ae stop all -y --self` once classified every candidate as self, kept only the
 last, and left the rest live with rc 0).
 Any future citation must carry both halves; the arm alone overstates.
@@ -256,8 +315,11 @@ ae:6690-6719 naming each. Three of five are directly evidenced; two are source-o
 this section.
 
 **SC-839d — a stop refusal names the failed check.** Bucket 1.
-**RULED: DIVERGENCE, SCOPED — plus a STALE EXAMPLE in the row itself.** Two separate
-defects, both found by reading the call site rather than the arms.
+**RULED: BUCKET 3 — fix-known-defect (#101)** (colead's BLOCKER, adopted). This resolves
+through the contract enum, not as a free-form DIVERGENCE: the **SHOULD is KEPT** and
+scoped to identity-gate refusals, the observed generic-only C1/C4 path is recorded, and
+the row points at #101's intended behaviour (retain the precise C diagnosis alongside
+usage).
 
 *1. The claim does not hold on the implicit no-name route.* At ae:6560-6568 the frozen
 code reads:
@@ -284,7 +346,17 @@ Note the frozen code's own opinion of unattributed refusals: the refusal site at
 defaults to `<unattributed — this is a contract gap, please report>`. ae already treats a
 refusal that cannot name its check as a defect.
 
-*2. The row's canonical example is drawn from a design that was replaced.* SC-839d
+*2. The example is RARELY REACHABLE, not stale — my finding was wrong and is corrected.*
+I claimed the row's example describes a deleted design. **The C4 diagnostic producer
+still exists in frozen source at ae:6956-6957**, in exactly the row's shape:
+`_STOP_UNPROVEN="C4 — pane ${_pane} is in '${_pane_sess#* }', not '${name}'"`.
+Colead's formulation is the correct one: **public reachability is stale or rare; source
+existence is not.** So the example illustrates live code, and the defect is only that the
+implicit route cannot surface it — which is #101, already filed.
+**Consequence: the example is NOT rewritten.** Replacing it with a live C2/C5 example is
+an optional clarity edit, not a second conflict, and rewriting a normative example merely
+because the incumbent usually cannot surface it would let measurement edit the contract.
+*What I originally wrote, kept for the record:* SC-839d
 illustrates itself with `refusing: C4 — pane %0 is in 'alpha', not 'beta'`. That string
 appears at ae:6863 **inside the comment explaining why that approach was abandoned**: it
 describes what happened when the name was resolved ambiently and then filtered with C4,
@@ -317,32 +389,55 @@ before and after, so the harness could have registered it.
 
 ---
 
-## Proposed dispositions
+## Dispositions — POST-GATE
 
-- **CONFIRMED / no change — 14**: SC-515a, SC-515b, SC-515c, SC-815a, SC-815b, SC-815c,
-  SC-815d, SC-835a, SC-835b, SC-835c, SC-835e, SC-835h, SC-839b, SC-839e.
-- **CONFIRMED BY PAIRED CONTRAST, evidence weakness stated — 1**: SC-835f.
-- **CONFIRMED AS COMPOSITE (frozen source + partial empirical) — 2**: SC-839a, SC-839c.
-  Neither arm can fail the half the source carries; the label must travel with the row.
-- **CONFIRMED WITH A PRECISION REQUIRED — 1**: SC-835d. The headline ("never deletes
-  anything") is falsified by one pid file; the body is satisfied exactly. Contract-text
-  defect, not a product divergence.
-- **PARTIAL, gate item — 1**: SC-835g. `supervisor_observed yes` is asserted where the
-  named artifact is a post-hoc snapshot byte-identical to `3post.ps.txt`.
-- **DIVERGENCE, scoped, + stale example — 1**: SC-839d.
-- **No INCONCLUSIVE arms. No ARM-INVALID.**
+*Colead's independent read moved EIGHT of the twenty, and every move was away from a mark
+I proposed. Two of the eight corrected my reading of the frozen source itself. Recorded
+that way deliberately: a gate whose findings are folded silently into the totals leaves no
+evidence it ran.*
+
+- **CONFIRMED, direct — 11**: SC-515a, SC-515b, SC-515c, SC-815a, SC-815b, SC-815c,
+  SC-815d, SC-835e, SC-835h, SC-839b, SC-839e.
+- **CONFIRMED AS COMPOSITE — 8**: SC-835a, SC-835b, SC-835c, SC-835d, SC-835f, SC-835g,
+  SC-839a, SC-839c. Every one of these has a half no arm in this section can fail; the
+  label must travel with the row, and a future citation that drops it overstates.
+- **BUCKET 3, fix-known-defect (#101) — 1**: SC-839d. SHOULD kept and scoped to
+  identity-gate refusals; example NOT rewritten.
+- **No PARTIAL, no free-form DIVERGENCE, no reopened conflicts, no INCONCLUSIVE arms.**
 
 **Section total: 20.**
 
+**Arithmetic flagged for colead:** your summary says "13 direct confirmed"; I count **11**
+(20 − 8 composite − 1 bucket-3). The difference is that your list moves SC-835d and
+SC-835g out of "direct" in the prose but the count appears to retain them. Raising it
+rather than silently adopting either number.
+
+---
+
 ## What this section changed about how we read rows
 
-1. **A headline can contradict its own body** (SC-835d). Grain requirement 4 added.
-2. **A stale example can outlive the design it described** (SC-839d). SC-839d's
-   illustration is quoted in frozen source as the behaviour of the *rejected* approach —
-   found only by reading the call site, never by reading the arms. Examples need the same
-   provenance discipline as claims.
-3. **A field named like a measurement can hold an inference** (SC-835g). `ARM.txt`'s
-   `supervisor_observed yes` reads as an observation and cannot be told apart from a
-   deduction using the committed tree.
-4. **An absent artifact is not a recorded absence** (SC-835f). The paired control carries
-   the claim; the missing file does not.
+1. **A headline can contradict its own body** (SC-835d) — and **a proposed fix can repeat
+   the same error one level down**. My precision said "ae state is preserved" while the
+   deleted `.watchdog.pid` lives *under* the ae-state directory. The fix was outcome
+   grain plus `MAY`, not `DOES`: permitted, not required, so one observed mechanism does
+   not become a requirement.
+2. **The product's own prose is not evidence for the product's behaviour** (SC-835b,
+   SC-835c). `stopped: verified gone` and `nothing was stopped, state preserved` are ae
+   asserting properties, exactly as strong as any other string it prints. Ordering came
+   from ae:7948-7950; no-change came from the early-return path. **The anti-oracle rule
+   applies to messages, not only to exit codes** — this is the sharpest lesson of the
+   section and I had to be shown it twice in adjacent rows.
+3. **An argv line proves targeting, not selection** (SC-835a). `-S <socket>` cannot
+   distinguish "the recorded server" from "the ambient server" when the arm makes them
+   the same socket. A discriminator needs two servers that differ.
+4. **"Rarely reachable" is not "removed"** (SC-839d). I called the row's C4 example stale;
+   the producer is live at ae:6956-6957. Public reachability is stale or rare; source
+   existence is not — and a normative example must not be rewritten because the incumbent
+   usually cannot surface it.
+5. **A field named like a measurement can hold an inference** (SC-835g) — and so can a
+   seat's rescue of it. My argument that a durable event proves an out-of-pane writer was
+   the same over-reach I had flagged in the arm three rows earlier: an event cannot
+   identify its own writer. The row closed on stated source ordering instead.
+6. **An absent artifact is not a recorded absence** (SC-835f). The failing mutant is
+   concrete: a build that briefly prompts and then proceeds passes an arm that never
+   observed the prompt's absence.
