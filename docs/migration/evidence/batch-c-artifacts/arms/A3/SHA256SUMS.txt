@@ -673,10 +673,11 @@ b5aa65c6d722ad4e562e590069bd26ad4b4fb0f42f063d4e30c7f98751631de5  ./harness/arm-
 d9a44bcf67769a66eb83590c4ff9ddfb2935e9745cf1e2daf5ee75f1dad1c529  ./harness/arm-d03.sh
 f24124182ddfd7b331e72d6eaf7faece97a200f793d5b630cb9f1916396e1b5f  ./harness/arm-d04a.sh
 0875a3e56be87276b034ebf0ba2402ce0e3ceb91ad059befa058e3d32a047af3  ./harness/arm-d04b.sh
+12f1e4be6b6e8684804905bd0c43327f87a80ff2ca539ff639e5040d25bdea2a  ./harness/arm-table.sh
 7d8d1bc5c90c4d682d747527f5934866746ced537da55a9e59ac51af661b6a4a  ./harness/armlib.sh
 a39faaae9570f147e448a9bf7bc7e3d7b795e105921e67fed088f726c293c205  ./harness/case-schema-check.py
 c4c1df53134e454d928898d005455e04d2da3ecb95042bf1f1288b4dfe137f4a  ./harness/case-schema.tsv
-b44aae970cd54fa0e1261c60102ecc5fe87fcd6af38e45902390cc531ac230aa  ./harness/committed-bytes-check.py
+f3f5a9f4a49025a3ced2b6db589af6ea95b4e818cc5ace629ef43c4fe994f6d3  ./harness/committed-bytes-check.py
 0966b9a210cf5b9915ae4c5b58795893f6d77789a4c3b842c1e47fcaa903b60c  ./harness/committed-bytes-redproof.sh
 4f0d45210750821e463ddf1b6eeeb8c023a52959a2236b78ce6f3ea97230f972  ./harness/dlib.sh
 88ce41b0229cb34910e7eb0cbb7bafd8df724db5131ccf548e988dc216f1a4d5  ./harness/finalize-arm.sh
