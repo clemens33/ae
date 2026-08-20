@@ -174,7 +174,16 @@ successful replacement; no directory fsync is performed.
   the marker until the owner clears it or the freshness condition fails. A stop after the
   fresh heartbeat but before/inside `kill-session` leaves marker+fresh heartbeat while the
   Bash guard stands down; the tmux kill may or may not have completed because the kill call
-  is tolerant (`aewatch:3276-3288`). A process termination that bypasses cleanup leaves the
+  is tolerant (`aewatch:3276-3288`). **FAIL-OPEN direction (audit, probe-verified exit 0):
+  a kill failure (rc=1/timeout) is IGNORED — `handed_off` is still set and `bridge.tick`
+  still sends, so an existing bash daemon and aewatch BOTH send (probe: forced kill rc=1
+  → bridge_ticks=1, marker_fresh=true). The marker suppresses future revive, not the
+  live predecessor. Kill scope is ambient + discovered-meta servers only (an unrepresented
+  named server is missed), and the handoff takes no `telegram/control.lock`, so bash
+  start/stop/supervise can interleave. Defect: #84 (intended: prove every predecessor
+  absent on the complete scope, serialize control before first send). Destructive tmux
+  targets here are raw prefix-matchable names — defect #85. #83 remains the separate
+  explicit-start bypass.** A process termination that bypasses cleanup leaves the
   marker and the last heartbeat; after the heartbeat ages beyond 90 seconds, Bash's guard
   no longer returns early (`ae:10479-10484`).
 - `clear_bridge_owner` only unlinks a marker whose PID field equals the clearing process
@@ -254,10 +263,12 @@ Aewatch reads the flat session metadata without `meta.lock` in all of these path
   (`aewatch:2409-2427`).
 
 Bash's normal metadata writer takes `<meta>.lock`, reads the whole file, writes a temp, and
-  renames it while fd 200 is held (`ae:2348-2436`). Launch/session-ID capture paths use the
-  same lock and temp+rename (`ae:1825-1865`, `ae:1999-2025`, `ae:2029-2055`,
-  `ae:2068-2075`). Aewatch's direct reads do not take that lock, so they can occur before,
-  during, or after a Bash replacement. Aewatch has no direct `meta` writer of its own.
+  renames it while fd 200 is held (`ae:2348-2436`). **CORRECTED (audit I5): not all
+  writers are temp+rename — `start_capture_session_id` appends `launch_time.*` DIRECTLY
+  under meta.lock (`ae:2068-2075`), and `_cmd_spawn` directly appends agent/bin/launch_id
+  rows under meta.lock (`ae:11923-11945`).** Aewatch's direct reads take no lock, so they
+  can observe meta before, during, or after a replacement — including PARTIAL canonical
+  meta from the direct-append writers. Aewatch has no direct `meta` writer of its own.
 
 The recovery boundary is cross-language: aewatch shells the executable recorded in `ae_path`
 as `ae _recover-pending <session>` and parses its TSV output (`aewatch:2409-2450`). Bash's
@@ -277,10 +288,15 @@ real sweep (`ae:16122-16129`). Neither the aewatch read nor the Bash read takes 
 
 Aewatch reloads `$AE_HOME/config` each bridge tick via the ae-compatible INI parser
 (`aewatch:1700-1757`, `aewatch:1571-1580`) and reads the configured Telegram token file
-(`aewatch:731-773`). Bash parses the same config (`ae:356-403`, `ae:9401-9435`) and
-`telegram setup` appends the `[telegram]` block directly to the config
-(`ae:10550-10605`). There is no shared config lock; aewatch can read while that append is
-in progress. The token file is read-only from both paths in this census.
+(`aewatch:731-773`). **CORRECTED (audit I4):** `telegram setup` directly OVERWRITES the
+token file and directly appends config; `_telegram_persist_intent` writes config
+DIRECTLY when the file/section is missing and uses temp+mv only for an existing section
+— the token is NOT read-only. There is no shared config lock; aewatch can observe a
+partial setup write. Aewatch's `load_config` reads ONLY `$AE_HOME/config` — it catches
+missing-file but not read errors (an OSError crashes a component path) and deliberately
+ignores bash's `CONFIG_FILE`/`AE_LOCAL_CONFIG`, so **the two backends do not always read
+the same config** (S10/S15 conflict candidate: interchangeable backends need one
+explicit effective-config authority — fix or DR).
 
 ## Shared event/tmux state and tmux mutation paths
 
@@ -341,3 +357,74 @@ held by one implementation.
   unlocked path operations. Clean shutdown clears the marker; termination that bypasses
   cleanup leaves marker/heartbeat residue until Bash's 90-second freshness test stops
   treating the sidecar as owner.
+
+## Audited addenda (colead batch, memo topic census3-audit, 2026-08-20; lead-transcribed)
+
+Defect issues opened from this audit: **#84** (fail-open takeover), **#85**
+(prefix-matchable destructive tmux targets). **#83** remains the separate explicit-start
+bypass. B3 (below) awaits a joint fix-vs-DR choice.
+
+### B3 — append-only contract vs resume trim (normative conflict, NOT conflict=none)
+
+bridge-protocol.md:90-95 and events.md:142-148 promise past lines never change, no
+rotation, lifetime growth. Frozen `ae:18046-18075` REPLACES `events.jsonl` with the
+newest N lines on resume. Joint resolution pending: fix-known-defect (preserve
+append-only) or a DR for explicit generations/rotation + reader-cursor migration; #21 is
+a candidate implementation vehicle but does not itself resolve the conflict.
+
+### I1 — event reader stat/open generation race (probe-verified, exit 0)
+
+aewatch:1470-1508 and bash:10123-10174 stat the path, later open it, and return the stat
+inode without the event lock. A resume-trim replacement between stat and open caused
+`new-first` to send with the OLD inode retained; the next tick saw the new inode, jumped
+to EOF, and silently skipped `new-second`. Even an un-raced inode change jumps to current
+EOF — events appended after trim and before the first poll are lost. Resolution rides B3.
+
+### I2 — `_locked_append` failure directions are two, not one
+
+Returns false only after repeated flock OSError until deadline (contention
+indistinguishable from other flock errors); lock-path open, event open, write, close,
+and unlock errors ESCAPE the false-return path, abort the watchdog component tick, enter
+crash/backoff, and can eventually stop the combined daemon. `make_emit_event` drops only
+the false return.
+
+### I3 — shared Telegram store caller semantics (transition triggers, not generic LWW)
+
+`_drain_outbound` ignores `OutboundState.save(False)` — sends can succeed while the
+durable offset stays old: replay/duplicates on next tick or restart (at-least-once needs
+its own row). `CurrentTarget.clear` ignores unlink failure and `/use clear` replies
+success with the sticky target still active (known-defect candidate: success only after
+durable clear). During takeover, bash EXIT can save an old in-memory `state.tsv` AFTER
+the kill while aewatch has begun — no common store lock, so later replacement can
+regress offsets.
+
+### I6 — `up` is outside the daemon singleton
+
+`ensure_aewatch_session` probes/kills/creates BEFORE any `aewatch.lock`; concurrent
+autostarts can race and kill/recreate each other. The lifetime singleton covers
+loop/tick only, never up/start orchestration.
+
+### I7 — delivery-guard asymmetry (#45)
+
+Bash watchdog nudges go through generated `send` (per-pane lock, busy/human/dead/
+verified-submit guards); aewatch calls `RealTmuxClient.paste` directly with no shared
+target lock and no guards. Classified fix-known-defect(#45): Rust daemons use the one
+verified delivery primitive.
+
+### I8 — marker/heartbeat precision
+
+Temp+replace gives atomic VISIBILITY, not power-loss durability (no fsync anywhere);
+"durable fact" here means stranger-readable process state — do not promise crash/power
+persistence. A first-handoff `write_heartbeat` exception lands after marker publication
+and before local clear; loop containment catches it, so the marker stands until retry,
+loop-exit cleanup, or freshness decay. Clean SIGTERM/HUP/INT runs the CLI `finally`;
+only crash/SIGKILL/bypass leaves permanent residue.
+
+### Citation nits (accepted)
+
+`record_success` does only `_save([])` (not load/prune) — census line 132.
+`kill_session` records no effect (lines 297-300). tmux status: ae:15524-15557 is the
+branch segment; status writes are ae:15985-15986 and 16570-16571. Autostart uses
+NONBLOCKING flock; explicit start uses `flock -w 5` (line 169). The logger records
+`log.write` BEFORE mkdir/rotate/write — a caught write failure can leave a phantom
+oracle effect.

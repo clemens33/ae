@@ -446,13 +446,22 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 
 ## Daemons + control surfaces (P4)
 
-### D25 — watchdog daemon (mode-split; measured, colead 2026-08-20)
+### D25 — watchdog daemon (mode-split; measured, colead 2026-08-20; census-3 audited)
 
-- **default mode:** current owner = **bash** (watchdog loop in ae)
-- **`AE_WATCHDOG_IMPL=uv` mode:** current owner = **python contrib (aewatch)**
-- effects: nudge delivery to panes, nudge counters, footprint exclusion, quiet-state honoring
-- locks / atomicity: TBD per mode
-- planned owner/fate: **rust at P4**; both modes retire together
+- **default mode (bash):** nudges go through the generated `send` helper — per-target
+  lock + busy/human/dead/verified-submit guards; tmux option writes otherwise carry no
+  ae lock
+- **`AE_WATCHDOG_IMPL=uv` mode (python contrib, aewatch):** holds `aewatch.lock` for
+  loop/tick lifetime ONLY (`up`/start orchestration is OUTSIDE the singleton — audit I6:
+  concurrent autostarts can race and kill/recreate each other); bounded
+  `events.jsonl.lock` append (two failure directions — audit I2); reads meta/config/
+  events UNLOCKED against bash writers (partial/mixed-generation reads possible — audit
+  I5/I1); delivers via direct `RealTmuxClient.paste`, NO shared target lock, NO guards —
+  **fix-known-defect(#45)**: Rust daemons use the one verified delivery primitive;
+  heartbeat/backoff temp+replace (atomic visibility, NOT power-loss durability — audit
+  I8); logger direct append with lock-free rotation
+- planned owner/fate: **rust at P4**; both modes retire together. **Final row fill
+  blocked until B1–B3 resolutions recorded (census-3 addenda).**
 
 ### D26a — watchdog start/stop (`ae watchdog start|stop`, session `watchdog` + `loop` helpers)
 
@@ -479,10 +488,20 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 - **ownership is a runtime handoff, not a static split:** when the aewatch marker exists
   AND its heartbeat is fresh, **aewatch owns the bridge operation and the bash daemon
   stands down**; otherwise the bash daemon owns it.
-- **known defect (both seats, 2026-08-20):** `ae telegram start` under a live aewatch
-  WARNS AND PROCEEDS, creating a double-sender state (ae:10639-10648). Classified
-  fix-known-defect(**#83**, intended: the single-sender invariant holds against explicit
-  operator start — refuse or take over cleanly); not a DR.
+- **known defects (both seats, 2026-08-20):** `ae telegram start` under a live aewatch
+  WARNS AND PROCEEDS — double sender (ae:10639-10648): fix-known-defect(**#83**,
+  intended: single-sender holds against explicit operator start). The takeover itself is
+  **fail-open** — tolerant kill ignored (probe: rc=1 → still ticks), incomplete server
+  scope, no control-lock serialization: fix-known-defect(**#84**, intended: prove every
+  predecessor absent on the complete scope, serialize control before first send).
+  Destructive tmux targets are raw prefix-matchable names: fix-known-defect(**#85**,
+  intended: resolve exact session identity before any kill).
+- mechanics (census-3 audited): marker/heartbeat atomic-replace visibility (no
+  durability promise), freshness/clear unlocked, no shared control lock between the
+  handoff and bash start/stop/supervise; `aewatch.lock` is distinct from bash's
+  daemon/control locks; shared Telegram stores (`tg_offset`, `state.tsv`,
+  `current_target`) have NO common lock — bash EXIT can regress offsets after a
+  takeover (audit I3). **Final row fill blocked until B1–B3 resolutions recorded.**
 - effects: chat event consumption, Telegram send/receive, reply routing to panes
 - current writer/call path: bash telegram daemon; aewatch bridge (mode above)
 - locks / atomicity: TBD per mode — the marker+heartbeat handoff itself is a contract
@@ -553,8 +572,14 @@ consuming operation, never an independent flip; gate finding b29dac92, blocker 4
 
 ### D30c — aewatch internals
 
-- effects / call path / locks / atomicity: TBD per mode (see D25/D27)
+- effects / call path (census-3): daemon loop/once/`up` (up OUTSIDE the singleton),
+  singleton/heartbeat/backoff/log/marker writers, event append (`_locked_append`) and
+  unlocked event reads (stat/open race — audit I1), Telegram stores + config reads
+  (only `$AE_HOME/config`, ignores `CONFIG_FILE`/`AE_LOCAL_CONFIG` — effective-config
+  conflict candidate, audit I4), unlocked meta reads (partial reads of direct-append
+  writers — audit I5), tmux takeover/mutations (#84/#85)
 - current owner: **python contrib**
 - planned owner/fate: split fates (gate finding a1358882) — **runtime ownership retires at
   P4** when D25/D27 flip to Rust; **source stays contrib as reference/incubator** per the
-  epic (it is the measured spec for the daemon port)
+  epic (it is the measured spec for the daemon port). **Final row fill blocked until
+  B1–B3 resolutions recorded.**
