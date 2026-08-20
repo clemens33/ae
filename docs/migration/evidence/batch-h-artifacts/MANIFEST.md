@@ -98,12 +98,11 @@ another group's precondition. Cases inside a group run in the listed order and s
 write; the order is part of the fixture and is recorded in every ledger.
 
 Every case records the session directory's own byte listing before and after the
-invocation (`session-bytes.before.tsv`, `.after.tsv`, `.diff.txt`) — several of these
+invocation (the `session-bytes` before, after and diff files) — several of these
 helpers write, and a refusal that wrote something is a different reading from a refusal
 that did not.
 
-Four cases need the controller manipulation their input class names: an unreadable `meta`
-(mode 000), an emptied `meta`, a malformed `config`, and a pane respawned as a plain shell.
+Four cases need the controller manipulation their input class names: an unreadable session meta (mode 000), an emptied session meta, a malformed config file, and a pane respawned as a plain shell.
 Each is applied immediately before its case and reverted after. `RUN-MANIFEST.md` A11.
 
 ## Ledger chronology
