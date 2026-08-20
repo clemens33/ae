@@ -653,13 +653,96 @@ injection boundaries; bash daemon vs aewatch runtime handoff via marker + fresh
 heartbeat), `ae steward` + ae-monitor window (bash product surfaces) vs contrib
 templates/sidecars.
 
-<!-- rows: SC-9xx — colead drafting (seat split 2026-08-20); lead remains sole writer -->
+<!-- rows: SC-9xx — claims collected by gpt56luna:s10source (colead's evidence worker,
+2026-08-20, frozen-doc citations); buckets proposed by lead; colead confirm pending -->
 
 **SC-900 — event-log container lifecycle.** Bucket 4 — **DR-001**: the container is NOT
 append-only forever; explicit generations with rotation under DR-001's binding
 conditions replace both the frozen resume-trim behavior and the docs' no-rotation
 promise. Authority: DR-001 (both seats). Empirical: ae:18046-18075 (trim) + census-3
 audit I1 (reader race). Conflict: DR-001.
+
+**SC-901 — daemon topology.** Bucket 4 — **DR-002**: one Rust daemon per `AE_HOME`
+owns watchdog + telegram at P4; the `AE_WATCHDOG_IMPL` selector and the per-session
+`_watchdog` process/pane retire. Per-session enable/persistence/start-stop-status
+semantics survive; `ae-monitor`/`_events` stay inspectable; daemon decisions are
+durable events/log, never pane-peeking. Authority: DR-002 (both seats).
+Conflict: DR-002.
+
+The S10 claim table (source: s10source batch, one testable SHOULD per row; frozen-doc
+citations in the batch, memo-linked). Bucket column is the lead proposal; rows marked
+**DR-002** have their bash-era SHOULD retired by the topology decision and are kept as
+compatibility semantics only where DR-002 preserves them:
+
+| Row | Claim (abbrev.) | Bucket | Conflict |
+|---|---|---|---|
+| W-01 | watchdog on by default; only false/no/off/0 disables | 2 | none |
+| W-02 | enablement persists in meta across resume | 2 | none |
+| W-03 | watchdog self-terminates when session/meta disappears | 1 | none |
+| W-04 | bash default impl; aewatch via AE_WATCHDOG_IMPL=uv | 4/DR-002 | selector retires |
+| W-05 | uv selects exclusively; else bash; never duplicates | 4/DR-002 | — |
+| W-06 | reuse running aewatch only on fresh heartbeat | 4/DR-002 | — |
+| W-07 | bridge ownership = marker AND heartbeat ≤90s | 4/DR-002 | — |
+| W-08 | stale ownership → bash revives | 4/DR-002 | — |
+| W-09 | interval/stale/nudge/throttle defaults 60s/15m/2/5 | 2 | none |
+| W-10 | tg supervision default 120s; 0 disables | 2 | none |
+| W-11 | steward sweep default 300s; 0 → normal behavior | 2 | none |
+| W-12 | sweep retry 30s clamped, 6 fast, one unreachable alert | 2 | none |
+| W-13 | branch order first-match-wins | 2 | none |
+| W-14 | agentless shell pane: alert once, mark dead, ignore | 2 | none |
+| W-15 | quiet declarations suppress; done event-only; wu/blocked yield to pane | 1 | none |
+| W-16 | throttle streak: suppress, one event, alert at N, cleared on recovery | 2 | none |
+| W-17 | at most MAX_NUDGES; limit cycle alerts then silence | 2 | none |
+| W-18 | missing panes alert once; pending captures retried | 2 | none |
+| W-19 | state done dual-emits; either recognized by older watchdog | 2 | none (torn emit = D07/S14 row) |
+| M-01 | ae-monitor window always; _events always; _watchdog only-while-running | 2 (+4/DR-002 for the _watchdog pane half) | — |
+| M-02 | watchdog stop/restart leaves events pane usable | 2 | none |
+| M-03 | baked status bar owned by ae; stop clears live segments only | 2 | none |
+| M-04 | doctor --refresh replaces disk code, never the running watchdog | 2 | none |
+| B-01 | external actor = platform:id, opaque past allowlist | 2 | none |
+| B-02 | event-only sinks: no tmux resolution, literal target; unknown fails loud | 1 | none |
+| B-03 | AE_SENDER_OVERRIDE for send/ask/review; reply identity via --as | 2 | none |
+| B-04 | readers tolerate missing files, buffer partial trailing records | 1 | none |
+| B-05 | offsets keyed (session_id,inode); tail never whole-load | 2 | DR-001 amends (generation cursor) |
+| B-06 | bridges bind stable session_id across resume/rename/transfer | 1 | none |
+| B-07 | claim, stop the other, THEN send; fresh marker = stand down | 1 | fix-known-defect(#84; #83 operator bypass) |
+| B-08 | bridges ignore unknown fields; renames/removals breaking | 2 | none |
+| T-01 | missing jq/curl refuses only the bridge, never core | 1 | none |
+| T-02 | default include set; per-session offsets prevent replay | 2 | fix-known-defect(#86: offsets can regress) |
+| T-03 | empty allowed_user_ids = outbound-only | 2 | none |
+| T-04 | inbound: numeric allowlisted from.id + exact chat.id + private, else silent drop | 1 | none |
+| T-05 | routing precedence chain with common revalidation | 2 | none |
+| T-06 | targets resolve to running exact/unique-prefix + real agents; escapes rejected | 1 | none |
+| T-07 | setMyCommands failure logged and ignored | 2 | none |
+| T-08 | offset advances BEFORE dispatch — restart cannot replay a side-effecting command | 1 | none |
+| T-09 | token file 0600 owner-only; wrong perms refuse start with diagnostic | 1 | none |
+| T-10 | start idempotent; stop-when-stopped succeeds; status = intent + runtime | 2 | none |
+| T-11 | autostart never blocks launch; failure = one-line warning | 1 | none |
+| T-12 | supervision ~120s, 0 disables, never undoes explicit stop, best-effort | 2 | none |
+| T-13 | tracked sessions resume from saved offset; new sessions start at EOF | 2 | DR-001 amends (cursor) |
+| T-14 | both backends: same filter/routing/menu over same state | 3 | fix-known-defect(#45 delivery, #86 stores, #87 config) |
+| T-15 | token never in argv; redacted in logs | 1 | none |
+| C-01 | steward session swept every 300s, no stale escalation; workers normal | 2 | none |
+| C-02 | sweep nudges delivery-checked, retried, at-least-once | 2 | none |
+| C-03 | steward liveness = pane checks + state-file mtime ~2x cadence | 2 | none |
+| C-04 | steward never ends/stops/edits another session or dispatches without human say-so | 1 | none |
+| C-05 | steward isolates config, neutralizes local, --init never overwrites | 1 | none |
+| C-06 | legacy hub supported; steward name reserved | 2 | none |
+| A-01 | core deps = bash>=4 + tmux + git; jq/curl never core | 1 | none |
+| A-03 | helper publication atomic temp+chmod+rename; running watchdog keeps body | 1 | none (M3 mechanism) |
+| A-04 | telegram plain-text paths; jq programs fixed, data via stdin | 1 | none |
+
+(A-02 is the historical revisit-trigger doctrine — executed by #79, not a contract row.
+A-05 = SC-1101, not duplicated. Batch conflicts 1–3 are owned by SC-900/#84-85/#45
+rows; conflict 6 is the I8 precision note; conflict 7 — autostart race outside the
+singleton — is absorbed by DR-002 condition 1 (race-free self-healing), no separate
+issue; conflict 8 rides M1's typed-Result contract with per-operation policy rows.)
+
+**S10 gaps (recorded, not closed):** malformed/non-numeric handling for `AE_WATCHDOG_*`,
+`AE_TELEGRAM_*`, include/exclude and `allowed_user_ids` is UNDOCUMENTED — probe + seat
+decisions before those rows can complete (S15 carries them per-variable); outbound
+send-failure and offset-save-failure semantics undocumented (#86 fixes forward);
+crash/power durability of markers is explicitly NOT promised (I8).
 
 ### S11 — Installer / doctor / refresh
 
@@ -843,6 +926,38 @@ bar for DR completeness: the wider the divergence, the fuller the record.
 | DR | Title | Status |
 |---|---|---|
 | DR-001 | Event-log generations | RATIFIED (both seats, 2026-08-20) |
+| DR-002 | One daemon per AE_HOME | RATIFIED (both seats, 2026-08-20) |
+
+```
+DR-002 One daemon per AE_HOME
+- affected SC ids: SC-901; W-04..08 and M-01's _watchdog-pane half (bash-era SHOULDs
+  retired at P4); interacts with #83/#84 (the handoff protocol they afflict ceases to
+  exist under one owner).
+- context / current IS: two daemon runtimes (bash per-session _watchdog process/pane +
+  machine bridge; python aewatch machine singleton under AE_WATCHDOG_IMPL=uv) with a
+  marker/heartbeat handoff protocol between them — probe-proven fail-open (#84),
+  operator bypass (#83), store regression (#86), config divergence (#87).
+- options considered: (a) preserve both topologies in Rust (duplicates ownership and
+  process supervision that #79 already retires); (b) one Rust daemon per AE_HOME
+  (the aewatch ownership topology).
+- decision / intended Rust behavior: ONE Rust daemon per AE_HOME owns watchdog +
+  telegram at P4. AE_WATCHDOG_IMPL and the per-session _watchdog process/pane retire.
+  Kept: per-session enable/persistence/start|stop|status semantics; ae-monitor/_events
+  inspectability; daemon decisions exposed via durable events/log, never pane-peeking.
+- binding conditions (fable5:lead): (1) a dead daemon is VISIBLE (ae list/status) and
+  self-heals via race-free ensure-at-launch — never silent global no-nudges; (2)
+  complete-scope discovery is a design requirement (#84's class unrepresentable);
+  (3) per-session state stays session-scoped — one process, never one blob; (4) an
+  explicit restart contract (upgrade/doctor-refresh behavior stated, restarts loud in
+  events); (5) durable decision events fully replace peek _watchdog (#19 ae explain is
+  the consumer).
+- trade-offs accepted: single supervised process replaces N independent ones (SPOF
+  accepted against condition 1); observable topology changes (pane and selector gone).
+- authority: epic #79 P4 (both runtimes retire); census-3 (measured aewatch topology =
+  the incumbent design); Clemens' ambitious-divergence latitude.
+- seats + date: gpt56sol:colead (proposed) + fable5:lead (concurred, five conditions),
+  2026-08-20.
+```
 
 ```
 DR-001 Event-log generations
