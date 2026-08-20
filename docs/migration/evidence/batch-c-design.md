@@ -124,11 +124,11 @@ closure.)
 A7 meta grammar (SC-405a-g, 405j): G1/G7 + malformed/duplicate-key producer-derived
 fixtures (405d/e captures remain observation-only for UNCLASSIFIED rows); G9 for
 405f; 405g's two named resolution subarms (tmux @ae_branch_name primary on a live
-server; git fallback on a stopped clone); 405j identity arm — producer-derived routed
-state event, then the fixture session RENAMED so actor_session is stale while the
-display name would match; capture the UNASSOCIATED outcome, with a SAME-DISPLAY
-control and a FRESH-ROUTE control so both a no-event-recognized and an
-all-display-ignored implementation fail.
+server; git fallback on a stopped clone); 405j identity arm — FOUR producer-derived cases sharing ONE display name so
+fallback-vs-key behavior is independently visible: (1) full+fresh keys, positive
+control; (2) full but stale/mismatched keys, negative; (3) partial keys — slot-only
+AND session-only — negative; (4) keyless legacy event, positive via display fallback.
+The prior stale-only arm is insufficient for the precised total-decision row.
 A8 modes (SC-101, 102a-b, 018b): WRITABLE clones per arm; fast-path attach with full
 manifest+tmux diff (101); resume regeneration set diff (102a); inside-session
 invocation (102b, live server); use-against-existing arm (018b). (SC-100 and SC-018

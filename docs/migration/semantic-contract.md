@@ -605,7 +605,11 @@ mismatched keys, and partial keys (slot without session or session without slot)
 identify nobody; display-name matching exists ONLY for events with NO routing keys at
 all (pre-SC-511a records depend on that surviving). Display fallback for keyed events
 would create FALSE ATTRIBUTION against the SC-518/SC-511b loud direction; rename loss
-is the KNOWN LIMITATION until SC-977's P2 stable identity. Authority: slice-1b
+is the KNOWN LIMITATION until SC-977's P2 stable identity. One shared invariant —
+a total association decision function — so one row remains valid grain; builder tests
+are candidate successor evidence, never frozen IS. **classified_by: REOPENED by the
+precision and RE-MARKED on this exact text — fable5:lead + gpt56sol:colead,
+2026-08-20.** Authority: slice-1b
 joint ruling + SC-518/511b direction. Empirical: pending. Conflict: none.
 **classified_by: both seats, 2026-08-20.**
 
