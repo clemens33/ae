@@ -1,0 +1,185 @@
+--- /tmp/aelx/L-RENTRANS/rename-effects/cap/1pre.workspace.proj.md	2026-08-20 20:25:08
++++ /tmp/aelx/L-RENTRANS/rename-effects/cap/3post.workspace.proj2.md	2026-08-20 20:25:18
+@@ -1,6 +1,6 @@
+ # ae workspace
+ 
+-Session: proj
++Session: proj2
+ Origin: /private/tmp/aelx/L-RENTRANS/rename-effects/w
+ Directory: /private/tmp/aelx/L-RENTRANS/rename-effects/w
+ Mode: local
+@@ -12,67 +12,69 @@
+ | Agent | Tool | Role | Pane |
+ |-------|------|------|------|
+ | claude:claude | claude code | lead | %0 |
++| _watchdog:_watchdog | _watchdog | agent | %2 |
++| _events:_events | _events | agent | %1 |
+ 
+ ## Communication
+ 
+ Send a message to another agent by name:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/send "<agent_name>" "your message"
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/send "<agent_name>" "your message"
+ ```
+ 
+ Ask another agent a question and require a reply:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/ask <agent_name> "your question"
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/ask <agent_name> "your question"
+ ```
+ 
+ Request a critical review:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/review <agent_name> "review request"
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/review <agent_name> "review request"
+ ```
+ 
+ Reply to a logged request by request id:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/reply <request_id> "your reply"
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/reply <request_id> "your reply"
+ ```
+ 
+ Inspect request state without peeking panes:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/requests
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/requests inbox
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/requests
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/requests inbox
+ ```
+ 
+ Declare your current work state. It shows in `ae list` (per agent). Your `waiting-user`/`blocked` contribute to the session `attn:` marker; `ae list` may also show watchdog-derived reasons (`dead`/`stale`/`throttled`). The watchdog stops nudging on any quiet state: `done` until a newer message arrives; `waiting-user`/`blocked` until the pane changes (e.g. the human replies), then nudging resumes:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/state working "starting on X"
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/state waiting-user "need clarification on Y"
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/state blocked "waiting for codex review on req-Z"   # reason required
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/state done "shipped X"
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/state                                                # print current state
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/state working "starting on X"
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/state waiting-user "need clarification on Y"
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/state blocked "waiting for codex review on req-Z"   # reason required
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/state done "shipped X"
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/state                                                # print current state
+ ```
+ 
+ `mark-done "<summary>"` is preserved as shorthand for `state done`. Declare `working` on every new task, `waiting-user` only after asking the human, `blocked` only with a concrete external blocker.
+ 
+ Record durable findings, decisions, and handoffs in shared session memory:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/memo add "important shared fact"
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/memo add --topic arch "we chose SQLite over Postgres"
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/memo read
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/memo read --topic arch
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/memo tail 5
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/memo add "important shared fact"
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/memo add --topic arch "we chose SQLite over Postgres"
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/memo read
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/memo read --topic arch
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/memo tail 5
+ ```
+ 
+-Memo entries are append-only and stored in `/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/memo.tsv`. Use memo for durable shared context, not full chat transcripts.
++Memo entries are append-only and stored in `/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/memo.tsv`. Use memo for durable shared context, not full chat transcripts.
+ 
+ The session can carry a one-line goal — what this session is FOR. It shows in `ae list` and the watchdog quotes it when nudging idle agents:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/goal                       # show the current session goal
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/goal "ship the PR for X"   # set it
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/goal --clear               # remove it
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/goal                       # show the current session goal
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/goal "ship the PR for X"   # set it
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/goal --clear               # remove it
+ ```
+ 
+ When another agent sends you a question, task, or review request, reply via the exact `reply` or `send` command included in that message:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/send "<their_agent_name>" "your reply"
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/send "<their_agent_name>" "your reply"
+ ```
+ 
+ Do not infer the recipient. Do not reply only in your own pane output. Do not poll or capture panes to wait for replies — answers arrive as incoming messages.
+@@ -82,8 +84,8 @@
+ If the human messages you from Telegram, answer with `say` — your normal pane
+ output does NOT reach their phone:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/say "done — the menu is live, tested end to end"
+-echo "a longer, multi-line reply" | /tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/say   # stdin for long text
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/say "done — the menu is live, tested end to end"
++echo "a longer, multi-line reply" | /tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/say   # stdin for long text
+ ```
+ `say` emits a `chat` event the Telegram bridge forwards (when running with
+ `chat` in its include filter). The human can reply to your message on Telegram
+@@ -93,10 +95,10 @@
+ 
+ View recent output from another agent's pane:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/peek <agent_name> [lines]
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/peek <agent_name> [lines]
+ ```
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/peak <agent_name> [lines]
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/peak <agent_name> [lines]
+ ```
+ 
+ Default: 80 lines. Max: 2000. Use peek/peak for inspection only, not as a reply mechanism.
+@@ -105,21 +107,21 @@
+ 
+ List all agents in the session:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/agents
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/agents
+ ```
+ 
+ ## Focus
+ 
+ Switch to another agent's pane:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/focus <agent_name>
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/focus <agent_name>
+ ```
+ 
+ ## Interrupt
+ 
+ Stop an agent's current generation and optionally redirect:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/interrupt <agent_name> [message]
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/interrupt <agent_name> [message]
+ ```
+ 
+ Without a message, just cancels current work. With a message, cancels then sends new instructions.
+@@ -129,7 +131,7 @@
+ Add another agent to this workspace (it gets its own tmux window, named
+ after its role — the main window's layout is untouched):
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/spawn <alias>:<name> [prompt]
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/spawn <alias>:<name> [prompt]
+ ```
+ 
+ Always give spawned agents a descriptive role name (e.g. `codex:reviewer`, `claude:pair-programmer`).
+@@ -182,7 +184,7 @@
+ 
+ Remove a spawned agent from the workspace:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/retire <agent_name|pane_id>
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/retire <agent_name|pane_id>
+ ```
+ 
+ Kills the pane, removes meta entry, and updates the manifest. Only works on spawned agents.
+@@ -191,13 +193,13 @@
+ 
+ All helpers support targeting agents in other ae sessions using `@session:agent` syntax:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/peek @other-session:claude:lead 20
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/send @other-session:codex:reviewer "check the API"
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/peek @other-session:claude:lead 20
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/send @other-session:codex:reviewer "check the API"
+ ```
+ 
+ List all agents across all running sessions:
+ ```bash
+-/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj/agents --all
++/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/sessions/proj2/agents --all
+ ```
+ 
+ ## Rules

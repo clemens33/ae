@@ -1,0 +1,81 @@
+pid=11664 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <tf1>
+pid=11703 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <new-session> <-d> <-s> <tf1> <-c> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/w>
+pid=11709 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <-u> <CLAUDECODE>
+pid=11712 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <-u> <CLAUDE_CODE_SESSION>
+pid=11714 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <AE_SESSION> <1>
+pid=11717 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <AE_ORIGIN> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/w>
+pid=11719 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <AE_DIR> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/w>
+pid=11721 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <AE_MODE> <local>
+pid=11723 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-environment> <-t> <tf1> <AE_HOME> </tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/h/.ae>
+pid=11725 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <tf1> <mouse> <on>
+pid=11727 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <tf1> <focus-events> <on>
+pid=11730 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <tf1> <history-limit> <50000>
+pid=11732 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <tf1> <pane-border-status> <top>
+pid=11734 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <tf1> <pane-border-format> < #{@ae_agent} >
+pid=11736 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <has-session> <-t> <tf1>
+pid=11739 ppid=11738 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=11750 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left> <[ae tf1] >
+pid=11752 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-left-length> <40>
+pid=11755 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right> <[…endpoint-validation-hostile-name-pull/w#{@ae_branch_status}] #{@ae_watchdog_status}>
+pid=11757 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-right-length> <100>
+pid=11759 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-interval> <5>
+pid=11761 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status> <2>
+pid=11765 ppid=11763 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <show-options> <-gv> <status-format[0]>
+pid=11767 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[0]> <#[align=left range=left #{E:status-left-style}]#[push-default]#{T;=/#{status-left-length}:status-left}#[pop-default]#[norange default]#[list=on align=#{status-justify}]#[list=left-marker]<#[list=right-marker]>#[list=on]#{W:#[range=window|#{window_index} #{E:window-status-style}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-format}#[pop-default]#[norange default]#{?loop_last_flag,,#{E:window-status-separator}},#[range=window|#{window_index} list=focus #{?#{!=:#{E:window-status-current-style},default},#{E:window-status-current-style},#{E:window-status-style}}#{?#{&&:#{window_last_flag},#{!=:#{E:window-status-last-style},default}}, #{E:window-status-last-style},}#{?#{&&:#{window_bell_flag},#{!=:#{E:window-status-bell-style},default}}, #{E:window-status-bell-style},#{?#{&&:#{||:#{window_activity_flag},#{window_silence_flag}},#{!=:#{E:window-status-activity-style},default}}, #{E:window-status-activity-style},}}]#[push-default]#{T:window-status-current-format}#[pop-default]#[norange list=on default]#{?loop_last_flag,,#{E:window-status-separator}}}#[nolist align=right range=right #{E:status-right-style}]#[push-default]#{T;=/#{status-right-length}:status-right}#[pop-default]#[norange default]>
+pid=11769 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <status-format[1]> <#[align=left] #{@ae_agent}#[align=right]#{@ae_agents_status} >
+pid=11771 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-format> <#I:#W#{@ae_window_status}#F>
+pid=11773 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <$0> <window-status-current-format> <#I:#W#{@ae_window_status}#F>
+pid=11775 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <set-option> <-t> <tf1> <automatic-rename> <off>
+pid=11779 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <rename-window> <-t> <tf1> <tf1>
+pid=11781 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-t> <tf1> <-p> <#{pane_id}>
+pid=11783 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <select-pane> <-t> <%0> <-T> <ae:claude:claude>
+pid=11785 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_agent> <claude:claude>
+pid=11788 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <set-option> <-p> <-t> <%0> <@ae_slot> <main>
+pid=11810 ppid=11809 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <display-message> <-p> <#{socket_path}>
+pid=11922 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id}	#{@ae_agent}>
+pid=11947 ppid=11946 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id}|#{@ae_slot}|#{@ae_agent}>
+pid=12091 ppid=12090 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=12102 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <load-buffer> <-b> <ae-ps-11608-%0> <->
+pid=12112 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <paste-buffer> <-d> <-b> <ae-ps-11608-%0> <-t> <%0>
+pid=12300 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=4 <send-keys> <-t> <%0> <Enter>
+pid=12343 ppid=12342 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <display-message> <-p> <-t> <%0> <#{pane_current_command}>
+pid=12403 ppid=12401 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id} #{@ae_agent}>
+pid=12407 ppid=12405 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=12 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <new-window> <-d> <-t> <tf1:99> <-n> <ae-monitor> <-P> <-F> <#{pane_id}> </tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/h/.ae/sessions/tf1/events-tail>
+pid=12410 ppid=12351 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <set-option> <-p> <-t> <%1> <@ae_agent> <_events>
+pid=12412 ppid=12351 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <select-pane> <-t> <%1> <-T> <ae events>
+pid=12414 ppid=12351 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <set-window-option> <-t> <tf1:ae-monitor> <pane-border-status> <top>
+pid=12416 ppid=12351 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <select-pane> <-t> <%1> <-d>
+pid=12457 ppid=12455 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id} #{@ae_agent}>
+pid=12463 ppid=12461 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id} #{@ae_agent}>
+pid=12473 ppid=12470 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id} #{@ae_agent}>
+pid=12476 ppid=12475 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <split-window> <-v> <-b> <-t> <%1> <-P> <-F> <#{pane_id}> </tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/h/.ae/sessions/tf1/watchdog _run>
+pid=12480 ppid=12425 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <set-option> <-p> <-t> <%2> <@ae_agent> <_watchdog>
+pid=12482 ppid=12425 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <select-pane> <-t> <%2> <-T> <ae watchdog>
+pid=12493 ppid=12425 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=6 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <select-pane> <-t> <%2> <-d>
+pid=12517 ppid=11608 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <select-pane> <-t> <%0>
+pid=11608 ppid=11160 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=3 <attach-session>pid=12522 ppid=12520 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-t> <tf1>
+ <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12539 ppid=12479 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ◌ starting]>
+pid=12557 ppid=12555 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12559 ppid=12542 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=12572 ppid=12570 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12574 ppid=12479 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=12576 ppid=12479 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <has-session> <-t> <tf1>
+pid=12584 ppid=12479 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id}|#{@ae_agent}|#{pane_current_command}|#{pane_pid}>
+pid=12588 ppid=12587 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <display-message> <-p> <-t> <%0> <#{@ae_slot}>
+pid=12593 ppid=12591 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=11 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <capture-pane> <-p> <-J> <-S> <-40> <-E> <-> <-t> <%0>
+pid=12633 ppid=12631 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12635 ppid=12479 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <set-option> <-t> <$0> <@ae_watchdog_status> <[watch ● 1/1]>
+pid=12652 ppid=12650 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12654 ppid=12638 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_name> <main>
+pid=12665 ppid=12663 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12667 ppid=12479 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <set-option> <-t> <$0> <@ae_branch_status> < main>
+pid=12680 ppid=12678 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=12683 ppid=12479 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=7 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <set-option> <-t> <$0> <@ae_agents_status> <claude●>
+pid=12690 ppid=12689 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-panes> <-s> <-t> <tf1> <-F> <#{pane_id}|#{window_id}|#{@ae_agent}>
+pid=12693 ppid=12479 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <set-option> <-w> <-t> <@0> <@ae_window_status> <●>
+pid=12695 ppid=12479 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=8 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <set-option> <-w> <-t> <@1> <@ae_window_status> <>
+pid=13434 ppid=13424 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-sessions> <-F> <#{session_id} #{session_name}>
+pid=13458 ppid=13406 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <kill-session> <-t> <$0>
+pid=13479 ppid=13477 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 <-S>pid=13476 ppid=13464 AE_TMUX_SERVER=<unset> AE_TMUX_SERVER_KIND=<unset> argc=5 </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <list-sessions> <-S> <-F> </private/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull/t/tmux-501/default> <#{session_id} #{session_name}> <list-sessions>
+ <-F> <#{session_name}>

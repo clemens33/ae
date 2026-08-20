@@ -1,0 +1,4 @@
+note: flock not found — lifecycle locking degraded (start/stop races unguarded)
+Error: session 'proj' has no positive server record — ae cannot tell which tmux server owns it, and will not guess.
+  Resolve: 'ae doctor --refresh proj', or AE_END_SERVER='<name|/socket/path>' ae stop proj
+  Nothing was stopped; state preserved.

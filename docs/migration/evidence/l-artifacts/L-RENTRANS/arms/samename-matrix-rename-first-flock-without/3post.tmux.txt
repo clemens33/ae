@@ -1,0 +1,18 @@
+## socket	/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-without/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|proj2|2|0|1787250939
+$1|projx|2|0|1787250943
+## windows
+proj2|@0|0|proj2|1
+proj2|@1|99|ae-monitor|2
+projx|@2|0|projx|1
+projx|@3|99|ae-monitor|2
+## panes
+proj2|@0|%0|79791|claude|claude:claude|main|0
+proj2|@1|%2|80918|bash|_watchdog||0
+proj2|@1|%1|80842|bash|_events||0
+projx|@2|%3|81504|claude|claude:claude|main|0
+projx|@3|%5|82428|bash|_watchdog||0
+projx|@3|%4|82339|bash|_events||0
+## clients

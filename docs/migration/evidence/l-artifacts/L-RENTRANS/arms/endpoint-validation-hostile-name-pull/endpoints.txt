@@ -1,0 +1,16 @@
+# BOTH ENDPOINTS. This host is both endpoints in this section: there is no
+# remote side, because no transport was reached. The local side is captured
+# above; the would-be remote side is the same filesystem and is captured by
+# the same manifests. Recorded so the single-endpoint scope is explicit.
+
+# sessions root, full listing
+.
+..
+.lifecycle.tf1.lock
+tf1
+
+# one level ABOVE the sessions root (the path a traversal name would reach)
+.
+..
+config
+sessions

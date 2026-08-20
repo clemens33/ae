@@ -1,0 +1,15 @@
+mode=local
+origin=/private/tmp/aelx/L-RENTRANS/rename-effects/w
+session=proj
+session_id=6aa972d8-e9f0-4182-ba58-8dd64fc39200
+work_dir=/private/tmp/aelx/L-RENTRANS/rename-effects/w
+layout=vertical
+config=/tmp/aelx/L-RENTRANS/rename-effects/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-RENTRANS/rename-effects/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-RENTRANS/rename-effects/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:73a29043-31f6-499e-9564-447b8538a28f
+agent_bin.main=claude
+watchdog=true

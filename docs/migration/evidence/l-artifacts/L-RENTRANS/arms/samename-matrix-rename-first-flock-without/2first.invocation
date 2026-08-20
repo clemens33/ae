@@ -1,0 +1,24 @@
+cwd: /tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-without/w
+argv (bg):
+  /tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-without/b/ae
+  rename
+  proj
+  proj2
+env:
+  HOME=/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-without/h
+  AE_HOME=/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-without/h/.ae
+  TMPDIR=/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-without/tp
+  TMUX_TMPDIR=/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-without/t
+  PATH=/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-without/b:/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-without/nb:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-without/cap/fake
+  AE_L_TMUX_LOG=/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-without/cap/tmux-argv.log
+  AE_L_HOOKS=b_rn_locked_entry:b_stop_one_pre_kill
+  AE_L_TRACE=/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-without/cap/hook-trace.tsv
+  AE_L_BLOCK=/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-without/ctl
+  AE_L_BLOCK_MAX=1800

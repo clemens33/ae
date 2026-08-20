@@ -1,0 +1,15 @@
+arm	samename-matrix-stop-first-flock-with
+section	L-RENTRANS (PARTIAL — transport-free subset under a BLOCKED transport gate)
+roster_ids	SC-1302
+construction	the SAME-NAME concurrency matrix, transport-free cell: the ordered pair (stop first, then the other) raced on ONE name under controller barriers, with flock with
+transport	NONE — this arm touches neither ssh nor rsync
+hook_patch_version	L-HOOKS-v4
+binary.sha256	c66fe2d897c5d3b354e1ee11663e17b63ba4077792ab2882c3317da8c082b308
+topology	proj + projx (prefix-sibling pair), one recorded server
+ordered_pair	stop -> rename
+flock	with
+first_rc	0
+second_rc	0
+first_barrier	b_stop_one_pre_kill
+barrier_bound_sec	60
+lock_trace	flock-spy.at-interleave.log and flock-spy.final.log

@@ -1,0 +1,6 @@
+69193     1 /opt/homebrew/bin/tmux new-session -d -s proj -c /private/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-with/w
+74103 68687 bash /tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-with/b/ae rename proj proj2
+70067 69193 /opt/homebrew/bin/bash /tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-with/h/.ae/sessions/proj/events-tail
+70178 69193 /opt/homebrew/bin/bash /tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-with/h/.ae/sessions/proj/watchdog _run
+71977 69193 /opt/homebrew/bin/bash /tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-with/h/.ae/sessions/projx/events-tail
+72059 69193 /opt/homebrew/bin/bash /tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-with/h/.ae/sessions/projx/watchdog _run

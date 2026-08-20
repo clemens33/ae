@@ -1,0 +1,10 @@
+--- /tmp/aelx/L-RENTRANS/rename-effects/cap/1pre.meta.proj.txt	2026-08-20 20:25:10
++++ /tmp/aelx/L-RENTRANS/rename-effects/cap/3post.meta.proj2.txt	2026-08-20 20:25:18
+@@ -1,6 +1,6 @@
+ mode=local
+ origin=/private/tmp/aelx/L-RENTRANS/rename-effects/w
+-session=proj
++session=proj2
+ session_id=6aa972d8-e9f0-4182-ba58-8dd64fc39200
+ work_dir=/private/tmp/aelx/L-RENTRANS/rename-effects/w
+ layout=vertical

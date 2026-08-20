@@ -1,0 +1,18 @@
+## socket	/tmp/aelx/L-RENTRANS/rename-effects/t/tmux-501/default
+## socket-exists	yes
+## sessions
+$0|proj|2|0|1787250308
+$1|projx|2|0|1787250312
+## windows
+proj|@0|0|proj|1
+proj|@1|99|ae-monitor|2
+projx|@2|0|projx|1
+projx|@3|99|ae-monitor|2
+## panes
+proj|@0|%0|72162|claude|claude:claude|main|0
+proj|@1|%2|72712|bash|_watchdog||0
+proj|@1|%1|72643|bash|_events||0
+projx|@2|%3|73422|claude|claude:claude|main|0
+projx|@3|%5|74317|bash|_watchdog||0
+projx|@3|%4|74250|bash|_events||0
+## clients

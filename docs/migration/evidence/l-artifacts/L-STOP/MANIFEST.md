@@ -24,11 +24,20 @@ network. Each arm's own disposable sandbox under `/tmp/aelx/L-STOP/<arm>/`.
 **L-HOOKS-v2 is L-HOOKS-v1 plus three stop-path barriers, nothing else**
 (`_harness/mkhooks2.py`): `b_stop_supervisor_entry` (the detached fleet supervisor, after
 its op-id validation and before it acts), `b_stop_before_await` (the caller, immediately
-before it waits on the durable per-target records), `b_stop_one_pre_kill` (a singular
-stop, under the lifecycle lock, before the kill). `_H` is unchanged: it returns 0
-immediately when `AE_L_HOOKS` is unset, and when active it only appends a barrier ordinal
-to a harness file and optionally blocks on a release file. It never reads, hashes or
-computes over product state.
+before it waits on the durable per-target records), `b_stop_one_pre_kill`.
+
+**Correction, added after L-RENTRANS exercised that third barrier.** In v2 the
+`b_stop_one_pre_kill` insertion landed INSIDE the fleet-only `expect_set == true` branch
+of `_stop_one_session`, so it could never fire for a SINGULAR stop, which is what its name
+describes. **No arm in this section used it** — the four v2 arms all use
+`b_stop_supervisor_entry` — so no capture here is affected, and v2's recorded hash is
+unchanged and still reproduces byte-for-byte from `_harness/mkhooks2.py`. The placement is
+corrected in L-HOOKS-v4, whose own manifest states the correction; v2 and v3 are
+deliberately left alone so their committed hashes stay reproducible.
+
+`_H` is unchanged in every version: it returns 0 immediately when `AE_L_HOOKS` is unset,
+and when active it only appends a barrier ordinal to a harness file and optionally blocks
+on a release file. It never reads, hashes or computes over product state.
 
 ### v2 admissibility — proven BEFORE any v2-hooked capture (`_admissibility/`)
 

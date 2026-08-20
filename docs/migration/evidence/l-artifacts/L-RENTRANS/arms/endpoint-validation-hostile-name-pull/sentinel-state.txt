@@ -1,0 +1,4 @@
+sentinel.name	SENTINEL_TOUCHED
+scan.root	/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-pull (recursive)
+count.before	0
+count.after	0

@@ -19,3 +19,6 @@ hooks-v2.generator	mkhooks2.py — v1's sites plus b_stop_supervisor_entry, b_st
 instrumented-v3.ae.sha256	b1b07709b01a66f7467333a151e641d2139b6950e58ca4cd53b47aa020afdfdd
 hooks-v3.patch.sha256	9243b21168b2efe1c031856c36651c8f5c230af269fa4e8029acff1563c7ad6c
 hooks-v3.generator	mkhooks3.py — v2 plus b_cp_resolver_entry, b_cp_reval_after_confirmation, b_cp_reval_after_wait
+instrumented-v4.ae.sha256	c66fe2d897c5d3b354e1ee11663e17b63ba4077792ab2882c3317da8c082b308
+hooks-v4.patch.sha256	edeca4c4d04675048fd45d9d5ca3106a2d5459d0cc156956e52c099122b5758e
+hooks-v4.generator	mkhooks4.py — v3's sites plus b_rn_locked_entry, b_rn_tmux_renamed, b_rn_dir_moved, b_rn_meta_updated, AND b_stop_one_pre_kill moved out of the fleet-only branch (placement correction; v2/v3 left unchanged so their committed hashes stay reproducible)

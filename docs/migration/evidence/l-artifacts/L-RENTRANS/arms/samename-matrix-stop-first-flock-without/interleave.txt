@@ -1,0 +1,2 @@
+first.barrier	b_stop_one_pre_kill.7172.1
+second.op	ae rename proj proj2 (the SAME name, while the stop is held at its barrier)

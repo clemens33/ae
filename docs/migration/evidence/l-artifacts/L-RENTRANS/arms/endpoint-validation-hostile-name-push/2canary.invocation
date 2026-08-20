@@ -1,0 +1,23 @@
+cwd: /tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-push/w
+argv:
+  /tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-push/b/ae
+  transfer
+  tf1
+  nosuchpeer.invalid
+  -y
+env:
+  HOME=/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-push/h
+  AE_HOME=/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-push/h/.ae
+  TMPDIR=/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-push/tp
+  TMUX_TMPDIR=/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-push/t
+  PATH=/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-push/b:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+  TERM=xterm-256color
+  LANG=en_US.UTF-8
+  LC_ALL=en_US.UTF-8
+  TZ=UTC
+  SHELL=/opt/homebrew/bin/bash
+  AE_FAKE_TOOL=fake
+  AE_FAKE_LOG_DIR=/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-push/cap/fake
+  AE_L_SSH_LOG=/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-push/cap/ssh.log
+  AE_L_RSYNC_LOG=/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-push/cap/rsync.log
+  AE_L_TMUX_LOG=/tmp/aelx/L-RENTRANS/endpoint-validation-hostile-name-push/cap/tmux-argv.log

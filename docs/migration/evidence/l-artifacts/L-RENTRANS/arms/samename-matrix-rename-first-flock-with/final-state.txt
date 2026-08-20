@@ -1,0 +1,12 @@
+# final state
+## tmux sessions
+$0|proj2
+$1|projx
+
+## session dirs
+proj2
+projx
+
+## meta session= per dir
+/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-with/h/.ae/sessions/proj2/meta: session=proj2
+/tmp/aelx/L-RENTRANS/samename-matrix-rename-first-flock-with/h/.ae/sessions/projx/meta: session=projx

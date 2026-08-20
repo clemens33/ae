@@ -1,0 +1,15 @@
+mode=local
+origin=/private/tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-without/w
+session=proj
+session_id=2558d3e4-1e64-4713-8b16-85d1f98c1960
+work_dir=/private/tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-without/w
+layout=vertical
+config=/tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-without/h/.ae/config
+main_pane=%0
+ae_path=/tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-without/b/ae
+ae_version=0.2.1
+tmux_server=/private/tmp/aelx/L-RENTRANS/samename-matrix-stop-first-flock-without/t/tmux-501/default
+tmux_server_kind=socket
+agent.main=claude:claude:b152c0a8-03c5-4598-8a39-1625496bce53
+agent_bin.main=claude
+watchdog=true

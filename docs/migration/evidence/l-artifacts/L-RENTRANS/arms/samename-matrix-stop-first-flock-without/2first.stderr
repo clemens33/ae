@@ -1,0 +1,2 @@
+note: flock not found — lifecycle locking degraded (start/stop races unguarded)
+Error: cannot verify 'proj' was killed (its tmux server is unreachable) — state preserved.

@@ -1,0 +1,25 @@
+# equivalence compare: K: SSH+RSYNC delegate-and-log shim equivalence (transfer fixture, valid name, shims vs no shims)
+# A=/tmp/aelx/EQUIV/tfr-noshim01
+# B=/tmp/aelx/EQUIV/tfr-shimon01
+
+## 1launch.rc  A=1 B=1  SAME
+## 1launch.stdout normalized diff
+## 1launch.stderr normalized diff
+
+## 1blaunch.rc  A=0 B=0  SAME
+## 1blaunch.stdout normalized diff
+## 1blaunch.stderr normalized diff
+
+## 2op.rc  A=1 B=1  SAME
+## 2op.stdout normalized diff
+## 2op.stderr normalized diff
+
+## 3op.rc  A=1 B=1  SAME
+## 3op.stdout normalized diff
+## 3op.stderr normalized diff
+
+## m.before STRUCTURAL diff (path/type/mode/link)
+
+## m.after STRUCTURAL diff (path/type/mode/link)
+
+## comparator verdict: NO_DIFFERENCES
