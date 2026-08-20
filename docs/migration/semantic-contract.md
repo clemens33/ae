@@ -206,23 +206,32 @@ helpers/AGENTS.md helper table (gate correction: these signatures ARE documented
 code-observation was wrong for them); Empirical: pending; Conflict: none:
 
 **SC-212a — `goal [text|--clear]` signature.**
-**SC-212b — `memo add [--topic t]` / `memo read [--topic t]` / `memo tail [n]`
-signatures.**
+**SC-212b — `memo add [--topic t] <text>` signature.**
 **SC-212c — `requests [mine|inbox|all]` signature.**
-**SC-212d — `peek <agent> [lines]` (+ `peak` alias) signature, default 80 / max 2000.**
+**SC-212d — `peek <agent> [lines]` signature.**
 **SC-212e — `agents [--all]` signature.**
 **SC-212f — `focus <agent>` signature.**
-**SC-212g — `interrupt <agent> [message]` signature (no-message form cancels only).**
+**SC-212g — `interrupt <agent> [message]` signature.**
 **SC-212h — `spawn <alias:name> [prompt]` signature.**
-**SC-212i — `retire <agent|pane-id>` signature (spawned agents only).**
-**SC-212j — `say <text|stdin>` signature → chat event.**
+**SC-212i — `retire <agent|pane-id>` signature.**
+**SC-212j — `say` accepts args or piped stdin.**
+**SC-212k — `memo read [--topic t]` signature.**
+**SC-212l — `memo tail [n]` signature.**
+**SC-212m — `peak` is an alias of `peek`.**
+**SC-212n — peek default is 80 lines.**
+**SC-212o — peek maximum is 2000 lines.**
+**SC-212p — `interrupt` with no message cancels only.**
+**SC-212q — `retire` acts on spawned agents only.**
+**SC-212r — `say` emits a chat event.**
+**SC-212s — `state <working|waiting-user|blocked|done> [reason]` signature** (gate
+correction: documented at AGENTS.md@72c7293:96 — not code-observation).
 
 Code-observed refusal/malformed modes — one head per helper
 (`authority=code-observation`; Empirical: pending probe; Conflict: pending seat
 closure; UNCLASSIFIED):
 
-**SC-211a — `state` signature and refusal modes** (signature not in the frozen helper
-table's documented set — whole surface code-observed).
+**SC-211a — `state` refusal/malformed modes** (the signature is SC-212s; only the
+residue is code-observed).
 **SC-211b — `goal` refusal/malformed modes.**
 **SC-211c — `memo` refusal/malformed modes.**
 **SC-211d — `requests` refusal/malformed modes.**
@@ -248,10 +257,12 @@ Conflict: none.
 **SC-211n — `events-tail` query surface.** `authority=code-observation` — snapshot cut
 is SC-1306e. Empirical: census-1 D03. Conflict: pending seat closure. UNCLASSIFIED.
 
-**SC-211o — `_register-sid` surface.** Bucket 2 — Codex's first-task self-registration
-of its session UUID (gate correction: SC-834a is recover-pending, not this).
-Authority: commands.md:713-715 (documents purpose + caller). Empirical: census-1 D13.
-Conflict: none.
+**SC-211o — Codex session identity is registered positively and slot-bound.** Bucket 2
+— outcome-level (gate correction: commands.md calls `_register-sid` INTERNAL, so the
+executable name is mechanism, not promise): the Codex UUID is registered/captured from
+a positively owned, slot-bound signal. The `_register-sid` shim itself is empirical
+mechanism whose retirement rides DR-006. Authority: commands.md:711-723 (outcome) +
+DR-005/SC-704b (ownership rule). Empirical: census-1 D13. Conflict: none.
 
 **SC-211p — `_lib` name resolution grammar.** Bucket 2 — exact `alias:name`,
 alias-only when unique, bare name, `%pane-id`, and `@session:agent` all resolve; the
@@ -328,10 +339,9 @@ write ownership stated at the flip commit. Authority: DR-001. Empirical: n/a
 (successor design). Conflict: DR-001.
 
 **SC-400c — generated-logic helpers retire from the written layout at P2.** Bucket 4 —
-governed by the epic/#76, not DR-001 (gate split): helpers become thin shims; the
-generated-logic class leaves the session dir's written set. Authority: epic #79 P2 +
-#76. Empirical: n/a (successor design). Conflict: none (phase plan, not a DR — the
-epic itself is the ruling).
+**DR-006** (gate ruling: every b4 carries a DR; the epic is authority, not a waiver).
+Authority: DR-006 + epic #79 P2 + #76. Empirical: n/a (successor design).
+Conflict: DR-006.
 
 **SC-401a — the archive payload is the five-part set.** Bucket 2 — generated `meta`,
 rendered `digest.md`, `memo.tsv`, `events.jsonl`, `messages/*` bodies (#48 format;
@@ -1353,8 +1363,13 @@ Externally visible atomicity, one head per surface (each:
 closure-map gate designs; Conflict: pending seat closure; UNCLASSIFIED):
 
 **SC-1303 — rename: what a concurrent observer may see mid-operation.**
-**SC-1304a — transfer push direction: mid-operation observability at the destination.**
-**SC-1304b — transfer pull direction: mid-operation observability at the source.**
+**SC-1304a — transfer push: the source is stopped/intact throughout.**
+**SC-1304b — transfer push: the remote destination may hold partial/mixed state
+mid-operation.**
+**SC-1304c — transfer pull: the remote source is stopped/intact throughout.**
+**SC-1304d — transfer pull: the local destination may hold partial/mixed state
+mid-operation** (frozen ae:11443-11457 + census-2:329-345 — gate correction: the
+data-residue surface is the destination, per direction).
 **SC-1305 — compact: mid-operation observability.**
 **SC-1306a — `list` snapshot cut under concurrent writes.**
 **SC-1306b — `status` snapshot cut.**
@@ -1491,6 +1506,35 @@ bar for DR completeness: the wider the divergence, the fuller the record.
 | DR-003 | At-least-once outbound Telegram delivery | RATIFIED (both seats, 2026-08-20) |
 | DR-004 | Durable inbox, coalesced notification | RATIFIED (both seats, 2026-08-20) |
 | DR-005 | Exact identity or loud refusal | RATIFIED (both seats, 2026-08-20) |
+| DR-006 | Helpers become versioned Rust + thin shims | RATIFIED (both seats, 2026-08-20) |
+
+```
+DR-006 Helpers become versioned Rust + thin shims
+- affected SC ids: SC-400c; the S3 helper-surface rows (their CLI signatures are the
+  compatibility contract the shims preserve); SC-211o's mechanism note; interacts with
+  SC-1001 (phase-owned asset migration) and SC-1004 (atomic publication survives as
+  the shim-publication rule).
+- context / current IS: helper LOGIC is generated bash (declare-f emission) per
+  session; #76 proved the drift class (a session driven through its own stale
+  helpers); the epic retires generated logic at P2.
+- decision / binding outcomes: helper business logic moves into the versioned Rust
+  binary; sessions keep thin generated SHIMS that exec it. (1) SHIM COMPATIBILITY —
+  every documented helper CLI signature (S3 rows) is preserved by the shim surface;
+  (2) ATOMIC REFRESH/MIGRATION — shim publication stays atomic per artifact
+  (SC-1004), and a phase upgrade migrates sessions without a broken intermediate
+  state; (3) BINARY-PATH/VERSION OWNERSHIP — the shim addresses an installed,
+  versioned binary at a known path; version skew between a session's shims and the
+  binary is DETECTED and reported, never silently divergent (#76's class, closed
+  structurally); (4) ROLLBACK BOUNDARY — reversible until the P2 phase gate passes,
+  per the epic rollback rule; the flip commit names the revert.
+- trade-offs accepted: a binary dependency for every helper call (ms startup measured
+  acceptable per epic); the generated-logic auditability moves from emitted bash to
+  the binary's tests.
+- authority: epic #79 (strangler strategy, P2 phase), #76 (the drift-class finding),
+  gate ruling family-gate-3 (the b4-requires-DR rule).
+- seats + date: fable5:lead (record) + gpt56sol:colead (required the record,
+  content per their gate), 2026-08-20.
+```
 
 ```
 DR-005 Exact identity or loud refusal
