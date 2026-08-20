@@ -132,22 +132,29 @@ consuming operation owns its own artifact publication and ports the chokepoint i
 
 - **grouping provisional** (grouped-cutover rule): stays one record ONLY if evidence
   proves one shared store + one lock protocol + one atomic cutover; else splits
-- effects: request records, events.jsonl appends, pane delivery
+- effects (colead row-fill, census-backed): there is NO request table at 72c7293 —
+  request authority is `events.jsonl` + `messages/*` body artifacts. ask/review:
+  deliver first, store body, THEN append the request event (the #66
+  delivered-before-logged defect). reply: reads events UNLOCKED via `ae_find_request`,
+  then the same deliver/body/event sequence
 - current writer/call path: `helper_ask_main`/`helper_review_main`/`helper_reply_main`,
-  `ae_tracked_send`, `ae_find_request`, slot verification
-- locks (ordered): TBD (flock serialization on send + request store)
-- atomicity boundary: TBD (request logged vs delivered vs replied; each #66 finding lands
-  as its own contract row)
+  `ae_tracked_send`, `ae_find_request`
+- locks (ordered): per delivery — target fd9 (held for paste, released), then unlocked
+  body write, then event fd8
+- atomicity boundary: delivered-but-unlogged and body-without-event residues are real
+  (#66 rows); unlocked read in `ae_find_request` can race an append
 - current owner: bash
 - planned owner/fate: **rust at P2**
 
 ### D06 — plain `send` (untracked delivery)
 
-- effects: pane delivery (defer on busy/human-typed, verify submit, fail loud), events —
-  TBD whether send emits
+- effects: pane delivery (defer on busy/human-typed, verify submit, fail loud),
+  `messages/*` body file, event append (send DOES emit — census-verified)
 - current writer/call path: `helper_send_main`
-- locks (ordered): TBD (flock on pane delivery)
-- atomicity boundary: deliver-or-fail-loud promise (contract rows in S3)
+- locks (ordered): target fd9 held for paste → RELEASED → unlocked body write → event fd8
+  (census ae:14235–14283)
+- atomicity boundary: deliver-or-fail-loud promise (contract rows in S3); crash after
+  release leaves delivered-pane + body-without-event residue
 - current owner: bash
 - planned owner/fate: **rust at P2** — one operation including its tmux calls (Rust calls
   tmux directly)
@@ -216,13 +223,19 @@ consuming operation owns its own artifact publication and ports the chokepoint i
 - current owner: bash
 - planned owner/fate: TBD — candidate **stays bash** (pure tmux glue)
 
-### D13 — `_register-sid` (codex post-launch sid capture)
+### D13 — codex SID capture (staging + async reconciliation, one transaction)
 
-- effects: meta write (session id), events TBD
-- current writer/call path: `helper_register_sid_main`
-- locks (ordered): TBD
-- atomicity boundary: TBD
-- current owner: bash
+- effects (two call paths — colead correction, lead-verified): (1) STAGING:
+  `helper_register_sid_main` writes `codex.<slot>.sid` UNLOCKED, in-place
+  (ae:14819) — it never writes meta, it only reads it; (2) ASYNC RECONCILIATION: a
+  separate capture process consumes the staging file (ae:1829ff) and rewrites
+  `agent.<slot>` under meta.lock; watchdog recovery may emit a `recover` event
+- current writer/call path: `helper_register_sid_main` (staging) + the launch-side async
+  capture process (reconciliation)
+- locks (ordered): staging = none; reconciliation = meta.lock
+- atomicity boundary: staging file can exist unconsumed (process died between);
+  unlocked in-place staging write can be torn — contract row candidates
+- current owner: bash (both paths — the domain is the full transaction; it flips whole)
 - planned owner/fate: **rust at P2**
 
 ### D14 — helper generation (split by artifact class; gate finding fe7cfc2e, blocker 3)
