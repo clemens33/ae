@@ -343,6 +343,15 @@ column-drop arm anchored on a pre-change row, corrupted the original, and passed
 because the generator's `rc 2` was never inspected. A red arm that passes because the
 generator crashed is a red arm that tested nothing.
 
+**Point the same rule at the INSTRUMENT, not only the product.** A seed that does not land
+is indistinguishable from a check that does not fire, and it errs in **both** directions
+depending on how the harness is coded. A seat red-proving someone else's checker seeded a
+pattern matching zero lines; nothing was inserted, the tool correctly reported clean, and
+the reading available at that instant was *"the checker missed it"* — **a false alarm about
+a working tool.** The column-drop arm above is the same non-landing seed producing the
+opposite error, a **false pass**. One discipline covers both: **seed, DIFF to confirm the
+seed is present, then run.**
+
 ### A green gate a reader cannot reproduce is a claim, not evidence
 
 The longest-running defect of the cluster, and the one that hid best: a worker ended every
