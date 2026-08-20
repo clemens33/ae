@@ -1,0 +1,53 @@
+## A-H4 — SC-211p, `_lib` name resolution (generated from the captures)
+
+Each row is one input class from the executor list, invoked through the generated
+`_lib`'s own `ae_resolve` and captured with the resolver's output contract
+(ae@72c7293:12983-12989). Nothing here states what any reading means.
+
+`canary` is this case's capture-path control: known stdout, known stderr, known rc
+through the exact wrapper, fired before AND after the measured invocation.
+
+  case                              input               rc   pane    agent             canary 
+  --------------------------------  ------------------  ---  ------  ----------------  -------
+  h4-c01-pane-live                  %0                  0    %0      cl:lead           2/2    
+  h4-c02-pane-dead                  %4                  0    %4                        2/2    
+  h4-c03-xsession-ok                @th5b:cl:remote     0    %7      @th5b:cl:remote   2/2    
+  h4-c04-xsession-noagent           @th5b:cl:nosuch     1                              2/2    
+  h4-c05-xsession-nosess            @th5zz:cl:lead      1                              2/2    
+  h4-c06-at-nocolon                 @th5b               1                              2/2    
+  h4-c07-at-empty-sess              @:lead              1                              2/2    
+  h4-c08-at-empty-agent             @th5b:              1                              2/2    
+  h4-c09-bare-unique                solo                0    %1      cx:solo           2/2    
+  h4-c10-bare-ambiguous             lead                1                              2/2    
+  h4-c11-alias-unique               zz                  0    %3      zz:only           2/2    
+  h4-c12-alias-ambiguous            cx                  1                              2/2    
+  h4-c13-exact-present              cx:solo             0    %1      cx:solo           2/2    
+  h4-c14-name-absent                cl:nosuch           1                              2/2    
+  h4-c15-empty-string               (empty)             1                              2/2    
+
+## stderr, verbatim, per case that produced any
+
+  h4-c04-xsession-noagent
+      Error: agent 'cl:nosuch' not found in session 'th5b'
+  h4-c05-xsession-nosess
+      Error: session 'th5zz' not found
+  h4-c06-at-nocolon
+      Error: cross-session target must be @session:agent, got '@th5b'
+  h4-c07-at-empty-sess
+      Error: cross-session target must be @session:agent
+  h4-c08-at-empty-agent
+      Error: cross-session target must be @session:agent
+  h4-c10-bare-ambiguous
+      Error: ambiguous name 'lead' in session 'th5a' — use alias:name format
+  h4-c12-alias-ambiguous
+      Error: ambiguous name 'cx' in session 'th5a' — use alias:name format
+  h4-c14-name-absent
+      Error: agent 'cl:nosuch' not found in session 'th5a'
+  h4-c15-empty-string
+      Error: agent '' not found in session 'th5a'
+
+## distinct readings
+
+  distinct rc values: ['0', '1']
+  cases resolving to a pane: 6 of 15
+  distinct stderr first lines: 8

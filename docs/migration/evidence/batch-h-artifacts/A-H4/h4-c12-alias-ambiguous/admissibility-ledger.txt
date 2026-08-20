@@ -1,0 +1,14 @@
+seq=001	utc=2026-08-20T22:06:44Z	epoch=1787263604	event=case-OPEN	arm=A-H4	case=h4-c12-alias-ambiguous	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T22:06:44Z	epoch=1787263604	event=rows	rows=SC-211p	surface=_lib ae_resolve	fixture=H5 (two live sessions, one server)
+seq=003	utc=2026-08-20T22:06:44Z	epoch=1787263604	event=fixture	session_a=th5a	session_b=th5b	live_pane=%0	dead_pane=%4
+seq=004	utc=2026-08-20T22:06:44Z	epoch=1787263604	event=source-state-captured	artifact_sha256=ba65e175d734ac1e97b8a435d767d207be7c06b7444cd1494e0d5f7759efdf81	paths=/tmp/aecx/h/h5/home/.ae/sessions/th5a/_lib /tmp/aecx/h/h5/home/.ae/sessions/th5a/meta
+seq=005	utc=2026-08-20T22:06:44Z	epoch=1787263604	event=env-equivalence	helper_sha256=afba2f5676348566e39cb98becf9470ad1957b3ada7dcc5d6136542aa72e45d2	controller_sha256=a6275ba6ba81b7c3495ecad10780dd5f3f22c6ac2f925d31fdd7846ff5725094	diff_lines=6
+seq=006	utc=2026-08-20T22:06:44Z	epoch=1787263604	event=measured-input	input=cx	note=an alias carried by two agents
+seq=007	utc=2026-08-20T22:06:45Z	epoch=1787263605	event=invocation	label=canary-pre-h4-c12-alias-ambiguous	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=dc97c57c77060e8a2a21d039185c485a7a308eb5d0fa09b183d88f9246f92c48	stderr_sha256=27c30dd656b82bc54eb036e3f85d1a3bec8468f784cd9fa1eeb88fc2a30d17ae
+seq=008	utc=2026-08-20T22:06:45Z	epoch=1787263605	event=canary	when=pre	tag=h4-c12-alias-ambiguous	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=009	utc=2026-08-20T22:06:45Z	epoch=1787263605	event=PRODUCT-START	label=20
+seq=010	utc=2026-08-20T22:06:45Z	epoch=1787263605	event=invocation	label=resolve	rc=1	elapsed_s=0	timed_out=no	stdout_sha256=095af0bdbe28e4eba1c1f41b002fa73faea24e1e00cc6f0c25bcca6a1149cb13	stderr_sha256=6ca067d70e31fb0402dd3208a863170681ddd6ef081b60eff492e3e7eb5edd43
+seq=011	utc=2026-08-20T22:06:45Z	epoch=1787263605	event=PRODUCT-COMPLETE	label=20
+seq=012	utc=2026-08-20T22:06:46Z	epoch=1787263606	event=invocation	label=canary-post-h4-c12-alias-ambiguous	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=c8b933750e5b48aa2c86b4c167a470d8b3163abd9d6cdb6771f960731f4341d7	stderr_sha256=b31d824df83bf4e3db849bb51c50c09ff506a0e7749eaadd77d364fa6a9ca7da
+seq=013	utc=2026-08-20T22:06:46Z	epoch=1787263606	event=canary	when=post	tag=h4-c12-alias-ambiguous	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=014	utc=2026-08-20T22:06:46Z	epoch=1787263606	event=case-CLOSE	invocations_sha256=e9ddbfcc17a9090eabe17db56de093fc977fc5aea59d50da35c70034cf3e29ed

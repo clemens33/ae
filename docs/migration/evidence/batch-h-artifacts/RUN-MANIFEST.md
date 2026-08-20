@@ -28,6 +28,15 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 | `_harness/hfix.sh` | `1227077c8691e481c0f5074b847e113acf4a963787ec875e238c7fe7dd2e61a0` | 2026-08-20T21:51:16Z |
 | `_harness/arm-h4.sh` | `5944b88c92acd4752addffabe9705ab087ff6c430bed0ea1d0bf6d8040693009` | 2026-08-20T21:51:16Z |
 
+### A3 — `_harness/derive-h4-record.py` registered after A-H4's run
+
+- new sha256: `c7c96f2a2da3c67703b11a4fe6f8dd101b70146d2f7a7556fdb996b11f15f15f`
+- what it is: a REPORTING script that reads A-H4's committed captures and emits
+  `resolution-record.txt`. It records no new observation and cannot change one.
+- why it is registered anyway: pre-registration is about the capture program, and a
+  reporting script that runs after the captures exist is outside it — but it is committed
+  and hashed here so a seat reading the record can regenerate it and get the same bytes.
+
 ## Frozen source
 
 `72c7293`, verified by hash at every case open and recorded in each case's ledger.

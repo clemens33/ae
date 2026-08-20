@@ -1,0 +1,6 @@
+agent.main=cl:lead:pending
+agent.worker.0=cx:solo:pending
+agent.worker.1=cx:other:pending
+agent.worker.2=zz:only:pending
+agent.worker.3=qq:spare:pending
+agent.spawned.0=cx:lead:pending

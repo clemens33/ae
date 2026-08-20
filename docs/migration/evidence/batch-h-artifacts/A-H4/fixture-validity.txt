@@ -1,0 +1,26 @@
+## fixture validity — what the roster and the server actually carry
+session_a=th5a
+session_b=th5b
+live_pane=%0
+dead_pane=%4
+## session A roster (meta)
+agent.main=cl:lead:pending
+agent.worker.0=cx:solo:pending
+agent.worker.1=cx:other:pending
+agent.worker.2=zz:only:pending
+agent.worker.3=qq:spare:pending
+agent.spawned.0=cx:lead:pending
+## session B roster (meta)
+agent.main=cl:remote:pending
+## panes on the server
+th5a|%0|cl:lead
+th5a|%1|cx:solo
+th5a|%2|cx:other
+th5a|%3|zz:only
+th5a|%6|cx:lead
+th5a|%5|_events
+th5b|%7|cl:remote
+th5b|%8|_events
+## spawn stdout
+Spawned cx:lead in pane %6
+## spawn stderr
