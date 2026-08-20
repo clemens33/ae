@@ -664,16 +664,19 @@ verdict.
 
 **classified_by (S6 gate — EXACT FROZEN SET, range form retired): SC-500, SC-501,
 SC-502, SC-503a, SC-503b, SC-504a, SC-504b, SC-505a, SC-505b, SC-506, SC-507a,
-SC-507b, SC-507c, SC-507d, SC-509, SC-510a, SC-510b, SC-510d, SC-511a, SC-511b,
-SC-511c, SC-512, SC-513a, SC-513b, SC-513c, SC-514, SC-515a, SC-515b, SC-515c,
-SC-516, SC-517a, SC-517b, SC-517c — fable5:lead + gpt56sol:colead, 2026-08-20.
-SC-508 is explicitly UNCLASSIFIED until its evidence probe + joint closure.
-PROCESS RULE (colead, declaration-normalization ruling): a range or family mark
-is FROZEN to the exact row set existing at its ruling; rows added inside the
-range later NEVER inherit the mark — each carries its own classified_by or none.
-SC-509b, SC-510c, SC-510e, SC-510f carry their OWN per-row marks and are
-deliberately not enumerated here, so this set fabricates no inheritance either
-way.**
+SC-507b, SC-507c, SC-507d, SC-509, SC-510a, SC-510b, SC-510c, SC-510d, SC-511a,
+SC-511b, SC-511c, SC-512, SC-513a, SC-513b, SC-513c, SC-514, SC-515a, SC-515b,
+SC-515c, SC-516, SC-517a, SC-517b, SC-517c — fable5:lead + gpt56sol:colead,
+2026-08-20. SC-508 is explicitly UNCLASSIFIED until its evidence probe + joint
+closure. PROCESS RULE (colead, declaration-normalization ruling): a range or
+family mark is FROZEN to the exact row set existing at its ruling; rows added
+inside the range later NEVER inherit the mark — each carries its own
+classified_by or none. Historical-membership audit (colead): SC-510c WAS present
+at the S6 gate (76722eb fold, f4e93ef ratification) and is enumerated for
+exactness — its later slice-1 Q3 amendment is governed by its own per-row
+re-mark, which this historical mark does not authorize; SC-509b post-dates the
+gate (slice-1 Q5) and is excluded — its own per-row mark governs; SC-510e/f
+(slice-1d) likewise carry their own marks.**
 
 **SC-500 — compact stdout byte format.** Bucket 2 — `Archived`, `Archive:`, `Digest:`,
 `Recovery:`: four lines, that order, nothing else, and EMPTY unless the boundary was
