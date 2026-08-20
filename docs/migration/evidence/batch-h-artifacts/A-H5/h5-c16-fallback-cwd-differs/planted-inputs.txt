@@ -1,4 +1,4 @@
   meta line appended: launch_id.main=TOK-NOBODY-CARRIES-THIS
-  meta line appended: launch_time.main=1787264662
-  planted 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=ad39295c857bdd19860c2040cbad9f184e7c646a5555b396438ed10009a140d8
-    first_line={"id":"aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa","cwd":"/tmp","marker":"fallback-cwd-differs"}
+  meta line appended: launch_time.main=1787265670
+  planted 2026/08/20/cand-a.jsonl mtime=1787266210 sha256=d6a90041a63e77899c12b1263c61a68f2365ff93df80f9a8a3e5a2c25eb41d25
+    first_line={"id":"aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa","cwd":"/tmp","marker":"fallback"}

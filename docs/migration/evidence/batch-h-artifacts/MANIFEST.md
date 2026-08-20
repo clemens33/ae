@@ -12,7 +12,7 @@ accepts it.
 |---|---|
 | A-H4 — SC-211p, `_lib` name resolution | COMPLETE — 15 case runs |
 | A-H5 — SC-211o, codex identity registration | COMPLETE — 16 case runs |
-| A-H3 — the argument surface | not started |
+| A-H3 — the argument surface (SC-211a-j, SC-212c) | COMPLETE — 72 case runs |
 | A-H1 / A-H2 — dispatch, version, steward | not started |
 | A-H8 — the long-lived query | not started |
 | SC-211l — under its containment | not started |
@@ -86,3 +86,29 @@ ae:14793). `h5-c15` / `h5-c16` are the CWD FALLBACK pair: a token no candidate c
 the fallback is reached and cwd is what decides. Every other byte and time is held constant
 within each pair. `RUN-MANIFEST.md` A8-A10 carry how they got there, including a reading
 that moved in a case the amendment did not name.
+
+## A-H3 — the argument surface
+
+Rows: SC-211a through SC-211j and SC-212c. Seventy-two cases across ten generated helpers,
+one per input class in the executor brief, each a single invocation bracketed by
+capture-path canaries. `say` is not here: SC-211l runs under its own containment section.
+
+Each helper group has its OWN launched sandbox, so one group's mutations cannot become
+another group's precondition. Cases inside a group run in the listed order and some of them
+write; the order is part of the fixture and is recorded in every ledger.
+
+Every case records the session directory's own byte listing before and after the
+invocation (`session-bytes.before.tsv`, `.after.tsv`, `.diff.txt`) — several of these
+helpers write, and a refusal that wrote something is a different reading from a refusal
+that did not.
+
+Four cases need the controller manipulation their input class names: an unreadable `meta`
+(mode 000), an emptied `meta`, a malformed `config`, and a pane respawned as a plain shell.
+Each is applied immediately before its case and reverted after. `RUN-MANIFEST.md` A11.
+
+## Ledger chronology
+
+Every ledger in this tree passes `../gate/check-ledger-chronology.py`: sequence identities
+unique and monotonic. The check exists because they were not — see `RUN-MANIFEST.md` A12,
+where a subshell introduced to fix an invocation directory silently broke the ordering
+record in two arms, with presence and hash both passing.

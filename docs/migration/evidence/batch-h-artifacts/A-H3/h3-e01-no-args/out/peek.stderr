@@ -1,0 +1,3 @@
+Usage: peek <agent-name|pane-id|@session:agent> [lines]
+  Examples: peek codex:reviewer
+           peek @my-feature:claude:lead 50

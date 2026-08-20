@@ -1,0 +1,13 @@
+seq=001	utc=2026-08-20T22:53:39Z	epoch=1787266419	event=case-OPEN	arm=A-H3	case=h3-e04-nonnumeric-count	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T22:53:39Z	epoch=1787266419	event=rows	rows=SC-211x	helper=peek	group_session=th3e
+seq=003	utc=2026-08-20T22:53:39Z	epoch=1787266419	event=surface-state-captured	artifact_sha256=aab4297d129a4371c8e1a70eb6dcc77149689cac240a79ca223d245089127743	paths=/tmp/aecx/h/h3e/home/.ae/sessions/th3e/peek /tmp/aecx/h/h3e/home/.ae/sessions/th3e/_lib
+seq=004	utc=2026-08-20T22:53:40Z	epoch=1787266420	event=measured-input	helper=peek	argv=cx:worker abc	invocation_cwd=/tmp/aecx/h/h3e/work
+seq=005	utc=2026-08-20T22:53:40Z	epoch=1787266420	event=invocation	label=canary-pre-h3-e04-nonnumeric-count	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=14b1a61131e132b7f7a43cbe4ff0b9d2a8dd7130a2ba48dd26451d3c21c66803	stderr_sha256=b8531099e27d9c439bd0c84667d5ec460aa2cf8d26410041dc0a84a8e1976ca4
+seq=006	utc=2026-08-20T22:53:40Z	epoch=1787266420	event=canary	when=pre	tag=h3-e04-nonnumeric-count	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=007	utc=2026-08-20T22:53:40Z	epoch=1787266420	event=PRODUCT-START	label=25
+seq=008	utc=2026-08-20T22:53:41Z	epoch=1787266421	event=invocation	label=peek	rc=1	elapsed_s=1	timed_out=no	stdout_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	stderr_sha256=edf16c64006479e3c9c6fb15aef530be036c0432ce4bd324ad23741cb321e8b9
+seq=009	utc=2026-08-20T22:53:41Z	epoch=1787266421	event=PRODUCT-COMPLETE	label=25
+seq=010	utc=2026-08-20T22:53:41Z	epoch=1787266421	event=invocation	label=canary-post-h3-e04-nonnumeric-count	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=9095eb443212b09fcaf6a8e31c1ca2b1f9a5d46ce60885c201ec6bc76240fb7e	stderr_sha256=083b611ea9a983dd7870c41dd239227a93a0e14c7f64695c200b803c4e576ac8
+seq=011	utc=2026-08-20T22:53:41Z	epoch=1787266421	event=canary	when=post	tag=h3-e04-nonnumeric-count	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=012	utc=2026-08-20T22:53:42Z	epoch=1787266422	event=write-record	changed_lines=0	before_sha256=037f22fbd75f140545d5b8f81bbe5174c42ef698798f5b750954de19f07baf99	after_sha256=037f22fbd75f140545d5b8f81bbe5174c42ef698798f5b750954de19f07baf99
+seq=013	utc=2026-08-20T22:53:42Z	epoch=1787266422	event=case-CLOSE	invocations_sha256=d6033fc6b5dbec11ae9a2e3d9108dffd394f2eff7d6ff053cb37901a51f0a29b

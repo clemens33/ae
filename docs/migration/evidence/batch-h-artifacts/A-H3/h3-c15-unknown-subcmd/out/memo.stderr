@@ -1,0 +1,1 @@
+Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]

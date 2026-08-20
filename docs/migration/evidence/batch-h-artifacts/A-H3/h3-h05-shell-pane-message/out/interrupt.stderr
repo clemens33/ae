@@ -1,0 +1,1 @@
+ae: interrupt of cx:worker REFUSED — target pane is a shell, not a running agent; a stray Enter would EXECUTE the message as a shell command. Re-launch the agent, then re-send.

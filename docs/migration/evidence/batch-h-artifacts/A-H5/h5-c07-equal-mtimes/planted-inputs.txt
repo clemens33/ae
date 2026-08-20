@@ -1,5 +1,5 @@
-  meta line appended: launch_time.main=1787264662
-  planted 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=324ea703dfc8f7408efe365254a5f51768fcbe0a2e3ab70de470817245312896
+  meta line appended: launch_time.main=1787265670
+  planted 2026/08/20/cand-a.jsonl mtime=1787266210 sha256=324ea703dfc8f7408efe365254a5f51768fcbe0a2e3ab70de470817245312896
     first_line={"id":"aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa","cwd":"/tmp/aecx/h/h6/work","marker":"equal-a"}
-  planted 2026/08/20/cand-b.jsonl mtime=1787265202 sha256=35f2272996bf1e2e47619cd48309272f77dd30b6dd144f93b9bdcf435f2129ec
+  planted 2026/08/20/cand-b.jsonl mtime=1787266210 sha256=35f2272996bf1e2e47619cd48309272f77dd30b6dd144f93b9bdcf435f2129ec
     first_line={"id":"bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb","cwd":"/tmp/aecx/h/h6/work","marker":"equal-b"}

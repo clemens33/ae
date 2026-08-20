@@ -1,4 +1,4 @@
   meta line appended: launch_id.main=TOK-MATCH
-  meta line appended: launch_time.main=1787264662
-  planted 2026/08/20/cand-a.jsonl mtime=1787265202 sha256=e237be7c371a12a12d87fc363b8b187e58f3a8f98f3f26135957aa009d603446
+  meta line appended: launch_time.main=1787265670
+  planted 2026/08/20/cand-a.jsonl mtime=1787266210 sha256=e237be7c371a12a12d87fc363b8b187e58f3a8f98f3f26135957aa009d603446
     first_line={"id":"aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa","cwd":"/tmp","x":"AE_CODEX_LAUNCH_ID=TOK-MATCH"}

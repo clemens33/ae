@@ -77,6 +77,11 @@ claim this arm cannot make about its candidates and should not appear to.
   plain shell. Each is applied immediately before its case and reverted immediately after
   where the group continues.
 
+### A13 — `_harness/derive-h3-record.py` registered after A-H3's run
+
+- new sha256: `91e8872e7876a1aa0be1344da184057aa8f7bf43f2210e19138cf883bc50eb15`
+- post-capture reporting only; reads the committed captures and records no observation.
+
 ## Frozen source
 
 `72c7293`, verified by hash at every case open and recorded in each case's ledger.

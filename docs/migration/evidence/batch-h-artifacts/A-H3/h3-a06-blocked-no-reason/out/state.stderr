@@ -1,0 +1,8 @@
+Error: 'blocked' requires a reason
+Usage: state <working|waiting-user|blocked|done> [reason]
+       state                              # print current state
+
+  working       actively making progress
+  waiting-user  needs human input
+  blocked       stuck on external dep — REASON REQUIRED
+  done          complete or paused

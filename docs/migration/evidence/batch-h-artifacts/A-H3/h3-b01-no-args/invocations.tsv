@@ -1,0 +1,4 @@
+label	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	bound_s	timed_out	argv
+canary-pre-h3-b01-no-args	7	38e4fe40670d072d7a20d722e087bf7eedd8af321747e5daa673ba7bf9b62e80	36	a790717c0bac70d74a15bb93eb21eac9bae5afb6beae60ff8f04e3ddf4d3855f	43	10	no	/opt/homebrew/bin/bash -c printf '%s\n' 'AE-H-CANARY-pre-h3-b01-no-args-9f3c'; printf '%s\n' 'AE-H-CANARY-pre-h3-b01-no-args-9f3c-stderr' >&2; exit 7
+goal	0	acbe00ad1e6618daf849e707c90a9a4a1f25b7289fab334d167531575282d486	14	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0	25	no	env TMUX=/tmp/aecx/h/h3b/s.sock,62200,0 TMUX_PANE=%0 /tmp/aecx/h/h3b/home/.ae/sessions/th3b/goal
+canary-post-h3-b01-no-args	7	e3e28df8140af6c55b6f70e902f697f7ce465369a524bb5e1a117cfcbc9100d7	37	2fc9af55278ea8b16ec4528c9d85cfc5b71cc4dd84d59d9fbc34807f3da015c2	44	10	no	/opt/homebrew/bin/bash -c printf '%s\n' 'AE-H-CANARY-post-h3-b01-no-args-9f3c'; printf '%s\n' 'AE-H-CANARY-post-h3-b01-no-args-9f3c-stderr' >&2; exit 7

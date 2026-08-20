@@ -1,15 +1,15 @@
-seq=001	utc=2026-08-20T22:34:22Z	epoch=1787265262	event=case-OPEN	arm=A-H5	case=h5-c01-no-slot-arg	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
-seq=002	utc=2026-08-20T22:34:22Z	epoch=1787265262	event=rows	rows=SC-211o	surface=_register-sid	fixture=H6 cohorts
-seq=003	utc=2026-08-20T22:34:22Z	epoch=1787265262	event=surface-state-captured	artifact_sha256=86544c10e3555805ffc3b947489aa52700980279813131a3a07faebd7f7de9aa	paths=/tmp/aecx/h/h6/home/.ae/sessions/th6/_register-sid /tmp/aecx/h/h6/home/.ae/sessions/th6/meta
-seq=004	utc=2026-08-20T22:34:22Z	epoch=1787265262	event=planted	artifact_sha256=d1cac842bf3cc66feee3550a5a71b7138de1d7349f0bc403f25a77df1f7d7846	note=candidate files and meta keys are CONTROLLER-constructed input data, listed with their bytes
-seq=005	utc=2026-08-20T22:34:22Z	epoch=1787265262	event=measured-input	slot_argv=<none>	note=no slot argument
-seq=006	utc=2026-08-20T22:34:22Z	epoch=1787265262	event=invocation-cwd	cwd=/tmp/aecx/h/h6/work	note=the session work dir, as an agent's pane has
-seq=007	utc=2026-08-20T22:34:23Z	epoch=1787265263	event=invocation	label=canary-pre-h5-c01-no-slot-arg	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=8c06a4790fe81cfc17c944c8e3366ad76da3c04d0a79aac796580ae99157952a	stderr_sha256=44c59800bc63fa38b37d241d88b20263ef332cce12334105c97c669a5799cad1
-seq=008	utc=2026-08-20T22:34:23Z	epoch=1787265263	event=canary	when=pre	tag=h5-c01-no-slot-arg	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
-seq=009	utc=2026-08-20T22:34:23Z	epoch=1787265263	event=PRODUCT-START	label=25
-seq=010	utc=2026-08-20T22:34:23Z	epoch=1787265263	event=invocation	label=register	rc=0	elapsed_s=0	timed_out=no	stdout_sha256=69f9a5b721534954f5c019ef1857b7e913ad543de450b1b4984b947f828cc266	stderr_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-seq=011	utc=2026-08-20T22:34:23Z	epoch=1787265263	event=PRODUCT-COMPLETE	label=25
-seq=012	utc=2026-08-20T22:34:24Z	epoch=1787265264	event=invocation	label=canary-post-h5-c01-no-slot-arg	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=b3aa8fb49def53597462fcb1dd14a154419e8b73982a13e87239142f01321ec5	stderr_sha256=667011d68e505fd665a503ebac1a4c49279e7f528ad2ed0fa169875d01f1d191
-seq=013	utc=2026-08-20T22:34:24Z	epoch=1787265264	event=canary	when=post	tag=h5-c01-no-slot-arg	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
-seq=007	utc=2026-08-20T22:34:24Z	epoch=1787265264	event=sid-artifact	artifact_sha256=81fda4b7de09e49d94ecd064a037350d4ad10edce358936535a38bed1eeaf09b	meta_diff_lines=0
-seq=008	utc=2026-08-20T22:34:24Z	epoch=1787265264	event=case-CLOSE	invocations_sha256=e59d632447744cf099e378c563f97a9bf342ba1365c261f7f83d9dfea0de431f
+seq=001	utc=2026-08-20T22:51:10Z	epoch=1787266270	event=case-OPEN	arm=A-H5	case=h5-c01-no-slot-arg	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T22:51:10Z	epoch=1787266270	event=rows	rows=SC-211o	surface=_register-sid	fixture=H6 cohorts
+seq=003	utc=2026-08-20T22:51:10Z	epoch=1787266270	event=surface-state-captured	artifact_sha256=1d30f5d1d8c1b7cad266fef139cdedbe106469270e8d5e78f2cffad6315d8a1e	paths=/tmp/aecx/h/h6/home/.ae/sessions/th6/_register-sid /tmp/aecx/h/h6/home/.ae/sessions/th6/meta
+seq=004	utc=2026-08-20T22:51:10Z	epoch=1787266270	event=planted	artifact_sha256=e091cebf5b3cb65b5015229b320db6671f85ebf32687939504389b3b55920388	note=candidate files and meta keys are CONTROLLER-constructed input data, listed with their bytes
+seq=005	utc=2026-08-20T22:51:10Z	epoch=1787266270	event=measured-input	slot_argv=<none>	note=no slot argument
+seq=006	utc=2026-08-20T22:51:10Z	epoch=1787266270	event=invocation-cwd	cwd=/tmp/aecx/h/h6/work	note=the session work dir, as an agent's pane has
+seq=007	utc=2026-08-20T22:51:11Z	epoch=1787266271	event=invocation	label=canary-pre-h5-c01-no-slot-arg	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=8c06a4790fe81cfc17c944c8e3366ad76da3c04d0a79aac796580ae99157952a	stderr_sha256=44c59800bc63fa38b37d241d88b20263ef332cce12334105c97c669a5799cad1
+seq=008	utc=2026-08-20T22:51:11Z	epoch=1787266271	event=canary	when=pre	tag=h5-c01-no-slot-arg	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=009	utc=2026-08-20T22:51:11Z	epoch=1787266271	event=PRODUCT-START	label=25
+seq=010	utc=2026-08-20T22:51:11Z	epoch=1787266271	event=invocation	label=register	rc=0	elapsed_s=0	timed_out=no	stdout_sha256=69f9a5b721534954f5c019ef1857b7e913ad543de450b1b4984b947f828cc266	stderr_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+seq=011	utc=2026-08-20T22:51:11Z	epoch=1787266271	event=PRODUCT-COMPLETE	label=25
+seq=012	utc=2026-08-20T22:51:12Z	epoch=1787266272	event=invocation	label=canary-post-h5-c01-no-slot-arg	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=b3aa8fb49def53597462fcb1dd14a154419e8b73982a13e87239142f01321ec5	stderr_sha256=667011d68e505fd665a503ebac1a4c49279e7f528ad2ed0fa169875d01f1d191
+seq=013	utc=2026-08-20T22:51:12Z	epoch=1787266272	event=canary	when=post	tag=h5-c01-no-slot-arg	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=014	utc=2026-08-20T22:51:12Z	epoch=1787266272	event=sid-artifact	artifact_sha256=81fda4b7de09e49d94ecd064a037350d4ad10edce358936535a38bed1eeaf09b	meta_diff_lines=0
+seq=015	utc=2026-08-20T22:51:12Z	epoch=1787266272	event=case-CLOSE	invocations_sha256=f0b4140723de860db0c8c3ea9d401a5619809f4e31a8e024eea7f083c9cbde7c

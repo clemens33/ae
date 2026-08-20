@@ -1,0 +1,21 @@
+## source state of the surfaces under test, read from the filesystem
+### /tmp/aecx/h/h3b/home/.ae/sessions/th3b/goal
+  exists=yes
+  type=file
+  mode=700
+  size=1247
+  interpreter=#!/opt/homebrew/bin/bash
+  sources_lib=1
+  read_attempt_rc=0
+  read_attempt_stderr=<none>
+  sha256=19aaeae31baaeb7683213c5d796e00f0791d5c2ca575a66663e113d1970f811d
+### /tmp/aecx/h/h3b/home/.ae/sessions/th3b/_lib
+  exists=yes
+  type=file
+  mode=700
+  size=38617
+  interpreter=<none>
+  sources_lib=0
+  read_attempt_rc=0
+  read_attempt_stderr=<none>
+  sha256=91da0d9b5bcd6d3c8abcd5c974fe7be0c63a329ba5971cbbb57b6fd8e71a2d40

@@ -1,0 +1,277 @@
+## A-H3 — the argument surface (generated from the captures)
+
+One case per input class. `wrote` counts the lines by which the session directory's
+own byte listing changed across the invocation — several of these helpers write, and
+a refusal that wrote something is a different reading from one that did not.
+`canary` is the capture-path control, fired before and after each invocation.
+
+  case                            helper      rc   out B   err B   wrote  canary
+  ------------------------------  ----------  ---  ------  ------  -----  ------
+  h3-a01-no-args                  state       0    31      0       0      2/2   
+  h3-a02-working                  state       0    23      0       3      2/2   
+  h3-a03-waiting-user             state       0    28      0       4      2/2   
+  h3-a04-done                     state       0    20      0       4      2/2   
+  h3-a05-blocked-reason           state       0    33      0       4      2/2   
+  h3-a06-blocked-no-reason        state       2    0       326     0      2/2   
+  h3-a07-unknown-mode             state       2    0       291     0      2/2   
+  h3-a08-empty-mode               state       2    0       291     0      2/2   
+  h3-a09-leading-dash             state       2    0       291     0      2/2   
+  h3-a10-extra-words              state       0    41      0       4      2/2   
+  h3-b01-no-args                  goal        0    14      0       0      2/2   
+  h3-b02-one-word                 goal        0    16      0       7      2/2   
+  h3-b03-several-words            goal        0    27      0       8      2/2   
+  h3-b04-clear                    goal        0    14      0       8      2/2   
+  h3-b05-clear-extra              goal        1    0       125     0      2/2   
+  h3-b06-help-long                goal        1    0       125     0      2/2   
+  h3-b07-help-short               goal        1    0       125     0      2/2   
+  h3-b08-controls-only            goal        0    12      0       8      2/2   
+  h3-c01-no-args                  memo        0    0       0       0      2/2   
+  h3-c02-add-text                 memo        0    0       0       6      2/2   
+  h3-c03-add-no-text              memo        1    0       87      0      2/2   
+  h3-c04-add-topic-text           memo        0    0       0       8      2/2   
+  h3-c05-add-topic-bare           memo        1    0       87      0      2/2   
+  h3-c06-add-topic-no-text        memo        1    0       87      0      2/2   
+  h3-c07-read                     memo        0    102     0       0      2/2   
+  h3-c08-read-topic               memo        0    56      0       0      2/2   
+  h3-c09-read-topic-bare          memo        1    0       87      0      2/2   
+  h3-c10-read-extra               memo        1    0       87      0      2/2   
+  h3-c11-tail                     memo        0    102     0       0      2/2   
+  h3-c12-tail-n                   memo        0    102     0       0      2/2   
+  h3-c13-tail-nonnumeric          memo        1    0       87      0      2/2   
+  h3-c14-tail-extra               memo        1    0       87      0      2/2   
+  h3-c15-unknown-subcmd           memo        1    0       87      0      2/2   
+  h3-d01-no-args                  requests    0    97      0       0      2/2   
+  h3-d02-mine                     requests    0    97      0       0      2/2   
+  h3-d03-inbox                    requests    0    97      0       0      2/2   
+  h3-d04-all                      requests    0    97      0       0      2/2   
+  h3-d05-unknown-mode             requests    1    0       33      0      2/2   
+  h3-d06-extra-args               requests    0    97      0       0      2/2   
+  h3-e01-no-args                  peek        1    0       131     0      2/2   
+  h3-e02-absent-target            peek        1    0       53      0      2/2   
+  h3-e03-present-no-count         peek        0    165     0       0      2/2   
+  h3-e04-nonnumeric-count         peek        1    0       41      0      2/2   
+  h3-e05-negative-count           peek        1    0       40      0      2/2   
+  h3-e06-leading-plus             peek        1    0       40      0      2/2   
+  h3-e07-zero                     peek        0    165     0       0      2/2   
+  h3-e08-above-cap                peek        0    165     0       0      2/2   
+  h3-e09-extra-args               peek        0    165     0       0      2/2   
+  h3-f01-no-args                  agents      0    167     0       0      2/2   
+  h3-f02-all                      agents      0    251     0       0      2/2   
+  h3-f03-other-arg                agents      0    167     0       0      2/2   
+  h3-f04-all-unreadable-meta      agents      0    64      207     0      2/2   
+  h3-g01-no-args                  focus       1    0       123     0      2/2   
+  h3-g02-absent-target            focus       1    0       53      0      2/2   
+  h3-g03-present                  focus       0    0       0       3      2/2   
+  h3-g04-extra-args               focus       0    0       0       4      2/2   
+  h3-h01-no-args                  interrupt   1    0       181     0      2/2   
+  h3-h02-absent-target            interrupt   1    0       53      0      2/2   
+  h3-h03-present-no-message       interrupt   0    0       0       3      2/2   
+  h3-h04-present-message          interrupt   0    0       0       4      2/2   
+  h3-h05-shell-pane-message       interrupt   1    0       179     0      2/2   
+  h3-i01-no-args                  spawn       1    0       39      0      2/2   
+  h3-i02-unknown-alias            spawn       1    0       74      0      2/2   
+  h3-i03-empty-meta               spawn       1    0       0       0      2/2   
+  h3-i04-malformed-config         spawn       1    0       65      0      2/2   
+  h3-j01-no-args                  retire      1    0       92      0      2/2   
+  h3-j02-absent-name              retire      1    0       35      0      2/2   
+  h3-j03-main-agent               retire      1    0       61      0      2/2   
+  h3-j04-configured-worker        retire      1    0       61      0      2/2   
+  h3-j05-pane-outside             retire      1    0       47      0      2/2   
+  h3-j06-extra-args               retire      0    28      0       14     2/2   
+  h3-j07-valid-spawned            retire      1    0       35      0      2/2   
+
+## argv and first stderr line, per case
+
+  h3-a01-no-args  (state)
+      argv  : (none)
+  h3-a02-working  (state)
+      argv  : working
+  h3-a03-waiting-user  (state)
+      argv  : waiting-user
+  h3-a04-done  (state)
+      argv  : done
+  h3-a05-blocked-reason  (state)
+      argv  : blocked a reason
+  h3-a06-blocked-no-reason  (state)
+      argv  : blocked
+      stderr: Error: 'blocked' requires a reason
+  h3-a07-unknown-mode  (state)
+      argv  : nosuchmode
+      stderr: Usage: state <working|waiting-user|blocked|done> [reason]
+  h3-a08-empty-mode  (state)
+      argv  : (none)
+      stderr: Usage: state <working|waiting-user|blocked|done> [reason]
+  h3-a09-leading-dash  (state)
+      argv  : -working
+      stderr: Usage: state <working|waiting-user|blocked|done> [reason]
+  h3-a10-extra-words  (state)
+      argv  : working extra words here
+  h3-b01-no-args  (goal)
+      argv  : (none)
+  h3-b02-one-word  (goal)
+      argv  : alpha
+  h3-b03-several-words  (goal)
+      argv  : alpha beta gamma
+  h3-b04-clear  (goal)
+      argv  : --clear
+  h3-b05-clear-extra  (goal)
+      argv  : --clear extra
+      stderr: Usage: goal            # show the session goal
+  h3-b06-help-long  (goal)
+      argv  : --help
+      stderr: Usage: goal            # show the session goal
+  h3-b07-help-short  (goal)
+      argv  : -h
+      stderr: Usage: goal            # show the session goal
+  h3-b08-controls-only  (goal)
+      argv  : (none)
+  h3-c01-no-args  (memo)
+      argv  : (none)
+  h3-c02-add-text  (memo)
+      argv  : add a memo line
+  h3-c03-add-no-text  (memo)
+      argv  : add
+      stderr: Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]
+  h3-c04-add-topic-text  (memo)
+      argv  : add --topic arch a topical line
+  h3-c05-add-topic-bare  (memo)
+      argv  : add --topic
+      stderr: Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]
+  h3-c06-add-topic-no-text  (memo)
+      argv  : add --topic arch
+      stderr: Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]
+  h3-c07-read  (memo)
+      argv  : read
+  h3-c08-read-topic  (memo)
+      argv  : read --topic arch
+  h3-c09-read-topic-bare  (memo)
+      argv  : read --topic
+      stderr: Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]
+  h3-c10-read-extra  (memo)
+      argv  : read extra
+      stderr: Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]
+  h3-c11-tail  (memo)
+      argv  : tail
+  h3-c12-tail-n  (memo)
+      argv  : tail 3
+  h3-c13-tail-nonnumeric  (memo)
+      argv  : tail abc
+      stderr: Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]
+  h3-c14-tail-extra  (memo)
+      argv  : tail 3 extra
+      stderr: Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]
+  h3-c15-unknown-subcmd  (memo)
+      argv  : nosuchsub
+      stderr: Usage: memo add [--topic <topic>] <text> | memo read [--topic <topic>] | memo tail [n]
+  h3-d01-no-args  (requests)
+      argv  : (none)
+  h3-d02-mine  (requests)
+      argv  : mine
+  h3-d03-inbox  (requests)
+      argv  : inbox
+  h3-d04-all  (requests)
+      argv  : all
+  h3-d05-unknown-mode  (requests)
+      argv  : nosuchmode
+      stderr: Usage: requests [mine|inbox|all]
+  h3-d06-extra-args  (requests)
+      argv  : all extra
+  h3-e01-no-args  (peek)
+      argv  : (none)
+      stderr: Usage: peek <agent-name|pane-id|@session:agent> [lines]
+  h3-e02-absent-target  (peek)
+      argv  : cl:nosuch
+      stderr: Error: agent 'cl:nosuch' not found in session 'th3e'
+  h3-e03-present-no-count  (peek)
+      argv  : cx:worker
+  h3-e04-nonnumeric-count  (peek)
+      argv  : cx:worker abc
+      stderr: Error: lines must be a number, got 'abc'
+  h3-e05-negative-count  (peek)
+      argv  : cx:worker -5
+      stderr: Error: lines must be a number, got '-5'
+  h3-e06-leading-plus  (peek)
+      argv  : cx:worker +5
+      stderr: Error: lines must be a number, got '+5'
+  h3-e07-zero  (peek)
+      argv  : cx:worker 0
+  h3-e08-above-cap  (peek)
+      argv  : cx:worker 99999
+  h3-e09-extra-args  (peek)
+      argv  : cx:worker 10 extra
+  h3-f01-no-args  (agents)
+      argv  : (none)
+  h3-f02-all  (agents)
+      argv  : --all
+  h3-f03-other-arg  (agents)
+      argv  : nosucharg
+  h3-f04-all-unreadable-meta  (agents)
+      argv  : --all
+      stderr: grep: /tmp/aecx/h/h3f/home/.ae/sessions/th3f/meta: Permission denied
+  h3-g01-no-args  (focus)
+      argv  : (none)
+      stderr: Usage: focus <agent-name|pane-id|@session:agent>
+  h3-g02-absent-target  (focus)
+      argv  : cl:nosuch
+      stderr: Error: agent 'cl:nosuch' not found in session 'th3g'
+  h3-g03-present  (focus)
+      argv  : cx:worker
+  h3-g04-extra-args  (focus)
+      argv  : cx:worker extra
+  h3-h01-no-args  (interrupt)
+      argv  : (none)
+      stderr: Usage: interrupt <agent-name|pane-id|@session:agent> [message]
+  h3-h02-absent-target  (interrupt)
+      argv  : cl:nosuch
+      stderr: Error: agent 'cl:nosuch' not found in session 'th3h'
+  h3-h03-present-no-message  (interrupt)
+      argv  : cx:worker
+  h3-h04-present-message  (interrupt)
+      argv  : cx:worker a message
+  h3-h05-shell-pane-message  (interrupt)
+      argv  : %1 a message into a shell
+      stderr: ae: interrupt of cx:worker REFUSED — target pane is a shell, not a running agent; a stray Enter would EXECUTE the message as a shell command. Re-launch the agent, then re-send.
+  h3-i01-no-args  (spawn)
+      argv  : (none)
+      stderr: Usage: spawn <alias>[:<name>] [prompt]
+  h3-i02-unknown-alias  (spawn)
+      argv  : nosuchalias:name
+      stderr: Error: agent 'nosuchalias' not defined in /tmp/aecx/h/h3i/home/.ae/config
+  h3-i03-empty-meta  (spawn)
+      argv  : cx:probe
+  h3-i04-malformed-config  (spawn)
+      argv  : cx:probe
+      stderr: Error: agent 'cx' not defined in /tmp/aecx/h/h3i/home/.ae/config
+  h3-j01-no-args  (retire)
+      argv  : (none)
+      stderr: Usage: retire <agent-name|pane-id>
+  h3-j02-absent-name  (retire)
+      argv  : cl:nosuch
+      stderr: Error: agent 'cl:nosuch' not found
+  h3-j03-main-agent  (retire)
+      argv  : cl:lead
+      stderr: Error: cannot retire the main agent — use 'ae end' instead
+  h3-j04-configured-worker  (retire)
+      argv  : cx:worker
+      stderr: Error: cannot retire a worker agent — use 'ae end' instead
+  h3-j05-pane-outside  (retire)
+      argv  : %999
+      stderr: Error: pane '%999' not found in session 'th3j'
+  h3-j06-extra-args  (retire)
+      argv  : cx:helper extra
+  h3-j07-valid-spawned  (retire)
+      argv  : cx:helper
+      stderr: Error: agent 'cx:helper' not found
+
+## distinct readings per helper
+
+  agents     cases=4   distinct rc=['0'] distinct first-stderr=1 cases that wrote=0
+  focus      cases=4   distinct rc=['0', '1'] distinct first-stderr=2 cases that wrote=2
+  goal       cases=8   distinct rc=['0', '1'] distinct first-stderr=1 cases that wrote=4
+  interrupt  cases=5   distinct rc=['0', '1'] distinct first-stderr=3 cases that wrote=2
+  memo       cases=15  distinct rc=['0', '1'] distinct first-stderr=1 cases that wrote=2
+  peek       cases=9   distinct rc=['0', '1'] distinct first-stderr=5 cases that wrote=0
+  requests   cases=6   distinct rc=['0', '1'] distinct first-stderr=1 cases that wrote=0
+  retire     cases=7   distinct rc=['0', '1'] distinct first-stderr=6 cases that wrote=1
+  spawn      cases=4   distinct rc=['1'] distinct first-stderr=3 cases that wrote=0
+  state      cases=10  distinct rc=['0', '2'] distinct first-stderr=2 cases that wrote=5
