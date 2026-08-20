@@ -8,13 +8,16 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
+    let stderr = std::io::stderr();
+    let mut err = stderr.lock();
 
-    match ae::run(&args, &mut out) {
+    match ae::run(&args, &mut out, &mut err) {
         Ok(code) => ExitCode::from(code),
-        Err(err) => {
-            // Presentation failed on stdout; say so on stderr and give up
-            // quietly if that is gone too.
-            let _ = writeln!(std::io::stderr(), "ae: {err}");
+        Err(error) => {
+            // Presentation itself failed. Say so on a fresh stderr handle and
+            // give up quietly if that is gone too — the locked one above may be
+            // the very thing that broke.
+            let _ = writeln!(std::io::stderr(), "ae: {error}");
             ExitCode::FAILURE
         }
     }

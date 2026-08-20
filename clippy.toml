@@ -5,3 +5,31 @@
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
+
+# The capability boundary for running a child process (see the pinned door in
+# `tests/it/parity.rs`'s `mod raw`). This resolves TYPES, not text, so it holds
+# against UFCS `std::process::Command::output(&mut c)`, `use ... as C`, and
+# spellings nobody has thought of yet — a filter over method names closes one
+# spelling, not the class.
+#
+# WHY THIS IS A BOUNDARY AND NOT A HEURISTIC, and it is load-bearing:
+#   * ALL FOUR dependency tables are empty or absent — `[dependencies]`,
+#     `[dev-dependencies]`, `[build-dependencies]`, and any
+#     `[target."cfg(...)".dependencies]` — so no third-party spawner exists to
+#     route around it. All four, deliberately: naming only the first two would
+#     leave this sentence TRUE while the claim it supports had become false.
+#   * `unsafe_code = "forbid"` — forbid, not deny, so no `#[allow]` anywhere can
+#     re-enable it, and there is no libc/syscall route either.
+# In THIS crate the only way to a child process is this one type. BOTH clauses
+# are premises: the day a dependency lands in ANY of those four tables, or the
+# day `forbid` softens, this stops being a capability boundary and becomes a
+# naming convention. Whoever adds the first dependency is paying that price —
+# see it before you do.
+#
+# That the deny is still in force is checked SEMANTICALLY, not by reading the
+# source for exemptions: see
+# `the_capability_boundary_holds_against_any_lint_relaxation` in
+# tests/it/parity_self_test.rs, which runs clippy under `--force-warn` — a flag
+# no `allow`, group `allow`, `cfg_attr`, `expect` or crate-root `#![allow]` can
+# override.
+disallowed-types = ["std::process::Command"]

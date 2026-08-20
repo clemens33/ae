@@ -51,6 +51,20 @@ pedantic = { level = "warn", priority = -1 }
 # strength, and deny would break a scoped, documented `#[allow]`.
 unwrap_used = "warn"
 expect_used = "warn"
+# DENY, unlike the two above: this one is a capability boundary rather than a
+# style rule, and the scoped relaxations that open a door are meant to be
+# conspicuous. The type it denies, and why denying one type is sufficient HERE,
+# are documented in clippy.toml.
+#
+# There are TWO doors crate-wide, doing different jobs: the parity harness's, in
+# that file's `mod raw`, and the black-box CLI tests', which must run the product
+# binary. Not `forbid`: forbid would block both, so the residual is that a
+# further relaxation would open a further door. A self-test inventories them by
+# FILE and COUNT — where, not merely how many. That inventory is textual and
+# closes only the relaxation forms it enumerates; the type deny above is
+# semantic and closes the class. They are not the same strength, and
+# tests/it/parity.rs documents the difference.
+disallowed_types = "deny"
 
 [profile.release]
 strip = "symbols"
