@@ -1009,6 +1009,16 @@ ids, injection boundaries, and tool kinds ride explicit parameters; the built co
 is downstream data — hostile input, not a source of truth. Authority: #30-family ruling
 (commit 32719f5) + AGENTS.md. Empirical: shipped exhibits. Conflict: none.
 
+**SC-707 — an unsupported launch command receives no context injection.**
+`authority=code-observation` — inject_ae_context and initial_prompt_for_cmd leave
+unrecognized agent commands as passthrough (ae@72c7293:1539,1558): no system/
+developer/context material and no initial prompt are delivered; the agent starts
+bare with only the on-disk workspace. Surfaced by the B0 transport census
+(b0-census.md §B gap list), cut OUT of SC-1208's scope by seat ruling — SC-1208
+guarantees the five modeled tools only. Bucket + intended Rust behavior (refuse?
+warn? document?) are a seat ruling. Empirical: observed(b0-census.md §B;
+ae:1539,1558 rechecked). Conflict: pending seat closure (UNCLASSIFIED).
+
 ### S9 — Lifecycle transactions
 
 git commit/push on end, archive capture ordering (archive-before-removal, failed archive

@@ -1,8 +1,8 @@
-# Probe cluster plan — closing the 319 (seat-gated; refreshed from the manifest)
+# Probe cluster plan — closing the 320 (seat-gated; refreshed from the manifest)
 
-Built ONLY from the regenerated ratification-critical.md labels (319 CRITICAL lines,
-machine-counted 2026-08-20 post slice-1c; header and lines agree, manifest↔canonical
-SET_EXTRA=0/SET_MISSING=0). Rules inherited: dependency closure (a
+Built ONLY from the regenerated ratification-critical.md labels (320 CRITICAL lines,
+machine-counted 2026-08-20 post slice-1c + SC-707; header and lines agree,
+manifest↔canonical SET_EXTRA=0/SET_MISSING=0). Rules inherited: dependency closure (a
 critical SC row pulls its interpreting D record/mechanism into the same batch unless
 independently proven); probe designs are VALUE-BLIND (manipulation/barriers + captured
 stdout/stderr/rc/files/tmux; expected values omitted — seats classify); deterministic
@@ -10,8 +10,8 @@ per the closure-map gate (no timing races, no live-model queries); every capture
 CANDIDATE observation until seat acceptance (never a builder oracle before scoped
 ratification — P1-start condition 2).
 
-Family spread of the 319 (id-range convention, machine-joined): S9=71, S10=58,
-S6=43, S15=25, S3=24, S1=20, S5=18, S14=13, S13=12, S8=7, S7=5, S2=3, S12=3, S4=2,
+Family spread of the 320 (id-range convention, machine-joined): S9=71, S10=58,
+S6=43, S15=25, S3=24, S1=20, S5=18, S14=13, S13=12, S8=8, S7=5, S2=3, S12=3, S4=2,
 S11=2, +13 D records (D01-D04 read side; D14b half; D24 negative pointer;
 D25/27/30x gates; D28c).
 

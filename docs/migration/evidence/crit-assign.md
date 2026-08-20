@@ -122,6 +122,7 @@ CRIT-ASSIGN: SC-704d | F-ADAPTER | adapter fixture probe: heuristic fallbacks re
 CRIT-ASSIGN: SC-704e | F-ADAPTER | adapter fixture probe: rerun truth is explicit
 CRIT-ASSIGN: SC-705 | F-ADAPTER | adapter fixture probe: executable-identification arm — env-prefixed and suffixed commands classified by real binary
 CRIT-ASSIGN: SC-706 | F-ADAPTER | adapter fixture probe: a fact built upstream is transported, never re-parsed
+CRIT-ASSIGN: SC-707 | F-ADAPTER | code-observation confirmation: launch a fixture unsupported agent command through frozen ae; capture launch script, argv/env, delivered prompt surface (recheck ae:1539,1558)
 CRIT-ASSIGN: SC-800 | L-END | end/archive tree: archive publication claims by `mkdir`
 CRIT-ASSIGN: SC-801 | L-END | end/archive tree: staging is private by construction
 CRIT-ASSIGN: SC-802 | L-END | end/archive tree: the final archive appears complete or not at all

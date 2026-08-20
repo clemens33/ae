@@ -2,11 +2,11 @@
 
 Derived mechanically from the canonical set reported by sweep-check.sh; letters are criteria only.
 
-- Canonical IDs (checker at HEAD): SC=419, D=43, total=462; manifest lines=462 (exact; SET_EXTRA=0, SET_MISSING=0)
-- Class counts (mechanically regenerated 2026-08-20 post slice-1c: SC-405i/j/k folded, 521a/b split, stale bare-523 prose removed): CRITICAL=319, DEFERRABLE=102, OBSERVED=41
-- Critical-letter counts (overlaps counted): A=123, B=38, C=58, D=198
-- D24 remains critical/non-observed pending its negative-evidence pointer; when it lands: CRITICAL=318, OBSERVED=42
-- Outstanding critical observations: 319. Clusters build only from the CRIT-ASSIGN table.
+- Canonical IDs (checker at HEAD): SC=420, D=43, total=463; manifest lines=463 (exact; SET_EXTRA=0, SET_MISSING=0)
+- Class counts (mechanically regenerated 2026-08-20 post slice-1c: SC-405i/j/k folded, 521a/b split, SC-707 added from the B0 census gap, stale bare-523 prose removed): CRITICAL=320, DEFERRABLE=102, OBSERVED=41
+- Critical-letter counts (overlaps counted): A=124, B=38, C=58, D=198
+- D24 remains critical/non-observed pending its negative-evidence pointer; when it lands: CRITICAL=319, OBSERVED=42
+- Outstanding critical observations: 320. Clusters build only from the CRIT-ASSIGN table.
 
 - A includes explicit UNCLASSIFIED, authority=code-observation, literal Authority: UNRESOLVED(...) rows, and D records whose TBD fields feed a seat ruling; ALREADY-OBSERVED takes pin-audit PROVES priority.
 
@@ -199,6 +199,7 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-704e — CRITICAL(D)
 - SC-705 — CRITICAL(D)
 - SC-706 — CRITICAL(D)
+- SC-707 — CRITICAL(A)
 - SC-800 — CRITICAL(D)
 - SC-801 — CRITICAL(D)
 - SC-802 — CRITICAL(D)
