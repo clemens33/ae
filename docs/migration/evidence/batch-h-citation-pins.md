@@ -7,8 +7,9 @@ than trusted as arithmetic. A line number is a claim; the line is the evidence.
 ENDPOINTS ONLY: a range pins its first and last line, not the lines between them.
 And a pin proves a citation RESOLVES — never that it is the RIGHT line for the
 claim beside it. A confident citation on a wrong-but-plausible line passes clean;
-the +8 steward citations this tool was built after would have passed it. It makes
-a seat's reading cheap, it does not perform the reading.
+the +8 steward citations this tool was built after would have passed it, and so did
+three semantically wrong SC-211o citations that a seat caught by reading the source.
+It makes a seat's reading cheap; it does not perform the reading.
 
 | document | line | source text |
 |---|---|---|

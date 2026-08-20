@@ -47,10 +47,14 @@ def _load_splitter():
 
 split_spellings = _load_splitter()
 
-def generate(census_path, out_path):
-    # rc 2 means the generator itself found duplicates; that is reported by the caller.
-    subprocess.run([sys.executable, GEN, census_path, out_path],
-                   stdout=subprocess.DEVNULL)
+def generate(census_path, out_path, expect_rc=0):
+    """Run the generator and RETURN ITS RC. The previous version discarded it, so a census
+    the generator itself rejected (duplicates, scope errors — rc 2) still produced a run
+    that looked clean, with only a mirrored parser left to rediscover the problem. A
+    mirrored parser is a second implementation of the rule; the rc is the rule."""
+    r = subprocess.run([sys.executable, GEN, census_path, out_path],
+                       capture_output=True, text=True)
+    return r.returncode, r.stdout
 
 def pairs(md):
     """Returns (set, duplicates). A duplicate record is a defect: it hides an ambiguity in
@@ -113,7 +117,9 @@ fails = []
 tmp = tempfile.mkdtemp()
 
 gen_path = os.path.join(tmp, "gen.md")
-generate(census, gen_path)
+gen_rc, gen_out = generate(census, gen_path)
+if gen_rc != 0:
+    fails.append(f"GENERATOR REJECTED THE CENSUS (rc {gen_rc}): {gen_out.strip()[:200]}")
 if open(gen_path, encoding="utf-8").read() != open(listing, encoding="utf-8").read():
     fails.append("DIFF-CLEAN: the committed list is not what the generator produces")
 
@@ -128,17 +134,28 @@ for miss in sorted(cp - lp): fails.append(f"MISSING from list, present in census
 NOVEL = "zqx-outcome-token-not-enumerated-anywhere"
 inj = os.path.join(tmp, "inj.md")
 src = open(census, encoding="utf-8").read()
-anchor = "| no args | the print-current branch, ae:12836-12845 | ACCEPTED |"
-if anchor in src:
-    src2 = src.replace(anchor, anchor + f"\n| a synthetic probe input | somewhere, ae:1 | {NOVEL} |")
-    open(inj, "w", encoding="utf-8").write(src2)
-    out2 = os.path.join(tmp, "inj-out.md"); generate(inj, out2)
-    body = open(out2, encoding="utf-8").read()
+# The anchor is the COMPLETE scoped row. The previous anchor stopped at "ACCEPTED |" and
+# the replacement stole the row's trailing "IN |" into the synthetic row, leaving the
+# original one column short — so the census under test was malformed and the generator was
+# rejecting it, while the proof still "passed" because the synthetic input appeared.
+ANCHOR = "| no args | the print-current branch, ae:12836-12845 | ACCEPTED | IN |"
+SYNTH  = f"| a synthetic probe input | somewhere, ae:1 | {NOVEL} | IN |"
+if ANCHOR in src:
+    open(inj, "w", encoding="utf-8").write(src.replace(ANCHOR, ANCHOR + "\n" + SYNTH, 1))
+    out2 = os.path.join(tmp, "inj-out.md")
+    inj_rc, _ = generate(inj, out2)
+    body = open(out2, encoding="utf-8").read() if os.path.exists(out2) else ""
+    if inj_rc != 0:
+        fails.append(f"COLUMNAR DROP: the injected census did not generate cleanly (rc {inj_rc}) — "
+                     "the injection is not a clean one-variable change")
     if NOVEL in body:
         fails.append("COLUMNAR DROP: a novel outcome label reached the generated list")
-    if "a synthetic probe input" not in body:
-        fails.append("COLUMNAR DROP: the injected row's INPUT did not reach the list — "
+    if body.count("- a synthetic probe input") != 1:
+        fails.append("COLUMNAR DROP: the injected row's INPUT did not appear exactly once — "
                      "the check would pass vacuously")
+    if "- no args" not in body:
+        fails.append("COLUMNAR DROP: the anchor row was lost by the injection — "
+                     "the injection perturbed more than one variable")
 else:
     fails.append("COLUMNAR DROP: injection anchor not found; the check could not run")
 
@@ -159,11 +176,18 @@ if redproof:
     def run_variant(mutate, label):
         v = os.path.join(tmp, "v.md"); g = os.path.join(tmp, "vg.md")
         open(v, "w", encoding="utf-8").write(mutate(open(listing, encoding="utf-8").read()))
-        generate(census, g)
+        rc, _ = generate(census, g)
         same = open(v, encoding="utf-8").read() == open(g, encoding="utf-8").read()
-        eq = pairs(v) == census_pairs(census)
-        belt = any(BELT.search(l) for l in open(v, encoding="utf-8"))
-        caught = (not same) or (not eq) or belt
+        # Unpack BOTH sides. The previous line compared pairs()'s 2-tuple with
+        # census_pairs()'s 3-tuple, which can never be equal — so `eq` was always False and
+        # every arm reported caught=YES whatever set equality did. A dead leg inside a
+        # red-proof is the failure this suite exists to prevent, one level in.
+        v_pairs, v_dupes = pairs(v)
+        c_pairs, c_dupes, c_errs = census_pairs(census)
+        eq = (v_pairs == c_pairs)
+        belt = any(BELT.search(l) for l in open(v, encoding="utf-8")
+                   if l.startswith("- ") or l.startswith("## Surface:"))
+        caught = (not same) or (not eq) or belt or bool(v_dupes) or rc != 0
         print(f"  {label:34s} caught={'YES' if caught else 'NO'}")
         return caught
     arms = [
@@ -198,11 +222,43 @@ if redproof:
         (lambda t: t.replace(IN_ROW, IN_ROW.replace("| IN |", "| MAYBE |"), 1), "census invalid scope value"),
         (lambda t: t.replace("| Input | Reaches | Class | Row | Scope |", "| Input | Reaches | Class | Row |", 1), "census header missing Scope"),
     ]
+    # THE VACUITY CONTROL. A red-proof set in which no arm has ever reported NO is
+    # indistinguishable from one wired to a constant — which is precisely what the
+    # 2-tuple-vs-3-tuple comparison made these arms, six of them reporting perfect
+    # coverage while unable to fail. So each harness is run against an UNMODIFIED input
+    # and MUST report NO, and every arm's mutation must actually change its input.
+    null_census = run_census_variant(lambda t: t, "NULL census arm (must be NO)")
+    if null_census:
+        fails.append("RED-PROOF VACUOUS: the census harness reports caught on an UNMODIFIED census")
+
     for mutate, label in census_arms:
+        base = open(census, encoding="utf-8").read()
+        if mutate(base) == base:
+            fails.append(f"RED-PROOF VACUOUS: the '{label}' mutation does not change the census")
         if not run_census_variant(mutate, label):
             fails.append(f"RED-PROOF BLIND: the '{label}' injection was not caught")
 
+    # Calibration for the equality leg specifically. Every list mutation also breaks
+    # diff-clean, so no list arm can distinguish "equality works" from "equality is dead" —
+    # which is exactly how the 2-tuple-vs-3-tuple bug survived. This exercises the
+    # comparison directly and must report NO if it is replaced by a constant.
+    a_pairs, _ = pairs(listing)
+    c_pairs_cal, _, _ = census_pairs(census)
+    same_sets = (a_pairs == c_pairs_cal)
+    diff_sets = (a_pairs == (c_pairs_cal | {("synthetic", "not-a-real-input")}))
+    cal_ok = same_sets and not diff_sets
+    print(f"  {'equality leg is live (calibration)':34s} caught={'YES' if cal_ok else 'NO'}")
+    if not cal_ok:
+        fails.append("RED-PROOF BLIND: the set-equality comparison does not discriminate")
+
+    null_list = run_variant(lambda t: t, "NULL list arm (must be NO)")
+    if null_list:
+        fails.append("RED-PROOF VACUOUS: the list harness reports caught on an UNMODIFIED list")
+
     for mutate, label in arms:
+        base = open(listing, encoding="utf-8").read()
+        if mutate(base) == base:
+            fails.append(f"RED-PROOF VACUOUS: the '{label}' mutation does not change the list")
         if not run_variant(mutate, label):
             # A red arm that reports caught=NO and leaves rc 0 is a red-proof that cannot
             # fail — the exact shape this whole batch exists to eliminate. It is a FAILURE.

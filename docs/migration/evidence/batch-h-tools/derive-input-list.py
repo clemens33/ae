@@ -11,11 +11,12 @@ Spellings separated by "/" are EXPANDED into separate entries: a brief that grou
 would let one chosen spelling stand for the group, and spelling parity is exactly what
 several of these rows are about.
 
-OWNERSHIP IS APPLIED BEFORE THE DROP. A census row that any cell marks OUT-OF-BATCH belongs
-to another row's batch and must not reach this batch's executor: it is excluded here, by
-machine, rather than left to the executor to notice a note that the drop has already
-removed. Duplicate (surface, input) records are a FAILURE, not something to dedupe
-silently — the checker reports them.
+OWNERSHIP IS A TYPED FIELD, APPLIED BEFORE THE DROP. Every in-scope census table carries a
+trailing Scope column valued IN or OOB:<owner>; this generator REQUIRES it, validates the
+value and the row's column count, and excludes OOB rows from the executor brief. An earlier
+version looked for the substring OUT-OF-BATCH in any cell, which let prose change scope by
+accident and made a missing scope silent. Duplicate (surface, input) records and conflicting
+ownership are FAILURES, detected BEFORE the scope filter so the filter cannot erase them.
 
 usage: derive-input-list.py <census.md> <out.md>
 """

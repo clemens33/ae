@@ -25,7 +25,6 @@ citations. This document stays with the seats.
 ## Top-level dispatcher (SC-012b, SC-014)
 
 | Input | Reaches | Class | Row | Scope |
-|---|---|---|---|---|
 | `-h` | outer case arm, ae:16841-16843 | ACCEPTED | SC-012b | IN |
 | `--help` | same arm, ae:16841 | ACCEPTED | SC-012b | IN |
 | `help` | same arm, ae:16841 | ACCEPTED | SC-012b | IN |
@@ -34,7 +33,6 @@ citations. This document stays with the seats.
 | `-V` | same arm, ae:16845 | ACCEPTED | SC-014 | IN |
 | an unknown LONG OPTION (`--nosuchflag`) | the launch parser's `--*)` arm, ae:16928-16930 | REJECTED | OUT-OF-BATCH — SC-022 | OOB:SC-022 |
 | a non-option word (`nosuchthing`) | the launch parser's `*)` arm, ae:16932-16934 — bound to `_LP_NAME` | ACCEPTED (launch candidate) | OUT-OF-BATCH — launch | OOB:launch |
-|---|---|---|---|---|
 **SC-012b owns the help aliases only.** The unknown-OPTION class is SC-022's and a
 non-option word enters the launch path rather than the command dispatch; neither can close
 SC-012b, both are marked OUT-OF-BATCH, and the generator therefore keeps them out of this
@@ -52,7 +50,6 @@ alias is SC-939f's. They are listed here for completeness of the parser and mark
 OUT-OF-BATCH; **they are not SC-013 evidence and no H arm closes them.**
 
 | Input | Reaches | Class | Row | Scope |
-|---|---|---|---|---|
 | `-h` | ae:16740-16742 | ACCEPTED (exit 0) | SC-013 | IN |
 | `--help` | ae:16740 | ACCEPTED (exit 0) | SC-013 | IN |
 | `help` | ae:16740 | ACCEPTED (exit 0) | SC-013 | IN |
@@ -68,7 +65,6 @@ OUT-OF-BATCH; **they are not SC-013 evidence and no H arm closes them.**
 | bare `steward` (no flags) | parser loop never entered | ACCEPTED | OUT-OF-BATCH — SC-930 | OOB:SC-930 |
 | `hub` spelling | ae:16722 | ACCEPTED | OUT-OF-BATCH — SC-939f | OOB:SC-939f |
 | a positional argument | ae:16752-16761 | REJECTED | OUT-OF-BATCH — SC-930 | OOB:SC-930 |
-|---|---|---|---|---|
 **Finding for the seats:** `contrib/aesteward` at `72c7293` contains only `CHARTER.md`,
 `README.md` and `steward.config` — no executable. Whatever `ae steward` does at these flags
 is therefore inside `ae` itself or depends on an artifact the frozen tree does not carry.
@@ -77,7 +73,6 @@ SC-013's arm must capture that rather than assume a steward program exists.
 ## `state` (SC-211a) — ae:12831-12873
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | no args | the print-current branch, ae:12836-12845 | ACCEPTED | IN |
 | `working` / `waiting-user` / `done` | ae:12853 | ACCEPTED | IN |
 | `blocked` with a reason | ae:12854-12859 | ACCEPTED | IN |
@@ -86,11 +81,9 @@ SC-013's arm must capture that rather than assume a steward program exists.
 | empty-string mode | `case ""` falls to `*)`, ae:12860 | REJECTED | IN |
 | mode with a leading `-` | `*)`, ae:12860 | REJECTED | IN |
 | extra words after a legal mode | joined into `reason`, ae:12850 | ACCEPTED | IN |
-|---|---|---|---|
 ## `goal` (SC-211b) — ae:14558-14593
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | no args | print-current, ae:14560-14566 | ACCEPTED | IN |
 | one word | set branch, ae:14577 | ACCEPTED | IN |
 | several words | set branch (`text="$*"`), ae:14578 | ACCEPTED | IN |
@@ -99,11 +92,9 @@ SC-013's arm must capture that rather than assume a steward program exists.
 | `--help` | ae:14574 -> `helper_goal_usage`, ae:14551-14555 | REJECTED (rc 1) | IN |
 | `-h` | ae:14574 -> `helper_goal_usage`, ae:14551-14555 | REJECTED (rc 1) | IN |
 | text that is only control bytes | stripped to empty, ae:14583-14584 | REJECTED | IN |
-|---|---|---|---|
 ## `memo` (SC-211c) — ae:14498-14548
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | no args | `cmd` defaults to `read`, ae:14501 | ACCEPTED | IN |
 | `add <text>` | ae:14511-14523 | ACCEPTED | IN |
 | `add` with no text | ae:14511 | REJECTED | IN |
@@ -120,11 +111,9 @@ SC-013's arm must capture that rather than assume a steward program exists.
 | `tail <n> <extra>` | ae:14537 | REJECTED | IN |
 | unknown subcommand | ae:14546 | REJECTED | IN |
 | any read/tail with no memo file | ae:14533 / ae:14540 | ACCEPTED (early exit 0) | IN |
-|---|---|---|---|
 ## `requests` (SC-211d, SC-212c) — ae:14407-14456
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | no args | `mode` defaults to `mine`, ae:14409 | ACCEPTED | IN |
 | `mine` / `inbox` / `all` | ae:14412 | ACCEPTED | IN |
 | unknown mode | ae:14412-14414 | REJECTED | IN |
@@ -132,21 +121,17 @@ SC-013's arm must capture that rather than assume a steward program exists.
 | `inbox` where identity is undetectable | ae:14417-14419 | REJECTED | IN |
 | `all` where identity is undetectable | passes the guard, ae:14417 | ACCEPTED | IN |
 | extra args after the mode | never read | IGNORED | IN |
-|---|---|---|---|
 ## `say` (SC-211l) — ae:14470-14486
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | text via argv | ae:14471-14472 | ACCEPTED | IN |
 | text via a pipe | ae:14473-14474 | ACCEPTED | IN |
 | no args on a real TTY | ae:14476 -> `helper_say_usage`, ae:14459-14468 | REJECTED (rc 2) | IN |
 | no args with redirected empty stdin | ae:14473-14474 then ae:14480 | REJECTED | IN |
 | whitespace-only text | ae:14480-14481 | REJECTED | IN |
-|---|---|---|---|
 ## `peek` (SC-211e) — ae:14596-14615
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | no args | ae:14597-14601 | REJECTED | IN |
 | a target spelling absent from the fixture | ae:14603 | REJECTED | IN |
 | an exact `alias:name` present in the fixture, no count | default 80, ae:14605 | ACCEPTED | IN |
@@ -156,66 +141,52 @@ SC-013's arm must capture that rather than assume a steward program exists.
 | `0` | clamped, ae:14612 | ACCEPTED | IN |
 | count above 2000 | clamped, ae:14611 | ACCEPTED | IN |
 | extra args after the count | never read | IGNORED | IN |
-|---|---|---|---|
 ## `agents` (SC-211f) — ae:14618-14638
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | no args | current-session branch, ae:14632-14636 | ACCEPTED | IN |
 | `--all` | ae:14619-14630 | ACCEPTED | IN |
 | any other argument | not `--all`, so the current-session branch | IGNORED | IN |
 | `--all` with an unreadable session meta | `grep` on it, ae:14623 | (capture; the `-f` test at ae:14622 passes for a mode-000 file) | IN |
-|---|---|---|---|
 ## `focus` (SC-211g) — ae:14641-14654
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | no args | ae:14642-14646 | REJECTED | IN |
 | a target spelling absent from the fixture | ae:14648 | REJECTED | IN |
 | an exact `alias:name` present in the fixture | ae:14651-14653 | ACCEPTED | IN |
 | extra args | never read | IGNORED | IN |
-|---|---|---|---|
 ## `interrupt` (SC-211h) — ae:14657-14701
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | no args | ae:14658-14662 | REJECTED | IN |
 | a target spelling absent from the fixture | ae:14664 | REJECTED | IN |
 | a present target, no message | ae:14673 | ACCEPTED | IN |
 | a present target + message, pane running a shell (H3) | ae:14673-14675 | REJECTED | IN |
 | a present target + message, pane running the agent binary (H1) | ae:14685 onward | ACCEPTED | IN |
-|---|---|---|---|
 ## `spawn` (SC-211i) — ae:14704-14723
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | `AE_PATH` missing or not executable | ae:14711-14716 (BEFORE argument handling) | REJECTED | IN |
 | no args | ae:14718-14720 | REJECTED | IN |
 | any args | `exec "$AE_PATH" _spawn …`, ae:14722 | delegated to `_cmd_spawn` | IN |
-|---|---|---|---|
 ### delegated `_cmd_spawn` (ae:11845-) — the non-name classes SC-211i owns
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | an alias not defined in the config | ae:11912 | REJECTED | IN |
 | a session absent from meta | ae:11895 | REJECTED | IN |
 | a session named in meta but not running | ae:11899 | REJECTED | IN |
 | a complete meta/config/session fixture with `meta.lock` HELD BEYOND THE 5s WAIT | ae:11928-11930, which is reached AFTER `tmux new-window` at ae:11920-11921 — the case captures pane/window residue as well as the refusal | REJECTED | IN |
 | a legal `alias` with no `:name` | prompt/default path, ae:11879 | ACCEPTED | IN |
 | a name violating the agent-name grammar | ae:11857 | OUT-OF-BATCH — SC-1201 | OOB:SC-1201 |
-|---|---|---|---|
 ## `retire` (SC-211j) — ae:14726-14747
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | `AE_PATH` missing or not executable | ae:14733-14738 | REJECTED | IN |
 | no args | ae:14740-14744 | REJECTED | IN |
 | any args | `exec "$AE_PATH" _retire …`, ae:14746 | delegated to `_cmd_retire` | IN |
-|---|---|---|---|
 ### delegated `_cmd_retire` (ae:12118-) — the classes SC-211j owns
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | a session absent from meta | ae:12135 | REJECTED | IN |
 | a `%pane-id` not in the session | ae:12153 | REJECTED | IN |
 | a bare name carried by two agents | ae:12175 | REJECTED | IN |
@@ -225,22 +196,18 @@ SC-013's arm must capture that rather than assume a steward program exists.
 | a reference absent from `agent.spawned.*` | ae:12208 | REJECTED | IN |
 | an agent reference present in `agent.spawned.*` | proceeds past ae:12203 | ACCEPTED | IN |
 | extra arguments after the target | never read | IGNORED | IN |
-|---|---|---|---|
 ## `events-tail` (SC-211n) — ae:14885-14905
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | any argv at all | never read — no argument handling exists | IGNORED | IN |
 | events file absent | `while [[ ! -f ]]; sleep 1`, ae:14897-14899 | HANGS until the file appears | IN |
 | events file present | banner, `tail -n 30 -f`, ae:14902 | HANGS by design (follow) | IN |
-|---|---|---|---|
 Every invocation of this surface ends by controller termination. There is no input that
 makes it exit on its own.
 
 ## `_register-sid` (SC-211o) — ae:14750-14825
 
 | Input / fixture fact | Reaches | Class | Scope |
-|---|---|---|---|
 | no slot argument | `SLOT` default at ae:14752 | ACCEPTED | IN |
 | a slot with no `launch_time.<slot>` | primary read ae:14756, fallback read ae:14758 | ACCEPTED | IN |
 | non-numeric launch time | reset at ae:14760-14762 | ACCEPTED | IN |
@@ -257,7 +224,6 @@ makes it exit on its own.
 | a candidate whose recorded cwd DIFFERS from the invoking cwd | compared at ae:14807 | (selection fact) | IN |
 | an explicitly named slot that is the invoking pane's | `SLOT` from argv, ae:14752 | (input class) | IN |
 | an explicitly named slot that is NOT the invoking pane's | `SLOT` from argv, ae:14752 | (input class) | IN |
-|---|---|---|---|
 Selection facts are inputs to vary, not outcomes; the arm captures which sid is written.
 
 **Scope statement.** The slot argument is treated as TRUSTED INTERNAL input in this batch:
@@ -268,7 +234,6 @@ to the identity boundary rows, not to SC-211o.
 ## `ae_resolve` (SC-211p) — ae:12878-12991
 
 | Input | Reaches | Class | Scope |
-|---|---|---|---|
 | `%<pane-id>` (any) | branch 1, ae:12885-12901 | ACCEPTED (returns 0) | IN |
 | `@session:agent`, session exists, agent present | branch 2 then 3 | ACCEPTED | IN |
 | `@session:agent`, session absent | ae:12919-12921 | REJECTED | IN |
@@ -282,7 +247,6 @@ to the identity boundary rows, not to SC-211o.
 | exact `alias:name` present | branch 3 | ACCEPTED | IN |
 | name absent | ae:12978 | REJECTED | IN |
 | empty string | branch 3 with an empty target | (capture) | IN |
-|---|---|---|---|
 ## Usage-exit family (seat-only) — SOURCE-DERIVED across the whole generated helper set
 
 Raised because one row's reading is not legible beside nothing. Each cell below is the EXIT
@@ -295,7 +259,6 @@ reading.
 reading only when H's captures exist.
 
 | Surface | Usage path | Exit line | Exit |
-|---|---|---|---|
 | `state` | dedicated function, `helper_state_usage` | ae:12828 | 2 |
 | `say` | dedicated function, `helper_say_usage` | ae:14467 | 2 |
 | `goal` | dedicated function, `helper_goal_usage` | ae:14555 | 1 |
@@ -306,7 +269,6 @@ reading only when H's captures exist.
 | `interrupt` | inline block | ae:14662 | 1 |
 | `spawn` | inline block | ae:14720 | 1 |
 | `retire` | inline block | ae:14744 | 1 |
-|---|---|---|---|
 Eight exit 1 and two exit 2. **No explanation of the split is offered here.** An earlier
 version of this section asserted that the exit-2 surfaces were the ones with a dedicated
 usage function; that is REFUTED by the same table — `goal` and `memo` are dedicated
@@ -320,7 +282,6 @@ family is read as a family.
 ## Row -> input-class mapping (for the seat gate)
 
 | Row | Surface | Input classes |
-|---|---|---|
 | SC-012b | dispatcher | the help spellings only (`-h`, `--help`, `help`) — the unknown-option class is SC-022's and a non-option word enters the launch path; both are OOB cross-references and neither can close this row |
 | SC-014 | dispatcher | version trio |
 | SC-013 | `steward` | help spellings + detach spellings + help-with-trailing-args + selector order/repetition (the OUT-OF-BATCH rows belong to SC-930/931/932/939f) |
@@ -340,4 +301,3 @@ family is read as a family.
 | SC-211p | `ae_resolve` | see the generated list |
 | D14b | held pending record correction | — |
 | SC-1301 | three meta writers | per-writer cuts, not argument classes |
-|---|---|---|
