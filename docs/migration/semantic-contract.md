@@ -607,8 +607,12 @@ legacy display fallback (pre-SC-511a records depend on that surviving); ANY pres
 routing member that does not fully and freshly match — stale full keys, mismatched
 keys, partial keys (slot without session or session without slot), and any present
 EMPTY member — makes the keyed identity invalid and UNASSOCIATED. Readers never
-erase a present member into structural absence (SC-510b's empty-as-omission and
-SC-511a's omit-when-empty are PRODUCER rules only). Evidence and tests carry the
+erase a present ROUTING member into structural absence — this prohibition is
+scoped to the four routing keys; the SC-510b trio's reader-side empty-as-omission
+stands unchanged, and SC-510b's/SC-511a's producer rules are authority for their
+own surfaces only (scoping clarification after the builder flagged the unscoped
+sentence would contradict the same ruling's trio preservation). Evidence and
+tests carry the
 three-way discriminator: keys absent / one present-empty member / all-present-empty.
 Display fallback for keyed events would create FALSE ATTRIBUTION against the
 SC-518/SC-511b loud direction; rename loss is the KNOWN LIMITATION until SC-977's
