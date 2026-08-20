@@ -374,6 +374,41 @@ defect's reach by two strings that could satisfy the broken check.* Measuring a 
 predicate other than the bug's own does not merely produce a different number — it
 misdescribes how much surface the bug has.
 
+### A remedy that depends on someone staying uninformed is not a remedy
+
+A lead leaked one row's disposition to an executor, then routed that row's
+symmetry certification to the OTHER seat — **because that seat was uninformed.** Within the
+hour the other seat, doing its job, sent the executor a ruling containing dispositions for
+six rows. The remedy evaporated, and there was no uncontaminated party left anywhere in the
+session.
+
+**In a system whose participants exchange rulings by design, "an uninformed party" is a
+temporary state, not a resource.** Any control that makes ignorance load-bearing is
+consumed the first time the people involved do their jobs.
+
+**Replace the uninformed judge with a recorded result.** The fix that works under universal
+contamination is a **reachability proof**: two pre-registered synthetic fixtures, committed
+before the real capture, one built to drive the arm to each candidate outcome. The arm must
+report BOTH; if it can only ever report one, it is ARM-INVALID and no real capture is taken
+through it; the runner refuses until both outcomes have been observed.
+
+Why that survives when judgment does not: **a contaminated reviewer cannot be trusted to
+JUDGE whether an arm is symmetric, but can still VERIFY that two committed fixtures produced
+two different outcomes.** That is a fact rather than a judgment, and facts do not care who
+reads them. It is the vacuity control one level up — every red arm must report NO at least
+once; every contaminated arm must reach both outcomes at least once.
+
+**The gap it does not close, which must be closed separately:** a reachability proof shows
+the arm's PREDICATE has both directions. It does not show the real FIXTURE is unbiased — a
+contaminated builder could pass both synthetics and still construct a real fixture that only
+lands one way. So the real fixture is pre-registered too, hash-pinned and committed
+alongside the synthetics, and inspected before the run. **Inspecting a committed artifact is
+not judgment and is not compromised by contamination.**
+
+Corollary on channels: normative dispositions, buckets, conflict fields and issue numbers go
+seat-to-seat only; workers receive neutral surface lines. A channel with no rule will leak
+through people behaving correctly.
+
 ### Bounding your own result
 
 A guard that becomes able to fail and immediately finds something proves exactly one thing:
