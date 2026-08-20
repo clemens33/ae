@@ -1,0 +1,13 @@
+seq=001	utc=2026-08-20T23:14:28Z	epoch=1787267668	event=case-OPEN	arm=A-H1	case=h1-c01-dash-h	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T23:14:28Z	epoch=1787267668	event=rows	rows=SC-012b/SC-014	surface=frozen ae dispatcher	spelling_invoked_separately=yes
+seq=003	utc=2026-08-20T23:14:28Z	epoch=1787267668	event=surface-state-captured	artifact_sha256=e12490185d54507775c74a00aca22839066513cc190e162e730e2f52ecf01f7c	paths=/private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae
+seq=004	utc=2026-08-20T23:14:28Z	epoch=1787267668	event=measured-input	argv=ae -h	bound_s=20
+seq=005	utc=2026-08-20T23:14:29Z	epoch=1787267669	event=invocation	label=canary-pre-h1-c01-dash-h	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=4d02720665a933e2178c2e64b3ed87e6ad212e3aa489c6a6cdec719b1bb53afa	stderr_sha256=f34438442da682d005cf3dcd40e3ee57d3232bcce6eb865221eeaf2394e04125
+seq=006	utc=2026-08-20T23:14:29Z	epoch=1787267669	event=canary	when=pre	tag=h1-c01-dash-h	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=007	utc=2026-08-20T23:14:29Z	epoch=1787267669	event=PRODUCT-START	label=20
+seq=008	utc=2026-08-20T23:14:29Z	epoch=1787267669	event=invocation	label=ae	rc=0	elapsed_s=0	timed_out=no	stdout_sha256=2615d2fa634910748c393d66b42578c9238ed1a0c6128524e0da3f0ac4fb04a3	stderr_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+seq=009	utc=2026-08-20T23:14:29Z	epoch=1787267669	event=PRODUCT-COMPLETE	label=20
+seq=010	utc=2026-08-20T23:14:30Z	epoch=1787267670	event=invocation	label=canary-post-h1-c01-dash-h	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=757fe18eb033622003b192339926a5b67ddca54bb0606e6e6e1304d03e53e24f	stderr_sha256=f558dfac81485a919fdeb20c18664be5fad1432aa26c7a4ac7912c726f8bf604
+seq=011	utc=2026-08-20T23:14:30Z	epoch=1787267670	event=canary	when=post	tag=h1-c01-dash-h	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=012	utc=2026-08-20T23:14:30Z	epoch=1787267670	event=write-record	changed_lines=0
+seq=013	utc=2026-08-20T23:14:30Z	epoch=1787267670	event=case-CLOSE	invocations_sha256=9d9a947c57c27368c7f4fd3d58cbf4a6a663d165d581dca37bb62a7166d6efd9

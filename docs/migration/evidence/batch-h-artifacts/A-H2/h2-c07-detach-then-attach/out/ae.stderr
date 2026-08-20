@@ -1,0 +1,2 @@
+Error: no steward config at /tmp/aecx/h/h1/home/.ae/steward/steward.config.
+Run 'ae steward --init' to scaffold the steward config + charter.

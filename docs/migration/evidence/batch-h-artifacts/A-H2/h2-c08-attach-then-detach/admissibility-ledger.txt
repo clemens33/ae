@@ -1,0 +1,13 @@
+seq=001	utc=2026-08-20T23:14:53Z	epoch=1787267693	event=case-OPEN	arm=A-H2	case=h2-c08-attach-then-detach	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T23:14:53Z	epoch=1787267693	event=rows	rows=SC-013	surface=frozen ae dispatcher	spelling_invoked_separately=yes
+seq=003	utc=2026-08-20T23:14:53Z	epoch=1787267693	event=surface-state-captured	artifact_sha256=e12490185d54507775c74a00aca22839066513cc190e162e730e2f52ecf01f7c	paths=/private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae
+seq=004	utc=2026-08-20T23:14:53Z	epoch=1787267693	event=measured-input	argv=ae steward --attach --detach	bound_s=30
+seq=005	utc=2026-08-20T23:14:54Z	epoch=1787267694	event=invocation	label=canary-pre-h2-c08-attach-then-detach	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=dc742fa6aa02b42a415ef77ab4cf4d3b461b6e19ecd7d6996ceaca589a828b1f	stderr_sha256=ad61d011c176bb5d09187e97098016c3a9889bdc70d23e65899b0504bb4a6435
+seq=006	utc=2026-08-20T23:14:54Z	epoch=1787267694	event=canary	when=pre	tag=h2-c08-attach-then-detach	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=007	utc=2026-08-20T23:14:54Z	epoch=1787267694	event=PRODUCT-START	label=30
+seq=008	utc=2026-08-20T23:14:55Z	epoch=1787267695	event=invocation	label=ae	rc=1	elapsed_s=0	timed_out=no	stdout_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	stderr_sha256=50708c5dc52faf2195325190983f3798e37962e483a7474e2a627a2083e9a2a0
+seq=009	utc=2026-08-20T23:14:55Z	epoch=1787267695	event=PRODUCT-COMPLETE	label=30
+seq=010	utc=2026-08-20T23:14:55Z	epoch=1787267695	event=invocation	label=canary-post-h2-c08-attach-then-detach	rc=7	elapsed_s=0	timed_out=no	stdout_sha256=90f43c1bc1356b9d1b04da18fbfd5124653d3099cd153adc45973f42b5e8df5a	stderr_sha256=b32cbd5888035f813185cdca394f6d4f0cff546d8d95a5335b9981f5992b398f
+seq=011	utc=2026-08-20T23:14:55Z	epoch=1787267695	event=canary	when=post	tag=h2-c08-attach-then-detach	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=012	utc=2026-08-20T23:14:55Z	epoch=1787267695	event=write-record	changed_lines=0
+seq=013	utc=2026-08-20T23:14:55Z	epoch=1787267695	event=case-CLOSE	invocations_sha256=17df994ae2570b41073fab708a21ccf7b63228d636c397bb6dcb6857a8d0b25b

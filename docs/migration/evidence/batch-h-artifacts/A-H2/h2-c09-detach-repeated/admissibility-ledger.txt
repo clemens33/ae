@@ -1,0 +1,13 @@
+seq=001	utc=2026-08-20T23:14:55Z	epoch=1787267695	event=case-OPEN	arm=A-H2	case=h2-c09-detach-repeated	frozen_sha=72c7293	frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T23:14:55Z	epoch=1787267695	event=rows	rows=SC-013	surface=frozen ae dispatcher	spelling_invoked_separately=yes
+seq=003	utc=2026-08-20T23:14:55Z	epoch=1787267695	event=surface-state-captured	artifact_sha256=e12490185d54507775c74a00aca22839066513cc190e162e730e2f52ecf01f7c	paths=/private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae
+seq=004	utc=2026-08-20T23:14:55Z	epoch=1787267695	event=measured-input	argv=ae steward --detach --detach	bound_s=30
+seq=005	utc=2026-08-20T23:14:56Z	epoch=1787267696	event=invocation	label=canary-pre-h2-c09-detach-repeated	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=f1b460ddc12da27eb1c4d239ffef5c1a53750d49e1cd95bf629afc12e2989b4d	stderr_sha256=e158f9085db33a9c08066e4c88540fe94e2ace2e65b5471f86f68ed50f75ea9c
+seq=006	utc=2026-08-20T23:14:56Z	epoch=1787267696	event=canary	when=pre	tag=h2-c09-detach-repeated	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=007	utc=2026-08-20T23:14:56Z	epoch=1787267696	event=PRODUCT-START	label=30
+seq=008	utc=2026-08-20T23:14:56Z	epoch=1787267696	event=invocation	label=ae	rc=1	elapsed_s=0	timed_out=no	stdout_sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	stderr_sha256=50708c5dc52faf2195325190983f3798e37962e483a7474e2a627a2083e9a2a0
+seq=009	utc=2026-08-20T23:14:56Z	epoch=1787267696	event=PRODUCT-COMPLETE	label=30
+seq=010	utc=2026-08-20T23:14:57Z	epoch=1787267697	event=invocation	label=canary-post-h2-c09-detach-repeated	rc=7	elapsed_s=1	timed_out=no	stdout_sha256=4706359c14d48a8421dfca8be25b6d4056b7661ccf6daaf87e32792b876fafa3	stderr_sha256=fafa2b497115cbba26b42f0d3b0e0cded95bb036e5a545e7db3692158a39c1e4
+seq=011	utc=2026-08-20T23:14:57Z	epoch=1787267697	event=canary	when=post	tag=h2-c09-detach-repeated	stdout_carried=1	stderr_carried=1	rc_seen=7	rc_expected=7	pass=yes
+seq=012	utc=2026-08-20T23:14:57Z	epoch=1787267697	event=write-record	changed_lines=0
+seq=013	utc=2026-08-20T23:14:57Z	epoch=1787267697	event=case-CLOSE	invocations_sha256=91ca366686cf05c71759d57c428d55b3cb670cf1c4e37362275665f5fcd03974

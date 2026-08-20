@@ -115,6 +115,11 @@ second.
 - new sha256: `42fba8e4e625e6c8b5633b0b096c6fbe3d56d39081b67983f56852e0fd0ca93e`
 - post-capture reporting only.
 
+### A17 — `_harness/derive-h1h2-record.py` registered after A-H1/A-H2's run
+
+- new sha256: `bc2c105a87f01788d6c83ac66fb4b98c7e6d98c810f087fc9ca9bc4025933cfb`
+- post-capture reporting only.
+
 ## Frozen source
 
 `72c7293`, verified by hash at every case open and recorded in each case's ledger.

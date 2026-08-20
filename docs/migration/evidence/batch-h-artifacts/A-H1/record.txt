@@ -1,0 +1,26 @@
+## A-H1 — generated from the captures
+
+Each spelling was invoked separately. `stdout sha256` is what makes 'these coincide'
+a statement about bytes: two spellings agree only if their captured stdout hashes
+agree.
+
+  case                            argv                        rc   out B   stdout sha256   wrote  canary
+  ------------------------------  --------------------------  ---  ------  --------------  -----  ------
+  h1-c01-dash-h                   ae -h                       0    3236    2615d2fa6349    0      2/2   
+  h1-c02-help-long                ae --help                   0    3236    2615d2fa6349    0      2/2   
+  h1-c03-help-word                ae help                     0    3236    2615d2fa6349    0      2/2   
+  h1-c04-version-word             ae version                  0    9       4cd81e5f263a    0      2/2   
+  h1-c05-version-long             ae --version                0    9       4cd81e5f263a    0      2/2   
+  h1-c06-version-short            ae -V                       0    9       4cd81e5f263a    0      2/2   
+
+## stderr first line, per case that produced any
+
+
+## spelling families, by captured stdout hash
+
+  2615d2fa6349  3 case(s): h1-c01-dash-h, h1-c02-help-long, h1-c03-help-word
+  4cd81e5f263a  3 case(s): h1-c04-version-word, h1-c05-version-long, h1-c06-version-short
+
+  distinct stdout hashes: 2 across 6 cases
+  distinct rc values: ['0']
+  cases whose AE_HOME changed: 0

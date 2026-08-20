@@ -1,0 +1,39 @@
+## A-H2 — generated from the captures
+
+Each spelling was invoked separately. `stdout sha256` is what makes 'these coincide'
+a statement about bytes: two spellings agree only if their captured stdout hashes
+agree.
+
+  case                            argv                        rc   out B   stdout sha256   wrote  canary
+  ------------------------------  --------------------------  ---  ------  --------------  -----  ------
+  h2-c01-dash-h                   ae steward -h               0    753     7179022f8ecf    0      2/2   
+  h2-c02-help-long                ae steward --help           0    753     7179022f8ecf    0      2/2   
+  h2-c03-help-word                ae steward help             0    753     7179022f8ecf    0      2/2   
+  h2-c04-help-trailing            ae steward --help extra ar  0    753     7179022f8ecf    0      2/2   
+  h2-c05-detach                   ae steward --detach         1    0       e3b0c44298fc    0      2/2   
+  h2-c06-no-attach                ae steward --no-attach      1    0       e3b0c44298fc    0      2/2   
+  h2-c07-detach-then-attach       ae steward --detach --atta  1    0       e3b0c44298fc    0      2/2   
+  h2-c08-attach-then-detach       ae steward --attach --deta  1    0       e3b0c44298fc    0      2/2   
+  h2-c09-detach-repeated          ae steward --detach --deta  1    0       e3b0c44298fc    0      2/2   
+
+## stderr first line, per case that produced any
+
+  h2-c05-detach
+      Error: no steward config at /tmp/aecx/h/h1/home/.ae/steward/steward.config.
+  h2-c06-no-attach
+      Error: no steward config at /tmp/aecx/h/h1/home/.ae/steward/steward.config.
+  h2-c07-detach-then-attach
+      Error: no steward config at /tmp/aecx/h/h1/home/.ae/steward/steward.config.
+  h2-c08-attach-then-detach
+      Error: no steward config at /tmp/aecx/h/h1/home/.ae/steward/steward.config.
+  h2-c09-detach-repeated
+      Error: no steward config at /tmp/aecx/h/h1/home/.ae/steward/steward.config.
+
+## spelling families, by captured stdout hash
+
+  e3b0c44298fc  5 case(s): h2-c05-detach, h2-c06-no-attach, h2-c07-detach-then-attach, h2-c08-attach-then-detach, h2-c09-detach-repeated
+  7179022f8ecf  4 case(s): h2-c01-dash-h, h2-c02-help-long, h2-c03-help-word, h2-c04-help-trailing
+
+  distinct stdout hashes: 2 across 9 cases
+  distinct rc values: ['0', '1']
+  cases whose AE_HOME changed: 0

@@ -13,7 +13,8 @@ accepts it.
 | A-H4 — SC-211p, `_lib` name resolution | COMPLETE — 15 case runs |
 | A-H5 — SC-211o, codex identity registration | COMPLETE — 16 case runs |
 | A-H3 — the argument surface (SC-211a-j, SC-212c) | COMPLETE — 72 case runs |
-| A-H1 / A-H2 — dispatch, version, steward | not started |
+| A-H1 — dispatch and version spellings (SC-012b, SC-014) | COMPLETE — 6 case runs |
+| A-H2 — steward help and detach spellings (SC-013) | COMPLETE — 9 case runs |
 | A-H8 — the long-lived query | not started |
 | SC-211l — `say` under its containment | COMPLETE — 5 case runs |
 | SC-1301 — hooks and barriers | not started |
@@ -137,3 +138,20 @@ Containment, in the order of what carries the claim:
 
 Every case's census must report its own deliberately in-range control; a case whose census
 cannot see its control is INCONCLUSIVE rather than contained. `RUN-MANIFEST.md` A14-A15.
+
+## A-H1 and A-H2 — spellings, each invoked separately
+
+A-H1 covers SC-012b's help spellings and SC-014's version spellings; A-H2 covers the help
+and detach spellings SC-013 owns. Each spelling is its own case: one shared capture cannot
+show a divergence between spellings, and that is what these rows are about. The
+unknown-option and non-option classes belong to SC-022 and the launch path and are not
+here; `--init`, `--attach`, a bare `steward` and the `hub` alias belong to SC-932, SC-931,
+SC-930 and SC-939f.
+
+Each record groups cases into spelling FAMILIES BY THE HASH of their captured stdout, so
+"these coincide" is a statement about bytes rather than an impression from reading three
+tables side by side.
+
+The detach cases run under a longer bound, and the arm records what was running under the
+fixture's own AE_HOME at teardown before reaping it — a detach starts something, and what
+it started is part of the reading.
