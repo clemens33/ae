@@ -426,7 +426,7 @@ code-observation was wrong for them); Empirical: pending; Conflict: none:
 **SC-212d — `peek <agent> [lines]` signature.**
   Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212e — `agents [--all]` signature.**
-  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
+  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table row :105 + prose :111 ("`agents --all` lists agents across all running ae sessions") — one optional-flag signature, jointly supported (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212f — `focus <agent>` signature.**
   Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212g — `interrupt <agent> [message]` signature.**
@@ -434,7 +434,7 @@ code-observation was wrong for them); Empirical: pending; Conflict: none:
 **SC-212h — `spawn <alias:name> [prompt]` signature.**
   Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212i — `retire <agent|pane-id>` signature.**
-  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
+  Bucket 2. Authority: AGENTS.md@72c7293 table row :109 + name-resolution prose :111 (`%pane-id`) — one CLI-signature claim: every helper taking an agent argument resolves `%pane-id`; the spawned-only semantic is SC-212q's, not this row's (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212j — `say` accepts args or piped stdin.**
   Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212k — `memo read [--topic t]` signature.**
@@ -446,7 +446,7 @@ code-observation was wrong for them); Empirical: pending; Conflict: none:
 **SC-212n — peek default is 80 lines.**
   Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212o — peek maximum is 2000 lines.**
-  Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
+  Bucket 2. Authority: helpers.md@72c7293:77 Inspection table (peek: "default 80, max 2000") — re-anchored: the AGENTS.md table documents only the default; the max appears nowhere in AGENTS.md (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212p — `interrupt` with no message cancels only.**
   Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212q — `retire` acts on spawned agents only.**
@@ -454,8 +454,19 @@ code-observation was wrong for them); Empirical: pending; Conflict: none:
 **SC-212r — `say` emits a chat event.**
   Bucket 2. Authority: AGENTS.md@72c7293 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
 **SC-212s — `state <working|waiting-user|blocked|done> [reason]` signature** (gate
-  Bucket 2.
-correction: documented at AGENTS.md@72c7293:96 — not code-observation).
+correction: documented — not code-observation).
+  Bucket 2. Authority: AGENTS.md@72c7293:96 session-helpers table (frozen helper docs). Empirical: pending. Conflict: none.
+
+**classified_by (S3 helper-signature MARK batch 2A, ae-20260820T164044Z-f958a368):
+SC-212a, SC-212b, SC-212c, SC-212d, SC-212e, SC-212f, SC-212g, SC-212h, SC-212i,
+SC-212j, SC-212k, SC-212l, SC-212m, SC-212n, SC-212o, SC-212p, SC-212q, SC-212r,
+SC-212s — fable5:lead + gpt56sol:colead, 2026-08-20. Exact enumeration; later rows
+never inherit this mark; SC-211a..p (Batch 2B) are EXCLUDED — they remain
+code-observation rows awaiting accepted IS plus a preserve/fix/diverge seat ruling.
+All bucket 2, conflict=none. Marked with the countersign conditions applied first:
+SC-212o re-anchored to helpers.md@72c7293:77, SC-212e/SC-212i composite anchors
+(table row + :111 prose), SC-212s normalized into one contiguous row.
+Normative/conflict lane only; Empirical remains pending throughout.**
 
 Code-observed refusal/malformed modes — one head per helper
 (`authority=code-observation`; Empirical: pending probe; Conflict: pending seat
