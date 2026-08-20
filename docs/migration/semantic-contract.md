@@ -1092,37 +1092,42 @@ The rows below are the normative rules that govern every adapter.
 **SC-700 — delivery gates on readiness, initialization checked first.** Bucket 1 — both
 launch-delivery moments (spawn task, launch/resume prompt) gate on input-readiness, and
 a tool that is provably still initializing is not ready however idle its input box
-looks. Authority: AGENTS.md readiness ruling ("an idle input box is not an initialized
-application"). Empirical: measured codex timings @72c7293. Conflict: none.
+looks. Authority: AGENTS.md@72c7293:141 readiness bullet ("An idle input box is not
+an initialized application"; both delivery moments gated, `_tool_initializing` asked
+FIRST). Empirical: measured codex timings @72c7293. Conflict: none.
 
 **SC-701 — readiness markers are negative evidence only.** Bucket 1 — a marker's
 absence is never proof of readiness; a predicate that demands a positive banner breaks
-the day a tool stops printing one. Authority: AGENTS.md readiness ruling. Empirical:
+the day a tool stops printing one. Authority: AGENTS.md@72c7293:149-150 ("The
+markers are NEGATIVE: their absence is not proof of readiness"). Empirical:
 codex `model: loading` / MCP progress measurements. Conflict: none.
 
 **SC-702 — a readiness timeout fails loud and durable.** Bucket 1 — the pane text is
 preserved next to the session and an event is emitted, because launch delivery runs
-detached where stderr reaches nobody. Authority: AGENTS.md readiness ruling.
-Empirical: pending. Conflict: none.
+detached where stderr reaches nobody. Authority: AGENTS.md@72c7293:151-152 ("Timeout
+is a LOUD, DURABLE failure"). Empirical: pending. Conflict: none.
 
 **SC-703 — an unmodelled TUI is an accepted risk, never a pretend gate.** Bucket 2 —
 a tool without readiness/busy modelling (grok at 72c7293) delivers ungated, and that
-status is DOCUMENTED, not silently faked. Authority: AGENTS.md grok row (ruling
-framing). Empirical: matrix. Conflict: none.
+status is DOCUMENTED, not silently faked. Authority: AGENTS.md@72c7293:137 grok
+column ("EXEMPT — no readiness detection … Accepted risk, not a pretend gate").
+Empirical: matrix. Conflict: none.
 
 **SC-704 — adapter expectations are seat-ruled, never measurement-promoted.** Bucket 1
 — the capability matrix stays IS; measurements never become expected outputs without an
 explicit seat ruling (the anti-oracle rule). The generic product outcomes are frozen
 NOW as SC-704a-e (gate ruling — classification is not deferred to P1); exact flags,
 markers, and per-tool capabilities remain empirical/adaptable. Upstream drift is
-detected (canary class, #22), never silently absorbed. Authority: #81 source-lane rule
-+ epic #79. Empirical: the matrix. Conflict: none.
-
-**SC-704a — injected ae context never replaces a vendor's own agent prompt.** Bucket 1
-  Authority: S8 joint adapter ruling (SC-704 frame).
-— context rides an append/positional/config surface per tool; a replace-style flag is
-forbidden (the grok `--system-prompt-override` trap). Empirical: matrix rows.
+detected (canary class, #22), never silently absorbed. Authority: adapter-outcome
+ruling commit 661f8f6 + the #81 source-lane rule + epic #79. Empirical: the matrix.
 Conflict: none.
+
+**SC-704a — injected ae context never replaces a vendor's own agent prompt.** Bucket
+1 — context rides an append/positional/config surface per tool; a replace-style flag
+is forbidden (the grok `--system-prompt-override` trap). Authority: adapter-outcome
+ruling commit 661f8f6 (SC-704 frame) + AGENTS.md@72c7293 grok system-prompt row
+("`--system-prompt-override` … REPLACES grok's own agent prompt — never use either").
+Empirical: matrix rows. Conflict: none.
 
 **SC-704b — capture binds only a positively-owned signal.** Bucket 3 — SHOULD: an
   Authority: S8 joint adapter ruling + DR-005 ownership rule.
@@ -1145,10 +1150,22 @@ fresh launch remains an explicit, distinct operation that never claims to be a r
 Empirical: matrix fallback rows. Conflict: DR-005.
 
 **SC-704e — rerun truth is explicit.** Bucket 1 — re-running a launch script either
-  Authority: S8 joint adapter ruling (SC-704 frame) + SC-811 pins context.
 resumes the same conversation or honestly starts fresh; never a collision error,
-never a silent identity swap. Empirical: matrix rerun row + SC-811 pins.
-Conflict: none.
+never a silent identity swap. Authority: adapter-outcome ruling commit 661f8f6
+(SC-704 frame) + AGENTS.md@72c7293 launch-rerun bullet and table row (upfront-UUID
+tools resume the same UUID; post-launch-capture tools start FRESH — "the conversation
+is simply lost", never a collision) + SC-811 pins context. Empirical: matrix rerun
+row + SC-811 pins. Conflict: none.
+
+**classified_by (S8 adapter-frame MARK batch 5, ae-20260820T174651Z-400d70f4):
+SC-700, SC-701, SC-702, SC-703, SC-704, SC-704a, SC-704e — fable5:lead +
+gpt56sol:colead, 2026-08-20. Exact enumeration; later rows never inherit; SC-704b,
+SC-704c, SC-704d explicitly do NOT inherit this mark (bucket-3/DR-005 rows, Q2).
+SC-700/701/702/704/704a/704e bucket 1, SC-703 bucket 2; conflict=none throughout.
+Marked with the countersign conditions applied first: SC-704a/704e normalized into
+contiguous rows, the joint-ruling authority made durable (adapter-outcome ruling
+commit 661f8f6 + the SC-704/#81 frame), anchors line-precise. Normative/conflict
+lane only; Empirical columns untouched.**
 
 **SC-705 — tool detection identifies the actual executable without interpreting
 injected prose.** Bucket 3 — semantic SHOULD under joint ruling: classification derives
