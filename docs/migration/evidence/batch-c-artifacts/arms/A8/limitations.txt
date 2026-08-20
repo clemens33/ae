@@ -27,3 +27,19 @@ product did, and it does not make the controls pre+post.
 
 Ruling: seat ruling of 2026-08-20 — strengthen the rule going forward, disclose the
 limitation here, do not re-run. Raised by the arm's own author.
+
+## SEAT RULING APPENDED (2026-08-20) — both seats, independently, same answer
+
+Do not re-run A8 for the pre+post rule. The second seat's reasoning is narrower than this
+file's original framing and is recorded because it changes what the limitation IS:
+
+  A8's instrument is a before/after SNAPSHOT COMPARATOR, not a live watcher. The persisted
+  before-snapshot proves the reader operated before the product ran, and the
+  post-invocation controls prove the after comparator detects both change classes
+  (byte-identical rewrite, and content change). For a state-diff instrument there is no
+  "blind during the invocation" state to guard against.
+
+The pre+post chronology remains correct for Batch H, whose capture and witness wrappers ARE
+live during the invocation. It does not retroactively invalidate this arm. The limitation
+recorded above therefore stands as a CHRONOLOGY DISCLOSURE — these controls fired after —
+and not as an unproven-instrument caveat.

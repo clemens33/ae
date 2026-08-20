@@ -1,7 +1,6 @@
 # Batch H-HELPER — design
 
-**STATUS: DRAFT v4 — worker-authored (opus5:cexec), REQUEST-CHANGES from gpt56sol:colead
-addressed below. No arm runs until both seats approve.** v1-v3 are in git history;
+**STATUS: DRAFT v6 — worker-authored (opus5:cexec). Two REQUEST-CHANGES rounds addressed. No arm runs until both seats approve.** v1-v3 are in git history;
 this revision accepts every factual correction in that review, and each one is recorded
 where it changed the design rather than silently applied.
 
@@ -144,10 +143,14 @@ down, and the earlier construction was not admissible:
 
 ## Required pre-step — the argument census
 
-Before any arm is written, the argument handling of each frozen helper AND of the top-level
-dispatcher and the `steward` flag surface is enumerated into a committed table, returned for
-a seat gate with an explicit row -> input-class mapping. The executor receives the
-seat-approved INPUT LIST; the classified labels stay with the seats. The table records: for every input class, whether it is ACCEPTED, REJECTED, IGNORED, or
+Before any arm is written, the argument handling of each frozen helper, the delegated
+`_cmd_spawn`/`_cmd_retire` paths, the top-level dispatcher and the `steward` flag surface is
+enumerated into a committed table, returned for a seat gate with an explicit row ->
+input-class mapping. The executor receives the seat-approved INPUT LIST, which is GENERATED
+from the census by a committed script that drops every non-input COLUMN — a columnar drop,
+not a vocabulary filter, so no outcome label reaches the brief whatever it is called — and
+is gated by a committed checker (diff-clean, set equality, a novel-label injection proving
+the drop, and a lexical belt) with five red-proofs. The table records: for every input class, whether it is ACCEPTED, REJECTED, IGNORED, or
 HANGS, derived from the frozen function itself with line citations — not from prose. The
 arms are then built from that table. This exists because the v3 matrix was freehand and
 carried two direct row/source mismatches (below); a census makes the omission visible
@@ -171,11 +174,20 @@ recorded beside it.
 ## Arms
 
 **A-H1 top-level dispatch (SC-012b, SC-014).** `ae -h`, `ae --help`, `ae help`, `ae
-version`, `ae --version`, `ae -V`, and one unknown flag — each invoked separately into its
-own capture (ae:16841-16848).
+version`, `ae --version`, `ae -V`, an unknown LONG OPTION, and a non-option word — each
+invoked separately into its own capture. The last two are separate input classes, not one
+"unknown word": the launch parser handles `--*` and a bare word in different arms
+(ae:16928-16934), and collapsing them would erase the distinction the row is about.
 
-**A-H2 steward (SC-013).** `ae steward --help`; `ae steward --detach` under a bound, its
-process reaped in teardown, file manifest before/after.
+**A-H2 steward (SC-013).** SC-013 owns the HELP and DETACH spellings only: `-h`,
+`--help`, `help`, `--detach`, `--no-attach`, help with trailing arguments, and the
+selector-order and repeated-selector classes that the iterative parser makes reachable
+(ae:16730-16758). Detach invocations run under a bound with the process reaped in teardown
+and the file manifest captured before and after. `--init`, `--attach`/`--switch`, a bare
+`steward`, the `hub` spelling and a positional argument are OTHER ROWS' (SC-932, SC-931,
+SC-930, SC-939f); they appear in the census as out-of-batch cross-references and NO arm
+here closes them. `contrib/aesteward` at 72c7293 carries no executable, so what these
+flags reach is captured rather than assumed.
 
 **A-H3 helper argument surface (SC-211a-j, SC-211l, SC-212c).** One case per helper, each
 invoked from a real pane, with the input classes drawn from the argument census. Known
@@ -185,9 +197,13 @@ corrections to the v3 matrix, all from the review and all verified against froze
   with a trailing argument, empty text, and `-h`/`--help` as their own inputs. (v3's
   "two positionals" class rested on a source misreading; the census supersedes it.)
 - **SC-211i `spawn`:** the row is `spawn` NON-NAME argument errors, so name-grammar inputs
-  are routed to SC-1201 (F-IDENTITY) rather than used here. Input classes: no args,
-  missing alias, unknown alias, absent `meta`, malformed `meta`/`config`, and an
-  environment in which the pre-main `AE_PATH` guard (ae:14711-14716) is reachable.
+  are routed to SC-1201 (F-IDENTITY) rather than used here. Input classes come from the census's WRAPPER rows (no args; an environment in which the
+pre-main `AE_PATH` guard at ae:14711-14716 is reachable) AND its DELEGATED `_cmd_spawn`
+sub-census (an alias not defined in the config, a session absent from meta, a session named
+but not running, meta present but unlockable, a legal alias with no `:name`). `retire`
+likewise draws on the `_cmd_retire` sub-census — main-agent reference, configured worker,
+reference absent from `agent.spawned.*`, ambiguous bare name, `%pane-id` outside the
+session, extra arguments.
 - **SC-211d `requests`, SC-211j `retire`, SC-211c `memo`, SC-211e `peek`, SC-211f
   `agents`, SC-211l `say`:** input classes come from the census, including no-arg
   defaults, extra-arg handling, ambiguous and out-of-session targets, negative and
@@ -209,11 +225,14 @@ a different resolution domain is visible as such. The `tmux has-session -t <name
 recorded as a separate confounder rather than being allowed into the fixture.
 
 **A-H5 codex identity registration (SC-211o).** `_register-sid` is invoked as
-`_register-sid <slot>` (ae:14750-14824) against H6's cohorts. The fixture varies ONE fact
-at a time across the candidate Codex JSONL files and the slot's meta: launch-id token
-absent / matching / mismatched, file mtime before vs after `launch_time.<slot>`, two
-eligible files with different mtimes, first-line id malformed or missing, today vs
-yesterday directory, and the working directory the invocation is made from. Captures: the
+`_register-sid <slot>` (ae:14750-14824) against H6's cohorts. The fixture varies ONE fact at a time across the candidate Codex JSONL files and the
+slot's meta: launch-id token absent / matching / mismatched, file mtime before vs after
+`launch_time.<slot>`, two eligible files with different mtimes, two with EQUAL mtimes, a
+recorded cwd matching or differing from the invoking one, first-line id malformed or
+missing, today vs yesterday directory, the default slot, and an explicitly named slot other
+than the invoking pane's. The slot argument is scoped as TRUSTED INTERNAL input in this
+batch — `_register-sid` is launched by ae, not by a peer — and hostile slot values belong to
+the identity boundary rows if that scope is ever wrong. Captures: the
 `codex.<slot>.sid` artifact, meta bytes before and after, and every candidate file's own
 facts (path, mtime, first line). Invoking with a slot other than the invoking pane's is its
 own input class. The v3 arm's id-argument inputs are discarded: they do not exist in this
@@ -255,11 +274,13 @@ atomic publication. Inactive equivalence proven before any capture.
 query, so refusal semantics do not apply and a generic timeout must never be read as a
 product rc. The arm uses NAMED barriers and controller termination: (i) invoked against a
 session directory whose events file does not yet exist, with the controller CREATING it as
-a named transition that the capture brackets; (ii) a replay capture closed by a named event
+a named transition that the capture brackets; (ii) producer-derived replay cohorts of 29, 30 and 31 events with per-line provenance,
+each read before any follow begins, so the frozen replay cut is exercised on both sides and
+at the boundary rather than assumed; (iii) a replay capture closed by a named event
 barrier — the controller emits a known event and the capture closes when it appears; (iii)
 a follow capture across a second named event; (iv) a partial final line written in TWO
 steps with a barrier between them, so what the follower emits at each step is captured
-separately; (v) an unknown-argv invocation captured beside the plain one. Termination is
+separately; (vi) an unknown-argv invocation captured beside the plain one. Termination is
 performed by the controller AFTER the named capture barrier and recorded as a controller
 action — never as an rc, never as a timeout. SC-1306e's snapshot claim is cross-referenced,
 not classified here.
