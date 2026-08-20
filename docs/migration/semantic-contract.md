@@ -155,12 +155,14 @@ entry. This row does NOT cover bare invocation — commands.md:4 owns bare `ae [
 as launch/reattach, not help (residue: SC-012b). Authority: commands.md@72c7293:39
 ("ae help — Show short help"). Empirical: pending. Conflict: none.
 
-**SC-012b — help-path reachability outside `ae help`.** `authority=code-observation`
-— which invocations other than the literal `ae help` reach the help output (top-level
-`-h`/`--help`, or any dispatcher fallback) is undocumented in the frozen docs; bare
-`ae [name]` is launch/reattach per commands.md:4, and SC-022 separately owns the
-unknown-OPTION usage-error surface. Probe + seat ruling. Empirical: pending probe.
-Conflict: pending seat closure (UNCLASSIFIED).
+**SC-012b — top-level `-h`/`--help` as aliases of `ae help`.**
+`authority=code-observation` — the frozen dispatcher has exactly ONE help branch,
+`help | -h | --help` at ae:16841-16843 (`cmd_help` has no other caller); the two flag
+spellings are undocumented in the frozen docs. Narrowed from a broader
+"dispatcher-fallback" phrasing by seat second-gate correction (there is no such
+surface: unknown OPTION is SC-022's, non-option falls into launch per commands.md:4).
+Probe + seat ruling. Empirical: pending probe. Conflict: pending seat closure
+(UNCLASSIFIED).
 
 **classified_by (S1 preflight MARK, ae-20260820T115449Z-1b7ef041): SC-016a, SC-016b,
 SC-016c, SC-016d, SC-017a..i, SC-020a, SC-020b, SC-020c — fable5:lead +
@@ -863,8 +865,10 @@ no invented usage error — and no silent selector override. IS at 72c7293: `lis
 --needs-attn --stopped` emits RUNNING attention sessions — ae:4122-4127 force-resets
 the scope to running after selector parsing whenever an attention/activity filter is
 present, silently overriding `--stopped`. Authority: commands.md filter rows + joint
-ruling. Empirical: observed (Batch C A2 @36a107b, inter_needsattnstopped arms, both
-argument orders). Conflict: fix-known-defect(#96, intended: literal intersection).
+ruling. Empirical: observed (Batch C A2 @36a107b, inter_needsattnstopped arm — ONE
+captured order; order independence is source-proven, not captured: the ae:4122-4127
+post-parse force ignores selector order). Conflict: fix-known-defect(#96, intended:
+literal intersection).
 **classified_by: RE-MARKED after reclassification — both seats, 2026-08-20.**
 
 **SC-521b — same-dimension scope flags are alternatives: last distinct selector
