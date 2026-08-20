@@ -11,10 +11,12 @@ document AND its prerequisites are seat-green.
 assigned frozen-IS claim, using the same layer the product reads, on uncontaminated
 inputs, without importing an expected value.
 
-## Prerequisites (hard gates, both PENDING — nothing here is approved yet)
+## Prerequisites (hard gates)
 
-1. **B0 designs** (SC-507b, SC-511c, D01–D04 concurrency, SC-1208): separate seat
-   gate. EXECUTION OWNERSHIP (B0 preflight ruling): B0 owns the DESIGNS for D01–D04
+1. **B0 designs** (SC-507b, SC-511c, D01–D04 concurrency, SC-1208): **SATISFIED**
+   — all eight designs seat-approved (colead, ae-20260820T142705Z-afec1702, on
+   b0-design.md v2.2 at c6cbccd). The approved D01–D04 designs are hereby STAGED
+   into this batch for the C worker to execute. EXECUTION OWNERSHIP (B0 preflight ruling): B0 owns the DESIGNS for D01–D04
    concurrency; the C worker EXECUTES those approved designs and returns their
    evidence; the B0 worker itself executes only SC-507b/511c/1208. C consumes approved
    DESIGNS; it never redesigns them.

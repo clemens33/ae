@@ -14,8 +14,14 @@ manipulation→reason mapping lives in the seat annex only.
 ## Producer and sandbox
 
 - Isolated AE_HOME/HOME sandbox; a real `ae` launch at 72c7293 whose config's
-  agent commands are FIXTURE SHELLS (plain bash), never live models; dedicated
-  tmux server per the harness marker discipline.
+  agent command is a CONTROLLABLE FAKE AGENT executable, never a live model and
+  never a plain shell (gate correction: with agent_bin=bash the pane's own shell
+  satisfies the dead-check's descendant search at ae:16298-16318, and a shell
+  pane makes real sends hit shell-refusal or echo nudges back as fresh pane
+  activity). The fake: a distinct non-shell foreground identity (its own comm/
+  `pane_current_command` name), a stable no-echo pane (fixed prompt, reads stdin
+  without echoing), accepts real `send` deliveries, and prints controller-driven
+  lines on command. Dedicated tmux server per the harness marker discipline.
 - The REAL generated watchdog from that launch is the producer. No instrumentation
   patch is needed: pacing rides the documented `AE_WATCHDOG_*` environment knobs
   (`AE_WATCHDOG_INTERVAL_SEC`, `AE_WATCHDOG_STALE_MIN`, `AE_WATCHDOG_MAX_NUDGES`,
@@ -27,20 +33,33 @@ manipulation→reason mapping lives in the seat annex only.
   observation windows (a fixed number of watchdog cycles) whose expiry is recorded
   INCONCLUSIVE — never interpreted by the worker.
 
-## Arms (each a fresh sandbox; capture = events.jsonl bytes + watchdog log + pane
-snapshots + knob values, before/after manifests)
+## Arms (three independent fresh sandboxes; capture = events.jsonl bytes +
+watchdog log + pane snapshots + send rc + knob values, before/after manifests)
 
-1. **Process-killed pane** — controller kills the fixture agent's process so the
-   pane drops to (or loses) its shell; observe N cycles.
-2. **Idle pane past threshold** — fixture agent emits one initial event, then
-   nothing; `AE_WATCHDOG_STALE_MIN` shortened; observe N cycles.
-3. **Nudge-cap consumption** — idle pane as in arm 2, `AE_WATCHDOG_MAX_NUDGES`
-   set low; observe enough cycles for the cap to be reached and passed.
-4. **Recovery after arm-3 state** — from arm 3's end state, the fixture pane
-   emits fresh activity (a real helper `state working` invocation); observe N
-   further cycles. (Captures any clearing bytes the frozen producer emits —
-   `throttle-cleared`/`alert-cleared` are documented actions; whether and when
-   they appear is the capture.)
+1. **Child-killed pane** — controller kills ONLY the fake agent child, so the
+   original pane shell returns as the foreground; observe N cycles. (The
+   dead-check resolves the recorded agent_bin and searches for it under the
+   pane PID — ae:15895+ `_load_agent_bins`, ae:16298-16318 descendant walk.)
+2. **Live-but-static pane past threshold** — the fake stays alive and its pane
+   static; no further events; `AE_WATCHDOG_STALE_MIN` and
+   `AE_WATCHDOG_MAX_NUDGES` shortened; observe enough cycles for the nudge cap
+   to be reached and passed. Record every real-send rc and the nudge bytes the
+   pane received.
+3. **Pane-phrase two-phase arm (single sandbox, single running watchdog — the
+   throttle streak is PROCESS MEMORY in the running watchdog and cannot survive
+   a fresh clone; recovery is therefore a named SUBARM here, not a fourth
+   sandbox):**
+   - *Phase A*: with the fake process LIVE, the controller has it print one
+     documented GENERIC phrase (`429 Too Many Requests` — the generic catalog
+     applies to every agent_bin, matched over the captured last ~15 pane lines:
+     ae:15842-15889) into its pane tail; `AE_WATCHDOG_THROTTLE_ALERT_CYCLES`
+     lowered; cross successive cycle barriers, capturing after each.
+   - *Phase B*: the controller has the fake print enough nonmatching lines to
+     displace the phrase from the captured tail, POSITIVELY captures that pane
+     state, then crosses the next cycle(s), capturing whatever bytes the
+     producer emits. (Detection and clearing are pane-content facts — an event
+     such as `state working` cannot remove pane bytes; clear emission at
+     ae:16383-16396.)
 
 Each arm also records WHICH watchdog code path ran (the generated watchdog's own
 log lines), giving every harvested byte its provenance: producing binary, arm,
@@ -66,9 +85,12 @@ designs; can run in parallel with the B0 worker's SC-507b/511c/1208 execution.
 ## SEAT ANNEX — never included in the worker brief
 
 Expected manipulation→reason mapping for classification: arm 1 → `alert` with a
-dead-class summary; arm 2 → `alert` stale-class; arm 3 → `throttled`; arm 4 →
-`throttle-cleared`/`alert-cleared` if the frozen producer emits clears on
-recovery (its absence is itself an observation for SC-980's incumbent baseline —
-seats classify, the worker does not). Alert-consumer semantics under test later:
-`_agents_alert_reasons` at ae:3416-3565 (summary substring classes noted at
-ae:3522-3526 — dead must not downgrade to throttled on a stray substring match).
+dead-class summary (agent binary no longer under the pane PID); arm 2 → nudge
+sequence then `alert` stale/max-nudges class; arm 3 phase A → `throttled` on the
+first matching cycle, then `alert` "throttled for Ns" when the streak reaches
+THROTTLE_ALERT_CYCLES; arm 3 phase B → `throttle-cleared` once the captured tail
+stops matching (whether/when it appears is the capture — its absence is itself
+an observation for SC-980's incumbent baseline; seats classify, the worker does
+not). Alert-consumer semantics under test later: `_agents_alert_reasons` at
+ae:3416-3565 (summary substring classes noted at ae:3522-3526 — dead must not
+downgrade to throttled on a stray substring match).
