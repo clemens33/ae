@@ -55,6 +55,7 @@ invocation; cost-only rows carry `protected gate: none (cost)`.
 | 94 | RR(P2/send) +B3 | fix-known-defect: canonical tool kind transported into every delivery call, process title = liveness only (SC-705/706); found live by B0 Design 8 |
 | 96 | RR(P1) +B3 | fix-known-defect: cross-dimension list filter intersection is literal — frozen ae force-resets scope to running after selector parse, silently overriding --stopped (SC-521a); found live by Batch C A2 |
 | 97 | RR(P1) +B3 | fix-known-defect: agents[].reason never populated — set-but-empty test on the associative map drops the first contribution (SC-509c, ae:3714); found live by Batch C A3/A3b + colead root-cause |
+| 98 | RR(P3) +B3 | fix-known-defect: end all freeze/re-proof does not refuse a renamed target - archived+cleaned on disk while its tmux session stays alive, stderr empty (SC-820a); found live by Batch L L-END |
 | 55 | RR(P4) | watchdog fairness test contract |
 | 56 | RR(P2/adapter) +B3 | opencode capture disambiguation |
 | 57 | RR(P5) +B3 | installer flip defines installed-artifact contract (B3 per colead, accepted) |

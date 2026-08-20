@@ -1381,12 +1381,24 @@ reason, nothing deleted, regardless of history flag ("delete it" is not an answe
 "which session is this"). Authority: commands.md:513-518 + architecture.md:139-143.
 Empirical: pending. Conflict: none.
 
-**SC-820a — end freezes the confirmed plan and re-proves it under the lock.** Bucket 1
-— each target resolved exactly ONCE; the prompt renders from those fields and the
-freeze captures the same observation (a fork cannot carry a freeze back); re-proof
-under the lifecycle lock refuses on mismatch and prints both versions. Authority:
-commands.md:526-532 + architecture.md:146-149,158-166. Empirical: pending.
-Conflict: none.
+**SC-820a — end freezes the confirmed plan and re-proves it under the lock.** Bucket 3
+— fix-known-defect(#98) (reclassified from bucket 1/conflict=none by joint L-END
+classification, both seats 2026-08-20). SHOULD (unchanged): each target resolved
+exactly ONCE; the prompt renders from those fields and the freeze captures the same
+observation (a fork cannot carry a freeze back); re-proof under the lifecycle lock
+REFUSES on mismatch, prints both versions, and takes no action on that target. IS at
+72c7293: with a confirmed target's tmux session renamed between the accepted answer
+and the per-target lifecycle lock (on-disk state untouched), `end all` proceeds
+normally — stdout prints the ordinary archive/cleanup/ended lines, stderr is EMPTY,
+no both-versions diagnostic appears, and the session is archived and cleaned on disk
+while its renamed tmux session stays ALIVE: the torn state the freeze contract exists
+to prevent, produced silently. Authority: commands.md:526-532 +
+architecture.md:146-149,158-166. Empirical: observed (L-END
+`endall-rename-between-confirm-and-lock` @7aab1b4 — `2endall.stdout.od` decoded,
+`2endall.stderr.od` empty, `post-state.txt` showing `ef2-renamed` alive; see
+l-classify-L-END.md). Conflict: fix-known-defect(#98, intended: refuse the mismatched
+target, print both versions, act on nothing for it).
+**classified_by: both seats, 2026-08-20 (joint L-END classification).**
 
 **SC-820b — `-f` freezes nothing.** Bucket 2 — nothing was promised, so nothing is
 frozen or re-proved. Authority: commands.md:526-532. Empirical: pending. Conflict: none.
