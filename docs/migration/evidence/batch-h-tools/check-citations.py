@@ -17,8 +17,9 @@ For a RANGE (`ae:100-140`) it pins the ENDPOINTS, not every line between them �
 named endpoint pins for that reason, and a claim that a seat "sees the cited range" would be
 false of it.
 
-`--check` regenerates to a temp file and compares against the committed one, so a stale
-committed artifact is a failure rather than a document nobody re-ran. `--redproof` runs the
+`--check` builds the expected artifact IN MEMORY and compares it with the committed file
+without writing anything, so a stale artifact is a failure rather than something the check
+silently repairs. `--redproof` runs the
 failure injections.
 
 usage: check-citations.py <doc.md> [...] --commit <sha> --repo <path> [--out <pins.md>] [--check] [--redproof]
@@ -110,29 +111,51 @@ if "--redproof" in args:
     blank = next((i + 1 for i, l in enumerate(src) if not l.strip()), 3)
     brace = next((i + 1 for i, l in enumerate(src) if l.strip() == "}"), 4)
     ok = True
-    # Vacuity control: a document whose citations are all valid must report NOT caught.
-    # Without it, a red-proof set that never says NO is indistinguishable from a constant.
-    null_ok = not arm("ae:16740\n", "NULL arm (must be NO)")
-    if not null_ok:
-        bad.append(("redproof", 0, "the citation harness reports caught on a VALID citation"))
-    ok &= null_ok
-    ok &= arm(f"ae:{len(src) + 5000}\n", "citation past end of file")
-    ok &= arm(f"ae:{blank}\n", "citation on a blank line")
-    ok &= arm(f"ae:{brace}\n", "citation on a bare closing brace")
 
-    # STALE-OUTPUT arm: --check against an artifact that is not what regeneration produces
-    # must FAIL and must NOT repair it. This is the arm whose absence let --check pass on
-    # an empty file.
-    d = os.path.join(tempfile.mkdtemp(), "doc.md"); o = os.path.join(os.path.dirname(d), "pins.md")
-    open(d, "w", encoding="utf-8").write("ae:16740\n")
-    open(o, "w", encoding="utf-8").write("")          # deliberately stale (empty)
-    r = subprocess.run([sys.executable, __file__, d, "--commit", commit, "--repo", repo,
-                        "--out", o, "--check"], capture_output=True, text=True)
-    untouched = open(o, encoding="utf-8").read() == ""
-    caught = r.returncode != 0 and untouched
-    print(f"  {'stale committed pin file':34s} caught={'YES' if caught else 'NO'}"
-          f"{'' if untouched else ' (and it was OVERWRITTEN)'}")
-    ok &= caught
+    def paired(neutral_text, mutated_text, label):
+        """Neutral must report NO, mutated must report YES — per ARM, not per harness.
+        A shared NULL only calibrates the predicate path it happens to traverse; an arm
+        with its own dead predicate stays invisible behind it."""
+        n = arm(neutral_text, f"{label} [neutral]")
+        m = arm(mutated_text, f"{label} [mutated]")
+        if n:
+            bad.append(("redproof", 0, f"'{label}' reports caught on a VALID input"))
+        if not m:
+            bad.append(("redproof", 0, f"'{label}' did not catch its injection"))
+        return (not n) and m
+
+    VALID = "ae:16740\n"
+    ok &= paired(VALID, f"ae:{len(src) + 5000}\n", "citation past end of file")
+    ok &= paired(VALID, f"ae:{blank}\n", "citation on a blank line")
+    ok &= paired(VALID, f"ae:{brace}\n", "citation on a bare closing brace")
+
+    # The stale-output arm has its OWN DRIVER (it runs --check against a committed file),
+    # so the citation NULL above does not calibrate it. It gets its own neutral: a pin file
+    # that IS what regeneration produces must pass, and must also be left untouched.
+    def stale_arm(make_committed, label, expect_caught):
+        d = tempfile.mkdtemp()
+        doc, o = os.path.join(d, "doc.md"), os.path.join(d, "pins.md")
+        open(doc, "w", encoding="utf-8").write(VALID)
+        subprocess.run([sys.executable, __file__, doc, "--commit", commit, "--repo", repo,
+                        "--out", o], capture_output=True, text=True)      # publish the true artifact
+        before = open(o, encoding="utf-8").read()
+        open(o, "w", encoding="utf-8").write(make_committed(before))
+        want = open(o, encoding="utf-8").read()
+        r = subprocess.run([sys.executable, __file__, doc, "--commit", commit, "--repo", repo,
+                            "--out", o, "--check"], capture_output=True, text=True)
+        untouched = open(o, encoding="utf-8").read() == want
+        caught = r.returncode != 0
+        print(f"  {label:34s} caught={'YES' if caught else 'NO'}"
+              f"{'' if untouched else ' (and it was OVERWRITTEN)'}")
+        if not untouched:
+            bad.append(("redproof", 0, f"'{label}' — --check WROTE to the artifact it verifies"))
+        if caught != expect_caught:
+            bad.append(("redproof", 0, f"'{label}' expected caught={expect_caught}"))
+        return caught == expect_caught and untouched
+
+    ok &= stale_arm(lambda t: t, "stale committed pin file [neutral]", False)
+    ok &= stale_arm(lambda t: "", "stale committed pin file [mutated]", True)
+
     if not ok:
         bad.append(("redproof", 0, "a red arm was not caught"))
 

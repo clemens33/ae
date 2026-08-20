@@ -47,7 +47,7 @@ def _load_splitter():
 
 split_spellings = _load_splitter()
 
-def generate(census_path, out_path, expect_rc=0):
+def generate(census_path, out_path):
     """Run the generator and RETURN ITS RC. The previous version discarded it, so a census
     the generator itself rejected (duplicates, scope errors — rc 2) still produced a run
     that looked clean, with only a mirrored parser left to rediscover the problem. A
@@ -132,32 +132,43 @@ for extra in sorted(lp - cp): fails.append(f"EXTRA in list, absent from census: 
 for miss in sorted(cp - lp): fails.append(f"MISSING from list, present in census: {miss}")
 
 NOVEL = "zqx-outcome-token-not-enumerated-anywhere"
-inj = os.path.join(tmp, "inj.md")
-src = open(census, encoding="utf-8").read()
-# The anchor is the COMPLETE scoped row. The previous anchor stopped at "ACCEPTED |" and
-# the replacement stole the row's trailing "IN |" into the synthetic row, leaving the
-# original one column short — so the census under test was malformed and the generator was
-# rejecting it, while the proof still "passed" because the synthetic input appeared.
 ANCHOR = "| no args | the print-current branch, ae:12836-12845 | ACCEPTED | IN |"
-SYNTH  = f"| a synthetic probe input | somewhere, ae:1 | {NOVEL} | IN |"
-if ANCHOR in src:
-    open(inj, "w", encoding="utf-8").write(src.replace(ANCHOR, ANCHOR + "\n" + SYNTH, 1))
-    out2 = os.path.join(tmp, "inj-out.md")
-    inj_rc, _ = generate(inj, out2)
-    body = open(out2, encoding="utf-8").read() if os.path.exists(out2) else ""
-    if inj_rc != 0:
-        fails.append(f"COLUMNAR DROP: the injected census did not generate cleanly (rc {inj_rc}) — "
-                     "the injection is not a clean one-variable change")
+SYNTH  = "| a synthetic probe input | somewhere, ae:1 | " + NOVEL + " | IN |"
+SYNTH_PAIR = ("`state` (SC-211a)", "a synthetic probe input")
+src = open(census, encoding="utf-8").read()
+
+def columnar_drop(place, tag):
+    """Inject one synthetic row and require the output to be EXACTLY baseline + one pair.
+
+    `place` decides how the synthetic row enters. Appending is the real check; REPLACING
+    the anchor is a red arm, because the predicate this replaced — "the string '- no args'
+    appears somewhere" — passed on a replacement: the committed list has ten such entries,
+    so the anchor could vanish entirely and the substring survived. Set equality is what
+    tells an appended row from a replaced one.
+    """
+    problems = []
+    if ANCHOR not in src:
+        return ["COLUMNAR DROP: injection anchor not found; the check could not run"]
+    f = os.path.join(tmp, f"inj-{tag}.md"); o = os.path.join(tmp, f"inj-{tag}-out.md")
+    open(f, "w", encoding="utf-8").write(src.replace(ANCHOR, place, 1))
+    rc, msg = generate(f, o)
+    body = open(o, encoding="utf-8").read() if os.path.exists(o) else ""
+    got, dupes = pairs(o) if os.path.exists(o) else (set(), [])
+    _, _, errs = census_pairs(f)
+    if rc != 0:
+        problems.append(f"COLUMNAR DROP: injected census did not generate cleanly (rc {rc}: {msg.strip()[:110]})")
     if NOVEL in body:
-        fails.append("COLUMNAR DROP: a novel outcome label reached the generated list")
-    if body.count("- a synthetic probe input") != 1:
-        fails.append("COLUMNAR DROP: the injected row's INPUT did not appear exactly once — "
-                     "the check would pass vacuously")
-    if "- no args" not in body:
-        fails.append("COLUMNAR DROP: the anchor row was lost by the injection — "
-                     "the injection perturbed more than one variable")
-else:
-    fails.append("COLUMNAR DROP: injection anchor not found; the check could not run")
+        problems.append("COLUMNAR DROP: a novel outcome label reached the generated list")
+    if got != (cp | {SYNTH_PAIR}):
+        problems.append(f"COLUMNAR DROP: injected pair set != baseline + one synthetic pair "
+                        f"(missing {sorted(cp - got)[:2]}, unexpected {sorted(got - cp - {SYNTH_PAIR})[:2]})")
+    if dupes:
+        problems.append(f"COLUMNAR DROP: injected list carries duplicates: {dupes[:2]}")
+    if errs:
+        problems.append(f"COLUMNAR DROP: injected census carries scope errors: {errs[:2]}")
+    return problems
+
+fails += columnar_drop(ANCHOR + "\n" + SYNTH, "append")
 
 BELT = re.compile(r"\b(ACCEPTED|REJECTED|IGNORED|HANGS|OUT-OF-BATCH|resolvable|unresolvable"
                   r"|valid|invalid|succeeds|fails)\b|ae:[0-9]")
@@ -227,16 +238,33 @@ if redproof:
     # 2-tuple-vs-3-tuple comparison made these arms, six of them reporting perfect
     # coverage while unable to fail. So each harness is run against an UNMODIFIED input
     # and MUST report NO, and every arm's mutation must actually change its input.
-    null_census = run_census_variant(lambda t: t, "NULL census arm (must be NO)")
-    if null_census:
-        fails.append("RED-PROOF VACUOUS: the census harness reports caught on an UNMODIFIED census")
-
-    for mutate, label in census_arms:
-        base = open(census, encoding="utf-8").read()
-        if mutate(base) == base:
-            fails.append(f"RED-PROOF VACUOUS: the '{label}' mutation does not change the census")
-        if not run_census_variant(mutate, label):
+    def paired(run, mutate, label, base_text, kind):
+        """Every named arm reports BOTH states: neutral must be NO, mutated must be YES.
+        One NULL per shared harness proves the runner has a false state; it does not
+        produce the arm-by-arm record the ruling asks for, and an arm can be constant while
+        its harness is not."""
+        neutral = run(lambda t: t, f"{label} [neutral]")
+        if neutral:
+            fails.append(f"RED-PROOF VACUOUS: '{label}' reports caught on UNMODIFIED input")
+        if mutate(base_text) == base_text:
+            fails.append(f"RED-PROOF VACUOUS: the '{label}' mutation does not change the {kind}")
+        if not run(mutate, f"{label} [mutated]"):
             fails.append(f"RED-PROOF BLIND: the '{label}' injection was not caught")
+
+    # The acceptance test's own red arm: replacing the anchor rather than appending after
+    # it must be REJECTED. This is the seat's live counterexample, kept as a standing arm.
+    neutral_problems = columnar_drop(ANCHOR + "\n" + SYNTH, "rp-neutral")
+    replaced_problems = columnar_drop(SYNTH, "rp-replaced")
+    print(f"  {'columnar acceptance [neutral]':34s} caught={'NO' if not neutral_problems else 'YES'}")
+    print(f"  {'columnar acceptance [mutated]':34s} caught={'YES' if replaced_problems else 'NO'}")
+    if neutral_problems:
+        fails.append(f"RED-PROOF VACUOUS: the columnar acceptance test rejects a clean injection: {neutral_problems[:1]}")
+    if not replaced_problems:
+        fails.append("RED-PROOF BLIND: the columnar acceptance test accepts a REPLACED anchor")
+
+    census_text = open(census, encoding="utf-8").read()
+    for mutate, label in census_arms:
+        paired(run_census_variant, mutate, label, census_text, "census")
 
     # Calibration for the equality leg specifically. Every list mutation also breaks
     # diff-clean, so no list arm can distinguish "equality works" from "equality is dead" —
@@ -246,23 +274,16 @@ if redproof:
     c_pairs_cal, _, _ = census_pairs(census)
     same_sets = (a_pairs == c_pairs_cal)
     diff_sets = (a_pairs == (c_pairs_cal | {("synthetic", "not-a-real-input")}))
-    cal_ok = same_sets and not diff_sets
-    print(f"  {'equality leg is live (calibration)':34s} caught={'YES' if cal_ok else 'NO'}")
-    if not cal_ok:
-        fails.append("RED-PROOF BLIND: the set-equality comparison does not discriminate")
+    print(f"  {'equality calibration [neutral]':34s} caught={'NO' if same_sets else 'YES'}")
+    print(f"  {'equality calibration [mutated]':34s} caught={'YES' if not diff_sets else 'NO'}")
+    if not same_sets:
+        fails.append("RED-PROOF VACUOUS: equality reports a difference between identical sets")
+    if diff_sets:
+        fails.append("RED-PROOF BLIND: equality does not discriminate a differing set")
 
-    null_list = run_variant(lambda t: t, "NULL list arm (must be NO)")
-    if null_list:
-        fails.append("RED-PROOF VACUOUS: the list harness reports caught on an UNMODIFIED list")
-
+    list_text = open(listing, encoding="utf-8").read()
     for mutate, label in arms:
-        base = open(listing, encoding="utf-8").read()
-        if mutate(base) == base:
-            fails.append(f"RED-PROOF VACUOUS: the '{label}' mutation does not change the list")
-        if not run_variant(mutate, label):
-            # A red arm that reports caught=NO and leaves rc 0 is a red-proof that cannot
-            # fail — the exact shape this whole batch exists to eliminate. It is a FAILURE.
-            fails.append(f"RED-PROOF BLIND: the '{label}' injection was not caught")
+        paired(run_variant, mutate, label, list_text, "list")
     print(f"  ALL CAUGHT: {'yes' if not any(f.startswith('RED-PROOF') for f in fails) else 'NO — a check is blind'}")
 
 print(f"census_pairs={len(cp)} list_pairs={len(lp)} failures={len(fails)}")

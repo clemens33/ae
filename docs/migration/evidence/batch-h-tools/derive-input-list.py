@@ -22,6 +22,9 @@ usage: derive-input-list.py <census.md> <out.md>
 """
 import re, sys
 
+if len(sys.argv) < 3:
+    sys.stderr.write("usage: derive-input-list.py <census.md> <out.md>\n")
+    sys.exit(2)
 src, out = sys.argv[1], sys.argv[2]
 lines = open(src, encoding="utf-8").read().split("\n")
 

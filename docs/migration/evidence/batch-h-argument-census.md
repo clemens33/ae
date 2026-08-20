@@ -25,6 +25,7 @@ citations. This document stays with the seats.
 ## Top-level dispatcher (SC-012b, SC-014)
 
 | Input | Reaches | Class | Row | Scope |
+|---|---|---|---|---|
 | `-h` | outer case arm, ae:16841-16843 | ACCEPTED | SC-012b | IN |
 | `--help` | same arm, ae:16841 | ACCEPTED | SC-012b | IN |
 | `help` | same arm, ae:16841 | ACCEPTED | SC-012b | IN |
@@ -50,6 +51,7 @@ alias is SC-939f's. They are listed here for completeness of the parser and mark
 OUT-OF-BATCH; **they are not SC-013 evidence and no H arm closes them.**
 
 | Input | Reaches | Class | Row | Scope |
+|---|---|---|---|---|
 | `-h` | ae:16740-16742 | ACCEPTED (exit 0) | SC-013 | IN |
 | `--help` | ae:16740 | ACCEPTED (exit 0) | SC-013 | IN |
 | `help` | ae:16740 | ACCEPTED (exit 0) | SC-013 | IN |
@@ -73,6 +75,7 @@ SC-013's arm must capture that rather than assume a steward program exists.
 ## `state` (SC-211a) — ae:12831-12873
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | no args | the print-current branch, ae:12836-12845 | ACCEPTED | IN |
 | `working` / `waiting-user` / `done` | ae:12853 | ACCEPTED | IN |
 | `blocked` with a reason | ae:12854-12859 | ACCEPTED | IN |
@@ -84,6 +87,7 @@ SC-013's arm must capture that rather than assume a steward program exists.
 ## `goal` (SC-211b) — ae:14558-14593
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | no args | print-current, ae:14560-14566 | ACCEPTED | IN |
 | one word | set branch, ae:14577 | ACCEPTED | IN |
 | several words | set branch (`text="$*"`), ae:14578 | ACCEPTED | IN |
@@ -95,6 +99,7 @@ SC-013's arm must capture that rather than assume a steward program exists.
 ## `memo` (SC-211c) — ae:14498-14548
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | no args | `cmd` defaults to `read`, ae:14501 | ACCEPTED | IN |
 | `add <text>` | ae:14511-14523 | ACCEPTED | IN |
 | `add` with no text | ae:14511 | REJECTED | IN |
@@ -114,6 +119,7 @@ SC-013's arm must capture that rather than assume a steward program exists.
 ## `requests` (SC-211d, SC-212c) — ae:14407-14456
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | no args | `mode` defaults to `mine`, ae:14409 | ACCEPTED | IN |
 | `mine` / `inbox` / `all` | ae:14412 | ACCEPTED | IN |
 | unknown mode | ae:14412-14414 | REJECTED | IN |
@@ -124,6 +130,7 @@ SC-013's arm must capture that rather than assume a steward program exists.
 ## `say` (SC-211l) — ae:14470-14486
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | text via argv | ae:14471-14472 | ACCEPTED | IN |
 | text via a pipe | ae:14473-14474 | ACCEPTED | IN |
 | no args on a real TTY | ae:14476 -> `helper_say_usage`, ae:14459-14468 | REJECTED (rc 2) | IN |
@@ -132,6 +139,7 @@ SC-013's arm must capture that rather than assume a steward program exists.
 ## `peek` (SC-211e) — ae:14596-14615
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | no args | ae:14597-14601 | REJECTED | IN |
 | a target spelling absent from the fixture | ae:14603 | REJECTED | IN |
 | an exact `alias:name` present in the fixture, no count | default 80, ae:14605 | ACCEPTED | IN |
@@ -144,6 +152,7 @@ SC-013's arm must capture that rather than assume a steward program exists.
 ## `agents` (SC-211f) — ae:14618-14638
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | no args | current-session branch, ae:14632-14636 | ACCEPTED | IN |
 | `--all` | ae:14619-14630 | ACCEPTED | IN |
 | any other argument | not `--all`, so the current-session branch | IGNORED | IN |
@@ -151,6 +160,7 @@ SC-013's arm must capture that rather than assume a steward program exists.
 ## `focus` (SC-211g) — ae:14641-14654
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | no args | ae:14642-14646 | REJECTED | IN |
 | a target spelling absent from the fixture | ae:14648 | REJECTED | IN |
 | an exact `alias:name` present in the fixture | ae:14651-14653 | ACCEPTED | IN |
@@ -158,6 +168,7 @@ SC-013's arm must capture that rather than assume a steward program exists.
 ## `interrupt` (SC-211h) — ae:14657-14701
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | no args | ae:14658-14662 | REJECTED | IN |
 | a target spelling absent from the fixture | ae:14664 | REJECTED | IN |
 | a present target, no message | ae:14673 | ACCEPTED | IN |
@@ -166,12 +177,14 @@ SC-013's arm must capture that rather than assume a steward program exists.
 ## `spawn` (SC-211i) — ae:14704-14723
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | `AE_PATH` missing or not executable | ae:14711-14716 (BEFORE argument handling) | REJECTED | IN |
 | no args | ae:14718-14720 | REJECTED | IN |
 | any args | `exec "$AE_PATH" _spawn …`, ae:14722 | delegated to `_cmd_spawn` | IN |
 ### delegated `_cmd_spawn` (ae:11845-) — the non-name classes SC-211i owns
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | an alias not defined in the config | ae:11912 | REJECTED | IN |
 | a session absent from meta | ae:11895 | REJECTED | IN |
 | a session named in meta but not running | ae:11899 | REJECTED | IN |
@@ -181,12 +194,14 @@ SC-013's arm must capture that rather than assume a steward program exists.
 ## `retire` (SC-211j) — ae:14726-14747
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | `AE_PATH` missing or not executable | ae:14733-14738 | REJECTED | IN |
 | no args | ae:14740-14744 | REJECTED | IN |
 | any args | `exec "$AE_PATH" _retire …`, ae:14746 | delegated to `_cmd_retire` | IN |
 ### delegated `_cmd_retire` (ae:12118-) — the classes SC-211j owns
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | a session absent from meta | ae:12135 | REJECTED | IN |
 | a `%pane-id` not in the session | ae:12153 | REJECTED | IN |
 | a bare name carried by two agents | ae:12175 | REJECTED | IN |
@@ -199,6 +214,7 @@ SC-013's arm must capture that rather than assume a steward program exists.
 ## `events-tail` (SC-211n) — ae:14885-14905
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | any argv at all | never read — no argument handling exists | IGNORED | IN |
 | events file absent | `while [[ ! -f ]]; sleep 1`, ae:14897-14899 | HANGS until the file appears | IN |
 | events file present | banner, `tail -n 30 -f`, ae:14902 | HANGS by design (follow) | IN |
@@ -208,6 +224,7 @@ makes it exit on its own.
 ## `_register-sid` (SC-211o) — ae:14750-14825
 
 | Input / fixture fact | Reaches | Class | Scope |
+|---|---|---|---|
 | no slot argument | `SLOT` default at ae:14752 | ACCEPTED | IN |
 | a slot with no `launch_time.<slot>` | primary read ae:14756, fallback read ae:14758 | ACCEPTED | IN |
 | non-numeric launch time | reset at ae:14760-14762 | ACCEPTED | IN |
@@ -234,6 +251,7 @@ to the identity boundary rows, not to SC-211o.
 ## `ae_resolve` (SC-211p) — ae:12878-12991
 
 | Input | Reaches | Class | Scope |
+|---|---|---|---|
 | `%<pane-id>` (any) | branch 1, ae:12885-12901 | ACCEPTED (returns 0) | IN |
 | `@session:agent`, session exists, agent present | branch 2 then 3 | ACCEPTED | IN |
 | `@session:agent`, session absent | ae:12919-12921 | REJECTED | IN |
@@ -259,6 +277,7 @@ reading.
 reading only when H's captures exist.
 
 | Surface | Usage path | Exit line | Exit |
+|---|---|---|---|
 | `state` | dedicated function, `helper_state_usage` | ae:12828 | 2 |
 | `say` | dedicated function, `helper_say_usage` | ae:14467 | 2 |
 | `goal` | dedicated function, `helper_goal_usage` | ae:14555 | 1 |
@@ -282,6 +301,7 @@ family is read as a family.
 ## Row -> input-class mapping (for the seat gate)
 
 | Row | Surface | Input classes |
+|---|---|---|
 | SC-012b | dispatcher | the help spellings only (`-h`, `--help`, `help`) — the unknown-option class is SC-022's and a non-option word enters the launch path; both are OOB cross-references and neither can close this row |
 | SC-014 | dispatcher | version trio |
 | SC-013 | `steward` | help spellings + detach spellings + help-with-trailing-args + selector order/repetition (the OUT-OF-BATCH rows belong to SC-930/931/932/939f) |
