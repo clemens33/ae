@@ -1,8 +1,10 @@
-# Batch C design v3 — read-side evidence run (62 assignments)
+# Batch C design v3 — read-side evidence run (64 assignments)
 
-BOUNDARY REOPENED per the standing contract-change rule (slice-1b added SC-405i/j/k
-to C; SC-405d reclassified in place, its arm unchanged). Delta: three arms appended
-to A7/A9; everything else stands as gated.
+BOUNDARY REOPENED per the standing contract-change rule (slice-1b added SC-405i/j/k;
+slice-1d added SC-510e/f to A1 and precised SC-405j's A7 arm with the three-way
+empty-member discriminator). Deltas beyond slice-1b: two duplicate-key mutation
+assignments in A1 (known-key and unknown-key cohorts, each with an order-reversed
+pair) and the A7 subcase split below; everything else stands as gated.
 
 Corrected per the seat gate (six blockers folded). NO evidence worker runs before this
 document AND its prerequisites are seat-green.
@@ -118,7 +120,10 @@ routing-preference arms with G10.
 
 ## Arms (nine groups, unchanged coverage, corrected mechanics)
 
-A1 schema/document (SC-509, 509b, 506, 510a-d, 511a-b, 405k): G1/G3/G7/G8/G11; 510c's
+A1 schema/document (SC-509, 509b, 506, 510a-f, 511a-b, 405k): G1/G3/G7/G8/G11; 510e —
+producer-derived cohort where one KNOWN key appears twice (conflicting values), plus
+the same pair with member order REVERSED; 510f — the identical construction with an
+UNKNOWN key; run the consumer families on each and capture; 510c's
 recover-ref via the `_recover-pending`/`_register-sid` harvest; 511c REMOVED (B0);
 405k — live tmux topology with one EXTRA runtime pane absent from the roster AND one
 roster slot whose pane is absent; capture the rendered agents[] (membership and
@@ -140,10 +145,13 @@ closure.)
 A7 meta grammar (SC-405a-g, 405j): G1/G7 + malformed/duplicate-key producer-derived
 fixtures (405d/e captures remain observation-only for UNCLASSIFIED rows); G9 for
 405f; 405g's two named resolution subarms (tmux @ae_branch_name primary on a live
-server; git fallback on a stopped clone); 405j identity arm — FOUR producer-derived
+server; git fallback on a stopped clone); 405j identity arm — producer-derived
 cases sharing ONE display name: (1) full+fresh routing keys; (2) full but
 stale/mismatched keys; (3) partial keys — slot-only AND session-only; (4) keyless
-legacy event. Run the consumer on each case; capture per-case outputs.
+legacy event (no routing members at all); (5) empty-member subcases per the
+slice-1d three-way discriminator — one routing member present as the empty string,
+AND all routing members present as empty strings — each its own producer-derived
+byte diff. Run the consumer on each case; capture per-case outputs.
 A8 modes (SC-101, 102a-b, 018b): WRITABLE clones per arm; fast-path attach with full
 manifest+tmux diff (101); resume regeneration set diff (102a); inside-session
 invocation (102b, live server); use-against-existing arm (018b). (SC-100 and SC-018

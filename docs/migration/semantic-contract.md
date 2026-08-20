@@ -599,19 +599,25 @@ pending (C-cluster). Conflict: none. **classified_by: both seats, 2026-08-20.**
 
 **SC-405j — an event carrying ANY routing key that does not fully and freshly match
 stays UNASSOCIATED.** Bucket 2 — (slice-1b Q10, colead dissent adopted; PRECISED after
-the builder's premise correction — the pre-existing code already refused stale
-full-key events, and the actual change was the PARTIAL-key case): stale full keys,
-mismatched keys, and partial keys (slot without session or session without slot) all
-identify nobody; display-name matching exists ONLY for events with NO routing keys at
-all (pre-SC-511a records depend on that surviving). Display fallback for keyed events
-would create FALSE ATTRIBUTION against the SC-518/SC-511b loud direction; rename loss
-is the KNOWN LIMITATION until SC-977's P2 stable identity. One shared invariant —
-a total association decision function — so one row remains valid grain; builder tests
-are candidate successor evidence, never frozen IS. **classified_by: REOPENED by the
-precision and RE-MARKED on this exact text — fable5:lead + gpt56sol:colead,
-2026-08-20.** Authority: slice-1b
-joint ruling + SC-518/511b direction. Empirical: pending. Conflict: none.
-**classified_by: both seats, 2026-08-20.**
+the builder's premise correction; REOPENED AND PRECISED AGAIN by the empty-member
+ruling, slice-1d): PRESENCE is decided BEFORE any empty-string normalization — a
+routing key member that appears in the record's JSON is PRESENT even when its value
+is the empty string. Structurally ABSENT routing keys (no member at all) permit the
+legacy display fallback (pre-SC-511a records depend on that surviving); ANY present
+routing member that does not fully and freshly match — stale full keys, mismatched
+keys, partial keys (slot without session or session without slot), and any present
+EMPTY member — makes the keyed identity invalid and UNASSOCIATED. Readers never
+erase a present member into structural absence (SC-510b's empty-as-omission and
+SC-511a's omit-when-empty are PRODUCER rules only). Evidence and tests carry the
+three-way discriminator: keys absent / one present-empty member / all-present-empty.
+Display fallback for keyed events would create FALSE ATTRIBUTION against the
+SC-518/SC-511b loud direction; rename loss is the KNOWN LIMITATION until SC-977's
+P2 stable identity. One shared invariant — a total association decision function —
+so one row remains valid grain; builder tests are candidate successor evidence,
+never frozen IS. Authority: slice-1b + slice-1d joint rulings + SC-518/511b
+direction. Empirical: pending. Conflict: none. **classified_by: REOPENED by the
+slice-1d precision and RE-MARKED on this exact text — fable5:lead + gpt56sol:colead,
+2026-08-20.**
 
 **SC-405k — agents[] membership is roster-defined.** Bucket 2 — (slice-1b Q11):
 runtime-only panes/slots never invent agents; SC-509's agents[] fields are roster
@@ -810,6 +816,24 @@ Conflict: none. **classified_by: REOPENED by the amendment and RE-MARKED — fab
 
 **SC-510d — string values are JSON-escaped.** Bucket 2 — the escape set is `\"` `\\`
 `\n` `\t` `\r`. Authority: events.md:70. Empirical: pending. Conflict: none.
+
+**SC-510e — a duplicate KNOWN event key makes the whole record malformed.** Bucket 1
+— (slice-1d joint ruling): no row defines duplicate-member precedence, RFC 8259 makes
+duplicate-name resolution non-interoperable, and known-key first/last winner
+selection is forbidden FABRICATION; a record carrying two members of any documented
+stable key is skipped and counted, degrading the session via SC-520's path.
+Evidence and tests carry the ordering discriminator: the same duplicate pair with
+member order REVERSED must produce the same outcome. Authority: slice-1d joint
+ruling (this row is the normative source — SC-405e is meta grammar and remains
+UNCLASSIFIED; it is not authority here). Empirical: pending. Conflict: none.
+**classified_by: both seats, 2026-08-20.**
+
+**SC-510f — duplicate UNKNOWN event keys stay inert.** Bucket 2 — (slice-1d joint
+ruling): additive-schema semantics ignore unknown members whether they appear once
+or many times; duplication of an unknown key is not an anomaly and never degrades.
+Evidence and tests carry the reversed-order discriminator alongside SC-510e's.
+Authority: slice-1d joint ruling + SC-511b additive direction. Empirical: pending.
+Conflict: none. **classified_by: both seats, 2026-08-20.**
 
 **SC-511a — messaging events carry optional routing-key fields.** Bucket 2 —
 `actor_slot`/`actor_session`/`target_slot`/`target_session` on send/ask/review/reply

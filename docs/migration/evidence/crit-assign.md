@@ -95,6 +95,8 @@ CRIT-ASSIGN: SC-510a | C | read-side fixture cluster: event required keys
 CRIT-ASSIGN: SC-510b | C | read-side fixture cluster: optional keys are omitted when empty
 CRIT-ASSIGN: SC-510c | C | read-side fixture cluster: `ref` polysemy follows the action table
 CRIT-ASSIGN: SC-510d | C | read-side fixture cluster: string values are JSON-escaped
+CRIT-ASSIGN: SC-510e | C | A1 schema group: duplicate KNOWN-key producer-derived mutations, order-reversed pair, consumer run + captures
+CRIT-ASSIGN: SC-510f | C | A1 schema group: duplicate UNKNOWN-key mutations, order-reversed pair, consumer run + captures
 CRIT-ASSIGN: SC-511a | C | read-side fixture cluster: messaging events carry optional routing-key fields
 CRIT-ASSIGN: SC-511b | C | read-side fixture cluster: readers prefer slot+session over display name
 CRIT-ASSIGN: SC-511c | B0 | frozen-consumer fixture design: add/remove/rename keys against extracted consumers, explicit expected compatibility outcomes
