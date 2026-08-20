@@ -361,6 +361,21 @@ The rule: **red-proof every named check, on the host that will run it, with a
 neutral/mutated pair each.** One green mutation proves one path and licenses no statement
 about the tool.
 
+**And note where that defect landed.** This repo's own hazard list documents the GNU-vs-BSD
+divergence class at length — `tac`, `stat -c`, `date -d`, `sed -i`, `grep -oP` — with the
+warning that every row *"shipped as a macOS bug"* and that they **fail silently**: the
+command does not error, a fallback lands, and the feature reads as *nothing found* rather
+than *broken*. The dead word-boundary is a **sixth row of that table, inside the instrument
+built to police defects of that shape**, and it was found by a reviewer rather than its
+author.
+
+That is the cognitive-acts mechanism applied to a *documented hazard* rather than a
+self-authored rule: the list is a **category** — GNU-only constructs fail silently on BSD —
+and `\<…\>` arriving inside a regex is an **instance that does not announce its
+membership**. It explains why writing hazards down does not prevent them, and why the
+repair was the right one: the tool was **rewritten in a language not exposed to the class**,
+rather than having the one boundary patched. Patching the instance leaves the family.
+
 **Point the same rule at the INSTRUMENT, not only the product.** A seed that does not land
 is indistinguishable from a check that does not fire, and it errs in **both** directions
 depending on how the harness is coded. A seat red-proving someone else's checker seeded a
