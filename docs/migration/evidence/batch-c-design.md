@@ -1,102 +1,132 @@
-# Batch C design — read-side fixture cluster (59 assignments)
+# Batch C design v2 — read-side evidence run (59 assignments)
 
-Lead draft for both-seat approval; NO evidence worker runs before that approval.
-Rules inherited and binding: value-blind arms (manipulation/barriers/captures only —
-expected values omitted, seats classify); deterministic (no timing races, no
-live-model queries); every arm fails independently; captures are CANDIDATE
-observations, never a builder oracle, until seat acceptance; bucket-3/4 rows capture
-the INCUMBENT baseline only, never a successor SHOULD; provenance on every artifact
-(frozen commit, environment, command, rc).
+Corrected per the seat gate (six blockers folded). NO evidence worker runs before this
+document AND its prerequisites are seat-green.
 
-## Fixture topology — nine session directories, one AE_HOME sandbox
+**Binding invariant (gate):** every capture must be independently able to FALSIFY its
+assigned frozen-IS claim, using the same layer the product reads, on uncontaminated
+inputs, without importing an expected value.
 
-Built ONCE per run by the probe script into an isolated `AE_HOME`; every fixture dir
-is thereafter IMMUTABLE for the run (a read-only chmod after build is the barrier).
-The suite operates on SNAPSHOTS, never live sessions (#81 parity rule).
+## Prerequisites (hard gates, both PENDING — nothing here is approved yet)
 
-| Fixture | Purpose (rows it feeds) |
+1. **B0 designs** (SC-507b, SC-511c, D01–D04 concurrency, SC-1208): separate seat
+   gate. C consumes their approved artifacts; it never redesigns or runs them.
+   SC-511c is REMOVED from this batch's arms (B0 owns it).
+2. **T-WD producer precursor** (narrow): real watchdog runs against controlled panes
+   producing incumbent dead/stale/throttled alert event bytes with provenance — the
+   only legitimate source for FX2's attention bytes (SC-980's incumbent-capture task,
+   run first under its own approved subdesign).
+
+## Template groups and per-arm sandboxes
+
+Fixture state is harvested ONCE into immutable **template groups** (chmod-protected,
+fingerprinted). Every ARM × LANE (bash lane / rust lane) then **clones a fresh
+`AE_HOME` from the template fingerprint** — no arm and no lane ever shares a sandbox
+(the bash lane cannot contaminate the rust lane; a mutating arm cannot leak into a
+read-only one). Mutating arms (A8) receive writable clones; read-only arms run on
+protected clones. Where a row needs LIVE state (running/alive/attach/status-inside),
+the arm creates a **dedicated tmux server** (own socket dir per the harness-slice
+marker discipline) with controlled panes/processes — shells and fixture scripts, never
+live models.
+
+Template groups (a GROUP holds one or more session dirs + optional tmux topology):
+
+| Group | Contents |
 |---|---|
-| FX1 healthy-multi | 2 agents, full meta (mode/origin/work_dir/goal), events with all six attention reasons ABSENT — baseline for schema/field rows |
-| FX2 attention-ladder | 6 sessions in one home, one per attention reason at documented severity — rollup/severity rows |
-| FX3 degraded-meta | unreadable meta (mode 000) + separately a malformed-complete event line — degradation rows |
-| FX4 quiet-fresh | session dir with NO events.jsonl; sibling with zero-byte events.jsonl — absent/empty rows |
-| FX5 request-pairs | ask/reply chains: correct mirror pair; same-ref wrong-target reply; mixed identity (one routed, one display); threshold-boundary ages (exactly at, strictly past) |
-| FX6 stopped-set | stopped sessions incl. one with attention-shaped history — filter rows |
-| FX7 unknown-extras | meta with unknown keys; events with unknown keys and unknown action — tolerance rows |
-| FX8 dr001-tail | events.jsonl WITHOUT trailing newline + a partial trailing record — reader boundary |
-| FX9 goal-history | multiple goal events over time — goal_set_epoch derivation |
+| G1 healthy | 2-agent session dir, full ratified meta keys, harvested event history with zero attention reasons |
+| G2 attention | 6 session dirs, one attention reason each — event bytes from the T-WD precursor (dead/stale/throttled) and real helper runs (waiting-user/blocked via state; unanswered via ask-pair aging) |
+| G2b competing | 1 session dir, multiple agents with COMPETING reasons, arrival order REVERSED relative to severity — proves max-severity rollup, not first/last-wins (SC-017g) |
+| G3 degraded | session dir with mode-000 meta; sibling with a malformed COMPLETE event line (producer-derived, named byte-diff) |
+| G4 quiet | session dir with NO events.jsonl; sibling with zero-byte events.jsonl |
+| G5 requests | ONE harvested valid ask/reply mirror pair + FIVE producer-derived mutations (below) |
+| G6 stopped | stopped session dirs incl. one with attention-shaped history |
+| G7 tolerance | meta with unknown keys; events with unknown keys/action (producer-derived + named additions) |
+| G8 tail | events.jsonl without trailing newline + partial trailing record (harvested then truncated, diff recorded) |
+| G9 goals | goal events with DISTINCT deterministic timestamps (clock hook, below) |
+| G10 identity-pairs | same-display/different-routing-key pair + display-only legacy pair (SC-511b preference proof) |
+| G11 escapes | harvested events whose payloads carry each documented escape class — quote, backslash, newline, tab, CR — producer INPUT bytes and emitted bytes both captured (SC-510d) |
 
-**Producer-bytes rule (colead B2, binding):** every `events.jsonl` byte in FX1–FX9 is
-EXTRACTED from real frozen producers, never hand-authored: a builder subrun invokes the
-generated helpers (`state`, `goal`, `memo`, `say`, `ask`, `review`, `reply`) of a
-scratch session at 72c7293 and the probe HARVESTS those emitted lines into the
-fixtures, recording per-line provenance (producing helper + command). Meta bytes are
-harvested from a real `ae` launch of the scratch session (then edited ONLY by the
-documented mutation of the arm, e.g. chmod for FX3 — each mutation is the arm's named
-manipulation). The extraction script and its provenance manifest ship with the
-artifacts.
+**Producer-derivation rule (gate wording):** every fixture byte is PRODUCER-DERIVED:
+harvested from real frozen producers (generated helpers state/goal/memo/say/ask/
+review/reply; `_register-sid` and `_recover-pending` for recover-ref bytes — both now
+in the harvester list; the T-WD precursor for alert bytes; a real `ae` launch for
+meta), then mutated ONLY by the arm's NAMED manipulation with a recorded byte diff.
+Hand-authoring is forbidden; "extracted" applies to valid lines, "producer-derived +
+named mutation diff" to malformed/truncated/future/mismatch fixtures.
 
-## Reader invocations
+## G5 request-pair protocol (gate B3 — the real reply helper refuses a mismatched
+responder, so wrong-target replies cannot be driven live)
 
-Two readers per arm where applicable, captured separately with identical inputs:
-1. **Frozen bash** `ae list --json` / `status` / `next` etc. at 72c7293 (the IS lane —
-   dispatcher invoked with the sandbox AE_HOME; the M2 bootstrap effect is part of the
-   capture, per SC-1202's known conflict).
-2. **Rust slice binary** where the seam exists (candidate validation only — its output
-   is NEVER the expected value; divergence between the two lanes is a REPORT for the
-   seats, resolved row-by-row as bash-IS vs contract-SHOULD vs builder-defect).
+Harvest ONE valid ask→reply mirror pair from two scratch agents. Derive five
+mutations, each a named coherent byte diff (actor/target AND their slot/session
+routing fields mutated together):
+1. correct mirror (unmutated control)
+2. wrong ref
+3. same ref, wrong actor
+4. same ref, correct actor, wrong target
+5. routed-vs-routed mismatch (both sides carry routing keys, keys disagree)
+6. mixed routed/display (one side routed, one display-only)
+Each is an independent SC-518 conjunct falsifier; 5–6 double as SC-511b
+routing-preference arms with G10.
 
-## Arms (59, grouped; each independently failable; captures = stdout+stderr+rc+
-fixture-dir listing before/after — before/after diff proves read-only rows)
+## Time protocol (gate B4)
 
-D01/D02/D03/D04a/D04b + SC-1306a-e (concurrency cuts) use the four B0-approved
-concurrency designs (named mutation barriers, before/after input fingerprints, tmux
-snapshots, repeated assertions) — those designs gate separately and this batch
-consumes them as approved.
+- A **fixed-clock hook** for every time-sensitive arm: a PATH-first `date` shim in the
+  sandbox (bash lane) and an injected clock (rust lane); no arm computes "now" and
+  races the real clock.
+- G9's goal events carry DISTINCT timestamps via the clock hook between producer
+  invocations.
+- **SC-524 source-discrimination pair** (bash reads events.jsonl MTIME for activity,
+  not event ts — ae@72c7293:3993-4009,4220-4228): two subarms on identical cloned
+  inputs per lane — (a) future event ts / ordinary mtime, (b) ordinary event ts /
+  future mtime. The seats see the incumbent-source divergence directly instead of a
+  fixture where both sources accidentally agree.
+- Threshold arms (SC-522, 523a/b): fixed clock; equality vs strictly-past as two
+  inputs. Default-value arms run under a SCRUBBED environment (env -i plus the
+  documented minimum), never inherited shell state.
 
-- **A1 schema/document** (SC-509, 509b, 506, 510a-d, 511a-c): FX1 baseline capture;
-  FX3 for 509b/506 (degraded entry present, document closes, identity survives); FX7
-  for 511b tolerance; FX8 for 510-shape at the boundary. 510c's state-in-ref via FX1's
-  harvested state events.
-- **A2 filters** (SC-017a-i, 521): FX1+FX2+FX6 in one home; one invocation per flag
-  and per documented alias; the two intersection invocations (stopped+needs-attn,
-  stopped+active); ls alias invocation.
-- **A3 rollup/severity** (SC-017g, 017h, 524): FX2 captures per severity; one
-  future-timestamped event fixture (harvested line, timestamp mutation named) for 524.
-- **A4 status/next** (SC-016a-d, 513a-c, 019, 020a-c): status named/default (inside
-  via a scripted tmux client in the sandbox server), never-attaches proven by tmux
-  client-list before/after; next with/without attention; --attach inside vs outside
-  tmux; gone-session re-check (fixture removed between resolve and attach via the
-  B0 barrier design); unknown-arg and no-attention rc captures; jump alias.
-- **A5 exits** (SC-514): doctor run against the sandbox with one planted FAIL
-  (missing dependency on PATH) and one clean run.
-- **A6 requests/pairing** (SC-518, 522, 523a-b, SC-212c signature): FX5 captures via
-  the requests helper and list unanswered derivation; threshold arms at equality vs
-  past; defaults confirmed against unset env.
-- **A7 meta grammar** (SC-405a-g): FX1 for the ratified keys; FX7 for 405d unknown
-  keys (probe capture, UNCLASSIFIED row - observation only); a malformed/duplicate-key
-  fixture for 405e (same status); FX9 for 405f; 405g's two subarms — a running scratch
-  session with @ae_branch_name set (tmux-primary) and a stopped fixture with only git
-  (fallback).
-- **A8 modes** (SC-100, 101, 102a-b, 018, 018b): default-name derivation from a
-  hostile-adjacent cwd (grammar-guarantee capture); fast-path attach capture with
-  before/after state diff (101's mutation-exclusion IS); resume-of-stopped capture
-  (102a regeneration set diff); inside-session invocation capture (102b); use-arm
-  captures (018 documented start; 018b against-existing decision surface).
-- **A9 quiet-vs-degraded** (SC-519, 520): FX4 absent + empty (quiet); FX3 malformed
-  complete line (degraded + skip observability capture incl. the public JSON marker).
+## Read-only and barrier proofs (gate B6)
 
-## Ordering & environment
+- Read-only rows: a recursive MANIFEST before and after — path, type, mode, symlink
+  target, content hash (atime deliberately ignored) across the cloned AE_HOME — plus
+  tmux server/session/window/pane/client snapshots. A listing is not a proof; the
+  manifest diff is.
+- **SC-020b named barrier**: pause after next's session RESOLUTION, kill/remove that
+  exact session, resume, capture the non-attach/non-recreate outcome. This arm may
+  reuse D04b's B0 hook ONLY if the approved B0 design names this exact cut and
+  capture; otherwise it runs its own barrier as specified here.
 
-Fixed order A1→A9 (any inter-arm dependence is a defect — the read-only before/after
-diffs prove isolation); single-threaded; `TZ=UTC`, fixed `LANG`; sandbox AE_HOME under
-mktemp with the suite-marker discipline from the harness slice; frozen-commit checkout
-verified by hash before any run; every artifact under
-`docs/migration/evidence/batch-c-artifacts/` with the provenance manifest.
+## Arms (nine groups, unchanged coverage, corrected mechanics)
 
-## Deliverables
+A1 schema/document (SC-509, 509b, 506, 510a-d, 511a-b): G1/G3/G7/G8/G11; 510c's
+recover-ref via the `_recover-pending`/`_register-sid` harvest; 511c REMOVED (B0).
+A2 filters (SC-017a-f, 017i, 521): G1+G2+G6 clones; one invocation per flag/alias;
+the two intersection arms; ls alias.
+A3 rollup/severity (SC-017g, 017h, 524): G2 + G2b (competing/reversed); the SC-524
+source-discrimination pair.
+A4 status/next (SC-016a-d, 513a-c, 019, 020a-c): live-tmux arms on dedicated servers;
+never-attaches via client-list snapshots; SC-020b per its named barrier.
+A5 exits (SC-514): doctor under a CONTROLLED PATH/capability fixture — clean arm and
+planted-failure arm both run the frozen script through a known bash; removing the one
+planted dependency cannot remove the interpreter or other checklist items.
+A6 requests/pairing (SC-518, 522, 523a-b, SC-212c): G5 protocol; scrubbed-env
+defaults; fixed-clock thresholds.
+A7 meta grammar (SC-405a-g): G1/G7 + malformed/duplicate-key producer-derived
+fixtures (405d/e captures remain observation-only for UNCLASSIFIED rows); G9 for
+405f; 405g's two named resolution subarms (tmux @ae_branch_name primary on a live
+server; git fallback on a stopped clone).
+A8 modes (SC-100, 101, 102a-b, 018, 018b): WRITABLE clones per arm; default-name
+derivation capture; fast-path attach with full manifest+tmux diff (101); resume
+regeneration set diff (102a); inside-session invocation (102b, live server); use arms.
+A9 quiet-vs-degraded (SC-519, 520): G4 (quiet both ways) vs G3 (degraded + public
+JSON marker + retained generation/offset/reason capture).
 
-Per arm: captured stdout/stderr/rc + fixture provenance + before/after diffs, one
-manifest file mapping arm → row ids → artifact paths. No verdicts — the seats classify
-each capture against its row (contradictions become bucket-3/DR reopenings; measurement
-never rewrites SHOULD).
+## Lanes, ordering, environment
+
+Per arm: bash lane first on its own clone, rust lane on ITS own clone (same template
+fingerprint) — divergence between lanes is REPORTED, never resolved by the probe.
+Fixed arm order; single-threaded; TZ=UTC, fixed LANG, scrubbed env per arm; frozen
+commit verified by hash; artifacts under batch-c-artifacts/ with a manifest mapping
+arm → row ids → artifact paths → template fingerprints → mutation diffs. No verdicts
+anywhere — seats classify; contradictions become bucket-3/DR reopenings; measurement
+never rewrites SHOULD; bucket-3/4 rows capture the incumbent baseline only.
