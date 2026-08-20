@@ -66,7 +66,11 @@ def pairs(md):
     return out, dup
 
 def census_pairs(md):
-    out, cur, dup = set(), None, []
+    """(in-scope pairs, duplicates, scope errors) — mirrors the generator, including that
+    duplicate and conflicting-ownership detection happens BEFORE the scope filter. A
+    filtered-first reader cannot see two identical OOB rows or an IN/OOB conflict."""
+    out, cur, dup, errs = set(), None, [], []
+    seen_scope, ncols, idx = {}, None, None
     for ln in open(md, encoding="utf-8"):
         ln = ln.rstrip("\n")
         if ln.startswith("## ") or ln.startswith("### "):
@@ -74,16 +78,36 @@ def census_pairs(md):
             t = re.sub(r"\s*\(ae:[^)]*\)", "", t).strip()
             tl = t.lower()
             cur = None if ("(seat-only)" in tl or any(k in tl for k in ("argument census", "row ->"))) else t
-        elif ln.startswith("|") and cur:
-            c = [x.strip() for x in ln.strip("|").split("|")]
-            if c and c[0] and not c[0].lower().startswith("input") and not set(c[0]) <= set("-: "):
-                if any("OUT-OF-BATCH" in x for x in c):
-                    continue
-                for part in split_spellings(c[0]):
-                    k = (cur, part)
-                    if k in out: dup.append(k)
-                    out.add(k)
-    return out, dup
+            idx = None
+            continue
+        if not (ln.startswith("|") and cur):
+            continue
+        c = [x.strip() for x in ln.strip("|").split("|")]
+        if not c or not c[0] or set(c[0]) <= set("-: "):
+            continue
+        if c[0].lower().startswith("input"):
+            if c[-1] != "Scope":
+                errs.append(f"{cur}: header has no trailing Scope column"); idx = None
+            else:
+                idx, ncols = len(c) - 1, len(c)
+            continue
+        if idx is None:
+            errs.append(f"{cur}: data row before a valid header"); continue
+        if len(c) != ncols:
+            errs.append(f"{cur}: row has {len(c)} columns, header has {ncols}"); continue
+        scope = c[idx]
+        if not re.fullmatch(r"IN|OOB:[A-Za-z0-9_.\-]+", scope):
+            errs.append(f"{cur}: bad scope value {scope!r}"); continue
+        for part in split_spellings(c[0]):
+            k = (cur, part)
+            if k in seen_scope and seen_scope[k] != scope:
+                errs.append(f"{cur}: conflicting scope for {part!r}")
+            elif k in seen_scope:
+                dup.append(k)
+            seen_scope[k] = scope
+            if scope == "IN":
+                out.add(k)
+    return out, dup, errs
 
 fails = []
 tmp = tempfile.mkdtemp()
@@ -94,9 +118,10 @@ if open(gen_path, encoding="utf-8").read() != open(listing, encoding="utf-8").re
     fails.append("DIFF-CLEAN: the committed list is not what the generator produces")
 
 lp, lp_dupes = pairs(listing)
-cp, cp_dupes = census_pairs(census)
+cp, cp_dupes, cp_errs = census_pairs(census)
 for d in lp_dupes: fails.append(f"DUPLICATE_LIST: {d}")
 for d in cp_dupes: fails.append(f"DUPLICATE_CENSUS: {d}")
+for e in cp_errs: fails.append(f"SCOPE_ERROR: {e}")
 for extra in sorted(lp - cp): fails.append(f"EXTRA in list, absent from census: {extra}")
 for miss in sorted(cp - lp): fails.append(f"MISSING from list, present in census: {miss}")
 
@@ -149,6 +174,34 @@ if redproof:
         (lambda t: t.replace("- `version`", "- `version` (ae:16845)", 1), "citation leakage"),
         (lambda t: t.replace("- `mine`\n", "- `mine`\n- `mine`\n", 1), "duplicate record"),
     ]
+    def run_census_variant(mutate, label):
+        """Mutate the CENSUS, regenerate, and require the pipeline to notice. The previous
+        suite mutated only the generated list, so every ownership and duplicate claim about
+        the SOURCE was untested."""
+        v = os.path.join(tmp, "c.md"); g = os.path.join(tmp, "cg.md")
+        open(v, "w", encoding="utf-8").write(mutate(open(census, encoding="utf-8").read()))
+        r = subprocess.run([sys.executable, GEN, v, g], capture_output=True, text=True)
+        _, d, e = census_pairs(v)
+        gen_pairs, _ = pairs(g) if os.path.exists(g) else (set(), [])
+        caught = bool(d or e) or r.returncode != 0 or gen_pairs != cp
+        print(f"  {label:34s} caught={'YES' if caught else 'NO'}")
+        return caught
+
+    IN_ROW  = "| `-h` | outer case arm, ae:16841-16843 | ACCEPTED | SC-012b | IN |"
+    OOB_ROW = "| `--init` | ae:16732-16738 | ACCEPTED | OUT-OF-BATCH — SC-932 | OOB:SC-932 |"
+    census_arms = [
+        (lambda t: t.replace(IN_ROW, IN_ROW.replace("| IN |", "| OOB:SC-999 |"), 1), "census IN -> OOB"),
+        (lambda t: t.replace(OOB_ROW, OOB_ROW.replace("| OOB:SC-932 |", "| IN |"), 1), "census OOB -> IN"),
+        (lambda t: t.replace(IN_ROW, IN_ROW + "\n" + IN_ROW, 1), "census duplicate in-scope row"),
+        (lambda t: t.replace(OOB_ROW, OOB_ROW + "\n" + OOB_ROW, 1), "census duplicate OOB row"),
+        (lambda t: t.replace(IN_ROW, IN_ROW + "\n" + IN_ROW.replace("| IN |", "| OOB:SC-932 |"), 1), "census conflicting ownership"),
+        (lambda t: t.replace(IN_ROW, IN_ROW.replace("| IN |", "| MAYBE |"), 1), "census invalid scope value"),
+        (lambda t: t.replace("| Input | Reaches | Class | Row | Scope |", "| Input | Reaches | Class | Row |", 1), "census header missing Scope"),
+    ]
+    for mutate, label in census_arms:
+        if not run_census_variant(mutate, label):
+            fails.append(f"RED-PROOF BLIND: the '{label}' injection was not caught")
+
     for mutate, label in arms:
         if not run_variant(mutate, label):
             # A red arm that reports caught=NO and leaves rc 0 is a red-proof that cannot

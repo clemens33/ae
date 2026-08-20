@@ -1,6 +1,6 @@
 # Batch H-HELPER — design
 
-**STATUS: DRAFT v8 — worker-authored (opus5:cexec). Two REQUEST-CHANGES rounds addressed. No arm runs until both seats approve.** v1-v3 are in git history;
+**STATUS: DRAFT v9 — worker-authored (opus5:cexec). Two REQUEST-CHANGES rounds addressed. No arm runs until both seats approve.** v1-v3 are in git history;
 this revision accepts every factual correction in that review, and each one is recorded
 where it changed the design rather than silently applied.
 
@@ -145,12 +145,22 @@ down, and the earlier construction was not admissible:
 
 ## Citations are pinned, not asserted
 
-Every `ae:NNNN` in this design and in the census is resolved against
+Every `ae:NNNN` in this design, the census and the generated list is resolved against
 `git show 72c7293:ae` by `batch-h-tools/check-citations.py`, which emits
 `batch-h-citation-pins.md` carrying the cited line's own TEXT — so a seat reads source
-rather than trusting arithmetic. It exists because the steward citations here were wrong by
-a constant 8: transcribed from a windowed grep, window offsets written down as absolute
-lines, under a claim of exact verification. 259 citations pinned, 0 suspicious.
+rather than trusting arithmetic. `--check` fails on a stale committed pin file and
+`--redproof` proves the tool can report red. The count is whatever the tool reports; it is
+not restated here, because a count in prose has lost the invocation that produced it.
+
+It exists because the steward citations here were wrong by a constant 8: transcribed from a
+windowed grep, offsets written down as absolute lines, under a claim of exact verification.
+
+**Two limits, stated before anyone cites it.** It pins a range's ENDPOINTS, not the lines
+between them — the artifact is named endpoint pins for that reason. And a pin proves a
+citation RESOLVES, never that it is the RIGHT line for the claim beside it: the +8 steward
+citations would have passed it clean, because those were real lines with real text. What
+caught them was a seat reading the source. The tool makes that reading cheap; it does not
+perform it.
 
 ## Required pre-step — the argument census
 
@@ -160,8 +170,13 @@ enumerated into a committed table, returned for a seat gate with an explicit row
 input-class mapping. The executor receives the seat-approved INPUT LIST, which is GENERATED
 from the census by a committed script that drops every non-input COLUMN — a columnar drop,
 not a vocabulary filter, so no outcome label reaches the brief whatever it is called — and
-is gated by a committed checker (diff-clean, set equality, a novel-label injection proving
-the drop, and a lexical belt) with five red-proofs. The table records: for every input class, whether it is ACCEPTED, REJECTED, IGNORED, or
+is gated by a committed checker (diff-clean, set equality both directions, scope-column
+validation, duplicate and conflicting-ownership detection performed BEFORE the scope filter,
+a novel-label injection proving the drop, and a lexical belt), with red arms on both the
+generated list AND the census source — including in->OOB, OOB->in, duplicate in-scope,
+duplicate OOB, conflicting ownership, an invalid scope value and a missing Scope column. Any
+blind arm fails the run. Scope is an explicit validated COLUMN, not a substring found in
+prose. The table records: for every input class, whether it is ACCEPTED, REJECTED, IGNORED, or
 HANGS, derived from the frozen function itself with line citations — not from prose. The
 arms are then built from that table. This exists because the v3 matrix was freehand and
 carried two direct row/source mismatches (below); a census makes the omission visible
@@ -299,8 +314,8 @@ controller CREATING it as a named transition that the capture brackets; (2) prod
 replay cohorts of 29, 30 and 31 events with per-line provenance,
 each read before any follow begins, so the frozen replay cut is exercised on both sides and
 at the boundary rather than assumed; (3) a replay capture closed by a named event
-barrier — the controller emits a known event and the capture closes when it appears; (iii)
-a follow capture across a second named event; (iv) a partial final line written in TWO
+barrier — the controller emits a known event and the capture closes when it appears; (4)
+a follow capture across a second named event; (5) a partial final line written in TWO
 steps with a barrier between them, so what the follower emits at each step is captured
 separately; (6) an unknown-argv invocation captured beside the plain one. Termination is
 performed by the controller AFTER the named capture barrier and recorded as a controller

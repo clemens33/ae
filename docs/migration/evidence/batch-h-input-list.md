@@ -173,12 +173,12 @@ construct, not an argument to pass.
 - no slot argument
 - a slot with no `launch_time.<slot>`
 - non-numeric launch time
-- candidate file older than launch time
-- candidate with matching launch-id token
-- candidate with a mismatched token
-- no token match anywhere
+- candidate file older than the launch time
+- candidate carrying the launch-id token
+- candidate carrying a different launch-id token
+- no candidate carrying the token
 - a malformed first-line id
-- a missing first-line id
+- an empty first line
 - yesterday's directory
 - two candidates with EQUAL mtimes
 - two candidates with DIFFERENT mtimes

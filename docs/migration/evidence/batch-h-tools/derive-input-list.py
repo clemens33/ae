@@ -55,7 +55,9 @@ def split_spellings(cell):
         return [x.strip() for x in re.split(r"\s*/\s*", cell)]
     return [cell]
 
+SCOPE_RE = re.compile(r"IN|OOB:[A-Za-z0-9_.\-]+")
 body, keep, seen, dupes = [], False, set(), []
+all_keys, errors, ncols, scope_idx = {}, [], {}, None
 for ln in lines:
     if ln.startswith("## ") or ln.startswith("### "):
         title = re.sub(r"\s+—.*$", "", ln)          # drop the heading tail
@@ -74,20 +76,48 @@ for ln in lines:
         continue
     cells = [c.strip() for c in ln.strip("|").split("|")]
     inp = cells[0] if cells else ""
-    if not inp or inp.lower().startswith("input") or set(inp) <= set("-: "):
+    if not inp or set(inp) <= set("-: "):
         continue
-    if any("OUT-OF-BATCH" in c for c in cells):      # owned by another row's batch
+    if inp.lower().startswith("input"):
+        # header: the Scope column is REQUIRED and its position is taken from here, so a
+        # table without one fails loudly instead of defaulting every row into scope.
+        if not cells or cells[-1] != "Scope":
+            errors.append(f"{title}: table header has no trailing Scope column")
+            scope_idx = None
+        else:
+            scope_idx = len(cells) - 1
+            ncols[title] = len(cells)
+        continue
+    if scope_idx is None:
+        errors.append(f"{title}: data row before a valid header: {inp[:40]}")
+        continue
+    if len(cells) != ncols.get(title):
+        errors.append(f"{title}: row has {len(cells)} columns, header has {ncols.get(title)}: {inp[:40]}")
+        continue
+    scope = cells[scope_idx]
+    if not SCOPE_RE.fullmatch(scope):
+        errors.append(f"{title}: scope value {scope!r} is not IN or OOB:<owner>: {inp[:40]}")
         continue
     for part in split_spellings(inp):
         key = (title, part)
-        if key in seen:
+        # Duplicate detection runs BEFORE the scope filter: two identical OOB rows, or an
+        # IN row and a conflicting OOB row for the same input, would otherwise be erased by
+        # the filter and never compared.
+        if key in all_keys and all_keys[key] != scope:
+            errors.append(f"{title}: conflicting scope for {part!r}: {all_keys[key]} vs {scope}")
+        elif key in all_keys:
             dupes.append(key)
+        all_keys[key] = scope
+        if scope != "IN":
+            continue
         seen.add(key)
         body.append(f"- {part}")
 
 txt = "\n".join(HEAD + body) + "\n"
 open(out, "w", encoding="utf-8").write(txt)
-if dupes:
-    print(f"DUPLICATE_CENSUS: {len(dupes)} duplicate (surface, input) records: {dupes[:5]}")
+for d in dupes:
+    print(f"DUPLICATE_CENSUS: {d}")
+for e in errors:
+    print(f"SCOPE_ERROR: {e}")
 print(f"{len(seen)} input entries written to {out}")
-sys.exit(2 if dupes else 0)
+sys.exit(2 if (dupes or errors) else 0)
