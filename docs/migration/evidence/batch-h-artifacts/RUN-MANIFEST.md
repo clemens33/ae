@@ -26,7 +26,7 @@ SC-1301 runs last, under the hook and barrier machinery its own section describe
 |---|---|---|
 | `_harness/hlib.sh` | `0f838f7e89619358650f4ee99da31776f5351ef219c32f85c9b1546a0a8779e4` | 2026-08-20T21:51:16Z |
 | `_harness/hfix.sh` | `51e401d354e20cd8332fb019d3a76122a669df482a87f9054cb68818d7a5c4b5` | 2026-08-20T21:51:16Z |
-| `_harness/make-h-hook-patch.py` | `b9b62f8ddf2a1db0fbadbb45e2b42a51573cb3976bc66990dec021e48da485be` | 2026-08-21 (registered BEFORE its first run) |
+| `_harness/make-h-hook-patch.py` | `57329df3e2ce1dc6b0bf402f53abe92285f10d851954f257d35637a5b9339b9d` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h1301.sh` | `880047d483fe32a5bf05fb4f71a08f4a6a2de4842e8e37b26a073694a4aa815c` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h8.sh` | `a0382a9dc48123dd10a1034e85723fcbc3d06fb69d51f229331ebbe86061df71` | 2026-08-21 (registered BEFORE its first run) |
 | `_harness/arm-h1h2.sh` | `4c2c8cb2d71d8153a9efe102572596546780b8381fed2885d30ed0f13d0da720` | 2026-08-21 (registered BEFORE its first run) |
@@ -382,4 +382,15 @@ re-read after an amendment instead of only the ones the amendment names.
 - and the case no longer proceeds past an unarmed barrier: it records OUTCOME-INCONCLUSIVE
   and stops, because everything captured after an unarmed barrier is a completed write
   wearing a barrier's label. The first run published exactly that and it read as a finding.
+- arms reopened: A-H1301, whole.
+
+### A24 — the hooked copy was not executable
+
+- `b9b62f8ddf2a1db0fbadbb45e2b42a51573cb3976bc66990dec021e48da485be` -> `57329df3e2ce1dc6b0bf402f53abe92285f10d851954f257d35637a5b9339b9d`
+- what the run showed: cut 2 recorded OUTCOME-INCONCLUSIVE with the spawn helper printing
+  `Error: ae not found (expected at /tmp/aecx/h/hook/ae)`. The file was there; it had no
+  executable bit, so ae's own `AE_PATH` guard refused it — a real product guard reporting
+  correctly about an instrument that was never runnable.
+- the generator now publishes the hooked copy with mode 0755. The guard that caught it is
+  one of the input classes A-H3 exercises, which is a pleasing way to find out.
 - arms reopened: A-H1301, whole.

@@ -17,7 +17,7 @@ Three hook points, one per writer, because the three writers do not share a boun
 
 usage: make-h-hook-patch.py <frozen-ae> <out-hooked> <out-patch>
 """
-import difflib, hashlib, sys
+import difflib, hashlib, os, sys
 
 src, out_hooked, out_patch = sys.argv[1], sys.argv[2], sys.argv[3]
 orig = open(src, encoding="utf-8", errors="surrogateescape").read().split("\n")
@@ -89,6 +89,10 @@ else:
 
 hooked = "\n".join(lines)
 open(out_hooked, "w", encoding="utf-8", errors="surrogateescape").write(hooked)
+# The hooked copy must be EXECUTABLE. Without this it is a file ae's own AE_PATH guard
+# refuses — "ae not found (expected at ...)" — which is how the spawn cut failed to arm:
+# a real product guard, reporting correctly, about an instrument that was never runnable.
+os.chmod(out_hooked, 0o755)
 diff = list(difflib.unified_diff(orig, lines, fromfile="ae@72c7293", tofile="ae@72c7293+hook", lineterm=""))
 open(out_patch, "w").write("\n".join(diff) + "\n")
 added = sum(1 for d in diff if d.startswith("+") and not d.startswith("+++"))
