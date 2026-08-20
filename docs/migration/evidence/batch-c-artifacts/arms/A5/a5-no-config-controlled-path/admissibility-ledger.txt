@@ -1,0 +1,14 @@
+seq=001	utc=2026-08-20T19:40:03Z	epoch=1787254803	event=case-OPEN	arm=A5 case=a5-no-config clone_mode=controlled-path frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T19:40:03Z	epoch=1787254803	event=rows	rows=SC-514 template=A5/doctor-fixture removed_tool=none capability=no-config
+seq=003	utc=2026-08-20T19:40:04Z	epoch=1787254804	event=clone-VERIFIED	clone_fingerprint=e3da566fb1c16e07f0bbdb7af612432fe22f13b9010bec50ae556044ebbb8c4c expected=e3da566fb1c16e07f0bbdb7af612432fe22f13b9010bec50ae556044ebbb8c4c matches=yes
+seq=004	utc=2026-08-20T19:40:05Z	epoch=1787254805	event=bin-listing	entries=1517 sha256=2204093b1aa95b58a3b17cad07541664067ef1fe7433d3b60446ee196cdde24d removed=none
+seq=005	utc=2026-08-20T19:40:05Z	epoch=1787254805	event=capability-manipulation	moved the config file aside from=config to=../config.moved-aside
+seq=006	utc=2026-08-20T19:40:05Z	epoch=1787254805	event=env-recorded	artifact_sha256=361503f5ee9aa73a6e05181b8658050cc2c500cbffb07299a92e8b78037e2184
+seq=007	utc=2026-08-20T19:40:05Z	epoch=1787254805	event=env-tab-selfcheck-START	artifact=env-tab-selfcheck.txt
+seq=008	utc=2026-08-20T19:40:05Z	epoch=1787254805	event=env-tab-selfcheck-COMPLETE	tab_survived=yes artifact_sha256=79b74de4a593814936939b5e5e165ff81391be0285a804382943e86208b297e0
+seq=009	utc=2026-08-20T19:40:05Z	epoch=1787254805	event=manifest-before	artifact_sha256=021f903f6111d12ab1981048e7e9f5a84256ea0775b90c05d5fbe739b825c2c2
+seq=010	utc=2026-08-20T19:40:05Z	epoch=1787254805	event=consumer-START	label=doctor argv=/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae doctor PATH=/tmp/aecx/arms/A5/a5-no-config/bin
+seq=011	utc=2026-08-20T19:40:05Z	epoch=1787254805	event=consumer-COMPLETE	label=doctor rc=1 stdout_sha256=09f229f9672be924aff4ebd9176f95f5e27f0acd2f2448127f0bf6347d7a0d71
+seq=012	utc=2026-08-20T19:40:06Z	epoch=1787254806	event=checklist	artifact_sha256=4920a1d008234560344a74db0ebc0269f978ef1d54cf3f80d30d4c768cd19139 lines=1
+seq=013	utc=2026-08-20T19:40:06Z	epoch=1787254806	event=manifest-after	artifact_sha256=1cfdb121ebc190afe144e95fe68e581db300d1bce362a670bf0d94ce39cf7d69
+seq=014	utc=2026-08-20T19:40:06Z	epoch=1787254806	event=case-CLOSE	case_txt_sha256=991d9a4a06f2c900a6e1af6c2a5b0f09ba11f9db540c71fb681be0cf8865883b consumers_tsv_sha256=689803c5f423e48b16351e5b42e76fffece05f8115ad3caa3a28e256b0389234

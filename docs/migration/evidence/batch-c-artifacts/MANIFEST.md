@@ -113,8 +113,8 @@ modified since HEAD are counted and named, not failed.
 Measured rather than assumed, after a parallel finding in the L-artifacts where 119 of 132
 checksum files listed THEMSELVES — a hash that necessarily changes when it is written, so
 the file could never verify from its own listing — and 12 more used paths relative to a
-different root than they sat in. Batch C: **13 checksum files, 4480 entries, zero
-self-listed, zero entries that fail to resolve from their own directory.** Each now carries
+different root than they sat in. Batch C: **14 checksum files, zero self-listed, zero entries
+that fail to resolve from their own directory** (measured at every gate run). Each now carries
 a three-line header naming the exact directory to verify from
 (`cd <tree-relative dir> && shasum -a 256 -c SHA256SUMS.txt`) and stating that it is
 deliberately not listed in itself; the gate counts checksum lines rather than file lines so
@@ -166,7 +166,8 @@ note (1306a→D01/Design 2, 1306b→D04a/Design 5, 1306c→D04b/Design 6, 1306d�
 | Arm group A3 (SC-017g, 017h, 524) | COMPLETE, bash lane — 20 case runs |
 | Arm group A3b (SC-017g adjacent pairs) | COMPLETE, bash lane — 12 case runs |
 | Arm group A4 (SC-016a–d, 513a–c, 019, 020a–c) | COMPLETE, bash lane — 7 case runs, incl. SC-020b on D04b's hook |
-| Arm groups A5–A9 | not started |
+| Arm group A5 (SC-514) | COMPLETE, bash lane — 7 case runs under a controlled PATH |
+| Arm groups A6–A9 | not started |
 | D-record executions (b0-design Designs 2–6) + SC-1306a–e | COMPLETE, bash lane — D01, D02, D03, D04a, D04b, all with controller-only twins |
 
 ---
@@ -569,6 +570,7 @@ ruled not to be rebuilt.
 | `A3b` | `pair-stale-over-waitinguser` | `tpairstaleoverwaitinguser` | 38 | `1a4b9cce376ac21bb359117a452b6c0955f9623dd82ace1576c6d80b2f0714b4` | `979b9bdcfe49d9f3763975aa321c3de596c4d292cdfdc1553299ffa875e3a48e` | `(new member)` |
 | `A3b` | `pair-throttled-over-unanswered` | `tpairthrottledoverunanswered` | 38 | `f397a68bc00ca03191655de0ec6207b07787c3f7149dc5695928c65f8e4afc64` | `e39eaf585b474db0f93ff670efe4de5c1b54a6333daa3d559e15c3d48cd15591` | `(new member)` |
 | `A3b` | `pair-waitinguser-over-blocked` | `tpairwaitinguseroverblocked` | 33 | `211b69861f9f331b9664bf277abfe1cd007296067f08aad64fd2de7601561a3e` | `b31945ae8c4612964f2eacc9dddacebe1e90917c836467012618355c0e53825e` | `(new member)` |
+| `A5` | `doctor-fixture` | `ta5` | 33 | `e3da566fb1c16e07f0bbdb7af612432fe22f13b9010bec50ae556044ebbb8c4c` | `5cd8a20578b15e0438e095a142d5c9e19439ebe962d8a03a50f980be96d2998c` | `(new member)` |
 | `D` | `d02-pending-with-harvested-reply` | `td02` | 40 | `c5a47d626ffaf77aed1dcfd551e1c945a71d612f3ee9ffaa8d16aa40e8192f14` | `c9863e6ad2a50e4b1e9912b29957bf6d972b3e48425bc8ce6a07154b16f7cd24` | `(new member)` |
 | `D` | `d03-31-numbered-events` | `td03` | 39 | `0bd4c21ce2c572b38527d83bc0ea8e8e82b830aee009453bfbfc1a18e9fa9dcb` | `d0d8630ccdb09be5fc6cdbe52960ccc134baea6840f2021c98fa47dd6656aa4d` | `(new member)` |
 | `G1` | `healthy` | `tg1` | 42 | `075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667` | `c940ecaed0bba78bb6b78f7a286ed3c65f601aa18f5a0babda6d2910aa062f18` | `bbfdf6957bb62063e2c5c94fc36844bede3eeab190027799b5a11164ddeab5dd` |
@@ -849,6 +851,7 @@ Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A1/<case>/`:
 - `A1/ledger.tsv` (case -> row ids), `A1/harness/` (the exact scripts and the
   tmux shim), `SHA256SUMS.txt` (every file above)
 
+
 ## Arm group A2 — list filters (bash lane)
 
 ### A2 — what the arm does
@@ -950,6 +953,7 @@ Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A2/<case>/`:
 - `A2/ledger.tsv` (case -> row ids), `A2/harness/` (the exact scripts and the
   tmux shim), `SHA256SUMS.txt` (every file above)
 
+
 ## Arm group A3 — rollup / severity (bash lane)
 
 ### A3 — what the arm does
@@ -1043,6 +1047,7 @@ Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A3/<case>/`:
 - `A3/ledger.tsv` (case -> row ids), `A3/harness/` (the exact scripts and the
   tmux shim), `SHA256SUMS.txt` (every file above)
 
+
 ## Arm group A3b — SC-017g adjacent-pair discrimination (bash lane)
 
 ### A3b — what the arm does
@@ -1114,6 +1119,7 @@ Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A3b/<case>/`:
 - `tmux.before.txt` / `tmux.after.txt`
 - `A3b/ledger.tsv` (case -> row ids), `A3b/harness/` (the exact scripts and the
   tmux shim), `SHA256SUMS.txt` (every file above)
+
 
 ## Arm group A4 — status / next (bash lane)
 
@@ -1205,6 +1211,79 @@ Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A4/<case>/`:
   type, mode, content hash, symlink target, path across the cloned AE_HOME
 - `tmux.before.txt` / `tmux.after.txt`
 - `A4/ledger.tsv` (case -> row ids), `A4/harness/` (the exact scripts and the
+  tmux shim), `SHA256SUMS.txt` (every file above)
+
+
+## Arm group A5 — doctor exits (SC-514) (bash lane)
+
+### A5 — what the arm does
+
+Row: SC-514. The doctor is run under a CONTROLLED PATH: a directory of 1517 SYMLINKS to
+every executable on the standard search path, with `PATH` set to that directory ALONE. A
+planted arm removes exactly ONE symlink, and the arm PROVES it removed exactly one — each
+case publishes `bin-listing.txt`, and the diff against the clean arm's listing is a single
+line naming the removed tool. The interpreter is invoked by ABSOLUTE path, so no removal
+can take it away; `a5-no-bash-on-path` removes `bash` from the controlled directory
+deliberately to show that.
+
+The fixture (`A5/doctor-fixture`) is a real 2-agent launch with ordinary traffic, then the
+real `ae stop`, so it is a settled on-disk session rather than a live one, and its config
+names the agent by absolute path so the doctor's `agent:` check resolves through the
+controlled directory like every other checklist item.
+
+Each case publishes the doctor's stdout verbatim, its rc, `checklist.txt` (every
+`OK`/`WARN`/`FAIL` line and the Summary, re-derived from the captured stdout with the
+source hash recorded), the bin listing, and before/after AE_HOME manifests.
+
+`platform-note.txt` records why there is no `a5-no-timeout` arm: `timeout` is GNU coreutils
+and this platform does not provide it, so there was nothing to remove. The harness tried,
+could not plant the removal, and HARNESS-ABORTED rather than publishing a case that removed
+nothing and looked like a planted failure; the aborted directory was deleted rather than
+published. The observation it would have produced is already in the clean arm, whose
+checklist carries the `timeout` WARN with the full bin directory in place.
+### A5 case table
+
+`checks<first consumer` names the ledger sequence numbers of the TAB round-trip
+COMPLETE, the tmux-shim equivalence COMPLETE (`-` where the case starts no server),
+and the first `consumer-START`. The ledger is append-only and written by the checks
+themselves, so the ordering is established by the original durable content — not by
+file mtimes and not by a hash list added afterwards. For a barrier case the first
+consumer activity is `barrier-ARMED` (the hooked run has no `consumer-START` line).
+
+A case whose design includes a CONTROLLER MUTATION necessarily shows a tmux delta;
+what the controller did, when, and from where is in `controller-mutation.txt` and in
+the ledger, and the before/at-barrier/after tmux snapshots bracket it.
+
+| case | clone | rows | template | clone fp = template fp | manifest diff | tmux snapshot identical | consumers | checks<first consumer | ordered |
+|---|---|---|---|---|---|---|---|---|---|
+| `a5-clean-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 2 | - | 1 | 7/-/9 | yes |
+| `a5-no-bash-on-path-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 2 | - | 1 | 7/-/9 | yes |
+| `a5-no-config-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 4 | - | 1 | 8/-/10 | yes |
+| `a5-no-flock-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 2 | - | 1 | 7/-/9 | yes |
+| `a5-no-git-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 2 | - | 1 | 7/-/9 | yes |
+| `a5-no-tail-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 2 | - | 1 | 7/-/9 | yes |
+| `a5-no-tmux-controlled-path` | controlled-path | SC-514 | `A5/doctor-fixture` | - | 2 | - | 1 | 7/-/9 | yes |
+
+Artifact paths — `docs/migration/evidence/batch-c-artifacts/arms/A5/<case>/`:
+
+- `admissibility-ledger.txt` — append-only, monotonic `seq` + UTC + epoch per event:
+  case open, rows, clone verification (clone vs expected fingerprint), the TAB
+  round-trip START/COMPLETE, the tmux-shim equivalence START/COMPLETE, the
+  before/after manifests, and every consumer START/COMPLETE with its rc and its
+  stdout / stderr / tmuxtrace sha256
+- `env-tab-selfcheck.txt` — the TAB round-trip in this case's own scrubbed
+  environment, plus the paired `LANG=LC_ALL=C` probe on the same throwaway server
+- `tmux-shim-equivalence.txt` — live cases only: the delegate-and-log shim proven
+  byte-identical to the real binary on this arm's own stable topology
+- `case.txt`, `env.txt`, `consumers.tsv` (label, rc, stdout/stderr sha256 + bytes,
+  tmuxtrace sha256 + line count, bounded flag, exact argv)
+- `out/<label>.stdout`, `out/<label>.stderr` (present only when non-empty),
+  `out/<label>.tmuxtrace` — per invocation: the effective `AE_TMUX_SERVER` and kind,
+  the effective locale, and the DELEGATED tmux argv
+- `manifest.before.tsv` / `manifest.after.tsv` / `manifest.diff.txt` — recursive:
+  type, mode, content hash, symlink target, path across the cloned AE_HOME
+- `tmux.before.txt` / `tmux.after.txt`
+- `A5/ledger.tsv` (case -> row ids), `A5/harness/` (the exact scripts and the
   tmux shim), `SHA256SUMS.txt` (every file above)
 
 ## D-record executions (bash lane)

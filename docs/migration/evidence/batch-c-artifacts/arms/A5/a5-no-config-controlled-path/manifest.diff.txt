@@ -1,0 +1,4 @@
+0a1
+> file	644	10b6bb57e28dc9f820330784fac9a02bda4017de7a92d3e3f8a845d5921fdaea	-	./config
+32a34
+> dir	755	-	-	./worktrees

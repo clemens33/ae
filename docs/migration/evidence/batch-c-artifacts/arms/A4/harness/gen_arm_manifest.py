@@ -17,7 +17,13 @@ for c in sorted(os.listdir(DEST)):
     p=os.path.join(DEST,c)
     if not os.path.isdir(p) or not os.path.exists(os.path.join(p,"case.txt")): continue
     d=kv(os.path.join(p,"case.txt"))
-    parts=c.rsplit("-",1); base,mode=(parts[0],parts[1]) if len(parts)==2 else (c,"?")
+    # mode suffixes are a KNOWN set, not "whatever follows the last dash" — a mode like
+    # controlled-path contains one, and splitting on the last dash silently renamed the
+    # case and broke every ledger lookup for the arm.
+    MODES=("controlled-path","ro","rw","live","twin","barrier","attach","follow")
+    base,mode=c,"?"
+    for m in MODES:
+        if c.endswith("-"+m): base,mode=c[:-(len(m)+1)],m; break
     l=led.get(base,{})
     ncons=sum(1 for _ in open(os.path.join(p,"consumers.tsv")))-1
     lg=open(os.path.join(p,"admissibility-ledger.txt")).read().splitlines()

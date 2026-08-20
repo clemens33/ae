@@ -75,6 +75,13 @@ for arm in sorted(os.listdir(arms)) if os.path.isdir(arms) else []:
                 and "event=events-tail-STARTED" not in text:
             kinds.append("document")
         if "event=hook-inactive-equivalence-START" in text: kinds.append("hooked")
+        # A case is tmux-bound when its OWN recorded environment gave it a server. That is
+        # the case's declaration, not an inference from which files happen to exist — the
+        # A5 doctor arms run under a controlled PATH with no tmux at all and must not be
+        # asked for snapshots of a server they never had.
+        envp = os.path.join(cdir, "env.txt")
+        if os.path.exists(envp) and "AE_TMUX_SERVER=" in open(envp, encoding="utf-8", errors="replace").read():
+            kinds.append("tmux-bound-staged" if staged else "tmux-bound-unstaged")
         for k in kinds:
             for f in req.get(k, []):
                 if f.startswith("glob:"):
@@ -90,7 +97,7 @@ for arm in sorted(os.listdir(arms)) if os.path.isdir(arms) else []:
                 if not ok:
                     bad.append((f"{arm}/{c}", f, f"required by kind '{k}' but absent or empty"))
         checked += 1
-        base = re.sub(r"-(ro|rw|live|twin|barrier|attach|follow)$", "", c)
+        base = re.sub(r"-(controlled-path|ro|rw|live|twin|barrier|attach|follow)$", "", c)
         seen.add(base)
     # CASE INDEX membership, directory-exact and content-bound.
     idx = os.path.join(adir, "CASES.tsv")

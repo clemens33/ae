@@ -1,0 +1,13 @@
+seq=001	utc=2026-08-20T19:39:50Z	epoch=1787254790	event=case-OPEN	arm=A5 case=a5-no-tmux clone_mode=controlled-path frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+seq=002	utc=2026-08-20T19:39:50Z	epoch=1787254790	event=rows	rows=SC-514 template=A5/doctor-fixture removed_tool=tmux capability=none
+seq=003	utc=2026-08-20T19:39:50Z	epoch=1787254790	event=clone-VERIFIED	clone_fingerprint=e3da566fb1c16e07f0bbdb7af612432fe22f13b9010bec50ae556044ebbb8c4c expected=e3da566fb1c16e07f0bbdb7af612432fe22f13b9010bec50ae556044ebbb8c4c matches=yes
+seq=004	utc=2026-08-20T19:39:51Z	epoch=1787254791	event=bin-listing	entries=1516 sha256=2685e7b59c1ff68b8d9d33d0177464f47e5d270e67a206b723f21e6278f77d06 removed=tmux
+seq=005	utc=2026-08-20T19:39:51Z	epoch=1787254791	event=env-recorded	artifact_sha256=55c248abd4ea324136f4ffc905b507747c4b4b1aaae25dc990020ad48496cb65
+seq=006	utc=2026-08-20T19:39:51Z	epoch=1787254791	event=env-tab-selfcheck-START	artifact=env-tab-selfcheck.txt
+seq=007	utc=2026-08-20T19:39:51Z	epoch=1787254791	event=env-tab-selfcheck-COMPLETE	tab_survived=yes artifact_sha256=fb74fb7d1ace5725c73be717a384ca7b7c49a2c07d699b55c3a49df54cd06de5
+seq=008	utc=2026-08-20T19:39:51Z	epoch=1787254791	event=manifest-before	artifact_sha256=e3da566fb1c16e07f0bbdb7af612432fe22f13b9010bec50ae556044ebbb8c4c
+seq=009	utc=2026-08-20T19:39:51Z	epoch=1787254791	event=consumer-START	label=doctor argv=/opt/homebrew/bin/bash /private/tmp/claude-501/-Users-ckriech-projects-clemens33-ae-rust/347d2089-7268-421d-8188-8924e246bbf0/scratchpad/frozen/ae doctor PATH=/tmp/aecx/arms/A5/a5-no-tmux/bin
+seq=010	utc=2026-08-20T19:39:51Z	epoch=1787254791	event=consumer-COMPLETE	label=doctor rc=1 stdout_sha256=85fde0136be262e914cc406da0f599c2d842d3a994b67f569af08430942e27a3
+seq=011	utc=2026-08-20T19:39:51Z	epoch=1787254792	event=checklist	artifact_sha256=6de663cca0b5525f6b16f86be783186d3a1de979d9a7bbf9e5f1599e575a1473 lines=1
+seq=012	utc=2026-08-20T19:39:52Z	epoch=1787254792	event=manifest-after	artifact_sha256=15a03665712c4fd6185a12e89197311eeb5e9d80ab2cfe597ab5ff91dcbb4c2f
+seq=013	utc=2026-08-20T19:39:52Z	epoch=1787254792	event=case-CLOSE	case_txt_sha256=937c70b0bb5ac423a8e815aa627f5c51355bbb68107aa56b2c0b2e49d18f7b39 consumers_tsv_sha256=418589731d92774d05e76e99245ce62b959674f10da0e49f5745ebbbb55d17e8

@@ -14,8 +14,9 @@ unstaged	manifest.diff.txt
 staged	glob:2:manifest.*.tsv
 consumer-run	out/
 pane-follow	glob:1:pane.*.txt
-document	tmux.before.txt
-document	tmux.after.txt
+tmux-bound-unstaged	tmux.before.txt
+tmux-bound-unstaged	tmux.after.txt
+tmux-bound-staged	glob:2:tmux.*.txt
 live	tmux-shim-equivalence.txt
 barrier	controller-mutation.txt
 twin	controller-mutation.txt

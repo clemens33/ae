@@ -1,0 +1,22 @@
+## doctor checklist, re-derived from out/doctor.stdout
+source=out/doctor.stdout sha256=85fde0136be262e914cc406da0f599c2d842d3a994b67f569af08430942e27a3 bytes=1096
+derivation=pure post-processing of the captured bytes; nothing was re-run
+
+OK    ae             version 0.2.1
+OK    bash           version 5.3.15(1)-release
+FAIL  tmux           tmux not found in PATH
+OK    git            git version 2.50.1 (Apple Git-155)
+OK    flock          /tmp/aecx/arms/A5/a5-no-tmux/bin/flock
+OK    userland       BSD/macOS (portability shims active)
+WARN  timeout        not found — watchdog git probes run unbounded (brew install coreutils)
+OK    config         /tmp/aecx/arms/A5/a5-no-tmux/home/.ae/config
+WARN  PATH           /tmp/aecx/arms/A5/a5-no-tmux/home/.local/bin not found on PATH
+WARN  local-config   no project override (.ae/config) in /private/tmp/aecx/arms/A5/a5-no-tmux
+OK    sessions       /tmp/aecx/arms/A5/a5-no-tmux/home/.ae/sessions
+OK    worktrees      /tmp/aecx/arms/A5/a5-no-tmux/home/.ae/worktrees
+WARN  orphans        1 session dir(s)/worktree(s) with no running session: ta5
+WARN  orphans-hint   resume with 'ae <name>' or finish teardown with 'ae end <name>'
+OK    workspace.main fake:lead
+OK    workspace.workers fake:worker
+OK    agent:fake     /tmp/aecx/bin/aefake
+Summary: 1 failure(s), 5 warning(s)

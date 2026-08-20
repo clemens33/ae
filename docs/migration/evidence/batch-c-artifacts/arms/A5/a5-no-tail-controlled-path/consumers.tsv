@@ -1,0 +1,2 @@
+consumer	rc	stdout_sha256	stdout_bytes	stderr_sha256	stderr_bytes	tmuxtrace_sha256	tmuxtrace_lines	bounded	argv
+doctor	1	d778ac9697022009925b75ff9e858899f9f17ce17b174b3ae00e8fa65532acb3	1120	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	0	-	-	-	ae doctor under PATH=/tmp/aecx/arms/A5/a5-no-tail/bin

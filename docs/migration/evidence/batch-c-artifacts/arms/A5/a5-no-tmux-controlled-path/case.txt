@@ -1,0 +1,11 @@
+arm=A5 case=a5-no-tmux rows=SC-514 template=A5/doctor-fixture clone_mode=controlled-path
+clone_fingerprint=e3da566fb1c16e07f0bbdb7af612432fe22f13b9010bec50ae556044ebbb8c4c clone_fingerprint_matches_template=yes
+controlled_bin_dir=/tmp/aecx/arms/A5/a5-no-tmux/bin (symlinks only; PATH is this directory ALONE)
+removed_tool=tmux
+capability_manipulation=none
+interpreter=/opt/homebrew/bin/bash invoked by ABSOLUTE path, so no removal can take it away
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2 frozen_ae_sha256=b7b8aa9fb77afc0705abdfaadf60cc58911f1cac46fe2ec993578fe5451575fd
+utc_start=2026-08-20T19:39:51Z
+manifest_diff_lines=2
+doctor_rc=1
+utc_end=2026-08-20T19:39:52Z

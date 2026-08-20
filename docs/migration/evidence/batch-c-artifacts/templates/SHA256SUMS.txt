@@ -158,6 +158,11 @@ c76f986ddcd7d5e5111638cf472e2275bba893c1e8526225280a43378340c3ff  ./A3b/fixture-
 64234d3e78596ec16137758057b5fd83a17ef1dc0997b8b4057be66f1e71f38f  ./A3b/fixture-bytes/pair-waitinguser-over-blocked/config
 71e4e63a801f565152c2591a26eaabc42494f4a214e262204b67fe1a1f0a56fd  ./A3b/fixture-bytes/pair-waitinguser-over-blocked/sessions/tpairwaitinguseroverblocked/events.jsonl
 03cf76268de27a0f0dd7505b90c6f83c5c6ae60287553419bca4e472de00a772  ./A3b/fixture-bytes/pair-waitinguser-over-blocked/sessions/tpairwaitinguseroverblocked/meta
+e3da566fb1c16e07f0bbdb7af612432fe22f13b9010bec50ae556044ebbb8c4c  ./A5/_meta/doctor-fixture.modes.tsv
+730d4e394eed65e2ccd79de6041e99652e49396aa446d3eda6060f96c38f7dc1  ./A5/_meta/doctor-fixture.txt
+cbc25e77d5514c8436540e06d67ff2dfe076ccce705123018489ab914c0fb4a9  ./A5/fixture-bytes/doctor-fixture/config
+cb648a0a400f7b90c3c13c594a75dc431e78aaf7b2756273c038db68c3e44185  ./A5/fixture-bytes/doctor-fixture/sessions/ta5/events.jsonl
+0eb8bd34354bd9c1cd4df8a7ac1a1c81d1fc6df9070c5a235cb0b290337027d0  ./A5/fixture-bytes/doctor-fixture/sessions/ta5/meta
 c5a47d626ffaf77aed1dcfd551e1c945a71d612f3ee9ffaa8d16aa40e8192f14  ./D/_meta/d02-pending-with-harvested-reply.modes.tsv
 26f81927ac3ff03c15b97715ed6b12ca6907a116f6638dc1c65572ff40e6a2d2  ./D/_meta/d02-pending-with-harvested-reply.mutation.txt
 a9aad4449acc31cbee3c8e06b4c7a2c5e13a91c2091dd88f9e64131d02b553f1  ./D/_meta/d02-pending-with-harvested-reply.txt
@@ -177,7 +182,7 @@ bd4a15977e271b2fa2fd2e28b6e7e4b3820961180e5245ac9c4fbf684b447a8c  ./D/fixture-by
 ad0ae7c9b6111a5eb93a2fb70c117ab62d72208130839a3da01551533dc7a775  ./D/fixture-bytes/d03-31-numbered-events/sessions/td03/meta
 525e3808ac9fd1c59db60330508d28c6fb656a15a028ceb887d7d7767b87c2ac  ./date-shim/date
 9ce5f043aee179b4fb62cd3876622a7a6fc06968ce94ca2f99fe78784cce8b52  ./FINGERPRINTS.superseded-pre-locale-fix.tsv
-36178255524016d6dc4a1f4ce9e162ac98be383e45f9ae7a6870edb6970a4793  ./FINGERPRINTS.tsv
+b128685ddbf4243a2efd7c2bf575fa0687170d6ed35b8504db1d0cf139d40ef7  ./FINGERPRINTS.tsv
 075d5a2c2b065c8511193a8b16ee9d7785ae91ce8d9ba3020d7bc40a171ff667  ./G1/_meta/healthy.modes.tsv
 82a471cdb1c368564982efa9b4f03636439090e9e705bcbaaf5e97adec59ecf7  ./G1/_meta/healthy.txt
 cbc25e77d5514c8436540e06d67ff2dfe076ccce705123018489ab914c0fb4a9  ./G1/fixture-bytes/healthy/config
@@ -431,9 +436,11 @@ ec530e8fb440d59cd920f9bcb70f490bb721a3d107b868a01982fa98834a877a  ./harness/tpl-
 f3ba5d038c442f7d7d52de40ff1ddfad28cb8a9fb7074c6fe9c61f5332df36d8  ./harness/tpl-a2.sh
 8277971c6f73121015491e1cb529df332b28815c50ea31c6f2dbde1df0be08b8  ./harness/tpl-a3.sh
 992b286607b4a603359bd40c286b425fbddd0ea438cdef139ac66f05e4eae59c  ./harness/tpl-a3b.sh
+c9b3aa46bf9329b43e655b94c55a157a95338abdbcb3f06e7b4191e62f93bddf  ./harness/tpl-a5.sh
 92c8efeeb6acc6003be9d5726bbce35c1b5e6f966010a7079f5b79b91f57d23d  ./harness/tpl-d.sh
 dc3b540b43f734b2eafb9e0479e33b11f2fe6be70f45686cc6e4920eef80efa3  ./harness/tpl-d03.sh
 bc1981c9f250d0eed8d9ca8d868fbecc7e3704866b755dd66ea0fc0645be277f  ./harness/tpl-stage1.sh
 5edaa894c08bd57532c860d8e0cbd3bdd037cf6e2f23780cffb935fbe306ae38  ./harness/tpl-stage2.sh
 605e7b935ec68b2dd58f336528043c1c953a9d846e7bd4445d54a1288e4b6ad4  ./harness/tpl-stage3.sh
 0f07fbc93e9ed6c3f08e20a80f4a5697a446d757029645e493daf9cdc73590c4  ./harness/tpl-stage4.sh
+f4f4e248e58798cdc4af6bd6d9acb5740d78c7f25dc07d8d874774045d649631  ./harness/write-sums.sh

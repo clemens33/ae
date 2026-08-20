@@ -1,0 +1,18 @@
+group=A5
+member=doctor-fixture
+fingerprint_pre_protection=e3da566fb1c16e07f0bbdb7af612432fe22f13b9010bec50ae556044ebbb8c4c
+source_sandbox=/tmp/aecx/tpl/a5
+source_session=ta5
+frozen_sha=72c729343a0117af2968b66e1c43f89ad25fc0b2
+built_utc=2026-08-20T19:39:01Z
+--- provenance ---
+construction: a real 2-agent launch, ordinary traffic, then the real ae stop, so the
+fixture is a settled on-disk session rather than a live one. The config names the
+agent alias by ABSOLUTE path, so the doctor's agent: check resolves through the
+controlled bin dir like every other checklist item.
+  as=%0 helper='state working A5 doctor fixture traffic'
+    rc=0
+  as=%0 helper='goal A5 doctor fixture goal'
+    rc=0
+  ae stop rc=0
+fingerprint_protected=5cd8a20578b15e0438e095a142d5c9e19439ebe962d8a03a50f980be96d2998c
