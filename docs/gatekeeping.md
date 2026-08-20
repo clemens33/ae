@@ -374,6 +374,40 @@ running the wrong thing, and the reason was that the right thing had never been 
 cheaper and more reliable than probe N+1. Guessing feels like progress and is the same
 motion that produced the first N.
 
+### The seat boundary, in its finished form
+
+Reached after two leaks and three refinements, and worth stating whole because each clause
+was paid for.
+
+**Why a rule was not enough.** Normative content crossed to a worker twice while a channel
+rule forbidding it was in force, both times from a seat behaving correctly — once inside a
+message *arguing for the exclusion*, once inside a legitimate scope correction. A rule
+being followed and still failing is the wrong instrument.
+
+**The boundary is a FILTER, not a rule.** Outcome-bearing gate analysis routes seat-to-seat;
+the worker receives a **neutral delta** produced by a seat. That costs a hop and puts
+filtering work on the seats, which is the price of a boundary that does not depend on
+everyone remembering it.
+
+**Filter by SUBJECT MATTER, not severity and not source.** Findings about the harness, the
+document, or the platform travel **verbatim** — a subshell breaking a sequence counter, an
+arm deferring constructibility to its own artifact, a positional reference that retargeted.
+Only findings whose *reasoning states what the product does* get converted. Applied bluntly
+the rule over-applies: every gate routes through a seat, and since a delta is always lossier
+than the original, filtering what needs no filtering costs precision for nothing. In one
+nine-blocker gate, five travelled whole and four needed conversion.
+
+**A source anchor may travel; the relation it proves may not.** `cut at ae:15089` locates a
+site and is necessary for the worker to build anything. *"ae:15089 shows the daemon is
+stopped before X"* states the relation the arm exists to test. Without this precision the
+rule either blocks every citation — making arms unbuildable — or admits citations together
+with the prose that explains them, which is the leak.
+
+**The worker derives its own product facts.** Told what to change and where, a worker reads
+the frozen source themselves. That is strictly better than being handed a conclusion: it
+keeps the anti-oracle rule pointed at seats too, and a seat that has been right six times is
+still not an authority about the product.
+
 ### A transcribed checklist can only under-report
 
 The sharpest instrument bias found in the cluster, because its error mode has **one
