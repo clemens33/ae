@@ -36,8 +36,8 @@ CRIT-ASSIGN: D24 | B0 | negative-evidence artifact: scoped writer-enumeration ab
 CRIT-ASSIGN: D25 | T-WD | watchdog branch harness: watchdog daemon (mode-split; measured, colead 2026-08-20; census-3 audited)
 CRIT-ASSIGN: D27 | T-STORE | store/handoff harness: telegram bridge (runtime handoff; corrected per gate finding fe7cfc2e, blocker 6)
 CRIT-ASSIGN: D28c | T-CTRL | daemon control harness: telegram status (read)
-CRIT-ASSIGN: D30a | F-IDENTITY | template-consumption arm: scaffold from templates, capture provenance
-CRIT-ASSIGN: D30b | F-IDENTITY | aemonitor state-writer scope arm: enumerate its writes, assert outside ae state
+CRIT-ASSIGN: D30a | F-CONTRIB | contrib/code audit: static template consumption + provenance
+CRIT-ASSIGN: D30b | F-CONTRIB | contrib/code audit: aemonitor state-writer scope enumeration, asserted outside ae state
 CRIT-ASSIGN: D30c | T-STORE | store/handoff harness: aewatch internals
 CRIT-ASSIGN: SC-101 | C | read-side fixture cluster: the running-session fast path's mutation exclusion
 CRIT-ASSIGN: SC-102a | C | read-side fixture cluster: resume of a stopped session
@@ -90,7 +90,7 @@ CRIT-ASSIGN: SC-507b | B0 | fingerprint-barrier design: mutate each moving file 
 CRIT-ASSIGN: SC-507c | L-COMPACT | compact tree: `archive preview` diagnostics go to stderr
 CRIT-ASSIGN: SC-507d | L-COMPACT | compact tree: `archive preview` is read-only by construction
 CRIT-ASSIGN: SC-508 | L-COMPACT | compact tree: residual undocumented exit codes
-CRIT-ASSIGN: SC-509 | L-COMPACT | compact tree: `list --json` versioned object schema
+CRIT-ASSIGN: SC-509 | C | read-side fixture cluster: list --json versioned object schema against fixture sessions
 CRIT-ASSIGN: SC-510a | C | read-side fixture cluster: event required keys
 CRIT-ASSIGN: SC-510b | C | read-side fixture cluster: optional keys are omitted when empty
 CRIT-ASSIGN: SC-510c | C | read-side fixture cluster: `ref` polysemy follows the action table
@@ -137,18 +137,18 @@ CRIT-ASSIGN: SC-806a | L-END | end/archive tree: archive identity is the session
 CRIT-ASSIGN: SC-806b | L-END | end/archive tree: canonical lowercase key; legacy uppercase normalized
 CRIT-ASSIGN: SC-807 | L-END | end/archive tree: the lifecycle lock is released before the relaunch
 CRIT-ASSIGN: SC-808 | L-END | end/archive tree: the child re-proves the exact parent archive before publishing its state
-CRIT-ASSIGN: SC-809 | L-END | end/archive tree: lineage is never inferred from a name
+CRIT-ASSIGN: SC-809 | L-FROM | from/lineage tree: lineage never inferred from a name
 CRIT-ASSIGN: SC-810a | L-PURGE | purge/validator tree: `--purge-history` writes no archive
 CRIT-ASSIGN: SC-810b | L-PURGE | purge/validator tree: `--purge-history` deletes any existing archive for the source UUID
 CRIT-ASSIGN: SC-811a | L-END | end/archive tree: `launch.<slot>.sh` re-run: first run creates, later runs resume
 CRIT-ASSIGN: SC-811b | L-END | end/archive tree: ae clears the marker whenever it rewrites the script
 CRIT-ASSIGN: SC-812 | L-END | end/archive tree: the resume decision happens BEFORE exec
-CRIT-ASSIGN: SC-813 | L-END | end/archive tree: session names are allowlisted at every creation/import boundary
-CRIT-ASSIGN: SC-814 | L-END | end/archive tree: transfer validates both endpoint names before any side effect
-CRIT-ASSIGN: SC-815a | L-END | end/archive tree: the confirmed fleet is the fleet acted on
-CRIT-ASSIGN: SC-815b | L-END | end/archive tree: fleet entries carry session identity, not names
+CRIT-ASSIGN: SC-813 | F-IDENTITY | multi-boundary identity arm: launch entry + default-name + rename target + transfer both directions, one hostile name each
+CRIT-ASSIGN: SC-814 | L-RENTRANS | rename/transfer tree: endpoint name validation before any side effect
+CRIT-ASSIGN: SC-815a | L-STOP | stop matrix tree: fleet acts on the confirmed set only
+CRIT-ASSIGN: SC-815b | L-STOP | stop matrix tree: fleet entries carry session identity, name-reuse leaves newcomer
 CRIT-ASSIGN: SC-815c | L-STOP | stop matrix tree: concurrent-fleet arm — two ops, each consumes only its own results
-CRIT-ASSIGN: SC-815d | L-END | end/archive tree: the visible representation is `[op <uuid>]` in the events
+CRIT-ASSIGN: SC-815d | L-STOP | stop matrix tree: op-id representation in fleet events
 CRIT-ASSIGN: SC-816 | L-END | end/archive tree: an unverifiable session is still a target
 CRIT-ASSIGN: SC-817 | L-END | end/archive tree: end's transaction order: stop, git-outcome-fixed, capture, cleanup
 CRIT-ASSIGN: SC-818b | L-PURGE | purge/validator tree: purge acquires the same `.publishing.<uuid>` claim
@@ -156,9 +156,9 @@ CRIT-ASSIGN: SC-818c | L-PURGE | purge/validator tree: purge validates the tree 
 CRIT-ASSIGN: SC-818d | L-PURGE | purge/validator tree: purge requires a NONEMPTY exact source-identity match
 CRIT-ASSIGN: SC-818e | L-PURGE | purge/validator tree: purge refuses to delete a parent a live `--from` lineage points at
 CRIT-ASSIGN: SC-819 | L-PURGE | purge/validator tree: an unidentifiable session is refused BEFORE anything is stopped
-CRIT-ASSIGN: SC-820a | L-COMPACT | compact tree: end freezes the confirmed plan and re-proves it under the lock
-CRIT-ASSIGN: SC-821a | L-COMPACT | compact tree: `end all` acts on the confirmed target set only
-CRIT-ASSIGN: SC-821b | L-COMPACT | compact tree: "a prompt ran" is its own fact, never a count
+CRIT-ASSIGN: SC-820a | L-END | end/archive tree: confirmed-plan freeze + re-proof under lock, mismatch refuses
+CRIT-ASSIGN: SC-821a | L-END | end/archive tree: end-all acts on the confirmed target set only
+CRIT-ASSIGN: SC-821b | L-END | end/archive tree: prompt-ran is its own fact, empty set ends nothing
 CRIT-ASSIGN: SC-822 | L-FROM | from/lineage tree: `--from` is valid only for a session that does not exist in any form
 CRIT-ASSIGN: SC-823 | L-FROM | from/lineage tree: the parent is proved before anything is created
 CRIT-ASSIGN: SC-824a | L-FROM | from/lineage tree: proof facts are recorded as proved, never re-read
@@ -267,14 +267,14 @@ CRIT-ASSIGN: SC-1207a | F-IDENTITY | identity boundary probe: prompt identity fa
 CRIT-ASSIGN: SC-1207b | F-IDENTITY | identity boundary probe: meta serializes agents as `alias:name:provider-session-id`
 CRIT-ASSIGN: SC-1208 | B0 | argv/context capture design: constructed injection boundary vs delivered user-input artifact
 CRIT-ASSIGN: SC-1209 | F-IDENTITY | identity boundary probe: envelope authority arm — nested/pasted envelopes treated as data, unenveloped input as human
-CRIT-ASSIGN: SC-1301 | H-ENV | env sweep: session meta is written through one fail-closed writer
-CRIT-ASSIGN: SC-1302 | H-ENV | env sweep: a session name's lifecycle operations serialize on one lock
+CRIT-ASSIGN: SC-1301 | H-HELPER | meta-writer fault arm: fault hooks on each of the three writers, reader observes complete-or-old only
+CRIT-ASSIGN: SC-1302 | L-RENTRANS | cross-lifecycle concurrency arm: concurrent stop/rename/transfer on one name, serialization observed
 CRIT-ASSIGN: SC-1303 | L-RENTRANS | rename/transfer tree: rename: what a concurrent observer may see mid-operation
 CRIT-ASSIGN: SC-1304a | L-RENTRANS | rename/transfer tree: push mid-op arm — source present post-stop, no destination write yet
 CRIT-ASSIGN: SC-1304b | L-RENTRANS | rename/transfer tree: push destination-partial arm — crash-cut leaves partial remote state
 CRIT-ASSIGN: SC-1304c | L-RENTRANS | rename/transfer tree: pull mid-op arm — remote source present post-stop
 CRIT-ASSIGN: SC-1304d | L-RENTRANS | rename/transfer tree: pull destination-partial arm — crash-cut leaves partial local state
-CRIT-ASSIGN: SC-1305 | L-RENTRANS | rename/transfer tree: compact: mid-operation observability
+CRIT-ASSIGN: SC-1305 | L-COMPACT | compact tree: mid-operation observability cuts
 CRIT-ASSIGN: SC-1306a | C | read-side fixture cluster: `list` snapshot cut under concurrent writes
 CRIT-ASSIGN: SC-1306b | C | read-side fixture cluster: `status` snapshot cut
 CRIT-ASSIGN: SC-1306c | C | read-side fixture cluster: `next` snapshot cut
