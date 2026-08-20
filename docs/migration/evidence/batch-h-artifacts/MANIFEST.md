@@ -61,7 +61,7 @@ surface writes. `_register-sid` takes a SLOT (ae@72c7293:14752), reads `launch_i
 and `launch_time.<slot>` from meta, scans today's and yesterday's Codex session directories,
 and writes what it selects to `codex.<slot>.sid`.
 
-**Constructed inputs, declared.** The candidate `.jsonl` files and the `launch_id` /
+**Constructed inputs, declared.** The candidate Codex session files and the `launch_id` /
 `launch_time` meta lines are written by the CONTROLLER — there is no offline producer for
 either, and the fake agent is not a codex-kind tool, so ae never writes those keys. Each
 case records the exact planted bytes and their hashes in `planted-inputs.txt`. They are
@@ -75,6 +75,6 @@ and both canaries'.
 
 ## The gate
 
-`../gate/` holds the canonical gate. Per-arm `harness/` directories are provenance
+`../gate/` holds the canonical gate. Each arm's own harness directory is a provenance
 snapshots of the version each arm ran under; an older snapshot reports violations the
 current gate does not, so a reader reproducing a gate result runs the canonical copy.
