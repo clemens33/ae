@@ -56,6 +56,11 @@ INPUT DATA the surface reads, not helper bytes: every helper byte still comes fr
 frozen launch. Declared here rather than discovered later, because "producer-derived" is a
 claim this arm cannot make about its candidates and should not appear to.
 
+### A7 — `_harness/derive-h5-record.py` registered after A-H5's run
+
+- new sha256: `f71e06aea76925ad10e036ad1830afb4a618324d10486e28be1e44602a7e09d4`
+- post-capture reporting only; reads the committed captures and records no observation.
+
 ## Frozen source
 
 `72c7293`, verified by hash at every case open and recorded in each case's ledger.

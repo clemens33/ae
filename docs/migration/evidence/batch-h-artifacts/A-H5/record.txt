@@ -1,0 +1,76 @@
+## A-H5 — SC-211o, `_register-sid` (generated from the captures)
+
+One fixture fact varies per case. `sid` is whether a `codex.<slot>.sid` artifact was
+written and what it contains; `meta diff` is the change to the session's own meta
+across the invocation. Candidate files and meta keys are controller-planted input
+data, listed per case in `planted-inputs.txt`. Nothing here says which candidate
+should win.
+
+  case                        slot       rc   cand   sid   meta diff  canary 
+  --------------------------  ---------  ---  -----  ----  ---------  -------
+  h5-c01-no-slot-arg          <none>     0    1      yes   0          2/2    
+  h5-c02-slot-no-launchtime   main       0    1      yes   0          2/2    
+  h5-c03-token-match          main       0    1      yes   0          2/2    
+  h5-c04-token-mismatch       main       1    1      no    0          2/2    
+  h5-c05-older-than-launch    main       1    1      no    0          2/2    
+  h5-c06-nonnumeric-time      main       0    1      yes   0          2/2    
+  h5-c07-equal-mtimes         main       0    2      yes   0          2/2    
+  h5-c08-different-mtimes     main       0    2      yes   0          2/2    
+  h5-c09-cwd-match            main       0    1      yes   0          2/2    
+  h5-c10-cwd-differs          main       0    1      yes   0          2/2    
+  h5-c11-malformed-id         main       1    1      no    0          2/2    
+  h5-c12-empty-first-line     main       1    1      no    0          2/2    
+  h5-c13-yesterday            main       0    1      yes   0          2/2    
+  h5-c14-other-slot           worker.0   0    1      yes   0          2/2    
+
+## what each case varied, and what the sid artifact carried
+
+  h5-c01-no-slot-arg
+      varied : no slot argument
+      sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+  h5-c02-slot-no-launchtime
+      varied : a slot with no launch_time
+      sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+  h5-c03-token-match
+      varied : a candidate carrying the launch-id token
+      sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+  h5-c04-token-mismatch
+      varied : a candidate carrying a different token
+      sid    : (none written)
+  h5-c05-older-than-launch
+      varied : a candidate older than the launch time
+      sid    : (none written)
+  h5-c06-nonnumeric-time
+      varied : a non-numeric launch time
+      sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+  h5-c07-equal-mtimes
+      varied : two candidates with equal mtimes
+      sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+  h5-c08-different-mtimes
+      varied : two candidates with different mtimes
+      sid    : bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb
+  h5-c09-cwd-match
+      varied : a candidate whose cwd matches the invoking cwd
+      sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+  h5-c10-cwd-differs
+      varied : a candidate whose cwd differs
+      sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+  h5-c11-malformed-id
+      varied : a malformed first-line id
+      sid    : (none written)
+  h5-c12-empty-first-line
+      varied : an empty first line
+      sid    : (none written)
+  h5-c13-yesterday
+      varied : a candidate in yesterday's directory
+      sid    : bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb
+  h5-c14-other-slot
+      varied : a slot other than the invoking pane's
+      sid    : aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+
+## distinct readings
+
+  cases writing a sid artifact: 10 of 14
+  distinct sid contents: 2
+  distinct rc values: ['0', '1']
+  cases whose meta changed across the invocation: 0
