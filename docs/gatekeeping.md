@@ -28,6 +28,7 @@ invariant, not against the code.
 | a rule says two facts are independent and you are choosing test cases | Orthogonality is proven on the OFF-DIAGONAL; the diagonal is where a derivation hides |
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
+| you scoped someone's search, and they came back reporting that something is missing | A verification confirms WITHIN its scope and cannot see its scope |
 | a document explains that your concern is covered by some other rule, and you are satisfied | A DELEGATION is a claim about scope, and being talked out of a concern is not resolving it |
 | your fix satisfied a structural criterion and you have not asked what information it discarded | A structural criterion measures a PROXY, and satisfying it can defeat the goal |
 | a guard says NO FILESYSTEM ACCESS or NO SPAWNING and its body lists identifiers | A guard that enumerates NAMES enforces those names, whatever its title claims |
@@ -943,6 +944,40 @@ gives an implementer standing to push back with a citation rather than an opinio
 Ask it explicitly, every pass: **which correct implementations would this reject?** If the
 answer is "none I can think of," the enumerated open choices are what make that checkable rather
 than hopeful.
+
+### A verification confirms WITHIN its scope and cannot see its scope
+
+A reviewer was asked to find which axes a body of tests varies. They were told: *do not read
+`src/` beyond what the tests import — the tests are the subject.* Sensible on its face, and
+meant to keep their read independent of the implementation.
+
+The unit tests lived in `src/`.
+
+So they measured over one integration file, found twelve criteria with no test and two facts
+never varied, and reported it. **Every count was correct.** And every conclusion was wrong,
+because a second file held named tests for all twelve.
+
+**The instructive part is what they did next, which was right and made it worse.** They asked
+the correct verifying question — *is this genuine absence, or just a naming difference?* — and
+probed the vocabulary each missing criterion would need: prefix, grouping, mismatch, same name,
+two servers. All zero. A well-chosen check, correctly executed, **which confirmed a false
+conclusion, because it ran inside the same wrong boundary as the count it was checking.**
+
+**Rigour inside a bad scope produces confident error rather than caught error, and more rigour
+produces more confidence.** No verification reaches outside its own frame; that is what makes a
+frame a frame. The reviewer could not have caught it, because the boundary came from someone
+else and honouring it was correct.
+
+So scope is the reviewer's responsibility to state and the *requester's* to get right:
+
+- **Name the boundary in terms of what the artifact IS, not where it lives.** "Do not read
+  product code" and "do not read `src/`" are different instructions in any language that
+  colocates tests with implementation, and only one of them was meant.
+- **Before accepting an absence result, ask what would exist outside the frame if the finding
+  were false.** One question — *where else could a test for this live?* — costs nothing and is
+  the only check that looks at the boundary rather than through it.
+- **An absence is the finding most sensitive to scope.** A positive finding survives a
+  too-narrow frame; a negative one is manufactured by it.
 
 ### A DELEGATION is a claim about scope, and being talked out of a concern is not resolving it
 
