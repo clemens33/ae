@@ -295,9 +295,16 @@ either, both, or neither may hold. IS at 72c7293: VIOLATED — a failed ambient
 `list-sessions` produces zero running rows (ae:2692), and each stopped-side
 `has-session` then fails (ae:2706), so every durable directory is printed `stopped` with
 no diagnostic; a non-ambient live session is misclassified the same way, while a live
-session missing `AE_SESSION` disappears. These product consequences are source-proven;
-no end-to-end list arm has captured them yet. Empirical: source-proven, end-to-end
-capture pending. Authority: SC-816 + SC-835c's established
+session missing `AE_SESSION` disappears. One violated outcome is observed end to end in the
+accepted Batch C corpus: 38 no-server cases (228 list/ls consumer rows) retain durable
+candidates while the tmux query is unavailable, and frozen bash renders those candidates
+`stopped` or omits them from the active view in human and JSON output instead of `unknown`.
+The corpus predates and did not target SC-017l; that makes the capture incidental, not
+inadmissible. It closes the failed-query/unreachable-server baseline only. Non-ambient and
+ambiguous recorded servers, missing/mismatched ownership evidence, and unknown x degraded
+orthogonality remain uncaptured; the remaining product relations are source-proven.
+Empirical: observed(Batch C A1 no-server corpus, indexed by
+docs/migration/evidence/corpus/P1-SUFFICIENCY.md@71e8a83); scoped matrix gaps as named. Authority: SC-816 + SC-835c's established
 rule that inability to verify is not absence + joint P1 ruling. Issue #105 is
 IS/conflict only. Conflict: fix-known-defect(#105).
 
