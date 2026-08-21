@@ -1071,6 +1071,12 @@ records the test's model of the sequence. A test-held fixture records the test's
 world. A hand-listed set of names records the test's model of the capability. All three are
 green when the model is right and green when the model is wrong.
 
+The repair that worked here is worth naming because it changed the CLAIM rather than
+strengthening the guard: presentation was given **no address** — no root, no record path,
+nothing to point at — so a re-derivation of the thing being presented became inexpressible,
+while a gratuitous syscall stayed possible and was **explicitly no longer claimed against.** A
+narrower claim that is structurally true beats a broad one held up by a list.
+
 **The check: for each observable an argument rests on, ask who emits it.** If the answer is *the
 test does, at the point it thinks is correct*, the criterion is testing the author's
 understanding rather than the program's behaviour. A production-emitted trace, a type the
@@ -1085,6 +1091,12 @@ Two corollaries earned the hard way:
   dependencies, no unsafe — were cited as closing an enumeration gap. They close *third-party*
   and *libc* routes. The gap was *unlisted safe-standard-library* routes, which neither touches.
   Check what a premise covers, not whether it holds.
+- **An honest limitation stated beside an over-claim makes the over-claim HARDER to see.** That
+  guard's own file said, in plain terms, that it enumerated entry points — and then called the
+  enumeration a boundary. Its author wrote both sentences in one sitting and did not notice they
+  contradicted each other; the reviewer read the admission as candour, credited it, and stopped.
+  **Candour reads as sufficiency.** When a document discloses its own limit, that is the moment
+  to ask whether the rest of the document respects it, not the moment to relax.
 
 ### Four depths of one confusion: grain, population, deciding field, and the generator itself
 
