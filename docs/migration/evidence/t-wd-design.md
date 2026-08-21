@@ -468,7 +468,7 @@ demonstrated — so it cannot honestly claim an unknown representation is imposs
 **The other recognizers have limits too, stated rather than discovered.** Body-class and
 candidate-field detection are **substring and prefix tests**: they catch an *unknown* or
 *misplaced* form, not a *malformed* one, so `CAPTURE-ONLYISH` and `- **CANDIDATE SPACE**X` are
-accepted. Surface-table membership is a **set join**, so a duplicated row passes — membership is
+accepted. Surface-table membership is a **set join**, so a duplicated row is accepted — membership is
 checked, uniqueness is not. And a token in a Barriers field that is not `CUT-`/`BAR-` shaped is
 **invisible** to the barrier checks rather than reported as unknown. None of these is built,
 because no evidence exists for them to invalidate and every current byte uses a valid form; they
