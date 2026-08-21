@@ -29,6 +29,7 @@ invariant, not against the code.
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
 | you are accepting a delivery and have checked that it builds and behaves | Reviewing OUTCOMES is not reviewing INSTRUMENTS, and the outcomes are what you are shown |
+| you are escalating a question and have written down what you think the answer is | An escalation that carries its expected answer gets the frame confirmed, not examined |
 | you are about to report a count, or you have just been given one | A count can be honestly MEASURED over a population you narrowed without saying so |
 | your independent count disagrees with the figure you were asked to verify | Check that the field you COUNT BY has the same granularity as the thing you are counting |
 | something was derived from a spec, and the spec has changed since | A DERIVED artifact goes stale the moment its source moves, and nothing re-runs to say so |
@@ -1045,6 +1046,38 @@ explicitly:
 The reviewer here had written a checklist containing both of those steps **two hours earlier**,
 and skipped them on the next delivery. Knowing the hazard is not the mechanism; a checklist you
 do not run is a document about someone else.
+
+### An escalation that carries its expected answer gets the frame confirmed, not examined
+
+A question was escalated with the reasoning attached: *here is the gap, here is what the rows
+appear to say about it by construction, and here is why the consequence is too large for me to
+rule alone.* That reads like diligence. Everything in it was offered as reasoning to be checked.
+
+The ruling came back saying **no gap existed.** The rows already settled the branch; the
+escalator had read a gap into them and then, having read it in, sized it — producing a
+carefully-measured estimate of something that was not there.
+
+And the same escalation carried a second inherited claim, relayed with endorsement: that a
+derived table had been *safely confined* to cases the evidence supported. It had not. Two
+hundred and forty of its records asserted an outcome nothing had captured. **A scoping claim
+accepted without testing, and then passed on as reassurance, is worse than one merely believed —
+it arrives at the next reader with a second signature on it.**
+
+The mechanism is ordinary and hard to feel: a question shaped as *is X true?* invites a check of
+X. A question shaped as *X appears true by construction — confirm?* invites agreement, because
+the frame now carries the escalator's authority as well as their evidence. The more senior the
+escalator, the stronger the pull, and the more carefully the reasoning is laid out, the more it
+reads as settled.
+
+**So escalate the observation and withhold the conclusion.** State what was measured, state what
+is undetermined, and stop — offering the expected answer only if asked for it, and marked as a
+guess rather than a reading. Where you must offer one, say explicitly which finding survives if
+it is wrong: here the shape (*a recorded pointer can name something never observed*) held
+perfectly while the interpretation (*therefore those cases must diverge*) inverted.
+
+**And re-test every inherited claim you are about to repeat.** Relaying is not neutral. The
+claim that was refuted here had been examined by nobody, endorsed by two people, and would have
+reached a third with the weight of both.
 
 ### A count can be honestly MEASURED over a population you narrowed without saying so
 
