@@ -28,6 +28,7 @@ invariant, not against the code.
 | a rule says two facts are independent and you are choosing test cases | Orthogonality is proven on the OFF-DIAGONAL; the diagonal is where a derivation hides |
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
+| a test arm's input never actually differs between iterations | An obligation can be discharged by the TYPE, and then its test is a restatement |
 | you scoped someone's search, and they came back reporting that something is missing | A verification confirms WITHIN its scope and cannot see its scope |
 | a document explains that your concern is covered by some other rule, and you are satisfied | A DELEGATION is a claim about scope, and being talked out of a concern is not resolving it |
 | your fix satisfied a structural criterion and you have not asked what information it discarded | A structural criterion measures a PROXY, and satisfying it can defeat the goal |
@@ -945,6 +946,39 @@ Ask it explicitly, every pass: **which correct implementations would this reject
 answer is "none I can think of," the enumerated open choices are what make that checkable rather
 than hopeful.
 
+### An obligation can be discharged by the TYPE, and then its test is a restatement
+
+A criterion required that a failed query never supply proof — specifically, that *partial output
+from a failure* could not be read as evidence either way. A test existed for it, running the
+same payload bytes through a successful arm and a failed arm.
+
+The failed arm could not carry those bytes at all. The result type was
+`Result<Vec<Session>, QueryFailed>` with `struct QueryFailed;` — a failure with **no room for a
+payload**. So the fixture's own comment described something it could not express: both
+iterations of its loop produced the identical empty error, byte-identical to itself, and the
+payload never reached the arm it was meant to contaminate.
+
+**The obligation was already discharged, by the type, more completely than any test could.**
+That is a good outcome — but it means the test is a *restatement* of a guarantee, not evidence
+for it, and treating it as coverage points attention at the wrong layer.
+
+**The risk relocates to wherever the type is constructed.** Something decides success from
+failure, and *that* decision can absolutely be fooled by output — an adapter that inspects
+stdout, a wrapper that treats an empty result as an error, a parser that succeeds on garbage.
+In this codebase that seam had its own direct test, looping empty, plausible-looking, and
+error-shaped payloads against a failing run. That is where the criterion actually lives.
+
+Two things to take from it:
+
+- **When a criterion is satisfied structurally, say so in the criterion**, and point at the
+  boundary that now carries the risk. Otherwise the next reader sees a green test and believes
+  the wrong layer is guarded — and the day someone widens the error type to carry a message,
+  the restatement test still passes.
+- **The detection method generalises: ask why a differential arm never varies.** An arm whose
+  input cannot differ is either enforcing something structurally or testing nothing, and both
+  answers are worth having. It is the same question that exposes an unvaried axis, turned on a
+  single arm.
+
 ### A verification confirms WITHIN its scope and cannot see its scope
 
 A reviewer was asked to find which axes a body of tests varies. They were told: *do not read
@@ -978,6 +1012,13 @@ So scope is the reviewer's responsibility to state and the *requester's* to get 
   the only check that looks at the boundary rather than through it.
 - **An absence is the finding most sensitive to scope.** A positive finding survives a
   too-narrow frame; a negative one is manufactured by it.
+
+The reviewer's own account of why they could not see it is the useful part: **the boundary was
+invisible because it was plausible.** *Tests live in `tests/`* is true in most repositories and
+false in Rust, so the probe was well-formed for a question one directory too narrow. Their
+prescription is better than a better probe: **count the evidence base before measuring inside
+it, and ask what would have to be true for this to be all of it.** That question interrogates
+the frame; every question asked after it interrogates only the contents.
 
 ### A DELEGATION is a claim about scope, and being talked out of a concern is not resolving it
 
