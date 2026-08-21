@@ -40,8 +40,8 @@ shape is the thing being replaced, not ported.
 and SC-017n group order at one site; `Status::ALL` plus an exhaustive-match guard and a coverage
 test closing the array-literal hole.
 
-**Phase 1 itself is landed and its gate is OPEN, not passed** — see `p1-phase1-gate.md` for the
-23 pre-registered criteria and their per-criterion status. `src/inventory.rs` holds the
+**Phase 1 itself is landed and its gate DOES NOT PASS** — see `p1-phase1-gate.md` for the
+24 pre-registered criteria and the gate's recorded status. `src/inventory.rs` holds the
 candidate collection with its invariants **structural rather than defended**: `Roots` cannot
 spell an archive path, `durable_records()` opens nothing inside a candidate directory, and
 `candidates()` starts as every durable record and only pushes. The live half is a called port,
@@ -49,8 +49,8 @@ spell an archive path, `durable_records()` opens nothing inside a candidate dire
 existence check is not expressible in the type.
 
 No product code constructs `Unknown` yet and `SCHEMA_VERSION` is still 1 — both deliberate, and
-both change in phase 2. The phase-2 gate is pre-registered at `p1-phase2-gate.md` before any
-phase-2 code exists, for the same reason the phase-1 one was.
+both change in phase 2. The phase-2 gate is pre-registered at `p1-phase2-gate.md`; its recorded
+status is **NOT RUN — phase 2 does not exist**, for the same reason the phase-1 one was.
 
 
 Each ends with `just rust-check` green, or stops. No phase begins while the previous is red.
