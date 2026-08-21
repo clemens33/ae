@@ -2680,6 +2680,38 @@ rather than freezing it at the gate's authoring date. Note the cost is real and 
 paying: firing those arms means a phase that looked finished is not. The alternative was an
 acceptance that had quietly stopped meaning what it said.
 
+### A mechanism with ONE reachable output cannot be tested — and it matters which one
+
+A slice was scoped to add pane-to-agent association. Reading the contract before building
+it, the implementer found that the only verdict the mechanism could ever reach was `dead`:
+the row granting `alive` depended on a predicate that occurs exactly once in the whole
+contract — inside the row that depends on it — and is defined nowhere.
+
+So the feature could produce one value. **No test could show the association CORRECTLY
+FINDS an agent's pane; only that it correctly fails to find one.** With a single reachable
+output, *behaving correctly* and *returning a constant* are observationally identical, and
+no amount of test-writing separates them.
+
+The reviewer's sharpening is the part worth keeping: it is not merely untestable in the
+useful direction, **it is unfalsifiable in the harmful one.** Every wrong answer such a
+mechanism can produce is a false `dead` — the precise failure the whole effort exists to
+prevent — and nothing available to it could ever contradict that. It is a monotonic source
+of exactly one error, with no instrument that can see the error.
+
+**The asymmetry decides the ruling.** A mechanism that can only answer `unknown` is useless
+but harmless: its single value is the safe one. A mechanism that can only answer `dead` is
+useless *and* dangerous, because the single value is the damaging one. Same structural
+defect, opposite disposition — the first can ship and wait, the second must not.
+
+Before building, ask **what values can this reach?** If the answer is one, no test you write
+afterwards will help, and the fix is never more tests — it is giving the mechanism a second
+reachable value. Here that meant stopping the slice and ratifying a live predicate first,
+so the association could be proven to succeed and not merely to fail.
+
+Corollary: this is the one-sided-arm problem scaled from an assertion to a whole feature.
+An arm with one direction is a weak test; a *feature* with one direction is not a testable
+thing at all.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
