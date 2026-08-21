@@ -69,20 +69,28 @@ rendering. The expected C-byte order within each group is `Alpha*`, `Zeta*`, `al
    copying, or streaming bytes from that completed input are **OPEN CHOICES**; so are
    sorting before versus after filtering and buffered versus iterator-based presentation.
 
-3. **[PAIR/BOUNDARY] A RENDERER PRESENTS FACTS; IT NEVER RE-DERIVES THEM.** Render one
-   fixed snapshot in two opposed external worlds after `presentation enter`: tmux reports the
-   opposite liveness for planted running/unknown rows, event/attention files report the
-   opposite attention/activity facts, durable traversal order changes, and tmux emission
-   order changes. Instrument tmux, durable-root/meta, and event-store access from the
-   presentation boundary onward. Observable: zero such reads/calls and identical semantic
-   selection, status, attention/activity filtering, and order in both worlds. FAIL if
-   output stays coincidentally equal but a forbidden read occurs, or if any external fact
-   changes it. Before relying on any zero, calibrate each access recorder through the same
-   primitive with a neutral leg that reports zero and a deliberately invoked control that
-   reports the named access; an uncalibrated recorder makes the arm invalid. Clock reads
-   used only for already-ratified presentation fields are outside the access prohibition,
-   but an opposed clock control must leave selection, status, attention/activity
-   filtering, and order unchanged.
+3. **[PAIR/BOUNDARY] PRESENTATION OUTPUT DOES NOT RE-DERIVE ANY PLANTED SNAPSHOT FACT.**
+   Render one fixed snapshot in two opposed external worlds after `presentation enter`:
+   readable event/attention and durable session bytes report opposite planted facts, and
+   durable traversal order changes. Before comparing output, prove every opposed world change
+   landed and is readable through the product primitive that originally supplied that
+   fact; a changed path or mock value that the product could never observe invalidates the
+   arm. Observable: identical semantic selection, status, attention/activity filtering,
+   and order in both worlds. An opposed clock control must likewise leave those facts
+   unchanged. FAIL if any planted external fact changes the presentation result, if a
+   planted axis is absent or unchanged, or if the test enters below the real list/ls route
+   and therefore misses work its caller performs.
+
+   **Explicit residual — UNPROVEN:** this in-process, std-only gate does not establish zero
+   post-boundary syscalls. An output differential cannot see a discarded read or a reread
+   that fails and falls back to the carried value; a source-name/type inventory sees only
+   spellings it enumerates. Neither is a capability boundary, and this criterion makes no
+   zero-access claim. Tmux observation/emission is not an arm until the real transport
+   slice supplies a product-valid observation route. Upgrade trigger: if presentation
+   gains a dedicated ae-state reader capability beyond the currently accepted payload
+   fields, or a post-boundary second-observation defect recurs, add a Linux
+   `strace` lane plus a non-skipping platform-equivalent observer before restoring a
+   universal zero-access claim. A Linux-only skipped assertion is not closure on macOS.
 
 4. **[SET] BASE STATUS VIEWS HAVE THE EXACT ACTIVE/HISTORY DOMAINS.** Against both human
    and JSON surfaces, default and explicit `--running` select every running and unknown
@@ -135,14 +143,16 @@ rendering. The expected C-byte order within each group is `Alpha*`, `Zeta*`, `al
    Relative order of distinct identities with byte-identical session names is an **OPEN
    CHOICE** because SC-017n supplies no tie-breaker.
 
-10. **[PAIR/CONTROL] THE ORDER ARM CAN DISTINGUISH PRODUCT ORDER FROM AMBIENT ORDER.**
-    Demonstrate before relying on criterion 9 that the planted input permutation and an
-    opposed tmux-emission sequence each differ from the required C/group sequence. Run
-    under `LC_ALL=C` and at least one available non-C locale whose control collation is
-    demonstrated to differ for the planted names; an arm whose control agrees is
-    INCONCLUSIVE, not a pass. Observable output remains byte-order identical across all
-    valid arms, with no tmux query after `presentation enter`. Sort implementation, stable-sort
-    algorithm, and whether filtering precedes sorting are **OPEN CHOICES**.
+10. **[PAIR/CONTROL] THE ORDER CONTROLS CAN DISTINGUISH THE FORBIDDEN COMPARATORS.**
+    Demonstrate before relying on criterion 9 that the planted input permutation differs
+    from the required C/group sequence. Run under `LC_ALL=C` and at least one available
+    non-C locale whose control collation is demonstrated to differ for the planted names;
+    an arm whose control agrees is INCONCLUSIVE, not a pass. Observable output remains
+    byte-order identical across those valid arms. The post-entry external-observation
+    question belongs only to criterion 3; it is not restated here. An opposed real tmux
+    emission arm belongs to the future transport slice because this build has no emission
+    to oppose. Sort implementation, stable-sort algorithm, and whether filtering precedes
+    sorting are **OPEN CHOICES**.
 
 11. **[SET/ORDER] HUMAN AND JSON HAVE IDENTICAL SELECTION AND SEMANTIC ORDER.** For every
     status-view and attention/activity combination above through both `list` and `ls`,
@@ -157,8 +167,11 @@ rendering. The expected C-byte order within each group is `Alpha*`, `Zeta*`, `al
     failure and its simultaneous canonical-root + worktrees-root failure. The positively
     owned ambient live candidate is the found row in both, with positive attention and
     activity facts; the incomplete inputs carry respectively one source key and two
-    distinct source keys in the test's semantic loss projection. This does not mandate a
-    product key or public loss-record schema. Their complete controls make the failed
+    distinct source keys in the test's semantic loss projection. Phase 1/2 already prove
+    those keys are distinct; phase 3 may consume only their already-computed cardinality.
+    The source identities need not cross into presentation, and presentation must not
+    recompute them from paths. This does not mandate a product key or public loss-record
+    schema. Their complete controls make the failed
     sources readable-empty, so all three arms have the same found candidate set. Through
     both `list` and `ls`, run
     every supported human status/filter combination exercised by criteria 4, 6, 7, and 8,
@@ -196,10 +209,16 @@ rendering. The expected C-byte order within each group is `Alpha*`, `Zeta*`, `al
     criterion 23, not a new classification rule; it does not invent a human degradation
     field.
 
-15. **[SCOPE GUARD] DO NOT MAKE PRESENTATION CHOICES INTO CONTRACT.** Human table layout,
-    colors, headers, whitespace, diagnostic wording/path detail/exit status, JSON object
-    field order, detailed machine loss records, internal collection/sort implementation,
-    and equal-name tie-breaking are **OPEN CHOICES** where no cited row constrains them.
-    The gate itself FAILS if a test rejects an otherwise correct phase-3 implementation
-    for one of those choices. It also fails if it reopens phase-1 discovery or phase-2
-    liveness/schema decisions instead of consuming their completed snapshot.
+15. **[SET/REVIEW] TESTS DO NOT PIN THE FINITE OPEN-CHOICE SET.** The named set is: human
+    table layout, colors, headers, whitespace; diagnostic wording, path detail, and exit
+    status; JSON stderr warning policy; JSON object field order; detailed machine loss
+    records and their order; internal collection or sort implementation; and equal-name
+    tie-breaking. Audit every unit, integration, and doctest assertion in the Rust suite
+    that touches one of those surfaces and record its source location plus the required
+    semantic fact it checks. FAIL if an expected value depends on any named open
+    representation or implementation choice, or if a phase-3 test reopens phase-1
+    discovery or phase-2 liveness/schema instead of consuming the completed snapshot.
+
+    Separately, the gate author/reviewer must reject any proposed criterion that would
+    fail a correct implementation solely for a named open choice. That is a review rule,
+    not a claim an in-process test can prove universally.
