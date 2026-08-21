@@ -2408,6 +2408,44 @@ it however carefully they read. Independence has to cover **inputs**, not only j
 schedule the second seat to read from a different starting point, or it is a second pass
 rather than a second perspective.
 
+### Forbid the OPERATION, not the POSSESSION — and beware that only one of them is enforceable
+
+A layer was supposed not to reach back for state it had already been handed. The rule
+written was **"presentation carries no address."** It was verified by scanning the input
+type for path-typed fields, found clean, and reported as a structural boundary.
+
+It was false. `work_dir` is a payload field contractually and an address operationally, and
+the forbidden address composes from `work_dir` + `.ae` + the session name — no new field,
+no path type, no spelling any scan enumerates. **Possession is compositional**: a
+capability assembled from individually legitimate parts is a capability held, and an
+inventory of what a type *holds* is structurally unable to see it.
+
+The rule that replaced it names the operation: **"presentation must not recompute source
+identities from paths."** That is better on three counts. It is checkable at the site
+where the harm would occur rather than at a declaration site. It needs no definition of
+what counts as an address, which is the enumeration that sank the first version. And it
+survives new payload fields — the next field that also happens to compose an address does
+not reopen it, because nothing turned on which fields exist.
+
+**The general move:** when you are about to forbid *holding* X, ask what you are afraid
+will be *done* with X, and forbid that. The possession rule is always a proxy for a use
+you fear; write down the use. This is the same distinction as a capability boundary versus
+a name list — a name list enumerates spellings of the thing held, a capability boundary
+constrains what can be done with it.
+
+**And the trap, which is the part worth remembering.** Possession rules are seductive
+*because the type system can enforce them.* You can make a field unspellable; you usually
+cannot make an operation unspellable. So the enforceable rule and the correct rule come
+apart, and the enforceable one arrives wearing a structural proof — which is exactly the
+evidence that stops further questioning. **The confidence came from the enforcement
+mechanism, not from the rule being right.** When a boundary is provable by construction,
+check separately that the thing proved is the thing you needed; those are two claims and
+the proof only speaks to one.
+
+Corollary for the weaker rule: a use-shaped rule usually cannot be made structural, so it
+needs a real test and an opposed control rather than a type. That is a genuine cost. Pay
+it — a defended rule that names the concern beats a structural rule that names a proxy.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
