@@ -26,6 +26,7 @@ invariant, not against the code.
 | your criteria all pass but the obligation was about ordering, causality, or a matched pair | A check can only see obligations SHAPED like it — temporal ones survive a static gate |
 | a case with more information available is about to be handled by a different branch | Adding evidence must never SUBTRACT knowledge — check the richer case against the poorer one |
 | a rule says two facts are independent and you are choosing test cases | Orthogonality is proven on the OFF-DIAGONAL; the diagonal is where a derivation hides |
+| a rule lists cases and you just found one it does not cover | Adding the missing member to an enumerated rule PRESERVES the defect that produced it |
 | a rule was just clarified, refined, or split into two orthogonal facts | A clarification that SPLITS a concept creates a coverage gap in evidence captured before it |
 | you verified every flagged item and found nothing wrong | Forward verification cannot see a FALSE NEGATIVE — you have to check the converse |
 | you are claiming a body of evidence covers some condition | A condition that was never CAPTURED cannot later be shown to have been ABSENT |
@@ -902,6 +903,38 @@ The same shape governs any claim of the form "these vary independently": orderin
 membership, identity versus reachability, presence versus permission. If the evidence only
 holds cases where both move together, the claim is untested no matter how many of them there
 are.
+
+### Adding the missing member to an enumerated rule PRESERVES the defect that produced it
+
+A rule named three places an enumeration could fail. A fourth turned up. The obvious repair is
+to add it — and that repair is wrong, for a reason worth stating precisely:
+
+> A fourth named class would repair today's inventory while **preserving the defect's cause**:
+> treating the leaves of the *current* traversal graph as the normative domain.
+
+That is a different claim from "the list was incomplete". Incompleteness is an accident you
+patch. **The list was never the right kind of thing** — it defined membership by pointing at
+today's instances, so every future instance needs another edit, and each edit is another chance
+to miss one. The fix is to state the **property that makes something a member**, and demote the
+current names to explicitly non-exhaustive examples.
+
+The tell that you are looking at this failure: the missing member was *obvious once seen*, and
+the argument for adding it is that it "clearly belongs". Clearly belongs **to what**? Answer
+that, and you have written the principle.
+
+**A generalisation needs its bounds in the same edit, or it becomes a widening.** Three clauses
+did that work here and each is reusable:
+
+- **Keep the existing exclusions verbatim.** They bound the principle to what was actually
+  required, and stop "any required traversal that failed" collapsing into "any I/O error".
+- **A failed step records its OWN loss only** — never fabricated losses or identities for
+  children it could not discover. **You cannot count what you could not see**, so a loss count
+  is of *operations attempted and known to have failed*, never of the unknown quantity hiding
+  behind them. The other reading makes the count unbounded and unverifiable.
+- **Fix the word that caused the gap, in the same edit.** The exclusion here came from
+  "terminal", which reads as both *leaf of the graph* and *final after retries*. The wrong
+  reading is what let the intermediate node escape. Disambiguating it is what stops the same
+  gap reappearing under a new name.
 
 ### A clarification that SPLITS a concept creates a coverage gap in evidence captured before it
 
