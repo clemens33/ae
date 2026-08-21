@@ -161,7 +161,7 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     if matches!(cli::Request::parse(args), cli::Request::List(_))
         && let Some(root) = state_root()
     {
-        let world = current_world(&root);
+        let (_snapshot, world) = current_world(&root);
         return run_with(args, Some(&world), out, err);
     }
     run_with(args, None, out, err)
@@ -193,24 +193,31 @@ fn state_root() -> Option<std::path::PathBuf> {
     named("AE_HOME").or_else(|| named("HOME").map(|home| home.join(".ae")))
 }
 
-/// The world `ae list` shows right now.
+/// The classified snapshot AND the world `ae list` shows right now — the real
+/// route, returned in both halves so it can be observed from outside.
+///
+/// **Both halves, deliberately.** The phase-3 gate's criterion 2 requires the
+/// presentation input to equal the completed classified set, and a test that
+/// entered presentation itself was observing a boundary IT chose rather than the
+/// one the CLI crosses: anything this function did between classification and
+/// entry was invisible to it. Returning the snapshot beside the world makes both
+/// sides comparable on the route the product actually takes.
 ///
 /// Phase 1 discovers, phase 2 classifies, phase 3 renders — and the transport is
 /// the one piece this build does not have. [`NoTransport`] fails every liveness
 /// query, so SC-017l makes every durable candidate `unknown`: not a guess and
 /// not a refusal, but the answer ae is entitled to give when it cannot verify
 /// anything. When a real transport lands, only that one impl changes.
-fn current_world(root: &std::path::Path) -> listing::World {
+#[must_use]
+pub fn current_world(root: &std::path::Path) -> (liveness::Snapshot, listing::World) {
     let scan = inventory::durable_records(&inventory::Roots::under(root));
     // No ambient server: selecting one is SC-1410c's unratified question, and
     // entitlement without a pointer is exactly what SC-017j forbids.
     let taken = inventory::take(scan, None, &NoTransport);
     let snapshot = liveness::classify(taken, &NoTransport);
-    listing::world_of(
-        &snapshot,
-        time::Timestamp::now(),
-        session::DEFAULT_UNANSWERED_SECS,
-    )
+    let world = listing::Presentation::enter(&snapshot)
+        .world(time::Timestamp::now(), session::DEFAULT_UNANSWERED_SECS);
+    (snapshot, world)
 }
 
 /// The absent tmux transport.

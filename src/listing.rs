@@ -130,6 +130,12 @@ impl World {
 /// [`Presentation::at_entry`] is what the snapshot said AT that moment, in the
 /// order it said it, which is what makes reordering or dropping anything at the
 /// boundary observable.
+///
+/// **There is no wrapper around this, deliberately.** A `world_of(snapshot, …)`
+/// convenience used to exist, and it was a place work could hide: a caller that
+/// mangled a clone and then entered with the changed value was invisible to a
+/// test that entered directly, because the test was below the real route. The
+/// route and the boundary are now the same call, so "below it" is not a place.
 pub struct Presentation<'a> {
     snapshot: &'a Snapshot,
 }
@@ -211,16 +217,6 @@ fn distinct_losses(losses: &[FailedSource]) -> usize {
         }
     }
     seen.len()
-}
-
-/// The world a classified snapshot describes — a shorthand for
-/// [`Presentation::enter`] followed by [`Presentation::world`].
-///
-/// The boundary is still first: this has no phase-3 work of its own to do
-/// before it.
-#[must_use]
-pub fn world_of(snapshot: &Snapshot, now: Timestamp, unanswered_secs: i64) -> World {
-    Presentation::enter(snapshot).world(now, unanswered_secs)
 }
 
 /// What `ae list` writes to STDERR for `world`, if anything.

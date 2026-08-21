@@ -23,7 +23,7 @@ use ae::inventory::{
     QueryFailed, Roots, ServerId, durable_records, take,
 };
 use ae::json;
-use ae::listing::{render, world_of};
+use ae::listing::{Presentation, render};
 use ae::liveness::{Snapshot, classify};
 use ae::meta::{Selector, ServerSelector};
 use ae::session::DEFAULT_UNANSWERED_SECS;
@@ -273,7 +273,7 @@ fn inventory(candidates: Vec<Candidate>) -> Inventory {
 }
 
 fn digest_of(snapshot: &Snapshot) -> json::Value {
-    let world = world_of(snapshot, NOW, DEFAULT_UNANSWERED_SECS);
+    let world = Presentation::enter(snapshot).world(NOW, DEFAULT_UNANSWERED_SECS);
     let rendered = render(&args(&["--all", "--json"]), &world);
     match json::parse(rendered.trim_end()) {
         Ok(document) => document,
@@ -678,7 +678,7 @@ fn criterion_16_every_successor_digest_is_version_2_with_a_closed_status_domain(
             );
             let rendered = render(
                 &args(&["--all", "--json"]),
-                &world_of(&snapshot, NOW, DEFAULT_UNANSWERED_SECS),
+                &Presentation::enter(&snapshot).world(NOW, DEFAULT_UNANSWERED_SECS),
             );
             let document = match json::parse(rendered.trim_end()) {
                 Ok(document) => document,
@@ -740,7 +740,7 @@ fn criterion_19_no_emitted_document_pairs_version_1_with_unknown() {
         vec!["--all", "--json"],
         vec!["--stopped", "--json"],
     ] {
-        let world = world_of(&snapshot, NOW, DEFAULT_UNANSWERED_SECS);
+        let world = Presentation::enter(&snapshot).world(NOW, DEFAULT_UNANSWERED_SECS);
         let rendered = render(&args(&flags), &world);
         assert!(
             !rendered.contains("\"schema_version\":1"),
@@ -778,7 +778,7 @@ fn criterion_15_no_filter_or_rendering_route_changes_a_classified_status() {
         vec!["--stopped", "--json"],
         vec!["--needs-attn", "--all", "--json"],
     ] {
-        let world = world_of(&snapshot, NOW, DEFAULT_UNANSWERED_SECS);
+        let world = Presentation::enter(&snapshot).world(NOW, DEFAULT_UNANSWERED_SECS);
         let document = match json::parse(render(&args(&flags), &world).trim_end()) {
             Ok(document) => document,
             Err(why) => panic!("{flags:?}: one document: {why:?}"),
@@ -796,7 +796,7 @@ fn criterion_15_no_filter_or_rendering_route_changes_a_classified_status() {
         }
     }
 
-    let world = world_of(&snapshot, NOW, DEFAULT_UNANSWERED_SECS);
+    let world = Presentation::enter(&snapshot).world(NOW, DEFAULT_UNANSWERED_SECS);
     let table = render(&args(&["--all"]), &world);
     for (name, status) in &classified {
         assert!(
@@ -1376,11 +1376,8 @@ fn criterion_14_the_digest_does_not_change_when_the_world_does() {
     let render_now = |inventory: Inventory| {
         render(
             &args(&["--all", "--json"]),
-            &world_of(
-                &classify(inventory, &backend()),
-                NOW,
-                DEFAULT_UNANSWERED_SECS,
-            ),
+            &Presentation::enter(&classify(inventory, &backend()))
+                .world(NOW, DEFAULT_UNANSWERED_SECS),
         )
     };
     let before = render_now(taken.clone());

@@ -889,18 +889,35 @@ fn criterion_2_presentation_starts_from_one_completed_classified_snapshot() {
         assert!(written.is_ok(), "a planted session");
     }
 
-    // `classify complete`: the snapshot, as classification left it.
-    let scan = ae::inventory::durable_records(&ae::inventory::Roots::under(&root));
-    let snapshot = ae::liveness::classify(ae::inventory::take(scan, None, &Down), &Down);
+    // THE REAL ROUTE. `ae::current_world` is what the CLI calls; it returns the
+    // classified snapshot beside the world it produced, so both sides of the
+    // boundary are observed ON THE PATH THE PRODUCT TAKES. Entering presentation
+    // directly here would observe a boundary this test chose — and anything the
+    // caller did between classification and entry would be invisible, which is
+    // exactly how the previous version passed with a reversal inserted above it.
+    let (snapshot, world) = ae::current_world(&root);
     let classified: Vec<(String, &str)> = snapshot
         .sessions
         .iter()
         .map(|c| (c.candidate.name.clone(), c.status.as_str()))
         .collect();
-
-    // `presentation enter`: the production boundary, invoked.
     let presentation = ae::listing::Presentation::enter(&snapshot);
     let at_entry = presentation.at_entry();
+
+    // The world the REAL route produced carries exactly the classified
+    // identities — a step between classification and entry would show here.
+    let mut produced: Vec<String> = world
+        .sessions
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect();
+    produced.sort();
+    let mut expected: Vec<String> = classified.iter().map(|(name, _)| name.clone()).collect();
+    expected.sort();
+    assert_eq!(
+        produced, expected,
+        "the world the CLI route built does not carry the classified set"
+    );
 
     assert_eq!(
         at_entry, classified,
@@ -910,7 +927,6 @@ fn criterion_2_presentation_starts_from_one_completed_classified_snapshot() {
     assert_eq!(at_entry.len(), 3, "and the fixture is not empty");
 
     // Everything downstream presents from that one input and changes nothing.
-    let world = presentation.world(NOW, ae::session::DEFAULT_UNANSWERED_SECS);
     for spelling in ["list", "ls"] {
         for flags in every_human_view() {
             let (stdout, _, _) = invoke_over(spelling, &flags, Some(&world));
@@ -1240,19 +1256,24 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
 }
 
 #[test]
-fn criterion_3_presentation_cannot_address_ae_s_own_state() {
-    // THE STRUCTURAL CLAIM, and it holds whatever the spelling. A renderer that
-    // wants to re-derive a fact it is presenting needs an ADDRESS for that
-    // fact — the sessions root, the worktrees root, or the record's own
-    // directory. None of the three is reachable from the presentation input, so
-    // the defect that matters is unrepresentable rather than merely forbidden.
+fn the_presentation_input_declares_no_path_typed_field() {
+    // WHAT THIS ASSERTS, AND IT IS NOT WHAT ITS PREDECESSOR CLAIMED. It checks
+    // one fact: neither `World` nor `SessionEntry` DECLARES a path-typed field.
+    // That is true, and it is worth keeping — a path field would be an address
+    // handed to presentation for free.
     //
-    // NOT CLAIMED: that no syscall can occur. A gratuitous `canonicalize("/")`
-    // stays expressible and this says nothing about it. What it says is that a
-    // read of the thing being presented has nowhere to point.
+    // IT DOES NOT MEAN PRESENTATION CANNOT ADDRESS AE'S STATE, and the previous
+    // version of this test said exactly that. colead disproved it twice: a
+    // `type StateAddress = PathBuf` alias defeats a text scan for `PathBuf`, and
+    // — with no new field at all — `render` can COMPOSE the SC-400d
+    // worktree-nested record path from `SessionEntry.work_dir` plus `.ae` plus
+    // the session name. `work_dir` is payload contractually and an address
+    // operationally, and no scan of field TYPES can see that.
+    //
+    // So this is a narrow structural fact, not a boundary. Criterion 3's
+    // zero-access obligation is NOT met by it; see the report accompanying this
+    // change for what instrument would meet it.
     let module = product_module("listing.rs");
-
-    // The presentation input, field by field. A path here would be an address.
     let world = module
         .split_once("pub struct World {")
         .and_then(|(_, rest)| rest.split_once('}'))
@@ -1260,35 +1281,16 @@ fn criterion_3_presentation_cannot_address_ae_s_own_state() {
             || panic!("World must be declared in listing.rs"),
             |(body, _)| body.to_owned(),
         );
-    for address in ["PathBuf", "&Path", "&'a Path"] {
+    for declared in ["PathBuf", "&Path", "&'a Path"] {
         assert!(
-            !world.contains(address),
-            "the presentation input carries an address ({address}), so a re-derivation \
-             has something to open: {world}"
+            !world.contains(declared),
+            "the presentation input declares a path-typed field ({declared}): {world}"
         );
     }
     assert!(
         world.contains("losses: usize"),
-        "SC-017o's fact crosses as a COUNT, which is what removed the last path"
+        "SC-017o's fact crosses as a COUNT, which is what removed the last declared path"
     );
-
-    // And the same for what it holds per session: SC-509's `origin`/`work_dir`
-    // are the operator's own project directories, carried as payload STRINGS to
-    // print. ae's own state root is nowhere in the type.
-    let digest = product_module("digest.rs");
-    let entry = digest
-        .split_once("pub struct SessionEntry {")
-        .and_then(|(_, rest)| rest.split_once("\n}"))
-        .map_or_else(
-            || panic!("SessionEntry must be declared in digest.rs"),
-            |(body, _)| body.to_owned(),
-        );
-    for address in ["PathBuf", "&Path"] {
-        assert!(
-            !entry.contains(address),
-            "a session entry carries an address ({address}): {entry}"
-        );
-    }
 }
 
 /// One product module's source, comments stripped, tests excluded.
@@ -1304,4 +1306,179 @@ fn product_module(name: &str) -> String {
         .join("\n");
     code.split_once("#[cfg(test)]")
         .map_or(code.clone(), |(module, _)| module.to_owned())
+}
+
+// ---- SC-017p/q/r + SC-509e: three-valued agent liveness ----------------
+//
+// RESTORED. These four were deleted by a slice-to-end-of-file in the phase-3
+// blocker fix (1f92bca2), which replaced everything after the criterion-3 tests
+// because they had been appended below them. The suite went 451 to 448 and the
+// drop was reported as green. A test count that FALLS after a change described
+// as adding one is a contradiction; that number is now part of every report.
+
+#[test]
+fn sc_509e_the_agent_liveness_field_is_present_even_when_null() {
+    // The closed JSON domain is `true | false | null`, and PRESENT is the part
+    // that matters: a consumer gating on the key must not have to tell "absent
+    // because unknown" from "absent because the writer is old".
+    for (alive, expected) in [
+        (Some(true), json::Value::Bool(true)),
+        (Some(false), json::Value::Bool(false)),
+        (None, json::Value::Null),
+    ] {
+        let mut entry = SessionEntry::new("s", Status::Running);
+        entry.agents = vec![AgentEntry {
+            reference: "cl:lead".to_owned(),
+            alias: "cl".to_owned(),
+            name: "lead".to_owned(),
+            alive,
+            ..AgentEntry::default()
+        }];
+        let world = World::new(NOW, vec![entry]);
+        let (text, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));
+        let document = match json::parse(text.trim_end()) {
+            Ok(document) => document,
+            Err(why) => panic!("one document: {why:?}"),
+        };
+        let Some(json::Value::Arr(sessions)) = document.get("sessions") else {
+            panic!("sessions must be an array");
+        };
+        let Some(json::Value::Arr(agents)) = sessions[0].get("agents") else {
+            panic!("agents must be an array");
+        };
+        assert_eq!(
+            agents[0].get("alive"),
+            Some(&expected),
+            "alive={alive:?} must render as {expected:?}"
+        );
+        assert!(
+            text.contains(r#""alive":"#),
+            "the key is present in every document: {text}"
+        );
+    }
+}
+
+/// The health cell the product renders for an agent with this liveness.
+///
+/// Read FROM the product rather than written down: SC-017r leaves the words or
+/// glyphs an OPEN CHOICE, so a test demanding the string "unknown" would reject
+/// a correct glyph renderer, and criterion 15 fails the gate itself for that.
+fn health_cell(alive: Option<bool>) -> String {
+    let mut entry = SessionEntry::new("s", Status::Running);
+    entry.agents = vec![AgentEntry {
+        reference: "cl:lead".to_owned(),
+        alias: "cl".to_owned(),
+        name: "lead".to_owned(),
+        alive,
+        ..AgentEntry::default()
+    }];
+    let world = World::new(NOW, vec![entry]);
+    let (text, _, _) = invoke_over("list", &["--all"], Some(&world));
+    let row = text
+        .lines()
+        .find(|line| line.starts_with(char::is_whitespace) && line.contains("cl:lead"))
+        .unwrap_or_else(|| panic!("the agent row must render for alive={alive:?}"));
+    // The cell after the agent reference. Which column and how wide is layout,
+    // and layout is not this gate's business.
+    row.split_whitespace().nth(1).unwrap_or_default().to_owned()
+}
+
+#[test]
+fn sc_017r_the_three_agent_healths_are_distinct_and_none_is_empty() {
+    let alive = health_cell(Some(true));
+    let dead = health_cell(Some(false));
+    let unknown = health_cell(None);
+
+    for (cell, which) in [(&alive, "alive"), (&dead, "dead"), (&unknown, "unknown")] {
+        assert!(
+            !cell.is_empty(),
+            "{which} must not render as blank — frozen bash rendered a failed query \
+             exactly like a healthy agent, and that silence is the defect"
+        );
+    }
+    assert_ne!(alive, dead, "alive and dead must be distinguishable");
+    assert_ne!(dead, unknown, "dead and unknown must be distinguishable");
+    assert_ne!(alive, unknown, "alive and unknown must be distinguishable");
+}
+
+#[test]
+fn sc_017q_an_unknown_agent_keeps_its_declared_state_and_reason() {
+    // Liveness null never nulls or relabels an independently known fact.
+    let mut entry = SessionEntry::new("s", Status::Running);
+    entry.agents = vec![AgentEntry {
+        reference: "cl:lead".to_owned(),
+        alias: "cl".to_owned(),
+        name: "lead".to_owned(),
+        alive: None,
+        state: Some("blocked".to_owned()),
+        reason: Some(ae::attention::Reason::Blocked),
+        session_id: Some("e795c9e9".to_owned()),
+    }];
+    let world = World::new(NOW, vec![entry]);
+    let (text, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));
+    let document = match json::parse(text.trim_end()) {
+        Ok(document) => document,
+        Err(why) => panic!("one document: {why:?}"),
+    };
+    let Some(json::Value::Arr(sessions)) = document.get("sessions") else {
+        panic!("sessions must be an array");
+    };
+    let Some(json::Value::Arr(agents)) = sessions[0].get("agents") else {
+        panic!("agents must be an array");
+    };
+    assert_eq!(agents[0].get("alive"), Some(&json::Value::Null));
+    assert_eq!(agents[0].get_str("state"), Some("blocked"));
+    assert_eq!(agents[0].get_str("reason"), Some("blocked"));
+    assert_eq!(agents[0].get_str("session_id"), Some("e795c9e9"));
+}
+
+#[test]
+fn sc_017q_the_entry_point_reports_unknown_agents_rather_than_dead_ones() {
+    // END TO END, at the real binary: this build has no transport, so no pane
+    // can be observed — and the human surface must say so rather than printing
+    // every agent as dead, which is what it did before these rows landed.
+    let root = std::env::temp_dir().join(format!("ae-p3-agents-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("sessions").join("AlphaR");
+    let written = std::fs::create_dir_all(&dir).and_then(|()| {
+        std::fs::write(
+            dir.join("meta"),
+            "mode=local\nagent.main=cl:lead\ntmux_server_kind=name\ntmux_server=B\n",
+        )
+    });
+    assert!(written.is_ok(), "a planted session");
+
+    let scan = ae::inventory::durable_records(&ae::inventory::Roots::under(&root));
+    let snapshot = ae::liveness::classify(ae::inventory::take(scan, None, &Down), &Down);
+    let world = ae::listing::Presentation::enter(&snapshot)
+        .world(NOW, ae::session::DEFAULT_UNANSWERED_SECS);
+    let (human, _, _) = invoke_over("list", &["--all"], Some(&world));
+    let (machine, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));
+    let _ = std::fs::remove_dir_all(&root);
+
+    // Bound to the product's own choice, not to a word this test picked.
+    let null_cell = health_cell(None);
+    let dead_cell = health_cell(Some(false));
+    let agent_row = human
+        .lines()
+        .find(|line| line.starts_with(char::is_whitespace) && line.contains("cl:lead"))
+        .unwrap_or_else(|| panic!("the agent row must be rendered: {human}"));
+    assert_eq!(
+        agent_row.split_whitespace().nth(1),
+        Some(null_cell.as_str()),
+        "an unobservable agent renders as the product's UNKNOWN cell: {human}"
+    );
+    assert_ne!(
+        agent_row.split_whitespace().nth(1),
+        Some(dead_cell.as_str()),
+        "and never as its dead cell: {human}"
+    );
+    assert!(
+        machine.contains(r#""alive":null"#),
+        "and the machine surface says null: {machine}"
+    );
+    assert!(
+        !machine.contains(r#""alive":false"#),
+        "nothing was proven dead: {machine}"
+    );
 }
