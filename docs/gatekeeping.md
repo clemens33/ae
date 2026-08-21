@@ -29,6 +29,7 @@ invariant, not against the code.
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
 | you are accepting a delivery and have checked that it builds and behaves | Reviewing OUTCOMES is not reviewing INSTRUMENTS, and the outcomes are what you are shown |
+| you are about to report a count, or you have just been given one | A count can be honestly MEASURED over a population you narrowed without saying so |
 | your independent count disagrees with the figure you were asked to verify | Check that the field you COUNT BY has the same granularity as the thing you are counting |
 | something was derived from a spec, and the spec has changed since | A DERIVED artifact goes stale the moment its source moves, and nothing re-runs to say so |
 | a test arm's input never actually differs between iterations | An obligation can be discharged by the TYPE, and then its test is a restatement |
@@ -1044,6 +1045,39 @@ explicitly:
 The reviewer here had written a checklist containing both of those steps **two hours earlier**,
 and skipped them on the next delivery. Knowing the hazard is not the mechanism; a checklist you
 do not run is a document about someone else.
+
+### A count can be honestly MEASURED over a population you narrowed without saying so
+
+A figure was reported as *45 of 91 cases*. Both numbers were measured. Neither was wrong. And
+the population had been narrowed twice, silently, before the measuring began:
+
+- **An unstated exclusion.** The predicate required a particular field, and 86 of 177 cases
+  lacked it. They were dropped without appearing anywhere in the report — so *91* looked like
+  the corpus and was in fact a subset less than half its size.
+- **An unverified proxy.** One class was assigned by a *shape* — a path prefix standing in for
+  the relation actually of interest — confirmed by hand on two specimens and then generalised
+  across the class, never compared field to field.
+
+Nothing about the number looked wrong, because **the arithmetic was never the weak part.** The
+author found it themselves while pulling one specimen per class for someone else to reproduce:
+the excluded specimen turned out to record the same fact under a different spelling.
+
+**A count is only as honest as its denominator, and the denominator is where the undeclared
+work hides.** So report a population the way you report a measurement: the predicate that
+selected it, what that predicate excluded, and how many. *45 of 91* and *45 of 91, having
+dropped 86 of 177 for lacking a field and assigned one class by a proxy verified on two
+specimens* are the same measurement and different claims.
+
+**And when the finding is about a SHAPE, lead with the shape.** Here the substance was that a
+recorded pointer can name something the evidence never observed — true whether the count is 45,
+43 or 48. Leading with a number invites everyone, including its author, to argue about the
+number, and puts the weight on the part most likely to move. State the mechanism first and
+offer the count as an indication of scale.
+
+The pattern beneath both defects: **the same author had earlier keyed a count on a field of the
+wrong granularity.** That was one level down — a field whose grain did not match the obligation.
+This is one level up — a population defined by predicates that were never stated. Both produce
+a number that is arithmetically perfect and answers a question nobody asked.
 
 ### Check that the field you COUNT BY has the same granularity as the thing you are counting
 
