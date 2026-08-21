@@ -2712,6 +2712,60 @@ Corollary: this is the one-sided-arm problem scaled from an assertion to a whole
 An arm with one direction is a weak test; a *feature* with one direction is not a testable
 thing at all.
 
+### Correctness that lives in the RELATION between two functions is invisible to both
+
+A roster parser validated that an agent's alias and name were non-empty and never checked
+the **slot**, so a hand-edited meta line yields a roster entry whose slot is the empty
+string. Separately, a pane reader normalised an empty marker to `None`, so no observed pane
+ever carries `Some("")`. Composed, the empty slot matches nothing — which is the correct
+answer.
+
+**Neither function is wrong. Neither holds the invariant. Nothing asserts it.** The safety
+is real and it is entirely emergent.
+
+The realistic attack is not malice, it is tidying. Deleting the reader's
+`.filter(|slot| !slot.is_empty())` looks like removing defensive noise — and it does, right
+up until you remember the measured platform fact underneath it: **tmux reports "unset" and
+"set to the empty string" identically.** Forget that and the filter is obviously redundant.
+Remove it and every unmarked pane carries `Some("")`, an empty roster slot matches *every*
+unmarked pane, and an agent's health is read off somebody else's pane.
+
+Two rules fall out:
+
+- **A guard whose justification is a measured fact must carry that fact at the guard.**
+  Otherwise the guard's own apparent obviousness is the argument for deleting it.
+- **Name the test for the FACT, not the mechanism.** *An empty roster slot matches no pane*
+  survives the deletion it guards against; *the empty-marker filter works* is read as a test
+  **of** the filter and gets removed in the same commit by someone who believes they are
+  cleaning up. The test has to outlive the implementation that currently makes it pass.
+
+Detection is the hard part, because review reads functions one at a time and this class is
+structurally invisible to that. The question that surfaces it: **what makes this safe, and
+does that thing live in this function?** If the answer is "something else normalises it
+first," the invariant is unowned.
+
+### A migration's defect list is a REVIEW INSTRUMENT, not just a record
+
+The finding above was not discovered by reading the new code. It was found by taking a
+defect that had *just been filed against the frozen system* — a shell-set predicate missing
+its empty-string case, so an unreadable value read as a positive result — and asking the
+**successor's** reader the same question. It had a live one.
+
+That inversion is the whole technique. A defect found in the thing you are replacing
+arrives looking like a fact **about the incumbent**: evidence for the migration, a line in
+an issue tracker, a reason the rewrite is justified. It is also, and more usefully, **a
+question you have not yet asked of the replacement.**
+
+The generalisation step is small and mechanical: strip the instance down to its class —
+*missing empty case*, *failure treated as absence*, *identity keyed on a display field* —
+then grep the successor for where that class could live. Rewrites are especially exposed
+here, because the new implementation inherits the old one's *problem shape* even when it
+shares none of its code, and the author is primed to see each incumbent defect as something
+they have already escaped by construction.
+
+So: every issue filed against the frozen system should end with a question, not a
+conclusion. Not *bash got this wrong* — **does ours?**
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
