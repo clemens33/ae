@@ -2337,6 +2337,77 @@ Corollary for self-review: the two escapes the author caught were exception-shap
 the one they missed was example-shaped. Self-review reliably catches the form that
 declares itself. Budget a second seat for the form that does not.
 
+**And the half that review missed: a register with no open cell can still be incomplete.**
+The reviewer who found the open cell audited all twelve policy cells for over-width and
+reported the register sound. A second seat then found two ratified open choices that were
+never registered at all. Both readings were of the same artifact; only one of the two
+questions had been asked.
+
+A set has two independent failure modes and checking one says nothing about the other:
+a member too permissive, and a member absent. **Auditing the cells is not auditing the
+set.** The absent member is the harder one because there is nothing on the page to read
+critically — closure review is driven by what is present, so it is structurally blind to
+what is not. The check that finds it does not live in the register at all: enumerate the
+choices the upstream criteria RATIFIED, then confirm each appears. Completeness is only
+provable against the source that authorised the entries, never against the entries.
+
+Same shape as verifying additions by presence and removals by absence: the direction you
+do not check is where the defect sits.
+
+### An exclusion whose SCOPE the subject controls is one the subject grants itself
+
+A parity register's rows each carry a scope — the condition under which the exclusion
+applies. Two of them read, in effect, *an invocation whose `inventory_complete` fact is
+false*.
+
+`inventory_complete` is **the subject's own output**. So a successor that emits `false`
+has selected those exclusions into applicability for itself, and the gate forgives
+exactly the invocations the product nominated. Worse at the margin: where that value is
+UNSCORABLE, the exclusion still applies, on a premise nothing established.
+
+**This is "a gate that generates its input" relocated from a FIXTURE to a PREDICATE** —
+and that relocation is why the rule already being written down did not prevent it. The
+reviewer who missed it had authored the fixture-shaped version of the rule in this very
+document. A defect that changes part of speech stops matching the pattern you memorised,
+because you memorised the noun it usually wears. The mechanism is identical; only the
+grammatical slot moved.
+
+The check: for every conditional anywhere in a gate — exclusion scopes, skip conditions,
+applicability guards, any *only when* clause — ask **whose output decides this
+condition.** If the answer is the subject's, the subject is grading itself, however
+rigorous the rest of the row is. A scope is not metadata; it is an assertion, and it
+needs the same provenance discipline as an obligation.
+
+Repair: establish the predicate from **harness-side facts** — what was planted, what the
+manifest says was there — never from what the product printed. The condition and the
+thing being judged must not share an author.
+
+### A self-diagnosed failure mode becomes the thing you check, so the next miss comes from elsewhere
+
+A lead had missed the same way twice: verified a type's path *vocabulary* and reported an
+address boundary; substring-matched a phase key and counted the wrong population. Both
+spelling-shaped. Diagnosing that honestly, they asked a second seat whether the findings
+they had just missed were that class again, planning to write it up as a standing personal
+failure mode.
+
+**None of the three was.** They were set-completeness, predicate provenance, and a
+case-versus-invocation grain mismatch — not one vocabulary error among them.
+
+The mechanism is worth more than the diagnosis: **naming a failure mode converts it into
+an explicit check, and an explicit check is the one place you are now strong.** The
+residual risk does not stay put; it migrates to whatever you are not currently watching.
+A personal error log is genuinely useful for *repairing* a class and actively misleading
+for *predicting* the next one. Treat a self-diagnosis as a fix, never as a forecast — and
+never let it narrow the search, because a hypothesis about your own blindness is still a
+hypothesis about where to look.
+
+**The other half of that result: of the three findings, two were reachable from the
+artifact under review and one required reading a different SOURCE entirely** — the corpus
+specimen rather than the gate prose. Two seats given identical inputs would have missed
+it however carefully they read. Independence has to cover **inputs**, not only judgment:
+schedule the second seat to read from a different starting point, or it is a second pass
+rather than a second perspective.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
