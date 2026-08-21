@@ -1369,6 +1369,14 @@ So **assert the perturbation landed before interpreting the response.** Confirm 
 matched, the mutant compiled, the fixture wrote the bytes — then read the result. Noticing that
 output looks "suspiciously empty" is luck; the assertion is not.
 
+**And your own success message is not evidence of success.** A reviewer invoked a delivery
+helper and printed a confirmation line after it. The helper died on a shell quoting error — an
+apostrophe inside the quoted argument — and delivered nothing; the confirmation printed anyway,
+because it was a separate statement that never depended on the outcome. Only reading the exit
+code showed the review had not been sent. **A status line you write yourself reports that you
+reached the line, never that the thing worked.** Chain it (`cmd && echo ok`) or check the
+status; an unconditional confirmation is a claim, not an observation.
+
 **And a control run must be COMPLETE, not first-hit.** The same project hit this immediately
 after: a test runner's default fail-fast cancelled the remaining tests after two failures, so
 the control everyone cared about **never executed** — and "did not appear in the failures" reads
