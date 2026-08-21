@@ -92,8 +92,15 @@ inventory**: `RUNNING` then `UNKNOWN`. `--stopped` is `STOPPED` only. `--all` is
 ae owns ordering: C byte order by session name within a status group; group order `RUNNING`,
 `UNKNOWN`, `STOPPED`. No tmux version, locale, glob, or traversal order reaches output.
 
-*Done when:* order is reproducible across platforms without consulting tmux, and every scope's
-membership is asserted by a test that fails if a variant is added.
+**The refusal is removed HERE, and nowhere earlier.** `src/lib.rs`'s `NO_SESSION_SOURCE` stands
+until inventory, liveness and rendering all exist, because an empty or partial listing on a
+machine that HAS sessions is a wrong answer wearing the shape of a right one — which is the
+reasoning the const's own doc comment carries. Deleting it before this phase would trade an
+honest refusal for a confident falsehood.
+
+*Done when:* order is reproducible across platforms without consulting tmux, every scope's
+membership is asserted by a test that fails if a variant is added, and `ae list` answers instead
+of refusing.
 
 ### Phase 4 — parity, which is NOT "match the corpus"
 
@@ -141,7 +148,25 @@ surfaces where `SC-017l` mandates `unknown`). It does **not** exercise:
   proved via the tmux session environment and the capture recorded pane options, so the corpus
   cannot answer in either direction
 
-These are **not** captured before building, deliberately. They would capture *bash behaving
+Measured after `SC-400d` and `SC-405l` landed, the corpus is thinner still, and two of these
+can **never** be corroborated by parity:
+
+- the **worktree-nested layout** is absent — zero paths across 177 case manifests and the
+  template fixture bytes, measured both ways. One case holds a `./worktrees` directory and it is
+  empty, which `SC-400d` disposes of by name. **0 of 1065 rows.**
+- the **anti-deduplication clause** is equally unexercised: no two candidates anywhere share a
+  leaf across roots, so no corpus row can distinguish a correct implementation from one keyed on
+  the leaf alone.
+- `positive(socket)` is universal (130 occurrences, every kind in the corpus); `positive(name)`
+  is zero, including the legacy kind-absent form the row specifically ratifies; all six
+  `ambiguous` sub-states are zero.
+
+For those, **successor tests are not the primary evidence — they are the only evidence this
+corpus will ever provide.** Phase-1 gate criterion 2 already requires the layout fixture, so the
+gate is not blocked; nothing downstream will corroborate it. These gaps are *absent* rather than
+*unobservable*, which is the cheaper kind: a fixture closes each one.
+
+The five original gaps are **not** captured before building, deliberately. They would capture *bash behaving
 defectively*, which is already source-proven and, for the prefix primitive, observed. What P1
 needs is proof the **successor** behaves correctly — and that is successor tests constructing
 these scenarios directly, which do not depend on the corpus at all. The captures upgrade an
