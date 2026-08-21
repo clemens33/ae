@@ -221,10 +221,15 @@ misreading.
     classification, observe `inventory_complete = false`, one logical loss fact for the failed
     source, and the healthy candidate still present. The filesystem fixtures must demonstrate that
     the enumeration operation itself returned an error; `chmod` alone is invalid if the effective
-    test user can still list the path. Then combine two independent failures in one snapshot — an
-    unlistable canonical root and a separately unlistable discovered worktree `.ae` subtree — and
-    require two distinguishable logical-source loss facts, not a boolean or first-loss-only record;
-    a third healthy source still contributes its candidate. Opposed controls — missing durable
+    test user can still list the path. Exercise a fourth arm separately: an existing
+    WORKTREES ROOT whose enumeration fails while a healthy canonical candidate survives —
+    observable incomplete plus exactly ONE `WorktreeRoot`-shaped logical loss, and no guessed
+    child-subtree losses invented for the `.ae` subtrees it could not discover. Keep the
+    discovered-subtree arm separately; it proves the next graph depth is covered when the parent
+    enumeration succeeds. Then combine two independent failures in one snapshot — an unlistable
+    canonical root and an unlistable WORKTREES ROOT — and require two distinguishable
+    logical-source loss facts, not a boolean or first-loss-only record; an entitled-server live
+    candidate supplies the healthy third source. Opposed controls — missing durable
     root, absent worktree `.ae`, readable empty source, and live server outside the entitled set —
     remain complete and add no loss. A discovered candidate whose meta is absent or unreadable
     remains inventory-complete and carries only its independent criterion-21/SC-509b record-loss

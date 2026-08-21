@@ -373,12 +373,21 @@ Normative/conflict classification and the explicitly scoped source/probe empiric
 only; no primitive probe is promoted to an end-to-end product capture.**
 
 **SC-017o — incomplete inventory is explicit snapshot state, never a synthetic session.**
-Bucket 3 — fix-known-defect(#105). Every inventory snapshot records whether all
-enumerations required by SC-017j completed, and retains a loss fact for each logical
-source whose terminal enumeration failed. Failure to enumerate an existing canonical
-durable root, a discovered worktree `.ae` subtree, or an entitled tmux server makes the
-snapshot INCOMPLETE; discovery continues and every candidate found from other sources
-survives. No candidate, name, status, `unknown` value, or `degraded` value is fabricated
+Bucket 3 — fix-known-defect(#105). Every inventory snapshot records whether every
+enumeration operation required to form SC-017j's candidate union completed, and retains
+one loss fact for each logical operation whose final outcome was failure. ANY required
+traversal whose failure hides candidates the snapshot would otherwise have been entitled
+to see makes the snapshot INCOMPLETE, whether that traversal enumerates candidates
+directly or discovers further enumeration sources. Current non-exhaustive instances are
+the canonical sessions root, the worktrees root, a discovered worktree `.ae` subtree, and
+an entitled tmux server. A failed intermediate traversal records its own loss only; it
+never fabricates losses or identities for child sources it could not discover. Here
+"final outcome" means the operation still failed after whatever retry policy the
+implementation chose; it does not mean a leaf node in the discovery graph. Discovery
+continues wherever independent sources remain usable, and every candidate found from them
+survives. The loss COUNT is of failed logical operations actually attempted and known —
+never of hidden candidates or hypothetical child operations: one failed worktrees-root
+enumeration contributes one loss however many unknown subtrees it may contain. No candidate, name, status, `unknown` value, or `degraded` value is fabricated
 for identities the failed source may contain. A missing durable root or absent worktree
 `.ae` subtree is an AUTHORITATIVE EMPTY SOURCE, not a loss; archives and servers outside
 the entitled set were never required and do not make the snapshot incomplete. Once a
