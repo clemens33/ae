@@ -2446,6 +2446,48 @@ Corollary for the weaker rule: a use-shaped rule usually cannot be made structur
 needs a real test and an opposed control rather than a type. That is a genuine cost. Pay
 it — a defended rule that names the concern beats a structural rule that names a proxy.
 
+### A scoped verdict copied without its scope is a STRONGER claim than the source made
+
+A gate file records its outcome like this:
+
+```
+## Status against `f6c8f0a` (phase 1 as landed)
+
+**DOES NOT PASS.** …
+```
+
+A seat reconciling a stale plan against that file lifted the verdict and left the heading
+behind. `DOES NOT PASS` became the plan's statement about the present, when the source
+said it about one commit. The companion case was worse: a gate held unread before its
+implementation existed carried `NOT RUN — phase 2 does not exist`, written truthfully at
+the time; copied forward, the plan asserted phase 2 did not exist while eighteen phase-2
+tests, a bumped schema constant and four source files constructing the new variant sat in
+the tree.
+
+**Scope lives in headings; verdicts live in bodies; copying is body-shaped.** That is why
+the scope is structurally the part that falls off. Nobody decides to drop it.
+
+**The laundering is the real damage.** The derived document does not merely repeat a stale
+claim — it repeats it *with a citation to a real line*. That makes it more credible than
+the vague sentence it replaced and much harder to challenge, because checking the citation
+CONFIRMS it. A reader who verifies the reference finds exactly the quoted words and stops.
+Propagating staleness with a citation is worse than propagating it without one; see also
+a citation that resolves being the most dangerous kind of wrong.
+
+The rule when lifting a verdict: **look UP for a scoping heading before you copy.** If the
+scope cannot travel with the verdict, do not lift the verdict — cite the location and let
+the reader go to the only place the status can be current.
+
+**And the dispatch half, which is the reusable part: authority is per-QUESTION, not
+per-artifact.** The instruction was "derive every status and count from the gate files."
+Those files are genuinely authoritative for criteria counts — a count is scope-free, you
+can number the list. They are *not* authoritative for current status, because every status
+in them is bound to the commit it was measured against. One file, two questions, two
+different answers about whether it may be trusted. A worker told to treat an artifact as
+authoritative cannot make that split if the person dispatching them did not. Name the
+question the source is authoritative FOR, or expect the scope-free answers and the
+scope-bound ones to come back with equal confidence.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
