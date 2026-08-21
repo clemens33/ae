@@ -24,6 +24,7 @@ invariant, not against the code.
 | the commit that introduced a rule also violates it in the same text | Why rules get broken inside their own statement |
 | you filtered a tool's output to the fields you expected to change | Your probe's SCOPE decides the finding, and you chose that scope from expectation |
 | your criteria all pass but the obligation was about ordering, causality, or a matched pair | A check can only see obligations SHAPED like it — temporal ones survive a static gate |
+| a rule was just clarified, refined, or split into two orthogonal facts | A clarification that SPLITS a concept creates a coverage gap in evidence captured before it |
 | you verified every flagged item and found nothing wrong | Forward verification cannot see a FALSE NEGATIVE — you have to check the converse |
 | you are claiming a body of evidence covers some condition | A condition that was never CAPTURED cannot later be shown to have been ABSENT |
 | a coverage count came back healthy and nobody has re-derived it | A measurement error that produces COMFORT gets used; one that produces alarm gets checked |
@@ -833,6 +834,36 @@ over-merging that under-merging never occurs to you.
 
 So before trusting a criteria list, ask of each obligation: **is this about a state, a sequence,
 or a pair?** and does anything in the list observe that kind of thing at all.
+
+### A clarification that SPLITS a concept creates a coverage gap in evidence captured before it
+
+A rule said a certain field was `missing` when its keys were absent. It was ambiguous about a
+neighbouring case, so it was clarified: `missing` now means *no fact is available to the
+reader*, which covers both an unreadable record and a readable one whose keys are absent — and
+the two are declared **orthogonal** to a second, separately tracked fact about whether the
+record could be read at all.
+
+The clarification is correct and it immediately created a hole nobody put there. The old,
+undivided concept had one shape and the corpus exercised it. The new one has **two** shapes:
+
+- unreadable record → `missing` **with** the read-loss fact — 68 corpus rows
+- readable record, no keys → `missing` **without** it — **zero** corpus rows
+
+Every instance the evidence holds sits on the **same side of the new distinction**. So an
+implementation that derives one fact from the other — collapsing exactly the axes the rule now
+declares independent — is wrong in a way that body of evidence **cannot detect**, and it became
+undetectable at the moment the rule got more precise.
+
+The general shape: **evidence is only ever as discriminating as the distinctions that existed
+when it was captured.** Sharpening a definition does not sharpen the corpus; it silently
+promotes a previously-adequate body of evidence into an inadequate one, and nothing re-runs to
+tell you. The gap is created by an edit to a *document*, so no capture, test, or gate reports
+it.
+
+So whenever a rule is split, refined, or made orthogonal to something, **immediately ask which
+side of the new line the existing evidence sits on.** If it is all on one side, the distinction
+is unverified by construction, and only new fixtures can close it — which is worth knowing on
+the day of the edit rather than at the gate that fails to catch it.
 
 ### Forward verification cannot see a FALSE NEGATIVE — you have to check the converse
 
