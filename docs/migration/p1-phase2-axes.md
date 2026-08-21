@@ -1,3 +1,35 @@
+> # ⚠ INVALIDATED — ALL THREE FINDINGS ARE FALSE
+>
+> **Retained, not deleted, because a record that quietly becomes right is worth less than one
+> that shows where it was wrong.**
+>
+> Every measurement below is accurate **about `tests/it/phase2.rs`** and false as a claim about
+> the phase-2 evidence base, because **the unit tests live in `src/liveness.rs`** — 37 test
+> functions named `criterion_2` through `criterion_12` plus 23 — and the scope I was given
+> excluded them.
+>
+> - **F1 is false.** The mismatched-marker cell exists: `liveness.rs:484` "ownership mismatched",
+>   `:507` "mismatched is not positive — and a prefix is a mismatch like any other", `:568`
+>   `durable("marker-mismatched", positive("up"))`.
+> - **F2 is false.** A socket selector does reach classification: `liveness.rs:394`
+>   `ServerSelector::Positive(Selector::Socket("/tmp/B.sock"))`.
+> - **F3 is false.** Criteria 2,3,4,5,6,7,8,10,11,12 all have named tests in `src/liveness.rs`.
+>   The list was twelve-untested-**in-phase2.rs**.
+>
+> **The cause was the scope boundary, which the lead set and has taken as his.** The lesson is
+> mine to carry anyway, and it is the sharpest one this file produced: my verification step —
+> probing whether the absence was genuine or a naming difference, with `prefix`/`grouping`/
+> `mismatch`/`same name`/`two servers` all returning zero — was well chosen, was executed
+> correctly, and **confirmed a false conclusion, because it ran inside the same wrong boundary as
+> the count it was checking**.
+>
+> **A verification confirms within its scope and cannot see its scope.** Checking harder inside a
+> wrong boundary yields confident error rather than caught error, and rigour makes the error more
+> confident, not less. The one question neither the count nor the probe asked was *is this the
+> whole evidence base* — and that question cannot be answered from inside the set being measured.
+>
+> Superseded by the re-scoped analysis over `src/liveness.rs` **and** `tests/it/phase2.rs`.
+
 # Which axes the phase-2 evidence varies — and which it holds constant
 
 **By `opus5:lexec`.** Subject: phase-2 gate blob `29db943aa85319534301332052105ba16df03b4d`
