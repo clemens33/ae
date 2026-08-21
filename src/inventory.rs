@@ -316,6 +316,43 @@ impl Candidate {
     }
 }
 
+/// What the durable scan found, and what it could not see.
+///
+/// The second field is the third member of a family this build has now
+/// separated three times: **never-asked is not unreachable**, **record-absent is
+/// not record-unreadable**, and a state directory ae could not LIST is not a
+/// state directory that is not there. Each pair is two epistemic states that a
+/// tidier design would render identically, and rendering them identically is
+/// how a confident listing omits something and says nothing about it — #105's
+/// shape, one level up.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DurableScan {
+    /// Every durable candidate found.
+    pub records: Vec<DurableRecord>,
+    /// Worktree state roots that EXIST and would not list.
+    ///
+    /// Not candidates and never a source of one — nothing can be named inside a
+    /// directory that will not enumerate. This is the fact that the inventory is
+    /// incomplete THERE, recorded because silence is the failure mode: a session
+    /// living in an unlistable worktree would otherwise be invisible with no
+    /// signal at all.
+    ///
+    /// A worktree with NO `.ae` directory is absent from this list: that is a
+    /// bare checkout, which SC-400d says is not a candidate. Absence is not
+    /// loss.
+    pub unlistable: Vec<PathBuf>,
+}
+
+impl From<Vec<DurableRecord>> for DurableScan {
+    /// A scan that found these records and saw everything it looked at.
+    fn from(records: Vec<DurableRecord>) -> Self {
+        Self {
+            records,
+            unlistable: Vec::new(),
+        }
+    }
+}
+
 /// Every durable candidate under `roots`, both SC-400d layouts, path order.
 ///
 /// A candidate is a state DIRECTORY: `<sessions>/<name>/`, or
@@ -339,26 +376,34 @@ impl Candidate {
 /// inventing an empty answer there would report "no sessions" for "I could not
 /// look", which is the shape of #105 one level up.
 ///
-/// A worktree whose own `.ae` will not list is skipped rather than failing the
-/// whole scan: nothing can be named there, and one unreadable subtree must not
-/// cost every candidate in every other one. No row rules this case.
-pub fn durable_records(roots: &Roots) -> io::Result<Vec<DurableRecord>> {
-    let mut records = Vec::new();
+/// A worktree whose own `.ae` will not list is SKIPPED AND RECORDED rather than
+/// failing the whole scan: nothing can be named there, and one unreadable
+/// subtree must not cost every candidate in every other one. It lands in
+/// [`DurableScan::unlistable`], because the alternative is a listing that is
+/// quietly incomplete.
+pub fn durable_records(roots: &Roots) -> io::Result<DurableScan> {
+    let mut scan = DurableScan::default();
     for path in child_dirs(roots.sessions())? {
-        records.push(record_at(path, Layout::Canonical));
+        scan.records.push(record_at(path, Layout::Canonical));
     }
     for worktree in child_dirs(roots.worktrees())? {
         // SC-400d: the candidate is the NESTED state directory. A bare worktree
-        // is a checkout, not a session.
-        let Ok(states) = child_dirs(&worktree.join(WORKTREE_STATE_DIR)) else {
+        // is a checkout, not a session — and `child_dirs` already answered an
+        // ABSENT `.ae` with an empty list, so an error here means it exists and
+        // would not enumerate.
+        let state_root = worktree.join(WORKTREE_STATE_DIR);
+        let Ok(states) = child_dirs(&state_root) else {
+            scan.unlistable.push(state_root);
             continue;
         };
         for path in states {
-            records.push(record_at(path, Layout::WorktreeNested));
+            scan.records.push(record_at(path, Layout::WorktreeNested));
         }
     }
-    records.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(records)
+    scan.records
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    scan.unlistable.sort();
+    Ok(scan)
 }
 
 /// The direct child DIRECTORIES of `dir`, or nothing at all when `dir` does not
@@ -452,6 +497,11 @@ pub struct Inventory {
     /// again to learn what this pass already knows. A server ae was never
     /// entitled to ask is NOT in here — never asked is not unreachable.
     pub unreachable: Vec<ServerId>,
+    /// Worktree state roots that would not list — see
+    /// [`DurableScan::unlistable`]. Carried through unchanged: the inventory is
+    /// incomplete THERE, and that is information the caller may not silently
+    /// lose. Nothing renders it yet, and it is never a candidate source.
+    pub unlistable: Vec<PathBuf>,
 }
 
 /// Take the SC-017j inventory: durable records unioned with what the entitled
@@ -485,19 +535,26 @@ pub struct Inventory {
 ///     }
 /// }
 ///
-/// let Inventory { candidates, .. } = take(Vec::new(), Some(&ServerId::Ambient), &OneSession);
+/// let scan = ae::inventory::DurableScan::default();
+/// let Inventory { candidates, .. } = take(scan, Some(&ServerId::Ambient), &OneSession);
 /// assert_eq!(candidates.len(), 1);
 /// assert!(candidates[0].is_tmux_only());
 /// ```
 pub fn take<D: Discovery + ?Sized>(
-    durable: Vec<DurableRecord>,
+    durable: DurableScan,
     ambient: Option<&ServerId>,
     discovery: &D,
 ) -> Inventory {
-    let entitled = entitled_servers(ambient, &durable);
+    let entitled = entitled_servers(ambient, &durable.records);
     let mut inventory = Inventory {
-        candidates: durable.into_iter().map(Candidate::durable).collect(),
+        candidates: durable
+            .records
+            .into_iter()
+            .map(Candidate::durable)
+            .collect(),
         unreachable: Vec::new(),
+        // Carried, not consulted: an incompleteness the caller inherits.
+        unlistable: durable.unlistable,
     };
 
     // Discovery, complete, before any reconciliation.
@@ -568,8 +625,8 @@ mod tests {
     //! into something passable.
 
     use super::{
-        Candidate, DiscoveredSession, Discovery, DurableRecord, Inventory, Layout, LiveSighting,
-        MetaRead, Provenance, QueryFailed, Roots, Selector, ServerId, ServerSelector,
+        Candidate, DiscoveredSession, Discovery, DurableRecord, DurableScan, Inventory, Layout,
+        LiveSighting, MetaRead, Provenance, QueryFailed, Roots, Selector, ServerId, ServerSelector,
         durable_records, entitled_servers, take,
     };
     use std::cell::RefCell;
@@ -821,6 +878,10 @@ mod tests {
         }
     }
 
+    fn scan(records: Vec<DurableRecord>) -> DurableScan {
+        DurableScan::from(records)
+    }
+
     fn plain(path: &str) -> DurableRecord {
         record(path, ServerSelector::Missing)
     }
@@ -830,7 +891,11 @@ mod tests {
     #[test]
     fn criterion_1_the_candidate_collection_is_observable_before_any_classification() {
         let servers = Servers::new().live(ServerId::Ambient, &[("ghost", Some("ghost"))]);
-        let inventory = take(vec![plain("/s/kept")], Some(&ServerId::Ambient), &servers);
+        let inventory = take(
+            scan(vec![plain("/s/kept")]),
+            Some(&ServerId::Ambient),
+            &servers,
+        );
         assert_eq!(
             identities(&inventory),
             ["durable:/s/kept", "live:ghost@ambient"]
@@ -857,7 +922,9 @@ mod tests {
         let nested = scratch.nested("feature-checkout", "nested-session");
         let bare = scratch.bare_worktree("no-state-here");
 
-        let records = durable_records(&scratch.roots()).expect("both roots readable");
+        let records = durable_records(&scratch.roots())
+            .expect("both roots readable")
+            .records;
         let by_path: Vec<(&Path, &str, Layout)> = records
             .iter()
             .map(|record| (record.path.as_path(), record.name.as_str(), record.layout))
@@ -877,10 +944,79 @@ mod tests {
     }
 
     #[test]
+    fn a_worktree_state_root_that_will_not_list_is_recorded_rather_than_silently_skipped() {
+        // The third instance of one family tonight: never-asked is not
+        // unreachable, record-absent is not record-unreadable, and a state
+        // directory ae could not LIST is not one that is not there. A session
+        // living in here is invisible, so the INCOMPLETENESS is the fact — the
+        // alternative is a confident listing that omits it and says nothing.
+        let scratch = Scratch::new("unlistable");
+        let kept = scratch.session("elsewhere");
+        let good = scratch.nested("readable-checkout", "seen");
+        // `.ae` as a FILE: read_dir fails with NotADirectory for every uid,
+        // where a chmod would depend on who is running the suite.
+        let blocked = scratch.0.join("worktrees").join("opaque-checkout");
+        fs::create_dir_all(&blocked).expect("a worktree");
+        fs::write(blocked.join(".ae"), "not a directory").expect("an unlistable state root");
+        assert!(
+            fs::read_dir(blocked.join(".ae")).is_err(),
+            "the fixture must genuinely fail to list"
+        );
+
+        let scan = durable_records(&scratch.roots()).expect("the scan does not fail as a whole");
+        assert_eq!(
+            scan.unlistable,
+            [blocked.join(".ae")],
+            "the incompleteness is recorded"
+        );
+        assert_eq!(
+            scan.records
+                .iter()
+                .map(|record| record.path.as_path())
+                .collect::<Vec<_>>(),
+            [kept.as_path(), good.as_path()],
+            "and one unlistable subtree costs no candidate anywhere else"
+        );
+
+        let inventory = take(scan, None, &Servers::new());
+        assert_eq!(
+            inventory.unlistable,
+            [blocked.join(".ae")],
+            "carried through to the boundary"
+        );
+        // `identities` sorts, and `sessions/` sorts before `worktrees/`.
+        assert_eq!(
+            identities(&inventory),
+            [
+                format!("durable:{}", kept.display()),
+                format!("durable:{}", good.display()),
+            ],
+            "and it is never a candidate source"
+        );
+    }
+
+    #[test]
+    fn a_bare_worktree_is_absence_rather_than_loss() {
+        // SC-400d: a worktree with no nested state directory is simply not a
+        // candidate. Recording it as an incompleteness would make the loss list
+        // fire on the NORMAL case and stop meaning anything.
+        let scratch = Scratch::new("bare-not-loss");
+        scratch.bare_worktree("just-a-checkout");
+        let scan = durable_records(&scratch.roots()).expect("a readable root");
+        assert!(scan.records.is_empty());
+        assert!(
+            scan.unlistable.is_empty(),
+            "nothing was lost — there was nothing there"
+        );
+    }
+
+    #[test]
     fn criterion_2_a_worktree_root_that_does_not_exist_is_not_a_failure() {
         let scratch = Scratch::new("no-worktrees");
         scratch.session("only-canonical");
-        let records = durable_records(&scratch.roots()).expect("a missing worktree root is fine");
+        let records = durable_records(&scratch.roots())
+            .expect("a missing worktree root is fine")
+            .records;
         assert_eq!(records.len(), 1);
     }
 
@@ -993,7 +1129,7 @@ mod tests {
             ServerId::Ambient,
             &[("marked", Some("marked")), ("unmarked", None)],
         );
-        let inventory = take(Vec::new(), Some(&ServerId::Ambient), &servers);
+        let inventory = take(DurableScan::default(), Some(&ServerId::Ambient), &servers);
         assert_eq!(identities(&inventory), ["live:marked@ambient"]);
         assert!(inventory.candidates[0].is_tmux_only());
     }
@@ -1031,11 +1167,11 @@ mod tests {
 
     #[test]
     fn criterion_7_a_backend_failure_removes_no_durable_candidate_and_no_other_server() {
-        let durable = vec![
+        let durable = scan(vec![
             plain("/s/no-pointer"),
             record("/s/points-down", positive("sock-down")),
             record("/s/points-up", positive("sock-up")),
-        ];
+        ]);
         let servers = Servers::new()
             .down(named("sock-down"))
             .live(named("sock-up"), &[("elsewhere", Some("elsewhere"))]);
@@ -1071,7 +1207,7 @@ mod tests {
         // the substitution that proves nothing.
         let servers = Servers::new().live(ServerId::Ambient, &[("mdk-app", Some("mdk-app"))]);
         let inventory = take(
-            vec![record("/s/mdk", positive("sock-a"))],
+            scan(vec![record("/s/mdk", positive("sock-a"))]),
             Some(&ServerId::Ambient),
             &servers,
         );
@@ -1087,7 +1223,11 @@ mod tests {
     #[test]
     fn criterion_9a_an_unmarked_exact_live_name_leaves_the_durable_candidate_alone() {
         let servers = Servers::new().live(ServerId::Ambient, &[("mdk", None)]);
-        let inventory = take(vec![plain("/s/mdk")], Some(&ServerId::Ambient), &servers);
+        let inventory = take(
+            scan(vec![plain("/s/mdk")]),
+            Some(&ServerId::Ambient),
+            &servers,
+        );
         assert_eq!(identities(&inventory), ["durable:/s/mdk"]);
         assert_eq!(attached(&inventory, Path::new("/s/mdk")), None);
     }
@@ -1095,7 +1235,7 @@ mod tests {
     #[test]
     fn criterion_9b_the_same_unmarked_session_with_no_durable_record_is_no_candidate() {
         let servers = Servers::new().live(ServerId::Ambient, &[("mdk", None)]);
-        let inventory = take(Vec::new(), Some(&ServerId::Ambient), &servers);
+        let inventory = take(DurableScan::default(), Some(&ServerId::Ambient), &servers);
         assert!(
             inventory.candidates.is_empty(),
             "positive ownership is what admits a live-only candidate, and there was none"
@@ -1190,7 +1330,7 @@ mod tests {
         let servers = Servers::new()
             .live(ServerId::Ambient, &[])
             .live(named("C-unnamed"), &[("on-c", Some("on-c"))]);
-        let inventory = take(Vec::new(), Some(&ServerId::Ambient), &servers);
+        let inventory = take(DurableScan::default(), Some(&ServerId::Ambient), &servers);
         assert!(
             inventory.candidates.is_empty(),
             "no candidate, and no placeholder standing in for one"
@@ -1274,11 +1414,11 @@ mod tests {
     #[test]
     fn criterion_14_the_durable_projection_is_identical_across_four_tmux_worlds() {
         let fixture = || {
-            vec![
+            scan(vec![
                 plain("/s/mdk"),
                 plain("/s/quiet"),
                 record("/s/pointed", positive("sock-b")),
-            ]
+            ])
         };
         let worlds: Vec<(&str, Servers)> = vec![
             (
@@ -1317,7 +1457,7 @@ mod tests {
     fn criterion_15_durable_inclusion_is_never_gated_on_a_query_and_ownership_never_filters_it() {
         let servers = Servers::new().down(ServerId::Ambient);
         let inventory = take(
-            vec![plain("/s/a"), plain("/s/b")],
+            scan(vec![plain("/s/a"), plain("/s/b")]),
             Some(&ServerId::Ambient),
             &servers,
         );
@@ -1379,7 +1519,7 @@ mod tests {
 
     #[test]
     fn criterion_20a_one_match_coalesces_into_a_single_candidate_carrying_both_provenances() {
-        let durable = vec![record("/s/api", positive("sock-a"))];
+        let durable = scan(vec![record("/s/api", positive("sock-a"))]);
         let servers = Servers::new().live(named("sock-a"), &[("api", Some("api"))]);
         let inventory = take(durable, None, &servers);
 
@@ -1400,7 +1540,7 @@ mod tests {
 
     #[test]
     fn criterion_20a_control_the_same_name_on_another_entitled_server_stays_distinct() {
-        let durable = vec![record("/s/api", positive("sock-a"))];
+        let durable = scan(vec![record("/s/api", positive("sock-a"))]);
         let servers = Servers::new()
             .live(ServerId::Ambient, &[("api", Some("api"))])
             .live(named("sock-a"), &[]);
@@ -1458,7 +1598,7 @@ mod tests {
         for selector in [ServerSelector::Missing, ServerSelector::Ambiguous] {
             let servers = Servers::new().live(ServerId::Ambient, &[("api", Some("api"))]);
             let inventory = take(
-                vec![record("/s/api", selector.clone())],
+                scan(vec![record("/s/api", selector.clone())]),
                 Some(&ServerId::Ambient),
                 &servers,
             );
@@ -1548,7 +1688,7 @@ mod tests {
             .expect("its signature")
             .0
             .to_owned();
-        assert!(signature.contains("durable: Vec<DurableRecord>"));
+        assert!(signature.contains("durable: DurableScan"));
         assert!(signature.contains("ambient: Option<&ServerId>"));
         assert!(signature.contains("discovery: &D"));
         assert!(
@@ -1558,7 +1698,7 @@ mod tests {
 
         let servers = Servers::new().live(ServerId::Ambient, &[("live-one", Some("live-one"))]);
         let inventory = take(
-            vec![plain("/s/durable-one")],
+            scan(vec![plain("/s/durable-one")]),
             Some(&ServerId::Ambient),
             &servers,
         );
@@ -1585,12 +1725,12 @@ mod tests {
         let live_now = Servers::new().live(ServerId::Ambient, &[("early", Some("early"))]);
         assert_eq!(
             identities(&take(
-                vec![plain("/s/d")],
+                scan(vec![plain("/s/d")]),
                 Some(&ServerId::Ambient),
                 &gathered_earlier
             )),
             identities(&take(
-                vec![plain("/s/d")],
+                scan(vec![plain("/s/d")]),
                 Some(&ServerId::Ambient),
                 &live_now
             )),
@@ -1637,7 +1777,7 @@ mod tests {
         // The discriminator matrix itself is a meta-reading unit test, beside
         // the normalizer it tests. What belongs HERE is the consequence: no
         // missing or ambiguous form may enter the queried-server set.
-        let durable = vec![
+        let durable = scan(vec![
             record("/s/name", positive("by-name")),
             record(
                 "/s/socket",
@@ -1645,7 +1785,7 @@ mod tests {
             ),
             record("/s/missing", ServerSelector::Missing),
             record("/s/ambiguous", ServerSelector::Ambiguous),
-        ];
+        ]);
         let servers = Servers::new();
         let inventory = take(durable, None, &servers);
 
@@ -1666,13 +1806,13 @@ mod tests {
         // SC-017j: unproved equivalence between selector spellings never
         // authorizes a merge. These two are not proven equivalent, so they are
         // two entitlements and two queries.
-        let durable = vec![
+        let durable = scan(vec![
             record("/s/one", positive("/tmp/ae.sock")),
             record(
                 "/s/two",
                 ServerSelector::Positive(Selector::Socket(PathBuf::from("/tmp/ae.sock"))),
             ),
-        ];
+        ]);
         let servers = Servers::new();
         let _ = take(durable, None, &servers);
         assert_eq!(
@@ -1700,7 +1840,9 @@ mod tests {
             "held",
         )
         .expect("a lock fixture");
-        let records = durable_records(&scratch.roots()).expect("a readable root");
+        let records = durable_records(&scratch.roots())
+            .expect("a readable root")
+            .records;
         assert_eq!(
             records.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
             ["real"]
@@ -1720,7 +1862,7 @@ mod tests {
         let scratch = Scratch::new("no-root");
         assert_eq!(
             durable_records(&scratch.roots()).expect("a fresh machine is not a failure"),
-            Vec::new()
+            DurableScan::default()
         );
     }
 
@@ -1743,7 +1885,9 @@ mod tests {
         #[cfg(not(unix))]
         let unspellable = false;
 
-        let records = durable_records(&scratch.roots()).expect("a readable root");
+        let records = durable_records(&scratch.roots())
+            .expect("a readable root")
+            .records;
         assert_eq!(records.len(), usize::from(unspellable) + 1);
         if unspellable {
             assert!(
@@ -1769,7 +1913,9 @@ mod tests {
             scratch.session(name);
         }
         scratch.nested("checkout", "nested-one");
-        let records = durable_records(&scratch.roots()).expect("a readable root");
+        let records = durable_records(&scratch.roots())
+            .expect("a readable root")
+            .records;
         let paths: Vec<&Path> = records.iter().map(|record| record.path.as_path()).collect();
         let mut sorted = paths.clone();
         sorted.sort_unstable();
@@ -1786,14 +1932,14 @@ mod tests {
 
     #[test]
     fn sc_017j_the_entitled_set_is_the_ambient_server_plus_distinct_recorded_pointers() {
-        let durable = vec![
+        let durable = scan(vec![
             record("/s/one", positive("sock-a")),
             plain("/s/two"),
             record("/s/three", ServerSelector::Ambiguous),
             record("/s/four", positive("sock-a")),
-        ];
+        ]);
         assert_eq!(
-            entitled_servers(Some(&ServerId::Ambient), &durable),
+            entitled_servers(Some(&ServerId::Ambient), &durable.records),
             [ServerId::Ambient, named("sock-a")],
             "distinct pointers only: a repeat is not a second entitlement"
         );
