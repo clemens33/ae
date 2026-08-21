@@ -2488,6 +2488,45 @@ authoritative cannot make that split if the person dispatching them did not. Nam
 question the source is authoritative FOR, or expect the scope-free answers and the
 scope-bound ones to come back with equal confidence.
 
+### Wiring an INERT SEAM makes every fixture that depended on its inertness contingent
+
+ae had no tmux transport: `Discovery` failed every query by construction. A test fixture
+planted a session recording `tmux_server=ae-test` and asserted the row rendered `unknown`.
+That fixture's correctness depends on `ae-test` **not existing** — and while the seam was
+inert, that premise was FREE. No query could run, so whether any such server existed on
+the machine could not matter.
+
+Wiring the transport revoked the grant. The same fixture, unchanged, now issues a real
+query. A developer with `tmux -L ae-test` running anywhere on the box turns the failed
+query into a **successful** one that legitimately reports the session absent — `stopped`,
+a red test, and a failure with nothing to do with the product. **Nothing in the fixture
+changed; the cost of its precondition did.**
+
+**The general shape: an inert seam grants a free precondition to every fixture downstream
+of it, and wiring the seam revokes that grant silently, everywhere, at once.** The grant
+is invisible while it holds, because a precondition that cannot fail is indistinguishable
+from one that is not there.
+
+**Detection does not follow the diff.** The change shows you the seam; it does not show
+you what was leaning on it, and most of the exposed fixtures are files the change never
+opens. Grep instead for **what the seam used to make free** — here, every fixture naming a
+tmux server or socket, then filter to those whose premise is that the named thing is
+ABSENT. A fixture depending on a server it *creates* is safe; a fixture depending on a
+server nobody created is the exposed shape.
+
+Note the discovery mode, because it is the common one: this instance was found by
+**proximity** — while fixing a comment three lines away that the same change had made
+false — not by looking. Proximity finds the first one. It never finds the set, and the
+feeling of having found it is the same either way.
+
+**The load-bearing move was declaring the boundary.** The author wrote: *a gap in my
+landing, not a completed sweep — I only swept the file I was already in.* That sentence is
+worth more than the fix. **An unswept file you have NAMED is a task; an unswept file you
+have not named is a defect that will later be attributed to something else** — a flaky
+test, a bad machine, an unrelated commit. Only the author knows the scope of what they
+actually checked, so a check reported without its scope inherits the same defect as a
+verdict reported without its scope: it reads stronger than it is.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
