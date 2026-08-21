@@ -95,11 +95,58 @@ ae owns ordering: C byte order by session name within a status group; group orde
 *Done when:* order is reproducible across platforms without consulting tmux, and every scope's
 membership is asserted by a test that fails if a variant is added.
 
-### Phase 4 — parity
+### Phase 4 — parity, which is NOT "match the corpus"
 
-Snapshot parity for the 1065 P1 rows, consuming the frozen corpus through `verify-corpus.py`
-(which has no write path, deliberately). Normalisation is proven two-sided already: same
-invocation across hosts converges, different invocations do not collide.
+Uniform byte-parity against the corpus is wrong, and measurably so. `SC-509d` moves the schema
+for **every** successor digest, so divergence is not a carve-out for defect rows — it is the
+majority of the machine surface, driven by one enum value:
+
+| rows | disposition |
+|---:|---|
+| 76 | diverge on **both** status and schema |
+| 152 | diverge on status |
+| 325 | diverge on schema alone |
+| 306 | status-bearing, expected identical |
+| 206 | carry neither field (`requests`, `events-tail`) — expected identical |
+
+**553 of 1065 rows (52%) would go red precisely when the implementation is correct.**
+
+The keying property is **what the output carries**, not which scenario produced the row: 859
+rows carry a status field, 401 of those carry the machine digest, 206 carry neither
+(verified, not assumed).
+
+So every P1 row carries a **pre-registered verdict** — `EXPECTED-MATCH` or
+`EXPECTED-DIVERGENCE` — derived from which rows govern its output shape. **An
+expected-divergence row is not skipped; it asserts the mandated divergence.** A row that must
+move `stopped` → `unknown` fails if it still says `stopped` *and* fails if it says anything
+else. That makes the 553 the strongest part of the suite rather than a hole in it: those are
+the rows proving the fix, not the port.
+
+Normalisation is already proven two-sided — same invocation across hosts converges, different
+invocations do not collide — and the corpus is consumed through `verify-corpus.py`, which has
+no write path by construction.
+
+### Known corpus gaps — successor tests cover these, not the corpus
+
+The corpus exercises an **unreachable recorded server** (228 rows, verified end to end: a
+recorded socket that is absent, `error connecting`, and bash printing `stopped` in both
+surfaces where `SC-017l` mandates `unknown`). It does **not** exercise:
+
+- a live **prefix sibling** in the firing orientation (co-occurring pairs exist; all oriented
+  the wrong way — the defect needs a non-live candidate prefixing a live one)
+- a **non-ambient** server, as distinct from no server
+- an **ambiguous** recorded server
+- `unknown` and `degraded` **together**, which `SC-017l` asserts are orthogonal
+- a **missing ownership marker** — and this one is *unobservable*, not absent: ownership is
+  proved via the tmux session environment and the capture recorded pane options, so the corpus
+  cannot answer in either direction
+
+These are **not** captured before building, deliberately. They would capture *bash behaving
+defectively*, which is already source-proven and, for the prefix primitive, observed. What P1
+needs is proof the **successor** behaves correctly — and that is successor tests constructing
+these scenarios directly, which do not depend on the corpus at all. The captures upgrade an
+empirical label; they do not gate an implementation, and frozen source means they are exactly
+as available later.
 
 ## Non-goals
 
