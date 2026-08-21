@@ -238,8 +238,13 @@ impl SessionRead {
 pub struct AgentRuntime {
     /// The slot this describes — `main` / `worker.<n>` / `spawned.<n>`.
     pub slot: String,
-    /// Whether the agent's pane is alive.
-    pub alive: bool,
+    /// Whether the agent's pane is alive — **SC-017p/SC-017q**, three-valued.
+    ///
+    /// `None` means the observation did not establish either answer: a failed
+    /// pane query, an ambiguous or missing pane marker, or a session whose own
+    /// liveness is unknown. It is NOT "dead": SC-017q is explicit that
+    /// unprovable agent liveness is first-class unknown and never removal.
+    pub alive: Option<bool>,
     /// The watchdog's typed reason for this agent, if any (SC-980).
     pub alert: Option<Reason>,
 }
@@ -505,6 +510,34 @@ pub fn entry_from(
     entry
 }
 
+/// What is known about one roster agent's liveness — **SC-017p/SC-017q**.
+///
+/// The two grains are separate but not a free Cartesian product, and the row
+/// fixes the relation in one direction only:
+///
+/// * session `stopped` — a SUCCESSFUL exact-session absence proof — implies
+///   every roster agent `dead`. The session is provably not there, so neither is
+///   any pane of it.
+/// * session `unknown` implies agent `unknown`. Nothing can be established about
+///   a pane inside a session ae could not observe, and inheriting `dead` here is
+///   precisely the collapse SC-017q forbids.
+/// * session `running` permits all three, according to the pane observation.
+///
+/// A runtime that names no member for the slot has made no observation of it, so
+/// the answer is `unknown` rather than `dead` — that default is where both the
+/// frozen script and this crate's first version encoded absence of evidence as
+/// evidence of absence.
+fn agent_liveness(runtime: &SessionRuntime, agent: Option<&AgentRuntime>) -> Option<bool> {
+    match runtime.status {
+        // Proven absent: every roster agent with it.
+        Status::Stopped => Some(false),
+        // Nothing established about the session, so nothing about its panes.
+        Status::Unknown => None,
+        // The pane observation decides, and its absence decides nothing.
+        Status::Running => agent.and_then(|agent| agent.alive),
+    }
+}
+
 /// The `agents[]` array: the meta's roster, answered by the runtime and the
 /// event stream.
 ///
@@ -529,7 +562,7 @@ fn agent_entries(
                 alias: slot.alias.clone(),
                 name: slot.name.clone(),
                 session_id: slot.session_id.clone(),
-                alive: runtime_agent.is_some_and(|agent| agent.alive),
+                alive: agent_liveness(runtime, runtime_agent),
                 state: declared.map(ToOwned::to_owned),
                 // SC-017g: dead/stale/throttled come from the watchdog (SC-980
                 // hands them here typed); waiting-user/blocked are
@@ -1672,7 +1705,7 @@ mod tests {
             branch: Some("feature/login".to_owned()),
             agents: vec![AgentRuntime {
                 slot: "main".to_owned(),
-                alive: false,
+                alive: Some(false),
                 alert: Some(Reason::Dead),
             }],
         };
@@ -1683,7 +1716,7 @@ mod tests {
             Some("blocked"),
             "both are reported"
         );
-        assert!(!entry.agents[0].alive);
+        assert_eq!(entry.agents[0].alive, Some(false));
         assert_eq!(entry.attention, Some(Reason::Dead));
         assert_eq!(
             entry.branch.as_deref(),
@@ -1693,12 +1726,78 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_the_runtime_never_mentions_is_not_alive() {
+    fn sc_017q_an_agent_the_runtime_never_mentions_is_unknown_rather_than_dead() {
+        // THIS TEST PINNED THE DEFECT. It used to assert `alive == false` for an
+        // agent no observation ever mentioned — absence of evidence recorded as
+        // evidence of absence, which is SC-017q's named successor violation and
+        // the same collapse as the session-level one a layer up.
+        //
+        // The session here is RUNNING, so SC-017q leaves the pane observation to
+        // decide; there was none, so nothing is decided.
         let scratch = Scratch::new("noruntime");
         scratch.meta(META);
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
-        assert!(!entry.agents[0].alive);
-        assert_eq!(entry.agents[0].reason, None);
+        assert_eq!(entry.agents[0].alive, None, "unknown, never dead");
+        assert_eq!(
+            entry.agents[0].reason, None,
+            "and an unknown agent does not manufacture an attention reason"
+        );
+    }
+
+    #[test]
+    fn sc_017q_the_session_grain_constrains_the_agent_grain_in_one_direction() {
+        // The relation is ratified and is NOT a free Cartesian product: a
+        // successful absence proof for the session proves every roster agent
+        // dead, an unknown session leaves every agent unknown, and only a
+        // running session defers to the pane observation.
+        let scratch = Scratch::new("grain");
+        scratch.meta(META);
+        for (status, expected, why) in [
+            (
+                Status::Stopped,
+                Some(false),
+                "proven absent takes its panes with it",
+            ),
+            (
+                Status::Unknown,
+                None,
+                "nothing observed about the session, nothing about its panes",
+            ),
+            (
+                Status::Running,
+                None,
+                "running defers to a pane observation, and there was none",
+            ),
+        ] {
+            let entry = entry_for(
+                &scratch.0,
+                "s",
+                &SessionRuntime::new(status),
+                NOW,
+                DEFAULT_UNANSWERED_SECS,
+            );
+            assert_eq!(entry.agents[0].alive, expected, "{status:?}: {why}");
+        }
+    }
+
+    #[test]
+    fn sc_017q_a_running_session_permits_all_three_agent_answers() {
+        let scratch = Scratch::new("all-three");
+        scratch.meta(META);
+        for (observed, expected) in [
+            (Some(true), Some(true)),
+            (Some(false), Some(false)),
+            (None, None),
+        ] {
+            let mut runtime = SessionRuntime::new(Status::Running);
+            runtime.agents = vec![AgentRuntime {
+                slot: "main".to_owned(),
+                alive: observed,
+                alert: None,
+            }];
+            let entry = entry_for(&scratch.0, "s", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
+            assert_eq!(entry.agents[0].alive, expected, "observed {observed:?}");
+        }
     }
 
     #[test]
@@ -1743,7 +1842,7 @@ mod tests {
             branch: None,
             agents: vec![AgentRuntime {
                 slot: "main".to_owned(),
-                alive: true,
+                alive: Some(true),
                 alert: Some(Reason::Dead),
             }],
         };

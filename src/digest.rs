@@ -101,8 +101,20 @@ pub struct AgentEntry {
     pub name: String,
     /// The captured tool session id, where one exists.
     pub session_id: Option<String>,
-    /// Whether the agent's pane is alive.
-    pub alive: bool,
+    /// Whether the agent's pane is alive — **SC-509e**, three-valued.
+    ///
+    /// `Some(true)` and `Some(false)` carry SC-017p's POSITIVELY established
+    /// facts: an exact association to a live pane, or a proof that this exact
+    /// roster agent has none. `None` is SC-017q's `unknown`, and it is emitted
+    /// as JSON `null` rather than omitted — the field is present even when null,
+    /// because a consumer gating on its presence must not have to tell "absent
+    /// because unknown" from "absent because this reader is old".
+    ///
+    /// It was a `bool`, and that was the same defect as the session status one
+    /// level up: a missing observation encoded as a negative FACT. Frozen bash
+    /// initialised it to false and flipped it only on a positive hit, so an
+    /// unavailable pane query rendered exactly like a dead agent.
+    pub alive: Option<bool>,
     /// The agent's declared work state.
     pub state: Option<String>,
     /// "each agent's `reason` is its own contribution" to the session marker.
@@ -119,7 +131,11 @@ impl AgentEntry {
             ("name".to_owned(), Value::str(&self.name)),
         ];
         push_str(&mut fields, "session_id", self.session_id.as_deref());
-        fields.push(("alive".to_owned(), Value::Bool(self.alive)));
+        // Present even when null — see the field's own docs.
+        fields.push((
+            "alive".to_owned(),
+            self.alive.map_or(Value::Null, Value::Bool),
+        ));
         push_str(&mut fields, "state", self.state.as_deref());
         push_str(&mut fields, "reason", self.reason.map(Reason::as_str));
         Value::Obj(fields)
@@ -372,7 +388,7 @@ mod tests {
             alias: "claude".to_owned(),
             name: "lead".to_owned(),
             session_id: Some("e795c9e9".to_owned()),
-            alive: true,
+            alive: Some(true),
             state: Some("blocked".to_owned()),
             reason: Some(Reason::Blocked),
         }];

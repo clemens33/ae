@@ -408,7 +408,7 @@ fn sc_405g_the_branch_is_a_runtime_input_not_a_meta_key() {
         branch: Some("feature/login".to_owned()),
         agents: vec![AgentRuntime {
             slot: "main".to_owned(),
-            alive: true,
+            alive: Some(true),
             alert: None,
         }],
     };
@@ -420,9 +420,13 @@ fn sc_405g_the_branch_is_a_runtime_input_not_a_meta_key() {
         DEFAULT_UNANSWERED_SECS,
     );
     assert_eq!(built.branch.as_deref(), Some("feature/login"));
-    assert!(built.agents[0].alive, "alive is a runtime fact too");
+    assert_eq!(
+        built.agents[0].alive,
+        Some(true),
+        "alive is a runtime fact too"
+    );
     assert!(
-        !built.agents[1].alive,
+        built.agents[1].alive != Some(true),
         "a slot the runtime does not mention is not alive"
     );
 }
@@ -434,7 +438,7 @@ fn sc_980_a_typed_alert_outranks_a_self_declaration() {
         branch: None,
         agents: vec![AgentRuntime {
             slot: "worker.0".to_owned(),
-            alive: false,
+            alive: Some(false),
             alert: Some(Reason::Dead),
         }],
     };

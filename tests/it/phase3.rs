@@ -1306,3 +1306,155 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
         );
     }
 }
+
+// ---- SC-017p/q/r + SC-509e: three-valued agent liveness ----------------
+
+#[test]
+fn sc_509e_the_agent_liveness_field_is_present_even_when_null() {
+    // The closed JSON domain is `true | false | null`, and PRESENT is the part
+    // that matters: a consumer gating on the key must not have to tell "absent
+    // because unknown" from "absent because the writer is old".
+    for (alive, expected) in [
+        (Some(true), json::Value::Bool(true)),
+        (Some(false), json::Value::Bool(false)),
+        (None, json::Value::Null),
+    ] {
+        let mut entry = SessionEntry::new("s", Status::Running);
+        entry.agents = vec![AgentEntry {
+            reference: "cl:lead".to_owned(),
+            alias: "cl".to_owned(),
+            name: "lead".to_owned(),
+            alive,
+            ..AgentEntry::default()
+        }];
+        let world = World::new(NOW, vec![entry]);
+        let (text, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));
+        let document = match json::parse(text.trim_end()) {
+            Ok(document) => document,
+            Err(why) => panic!("one document: {why:?}"),
+        };
+        let Some(json::Value::Arr(sessions)) = document.get("sessions") else {
+            panic!("sessions must be an array");
+        };
+        let Some(json::Value::Arr(agents)) = sessions[0].get("agents") else {
+            panic!("agents must be an array");
+        };
+        assert_eq!(
+            agents[0].get("alive"),
+            Some(&expected),
+            "alive={alive:?} must render as {expected:?}"
+        );
+        assert!(
+            text.contains(r#""alive":"#),
+            "the key is present in every document: {text}"
+        );
+    }
+}
+
+#[test]
+fn sc_017r_the_three_agent_healths_are_distinguishable_and_none_is_silent() {
+    // The words are an OPEN CHOICE; that all three are distinct, non-empty and
+    // that unknown reads as unknown rather than as blank or absence is not.
+    let mut rendered = Vec::new();
+    for alive in [Some(true), Some(false), None] {
+        let mut entry = SessionEntry::new("s", Status::Running);
+        entry.agents = vec![AgentEntry {
+            reference: "cl:lead".to_owned(),
+            alias: "cl".to_owned(),
+            name: "lead".to_owned(),
+            alive,
+            ..AgentEntry::default()
+        }];
+        let world = World::new(NOW, vec![entry]);
+        let (text, _, _) = invoke_over("list", &["--all"], Some(&world));
+        let agent_line = text
+            .lines()
+            .find(|line| line.starts_with(char::is_whitespace) && line.contains("cl:lead"))
+            .unwrap_or_else(|| panic!("the agent row must be rendered for alive={alive:?}"))
+            .to_owned();
+        assert!(
+            agent_line.split_whitespace().count() >= 2,
+            "alive={alive:?}: the health must not render as blank: {agent_line:?}"
+        );
+        rendered.push(agent_line);
+    }
+    assert_eq!(rendered.len(), 3);
+    assert_ne!(rendered[0], rendered[1], "alive and dead must differ");
+    assert_ne!(rendered[1], rendered[2], "dead and unknown must differ");
+    assert_ne!(rendered[0], rendered[2], "alive and unknown must differ");
+    // The specific failure the row names: unknown silently reading as one of the
+    // established answers.
+    assert!(
+        rendered[2].contains("unknown"),
+        "unknown must be recognizable AS unknown: {:?}",
+        rendered[2]
+    );
+}
+
+#[test]
+fn sc_017q_an_unknown_agent_keeps_its_declared_state_and_reason() {
+    // Liveness null never nulls or relabels an independently known fact.
+    let mut entry = SessionEntry::new("s", Status::Running);
+    entry.agents = vec![AgentEntry {
+        reference: "cl:lead".to_owned(),
+        alias: "cl".to_owned(),
+        name: "lead".to_owned(),
+        alive: None,
+        state: Some("blocked".to_owned()),
+        reason: Some(ae::attention::Reason::Blocked),
+        session_id: Some("e795c9e9".to_owned()),
+    }];
+    let world = World::new(NOW, vec![entry]);
+    let (text, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));
+    let document = match json::parse(text.trim_end()) {
+        Ok(document) => document,
+        Err(why) => panic!("one document: {why:?}"),
+    };
+    let Some(json::Value::Arr(sessions)) = document.get("sessions") else {
+        panic!("sessions must be an array");
+    };
+    let Some(json::Value::Arr(agents)) = sessions[0].get("agents") else {
+        panic!("agents must be an array");
+    };
+    assert_eq!(agents[0].get("alive"), Some(&json::Value::Null));
+    assert_eq!(agents[0].get_str("state"), Some("blocked"));
+    assert_eq!(agents[0].get_str("reason"), Some("blocked"));
+    assert_eq!(agents[0].get_str("session_id"), Some("e795c9e9"));
+}
+
+#[test]
+fn sc_017q_the_entry_point_reports_unknown_agents_rather_than_dead_ones() {
+    // END TO END, at the real binary: this build has no transport, so no pane
+    // can be observed — and the human surface must say so rather than printing
+    // every agent as dead, which is what it did before these rows landed.
+    let root = std::env::temp_dir().join(format!("ae-p3-agents-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("sessions").join("AlphaR");
+    let written = std::fs::create_dir_all(&dir).and_then(|()| {
+        std::fs::write(
+            dir.join("meta"),
+            "mode=local\nagent.main=cl:lead\ntmux_server_kind=name\ntmux_server=B\n",
+        )
+    });
+    assert!(written.is_ok(), "a planted session");
+
+    let scan = ae::inventory::durable_records(&ae::inventory::Roots::under(&root));
+    let snapshot = ae::liveness::classify(ae::inventory::take(scan, None, &Down), &Down);
+    let world = ae::listing::world_of(&snapshot, NOW, ae::session::DEFAULT_UNANSWERED_SECS);
+    let (human, _, _) = invoke_over("list", &["--all"], Some(&world));
+    let (machine, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        human.contains("unknown") && !human.contains("dead"),
+        "an unobservable agent is unknown, never dead: {human}"
+    );
+    assert!(
+        machine.contains(r#""alive":null"#),
+        "and the machine surface says null: {machine}"
+    );
+    assert!(
+        !machine.contains(r#""alive":false"#),
+        "nothing was proven dead: {machine}"
+    );
+}

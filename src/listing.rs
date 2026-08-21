@@ -262,7 +262,17 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
             // Per-agent HEALTH. `dead` here is the boolean `alive: false` — a
             // pane fact — and is not SC-980's `attn:dead` alert, which reaches
             // the session marker above by way of SC-017g's rollup.
-            out.push_str(if agent.alive { "alive" } else { "dead" });
+            // **SC-017r** — three distinguishable, non-silent renderings. The
+            // words are an open choice; that `unknown` is recognizable AS
+            // unknown rather than as absence or blank is not. Frozen bash
+            // rendered a failed query exactly like a healthy agent (empty
+            // marker) while its JSON called the same agent dead: two surfaces
+            // collapsing one unknown in opposite directions.
+            out.push_str(match agent.alive {
+                Some(true) => "alive",
+                Some(false) => "dead",
+                None => "unknown",
+            });
             out.push('\t');
             // The declared state, or a placeholder: an agent that has declared
             // nothing must not render as an agent whose state is the empty
@@ -289,7 +299,7 @@ mod tests {
         ListArgs::parse(flags).expect("documented flags")
     }
 
-    fn agent(reference: &str, alive: bool, state: Option<&str>) -> AgentEntry {
+    fn agent(reference: &str, alive: Option<bool>, state: Option<&str>) -> AgentEntry {
         AgentEntry {
             reference: reference.to_owned(),
             alias: reference.split(':').next().unwrap_or("").to_owned(),
@@ -306,12 +316,12 @@ mod tests {
         live.attention = Some(Reason::Blocked);
         live.last_active_epoch = Some(NOW.epoch() - 10);
         live.agents = vec![
-            agent("claude:lead", true, Some("blocked")),
-            agent("codex:coworker", false, None),
+            agent("claude:lead", Some(true), Some("blocked")),
+            agent("codex:coworker", Some(false), None),
         ];
 
         let mut quiet = SessionEntry::new("quiet", Status::Running);
-        quiet.agents = vec![agent("claude:solo", true, Some("working"))];
+        quiet.agents = vec![agent("claude:solo", Some(true), Some("working"))];
 
         let old = SessionEntry::new("old", Status::Stopped);
 
@@ -571,7 +581,7 @@ mod tests {
         // can be reasoned about without picking a line out of it.
         let rendered_with = |state: Option<&str>| {
             let mut session = SessionEntry::new("solo-session", Status::Running);
-            session.agents = vec![agent("claude:lead", true, state)];
+            session.agents = vec![agent("claude:lead", Some(true), state)];
             table(&[&session])
         };
 
@@ -612,7 +622,7 @@ mod tests {
         // nothing about the rule.
         let mut session = SessionEntry::new("s", Status::Running);
         session.attention = Some(Reason::Dead);
-        session.agents = vec![agent("claude:lead", false, Some("working"))];
+        session.agents = vec![agent("claude:lead", Some(false), Some("working"))];
 
         let unflagged = table(&[&session]);
         for reason in Reason::BY_SEVERITY {
@@ -671,10 +681,10 @@ mod tests {
 
                 // The negative half depends on the fixture's words, not on the
                 // layout: no name, status or state here spells the other health.
-                let (health, other) = if listed.alive {
-                    ("alive", "dead")
-                } else {
-                    ("dead", "alive")
+                let (health, other) = match listed.alive {
+                    Some(true) => ("alive", "dead"),
+                    Some(false) => ("dead", "alive"),
+                    None => ("unknown", "dead"),
                 };
                 assert!(alone.contains(&listed.reference), "{alone}");
                 assert!(alone.contains(health), "{alone}");
