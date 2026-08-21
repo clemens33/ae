@@ -27,6 +27,7 @@ invariant, not against the code.
 | a case with more information available is about to be handled by a different branch | Adding evidence must never SUBTRACT knowledge — check the richer case against the poorer one |
 | a rule says two facts are independent and you are choosing test cases | Orthogonality is proven on the OFF-DIAGONAL; the diagonal is where a derivation hides |
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
+| a document explains that your concern is covered by some other rule, and you are satisfied | A DELEGATION is a claim about scope, and being talked out of a concern is not resolving it |
 | a rule says EVERY / ALWAYS and one criterion demonstrates it on the case it happened to build | A UNIVERSAL obligation checked on ONE fixture is checked nowhere |
 | your fixture plants a precondition while other parts of the same fixture break its source | A fixture can succeed at building a state the product could never produce |
 | a rule lists cases and you just found one it does not cover | Adding the missing member to an enumerated rule PRESERVES the defect that produced it |
@@ -906,6 +907,33 @@ The same shape governs any claim of the form "these vary independently": orderin
 membership, identity versus reachability, presence versus permission. If the evidence only
 holds cases where both move together, the claim is untested no matter how many of them there
 are.
+
+### A DELEGATION is a claim about scope, and being talked out of a concern is not resolving it
+
+A reviewer noticed a gap: an alias command was untested for most filters. They looked for it
+deliberately, found it, and then read a sentence in the same document explaining that alias
+parity was covered by an older obligation elsewhere. They accepted it and wrote *"delegated
+deliberately and said so"* into the review as a point in the document's favour.
+
+The delegation was real and its scope was wrong. The older obligation covered the
+**pre-existing** behaviour; the filters this phase changed were **new**, so a defect in the
+alias under the new semantics was outside what that obligation was ever written to catch. The
+document's author found it later by self-reading.
+
+This is not *missing* something. **It is finding it and being argued out of it by a sentence** —
+and that is more dangerous, because the noticing already happened and got spent. Locating the
+explanation *feels* like discharging the concern: you did the work, the document answered, the
+item closes. Nothing about that sequence prompts the one remaining question.
+
+So treat every "covered elsewhere" as **an unverified claim with two halves**: that the other
+rule exists, and that **its scope contains this case**. The first is a lookup and is nearly
+always true — which is exactly what makes it satisfying. The second is the actual check, and it
+is skipped most reliably when the delegation is *accurate about the thing it names*.
+
+The concrete habit: when a document points you elsewhere, **go read the elsewhere and ask what
+it was written to catch**, not merely whether it is about the same subject. Obligations written
+before a change do not automatically extend to what the change introduced — and a phase that
+alters semantics has, by definition, produced cases its predecessors were not written against.
 
 ### A UNIVERSAL obligation checked on ONE fixture is checked nowhere
 
