@@ -9,3 +9,4 @@ mod fixtures;
 mod parity;
 mod parity_self_test;
 mod phase2;
+mod phase3;

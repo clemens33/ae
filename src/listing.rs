@@ -46,6 +46,7 @@
 
 use crate::digest::{Digest, SessionEntry};
 use crate::filters::ListArgs;
+use crate::inventory::FailedSource;
 use crate::liveness::Snapshot;
 use crate::session::SessionRuntime;
 use crate::time::Timestamp;
@@ -61,13 +62,19 @@ pub struct World {
     pub now: Timestamp,
     /// Every session known to the caller, before any filter runs.
     pub sessions: Vec<SessionEntry>,
-    /// **SC-017o** — whether every enumeration behind `sessions` completed.
+    /// **SC-017o** — the logical sources whose enumeration failed.
     ///
     /// A property of the SNAPSHOT, not of the selection: filtering changes which
     /// sessions are shown and can never change whether ae managed to look
-    /// everywhere. It therefore passes through [`render`] untouched, and every
-    /// filter's document carries the same answer.
-    pub inventory_complete: bool,
+    /// everywhere. It passes through [`render`] untouched, so every filter's
+    /// document carries the same answer and every human view carries the same
+    /// warning.
+    ///
+    /// The FACTS rather than a boolean, because SC-017o's human surface needs
+    /// the COUNT of distinct failed sources and a boolean cannot supply one.
+    /// [`World::inventory_complete`] derives the machine answer from this, so
+    /// the two can never disagree.
+    pub losses: Vec<FailedSource>,
 }
 
 impl World {
@@ -77,15 +84,38 @@ impl World {
         Self {
             now,
             sessions,
-            inventory_complete: true,
+            losses: Vec::new(),
         }
     }
 
-    /// The same world, with SC-017o's completeness fact stated explicitly.
+    /// The same world, carrying SC-017o's loss facts.
     #[must_use]
-    pub fn with_completeness(mut self, inventory_complete: bool) -> Self {
-        self.inventory_complete = inventory_complete;
+    pub fn with_losses(mut self, losses: Vec<FailedSource>) -> Self {
+        self.losses = losses;
         self
+    }
+
+    /// SC-017o's `inventory_complete` — derived, never stored.
+    #[must_use]
+    pub fn inventory_complete(&self) -> bool {
+        self.losses.is_empty()
+    }
+
+    /// How many DISTINCT logical sources failed — SC-017o's human count.
+    ///
+    /// Distinct by source key, because the row's fact is how many sources were
+    /// lost, not how many loss records exist. One source recorded twice is one
+    /// loss; two roots that both failed are two, and a count that could not tell
+    /// those apart would be a boolean wearing a number.
+    #[must_use]
+    pub fn loss_count(&self) -> usize {
+        let mut distinct: Vec<&FailedSource> = Vec::new();
+        for loss in &self.losses {
+            if !distinct.contains(&loss) {
+                distinct.push(loss);
+            }
+        }
+        distinct.len()
     }
 }
 
@@ -124,8 +154,36 @@ pub fn world_of(snapshot: &Snapshot, now: Timestamp, unanswered_secs: i64) -> Wo
     World {
         now,
         sessions,
-        inventory_complete: snapshot.complete(),
+        losses: snapshot.incomplete.clone(),
     }
+}
+
+/// What `ae list` writes to STDERR for `world`, if anything.
+///
+/// **SC-017o** — a human listing keeps its partial table and says, explicitly,
+/// that it could not look everywhere. The message carries at least the NUMBER of
+/// failed logical sources, because the useful fact is not WHICH sessions were
+/// lost — nobody can know that — but that absence in this snapshot is not proof.
+///
+/// Emitted for EVERY human view, not just `--all`: a warning that appears only
+/// under one filter is a warning most invocations never see, and the filter a
+/// human happened to type has nothing to do with whether ae managed to
+/// enumerate. Wording, whether paths are named, and exit status are open
+/// choices; the count is not.
+///
+/// `None` for a complete snapshot — silence is the correct answer when nothing
+/// was lost, and a diagnostic that always fires stops carrying information.
+#[must_use]
+pub fn diagnostic(world: &World) -> Option<String> {
+    let lost = world.loss_count();
+    if lost == 0 {
+        return None;
+    }
+    let sources = if lost == 1 { "source" } else { "sources" };
+    Some(format!(
+        "ae: warning: inventory incomplete — {lost} logical {sources} could not be enumerated; \
+         sessions they may hold are absent from this listing"
+    ))
 }
 
 /// What `ae list` writes to stdout for `args` over `world`.
@@ -166,7 +224,7 @@ pub fn render(args: &ListArgs, world: &World) -> String {
             selected.into_iter().cloned().collect::<Vec<SessionEntry>>(),
             // Carried, never derived from the selection: a filter cannot make an
             // incomplete enumeration complete.
-            world.inventory_complete,
+            world.inventory_complete(),
         )
         .render();
         // The newline is a stdout convention, not part of SC-509's object —
@@ -289,7 +347,7 @@ mod tests {
                 .into_iter()
                 .filter(|session| session.status == Status::Running)
                 .collect(),
-            world().inventory_complete,
+            world().inventory_complete(),
         )
         .render();
         assert_eq!(rendered, format!("{expected}\n"));

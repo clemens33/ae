@@ -245,7 +245,7 @@ fn decide(candidate: &Candidate, answers: &Answers) -> Status {
 
 #[cfg(test)]
 mod tests {
-    use super::{Snapshot, classify, positively_owned};
+    use super::{Answers, Snapshot, classify, decide, positively_owned};
     use crate::digest::Status;
     use crate::inventory::{
         Candidate, DiscoveredSession, Discovery, DurableRecord, FailedSource, Inventory, Layout,
@@ -320,6 +320,21 @@ mod tests {
     }
 
     impl Discovery for Backend {
+        /// **HAZARD, and it is deliberate.** An UNREGISTERED server answers
+        /// `Ok(vec![])` — a SUCCESSFUL EMPTY query, which is the proof that a
+        /// name is absent and therefore the route to `stopped`.
+        ///
+        /// Seven tests rely on that: `Backend::new()` with no worlds means
+        /// "every server answers, and everything is empty", which is exactly
+        /// what a stopped-everywhere fixture needs. So the fallback stays.
+        ///
+        /// The cost is that A MISTYPED SERVER NAME IS INDISTINGUISHABLE FROM A
+        /// REGISTERED EMPTY ONE. A test that means to ask server B, typos it,
+        /// and asserts `stopped` PASSES — while proving nothing about B. Same
+        /// family as the shadowed second `live()` for one server: a fixture
+        /// convenience that is right in the common case and silently wrong when
+        /// a name is wrong. If a test's claim depends on WHICH server answered,
+        /// assert `contacted()` as well as the status.
         fn enumerate(&self, server: &ServerId) -> Result<Vec<DiscoveredSession>, QueryFailed> {
             self.trace.borrow_mut().push(server.clone());
             self.worlds
@@ -986,15 +1001,37 @@ mod tests {
     }
 
     #[test]
-    fn a_candidate_whose_server_was_never_asked_is_unknown_rather_than_stopped() {
-        // Defensive: if an answer is missing for any reason, the fallback is the
-        // one SC-017l mandates. `stopped` requires a successful query, and a
-        // query that never happened is not one.
+    fn a_failed_query_is_unknown_rather_than_stopped() {
+        // The FAILED-query branch. Named for what it reaches: the server was
+        // asked and did not answer.
         let snapshot = classify(
-            inventory(vec![durable("orphan", positive("never-asked"))]),
-            &Backend::new().down(named("never-asked")),
+            inventory(vec![durable("orphan", positive("down"))]),
+            &Backend::new().down(named("down")),
         );
         assert_eq!(status_of(&snapshot, "orphan"), Status::Unknown);
+    }
+
+    #[test]
+    fn a_candidate_whose_server_was_never_asked_is_unknown_rather_than_stopped() {
+        // The MISSING-ANSWER branch, reached directly because no fixture can
+        // reach it through `classify`: `Answers::gather` enumerates exactly the
+        // servers the candidates name, so a candidate whose server has no entry
+        // is an internal inconsistency rather than a reachable state.
+        //
+        // It is still worth pinning, and it has to be pinned HERE. An earlier
+        // version of this test used a registered-and-failing server — which is
+        // the branch above — so if this arm had returned `stopped`, that test
+        // would have passed while naming a branch it never touched. A test whose
+        // name describes a branch it cannot reach is the same class as a shape
+        // that does not contain what its name says.
+        let no_answers = Answers(Vec::new());
+        let candidate = durable("orphan", positive("never-asked"));
+        assert_eq!(
+            decide(&candidate, &no_answers),
+            Status::Unknown,
+            "`stopped` requires a successful query, and a query that never \
+             happened is not one"
+        );
     }
 
     // ---- criterion 14: no rediscovery, asked of the source -----------------

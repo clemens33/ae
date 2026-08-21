@@ -108,6 +108,13 @@ fn spell(server: &ServerId) -> String {
 }
 
 impl Discovery for Recorder {
+    /// **HAZARD:** an UNREGISTERED server answers `Ok(vec![])` — a successful
+    /// EMPTY query, which is what proves a name absent and reaches `stopped`.
+    /// Fixtures depend on that, so the fallback stays; the cost is that a
+    /// MISTYPED server name is indistinguishable from a registered empty one,
+    /// and a test asserting `stopped` passes with the typo while proving nothing
+    /// about the server it meant. Where the claim depends on WHICH server
+    /// answered, assert `targets()` as well.
     fn enumerate(&self, server: &ServerId) -> Result<Vec<DiscoveredSession>, QueryFailed> {
         let answer = self
             .worlds

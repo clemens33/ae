@@ -106,20 +106,22 @@ pub fn help_text() -> String {
     )
 }
 
-/// What the binary says when `list` has nowhere to read sessions from.
+/// What the binary says when it cannot derive its own state root.
 ///
-/// Enumerating session directories and deciding running-vs-stopped are surfaces
-/// no ratified row defines yet — see [`listing::World`]. Until one does, `ae
-/// list` reports that rather than printing an empty listing, which on a machine
-/// that HAS sessions would be a wrong answer wearing the shape of a right one.
-pub const NO_SESSION_SOURCE: &str =
-    "list: no session source is wired yet — enumeration and liveness are not ratified surfaces";
+/// **The unwired-source refusal is GONE.** `ae list` answers now: SC-017j
+/// enumerates, SC-017k/l classify, SC-017m/n render. What remains is the one
+/// case where there is nothing to enumerate FROM — no `AE_HOME` and no `HOME` —
+/// which is not a missing feature but a machine that cannot say where its own
+/// state lives. Reporting that is not the same as reporting "no source is
+/// wired": one is a fact about this invocation, the other was a fact about the
+/// build.
+pub const NO_STATE_ROOT: &str = "cannot derive the state root: neither AE_HOME nor HOME is set";
 
 /// What the binary says for a top-level session name.
 ///
 /// **SC-022** rules that such a token is a launch candidate and never an
 /// unknown-subcommand error. Launching is not this slice's work, so the binary
-/// says exactly that — SCAFFOLD, like [`NO_SESSION_SOURCE`], and no part of any
+/// says exactly that — SCAFFOLD, and no part of any
 /// acceptance claim.
 pub const NO_LAUNCHER: &str = "start is not implemented in this build";
 
@@ -136,10 +138,10 @@ pub const EXIT_UNAVAILABLE: u8 = 1;
 
 /// Run the CLI against `args` (argv WITHOUT the program name).
 ///
-/// The binary's entry point: there is no session source wired, so `list` ends
-/// in [`NO_SESSION_SOURCE`] on `err` with [`EXIT_UNAVAILABLE`]. See
-/// [`run_with`] for the tested path, and [`listing::World`] for why the source
-/// is a parameter at all.
+/// The binary's entry point. `list` reads the real state root, enumerates,
+/// classifies and renders; see [`run_with`] for the injected-source path the
+/// suite drives, and [`listing::World`] for why the source is a parameter at
+/// all.
 ///
 /// # Errors
 ///
@@ -154,7 +156,75 @@ pub const EXIT_UNAVAILABLE: u8 = 1;
 /// # Ok::<(), ae::Error>(())
 /// ```
 pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Result<u8> {
+    // Only a listing needs a source. Parsing twice is cheaper than making
+    // `--version` touch the disk to answer a question about itself.
+    if matches!(cli::Request::parse(args), cli::Request::List(_))
+        && let Some(root) = state_root()
+    {
+        let world = current_world(&root);
+        return run_with(args, Some(&world), out, err);
+    }
     run_with(args, None, out, err)
+}
+
+/// Where this invocation's state lives — **SC-404**'s default derivation.
+///
+/// `AE_HOME` if it names something, else `<HOME>/.ae`. An empty value is
+/// treated as unset rather than as the root of the filesystem: the alternative
+/// is deriving `/sessions` from a variable someone exported blank, which is a
+/// worse answer than saying the root cannot be derived.
+///
+/// **SC-1410a is UNCLASSIFIED** — the variable's unset/override/malformed
+/// semantics are not ratified. This implements only what SC-404 already says
+/// (the derivation and its default) and refuses rather than guessing where the
+/// row is silent. A relative `AE_HOME` is used as given; nothing here rewrites
+/// it, because normalising a path the operator supplied is a decision no row
+/// makes.
+fn state_root() -> Option<std::path::PathBuf> {
+    let named = |key: &str| {
+        std::env::var_os(key)
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+    };
+    named("AE_HOME").or_else(|| named("HOME").map(|home| home.join(".ae")))
+}
+
+/// The world `ae list` shows right now.
+///
+/// Phase 1 discovers, phase 2 classifies, phase 3 renders — and the transport is
+/// the one piece this build does not have. [`NoTransport`] fails every liveness
+/// query, so SC-017l makes every durable candidate `unknown`: not a guess and
+/// not a refusal, but the answer ae is entitled to give when it cannot verify
+/// anything. When a real transport lands, only that one impl changes.
+fn current_world(root: &std::path::Path) -> listing::World {
+    let scan = inventory::durable_records(&inventory::Roots::under(root));
+    // No ambient server: selecting one is SC-1410c's unratified question, and
+    // entitlement without a pointer is exactly what SC-017j forbids.
+    let taken = inventory::take(scan, None, &NoTransport);
+    let snapshot = liveness::classify(taken, &NoTransport);
+    listing::world_of(
+        &snapshot,
+        time::Timestamp::now(),
+        session::DEFAULT_UNANSWERED_SECS,
+    )
+}
+
+/// The absent tmux transport.
+///
+/// Every query fails, because this crate cannot start a child process —
+/// `clippy.toml` denies `std::process::Command` outside two pinned test doors,
+/// and that boundary is worth more than a premature transport. The consequence
+/// is honest: SC-017l routes an unanswerable query to `unknown`, never to
+/// `stopped` and never to absence.
+struct NoTransport;
+
+impl inventory::Discovery for NoTransport {
+    fn enumerate(
+        &self,
+        _server: &inventory::ServerId,
+    ) -> std::result::Result<Vec<inventory::DiscoveredSession>, inventory::QueryFailed> {
+        Err(inventory::QueryFailed)
+    }
 }
 
 /// Run the CLI against `args` over `world` — the injected session source.
@@ -207,10 +277,19 @@ pub fn run_with(
         }
         cli::Request::List(list_args) => {
             if let Some(world) = world {
+                // SC-017o: the warning goes to STDERR and the table still
+                // prints. A machine reading `--json` must not have to tell the
+                // document apart from the complaint about it, and a human must
+                // not have to notice a missing row to learn ae could not look.
+                if !list_args.json
+                    && let Some(warning) = listing::diagnostic(world)
+                {
+                    writeln!(err, "{warning}")?;
+                }
                 write!(out, "{}", listing::render(list_args, world))?;
                 0
             } else {
-                writeln!(err, "ae: {NO_SESSION_SOURCE}")?;
+                writeln!(err, "ae: {NO_STATE_ROOT}")?;
                 EXIT_UNAVAILABLE
             }
         }
@@ -227,7 +306,7 @@ pub fn run_with(
 #[cfg(test)]
 mod tests {
     use super::{
-        EXIT_UNAVAILABLE, Error, NO_LAUNCHER, NO_SESSION_SOURCE, help_text, listing::World, run,
+        EXIT_UNAVAILABLE, Error, NO_LAUNCHER, NO_STATE_ROOT, help_text, listing::World, run,
         run_with, version_line,
     };
     use crate::digest::{SessionEntry, Status};
@@ -343,18 +422,21 @@ mod tests {
     }
 
     #[test]
-    fn a_list_with_no_wired_source_says_so_on_stderr_and_exits_one() {
-        // The decision, in one test: not 0, not the usage 2, nothing on stdout
-        // that could be mistaken for an empty listing.
+    fn a_list_with_no_state_root_says_so_on_stderr_and_exits_one() {
+        // What is left of the old refusal. It is no longer "no source is wired"
+        // — that was a fact about the BUILD and it is gone — but "this machine
+        // did not tell me where its state lives", which is a fact about the
+        // invocation. Not 0, not the usage 2, nothing on stdout that could be
+        // mistaken for an empty listing.
         for words in [vec!["list"], vec!["ls"], vec!["list", "--all", "--json"]] {
             let (mut out, mut err) = (Vec::new(), Vec::new());
-            let code = run(&argv(&words), &mut out, &mut err).unwrap();
+            let code = run_with(&argv(&words), None, &mut out, &mut err).unwrap();
             assert_eq!(code, EXIT_UNAVAILABLE, "{words:?}");
             assert_ne!(code, 0, "{words:?}");
             assert_ne!(code, 2, "{words:?}");
             assert!(out.is_empty(), "{words:?}: stdout was {out:?}");
             let message = String::from_utf8(err).unwrap();
-            assert!(message.contains(NO_SESSION_SOURCE), "{words:?}: {message}");
+            assert!(message.contains(NO_STATE_ROOT), "{words:?}: {message}");
         }
     }
 

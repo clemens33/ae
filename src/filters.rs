@@ -135,32 +135,68 @@ impl Selection {
             .order()
             .iter()
             .flat_map(|status| {
-                sessions
+                let mut group: Vec<&SessionEntry> = sessions
                     .iter()
-                    .filter(move |session| session.status == *status)
+                    .filter(|session| session.status == *status)
                     .filter(|session| self.keeps(session, now))
+                    .collect();
+                // **SC-017n** — the PRODUCT sorts. Raw byte / `LC_ALL=C` order
+                // by name within the group, so tmux emission order, filesystem
+                // glob order, root traversal, locale collation and creation
+                // order never become output contracts by accident. Rust compares
+                // `str` by bytes, which IS the C order the row names, and the
+                // session-name grammar is ASCII so the two cannot diverge.
+                //
+                // STABLE, so identities whose names are byte-identical keep the
+                // order they arrived in: SC-017n supplies no tie-breaker, and
+                // inventing one would be contract this row does not write.
+                group.sort_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
+                group
             })
             .collect()
     }
 
     /// Whether the attention and activity filters keep `session`.
     ///
-    /// Both rows say "only **running** sessions with …", so each flag carries
-    /// that clause itself. **SC-521** ratified the consequence: `--stopped
-    /// --needs-attn` and `--stopped --active` select nothing, `--all` with
-    /// either keeps only matching running sessions, and there is no invented
-    /// usage error.
+    /// **SC-521c** ratifies the schema-v2 domain: both flags test their positive
+    /// fact on `running` OR `unknown` — every session not known stopped — and a
+    /// stopped session never satisfies either live-scope predicate. So
+    /// `--stopped --needs-attn` and `--stopped --active` select nothing in
+    /// either argument order, and `--all` with either keeps matching running
+    /// AND unknown sessions. There is no invented usage error.
+    ///
+    /// The predicate stays POSITIVE on both sides: being `unknown` does not
+    /// admit a session, it only stops disqualifying one. Liveness uncertainty
+    /// never erases an independently established record fact, and it never
+    /// invents one either — a session ae cannot verify must still carry the
+    /// attention or activity fact to be kept.
+    ///
+    /// Supersedes SC-521a's "matching running sessions" domain for version 2
+    /// only; the selector-intersection and no-relabel conclusions stand.
     fn keeps(&self, session: &SessionEntry, now: Timestamp) -> bool {
-        if self.needs_attention && !(session.status == Status::Running && session.needs_attention())
-        {
+        if self.needs_attention && !(live_scope(session.status) && session.needs_attention()) {
             return false;
         }
         if let Some(window) = self.active_within_secs
-            && (session.status != Status::Running || !is_active(session, now, window))
+            && !(live_scope(session.status) && is_active(session, now, window))
         {
             return false;
         }
         true
+    }
+}
+
+/// Whether a status is in SC-521c's live scope — every session not known
+/// stopped.
+///
+/// Named rather than inlined because it is the whole of SC-521c's change and it
+/// has two call sites: two places that spell the same domain separately are two
+/// places for it to drift, and the version-1 shape drifted exactly that way by
+/// naming `Running` in both.
+const fn live_scope(status: Status) -> bool {
+    match status {
+        Status::Running | Status::Unknown => true,
+        Status::Stopped => false,
     }
 }
 
@@ -589,7 +625,11 @@ mod tests {
             ..Selection::default()
         };
         let shown = selection.select(&sessions, NOW);
-        assert_eq!(names(&shown), ["just-now", "four-minutes-ago"]);
+        // MEMBERSHIP is what this row is about. The sequence is SC-017n's C-byte
+        // order, which is why it no longer matches the order they were supplied
+        // in — a test that pinned supplied order would now be asserting the very
+        // thing SC-017n says must never reach output.
+        assert_eq!(names(&shown), ["four-minutes-ago", "just-now"]);
     }
 
     #[test]
