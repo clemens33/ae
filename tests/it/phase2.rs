@@ -194,6 +194,24 @@ impl Scratch {
         self.write(name, "mode=local\nagent.main=cl:lead\n")
     }
 
+    /// Write an event log beside a session's meta.
+    ///
+    /// SC-519 makes an ABSENT log a quiet stream, which is why a differential
+    /// test whose fixtures have no log is blind to an event reread: absent
+    /// before, absent after, absent once the tree is gone — the arm never
+    /// varies, so nothing about it can be discriminated.
+    fn events(&self, name: &str, lines: &[String]) -> PathBuf {
+        let dir = self.0.join("sessions").join(name);
+        let mut body = lines.join("\n");
+        body.push('\n');
+        let path = dir.join("events.jsonl");
+        assert!(
+            fs::write(&path, body).is_ok(),
+            "an event log must be writable"
+        );
+        path
+    }
+
     fn write(&self, name: &str, meta: &str) -> PathBuf {
         let dir = self.0.join("sessions").join(name);
         let written = fs::create_dir_all(&dir).and_then(|()| fs::write(dir.join("meta"), meta));
@@ -219,6 +237,11 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+/// One event line, in the shape SC-510a/SC-510c define.
+fn event(ts: &str, actor: &str, action: &str, extra: &str) -> String {
+    format!(r#"{{"ts":"{ts}","actor":"{actor}","action":"{action}"{extra}}}"#)
 }
 
 /// The product-discovered candidate called `name`.
@@ -1187,11 +1210,16 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
     // broader than its enforcement, and a second observation lived inside it
     // for a whole review cycle.
     //
-    // The CLASS is closed behaviourally, by
-    // `criterion_14_the_digest_does_not_change_when_the_world_does` below: any
-    // second observation, under any name, sees a different world and produces a
-    // different digest. This test is the cheap early warning, and it now claims
-    // only what it checks.
+    // What closes more is
+    // `criterion_14_the_digest_does_not_change_when_the_world_does` below —
+    // but it closes AXES, not a class, and the difference is the whole reason
+    // this comment was rewritten twice. A differential discriminates exactly
+    // over the facts it MOVES; anything constant in every arm is invisible to
+    // it, and an ABSENT input is the most constant thing there is. That test
+    // therefore plants and opposes both record sources — meta AND events — and
+    // covers those facts only. A source neither test plants is closed by
+    // neither: no capability boundary exists for the filesystem here, so
+    // nothing says "class".
     let modules = product_source();
     assert!(
         modules.iter().any(|(name, _)| name == "liveness.rs")
@@ -1241,44 +1269,41 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
     );
 }
 
-#[test]
-fn criterion_14_the_digest_does_not_change_when_the_world_does() {
-    // THE CLASS-CLOSING TEST, and it needs no list of spellings. Phase 2 is a
-    // pure function of the inventory it was handed: render the digest, then
-    // change the filesystem underneath in both directions — grow it, then
-    // remove it entirely — and render again from the SAME inventory. Any second
-    // observation, however it is spelled, sees a different world and produces a
-    // different document.
-    let scratch = Scratch::new("world-changes");
-    scratch.healthy(
+/// Plant both halves of the record, so the differential has two axes to move.
+///
+/// Returns the path of the candidate whose meta is ABSENT and will appear later.
+fn plant_both_record_sources(scratch: &Scratch) -> PathBuf {
+    scratch.healthy("alpha", "goal=the original goal\n");
+    // Event-derived facts SC-509 emits: goal_set_epoch (SC-405f), the declared
+    // agent state (SC-510c), and last_active_epoch (SC-017e).
+    scratch.events(
         "alpha",
-        "goal=the original goal
-",
+        &[
+            event("2026-05-29T09:00:00Z", "cl:lead", "goal", ""),
+            event(
+                "2026-05-29T10:00:00Z",
+                "cl:lead",
+                "state",
+                r#","ref":"working""#,
+            ),
+        ],
     );
     scratch.degraded_but_addressable("damaged");
     let repaired = scratch.no_meta("was-absent");
     scratch.no_selector("quiet");
-    let taken = take(durable_records(&scratch.roots()), None, &Recorder::new());
+    repaired
+}
 
-    let backend = || Recorder::new().live(named("B"), &[("alpha", Some("alpha"))]);
-    let before = render(
-        &args(&["--all", "--json"]),
-        &world_of(
-            &classify(taken.clone(), &backend()),
-            NOW,
-            DEFAULT_UNANSWERED_SECS,
-        ),
-    );
-
-    // The world GROWS: a record that was absent becomes readable, and an
-    // existing goal changes. A second read that succeeds would notice both.
+/// Change the world under both axes, after the inventory was taken.
+///
+/// A meta reread would see a changed goal and a record that became readable; an
+/// EVENT reread would see a later goal event, a later declared state and a
+/// newer activity stamp. Every one of those is opposed to what was planted.
+fn oppose_both_record_sources(scratch: &Scratch, repaired: &Path) {
     assert!(
         fs::write(
             repaired.join("meta"),
-            "mode=local
-agent.main=cl:lead
-goal=a goal that appeared later
-",
+            "mode=local\nagent.main=cl:lead\ngoal=a goal that appeared later\n",
         )
         .is_ok(),
         "the absent record becomes readable"
@@ -1286,41 +1311,128 @@ goal=a goal that appeared later
     assert!(
         fs::write(
             scratch.0.join("sessions").join("alpha").join("meta"),
-            "mode=copy
-agent.main=cl:other
-goal=a different goal
-",
+            "mode=copy\nagent.main=cl:other\ngoal=a different goal\n",
         )
         .is_ok(),
         "and an existing record changes"
     );
-    let after_growth = render(
-        &args(&["--all", "--json"]),
-        &world_of(
-            &classify(taken.clone(), &backend()),
-            NOW,
-            DEFAULT_UNANSWERED_SECS,
-        ),
+    scratch.events(
+        "alpha",
+        &[
+            event("2026-05-29T09:00:00Z", "cl:lead", "goal", ""),
+            event(
+                "2026-05-29T10:00:00Z",
+                "cl:lead",
+                "state",
+                r#","ref":"working""#,
+            ),
+            // Strictly LATER, and opposed on every event-derived field.
+            event("2026-05-29T11:00:00Z", "cl:lead", "goal", ""),
+            event(
+                "2026-05-29T12:00:00Z",
+                "cl:lead",
+                "state",
+                r#","ref":"blocked""#,
+            ),
+        ],
     );
+}
 
-    // The world DISAPPEARS. A second read that fails would notice that.
+#[test]
+fn criterion_14_the_digest_does_not_change_when_the_world_does() {
+    // THE DIFFERENTIAL, over BOTH record sources — and over the facts it
+    // plants, which is the limit of what it can say.
+    //
+    // A differential test discriminates exactly over the axes it MOVES, and an
+    // ABSENT input is the most constant thing there is. An earlier version of
+    // this test varied only the meta and gave every fixture no event log at
+    // all — so SC-519 mapped that log to the same quiet stream in all three
+    // arms, and an implementation rereading EVENTS could have passed every byte
+    // comparison while being wrong. Deleting a source that was never there is
+    // the weakest possible evidence about it.
+    //
+    // So both halves of the record are PLANTED, both are OPPOSED after
+    // inventory, and every planted fact is asserted to have landed first.
+    let scratch = Scratch::new("world-changes");
+    let repaired = plant_both_record_sources(&scratch);
+    let taken = take(durable_records(&scratch.roots()), None, &Recorder::new());
+
+    let backend = || Recorder::new().live(named("B"), &[("alpha", Some("alpha"))]);
+    let render_now = |inventory: Inventory| {
+        render(
+            &args(&["--all", "--json"]),
+            &world_of(
+                &classify(inventory, &backend()),
+                NOW,
+                DEFAULT_UNANSWERED_SECS,
+            ),
+        )
+    };
+    let before = render_now(taken.clone());
+
+    // BOTH PRECONDITIONS, asserted before anything is concluded: each planted
+    // fact must be VISIBLE in the first document, or the arm that is supposed
+    // to discriminate carries nothing.
+    // Derived from the planted stamps rather than hand-computed: a wrong
+    // constant here would weaken the precondition into a tautology.
+    let stamp = |iso: &str| match Timestamp::parse(iso) {
+        Some(parsed) => parsed.epoch(),
+        None => panic!("{iso} must parse"),
+    };
+    let planted_goal = stamp("2026-05-29T09:00:00Z");
+    let planted_activity = stamp("2026-05-29T10:00:00Z");
+    for planted in [
+        r#""goal":"the original goal""#.to_owned(),
+        format!(r#""goal_set_epoch":{planted_goal}"#),
+        format!(r#""last_active_epoch":{planted_activity}"#),
+        r#""state":"working""#.to_owned(),
+    ] {
+        assert!(
+            before.contains(&planted),
+            "the fixture must actually emit {planted}, or its axis proves nothing:\n{before}"
+        );
+    }
+
+    oppose_both_record_sources(&scratch, &repaired);
+    let after_growth = render_now(taken.clone());
+
+    // The world DISAPPEARS. A read that FAILS would notice that.
     assert!(
         fs::remove_dir_all(scratch.0.join("sessions")).is_ok(),
         "and then it is gone"
     );
-    let after_removal = render(
-        &args(&["--all", "--json"]),
-        &world_of(&classify(taken, &backend()), NOW, DEFAULT_UNANSWERED_SECS),
-    );
+    let after_removal = render_now(taken);
 
     assert_eq!(
         before, after_growth,
         "the digest reports the snapshot, not the filesystem as it is now"
     );
     assert_eq!(before, after_removal, "in both directions, byte for byte");
+    // WHICH ARM DOES THE WORK, because it is not the obvious one: a reread that
+    // fails on a deleted tree can simply keep the carried value and pass the
+    // removal arm. GROWTH is what catches a reread that SUCCEEDS and disagrees.
+    // Deletion alone would have missed the very defect this test now proves
+    // against.
+    // Named explicitly, so a future reader can see which axes this closes.
     assert!(
-        before.contains("the original goal"),
-        "and the fixture was not vacuous — the first render did carry record facts"
+        after_growth.contains(r#""state":"working""#)
+            && !after_growth.contains(r#""state":"blocked""#),
+        "the LATER declared state never reached the digest"
+    );
+    assert!(
+        after_growth.contains(&format!(r#""goal_set_epoch":{planted_goal}"#))
+            && !after_growth.contains(&format!(
+                r#""goal_set_epoch":{}"#,
+                stamp("2026-05-29T11:00:00Z")
+            )),
+        "nor the later goal event"
+    );
+    assert!(
+        !after_growth.contains(&format!(
+            r#""last_active_epoch":{}"#,
+            stamp("2026-05-29T12:00:00Z")
+        )),
+        "nor the newer activity stamp"
     );
 }
 
