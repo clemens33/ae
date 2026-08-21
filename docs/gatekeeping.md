@@ -1037,6 +1037,20 @@ The strongest version of this project's guards are the ones with nothing to enum
 that cannot spell an archive path, a port with no name parameter, a function whose signature has
 no failure mode. Those cannot drift, because there is no list to fall behind.
 
+**The repair that worked here did both halves, and neither alone would have been enough.** The
+tripwire was narrowed to *claim only what it checks* — it now states that it scans three names
+and **names what it cannot see**: `Path::exists`, `metadata`, `File::open`, any wrapper. Then
+the capability was closed **behaviourally**, where a spelling has no purchase: render the
+output, grow the filesystem underneath, render again, delete the tree, render again, and require
+all three byte-identical from the same captured input. **Any second observation, under any name
+anyone invents later, sees a different world and fails.**
+
+And the control is what makes it evidence rather than design: a second read was planted using
+the spelling that had defeated the old guard — **invisible to the tripwire by construction** —
+and the behavioural test went red. When you replace a guard that missed something, **prove the
+replacement catches the specific escape that beat its predecessor.** A new guard asserted to be
+broader is a claim; a new guard demonstrated against the old failure is a measurement.
+
 ### A UNIVERSAL obligation checked on ONE fixture is checked nowhere
 
 Three separate findings in one review turned out to be the same defect wearing different
