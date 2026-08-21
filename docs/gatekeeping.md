@@ -733,6 +733,35 @@ absent file standing in for a recorded absence.
 reasons**, and a control that fails for reasons unrelated to its subject reads exactly like
 the subject failing.
 
+### When the source is FROZEN, evidence has no expiry — so capture order must follow BUILD order
+
+A rewrite froze its predecessor at a known commit and began capturing behavioural evidence
+against it. Six consecutive gate rounds went into one evidence batch — rigorously, with real
+defects found every round — for a subsystem belonging to **phase four**, while the product
+sat in **phase one** unable to perform its only implemented command, blocked on two surfaces
+no ratified row defined.
+
+The fact that settles the priority is the freeze itself. **Evidence captured against a frozen
+source cannot decay**: the phase-four batch would be exactly as capturable, byte for byte, at
+phase four as it was that night, because the thing it measures cannot move. Deferring it cost
+nothing. Doing it first cost the phase actually in progress.
+
+So a frozen oracle removes the only honest reason to capture early. What remains is:
+**does the next item unblock the next build?** Anything else is queue position chosen by
+interest, and interest reliably selects the subsystem that is most intricate rather than the
+one that is most in the way.
+
+The failure is hard to see from inside because **every local signal is green** — the work is
+careful, the gates find real defects, each round is a genuine improvement. Nothing in a
+well-run evidence loop reports that it is three phases ahead of the build. Only the question
+*what is currently blocked, and does this unblock it?* surfaces it, and that question has to
+be asked deliberately, on a schedule, by someone whose job is the queue and not the batch.
+
+**Corollary for reviewers:** a team capturing in interest order will always feel productive
+and will never unblock anything. Sustained high-quality output against the wrong queue
+position is the most expensive failure mode available to a competent team, precisely because
+none of the usual quality signals fire.
+
 ### Value-blindness is a DESIGN forcing function, not only anti-contamination hygiene
 
 A gate found that a design document cited the wrong source for a product claim. The correct
