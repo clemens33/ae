@@ -1,0 +1,1066 @@
+case	consumer	surface	output_shape	status_bearing	digest_bearing	server_unreachable	verdict	mandated_by	baseline_provenance
+arms/A1/c01-healthy-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c01-healthy-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c01-healthy-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c01-healthy-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c01-healthy-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c01-healthy-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c01-healthy-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c01-healthy-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c01-healthy-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c01-healthy-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c01-healthy-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c01-healthy-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c01-healthy-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c01-healthy-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c01-healthy-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c01-healthy-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c03-malformed-line-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c03-malformed-line-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c03-malformed-line-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c03-malformed-line-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c03-malformed-line-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c03-malformed-line-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c03-malformed-line-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c03-malformed-line-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c03-malformed-line-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c03-malformed-line-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c03-malformed-line-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c03-malformed-line-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c03-malformed-line-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c03-malformed-line-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c03-malformed-line-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c03-malformed-line-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c05-recover-ref-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c05-recover-ref-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c05-recover-ref-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c05-recover-ref-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c05-recover-ref-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c05-recover-ref-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c05-recover-ref-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c05-recover-ref-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c05-recover-ref-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c05-recover-ref-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c05-recover-ref-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c05-recover-ref-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c05-recover-ref-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c05-recover-ref-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c05-recover-ref-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c05-recover-ref-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c06-escapes-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c06-escapes-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c06-escapes-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c06-escapes-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c06-escapes-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c06-escapes-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c06-escapes-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c06-escapes-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c06-escapes-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c06-escapes-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c06-escapes-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c06-escapes-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c06-escapes-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c06-escapes-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c06-escapes-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c06-escapes-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c07-dupkey-known-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c07-dupkey-known-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c07-dupkey-known-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c07-dupkey-known-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c07-dupkey-known-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c07-dupkey-known-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c07-dupkey-known-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c07-dupkey-known-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c07-dupkey-known-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c07-dupkey-known-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c07-dupkey-known-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c07-dupkey-known-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c07-dupkey-known-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c07-dupkey-known-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c07-dupkey-known-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c07-dupkey-known-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c11-routing-known-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c11-routing-known-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c11-routing-known-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c11-routing-known-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c11-routing-known-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c11-routing-known-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c11-routing-known-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c11-routing-known-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c11-routing-known-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c11-routing-known-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c11-routing-known-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c11-routing-known-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c11-routing-known-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c11-routing-known-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c11-routing-known-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c11-routing-known-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c12-routing-omitted-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c12-routing-omitted-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c12-routing-omitted-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c12-routing-omitted-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c12-routing-omitted-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c12-routing-omitted-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c12-routing-omitted-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c12-routing-omitted-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c12-routing-omitted-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c12-routing-omitted-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c12-routing-omitted-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c12-routing-omitted-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c12-routing-omitted-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c12-routing-omitted-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c12-routing-omitted-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c12-routing-omitted-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c13-same-display-routing-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c13-same-display-routing-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c13-same-display-routing-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c13-same-display-routing-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c13-same-display-routing-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c13-same-display-routing-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c13-same-display-routing-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c13-same-display-routing-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c13-same-display-routing-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c13-same-display-routing-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c13-same-display-routing-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c13-same-display-routing-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c13-same-display-routing-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c13-same-display-routing-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c13-same-display-routing-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c13-same-display-routing-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c17-unknown-action-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c17-unknown-action-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c17-unknown-action-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c17-unknown-action-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c17-unknown-action-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c17-unknown-action-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c17-unknown-action-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c17-unknown-action-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c17-unknown-action-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c17-unknown-action-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c17-unknown-action-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c17-unknown-action-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c17-unknown-action-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c17-unknown-action-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c17-unknown-action-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c17-unknown-action-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c19-partial-tail-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c19-partial-tail-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c19-partial-tail-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c19-partial-tail-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c19-partial-tail-ro/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c19-partial-tail-ro/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c19-partial-tail-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c19-partial-tail-ro/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c19-partial-tail-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c19-partial-tail-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c19-partial-tail-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c19-partial-tail-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A1/c19-partial-tail-rw/consumers.tsv	ls-alias	ae ls	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c19-partial-tail-rw/consumers.tsv	ls-alias-all	ae ls	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A1/c19-partial-tail-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c19-partial-tail-rw/consumers.tsv	events-tail	helper:events-tail	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline/list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline/list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline/list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline/requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline-clocale/list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline-clocale/list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A1/c20-405k-live/consumers.tsv	s1-extra-pane/list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A1/c20-405k-live/consumers.tsv	s1-extra-pane/list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A1/c20-405k-live/consumers.tsv	s1-extra-pane/list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A1/c20-405k-live/consumers.tsv	s1-extra-pane/requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A1/c20-405k-live/consumers.tsv	s2-extra-pane-and-missing-roster-pane/list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A1/c20-405k-live/consumers.tsv	s2-extra-pane-and-missing-roster-pane/list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A1/c20-405k-live/consumers.tsv	s2-extra-pane-and-missing-roster-pane/list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A1/c20-405k-live/consumers.tsv	s2-extra-pane-and-missing-roster-pane/requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	list_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	ls	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	ls_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	list_running	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	list_running_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	ls_running	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	ls_running_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	list_all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	list_all_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	ls_all	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	ls_all_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	list_stopped	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	list_stopped_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	ls_stopped	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	ls_stopped_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	list_needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	list_needsattn_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	ls_needsattn	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	ls_needsattn_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	list_needsme	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	list_needsme_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	ls_needsme	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	ls_needsme_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	list_needs	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	list_needs_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	ls_needs	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	ls_needs_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	list_attn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	list_attn_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	ls_attn	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	ls_attn_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	list_active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	list_active_json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	ls_active	ae ls	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	ls_active_json	ae ls	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	list_busy	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	list_busy_json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	ls_busy	ae ls	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	ls_busy_json	ae ls	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	inter_needsattnall	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	inter_needsattnall_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	inter_allneedsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	inter_allneedsattn_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	inter_activeall	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	inter_activeall_json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	inter_allactive	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	inter_allactive_json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	inter_needsattnstopped	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	inter_needsattnstopped_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	inter_activestopped	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	inter_activestopped_json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	list_badflag	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	list_help	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_list_active	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_list_active_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_list_busy	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_active_all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_all_active	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_active_stopped	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_stopped_active	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_needsattn_active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_active_needsattn	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_list_active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_list_active_json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_list_busy	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_active_all	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_all_active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_active_stopped	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_stopped_active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_needsattn_active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_active_needsattn	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	list_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	ls	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	ls_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	list_running	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	list_running_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	ls_running	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	ls_running_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	list_all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	list_all_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	ls_all	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	ls_all_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	list_stopped	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	list_stopped_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	ls_stopped	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	ls_stopped_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	list_needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	list_needsattn_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	ls_needsattn	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	ls_needsattn_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	list_needsme	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	list_needsme_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	ls_needsme	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	ls_needsme_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	list_needs	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	list_needs_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	ls_needs	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	ls_needs_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	list_attn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	list_attn_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	ls_attn	ae ls	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	ls_attn_json	ae ls	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	list_active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	list_active_json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	ls_active	ae ls	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	ls_active_json	ae ls	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	list_busy	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	list_busy_json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	ls_busy	ae ls	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	ls_busy_json	ae ls	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	inter_needsattnall	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	inter_needsattnall_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	inter_allneedsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	inter_allneedsattn_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	inter_activeall	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	inter_activeall_json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	inter_allactive	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	inter_allactive_json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	inter_needsattnstopped	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	inter_needsattnstopped_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	inter_activestopped	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	inter_activestopped_json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	list_badflag	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	list_help	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_list_active	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_list_active_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_list_busy	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_active_all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_all_active	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_active_stopped	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_stopped_active	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_needsattn_active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_active_needsattn	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_list_active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_list_active_json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_list_busy	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_active_all	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_all_active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_active_stopped	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_stopped_active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_needsattn_active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_active_needsattn	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c01-dead-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c01-dead-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c01-dead-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c01-dead-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c01-dead-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c01-dead-ro/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c01-dead-ro/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c01-dead-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c01-dead-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c01-dead-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c01-dead-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c01-dead-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c01-dead-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c01-dead-rw/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c01-dead-rw/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c01-dead-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c02-stale-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c02-stale-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c02-stale-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c02-stale-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c02-stale-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c02-stale-ro/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c02-stale-ro/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c02-stale-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c02-stale-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c02-stale-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c02-stale-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c02-stale-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c02-stale-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c02-stale-rw/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c02-stale-rw/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c02-stale-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c03-throttled-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c03-throttled-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c03-throttled-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c03-throttled-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c03-throttled-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c03-throttled-ro/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c03-throttled-ro/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c03-throttled-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c03-throttled-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c03-throttled-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c03-throttled-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c03-throttled-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c03-throttled-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c03-throttled-rw/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c03-throttled-rw/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c03-throttled-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c04-waiting-user-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c04-waiting-user-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c04-waiting-user-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c04-waiting-user-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c04-waiting-user-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c04-waiting-user-ro/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c04-waiting-user-ro/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c04-waiting-user-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c04-waiting-user-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c04-waiting-user-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c04-waiting-user-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c04-waiting-user-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c04-waiting-user-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c04-waiting-user-rw/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c04-waiting-user-rw/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c04-waiting-user-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c05-blocked-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c05-blocked-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c05-blocked-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c05-blocked-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c05-blocked-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c05-blocked-ro/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c05-blocked-ro/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c05-blocked-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c05-blocked-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c05-blocked-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c05-blocked-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c05-blocked-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c05-blocked-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c05-blocked-rw/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c05-blocked-rw/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c05-blocked-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c06-unanswered-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c06-unanswered-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c06-unanswered-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c06-unanswered-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c06-unanswered-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c06-unanswered-ro/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c06-unanswered-ro/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c06-unanswered-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c06-unanswered-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c06-unanswered-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c06-unanswered-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c06-unanswered-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c06-unanswered-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c06-unanswered-rw/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c06-unanswered-rw/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c06-unanswered-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c07-competing-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c07-competing-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c07-competing-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c07-competing-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c07-competing-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c07-competing-ro/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c07-competing-ro/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c07-competing-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c07-competing-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c07-competing-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c07-competing-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c07-competing-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c07-competing-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c07-competing-rw/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c07-competing-rw/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c07-competing-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-active	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-active-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-active	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-active-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-needsattn	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-needsattn-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-needsattn	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-needsattn-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-needsattn	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-needsattn-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-active	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-active-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-needsattn	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-needsattn-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-active	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-active-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-active	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-active-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-active	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-active-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-active	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-active-json	ae list	digest	no	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A4/c01-status-live-live/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A4/c01-status-live-live/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A4/c02-status-016b-live/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A4/c02-status-016b-live/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A4/c03-next-noattach-ro/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A4/c03-next-noattach-rw/consumers.tsv	list-needsattn-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-c01-m1-control-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c01-m1-control-ro/consumers.tsv	requests-mine	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c01-m1-control-ro/consumers.tsv	requests-inbox	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c01-m1-control-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-c01-m1-control-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c01-m1-control-rw/consumers.tsv	requests-mine	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c01-m1-control-rw/consumers.tsv	requests-inbox	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c01-m1-control-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-c02-m2-wrong-ref-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c02-m2-wrong-ref-ro/consumers.tsv	requests-mine	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c02-m2-wrong-ref-ro/consumers.tsv	requests-inbox	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c02-m2-wrong-ref-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-c02-m2-wrong-ref-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c02-m2-wrong-ref-rw/consumers.tsv	requests-mine	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c02-m2-wrong-ref-rw/consumers.tsv	requests-inbox	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c02-m2-wrong-ref-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-c03-m3-wrong-actor-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c03-m3-wrong-actor-ro/consumers.tsv	requests-mine	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c03-m3-wrong-actor-ro/consumers.tsv	requests-inbox	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c03-m3-wrong-actor-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-c03-m3-wrong-actor-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c03-m3-wrong-actor-rw/consumers.tsv	requests-mine	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c03-m3-wrong-actor-rw/consumers.tsv	requests-inbox	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c03-m3-wrong-actor-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-c04-m4-wrong-target-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c04-m4-wrong-target-ro/consumers.tsv	requests-mine	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c04-m4-wrong-target-ro/consumers.tsv	requests-inbox	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c04-m4-wrong-target-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-c04-m4-wrong-target-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c04-m4-wrong-target-rw/consumers.tsv	requests-mine	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c04-m4-wrong-target-rw/consumers.tsv	requests-inbox	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c04-m4-wrong-target-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-ro/consumers.tsv	requests-mine	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-ro/consumers.tsv	requests-inbox	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-rw/consumers.tsv	requests-mine	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-rw/consumers.tsv	requests-inbox	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-c06-m6-mixed-routed-display-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c06-m6-mixed-routed-display-ro/consumers.tsv	requests-mine	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c06-m6-mixed-routed-display-ro/consumers.tsv	requests-inbox	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c06-m6-mixed-routed-display-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-c06-m6-mixed-routed-display-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c06-m6-mixed-routed-display-rw/consumers.tsv	requests-mine	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c06-m6-mixed-routed-display-rw/consumers.tsv	requests-inbox	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-c06-m6-mixed-routed-display-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age10_list_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age10_list_needsattn	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1799_list_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1799_list_needsattn	ae list	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1800_list_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1800_list_needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1801_list_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1801_list_needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age100000_list_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age100000_list_needsattn	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	env_unset_list_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	env_500_list_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	env_900x_list_json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c10-branch-live-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c10-branch-live-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c10-branch-live-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c10-branch-live-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c10-branch-live-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c10-branch-live-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c10-branch-live-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c10-branch-live-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c10-branch-live-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c10-branch-live-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A9/a9-c01-no-events-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c01-no-events-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c01-no-events-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c01-no-events-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c01-no-events-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c01-no-events-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c01-no-events-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c01-no-events-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c01-no-events-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c01-no-events-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A9/a9-c04-malformed-event-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c04-malformed-event-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c04-malformed-event-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c04-malformed-event-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c04-malformed-event-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c04-malformed-event-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c04-malformed-event-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c04-malformed-event-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c04-malformed-event-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c04-malformed-event-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A9/a9-c05-meta-absent-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c05-meta-absent-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c05-meta-absent-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c05-meta-absent-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c05-meta-absent-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c05-meta-absent-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c05-meta-absent-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c05-meta-absent-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c05-meta-absent-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c05-meta-absent-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	list	ae list	neither	no	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	list-json	ae list	digest	no	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	list-all	ae list	human-status	yes	no	yes	EXPECTED-DIVERGENCE	SC-017l/m	OBSERVED
+arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	list-all-json	ae list	digest	yes	yes	yes	EXPECTED-DIVERGENCE	SC-509d+SC-017l/m	OBSERVED
+arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	requests-all	helper:requests	neither	no	no	yes	EXPECTED-MATCH	-	-
+arms/A9/a9-c06-healthy-control-ro/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c06-healthy-control-ro/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c06-healthy-control-ro/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c06-healthy-control-ro/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c06-healthy-control-ro/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c06-healthy-control-rw/consumers.tsv	list	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c06-healthy-control-rw/consumers.tsv	list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c06-healthy-control-rw/consumers.tsv	list-all	ae list	human-status	yes	no	no	EXPECTED-MATCH	-	-
+arms/A9/a9-c06-healthy-control-rw/consumers.tsv	list-all-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/A9/a9-c06-healthy-control-rw/consumers.tsv	requests-all	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/D/d01-controller-only-twin-twin/consumers.tsv	baseline-list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/D/d01-controller-only-twin-twin/consumers.tsv	rerun-list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/D/d01-list-vs-goal-writer-barrier/consumers.tsv	baseline-list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/D/d01-list-vs-goal-writer-barrier/consumers.tsv	barrier-list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/D/d01-list-vs-goal-writer-barrier/consumers.tsv	rerun-list-json	ae list	digest	yes	yes	no	EXPECTED-DIVERGENCE	SC-509d	SOURCE
+arms/D/d02-controller-only-twin-twin/consumers.tsv	baseline-requests	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/D/d02-controller-only-twin-twin/consumers.tsv	clean-rerun-requests	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/D/d02-requests-vs-reply-writer-barrier/consumers.tsv	baseline-requests	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/D/d02-requests-vs-reply-writer-barrier/consumers.tsv	barrier-requests	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
+arms/D/d02-requests-vs-reply-writer-barrier/consumers.tsv	clean-rerun-requests	helper:requests	neither	no	no	no	EXPECTED-MATCH	-	-
