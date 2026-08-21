@@ -24,6 +24,7 @@ invariant, not against the code.
 | the commit that introduced a rule also violates it in the same text | Why rules get broken inside their own statement |
 | you filtered a tool's output to the fields you expected to change | Your probe's SCOPE decides the finding, and you chose that scope from expectation |
 | your criteria all pass but the obligation was about ordering, causality, or a matched pair | A check can only see obligations SHAPED like it — temporal ones survive a static gate |
+| a case with more information available is about to be handled by a different branch | Adding evidence must never SUBTRACT knowledge — check the richer case against the poorer one |
 | a rule was just clarified, refined, or split into two orthogonal facts | A clarification that SPLITS a concept creates a coverage gap in evidence captured before it |
 | you verified every flagged item and found nothing wrong | Forward verification cannot see a FALSE NEGATIVE — you have to check the converse |
 | you are claiming a body of evidence covers some condition | A condition that was never CAPTURED cannot later be shown to have been ABSENT |
@@ -834,6 +835,31 @@ over-merging that under-merging never occurs to you.
 
 So before trusting a criteria list, ask of each obligation: **is this about a state, a sequence,
 or a pair?** and does anything in the list observe that kind of thing at all.
+
+### Adding evidence must never SUBTRACT knowledge — check the richer case against the poorer one
+
+A rule said a candidate discovered only as a live sighting is proven live by that sighting.
+A separate rule said a candidate with a durable record is proven live by querying its recorded
+server. Both sensible. Nobody had written down what happens to a candidate that is **both** —
+which is what an ordinary running instance looks like once the two sources are joined.
+
+The default reading made it the *durable* case: query the server again. And that reading is
+incoherent, for a reason that has nothing to do with either rule's merits. The **same accepted
+sighting** keeps a live-only candidate proven; if adding a durable record meant a redundant
+failed query could turn that identical candidate *unknown*, then **learning more would reduce
+what is known.**
+
+That is the check worth generalising. Wherever a system classifies by *how much* it knows about
+something — provenance, source count, record richness — take a case, add a fact that is
+strictly additional, and confirm the conclusion does not get weaker. A pipeline that treats
+"richer" as a different branch rather than a superset will silently violate this, because the
+two branches are written by different people at different times against different rules.
+
+The corroborating detail here is worth noticing too: the join conditions and the proof
+conditions turned out to be **the same conditions** — same recorded server, exact name, positive
+ownership, exactly one match. That is not a coincidence, and when it happens it usually means
+one of the two steps has already established what the other is about to re-derive. Look for it
+before adding a second query, a second read, or a second verification pass.
 
 ### A clarification that SPLITS a concept creates a coverage gap in evidence captured before it
 
