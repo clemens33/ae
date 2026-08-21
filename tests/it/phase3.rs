@@ -883,7 +883,16 @@ fn criterion_2_presentation_starts_from_one_completed_classified_snapshot() {
         let written = std::fs::create_dir_all(&dir).and_then(|()| {
             std::fs::write(
                 dir.join("meta"),
-                "mode=local\nagent.main=cl:lead\ntmux_server_kind=name\ntmux_server=B\n",
+                // NO SERVER SELECTOR, deliberately. This criterion is about the
+                // SEQUENCE — that presentation receives the completed classified
+                // set — and its assertions are status-agnostic. Recording a
+                // server would make the real route spawn a real `tmux` once the
+                // transport exists: a child process, and a dependency on tmux
+                // being installed, bought for a query whose ANSWER this test
+                // never reads. With no selector the candidates are `unknown`
+                // because SC-405l normalizes to `missing`, the route is
+                // identical, and the coverage is unchanged.
+                "mode=local\nagent.main=cl:lead\n",
             )
         });
         assert!(written.is_ok(), "a planted session");
@@ -1434,9 +1443,19 @@ fn sc_017q_an_unknown_agent_keeps_its_declared_state_and_reason() {
 
 #[test]
 fn sc_017q_the_entry_point_reports_unknown_agents_rather_than_dead_ones() {
-    // END TO END, at the real binary: this build has no transport, so no pane
-    // can be observed — and the human surface must say so rather than printing
-    // every agent as dead, which is what it did before these rows landed.
+    // END TO END, and the reason it holds is the INJECTION, not the build. An
+    // earlier version of this comment said "this build has no transport, so no
+    // pane can be observed" — a claim about the product, which stopped being
+    // true the moment a real transport landed, while the test kept passing for
+    // an entirely different reason and would have taught the next reader the
+    // wrong one.
+    //
+    // What actually holds it: `Down` fixes the SESSION transport, and no pane
+    // observation exists at any transport yet (SC-017p's positive and negative
+    // proofs are unbuilt), so this observes the agent surface alone. When a pane
+    // transport lands, THIS comment is the one that goes stale next, and the
+    // repair is the same — name what the test injects, never what the build
+    // happens to lack.
     let root = std::env::temp_dir().join(format!("ae-p3-agents-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let dir = root.join("sessions").join("AlphaR");
