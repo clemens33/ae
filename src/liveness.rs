@@ -252,6 +252,7 @@ mod tests {
         LiveSighting, MetaRead, QueryFailed, ServerId,
     };
     use crate::meta::{Selector, ServerSelector};
+    use crate::session::RecordSnapshot;
     use std::cell::RefCell;
     use std::path::PathBuf;
 
@@ -335,6 +336,7 @@ mod tests {
             layout: Layout::Canonical,
             server,
             meta_read: MetaRead::Parsed,
+            snapshot: RecordSnapshot::default(),
         }
     }
 
@@ -783,6 +785,7 @@ mod tests {
                 layout: Layout::Canonical,
                 server: positive("A"),
                 meta_read: MetaRead::Parsed,
+                snapshot: RecordSnapshot::default(),
             }),
             Candidate::durable(DurableRecord {
                 path: PathBuf::from("/roots/b/shared"),
@@ -790,6 +793,7 @@ mod tests {
                 layout: Layout::WorktreeNested,
                 server: positive("B"),
                 meta_read: MetaRead::Parsed,
+                snapshot: RecordSnapshot::default(),
             }),
             Candidate::durable(DurableRecord {
                 path: PathBuf::from("/roots/c/shared"),
@@ -797,6 +801,7 @@ mod tests {
                 layout: Layout::WorktreeNested,
                 server: positive("C"),
                 meta_read: MetaRead::Parsed,
+                snapshot: RecordSnapshot::default(),
             }),
         ];
         let backend = Backend::new()

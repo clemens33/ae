@@ -323,6 +323,79 @@ pub fn entry_for(
     now: Timestamp,
     unanswered_secs: i64,
 ) -> SessionEntry {
+    entry_from(
+        &RecordSnapshot::read(dir),
+        name,
+        runtime,
+        now,
+        unanswered_secs,
+    )
+}
+
+/// Everything one session directory said, read ONCE.
+///
+/// **This exists because a digest built from two observations is a digest whose
+/// facts never coexisted.** The record is read when the candidate is
+/// discovered; if the same bytes were read again at emission, a `meta` that was
+/// unreadable during discovery could become readable before rendering and
+/// silently REPAIR its own loss fact, and a session that changed in between
+/// would print record facts beside a liveness answer that never held at the
+/// same moment. One read, carried forward — see SC-017o's sibling reasoning
+/// about enumeration, and the phase-2 gate's criterion 14.
+///
+/// Both halves are optional because both reads can fail independently, and the
+/// DIFFERENCE matters: SC-405i makes an unreadable meta damage, while SC-519
+/// makes an absent event log a quiet stream. [`SessionRead::open`] has already
+/// applied that distinction, so a `None` here is real loss on either side.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecordSnapshot {
+    /// The parsed `meta`, when it could be read.
+    pub meta: Option<Meta>,
+    /// The event stream, when it could be read.
+    pub events: Option<SessionRead>,
+}
+
+impl RecordSnapshot {
+    /// Read both halves of the record at `dir`.
+    ///
+    /// The ONLY I/O on this path. Everything downstream — [`entry_from`], the
+    /// classifier, the digest — is a pure function of what this captured.
+    #[must_use]
+    pub fn read(dir: &Path) -> Self {
+        Self {
+            meta: Meta::read(dir).ok(),
+            events: SessionRead::open(dir).ok(),
+        }
+    }
+}
+
+/// The SC-509 entry for a record already read.
+///
+/// Pure: same snapshot, same runtime, same answer, whatever the filesystem is
+/// doing by the time this runs.
+///
+/// Cannot fail. SC-506 says one bad session degrades its own entry and the
+/// document always closes, and SC-509b says that degradation is VISIBLE:
+/// `degraded: true` reaches the JSON whenever data was actually lost, so damage
+/// never renders identically to legitimate sparsity.
+///
+/// What counts as loss, per the rows:
+///
+/// * the `meta` could not be read or held something SC-405d/e leave open
+///   (unknown key, malformed line, duplicate key, malformed roster value);
+/// * the event log EXISTS but could not be read (SC-519);
+/// * a malformed COMPLETE record was skipped (SC-520).
+///
+/// What does not: an absent or zero-byte event log, which SC-519 rules is a
+/// quiet stream and not damage.
+#[must_use]
+pub fn entry_from(
+    snapshot: &RecordSnapshot,
+    name: &str,
+    runtime: &SessionRuntime,
+    now: Timestamp,
+    unanswered_secs: i64,
+) -> SessionEntry {
     let mut entry = SessionEntry::new(name, runtime.status);
     entry.branch.clone_from(&runtime.branch);
 
@@ -330,8 +403,8 @@ pub fn entry_for(
     // beyond the directory name and the entire roster are lost at once, which
     // is actual loss by SC-509b's test — unlike a missing EVENT log, which
     // SC-519 makes quiet.
-    let meta = Meta::read(dir).ok();
-    if let Some(meta) = &meta {
+    let meta = snapshot.meta.as_ref();
+    if let Some(meta) = meta {
         entry.degraded |= anomalies_degrade(meta.anomalies());
         // SC-405k routes a MISSING ROSTER through SC-405i: a session that
         // cannot name a single agent has lost the same thing a session with no
@@ -352,8 +425,8 @@ pub fn entry_for(
     // record the reader could not take, or — once generations exist — a cursor
     // whose history is gone beneath it (DR-001). Every one of those is a fact
     // SC-509b says the digest must show rather than render as silence.
-    let read = SessionRead::open(dir).ok();
-    if let Some(read) = &read {
+    let read = snapshot.events.as_ref();
+    if let Some(read) = read {
         entry.degraded |= read.lost_records();
         entry.last_active_epoch = read.last_active.map(Timestamp::epoch);
         entry.goal_set_epoch = read.goal_set_at().map(Timestamp::epoch);
@@ -364,8 +437,8 @@ pub fn entry_for(
     // The roster comes from the META, so an unreadable event log costs the
     // agents their declared STATE and nothing else. SC-509b omits the facts
     // that were lost, not the ones that happen to sit next to them.
-    if let Some(meta) = &meta {
-        entry.agents = agent_entries(meta, read.as_ref(), runtime, name);
+    if let Some(meta) = meta {
+        entry.agents = agent_entries(meta, read, runtime, name);
     }
     // SC-017g as AMENDED: the MAX across agent reasons PLUS session-level
     // unresolved-request facts. `unanswered` is a PAIR fact — a cross-session

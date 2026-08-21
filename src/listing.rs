@@ -92,10 +92,13 @@ impl World {
 /// The world a classified snapshot describes — the phase-2 wiring.
 ///
 /// One entry per classified candidate, in snapshot order, carrying SC-017o's
-/// completeness fact forward. This is where SC-509's session-level fields are
-/// read: [`crate::liveness`] classifies liveness from phase-1 facts alone and
-/// touches no file, and the digest still needs `mode`/`origin`/`goal`/`agents`,
-/// which live only in the session directory.
+/// completeness fact forward.
+///
+/// **Reads nothing.** Every SC-509 field comes from the record snapshot phase 1
+/// captured at discovery ([`crate::session::RecordSnapshot`]), so the digest's
+/// record facts and the liveness printed beside them are one observation of the
+/// world rather than two. That is the phase-2 gate's criterion 14, and it binds
+/// here — at emission — exactly as it binds the classifier.
 ///
 /// A tmux-only candidate has no directory to read, so it is SC-509b `degraded`
 /// by construction — SC-017j: "a positively live tmux-only candidate remains
@@ -108,8 +111,8 @@ pub fn world_of(snapshot: &Snapshot, now: Timestamp, unanswered_secs: i64) -> Wo
         .sessions
         .iter()
         .map(|classified| match &classified.candidate.durable {
-            Some(record) => crate::session::entry_for(
-                &record.path,
+            Some(record) => crate::session::entry_from(
+                &record.snapshot,
                 &record.name,
                 &SessionRuntime::new(classified.status),
                 now,

@@ -71,7 +71,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::meta::{Meta, Selector, ServerSelector};
+use crate::meta::{Selector, ServerSelector};
+use crate::session::RecordSnapshot;
 
 /// The nested state directory inside a worktree — SC-400d's legacy layout.
 const WORKTREE_STATE_DIR: &str = ".ae";
@@ -168,6 +169,20 @@ pub struct DurableRecord {
     pub server: ServerSelector,
     /// What reading its `meta` did — see [`MetaRead`].
     pub meta_read: MetaRead,
+    /// Everything the record said, read ONCE, at discovery.
+    ///
+    /// **The phase-2 gate's criterion 14 binds the whole phase, not just
+    /// classification**, and this field is what makes that possible: the digest
+    /// is assembled from these bytes rather than from a second read at emission
+    /// time. A second observation would let a record that was unreadable here
+    /// become readable before rendering and repair its own loss fact, and would
+    /// print record facts beside a liveness answer that never held at the same
+    /// moment.
+    ///
+    /// This costs no extra I/O. The selector above already required opening the
+    /// `meta`; carrying what that read produced is strictly cheaper than
+    /// reading it again later.
+    pub snapshot: RecordSnapshot,
 }
 
 /// A tmux server ae holds a pointer to.
@@ -482,16 +497,28 @@ fn record_at(path: PathBuf, layout: Layout) -> DurableRecord {
         layout,
         server: ServerSelector::Missing,
         meta_read: MetaRead::Absent,
+        snapshot: RecordSnapshot::default(),
     };
-    match Meta::read(&record.path) {
-        Ok(meta) => {
+    // ONE read of this record, here, feeding both the selector and every SC-509
+    // field the digest will need. The meta had to be opened for the selector
+    // anyway; what changes is that nothing downstream opens it again.
+    record.snapshot = RecordSnapshot::read(&record.path);
+    match &record.snapshot.meta {
+        Some(meta) => {
             record.meta_read = MetaRead::Parsed;
             record.server = meta.server_selector();
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        // Exists and will not read. No selector is derived from bytes nobody
-        // could read — the alternative is querying a server on a guess.
-        Err(_) => record.meta_read = MetaRead::Unreadable,
+        // Absent and unreadable are different facts and stay different (SC-405l
+        // as amended: both normalize the SELECTOR to `missing`, and only the
+        // record-read fact tells them apart). No selector is derived from bytes
+        // nobody could read — the alternative is querying a server on a guess.
+        None => {
+            record.meta_read = if record.path.join(crate::meta::FILE).exists() {
+                MetaRead::Unreadable
+            } else {
+                MetaRead::Absent
+            };
+        }
     }
     record
 }
@@ -697,6 +724,7 @@ mod tests {
         Inventory, Layout, LiveSighting, MetaRead, Provenance, QueryFailed, Roots, Selector,
         ServerId, ServerSelector, durable_records, entitled_servers, take,
     };
+    use crate::session::RecordSnapshot;
     use std::cell::RefCell;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -943,6 +971,7 @@ mod tests {
             layout: Layout::Canonical,
             server,
             meta_read: MetaRead::Parsed,
+            snapshot: RecordSnapshot::default(),
         }
     }
 

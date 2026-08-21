@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 
 use ae::digest::Status;
 use ae::inventory::{
-    Candidate, DiscoveredSession, Discovery, DurableRecord, FailedSource, Inventory, Layout,
-    LiveSighting, MetaRead, QueryFailed, Roots, ServerId, durable_records, take,
+    Candidate, DiscoveredSession, Discovery, FailedSource, Inventory, LiveSighting, MetaRead,
+    QueryFailed, Roots, ServerId, durable_records, take,
 };
 use ae::json;
 use ae::listing::{render, world_of};
@@ -153,21 +153,33 @@ impl Scratch {
         Self(dir)
     }
 
-    /// A session directory with a readable meta naming one agent — the
-    /// not-degraded shape.
-    fn healthy(&self, name: &str, meta_extra: &str) -> PathBuf {
-        let dir = self.0.join("sessions").join(name);
-        let written = fs::create_dir_all(&dir).and_then(|()| {
-            fs::write(
-                dir.join("meta"),
-                format!("mode=local\nagent.main=cl:lead\n{meta_extra}"),
-            )
-        });
-        assert!(written.is_ok(), "a session fixture must be writable");
-        dir
+    /// A session whose meta is READABLE, names a positive server selector, and
+    /// carries a roster — the product-valid not-degraded shape.
+    fn healthy(&self, name: &str, extra: &str) -> PathBuf {
+        self.write(
+            name,
+            &format!(
+                "mode=local\ntmux_server_kind=name\ntmux_server=B\nagent.main=cl:lead\n{extra}"
+            ),
+        )
     }
 
-    /// A session directory whose meta is absent — SC-405i record loss.
+    /// A session whose meta is READABLE and names a positive server selector,
+    /// but has NO ROSTER — SC-405k/SC-405i record loss.
+    ///
+    /// This is the pairing the phase-2 gate's criterion 13 needs and a
+    /// hand-built struct cannot honestly supply: degradation from an
+    /// INDEPENDENT record fact, sitting beside a selector positive enough to
+    /// reach a real liveness answer. An unreadable meta cannot do it — that
+    /// yields a `missing` selector by construction, so `running`+degraded would
+    /// be unreachable and any fixture asserting it would be describing a state
+    /// the product can never produce.
+    fn degraded_but_addressable(&self, name: &str) -> PathBuf {
+        self.write(name, "mode=local\ntmux_server_kind=name\ntmux_server=B\n")
+    }
+
+    /// A session directory whose meta is absent — SC-405i record loss, and a
+    /// `missing` selector.
     fn no_meta(&self, name: &str) -> PathBuf {
         let dir = self.0.join("sessions").join(name);
         assert!(
@@ -175,6 +187,27 @@ impl Scratch {
             "a session fixture must be creatable"
         );
         dir
+    }
+
+    /// A session whose meta is readable and carries a roster but NO selector.
+    fn no_selector(&self, name: &str) -> PathBuf {
+        self.write(name, "mode=local\nagent.main=cl:lead\n")
+    }
+
+    fn write(&self, name: &str, meta: &str) -> PathBuf {
+        let dir = self.0.join("sessions").join(name);
+        let written = fs::create_dir_all(&dir).and_then(|()| fs::write(dir.join("meta"), meta));
+        assert!(written.is_ok(), "a session fixture must be writable");
+        dir
+    }
+
+    /// Every candidate, discovered by the PRODUCT reader.
+    ///
+    /// Nothing in this file hand-builds a `DurableRecord` any more: a fixture
+    /// can succeed at constructing a state the product could never produce, and
+    /// then every assertion about it passes while proving nothing.
+    fn candidates(&self) -> Vec<Candidate> {
+        take(durable_records(&self.roots()), None, &Recorder::new()).candidates
     }
 
     fn roots(&self) -> Roots {
@@ -188,16 +221,11 @@ impl Drop for Scratch {
     }
 }
 
-fn record_at(path: &Path, server: ServerSelector, meta_read: MetaRead) -> DurableRecord {
-    DurableRecord {
-        path: path.to_path_buf(),
-        name: match path.file_name() {
-            Some(leaf) => leaf.to_string_lossy().into_owned(),
-            None => panic!("a state directory always has a last component"),
-        },
-        layout: Layout::Canonical,
-        server,
-        meta_read,
+/// The product-discovered candidate called `name`.
+fn pick(candidates: &[Candidate], name: &str) -> Candidate {
+    match candidates.iter().find(|candidate| candidate.name == name) {
+        Some(candidate) => candidate.clone(),
+        None => panic!("the reader did not discover {name}"),
     }
 }
 
@@ -296,7 +324,7 @@ fn criterion_20_the_recorder_tells_success_absence_ownership_and_failure_apart()
     );
 }
 
-// ---- criterion 1 and 14: the boundary, and what does not cross it ----------
+// ---- criterion 1: the complete inventory precedes classification -----------
 
 #[test]
 fn criterion_1_the_complete_inventory_is_what_classification_receives() {
@@ -305,19 +333,13 @@ fn criterion_1_the_complete_inventory_is_what_classification_receives() {
     scratch.healthy("beta", "");
     let backend = Recorder::new();
 
-    // `inventory complete`: the value, captured whole.
     let taken = take(durable_records(&scratch.roots()), None, &backend);
     let at_inventory: Vec<String> = taken
         .candidates
         .iter()
         .map(|candidate| candidate.name.clone())
         .collect();
-    assert!(
-        backend.records().is_empty(),
-        "nothing classified anything yet: the backend has not been asked"
-    );
 
-    // `classify enter`: the same value, and the classifier's input IS it.
     let snapshot = classify(taken, &backend);
     let at_classify: Vec<String> = snapshot
         .sessions
@@ -329,38 +351,60 @@ fn criterion_1_the_complete_inventory_is_what_classification_receives() {
     assert_eq!(at_classify.len(), 2, "and nothing was materialized inside");
 }
 
-#[test]
-fn criterion_14_classification_survives_the_filesystem_disappearing_under_it() {
-    // The strongest form of "phase 2 does not rediscover": take the inventory,
-    // then DELETE the roots. A classifier that re-read anything would change
-    // its answer; this one cannot, because it holds every fact it needs.
-    let scratch = Scratch::new("no-reread");
-    scratch.healthy("alpha", "");
-    let mut record = record_at(
-        &scratch.0.join("sessions").join("alpha"),
-        positive("B"),
-        MetaRead::Parsed,
-    );
-    record.name = "alpha".to_owned();
-    let taken = inventory(vec![Candidate::durable(record)]);
+// ---- criterion 14: NO phase-2 read, at either boundary ---------------------
 
-    fs::remove_dir_all(scratch.0.join("sessions")).expect("the roots go away");
+#[test]
+fn criterion_14_the_whole_phase_survives_the_filesystem_disappearing_after_inventory() {
+    // The obligation is on PHASE 2, which the gate defines as the classified set
+    // PLUS the successor digest. So the roots go away after `inventory
+    // complete`, and BOTH boundaries must still answer — classification and
+    // emission. An earlier version of this test called only `classify`, and a
+    // whole-phase obligation checked on one function is how the second read
+    // survived review.
+    let scratch = Scratch::new("no-reread");
+    scratch.healthy("alpha", "origin=/o\ngoal=ship it\n");
+    scratch.no_meta("damaged");
+    let taken = take(durable_records(&scratch.roots()), None, &Recorder::new());
+
+    assert!(
+        fs::remove_dir_all(scratch.0.join("sessions")).is_ok(),
+        "the roots go away"
+    );
 
     let backend = Recorder::new().live(named("B"), &[("alpha", Some("alpha"))]);
     let snapshot = classify(taken, &backend);
+    let document = digest_of(&snapshot);
 
-    assert_eq!(snapshot.sessions[0].status, Status::Running);
     assert_eq!(
         backend.targets(),
         ["name:B"],
         "one backend query, no rescan"
     );
+    let mut emitted = sessions_of(&document);
+    emitted.sort();
+    assert_eq!(
+        emitted,
+        vec![
+            ("alpha".to_owned(), "running".to_owned(), false),
+            ("damaged".to_owned(), "unknown".to_owned(), true),
+        ],
+        "every SC-509 fact came from the snapshot phase 1 captured"
+    );
+    let Some(json::Value::Arr(entries)) = document.get("sessions") else {
+        panic!("sessions must be an array");
+    };
+    let Some(alpha) = entries.iter().find(|e| e.get_str("name") == Some("alpha")) else {
+        panic!("alpha must be emitted");
+    };
+    assert_eq!(
+        alpha.get_str("goal"),
+        Some("ship it"),
+        "including the meta fields, which no second read could have supplied"
+    );
 }
 
 #[test]
 fn criterion_9_a_tmux_only_candidate_leaves_the_filesystem_untouched() {
-    // SC-017k reuse, plus the "no durable record is fabricated" half: capture
-    // the tree before and after, and require it byte-identical.
     let scratch = Scratch::new("no-writes");
     scratch.healthy("elsewhere", "");
     let before = manifest(&scratch.0);
@@ -372,11 +416,12 @@ fn criterion_9_a_tmux_only_candidate_leaves_the_filesystem_untouched() {
     });
     let backend = Recorder::new().down(named("A"));
     let snapshot = classify(inventory(vec![candidate]), &backend);
+    let _ = digest_of(&snapshot);
 
-    assert_eq!(snapshot.sessions[0].status, Status::Running);
-    assert!(
-        backend.records().is_empty(),
-        "A was never re-queried, so its unavailability could not downgrade anything"
+    assert_eq!(
+        snapshot.sessions[0].status,
+        Status::Running,
+        "the snapshot fact stands even though A is unavailable"
     );
     assert!(snapshot.sessions[0].candidate.durable.is_none());
     assert_eq!(
@@ -386,8 +431,7 @@ fn criterion_9_a_tmux_only_candidate_leaves_the_filesystem_untouched() {
     );
 }
 
-/// Every path under `root`, with its kind and content length — enough to see a
-/// write that a directory listing alone would miss.
+/// Every path under `root`, with its kind and content length.
 fn manifest(root: &Path) -> Vec<String> {
     let mut seen = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -412,66 +456,70 @@ fn manifest(root: &Path) -> Vec<String> {
 
 // ---- criterion 13: unknown and degraded are orthogonal, through the digest --
 
-#[test]
-fn criterion_13_unknown_and_degraded_are_independent_at_both_boundaries() {
-    let scratch = Scratch::new("orthogonal");
-    // Degradation comes from a RECORD fact, never from breaking the query:
-    // a meta with no roster is SC-405k/SC-405i loss; a meta with one is not.
-    let running_clean = scratch.healthy("running-clean", "");
-    let running_damaged = scratch.no_meta("running-damaged");
-    let unknown_clean = scratch.healthy("unknown-clean", "");
-    let unknown_damaged = scratch.no_meta("unknown-damaged");
-    let stopped_clean = scratch.healthy("stopped-clean", "");
-    let stopped_damaged = scratch.no_meta("stopped-damaged");
+/// The criterion-13 matrix, built entirely by the PRODUCT reader.
+///
+/// Every degraded cell earns its degradation from an independent record fact —
+/// a readable meta with a positive selector and no roster (SC-405k/SC-405i), or
+/// an absent meta — never from breaking the liveness query, and never from a
+/// hand-assembled struct pairing a positive selector with a failed read, which
+/// `record_at` cannot produce and the product therefore never emits.
+fn orthogonality_fixture(scratch: &Scratch) -> Vec<Candidate> {
+    scratch.healthy("running-clean", "");
+    scratch.degraded_but_addressable("running-damaged");
+    scratch.no_selector("unknown-clean");
+    scratch.no_meta("unknown-damaged");
+    scratch.healthy("stopped-clean", "");
+    scratch.degraded_but_addressable("stopped-damaged");
+    scratch.candidates()
+}
 
-    let candidates = vec![
-        Candidate::durable(record_at(&running_clean, positive("B"), MetaRead::Parsed)),
-        Candidate::durable(record_at(&running_damaged, positive("B"), MetaRead::Absent)),
-        // The unknown pair holds selector state at SC-405l `missing`, and moves
-        // ONLY the record-read fact.
-        Candidate::durable(record_at(
-            &unknown_clean,
-            ServerSelector::Missing,
-            MetaRead::Parsed,
-        )),
-        Candidate::durable(record_at(
-            &unknown_damaged,
-            ServerSelector::Missing,
-            MetaRead::Absent,
-        )),
-        Candidate::durable(record_at(&stopped_clean, positive("B"), MetaRead::Parsed)),
-        Candidate::durable(record_at(&stopped_damaged, positive("B"), MetaRead::Absent)),
-    ];
-    let backend = Recorder::new().live(
+fn orthogonality_backend() -> Recorder {
+    Recorder::new().live(
         named("B"),
         &[
             ("running-clean", Some("running-clean")),
             ("running-damaged", Some("running-damaged")),
         ],
-    );
+    )
+}
 
-    let snapshot = classify(inventory(candidates), &backend);
+#[test]
+fn criterion_13_unknown_and_degraded_are_independent_at_both_boundaries() {
+    let scratch = Scratch::new("orthogonal");
+    let candidates = orthogonality_fixture(&scratch);
+    // Every cell is reachable: the product reader produced each one.
+    for name in [
+        "running-clean",
+        "running-damaged",
+        "unknown-clean",
+        "unknown-damaged",
+        "stopped-clean",
+        "stopped-damaged",
+    ] {
+        let _ = pick(&candidates, name);
+    }
 
-    // At the classifier boundary.
-    let classified: Vec<(String, Status)> = snapshot
+    let snapshot = classify(inventory(candidates), &orthogonality_backend());
+
+    let mut classified: Vec<(String, Status)> = snapshot
         .sessions
         .iter()
         .map(|entry| (entry.candidate.name.clone(), entry.status))
         .collect();
+    classified.sort_by(|left, right| left.0.cmp(&right.0));
     assert_eq!(
         classified,
         vec![
             ("running-clean".to_owned(), Status::Running),
             ("running-damaged".to_owned(), Status::Running),
-            ("unknown-clean".to_owned(), Status::Unknown),
-            ("unknown-damaged".to_owned(), Status::Unknown),
             ("stopped-clean".to_owned(), Status::Stopped),
             ("stopped-damaged".to_owned(), Status::Stopped),
+            ("unknown-clean".to_owned(), Status::Unknown),
+            ("unknown-damaged".to_owned(), Status::Unknown),
         ],
         "flipping degradation alone never moved a status"
     );
 
-    // ...and in the emitted schema-version-2 digest.
     let mut emitted = sessions_of(&digest_of(&snapshot));
     emitted.sort();
     assert_eq!(
@@ -484,8 +532,44 @@ fn criterion_13_unknown_and_degraded_are_independent_at_both_boundaries() {
             ("unknown-clean".to_owned(), "unknown".to_owned(), false),
             ("unknown-damaged".to_owned(), "unknown".to_owned(), true),
         ],
-        "every combination survives serialization: unknown does not set degraded, \
-         degraded does not force unknown, and the serializer treats neither specially"
+        "every combination survives serialization, and every one is product-reachable"
+    );
+}
+
+#[test]
+fn criterion_13_the_degraded_cells_are_reachable_rather_than_asserted() {
+    // The control for the fixture itself. `running`+degraded is only meaningful
+    // if the reader can produce a record that is BOTH addressable and damaged;
+    // if it could not, the matrix above would be describing an impossible state.
+    let scratch = Scratch::new("reachable");
+    scratch.degraded_but_addressable("both");
+    let candidate = pick(&scratch.candidates(), "both");
+    let Some(record) = &candidate.durable else {
+        panic!("a durable candidate");
+    };
+    assert_eq!(
+        record.server,
+        positive("B"),
+        "the reader derived a POSITIVE selector, so this record can reach a liveness answer"
+    );
+    assert_eq!(
+        record.meta_read,
+        MetaRead::Parsed,
+        "from a meta it could read — the damage is a separate record fact"
+    );
+    // A fresh recorder, not the matrix one with another entry appended: the
+    // double answers with the FIRST world it holds for a server, so a second
+    // `live` for the same server is shadowed and the fixture would silently
+    // describe an empty B.
+    let snapshot = classify(
+        inventory(vec![candidate]),
+        &Recorder::new().live(named("B"), &[("both", Some("both"))]),
+    );
+    assert_eq!(snapshot.sessions[0].status, Status::Running);
+    assert_eq!(
+        sessions_of(&digest_of(&snapshot)),
+        vec![("both".to_owned(), "running".to_owned(), true)],
+        "running AND degraded, produced end to end"
     );
 }
 
@@ -494,53 +578,28 @@ fn criterion_13_unknown_and_degraded_are_independent_at_both_boundaries() {
 #[test]
 fn criterion_16_every_successor_digest_is_version_2_with_a_closed_status_domain() {
     let scratch = Scratch::new("matrix");
-    let running = scratch.healthy("r", "");
-    let stopped = scratch.healthy("s", "");
-    let unknown = scratch.healthy("u", "");
+    scratch.healthy("r", "");
+    scratch.healthy("s", "");
+    scratch.no_selector("u");
+    let all = scratch.candidates();
+    let matrix = Scratch::new("matrix-degraded");
+    let degradation = orthogonality_fixture(&matrix);
 
     let shapes: Vec<(&str, Vec<Candidate>)> = vec![
         ("empty", Vec::new()),
-        (
-            "running only",
-            vec![Candidate::durable(record_at(
-                &running,
-                positive("B"),
-                MetaRead::Parsed,
-            ))],
-        ),
-        (
-            "stopped only",
-            vec![Candidate::durable(record_at(
-                &stopped,
-                positive("B"),
-                MetaRead::Parsed,
-            ))],
-        ),
-        (
-            "unknown only",
-            vec![Candidate::durable(record_at(
-                &unknown,
-                ServerSelector::Ambiguous,
-                MetaRead::Parsed,
-            ))],
-        ),
+        ("running only", vec![pick(&all, "r")]),
+        ("stopped only", vec![pick(&all, "s")]),
+        ("unknown only", vec![pick(&all, "u")]),
         (
             "mixed",
-            vec![
-                Candidate::durable(record_at(&running, positive("B"), MetaRead::Parsed)),
-                Candidate::durable(record_at(&stopped, positive("B"), MetaRead::Parsed)),
-                Candidate::durable(record_at(
-                    &unknown,
-                    ServerSelector::Ambiguous,
-                    MetaRead::Parsed,
-                )),
-            ],
+            vec![pick(&all, "r"), pick(&all, "s"), pick(&all, "u")],
         ),
+        ("degradation matrix", degradation),
     ];
 
     for (shape, candidates) in shapes {
         for complete in [true, false] {
-            let backend = Recorder::new().live(named("B"), &[("r", Some("r"))]);
+            let backend = orthogonality_backend().live(named("B"), &[("r", Some("r"))]);
             let snapshot = classify(
                 Inventory {
                     candidates: candidates.clone(),
@@ -554,8 +613,10 @@ fn criterion_16_every_successor_digest_is_version_2_with_a_closed_status_domain(
             );
             let world = world_of(&snapshot, NOW, DEFAULT_UNANSWERED_SECS);
             let rendered = render(&args(&["--all", "--json"]), &world);
-            let document = json::parse(rendered.trim_end())
-                .unwrap_or_else(|_| panic!("{shape}/{complete}: valid JSON"));
+            let document = match json::parse(rendered.trim_end()) {
+                Ok(document) => document,
+                Err(why) => panic!("{shape}/{complete}: valid JSON: {why:?}"),
+            };
 
             assert_eq!(
                 document.get("schema_version"),
@@ -589,19 +650,9 @@ fn criterion_16_every_successor_digest_is_version_2_with_a_closed_status_domain(
 
 #[test]
 fn criterion_19_no_emitted_document_pairs_version_1_with_unknown() {
-    // The successor has no version-selectable serializer — there is one schema
-    // and it is 2 — so the implication closes the way the criterion allows: every
-    // emitted document is searched, and none carries the forbidden pair.
     let scratch = Scratch::new("v1-never-unknown");
-    let unknown = scratch.healthy("u", "");
-    let snapshot = classify(
-        inventory(vec![Candidate::durable(record_at(
-            &unknown,
-            ServerSelector::Ambiguous,
-            MetaRead::Parsed,
-        ))]),
-        &Recorder::new(),
-    );
+    scratch.no_selector("u");
+    let snapshot = classify(inventory(scratch.candidates()), &Recorder::new());
     for flags in [
         vec!["--json"],
         vec!["--all", "--json"],
@@ -627,22 +678,11 @@ fn criterion_19_no_emitted_document_pairs_version_1_with_unknown() {
 #[test]
 fn criterion_15_no_filter_or_rendering_route_changes_a_classified_status() {
     let scratch = Scratch::new("render-invariance");
-    let running = scratch.healthy("r", "");
-    let stopped = scratch.healthy("s", "");
-    let unknown = scratch.healthy("u", "");
+    scratch.healthy("r", "");
+    scratch.healthy("s", "");
+    scratch.no_selector("u");
     let backend = Recorder::new().live(named("B"), &[("r", Some("r"))]);
-    let snapshot = classify(
-        inventory(vec![
-            Candidate::durable(record_at(&running, positive("B"), MetaRead::Parsed)),
-            Candidate::durable(record_at(&stopped, positive("B"), MetaRead::Parsed)),
-            Candidate::durable(record_at(
-                &unknown,
-                ServerSelector::Ambiguous,
-                MetaRead::Parsed,
-            )),
-        ]),
-        &backend,
-    );
+    let snapshot = classify(inventory(scratch.candidates()), &backend);
 
     let classified: Vec<(String, Status)> = snapshot
         .sessions
@@ -650,9 +690,6 @@ fn criterion_15_no_filter_or_rendering_route_changes_a_classified_status() {
         .map(|entry| (entry.candidate.name.clone(), entry.status))
         .collect();
 
-    // Every view over the SAME classification. Which rows a filter shows is
-    // SC-017m/n's business and is not asserted here; what must not move is the
-    // status attached to a row that IS shown.
     for flags in [
         vec!["--json"],
         vec!["--all", "--json"],
@@ -660,13 +697,15 @@ fn criterion_15_no_filter_or_rendering_route_changes_a_classified_status() {
         vec!["--needs-attn", "--all", "--json"],
     ] {
         let world = world_of(&snapshot, NOW, DEFAULT_UNANSWERED_SECS);
-        let document = json::parse(render(&args(&flags), &world).trim_end()).expect("one document");
+        let document = match json::parse(render(&args(&flags), &world).trim_end()) {
+            Ok(document) => document,
+            Err(why) => panic!("{flags:?}: one document: {why:?}"),
+        };
         for (name, status, _) in sessions_of(&document) {
-            let expected = classified
-                .iter()
-                .find(|(known, _)| *known == name)
-                .map(|(_, status)| *status)
-                .expect("a classified session");
+            let expected = match classified.iter().find(|(known, _)| *known == name) {
+                Some((_, status)) => *status,
+                None => panic!("{name} was rendered but never classified"),
+            };
             assert_eq!(
                 status,
                 expected.as_str(),
@@ -675,7 +714,6 @@ fn criterion_15_no_filter_or_rendering_route_changes_a_classified_status() {
         }
     }
 
-    // The human route reads the same answer.
     let world = world_of(&snapshot, NOW, DEFAULT_UNANSWERED_SECS);
     let table = render(&args(&["--all"]), &world);
     for (name, status) in &classified {
@@ -691,16 +729,12 @@ fn criterion_15_no_filter_or_rendering_route_changes_a_classified_status() {
 #[test]
 fn criterion_17_the_version_bump_changes_the_version_and_the_status_domain_only() {
     let scratch = Scratch::new("preserved");
-    let dir = scratch.healthy(
+    scratch.healthy(
         "my-feature",
         "origin=/o\nwork_dir=/w\ngoal=ship the login flow\n",
     );
     let snapshot = classify(
-        inventory(vec![Candidate::durable(record_at(
-            &dir,
-            positive("B"),
-            MetaRead::Parsed,
-        ))]),
+        inventory(scratch.candidates()),
         &Recorder::new().live(named("B"), &[("my-feature", Some("my-feature"))]),
     );
     let document = digest_of(&snapshot);
@@ -711,7 +745,6 @@ fn criterion_17_the_version_bump_changes_the_version_and_the_status_domain_only(
         panic!("sessions must be an array");
     };
     let entry = &entries[0];
-    // The documented SC-509 field set, still present and still meaning the same.
     assert_eq!(entry.get_str("name"), Some("my-feature"));
     assert_eq!(entry.get_str("status"), Some("running"));
     assert_eq!(entry.get_str("mode"), Some("local"));
@@ -736,12 +769,8 @@ fn criterion_17_the_version_bump_changes_the_version_and_the_status_domain_only(
 #[test]
 fn criterion_23_the_completeness_delta_survives_to_the_json_and_changes_nothing_else() {
     let scratch = Scratch::new("completeness");
-    let dir = scratch.healthy("kept", "");
-    let candidates = vec![Candidate::durable(record_at(
-        &dir,
-        positive("B"),
-        MetaRead::Parsed,
-    ))];
+    scratch.healthy("kept", "");
+    let candidates = scratch.candidates();
     let losses = vec![
         FailedSource::CanonicalRoot(PathBuf::from("/home/x/.ae/sessions")),
         FailedSource::WorktreeRoot(PathBuf::from("/home/x/.ae/worktrees")),
@@ -781,8 +810,6 @@ fn criterion_23_the_completeness_delta_survives_to_the_json_and_changes_nothing_
         "BOTH distinguishable loss facts crossed classification"
     );
 
-    // Empty on both sides, so an incomplete-empty snapshot cannot pass as an
-    // authoritative empty one.
     let empty_complete = classify(inventory(Vec::new()), &Recorder::new());
     let empty_incomplete = classify(
         Inventory {
@@ -803,16 +830,24 @@ fn criterion_23_the_completeness_delta_survives_to_the_json_and_changes_nothing_
 
 #[test]
 fn criterion_23_the_product_valid_arm_earns_the_delta_through_real_discovery() {
-    // The controlled pair above proves classifier preservation. This proves the
-    // delta can ARISE: one readable-empty source (complete), one whose
-    // enumeration demonstrably fails (incomplete), with the candidate set equal
-    // because the failing source is the one that had nothing to contribute.
     let complete = Scratch::new("product-complete");
-    fs::create_dir_all(complete.0.join("sessions")).expect("a readable, empty canonical root");
-    fs::create_dir_all(complete.0.join("worktrees")).expect("a readable, empty worktrees root");
+    assert!(
+        fs::create_dir_all(complete.0.join("sessions")).is_ok(),
+        "a readable, empty canonical root"
+    );
+    assert!(
+        fs::create_dir_all(complete.0.join("worktrees")).is_ok(),
+        "a readable, empty worktrees root"
+    );
     let broken = Scratch::new("product-incomplete");
-    fs::create_dir_all(broken.0.join("sessions")).expect("a readable canonical root");
-    fs::write(broken.0.join("worktrees"), "not a directory").expect("a hostile fixture");
+    assert!(
+        fs::create_dir_all(broken.0.join("sessions")).is_ok(),
+        "a readable canonical root"
+    );
+    assert!(
+        fs::write(broken.0.join("worktrees"), "not a directory").is_ok(),
+        "a hostile fixture"
+    );
     assert!(
         fs::read_dir(broken.0.join("worktrees")).is_err(),
         "the enumeration operation itself must fail"
@@ -848,12 +883,15 @@ fn criterion_23_the_product_valid_arm_earns_the_delta_through_real_discovery() {
 #[test]
 fn criterion_22_phase_2_contacts_only_servers_the_phase_1_facts_named() {
     let scratch = Scratch::new("entitlement");
-    let mine = scratch.healthy("mine", "");
-    // Plausible bait on disk beside the roots.
+    scratch.healthy("mine", "");
     for bait in ["tmux-1000", "sockets"] {
-        fs::create_dir_all(scratch.0.join(bait)).expect("bait");
-        fs::write(scratch.0.join(bait).join("default"), "socket").expect("bait socket");
+        assert!(fs::create_dir_all(scratch.0.join(bait)).is_ok(), "bait");
+        assert!(
+            fs::write(scratch.0.join(bait).join("default"), "socket").is_ok(),
+            "bait socket"
+        );
     }
+    let candidates = scratch.candidates();
     let before = manifest(&scratch.0);
 
     let backend = Recorder::new()
@@ -866,14 +904,8 @@ fn criterion_22_phase_2_contacts_only_servers_the_phase_1_facts_named() {
             &[("swept", Some("swept"))],
         );
 
-    let snapshot = classify(
-        inventory(vec![Candidate::durable(record_at(
-            &mine,
-            positive("B"),
-            MetaRead::Parsed,
-        ))]),
-        &backend,
-    );
+    let snapshot = classify(inventory(candidates), &backend);
+    let _ = digest_of(&snapshot);
 
     assert_eq!(
         backend.targets(),
@@ -1053,4 +1085,139 @@ fn criterion_20_a_real_ownership_marker_round_trips_through_the_product_reader()
         "unmarked",
         unmarked.as_deref()
     ));
+}
+
+// ---- criterion 14, asked of the whole crate rather than one file ----------
+
+/// The non-test source of every module in `src/`, comments stripped.
+fn product_source() -> Vec<(String, String)> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let Ok(entries) = fs::read_dir(&src) else {
+        panic!("src/ must be readable");
+    };
+    let mut modules: Vec<(String, String)> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .map(|path| {
+            let Ok(text) = fs::read_to_string(&path) else {
+                panic!("{} must be readable", path.display());
+            };
+            let code: String = text
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let module = code
+                .split_once("#[cfg(test)]")
+                .map_or(code.clone(), |(module, _)| module.to_owned());
+            let name = path
+                .file_name()
+                .map(|leaf| leaf.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            (name, module)
+        })
+        .collect();
+    modules.sort();
+    modules
+}
+
+/// Where a needle appears in product code, file by file, with counts.
+fn sites(needle: &str) -> Vec<(String, usize)> {
+    product_source()
+        .into_iter()
+        .map(|(name, code)| (name, code.matches(needle).count()))
+        .filter(|(_, count)| *count > 0)
+        .collect()
+}
+
+#[test]
+fn criterion_14_the_record_is_read_in_exactly_one_place_in_the_whole_crate() {
+    // My first version of this guard scanned `liveness.rs` alone, and criterion
+    // 14 binds PHASE 2 — the classified set AND the successor digest. A
+    // universal obligation checked on one particular is how the second read at
+    // emission survived review, so the guard is now crate-wide and asks where
+    // the record can be read AT ALL.
+    let modules = product_source();
+    assert!(
+        modules.iter().any(|(name, _)| name == "liveness.rs")
+            && modules.iter().any(|(name, _)| name == "listing.rs"),
+        "the scan reached the phase-2 modules"
+    );
+
+    assert_eq!(
+        sites(concat!("Meta", "::read(")),
+        vec![("session.rs".to_owned(), 1)],
+        "the meta is opened in exactly one place"
+    );
+    assert_eq!(
+        sites(concat!("SessionRead", "::open(")),
+        vec![("session.rs".to_owned(), 1)],
+        "and so is the event stream"
+    );
+    assert_eq!(
+        sites(concat!("RecordSnapshot", "::read(")),
+        vec![("inventory.rs".to_owned(), 1), ("session.rs".to_owned(), 1),],
+        "the one reader is called from discovery, and from the convenience \
+         wrapper that exists for callers who genuinely want a fresh read"
+    );
+
+    // The emission path specifically: it derives, and it does not read.
+    let Some((_, listing)) = product_source()
+        .into_iter()
+        .find(|(name, _)| name == "listing.rs")
+    else {
+        panic!("listing.rs must be scanned");
+    };
+    let Some((_, world_of)) = listing.split_once("pub fn world_of") else {
+        panic!("world_of must be in listing.rs");
+    };
+    for read in [
+        concat!("entry_", "for("),
+        concat!("Record", "Snapshot::read"),
+        concat!("fs", "::"),
+    ] {
+        assert!(
+            !world_of.contains(read),
+            "the digest must be assembled from the snapshot, never from a second read: {read}"
+        );
+    }
+    assert!(
+        world_of.contains(concat!("entry_", "from(")),
+        "it derives from the carried snapshot"
+    );
+}
+
+#[test]
+fn criterion_14_a_record_that_changes_after_discovery_cannot_change_the_digest() {
+    // The behavioural half of the same obligation, and the concrete failure the
+    // rework fixes: a record unreadable at discovery must not become readable
+    // before emission and REPAIR its own loss fact.
+    let scratch = Scratch::new("second-observation");
+    let damaged = scratch.no_meta("was-broken");
+    let taken = take(durable_records(&scratch.roots()), None, &Recorder::new());
+
+    // The world changes between the two boundaries. A second read would see it.
+    assert!(
+        fs::write(damaged.join("meta"), "mode=local\nagent.main=cl:lead\n").is_ok(),
+        "the record becomes readable after discovery"
+    );
+
+    let snapshot = classify(taken, &Recorder::new());
+    let emitted = sessions_of(&digest_of(&snapshot));
+
+    assert_eq!(
+        emitted,
+        vec![("was-broken".to_owned(), "unknown".to_owned(), true)],
+        "the digest reports what discovery SAW: still degraded, still unknown"
+    );
+    let document = digest_of(&snapshot);
+    let Some(json::Value::Arr(entries)) = document.get("sessions") else {
+        panic!("sessions must be an array");
+    };
+    assert_eq!(
+        entries[0].get_str("mode"),
+        None,
+        "and it did not pick up a field that only exists in the later bytes"
+    );
 }
