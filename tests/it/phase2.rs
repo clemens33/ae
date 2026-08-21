@@ -1007,13 +1007,18 @@ fn criterion_22_phase_2_contacts_only_servers_the_phase_1_facts_named() {
 /// Run `tmux` with `args` through the harness's pinned process door, returning
 /// `(succeeded, stdout)`.
 ///
-/// The door is `parity::capture::raw::run` — the one place this test target may
-/// name `std::process::Command`. Reusing it rather than opening a new one keeps
-/// the crate's capability boundary exactly where `clippy.toml` pins it: the
-/// LIBRARY still cannot spawn a process, which is what makes `src/tmux.rs` pure
-/// argument derivation and interpretation rather than an adapter that shells
-/// out.
-fn run_tmux(args: &[String], scratch: &Path) -> (bool, String) {
+/// The door is `parity::capture::raw::run` — one of the two places this TEST
+/// TARGET may name `std::process::Command`. Reusing it rather than opening a new
+/// one keeps the crate's capability boundary exactly where `clippy.toml` pins
+/// it.
+///
+/// The library CAN spawn now: `src/transport.rs` is the product's own door. That
+/// does not change what this proves, and using the transport here would weaken
+/// it — these tests must exercise `src/tmux.rs`'s derivation and interpretation
+/// DIRECTLY, so that a transport which happened to agree with a broken argument
+/// list could not make them pass. The purity of `src/tmux.rs` is what keeps that
+/// possible.
+pub(crate) fn run_tmux(args: &[String], scratch: &Path) -> (bool, String) {
     let mut invocation = Invocation::new("tmux");
     for arg in args {
         invocation = invocation.arg(arg);
@@ -1030,7 +1035,7 @@ fn run_tmux(args: &[String], scratch: &Path) -> (bool, String) {
 }
 
 /// Whether a real tmux is available to prove anything against.
-fn tmux_present(scratch: &Path) -> bool {
+pub(crate) fn tmux_present(scratch: &Path) -> bool {
     let out = scratch.join("probe-out");
     let err = scratch.join("probe-err");
     raw::run(&Invocation::new("tmux").arg("-V"), scratch, &out, &err)

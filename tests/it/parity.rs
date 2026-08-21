@@ -412,9 +412,13 @@ pub(crate) mod capture {
         /// If either artifact file cannot be created, or the child cannot be
         /// spawned.
         // THE HARNESS'S DOOR — the only place in the PARITY HARNESS that may
-        // name `std::process::Command`. There is one other door crate-wide, in
-        // `tests/it/cli.rs`, whose black-box tests must run the product binary;
-        // it is a different job and is private to that module.
+        // name `std::process::Command`. There are two others crate-wide, each a
+        // different job: `tests/it/cli.rs`, whose black-box tests must run the
+        // product binary and which is private to that module, and
+        // `src/transport.rs`, THE PRODUCT'S — ae cannot answer a liveness
+        // question without running tmux. That third one is not reachable from
+        // here: `transport::run` is private and the public transport only ever
+        // spawns tmux with an argument list `src/tmux.rs` derived.
         //
         // `clippy.toml` denies the type everywhere else, which resolves TYPES
         // rather than text and so holds against UFCS, aliases and re-imports

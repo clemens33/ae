@@ -14,15 +14,16 @@ use super::parity::Invocation;
 use super::parity::capture::ExitOutcome;
 use super::parity::capture::raw;
 
-// The OTHER door, and the only other one — `clippy.toml` denies
-// `std::process::Command` crate-wide and
-// `parity_self_test::the_doors_to_a_child_process_are_the_inventoried_ones` pins the
-// complete inventory of exceptions.
+// ONE OF THREE DOORS — `clippy.toml` denies `std::process::Command` crate-wide
+// and `parity_self_test::the_capability_boundary_holds_against_any_lint_relaxation`
+// pins the complete inventory of exceptions by asking the compiler for it.
 //
 // This one is not a parity concern: these tests drive the PRODUCT binary and
 // asserting on what it printed is their whole job, where the parity harness
 // must never judge a lane. `ae` is private to this module, so nothing in the
-// harness can reach a child process through it.
+// harness can reach a child process through it. The third door is the product's
+// own, in `src/transport.rs`; a binary this file runs may therefore spawn tmux
+// of its own accord, which is what makes the liveness assertions below real.
 #[allow(
     clippy::disallowed_types,
     reason = "black-box tests must run the product binary; see clippy.toml"
@@ -115,13 +116,18 @@ fn criterion_1_the_real_list_and_ls_surfaces_answer_over_a_real_state_root() {
                 stdout.contains("AlphaR") && stdout.contains("ZetaR"),
                 "{spelling}/json={json}: the planted sessions did not reach output: {stdout}"
             );
-            // THE STATUS IS `unknown`, AND THAT IS THE WHOLE POINT. This build
-            // has no tmux transport, so no liveness query can succeed — and
-            // SC-017l says an unanswerable query is `unknown`, never `stopped`.
-            // If the absent transport reported a SUCCESSFUL EMPTY query instead
-            // of a failure, every one of these rows would say `stopped`: ae
-            // would be asserting these sessions are gone on the strength of a
-            // question it never asked. That is #105 restated at the entry point.
+            // THE STATUS IS `unknown`, AND THAT IS THE WHOLE POINT. The
+            // transport is real now and it really ran: these sessions record a
+            // server that is not running, so the query FAILED — and SC-017l says
+            // an unanswerable query is `unknown`, never `stopped`. If the
+            // transport reported a SUCCESSFUL EMPTY query instead of a failure,
+            // every one of these rows would say `stopped`: ae would be asserting
+            // these sessions are gone on the strength of a question that got no
+            // answer. That is #105 restated at the entry point.
+            //
+            // The opposed arm — a server that DOES answer, making the same route
+            // say `running` and `stopped` — is in `transport.rs`. Without it this
+            // assertion would also pass on a transport that can never succeed.
             assert!(
                 stdout.contains("unknown"),
                 "{spelling}/json={json}: an unverifiable session must be unknown: {stdout}"
@@ -253,8 +259,17 @@ fn a_machine_that_cannot_say_where_its_state_lives_is_told_so() {
 }
 
 /// A scratch state root, short-lived and per-test.
+///
+/// `/tmp` DIRECTLY rather than `std::env::temp_dir()`, because a socket path
+/// lives under here now. `sun_path` is 104 bytes on macOS and `temp_dir()`
+/// eats most of them, so `<root>/no-server.sock` can exceed the limit — and
+/// then tmux fails for PATH LENGTH rather than for the absence this fixture
+/// means to assert. That is the right answer for the wrong reason, which is
+/// worse than the premise it was meant to replace: it would survive a transport
+/// that had stopped being able to look at all. `phase2.rs` and `transport.rs`
+/// use `/tmp` for the same reason.
 fn scratch(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("ae-cli-{}-{tag}", std::process::id()));
+    let dir = std::path::PathBuf::from(format!("/tmp/ae-cli-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
         std::fs::create_dir_all(dir.join("sessions")).is_ok(),
@@ -268,16 +283,40 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 /// The meta carries a POSITIVE server selector, and that is load-bearing rather
 /// than decorative: without one, SC-405l normalizes the selector to `missing`,
 /// the classifier never asks anything, and the liveness query branch is never
-/// reached. A fixture like that cannot tell an absent transport that FAILS from
-/// one that answers successfully-empty — and those two differ by exactly the
-/// `unknown` versus `stopped` this test exists to pin. The mutation lane found
-/// that hole; the selector closes it.
+/// reached. A fixture like that cannot tell a transport that FAILS from one that
+/// answers successfully-empty — and those two differ by exactly the `unknown`
+/// versus `stopped` this test exists to pin. The mutation lane found that hole;
+/// the selector closes it.
+///
+/// THE SERVER MUST NOT EXIST, and that premise is now ASSERTED rather than
+/// argued. It became contingent the moment the transport stopped being inert: a
+/// fixture recording a server ae actually queries depends on nobody running one
+/// by that address, or the query SUCCEEDS, legitimately reports these sessions
+/// absent, and renders `stopped` against an assertion of not-stopped.
+///
+/// A named server could only NARROW that — a per-process name is unlikely to be
+/// occupied, never proven unoccupied, and pids are reused. A socket path inside
+/// this test's own scratch directory is STRUCTURAL: the directory was created
+/// empty moments ago, the path is checked absent here, and no other process has
+/// a reason to bind it. The residual on the old form was in the safe direction
+/// (a collision can only fabricate an alarm, never mask a defect) but the red
+/// would have been unexplainable — a developer cannot tell ae breaking from
+/// someone's stray tmux server.
 fn plant_session(root: &std::path::Path, name: &str) {
     let dir = root.join("sessions").join(name);
+    let server = root.join("no-server.sock");
+    assert!(
+        !server.exists(),
+        "this fixture's whole premise is that nothing answers at {}",
+        server.display()
+    );
     let written = std::fs::create_dir_all(&dir).and_then(|()| {
         std::fs::write(
             dir.join("meta"),
-            "mode=local\nagent.main=cl:lead\ntmux_server_kind=name\ntmux_server=ae-test\n",
+            format!(
+                "mode=local\nagent.main=cl:lead\ntmux_server_kind=socket\ntmux_server={}\n",
+                server.display()
+            ),
         )
     });
     assert!(written.is_ok(), "a planted session");

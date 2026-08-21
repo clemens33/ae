@@ -6,11 +6,26 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 
-# The capability boundary for running a child process (see the pinned door in
-# `tests/it/parity.rs`'s `mod raw`). This resolves TYPES, not text, so it holds
-# against UFCS `std::process::Command::output(&mut c)`, `use ... as C`, and
-# spellings nobody has thought of yet — a filter over method names closes one
-# spelling, not the class.
+# The capability boundary for running a child process. This resolves TYPES, not
+# text, so it holds against UFCS `std::process::Command::output(&mut c)`,
+# `use ... as C`, and spellings nobody has thought of yet — a filter over method
+# names closes one spelling, not the class.
+#
+# THREE DOORS, each with a different job, and each pinned at its own site:
+#   1. `src/transport.rs`'s `run` — THE PRODUCT'S, and the only one outside the
+#      test target. ae is a tmux multiplexer: it cannot answer a liveness
+#      question (SC-017k/SC-017l) without running tmux, and before this door
+#      existed every session ae listed read `unknown` by construction. The
+#      capability is confined to one private function taking a derived argument
+#      list; `src/tmux.rs` stays pure, so the two decisions that can be WRONG —
+#      which server an argument list addresses, and what a completed run means —
+#      are still unit-testable without a process.
+#   2. `tests/it/parity.rs`'s `mod raw` — the parity harness's, which runs a lane
+#      and must never hold a byte it produced.
+#   3. `tests/it/cli.rs`'s `ae()` — the black-box tests', which must run the
+#      product binary and whose whole job is asserting on what it printed.
+# A fourth is a decision, not a detail: the deny is what makes adding one show up
+# in review rather than in a diff nobody read.
 #
 # WHY THIS IS A BOUNDARY AND NOT A HEURISTIC, and it is load-bearing:
 #   * ALL FOUR dependency tables are empty or absent — `[dependencies]`,

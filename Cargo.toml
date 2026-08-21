@@ -56,14 +56,16 @@ expect_used = "warn"
 # conspicuous. The type it denies, and why denying one type is sufficient HERE,
 # are documented in clippy.toml.
 #
-# There are TWO doors crate-wide, doing different jobs: the parity harness's, in
-# that file's `mod raw`, and the black-box CLI tests', which must run the product
-# binary. Not `forbid`: forbid would block both, so the residual is that a
-# further relaxation would open a further door. A self-test inventories them by
-# FILE and COUNT — where, not merely how many. That inventory is textual and
-# closes only the relaxation forms it enumerates; the type deny above is
-# semantic and closes the class. They are not the same strength, and
-# tests/it/parity.rs documents the difference.
+# There are THREE doors crate-wide, doing different jobs: the product's, in
+# `src/transport.rs`, because ae cannot answer a liveness question without
+# running tmux; the parity harness's, in `tests/it/parity.rs`'s `mod raw`; and
+# the black-box CLI tests', which must run the product binary. Not `forbid`:
+# forbid would block all three, so the residual is that a further relaxation
+# would open a further door. A self-test inventories them by FILE and COUNT —
+# where, not merely how many. That inventory is textual and closes only the
+# relaxation forms it enumerates; the type deny above is semantic and closes the
+# class. They are not the same strength, and tests/it/parity.rs documents the
+# difference.
 disallowed_types = "deny"
 
 [profile.release]

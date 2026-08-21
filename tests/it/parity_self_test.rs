@@ -897,9 +897,16 @@ fn the_capability_boundary_holds_against_any_lint_relaxation() {
 
     // Asked of the compiler, so no `allow` of any shape can hide a site from it:
     // these ARE the places this crate can start a child process.
+    //
+    // `src/transport.rs` is the PRODUCT's, and the only entry outside the test
+    // target: ae cannot answer SC-017k/SC-017l without running tmux, and before
+    // it existed every session ae listed read `unknown` by construction. It is
+    // listed here rather than exempted because the value of this guard is that
+    // adding a door is a line in a review, not a diff nobody read.
     assert_eq!(
         sites,
         vec![
+            "src/transport.rs".to_owned(),
             "tests/it/cli.rs".to_owned(),
             "tests/it/parity.rs".to_owned(),
             "tests/it/parity_self_test.rs".to_owned(),
@@ -1034,18 +1041,21 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
         }
     }
 
-    // Three relaxations this counter can see, each for a different job: the
-    // parity harness's door, which must never judge a lane; the black-box
-    // door, which drives the PRODUCT binary and where asserting on what it
-    // printed is the whole point (`cli::ae` is private to its module, so the
-    // harness cannot reach a child through it); and this file's own, which has
-    // to run clippy in order to ask clippy anything.
+    // Four relaxations this counter can see, each for a different job: the
+    // PRODUCT's, in `src/transport.rs`, because a tmux multiplexer that cannot
+    // run tmux answers `unknown` about everything; the parity harness's door,
+    // which must never judge a lane; the black-box door, which drives the
+    // PRODUCT binary and where asserting on what it printed is the whole point
+    // (`cli::ae` is private to its module, so the harness cannot reach a child
+    // through it); and this file's own, which has to run clippy in order to ask
+    // clippy anything.
     //
-    // A fourth entry is red. A relaxation this counter CANNOT see is not — that
+    // A fifth entry is red. A relaxation this counter CANNOT see is not — that
     // is what the semantic guard above is for.
     assert_eq!(
         inventory,
         vec![
+            ("src/transport.rs".to_owned(), 1),
             ("tests/it/cli.rs".to_owned(), 1),
             ("tests/it/parity.rs".to_owned(), 1),
             ("tests/it/parity_self_test.rs".to_owned(), 1),

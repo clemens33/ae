@@ -1,12 +1,11 @@
 //! Addressing a tmux server, and reading what it said.
 //!
 //! Everything here is PURE: argument derivation in, text interpretation out.
-//! Running the child process is the caller's job, and deliberately not this
-//! crate's — `clippy.toml` denies `std::process::Command` outside two pinned
-//! doors, and that boundary holds only while the library cannot spawn. So the
-//! product owns the two decisions that can be wrong — WHICH server an argument
-//! list addresses, and WHAT a completed run means — and the exec is a detail
-//! around them.
+//! Running the child process is [`crate::transport`]'s job, and deliberately not
+//! this module's. The split is what keeps the two decisions that can be WRONG —
+//! WHICH server an argument list addresses, and WHAT a completed run means —
+//! unit-testable without a process anywhere near them; the exec is a detail
+//! around them, behind the one door `clippy.toml` opens in product code.
 //!
 //! # Handover: what exists here, and what the next slice must add
 //!
@@ -19,28 +18,28 @@
 //! `AE_SESSION` round trip and a socket-that-is-not-a-server failure arm. See
 //! `tests/it/phase2.rs`, criterion 20.
 //!
-//! **The missing piece is exactly one thing: THE EXEC.** Nothing here spawns,
-//! because `clippy.toml` denies `std::process::Command` outside two pinned test
-//! doors and the library keeps that boundary. So a real transport is one
-//! deliberate crossing — a third door, enumerated like the others — and NOT a
-//! rewrite: the decisions that can be wrong (which server an argument list
-//! addresses, what a completed run means) already live in this module and are
-//! already tested.
+//! **The exec has LANDED.** [`crate::transport::Tmux`] runs these argument lists
+//! and feeds these interpreters, so what this module derives now reaches a real
+//! server on the ordinary `ae list` route. It is one deliberate crossing of the
+//! `std::process::Command` deny — a third door, enumerated in `clippy.toml`
+//! beside the two test ones — and it changed nothing here: the transport derives
+//! no argv of its own and interprets no bytes of its own.
 //!
-//! **What that unlocks, in order:**
+//! **What that unlocked, and what it did not:**
 //!
-//! * SC-017k/SC-017l — session liveness stops being universally `unknown`,
-//!   because [`interpret_sessions`] finally receives a real answer.
-//! * SC-017p/SC-017q — per-agent liveness. This module does NOT yet derive
-//!   panes: `list-panes` argv and its interpretation are the next functions to
-//!   write here, and they need the same treatment — exact association to a
-//!   roster slot, and ambiguity routed to `unknown` rather than to `dead`.
-//! * SC-017o — an entitled server that can actually be enumerated stops
-//!   counting as a failed source, so `inventory_complete` stops being false on
-//!   every machine that records a server.
-//!
-//! Until then [`crate::run`]'s transport fails every query by construction, and
-//! every one of those three surfaces reports the honest `unknown`.
+//! * SC-017k/SC-017l — DONE. Session liveness is no longer universally
+//!   `unknown`: [`interpret_sessions`] receives a real answer, and a candidate is
+//!   `running` or `stopped` on it. A server that does not answer is still
+//!   `unknown`, which is the row's whole point.
+//! * SC-017o — DONE for the same reason: an entitled server that can be
+//!   enumerated stops counting as a failed source, so `inventory_complete` is no
+//!   longer false on every machine that records a server.
+//! * SC-017p/SC-017q — STILL OPEN. This module does NOT derive panes:
+//!   `list-panes` argv and its interpretation are the next functions to write
+//!   here, and they need the same treatment — exact association to a roster
+//!   slot, and ambiguity routed to `unknown` rather than to `dead`. The
+//!   transport is ready for them; nothing about the pane question is answered by
+//!   its existence.
 //!
 //! # Why the exit status decides and the bytes do not
 //!

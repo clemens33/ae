@@ -28,6 +28,7 @@
 //! | [`inventory`] | SC-017j, SC-404 — which sessions EXIST, before anything asks whether they run |
 //! | [`liveness`] | SC-017k, SC-017l — what ae knows about running, and what it says when it cannot tell |
 //! | [`tmux`] | SC-017k — which server an argument list addresses, and what a completed run means |
+//! | [`transport`] | SC-017k, SC-017l — the exec, and why a run that did not answer is never absence |
 //! | [`session`] | SC-017e, SC-017g, SC-405d/f/g/i/j/k, SC-518, SC-520, SC-980 — what a session directory establishes, and what it must be told |
 //! | [`listing`] | SC-017f, SC-017h, SC-509, SC-506 — the two renderings of one selection, and the injected world they read |
 //! | [`cli`] | SC-021, and the argv half of SC-017a–i / SC-521a/b — which word is `list`, and which parser owns its flags |
@@ -63,6 +64,7 @@ pub mod meta;
 pub mod session;
 pub mod time;
 pub mod tmux;
+pub mod transport;
 
 use std::io::Write;
 
@@ -204,46 +206,20 @@ fn state_root() -> Option<std::path::PathBuf> {
 /// sides comparable on the route the product actually takes.
 ///
 /// Phase 1 discovers, phase 2 classifies, phase 3 renders — and the transport is
-/// the one piece this build does not have. [`NoTransport`] fails every liveness
-/// query, so SC-017l makes every durable candidate `unknown`: not a guess and
-/// not a refusal, but the answer ae is entitled to give when it cannot verify
-/// anything. When a real transport lands, only that one impl changes.
+/// [`transport::Tmux`], which runs the real thing. A candidate whose recorded
+/// server answers is `running` or `stopped` on that answer; a candidate whose
+/// server does not answer is still `unknown`, because SC-017l is about what was
+/// established and not about which build is running.
 #[must_use]
 pub fn current_world(root: &std::path::Path) -> (liveness::Snapshot, listing::World) {
     let scan = inventory::durable_records(&inventory::Roots::under(root));
     // No ambient server: selecting one is SC-1410c's unratified question, and
     // entitlement without a pointer is exactly what SC-017j forbids.
-    let taken = inventory::take(scan, None, &NoTransport);
-    let snapshot = liveness::classify(taken, &NoTransport);
+    let taken = inventory::take(scan, None, &transport::Tmux);
+    let snapshot = liveness::classify(taken, &transport::Tmux);
     let world = listing::Presentation::enter(&snapshot)
         .world(time::Timestamp::now(), session::DEFAULT_UNANSWERED_SECS);
     (snapshot, world)
-}
-
-/// The absent tmux transport.
-///
-/// Every query fails, because this crate cannot start a child process —
-/// `clippy.toml` denies `std::process::Command` outside two pinned test doors,
-/// and that boundary is worth more than a premature transport. The consequence
-/// is honest: SC-017l routes an unanswerable query to `unknown`, never to
-/// `stopped` and never to absence.
-///
-/// **This is the seam the real transport replaces, and it is the only one.**
-/// [`crate::tmux`] already holds the argv derivation and the completed-run
-/// interpretation, proven against real isolated servers; what is missing is the
-/// exec. Read that module's handover section before building it — including why
-/// a successful EMPTY query and a failed one must never collapse here, which is
-/// the difference between every session reading `unknown` and every session
-/// reading `stopped`.
-struct NoTransport;
-
-impl inventory::Discovery for NoTransport {
-    fn enumerate(
-        &self,
-        _server: &inventory::ServerId,
-    ) -> std::result::Result<Vec<inventory::DiscoveredSession>, inventory::QueryFailed> {
-        Err(inventory::QueryFailed)
-    }
 }
 
 /// Run the CLI against `args` over `world` — the injected session source.
