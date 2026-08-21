@@ -1039,9 +1039,9 @@ selector-intersection, no-relabel, and frozen two-valued conclusions stand. Live
 uncertainty never erases an independently established record fact. Authority: SC-017d/e +
 SC-017l/m + SC-509d + joint P1 ruling. Empirical: successor implementation pending; frozen
 schema v1 has no unknown state. Conflict: none.
-**classified_by: both seats, 2026-08-21 — attention/liveness independence ruling; bucket 2,
-conflict none. Successor semantics, not a frozen-Bash defect: #105 motivates first-class
-unknown but is not this row's authority.**
+**classified_by:** SC-521c — attention/liveness independence ruling, 2026-08-21;
+fable5:lead + gpt56sol:colead. Bucket 2, conflict none. Successor semantics, not a
+frozen-Bash defect: #105 motivates first-class unknown but is not this row's authority.**
 
 **SC-522 — the unanswered threshold is strictly past.** Bucket 2 — (slice-1 Q7e): age
 must EXCEED the threshold; equality is not past it. Authority: commands.md:60-76
