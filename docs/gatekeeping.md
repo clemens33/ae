@@ -22,6 +22,8 @@ invariant, not against the code.
 | you are briefing a worker and need to keep product conclusions off that channel | The seat boundary, in its finished form |
 | you and another person both confirmed a document contains X without re-reading the stated clause | Two people agreeing from memory about a document is not a reading of the document |
 | the commit that introduced a rule also violates it in the same text | Why rules get broken inside their own statement |
+| you are claiming a body of evidence covers some condition | A condition that was never CAPTURED cannot later be shown to have been ABSENT |
+| a coverage count came back healthy and nobody has re-derived it | A measurement error that produces COMFORT gets used; one that produces alarm gets checked |
 | your independent cross-check disagrees and you are about to adjust the cross-check | Fixing an instrument and TUNING it produce identical diffs |
 | you added a variant to a closed set, fixed everything the compiler flagged, and it went green | A type-system guarantee has a precise scope; the confidence it creates does not |
 | a number or pointer kept in two places has silently disagreed | Hand-maintained redundancy, of which stale pointers are one instance |
@@ -769,6 +771,48 @@ absent file standing in for a recorded absence.
 `sleep`, and the exec'd process exposes no environment. The control failed **for its own
 reasons**, and a control that fails for reasons unrelated to its subject reads exactly like
 the subject failing.
+
+### A condition that was never CAPTURED cannot later be shown to have been ABSENT
+
+A corpus was audited for whether it exercised four failure conditions. Three answers were
+possible, and only two were expected.
+
+One condition — a session missing its ownership marker — turned out to be **unobservable**.
+The marker is proved by querying the tmux *session environment*; the capture recorded pane
+options. So the corpus cannot say the condition was present, and it cannot say it was absent.
+It is silent, **and silence in a corpus reads exactly like coverage**: the rows are there, the
+captures are complete by their own manifest, nothing is missing or malformed. Only asking
+*what field would have recorded this?* separates "did not happen" from "was never looked at".
+
+This is the absence-of-evidence trap with a specific, checkable remedy. For any condition a
+body of evidence is claimed to cover, name **the field that would carry it** and confirm that
+field exists in the capture. If no field could have recorded it, the corpus is not weak
+evidence about that condition — **it is not evidence about it at all**, and any coverage claim
+that includes it is unfounded rather than optimistic.
+
+Report it as a third answer — present / absent / **unobservable** — because folding it into
+"absent" is how it becomes coverage.
+
+### A measurement error that produces COMFORT gets used; one that produces alarm gets checked
+
+The same audit first reported **146** rows exercising a prefix-collision defect. The real
+number was **zero**.
+
+The error: the count tested whether a prefix *pair co-occurred* in a fixture. The defect fires
+only when a **non-live** candidate's name is a strict prefix of a **live** one — an asymmetric
+condition. Co-occurrence and firing differ by exactly the asymmetry the defect depends on, and
+in every co-occurring case the pair was oriented the wrong way round.
+
+What makes this worth a rule is not the mistake but **its direction**. 146 says *that path is
+well covered* — a result that ends the inquiry, gets quoted downstream, and never gets a second
+look. Zero says *we have a gap* — a result that gets re-derived, argued with, and checked.
+**Errors that flatter coverage are systematically less likely to be caught than errors that
+threaten it**, because scrutiny is spent on findings that cost something.
+
+So audit the reassuring numbers, not the alarming ones — the alarming ones defend themselves.
+And when a count stands in for a *condition*, state the condition's firing shape explicitly
+before counting: every simplification that drops an asymmetry, an ordering, or a negation
+produces a number that is too large, and too large is the comfortable direction.
 
 ### Fixing an instrument and TUNING it produce identical diffs
 
