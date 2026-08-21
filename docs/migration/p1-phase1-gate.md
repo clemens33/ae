@@ -205,10 +205,30 @@ misreading.
     absent/empty x value absent/empty -> missing; meta absent -> missing; meta genuinely
     unreadable -> missing. The readable missing group and the two record-loss fixtures must agree
     on selector state while criterion 21 proves their record-read facts remain distinct. Test
-    invalid combinations separately: unknown kind, positive typed kind with empty value, relative socket,
-    present-but-empty kind beside a nonempty value, duplicate equal keys, and duplicate
-    conflicting keys must all be ambiguous. The absent-kind and present-empty-kind fixtures must
-    differ by construction. FAIL if any candidate disappears, any invalid form becomes positive,
-    name/socket payloads lose their type, unreadable/absent meta falls outside the typed selector
-    domain, or a missing/ambiguous form enters the queried-server set. Whether malformed readable
-    selector forms also set `degraded` is outside this criterion (SC-405e/SC-509b).
+    invalid combinations separately: unknown kind, positive typed kind with empty value,
+    relative socket, present-but-empty kind beside a nonempty value, duplicate equal keys, and
+    duplicate conflicting keys must all be ambiguous. The absent-kind and present-empty-kind
+    fixtures must differ by construction. FAIL if any candidate disappears, any invalid form
+    becomes positive, name/socket payloads lose their type, unreadable/absent meta falls outside
+    the typed selector domain, or a missing/ambiguous form enters the queried-server set. Whether
+    malformed readable selector forms also set `degraded` is outside this criterion
+    (SC-405e/SC-509b).
+
+24. **INCOMPLETE ENUMERATION IS AN EXPLICIT SNAPSHOT FACT, NOT A MISSING CANDIDATE.**
+    Exercise three terminal failures separately while another healthy source contributes a known
+    candidate: (a) an existing canonical durable root cannot be listed, (b) a discovered worktree
+    `.ae` subtree cannot be listed, and (c) an entitled tmux server cannot be enumerated. Before
+    classification, observe `inventory_complete = false`, one logical loss fact for the failed
+    source, and the healthy candidate still present. The filesystem fixtures must demonstrate that
+    the enumeration operation itself returned an error; `chmod` alone is invalid if the effective
+    test user can still list the path. Then combine two independent failures in one snapshot — an
+    unlistable canonical root and a separately unlistable discovered worktree `.ae` subtree — and
+    require two distinguishable logical-source loss facts, not a boolean or first-loss-only record;
+    a third healthy source still contributes its candidate. Opposed controls — missing durable
+    root, absent worktree `.ae`, readable empty source, and live server outside the entitled set —
+    remain complete and add no loss. A discovered candidate whose meta is absent or unreadable
+    remains inventory-complete and carries only its independent criterion-21/SC-509b record-loss
+    fact. FAIL if one bad source aborts the scan, the loss stays silent, a guessed
+    candidate/identity is fabricated, a healthy candidate is dropped, or an
+    authoritative-empty/epistemic-limit control is reported
+    as incomplete. Loss carrier, error detail, retry policy, and ordering are **OPEN CHOICES**.

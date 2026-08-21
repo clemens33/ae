@@ -137,20 +137,22 @@ builder until implementation handback.
     equivalence, or any result crosses server identity. Positively proven equivalent
     server selectors MAY be grouped per SC-017k; raw spelling inference may not.
 
-13. **[STATE MATRIX] UNKNOWN AND DEGRADED ARE ORTHOGONAL.** Construct the required four
-    cells while keeping the non-varied axis fixed: (`running`, not degraded),
+13. **[STATE MATRIX] UNKNOWN AND DEGRADED ARE ORTHOGONAL THROUGH THE EMITTED DIGEST.**
+    Construct the required four cells while keeping the non-varied axis fixed:
+    (`running`, not degraded),
     (`running`, degraded), (`unknown`, not degraded), (`unknown`, degraded). Use a
     separate phase-1 read-loss fact for degradation; do not manufacture it by breaking
     the liveness query. For the unknown pair, hold selector state at SC-405l `missing`:
     use a readable record with no selector for not-degraded and an absent or genuinely
-    unreadable record for degraded. Observable: each status/degradation pair
-    independently. Flip degradation alone and require identical query/status; flip
-    liveness proof alone and require identical degradation. Add `stopped` with both
-    degradation values as the SC-509b preservation control. FAIL if unknown sets
-    degraded, degraded forces unknown, the two missing-selector cells collapse their
-    distinct read-loss provenance, false is confused with omitted true, or any cell is
-    unconstructible. SC-509b permits omission of semantic false; exact JSON presence for
-    false is an **OPEN CHOICE**.
+    unreadable record for degraded. Observe every pair twice: at classifier output and in
+    the emitted schema-version-2 digest. Flip degradation alone and require identical
+    query/status at both boundaries; flip liveness proof alone and require identical
+    degradation at both. Add `stopped` with both degradation values as the SC-509b
+    preservation control. FAIL if unknown sets degraded, degraded forces unknown, the
+    serializer drops/forces degradation specifically for unknown, the two missing-
+    selector cells collapse their distinct read-loss provenance before emission, false
+    is confused with omitted true, or any cell is unconstructible. SC-509b permits
+    omission of semantic false; exact JSON presence for false is an **OPEN CHOICE**.
 
 14. **[STATE/BOUNDARY] PHASE 2 CONSUMES PHASE-1 FACTS; IT DOES NOT REDISCOVER THEM.**
     Instrument durable-root/meta access after `inventory complete`. Observable: no
@@ -172,10 +174,10 @@ builder until implementation handback.
     DOMAIN.** Emit successor digests for: empty inventory; running only; stopped only;
     unknown only; mixed statuses; and the degradation matrix. Observable: numeric
     `schema_version: 2` exactly once in every document, and every `sessions[].status` is
-    exactly one
-    of lowercase `running | unknown | stopped`. FAIL on a conditional bump only when an
-    unknown exists, version 1 on any successor path, null/free-text/alias status, invalid
-    JSON, or a status outside the closed domain. JSON field order is an **OPEN CHOICE**.
+    exactly one of lowercase `running | unknown | stopped`. FAIL on a conditional bump
+    only when an unknown exists, version 1 on any successor path, null/free-text/alias
+    status, invalid JSON, or a status outside the closed domain. JSON field order is an
+    **OPEN CHOICE**.
 
 17. **[PAIR] SCHEMA VERSION 2 PRESERVES THE REST OF SC-509/SC-509b.** For a fixture
     whose liveness remains running/stopped across the flip, compare version-1 baseline
@@ -221,13 +223,48 @@ builder until implementation handback.
     product-owned C sorting here; SC-017m/n and SC-521c own those. FAIL this gate itself
     if a test rejects an otherwise correct classifier for one of those unratified choices.
 
-22. **[SET/BEHAVIOR] PHASE 2 CONSUMES ENTITLEMENT; IT NEVER EXPANDS IT.** Preserve the
-    phase-1 entitled-server set as the authorization boundary, then place valid but
+22. **[SET/BEHAVIOR] PHASE 2 NEVER EXPANDS PHASE-1 ENTITLEMENT.** Use the phase-1
+    entitled-server set as the authorization upper bound, then place valid but
     unentitled tmux sockets/server names in plausible scan locations. Instrument both
     filesystem enumeration and every backend target. Observable: every server phase 2
     contacts belongs to the phase-1 entitled set, and phase 2 performs no arbitrary
     socket-path or server-name sweep. FAIL on any extra target or broad socket/server
     enumeration even when its result is discarded and every final status is otherwise
-    correct. Querying any subset of entitled servers, grouping equivalent selectors,
-    query order, caching, and retry count remain **OPEN CHOICES**; this criterion bounds
-    authorization, not the amount of permitted work.
+    correct. How phase 2 carries or recomputes an allowed subset from the phase-1 typed
+    facts is an **OPEN CHOICE**; it may not rediscover entitlement by sweeping. Querying
+    any subset of entitled servers, grouping equivalent selectors, query order, caching,
+    and retry count also remain **OPEN CHOICES**. This criterion bounds authorization,
+    not provenance or the amount of permitted work.
+
+23. **[PAIR/STATE] INVENTORY COMPLETENESS SURVIVES CLASSIFICATION AND EMISSION.** Feed
+    the same candidate set, selectors, read-loss facts, and backend answers twice. The
+    only difference is a phase-1 completeness fact: complete with zero enumeration
+    losses versus incomplete with one named logical-source loss. Observable: classified
+    identities, statuses, and degradation facts are identical; completeness and loss
+    facts cross the classifier boundary unchanged; emitted schema-version-2 JSON carries
+    `inventory_complete: true` versus `false`. Repeat with an empty candidate set so an
+    incomplete-empty snapshot cannot masquerade as authoritative empty. FAIL if the
+    classifier clears or recomputes the loss, maps incompleteness to `unknown` or
+    `degraded`, fabricates a candidate, drops healthy candidates, or emits the same
+    boolean for both arms. Reuse phase-1 criterion 24's simultaneous two-source failure
+    and require both distinguishable loss facts to cross classification; retaining only
+    the first is a failure even though JSON still needs only the boolean. Internal loss
+    representation, detailed JSON loss exposure, and human warning policy are outside
+    this phase.
+
+## Phase 3 handoff — pre-registered consequences, not phase-2 PASS conditions
+
+- Run every human list filter/view over one fixed incomplete snapshot. For each filter,
+  the emitted rows must equal that filter applied to the candidates the incomplete
+  inventory actually found; do not compare against identities visible only when the
+  failed source becomes readable. Every incomplete invocation emits an explicit stderr
+  diagnostic containing at least the logical-source loss count. Reuse phase-1 criterion
+  24's simultaneous two-source failure and require the reported count to be `2`, so a
+  boolean or constant-one diagnostic fails. FAIL if only `--all` warns, a filter hides
+  the warning, found rows change, or a synthetic session/status represents the loss.
+  Exact wording, optional paths/targets, and exit status remain **OPEN CHOICES**.
+- Run human complete/incomplete controls and JSON complete/incomplete controls, including
+  both empty inventories. Complete human output emits no incompleteness warning. Every
+  successor JSON document carries the top-level boolean with the correct value regardless
+  of filter or emptiness; version 1 remains unchanged. Detailed machine loss records are
+  **OPEN CHOICE** because SC-017o requires only the boolean.
