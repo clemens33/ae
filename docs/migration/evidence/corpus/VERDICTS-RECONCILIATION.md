@@ -122,3 +122,27 @@ has moved since.
 one row landing invalidated the reason projection on **every** divergent row, because SC-017o
 reaches `inventory_complete` — a field every digest carries. **The size of an amendment is no guide
 to the size of the invalidation it causes**, so "was that a big change?" is not a usable trigger.
+
+---
+
+## Addendum — the freshness relation is HEAD-relative, stated rather than discovered
+
+Built at `940215e` as `FRESHNESS.tsv` plus a gate clause. One property is worth writing down
+because it is a deliberate choice with a real cost, not an implementation detail:
+
+**The relation compares the recorded contract blob against `HEAD`, not against the working tree.**
+It therefore answers *"is the COMMITTED table fresh against the COMMITTED contract"* — the question
+a reviewer or CI asks — and one agent's in-flight contract edit cannot fail everyone else's gate.
+
+**The cost:** someone editing `semantic-contract.md` locally and running the gate gets a pass that
+says nothing about their own edit. So the **success** line names what it was fresh against, not just
+the failure line:
+
+```
+OBLIGATIONS VERIFIED — fresh against COMMITTED contract a535f8ca69f8 at HEAD
+  (HEAD-relative: an uncommitted local edit to the contract is NOT assessed)
+```
+
+A gate whose green message does not name its reference invites being read as *fresh against what I
+just wrote*, which is the one thing it does not check.
+

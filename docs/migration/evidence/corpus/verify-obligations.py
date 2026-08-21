@@ -45,6 +45,12 @@ def main(quiet=False):
         k, _, v = line.rstrip("\n").partition("\t"); rec[k] = v
 
     # ---- 1. FRESHNESS: has the source moved since this was derived? ----
+    # THE RELATION IS HEAD-RELATIVE, DELIBERATELY. It answers "is the COMMITTED table
+    # fresh against the COMMITTED contract", which is the question a reviewer or CI
+    # asks, and it means one agent's in-flight edit cannot fail everyone's gate. The
+    # cost is that someone editing the contract LOCALLY and running this gets a pass
+    # that says nothing about their own edit — so the success line names HEAD too,
+    # and not only the failure line.
     now = head_blob()
     if rec.get("contract_blob") != now:
         fail(out, "STALE", "derived against contract blob %s; HEAD is %s — re-derive"
@@ -129,7 +135,12 @@ def main(quiet=False):
               % (len(obls), len(carriers), rec.get("contract_blob", "?")[:12]))
         for k in sorted(per): print("  %-10s %4d" % (k, per[k]))
         for cid, msg in out[:20]: print("FAIL  %-14s %s" % (cid, msg))
-        print("OBLIGATIONS VERIFIED" if not out else "NOT VERIFIED — %d finding(s)" % len(out))
+        if not out:
+            print("OBLIGATIONS VERIFIED — fresh against COMMITTED contract %s at HEAD"
+                  % now[:12])
+            print("  (HEAD-relative: an uncommitted local edit to the contract is NOT assessed)")
+        else:
+            print("NOT VERIFIED — %d finding(s)" % len(out))
     return (1 if out else 0), {c for c, _ in out}
 
 if __name__ == "__main__":
