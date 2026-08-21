@@ -244,6 +244,96 @@ Normative/conflict lane only; Empirical remains pending where so marked.**
 **SC-017i — `--running` is the explicit spelling of the default filter.** Bucket 2.
 Authority: commands.md:83. Empirical: pending. Conflict: none.
 
+**SC-017j — inventory candidates exist before liveness is classified.** Bucket 3 —
+fix-known-defect(#105). The list inventory is the union of (a) durable current-session
+state under the canonical sessions root plus SC-400a's legacy-readable worktree layout
+and (b) positively identified ae-owned live tmux sessions on a server the product is
+already entitled to query. The entitled server set is finite and pointer-derived: (1) the single ambient server selected by this invocation's ordinary tmux transport, and (2) every distinct positive, unambiguous server selector read from a durable inventory candidate under that candidate's ratified current or legacy format. A missing/ambiguous selector confers no entitlement; it leaves that durable candidate in inventory with liveness unknown. Enumerating an entitled server may add every positively ae-owned live session found there. ae does not gain entitlement by sweeping arbitrary tmux socket paths or server names. A live session with no durable candidate on a server outside this set is absent from inventory by epistemic limit — not classified stopped or unknown — and may become visible later when an ambient selection or durable record supplies a pointer. SC-1410c separately owns whether/how AE_TMUX_SERVER selects the ambient server; this row consumes the selected ambient server and does not ratify that environment control. Archives are inert and never enter this inventory. Every
+durable candidate survives into classification: a failed liveness query, a prefix-only
+name match, or a live exact-name session whose ownership marker is missing cannot delete
+the candidate. A positively live tmux-only candidate remains visible; loss of its
+durable record is the separate SC-509b `degraded` fact. This row does NOT authorize
+basename-only deduplication of distinct identities. IS at 72c7293: VIOLATED —
+`list_ae_sessions` discovers ambient tmux sessions and requires `AE_SESSION` at
+ae:2682-2693, while `iter_stopped_sessions` separately discovers disk directories and
+then removes them through `tmux has-session -t "$name"` at ae:2697-2708. A missing
+marker or a prefix sibling can therefore remove the same durable candidate from both
+blocks. The prefix behavior itself was observed on isolated tmux 3.7b/Darwin
+(exact control 0, absent negative control 1); the resulting product disappearance is
+source-proven, not yet captured end-to-end. Empirical: primitive prefix behavior
+observed; product disappearance source-proven, end-to-end capture pending. Authority:
+architecture.md@72c7293:61-83 +
+SC-400a + SC-509b + joint P1 ruling. Issue #105 records IS/conflict only; it is not
+normative authority. Conflict: fix-known-defect(#105).
+
+**SC-017k — list liveness is a positive, exact fact from the session's own server.**
+Bucket 3 — fix-known-defect(#105). A durable candidate is `running` only when a
+successful query of its recorded tmux server returns the exact session name with
+positive ae-ownership evidence; it is `stopped` only when a successful query of that
+same server proves the exact name absent. For a candidate sourced solely from a live
+tmux discovery, that successful discovery query is the positive server fact for this
+snapshot; it does not fabricate a durable server record. Ambient-server membership,
+prefix success, and the renderer block that happened to print the row are not liveness
+facts. Implementations MAY group candidates by recorded server and query each server
+once; every candidate's answer must still come from its own server and exact name. IS at
+72c7293: VIOLATED — there is no per-session liveness predicate: the running block writes
+the literal `running` (ae:4244), the stopped block writes `stopped` (ae:4290), and the
+only stopped-side test is ambient, prefix-matching `tmux has-session -t "$name"`
+(ae:2706). The prefix behavior is observed at the tmux primitive; ambient-server and
+block-provenance violations are source-proven. Empirical: primitive prefix behavior
+observed; remaining product relations source-proven, end-to-end capture pending.
+Authority: SC-835a's recorded-server /
+exact-identity rule + the SC-832d/e exact-name hazard + joint P1 ruling. Issue #105 is
+IS/conflict only. Conflict: fix-known-defect(#105).
+
+**SC-017l — unprovable liveness is first-class `unknown`.** Bucket 3 —
+fix-known-defect(#105). An unreachable, missing, or ambiguous recorded server; a failed
+server query; or an exact live name with missing/mismatched ownership evidence yields
+`unknown` — never `stopped`, never absence. `unknown` is a fact about liveness knowledge.
+It is orthogonal to SC-509b's `degraded`, which is a fact about record read/parse loss:
+either, both, or neither may hold. IS at 72c7293: VIOLATED — a failed ambient
+`list-sessions` produces zero running rows (ae:2692), and each stopped-side
+`has-session` then fails (ae:2706), so every durable directory is printed `stopped` with
+no diagnostic; a non-ambient live session is misclassified the same way, while a live
+session missing `AE_SESSION` disappears. These product consequences are source-proven;
+no end-to-end list arm has captured them yet. Empirical: source-proven, end-to-end
+capture pending. Authority: SC-816 + SC-835c's established
+rule that inability to verify is not absence + joint P1 ruling. Issue #105 is
+IS/conflict only. Conflict: fix-known-defect(#105).
+
+**SC-017m — list renders and filters `unknown` without hiding it.** Bucket 3 —
+fix-known-defect(#105). Human and JSON surfaces spell the status `unknown` explicitly.
+The default / `--running` view is the active inventory, not stopped-history noise: it
+shows `running`, then `unknown`. `--stopped` shows only `stopped`; `--all` shows
+`running`, then `unknown`, then `stopped`. Attention/activity filters remain
+positive-running predicates and never relabel an unknown session. `unknown` alone does
+not set `degraded`; a damaged record may independently carry both. This precisely
+narrows SC-017a/b/c/i: an unknown session is not stopped history, and hiding it from the
+active view would recreate #105. SC-017f requires the same selection in human and JSON
+renderings. IS at 72c7293: VIOLATED — status is the literal of the block that printed the
+row, so an unverified candidate is either silently absent or rendered `stopped`.
+Empirical: source-proven, end-to-end capture pending. Authority:
+commands.md@72c7293:78-88 + SC-509b + joint P1 ruling. SC-509d owns the
+machine-schema version change; issue #105 is IS/conflict only. Conflict:
+fix-known-defect(#105).
+
+**SC-017n — list owns a portable deterministic session order.** Bucket 2 — within
+each status group, session names sort by raw byte / `LC_ALL=C` order; group order is
+`running`, `unknown`, `stopped` (with filters retaining only their selected groups).
+The session-name grammar is ASCII, so byte order is locale-independent and unambiguous.
+The product sorts itself: tmux emission, filesystem glob, root traversal, locale, and
+creation/id order never become output contracts by accident. Authority: SC-017b's
+existing inter-group order + joint P1 reproducibility ruling. Empirical: isolated tmux
+3.7b/Darwin emitted byte-identically to `LC_ALL=C sort` across opposed creation/id and
+case/numeric-looking names, but ae applies no sort; that one implementation's observed
+order is IS only, never authority or a cross-version guarantee. Conflict: none.
+
+**classified_by:** SC-017j SC-017k SC-017l SC-017m SC-017n — P1
+inventory/liveness joint ruling, 2026-08-21; fable5:lead + gpt56sol:colead. Exact enumeration;
+SC-017j..m are bucket 3 fix-known-defect(#105), SC-017n is bucket 2 conflict=none.
+Normative/conflict classification and the explicitly scoped source/probe empirical lanes
+only; no primitive probe is promoted to an end-to-end product capture.**
+
 **SC-020a — `next --attach` switches inside tmux, attaches outside.** Bucket 2 —
 `tmux switch-client` when already in tmux, `tmux attach-session` otherwise; `--switch`
 is its alias. Authority: commands.md:155-157. Empirical: pending. Conflict: none.
@@ -287,8 +377,8 @@ item declared, every target id must exist):
 S1MAP: launch -> SC-100 SC-101 SC-102a SC-102b SC-813
 S1MAP: --local/--copy/--worktree -> SC-306
 S1MAP: --from -> SC-822 SC-823 SC-824a SC-824b SC-825a
-S1MAP: list -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-509 SC-506 SC-1306a
-S1MAP: ls -> SC-021 SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-509 SC-506 SC-1306a
+S1MAP: list -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a
+S1MAP: ls -> SC-021 SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a
 S1MAP: status -> SC-016a SC-016b SC-016c SC-016d SC-1306b
 S1MAP: next -> SC-513a SC-513b SC-513c SC-020a SC-020b SC-020c SC-1306c
 S1MAP: jump -> SC-019
@@ -965,6 +1055,22 @@ doctrine). Empirical: pending. Conflict: none. **classified_by: both seats,
 needs_attention/attention/attention_rank) and `agents[]` fields (ref/alias/name/
 session_id/alive/state/reason); `schema_version` lets consumers gate on shape.
 Authority: commands.md:97-132. Empirical: pending. Conflict: none.
+
+**SC-509d — the P1 successor schema is version 2 because status gains `unknown`.**
+Bucket 3 — fix-known-defect(#105). Once the P1 read-side flip implements SC-017l/m,
+every successor digest emits `schema_version: 2`, and `sessions[].status` has the closed
+domain `running | unknown | stopped`; it never emits `unknown` under version 1. All
+other SC-509 fields and SC-509b degradation semantics carry forward unless another row
+changes them. SC-509 remains the true frozen-Bash version-1 contract rather than being
+rewritten after the fact. A new enum value is a consumer-visible contract change even
+when field name, JSON type, and position stay unchanged; versioning is the gating
+mechanism. Authority: SC-509's consumer-gating design + SC-017l/m + joint P1 ruling.
+IS at 72c7293: version 1 has only `running`/`stopped`; successor implementation pending.
+Empirical: frozen baseline source-proven; successor implementation pending.
+Issue #105 records the defect requiring this change, never its normative authority.
+Conflict: fix-known-defect(#105).
+**classified_by:** P1 schema-v2 joint ruling, 2026-08-21 — SC-509d; fable5:lead +
+gpt56sol:colead; bucket 3 fix-known-defect(#105), normative/conflict lane.**
 
 **SC-510a — event required keys.** Bucket 2 — every event carries `ts` (ISO 8601 UTC,
 second precision), `actor`, `action`. Authority: events.md:47-60. Empirical: pending.
