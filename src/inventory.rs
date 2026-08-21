@@ -316,39 +316,61 @@ impl Candidate {
     }
 }
 
-/// What the durable scan found, and what it could not see.
+/// A logical source whose terminal enumeration failed — SC-017o.
 ///
-/// The second field is the third member of a family this build has now
-/// separated three times: **never-asked is not unreachable**, **record-absent is
-/// not record-unreadable**, and a state directory ae could not LIST is not a
-/// state directory that is not there. Each pair is two epistemic states that a
-/// tidier design would render identically, and rendering them identically is
-/// how a confident listing omits something and says nothing about it — #105's
-/// shape, one level up.
+/// The row names three classes, and each is a place where ae asked a question
+/// and got no answer. What they have in common is the fact worth recording:
+/// **absence in this snapshot is not proof**. A listing that silently omits an
+/// unknowable number of sessions asserts a completeness it did not establish,
+/// which is the confident-empty shape #105 exists to remove.
+///
+/// What is NOT here matters as much. A missing durable root or an absent `.ae`
+/// subtree is an AUTHORITATIVE EMPTY SOURCE — it answered, and the answer was
+/// "nothing". Archives and servers outside the entitled set were never required.
+/// And a candidate directory that WAS discovered, whose `meta` will not read,
+/// stays that candidate's own SC-405i/SC-509b record-loss fact: it never becomes
+/// enumeration incompleteness, because nothing about the enumeration failed.
+///
+/// A loss fact names the SOURCE, never a session: the useful fact is not which
+/// sessions were lost — nobody can know that — but that some may have been.
+/// Guessing an identity here would be the fabrication SC-017o forbids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FailedSource {
+    /// `<AE_HOME>/sessions` exists and would not enumerate.
+    CanonicalRoot(PathBuf),
+    /// `<AE_HOME>/worktrees` exists and would not enumerate, hiding every
+    /// worktree beneath it.
+    WorktreeRoot(PathBuf),
+    /// A discovered `<worktree>/.ae` exists and would not enumerate.
+    WorktreeState(PathBuf),
+    /// An entitled tmux server did not answer.
+    Server(ServerId),
+}
+
+/// What the durable scan found, and which sources failed to answer.
+///
+/// The loss list is the third member of a family this build has now separated
+/// four times: **never-asked is not unreachable**, **record-absent is not
+/// record-unreadable**, **unlistable is not absent**, and now **a source that
+/// failed is not a source that answered "nothing"**. Each pair is two epistemic
+/// states that a tidier design would render identically.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DurableScan {
     /// Every durable candidate found.
     pub records: Vec<DurableRecord>,
-    /// Worktree state roots that EXIST and would not list.
+    /// Durable sources whose enumeration failed (SC-017o).
     ///
-    /// Not candidates and never a source of one — nothing can be named inside a
-    /// directory that will not enumerate. This is the fact that the inventory is
-    /// incomplete THERE, recorded because silence is the failure mode: a session
-    /// living in an unlistable worktree would otherwise be invisible with no
-    /// signal at all.
-    ///
-    /// A worktree with NO `.ae` directory is absent from this list: that is a
-    /// bare checkout, which SC-400d says is not a candidate. Absence is not
-    /// loss.
-    pub unlistable: Vec<PathBuf>,
+    /// Never candidates and never a source of one — nothing can be named inside
+    /// a directory that will not enumerate.
+    pub incomplete: Vec<FailedSource>,
 }
 
 impl From<Vec<DurableRecord>> for DurableScan {
-    /// A scan that found these records and saw everything it looked at.
+    /// A scan that found these records and enumerated every source it needed.
     fn from(records: Vec<DurableRecord>) -> Self {
         Self {
             records,
-            unlistable: Vec::new(),
+            incomplete: Vec::new(),
         }
     }
 }
@@ -364,46 +386,61 @@ impl From<Vec<DurableRecord>> for DurableScan {
 /// fails costs the selector rather than the candidate: the record is built from
 /// the directory first, and the read fills fields into it.
 ///
+/// **No source failure ends the scan** (SC-017o: "discovery continues and every
+/// candidate found from other sources survives"). This function is therefore
+/// infallible by construction — there is no `Result` left to return, because
+/// every way it can fail is a fact it records and carries on from. An earlier
+/// shape propagated the canonical root's error with `?`, which meant an
+/// unlistable `<AE_HOME>/sessions` also cost every candidate in every worktree:
+/// the exact "one bad subtree must not cost every candidate elsewhere" property
+/// that the nested arm was already written to hold.
+///
 /// The order is by path, not by traversal: `read_dir` order is a filesystem fact
 /// that differs between platforms and between runs. This is internal determinism
 /// only — the ORDER a listing shows is SC-017n's, applied later.
-///
-/// # Errors
-///
-/// A ROOT that does not exist is not an error: a machine that never ran ae has
-/// no sessions, and one that never used `--worktree` has no worktrees. A root
-/// that EXISTS and will not read is returned as the [`io::Error`] it is —
-/// inventing an empty answer there would report "no sessions" for "I could not
-/// look", which is the shape of #105 one level up.
-///
-/// A worktree whose own `.ae` will not list is SKIPPED AND RECORDED rather than
-/// failing the whole scan: nothing can be named there, and one unreadable
-/// subtree must not cost every candidate in every other one. It lands in
-/// [`DurableScan::unlistable`], because the alternative is a listing that is
-/// quietly incomplete.
-pub fn durable_records(roots: &Roots) -> io::Result<DurableScan> {
+#[must_use]
+pub fn durable_records(roots: &Roots) -> DurableScan {
     let mut scan = DurableScan::default();
-    for path in child_dirs(roots.sessions())? {
-        scan.records.push(record_at(path, Layout::Canonical));
+
+    match child_dirs(roots.sessions()) {
+        Ok(paths) => scan
+            .records
+            .extend(paths.into_iter().map(|p| record_at(p, Layout::Canonical))),
+        // An ABSENT root never reaches here: `child_dirs` answers it with an
+        // empty list, because a machine that never ran ae has no sessions and
+        // that is an answer, not a failure.
+        Err(_) => scan
+            .incomplete
+            .push(FailedSource::CanonicalRoot(roots.sessions().to_path_buf())),
     }
-    for worktree in child_dirs(roots.worktrees())? {
-        // SC-400d: the candidate is the NESTED state directory. A bare worktree
-        // is a checkout, not a session — and `child_dirs` already answered an
-        // ABSENT `.ae` with an empty list, so an error here means it exists and
-        // would not enumerate.
-        let state_root = worktree.join(WORKTREE_STATE_DIR);
-        let Ok(states) = child_dirs(&state_root) else {
-            scan.unlistable.push(state_root);
-            continue;
-        };
-        for path in states {
-            scan.records.push(record_at(path, Layout::WorktreeNested));
+
+    match child_dirs(roots.worktrees()) {
+        Ok(worktrees) => {
+            for worktree in worktrees {
+                // SC-400d: the candidate is the NESTED state directory. A bare
+                // worktree is a checkout, not a session — and an absent `.ae` is
+                // likewise an authoritative empty answer, not a loss.
+                let state_root = worktree.join(WORKTREE_STATE_DIR);
+                match child_dirs(&state_root) {
+                    Ok(states) => scan.records.extend(
+                        states
+                            .into_iter()
+                            .map(|p| record_at(p, Layout::WorktreeNested)),
+                    ),
+                    Err(_) => scan
+                        .incomplete
+                        .push(FailedSource::WorktreeState(state_root)),
+                }
+            }
         }
+        Err(_) => scan
+            .incomplete
+            .push(FailedSource::WorktreeRoot(roots.worktrees().to_path_buf())),
     }
+
     scan.records
         .sort_by(|left, right| left.path.cmp(&right.path));
-    scan.unlistable.sort();
-    Ok(scan)
+    scan
 }
 
 /// The direct child DIRECTORIES of `dir`, or nothing at all when `dir` does not
@@ -489,19 +526,49 @@ pub fn entitled_servers(ambient: Option<&ServerId>, durable: &[DurableRecord]) -
 pub struct Inventory {
     /// Every candidate, durable and live-only.
     pub candidates: Vec<Candidate>,
-    /// Entitled servers that did not answer.
+    /// Every logical source whose enumeration failed — SC-017o.
+    ///
+    /// ONE list for all three classes, deliberately. The row asks whether ALL
+    /// SC-017j enumerations completed, and a completeness answer derived from
+    /// several lists is one that goes wrong the day a fourth source class is
+    /// added to only some of them. [`Inventory::complete`] reads this and
+    /// nothing else.
+    ///
+    /// Nothing renders it yet — the stderr diagnostic and the digest's
+    /// `inventory_complete` are SC-017o's phase-2/3 surfaces. It is never a
+    /// candidate source: a failed source names no identity, and inventing one is
+    /// what the row forbids.
+    pub incomplete: Vec<FailedSource>,
+}
+
+impl Inventory {
+    /// Whether every SC-017j enumeration completed — SC-017o's snapshot fact.
+    ///
+    /// Derived, never stored: a boolean that can disagree with the loss facts
+    /// beside it is one that eventually will. Answerable for an EMPTY inventory,
+    /// which is the case the row calls out — "nothing found" and "nothing found,
+    /// and I could not look everywhere" are different snapshots, and only one of
+    /// them is evidence of absence.
+    #[must_use]
+    pub const fn complete(&self) -> bool {
+        self.incomplete.is_empty()
+    }
+
+    /// The entitled servers that did not answer.
     ///
     /// A fact about the QUERY, never about a session: SC-017l turns it into
-    /// `unknown` one phase later, and nothing here may read it as a status. It
-    /// is kept because discarding it would make phase 2 ask the same dead server
-    /// again to learn what this pass already knows. A server ae was never
+    /// `unknown` one phase later, and nothing here may read it as a status. Kept
+    /// reachable because discarding it would make phase 2 ask the same dead
+    /// server again to learn what this pass already knows. A server ae was never
     /// entitled to ask is NOT in here — never asked is not unreachable.
-    pub unreachable: Vec<ServerId>,
-    /// Worktree state roots that would not list — see
-    /// [`DurableScan::unlistable`]. Carried through unchanged: the inventory is
-    /// incomplete THERE, and that is information the caller may not silently
-    /// lose. Nothing renders it yet, and it is never a candidate source.
-    pub unlistable: Vec<PathBuf>,
+    pub fn unreachable(&self) -> impl Iterator<Item = &ServerId> {
+        self.incomplete.iter().filter_map(|source| match source {
+            FailedSource::Server(server) => Some(server),
+            FailedSource::CanonicalRoot(_)
+            | FailedSource::WorktreeRoot(_)
+            | FailedSource::WorktreeState(_) => None,
+        })
+    }
 }
 
 /// Take the SC-017j inventory: durable records unioned with what the entitled
@@ -552,16 +619,17 @@ pub fn take<D: Discovery + ?Sized>(
             .into_iter()
             .map(Candidate::durable)
             .collect(),
-        unreachable: Vec::new(),
         // Carried, not consulted: an incompleteness the caller inherits.
-        unlistable: durable.unlistable,
+        incomplete: durable.incomplete,
     };
 
     // Discovery, complete, before any reconciliation.
     let mut sighted: Vec<LiveSighting> = Vec::new();
     for server in entitled {
         let Ok(sessions) = discovery.enumerate(&server) else {
-            inventory.unreachable.push(server);
+            // SC-017o's third source class. The snapshot is incomplete; every
+            // candidate from every other source survives untouched.
+            inventory.incomplete.push(FailedSource::Server(server));
             continue;
         };
         for session in sessions {
@@ -625,9 +693,9 @@ mod tests {
     //! into something passable.
 
     use super::{
-        Candidate, DiscoveredSession, Discovery, DurableRecord, DurableScan, Inventory, Layout,
-        LiveSighting, MetaRead, Provenance, QueryFailed, Roots, Selector, ServerId, ServerSelector,
-        durable_records, entitled_servers, take,
+        Candidate, DiscoveredSession, Discovery, DurableRecord, DurableScan, FailedSource,
+        Inventory, Layout, LiveSighting, MetaRead, Provenance, QueryFailed, Roots, Selector,
+        ServerId, ServerSelector, durable_records, entitled_servers, take,
     };
     use std::cell::RefCell;
     use std::fs;
@@ -922,9 +990,7 @@ mod tests {
         let nested = scratch.nested("feature-checkout", "nested-session");
         let bare = scratch.bare_worktree("no-state-here");
 
-        let records = durable_records(&scratch.roots())
-            .expect("both roots readable")
-            .records;
+        let records = durable_records(&scratch.roots()).records;
         let by_path: Vec<(&Path, &str, Layout)> = records
             .iter()
             .map(|record| (record.path.as_path(), record.name.as_str(), record.layout))
@@ -963,10 +1029,10 @@ mod tests {
             "the fixture must genuinely fail to list"
         );
 
-        let scan = durable_records(&scratch.roots()).expect("the scan does not fail as a whole");
+        let scan = durable_records(&scratch.roots());
         assert_eq!(
-            scan.unlistable,
-            [blocked.join(".ae")],
+            scan.incomplete,
+            [FailedSource::WorktreeState(blocked.join(".ae"))],
             "the incompleteness is recorded"
         );
         assert_eq!(
@@ -980,8 +1046,8 @@ mod tests {
 
         let inventory = take(scan, None, &Servers::new());
         assert_eq!(
-            inventory.unlistable,
-            [blocked.join(".ae")],
+            inventory.incomplete,
+            [FailedSource::WorktreeState(blocked.join(".ae"))],
             "carried through to the boundary"
         );
         // `identities` sorts, and `sessions/` sorts before `worktrees/`.
@@ -1002,10 +1068,10 @@ mod tests {
         // fire on the NORMAL case and stop meaning anything.
         let scratch = Scratch::new("bare-not-loss");
         scratch.bare_worktree("just-a-checkout");
-        let scan = durable_records(&scratch.roots()).expect("a readable root");
+        let scan = durable_records(&scratch.roots());
         assert!(scan.records.is_empty());
         assert!(
-            scan.unlistable.is_empty(),
+            scan.incomplete.is_empty(),
             "nothing was lost — there was nothing there"
         );
     }
@@ -1014,9 +1080,7 @@ mod tests {
     fn criterion_2_a_worktree_root_that_does_not_exist_is_not_a_failure() {
         let scratch = Scratch::new("no-worktrees");
         scratch.session("only-canonical");
-        let records = durable_records(&scratch.roots())
-            .expect("a missing worktree root is fine")
-            .records;
+        let records = durable_records(&scratch.roots()).records;
         assert_eq!(records.len(), 1);
     }
 
@@ -1028,7 +1092,7 @@ mod tests {
         scratch.session("live-one");
         let baseline_servers = Servers::new().live(ServerId::Ambient, &[]);
         let baseline = take(
-            durable_records(&scratch.roots()).expect("a readable root"),
+            durable_records(&scratch.roots()),
             Some(&ServerId::Ambient),
             &baseline_servers,
         );
@@ -1047,7 +1111,7 @@ mod tests {
 
         let after_servers = Servers::new().live(ServerId::Ambient, &[]);
         let after = take(
-            durable_records(&scratch.roots()).expect("a readable root"),
+            durable_records(&scratch.roots()),
             Some(&ServerId::Ambient),
             &after_servers,
         );
@@ -1084,7 +1148,7 @@ mod tests {
 
         let servers = Servers::new().live(ServerId::Ambient, &[]);
         let inventory = take(
-            durable_records(&scratch.roots()).expect("a readable root"),
+            durable_records(&scratch.roots()),
             Some(&ServerId::Ambient),
             &servers,
         );
@@ -1113,11 +1177,7 @@ mod tests {
     fn an_absent_meta_is_a_different_read_outcome_from_an_unreadable_one() {
         let scratch = Scratch::new("absent-meta");
         let bare = scratch.session("no-meta");
-        let inventory = take(
-            durable_records(&scratch.roots()).expect("a readable root"),
-            None,
-            &Servers::new(),
-        );
+        let inventory = take(durable_records(&scratch.roots()), None, &Servers::new());
         assert_eq!(found(&inventory, &bare).meta_read, MetaRead::Absent);
     }
 
@@ -1141,11 +1201,7 @@ mod tests {
         let scratch = Scratch::new("same-leaf");
         let canonical = scratch.session("mdk");
         let nested = scratch.nested("other-checkout", "mdk");
-        let inventory = take(
-            durable_records(&scratch.roots()).expect("a readable root"),
-            None,
-            &Servers::new(),
-        );
+        let inventory = take(durable_records(&scratch.roots()), None, &Servers::new());
         assert_eq!(
             durable_identities(&inventory),
             [
@@ -1192,8 +1248,8 @@ mod tests {
             "the server that DID answer still contributes"
         );
         assert_eq!(
-            inventory.unreachable,
-            [named("sock-down")],
+            inventory.unreachable().collect::<Vec<_>>(),
+            [&named("sock-down")],
             "the failure is recorded as a fact about the QUERY"
         );
     }
@@ -1262,7 +1318,7 @@ mod tests {
             .live(named("C-unnamed"), &[("on-c", Some("on-c"))]);
 
         let inventory = take(
-            durable_records(&scratch.roots()).expect("a readable root"),
+            durable_records(&scratch.roots()),
             Some(&ServerId::Ambient),
             &servers,
         );
@@ -1300,7 +1356,7 @@ mod tests {
             .live(named("tempting"), &[("tempting-session", Some("x"))]);
 
         let inventory = take(
-            durable_records(&scratch.roots()).expect("a readable root"),
+            durable_records(&scratch.roots()),
             Some(&ServerId::Ambient),
             &servers,
         );
@@ -1336,7 +1392,7 @@ mod tests {
             "no candidate, and no placeholder standing in for one"
         );
         assert!(
-            inventory.unreachable.is_empty(),
+            inventory.unreachable().next().is_none(),
             "C is not unreachable — it was never ae's to ask, which is a different fact"
         );
     }
@@ -1360,7 +1416,7 @@ mod tests {
             );
 
         let inventory = take(
-            durable_records(&scratch.roots()).expect("a readable root"),
+            durable_records(&scratch.roots()),
             Some(&ServerId::Ambient),
             &servers,
         );
@@ -1569,11 +1625,7 @@ mod tests {
             .expect("the same positive selector in both");
         }
         let servers = Servers::new().live(named("sock-a"), &[("twin", Some("twin"))]);
-        let inventory = take(
-            durable_records(&scratch.roots()).expect("a readable root"),
-            None,
-            &servers,
-        );
+        let inventory = take(durable_records(&scratch.roots()), None, &servers);
 
         assert_eq!(
             identities(&inventory),
@@ -1633,7 +1685,7 @@ mod tests {
 
         let servers = Servers::new().live(ServerId::Ambient, &[("a-ghost", Some("a-ghost"))]);
         let inventory = take(
-            durable_records(&scratch.roots()).expect("a readable root"),
+            durable_records(&scratch.roots()),
             Some(&ServerId::Ambient),
             &servers,
         );
@@ -1757,11 +1809,7 @@ mod tests {
         );
 
         let servers = Servers::new();
-        let inventory = take(
-            durable_records(&scratch.roots()).expect("a readable root"),
-            None,
-            &servers,
-        );
+        let inventory = take(durable_records(&scratch.roots()), None, &servers);
         for dir in [&absent, &unreadable] {
             assert_eq!(found(&inventory, dir).server, ServerSelector::Missing);
         }
@@ -1840,9 +1888,7 @@ mod tests {
             "held",
         )
         .expect("a lock fixture");
-        let records = durable_records(&scratch.roots())
-            .expect("a readable root")
-            .records;
+        let records = durable_records(&scratch.roots()).records;
         assert_eq!(
             records.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
             ["real"]
@@ -1850,20 +1896,123 @@ mod tests {
     }
 
     #[test]
-    fn a_state_root_that_exists_and_will_not_read_is_an_error() {
-        // "I could not look" must not render as "there is nothing there".
+    fn sc_017o_a_canonical_root_that_will_not_enumerate_still_leaves_the_worktrees_scanned() {
+        // The `?` this replaced aborted the WHOLE scan, so an unlistable
+        // `<AE_HOME>/sessions` also cost every candidate in every worktree —
+        // the same defect the nested arm was already written to avoid, in the
+        // one place the early-return had been there all along.
         let scratch = Scratch::new("root-is-a-file");
         fs::write(scratch.0.join("sessions"), "not a directory").expect("a hostile fixture");
-        assert!(durable_records(&scratch.roots()).is_err());
+        let nested = scratch.nested("checkout", "survivor");
+
+        let scan = durable_records(&scratch.roots());
+        assert_eq!(
+            scan.incomplete,
+            [FailedSource::CanonicalRoot(scratch.0.join("sessions"))],
+            "\"I could not look\" is recorded, never rendered as \"nothing is there\""
+        );
+        assert_eq!(
+            scan.records
+                .iter()
+                .map(|record| record.path.as_path())
+                .collect::<Vec<_>>(),
+            [nested.as_path()],
+            "and discovery continued: the other source's candidates survive"
+        );
+        assert!(!take(scan, None, &Servers::new()).complete());
+    }
+
+    #[test]
+    fn sc_017o_a_worktrees_root_that_will_not_enumerate_still_leaves_the_canonical_root_scanned() {
+        let scratch = Scratch::new("worktrees-is-a-file");
+        let canonical = scratch.session("survivor");
+        fs::write(scratch.0.join("worktrees"), "not a directory").expect("a hostile fixture");
+
+        let scan = durable_records(&scratch.roots());
+        assert_eq!(
+            scan.incomplete,
+            [FailedSource::WorktreeRoot(scratch.0.join("worktrees"))]
+        );
+        assert_eq!(
+            scan.records
+                .iter()
+                .map(|record| record.path.as_path())
+                .collect::<Vec<_>>(),
+            [canonical.as_path()]
+        );
+    }
+
+    #[test]
+    fn sc_017o_the_snapshot_records_all_three_source_classes_at_once() {
+        // One snapshot, one completeness answer, three different ways to have
+        // lost a source. `complete()` reads the one list, so a class that stops
+        // being recorded cannot leave the boolean saying everything was fine.
+        let scratch = Scratch::new("all-three");
+        fs::write(scratch.0.join("sessions"), "not a directory").expect("a hostile fixture");
+        let blocked = scratch.0.join("worktrees").join("opaque");
+        fs::create_dir_all(&blocked).expect("a worktree");
+        fs::write(blocked.join(".ae"), "not a directory").expect("an unlistable state root");
+
+        let scan = durable_records(&scratch.roots());
+        let servers = Servers::new().down(ServerId::Ambient);
+        let inventory = take(scan, Some(&ServerId::Ambient), &servers);
+
+        assert_eq!(
+            inventory.incomplete,
+            [
+                FailedSource::CanonicalRoot(scratch.0.join("sessions")),
+                FailedSource::WorktreeState(blocked.join(".ae")),
+                FailedSource::Server(ServerId::Ambient),
+            ],
+            "every failed logical source keeps its own loss fact"
+        );
+        assert!(!inventory.complete());
+        assert!(
+            inventory.candidates.is_empty(),
+            "and NOTHING is fabricated for the identities those sources might hold"
+        );
+    }
+
+    #[test]
+    fn sc_017o_an_empty_but_complete_snapshot_is_distinguishable_from_an_empty_broken_one() {
+        // The row's own point: "nothing found" and "nothing found, and I could
+        // not look everywhere" are different snapshots, and only one of them is
+        // evidence of absence.
+        let scratch = Scratch::new("empty-complete");
+        let whole = take(durable_records(&scratch.roots()), None, &Servers::new());
+        assert!(whole.candidates.is_empty());
+        assert!(whole.complete(), "a fresh machine looked everywhere");
+
+        let broken = Scratch::new("empty-broken");
+        fs::write(broken.0.join("sessions"), "not a directory").expect("a hostile fixture");
+        let partial = take(durable_records(&broken.roots()), None, &Servers::new());
+        assert!(partial.candidates.is_empty());
+        assert!(!partial.complete(), "same emptiness, different evidence");
+    }
+
+    #[test]
+    fn sc_017o_a_discovered_candidate_with_an_unreadable_meta_is_not_enumeration_loss() {
+        // The row draws this line explicitly: once the directory was
+        // discovered, its meta is SC-405i/SC-509b's record-loss fact and never
+        // becomes snapshot incompleteness. The enumeration succeeded — it found
+        // exactly the thing whose contents are damaged.
+        let scratch = Scratch::new("meta-not-enumeration");
+        let damaged = scratch.session("damaged");
+        fs::create_dir_all(damaged.join("meta")).expect("an unreadable meta");
+        assert!(
+            fs::read(damaged.join("meta")).is_err(),
+            "genuinely unreadable"
+        );
+
+        let inventory = take(durable_records(&scratch.roots()), None, &Servers::new());
+        assert!(inventory.complete(), "nothing about the ENUMERATION failed");
+        assert_eq!(found(&inventory, &damaged).meta_read, MetaRead::Unreadable);
     }
 
     #[test]
     fn a_missing_state_root_is_an_empty_inventory_not_an_error() {
         let scratch = Scratch::new("no-root");
-        assert_eq!(
-            durable_records(&scratch.roots()).expect("a fresh machine is not a failure"),
-            DurableScan::default()
-        );
+        assert_eq!(durable_records(&scratch.roots()), DurableScan::default());
     }
 
     #[test]
@@ -1885,9 +2034,7 @@ mod tests {
         #[cfg(not(unix))]
         let unspellable = false;
 
-        let records = durable_records(&scratch.roots())
-            .expect("a readable root")
-            .records;
+        let records = durable_records(&scratch.roots()).records;
         assert_eq!(records.len(), usize::from(unspellable) + 1);
         if unspellable {
             assert!(
@@ -1913,9 +2060,7 @@ mod tests {
             scratch.session(name);
         }
         scratch.nested("checkout", "nested-one");
-        let records = durable_records(&scratch.roots())
-            .expect("a readable root")
-            .records;
+        let records = durable_records(&scratch.roots()).records;
         let paths: Vec<&Path> = records.iter().map(|record| record.path.as_path()).collect();
         let mut sorted = paths.clone();
         sorted.sort_unstable();
