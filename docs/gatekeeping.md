@@ -27,6 +27,7 @@ invariant, not against the code.
 | a case with more information available is about to be handled by a different branch | Adding evidence must never SUBTRACT knowledge — check the richer case against the poorer one |
 | a rule says two facts are independent and you are choosing test cases | Orthogonality is proven on the OFF-DIAGONAL; the diagonal is where a derivation hides |
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
+| a rule says EVERY / ALWAYS and one criterion demonstrates it on the case it happened to build | A UNIVERSAL obligation checked on ONE fixture is checked nowhere |
 | your fixture plants a precondition while other parts of the same fixture break its source | A fixture can succeed at building a state the product could never produce |
 | a rule lists cases and you just found one it does not cover | Adding the missing member to an enumerated rule PRESERVES the defect that produced it |
 | a rule was just clarified, refined, or split into two orthogonal facts | A clarification that SPLITS a concept creates a coverage gap in evidence captured before it |
@@ -906,6 +907,39 @@ membership, identity versus reachability, presence versus permission. If the evi
 holds cases where both move together, the claim is untested no matter how many of them there
 are.
 
+### A UNIVERSAL obligation checked on ONE fixture is checked nowhere
+
+Three separate findings in one review turned out to be the same defect wearing different
+subjects, and the pattern is worth more than any of them:
+
+> **The criterion that PRODUCES the artifacts is not the criterion that EXAMINES them.**
+
+A rule said *every* emitted document carries a certain field, *even when empty* — plainly
+universal. One criterion emitted six document shapes and inspected them for two other
+properties, never that field. A different criterion mentioned the field, on the two documents it
+built for its own purpose. So a serializer that emits the field **only on the paths the second
+criterion happens to construct** satisfies both, plus a third that fails only on fields *dropped
+or renamed* — and a field that was never there to drop is neither.
+
+The same shape had already appeared as an orthogonality proven in the classifier and unchecked
+in the serializer, and again as a shared fixture consumed with full rigour by two phases and
+loosely by a third.
+
+**The fix is placement, not strength.** A universal obligation has to be asserted **where the
+artifacts are enumerated** — inside the criterion that already loops over every shape — rather
+than demonstrated once wherever it was most convenient to construct one. Adding a stronger
+assertion in the convenient place does not help; it is still one fixture.
+
+Two diagnostics that find these cheaply:
+
+- **Grep the obligation's own noun through the gate.** If a required field, flag, or invariant
+  appears in exactly one criterion while some other criterion is the one generating instances,
+  that is the defect, and the count is the tell — here the field appeared **once**.
+- **Read the quantifier and then ask where the loop is.** *Every*, *always*, *in all cases*,
+  *even when empty* — each names a set, and the check belongs wherever that set is produced. If
+  the producing criterion and the checking criterion are different criteria, the obligation is
+  only as universal as one author's fixture list.
+
 ### A fixture can succeed at building a state the product could never produce
 
 A test needed a healthy source alongside two deliberately broken ones. The criterion said to
@@ -1334,6 +1368,12 @@ was wasted, because the "evidence" for it was a green run that measured nothing.
 So **assert the perturbation landed before interpreting the response.** Confirm the anchor
 matched, the mutant compiled, the fixture wrote the bytes — then read the result. Noticing that
 output looks "suspiciously empty" is luck; the assertion is not.
+
+**And a control run must be COMPLETE, not first-hit.** The same project hit this immediately
+after: a test runner's default fail-fast cancelled the remaining tests after two failures, so
+the control everyone cared about **never executed** — and "did not appear in the failures" reads
+exactly like "was not reddened by the break". An early-exit default silently converts *not run*
+into *not affected*. Disable it for any run whose purpose is to enumerate what a change breaks.
 
 And the structural remedy is the one that generalises: **an unarmed barrier is not a null
 result — it invalidates everything captured after it.** The case now records INCONCLUSIVE
