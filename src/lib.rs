@@ -237,10 +237,6 @@ impl inventory::Discovery for NoTransport {
 /// longer "nothing is wired" but "this invocation has no state root". [`run`]
 /// supplies a real world; the suite supplies fixtures.
 ///
-/// `None` is not a missing argument but a FACT: no source is wired. It is the
-/// state the shipped binary is in, so it is a state this function models rather
-/// than one the caller has to remember to handle.
-///
 /// # Errors
 ///
 /// Returns [`Error::Io`] if `out` or `err` cannot be written or flushed.

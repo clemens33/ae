@@ -1263,8 +1263,10 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
     else {
         panic!("listing.rs must be scanned");
     };
-    let Some((_, world_of)) = listing.split_once("pub fn world_of") else {
-        panic!("world_of must be in listing.rs");
+    // The projection moved into `Presentation::world` when phase 3 made the
+    // boundary a production type; the obligation did not move with it.
+    let Some((_, projection)) = listing.split_once("pub fn world(") else {
+        panic!("the projection must be in listing.rs");
     };
     for read in [
         concat!("entry_", "for("),
@@ -1272,12 +1274,12 @@ fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
         concat!("fs", "::"),
     ] {
         assert!(
-            !world_of.contains(read),
+            !projection.contains(read),
             "the digest must be assembled from the snapshot, never from a second read: {read}"
         );
     }
     assert!(
-        world_of.contains(concat!("entry_", "from(")),
+        projection.contains(concat!("entry_", "from(")),
         "it derives from the carried snapshot"
     );
 }

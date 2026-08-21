@@ -60,19 +60,25 @@ pub struct World {
     pub now: Timestamp,
     /// Every session known to the caller, before any filter runs.
     pub sessions: Vec<SessionEntry>,
-    /// **SC-017o** — the logical sources whose enumeration failed.
+    /// **SC-017o** — HOW MANY distinct logical sources failed to enumerate.
     ///
     /// A property of the SNAPSHOT, not of the selection: filtering changes which
     /// sessions are shown and can never change whether ae managed to look
     /// everywhere. It passes through [`render`] untouched, so every filter's
-    /// document carries the same answer and every human view carries the same
-    /// warning.
+    /// document carries the same answer and every human view the same warning.
     ///
-    /// The FACTS rather than a boolean, because SC-017o's human surface needs
-    /// the COUNT of distinct failed sources and a boolean cannot supply one.
-    /// [`World::inventory_complete`] derives the machine answer from this, so
-    /// the two can never disagree.
-    pub losses: Vec<FailedSource>,
+    /// **A COUNT, AND NOT THE PATHS, ON PURPOSE.** SC-017o's human surface needs
+    /// the number and its machine surface needs the boolean; neither needs a
+    /// path. And what presentation cannot NAME, it cannot re-derive: with no
+    /// state root and no record path anywhere in its input, a renderer that
+    /// wanted to re-check a fact has nothing to open. That is a narrower claim
+    /// than "no syscall can occur" — a gratuitous one stays expressible — but it
+    /// is the claim that matters, because a re-derivation of the facts being
+    /// presented needs an address for them.
+    ///
+    /// [`World::inventory_complete`] derives the boolean from this, so the two
+    /// can never disagree.
+    pub losses: usize,
 }
 
 impl World {
@@ -82,78 +88,139 @@ impl World {
         Self {
             now,
             sessions,
-            losses: Vec::new(),
+            losses: 0,
         }
     }
 
-    /// The same world, carrying SC-017o's loss facts.
+    /// The same world, carrying what SC-017o's loss facts amount to.
+    ///
+    /// Takes the FACTS and keeps their cardinality, through the same counter the
+    /// boundary uses — so "one source recorded twice is one loss" is decided in
+    /// one place rather than twice.
     #[must_use]
-    pub fn with_losses(mut self, losses: Vec<FailedSource>) -> Self {
-        self.losses = losses;
+    pub fn with_losses(mut self, losses: &[FailedSource]) -> Self {
+        self.losses = distinct_losses(losses);
         self
     }
 
     /// SC-017o's `inventory_complete` — derived, never stored.
     #[must_use]
-    pub fn inventory_complete(&self) -> bool {
-        self.losses.is_empty()
+    pub const fn inventory_complete(&self) -> bool {
+        self.losses == 0
     }
 
     /// How many DISTINCT logical sources failed — SC-017o's human count.
-    ///
-    /// Distinct by source key, because the row's fact is how many sources were
-    /// lost, not how many loss records exist. One source recorded twice is one
-    /// loss; two roots that both failed are two, and a count that could not tell
-    /// those apart would be a boolean wearing a number.
     #[must_use]
-    pub fn loss_count(&self) -> usize {
-        let mut distinct: Vec<&FailedSource> = Vec::new();
-        for loss in &self.losses {
-            if !distinct.contains(&loss) {
-                distinct.push(loss);
-            }
-        }
-        distinct.len()
+    pub const fn loss_count(&self) -> usize {
+        self.losses
     }
 }
 
-/// The world a classified snapshot describes — the phase-2 wiring.
+/// The phase-3 boundary — **the first operation on a classified snapshot**.
 ///
-/// One entry per classified candidate, in snapshot order, carrying SC-017o's
-/// completeness fact forward.
+/// This type exists so the boundary is a PRODUCTION fact rather than a line in a
+/// test. An earlier version had the suite append a "presentation enter" marker
+/// to its own log AFTER calling the projection, which cannot establish a
+/// sequence: everything the projection did happened before the marker and was
+/// invisible to it. A test log is narration; an invoked entry point is an
+/// observation.
 ///
-/// **Reads nothing.** Every SC-509 field comes from the record snapshot phase 1
-/// captured at discovery ([`crate::session::RecordSnapshot`]), so the digest's
-/// record facts and the liveness printed beside them are one observation of the
-/// world rather than two. That is the phase-2 gate's criterion 14, and it binds
-/// here — at emission — exactly as it binds the classifier.
+/// [`Presentation::enter`] does no filtering, no sorting and no formatting — it
+/// only borrows the snapshot — so no phase-3 work can precede it.
+/// [`Presentation::at_entry`] is what the snapshot said AT that moment, in the
+/// order it said it, which is what makes reordering or dropping anything at the
+/// boundary observable.
+pub struct Presentation<'a> {
+    snapshot: &'a Snapshot,
+}
+
+impl<'a> Presentation<'a> {
+    /// Enter presentation with `snapshot`. Nothing else happens here.
+    #[must_use]
+    pub const fn enter(snapshot: &'a Snapshot) -> Self {
+        Self { snapshot }
+    }
+
+    /// The identities and statuses this boundary received, IN ORDER.
+    ///
+    /// Unsorted on purpose: a fingerprint that sorted its own input could not
+    /// tell an untouched snapshot from one reordered before the boundary.
+    #[must_use]
+    pub fn at_entry(&self) -> Vec<(String, &'static str)> {
+        self.snapshot
+            .sessions
+            .iter()
+            .map(|classified| {
+                (
+                    classified.candidate.name.clone(),
+                    classified.status.as_str(),
+                )
+            })
+            .collect()
+    }
+
+    /// The world this snapshot describes — one entry per classified candidate,
+    /// carrying SC-017o's completeness fact forward.
+    ///
+    /// **Reads nothing.** Every SC-509 field comes from the record snapshot
+    /// phase 1 captured at discovery ([`crate::session::RecordSnapshot`]), so the
+    /// digest's record facts and the liveness printed beside them are one
+    /// observation of the world rather than two.
+    ///
+    /// A tmux-only candidate has no directory to read, so it is SC-509b
+    /// `degraded` by construction — SC-017j: "a positively live tmux-only
+    /// candidate remains visible; loss of its durable record is the separate
+    /// SC-509b `degraded` fact".
+    #[must_use]
+    pub fn world(&self, now: Timestamp, unanswered_secs: i64) -> World {
+        let sessions = self
+            .snapshot
+            .sessions
+            .iter()
+            .map(|classified| match &classified.candidate.durable {
+                Some(record) => crate::session::entry_from(
+                    &record.snapshot,
+                    &record.name,
+                    &SessionRuntime::new(classified.status),
+                    now,
+                    unanswered_secs,
+                ),
+                None => SessionEntry::degraded(&classified.candidate.name, classified.status),
+            })
+            .collect();
+        World {
+            now,
+            sessions,
+            // SC-017o's fact crosses as a COUNT of distinct failed sources,
+            // never as the paths — see [`World::losses`].
+            losses: distinct_losses(&self.snapshot.incomplete),
+        }
+    }
+}
+
+/// How many DISTINCT logical sources failed.
 ///
-/// A tmux-only candidate has no directory to read, so it is SC-509b `degraded`
-/// by construction — SC-017j: "a positively live tmux-only candidate remains
-/// visible; loss of its durable record is the separate SC-509b `degraded`
-/// fact". It is the one case where the flag is decided without a read, because
-/// there is nothing to read.
+/// Counted HERE, at the boundary, because presentation must not hold the loss
+/// paths — see [`World::losses`]. Distinct by source key: the row's fact is how
+/// many sources were lost, not how many records exist.
+fn distinct_losses(losses: &[FailedSource]) -> usize {
+    let mut seen: Vec<&FailedSource> = Vec::new();
+    for loss in losses {
+        if !seen.contains(&loss) {
+            seen.push(loss);
+        }
+    }
+    seen.len()
+}
+
+/// The world a classified snapshot describes — a shorthand for
+/// [`Presentation::enter`] followed by [`Presentation::world`].
+///
+/// The boundary is still first: this has no phase-3 work of its own to do
+/// before it.
 #[must_use]
 pub fn world_of(snapshot: &Snapshot, now: Timestamp, unanswered_secs: i64) -> World {
-    let sessions = snapshot
-        .sessions
-        .iter()
-        .map(|classified| match &classified.candidate.durable {
-            Some(record) => crate::session::entry_from(
-                &record.snapshot,
-                &record.name,
-                &SessionRuntime::new(classified.status),
-                now,
-                unanswered_secs,
-            ),
-            None => SessionEntry::degraded(&classified.candidate.name, classified.status),
-        })
-        .collect();
-    World {
-        now,
-        sessions,
-        losses: snapshot.incomplete.clone(),
-    }
+    Presentation::enter(snapshot).world(now, unanswered_secs)
 }
 
 /// What `ae list` writes to STDERR for `world`, if anything.

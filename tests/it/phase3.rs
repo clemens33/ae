@@ -110,7 +110,7 @@ impl Reference {
         World::new(NOW, self.entries.clone())
     }
 
-    fn incomplete_world(&self, losses: Vec<FailedSource>) -> World {
+    fn incomplete_world(&self, losses: &[FailedSource]) -> World {
         World::new(NOW, self.entries.clone()).with_losses(losses)
     }
 
@@ -636,7 +636,7 @@ fn criterion_12_every_human_view_warns_with_the_distinct_source_count() {
         (two_losses, Some(2)),
         (repeated, Some(1)),
     ] {
-        let world = reference.incomplete_world(losses);
+        let world = reference.incomplete_world(&losses);
         let complete = reference.world();
         // EVERY human view, through BOTH spellings, at the real surface.
         for spelling in ["list", "ls"] {
@@ -679,8 +679,8 @@ fn criterion_12_the_count_is_not_hardcoded_because_two_sources_read_two() {
     // one-loss arm above. Two distinct sources must read `2`, and the same
     // source twice must still read `1`.
     let reference = Reference::new(Supply::Creation);
-    let one = reference.incomplete_world(vec![FailedSource::CanonicalRoot("/a".into())]);
-    let two = reference.incomplete_world(vec![
+    let one = reference.incomplete_world(&[FailedSource::CanonicalRoot("/a".into())]);
+    let two = reference.incomplete_world(&[
         FailedSource::CanonicalRoot("/a".into()),
         FailedSource::WorktreeRoot("/b".into()),
     ]);
@@ -703,9 +703,9 @@ fn criterion_13_every_document_carries_version_2_and_the_completeness_boolean() 
     )];
     for (world, complete) in [
         (reference.world(), true),
-        (reference.incomplete_world(losses.clone()), false),
+        (reference.incomplete_world(&losses), false),
         (World::new(NOW, Vec::new()), true),
-        (World::new(NOW, Vec::new()).with_losses(losses), false),
+        (World::new(NOW, Vec::new()).with_losses(&losses), false),
     ] {
         for (spelling, flags) in ["list", "ls"].into_iter().flat_map(|spelling| {
             every_human_view()
@@ -783,7 +783,7 @@ fn criterion_13_degradation_survives_every_filter_unchanged() {
 fn criterion_14_flipping_completeness_changes_only_the_warning_and_the_boolean() {
     let reference = Reference::new(Supply::Creation);
     let complete = reference.world();
-    let incomplete = reference.incomplete_world(vec![FailedSource::Server(
+    let incomplete = reference.incomplete_world(&[FailedSource::Server(
         ae::inventory::ServerId::Selected(ae::meta::Selector::Name("gone".to_owned())),
     )]);
 
@@ -868,59 +868,14 @@ fn describe(reference: &Reference) -> String {
 
 // ---- criterion 2: presentation starts from one completed snapshot -------
 
-/// A recorded boundary event: a name, and the semantic fingerprint at it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Marker {
-    name: &'static str,
-    at: usize,
-    fingerprint: Vec<(String, String, bool)>,
-}
-
-/// The fingerprint of a classified snapshot: identity, status, degradation.
-fn fingerprint_of(snapshot: &ae::liveness::Snapshot) -> Vec<(String, String, bool)> {
-    let mut rows: Vec<(String, String, bool)> = snapshot
-        .sessions
-        .iter()
-        .map(|classified| {
-            (
-                classified.candidate.name.clone(),
-                classified.status.as_str().to_owned(),
-                classified
-                    .candidate
-                    .durable
-                    .as_ref()
-                    .is_some_and(|record| record.meta_read != ae::session::MetaRead::Parsed),
-            )
-        })
-        .collect();
-    rows.sort();
-    rows
-}
-
-/// The fingerprint of a presentation input.
-fn fingerprint_of_world(world: &World) -> Vec<(String, String, bool)> {
-    let mut rows: Vec<(String, String, bool)> = world
-        .sessions
-        .iter()
-        .map(|entry| {
-            (
-                entry.name.clone(),
-                entry.status.as_str().to_owned(),
-                entry.degraded,
-            )
-        })
-        .collect();
-    rows.sort();
-    rows
-}
-
 #[test]
 fn criterion_2_presentation_starts_from_one_completed_classified_snapshot() {
-    // THE REAL PATH, not hand-built entries: phase 1 discovers from disk, phase
-    // 2 classifies, phase 3 presents. An earlier version of this test assembled
-    // `SessionEntry` values directly and asserted set equality — which cannot
-    // detect presentation starting early, because there was no classification
-    // for it to start before.
+    // THE MARKER IS THE PRODUCTION ENTRY POINT, not a line this test appends
+    // afterwards. An earlier version called the projection and THEN logged
+    // "presentation enter", so everything the projection did happened before the
+    // marker and was invisible: a reverse sort inserted inside it still passed.
+    // `Presentation::enter` is now the first phase-3 operation, and
+    // `at_entry()` is what it received, in the order it received it.
     let root = std::env::temp_dir().join(format!("ae-p3-seq-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     for name in ["AlphaR", "ZetaR", "alpha10R"] {
@@ -928,72 +883,51 @@ fn criterion_2_presentation_starts_from_one_completed_classified_snapshot() {
         let written = std::fs::create_dir_all(&dir).and_then(|()| {
             std::fs::write(
                 dir.join("meta"),
-                "mode=local
-agent.main=cl:lead
-tmux_server_kind=name
-tmux_server=B
-",
+                "mode=local\nagent.main=cl:lead\ntmux_server_kind=name\ntmux_server=B\n",
             )
         });
         assert!(written.is_ok(), "a planted session");
     }
 
-    let mut log: Vec<Marker> = Vec::new();
-    let mut step = 0;
-
+    // `classify complete`: the snapshot, as classification left it.
     let scan = ae::inventory::durable_records(&ae::inventory::Roots::under(&root));
-    let taken = ae::inventory::take(scan, None, &Down);
-    let snapshot = ae::liveness::classify(taken, &Down);
-    step += 1;
-    log.push(Marker {
-        name: "classify complete",
-        at: step,
-        fingerprint: fingerprint_of(&snapshot),
-    });
+    let snapshot = ae::liveness::classify(ae::inventory::take(scan, None, &Down), &Down);
+    let classified: Vec<(String, &str)> = snapshot
+        .sessions
+        .iter()
+        .map(|c| (c.candidate.name.clone(), c.status.as_str()))
+        .collect();
 
-    // `presentation enter` is the world handed to the FIRST phase-3 operation.
-    // `world_of` is that operation: filtering, sorting and formatting all happen
-    // downstream of it inside `render`, so no marker can sit later and still
-    // precede them.
-    let world = ae::listing::world_of(&snapshot, NOW, ae::session::DEFAULT_UNANSWERED_SECS);
-    step += 1;
-    log.push(Marker {
-        name: "presentation enter",
-        at: step,
-        fingerprint: fingerprint_of_world(&world),
-    });
+    // `presentation enter`: the production boundary, invoked.
+    let presentation = ae::listing::Presentation::enter(&snapshot);
+    let at_entry = presentation.at_entry();
 
-    assert_eq!(log[0].name, "classify complete");
-    assert_eq!(log[1].name, "presentation enter");
-    assert!(
-        log[0].at < log[1].at,
-        "classification must complete before presentation begins"
-    );
     assert_eq!(
-        log[0].fingerprint, log[1].fingerprint,
-        "the presentation input is exactly the completed classified set"
+        at_entry, classified,
+        "the presentation input is the completed classified set, IN ITS ORDER — a \
+         filter or sort at or before the boundary would show here"
     );
-    assert_eq!(log[0].fingerprint.len(), 3, "and the fixture is not empty");
+    assert_eq!(at_entry.len(), 3, "and the fixture is not empty");
 
-    // Every surface presents from that ONE input, and none of them changes it.
-    let before = fingerprint_of_world(&world);
+    // Everything downstream presents from that one input and changes nothing.
+    let world = presentation.world(NOW, ae::session::DEFAULT_UNANSWERED_SECS);
     for spelling in ["list", "ls"] {
         for flags in every_human_view() {
             let (stdout, _, _) = invoke_over(spelling, &flags, Some(&world));
             for (name, status) in human_rows(&stdout) {
                 assert!(
-                    before
+                    at_entry
                         .iter()
-                        .any(|(known, known_status, _)| *known == name && *known_status == status),
+                        .any(|(known, known_status)| *known == name && *known_status == status),
                     "{spelling} {flags:?}: {name} was presented with facts the input never held"
                 );
             }
         }
     }
     assert_eq!(
-        fingerprint_of_world(&world),
-        before,
-        "the input gained, lost and changed nothing after presentation enter"
+        presentation.at_entry(),
+        at_entry,
+        "and the input itself is unchanged after every surface has read it"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1266,9 +1200,20 @@ fn is_product_line(file: &str, line: usize) -> bool {
 
 #[test]
 fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones() {
+    // A TRIPWIRE OVER ENTRY POINTS, AND ITS LIMIT IS THE TEST. `clippy.toml`
+    // names eleven resolved paths; safe std still exposes `canonicalize`,
+    // `read_link`, `symlink_metadata`, `OpenOptions::open` and `DirEntry`
+    // observations, and a discarded call to any of them slips straight past.
+    // The empty dependency tables and `unsafe_code = "forbid"` close the
+    // THIRD-PARTY and LIBC routes; neither closes an unlisted safe-std one, and
+    // reading them as covering the enumeration is what let an earlier version of
+    // this file call a name list a boundary.
+    //
+    // What actually bounds re-derivation is
+    // `criterion_3_presentation_cannot_address_ae_s_own_state` below: with no
+    // root and no record path in its input, presentation has nothing to open.
+    // This test is the cheap early warning for the eleven, and claims only them.
     let sites = world_reading_sites();
-    // NON-VACUITY FIRST. A probe that reports nothing has not run, and a guard
-    // that scans nothing passes forever.
     assert!(
         !sites.is_empty(),
         "the force-warn probe found no world-reading call anywhere; it did not run"
@@ -1282,8 +1227,6 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
     product.sort();
     product.dedup();
 
-    // THE DOORS. Discovery reads roots and records; the entry point derives the
-    // state root. Presentation is absent, and that absence is criterion 3.
     assert_eq!(
         product,
         vec![
@@ -1292,169 +1235,73 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             "src/lib.rs".to_owned(),
             "src/meta.rs".to_owned(),
         ],
-        "the set of places product code can read the outside world changed"
+        "the set of places product code can reach the eleven named entry points changed"
     );
-    for presentation in [
-        "src/listing.rs",
-        "src/liveness.rs",
-        "src/filters.rs",
-        "src/digest.rs",
-    ] {
+}
+
+#[test]
+fn criterion_3_presentation_cannot_address_ae_s_own_state() {
+    // THE STRUCTURAL CLAIM, and it holds whatever the spelling. A renderer that
+    // wants to re-derive a fact it is presenting needs an ADDRESS for that
+    // fact — the sessions root, the worktrees root, or the record's own
+    // directory. None of the three is reachable from the presentation input, so
+    // the defect that matters is unrepresentable rather than merely forbidden.
+    //
+    // NOT CLAIMED: that no syscall can occur. A gratuitous `canonicalize("/")`
+    // stays expressible and this says nothing about it. What it says is that a
+    // read of the thing being presented has nowhere to point.
+    let module = product_module("listing.rs");
+
+    // The presentation input, field by field. A path here would be an address.
+    let world = module
+        .split_once("pub struct World {")
+        .and_then(|(_, rest)| rest.split_once('}'))
+        .map_or_else(
+            || panic!("World must be declared in listing.rs"),
+            |(body, _)| body.to_owned(),
+        );
+    for address in ["PathBuf", "&Path", "&'a Path"] {
         assert!(
-            !product.contains(&presentation.to_owned()),
-            "{presentation} can now read the world: presentation must present, not re-derive"
+            !world.contains(address),
+            "the presentation input carries an address ({address}), so a re-derivation \
+             has something to open: {world}"
+        );
+    }
+    assert!(
+        world.contains("losses: usize"),
+        "SC-017o's fact crosses as a COUNT, which is what removed the last path"
+    );
+
+    // And the same for what it holds per session: SC-509's `origin`/`work_dir`
+    // are the operator's own project directories, carried as payload STRINGS to
+    // print. ae's own state root is nowhere in the type.
+    let digest = product_module("digest.rs");
+    let entry = digest
+        .split_once("pub struct SessionEntry {")
+        .and_then(|(_, rest)| rest.split_once("\n}"))
+        .map_or_else(
+            || panic!("SessionEntry must be declared in digest.rs"),
+            |(body, _)| body.to_owned(),
+        );
+    for address in ["PathBuf", "&Path"] {
+        assert!(
+            !entry.contains(address),
+            "a session entry carries an address ({address}): {entry}"
         );
     }
 }
 
-// ---- SC-017p/q/r + SC-509e: three-valued agent liveness ----------------
-
-#[test]
-fn sc_509e_the_agent_liveness_field_is_present_even_when_null() {
-    // The closed JSON domain is `true | false | null`, and PRESENT is the part
-    // that matters: a consumer gating on the key must not have to tell "absent
-    // because unknown" from "absent because the writer is old".
-    for (alive, expected) in [
-        (Some(true), json::Value::Bool(true)),
-        (Some(false), json::Value::Bool(false)),
-        (None, json::Value::Null),
-    ] {
-        let mut entry = SessionEntry::new("s", Status::Running);
-        entry.agents = vec![AgentEntry {
-            reference: "cl:lead".to_owned(),
-            alias: "cl".to_owned(),
-            name: "lead".to_owned(),
-            alive,
-            ..AgentEntry::default()
-        }];
-        let world = World::new(NOW, vec![entry]);
-        let (text, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));
-        let document = match json::parse(text.trim_end()) {
-            Ok(document) => document,
-            Err(why) => panic!("one document: {why:?}"),
-        };
-        let Some(json::Value::Arr(sessions)) = document.get("sessions") else {
-            panic!("sessions must be an array");
-        };
-        let Some(json::Value::Arr(agents)) = sessions[0].get("agents") else {
-            panic!("agents must be an array");
-        };
-        assert_eq!(
-            agents[0].get("alive"),
-            Some(&expected),
-            "alive={alive:?} must render as {expected:?}"
-        );
-        assert!(
-            text.contains(r#""alive":"#),
-            "the key is present in every document: {text}"
-        );
-    }
-}
-
-#[test]
-fn sc_017r_the_three_agent_healths_are_distinguishable_and_none_is_silent() {
-    // The words are an OPEN CHOICE; that all three are distinct, non-empty and
-    // that unknown reads as unknown rather than as blank or absence is not.
-    let mut rendered = Vec::new();
-    for alive in [Some(true), Some(false), None] {
-        let mut entry = SessionEntry::new("s", Status::Running);
-        entry.agents = vec![AgentEntry {
-            reference: "cl:lead".to_owned(),
-            alias: "cl".to_owned(),
-            name: "lead".to_owned(),
-            alive,
-            ..AgentEntry::default()
-        }];
-        let world = World::new(NOW, vec![entry]);
-        let (text, _, _) = invoke_over("list", &["--all"], Some(&world));
-        let agent_line = text
-            .lines()
-            .find(|line| line.starts_with(char::is_whitespace) && line.contains("cl:lead"))
-            .unwrap_or_else(|| panic!("the agent row must be rendered for alive={alive:?}"))
-            .to_owned();
-        assert!(
-            agent_line.split_whitespace().count() >= 2,
-            "alive={alive:?}: the health must not render as blank: {agent_line:?}"
-        );
-        rendered.push(agent_line);
-    }
-    assert_eq!(rendered.len(), 3);
-    assert_ne!(rendered[0], rendered[1], "alive and dead must differ");
-    assert_ne!(rendered[1], rendered[2], "dead and unknown must differ");
-    assert_ne!(rendered[0], rendered[2], "alive and unknown must differ");
-    // The specific failure the row names: unknown silently reading as one of the
-    // established answers.
-    assert!(
-        rendered[2].contains("unknown"),
-        "unknown must be recognizable AS unknown: {:?}",
-        rendered[2]
-    );
-}
-
-#[test]
-fn sc_017q_an_unknown_agent_keeps_its_declared_state_and_reason() {
-    // Liveness null never nulls or relabels an independently known fact.
-    let mut entry = SessionEntry::new("s", Status::Running);
-    entry.agents = vec![AgentEntry {
-        reference: "cl:lead".to_owned(),
-        alias: "cl".to_owned(),
-        name: "lead".to_owned(),
-        alive: None,
-        state: Some("blocked".to_owned()),
-        reason: Some(ae::attention::Reason::Blocked),
-        session_id: Some("e795c9e9".to_owned()),
-    }];
-    let world = World::new(NOW, vec![entry]);
-    let (text, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));
-    let document = match json::parse(text.trim_end()) {
-        Ok(document) => document,
-        Err(why) => panic!("one document: {why:?}"),
+/// One product module's source, comments stripped, tests excluded.
+fn product_module(name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(name);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        panic!("{name} must be readable");
     };
-    let Some(json::Value::Arr(sessions)) = document.get("sessions") else {
-        panic!("sessions must be an array");
-    };
-    let Some(json::Value::Arr(agents)) = sessions[0].get("agents") else {
-        panic!("agents must be an array");
-    };
-    assert_eq!(agents[0].get("alive"), Some(&json::Value::Null));
-    assert_eq!(agents[0].get_str("state"), Some("blocked"));
-    assert_eq!(agents[0].get_str("reason"), Some("blocked"));
-    assert_eq!(agents[0].get_str("session_id"), Some("e795c9e9"));
-}
-
-#[test]
-fn sc_017q_the_entry_point_reports_unknown_agents_rather_than_dead_ones() {
-    // END TO END, at the real binary: this build has no transport, so no pane
-    // can be observed — and the human surface must say so rather than printing
-    // every agent as dead, which is what it did before these rows landed.
-    let root = std::env::temp_dir().join(format!("ae-p3-agents-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let dir = root.join("sessions").join("AlphaR");
-    let written = std::fs::create_dir_all(&dir).and_then(|()| {
-        std::fs::write(
-            dir.join("meta"),
-            "mode=local\nagent.main=cl:lead\ntmux_server_kind=name\ntmux_server=B\n",
-        )
-    });
-    assert!(written.is_ok(), "a planted session");
-
-    let scan = ae::inventory::durable_records(&ae::inventory::Roots::under(&root));
-    let snapshot = ae::liveness::classify(ae::inventory::take(scan, None, &Down), &Down);
-    let world = ae::listing::world_of(&snapshot, NOW, ae::session::DEFAULT_UNANSWERED_SECS);
-    let (human, _, _) = invoke_over("list", &["--all"], Some(&world));
-    let (machine, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));
-    let _ = std::fs::remove_dir_all(&root);
-
-    assert!(
-        human.contains("unknown") && !human.contains("dead"),
-        "an unobservable agent is unknown, never dead: {human}"
-    );
-    assert!(
-        machine.contains(r#""alive":null"#),
-        "and the machine surface says null: {machine}"
-    );
-    assert!(
-        !machine.contains(r#""alive":false"#),
-        "nothing was proven dead: {machine}"
-    );
+    let code: String = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    code.split_once("#[cfg(test)]")
+        .map_or(code.clone(), |(module, _)| module.to_owned())
 }
