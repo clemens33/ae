@@ -35,18 +35,16 @@ shape is the thing being replaced, not ported.
 
 ## Phases
 
+**Already landed** (ahead of phase 1, because it was type-level and blocking nothing):
+`Status::Unknown` exists with the ratified semantics; `Scope::order()` holds the SC-017m
+composition and SC-017n group order at one site; `Status::ALL` plus an exhaustive-match guard
+and a coverage test close the array-literal hole. No product code constructs `Unknown` yet and
+`SCHEMA_VERSION` is still 1 — both deliberate, and both change in phase 2.
+
+
 Each ends with `just rust-check` green, or stops. No phase begins while the previous is red.
 
-### Phase 1 — schema moves, `Unknown` becomes constructible
-
-Owns `SC-509d`. Bump the machine surface to version 2 **in the same change** as the first code
-able to produce `unknown`. A new value in an existing field is not backward compatible even
-though the field shape is unchanged — consumers matching exhaustively break, and shipping it
-under version 1 is a silent contract break wearing an additive change.
-
-*Done when:* a consumer can gate on the version, and `unknown` is reachable in a test.
-
-### Phase 2 — candidate inventory (`SC-017j`)
+### Phase 1 — candidate inventory (`SC-017j`)
 
 The union of durable session state under the canonical root plus `SC-400a`'s legacy-readable
 worktree layout, **and** positively identified ae-owned live sessions. Archives are inert and
@@ -59,7 +57,7 @@ identities** — two different paths whose last component matches are two candid
 record still appears; the archive contributes nothing; two same-basename identities survive
 as two.
 
-### Phase 3 — liveness knowledge (`SC-017k`, `SC-017l`)
+### Phase 2 — liveness knowledge, and the schema moves with it (`SC-017k`, `SC-017l`, `SC-509d`)
 
 `RUNNING` requires a successful query of the session's **recorded** server plus exact-name,
 ae-owned evidence. `STOPPED` requires that same query proving exact-name absence. Anything
@@ -75,10 +73,17 @@ call. `SC-017k` permits **grouping candidates by recorded server and querying ea
 every candidate's answer must still come from its own server and its exact name. That is the
 sanctioned optimisation; the ambient shortcut is the defect.
 
-*Done when:* prefix siblings cannot mask each other, a downed server yields `UNKNOWN` rather
-than `stopped`, and no code path infers liveness from which block is rendering.
+**`SC-509d` lands here, not earlier.** This phase contains the first code able to construct
+`Unknown`, and version 1 must never emit it — so the machine surface moves to version 2 in
+this same change. A new value in an existing field is a consumer-visible contract change even
+though the field name, JSON type and position are unchanged; versioning is the gate. An
+earlier bump would version a domain nothing can produce, and a later one ships the break.
 
-### Phase 4 — rendering, filtering, order (`SC-017m`, `SC-017n`)
+*Done when:* prefix siblings cannot mask each other, a downed server yields `UNKNOWN` rather
+than `stopped`, no code path infers liveness from which block is rendering, and every emitted
+digest carries `schema_version: 2`.
+
+### Phase 3 — rendering and order in the output itself (`SC-017m`, `SC-017n`)
 
 Human and JSON surfaces render `unknown` explicitly. Default and `--running` mean **active
 inventory**: `RUNNING` then `UNKNOWN`. `--stopped` is `STOPPED` only. `--all` is `RUNNING`,
@@ -90,7 +95,7 @@ ae owns ordering: C byte order by session name within a status group; group orde
 *Done when:* order is reproducible across platforms without consulting tmux, and every scope's
 membership is asserted by a test that fails if a variant is added.
 
-### Phase 5 — parity
+### Phase 4 — parity
 
 Snapshot parity for the 1065 P1 rows, consuming the frozen corpus through `verify-corpus.py`
 (which has no write path, deliberately). Normalisation is proven two-sided already: same
