@@ -1179,6 +1179,20 @@ figure differing by a clean, explainable margin usually means one of them counte
 population, not that either is broken. **Reconcile the populations before arguing about the
 number.**
 
+**And do not assume the reconciliation will settle it.** In one case both counts reproduced —
+six was *selector-missing AND failed-case-query*, ten was *selector-missing* — and neither was
+wrong. The disagreement pointed at a **third thing**: the generator gated a per-candidate
+obligation on a case-level condition the governing rules never required, so sixteen rows carried
+no directional obligation at all. Reconciling found a defect in the machinery rather than an
+error in either tally.
+
+**So a disagreement between two competent derivations is not only a population question** — it
+can be a defect in whatever produced one of them, and the person best placed to find it is often
+the one about to defer. Here the author of the lower-confidence count offered to stand down,
+having been wrong twice before on populations, and **accepting that deference would have buried
+the finding**, because the mismatch was the only reason anyone looked. Reconcile rather than
+defer, even when your own track record argues for deferring.
+
 ### A DERIVED artifact goes stale the moment its source moves, and nothing re-runs to say so
 
 A machine-readable column was derived from a contract: for each row of evidence, whether the
