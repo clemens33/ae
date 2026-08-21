@@ -882,6 +882,13 @@ that includes it is unfounded rather than optimistic.
 Report it as a third answer — present / absent / **unobservable** — because folding it into
 "absent" is how it becomes coverage.
 
+**And keep the third answer separate afterwards, because the two gaps cost different things to
+close.** *Absent* means the evidence could have recorded the condition and no case happened to
+exhibit it — one new fixture closes it. *Unobservable* means no field in the capture could have
+carried it, so nothing short of re-capturing the whole body of evidence will ever answer, and
+until then every claim over that condition is unfounded rather than merely unproven. Absence is
+the cheap gap; unobservability is the one that quietly caps what the evidence can ever be asked.
+
 ### A measurement error that produces COMFORT gets used; one that produces alarm gets checked
 
 The same audit first reported **146** rows exercising a prefix-collision defect. The real
