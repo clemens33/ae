@@ -1050,6 +1050,7 @@ mod tests {
             [FailedSource::WorktreeState(blocked.join(".ae"))],
             "carried through to the boundary"
         );
+        assert!(!inventory.complete(), "and the SNAPSHOT says so");
         // `identities` sorts, and `sessions/` sorts before `worktrees/`.
         assert_eq!(
             identities(&inventory),
@@ -1727,6 +1728,200 @@ mod tests {
         );
     }
 
+    // ---- criterion 24: the combined arm, and the opposed controls ---------
+
+    #[test]
+    fn criterion_24c_an_entitled_server_that_will_not_enumerate_is_one_loss_beside_a_live_candidate()
+     {
+        // The third terminal failure, with a healthy source contributing.
+        let servers = Servers::new()
+            .down(named("sock-down"))
+            .live(ServerId::Ambient, &[("healthy", Some("healthy"))]);
+        let inventory = take(
+            scan(vec![record("/s/points-down", positive("sock-down"))]),
+            Some(&ServerId::Ambient),
+            &servers,
+        );
+        assert!(!inventory.complete());
+        assert_eq!(
+            inventory.incomplete,
+            [FailedSource::Server(named("sock-down"))],
+            "one logical loss fact for the one failed source"
+        );
+        assert_eq!(
+            identities(&inventory),
+            ["durable:/s/points-down", "live:healthy@ambient"],
+            "the healthy source still contributes, and nothing is fabricated for the dead one"
+        );
+    }
+
+    #[test]
+    fn criterion_24_the_next_depth_is_covered_when_the_parent_enumeration_succeeds() {
+        // The discovered-subtree arm, kept separately from the combined one: the
+        // worktrees root enumerated FINE and the failure is one level below it,
+        // which is the only way a `.ae` subtree can be discovered-then-lost.
+        let scratch = Scratch::new("depth-control");
+        fs::write(scratch.0.join("sessions"), "not a directory").expect("a hostile fixture");
+        let blocked = scratch.0.join("worktrees").join("opaque-checkout");
+        fs::create_dir_all(&blocked).expect("a worktree");
+        fs::write(blocked.join(".ae"), "not a directory").expect("an unlistable state root");
+        let healthy = scratch.nested("good-checkout", "survivor");
+        for enumeration in [scratch.0.join("sessions"), blocked.join(".ae")] {
+            assert!(
+                fs::read_dir(&enumeration).is_err(),
+                "the enumeration operation itself must fail: {}",
+                enumeration.display()
+            );
+        }
+
+        let inventory = take(durable_records(&scratch.roots()), None, &Servers::new());
+
+        assert!(!inventory.complete());
+        assert_eq!(
+            inventory.incomplete,
+            [
+                FailedSource::CanonicalRoot(scratch.0.join("sessions")),
+                FailedSource::WorktreeState(blocked.join(".ae")),
+            ],
+            "a failure at each depth, each named for the source that failed"
+        );
+        assert_eq!(
+            identities(&inventory),
+            [format!("durable:{}", healthy.display())],
+            "and the sibling worktree the parent DID enumerate still contributes"
+        );
+    }
+
+    #[test]
+    fn criterion_24_the_combined_arm_is_both_durable_roots_with_an_ambient_healthy_source() {
+        // THE ARM A COUNT PASSES AND A FLAG DOES NOT. Every single-failure arm
+        // is satisfied by an implementation reporting a constant 1, or keeping
+        // only the first loss. Two failures at once is what tells those apart.
+        //
+        // FIXTURE VALIDITY, and it is not incidental: with BOTH durable roots
+        // unlistable there are no durable candidates, hence no recorded
+        // selectors, hence no entitlement except the ambient server. A healthy
+        // source planted on any other server would be one THE PRODUCT COULD NOT
+        // REACH — the fixture would build, every assertion would pass, and it
+        // would prove nothing. The trace is asserted below so that stays true.
+        let scratch = Scratch::new("both-roots");
+        fs::write(scratch.0.join("sessions"), "not a directory").expect("a hostile fixture");
+        fs::write(scratch.0.join("worktrees"), "not a directory").expect("a hostile fixture");
+        for enumeration in [scratch.0.join("sessions"), scratch.0.join("worktrees")] {
+            assert!(
+                fs::read_dir(&enumeration).is_err(),
+                "the enumeration operation itself must fail: {}",
+                enumeration.display()
+            );
+        }
+
+        let servers = Servers::new().live(ServerId::Ambient, &[("healthy", Some("healthy"))]);
+        let inventory = take(
+            durable_records(&scratch.roots()),
+            Some(&ServerId::Ambient),
+            &servers,
+        );
+
+        assert!(!inventory.complete());
+        assert_eq!(
+            inventory.incomplete.len(),
+            2,
+            "a count, not a flag: two sources failed and two facts are kept"
+        );
+        assert_eq!(
+            inventory.incomplete,
+            [
+                FailedSource::CanonicalRoot(scratch.0.join("sessions")),
+                FailedSource::WorktreeRoot(scratch.0.join("worktrees")),
+            ],
+            "and the two are distinguishable — different class AND different path"
+        );
+        assert!(
+            !inventory
+                .incomplete
+                .iter()
+                .any(|source| matches!(source, FailedSource::WorktreeState(_))),
+            "nothing invented for subtrees under a root that never enumerated"
+        );
+        assert_eq!(
+            servers.contacted(),
+            ["ambient"],
+            "the fixture is REACHABLE: ambient is the only entitlement derivable here"
+        );
+        assert_eq!(
+            identities(&inventory),
+            ["live:healthy@ambient"],
+            "the healthy third source contributes, and no identity is invented for the lost roots"
+        );
+    }
+
+    #[test]
+    fn criterion_24_the_five_opposed_controls_stay_complete_and_add_no_loss() {
+        // A loss signal that fires on the normal case has stopped meaning
+        // anything. Each of these ANSWERED — the answer was "nothing" — or was
+        // never ae's to ask.
+        //
+        // The two missing-root controls are SEPARATE on purpose: a single
+        // fixture with neither root present cannot tell "absent canonical is
+        // handled" from "absent worktrees is handled", so an implementation that
+        // called one of them incomplete would pass a combined control.
+        let no_canonical = Scratch::new("control-missing-canonical");
+        no_canonical.bare_worktree("a-checkout");
+        assert!(
+            take(
+                durable_records(&no_canonical.roots()),
+                None,
+                &Servers::new()
+            )
+            .complete(),
+            "a missing CANONICAL root is an authoritative empty source"
+        );
+
+        let no_worktrees = Scratch::new("control-missing-worktrees");
+        no_worktrees.session("present");
+        assert!(
+            !no_worktrees.0.join("worktrees").exists(),
+            "the fixture must actually lack the worktrees root"
+        );
+        let scanned = take(
+            durable_records(&no_worktrees.roots()),
+            None,
+            &Servers::new(),
+        );
+        assert!(
+            scanned.complete(),
+            "a missing WORKTREES root is an authoritative empty source too"
+        );
+        assert_eq!(
+            scanned.candidates.len(),
+            1,
+            "and the other root still answered"
+        );
+
+        let bare = Scratch::new("control-bare-ae");
+        bare.bare_worktree("just-a-checkout");
+        assert!(
+            take(durable_records(&bare.roots()), None, &Servers::new()).complete(),
+            "an absent worktree .ae subtree is an authoritative empty source"
+        );
+
+        let empty = Scratch::new("control-readable-empty");
+        fs::create_dir_all(empty.0.join("sessions")).expect("a readable, empty root");
+        let read = take(durable_records(&empty.roots()), None, &Servers::new());
+        assert!(read.candidates.is_empty());
+        assert!(read.complete(), "a readable empty source answered");
+
+        let outside = Servers::new()
+            .live(ServerId::Ambient, &[])
+            .live(named("never-ours"), &[("theirs", Some("theirs"))]);
+        let epistemic = take(DurableScan::default(), Some(&ServerId::Ambient), &outside);
+        assert!(
+            epistemic.complete(),
+            "a server outside the entitled set was never required — not asking is not losing"
+        );
+        assert!(epistemic.candidates.is_empty());
+    }
+
     // ---- criterion 22: the union crosses the boundary standalone -----------
 
     #[test]
@@ -1904,6 +2099,14 @@ mod tests {
         let scratch = Scratch::new("root-is-a-file");
         fs::write(scratch.0.join("sessions"), "not a directory").expect("a hostile fixture");
         let nested = scratch.nested("checkout", "survivor");
+        // The fixture must prove the ENUMERATION returned an error, not merely
+        // that something looks odd. A file where a directory belongs fails
+        // read_dir with NotADirectory for every uid; a chmod would depend on who
+        // is running the suite, and would pass vacuously as root.
+        assert!(
+            fs::read_dir(scratch.0.join("sessions")).is_err(),
+            "the enumeration operation itself must fail"
+        );
 
         let scan = durable_records(&scratch.roots());
         assert_eq!(
@@ -1923,22 +2126,39 @@ mod tests {
     }
 
     #[test]
-    fn sc_017o_a_worktrees_root_that_will_not_enumerate_still_leaves_the_canonical_root_scanned() {
+    fn criterion_24d_a_failed_worktrees_root_is_one_loss_and_invents_no_child_losses() {
         let scratch = Scratch::new("worktrees-is-a-file");
         let canonical = scratch.session("survivor");
         fs::write(scratch.0.join("worktrees"), "not a directory").expect("a hostile fixture");
+        assert!(
+            fs::read_dir(scratch.0.join("worktrees")).is_err(),
+            "the enumeration operation itself must fail"
+        );
 
-        let scan = durable_records(&scratch.roots());
+        let inventory = take(durable_records(&scratch.roots()), None, &Servers::new());
+
+        assert!(!inventory.complete());
         assert_eq!(
-            scan.incomplete,
-            [FailedSource::WorktreeRoot(scratch.0.join("worktrees"))]
+            inventory.incomplete,
+            [FailedSource::WorktreeRoot(scratch.0.join("worktrees"))],
+            "exactly one loss, shaped as the root that failed"
+        );
+        // THE POINT OF THIS ARM: you cannot count what you could not see. The
+        // `.ae` subtrees under an unlistable worktrees root were never
+        // discovered, so inventing a loss fact per undiscovered subtree would be
+        // reporting a number nobody established — the same fabrication SC-017o
+        // forbids for identities, one level up.
+        assert!(
+            !inventory
+                .incomplete
+                .iter()
+                .any(|source| matches!(source, FailedSource::WorktreeState(_))),
+            "no guessed child-subtree losses for subtrees that were never discovered"
         );
         assert_eq!(
-            scan.records
-                .iter()
-                .map(|record| record.path.as_path())
-                .collect::<Vec<_>>(),
-            [canonical.as_path()]
+            identities(&inventory),
+            [format!("durable:{}", canonical.display())],
+            "and the healthy canonical candidate survives"
         );
     }
 
@@ -2004,9 +2224,12 @@ mod tests {
             "genuinely unreadable"
         );
 
+        let absent = scratch.session("no-meta-at-all");
+
         let inventory = take(durable_records(&scratch.roots()), None, &Servers::new());
         assert!(inventory.complete(), "nothing about the ENUMERATION failed");
         assert_eq!(found(&inventory, &damaged).meta_read, MetaRead::Unreadable);
+        assert_eq!(found(&inventory, &absent).meta_read, MetaRead::Absent);
     }
 
     #[test]
