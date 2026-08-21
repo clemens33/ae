@@ -29,6 +29,7 @@ invariant, not against the code.
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
 | you are accepting a delivery and have checked that it builds and behaves | Reviewing OUTCOMES is not reviewing INSTRUMENTS, and the outcomes are what you are shown |
+| a test count moved and you are about to report the total | The DELTA carries information the total does not — a count that drops is a contradiction |
 | you are accepting a report that says something was added, removed, or replaced | Verify ADDITIONS by presence and REMOVALS by absence — they are different checks |
 | a test constructs the marker, fixture, or list that its own conclusion rests on | If the TEST authors the instrument, it observes what the test believes |
 | you are about to trust a number, or you just found one that disagrees with another | The wrong-set sequence: grain, predicate, proxy, gate, spelling |
@@ -1049,6 +1050,38 @@ explicitly:
 The reviewer here had written a checklist containing both of those steps **two hours earlier**,
 and skipped them on the next delivery. Knowing the hazard is not the mechanism; a checklist you
 do not run is a document about someone else.
+
+### The DELTA carries information the total does not — a count that drops is a contradiction
+
+A change was described as *adding* a structural test. The suite went from **451 to 448**. Both
+the author and the reviewer read "448 passed" as green and moved on.
+
+Minus four deleted plus one added is exactly minus three. **A test count that falls after an
+additive change is a contradiction visible in the report itself**, and it was the only signal
+either of them had. A total answers *did everything pass*; a delta answers *did the change do
+what it said*. Only the second is a claim about the work.
+
+The cause beneath it is worth separating from the arithmetic. **A report written from what you
+did describes what you did, not what happened.** The author had genuinely built the helper the
+report described — earlier in the same session, in the working tree — and a later edit of their
+own destroyed it. The report was written from memory of the work rather than from the diff, so
+it was an accurate account of an artifact that no longer existed. It had never been committed at
+all.
+
+And the destroying edit is a mechanism worth naming: a programmatic rewrite sliced the file
+**from a found index to the end**, with no terminating marker. Anything appended after that
+point — including tests added earlier by the same person — was inside the replaced region. **An
+unbounded slice from a found index consumes everything later than it**, and "later in the file"
+usually means "added more recently", which is exactly the work least likely to be missed by a
+quick reread and most likely to be missed by memory.
+
+Three checks fall out, all cheap and all checkable by someone else:
+
+- **Report the delta, not the total.** *451 to 448* invites the question; *448 passed* does not.
+- **Explain any decrease explicitly, or do not send the report.** A drop after an additive
+  change is either a deletion you did not intend or a claim you cannot support.
+- **Write the report from `git diff --stat`, never from recollection of the session.** The diff
+  is the artifact; your memory is of the intention.
 
 ### Verify ADDITIONS by presence and REMOVALS by absence — they are different checks
 
