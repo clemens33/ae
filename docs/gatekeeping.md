@@ -733,6 +733,44 @@ absent file standing in for a recorded absence.
 reasons**, and a control that fails for reasons unrelated to its subject reads exactly like
 the subject failing.
 
+### A gate that GENERATES its input validates its own output, not the commit
+
+A tree gate emitted a derived index into the tree it audited, then reported over that index.
+Running it changed a **committed** file: two counts moved, because the last arm's artifacts
+had landed after the index was last generated. The commit had shipped a stale index and the
+gate had passed anyway — not by oversight but **structurally**, since the stale bytes are
+overwritten before anything reads them.
+
+The consequence is narrow and worth stating precisely: the numbers such a gate reports are
+true of the **working tree**, and are not evidence about the **commit**. Where the underlying
+artifacts carry their own independent verification (checksums, presence-at-HEAD), the
+conclusion survives; what was weaker than advertised is the mechanism.
+
+The separation to insist on: **a gate reads; a generator writes; they are different programs
+run at different times.** If one command must do both, it has to compare the regenerated
+artifact against the committed one and fail on difference — otherwise "regenerate" silently
+means "repair", and a repair inside a check is indistinguishable from a pass.
+
+### A protocol that was just hard-won is the one most likely to be OVER-APPLIED
+
+Six gate rounds hardened an evidence protocol — pre-registration, blindness, typed barriers,
+red-proofs. It was the correct instrument for contested claims where an arm could pre-judge
+itself, and it cost a great deal to get right.
+
+The next task was a source-reading problem: read a frozen script, cite it accurately, mark
+what source alone cannot settle. Its author's own account of what they would have done
+absent instruction: *"I would have carried the heavy shape over by default … after six rounds
+the protocol had stopped feeling like a cost and started feeling like the standard."*
+
+That is the mechanism, and it is not laziness — it is the opposite. **Effort spent hardening
+a protocol converts into belief that the protocol is the baseline**, and the belief is
+strongest immediately after the effort. Nobody over-applies a process they got cheaply.
+
+So proportionate rigor has to be decided **per task, out loud, by someone who is not holding
+the hard-won instrument** — and the answer "less rigor here" needs stating as a judgment
+about fit, never as a discount. The tell that it is fit rather than fatigue: you can name
+what the heavy protocol protects against, and say why that failure cannot occur here.
+
 ### When the source is FROZEN, evidence has no expiry — so capture order must follow BUILD order
 
 A rewrite froze its predecessor at a known commit and began capturing behavioural evidence
