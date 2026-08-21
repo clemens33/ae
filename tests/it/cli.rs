@@ -10,6 +10,10 @@
               PRODUCT code may reach"
 )]
 
+use super::parity::Invocation;
+use super::parity::capture::ExitOutcome;
+use super::parity::capture::raw;
+
 // The OTHER door, and the only other one — `clippy.toml` denies
 // `std::process::Command` crate-wide and
 // `parity_self_test::the_doors_to_a_child_process_are_the_inventoried_ones` pins the
@@ -150,6 +154,86 @@ fn criterion_1_the_real_list_and_ls_surfaces_answer_over_a_real_state_root() {
         }
     }
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Run `git` with `args` and return its stdout, or `None` if it could not run.
+///
+/// Through the parity harness's pinned door rather than a second `Command` in
+/// this file: `the_doors_to_a_child_process_are_the_inventoried_ones` counts
+/// relaxations per file, and this needs no new one.
+fn git(args: &[&str]) -> Option<String> {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let scratch = std::env::temp_dir().join(format!("ae-git-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&scratch);
+    let out = scratch.join("out");
+    let err = scratch.join("err");
+    let mut invocation = Invocation::new("git");
+    for arg in args {
+        invocation = invocation.arg(arg);
+    }
+    let status = raw::run(&invocation, manifest, &out, &err).ok()?;
+    let text = std::fs::read_to_string(&out).ok();
+    let _ = std::fs::remove_dir_all(&scratch);
+    matches!(status.outcome(), ExitOutcome::Code(0)).then_some(text?)
+}
+
+#[test]
+fn criterion_1_the_opposed_control_is_that_the_phase_2_baseline_still_refused() {
+    // A POSITIVE WITHOUT AN OPPOSED CONTROL PROVES LESS THAN IT LOOKS. The arm
+    // above shows `list` and `ls` answer today; this one shows they did NOT
+    // before, so the change is attributable to this work rather than to a
+    // refusal that was never reachable in the first place.
+    //
+    // The baseline is DERIVED, not written down: the most recent commit that
+    // changed the refusal constant in `src/lib.rs` is the one that removed it,
+    // so its parent is the last tree that still had it. A hardcoded sha would
+    // rot the first time history is rewritten, and would say nothing about WHY
+    // that commit is the boundary.
+    let Some(removal) = git(&[
+        "log",
+        "-S",
+        "NO_SESSION_SOURCE",
+        "--format=%H",
+        "--",
+        "src/lib.rs",
+    ]) else {
+        panic!("this control needs git and the repository history to be present");
+    };
+    let removal = removal
+        .lines()
+        .next()
+        .unwrap_or_else(|| panic!("the refusal constant must appear in history"))
+        .to_owned();
+    let baseline = format!("{removal}^:src/lib.rs");
+    let Some(before) = git(&["show", &baseline]) else {
+        panic!("the baseline tree must be readable: {baseline}");
+    };
+
+    // THE OPPOSED CONTROL: the baseline refused, and had no callable render path
+    // from the entry point — `run` handed `run_with` no source at all.
+    assert!(
+        before.contains("NO_SESSION_SOURCE"),
+        "the baseline must still carry the refusal, or it is not the opposed control"
+    );
+    assert!(
+        before.contains("no session source is wired"),
+        "including the message a user would have seen"
+    );
+    assert!(
+        before.contains("run_with(args, None, out, err)"),
+        "and its entry point reached no world at all"
+    );
+
+    // TODAY: neither the constant nor its message exists anywhere in the crate.
+    let Ok(now) = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"),
+    ) else {
+        panic!("src/lib.rs must be readable");
+    };
+    assert!(
+        !now.contains("NO_SESSION_SOURCE") && !now.contains("no session source is wired"),
+        "the refusal is gone from the product, not merely unreachable"
+    );
 }
 
 #[test]
