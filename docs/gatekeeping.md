@@ -2289,6 +2289,54 @@ and it arrives dressed as enthusiasm rather than as error.
    reads is still your word. A table the reviewer can regenerate is not. The same applies
    one layer down to any document derived from another.
 
+### A closed register is only as closed as its most open cell
+
+An exclusion register — the list of differences a parity gate is allowed to forgive —
+is worth exactly what its weakest row is worth, and the guards protecting it are
+structurally unable to say so.
+
+The exhibit: a phase-4 gate carried a six-row register with closure enforced from seven
+directions. Only the register may exclude; a runner may not declare a choice; compare
+exactly and subtract only the exact named loci; a choice never exempts a row or a whole
+stream; the row's still-required facts stay asserted even where bytes are excluded;
+**fail on an exclusion wider than its registered locus**; and no unregistered phrase
+expands the set. Five rows were airtight. The sixth excluded
+`Headers, columns, widths, colour, whitespace, and other layout bytes`.
+
+**The guard measures width against the registered text, so an unbounded registration is
+never exceeded — it is inhabited.** A runner who calls a newly-differing byte "layout"
+has not gone wider than the locus; they are inside it. The one clause written to catch
+this catches every row but the one that needs it.
+
+The global default does not reach it either. "Any other difference fails" operates on
+the residue *after* subtraction, and an open subtraction lets the runner decide what the
+residue contains. Nor does the positive counterpart: the row's still-required list is an
+enumeration, so anything in neither list — a footer, a count, a trailing marker — falls
+through both sides at once. A wrong count in a summary line is not a semantic row, not a
+field value, and plausibly "layout bytes."
+
+**The sharp part is why it survived.** The same author, in the same artifact, in the same
+pass, had already found and removed two escapes of this exact class — `except
+runtime-variable fields` and `any other open choice`. Both *read* as exceptions, and an
+exception announces that it is one. `and other layout bytes` reads as specificity: four
+concrete nouns stand in front of it and lend it their precision. **An example list
+survives review that an exception clause would not**, and it is camouflaged by the
+concrete items preceding it rather than despite them.
+
+The test that finds it: for every exclusion, ask **who decides whether a new byte falls
+inside this locus.** If the answer is the runner rather than the text, the cell is open
+however specific its prefix looks. Trailing `and other …`, `such as`, `etc.`, and a
+bare `…` are the spellings; the property is the delegated decision, not the phrase.
+
+Repair by mechanism, not by taxonomy: delete the tail, keep the named categories, and
+let the global default own the residue. The row then closes the same way its five
+siblings do — because nothing outside the enumeration was ever subtracted — rather than
+by trusting whoever runs it to classify honestly.
+
+Corollary for self-review: the two escapes the author caught were exception-shaped and
+the one they missed was example-shaped. Self-review reliably catches the form that
+declares itself. Budget a second seat for the form that does not.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
