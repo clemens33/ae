@@ -212,11 +212,14 @@ rendering. The expected C-byte order within each group is `Alpha*`, `Zeta*`, `al
     criterion 23, not a new classification rule; it does not invent a human degradation
     field.
 
-15. **[SET/REVIEW] TESTS DO NOT PIN THE FINITE OPEN-CHOICE SET.** The named set is: human
-    table layout, colors, headers, whitespace; diagnostic wording, path detail, and exit
-    status; JSON stderr warning policy; JSON object field order; detailed machine loss
-    records and their order; internal collection or sort implementation; and equal-name
-    tie-breaking. Audit every unit, integration, and doctest assertion in the Rust suite
+15. **[SET/REVIEW] TESTS DO NOT PIN THE FINITE OPEN-CHOICE SET.** Each choice retains the
+    surface scope of its owning criterion; this is not a flat cross-surface union. The named
+    set is: human table layout, colors, headers, whitespace; incomplete-human diagnostic
+    wording, path detail, and exit status from criterion 12; JSON stderr warning policy
+    from criterion 13 while JSON process rc remains retained; JSON object field order;
+    detailed machine loss records and their order; internal collection or sort
+    implementation; and equal-name tie-breaking. Audit every unit, integration, and
+    doctest assertion in the Rust suite
     that touches one of those surfaces and record its source location plus the required
     semantic fact it checks. FAIL if an expected value depends on any named open
     representation or implementation choice, or if a phase-3 test reopens phase-1
