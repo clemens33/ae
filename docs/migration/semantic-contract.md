@@ -372,6 +372,43 @@ SC-017j..m are bucket 3 fix-known-defect(#105), SC-017n is bucket 2 conflict=non
 Normative/conflict classification and the explicitly scoped source/probe empirical lanes
 only; no primitive probe is promoted to an end-to-end product capture.**
 
+**SC-017o — incomplete inventory is explicit snapshot state, never a synthetic session.**
+Bucket 3 — fix-known-defect(#105). Every inventory snapshot records whether all
+enumerations required by SC-017j completed, and retains a loss fact for each logical
+source whose terminal enumeration failed. Failure to enumerate an existing canonical
+durable root, a discovered worktree `.ae` subtree, or an entitled tmux server makes the
+snapshot INCOMPLETE; discovery continues and every candidate found from other sources
+survives. No candidate, name, status, `unknown` value, or `degraded` value is fabricated
+for identities the failed source may contain. A missing durable root or absent worktree
+`.ae` subtree is an AUTHORITATIVE EMPTY SOURCE, not a loss; archives and servers outside
+the entitled set were never required and do not make the snapshot incomplete. Once a
+candidate directory was discovered, missing/unreadable `meta` remains that candidate's
+separate SC-405i/SC-509b record-loss fact and does not become enumeration incompleteness.
+
+User visibility is MANDATORY. Human `list`/`ls` output keeps its partial table and emits
+an explicit stderr diagnostic containing at least the NUMBER of failed logical sources;
+exact wording, whether paths/targets are also named, and exit status are OPEN CHOICES.
+Every successor JSON digest emits top-level boolean `inventory_complete`; `true` means
+zero required enumeration losses, `false` means one or more. It is present even for an
+empty inventory. Internal loss representation and ordering remain open; they may not leak
+guessed session identities. SC-509d remains schema version 2 — version 2 has not shipped,
+and this row is the "unless another row changes them" addition SC-509d already permits.
+Version 1 remains unchanged.
+
+The useful fact is not WHICH sessions were lost; it is that ABSENCE IN THIS SNAPSHOT IS
+NOT PROOF. A listing that silently omits an unknowable number of sessions asserts a
+completeness it did not establish, which is the confident-empty shape #105 exists to
+remove; having no identity to report is why the signal belongs at the snapshot level, not
+a reason to withhold it. IS at 72c7293: VIOLATED — `iter_stopped_sessions` skips an
+unreadable root via `[[ -d "$dir" ]] || continue` (ae:2700-2702) and `cmd_list` reports no
+enumeration failure on any surface. Empirical: source-proven; successor implementation
+pending. Authority: SC-017j + SC-509b + SC-509d + joint P1 ruling. Issue #105 is
+IS/conflict only. Conflict: fix-known-defect(#105).
+**classified_by:** SC-017o — incomplete-inventory snapshot ruling, 2026-08-21;
+fable5:lead + gpt56sol:colead. Bucket 3 fix-known-defect(#105); grain is an identityless
+whole-snapshot property that neither SC-017j membership nor SC-017m per-session rendering
+can absorb without conflating subjects.**
+
 **SC-020a — `next --attach` switches inside tmux, attaches outside.** Bucket 2 —
 `tmux switch-client` when already in tmux, `tmux attach-session` otherwise; `--switch`
 is its alias. Authority: commands.md:155-157. Empirical: pending. Conflict: none.
@@ -415,8 +452,8 @@ item declared, every target id must exist):
 S1MAP: launch -> SC-100 SC-101 SC-102a SC-102b SC-813
 S1MAP: --local/--copy/--worktree -> SC-306
 S1MAP: --from -> SC-822 SC-823 SC-824a SC-824b SC-825a
-S1MAP: list -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c
-S1MAP: ls -> SC-021 SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c
+S1MAP: list -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c SC-017o
+S1MAP: ls -> SC-021 SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c SC-017o
 S1MAP: status -> SC-016a SC-016b SC-016c SC-016d SC-1306b
 S1MAP: next -> SC-513a SC-513b SC-513c SC-020a SC-020b SC-020c SC-1306c
 S1MAP: jump -> SC-019
