@@ -12,6 +12,41 @@ something reviews structurally miss. In the phase-3 record, every gate-caught ho
 violated by a locally-correct diff**. That is the gate's job: read the diff against the
 invariant, not against the code.
 
+## Which entry do I need?
+
+| SYMPTOM | ENTRY |
+|---|---|
+| a grep, census, or probe returned a plausible number that later proved wrong | The recurring shapes, each observed more than once |
+| the red-proof or checker reports green and you cannot make any arm report NO | The vacuity regress — every layer can be blind, independently |
+| someone said gate PASS and you cannot run the same command on the committed tree | A green gate a reader cannot reproduce is a claim, not evidence |
+| you are briefing a worker and need to keep product conclusions off that channel | The seat boundary, in its finished form |
+| you and another person both confirmed a document contains X without re-reading the stated clause | Two people agreeing from memory about a document is not a reading of the document |
+| the commit that introduced a rule also violates it in the same text | Why rules get broken inside their own statement |
+| a number or pointer kept in two places has silently disagreed | Hand-maintained redundancy, of which stale pointers are one instance |
+| your self-check grep reported CLEAN after you retyped the terms it was meant to enforce | A transcribed checklist can only under-report |
+| a prose "as arm N" reference now points at a different row after a split or rebuild | A back-reference by position is a pointer into a list that changes |
+| every test case reports the same result because an earlier guard refused before the subject ran | Ask what gates precede the fact under test |
+| you opened a blocked test and it still cannot tell MATCH from MISS, or a case you did not name changed after the fix | Reachable is not discriminating, and an amendment's blast radius is not what it names |
+| every citation now has a line number and one of them still cites the wrong function | Closing layer 1 makes layer 2 HARDER to see |
+| people are following the no-leak rule and the leak is still happening | A rule that is being followed and still failing is the wrong instrument |
+| the census cannot classify some processes and you were about to write a caveat sentence | Put a blind spot's SIZE in the data, not in prose |
+| the new types only have the two states the original printed, and those two already mixed meanings | A rewrite inherits the original's CONFLATIONS through its type definitions, before any logic exists |
+| running the checker changed a file that was already committed | A gate that GENERATES its input validates its own output, not the commit |
+| you just spent many rounds hardening a protocol and the next task is a source-reading problem | A protocol that was just hard-won is the one most likely to be OVER-APPLIED |
+| you are capturing evidence against frozen source for a later phase while the current build is blocked | When the source is FROZEN, evidence has no expiry — so capture order must follow BUILD order |
+| a design document asserts a product outcome that an evidence arm is supposed to establish | Value-blindness is a DESIGN forcing function, not only anti-contamination hygiene |
+| the citation pin resolves to a real line that is a different subsystem than the claim | A citation that RESOLVES is the most dangerous kind of wrong |
+| you pointed a hooked binary at a fixture that was built by the unhooked one | An instrument must be present when the fixture is BUILT, not only when it is READ |
+| the instrumented copy must differ from the frozen one and you were about to assert byte-identity | When the instrument necessarily perturbs, PROVE the difference set — do not assert it |
+| every finding is treated as a missing check and the tool keeps growing with no ceiling | An overstated claim is the defect — and it has TWO repairs |
+| you tightened a check to stop a false positive and a real violation then got through | A narrowing needs its own red-proof for what it now lets through |
+| a pinning or count tool reported green and you treated that as having read the source | A tool that makes a check CHEAP is not a tool that PERFORMS it |
+| the control only works while one party has not seen a ruling, and they just did their job | A remedy that depends on someone staying uninformed is not a remedy |
+| a guard that just became able to fail caught one thing and you are about to claim that proves how much the rest miss | Bounding your own result |
+| you are writing or reviewing an evidence arm and need the demand list rather than another failure story | What to demand instead |
+
+This table is HAND-MAINTAINED and may lag the entries below it.
+
 ## The protocol
 
 Run these steps in order. Mechanically. The checklist beats gestalt precisely on the
