@@ -1057,7 +1057,19 @@ committed into the entry itself.
 **A differential test discriminates exactly over the axes it MOVES.** Anything held constant in
 every arm is invisible to it, and an *absent* input is the most constant thing there is — which
 makes "we deleted it and nothing changed" the weakest available evidence about a source that was
-never there. So enumerate what the fixture varies, and either plant a live observable fact on
+never there.
+
+**And the deletion arm is weak a second way, which the repair's red-proof exposed.** A planted
+second read reddened the **growth** arm only. The removal arm stayed green — because a reread
+that *fails* on a deleted tree simply keeps the value already carried, producing the same output
+a correct implementation produces. So the arm that feels most decisive, the one where you tear
+the world away, is the least discriminating of the set: blind to a source that was absent, and
+forgiving of a re-observation that errors.
+
+**Growth is what discriminates.** A second read only betrays itself when it *succeeds and sees
+something different* — so the fixture must make the later world both **readable and opposed**,
+not merely gone. Prefer arms that change a value over arms that remove one, and when a
+differential has both, know which one is carrying the proof. So enumerate what the fixture varies, and either plant a live observable fact on
 every axis the claim covers, or narrow the claim to the axes actually planted. **An unused
 observation cannot be closed behaviourally at all**; only a real capability boundary closes that.
 
