@@ -30,7 +30,7 @@ invariant, not against the code.
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
 | you are accepting a delivery and have checked that it builds and behaves | Reviewing OUTCOMES is not reviewing INSTRUMENTS, and the outcomes are what you are shown |
 | a test constructs the marker, fixture, or list that its own conclusion rests on | If the TEST authors the instrument, it observes what the test believes |
-| you are about to trust a number, or you just found one that disagrees with another | Four depths of one confusion: grain, population, deciding field, and the generator itself |
+| you are about to trust a number, or you just found one that disagrees with another | The wrong-set sequence: grain, predicate, proxy, gate, spelling |
 | you are escalating a question and have written down what you think the answer is | An escalation that carries its expected answer gets the frame confirmed, not examined |
 | you are about to report a count, or you have just been given one | A count can be honestly MEASURED over a population you narrowed without saying so |
 | your independent count disagrees with the figure you were asked to verify | Check that the field you COUNT BY has the same granularity as the thing you are counting |
@@ -1098,7 +1098,7 @@ Two corollaries earned the hard way:
   **Candour reads as sufficiency.** When a document discloses its own limit, that is the moment
   to ask whether the rest of the document respects it, not the moment to relax.
 
-### Four depths of one confusion: grain, population, deciding field, and the generator itself
+### The wrong-set sequence: grain, predicate, proxy, gate, spelling
 
 The same error appeared four times in one project, at four different depths, and every instance
 produced **arithmetically perfect** numbers. It is worth naming as a sequence, because
@@ -1115,10 +1115,13 @@ recognising the second instance did not prevent the third.
    captured file recorded it directly. Every number built on it was measured over a proxy for
    the thing that decides — and the class most confidently labelled "established by a positive
    marker" turned out to be established by a marker **about a different server**.
-4. **Inside the GENERATOR.** A per-candidate obligation gated on a case-level condition the
-   governing rules never required. This one emitted *nothing* rather than something wrong, so no
-   count moved and no gate fired. It surfaced only because two people counted a related thing
-   and disagreed.
+4. **GATE — inside the generator.** A per-candidate obligation gated on a case-level condition
+   the governing rules never required. This one emitted *nothing* rather than something wrong,
+   so no count moved and no gate fired. It surfaced only because two people counted a related
+   thing and disagreed.
+5. **SPELLING.** A reviewer matched a phase label as a **substring**, so `P1` also caught
+   `P1-ADJACENT` — 1414 rows where the population was 1065. Committed by the person who had
+   written up instance 4 minutes earlier.
 
 **The common shape: a fact about a container being read as a fact about its contents.** A case
 is not its rows. A corpus is not its P1 subset. A path prefix is not a recorded pointer. And a
@@ -1132,9 +1135,15 @@ Three things this sequence teaches that the individual instances do not:
 - **The deeper it goes, the quieter it gets.** A wrong grain produces a wrong number someone can
   argue with. A wrong conditional in a generator produces *silence* — no record, no count, no
   red — and silence has no reviewer.
-- **Ask which of the four you are at.** Before trusting any figure: is the field the deciding
-  one, is it at the right grain, is the population stated, and does the code that produced it
-  gate on something the rules do not require?
+- **Ask which of the five you are at.** Before trusting any figure: is the field the deciding
+  one, is it at the right grain, is the population stated, does the code that produced it gate
+  on something the rules do not require, and is the match exact?
+- **Re-checking the arithmetic catches none of them.** Every instance summed correctly, because
+  a wrong set produces a right-*looking* answer. **A second, differently-derived number is the
+  only detector** — which is also why deferring to the more confident source destroys the signal.
+- **The failure is not about care.** Instance 5 was committed by the author of instance 4, in
+  the same hour, having just written the warning. Treat it as a standing hazard of counting
+  rather than as a lapse to resolve not to repeat.
 
 ### An escalation that carries its expected answer gets the frame confirmed, not examined
 
