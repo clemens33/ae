@@ -33,6 +33,8 @@ MUTATIONS = [
     ("VERDICT", OBL, "every obligation removed from a divergent row",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not l.startswith("arms/A1/c01-healthy-ro\tlist-all-json\t"))),
+    ("SUPPORT", OBL, "an obligation with no support verdict",
+     lambda s: s.replace("\tUNSCORABLE\t", "\tmaybe\t", 1)),
     ("MISSING-509e", OBL, "an unreachable digest stripped of its agent-liveness move",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A1/c01-healthy-ro") and "\tSC-509e\t" in l))),

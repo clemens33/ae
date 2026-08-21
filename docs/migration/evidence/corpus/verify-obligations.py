@@ -16,6 +16,7 @@ VERD = os.path.join(HERE, "VERDICTS.tsv")
 INV = os.path.join(HERE, "INVOCATIONS.tsv")
 STREAMS = {"digest", "stdout", "stderr"}
 PREDICATES = {"equals", "at-least", "all-of", "present"}
+SUPPORT = {"OBSERVED", "UNSCORABLE"}
 LISTING = ("ae list", "ae ls")
 
 def fail(out, cid, msg): out.append((cid, msg))
@@ -64,6 +65,9 @@ def main(quiet=False):
     for o in obls:
         if o["stream"] not in STREAMS: fail(out, "STREAM", "unknown stream %r" % o["stream"])
         if o["predicate"] not in PREDICATES: fail(out, "PREDICATE", "unknown predicate %r" % o["predicate"])
+        if o.get("support") not in SUPPORT:
+            fail(out, "SUPPORT", "unknown support value %r — every obligation must say whether "
+                 "THIS CORPUS can score it" % o.get("support"))
 
     # ---- 3. FROM matches the captured bytes (re-read, never trusted) ----
     for o in obls:

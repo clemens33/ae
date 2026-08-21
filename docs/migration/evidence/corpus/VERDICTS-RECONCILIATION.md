@@ -173,7 +173,61 @@ obligations rather than one.
 
 ---
 
-## FINDING RAISED, NOT RESOLVED — the recorded-server question reaches the EXISTING obligations
+## ⚠ THE FINDING BELOW WAS INVERTED — colead reproduced the count and refuted the label
+
+**Retained with the error visible, per standing practice.** I reported that roughly half the corpus
+may be scored `EXPECTED-MATCH` when it should diverge — an UNDER-claim. The truth is the opposite:
+**the table asserted a direction on records where the decisive fact was never observed.** It was
+OVER-claiming.
+
+**The normative correction, which I had wrong:** *staleness is not itself a liveness result.* I
+treated a stale recorded server as routing to `unknown` by construction. It does not. A positive
+selector NAMES the server that must be queried and **the exact query outcome decides** — failure or
+unreachability gives `unknown`, a success proving absence gives `stopped`, a success with exact name
+and ownership gives `running`. SC-017k/l already settled this; I read a gap into a rule that had
+none.
+
+**My class A was mislabelled and I had called it the solid one.** Verified on my own specimen:
+`arms/A1/c01-healthy-ro` has `AE_TMUX_SERVER=/tmp/aecx/arms/A1/c01-healthy-ro/none.sock` in
+`env.txt` — the socket whose failure I recorded — while its session meta records
+`tmux_server=/tmp/aecx/tpl/g1/s.sock`. **The captured failure proves the CASE socket unreachable and
+says nothing about the recorded server.** The class established "by a positive marker in the
+artifact" was established by a marker about the *wrong server*.
+
+**A third silent narrowing, mine, one level deeper than the two I had already disclosed:** the
+parity universe is **148** P1 cases reachable through `INVOCATIONS.tsv`, not the 177 `case.txt`
+files I partitioned. Verified.
+
+**I never read `env.txt`.** It carries `AE_TMUX_SERVER` in 162 cases and is the queried target;
+I inferred the queried server from `case.txt`'s `tmux_socket=` instead. The deciding field was in
+the corpus the whole time, in a file my method did not open.
+
+---
+
+## Repair applied — obligations now carry SUPPORT, and nothing is subtracted mechanically
+
+Per colead's repair 3. A new `support` column separates *whether the obligation holds* from
+*whether this corpus can score it*:
+
+| support | obligations | which |
+|---|---|---|
+| `OBSERVED` | **697** | SC-509d 401 (schema — independent of liveness); SC-017o 268 (`inventory_complete: false` and the stderr diagnostic — the captured ambient/entitled-server failure is itself a loss); SC-017l 14 + SC-017m 14 (selector `missing` by construction, which routes to `unknown` with no server outcome) |
+| `UNSCORABLE` | **665** | SC-017o 305 (the value `true` needs every enumeration proven clean, including recorded servers never queried); SC-017l 120 + SC-017m 120 (need a recorded-server outcome); SC-509e 42 + SC-017r 78 (agent liveness follows the session's) |
+
+**14 + 14 OBSERVED and 120 + 120 UNSCORABLE reproduce colead's independently derived figures
+exactly** — they said six absent/unreadable-meta cases can still reach `unknown` through
+`selector=missing`, and the remaining 42 cases, 120 plus 120 records, depend on an outcome the
+corpus never captured. Two derivations, different methods, same split.
+
+Nothing was deleted: an `UNSCORABLE` obligation still states what must change and why, and says
+plainly that this evidence base cannot judge it. Phase 4 must either inject and record a
+product-valid recorded-server result per candidate, or carry that locus as unscorable — because a
+whole-row `EXPECTED-MATCH` would canonise `stopped`, and `EXPECTED-DIVERGENCE` without a direction
+accepts anything.
+
+---
+
+## FINDING AS ORIGINALLY RAISED (inverted; kept for the record)
 
 While deriving, I checked which server the successor would actually query, because SC-017k requires
 the answer to come from the candidate's **recorded** server. The corpus's 91 cases partition:

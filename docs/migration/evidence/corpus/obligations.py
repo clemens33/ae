@@ -25,7 +25,29 @@ CONTRACT = "docs/migration/semantic-contract.md"
 LISTING = ("ae list", "ae ls")
 
 HDR = ["case", "consumer", "obligation_id", "stream", "locus", "from", "to",
-       "predicate", "baseline_provenance", "authority"]
+       "predicate", "baseline_provenance", "support", "authority"]
+
+# SUPPORT — whether THIS CORPUS can score the obligation, distinct from whether the
+# obligation holds. Added after colead refuted the partition: the captured query
+# failures are against the CASE/ambient socket (env.txt AE_TMUX_SERVER), while
+# SC-017k decides liveness from the candidate's RECORDED server — a different path
+# the corpus never queried. Staleness is NOT itself a liveness result; the exact
+# query outcome decides, and that outcome was never captured.
+#   OBSERVED   — the deciding fact is in the artifacts
+#   UNSCORABLE — the obligation stands normatively; this corpus cannot score it
+def selector_missing(case):
+    """A candidate whose meta is absent or unreadable has a `missing` selector by
+    construction (SC-405l), which routes to `unknown` WITHOUT any server outcome.
+    That is the only liveness route this corpus supports on its own."""
+    mb = os.path.join(SRC, case, "manifest.before.tsv")
+    if not os.path.exists(mb):
+        return False
+    rows = [l.rstrip("\n").split("\t") for l in open(mb, encoding="utf-8", errors="replace")]
+    sess = {r[-1].split("/")[2] for r in rows
+            if r[0] == "dir" and re.match(r"\./sessions/[^./][^/]*$", r[-1])}
+    metas = {r[-1].split("/")[2]: r[1] for r in rows
+             if r[0] == "file" and re.match(r"\./sessions/[^./][^/]*/meta$", r[-1])}
+    return bool(sess - set(metas)) or any(m in ("000", "0", "100", "200") for m in metas.values())
 
 def contract_blob():
     """The blob hash of the contract this derivation was made against. A lineage
@@ -60,7 +82,7 @@ def main():
             # SC-509d: version 2, unconditionally, on every successor digest.
             m = re.search(r'"schema_version"\s*:\s*(\d+)', text)
             rows.append((case, consumer, "SC-509d", "digest", "schema_version",
-                         m.group(1) if m else "ABSENT", "2", "equals", "SOURCE",
+                         m.group(1) if m else "ABSENT", "2", "equals", "SOURCE", "OBSERVED",
                          "successor digest is schema version 2"))
             # SC-017o: inventory_complete on EVERY successor digest, present even
             # for an empty inventory. Absent from every version-1 capture.
@@ -68,7 +90,9 @@ def main():
                          "present" if '"inventory_complete"' in text else "ABSENT",
                          "false" if incomplete else "true", "equals",
                          "OBSERVED" if incomplete else "SOURCE",
-                         "every successor digest carries the boolean"))
+                         "OBSERVED" if incomplete else "UNSCORABLE",
+                         "field mandated unconditionally; the VALUE true needs every "
+                         "enumeration proven clean, including recorded servers never queried"))
 
         # ---- SC-017p/q/r + SC-509e: per-agent liveness (contract 01353d8c) ----
         # SC-017q's matrix is an IMPLICATION, not an orthogonality: session `unknown`
@@ -76,23 +100,24 @@ def main():
         # roster agent's health diverges with it — and the two surfaces move in
         # OPPOSITE directions from the same frozen defect, which is why these are two
         # separate obligations rather than one.
+        sup = "OBSERVED" if selector_missing(case) else "UNSCORABLE"
         if incomplete:
             if digest and '"alive"' in text:
                 n_false = len(re.findall(r'"alive"\s*:\s*false', text))
                 n_true = len(re.findall(r'"alive"\s*:\s*true', text))
                 if n_false:
                     rows.append((case, consumer, "SC-509e", "digest", "agents[].alive",
-                                 "false", "null", "all-of", "OBSERVED",
+                                 "false", "null", "all-of", "OBSERVED", sup,
                                  f"{n_false} agent(s) recorded false from an unavailable "
                                  "pane query; unprovable is null"))
                 if n_true:
                     rows.append((case, consumer, "SC-509e", "digest", "agents[].alive",
-                                 "true", "null", "all-of", "OBSERVED",
+                                 "true", "null", "all-of", "OBSERVED", sup,
                                  f"{n_true} agent(s) recorded true, but session unknown "
                                  "implies agent unknown"))
             if listish and not digest and re.search(r"^\s{2}\S+:\S+\s", text, re.M):
                 rows.append((case, consumer, "SC-017r", "stdout", "agent health marker",
-                             "blank", "unambiguous unknown", "all-of", "OBSERVED",
+                             "blank", "unambiguous unknown", "all-of", "OBSERVED", sup,
                              "frozen renders alive and absent identically as a blank "
                              "marker; unknown must be non-silent"))
 
@@ -110,19 +135,20 @@ def main():
             if n:
                 rows.append((case, consumer, "SC-017l", stream,
                              "sessions[].status" if digest else "status cell",
-                             "stopped", "unknown", "all-of", "OBSERVED",
+                             "stopped", "unknown", "all-of", "OBSERVED", sup,
                              f"{n} captured occurrence(s) must all move"))
             else:
                 rows.append((case, consumer, "SC-017m", stream, "(row set)",
-                             "empty", "unknown rows present", "present", "OBSERVED",
+                             "empty", "unknown rows present", "present", "OBSERVED", sup,
                              "default view shows running then unknown; absent becomes present"))
             if not digest:
                 # SC-017o human half: stderr diagnostic carrying the NUMBER of failed
                 # logical sources. at-least, not equals — a gate pinning the count
                 # would fail a correct implementation that lost two sources.
                 rows.append((case, consumer, "SC-017o", "stderr", "(whole stream)",
-                             "ABSENT", "1", "at-least", "OBSERVED",
-                             "explicit diagnostic naming the loss count"))
+                             "ABSENT", "1", "at-least", "OBSERVED", "OBSERVED",
+                             "the captured ambient/entitled-server failure is itself a "
+                             "loss, so incompleteness here needs no recorded-server outcome"))
 
     rows.sort(key=lambda x: (x[0], x[1], x[2], x[4]))
     with open(OUT, "w", encoding="utf-8") as fh:
@@ -140,6 +166,8 @@ def main():
         fh.write(f"p1_rows\t{len(seen)}\n")
         fh.write(f"obligation_rows\t{len(rows)}\n")
 
+    sup = collections.Counter(x[9] for x in rows)
+    for k in sorted(sup): print("  support %-11s %4d" % (k, sup[k]))
     per = collections.Counter(x[2] for x in rows)
     carriers = len({(x[0], x[1]) for x in rows})
     print(f"P1 rows {len(seen)}   obligations {len(rows)}   rows carrying >=1: {carriers}")
