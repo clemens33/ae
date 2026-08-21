@@ -2,8 +2,8 @@
 
 - contract-head: `bab1b6fe7d056681e53e8ac709196950e89797ee`
 - frozen-baseline: `72c7293` (`72c729343a0117af2968b66e1c43f89ad25fc0b2`)
-- canonical set: SC rows `436`; ownership records `43`; total entries `479`
-- evidence-kind counts: TEST `82`; CENSUS `3`; CENSUS/CODE `23`; CODE `3`; OBSERVED `3`; OBSERVED/CODE `4`; PROBE `361`
+- canonical set: SC rows `438`; ownership records `43`; total entries `481`
+- evidence-kind counts: TEST `82`; CENSUS `3`; CENSUS/CODE `23`; CODE `5`; OBSERVED `3`; OBSERVED/CODE `4`; PROBE `361`
 
 AMENDMENT (both seats, 2026-08-20, preflight ae-20260820T111048Z-352d6eea): TEST and
 CENSUS/CODE entries are CANDIDATE evidence pointers pending the pin audit;
@@ -112,6 +112,7 @@ SC-307 | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; iso
 SC-400a | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures; no live-model query | manipulate=deterministic fault hook at the row operation boundary | barriers=freeze inputs and explicit before/after barriers; no timing races | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted for seat classification
 SC-400b | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures; no live-model query | manipulate=deterministic fault hook at the row operation boundary | barriers=freeze inputs and explicit before/after barriers; no timing races | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted for seat classification
 SC-400c | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures; no live-model query | manipulate=deterministic fault hook at the row operation boundary | barriers=freeze inputs and explicit before/after barriers; no timing races | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted for seat classification
+SC-400d | CODE | artifact=git show 72c7293:ae | heading=ae:3200-3209,8893 | recheck=canonical resolver plus worktree-nested wildcard scan establish the two frozen readable shapes and the inner-leaf name; successor two-layout inventory pending | expected-values=classified by both seats (bucket 2, conflict none)
 SC-401a | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures; no live-model query | manipulate=deterministic fault hook at the row operation boundary | barriers=freeze inputs and explicit before/after barriers; no timing races | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted for seat classification
 SC-401b | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures; no live-model query | manipulate=deterministic fault hook at the row operation boundary | barriers=freeze inputs and explicit before/after barriers; no timing races | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted for seat classification
 SC-402 | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures; no live-model query | manipulate=deterministic fault hook at the row operation boundary | barriers=freeze inputs and explicit before/after barriers; no timing races | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted for seat classification
@@ -504,4 +505,5 @@ SC-523b | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; is
 SC-405i | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures | manipulate=deterministic per C design | barriers=frozen inputs, before/after barriers | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted
 SC-405j | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures | manipulate=deterministic per C design | barriers=frozen inputs, before/after barriers | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted
 SC-405k | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures | manipulate=deterministic per C design | barriers=frozen inputs, before/after barriers | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted
+SC-405l | CODE | artifact=git show 72c7293:ae | heading=ae:7594-7599,17558-17559 | recheck=released reader maps kindless nonempty to -L name and explicit ambiguous to no target; typed writer emits the two-key representation; successor normalized reader pending | expected-values=classified by both seats (bucket 2, conflict none)
 
