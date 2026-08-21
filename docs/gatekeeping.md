@@ -2527,6 +2527,43 @@ test, a bad machine, an unrelated commit. Only the author knows the scope of wha
 actually checked, so a check reported without its scope inherits the same defect as a
 verdict reported without its scope: it reads stronger than it is.
 
+### Every gate property fails in TWO directions; review instinct is trained on one
+
+Three findings in one night of gate review, each the same shape, each found only because
+someone happened to look the unusual way:
+
+**Forgiving what must be compared / being unable to forgive what was ratified.** A fixed
+comparison projection was reviewed on the explicit question "does it invent or over-exempt
+semantics?" It did neither. It UNDER-admitted: one ratified register row — excluding a
+timestamp value that cannot match a replay — had no expressible mechanism, because the
+projection enumerated removal of member *order* and *presence* and never member *value*.
+All 401 machine-output rows would have failed, and the projection itself barred the runner
+from improvising. The question named one direction; the defect was in the other.
+
+**A member too permissive / a member absent.** An exclusion register was audited cell by
+cell for over-wide loci, one was found and repaired, and the register was reported sound.
+A second seat then found two ratified choices never registered at all. Auditing the cells
+is not auditing the set.
+
+**Forgiving a wrong implementation / rejecting a correct one.** A reviewer (me) found an
+ambiguous role definition and proposed tightening it. The tightening would have converted a
+ratified open choice into a required byte spelling — rejecting a correct implementation for
+exercising a choice the contract grants. The gate's own closing constraint forbade exactly
+that. **The fix was prohibited by the artifact it was filed against**, and it looked safe
+because tightening always looks safe.
+
+**The pattern: reviewers are trained to hunt leniency.** Every instinct — be adversarial,
+assume the author is wrong, look for the hole — points at the forgiving direction. The
+strict direction produces failures that *look like the gate working*: a red run, a refused
+row, an implementation told no. Nobody investigates a gate for being too harsh, because
+harshness wears the costume of rigor.
+
+Practical form: for each property a gate asserts, write both failure sentences before
+reviewing it. *This is wrong if it lets X through* and *this is wrong if it rejects Y.*
+If the second sentence is hard to write, that is the direction you are not checking. When a
+brief names one direction — as "does it over-exempt?" did — treat that as a description of
+where the author already looked, not as the scope of the review.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
