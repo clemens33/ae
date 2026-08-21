@@ -25,6 +25,7 @@
 //! | [`attention`] | SC-017g, SC-509 — severity and the rollup |
 //! | [`digest`] | SC-509, SC-509b, SC-506 — the versioned document that always closes, and says when it lost something |
 //! | [`filters`] | SC-017a–f, SC-017i, SC-521, SC-523, SC-524 — which sessions a listing shows |
+//! | [`inventory`] | SC-017j, SC-404 — which sessions EXIST, before anything asks whether they run |
 //! | [`session`] | SC-017e, SC-017g, SC-405d/f/g/i/j/k, SC-518, SC-520, SC-980 — what a session directory establishes, and what it must be told |
 //! | [`listing`] | SC-017f, SC-017h, SC-509, SC-506 — the two renderings of one selection, and the injected world they read |
 //! | [`cli`] | SC-021, and the argv half of SC-017a–i / SC-521a/b — which word is `list`, and which parser owns its flags |
@@ -52,6 +53,7 @@ pub mod digest;
 pub mod error;
 pub mod events;
 pub mod filters;
+pub mod inventory;
 pub mod json;
 pub mod listing;
 pub mod meta;
