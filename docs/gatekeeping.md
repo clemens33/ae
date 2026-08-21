@@ -29,6 +29,7 @@ invariant, not against the code.
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
 | you are accepting a delivery and have checked that it builds and behaves | Reviewing OUTCOMES is not reviewing INSTRUMENTS, and the outcomes are what you are shown |
+| you are accepting a report that says something was added, removed, or replaced | Verify ADDITIONS by presence and REMOVALS by absence — they are different checks |
 | a test constructs the marker, fixture, or list that its own conclusion rests on | If the TEST authors the instrument, it observes what the test believes |
 | you are about to trust a number, or you just found one that disagrees with another | The wrong-set sequence: grain, predicate, proxy, gate, spelling |
 | you are escalating a question and have written down what you think the answer is | An escalation that carries its expected answer gets the frame confirmed, not examined |
@@ -1048,6 +1049,39 @@ explicitly:
 The reviewer here had written a checklist containing both of those steps **two hours earlier**,
 and skipped them on the next delivery. Knowing the hazard is not the mechanism; a checklist you
 do not run is a document about someone else.
+
+### Verify ADDITIONS by presence and REMOVALS by absence — they are different checks
+
+A report described a repair: a helper was added, three tests were rewritten to read a value
+from the product, two structures had a field taken away. The reviewer checked it and passed it.
+
+They had checked **only the removals.** *No path type on this structure* and *this is now a
+production type* are both claims about something being **gone** or **changed in place**, and a
+grep confirms them in seconds. That the new helper **existed** was never checked — and it did
+not. The tests it was supposed to support had been deleted rather than replaced, so the behaviour
+they guarded was unprotected entirely, and two one-line mutations to the product passed the
+whole suite.
+
+**The asymmetry is easy to miss because both feel like "checking the report."** An absence claim
+is falsified by finding the thing; a presence claim is falsified by *not* finding it — and the
+second requires you to know what to look for, from a report you are simultaneously trying to
+verify. The reviewer confirmed everything the report said had been taken away and nothing it
+said had been put in.
+
+So when accepting work against a report, split the claims:
+
+- **Removals and constraints** — grep for the thing that should be gone.
+- **Additions** — grep for the thing that should be there, **by the name the report gave it**.
+  If the report names a helper, a test, or a field, that name is a checkable assertion.
+- **Replacements are both.** *X was replaced by Y* is two claims, and confirming X is gone says
+  nothing about whether Y arrived.
+
+**And when a report and the tree disagree, that is a distinct category of failure.** A weak test
+is a design problem; a report describing an artifact that does not exist is a *reporting*
+problem, and it invalidates the basis on which everything else in that report was accepted.
+Ask what happened before asking for a rebuild — a lost edit, a stale working tree, a commit that
+missed files, and a summary written from intention rather than from the diff are four different
+causes with four different remedies, and only one of them is fixed by writing the code again.
 
 ### If the TEST authors the instrument, it observes what the test believes
 
