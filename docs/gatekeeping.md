@@ -26,6 +26,7 @@ invariant, not against the code.
 | your criteria all pass but the obligation was about ordering, causality, or a matched pair | A check can only see obligations SHAPED like it — temporal ones survive a static gate |
 | a case with more information available is about to be handled by a different branch | Adding evidence must never SUBTRACT knowledge — check the richer case against the poorer one |
 | a rule says two facts are independent and you are choosing test cases | Orthogonality is proven on the OFF-DIAGONAL; the diagonal is where a derivation hides |
+| your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
 | your fixture plants a precondition while other parts of the same fixture break its source | A fixture can succeed at building a state the product could never produce |
 | a rule lists cases and you just found one it does not cover | Adding the missing member to an enumerated rule PRESERVES the defect that produced it |
 | a rule was just clarified, refined, or split into two orthogonal facts | A clarification that SPLITS a concept creates a coverage gap in evidence captured before it |
@@ -1321,6 +1322,18 @@ barrier's label. Nothing about it looks empty.
 So for any system that **generates its own surfaces**, ask where the instrumented artifact
 comes from, not just where the instrument is pointed. An instrument that must exist at
 construction time cannot be added at observation time.
+
+**The same hazard applies to the STIMULUS, not just the instrument — and there it is worse.**
+A control run patches the code to break something, expecting the guard to go red. If the patch
+silently fails to apply — an anchor reflowed by a formatter, a moved line, a renamed symbol —
+the suite stays green, and **a control that never applied is indistinguishable from a control
+that applied and was not caught.** The conclusion it pushes you toward is that your guard is
+weak, so you go strengthen a guard that was already fine: wasted work you would never discover
+was wasted, because the "evidence" for it was a green run that measured nothing.
+
+So **assert the perturbation landed before interpreting the response.** Confirm the anchor
+matched, the mutant compiled, the fixture wrote the bytes — then read the result. Noticing that
+output looks "suspiciously empty" is luck; the assertion is not.
 
 And the structural remedy is the one that generalises: **an unarmed barrier is not a null
 result — it invalidates everything captured after it.** The case now records INCONCLUSIVE
