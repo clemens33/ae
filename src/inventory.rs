@@ -1,9 +1,9 @@
 //! Which sessions EXIST, before anything asks whether they are running.
 //!
 //! **SC-017j** — the inventory is the union of (a) durable session state under
-//! the canonical sessions root and (b) positively identified ae-owned live tmux
-//! sessions on a server ae is already entitled to query. Archives are inert and
-//! never enter it. Every durable candidate survives into classification: a
+//! SC-400d's two readable layouts and (b) positively identified ae-owned live
+//! tmux sessions on a server ae is already entitled to query. Archives are inert
+//! and never enter it. Every durable candidate survives into classification: a
 //! failed liveness query, a prefix-only name match, or a live exact-name session
 //! whose ownership marker is missing cannot delete the candidate.
 //!
@@ -15,27 +15,32 @@
 //! Collapsing discovery into liveness is what produced #105, where two disjoint
 //! enumerators each removed the same durable directory for a different reason.
 //! So **nothing here classifies liveness** — [`Candidate`] carries no status at
-//! all, and there is no code path from this module to [`crate::digest::Status`].
+//! all, and there is no code path from this module to `digest`'s status type.
 //!
-//! Two structural consequences, both deliberate:
+//! Three structural consequences, all deliberate:
 //!
-//! * **This module opens no file inside a candidate directory.** A candidate is
-//!   a directory entry, so an unreadable, absent or malformed `meta` cannot
-//!   remove one — the damage is SC-405i/SC-509b's `degraded` fact, decided a
-//!   layer up, on a candidate that already exists. When a row finally names the
-//!   durable server selector (see [`RecordedServer`]), reading it must preserve
-//!   this: a failed read yields [`RecordedServer::Missing`], never a drop.
-//! * **Identity is the PATH, never the last component.** SC-017j does not
-//!   authorize basename-only deduplication of distinct identities: two paths
-//!   whose last component matches are two candidates.
+//! * **The state DIRECTORY establishes the candidate; the `meta` only fills it
+//!   in.** SC-400d: "presence of the state directory is sufficient for
+//!   discovery". The record is built from the directory and the read only
+//!   populates fields, so an absent, unreadable or malformed `meta` costs facts
+//!   and never a candidate. What the read outcome WAS is carried ([`MetaRead`]),
+//!   because SC-509b derives degradation from it later and re-running discovery
+//!   to re-learn it would be the expensive kind of forgetting.
+//! * **Identity is the root-qualified state directory, never the leaf.**
+//!   SC-400d: equal leaves across paths never deduplicate. The `<session-name>`
+//!   leaf is the inventory NAME; the path is the identity.
+//! * **Discovery completes before reconciliation.** SC-017j says so in those
+//!   words, and the reason is visible in the code: every sighting is gathered
+//!   first, so which server answered first cannot decide which candidate a
+//!   sighting joins.
 //!
 //! # Entitlement — a finite, pointer-derived set
 //!
 //! ae may enumerate a tmux server only when it already holds a pointer to it:
 //! the ambient server this invocation's ordinary transport selected, or a
-//! positive, unambiguous selector recorded by a durable candidate. A missing or
-//! ambiguous selector confers no entitlement. Sweeping arbitrary socket paths or
-//! server names is not a way to gain one.
+//! positive, unambiguous selector recorded by a durable candidate (SC-405l).
+//! A missing or ambiguous selector confers no entitlement. Sweeping arbitrary
+//! socket paths or server names is not a way to gain one.
 //!
 //! A live session on a server outside that set is **absent by epistemic limit**
 //! — not stopped, not unknown, not there at all — and becomes visible later when
@@ -66,6 +71,11 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::meta::{Meta, Selector, ServerSelector};
+
+/// The nested state directory inside a worktree — SC-400d's legacy layout.
+const WORKTREE_STATE_DIR: &str = ".ae";
+
 /// The ae state roots for one invocation, derived from `AE_HOME` (SC-404).
 ///
 /// **The archive is deliberately not reachable from this type.** SC-017j says
@@ -76,103 +86,105 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Roots {
     sessions: PathBuf,
+    worktrees: PathBuf,
 }
 
 impl Roots {
-    /// The roots under `ae_home` — SC-404's default derivation.
+    /// The roots under `ae_home` — SC-404's default derivation, both of
+    /// SC-400d's layouts.
     #[must_use]
     pub fn under<P: Into<PathBuf>>(ae_home: P) -> Self {
+        let home = ae_home.into();
         Self {
-            sessions: ae_home.into().join("sessions"),
+            sessions: home.join("sessions"),
+            worktrees: home.join("worktrees"),
         }
     }
 
-    /// The sessions root, `<AE_HOME>/sessions`.
+    /// The canonical root, `<AE_HOME>/sessions`.
     #[must_use]
     pub fn sessions(&self) -> &Path {
         &self.sessions
     }
-}
 
-/// A tmux server ae already holds a pointer to.
-///
-/// Opaque on purpose. What a selector LOOKS like — socket path, server name,
-/// the `tmux_server` / `tmux_server_kind` pair the bash era wrote — is not
-/// ratified by any row this module can cite, and bash is evidence rather than an
-/// oracle. So this type neither parses nor constructs a selector: it carries the
-/// one the caller's transport already resolved, and compares two of them for
-/// exact equality, which is all SC-017j's "every DISTINCT positive, unambiguous
-/// server selector" needs.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ServerId(String);
-
-impl ServerId {
-    /// The server this selector names.
-    pub fn new<S: Into<String>>(selector: S) -> Self {
-        Self(selector.into())
-    }
-
-    /// The selector, as the caller supplied it.
+    /// The legacy worktree root, `<AE_HOME>/worktrees`.
     #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub fn worktrees(&self) -> &Path {
+        &self.worktrees
     }
 }
 
-/// What a durable record says about the server its session lives on.
+/// Which SC-400d layout a durable candidate was found in.
 ///
-/// SC-017j splits the world exactly three ways, because only one of them
-/// confers entitlement: a *positive, unambiguous* selector. The other two are
-/// not failures to be retried — they are the ratified reason a durable candidate
-/// stays in inventory with its liveness unresolved.
-///
-/// **Nothing produces [`RecordedServer::Positive`] yet, and that is a contract
-/// gap rather than an omission here.** SC-405b enumerates the session-context
-/// meta keys as `mode`, `origin`, `work_dir`, `goal`; SC-405c the roster keys;
-/// SC-405d rules that every other key is tolerated and *never interpreted*. No
-/// row names a durable server-selector key, so there is nothing this reader may
-/// legally consume — reading the bash era's `tmux_server` would promote evidence
-/// to contract. [`durable_records`] therefore records `Missing` for every
-/// candidate until that row exists.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RecordedServer {
-    /// A positive, unambiguous selector: this candidate points at a server, and
-    /// that pointer entitles ae to query it.
-    Positive(ServerId),
-    /// No selector was recorded. Confers no entitlement.
-    Missing,
-    /// A selector was recorded but does not identify one server. Confers no
-    /// entitlement — an ambiguous pointer is not a pointer.
-    Ambiguous,
+/// Part of its provenance rather than a formatting detail: the two layouts spell
+/// a session's name in different places, and a candidate that forgot which one
+/// it came from could not say why its name is what it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// `<AE_HOME>/sessions/<session-name>/`.
+    Canonical,
+    /// `<AE_HOME>/worktrees/<worktree-name>/.ae/<session-name>/`, where the
+    /// outer worktree name and the inner session name may differ. The INNER
+    /// leaf is the inventory name.
+    WorktreeNested,
 }
 
-impl RecordedServer {
-    /// The server this record entitles ae to query, if any.
-    #[must_use]
-    pub const fn entitles(&self) -> Option<&ServerId> {
-        match self {
-            Self::Positive(server) => Some(server),
-            Self::Missing | Self::Ambiguous => None,
-        }
-    }
+/// What happened when phase 1 tried to read a candidate's `meta`.
+///
+/// **Independent of source membership** (criterion 21 / SC-509b): a tmux-only
+/// candidate has no record to lose, while a durable candidate whose `meta` will
+/// not read has one and lost its contents. Rendering those two the same way is
+/// the digest lying by omission — it would report a destroyed record as a
+/// session that never had one.
+///
+/// This phase carries the outcome and draws no conclusion from it. Whether it
+/// sets `degraded` is SC-405e/SC-509b's question, decided by the reader that
+/// needs the meta's contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetaRead {
+    /// Read and parsed.
+    Parsed,
+    /// No `meta` in the state directory.
+    Absent,
+    /// A `meta` that exists and would not read.
+    Unreadable,
 }
 
-/// Durable session state found under a sessions root.
-///
-/// The `path` is the identity; `name` is its last component, kept for display
-/// and for the exact-name matching SC-017k will do a phase later.
+/// Durable session state found under one of SC-400d's roots.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableRecord {
-    /// The session directory. THE identity of this candidate.
+    /// The state directory. THE identity of this candidate, root-qualified, so
+    /// two paths sharing a leaf are two candidates.
     pub path: PathBuf,
-    /// The directory's last component.
+    /// The `<session-name>` leaf — the inventory name (SC-400d).
     ///
-    /// Lossy for a non-UTF-8 name — the bytes survive in `path`, which is what
+    /// Lossy for a non-UTF-8 name; the bytes survive in `path`, which is what
     /// any later read must use. A name ae cannot spell is still a candidate:
     /// dropping it would be exactly the disappearance this module forbids.
     pub name: String,
-    /// The server this record points at, per SC-017j's three-way split.
-    pub server: RecordedServer,
+    /// Which layout it was found in.
+    pub layout: Layout,
+    /// The SC-405l normalized server selector.
+    pub server: ServerSelector,
+    /// What reading its `meta` did — see [`MetaRead`].
+    pub meta_read: MetaRead,
+}
+
+/// A tmux server ae holds a pointer to.
+///
+/// Two ways to hold one, and they are never assumed equivalent: SC-017j rules
+/// that "unproved equivalence between selector spellings never authorizes a
+/// merge", so an ambient server and a recorded `name`/`socket` selector are
+/// distinct identities here even when a human can see they address the same
+/// tmux.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerId {
+    /// The server this invocation's ordinary transport already selected, with
+    /// no explicit selector of its own. SC-1410c owns how it was selected; this
+    /// phase consumes the selection.
+    Ambient,
+    /// A server named by a positive, unambiguous durable selector (SC-405l).
+    Selected(Selector),
 }
 
 /// One session an entitled server reported, before ae decides whether it is its
@@ -230,21 +242,50 @@ pub struct LiveSighting {
     pub marker: String,
 }
 
+/// Which sources established a candidate.
+///
+/// **SC-509b needs this and it is not the same question as damage.** Source
+/// membership says whether a durable record EXISTS; [`MetaRead`] says whether it
+/// could be read. Collapsing them would let the digest report a destroyed record
+/// as a session that never had one.
+///
+/// Derived from the two source fields, never stored beside them: a provenance
+/// that can disagree with the sources it describes is one that eventually will.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provenance {
+    /// Durable state only — no entitled server reported it.
+    Durable,
+    /// A live session only — no durable record was found for it.
+    Live,
+    /// Both, positively matched. The union coalesced exactly one candidate.
+    Both,
+}
+
 /// One inventory candidate: durable state, a live sighting, or both.
 ///
 /// Deliberately carries no status. Liveness is SC-017k/SC-017l's question, one
-/// phase later, and a `Status` field here would be a place to answer it early.
+/// phase later, and a status field here would be a place to answer it early.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     /// The session name this candidate is known by.
     pub name: String,
     /// The durable record, when there is one.
     pub durable: Option<DurableRecord>,
-    /// The live sighting, when one was positively attached to this candidate.
+    /// The live sighting, when one was positively joined to this candidate.
     pub live: Option<LiveSighting>,
 }
 
 impl Candidate {
+    /// Which sources established this candidate.
+    #[must_use]
+    pub const fn provenance(&self) -> Provenance {
+        match (self.durable.is_some(), self.live.is_some()) {
+            (true, true) => Provenance::Both,
+            (true, false) => Provenance::Durable,
+            (false, _) => Provenance::Live,
+        }
+    }
+
     /// A candidate that exists only because a durable record does.
     #[must_use]
     pub fn durable(record: DurableRecord) -> Self {
@@ -275,48 +316,102 @@ impl Candidate {
     }
 }
 
-/// Every durable candidate under `roots`, path order.
+/// Every durable candidate under `roots`, both SC-400d layouts, path order.
 ///
-/// One candidate per direct child DIRECTORY of the sessions root. Nothing
-/// inside a candidate is opened, so no `meta` damage can remove one.
+/// A candidate is a state DIRECTORY: `<sessions>/<name>/`, or
+/// `<worktrees>/<worktree>/.ae/<name>/` where the two names may differ and the
+/// inner one is the inventory name. A bare worktree directory with no nested
+/// state directory is not a candidate.
 ///
-/// The order is by path, not by traversal: `read_dir` order is a filesystem
-/// fact that differs between platforms and between runs. This is internal
-/// determinism only — the ORDER a listing shows is SC-017n's, applied later.
+/// The `meta` inside each is read for its SC-405l selector ONLY, and a read that
+/// fails costs the selector rather than the candidate: the record is built from
+/// the directory first, and the read fills fields into it.
+///
+/// The order is by path, not by traversal: `read_dir` order is a filesystem fact
+/// that differs between platforms and between runs. This is internal determinism
+/// only — the ORDER a listing shows is SC-017n's, applied later.
 ///
 /// # Errors
 ///
-/// The sessions root not existing is not an error: a machine that never ran ae
-/// has no sessions, which is an empty inventory rather than a failure. A root
+/// A ROOT that does not exist is not an error: a machine that never ran ae has
+/// no sessions, and one that never used `--worktree` has no worktrees. A root
 /// that EXISTS and will not read is returned as the [`io::Error`] it is —
 /// inventing an empty answer there would report "no sessions" for "I could not
 /// look", which is the shape of #105 one level up.
+///
+/// A worktree whose own `.ae` will not list is skipped rather than failing the
+/// whole scan: nothing can be named there, and one unreadable subtree must not
+/// cost every candidate in every other one. No row rules this case.
 pub fn durable_records(roots: &Roots) -> io::Result<Vec<DurableRecord>> {
-    let entries = match fs::read_dir(roots.sessions()) {
+    let mut records = Vec::new();
+    for path in child_dirs(roots.sessions())? {
+        records.push(record_at(path, Layout::Canonical));
+    }
+    for worktree in child_dirs(roots.worktrees())? {
+        // SC-400d: the candidate is the NESTED state directory. A bare worktree
+        // is a checkout, not a session.
+        let Ok(states) = child_dirs(&worktree.join(WORKTREE_STATE_DIR)) else {
+            continue;
+        };
+        for path in states {
+            records.push(record_at(path, Layout::WorktreeNested));
+        }
+    }
+    records.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(records)
+}
+
+/// The direct child DIRECTORIES of `dir`, or nothing at all when `dir` does not
+/// exist.
+fn child_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
-    let mut records = Vec::new();
+    let mut found = Vec::new();
     for entry in entries {
         let entry = entry?;
-        // A file under the sessions root is not a session (the lifecycle locks
-        // live there). An entry whose TYPE cannot be read is kept: inability to
-        // verify is not absence, and the cost of being wrong here is a spurious
+        // A file here is not a session (the lifecycle locks live beside the
+        // session dirs). An entry whose TYPE cannot be read is KEPT: inability
+        // to verify is not absence, and the cost of being wrong is a spurious
         // row rather than a vanished session.
         if entry.file_type().is_ok_and(|kind| !kind.is_dir()) {
             continue;
         }
-        let path = entry.path();
-        records.push(DurableRecord {
-            name: entry.file_name().to_string_lossy().into_owned(),
-            path,
-            // See RecordedServer: no ratified row names a durable selector key.
-            server: RecordedServer::Missing,
-        });
+        found.push(entry.path());
     }
-    records.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(records)
+    Ok(found)
+}
+
+/// The durable record for the state directory at `path`.
+///
+/// The record exists before the `meta` is opened, which is what makes an
+/// unreadable one cost facts instead of the candidate.
+fn record_at(path: PathBuf, layout: Layout) -> DurableRecord {
+    let name = path
+        .file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned();
+    let mut record = DurableRecord {
+        path,
+        name,
+        layout,
+        server: ServerSelector::Missing,
+        meta_read: MetaRead::Absent,
+    };
+    match Meta::read(&record.path) {
+        Ok(meta) => {
+            record.meta_read = MetaRead::Parsed;
+            record.server = meta.server_selector();
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        // Exists and will not read. No selector is derived from bytes nobody
+        // could read — the alternative is querying a server on a guess.
+        Err(_) => record.meta_read = MetaRead::Unreadable,
+    }
+    record
 }
 
 /// The servers ae is entitled to enumerate, most-ambient first.
@@ -329,17 +424,15 @@ pub fn durable_records(roots: &Roots) -> io::Result<Vec<DurableRecord>> {
 #[must_use]
 pub fn entitled_servers(ambient: Option<&ServerId>, durable: &[DurableRecord]) -> Vec<ServerId> {
     let mut entitled: Vec<ServerId> = Vec::new();
-    let mut add = |server: &ServerId| {
-        if !entitled.iter().any(|known| known == server) {
-            entitled.push(server.clone());
-        }
-    };
     if let Some(ambient) = ambient {
-        add(ambient);
+        entitled.push(ambient.clone());
     }
     for record in durable {
-        if let Some(server) = record.server.entitles() {
-            add(server);
+        if let Some(selector) = record.server.entitles() {
+            let server = ServerId::Selected(selector.clone());
+            if !entitled.contains(&server) {
+                entitled.push(server);
+            }
         }
     }
     entitled
@@ -356,7 +449,8 @@ pub struct Inventory {
     /// A fact about the QUERY, never about a session: SC-017l turns it into
     /// `unknown` one phase later, and nothing here may read it as a status. It
     /// is kept because discarding it would make phase 2 ask the same dead server
-    /// again to learn what this pass already knows.
+    /// again to learn what this pass already knows. A server ae was never
+    /// entitled to ask is NOT in here — never asked is not unreachable.
     pub unreachable: Vec<ServerId>,
 }
 
@@ -368,12 +462,15 @@ pub struct Inventory {
 /// servers and for no others, so "ae does not gain entitlement by sweeping" is a
 /// property of the call sequence rather than of a filter applied afterwards.
 ///
-/// A discovered session joins the inventory only when it carries an ownership
-/// marker. It ATTACHES to a durable candidate only on positive evidence that
-/// they are the same session: that candidate records this exact server, and the
-/// names match exactly. Anything weaker attaches nothing and leaves a tmux-only
-/// candidate beside the durable one — a visible duplicate is recoverable, a
-/// wrong merge is a fabricated identity.
+/// **Discovery completes before reconciliation** (SC-017j). Every sighting is
+/// gathered first, so no join can depend on which server answered first.
+///
+/// A sighting joins a durable candidate only on SC-017j's join witness: that
+/// candidate's selector is positive, the sighting came from that very server,
+/// its name exactly equals the candidate's inventory name, and **exactly one**
+/// durable candidate matches that tuple. Zero matches leave a live-only
+/// candidate; more than one and NONE merges — every durable candidate and the
+/// sighting all remain. Server plus exact name is a join witness, not identity.
 ///
 /// ```
 /// use ae::inventory::{Discovery, DiscoveredSession, Inventory, QueryFailed, ServerId, take};
@@ -388,8 +485,7 @@ pub struct Inventory {
 ///     }
 /// }
 ///
-/// let ambient = ServerId::new("default");
-/// let Inventory { candidates, .. } = take(Vec::new(), Some(&ambient), &OneSession);
+/// let Inventory { candidates, .. } = take(Vec::new(), Some(&ServerId::Ambient), &OneSession);
 /// assert_eq!(candidates.len(), 1);
 /// assert!(candidates[0].is_tmux_only());
 /// ```
@@ -403,47 +499,55 @@ pub fn take<D: Discovery + ?Sized>(
         candidates: durable.into_iter().map(Candidate::durable).collect(),
         unreachable: Vec::new(),
     };
+
+    // Discovery, complete, before any reconciliation.
+    let mut sighted: Vec<LiveSighting> = Vec::new();
     for server in entitled {
         let Ok(sessions) = discovery.enumerate(&server) else {
-            // The query failed. That takes nothing away: every durable candidate
-            // is already in `candidates`, and this loop cannot remove one.
             inventory.unreachable.push(server);
             continue;
         };
         for session in sessions {
+            // No ownership evidence: not ae's, so not a candidate — and still
+            // not a reason to touch a durable candidate that happens to share
+            // its name. That substitution is #105.
             let Some(marker) = session.marker else {
-                // No ownership evidence: not ae's, so not a candidate — and
-                // still not a reason to touch a durable candidate that happens
-                // to share its name. That substitution is #105.
                 continue;
             };
-            let sighting = LiveSighting {
+            sighted.push(LiveSighting {
                 server: server.clone(),
                 name: session.name,
                 marker,
-            };
-            match attachment(&inventory.candidates, &sighting) {
-                Some(at) => inventory.candidates[at].live = Some(sighting),
-                None => inventory.candidates.push(Candidate::tmux_only(sighting)),
-            }
+            });
+        }
+    }
+
+    // Reconciliation, over the complete picture.
+    for sighting in sighted {
+        match join_witness(&inventory.candidates, &sighting) {
+            Some(at) => inventory.candidates[at].live = Some(sighting),
+            None => inventory.candidates.push(Candidate::tmux_only(sighting)),
         }
     }
     inventory
 }
 
-/// The single durable candidate `sighting` positively belongs to, if exactly one
+/// The single durable candidate `sighting` positively joins, if exactly one
 /// does.
 ///
-/// Exact name AND recorded server, and UNIQUE: two candidates recording the same
-/// server under the same name are two identities claiming one tmux session, and
-/// picking either would invent the answer. Ambiguity attaches nothing, exactly
-/// as an ambiguous selector entitles nothing.
-fn attachment(candidates: &[Candidate], sighting: &LiveSighting) -> Option<usize> {
+/// SC-017j's witness is the (recorded server, exact inventory name) tuple, and
+/// its cardinality rule is explicit: with more than one match, NONE merges.
+/// Picking one would invent an identity out of a witness the row says is not
+/// identity.
+fn join_witness(candidates: &[Candidate], sighting: &LiveSighting) -> Option<usize> {
     let mut found = None;
     for (at, candidate) in candidates.iter().enumerate() {
         let matches = candidate.live.is_none()
             && candidate.durable.as_ref().is_some_and(|record| {
-                record.name == sighting.name && record.server.entitles() == Some(&sighting.server)
+                record.name == sighting.name
+                    && record.server.entitles().is_some_and(|selector| {
+                        ServerId::Selected(selector.clone()) == sighting.server
+                    })
             });
         if matches {
             if found.is_some() {
@@ -459,17 +563,26 @@ fn attachment(candidates: &[Candidate], sighting: &LiveSighting) -> Option<usize
 mod tests {
     //! Each test names the pre-registered criterion of
     //! `docs/migration/p1-phase1-gate.md` it answers. The gate was authored
-    //! against the ROW, without reading this module, so a criterion it cannot
+    //! against the ROWS, without reading this module, so a criterion it cannot
     //! run is a contract gap and is reported as one rather than reinterpreted
     //! into something passable.
 
     use super::{
-        Candidate, DiscoveredSession, Discovery, DurableRecord, Inventory, LiveSighting,
-        QueryFailed, RecordedServer, Roots, ServerId, durable_records, entitled_servers, take,
+        Candidate, DiscoveredSession, Discovery, DurableRecord, Inventory, Layout, LiveSighting,
+        MetaRead, Provenance, QueryFailed, Roots, Selector, ServerId, ServerSelector,
+        durable_records, entitled_servers, take,
     };
     use std::cell::RefCell;
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    fn named(server: &str) -> ServerId {
+        ServerId::Selected(Selector::Name(server.to_owned()))
+    }
+
+    fn positive(server: &str) -> ServerSelector {
+        ServerSelector::Positive(Selector::Name(server.to_owned()))
+    }
 
     /// A tmux world that RECORDS every server it is asked about.
     ///
@@ -489,10 +602,10 @@ mod tests {
             }
         }
 
-        /// A server that answers with these sessions.
-        fn live(mut self, server: &str, sessions: &[(&str, Option<&str>)]) -> Self {
+        /// A server that answers with these `(name, marker)` sessions.
+        fn live(mut self, server: ServerId, sessions: &[(&str, Option<&str>)]) -> Self {
             self.worlds.push((
-                ServerId::new(server),
+                server,
                 Ok(sessions
                     .iter()
                     .map(|(name, marker)| DiscoveredSession {
@@ -505,17 +618,28 @@ mod tests {
         }
 
         /// A server that exists but does not answer.
-        fn down(mut self, server: &str) -> Self {
-            self.worlds.push((ServerId::new(server), Err(QueryFailed)));
+        fn down(mut self, server: ServerId) -> Self {
+            self.worlds.push((server, Err(QueryFailed)));
             self
         }
 
+        /// The SET of servers contacted — criterion 3 and 10 ask for the set,
+        /// and criterion 18 forbids pinning query order.
         fn contacted(&self) -> Vec<String> {
-            self.trace
+            let mut seen: Vec<String> = self
+                .trace
                 .borrow()
                 .iter()
-                .map(|server| server.as_str().to_owned())
-                .collect()
+                .map(|server| match server {
+                    ServerId::Ambient => "ambient".to_owned(),
+                    ServerId::Selected(Selector::Name(name)) => format!("name:{name}"),
+                    ServerId::Selected(Selector::Socket(path)) => {
+                        format!("socket:{}", path.display())
+                    }
+                })
+                .collect();
+            seen.sort();
+            seen
         }
     }
 
@@ -540,9 +664,29 @@ mod tests {
             Self(dir)
         }
 
+        /// A canonical candidate: `<home>/sessions/<name>/`.
         fn session(&self, name: &str) -> PathBuf {
             let dir = self.0.join("sessions").join(name);
             fs::create_dir_all(&dir).expect("a session dir");
+            dir
+        }
+
+        /// A legacy candidate: `<home>/worktrees/<worktree>/.ae/<session>/`.
+        fn nested(&self, worktree: &str, session: &str) -> PathBuf {
+            let dir = self
+                .0
+                .join("worktrees")
+                .join(worktree)
+                .join(".ae")
+                .join(session);
+            fs::create_dir_all(&dir).expect("a nested state dir");
+            dir
+        }
+
+        /// A worktree checkout with NO nested state directory.
+        fn bare_worktree(&self, worktree: &str) -> PathBuf {
+            let dir = self.0.join("worktrees").join(worktree);
+            fs::create_dir_all(dir.join("src")).expect("a bare worktree");
             dir
         }
 
@@ -557,38 +701,56 @@ mod tests {
         }
     }
 
+    fn identity(candidate: &Candidate) -> String {
+        match (&candidate.durable, &candidate.live) {
+            (Some(record), _) => format!("durable:{}", record.path.display()),
+            (None, Some(live)) => match &live.server {
+                ServerId::Ambient => format!("live:{}@ambient", live.name),
+                ServerId::Selected(Selector::Name(name)) => {
+                    format!("live:{}@name:{name}", live.name)
+                }
+                ServerId::Selected(Selector::Socket(path)) => {
+                    format!("live:{}@socket:{}", live.name, path.display())
+                }
+            },
+            (None, None) => unreachable!("a candidate is durable, live, or both"),
+        }
+    }
+
     /// Candidate identities as a SET.
     ///
-    /// Criterion 18: collection order is an open choice, so no test here may
-    /// pin it. Durable candidates are compared by PATH — criterion 6's "two
+    /// Criterion 18: collection order is an open choice, so no test here pins
+    /// it. Durable candidates are compared by PATH — criterion 6's "two
     /// independently addressable candidates" is exactly the distinction a
     /// name-keyed comparison would erase.
     fn identities(inventory: &Inventory) -> Vec<String> {
-        let mut seen: Vec<String> = inventory
-            .candidates
-            .iter()
-            .map(|candidate| match &candidate.durable {
-                Some(record) => format!("durable:{}", record.path.display()),
-                None => match &candidate.live {
-                    Some(live) => format!("live:{}@{}", live.name, live.server.as_str()),
-                    None => unreachable!("a candidate is durable, live, or both"),
-                },
-            })
-            .collect();
+        let mut seen: Vec<String> = inventory.candidates.iter().map(identity).collect();
         seen.sort();
         seen
     }
 
     fn durable_identities(inventory: &Inventory) -> Vec<String> {
-        let mut kept: Vec<String> = identities(inventory)
+        identities(inventory)
             .into_iter()
             .filter(|id| id.starts_with("durable:"))
-            .collect();
-        kept.sort();
-        kept
+            .collect()
     }
 
-    fn attached(inventory: &Inventory, path: &str) -> Option<LiveSighting> {
+    /// Provenance per candidate, in identity order — never iteration order.
+    fn provenances(inventory: &Inventory) -> Vec<Provenance> {
+        let mut ordered: Vec<(String, Provenance)> = inventory
+            .candidates
+            .iter()
+            .map(|candidate| (identity(candidate), candidate.provenance()))
+            .collect();
+        ordered.sort_by(|left, right| left.0.cmp(&right.0));
+        ordered
+            .into_iter()
+            .map(|(_, provenance)| provenance)
+            .collect()
+    }
+
+    fn attached(inventory: &Inventory, path: &Path) -> Option<LiveSighting> {
         inventory
             .candidates
             .iter()
@@ -596,15 +758,29 @@ mod tests {
                 candidate
                     .durable
                     .as_ref()
-                    .is_some_and(|record| record.path == Path::new(path))
+                    .is_some_and(|record| record.path == path)
             })
             .and_then(|candidate| candidate.live.clone())
     }
 
+    fn found(inventory: &Inventory, path: &Path) -> DurableRecord {
+        inventory
+            .candidates
+            .iter()
+            .find_map(|candidate| {
+                candidate
+                    .durable
+                    .as_ref()
+                    .filter(|record| record.path == path)
+            })
+            .cloned()
+            .unwrap_or_else(|| panic!("no candidate at {}", path.display()))
+    }
+
     /// This module's own source, comments stripped, TESTS EXCLUDED.
     ///
-    /// The three structural guards below ask the source a question the runtime
-    /// cannot answer — non-access has no signal. Excluding the test half is
+    /// The structural guards below ask the source a question the runtime cannot
+    /// answer — non-access has no signal. Excluding the test half is
     /// load-bearing: every needle they forbid appears in the tests that forbid
     /// it, so a whole-file scan would report the guard itself and pass for the
     /// wrong reason forever after someone "fixed" it. The split is asserted, so
@@ -630,7 +806,7 @@ mod tests {
         module.to_owned()
     }
 
-    fn record(path: &str, server: RecordedServer) -> DurableRecord {
+    fn record(path: &str, server: ServerSelector) -> DurableRecord {
         let path = PathBuf::from(path);
         DurableRecord {
             name: path
@@ -639,60 +815,85 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
             path,
+            layout: Layout::Canonical,
             server,
+            meta_read: MetaRead::Parsed,
         }
     }
 
     fn plain(path: &str) -> DurableRecord {
-        record(path, RecordedServer::Missing)
+        record(path, ServerSelector::Missing)
     }
 
     // ---- criterion 1: the phase observation seam ---------------------------
 
     #[test]
     fn criterion_1_the_candidate_collection_is_observable_before_any_classification() {
-        // The seam is `Inventory` itself: a candidate carries no status, so
-        // nothing downstream had to run for these assertions to mean something.
-        let servers = Servers::new().live("ambient", &[("ghost", Some("ghost"))]);
-        let inventory = take(
-            vec![plain("/s/kept")],
-            Some(&ServerId::new("ambient")),
-            &servers,
-        );
+        let servers = Servers::new().live(ServerId::Ambient, &[("ghost", Some("ghost"))]);
+        let inventory = take(vec![plain("/s/kept")], Some(&ServerId::Ambient), &servers);
         assert_eq!(
             identities(&inventory),
             ["durable:/s/kept", "live:ghost@ambient"]
         );
-        assert!(
+        assert_eq!(
             inventory
                 .candidates
                 .iter()
-                .all(|c| c.durable.is_some() || c.live.is_some()),
-            "every candidate is one of the two sources, never a fabricated third"
+                .map(Candidate::is_tmux_only)
+                .collect::<Vec<_>>(),
+            [false, true],
+            "and each candidate knows which source established it"
         );
-        let tmux_only: Vec<bool> = inventory
-            .candidates
+    }
+
+    // ---- criterion 2: both SC-400d durable layouts -------------------------
+
+    #[test]
+    fn criterion_2_both_durable_layouts_are_discovered_and_the_inner_leaf_is_the_name() {
+        let scratch = Scratch::new("two-layouts");
+        let canonical = scratch.session("canonical-one");
+        // The outer worktree name DIFFERS from the inner session leaf — SC-400d
+        // says the two may differ and the inner one is the inventory name.
+        let nested = scratch.nested("feature-checkout", "nested-session");
+        let bare = scratch.bare_worktree("no-state-here");
+
+        let records = durable_records(&scratch.roots()).expect("both roots readable");
+        let by_path: Vec<(&Path, &str, Layout)> = records
             .iter()
-            .map(Candidate::is_tmux_only)
+            .map(|record| (record.path.as_path(), record.name.as_str(), record.layout))
             .collect();
         assert_eq!(
-            tmux_only,
-            [false, true],
-            "and each one knows which source it came from"
+            by_path,
+            [
+                (canonical.as_path(), "canonical-one", Layout::Canonical),
+                (nested.as_path(), "nested-session", Layout::WorktreeNested),
+            ],
+            "the outer worktree name is never the inventory name"
         );
+        assert!(
+            !records.iter().any(|record| record.path == bare),
+            "a bare worktree with no nested state directory is not a candidate"
+        );
+    }
+
+    #[test]
+    fn criterion_2_a_worktree_root_that_does_not_exist_is_not_a_failure() {
+        let scratch = Scratch::new("no-worktrees");
+        scratch.session("only-canonical");
+        let records = durable_records(&scratch.roots()).expect("a missing worktree root is fine");
+        assert_eq!(records.len(), 1);
     }
 
     // ---- criterion 3: archives are zero input ------------------------------
 
     #[test]
-    fn criterion_3_archives_change_neither_the_candidates_nor_the_query_trace() {
+    fn criterion_3_archives_change_neither_the_candidates_nor_the_set_of_queried_servers() {
         let scratch = Scratch::new("archive");
         scratch.session("live-one");
-        let baseline_records = durable_records(&scratch.roots()).expect("a readable root");
-        let baseline_servers = Servers::new().live("ambient", &[]);
+        let baseline_servers = Servers::new().live(ServerId::Ambient, &[]);
         let baseline = take(
-            baseline_records,
-            Some(&ServerId::new("ambient")),
+            durable_records(&scratch.roots()).expect("a readable root"),
+            Some(&ServerId::Ambient),
             &baseline_servers,
         );
 
@@ -703,15 +904,15 @@ mod tests {
             fs::create_dir_all(&dir).expect("an archive fixture");
             fs::write(
                 dir.join("meta"),
-                "mode=local\ntmux_server=/tmp/unentitled.sock\n",
+                "mode=local\ntmux_server_kind=socket\ntmux_server=/tmp/unentitled.sock\n",
             )
             .expect("an archived meta");
         }
 
-        let after_servers = Servers::new().live("ambient", &[]);
+        let after_servers = Servers::new().live(ServerId::Ambient, &[]);
         let after = take(
             durable_records(&scratch.roots()).expect("a readable root"),
-            Some(&ServerId::new("ambient")),
+            Some(&ServerId::Ambient),
             &after_servers,
         );
 
@@ -724,52 +925,105 @@ mod tests {
         assert_eq!(after_servers.contacted(), ["ambient"]);
     }
 
-    // ---- criterion 4: an unreadable meta deletes nothing -------------------
+    // ---- criterion 4: an unreadable meta deletes nothing, in EACH layout ---
 
     #[test]
-    fn criterion_4_a_durable_directory_whose_meta_cannot_be_read_is_still_a_candidate() {
+    fn criterion_4_an_unreadable_meta_in_either_layout_keeps_its_candidate() {
         let scratch = Scratch::new("unreadable-meta");
-        let dir = scratch.session("damaged");
-        // A DIRECTORY named `meta`. chmod is not enough on its own — a run as
-        // root reads a 0000 file happily, and the test would then pass without
-        // ever creating the condition it names. EISDIR holds for every uid, so
-        // the condition is real wherever this runs, and it is ASSERTED before
-        // anything is concluded from it.
-        fs::create_dir_all(dir.join("meta")).expect("a meta that cannot be read as a file");
-        let failure = fs::read(dir.join("meta")).expect_err("the meta read must genuinely fail");
-        assert!(
-            !matches!(failure.kind(), std::io::ErrorKind::NotFound),
-            "the fixture must fail on READING, not on absence: {failure:?}"
-        );
+        let canonical = scratch.session("damaged-canonical");
+        let nested = scratch.nested("checkout", "damaged-nested");
+        for dir in [&canonical, &nested] {
+            // A DIRECTORY named `meta`. chmod is not enough on its own — a run
+            // as root reads a 0000 file happily, and the test would then pass
+            // without ever creating the condition it names. EISDIR holds for
+            // every uid, so the condition is real wherever this runs, and it is
+            // ASSERTED before anything is concluded from it.
+            fs::create_dir_all(dir.join("meta")).expect("a meta that cannot be read as a file");
+            let failure = fs::read(dir.join("meta")).expect_err("the read must genuinely fail");
+            assert!(
+                !matches!(failure.kind(), std::io::ErrorKind::NotFound),
+                "the fixture must fail on READING, not on absence: {failure:?}"
+            );
+        }
 
-        let servers = Servers::new().live("ambient", &[]);
+        let servers = Servers::new().live(ServerId::Ambient, &[]);
         let inventory = take(
             durable_records(&scratch.roots()).expect("a readable root"),
-            Some(&ServerId::new("ambient")),
+            Some(&ServerId::Ambient),
             &servers,
         );
-        assert_eq!(
-            durable_identities(&inventory),
-            [format!("durable:{}", dir.display())]
-        );
+
+        for dir in [&canonical, &nested] {
+            let record = found(&inventory, dir);
+            assert_eq!(
+                record.meta_read,
+                MetaRead::Unreadable,
+                "the read outcome is carried, not inferred later"
+            );
+            assert_eq!(
+                record.server,
+                ServerSelector::Missing,
+                "no selector is derived from bytes nobody could read"
+            );
+        }
         assert_eq!(
             servers.contacted(),
             ["ambient"],
-            "and no entitlement was derived from bytes nobody could read"
+            "and no server query was sourced from either unreadable record"
         );
+    }
+
+    #[test]
+    fn an_absent_meta_is_a_different_read_outcome_from_an_unreadable_one() {
+        let scratch = Scratch::new("absent-meta");
+        let bare = scratch.session("no-meta");
+        let inventory = take(
+            durable_records(&scratch.roots()).expect("a readable root"),
+            None,
+            &Servers::new(),
+        );
+        assert_eq!(found(&inventory, &bare).meta_read, MetaRead::Absent);
     }
 
     // ---- criterion 5: live-only discovery, with an ownership control -------
 
     #[test]
     fn criterion_5_only_the_marked_tmux_only_session_enters_the_inventory() {
-        let servers =
-            Servers::new().live("ambient", &[("marked", Some("marked")), ("unmarked", None)]);
-        let inventory = take(Vec::new(), Some(&ServerId::new("ambient")), &servers);
+        let servers = Servers::new().live(
+            ServerId::Ambient,
+            &[("marked", Some("marked")), ("unmarked", None)],
+        );
+        let inventory = take(Vec::new(), Some(&ServerId::Ambient), &servers);
         assert_eq!(identities(&inventory), ["live:marked@ambient"]);
-        assert!(
-            inventory.candidates[0].is_tmux_only(),
-            "it is live-only, which is the fact SC-509b's degraded reads later"
+        assert!(inventory.candidates[0].is_tmux_only());
+    }
+
+    // ---- criterion 6: distinct identities under one basename ---------------
+
+    #[test]
+    fn criterion_6_one_basename_in_two_layouts_is_two_addressable_candidates() {
+        let scratch = Scratch::new("same-leaf");
+        let canonical = scratch.session("mdk");
+        let nested = scratch.nested("other-checkout", "mdk");
+        let inventory = take(
+            durable_records(&scratch.roots()).expect("a readable root"),
+            None,
+            &Servers::new(),
+        );
+        assert_eq!(
+            durable_identities(&inventory),
+            [
+                format!("durable:{}", canonical.display()),
+                format!("durable:{}", nested.display()),
+            ],
+            "equal leaves across paths never deduplicate"
+        );
+        assert_eq!(found(&inventory, &canonical).name, "mdk");
+        assert_eq!(found(&inventory, &nested).name, "mdk");
+        assert_ne!(
+            found(&inventory, &canonical).layout,
+            found(&inventory, &nested).layout,
+            "and each knows which root qualified it"
         );
     }
 
@@ -777,20 +1031,16 @@ mod tests {
 
     #[test]
     fn criterion_7_a_backend_failure_removes_no_durable_candidate_and_no_other_server() {
-        let reachable = ServerId::new("sock-up");
         let durable = vec![
             plain("/s/no-pointer"),
-            record(
-                "/s/points-down",
-                RecordedServer::Positive(ServerId::new("sock-down")),
-            ),
-            record("/s/points-up", RecordedServer::Positive(reachable)),
+            record("/s/points-down", positive("sock-down")),
+            record("/s/points-up", positive("sock-up")),
         ];
         let servers = Servers::new()
-            .down("sock-down")
-            .live("sock-up", &[("elsewhere", Some("elsewhere"))]);
+            .down(named("sock-down"))
+            .live(named("sock-up"), &[("elsewhere", Some("elsewhere"))]);
 
-        let inventory = take(durable, Some(&ServerId::new("ambient")), &servers);
+        let inventory = take(durable, Some(&ServerId::Ambient), &servers);
 
         assert_eq!(
             durable_identities(&inventory),
@@ -802,12 +1052,12 @@ mod tests {
             "a failed query is not a reason to lose a durable candidate"
         );
         assert!(
-            identities(&inventory).contains(&"live:elsewhere@sock-up".to_owned()),
+            identities(&inventory).contains(&"live:elsewhere@name:sock-up".to_owned()),
             "the server that DID answer still contributes"
         );
         assert_eq!(
             inventory.unreachable,
-            [ServerId::new("sock-down")],
+            [named("sock-down")],
             "the failure is recorded as a fact about the QUERY"
         );
     }
@@ -819,77 +1069,75 @@ mod tests {
         // The orientation is the test: durable `mdk` with NO live `mdk`, and a
         // separately live `mdk-app`. Co-occurrence in the other direction is
         // the substitution that proves nothing.
-        let servers = Servers::new().live("ambient", &[("mdk-app", Some("mdk-app"))]);
+        let servers = Servers::new().live(ServerId::Ambient, &[("mdk-app", Some("mdk-app"))]);
         let inventory = take(
-            vec![plain("/s/mdk")],
-            Some(&ServerId::new("ambient")),
+            vec![record("/s/mdk", positive("sock-a"))],
+            Some(&ServerId::Ambient),
             &servers,
         );
         assert_eq!(
             identities(&inventory),
             ["durable:/s/mdk", "live:mdk-app@ambient"]
         );
-        assert_eq!(
-            attached(&inventory, "/s/mdk"),
-            None,
-            "the sibling did not attach to it either"
-        );
+        assert_eq!(attached(&inventory, Path::new("/s/mdk")), None);
     }
 
     // ---- criterion 9: an exact live name without the marker ---------------
 
     #[test]
     fn criterion_9a_an_unmarked_exact_live_name_leaves_the_durable_candidate_alone() {
-        let servers = Servers::new().live("ambient", &[("mdk", None)]);
-        let inventory = take(
-            vec![plain("/s/mdk")],
-            Some(&ServerId::new("ambient")),
-            &servers,
-        );
+        let servers = Servers::new().live(ServerId::Ambient, &[("mdk", None)]);
+        let inventory = take(vec![plain("/s/mdk")], Some(&ServerId::Ambient), &servers);
         assert_eq!(identities(&inventory), ["durable:/s/mdk"]);
-        assert_eq!(attached(&inventory, "/s/mdk"), None);
+        assert_eq!(attached(&inventory, Path::new("/s/mdk")), None);
     }
 
     #[test]
     fn criterion_9b_the_same_unmarked_session_with_no_durable_record_is_no_candidate() {
-        let servers = Servers::new().live("ambient", &[("mdk", None)]);
-        let inventory = take(Vec::new(), Some(&ServerId::new("ambient")), &servers);
+        let servers = Servers::new().live(ServerId::Ambient, &[("mdk", None)]);
+        let inventory = take(Vec::new(), Some(&ServerId::Ambient), &servers);
         assert!(
             inventory.candidates.is_empty(),
             "positive ownership is what admits a live-only candidate, and there was none"
         );
     }
 
-    // ---- criteria 10/11/12: entitlement, as far as it can be run today -----
+    // ---- criteria 10/11/12: entitlement, end to end ------------------------
 
     #[test]
     fn criterion_10_only_the_ambient_server_and_recorded_pointers_are_contacted() {
-        // A = ambient, B = named by a durable candidate, C = live and reachable
-        // to the harness but named by nobody.
+        // A = ambient, B = named by a durable candidate's own meta on disk,
+        // C = live and reachable to the harness but named by nobody.
+        let scratch = Scratch::new("entitlement");
+        let pointer = scratch.session("pointer");
+        fs::write(
+            pointer.join("meta"),
+            "tmux_server_kind=name\ntmux_server=B-pointed-at\n",
+        )
+        .expect("a selector on disk");
+
         let servers = Servers::new()
-            .live("A-ambient", &[("on-a", Some("on-a"))])
-            .live("B-pointed-at", &[("on-b", Some("on-b"))])
-            .live("C-unnamed", &[("on-c", Some("on-c"))]);
-        let durable = vec![record(
-            "/s/pointer",
-            RecordedServer::Positive(ServerId::new("B-pointed-at")),
-        )];
+            .live(ServerId::Ambient, &[("on-a", Some("on-a"))])
+            .live(named("B-pointed-at"), &[("on-b", Some("on-b"))])
+            .live(named("C-unnamed"), &[("on-c", Some("on-c"))]);
 
-        let inventory = take(durable, Some(&ServerId::new("A-ambient")), &servers);
+        let inventory = take(
+            durable_records(&scratch.roots()).expect("a readable root"),
+            Some(&ServerId::Ambient),
+            &servers,
+        );
 
-        let mut contacted = servers.contacted();
-        contacted.sort();
         assert_eq!(
-            contacted,
-            ["A-ambient", "B-pointed-at"],
+            servers.contacted(),
+            ["ambient", "name:B-pointed-at"],
             "C is never contacted — the trace, not the result, is what shows a sweep"
         );
         assert_eq!(
             identities(&inventory),
             [
-                "durable:/s/pointer",
-                "live:on-a@A-ambient",
-                "live:on-b@B-pointed-at",
+                format!("durable:{}", pointer.display()),
+                "live:on-a@ambient".to_owned(),
+                "live:on-b@name:B-pointed-at".to_owned(),
             ]
         );
     }
@@ -898,38 +1146,51 @@ mod tests {
     fn criterion_11_missing_and_ambiguous_selectors_confer_nothing_and_delete_nothing() {
         // The raw bytes an implementation might be tempted to use as a server
         // are live and would answer if asked. They are not asked.
-        let servers = Servers::new()
-            .live("ambient", &[])
-            .live("/tmp/tempting.sock", &[("tempting", Some("tempting"))])
-            .live(
-                "ambiguous-bytes",
-                &[("also-tempting", Some("also-tempting"))],
-            );
-        let durable = vec![
-            plain("/s/no-selector"),
-            record("/s/ambiguous", RecordedServer::Ambiguous),
-        ];
+        let scratch = Scratch::new("no-entitlement");
+        let no_selector = scratch.session("no-selector");
+        let ambiguous = scratch.session("ambiguous");
+        fs::write(
+            ambiguous.join("meta"),
+            "tmux_server_kind=ambiguous\ntmux_server=tempting\n",
+        )
+        .expect("an ambiguous selector on disk");
 
-        let inventory = take(durable, Some(&ServerId::new("ambient")), &servers);
+        let servers = Servers::new()
+            .live(ServerId::Ambient, &[])
+            .live(named("tempting"), &[("tempting-session", Some("x"))]);
+
+        let inventory = take(
+            durable_records(&scratch.roots()).expect("a readable root"),
+            Some(&ServerId::Ambient),
+            &servers,
+        );
 
         assert_eq!(
             durable_identities(&inventory),
-            ["durable:/s/ambiguous", "durable:/s/no-selector"]
+            [
+                format!("durable:{}", ambiguous.display()),
+                format!("durable:{}", no_selector.display()),
+            ],
+            "neither candidate was lost for having no usable pointer"
+        );
+        assert_eq!(
+            found(&inventory, &ambiguous).server,
+            ServerSelector::Ambiguous
         );
         assert_eq!(servers.contacted(), ["ambient"], "no guessed selector");
         assert_eq!(
-            identities(&inventory),
-            ["durable:/s/ambiguous", "durable:/s/no-selector"],
-            "and the sessions on those servers stayed out"
+            identities(&inventory).len(),
+            2,
+            "and the session on those bytes stayed out"
         );
     }
 
     #[test]
     fn criterion_12_a_session_outside_the_entitled_set_is_absent_rather_than_classified() {
         let servers = Servers::new()
-            .live("ambient", &[])
-            .live("C-unnamed", &[("on-c", Some("on-c"))]);
-        let inventory = take(Vec::new(), Some(&ServerId::new("ambient")), &servers);
+            .live(ServerId::Ambient, &[])
+            .live(named("C-unnamed"), &[("on-c", Some("on-c"))]);
+        let inventory = take(Vec::new(), Some(&ServerId::Ambient), &servers);
         assert!(
             inventory.candidates.is_empty(),
             "no candidate, and no placeholder standing in for one"
@@ -946,18 +1207,21 @@ mod tests {
     fn criterion_13_unentitled_servers_are_never_contacted_even_to_be_discarded() {
         let scratch = Scratch::new("no-sweep");
         scratch.session("real");
-        // Plausible scan bait, on disk beside the real root.
+        // Plausible scan bait, on disk beside the real roots.
         for bait in ["tmux-1000", "sockets", ".ae-sock"] {
             fs::create_dir_all(scratch.0.join(bait)).expect("bait");
             fs::write(scratch.0.join(bait).join("default"), "socket").expect("bait socket");
         }
         let servers = Servers::new()
-            .live("ambient", &[("real", Some("real"))])
-            .live("/tmp/tmux-1000/default", &[("swept", Some("swept"))]);
+            .live(ServerId::Ambient, &[("real", Some("real"))])
+            .live(
+                ServerId::Selected(Selector::Socket(PathBuf::from("/tmp/tmux-1000/default"))),
+                &[("swept", Some("swept"))],
+            );
 
         let inventory = take(
             durable_records(&scratch.roots()).expect("a readable root"),
-            Some(&ServerId::new("ambient")),
+            Some(&ServerId::Ambient),
             &servers,
         );
 
@@ -973,7 +1237,7 @@ mod tests {
     }
 
     #[test]
-    fn criterion_13_the_only_filesystem_reach_in_this_module_is_the_sessions_root() {
+    fn criterion_13_the_only_filesystem_reach_is_the_two_ratified_roots() {
         // The trace above covers the tmux half. The filesystem half is not
         // observable from behavior — non-access has no signal — so it is asked
         // of the SOURCE. Weaker than the compiler probe in the parity self-test
@@ -981,13 +1245,23 @@ mod tests {
         // check at all on the half of criterion 13 that names socket
         // directories.
         let module = module_source();
-        let fs_calls = module.matches("fs::").count();
         assert_eq!(
-            fs_calls, 1,
-            "exactly one filesystem call outside the tests, and it is read_dir of the sessions root"
+            module.matches("fs::").count(),
+            1,
+            "exactly one filesystem call outside the tests"
         );
-        assert!(module.contains("fs::read_dir(roots.sessions())"));
-        for sweep_bait in ["tmux-", "/tmp", "socket", "glob", "read_dir(\""] {
+        assert!(module.contains("fs::read_dir(dir)"));
+        assert_eq!(
+            module.matches("child_dirs(").count(),
+            4,
+            "one definition and three ratified roots: sessions, worktrees, and the nested .ae"
+        );
+        for sweep_bait in [
+            concat!("tmux", "-"),
+            concat!("/t", "mp"),
+            concat!("soc", "ket("),
+            "glob",
+        ] {
             assert!(
                 !module.contains(sweep_bait),
                 "no socket-path knowledge belongs in this module: {sweep_bait}"
@@ -1003,25 +1277,21 @@ mod tests {
             vec![
                 plain("/s/mdk"),
                 plain("/s/quiet"),
-                record(
-                    "/s/pointed",
-                    RecordedServer::Positive(ServerId::new("sock-b")),
-                ),
+                record("/s/pointed", positive("sock-b")),
             ]
         };
-        let ambient = ServerId::new("ambient");
         let worlds: Vec<(&str, Servers)> = vec![
             (
                 "server failure",
-                Servers::new().down("ambient").down("sock-b"),
+                Servers::new().down(ServerId::Ambient).down(named("sock-b")),
             ),
             (
                 "short-dead/long-live prefix sibling",
-                Servers::new().live("ambient", &[("mdk-app", Some("mdk-app"))]),
+                Servers::new().live(ServerId::Ambient, &[("mdk-app", Some("mdk-app"))]),
             ),
             (
                 "exact live without marker",
-                Servers::new().live("ambient", &[("mdk", None), ("quiet", None)]),
+                Servers::new().live(ServerId::Ambient, &[("mdk", None), ("quiet", None)]),
             ),
             ("no live server", Servers::new()),
         ];
@@ -1032,7 +1302,7 @@ mod tests {
             "durable:/s/quiet".to_owned(),
         ];
         for (world, servers) in worlds {
-            let inventory = take(fixture(), Some(&ambient), &servers);
+            let inventory = take(fixture(), Some(&ServerId::Ambient), &servers);
             assert_eq!(
                 durable_identities(&inventory),
                 expected,
@@ -1045,12 +1315,12 @@ mod tests {
 
     #[test]
     fn criterion_15_durable_inclusion_is_never_gated_on_a_query_and_ownership_never_filters_it() {
-        // Ownership filtering applies to tmux-only discovery ONLY. Here every
-        // server fails, so there is no query result at all — and every durable
-        // candidate is still present, unmarked ones included.
-        let durable = vec![plain("/s/a"), plain("/s/b")];
-        let servers = Servers::new().down("ambient");
-        let inventory = take(durable, Some(&ServerId::new("ambient")), &servers);
+        let servers = Servers::new().down(ServerId::Ambient);
+        let inventory = take(
+            vec![plain("/s/a"), plain("/s/b")],
+            Some(&ServerId::Ambient),
+            &servers,
+        );
         assert_eq!(
             durable_identities(&inventory),
             ["durable:/s/a", "durable:/s/b"]
@@ -1059,10 +1329,6 @@ mod tests {
 
     #[test]
     fn criterion_15_the_port_can_only_enumerate_a_server_never_test_one_name() {
-        // By construction: `Discovery` takes a server and returns a list. There
-        // is no name parameter anywhere in the trait, so a per-candidate
-        // existence check is not a thing this phase can express — which is what
-        // turned a prefix match into a deletion in the incumbent.
         let module = module_source();
         let trait_body = module
             .split_once("pub trait Discovery {")
@@ -1078,9 +1344,6 @@ mod tests {
             1,
             "one question, not two"
         );
-        // Needles assembled from halves: this file must not be a place the
-        // token it forbids can hide, and scanning only the non-test half is
-        // already load-bearing enough without the needle sitting in the other.
         for existence_check in [
             concat!("has_", "session"),
             concat!("has-", "session"),
@@ -1112,27 +1375,324 @@ mod tests {
         }
     }
 
-    // ---- the durable reader, and the invariant it holds by shape -----------
+    // ---- criterion 20: exactly-one join, and refused ambiguity -------------
 
     #[test]
-    fn sc_404_the_sessions_root_is_derived_and_the_archive_is_not_reachable() {
-        let roots = Roots::under("/home/x/.ae");
-        assert_eq!(roots.sessions(), Path::new("/home/x/.ae/sessions"));
-    }
+    fn criterion_20a_one_match_coalesces_into_a_single_candidate_carrying_both_provenances() {
+        let durable = vec![record("/s/api", positive("sock-a"))];
+        let servers = Servers::new().live(named("sock-a"), &[("api", Some("api"))]);
+        let inventory = take(durable, None, &servers);
 
-    #[test]
-    fn sc_017j_a_candidate_with_no_meta_at_all_still_appears() {
-        let scratch = Scratch::new("no-meta");
-        scratch.session("bare");
-        let found = durable_records(&scratch.roots()).expect("a readable root");
+        assert_eq!(identities(&inventory), ["durable:/s/api"], "exactly one");
+        assert_eq!(provenances(&inventory), [Provenance::Both]);
+        let candidate = &inventory.candidates[0];
         assert_eq!(
-            found.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
-            ["bare"]
+            candidate.durable.as_ref().map(|r| r.path.as_path()),
+            Some(Path::new("/s/api")),
+            "the durable provenance survived the coalesce"
+        );
+        assert_eq!(
+            candidate.live.as_ref().map(|l| l.name.as_str()),
+            Some("api"),
+            "and so did the live one"
         );
     }
 
     #[test]
-    fn a_file_under_the_sessions_root_is_not_a_session() {
+    fn criterion_20a_control_the_same_name_on_another_entitled_server_stays_distinct() {
+        let durable = vec![record("/s/api", positive("sock-a"))];
+        let servers = Servers::new()
+            .live(ServerId::Ambient, &[("api", Some("api"))])
+            .live(named("sock-a"), &[]);
+        let inventory = take(durable, Some(&ServerId::Ambient), &servers);
+        assert_eq!(
+            identities(&inventory),
+            ["durable:/s/api", "live:api@ambient"],
+            "same name, different server: the witness did not hold"
+        );
+        assert_eq!(
+            provenances(&inventory),
+            [Provenance::Durable, Provenance::Live]
+        );
+    }
+
+    #[test]
+    fn criterion_20b_two_root_distinct_twins_and_a_sighting_leave_all_three_and_join_neither() {
+        let scratch = Scratch::new("twins");
+        let canonical = scratch.session("twin");
+        let nested = scratch.nested("checkout", "twin");
+        for dir in [&canonical, &nested] {
+            fs::write(
+                dir.join("meta"),
+                "tmux_server_kind=name\ntmux_server=sock-a\n",
+            )
+            .expect("the same positive selector in both");
+        }
+        let servers = Servers::new().live(named("sock-a"), &[("twin", Some("twin"))]);
+        let inventory = take(
+            durable_records(&scratch.roots()).expect("a readable root"),
+            None,
+            &servers,
+        );
+
+        assert_eq!(
+            identities(&inventory),
+            [
+                format!("durable:{}", canonical.display()),
+                format!("durable:{}", nested.display()),
+                "live:twin@name:sock-a".to_owned(),
+            ],
+            "all three remain — with more than one match, NONE merges"
+        );
+        assert_eq!(attached(&inventory, &canonical), None);
+        assert_eq!(attached(&inventory, &nested), None);
+        assert_eq!(
+            provenances(&inventory),
+            [Provenance::Durable, Provenance::Durable, Provenance::Live],
+            "ambiguous cardinality refuses to coalesce — it does not pick"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_ambiguous_selector_never_authorizes_a_join() {
+        for selector in [ServerSelector::Missing, ServerSelector::Ambiguous] {
+            let servers = Servers::new().live(ServerId::Ambient, &[("api", Some("api"))]);
+            let inventory = take(
+                vec![record("/s/api", selector.clone())],
+                Some(&ServerId::Ambient),
+                &servers,
+            );
+            assert_eq!(
+                identities(&inventory),
+                ["durable:/s/api", "live:api@ambient"],
+                "name equality alone is never a join witness: {selector:?}"
+            );
+        }
+    }
+
+    // ---- criterion 21: source membership vs record-read loss ---------------
+
+    #[test]
+    fn criterion_21_source_membership_and_record_read_loss_are_independent_facts() {
+        // Four fixtures, and the point is which pairs must AGREE and which must
+        // DIFFER. (b), (c) and (d) all normalize the selector to `missing` —
+        // that is SC-405l as amended, and criterion 23 requires it. What keeps
+        // them apart is the read-loss axis alone. Satisfy this by making their
+        // SELECTORS differ and criterion 23 breaks; collapse the read facts and
+        // this one breaks. Both at once is the only correct answer.
+        let scratch = Scratch::new("four-facts");
+        let readable = scratch.session("b-readable-no-selector");
+        fs::write(readable.join("meta"), "mode=local\n").expect("a readable meta");
+        let absent = scratch.session("c-absent-meta");
+        let unreadable = scratch.session("d-unreadable-meta");
+        fs::create_dir_all(unreadable.join("meta")).expect("a meta that cannot be read as a file");
+        assert!(
+            fs::read(unreadable.join("meta")).is_err(),
+            "the fixture must genuinely fail to read"
+        );
+
+        let servers = Servers::new().live(ServerId::Ambient, &[("a-ghost", Some("a-ghost"))]);
+        let inventory = take(
+            durable_records(&scratch.roots()).expect("a readable root"),
+            Some(&ServerId::Ambient),
+            &servers,
+        );
+
+        let ghost = inventory
+            .candidates
+            .iter()
+            .find(|candidate| candidate.is_tmux_only())
+            .expect("the tmux-only candidate");
+        assert_eq!(ghost.provenance(), Provenance::Live);
+        assert!(ghost.durable.is_none(), "(a) has no record to have lost");
+
+        // The selector axis: identical for all three durable fixtures.
+        for dir in [&readable, &absent, &unreadable] {
+            assert_eq!(
+                found(&inventory, dir).server,
+                ServerSelector::Missing,
+                "no selector fact is available, however that came to be"
+            );
+            assert_eq!(
+                Candidate::provenance(
+                    inventory
+                        .candidates
+                        .iter()
+                        .find(|c| c.durable.as_ref().is_some_and(|r| r.path == *dir))
+                        .expect("a durable candidate")
+                ),
+                Provenance::Durable
+            );
+        }
+
+        // The read-loss axis: three different answers, none inferred from the
+        // selector or from the absence of live evidence.
+        assert_eq!(found(&inventory, &readable).meta_read, MetaRead::Parsed);
+        assert_eq!(found(&inventory, &absent).meta_read, MetaRead::Absent);
+        assert_eq!(
+            found(&inventory, &unreadable).meta_read,
+            MetaRead::Unreadable
+        );
+    }
+
+    // ---- criterion 22: the union crosses the boundary standalone -----------
+
+    #[test]
+    fn criterion_22_inventory_is_a_standalone_operation_over_raw_discovery_facts() {
+        let module = module_source();
+        let signature = module
+            .split_once("pub fn take")
+            .expect("the operation")
+            .1
+            .split_once('{')
+            .expect("its signature")
+            .0
+            .to_owned();
+        assert!(signature.contains("durable: Vec<DurableRecord>"));
+        assert!(signature.contains("ambient: Option<&ServerId>"));
+        assert!(signature.contains("discovery: &D"));
+        assert!(
+            signature.contains("-> Inventory"),
+            "the union is the return value, not a side effect on someone else's state"
+        );
+
+        let servers = Servers::new().live(ServerId::Ambient, &[("live-one", Some("live-one"))]);
+        let inventory = take(
+            vec![plain("/s/durable-one")],
+            Some(&ServerId::Ambient),
+            &servers,
+        );
+        assert_eq!(
+            identities(&inventory),
+            ["durable:/s/durable-one", "live:live-one@ambient"]
+        );
+    }
+
+    #[test]
+    fn criterion_22_raw_server_discovery_may_have_run_before_inventory_did() {
+        // The explicit NON-requirement: nothing here imposes an order between
+        // durable and server discovery. A `Discovery` that answers from facts
+        // gathered earlier is as legal as one that shells out on the spot, and
+        // must produce the same inventory.
+        let gathered_earlier = Servers::new().live(ServerId::Ambient, &[("early", Some("early"))]);
+        let _ = gathered_earlier.enumerate(&ServerId::Ambient);
+        assert_eq!(
+            gathered_earlier.contacted(),
+            ["ambient"],
+            "the facts were gathered up front"
+        );
+
+        let live_now = Servers::new().live(ServerId::Ambient, &[("early", Some("early"))]);
+        assert_eq!(
+            identities(&take(
+                vec![plain("/s/d")],
+                Some(&ServerId::Ambient),
+                &gathered_earlier
+            )),
+            identities(&take(
+                vec![plain("/s/d")],
+                Some(&ServerId::Ambient),
+                &live_now
+            )),
+            "when the facts were collected is not inventory's business"
+        );
+    }
+
+    // ---- criterion 23: the entitlement half of SC-405l ---------------------
+
+    #[test]
+    fn criterion_23_an_absent_or_unreadable_meta_normalizes_to_missing_not_to_a_fifth_state() {
+        // The trap this pairs with criterion 21: `missing` is what the reader
+        // says when no selector fact is available to it, so a record it could
+        // not read at all is `missing` — never `ambiguous`, which is reserved
+        // for bytes that WERE readable and admit no single positive mapping,
+        // and never something outside the four-value domain.
+        let scratch = Scratch::new("loss-is-missing");
+        let absent = scratch.session("absent-meta");
+        let unreadable = scratch.session("unreadable-meta");
+        fs::create_dir_all(unreadable.join("meta")).expect("an unreadable meta");
+        assert!(
+            fs::read(unreadable.join("meta")).is_err(),
+            "genuinely unreadable"
+        );
+
+        let servers = Servers::new();
+        let inventory = take(
+            durable_records(&scratch.roots()).expect("a readable root"),
+            None,
+            &servers,
+        );
+        for dir in [&absent, &unreadable] {
+            assert_eq!(found(&inventory, dir).server, ServerSelector::Missing);
+        }
+        assert!(
+            servers.contacted().is_empty(),
+            "and a missing selector never reaches the queried-server set"
+        );
+        assert_eq!(durable_identities(&inventory).len(), 2, "both still here");
+    }
+
+    #[test]
+    fn criterion_23_only_a_positive_selector_reaches_the_queried_server_set() {
+        // The discriminator matrix itself is a meta-reading unit test, beside
+        // the normalizer it tests. What belongs HERE is the consequence: no
+        // missing or ambiguous form may enter the queried-server set.
+        let durable = vec![
+            record("/s/name", positive("by-name")),
+            record(
+                "/s/socket",
+                ServerSelector::Positive(Selector::Socket(PathBuf::from("/tmp/ae.sock"))),
+            ),
+            record("/s/missing", ServerSelector::Missing),
+            record("/s/ambiguous", ServerSelector::Ambiguous),
+        ];
+        let servers = Servers::new();
+        let inventory = take(durable, None, &servers);
+
+        assert_eq!(
+            servers.contacted(),
+            ["name:by-name", "socket:/tmp/ae.sock"],
+            "both positive TYPES are queried, and nothing else is"
+        );
+        assert_eq!(
+            durable_identities(&inventory).len(),
+            4,
+            "and no candidate disappeared for having an unusable selector"
+        );
+    }
+
+    #[test]
+    fn criterion_23_a_name_and_a_socket_of_the_same_spelling_are_two_servers() {
+        // SC-017j: unproved equivalence between selector spellings never
+        // authorizes a merge. These two are not proven equivalent, so they are
+        // two entitlements and two queries.
+        let durable = vec![
+            record("/s/one", positive("/tmp/ae.sock")),
+            record(
+                "/s/two",
+                ServerSelector::Positive(Selector::Socket(PathBuf::from("/tmp/ae.sock"))),
+            ),
+        ];
+        let servers = Servers::new();
+        let _ = take(durable, None, &servers);
+        assert_eq!(
+            servers.contacted(),
+            ["name:/tmp/ae.sock", "socket:/tmp/ae.sock"],
+            "the type is part of the identity"
+        );
+    }
+
+    // ---- the durable reader, and the invariant it holds by shape -----------
+
+    #[test]
+    fn sc_404_the_two_state_roots_are_derived_and_the_archive_is_not_reachable() {
+        let roots = Roots::under("/home/x/.ae");
+        assert_eq!(roots.sessions(), Path::new("/home/x/.ae/sessions"));
+        assert_eq!(roots.worktrees(), Path::new("/home/x/.ae/worktrees"));
+    }
+
+    #[test]
+    fn a_file_under_a_state_root_is_not_a_session() {
         let scratch = Scratch::new("lock-file");
         scratch.session("real");
         fs::write(
@@ -1140,22 +1700,15 @@ mod tests {
             "held",
         )
         .expect("a lock fixture");
-        let found = durable_records(&scratch.roots()).expect("a readable root");
+        let records = durable_records(&scratch.roots()).expect("a readable root");
         assert_eq!(
-            found.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            records.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
             ["real"]
         );
     }
 
     #[test]
-    fn a_selector_is_carried_verbatim_because_this_crate_does_not_parse_one() {
-        for selector in ["default", "/tmp/ae-1000/socket", ""] {
-            assert_eq!(ServerId::new(selector).as_str(), selector);
-        }
-    }
-
-    #[test]
-    fn a_sessions_root_that_exists_and_will_not_read_is_an_error() {
+    fn a_state_root_that_exists_and_will_not_read_is_an_error() {
         // "I could not look" must not render as "there is nothing there".
         let scratch = Scratch::new("root-is-a-file");
         fs::write(scratch.0.join("sessions"), "not a directory").expect("a hostile fixture");
@@ -1163,7 +1716,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_sessions_root_is_an_empty_inventory_not_an_error() {
+    fn a_missing_state_root_is_an_empty_inventory_not_an_error() {
         let scratch = Scratch::new("no-root");
         assert_eq!(
             durable_records(&scratch.roots()).expect("a fresh machine is not a failure"),
@@ -1190,111 +1743,59 @@ mod tests {
         #[cfg(not(unix))]
         let unspellable = false;
 
-        let found = durable_records(&scratch.roots()).expect("a readable root");
-        assert_eq!(found.len(), usize::from(unspellable) + 1);
+        let records = durable_records(&scratch.roots()).expect("a readable root");
+        assert_eq!(records.len(), usize::from(unspellable) + 1);
         if unspellable {
             assert!(
-                found.iter().any(|record| record.name.contains('\u{FFFD}')),
+                records
+                    .iter()
+                    .any(|record| record.name.contains('\u{FFFD}')),
                 "the name is unspellable, so it is lossy — and still inventory"
             );
         }
     }
 
     #[test]
-    fn the_durable_reader_orders_by_path_rather_than_by_traversal() {
-        // A property of the READER, not of the candidate collection: criterion
-        // 18 leaves collection order open, and no test here pins it.
+    fn the_durable_reader_guarantees_sorted_output_rather_than_traversal_order() {
+        // The property is DETERMINISM, and the reader guarantees it by sorting.
+        // Asserting a remembered order would be the trap criterion 18 warns
+        // about — it fails a correct change. Asserting sortedness cannot.
+        //
+        // No case-only pair in the fixture: APFS folds `Alpha` into `alpha` and
+        // the two would be ONE directory, which is a filesystem fact rather than
+        // anything this reader decides.
         let scratch = Scratch::new("order");
-        for name in ["zulu", "alpha", "mike"] {
+        for name in ["zulu", "alpha", "mike", "alpha-2"] {
             scratch.session(name);
         }
-        let found = durable_records(&scratch.roots()).expect("a readable root");
+        scratch.nested("checkout", "nested-one");
+        let records = durable_records(&scratch.roots()).expect("a readable root");
+        let paths: Vec<&Path> = records.iter().map(|record| record.path.as_path()).collect();
+        let mut sorted = paths.clone();
+        sorted.sort_unstable();
+        assert_eq!(paths, sorted, "read_dir order must not reach the answer");
+
+        let mut names: Vec<&str> = records.iter().map(|record| record.name.as_str()).collect();
+        names.sort_unstable();
         assert_eq!(
-            found.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
-            ["alpha", "mike", "zulu"],
-            "read_dir order is a filesystem fact and must not reach the answer"
+            names,
+            ["alpha", "alpha-2", "mike", "nested-one", "zulu"],
+            "both layouts, one sorted answer"
         );
     }
 
     #[test]
     fn sc_017j_the_entitled_set_is_the_ambient_server_plus_distinct_recorded_pointers() {
-        let ambient = ServerId::new("ambient");
         let durable = vec![
-            record("/s/one", RecordedServer::Positive(ServerId::new("sock-a"))),
+            record("/s/one", positive("sock-a")),
             plain("/s/two"),
-            record("/s/three", RecordedServer::Ambiguous),
-            record("/s/four", RecordedServer::Positive(ServerId::new("sock-a"))),
+            record("/s/three", ServerSelector::Ambiguous),
+            record("/s/four", positive("sock-a")),
         ];
         assert_eq!(
-            entitled_servers(Some(&ambient), &durable),
-            [ambient, ServerId::new("sock-a")],
+            entitled_servers(Some(&ServerId::Ambient), &durable),
+            [ServerId::Ambient, named("sock-a")],
             "distinct pointers only: a repeat is not a second entitlement"
-        );
-    }
-
-    #[test]
-    fn criterion_6_two_paths_sharing_a_last_component_are_two_addressable_candidates() {
-        // Blocked in its full form (one candidate per durable ROOT — see the
-        // gate's blocked table), so this runs the half that does not depend on
-        // the second root: distinct paths, one basename, both addressable.
-        let durable = vec![plain("/roots/a/my-feature"), plain("/roots/b/my-feature")];
-        let inventory = take(durable, None, &Servers::new());
-        assert_eq!(
-            identities(&inventory),
-            ["durable:/roots/a/my-feature", "durable:/roots/b/my-feature"],
-            "the basename is not the key; the path is"
-        );
-    }
-
-    #[test]
-    fn a_sighting_attaches_only_on_the_exact_name_and_that_candidate_s_own_server() {
-        let durable = vec![record(
-            "/s/api",
-            RecordedServer::Positive(ServerId::new("sock-a")),
-        )];
-        let servers = Servers::new().live("sock-a", &[("api", Some("api"))]);
-        let inventory = take(durable, None, &servers);
-        assert_eq!(identities(&inventory), ["durable:/s/api"], "one, not two");
-        assert_eq!(
-            attached(&inventory, "/s/api").map(|live| live.name),
-            Some("api".to_owned())
-        );
-    }
-
-    #[test]
-    fn a_sighting_from_a_different_server_never_attaches_by_name_alone() {
-        let durable = vec![record(
-            "/s/api",
-            RecordedServer::Positive(ServerId::new("sock-a")),
-        )];
-        let servers = Servers::new()
-            .live("ambient", &[("api", Some("api"))])
-            .live("sock-a", &[]);
-        let inventory = take(durable, Some(&ServerId::new("ambient")), &servers);
-        assert_eq!(
-            identities(&inventory),
-            ["durable:/s/api", "live:api@ambient"],
-            "same name, different server: two identities until a row says otherwise"
-        );
-    }
-
-    #[test]
-    fn an_ambiguous_attachment_attaches_nothing() {
-        let server = ServerId::new("sock-a");
-        let durable = vec![
-            record("/roots/a/twin", RecordedServer::Positive(server.clone())),
-            record("/roots/b/twin", RecordedServer::Positive(server)),
-        ];
-        let servers = Servers::new().live("sock-a", &[("twin", Some("twin"))]);
-        let inventory = take(durable, None, &servers);
-        assert_eq!(
-            identities(&inventory),
-            [
-                "durable:/roots/a/twin",
-                "durable:/roots/b/twin",
-                "live:twin@sock-a",
-            ],
-            "picking either durable twin would invent the answer"
         );
     }
 }

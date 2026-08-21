@@ -1259,10 +1259,12 @@ mod tests {
     fn sc_405d_an_unknown_meta_key_is_tolerated_and_never_degrades() {
         // Closed the other way from the interim: unknown keys are the NORMAL
         // state of a real meta, so degrading on them would make the flag
-        // constant-true and stop it discriminating anything.
+        // constant-true and stop it discriminating anything. The fixture no
+        // longer uses `tmux_server` for this: SC-405l took that exact family out
+        // of SC-405d's catch-all, so it is read now rather than tolerated.
         let scratch = Scratch::new("unknownkey");
         scratch.meta(&format!(
-            "{META}ae_path=/usr/local/bin/ae\ntmux_server=default\nwatchdog=1234\n"
+            "{META}ae_path=/usr/local/bin/ae\nlayout=vertical\nwatchdog=1234\n"
         ));
         let entry = entry_for(&scratch.0, "odd", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert!(!entry.degraded, "tolerated silently");

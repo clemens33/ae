@@ -28,7 +28,7 @@
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The file this module reads, inside a session directory.
 pub const FILE: &str = "meta";
@@ -36,6 +36,9 @@ pub const FILE: &str = "meta";
 /// The roster key prefixes (SC-405c). The four context keys of SC-405b are
 /// matched literally where they are absorbed, next to their fields.
 const ROSTER_PREFIX: &str = "agent.";
+/// SC-405l's two selector keys, matched literally where they are absorbed.
+const SERVER_KEY: &str = "tmux_server";
+const SERVER_KIND_KEY: &str = "tmux_server_kind";
 const ROSTER_BIN_PREFIX: &str = "agent_bin.";
 
 /// One agent, as the roster records it (SC-405c + SC-1207b).
@@ -58,6 +61,51 @@ impl RosterEntry {
     #[must_use]
     pub fn reference(&self) -> String {
         format!("{}:{}", self.alias, self.name)
+    }
+}
+
+/// The two spellings a positive server selector normalizes to (SC-405l).
+///
+/// The TYPE is part of the fact, not a rendering detail: `-L name` and
+/// `-S /path` address different servers, and a normalizer that flattened both
+/// to a string would let one spelling stand in for the other.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Selector {
+    /// `positive(name:<nonempty>)`.
+    Name(String),
+    /// `positive(socket:<absolute-path>)`.
+    Socket(PathBuf),
+}
+
+/// What a durable record says about its tmux server — SC-405l's typed knowledge
+/// fact, normalized from the two-key legacy form.
+///
+/// Exactly one of four values, and only `Positive` confers SC-017j entitlement
+/// or supports SC-017k liveness. `Missing` and `Ambiguous` leave the candidate
+/// inventoried and route liveness through SC-017l's `unknown` — they are not
+/// failures to retry, they are the ratified shape of not knowing.
+///
+/// **Fail closed.** Every combination the row does not name explicitly is
+/// `Ambiguous`, because the cost of guessing wrong is querying a server ae was
+/// never entitled to query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerSelector {
+    /// A positive, unambiguous selector.
+    Positive(Selector),
+    /// No selector was recorded.
+    Missing,
+    /// Recorded, but it does not identify one server.
+    Ambiguous,
+}
+
+impl ServerSelector {
+    /// The selector this record entitles ae to query, if any.
+    #[must_use]
+    pub const fn entitles(&self) -> Option<&Selector> {
+        match self {
+            Self::Positive(selector) => Some(selector),
+            Self::Missing | Self::Ambiguous => None,
+        }
     }
 }
 
@@ -127,6 +175,14 @@ pub struct Meta {
     /// `agent_bin.<slot>` values whose `agent.<slot>` has not been read yet.
     /// A slot that never gets one simply never becomes an agent.
     pending_binaries: Vec<(String, String)>,
+    /// SC-405l's two selector keys, kept RAW. `None` is absent; `Some("")` is
+    /// present-and-empty, and the row makes those two different answers.
+    server_value: Option<String>,
+    server_kind: Option<String>,
+    /// Whether either selector key appeared more than once. SC-405l makes a
+    /// duplicate ambiguous whether or not the repeats agree, so what the second
+    /// one SAID is not kept.
+    server_duplicated: bool,
     anomalies: Vec<Anomaly>,
 }
 
@@ -197,6 +253,10 @@ impl Meta {
             "origin" => self.origin = None,
             "work_dir" => self.work_dir = None,
             "goal" => self.goal = None,
+            // A repeated selector key is AMBIGUOUS by SC-405l, which is a
+            // stronger statement than SC-405e's invalidation: the flag survives
+            // even if the repeats agreed.
+            SERVER_KEY | SERVER_KIND_KEY => self.server_duplicated = true,
             _ => {
                 if let Some(slot) = key.strip_prefix(ROSTER_BIN_PREFIX) {
                     if let Some(entry) = self.roster.iter_mut().find(|e| e.slot == slot) {
@@ -219,6 +279,11 @@ impl Meta {
             "origin" => self.origin = Some(value.to_owned()),
             "work_dir" => self.work_dir = Some(value.to_owned()),
             "goal" => self.goal = Some(value.to_owned()),
+            // SC-405l supersedes SC-405d for exactly this family: these two are
+            // read and normalized rather than tolerated-and-ignored. Every
+            // OTHER unknown key stays uninterpreted below.
+            SERVER_KEY => self.server_value = Some(value.to_owned()),
+            SERVER_KIND_KEY => self.server_kind = Some(value.to_owned()),
             _ => {
                 if let Some(slot) = key.strip_prefix(ROSTER_BIN_PREFIX) {
                     self.set_binary(slot, value);
@@ -291,6 +356,63 @@ impl Meta {
         Some(self.pending_binaries.swap_remove(at).1)
     }
 
+    /// The normalized server selector — SC-405l, read side only.
+    ///
+    /// The row's mapping, transcribed rather than paraphrased:
+    ///
+    /// | recorded | normalizes to |
+    /// |---|---|
+    /// | `kind=name` + nonempty value | `positive(name)` |
+    /// | `kind=socket` + nonempty ABSOLUTE value | `positive(socket)` |
+    /// | `kind=ambiguous` | `ambiguous` |
+    /// | kind ABSENT + nonempty value | `positive(name)` (the legacy form) |
+    /// | no value and no nonempty kind | `missing` |
+    /// | anything else | `ambiguous` |
+    ///
+    /// "Anything else" is not a catch-all for tidiness — it is the row's
+    /// fail-closed rule, and it covers an unknown kind, a typed empty value, a
+    /// relative socket path, a present-but-EMPTY kind beside a nonempty value,
+    /// and duplicate or conflicting selector keys. An absent kind and an empty
+    /// kind are deliberately different answers.
+    ///
+    /// This is READ normalization. No successor writer may emit this fact until
+    /// its encoding is separately ratified, so there is no inverse here.
+    ///
+    /// ```
+    /// use ae::meta::{Meta, Selector, ServerSelector};
+    ///
+    /// let legacy = Meta::parse("tmux_server=work\n");
+    /// assert_eq!(
+    ///     legacy.server_selector(),
+    ///     ServerSelector::Positive(Selector::Name("work".to_owned()))
+    /// );
+    /// assert_eq!(Meta::parse("mode=local\n").server_selector(), ServerSelector::Missing);
+    /// ```
+    #[must_use]
+    pub fn server_selector(&self) -> ServerSelector {
+        if self.server_duplicated {
+            return ServerSelector::Ambiguous;
+        }
+        let value = self.server_value.as_deref().unwrap_or_default();
+        match self.server_kind.as_deref() {
+            // Absent kind: the legacy one-key form, which named a server.
+            None if !value.is_empty() => ServerSelector::Positive(Selector::Name(value.to_owned())),
+            None => ServerSelector::Missing,
+            // Present but EMPTY. With no value it is still "no nonempty kind",
+            // which the row calls missing; beside a value it is ambiguous.
+            Some("") if value.is_empty() => ServerSelector::Missing,
+            Some("name") if !value.is_empty() => {
+                ServerSelector::Positive(Selector::Name(value.to_owned()))
+            }
+            Some("socket") if Path::new(value).is_absolute() => {
+                ServerSelector::Positive(Selector::Socket(PathBuf::from(value)))
+            }
+            // Unknown kind, typed empty value, relative socket, empty kind
+            // beside a value, explicit `ambiguous` — all one answer.
+            Some(_) => ServerSelector::Ambiguous,
+        }
+    }
+
     /// SC-405b — the copy mode the session was started in.
     #[must_use]
     pub fn mode(&self) -> Option<&str> {
@@ -338,7 +460,157 @@ impl Meta {
 
 #[cfg(test)]
 mod tests {
-    use super::{Anomaly, Meta};
+    use super::{Anomaly, Meta, Selector, ServerSelector};
+    use std::path::PathBuf;
+
+    #[test]
+    fn sc_405l_the_well_formed_selector_forms_normalize_to_their_typed_facts() {
+        // Transcribed from the row's mapping table, one case per line, opposed
+        // so that a normalizer collapsing two of them fails rather than passes.
+        for (text, expected, why) in [
+            (
+                "tmux_server_kind=name\ntmux_server=work\n",
+                ServerSelector::Positive(Selector::Name("work".to_owned())),
+                "kind=name + nonempty value",
+            ),
+            (
+                "tmux_server_kind=socket\ntmux_server=/tmp/ae/s.sock\n",
+                ServerSelector::Positive(Selector::Socket(PathBuf::from("/tmp/ae/s.sock"))),
+                "kind=socket + nonempty ABSOLUTE value",
+            ),
+            (
+                "tmux_server_kind=ambiguous\ntmux_server=work\n",
+                ServerSelector::Ambiguous,
+                "explicit ambiguous",
+            ),
+            (
+                "tmux_server=work\n",
+                ServerSelector::Positive(Selector::Name("work".to_owned())),
+                "kind ABSENT + nonempty value is the legacy positive(name)",
+            ),
+            (
+                "mode=local\n",
+                ServerSelector::Missing,
+                "both selector fields absent",
+            ),
+        ] {
+            assert_eq!(Meta::parse(text).server_selector(), expected, "{why}");
+        }
+    }
+
+    #[test]
+    fn sc_405l_all_four_readable_empty_combinations_are_missing() {
+        // kind absent/empty x value absent/empty. `missing` means NO SELECTOR
+        // FACT IS AVAILABLE — not a claim that readable bytes positively omitted
+        // the keys — so all four land in the same place, and none of them is
+        // `ambiguous`: nothing here was readable-and-contradictory.
+        for (text, why) in [
+            ("mode=local\n", "kind absent, value absent"),
+            ("tmux_server=\n", "kind absent, value empty"),
+            ("tmux_server_kind=\n", "kind empty, value absent"),
+            (
+                "tmux_server_kind=\ntmux_server=\n",
+                "kind empty, value empty",
+            ),
+        ] {
+            assert_eq!(
+                Meta::parse(text).server_selector(),
+                ServerSelector::Missing,
+                "{why}"
+            );
+        }
+    }
+
+    #[test]
+    fn sc_405l_every_other_combination_is_ambiguous_and_confers_nothing() {
+        for (text, why) in [
+            (
+                "tmux_server_kind=socket-ish\ntmux_server=work\n",
+                "unknown kind",
+            ),
+            ("tmux_server_kind=name\ntmux_server=\n", "typed empty value"),
+            ("tmux_server_kind=name\n", "typed value absent entirely"),
+            (
+                "tmux_server_kind=socket\ntmux_server=relative/s.sock\n",
+                "non-absolute socket",
+            ),
+            (
+                "tmux_server_kind=\ntmux_server=work\n",
+                "present-but-EMPTY kind beside a nonempty value",
+            ),
+            (
+                "tmux_server=work\ntmux_server=work\n",
+                "duplicate EQUAL keys — agreeing is not the same as unambiguous",
+            ),
+            (
+                "tmux_server=work\ntmux_server=other\n",
+                "duplicate CONFLICTING keys",
+            ),
+            (
+                "tmux_server_kind=name\ntmux_server_kind=socket\ntmux_server=/tmp/s\n",
+                "duplicate conflicting KIND keys",
+            ),
+        ] {
+            assert_eq!(
+                Meta::parse(text).server_selector(),
+                ServerSelector::Ambiguous,
+                "{why}"
+            );
+        }
+    }
+
+    #[test]
+    fn sc_405l_an_absent_kind_and_an_empty_kind_are_different_answers() {
+        // The gate requires these two fixtures to differ BY CONSTRUCTION: one
+        // omits the key, the other writes it empty, and they normalize to
+        // opposite sides of the entitlement line.
+        let absent = Meta::parse("tmux_server=work\n");
+        let empty = Meta::parse("tmux_server_kind=\ntmux_server=work\n");
+        assert_eq!(
+            absent.server_selector(),
+            ServerSelector::Positive(Selector::Name("work".to_owned()))
+        );
+        assert_eq!(empty.server_selector(), ServerSelector::Ambiguous);
+        assert_ne!(absent.server_selector(), empty.server_selector());
+    }
+
+    #[test]
+    fn sc_405l_a_name_payload_and_a_socket_payload_keep_their_types() {
+        // Flattening both to a string would let one spelling address the
+        // other's server. `-L /tmp/x` and `-S /tmp/x` are not the same tmux.
+        let by_name = Meta::parse("tmux_server_kind=name\ntmux_server=/tmp/x\n");
+        let by_socket = Meta::parse("tmux_server_kind=socket\ntmux_server=/tmp/x\n");
+        assert_eq!(
+            by_name.server_selector(),
+            ServerSelector::Positive(Selector::Name("/tmp/x".to_owned()))
+        );
+        assert_eq!(
+            by_socket.server_selector(),
+            ServerSelector::Positive(Selector::Socket(PathBuf::from("/tmp/x")))
+        );
+        assert_ne!(by_name.server_selector(), by_socket.server_selector());
+    }
+
+    #[test]
+    fn sc_405l_reading_the_selector_never_loses_the_rest_of_the_meta() {
+        // The family left SC-405d's catch-all; nothing else did.
+        let meta = Meta::parse(
+            "mode=local\ntmux_server_kind=name\ntmux_server=work\nae_path=/usr/local/bin/ae\n",
+        );
+        assert_eq!(meta.mode(), Some("local"));
+        assert_eq!(
+            meta.server_selector(),
+            ServerSelector::Positive(Selector::Name("work".to_owned()))
+        );
+        assert_eq!(
+            meta.anomalies(),
+            [Anomaly::UnknownKey {
+                key: "ae_path".to_owned(),
+                line: 4
+            }],
+            "the selector keys are consumed; every other unknown key is still merely tolerated"
+        );
+    }
 
     #[test]
     fn sc_405a_a_value_may_contain_the_separator_because_the_split_is_on_the_first_equals() {
