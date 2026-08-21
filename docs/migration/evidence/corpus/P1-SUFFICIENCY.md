@@ -213,22 +213,42 @@ Two consequences worth separating from the count:
 |---|---|---|
 | `positive(socket)` | **77 fixture metas — all of them** | every `tmux_server_kind` in the entire corpus is `socket`, 130 occurrences, no exceptions; values are absolute `/tmp/aecx/tpl/*/s.sock` |
 | `positive(name)` | **ZERO** | no `kind=name`, and no kind-absent-with-nonempty-value legacy form |
-| `missing` | **ZERO in this row's sense** — see below | no readable meta lacks the selector |
+| `missing` | **PRESENT — 2 fixtures, 68 rows** (revised; see below) | absent/unreadable `meta` normalizes here under the clarifying paragraph |
 | `ambiguous` | **ZERO, in all six named sub-states** | no unknown kind, no typed empty value, no non-absolute socket, no present-empty kind beside a nonempty value, no duplicate/conflicting keys, no explicit `kind=ambiguous` |
 
-**The `missing` answer needs care, and it is a different third answer than the ownership marker
-was.** The corpus does contain two fixtures where the selector cannot be read —
-`templates/A9/.../meta-absent` (meta removed by a named mutation, removed bytes preserved) and
-`templates/G3/.../meta-mode-000` (meta present but unreadable at its stored mode), together
-exercised by 15 cases and **68 list-or-ls rows**. But that is the **record-unreadable** class, which
-SC-405l explicitly hands to another row — "Whether malformed selector bytes also mark the record
-`degraded` remains SC-405e/SC-509b's separate question" — whereas its own `missing` state describes
-**a readable record whose selector is absent or empty**: "A selector with no value and no nonempty
-kind is `missing`."
+### `missing` — REVISED after the SC-405l clarifying ruling
 
-**Whether an unreadable record yields `missing` or falls outside SC-405l entirely is not stated by
-the row, and I am not deciding it.** Flagged as a seat question, because it determines whether those
-68 rows exercise `missing` or nothing.
+**The question I flagged has been ruled, and it went the other way from my reading — this section
+is corrected rather than left standing.** I had read SC-405l's `missing` as describing a *readable*
+record whose selector keys are absent, and therefore scored it ZERO. The clarifying paragraph
+settles it explicitly:
+
+> "`missing` means that **no selector fact is available to the reader**; it is not a claim that
+> readable bytes positively omitted the selector keys. An absent or unreadable `meta` record
+> therefore normalizes the selector to `missing` **AND** independently carries the phase-1
+> record-read-loss fact governed by SC-405i/SC-509b. A readable record with no selector also
+> normalizes to `missing` without that loss fact."
+
+So the corpus **does** exercise `missing`: `templates/A9/.../meta-absent` and
+`templates/G3/.../meta-mode-000`, both named mutations with the removed bytes preserved, together
+**15 cases and 68 list-or-ls rows**.
+
+**But the state now has two internally distinct shapes, and the corpus reaches only one:**
+
+| shape | selector axis | read-loss axis | corpus |
+|---|---|---|---|
+| absent or unreadable `meta` | `missing` | **carries** the SC-405i/SC-509b loss fact | **present** — 2 fixtures, 68 rows |
+| readable record with no selector | `missing` | **no** loss fact | **ABSENT — zero** |
+
+**These two axes are orthogonal by ruling** — "Selector knowledge and record-read/degradation
+knowledge are orthogonal; neither substitutes for the other" — so an implementation that collapses
+them is wrong in a way the corpus **cannot detect**, because every `missing` row it contains sits
+on the same side of the second axis. That is the same shape as the phase-1 gate gap where one
+boolean covered "never had a record" and "record could not be read": here the contract now names
+the orthogonality outright, and the corpus still cannot exercise it.
+
+**Scope of what these rows establish**, per colead: they fix the **input shapes only**. They do not
+upgrade SC-405l beyond CODE, which awaits successor tests.
 
 Contrast with the earlier ownership-marker finding, which was **unobservable** — the corpus never
 captured the marker, so it could not answer in either direction. These states are **absent**: the
