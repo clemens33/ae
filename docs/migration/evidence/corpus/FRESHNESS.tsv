@@ -1,0 +1,8 @@
+# Freshness relation — the SOURCE this derivation was made against.
+# A lineage stamp says where an artifact came from; only a hash
+# comparison says whether the source has MOVED since.
+field	value
+contract_path	docs/migration/semantic-contract.md
+contract_blob	a535f8ca69f8e5c0e935860d2deb8f28f450df46
+p1_rows	1065
+obligation_rows	1242
