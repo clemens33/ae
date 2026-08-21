@@ -28,6 +28,7 @@ invariant, not against the code.
 | a rule says two facts are independent and you are choosing test cases | Orthogonality is proven on the OFF-DIAGONAL; the diagonal is where a derivation hides |
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
+| you are accepting a delivery and have checked that it builds and behaves | Reviewing OUTCOMES is not reviewing INSTRUMENTS, and the outcomes are what you are shown |
 | your independent count disagrees with the figure you were asked to verify | Check that the field you COUNT BY has the same granularity as the thing you are counting |
 | something was derived from a spec, and the spec has changed since | A DERIVED artifact goes stale the moment its source moves, and nothing re-runs to say so |
 | a test arm's input never actually differs between iterations | An obligation can be discharged by the TYPE, and then its test is a restatement |
@@ -1009,6 +1010,40 @@ gives an implementer standing to push back with a citation rather than an opinio
 Ask it explicitly, every pass: **which correct implementations would this reject?** If the
 answer is "none I can think of," the enumerated open choices are what make that checkable rather
 than hopeful.
+
+### Reviewing OUTCOMES is not reviewing INSTRUMENTS, and the outcomes are what you are shown
+
+A delivery arrived reporting fifteen of fifteen criteria met. The reviewer checked the suite was
+green, checked the refusal had been removed, checked the sort order in real output, and found a
+genuine defect the report had flagged. Every one of those checks was a check on an **outcome**.
+
+The gate then failed it on three blockers, and two of them were **instruments that measure
+nothing**. A test built a scratch directory, wrote opposed files into it, and never passed it to
+the invocation — which received an in-memory value instead — so the "opposed external worlds"
+were one value and a directory nothing reads. Another asserted an emptiness the criterion
+explicitly left open, rejecting a correct implementation.
+
+Neither is visible from an outcome. **A test that measures nothing passes, and a test that
+over-constrains passes, and both look exactly like a test that works.** The only way to see
+either is to read what the test *does* against what the criterion *asks* — which is a different
+activity from confirming the result.
+
+The pull is structural, not lazy. A report hands you outcomes; outcomes are checkable in
+seconds; and each one you confirm feels like review happening. **The instrument review has no
+prompt.** Nothing in a green run says *by the way, look at whether the fixture is connected.*
+
+So when accepting work against criteria, budget the pass in two parts and do the second one
+explicitly:
+
+- **Outcomes:** does it build, do the numbers reconcile, does the reported behaviour appear in
+  real output.
+- **Instruments:** for each criterion, what does its test actually observe, and could that
+  observation differ if the product were wrong? Trace one fixture end to end — from where the
+  world is set up to where the assertion reads it — and confirm the two are connected at all.
+
+The reviewer here had written a checklist containing both of those steps **two hours earlier**,
+and skipped them on the next delivery. Knowing the hazard is not the mechanism; a checklist you
+do not run is a document about someone else.
 
 ### Check that the field you COUNT BY has the same granularity as the thing you are counting
 
