@@ -28,6 +28,7 @@ invariant, not against the code.
 | a rule says two facts are independent and you are choosing test cases | Orthogonality is proven on the OFF-DIAGONAL; the diagonal is where a derivation hides |
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
+| your independent count disagrees with the figure you were asked to verify | Check that the field you COUNT BY has the same granularity as the thing you are counting |
 | something was derived from a spec, and the spec has changed since | A DERIVED artifact goes stale the moment its source moves, and nothing re-runs to say so |
 | a test arm's input never actually differs between iterations | An obligation can be discharged by the TYPE, and then its test is a restatement |
 | you scoped someone's search, and they came back reporting that something is missing | A verification confirms WITHIN its scope and cannot see its scope |
@@ -1009,6 +1010,35 @@ Ask it explicitly, every pass: **which correct implementations would this reject
 answer is "none I can think of," the enumerated open choices are what make that checkable rather
 than hopeful.
 
+### Check that the field you COUNT BY has the same granularity as the thing you are counting
+
+A figure needed independent verification: how many rows carry a newly-added obligation. The
+obvious key was right there — a column recording whether that case's server was unreachable.
+Counting it gave **659**. The figure under test was **573**.
+
+An 86-row disagreement, from a real field, correctly populated, in the obvious place.
+
+The field was **case-level**, stamped on every row of an affected case. The obligation was
+defined **by surface** — *every successor JSON digest*, *human list/ls output*. So 86 rows sat
+in unreachable cases while being neither digests nor list/ls output, gained neither obligation,
+and correctly carried no divergence. The count was answering a subtly different question than
+the one asked, **and both questions were reasonable ones about the same data.**
+
+The reviewer nearly filed it as a disagreement, and would have been wrong while holding a
+number derived by an independent method — which is exactly the outcome independent verification
+is supposed to prevent.
+
+**So before trusting any count, state the granularity of the obligation and the granularity of
+the field you are keying on, and check they match.** A coarser field over-counts by inheritance;
+a finer one under-counts by splitting. The error is confident in both directions because
+nothing about the field looks wrong — it is real, populated, and named after the thing you care
+about.
+
+The tell is a *disagreement* rather than an absence: two competent derivations of the same
+figure differing by a clean, explainable margin usually means one of them counted a different
+population, not that either is broken. **Reconcile the populations before arguing about the
+number.**
+
 ### A DERIVED artifact goes stale the moment its source moves, and nothing re-runs to say so
 
 A machine-readable column was derived from a contract: for each row of evidence, whether the
@@ -1033,6 +1063,10 @@ So for anything derived from a moving source:
 - **When the source grows, ask what was derived from it.** That question is nobody's job by
   default, which is why the answer is usually *nothing was re-run*. A contract amendment should
   carry a list of its dependents the way a schema change carries its consumers.
+- **The check must be AUTOMATIC, not periodic.** Since amendment size predicts nothing, *"was
+  that a big change?"* is not a usable trigger — a human deciding when to re-verify will
+  reliably skip the one-line rule that reached every artifact. Gate on a stored source hash so
+  staleness is *reported* rather than noticed.
 - **Do not size the invalidation by the size of the amendment.** In this instance a single new
   rule made the reason-projection stale on **every** divergent row in the column, not on the
   class it obviously touched — because the obligation it added reaches a field that every
