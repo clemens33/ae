@@ -2766,6 +2766,45 @@ they have already escaped by construction.
 So: every issue filed against the frozen system should end with a question, not a
 conclusion. Not *bash got this wrong* — **does ours?**
 
+### A test can NAME a fact without exercising it — two shapes, one cause
+
+Both of these shipped in the same file, written by a careful author, in the area they
+understood best.
+
+**Shape one: the tautology.** A test called *a marker set to empty is not a usable identity*
+asserted `interpret(payload) == interpret(payload)` — a function against itself. The fact
+was real and independently confirmed by measurement, but the assertion pins nothing and
+cannot fail for any implementation. It consumes a name and a line in the count while
+providing no coverage.
+
+**Shape two: the fixture that builds its own conclusion.** A test guarding a normalization
+constructed the **post-normalization value by hand** — `pane(None)` — rather than feeding
+raw bytes through the normalizer. Deleting the very filter the test existed to protect left
+it **green**. The corrected version enters through the transformation
+(`interpret_panes(true, "\nmain\n")`) and reddens as intended. Measured both ways under the
+mutant, not argued.
+
+**The rule for shape two: a test guarding a transformation must ENTER THROUGH the
+transformation.** A fixture that builds the conclusion cannot observe the step that produces
+it — the same defect as a gate that generates its own input, wearing test clothes.
+
+**The shared cause is the useful part, and it is not carelessness.** The author's own
+diagnosis: *knowing a fact well is the condition under which you stop checking whether you
+asserted it.* Every other test in that file was written by asking **what mutation would
+redden this.** The two defective ones were written by asking **what do I know.** Having just
+measured the platform behaviour with `od`, a test that *mentioned* the fact read as a test
+that *checked* it.
+
+So expertise is the risk factor, not ignorance — which inverts the usual intuition about
+where to look. The area an author understands best is where their tests are most likely to
+restate knowledge instead of exercising code, because that is the only place they have
+enough knowledge to restate.
+
+Two practices fall out. Write every test from the mutation question rather than from the
+fact, and when review rejects a draft, **keep the rejected version as a comment beside the
+fix** — the wrong version looked right, and the next author will reach for it again unless
+they can see why it fails.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
