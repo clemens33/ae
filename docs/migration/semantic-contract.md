@@ -842,6 +842,14 @@ duplicate/conflicting selector keys — is `ambiguous` and MUST NOT confer entit
 Whether malformed selector bytes also mark the record `degraded` remains
 SC-405e/SC-509b's separate question.
 
+`missing` means that no selector fact is available to the reader; it is not a claim that
+readable bytes positively omitted the selector keys. An absent or unreadable `meta` record
+therefore normalizes the selector to `missing` AND independently carries the phase-1
+record-read-loss fact governed by SC-405i/SC-509b. A readable record with no selector also
+normalizes to `missing` without that loss fact. `ambiguous` remains reserved for selector
+bytes that were readable but do not admit one positive mapping. Selector knowledge and
+record-read/degradation knowledge are orthogonal; neither substitutes for the other.
+
 This row defines READ normalization only. A successor writer owes a separately
 ratified, round-tripping encoding before it emits this fact. It supersedes SC-405d's
 catch-all treatment only for the exact `tmux_server` / `tmux_server_kind` family in the
