@@ -399,9 +399,11 @@ The useful fact is not WHICH sessions were lost; it is that ABSENCE IN THIS SNAP
 NOT PROOF. A listing that silently omits an unknowable number of sessions asserts a
 completeness it did not establish, which is the confident-empty shape #105 exists to
 remove; having no identity to report is why the signal belongs at the snapshot level, not
-a reason to withhold it. IS at 72c7293: VIOLATED — `iter_stopped_sessions` skips an
-unreadable root via `[[ -d "$dir" ]] || continue` (ae:2700-2702) and `cmd_list` reports no
-enumeration failure on any surface. Empirical: source-proven; successor implementation
+a reason to withhold it. IS at 72c7293: VIOLATED — `iter_stopped_sessions`
+enumerates durable roots through an unguarded shell glob and only directory/continuation
+guards (ae:2697-2708); neither it nor `cmd_list` carries an enumeration-loss fact or
+diagnostic to any surface (ae:4153-4304). The absence of a reporting path is
+source-proven; the exact unreadable-root runtime cell is not captured. Empirical: source-proven; successor implementation
 pending. Authority: SC-017j + SC-509b + SC-509d + joint P1 ruling. Issue #105 is
 IS/conflict only. Conflict: fix-known-defect(#105).
 **classified_by:** SC-017o — incomplete-inventory snapshot ruling, 2026-08-21;
