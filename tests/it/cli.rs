@@ -4,6 +4,12 @@
 //! `[[bin]]` — it is the path to the binary this test run just built, so this
 //! exercises argv handling, exit code mapping and stdout for real.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "fixtures build and inspect real directories; the boundary is about what \
+              PRODUCT code may reach"
+)]
+
 // The OTHER door, and the only other one — `clippy.toml` denies
 // `std::process::Command` crate-wide and
 // `parity_self_test::the_doors_to_a_child_process_are_the_inventoried_ones` pins the

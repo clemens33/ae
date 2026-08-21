@@ -447,7 +447,12 @@ pub fn durable_records(roots: &Roots) -> DurableScan {
 /// The direct child DIRECTORIES of `dir`, or nothing at all when `dir` does not
 /// exist.
 fn child_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {
-    let entries = match fs::read_dir(dir) {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: SC-400d root enumeration — see clippy.toml"
+    )]
+    let listing = fs::read_dir(dir);
+    let entries = match listing {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
@@ -694,6 +699,12 @@ fn join_witness(candidates: &[Candidate], sighting: &LiveSighting) -> Option<usi
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        reason = "fixtures build and inspect real directories; the boundary is about \
+                  what PRODUCT code may reach"
+    )]
+
     //! Each test names the pre-registered criterion of
     //! `docs/migration/p1-phase1-gate.md` it answers. The gate was authored
     //! against the ROWS, without reading this module, so a criterion it cannot

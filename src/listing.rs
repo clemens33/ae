@@ -13,18 +13,15 @@
 //!
 //! # The injected world
 //!
-//! [`World`] is a seam, not a placeholder. No row in this slice's manifest
-//! defines how session directories are ENUMERATED, or how running-vs-stopped is
-//! decided — the second half was already recorded in [`crate::session`]'s "what
-//! this reader must be TOLD": liveness detection is a tmux fact and never row
-//! behavior. Both belong to later, unratified surfaces. So the sessions arrive
-//! as a parameter, exactly as `SessionRuntime` does one layer down, and every
-//! row in the manifest is executable against them today.
+//! [`World`] is the phase boundary. Enumeration is SC-017j's (phase 1),
+//! liveness SC-017k/l's (phase 2), and both are ratified and implemented — so
+//! the sessions arriving as a parameter is no longer a placeholder for an
+//! undecided surface but the thing that keeps THIS module unable to re-derive
+//! them. Presentation gets facts and presents them.
 //!
-//! Consequence, decided with the seats: the shipped binary has no source wired,
-//! and says so on stderr with exit 1 rather than printing an empty listing. An
-//! empty table on a machine that has sessions is a wrong answer that looks like
-//! a right one.
+//! The shipped binary wires that source itself: [`crate::run`] derives the state
+//! root, discovers, classifies and renders. The old "no session source is
+//! wired" refusal is gone.
 //!
 //! # PROVISIONAL — the tabular LAYOUT is not ratified
 //!
@@ -53,8 +50,9 @@ use crate::time::Timestamp;
 
 /// The facts a listing needs that no session directory holds.
 ///
-/// See the module docs: this is the ratified seam for enumeration and liveness,
-/// which no row in this slice's manifest defines.
+/// The completed phase-2 snapshot, projected for presentation: sessions with
+/// their classified status, and SC-017o's loss facts. See the module docs for
+/// why it arrives as a value rather than being fetched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct World {
     /// The moment the listing is taken as of — SC-509's `generated_at`, and

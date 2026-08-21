@@ -197,7 +197,12 @@ impl Meta {
     /// session has no events yet, but a session with no meta has lost its
     /// context and its whole roster at once.
     pub fn read(dir: &Path) -> io::Result<Self> {
-        Ok(Self::parse(&fs::read_to_string(dir.join(FILE))?))
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: the meta read itself — see clippy.toml"
+        )]
+        let text = fs::read_to_string(dir.join(FILE))?;
+        Ok(Self::parse(&text))
     }
 
     /// Parse meta text (SC-405a).
@@ -460,6 +465,12 @@ impl Meta {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        reason = "fixtures build and inspect real directories; the boundary is about \
+                  what PRODUCT code may reach"
+    )]
+
     use super::{Anomaly, Meta, Selector, ServerSelector};
     use std::path::PathBuf;
 

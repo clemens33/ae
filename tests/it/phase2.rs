@@ -7,6 +7,12 @@
 //! and `src/tmux.rs`; what is here is what needs a real filesystem, a real tmux,
 //! or the whole pipeline at once.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "fixtures build and inspect real directories; the boundary is about what \
+              PRODUCT code may reach"
+)]
+
 use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};

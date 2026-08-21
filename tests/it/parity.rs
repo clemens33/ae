@@ -131,6 +131,11 @@
 //!   manifest, so a run can still SEE them; they are just not reproduced from
 //!   the template.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "fixtures build and inspect real directories; the boundary is about what \
+              PRODUCT code may reach"
+)]
 #![cfg(unix)]
 
 use std::collections::BTreeMap;

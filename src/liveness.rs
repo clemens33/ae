@@ -245,6 +245,12 @@ fn decide(candidate: &Candidate, answers: &Answers) -> Status {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        reason = "fixtures build and inspect real directories; the boundary is about \
+                  what PRODUCT code may reach"
+    )]
+
     use super::{Answers, Snapshot, classify, decide, positively_owned};
     use crate::digest::Status;
     use crate::inventory::{

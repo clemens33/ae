@@ -182,8 +182,12 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
 /// makes.
 fn state_root() -> Option<std::path::PathBuf> {
     let named = |key: &str| {
-        std::env::var_os(key)
-            .filter(|value| !value.is_empty())
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: SC-404's state-root derivation — see clippy.toml"
+        )]
+        let raw = std::env::var_os(key);
+        raw.filter(|value| !value.is_empty())
             .map(std::path::PathBuf::from)
     };
     named("AE_HOME").or_else(|| named("HOME").map(|home| home.join(".ae")))
@@ -228,6 +232,10 @@ impl inventory::Discovery for NoTransport {
 }
 
 /// Run the CLI against `args` over `world` — the injected session source.
+///
+/// `None` means the caller could not supply one, which after three phases is no
+/// longer "nothing is wired" but "this invocation has no state root". [`run`]
+/// supplies a real world; the suite supplies fixtures.
 ///
 /// `None` is not a missing argument but a FACT: no source is wired. It is the
 /// state the shipped binary is in, so it is a state this function models rather

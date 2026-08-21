@@ -570,6 +570,10 @@ impl EventLog {
         // EVIDENCE the stream existed — if the file is gone now, history was
         // lost, and answering "quiet" would render that loss identically to a
         // session that never spoke (SC-509b's exact prohibition).
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a door: the event-log read — see clippy.toml"
+        )]
         let mut file = match File::open(&source.path) {
             Ok(file) => file,
             Err(err) if err.kind() == io::ErrorKind::NotFound && cursor == Cursor::default() => {
@@ -760,6 +764,12 @@ impl EventLog {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        reason = "fixtures build and inspect real directories; the boundary is about \
+                  what PRODUCT code may reach"
+    )]
+
     use super::{
         Cursor, Event, EventError, EventLog, GenerationSource, Identity, KNOWN_KEYS, RefMeaning,
         RoutingMember,

@@ -676,6 +676,12 @@ fn same_participant(left: Identity<'_>, right: Identity<'_>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::disallowed_methods,
+        reason = "fixtures build and inspect real directories; the boundary is about \
+                  what PRODUCT code may reach"
+    )]
+
     use super::{AgentRuntime, DEFAULT_UNANSWERED_SECS, SessionRead, SessionRuntime, entry_for};
     use crate::attention::Reason;
     use crate::digest::Status;

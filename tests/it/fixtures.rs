@@ -4,6 +4,12 @@
 //! expectation below is read off that row's SHOULD text — never off a bash run.
 //! See `tests/fixtures/README.md` for the map and for what replaces these.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "fixtures build and inspect real directories; the boundary is about what \
+              PRODUCT code may reach"
+)]
+
 use std::path::{Path, PathBuf};
 
 use ae::attention::Reason;

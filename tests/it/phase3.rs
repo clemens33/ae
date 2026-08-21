@@ -18,6 +18,12 @@
 //! Per group the four rows carry independent attention/activity facts:
 //! attention-only, activity-only, both, neither.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "fixtures build and inspect real directories; the boundary is about what \
+              PRODUCT code may reach"
+)]
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -28,6 +34,7 @@ use ae::inventory::FailedSource;
 use ae::json;
 use ae::listing::{World, diagnostic, render};
 use ae::time::Timestamp;
+use std::path::Path;
 
 use super::parity::Invocation;
 use super::parity::capture::ExitOutcome;
@@ -707,12 +714,13 @@ fn criterion_13_every_document_carries_version_2_and_the_completeness_boolean() 
         }) {
             let mut json_flags = flags.clone();
             json_flags.push("--json");
-            let (text, stderr, _) = invoke_over(spelling, &json_flags, Some(&world));
-            assert!(
-                stderr.is_empty(),
-                "{spelling} {flags:?}: the machine surface carries completeness in the \
-                 DOCUMENT; a warning beside it would make a consumer parse two channels"
-            );
+            // Deliberately NOT asserted: whether the machine surface also warns
+            // on stderr. Criterion 13 lists JSON stderr warning policy as an
+            // OPEN CHOICE, so an implementation that emits the required document
+            // AND a warning beside it is correct — and a test rejecting it would
+            // fail criterion 15, which fails the gate itself. This build happens
+            // not to warn there; that is a choice, not a contract.
+            let (text, _stderr, _) = invoke_over(spelling, &json_flags, Some(&world));
             let document = match json::parse(text.trim_end()) {
                 Ok(document) => document,
                 Err(why) => panic!("{flags:?}: one document: {why:?}"),
@@ -860,16 +868,38 @@ fn describe(reference: &Reference) -> String {
 
 // ---- criterion 2: presentation starts from one completed snapshot -------
 
-#[test]
-fn criterion_2_presentation_input_equals_the_completed_classified_set() {
-    // `classify complete` is the snapshot handed to `world_of`; `presentation
-    // enter` is the world handed to `render`, which is the FIRST phase-3
-    // operation — filtering, sorting and formatting all happen inside it, so no
-    // marker can be later than this one and still precede them.
-    let reference = Reference::new(Supply::Interleaved);
-    let world = reference.world();
+/// A recorded boundary event: a name, and the semantic fingerprint at it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Marker {
+    name: &'static str,
+    at: usize,
+    fingerprint: Vec<(String, String, bool)>,
+}
 
-    let at_presentation: Vec<(String, String, bool)> = world
+/// The fingerprint of a classified snapshot: identity, status, degradation.
+fn fingerprint_of(snapshot: &ae::liveness::Snapshot) -> Vec<(String, String, bool)> {
+    let mut rows: Vec<(String, String, bool)> = snapshot
+        .sessions
+        .iter()
+        .map(|classified| {
+            (
+                classified.candidate.name.clone(),
+                classified.status.as_str().to_owned(),
+                classified
+                    .candidate
+                    .durable
+                    .as_ref()
+                    .is_some_and(|record| record.meta_read != ae::session::MetaRead::Parsed),
+            )
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// The fingerprint of a presentation input.
+fn fingerprint_of_world(world: &World) -> Vec<(String, String, bool)> {
+    let mut rows: Vec<(String, String, bool)> = world
         .sessions
         .iter()
         .map(|entry| {
@@ -880,81 +910,138 @@ fn criterion_2_presentation_input_equals_the_completed_classified_set() {
             )
         })
         .collect();
-    let planted: Vec<(String, String, bool)> = {
-        let mut rows: Vec<(String, String, bool)> = reference
-            .manifest
-            .iter()
-            .map(|row| {
-                (
-                    row.name.clone(),
-                    row.status.as_str().to_owned(),
-                    row.degraded,
-                )
-            })
-            .collect();
-        rows.sort();
-        rows
-    };
-    let mut fingerprint = at_presentation.clone();
-    fingerprint.sort();
-    assert_eq!(
-        fingerprint, planted,
-        "the presentation input is exactly the classified set"
-    );
+    rows.sort();
+    rows
+}
 
-    // Presentation forms a PROJECTION and mutates nothing: after every view, the
-    // input still carries every identity and fact it started with.
-    for flags in every_human_view() {
-        let (stdout, _, _) = invoke_over("list", &flags, Some(&world));
-        for (name, status) in human_rows(&stdout) {
-            assert!(
-                at_presentation
-                    .iter()
-                    .any(|(known, known_status, _)| *known == name && *known_status == status),
-                "{flags:?}: {name} was presented with facts the input never held"
-            );
+#[test]
+fn criterion_2_presentation_starts_from_one_completed_classified_snapshot() {
+    // THE REAL PATH, not hand-built entries: phase 1 discovers from disk, phase
+    // 2 classifies, phase 3 presents. An earlier version of this test assembled
+    // `SessionEntry` values directly and asserted set equality — which cannot
+    // detect presentation starting early, because there was no classification
+    // for it to start before.
+    let root = std::env::temp_dir().join(format!("ae-p3-seq-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for name in ["AlphaR", "ZetaR", "alpha10R"] {
+        let dir = root.join("sessions").join(name);
+        let written = std::fs::create_dir_all(&dir).and_then(|()| {
+            std::fs::write(
+                dir.join("meta"),
+                "mode=local
+agent.main=cl:lead
+tmux_server_kind=name
+tmux_server=B
+",
+            )
+        });
+        assert!(written.is_ok(), "a planted session");
+    }
+
+    let mut log: Vec<Marker> = Vec::new();
+    let mut step = 0;
+
+    let scan = ae::inventory::durable_records(&ae::inventory::Roots::under(&root));
+    let taken = ae::inventory::take(scan, None, &Down);
+    let snapshot = ae::liveness::classify(taken, &Down);
+    step += 1;
+    log.push(Marker {
+        name: "classify complete",
+        at: step,
+        fingerprint: fingerprint_of(&snapshot),
+    });
+
+    // `presentation enter` is the world handed to the FIRST phase-3 operation.
+    // `world_of` is that operation: filtering, sorting and formatting all happen
+    // downstream of it inside `render`, so no marker can sit later and still
+    // precede them.
+    let world = ae::listing::world_of(&snapshot, NOW, ae::session::DEFAULT_UNANSWERED_SECS);
+    step += 1;
+    log.push(Marker {
+        name: "presentation enter",
+        at: step,
+        fingerprint: fingerprint_of_world(&world),
+    });
+
+    assert_eq!(log[0].name, "classify complete");
+    assert_eq!(log[1].name, "presentation enter");
+    assert!(
+        log[0].at < log[1].at,
+        "classification must complete before presentation begins"
+    );
+    assert_eq!(
+        log[0].fingerprint, log[1].fingerprint,
+        "the presentation input is exactly the completed classified set"
+    );
+    assert_eq!(log[0].fingerprint.len(), 3, "and the fixture is not empty");
+
+    // Every surface presents from that ONE input, and none of them changes it.
+    let before = fingerprint_of_world(&world);
+    for spelling in ["list", "ls"] {
+        for flags in every_human_view() {
+            let (stdout, _, _) = invoke_over(spelling, &flags, Some(&world));
+            for (name, status) in human_rows(&stdout) {
+                assert!(
+                    before
+                        .iter()
+                        .any(|(known, known_status, _)| *known == name && *known_status == status),
+                    "{spelling} {flags:?}: {name} was presented with facts the input never held"
+                );
+            }
         }
     }
-    let after: Vec<(String, String, bool)> = world
-        .sessions
-        .iter()
-        .map(|entry| {
-            (
-                entry.name.clone(),
-                entry.status.as_str().to_owned(),
-                entry.degraded,
-            )
-        })
-        .collect();
     assert_eq!(
-        at_presentation, after,
+        fingerprint_of_world(&world),
+        before,
         "the input gained, lost and changed nothing after presentation enter"
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A backend whose every query fails — the phase-2 seam, held fixed.
+struct Down;
+
+impl ae::inventory::Discovery for Down {
+    fn enumerate(
+        &self,
+        _server: &ae::inventory::ServerId,
+    ) -> Result<Vec<ae::inventory::DiscoveredSession>, ae::inventory::QueryFailed> {
+        Err(ae::inventory::QueryFailed)
+    }
 }
 
 // ---- criterion 3: a renderer presents facts, it never re-derives them ---
 
 #[test]
-fn criterion_3_two_opposed_external_worlds_produce_identical_output() {
-    // The snapshot is fixed; the WORLD underneath is flipped to the opposite of
-    // every fact it carries. A renderer that re-derived anything would answer
-    // differently in the second world.
+fn criterion_3_the_output_is_a_function_of_the_snapshot_and_nothing_else() {
+    // WHAT THIS MEASURES, AND WHAT IT DOES NOT. It moves the filesystem
+    // underneath a fixed snapshot and requires the output not to move. That
+    // catches a re-derivation whose result REACHES the output — and nothing
+    // else. A read whose result is discarded changes no byte and is invisible
+    // here, which is exactly what colead demonstrated against an earlier version
+    // of this test.
+    //
+    // The CAPABILITY is closed by
+    // `criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones`,
+    // which asks the compiler instead of the output. This arm is the behavioural
+    // half, and it claims only its half.
     let root = std::env::temp_dir().join(format!("ae-p3-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let reference = Reference::new(Supply::Creation);
     let world = reference.world();
 
-    let before: Vec<(Vec<String>, String)> = every_human_view()
-        .into_iter()
-        .map(|flags| {
-            let (stdout, stderr, _) = invoke_over("list", &flags, Some(&world));
-            (names(&human_rows(&stdout)), stderr)
-        })
-        .collect();
+    let render_all = || -> Vec<(Vec<String>, String)> {
+        every_human_view()
+            .into_iter()
+            .map(|flags| {
+                let (stdout, stderr, _) = invoke_over("list", &flags, Some(&world));
+                (names(&human_rows(&stdout)), stderr)
+            })
+            .collect()
+    };
+    let before = render_all();
 
-    // The opposed world: sessions on disk that contradict every planted row —
-    // opposite liveness, opposite attention, opposite activity, and a traversal
-    // order opposed to the required output order.
+    // A world on disk that contradicts every planted row.
     assert!(
         std::fs::create_dir_all(root.join("sessions")).is_ok(),
         "an opposed world on disk"
@@ -969,34 +1056,26 @@ fn criterion_3_two_opposed_external_worlds_produce_identical_output() {
         });
         assert!(written.is_ok(), "an opposed record");
     }
-
-    let after: Vec<(Vec<String>, String)> = every_human_view()
-        .into_iter()
-        .map(|flags| {
-            let (stdout, stderr, _) = invoke_over("list", &flags, Some(&world));
-            (names(&human_rows(&stdout)), stderr)
-        })
-        .collect();
+    let after = render_all();
     let _ = std::fs::remove_dir_all(&root);
 
     assert_eq!(
         before, after,
-        "an external fact changed the presentation, so something re-derived it"
+        "an external fact reached the presentation, so something re-derived it"
     );
 }
 
 #[test]
-fn criterion_3_the_differential_can_detect_a_re_derivation_before_its_zero_is_trusted() {
-    // CALIBRATION. The arm above concludes from a NON-difference, which is only
-    // evidence if a difference would have shown. So: the same instrument, run
-    // against a deliberately invoked re-derivation, must report the change.
+fn criterion_3_the_output_differential_fires_when_a_fact_actually_changes() {
+    // CALIBRATION for the arm above, and calibrated for what that arm can see:
+    // a change that REACHES the output. It does not calibrate an access
+    // recorder, because that arm has none — the compiler probe is the recorder,
+    // and its own non-vacuity check is inside it.
     let reference = Reference::new(Supply::Creation);
     let world = reference.world();
     let (stdout, _, _) = invoke_over("list", &[], Some(&world));
     let baseline = names(&human_rows(&stdout));
 
-    // The deliberate control: re-derive one row's status from an external fact,
-    // exactly as a leaking renderer would, and observe the instrument fire.
     let mut leaked = world.sessions.clone();
     if let Some(first) = leaked
         .iter_mut()
@@ -1004,13 +1083,12 @@ fn criterion_3_the_differential_can_detect_a_re_derivation_before_its_zero_is_tr
     {
         first.status = Status::Stopped;
     }
-    let leaked_world = World::new(NOW, leaked);
-    let (leaked_stdout, _, _) = invoke_over("list", &[], Some(&leaked_world));
+    let (leaked_stdout, _, _) = invoke_over("list", &[], Some(&World::new(NOW, leaked)));
 
     assert_ne!(
         baseline,
         names(&human_rows(&leaked_stdout)),
-        "the instrument cannot see a re-derivation, so its zero above proves nothing"
+        "the differential cannot see a changed fact, so its non-difference proves nothing"
     );
 }
 
@@ -1097,4 +1175,134 @@ fn criterion_10_a_non_c_locale_collates_these_names_differently_and_output_does_
         c_order,
         "and it is the PREFIX, because running precedes unknown"
     );
+}
+
+// ---- criterion 3: the access boundary, asked of the compiler ------------
+
+/// Every `(file, line)` where this crate may read the outside world, as CLIPPY
+/// reports it under `--force-warn`.
+///
+/// Asked of the compiler rather than of the source text, because the thing being
+/// bounded is a CAPABILITY and not a spelling: `Path::exists` is a filesystem
+/// observation under none of the names a reader would think to grep for, and an
+/// alias or UFCS call defeats a text scan entirely. `--force-warn` cannot be
+/// silenced by any `allow`, `expect` or crate-root attribute, so the doors it
+/// reports are the doors that exist.
+fn world_reading_sites() -> Vec<(String, usize)> {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let out = std::env::temp_dir().join(format!("ae-p3-clippy-{}", std::process::id()));
+    let err = out.with_extension("err");
+    let invocation = Invocation::new(cargo)
+        .arg("clippy")
+        .arg("--quiet")
+        .arg("--locked")
+        .arg("--all-targets")
+        .arg("--all-features")
+        .arg("--message-format=json")
+        .arg("--target-dir")
+        .arg(
+            manifest
+                .join("target")
+                .join("world-read-guard")
+                .display()
+                .to_string(),
+        )
+        .arg("--")
+        .arg("--force-warn")
+        .arg("clippy::disallowed_methods");
+    let status = raw::run(&invocation, manifest, &out, &err);
+    assert!(status.is_ok(), "this guard needs cargo and clippy on PATH");
+
+    let stdout = std::fs::read_to_string(&out).unwrap_or_default();
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&err);
+    let mut sites = Vec::new();
+    for line in stdout.lines() {
+        if !line.starts_with('{') {
+            continue;
+        }
+        let Ok(value) = json::parse(line) else {
+            continue;
+        };
+        if value.get_str("reason") != Some("compiler-message") {
+            continue;
+        }
+        let Some(message) = value.get("message") else {
+            continue;
+        };
+        let is_boundary = message.get_str("code_text") == Some("clippy::disallowed_methods")
+            || message.get("code").and_then(|code| code.get_str("code"))
+                == Some("clippy::disallowed_methods");
+        if is_boundary && let Some(json::Value::Arr(spans)) = message.get("spans") {
+            for span in spans {
+                let (Some(file), Some(json::Value::Num(line_no))) =
+                    (span.get_str("file_name"), span.get("line_start"))
+                else {
+                    continue;
+                };
+                if let Ok(line_no) = usize::try_from(*line_no) {
+                    sites.push((file.to_owned(), line_no));
+                }
+            }
+        }
+    }
+    sites.sort();
+    sites.dedup();
+    sites
+}
+
+/// Whether `line` in `file` is PRODUCT code rather than a test module.
+fn is_product_line(file: &str, line: usize) -> bool {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    match text.find("#[cfg(test)]") {
+        Some(at) => text[..at].lines().count() >= line,
+        None => true,
+    }
+}
+
+#[test]
+fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones() {
+    let sites = world_reading_sites();
+    // NON-VACUITY FIRST. A probe that reports nothing has not run, and a guard
+    // that scans nothing passes forever.
+    assert!(
+        !sites.is_empty(),
+        "the force-warn probe found no world-reading call anywhere; it did not run"
+    );
+
+    let mut product: Vec<String> = sites
+        .iter()
+        .filter(|(file, line)| file.starts_with("src/") && is_product_line(file, *line))
+        .map(|(file, _)| file.clone())
+        .collect();
+    product.sort();
+    product.dedup();
+
+    // THE DOORS. Discovery reads roots and records; the entry point derives the
+    // state root. Presentation is absent, and that absence is criterion 3.
+    assert_eq!(
+        product,
+        vec![
+            "src/events.rs".to_owned(),
+            "src/inventory.rs".to_owned(),
+            "src/lib.rs".to_owned(),
+            "src/meta.rs".to_owned(),
+        ],
+        "the set of places product code can read the outside world changed"
+    );
+    for presentation in [
+        "src/listing.rs",
+        "src/liveness.rs",
+        "src/filters.rs",
+        "src/digest.rs",
+    ] {
+        assert!(
+            !product.contains(&presentation.to_owned()),
+            "{presentation} can now read the world: presentation must present, not re-derive"
+        );
+    }
 }

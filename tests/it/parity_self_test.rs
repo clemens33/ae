@@ -11,6 +11,11 @@
 //! a lane — see [`the_harness_captures_and_never_judges`], which enforces that
 //! structurally, by reading the harness's own source.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "fixtures build and inspect real directories; the boundary is about what \
+              PRODUCT code may reach"
+)]
 #![cfg(unix)]
 
 use std::fs;

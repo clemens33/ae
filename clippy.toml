@@ -33,3 +33,40 @@ allow-panic-in-tests = true
 # no `allow`, group `allow`, `cfg_attr`, `expect` or crate-root `#![allow]` can
 # override.
 disallowed-types = ["std::process::Command"]
+
+# The capability boundary for READING THE OUTSIDE WORLD — the phase-3 gate's
+# criterion 3, which requires that presentation re-derives nothing.
+#
+# WHY A BOUNDARY AND NOT A TEST. An output differential cannot see a read whose
+# RESULT IS DISCARDED: a renderer that opens the sessions root and throws the
+# answer away changes no byte, and every equivalence test stays green. A source
+# scan cannot see one either — it looks for names, and `Path::exists` is a
+# filesystem observation under none of the names a reader would think to list.
+# So the instrument has to be the compiler: these are resolved as PATHS, not
+# text, which holds against aliases, re-imports and UFCS.
+#
+# WHAT IT DOES NOT CLOSE, stated because a boundary that oversells itself is the
+# defect it exists to prevent: this is an enumeration of ENTRY POINTS, not of the
+# capability. A syscall reached some way not listed here is not seen. Two things
+# make the enumeration hold anyway, and both are premises rather than decoration:
+# ALL FOUR dependency tables are empty, so no third-party reader exists to route
+# around it, and `unsafe_code = "forbid"` closes the libc route. The day either
+# changes, this becomes a naming convention.
+#
+# The allowed sites are enumerated SEMANTICALLY by
+# `criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones`
+# in tests/it/phase3.rs, which asks clippy under `--force-warn` — a flag no
+# `allow`, `expect` or crate-root attribute can override.
+disallowed-methods = [
+  "std::fs::read",
+  "std::fs::read_to_string",
+  "std::fs::read_dir",
+  "std::fs::metadata",
+  "std::fs::File::open",
+  "std::path::Path::exists",
+  "std::path::Path::metadata",
+  "std::path::Path::is_dir",
+  "std::path::Path::is_file",
+  "std::env::var",
+  "std::env::var_os",
+]
