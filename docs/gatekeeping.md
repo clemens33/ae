@@ -1033,6 +1033,12 @@ So for anything derived from a moving source:
 - **When the source grows, ask what was derived from it.** That question is nobody's job by
   default, which is why the answer is usually *nothing was re-run*. A contract amendment should
   carry a list of its dependents the way a schema change carries its consumers.
+- **Do not size the invalidation by the size of the amendment.** In this instance a single new
+  rule made the reason-projection stale on **every** divergent row in the column, not on the
+  class it obviously touched — because the obligation it added reaches a field that every
+  emitted document carries. The first reading of the finding named one identifiable subset, was
+  the comfortable size, and was wrong by a factor of two. **A small change to a source can
+  invalidate a derived artifact entirely, and the diff is no guide to the blast radius.**
 - **Re-derive by a DIFFERENT method than the one that built it.** Running the original
   generator again inherits its blind spots exactly — and a generator that has already been
   caught mis-deriving one class has a demonstrated one.
