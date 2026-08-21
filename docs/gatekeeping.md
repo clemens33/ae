@@ -29,6 +29,7 @@ invariant, not against the code.
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
 | a document explains that your concern is covered by some other rule, and you are satisfied | A DELEGATION is a claim about scope, and being talked out of a concern is not resolving it |
+| your fix satisfied a structural criterion and you have not asked what information it discarded | A structural criterion measures a PROXY, and satisfying it can defeat the goal |
 | a guard says NO FILESYSTEM ACCESS or NO SPAWNING and its body lists identifiers | A guard that enumerates NAMES enforces those names, whatever its title claims |
 | a rule says EVERY / ALWAYS and one criterion demonstrates it on the case it happened to build | A UNIVERSAL obligation checked on ONE fixture is checked nowhere |
 | you found two rules that contradict and routed the question upward | Settling an ambiguity is not the same as finding what happened while it was ambiguous |
@@ -969,6 +970,38 @@ The concrete habit: when a document points you elsewhere, **go read the elsewher
 it was written to catch**, not merely whether it is about the same subject. Obligations written
 before a change do not automatically extend to what the change introduced — and a phase that
 alters semantics has, by definition, produced cases its predecessors were not written against.
+
+### A structural criterion measures a PROXY, and satisfying it can defeat the goal
+
+A rule forbade observing mutable state twice: the digest was reading session files again, after
+liveness had been decided, so a record repaired between the two reads could erase the fact that
+it had ever been damaged. The criterion expressed this as **one read**.
+
+The repair consolidated all I/O into a single function. Read count: one. Criterion satisfied.
+**And it created a fresh defect of exactly the kind the rule existed to prevent** — because that
+one read kept only the *success* and discarded the error, so the distinction between *no file
+here* and *a file I could not open* was destroyed at the moment of reading. Something downstream
+then had to **look again** to reconstruct it, using a different question (*does this path
+exist?*) that answers wrongly when a directory cannot be searched at all.
+
+So the second observation was not removed. It was **relocated, and made worse**, while the
+metric the criterion counted improved.
+
+**One read** was a proxy for *one consistent observation*. Reading once and throwing away what
+you learned forces a second look, and no count of call sites can see that. The general form:
+**a structural criterion is a proxy for a property, and a repair aimed at the proxy can move the
+violation somewhere the proxy does not look.**
+
+Two habits follow:
+
+- When a criterion counts something, **name the property it stands in for**, in the criterion.
+  *One read* should read *one observation, whose full outcome is preserved and never re-derived*
+  — then a fix that discards the outcome fails on its face instead of passing on the count.
+- When reviewing a repair, ask **what information the repair destroyed**, not only what it
+  removed. Consolidation, normalisation, and simplification all narrow types, and a narrowed
+  type is where a distinction goes to die. `.ok()` on a fallible read is the canonical instance:
+  it converts *why it failed* into *whether it worked*, and every consumer that needed the why
+  must now guess.
 
 ### A guard that enumerates NAMES enforces those names, whatever its title claims
 
