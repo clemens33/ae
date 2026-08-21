@@ -430,12 +430,13 @@ Terms:
     discovery, liveness knowledge, schema domains, rendering/filtering, and product order
     are consumed from their accepted gates. Conditional predecessor evidence is rechecked
     against the pinned successor commit rather than frozen at the gate's authoring date.
-    Real tmux transport landed at `fb5c6450`, so the no-transport deferrals in accepted
-    phase-3 criteria 3 and 10 have fired: the accepted phase-3 handback must include the
-    product-valid opposed tmux-observation/emission arms those criteria condition on and
-    may not repeat the obsolete premise that no emission exists. This does not promote the
-    separate per-agent pane association route, which remains absent. SC-017p/q/r and
-    SC-509e post-date those gates
+    Real tmux transport landed at `fb5c6450`, invalidating the historical no-emission
+    explanation but not adding a presentation obligation: the executed product consumes
+    transport while building the carried snapshot before `Presentation::enter`, and
+    presentation has no post-entry transport observation route. The accepted phase-3 gate
+    records that boundary; an opposed live arm is optional strengthening, not a phase-4
+    prerequisite. This does not promote the separate per-agent pane association route,
+    which remains absent. SC-017p/q/r and SC-509e post-date those gates
     and are not silently promoted to gate-accepted facts: phase 4 consumes their exact
     contract/obligation loci, while the corpus-absent positive/negative/ambiguous agent
     liveness matrix remains pending the separate successor evidence named by criterion 12.
@@ -457,8 +458,7 @@ the per-invocation state-and-environment
 bindings; effective-environment and TAB
 self-check records; the agent-health presentation calibration and its swapped-locator
 red proof; pre-run and post-run corpus root verification; raw terminal row/locus
-accounting; every controlled-arm manifest; the triggered phase-3 transport-arm evidence;
-and the red-proof report. It states
+accounting; every controlled-arm manifest; and the red-proof report. It states
 separately:
 
 1. scorable parity result;

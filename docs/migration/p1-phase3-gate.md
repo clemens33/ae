@@ -85,10 +85,12 @@ rendering. The expected C-byte order within each group is `Alpha*`, `Zeta*`, `al
    post-boundary syscalls. An output differential cannot see a discarded read or a reread
    that fails and falls back to the carried value; a source-name/type inventory sees only
    spellings it enumerates. Neither is a capability boundary, and this criterion makes no
-   zero-access claim. Tmux observation/emission is not an arm until the real transport
-   slice supplies a product-valid observation route. Upgrade trigger: if presentation
-   gains a dedicated ae-state reader capability beyond the currently accepted payload
-   fields, or a post-boundary second-observation defect recurs, add a Linux
+   zero-access claim. Real tmux transport now supplies the carried snapshot before
+   `Presentation::enter`; presentation has no post-entry transport observation route. An
+   opposed tmux-after-entry differential is a useful strengthening of the carried-snapshot
+   arm, not a separate current pass condition. Upgrade trigger: if presentation gains a
+   dedicated ae-state reader capability beyond the currently accepted payload fields, or
+   a post-boundary second-observation defect recurs, add a Linux
    `strace` lane plus a non-skipping platform-equivalent observer before restoring a
    universal zero-access claim. A Linux-only skipped assertion is not closure on macOS.
 
@@ -149,10 +151,11 @@ rendering. The expected C-byte order within each group is `Alpha*`, `Zeta*`, `al
     non-C locale whose control collation is demonstrated to differ for the planted names;
     an arm whose control agrees is INCONCLUSIVE, not a pass. Observable output remains
     byte-order identical across those valid arms. The post-entry external-observation
-    question belongs only to criterion 3; it is not restated here. An opposed real tmux
-    emission arm belongs to the future transport slice because this build has no emission
-    to oppose. Sort implementation, stable-sort algorithm, and whether filtering precedes
-    sorting are **OPEN CHOICES**.
+    question belongs only to criterion 3; it is not restated here. Real tmux emission is
+    consumed upstream of presentation. An opposed live-emission arm may strengthen the
+    planted-permutation evidence, but it is not a separate pass condition. Sort
+    implementation, stable-sort algorithm, and whether filtering precedes sorting are
+    **OPEN CHOICES**.
 
 11. **[SET/ORDER] HUMAN AND JSON HAVE IDENTICAL SELECTION AND SEMANTIC ORDER.** For every
     status-view and attention/activity combination above through both `list` and `ls`,
