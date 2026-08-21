@@ -130,26 +130,12 @@ pub enum Layout {
     WorktreeNested,
 }
 
-/// What happened when phase 1 tried to read a candidate's `meta`.
+/// What happened when the record was read.
 ///
-/// **Independent of source membership** (criterion 21 / SC-509b): a tmux-only
-/// candidate has no record to lose, while a durable candidate whose `meta` will
-/// not read has one and lost its contents. Rendering those two the same way is
-/// the digest lying by omission — it would report a destroyed record as a
-/// session that never had one.
-///
-/// This phase carries the outcome and draws no conclusion from it. Whether it
-/// sets `degraded` is SC-405e/SC-509b's question, decided by the reader that
-/// needs the meta's contents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MetaRead {
-    /// Read and parsed.
-    Parsed,
-    /// No `meta` in the state directory.
-    Absent,
-    /// A `meta` that exists and would not read.
-    Unreadable,
-}
+/// Re-exported from the module that PERFORMS the read: the outcome and the read
+/// must not be able to disagree, and the only way to guarantee that is for the
+/// same call to produce both.
+pub use crate::session::MetaRead;
 
 /// Durable session state found under one of SC-400d's roots.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -503,22 +489,17 @@ fn record_at(path: PathBuf, layout: Layout) -> DurableRecord {
     // field the digest will need. The meta had to be opened for the selector
     // anyway; what changes is that nothing downstream opens it again.
     record.snapshot = RecordSnapshot::read(&record.path);
-    match &record.snapshot.meta {
-        Some(meta) => {
-            record.meta_read = MetaRead::Parsed;
-            record.server = meta.server_selector();
-        }
-        // Absent and unreadable are different facts and stay different (SC-405l
-        // as amended: both normalize the SELECTOR to `missing`, and only the
-        // record-read fact tells them apart). No selector is derived from bytes
-        // nobody could read — the alternative is querying a server on a guess.
-        None => {
-            record.meta_read = if record.path.join(crate::meta::FILE).exists() {
-                MetaRead::Unreadable
-            } else {
-                MetaRead::Absent
-            };
-        }
+    // BOTH facts from the ONE read. Absent and unreadable are different facts
+    // and stay different (SC-405l as amended: both normalize the SELECTOR to
+    // `missing`, and only the record-read fact tells them apart) — and telling
+    // them apart is the READ's job, because it is the only thing that saw the
+    // error. Asking the filesystem again here answered "absent" for a directory
+    // the process may not traverse, inventing a fact about bytes that exist.
+    record.meta_read = record.snapshot.meta_read;
+    if let Some(meta) = &record.snapshot.meta {
+        // No selector is derived from bytes nobody could read — the alternative
+        // is querying a server on a guess.
+        record.server = meta.server_selector();
     }
     record
 }
@@ -1201,6 +1182,65 @@ mod tests {
             ["ambient"],
             "and no server query was sourced from either unreadable record"
         );
+    }
+
+    #[test]
+    fn a_meta_behind_a_directory_the_process_cannot_traverse_is_unreadable_not_absent() {
+        // THE CELL A SECOND OBSERVATION GETS WRONG. The bytes exist; the
+        // process may not reach them. Anything that answers "is there a meta?"
+        // by asking the filesystem a second time gets `false` here and reports
+        // ABSENT — inventing the loss of a record that was never lost, and
+        // collapsing phase-1 criteria 21 and 23's two states into one.
+        //
+        // Deliberately NOT the EISDIR fixture: that one leaves the path
+        // observable, so a second look still says "something is there" and the
+        // bug hides. The failure has to be in the TRAVERSAL for the two
+        // observations to disagree.
+        let scratch = Scratch::new("unsearchable");
+        let dir = scratch.session("locked");
+        fs::write(dir.join("meta"), "mode=local\n").expect("real bytes on disk");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let denied = fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).is_ok();
+            assert!(denied, "the fixture must be able to deny traversal");
+        }
+        // The precondition, ASSERTED rather than assumed: running as root would
+        // traverse anyway and the cell would not exist. Stating it means a
+        // privileged runner fails loudly instead of passing vacuously.
+        let unreachable = fs::read(dir.join("meta")).is_err();
+        let observed_absent = !dir.join("meta").exists();
+        assert!(
+            unreachable,
+            "this proof needs a uid that cannot traverse the directory; \
+             running as root defeats the fixture"
+        );
+        assert!(
+            observed_absent,
+            "and the second observation must DISAGREE with the read — that \
+             disagreement is the whole finding"
+        );
+
+        let scan = durable_records(&scratch.roots());
+        let record = scan
+            .records
+            .iter()
+            .find(|record| record.path == dir)
+            .expect("the candidate survives");
+        assert_eq!(
+            record.meta_read,
+            MetaRead::Unreadable,
+            "the read said EACCES; nothing downstream may downgrade that to absence"
+        );
+        assert_eq!(record.server, ServerSelector::Missing);
+
+        // Restore before the fixture is dropped, or the tree cannot be removed.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o755));
+        }
     }
 
     #[test]

@@ -585,21 +585,50 @@ fn criterion_16_every_successor_digest_is_version_2_with_a_closed_status_domain(
     let matrix = Scratch::new("matrix-degraded");
     let degradation = orthogonality_fixture(&matrix);
 
-    let shapes: Vec<(&str, Vec<Candidate>)> = vec![
-        ("empty", Vec::new()),
-        ("running only", vec![pick(&all, "r")]),
-        ("stopped only", vec![pick(&all, "s")]),
-        ("unknown only", vec![pick(&all, "u")]),
+    // ONE server response carrying every exact name any shape needs. The
+    // recorder answers with the FIRST world it holds for a server, so appending
+    // a second `live` for B — which is what this loop used to do — is SHADOWED:
+    // the running-only shape classified `stopped` and the mixed shape was
+    // stopped/stopped/unknown, and a closed-domain check cannot see that,
+    // because `stopped` is in the domain. The file records that first-answer
+    // rule a few tests up; knowing it and applying it where it mattered turned
+    // out to be different acts.
+    let world = || {
+        Recorder::new().live(
+            named("B"),
+            &[
+                ("r", Some("r")),
+                ("running-clean", Some("running-clean")),
+                ("running-damaged", Some("running-damaged")),
+            ],
+        )
+    };
+
+    // Each shape names the statuses it must CONTAIN. A shape that does not hold
+    // what its name says is not that shape, and the domain check below would
+    // pass either way.
+    let shapes: Vec<(&str, Vec<Candidate>, Vec<&str>)> = vec![
+        ("empty", Vec::new(), Vec::new()),
+        ("running only", vec![pick(&all, "r")], vec!["running"]),
+        ("stopped only", vec![pick(&all, "s")], vec!["stopped"]),
+        ("unknown only", vec![pick(&all, "u")], vec!["unknown"]),
         (
             "mixed",
             vec![pick(&all, "r"), pick(&all, "s"), pick(&all, "u")],
+            vec!["running", "stopped", "unknown"],
         ),
-        ("degradation matrix", degradation),
+        (
+            "degradation matrix",
+            degradation,
+            vec![
+                "running", "running", "stopped", "stopped", "unknown", "unknown",
+            ],
+        ),
     ];
 
-    for (shape, candidates) in shapes {
+    for (shape, candidates, expected) in shapes {
         for complete in [true, false] {
-            let backend = orthogonality_backend().live(named("B"), &[("r", Some("r"))]);
+            let backend = world();
             let snapshot = classify(
                 Inventory {
                     candidates: candidates.clone(),
@@ -611,12 +640,29 @@ fn criterion_16_every_successor_digest_is_version_2_with_a_closed_status_domain(
                 },
                 &backend,
             );
-            let world = world_of(&snapshot, NOW, DEFAULT_UNANSWERED_SECS);
-            let rendered = render(&args(&["--all", "--json"]), &world);
+            let rendered = render(
+                &args(&["--all", "--json"]),
+                &world_of(&snapshot, NOW, DEFAULT_UNANSWERED_SECS),
+            );
             let document = match json::parse(rendered.trim_end()) {
                 Ok(document) => document,
                 Err(why) => panic!("{shape}/{complete}: valid JSON: {why:?}"),
             };
+
+            // THE SHAPE IS WHAT IT CLAIMS, asserted before anything else is
+            // read off it.
+            let mut emitted: Vec<String> = sessions_of(&document)
+                .into_iter()
+                .map(|(_, status, _)| status)
+                .collect();
+            emitted.sort();
+            let mut wanted: Vec<String> =
+                expected.iter().map(|status| (*status).to_owned()).collect();
+            wanted.sort();
+            assert_eq!(
+                emitted, wanted,
+                "{shape}/{complete}: the fixture does not contain the statuses its name claims"
+            );
 
             assert_eq!(
                 document.get("schema_version"),
@@ -1132,12 +1178,20 @@ fn sites(needle: &str) -> Vec<(String, usize)> {
 }
 
 #[test]
-fn criterion_14_the_record_is_read_in_exactly_one_place_in_the_whole_crate() {
-    // My first version of this guard scanned `liveness.rs` alone, and criterion
-    // 14 binds PHASE 2 — the classified set AND the successor digest. A
-    // universal obligation checked on one particular is how the second read at
-    // emission survived review, so the guard is now crate-wide and asks where
-    // the record can be read AT ALL.
+fn criterion_14_the_named_read_functions_appear_only_where_they_should() {
+    // A TRIPWIRE, AND ITS LIMIT IS PART OF THE TEST. This scans for three
+    // NAMES. It cannot see a filesystem observation spelled some other way —
+    // `Path::exists`, `metadata`, `File::open`, a helper that wraps any of them
+    // — and an earlier version of this guard claimed "exactly one filesystem
+    // call outside the tests" while enforcing only these three. That claim was
+    // broader than its enforcement, and a second observation lived inside it
+    // for a whole review cycle.
+    //
+    // The CLASS is closed behaviourally, by
+    // `criterion_14_the_digest_does_not_change_when_the_world_does` below: any
+    // second observation, under any name, sees a different world and produces a
+    // different digest. This test is the cheap early warning, and it now claims
+    // only what it checks.
     let modules = product_source();
     assert!(
         modules.iter().any(|(name, _)| name == "liveness.rs")
@@ -1162,7 +1216,6 @@ fn criterion_14_the_record_is_read_in_exactly_one_place_in_the_whole_crate() {
          wrapper that exists for callers who genuinely want a fresh read"
     );
 
-    // The emission path specifically: it derives, and it does not read.
     let Some((_, listing)) = product_source()
         .into_iter()
         .find(|(name, _)| name == "listing.rs")
@@ -1185,6 +1238,89 @@ fn criterion_14_the_record_is_read_in_exactly_one_place_in_the_whole_crate() {
     assert!(
         world_of.contains(concat!("entry_", "from(")),
         "it derives from the carried snapshot"
+    );
+}
+
+#[test]
+fn criterion_14_the_digest_does_not_change_when_the_world_does() {
+    // THE CLASS-CLOSING TEST, and it needs no list of spellings. Phase 2 is a
+    // pure function of the inventory it was handed: render the digest, then
+    // change the filesystem underneath in both directions — grow it, then
+    // remove it entirely — and render again from the SAME inventory. Any second
+    // observation, however it is spelled, sees a different world and produces a
+    // different document.
+    let scratch = Scratch::new("world-changes");
+    scratch.healthy(
+        "alpha",
+        "goal=the original goal
+",
+    );
+    scratch.degraded_but_addressable("damaged");
+    let repaired = scratch.no_meta("was-absent");
+    scratch.no_selector("quiet");
+    let taken = take(durable_records(&scratch.roots()), None, &Recorder::new());
+
+    let backend = || Recorder::new().live(named("B"), &[("alpha", Some("alpha"))]);
+    let before = render(
+        &args(&["--all", "--json"]),
+        &world_of(
+            &classify(taken.clone(), &backend()),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        ),
+    );
+
+    // The world GROWS: a record that was absent becomes readable, and an
+    // existing goal changes. A second read that succeeds would notice both.
+    assert!(
+        fs::write(
+            repaired.join("meta"),
+            "mode=local
+agent.main=cl:lead
+goal=a goal that appeared later
+",
+        )
+        .is_ok(),
+        "the absent record becomes readable"
+    );
+    assert!(
+        fs::write(
+            scratch.0.join("sessions").join("alpha").join("meta"),
+            "mode=copy
+agent.main=cl:other
+goal=a different goal
+",
+        )
+        .is_ok(),
+        "and an existing record changes"
+    );
+    let after_growth = render(
+        &args(&["--all", "--json"]),
+        &world_of(
+            &classify(taken.clone(), &backend()),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        ),
+    );
+
+    // The world DISAPPEARS. A second read that fails would notice that.
+    assert!(
+        fs::remove_dir_all(scratch.0.join("sessions")).is_ok(),
+        "and then it is gone"
+    );
+    let after_removal = render(
+        &args(&["--all", "--json"]),
+        &world_of(&classify(taken, &backend()), NOW, DEFAULT_UNANSWERED_SECS),
+    );
+
+    assert_eq!(
+        before, after_growth,
+        "the digest reports the snapshot, not the filesystem as it is now"
+    );
+    assert_eq!(before, after_removal, "in both directions, byte for byte");
+    assert!(
+        before.contains("the original goal"),
+        "and the fixture was not vacuous — the first render did carry record facts"
     );
 }
 

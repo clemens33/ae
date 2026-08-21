@@ -332,6 +332,33 @@ pub fn entry_for(
     )
 }
 
+/// What happened when phase 1 tried to read a candidate's `meta`.
+///
+/// **Independent of source membership** (criterion 21 / SC-509b): a tmux-only
+/// candidate has no record to lose, while a durable candidate whose `meta` will
+/// not read has one and lost its contents. Rendering those two the same way is
+/// the digest lying by omission — it would report a destroyed record as a
+/// session that never had one.
+///
+/// This phase carries the outcome and draws no conclusion from it. Whether it
+/// sets `degraded` is SC-405e/SC-509b's question, decided by the reader that
+/// needs the meta's contents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MetaRead {
+    /// Read and parsed.
+    Parsed,
+    /// No `meta` in the state directory.
+    ///
+    /// The DEFAULT, deliberately: a snapshot nobody has read yet has not
+    /// established that anything was lost. The failure direction of a wrong
+    /// default here is a fabricated loss fact, and this is the value that
+    /// claims least.
+    #[default]
+    Absent,
+    /// A `meta` that exists and would not read.
+    Unreadable,
+}
+
 /// Everything one session directory said, read ONCE.
 ///
 /// **This exists because a digest built from two observations is a digest whose
@@ -351,6 +378,18 @@ pub fn entry_for(
 pub struct RecordSnapshot {
     /// The parsed `meta`, when it could be read.
     pub meta: Option<Meta>,
+    /// WHY there is or is not a `meta` above — the typed outcome of the very
+    /// read that produced it.
+    ///
+    /// **This field exists because `.ok()` is lossy in exactly the way that
+    /// matters.** Absent and unreadable are different facts (SC-405l as
+    /// amended, phase-1 criteria 21 and 23), and `Option<Meta>` cannot tell
+    /// them apart. An earlier version discarded the error here and had the
+    /// caller reconstruct the distinction by asking the filesystem again —
+    /// which is a SECOND OBSERVATION wearing a different name, and one that
+    /// answers "absent" for a directory it is not allowed to traverse. Moving a
+    /// read is not the same as preserving its outcome.
+    pub meta_read: MetaRead,
     /// The event stream, when it could be read.
     pub events: Option<SessionRead>,
 }
@@ -359,11 +398,23 @@ impl RecordSnapshot {
     /// Read both halves of the record at `dir`.
     ///
     /// The ONLY I/O on this path. Everything downstream — [`entry_from`], the
-    /// classifier, the digest — is a pure function of what this captured.
+    /// classifier, the digest — is a pure function of what this captured,
+    /// including WHY each half is missing.
     #[must_use]
     pub fn read(dir: &Path) -> Self {
+        let (meta, meta_read) = match Meta::read(dir) {
+            Ok(meta) => (Some(meta), MetaRead::Parsed),
+            // The ONE place absent and unreadable are told apart, from the
+            // error the read itself returned. Anything downstream that had to
+            // ask the filesystem again would be answering a question this value
+            // already holds — and would get it wrong whenever the path is
+            // observable to the reader but not to the asker.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (None, MetaRead::Absent),
+            Err(_) => (None, MetaRead::Unreadable),
+        };
         Self {
-            meta: Meta::read(dir).ok(),
+            meta,
+            meta_read,
             events: SessionRead::open(dir).ok(),
         }
     }
