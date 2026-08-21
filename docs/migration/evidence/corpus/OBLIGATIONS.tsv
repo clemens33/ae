@@ -1275,8 +1275,12 @@ arms/A9/a9-c02-zero-byte-events-rw	list-all-json	SC-017o	digest	inventory_comple
 arms/A9/a9-c02-zero-byte-events-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c02-zero-byte-events-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c02-zero-byte-events-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
+arms/A9/a9-c03-meta-mode-000-ro	list	SC-017m	stdout	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
+arms/A9/a9-c03-meta-mode-000-ro	list-all	SC-017m	stdout	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
+arms/A9/a9-c03-meta-mode-000-ro	list-all-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c03-meta-mode-000-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c03-meta-mode-000-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
+arms/A9/a9-c03-meta-mode-000-ro	list-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c03-meta-mode-000-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c03-meta-mode-000-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c03-meta-mode-000-ro-noserver	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	OBSERVED	default view shows running then unknown; absent becomes present
@@ -1289,8 +1293,12 @@ arms/A9/a9-c03-meta-mode-000-ro-noserver	list-all-json	SC-509d	digest	schema_ver
 arms/A9/a9-c03-meta-mode-000-ro-noserver	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A9/a9-c03-meta-mode-000-ro-noserver	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c03-meta-mode-000-ro-noserver	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
+arms/A9/a9-c03-meta-mode-000-rw	list	SC-017m	stdout	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
+arms/A9/a9-c03-meta-mode-000-rw	list-all	SC-017m	stdout	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
+arms/A9/a9-c03-meta-mode-000-rw	list-all-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c03-meta-mode-000-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c03-meta-mode-000-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
+arms/A9/a9-c03-meta-mode-000-rw	list-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c03-meta-mode-000-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c03-meta-mode-000-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c04-malformed-event-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
@@ -1313,8 +1321,12 @@ arms/A9/a9-c04-malformed-event-rw	list-all-json	SC-017o	digest	inventory_complet
 arms/A9/a9-c04-malformed-event-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c04-malformed-event-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c04-malformed-event-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
+arms/A9/a9-c05-meta-absent-ro	list	SC-017m	stdout	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
+arms/A9/a9-c05-meta-absent-ro	list-all	SC-017m	stdout	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
+arms/A9/a9-c05-meta-absent-ro	list-all-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c05-meta-absent-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c05-meta-absent-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
+arms/A9/a9-c05-meta-absent-ro	list-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c05-meta-absent-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c05-meta-absent-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c05-meta-absent-ro-noserver	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	OBSERVED	default view shows running then unknown; absent becomes present
@@ -1327,8 +1339,12 @@ arms/A9/a9-c05-meta-absent-ro-noserver	list-all-json	SC-509d	digest	schema_versi
 arms/A9/a9-c05-meta-absent-ro-noserver	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A9/a9-c05-meta-absent-ro-noserver	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c05-meta-absent-ro-noserver	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
+arms/A9/a9-c05-meta-absent-rw	list	SC-017m	stdout	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
+arms/A9/a9-c05-meta-absent-rw	list-all	SC-017m	stdout	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
+arms/A9/a9-c05-meta-absent-rw	list-all-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c05-meta-absent-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c05-meta-absent-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
+arms/A9/a9-c05-meta-absent-rw	list-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c05-meta-absent-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c05-meta-absent-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c06-healthy-control-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried

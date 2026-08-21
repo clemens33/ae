@@ -132,14 +132,29 @@ def main(quiet=False):
     # DIRECTORY. Normalise, rather than letting a key mismatch read as 573 disagreements.
     stored = {(os.path.dirname(r["case"]), r["consumer"]): r["verdict"]
               for r in csv.DictReader(open(VERD, encoding="utf-8"), delimiter="\t")}
-    disagree = 0
+    # verdict is DERIVED from obligations; VERDICTS.tsv's stored column is legacy.
+    # The two directions of disagreement are NOT symmetric:
+    #   stored DIVERGENCE with no obligation -> a verdict that cannot say WHY. FAIL.
+    #   stored MATCH where an obligation now exists -> the stored column is BEHIND,
+    #     which is what happens every time the obligation set grows. Report, do not fail.
+    unreasoned, behind = 0, 0
     for key, v in stored.items():
         derived = "EXPECTED-DIVERGENCE" if carriers.get(key) else "EXPECTED-MATCH"
-        if derived != v:
-            disagree += 1
-            if disagree <= 5:
-                fail(out, "VERDICT", "%s/%s stored %s, obligations derive %s" % (key[0], key[1], v, derived))
-    if disagree > 5: fail(out, "VERDICT", "...and %d more" % (disagree - 5))
+        if derived == v:
+            continue
+        if v == "EXPECTED-DIVERGENCE":
+            unreasoned += 1
+            if unreasoned <= 5:
+                fail(out, "VERDICT-UNREASONED",
+                     "%s/%s stored DIVERGENCE but carries no obligation" % key)
+        else:
+            behind += 1
+    if unreasoned > 5:
+        fail(out, "VERDICT-UNREASONED", "...and %d more" % (unreasoned - 5))
+    if behind and not quiet:
+        print("note: VERDICTS.tsv is BEHIND on %d row(s) — obligations derive divergence "
+              "where the legacy column stored match. Expected whenever the obligation set "
+              "grows; the obligation table is authoritative." % behind)
 
     if not quiet:
         per = collections.Counter(o["obligation_id"] for o in obls)

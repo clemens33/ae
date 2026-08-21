@@ -35,6 +35,19 @@ HDR = ["case", "consumer", "obligation_id", "stream", "locus", "from", "to",
 # query outcome decides, and that outcome was never captured.
 #   OBSERVED   — the deciding fact is in the artifacts
 #   UNSCORABLE — the obligation stands normatively; this corpus cannot score it
+def missing_selector_sessions(case):
+    """The session names whose selector is missing by construction."""
+    mb = os.path.join(SRC, case, "manifest.before.tsv")
+    if not os.path.exists(mb): return []
+    rows = [l.rstrip("\n").split("\t") for l in open(mb, encoding="utf-8", errors="replace")]
+    sess = {r[-1].split("/")[2] for r in rows
+            if r[0] == "dir" and re.match(r"\./sessions/[^./][^/]*$", r[-1])}
+    metas = {r[-1].split("/")[2]: r[1] for r in rows
+             if r[0] == "file" and re.match(r"\./sessions/[^./][^/]*/meta$", r[-1])}
+    out = sorted(sess - set(metas))
+    out += sorted(n for n, m in metas.items() if m in ("000", "0", "100", "200"))
+    return out
+
 def selector_missing(case):
     """A candidate whose meta is absent or unreadable has a `missing` selector by
     construction (SC-405l), which routes to `unknown` WITHOUT any server outcome.
@@ -100,7 +113,8 @@ def main():
         # roster agent's health diverges with it — and the two surfaces move in
         # OPPOSITE directions from the same frozen defect, which is why these are two
         # separate obligations rather than one.
-        sup = "OBSERVED" if selector_missing(case) else "UNSCORABLE"
+        sel_missing = selector_missing(case)
+        sup = "OBSERVED" if sel_missing else "UNSCORABLE"
         if incomplete:
             if digest and '"alive"' in text:
                 n_false = len(re.findall(r'"alive"\s*:\s*false', text))
@@ -120,6 +134,28 @@ def main():
                              "blank", "unambiguous unknown", "all-of", "OBSERVED", sup,
                              "frozen renders alive and absent identically as a blank "
                              "marker; unknown must be non-silent"))
+
+        # SELECTOR-MISSING IS AN INDEPENDENT SUFFICIENT CAUSE OF `unknown`, and gating
+        # the liveness obligations on `incomplete` hid that. The chain never touches
+        # the case query: SC-405l makes the durable selector missing, SC-017j keeps the
+        # candidate and forbids name-only reconciliation, SC-017l makes its liveness
+        # unknown, SC-017m renders unknown in the default and --all views. A live
+        # sighting may ADD a running candidate if ownership is proven, but it cannot
+        # REMOVE the durable unknown one.
+        #
+        # So this locus — an unknown row is PRESENT for that candidate — is scorable
+        # from the manifest and the frozen bytes even where the full row set is not.
+        # Deliberately NOT relabelled SC-017l (no status transition is claimed) and
+        # deliberately NOT a whole-row-set prediction.
+        if listish and sel_missing and not incomplete:
+            names = missing_selector_sessions(case)
+            shown = [n for n in names if re.search(r"\b%s\b" % re.escape(n), text)]
+            rows.append((case, consumer, "SC-017m",
+                         "digest" if digest else "stdout", "unknown row present",
+                         "present" if shown else "absent", "unknown", "present",
+                         "OBSERVED", "OBSERVED",
+                         "selector missing by construction; %s"
+                         % (", ".join(names) if names else "candidate")))
 
         if listish and incomplete:
             # TWO DISTINCT OBLIGATIONS, and which one applies is READ FROM THE BYTES

@@ -30,7 +30,7 @@ MUTATIONS = [
     ("MISSING-509d", OBL, "a digest row stripped of its schema obligation",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A1/c01-healthy-ro\tlist-json\tSC-509d")))),
-    ("VERDICT", OBL, "every obligation removed from a divergent row",
+    ("VERDICT-UNREASONED", OBL, "a stored divergence left with no obligation to justify it",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not l.startswith("arms/A1/c01-healthy-ro\tlist-all-json\t"))),
     ("SUPPORT", OBL, "an obligation with no support verdict",

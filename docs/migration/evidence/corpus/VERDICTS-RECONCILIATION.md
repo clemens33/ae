@@ -255,3 +255,65 @@ not present, not absent, **unobservable** — for 45 of 91 cases.
 The obligations emitted above are confined to cases where the server state **is** recorded, so
 nothing in the table asserts a fact the corpus cannot support.
 
+---
+
+## Repair: selector-missing is an INDEPENDENT sufficient cause, and the generator gated it on the wrong condition
+
+**I offered to defer to colead's six and was told not to — correctly.** Both counts reproduce, for
+different populations: their six is the **intersection** of selector-missing AND failed-case-query;
+my ten is the selector-missing **input-shape** population. Different questions, both answered.
+
+**Deferring would have buried the finding**, because six and ten disagreeing is the only reason
+anyone looked. The instinct — I had been wrong twice on population definitions, so defer — was right
+in general and wrong here.
+
+### The bug
+
+`selector_missing(case)` was computed, but `sup` was consulted **only inside `if incomplete:`**. So
+four P1 cases with a *live* case socket — `a9-c03-meta-mode-000-ro/-rw`, `a9-c05-meta-absent-ro/-rw`,
+sixteen invocation rows — carried **no liveness obligation at all**.
+
+**The chain never touches the case query:** SC-405l makes the durable selector `missing`; SC-017j
+keeps the candidate and forbids name-only reconciliation; SC-017l makes its liveness `unknown`;
+SC-017m renders `unknown` in the default and `--all` views. A live sighting may *add* a running
+candidate if ownership is proven, but it **cannot remove the durable unknown candidate**.
+
+So the locus *an unknown row is present for that candidate* is scorable from the manifest and the
+frozen bytes — a locus I had marked unscorable that is in fact observable.
+
+### Applied exactly as specified
+
+One SC-017m unknown-presence obligation per affected invocation row, `OBSERVED`; **not** relabelled
+SC-017l (no status transition is claimed); **not** a whole-row-set prediction. Every predicted
+figure reproduced:
+
+| | before | after | predicted |
+|---|---|---|---|
+| obligations | 1362 | **1378** | 1378 |
+| support OBSERVED | 697 | **713** | 713 |
+| SC-017m OBSERVED | 14 | **30** | 30 |
+| SC-017l OBSERVED | 14 | **14** | unchanged |
+| verdicts | 573 / 492 | **581 / 484** | 581 / 484 |
+
+### The verdict cross-check became asymmetric, because the two directions are not equivalent
+
+Adding obligations put the legacy `VERDICTS.tsv` eight rows behind, and the gate failed on it. That
+is the wrong response: `verdict` is **derived**, so a stored column disagreeing means the stored
+column is stale, not that the obligations are wrong. The check now distinguishes them:
+
+- stored `EXPECTED-DIVERGENCE` with **no obligation** → a verdict that cannot say *why* → **FAIL**
+- stored `EXPECTED-MATCH` where an obligation now exists → the stored column is **behind** → report
+
+### The minimised cause, for the fourth time
+
+A **per-candidate** fact gated on a **case-level** condition. The sequence: a field of the wrong
+grain (659), a population narrowed by unstated predicates (45 of 91), the deciding field inferred
+from a proxy (`case.txt` instead of `env.txt`), and now a per-candidate cause gated case-wide inside
+the generator itself.
+
+**And it sharpens the reconciliation rule.** "Reconcile the populations before arguing about the
+number" assumes reconciliation *resolves* the disagreement. Here both counts were right and the
+disagreement was pointing at a **third thing** — a stale conditional neither count was about. A
+disagreement between two competent derivations is not only a population question; it can be a defect
+in whatever produced one of them, and deferring is exactly what stops you finding out.
+
