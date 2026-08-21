@@ -171,13 +171,17 @@ builder until implementation handback.
     phase; this criterion does not prescribe their outputs.
 
 16. **[STATE MATRIX] EVERY SUCCESSOR DIGEST IS SCHEMA VERSION 2 WITH THE CLOSED STATUS
-    DOMAIN.** Emit successor digests for: empty inventory; running only; stopped only;
-    unknown only; mixed statuses; and the degradation matrix. Observable: numeric
-    `schema_version: 2` exactly once in every document, and every `sessions[].status` is
-    exactly one of lowercase `running | unknown | stopped`. FAIL on a conditional bump
-    only when an unknown exists, version 1 on any successor path, null/free-text/alias
-    status, invalid JSON, or a status outside the closed domain. JSON field order is an
-    **OPEN CHOICE**.
+    DOMAIN AND AN EXPLICIT COMPLETENESS FACT.** Emit successor digests for: empty
+    inventory; running only; stopped only; unknown only; mixed statuses; and the
+    degradation matrix, with complete and incomplete controls for every shape.
+    Observable: numeric `schema_version: 2` exactly once and top-level
+    `inventory_complete` exactly once with the supplied boolean in every document, and
+    every `sessions[].status` is exactly one of lowercase
+    `running | unknown | stopped`. FAIL on a conditional version/field only when an
+    unknown, nonempty inventory, or particular shape exists; version 1 on any successor
+    path; a missing/duplicate/wrong completeness field; null/free-text/alias status;
+    invalid JSON; or a status outside the closed domain. JSON field order is an **OPEN
+    CHOICE**.
 
 17. **[PAIR] SCHEMA VERSION 2 PRESERVES THE REST OF SC-509/SC-509b.** For a fixture
     whose liveness remains running/stopped across the flip, compare version-1 baseline
@@ -236,19 +240,26 @@ builder until implementation handback.
     and retry count also remain **OPEN CHOICES**. This criterion bounds authorization,
     not provenance or the amount of permitted work.
 
-23. **[PAIR/STATE] INVENTORY COMPLETENESS SURVIVES CLASSIFICATION AND EMISSION.** Feed
-    the same candidate set, selectors, read-loss facts, and backend answers twice. The
-    only difference is a phase-1 completeness fact: complete with zero enumeration
-    losses versus incomplete with one named logical-source loss. Observable: classified
+23. **[PAIR/STATE] INVENTORY COMPLETENESS SURVIVES CLASSIFICATION AND EMISSION.** At the
+    phase-2 boundary, feed the same candidate set, selectors, read-loss facts, and
+    backend answers twice. The only difference in this controlled classifier-input pair
+    is a phase-1 completeness fact: complete with zero enumeration losses versus
+    incomplete with one named logical-source loss. Observable: classified
     identities, statuses, and degradation facts are identical; completeness and loss
     facts cross the classifier boundary unchanged; emitted schema-version-2 JSON carries
     `inventory_complete: true` versus `false`. Repeat with an empty candidate set so an
     incomplete-empty snapshot cannot masquerade as authoritative empty. FAIL if the
     classifier clears or recomputes the loss, maps incompleteness to `unknown` or
     `degraded`, fabricates a candidate, drops healthy candidates, or emits the same
-    boolean for both arms. Reuse phase-1 criterion 24's simultaneous two-source failure
-    and require both distinguishable loss facts to cross classification; retaining only
-    the first is a failure even though JSON still needs only the boolean. Internal loss
+    boolean for both arms. Calibrate the controlled pair against one product-valid
+    end-to-end phase-1 fixture whose source is readable-empty in the complete arm and
+    whose enumeration demonstrably fails in the incomplete arm, so the candidate set
+    can remain equal without pretending that failure of a nonempty source leaves its
+    discovered candidates intact. Reuse phase-1 criterion 24's simultaneous two-source
+    failure and require both distinguishable loss facts to cross classification;
+    retaining only the first is a failure even though JSON still needs only the boolean.
+    The controlled boundary pair proves classifier preservation; the product-valid arm
+    proves the completeness delta can arise through discovery. Internal loss
     representation, detailed JSON loss exposure, and human warning policy are outside
     this phase.
 
@@ -259,9 +270,12 @@ builder until implementation handback.
   inventory actually found; do not compare against identities visible only when the
   failed source becomes readable. Every incomplete invocation emits an explicit stderr
   diagnostic containing at least the logical-source loss count. Reuse phase-1 criterion
-  24's simultaneous two-source failure and require the reported count to be `2`, so a
-  boolean or constant-one diagnostic fails. FAIL if only `--all` warns, a filter hides
-  the warning, found rows change, or a synthetic session/status represents the loss.
+  24's separate one-source failure and simultaneous two-source failure. Before rendering,
+  identify the distinct logical-source keys in each carried loss set; require reported
+  counts `1` and `2` respectively, so one loss counted twice, a boolean, first-loss-only,
+  or any hardcoded count fails. Complete controls report none. FAIL if only `--all` warns,
+  a filter hides the warning, found rows change, or a synthetic session/status represents
+  the loss.
   Exact wording, optional paths/targets, and exit status remain **OPEN CHOICES**.
 - Run human complete/incomplete controls and JSON complete/incomplete controls, including
   both empty inventories. Complete human output emits no incompleteness warning. Every
