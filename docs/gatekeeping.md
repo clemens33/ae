@@ -2564,6 +2564,72 @@ If the second sentence is hard to write, that is the direction you are not check
 brief names one direction — as "does it over-exempt?" did — treat that as a description of
 where the author already looked, not as the scope of the review.
 
+### VERIFY-THEN-COMMIT is not atomic when another agent shares the tree
+
+A reviewer was told to run the author's mutation attacks — deliberately breaking the code
+to confirm the suite goes red. Nobody said WHERE. They worked in the live checkout.
+
+The author, in that same checkout, ran the gate green, checked `git status`, ran `git add`,
+and committed. Between the green run and the `git add`, the reviewer applied a mutation.
+The commit shipped `Err(QueryFailed)` — the mutant — as the real body of the transport, and
+HEAD did not build. Both agents did exactly what they were asked.
+
+**Two mechanisms, and the first one is the trap:**
+
+- **`git status` is a NAME oracle, not a CONTENT oracle.** `?? src/transport.rs` reports
+  that a file is untracked. It reports nothing whatever about its bytes. Reading a status
+  listing as verification looks precisely like diligence, which is why it survives.
+- **Any verification establishes a fact about the tree at time T; the commit captures the
+  tree at T+n.** Single-writer, `n` is harmless and the habit is safe. Add a concurrent
+  writer and it is an unlocked race that git will never flag.
+
+Narrowing the window is not the fix — the window is the defect. The repair that holds is
+**fail-closed and in one command**: snapshot hashes of every path in the same command that
+runs the gate, chain the commit behind a `shasum -c` of that snapshot, and then — the step
+whose absence caused the incident — **extract the paths back out of HEAD and re-hash them
+against the same snapshot.** The first two check what was on disk when you typed. Only the
+third checks what actually landed.
+
+Dispatch half, which is the durable lesson: **never place a mutating agent and a committing
+agent in one tree.** Mutation work belongs on a copy or in a dedicated worktree, and an
+instruction to "run the mutations" is incomplete until it says where. The condition was
+created by the dispatcher, not by either agent in it.
+
+Related: "the tree is frozen" is never one agent's promise to keep — an agent controls only
+its own edits. Treat a freeze as a coordination request, and re-measure anything measured
+across one, because a stale green is indistinguishable from a fresh one.
+
+### Disjoint findings come from disjoint POSITIONS — and pooling early destroys them
+
+One slice, three reviewing seats, three findings, and **no set contained another**:
+
+- the seat that had **written the fixture** found that its seven session names contained no
+  prefix of another, so the fixture population was structurally incapable of exhibiting the
+  bug being guarded against;
+- the seat attacking **cold from the code**, with no knowledge of which cases the author had
+  already considered, found that a signalled child read as success left the entire detector
+  suite green;
+- the seat that had **built the implementation** reached the ownership seam, because it knew
+  where it had made a judgement call rather than a derivation.
+
+**The disjointness is structural, not lucky.** Each seat found what its position let it see:
+authorship of the fixture reveals what the fixture excludes; cold attack reveals what
+familiarity has stopped questioning; authorship of the implementation reveals which lines
+are decisions. None of those vantage points is reachable from the others, however carefully
+the occupant reads.
+
+That is an argument for **diverse seats**, not for *more* review. A second pass from the
+same position mostly re-derives the first.
+
+**And the caveat that comes with the citation.** The implementer's attack list — the most
+useful artifact any of them produced — was also what nearly destroyed the result, because
+handing it to the cold seat first would have converted an independent pass into an audit of
+that list. The author cannot assess their own list's *completeness*; that is precisely the
+property another position exists to supply. So: **let each position be USED before its
+knowledge is pooled.** Share the coverage *boundary* freely — a fact about what someone did
+— and withhold the *conclusions* until the other seat has reached its own. Cold first,
+calibrate second.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
