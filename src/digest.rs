@@ -25,25 +25,57 @@ use crate::time::Timestamp;
 /// The `schema_version` SC-509 publishes. Consumers gate on it.
 pub const SCHEMA_VERSION: i64 = 1;
 
-/// Whether a session is running or stopped.
+/// Whether a session is running, stopped, or not established either way.
 ///
-/// SC-017a/b/c divide the world exactly this way, so the digest's `status` is
-/// two-valued rather than free text.
+/// SC-017a/b/c divide the *established* world into running and stopped, so the
+/// digest's `status` is an enumeration rather than free text. SC-816 and
+/// SC-835c add the third case: inability to verify is not absence, so a failed
+/// liveness check gets its own value instead of collapsing into `Stopped`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     /// The session is live.
     Running,
     /// The session is stopped history.
     Stopped,
+    /// Liveness was NOT ESTABLISHED - the recorded server was unreachable, the
+    /// query failed, or ownership evidence was missing. It is NOT stopped and
+    /// NOT absence.
+    ///
+    /// **`SCHEMA_VERSION` stays 1 here deliberately.** A new enum value in an
+    /// existing field is NOT backward-compatible even though the field shape is
+    /// unchanged: a consumer that gated on `status` being one of two spellings
+    /// breaks on a third. No code path can construct this variant yet — nothing
+    /// wires enumeration — so no document can carry it and no consumer can see
+    /// it. The schema must move to version 2 in the SAME change as the first
+    /// code that can actually construct `Unknown`.
+    ///
+    /// Orthogonal to [`SessionEntry::degraded`]: `degraded` means record facts
+    /// were LOST, `Unknown` means liveness was NOT ESTABLISHED. Either, both, or
+    /// neither can hold; they are never derived from one another.
+    Unknown,
 }
 
 impl Status {
+    /// Every status, in the SC-017n group order: running, unknown, stopped.
+    ///
+    /// An array literal is NOT exhaustiveness-checked. That is the exact shape
+    /// that let `filters.rs` enumerate the variants per scope and go on
+    /// compiling — silently dropping a new state from every listing — while the
+    /// one `match` on `Status` was updated and the compiler reported success.
+    /// So this constant carries a guard rather than a promise: the test
+    /// `the_status_list_holds_every_variant_exactly_once` answers each variant
+    /// through a `match`, so a fourth variant fails to BUILD the suite until it
+    /// is named, and the only thing it can legally name is a real index of this
+    /// array.
+    pub const ALL: [Self; 3] = [Self::Running, Self::Unknown, Self::Stopped];
+
     /// The spelling SC-509's example carries (`"status": "running"`).
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
             Self::Stopped => "stopped",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -327,6 +359,40 @@ mod tests {
             r#"}]}"#
         );
         assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn the_status_list_holds_every_variant_exactly_once() {
+        // The compiler cannot check an array literal for completeness — it can
+        // check a `match`. Each arm answers with the ALL entry for its own
+        // variant, so a fourth variant does not compile until it names a slot,
+        // and `Status::ALL[3]` on a three-element array is a deny-by-default
+        // `unconditional_panic`: naming a slot that does not exist fails the
+        // build too, which leaves growing ALL as the only way through.
+        let entry = |status: Status| match status {
+            Status::Running => Status::ALL[0],
+            Status::Unknown => Status::ALL[1],
+            Status::Stopped => Status::ALL[2],
+        };
+        for status in Status::ALL {
+            assert_eq!(entry(status), status, "ALL disagrees about {status:?}");
+        }
+        let mut spellings: Vec<&str> = Status::ALL.iter().map(|s| s.as_str()).collect();
+        spellings.sort_unstable();
+        spellings.dedup();
+        assert_eq!(
+            spellings.len(),
+            Status::ALL.len(),
+            "a status is listed twice, so some variant is missing"
+        );
+    }
+
+    #[test]
+    fn every_status_has_its_own_spelling() {
+        assert_eq!(
+            Status::ALL.map(Status::as_str),
+            ["running", "unknown", "stopped"]
+        );
     }
 
     #[test]

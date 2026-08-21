@@ -52,6 +52,34 @@ pub enum Scope {
     Stopped,
 }
 
+impl Scope {
+    /// The status groups this scope shows, in the order they are shown in.
+    ///
+    /// **SC-017m** ratifies the composition, **SC-017n** the group order
+    /// (running, unknown, stopped):
+    ///
+    /// | scope | groups |
+    /// |---|---|
+    /// | default / `--running` | running, unknown |
+    /// | `--stopped` | stopped |
+    /// | `--all` | running, unknown, stopped |
+    ///
+    /// `--running` includes [`Status::Unknown`] DELIBERATELY. Unknown is not
+    /// stopped history — it is a session whose liveness ae failed to establish
+    /// — so leaving it out of the default listing would HIDE exactly the
+    /// session a human most needs to see. That is the bug the whole ruling
+    /// exists to kill, and it is the shape this function had before: an array
+    /// literal is not exhaustiveness-checked, so a variant added to `Status`
+    /// fell out of every scope here and the compiler still reported success.
+    const fn order(self) -> &'static [Status] {
+        match self {
+            Self::Running => &[Status::Running, Status::Unknown],
+            Self::Stopped => &[Status::Stopped],
+            Self::All => &[Status::Running, Status::Unknown, Status::Stopped],
+        }
+    }
+}
+
 /// The active filters, as one value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Selection {
@@ -77,9 +105,10 @@ impl Selection {
 
     /// Apply the active filters to `sessions`, as of `now`.
     ///
-    /// Returns borrowed entries in the order they should be shown: for
-    /// [`Scope::All`], every running session first and then every stopped one
-    /// (SC-017b), each group keeping the order it arrived in.
+    /// Returns borrowed entries in the order they should be shown: running
+    /// sessions first, then unknown ones, then stopped ones (SC-017b/SC-017n),
+    /// restricted to the groups the scope carries (SC-017m), each group keeping
+    /// the order it arrived in.
     ///
     /// ```
     /// use ae::digest::{SessionEntry, Status};
@@ -99,14 +128,11 @@ impl Selection {
         sessions: &'a [SessionEntry],
         now: Timestamp,
     ) -> Vec<&'a SessionEntry> {
-        let order: &[Status] = match self.scope {
-            Scope::Running => &[Status::Running],
-            Scope::Stopped => &[Status::Stopped],
-            // SC-017b names an order, so the scope carries it rather than
-            // leaving two call sites to sort the same way by coincidence.
-            Scope::All => &[Status::Running, Status::Stopped],
-        };
-        order
+        // SC-017b/SC-017m/SC-017n name a composition AND an order, so the
+        // scope carries both rather than leaving two call sites to agree by
+        // coincidence. See [`Scope::order`].
+        self.scope
+            .order()
             .iter()
             .flat_map(|status| {
                 sessions
@@ -259,9 +285,72 @@ mod tests {
         vec![
             session("stopped-first", Status::Stopped),
             session("running-one", Status::Running),
+            session("unknown-first", Status::Unknown),
             session("stopped-second", Status::Stopped),
             session("running-two", Status::Running),
+            session("unknown-second", Status::Unknown),
         ]
+    }
+
+    #[test]
+    fn sc_017m_each_scope_shows_exactly_this_composition_in_this_order() {
+        // Transcription of the ratified rows, read off SC-017m/SC-017n and not
+        // off the implementation.
+        assert_eq!(
+            Scope::Running.order(),
+            [Status::Running, Status::Unknown],
+            "default / --running"
+        );
+        assert_eq!(Scope::Stopped.order(), [Status::Stopped], "--stopped");
+        assert_eq!(
+            Scope::All.order(),
+            [Status::Running, Status::Unknown, Status::Stopped],
+            "--all"
+        );
+        assert_eq!(
+            Scope::default().order(),
+            Scope::Running.order(),
+            "the default IS --running, so it cannot show a different set"
+        );
+    }
+
+    #[test]
+    fn sc_017m_no_status_falls_out_of_every_scope() {
+        // THE anti-silent-hole mechanism. Rust checks `match` for
+        // exhaustiveness and nothing else, so the arrays in `Scope::order` will
+        // compile forever after a variant is added to `Status` — dropping that
+        // state from every listing while the build stays green. This test is
+        // what goes red instead. (`Status::ALL`'s own completeness is guarded
+        // by a `match` in digest.rs, so the two together close the loop.)
+        for status in Status::ALL {
+            assert!(
+                [Scope::Running, Scope::All, Scope::Stopped]
+                    .iter()
+                    .any(|scope| scope.order().contains(&status)),
+                "no scope shows {status:?} — it is invisible to every `ae list`"
+            );
+        }
+    }
+
+    #[test]
+    fn sc_017m_unknown_is_visible_by_default_because_it_is_not_stopped_history() {
+        // The point of the ruling: a session whose liveness ae could not
+        // establish must not be hidden by the listing a human runs bare.
+        let corpus = corpus();
+        let shown = Selection::default().select(&corpus, NOW);
+        assert_eq!(
+            names(&shown),
+            [
+                "running-one",
+                "running-two",
+                "unknown-first",
+                "unknown-second"
+            ]
+        );
+        assert!(
+            !Scope::Stopped.order().contains(&Status::Unknown),
+            "and --stopped is history, which unknown is not"
+        );
     }
 
     #[test]
@@ -383,10 +472,27 @@ mod tests {
     }
 
     #[test]
-    fn sc_017a_the_default_shows_running_sessions_only() {
+    fn sc_017a_amended_the_default_shows_no_stopped_session() {
+        // SC-017m AMENDS this row's composition: the default is no longer
+        // "running only" but "not stopped history" — running plus unknown. What
+        // SC-017a still fixes, and what this asserts, is that a stopped session
+        // never appears in the bare listing.
         let corpus = corpus();
         let shown = Selection::default().select(&corpus, NOW);
-        assert_eq!(names(&shown), ["running-one", "running-two"]);
+        assert!(
+            shown.iter().all(|s| s.status != Status::Stopped),
+            "{:?}",
+            names(&shown)
+        );
+        assert_eq!(
+            names(&shown),
+            [
+                "running-one",
+                "running-two",
+                "unknown-first",
+                "unknown-second"
+            ]
+        );
     }
 
     #[test]
@@ -400,9 +506,10 @@ mod tests {
     }
 
     #[test]
-    fn sc_017b_all_shows_running_sessions_then_stopped_ones() {
+    fn sc_017b_all_shows_running_sessions_then_unknown_ones_then_stopped_ones() {
         // The row names an ORDER, not just a wider set: the stopped session
-        // that comes first in the corpus must still come last in the listing.
+        // that comes first in the corpus must still come last in the listing,
+        // and SC-017n puts unknown between the two groups.
         let selection = Selection {
             scope: Scope::All,
             ..Selection::default()
@@ -414,6 +521,8 @@ mod tests {
             [
                 "running-one",
                 "running-two",
+                "unknown-first",
+                "unknown-second",
                 "stopped-first",
                 "stopped-second"
             ]
