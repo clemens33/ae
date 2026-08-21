@@ -29,6 +29,7 @@ invariant, not against the code.
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
 | a document explains that your concern is covered by some other rule, and you are satisfied | A DELEGATION is a claim about scope, and being talked out of a concern is not resolving it |
+| a guard says NO FILESYSTEM ACCESS or NO SPAWNING and its body lists identifiers | A guard that enumerates NAMES enforces those names, whatever its title claims |
 | a rule says EVERY / ALWAYS and one criterion demonstrates it on the case it happened to build | A UNIVERSAL obligation checked on ONE fixture is checked nowhere |
 | you found two rules that contradict and routed the question upward | Settling an ambiguity is not the same as finding what happened while it was ambiguous |
 | your fixture plants a precondition while other parts of the same fixture break its source | A fixture can succeed at building a state the product could never produce |
@@ -968,6 +969,40 @@ The concrete habit: when a document points you elsewhere, **go read the elsewher
 it was written to catch**, not merely whether it is about the same subject. Obligations written
 before a change do not automatically extend to what the change introduced — and a phase that
 alters semantics has, by definition, produced cases its predecessors were not written against.
+
+### A guard that enumerates NAMES enforces those names, whatever its title claims
+
+A defect was found: a whole-phase obligation verified against one function and one file. The
+repair replaced it with what everyone — including the reviewer who passed it — called a
+crate-wide guard. Its stated claim was *exactly one filesystem call outside the tests*. Its
+implementation counted three identifiers.
+
+A different spelling of filesystem access, under none of those three names, sat live inside the
+guarded region. So the guard reported structural closure over a codebase that was still making
+the observation it existed to forbid — **and the claim in its own title is what stopped anyone
+checking.**
+
+The reviewer's error is the instructive half: they verified the guard covered the three names it
+listed, and never asked **whether those three names were all the ways to do the thing**. That
+is the same universal-on-a-particular shape the guard was written to fix, occurring inside the
+guard, and it survived a review by someone who had documented that shape hours earlier.
+
+So when a guard's title quantifies over a **capability** — no filesystem access, no process
+spawn, no network — and its body enumerates **identifiers**, the gap between them is unbounded
+and invisible. Two consequences:
+
+- **Do not repair it by lengthening the list.** A longer blacklist is the same defect with more
+  entries, and each addition makes the claim feel better supported while the gap stays open.
+  Enforce the capability where the language or toolchain can enforce it — a lint that bans a
+  *type* rather than a call, a module boundary, a signature that cannot express the operation —
+  or **narrow the title to name exactly what is counted.**
+- **Review a guard against its claim, not its body.** Reading the body tells you what it does;
+  the finding lives in the difference between that and what it says. Ask: *what else would
+  satisfy this sentence and not trip this code?*
+
+The strongest version of this project's guards are the ones with nothing to enumerate — a type
+that cannot spell an archive path, a port with no name parameter, a function whose signature has
+no failure mode. Those cannot drift, because there is no list to fall behind.
 
 ### A UNIVERSAL obligation checked on ONE fixture is checked nowhere
 
