@@ -28,6 +28,7 @@ invariant, not against the code.
 | a rule says two facts are independent and you are choosing test cases | Orthogonality is proven on the OFF-DIAGONAL; the diagonal is where a derivation hides |
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
+| something was derived from a spec, and the spec has changed since | A DERIVED artifact goes stale the moment its source moves, and nothing re-runs to say so |
 | a test arm's input never actually differs between iterations | An obligation can be discharged by the TYPE, and then its test is a restatement |
 | you scoped someone's search, and they came back reporting that something is missing | A verification confirms WITHIN its scope and cannot see its scope |
 | a document explains that your concern is covered by some other rule, and you are satisfied | A DELEGATION is a claim about scope, and being talked out of a concern is not resolving it |
@@ -1007,6 +1008,38 @@ gives an implementer standing to push back with a citation rather than an opinio
 Ask it explicitly, every pass: **which correct implementations would this reject?** If the
 answer is "none I can think of," the enumerated open choices are what make that checkable rather
 than hopeful.
+
+### A DERIVED artifact goes stale the moment its source moves, and nothing re-runs to say so
+
+A machine-readable column was derived from a contract: for each row of evidence, whether the
+successor must match the frozen output or diverge from it, and **which contract rule mandates
+that divergence**. Carefully built, independently verified, red-proofed both ways.
+
+Then the contract grew a rule. The column could not name it — the rule did not exist when the
+column was derived — so rows already marked *diverge* now diverged for the **old** reason while
+the new rule's obligations went unrepresented. A checker asking only *does this differ?* passes
+them. **The row diverges for the reason recorded and violates the reason that is not.**
+
+Nothing in the system reports this. The column is present, well-formed, provenance-stamped, and
+consistent with the contract *as it stood*. Its lineage is accurate and its currency is not,
+and **lineage is what provenance stamps record.**
+
+So for anything derived from a moving source:
+
+- **Give it a freshness relation, not just a provenance stamp.** Pin the source revision *and*
+  make staleness detectable — a check that the derivation still reproduces, or a recorded
+  source identity a later gate can compare against. "Derived from X" is a fact about the past;
+  "still agrees with X" is the property you actually rely on.
+- **When the source grows, ask what was derived from it.** That question is nobody's job by
+  default, which is why the answer is usually *nothing was re-run*. A contract amendment should
+  carry a list of its dependents the way a schema change carries its consumers.
+- **Re-derive by a DIFFERENT method than the one that built it.** Running the original
+  generator again inherits its blind spots exactly — and a generator that has already been
+  caught mis-deriving one class has a demonstrated one.
+
+The sharper version of the defect: **"expect divergence" degrades into "expect anything but
+this."** A verdict that records only *that* something must differ, not *how*, cannot fail an
+implementation that differs wrongly — which is the whole population it exists to judge.
 
 ### An obligation can be discharged by the TYPE, and then its test is a restatement
 
