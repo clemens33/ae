@@ -2665,6 +2665,21 @@ Corollary for the reviewer: when you find one, **sweep for the class before fixi
 instance.** One invalidated premise is a bug; several mean the list itself is missing its
 freshness relation, and repairing the instances leaves the generator running.
 
+**The same family, running the other direction: a deferral whose CONDITION was satisfied.**
+Two accepted criteria carried arms deferred in terms — *this is not an arm until the real
+transport supplies a product-valid observation route.* The transport then landed. Nothing in
+either criterion changed, nothing announced it, and both gates still read as accepted;
+but two arms that had been legitimately absent became legitimately required, and an
+acceptance that was complete on Monday was incomplete on Tuesday without being edited.
+
+So a conditional obligation fails in both directions — its premise can be falsified, and its
+condition can be met — and neither event touches the document that records it. **A deferral
+is a promise about the future written in the present tense.** The repair is the same
+relation: recheck conditional predecessor evidence against the pinned *successor commit*
+rather than freezing it at the gate's authoring date. Note the cost is real and worth
+paying: firing those arms means a phase that looked finished is not. The alternative was an
+acceptance that had quietly stopped meaning what it said.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
