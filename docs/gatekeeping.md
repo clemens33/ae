@@ -30,6 +30,7 @@ invariant, not against the code.
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
 | you are accepting a delivery and have checked that it builds and behaves | Reviewing OUTCOMES is not reviewing INSTRUMENTS, and the outcomes are what you are shown |
 | a test constructs the marker, fixture, or list that its own conclusion rests on | If the TEST authors the instrument, it observes what the test believes |
+| you are about to trust a number, or you just found one that disagrees with another | Four depths of one confusion: grain, population, deciding field, and the generator itself |
 | you are escalating a question and have written down what you think the answer is | An escalation that carries its expected answer gets the frame confirmed, not examined |
 | you are about to report a count, or you have just been given one | A count can be honestly MEASURED over a population you narrowed without saying so |
 | your independent count disagrees with the figure you were asked to verify | Check that the field you COUNT BY has the same granularity as the thing you are counting |
@@ -1084,6 +1085,44 @@ Two corollaries earned the hard way:
   dependencies, no unsafe — were cited as closing an enumeration gap. They close *third-party*
   and *libc* routes. The gap was *unlisted safe-standard-library* routes, which neither touches.
   Check what a premise covers, not whether it holds.
+
+### Four depths of one confusion: grain, population, deciding field, and the generator itself
+
+The same error appeared four times in one project, at four different depths, and every instance
+produced **arithmetically perfect** numbers. It is worth naming as a sequence, because
+recognising the second instance did not prevent the third.
+
+1. **Wrong GRAIN.** A count keyed on a field stamped at *case* level while the obligation was
+   defined *by surface*. Real field, correctly populated, in the obvious place — 86 rows
+   inherited a property they did not have. The verifier nearly filed a disagreement.
+2. **Wrong POPULATION.** A figure reported as *45 of 91* over a population narrowed twice
+   without saying so: an unstated exclusion dropping 86 of 177, and a class assigned by a
+   path-shape proxy confirmed on two specimens. The measurement was honest; the denominator was
+   undeclared.
+3. **Wrong DECIDING FIELD.** The queried server was *inferred from a path shape* when another
+   captured file recorded it directly. Every number built on it was measured over a proxy for
+   the thing that decides — and the class most confidently labelled "established by a positive
+   marker" turned out to be established by a marker **about a different server**.
+4. **Inside the GENERATOR.** A per-candidate obligation gated on a case-level condition the
+   governing rules never required. This one emitted *nothing* rather than something wrong, so no
+   count moved and no gate fired. It surfaced only because two people counted a related thing
+   and disagreed.
+
+**The common shape: a fact about a container being read as a fact about its contents.** A case
+is not its rows. A corpus is not its P1 subset. A path prefix is not a recorded pointer. And a
+case-level failure is not a per-candidate one.
+
+Three things this sequence teaches that the individual instances do not:
+
+- **Recognising the class does not confer immunity.** Each instance was found *after* the
+  previous had been written up, by the people who wrote it up. The reviewer who documented the
+  granularity trap then matched `P1` as a substring and caught `P1-ADJACENT`.
+- **The deeper it goes, the quieter it gets.** A wrong grain produces a wrong number someone can
+  argue with. A wrong conditional in a generator produces *silence* — no record, no count, no
+  red — and silence has no reviewer.
+- **Ask which of the four you are at.** Before trusting any figure: is the field the deciding
+  one, is it at the right grain, is the population stated, and does the code that produced it
+  gate on something the rules do not require?
 
 ### An escalation that carries its expected answer gets the frame confirmed, not examined
 
