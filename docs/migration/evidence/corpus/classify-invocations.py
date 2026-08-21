@@ -23,8 +23,21 @@ OUT = os.path.join(HERE, "INVOCATIONS.tsv")
 # documentation — never inferred from which shape the argv wears.
 #   `ae next` usage text: "Read-only by default: prints ..."; --attach "jumps to
 #   that session: switch-client inside tmux, attach-session outside".
-READ_BINARY = {"list", "ls", "status", "next", "doctor"}
-READ_HELPER = {"requests", "agents", "events-tail"}
+# P1 IS ACCOUNTABLE FOR WHAT VISION NAMES (seat ruling). VISION:93 reads
+# "Read side: `list --json`, requests, events queries" — so list, its alias ls,
+# requests, and events-tail. Everything else that is a READ is P1-ADJACENT:
+# captured, frozen, kept, and NOT parity-gating for P1 entry.
+#
+# The reason is PHASE HYGIENE, not difficulty: a phase whose scope widens by
+# reasonable-sounding increments never closes, and "these are also reads" is
+# exactly such an increment. These are LABELS, not notes on a P1 label — a label
+# that disagrees with the ruling is the stale-pointer class.
+VISION_BINARY = {"list", "ls"}
+VISION_HELPER = {"requests", "events-tail"}
+ADJACENT_BINARY = {"status", "next", "doctor"}
+ADJACENT_HELPER = {"agents"}
+READ_BINARY = VISION_BINARY | ADJACENT_BINARY
+READ_HELPER = VISION_HELPER | ADJACENT_HELPER
 WRITE_MARKERS = [("next", "--attach"), ("doctor", "--refresh")]
 
 HOST_PREFIXES = [
@@ -68,8 +81,10 @@ def classify(norm):
     m = HOME_RE.sub(r"\2", norm) if "<AE_HOME>" in norm else None
     if "<AE_HOME>/sessions/" in norm:
         helper = norm.split("/sessions/", 1)[1].split("/", 1)[1].split()[0]
-        if helper in READ_HELPER:
-            return "P1", "helper:" + helper, "read surface; VISION:93 names requests/events queries"
+        if helper in VISION_HELPER:
+            return "P1", "helper:" + helper, "read surface NAMED by VISION:93 — parity-gating"
+        if helper in ADJACENT_HELPER:
+            return "P1-ADJACENT", "helper:" + helper, "a read, but not named by VISION:93 — not parity-gating"
         return "UNRESOLVED", "helper:" + helper, "helper not on the read list and not classifiable from argv alone"
     toks = norm.split()
     if not toks or toks[0] != "ae":
@@ -85,10 +100,12 @@ def classify(norm):
     for s_, flag in WRITE_MARKERS:
         if sub == s_ and flag in rest:
             return "P2", "ae " + sub + " " + flag, "performs an action beyond reporting"
-    if sub in READ_BINARY:
-        return "P1", "ae " + sub, "read surface"
+    if sub in VISION_BINARY:
+        return "P1", "ae " + sub, "read surface NAMED by VISION:93 — parity-gating"
+    if sub in ADJACENT_BINARY:
+        return "P1-ADJACENT", "ae " + sub, "a read, but not named by VISION:93 — not parity-gating"
     if sub.startswith("-"):
-        return "P1", "ae " + sub, "flag-only form of the read surface"
+        return "P1", "ae " + sub, "flag-only form of the named read surface"
     return "P2", "ae <session>", "session-name token is a launch candidate, a lifecycle surface"
 
 def main():

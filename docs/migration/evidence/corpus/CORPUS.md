@@ -88,11 +88,27 @@ never scope.
 
 `classify-invocations.py` partitions all 1424 consumer rows into `INVOCATIONS.tsv`:
 
-| phase | rows | surfaces |
-|---|---|---|
-| **P1 (read)** | 1414 | `ae list` 743, `helper:requests` 168, `ae status` 140, `ae next` 140, `ae ls` 116, `helper:agents` 62, `helper:events-tail` 38, `ae doctor` 7 |
-| **P2 (write)** | 10 | `ae next --attach` 6, `ae <session>` launch 4 |
-| **UNRESOLVED** | 0 | — |
+| phase | rows | surfaces | parity-gating for P1 entry? |
+|---|---|---|---|
+| **P1** | 1065 | `ae list` 743, `helper:requests` 168, `ae ls` 116, `helper:events-tail` 38 | **yes** |
+| **P1-ADJACENT** | 349 | `ae status` 140, `ae next` 140, `helper:agents` 62, `ae doctor` 7 | **no** — captured, frozen, kept |
+| **P2 (write)** | 10 | `ae next --attach` 6, `ae <session>` launch 4 | no — P2 parity inputs |
+| **UNRESOLVED** | 0 | — | — |
+
+**P1 is accountable for what VISION names** (seat ruling). VISION:93 reads "Read side: `list
+--json`, requests, events queries", so `list`, its alias `ls`, `requests` and `events-tail` gate
+P1 entry. The other reads are **P1-ADJACENT**: real reads, captured and frozen, but not gating.
+
+**The reason is phase hygiene, not difficulty.** A phase whose scope widens by reasonable-sounding
+increments never closes, and "these are also reads" is exactly such an increment. VISION drew the
+line; the ruling makes it explicit rather than letting it drift, so P1 closes on a named surface
+and P2 inherits the rest.
+
+**These are LABELS, not notes on a P1 label.** Leaving 349 rows classed `P1` with a caveat beside
+them would be a label that disagrees with the ruling — the stale-pointer class, where the text and
+the truth part company and only the text is machine-readable. Nothing is discarded and nothing is
+re-captured: all 1424 rows stay frozen, and the distinction is a column, so re-deciding costs a
+re-run rather than a rebuild.
 
 **Read/write is decided against the frozen script's own documented contract, never inferred from
 shape.** `ae next` is classed read because its usage text says "**Read-only by default**" and
@@ -101,13 +117,6 @@ scopes the action to `--attach` ("switch-client inside tmux, attach-session outs
 it is `>&2`, and `doctor_report` is a `printf`; `--refresh` is the write path and no corpus row
 uses it. **P2 rows are frozen and KEPT**, labelled P2 parity inputs — never deleted, never quietly
 dropped, for the same reason `twd-precursor` is frozen as out-of-scope.
-
-**A SCOPE GAP I AM FLAGGING RATHER THAN RESOLVING.** The ruling says reads are P1 inputs, and
-VISION:93 enumerates P1 as "`list --json`, requests, events queries" — which is **narrower than
-all reads**. `status`, `next`, `agents` and `doctor` are reads that the VISION line does not name.
-I have classed them P1 per the ruling, but whether P1 is accountable for reproducing them is a
-seat question, and the partition is a column so re-deciding it costs a re-run rather than a
-rebuild.
 
 ### Normalisation, and the two-sided proof
 
@@ -140,8 +149,8 @@ the circular self-test this programme has already been caught by once.
 ## 6. What this promotion does not claim
 
 - **It does not re-verify the captures.** They were seat-accepted; this records and pins them.
-- **It does not decide P1 SCOPE** (§5): reads outside VISION:93's three named surfaces are
-  classed P1 per the ruling and flagged for a seat.
+- **It does not decide P1 SCOPE.** The P1 / P1-ADJACENT line is a seat ruling recorded in §5, not
+  a worker judgment; this promotion applies it as a label.
 - **It does not assert that the corpus is sufficient for P1 parity.** It is complete, pinned and
   reconstructible; whether it *covers* the P1 surface is a coverage question against rows this
   worker does not read.
