@@ -29,6 +29,7 @@ invariant, not against the code.
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
 | you are accepting a delivery and have checked that it builds and behaves | Reviewing OUTCOMES is not reviewing INSTRUMENTS, and the outcomes are what you are shown |
+| a test constructs the marker, fixture, or list that its own conclusion rests on | If the TEST authors the instrument, it observes what the test believes |
 | you are escalating a question and have written down what you think the answer is | An escalation that carries its expected answer gets the frame confirmed, not examined |
 | you are about to report a count, or you have just been given one | A count can be honestly MEASURED over a population you narrowed without saying so |
 | your independent count disagrees with the figure you were asked to verify | Check that the field you COUNT BY has the same granularity as the thing you are counting |
@@ -1046,6 +1047,43 @@ explicitly:
 The reviewer here had written a checklist containing both of those steps **two hours earlier**,
 and skipped them on the next delivery. Knowing the hazard is not the mechanism; a checklist you
 do not run is a document about someone else.
+
+### If the TEST authors the instrument, it observes what the test believes
+
+Three separate criteria in one project failed the same way, with three different repairs and one
+diagnosis:
+
+- A test proving the renderer never reads the filesystem built a scratch directory, wrote
+  opposed files into it, and **never passed it to the invocation** — which received an in-memory
+  value. The opposed worlds were one value and a directory nothing read.
+- A test proving discovery completes before presentation called the first presentation
+  operation, **then appended a "presentation enter" marker to a test-local list.** Everything
+  that operation did happened before the marker and was invisible; a sort inserted inside it
+  passed.
+- A guard claiming a capability boundary enumerated eleven method names, and **the file itself
+  said it enumerated entry points** — while the criterion it served demanded a boundary. An
+  unlisted safe-standard-library call at the same entry point passed.
+
+In each, the observable was **constructed by the test out of what its author already believed**,
+rather than **emitted by the product at the boundary being claimed**. A test-authored marker
+records the test's model of the sequence. A test-held fixture records the test's model of the
+world. A hand-listed set of names records the test's model of the capability. All three are
+green when the model is right and green when the model is wrong.
+
+**The check: for each observable an argument rests on, ask who emits it.** If the answer is *the
+test does, at the point it thinks is correct*, the criterion is testing the author's
+understanding rather than the program's behaviour. A production-emitted trace, a type the
+product cannot construct incorrectly, a compiler-resolved rule — those are observations. A
+`Vec` the test appends to is narration.
+
+Two corollaries earned the hard way:
+
+- **A later log cannot establish an earlier sequence.** If the marker is written after the
+  operation returns, the operation is outside it, no matter what the marker says.
+- **A premise is not a boundary just because it is true.** Two real, checkable facts — no
+  dependencies, no unsafe — were cited as closing an enumeration gap. They close *third-party*
+  and *libc* routes. The gap was *unlisted safe-standard-library* routes, which neither touches.
+  Check what a premise covers, not whether it holds.
 
 ### An escalation that carries its expected answer gets the frame confirmed, not examined
 
