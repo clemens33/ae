@@ -8,6 +8,40 @@
 //! list addresses, and WHAT a completed run means — and the exec is a detail
 //! around them.
 //!
+//! # Handover: what exists here, and what the next slice must add
+//!
+//! **The pure half is done and proven.** Typed `Selector` to argv is here
+//! ([`server_args`], [`list_sessions_args`], [`marker_args`]); completed-run
+//! interpretation is here ([`interpret_sessions`], [`interpret_marker`]), with
+//! the exit status deciding and the payload bytes never doing so. Both halves
+//! are exercised against two REAL isolated tmux servers — one `-L` named, one
+//! `-S` socket — each answering only with its own session, plus a real
+//! `AE_SESSION` round trip and a socket-that-is-not-a-server failure arm. See
+//! `tests/it/phase2.rs`, criterion 20.
+//!
+//! **The missing piece is exactly one thing: THE EXEC.** Nothing here spawns,
+//! because `clippy.toml` denies `std::process::Command` outside two pinned test
+//! doors and the library keeps that boundary. So a real transport is one
+//! deliberate crossing — a third door, enumerated like the others — and NOT a
+//! rewrite: the decisions that can be wrong (which server an argument list
+//! addresses, what a completed run means) already live in this module and are
+//! already tested.
+//!
+//! **What that unlocks, in order:**
+//!
+//! * SC-017k/SC-017l — session liveness stops being universally `unknown`,
+//!   because [`interpret_sessions`] finally receives a real answer.
+//! * SC-017p/SC-017q — per-agent liveness. This module does NOT yet derive
+//!   panes: `list-panes` argv and its interpretation are the next functions to
+//!   write here, and they need the same treatment — exact association to a
+//!   roster slot, and ambiguity routed to `unknown` rather than to `dead`.
+//! * SC-017o — an entitled server that can actually be enumerated stops
+//!   counting as a failed source, so `inventory_complete` stops being false on
+//!   every machine that records a server.
+//!
+//! Until then [`crate::run`]'s transport fails every query by construction, and
+//! every one of those three surfaces reports the honest `unknown`.
+//!
 //! # Why the exit status decides and the bytes do not
 //!
 //! **SC-017k** grants `running`/`stopped` only to a SUCCESSFUL query, and

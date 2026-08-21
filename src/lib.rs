@@ -220,6 +220,14 @@ fn current_world(root: &std::path::Path) -> listing::World {
 /// and that boundary is worth more than a premature transport. The consequence
 /// is honest: SC-017l routes an unanswerable query to `unknown`, never to
 /// `stopped` and never to absence.
+///
+/// **This is the seam the real transport replaces, and it is the only one.**
+/// [`crate::tmux`] already holds the argv derivation and the completed-run
+/// interpretation, proven against real isolated servers; what is missing is the
+/// exec. Read that module's handover section before building it — including why
+/// a successful EMPTY query and a failed one must never collapse here, which is
+/// the difference between every session reading `unknown` and every session
+/// reading `stopped`.
 struct NoTransport;
 
 impl inventory::Discovery for NoTransport {
