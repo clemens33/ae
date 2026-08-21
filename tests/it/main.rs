@@ -8,3 +8,4 @@ mod cli;
 mod fixtures;
 mod parity;
 mod parity_self_test;
+mod phase2;

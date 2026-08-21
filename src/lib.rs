@@ -26,6 +26,8 @@
 //! | [`digest`] | SC-509, SC-509b, SC-506 — the versioned document that always closes, and says when it lost something |
 //! | [`filters`] | SC-017a–f, SC-017i, SC-521, SC-523, SC-524 — which sessions a listing shows |
 //! | [`inventory`] | SC-017j, SC-404 — which sessions EXIST, before anything asks whether they run |
+//! | [`liveness`] | SC-017k, SC-017l — what ae knows about running, and what it says when it cannot tell |
+//! | [`tmux`] | SC-017k — which server an argument list addresses, and what a completed run means |
 //! | [`session`] | SC-017e, SC-017g, SC-405d/f/g/i/j/k, SC-518, SC-520, SC-980 — what a session directory establishes, and what it must be told |
 //! | [`listing`] | SC-017f, SC-017h, SC-509, SC-506 — the two renderings of one selection, and the injected world they read |
 //! | [`cli`] | SC-021, and the argv half of SC-017a–i / SC-521a/b — which word is `list`, and which parser owns its flags |
@@ -56,9 +58,11 @@ pub mod filters;
 pub mod inventory;
 pub mod json;
 pub mod listing;
+pub mod liveness;
 pub mod meta;
 pub mod session;
 pub mod time;
+pub mod tmux;
 
 use std::io::Write;
 
@@ -380,7 +384,13 @@ mod tests {
         let value = crate::json::parse(rendered.trim_end()).expect("one complete document");
         assert_eq!(
             value.get("schema_version"),
-            Some(&crate::json::Value::Num(1))
+            Some(&crate::json::Value::Num(crate::digest::SCHEMA_VERSION)),
+            "SC-509d: every successor digest is version 2"
+        );
+        assert_eq!(
+            value.get("inventory_complete"),
+            Some(&crate::json::Value::Bool(true)),
+            "SC-017o: and every successor digest carries the completeness fact"
         );
     }
 

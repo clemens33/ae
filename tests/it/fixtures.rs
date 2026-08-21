@@ -121,7 +121,7 @@ fn sc_510d_the_documented_escape_set_decodes_and_re_encodes() {
     // And back out again: a digest carrying this text stays one parseable line.
     let mut entry = SessionEntry::new("s", Status::Running);
     entry.goal = Some(summary.to_owned());
-    let rendered = Digest::new(now(), vec![entry]).render();
+    let rendered = Digest::new(now(), vec![entry], true).render();
     assert!(
         !rendered.contains('\n'),
         "no raw newline reaches the document"
@@ -509,7 +509,7 @@ fn sc_506_and_509b_one_damaged_session_degrades_alone_and_the_document_closes() 
     assert!(sessions[1].degraded);
     assert!(!sessions[2].degraded);
 
-    let rendered = Digest::new(now(), sessions).render();
+    let rendered = Digest::new(now(), sessions, true).render();
     let value = json::parse(&rendered).expect("a complete, parseable document");
     let Some(json::Value::Arr(entries)) = value.get("sessions") else {
         panic!("sessions must be an array");
@@ -552,9 +552,12 @@ fn sc_509_and_017f_the_digest_carries_exactly_what_the_filters_selected() {
     .cloned()
     .collect();
 
-    let rendered = Digest::new(now(), selected).render();
+    let rendered = Digest::new(now(), selected, true).render();
     let value = json::parse(&rendered).expect("one document");
-    assert_eq!(value.get("schema_version"), Some(&json::Value::Num(1)));
+    assert_eq!(
+        value.get("schema_version"),
+        Some(&json::Value::Num(ae::digest::SCHEMA_VERSION))
+    );
     assert_eq!(value.get_str("generated_at"), Some("2026-05-29T14:00:00Z"));
     let Some(json::Value::Arr(entries)) = value.get("sessions") else {
         panic!("sessions must be an array");

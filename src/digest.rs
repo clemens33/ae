@@ -22,8 +22,18 @@ use crate::attention::Reason;
 use crate::json::Value;
 use crate::time::Timestamp;
 
-/// The `schema_version` SC-509 publishes. Consumers gate on it.
-pub const SCHEMA_VERSION: i64 = 1;
+/// The `schema_version` every SUCCESSOR digest publishes — **SC-509d**.
+///
+/// Version 2, because `sessions[].status` gained `unknown`. A new value in an
+/// existing field is a consumer-visible contract change even though the field
+/// name, JSON type and position are unchanged: a consumer that gated on the
+/// two-value domain breaks on the third. Versioning is the gate, and this is the
+/// same change that made [`Status::Unknown`] constructible — earlier would
+/// version a domain nothing could produce, later would ship the break.
+///
+/// SC-509 remains the true frozen-bash version-1 contract; it is not rewritten
+/// after the fact, and this crate has no path that emits version 1.
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Whether a session is running, stopped, or not established either way.
 ///
@@ -41,13 +51,13 @@ pub enum Status {
     /// query failed, or ownership evidence was missing. It is NOT stopped and
     /// NOT absence.
     ///
-    /// **`SCHEMA_VERSION` stays 1 here deliberately.** A new enum value in an
-    /// existing field is NOT backward-compatible even though the field shape is
-    /// unchanged: a consumer that gated on `status` being one of two spellings
-    /// breaks on a third. No code path can construct this variant yet — nothing
-    /// wires enumeration — so no document can carry it and no consumer can see
-    /// it. The schema must move to version 2 in the SAME change as the first
-    /// code that can actually construct `Unknown`.
+    /// **The schema moved to version 2 with this variant's first constructor**
+    /// — SC-509d, and [`SCHEMA_VERSION`] carries the reasoning. A new enum value
+    /// in an existing field is NOT backward-compatible even though the field
+    /// shape is unchanged: a consumer that gated on `status` being one of two
+    /// spellings breaks on a third. The variant existed, unreachable, for
+    /// exactly one phase before [`crate::liveness::classify`] could produce it;
+    /// declaring it was never the boundary, constructing it was.
     ///
     /// Orthogonal to [`SessionEntry::degraded`]: `degraded` means record facts
     /// were LOST, `Unknown` means liveness was NOT ESTABLISHED. Either, both, or
@@ -241,19 +251,42 @@ pub struct Digest {
     pub generated_at: Timestamp,
     /// The sessions the active filters selected (SC-017f).
     pub sessions: Vec<SessionEntry>,
+    /// **SC-017o** — whether every SC-017j enumeration completed.
+    ///
+    /// `true` means zero required enumeration losses; `false` means one or more.
+    /// Emitted in EVERY document including an empty one, because that is the
+    /// case where it carries the most: "no sessions" and "no sessions, and I
+    /// could not look everywhere" are different snapshots, and only one of them
+    /// is evidence of absence.
+    ///
+    /// Not conditional on anything. A field that appears only when something
+    /// went wrong is a field consumers cannot gate on.
+    pub inventory_complete: bool,
 }
 
 impl Digest {
-    /// A digest of `sessions`, stamped `generated_at`.
+    /// A digest of `sessions`, stamped `generated_at`, carrying SC-017o's
+    /// completeness fact.
     ///
     /// The stamp is a parameter rather than a clock read: a document whose
     /// content depends on the wall clock cannot be asserted byte-for-byte, and
     /// a snapshot format is exactly the thing worth asserting byte-for-byte.
+    ///
+    /// `inventory_complete` is a parameter for the same reason it is not
+    /// derived from `sessions`: an incomplete snapshot can hold any number of
+    /// sessions, including all of them, and a document that inferred
+    /// completeness from what it happened to contain would assert exactly the
+    /// thing nobody established.
     #[must_use]
-    pub fn new(generated_at: Timestamp, sessions: Vec<SessionEntry>) -> Self {
+    pub fn new(
+        generated_at: Timestamp,
+        sessions: Vec<SessionEntry>,
+        inventory_complete: bool,
+    ) -> Self {
         Self {
             generated_at,
             sessions,
+            inventory_complete,
         }
     }
 
@@ -267,6 +300,10 @@ impl Digest {
                 "sessions",
                 Value::Arr(self.sessions.iter().map(SessionEntry::to_json).collect()),
             ),
+            // SC-017o, appended AFTER SC-509's documented set, exactly as
+            // SC-509b's `degraded` is appended inside a session object: the
+            // documented order survives intact as this object's prefix.
+            ("inventory_complete", Value::Bool(self.inventory_complete)),
         ])
     }
 
@@ -281,8 +318,9 @@ impl Digest {
     /// let digest = Digest::new(
     ///     Timestamp::from_epoch(0),
     ///     vec![SessionEntry::new("my-feature", Status::Running)],
+    ///     true,
     /// );
-    /// assert!(digest.render().starts_with(r#"{"schema_version":1,"#));
+    /// assert!(digest.render().starts_with(r#"{"schema_version":2,"#));
     /// ```
     #[must_use]
     pub fn render(&self) -> String {
@@ -341,6 +379,7 @@ mod tests {
         Digest::new(
             Timestamp::parse("2026-05-29T14:00:00Z").expect("the documented stamp"),
             vec![session],
+            true,
         )
     }
 
@@ -348,7 +387,7 @@ mod tests {
     fn sc_509_renders_the_documented_example_field_for_field() {
         let rendered = documented_example().render();
         let expected = concat!(
-            r#"{"schema_version":1,"generated_at":"2026-05-29T14:00:00Z","sessions":[{"#,
+            r#"{"schema_version":2,"generated_at":"2026-05-29T14:00:00Z","sessions":[{"#,
             r#""name":"my-feature","status":"running","#,
             r#""mode":"local","origin":"/…","work_dir":"/…","#,
             r#""goal":"ship the login flow","goal_set_epoch":1779990000,"#,
@@ -356,7 +395,7 @@ mod tests {
             r#""needs_attention":true,"attention":"blocked","attention_rank":3,"#,
             r#""agents":[{"ref":"claude:lead","alias":"claude","name":"lead","#,
             r#""session_id":"e795c9e9","alive":true,"state":"blocked","reason":"blocked"}]"#,
-            r#"}]}"#
+            r#"}],"inventory_complete":true}"#
         );
         assert_eq!(rendered, expected);
     }
@@ -449,6 +488,7 @@ mod tests {
                 SessionEntry::degraded("unreadable", Status::Running),
                 SessionEntry::new("good-two", Status::Stopped),
             ],
+            true,
         );
         let rendered = digest.render();
         let value = json::parse(&rendered).expect("a complete, parseable document");
@@ -512,7 +552,7 @@ mod tests {
         // A goal is free text a human typed. It reaches a JSON emitter.
         let mut session = SessionEntry::new("s", Status::Running);
         session.goal = Some("ship \"it\"\nnow\ttoday\\".to_owned());
-        let rendered = Digest::new(Timestamp::from_epoch(0), vec![session]).render();
+        let rendered = Digest::new(Timestamp::from_epoch(0), vec![session], true).render();
         assert!(
             rendered.contains(r#""goal":"ship \"it\"\nnow\ttoday\\""#),
             "{rendered}"
@@ -538,6 +578,7 @@ mod tests {
                 "a\"},{\"name\":\"injected",
                 Status::Running,
             )],
+            true,
         );
         let value = json::parse(&digest.render()).expect("one document");
         let Some(json::Value::Arr(sessions)) = value.get("sessions") else {
@@ -548,10 +589,13 @@ mod tests {
 
     #[test]
     fn an_empty_digest_is_still_a_versioned_document() {
-        let rendered = Digest::new(Timestamp::from_epoch(0), Vec::new()).render();
+        let rendered = Digest::new(Timestamp::from_epoch(0), Vec::new(), true).render();
         assert_eq!(
             rendered,
-            r#"{"schema_version":1,"generated_at":"1970-01-01T00:00:00Z","sessions":[]}"#
+            concat!(
+                r#"{"schema_version":2,"generated_at":"1970-01-01T00:00:00Z","sessions":[],"#,
+                r#""inventory_complete":true}"#
+            )
         );
     }
 }

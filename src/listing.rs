@@ -46,6 +46,8 @@
 
 use crate::digest::{Digest, SessionEntry};
 use crate::filters::ListArgs;
+use crate::liveness::Snapshot;
+use crate::session::SessionRuntime;
 use crate::time::Timestamp;
 
 /// The facts a listing needs that no session directory holds.
@@ -59,13 +61,67 @@ pub struct World {
     pub now: Timestamp,
     /// Every session known to the caller, before any filter runs.
     pub sessions: Vec<SessionEntry>,
+    /// **SC-017o** — whether every enumeration behind `sessions` completed.
+    ///
+    /// A property of the SNAPSHOT, not of the selection: filtering changes which
+    /// sessions are shown and can never change whether ae managed to look
+    /// everywhere. It therefore passes through [`render`] untouched, and every
+    /// filter's document carries the same answer.
+    pub inventory_complete: bool,
 }
 
 impl World {
-    /// A world of `sessions` as of `now`.
+    /// A world of `sessions` as of `now`, from a COMPLETE enumeration.
     #[must_use]
     pub fn new(now: Timestamp, sessions: Vec<SessionEntry>) -> Self {
-        Self { now, sessions }
+        Self {
+            now,
+            sessions,
+            inventory_complete: true,
+        }
+    }
+
+    /// The same world, with SC-017o's completeness fact stated explicitly.
+    #[must_use]
+    pub fn with_completeness(mut self, inventory_complete: bool) -> Self {
+        self.inventory_complete = inventory_complete;
+        self
+    }
+}
+
+/// The world a classified snapshot describes — the phase-2 wiring.
+///
+/// One entry per classified candidate, in snapshot order, carrying SC-017o's
+/// completeness fact forward. This is where SC-509's session-level fields are
+/// read: [`crate::liveness`] classifies liveness from phase-1 facts alone and
+/// touches no file, and the digest still needs `mode`/`origin`/`goal`/`agents`,
+/// which live only in the session directory.
+///
+/// A tmux-only candidate has no directory to read, so it is SC-509b `degraded`
+/// by construction — SC-017j: "a positively live tmux-only candidate remains
+/// visible; loss of its durable record is the separate SC-509b `degraded`
+/// fact". It is the one case where the flag is decided without a read, because
+/// there is nothing to read.
+#[must_use]
+pub fn world_of(snapshot: &Snapshot, now: Timestamp, unanswered_secs: i64) -> World {
+    let sessions = snapshot
+        .sessions
+        .iter()
+        .map(|classified| match &classified.candidate.durable {
+            Some(record) => crate::session::entry_for(
+                &record.path,
+                &record.name,
+                &SessionRuntime::new(classified.status),
+                now,
+                unanswered_secs,
+            ),
+            None => SessionEntry::degraded(&classified.candidate.name, classified.status),
+        })
+        .collect();
+    World {
+        now,
+        sessions,
+        inventory_complete: snapshot.complete(),
     }
 }
 
@@ -105,6 +161,9 @@ pub fn render(args: &ListArgs, world: &World) -> String {
         let mut out = Digest::new(
             world.now,
             selected.into_iter().cloned().collect::<Vec<SessionEntry>>(),
+            // Carried, never derived from the selection: a filter cannot make an
+            // incomplete enumeration complete.
+            world.inventory_complete,
         )
         .render();
         // The newline is a stdout convention, not part of SC-509's object —
@@ -227,6 +286,7 @@ mod tests {
                 .into_iter()
                 .filter(|session| session.status == Status::Running)
                 .collect(),
+            world().inventory_complete,
         )
         .render();
         assert_eq!(rendered, format!("{expected}\n"));
@@ -335,8 +395,16 @@ mod tests {
     fn sc_521a_an_empty_intersection_is_still_a_complete_document() {
         // SC-506/SC-509: selecting nothing produces a document, not silence.
         let value = json_of(&["--stopped", "--needs-attn", "--json"]);
-        assert_eq!(value.get("schema_version"), Some(&json::Value::Num(1)));
+        assert_eq!(
+            value.get("schema_version"),
+            Some(&json::Value::Num(crate::digest::SCHEMA_VERSION))
+        );
         assert_eq!(value.get("sessions"), Some(&json::Value::Arr(vec![])));
+        assert_eq!(
+            value.get("inventory_complete"),
+            Some(&json::Value::Bool(true)),
+            "SC-017o: an empty SELECTION is not an incomplete enumeration"
+        );
     }
 
     #[test]
@@ -585,7 +653,9 @@ mod tests {
         let empty = World::new(NOW, Vec::new());
         assert_eq!(
             render(&args(&["--json"]), &empty),
-            format!("{{\"schema_version\":1,\"generated_at\":\"{NOW}\",\"sessions\":[]}}\n")
+            format!(
+                "{{\"schema_version\":2,\"generated_at\":\"{NOW}\",\"sessions\":[],\"inventory_complete\":true}}\n"
+            )
         );
     }
 }
