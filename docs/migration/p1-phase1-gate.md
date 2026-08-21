@@ -177,12 +177,16 @@ misreading.
     three. Representation is open; one-to-one join semantics are not.
 
 21. **SOURCE MEMBERSHIP AND RECORD-READ LOSS ARE INDEPENDENT FACTS.** Construct (a) a tmux-only
-    candidate with no durable state and (b) a durable-directory candidate whose meta read
-    demonstrably fails. Observe the phase-1 carrier before classification. It must distinguish
-    durable-source presence, live-source presence, and durable-record read outcome so SC-509b can
-    later derive degradation without re-running discovery. FAIL if both fixtures collapse to one
-    undifferentiated `no readable meta` state, if source provenance is lost, or if read failure is
-    inferred from absence of live evidence. Exact enum/field representation is an *OPEN CHOICE*.
+    candidate with no durable state, (b) a durable-directory candidate with readable meta whose
+    selector keys are absent, (c) a durable-directory candidate whose meta is absent, and (d) a
+    durable-directory candidate whose meta read demonstrably fails. Observe the phase-1 carrier
+    before classification. It must distinguish durable-source presence, live-source presence, and
+    durable-record read outcome so SC-509b can later derive degradation without re-running
+    discovery. Fixtures (b), (c), and (d) all normalize the selector to SC-405l `missing`; only
+    their independent record-read facts differ. FAIL if (c) or (d) collapses into (b), if (a)
+    collapses into any durable-source fixture, if source provenance is lost, or if read failure is
+    inferred from selector state or absence of live evidence. Exact enum/field representation is
+    an *OPEN CHOICE*.
 
 22. **THE COMPLETE UNION CROSSES THE BOUNDARY BEFORE CLASSIFICATION.** Phase 1 must expose a
     standalone inventory operation over raw durable/live discovery facts; it must not accept a
@@ -197,10 +201,14 @@ misreading.
 23. **SC-405l SELECTOR NORMALIZATION IS A DISCRIMINATING MATRIX.** Unit-test the normalized
     server fact with opposed inputs: `name` + nonempty value -> positive name; `socket` +
     nonempty absolute path -> positive socket; explicit `ambiguous` -> ambiguous; kind ABSENT +
-    nonempty value -> legacy positive name; both selector fields absent/empty -> missing. Test
-    invalid combinations separately: unknown kind, typed empty value, relative socket,
+    nonempty value -> legacy positive name; each of the four readable combinations of kind
+    absent/empty x value absent/empty -> missing; meta absent -> missing; meta genuinely
+    unreadable -> missing. The readable missing group and the two record-loss fixtures must agree
+    on selector state while criterion 21 proves their record-read facts remain distinct. Test
+    invalid combinations separately: unknown kind, positive typed kind with empty value, relative socket,
     present-but-empty kind beside a nonempty value, duplicate equal keys, and duplicate
     conflicting keys must all be ambiguous. The absent-kind and present-empty-kind fixtures must
     differ by construction. FAIL if any candidate disappears, any invalid form becomes positive,
-    name/socket payloads lose their type, or a missing/ambiguous form enters the queried-server
-    set. Whether malformed forms also set `degraded` is outside this criterion (SC-405e/SC-509b).
+    name/socket payloads lose their type, unreadable/absent meta falls outside the typed selector
+    domain, or a missing/ambiguous form enters the queried-server set. Whether malformed readable
+    selector forms also set `degraded` is outside this criterion (SC-405e/SC-509b).
