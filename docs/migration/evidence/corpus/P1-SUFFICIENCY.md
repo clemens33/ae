@@ -169,3 +169,84 @@ and no unreachable-server listing is scored a match**. Red-proofed: flipping one
 
 **No assertions are written.** There is nothing to assert against, and that is the point.
 
+---
+
+## 8. Extension to SC-400d (two durable layouts) and SC-405l (typed server selector)
+
+Same three-answer discipline: **present**, **absent**, or **unobservable**. Both rows are bucket 2,
+conflict none.
+
+### 8.1 SC-400d — worktree-nested durable sessions: **ABSENT, zero**
+
+> "a durable candidate is a state directory at either `<AE_HOME>/sessions/<session-name>/`
+> (canonical) or `<AE_HOME>/worktrees/<worktree-name>/.ae/<session-name>/` (legacy worktree-nested)"
+
+**No path matching the legacy shape exists anywhere in the corpus** — not in the 177 case
+manifests, not in the template `fixture-bytes` trees. Measured both ways.
+
+Exactly **one** case, `arms/D/d02-requests-vs-reply-writer-barrier`, contains a `./worktrees`
+directory at all, and it has **zero entries beneath it**. SC-400d disposes of that case by name:
+
+> "A bare worktree directory without the nested state directory is not a session candidate."
+
+So the follow-up question — whether any inner leaf differs from its outer worktree name, which is
+what separates the general shape from the narrow one — **does not arise**: there are no nested
+state directories to compare. **P1 parity would never exercise the second layout: 0 of 1065 rows.**
+
+Two consequences worth separating from the count:
+
+- The row's **anti-deduplication clause** is equally unexercised — "the root-qualified state
+  directory is its discovery identity/provenance, so equal leaves across paths never deduplicate
+  candidates." The corpus contains no two candidates with equal leaves from different roots, so
+  nothing in it can distinguish a correct implementation from one keyed on the leaf alone.
+- The phase-1 gate's **criterion 2 requires exactly this fixture** ("one valid durable candidate
+  under the canonical sessions root and one under the ratified legacy-readable worktree layout").
+  That is a Rust test rather than a corpus parity row, so the gate is not blocked by this absence —
+  but no corpus row will ever corroborate it.
+
+### 8.2 SC-405l — selector states: **one of four exercised**
+
+> "every durable candidate exposes exactly one of `positive(name:<nonempty>)`,
+> `positive(socket:<absolute-path>)`, `missing`, or `ambiguous`"
+
+| state | corpus | evidence |
+|---|---|---|
+| `positive(socket)` | **77 fixture metas — all of them** | every `tmux_server_kind` in the entire corpus is `socket`, 130 occurrences, no exceptions; values are absolute `/tmp/aecx/tpl/*/s.sock` |
+| `positive(name)` | **ZERO** | no `kind=name`, and no kind-absent-with-nonempty-value legacy form |
+| `missing` | **ZERO in this row's sense** — see below | no readable meta lacks the selector |
+| `ambiguous` | **ZERO, in all six named sub-states** | no unknown kind, no typed empty value, no non-absolute socket, no present-empty kind beside a nonempty value, no duplicate/conflicting keys, no explicit `kind=ambiguous` |
+
+**The `missing` answer needs care, and it is a different third answer than the ownership marker
+was.** The corpus does contain two fixtures where the selector cannot be read —
+`templates/A9/.../meta-absent` (meta removed by a named mutation, removed bytes preserved) and
+`templates/G3/.../meta-mode-000` (meta present but unreadable at its stored mode), together
+exercised by 15 cases and **68 list-or-ls rows**. But that is the **record-unreadable** class, which
+SC-405l explicitly hands to another row — "Whether malformed selector bytes also mark the record
+`degraded` remains SC-405e/SC-509b's separate question" — whereas its own `missing` state describes
+**a readable record whose selector is absent or empty**: "A selector with no value and no nonempty
+kind is `missing`."
+
+**Whether an unreadable record yields `missing` or falls outside SC-405l entirely is not stated by
+the row, and I am not deciding it.** Flagged as a seat question, because it determines whether those
+68 rows exercise `missing` or nothing.
+
+Contrast with the earlier ownership-marker finding, which was **unobservable** — the corpus never
+captured the marker, so it could not answer in either direction. These states are **absent**: the
+corpus could have recorded them and no fixture ever constructed one. Absence is the weaker gap of
+the two, because it can be closed by building a fixture; unobservability could not be closed even
+in principle without re-capturing.
+
+### 8.3 Verdict movement: **NONE**
+
+Census before and after is identical — 492 `EXPECTED-MATCH`, 172 `SC-017l/m`, 305 `SC-509d`, 96
+both. Checked rather than assumed, and the reason is structural: `VERDICTS.tsv` keys on **what the
+output carries** (a status field, the machine digest) and on **whether the case's server was
+reachable**. Neither SC-400d nor SC-405l changes an emitted value — both define *reading*.
+
+One positive interaction worth recording. SC-405l **independently corroborates** the existing
+`SC-017l/m` verdicts rather than altering them: every corpus selector is `positive(socket)`, so
+entitlement is conferred, and the divergence on those 268 rows comes from the **server being
+unreachable** rather than from any selector defect. Had the corpus been full of `missing` or
+`ambiguous` selectors, the same rows would still diverge but for a different reason — and the
+verdict column would have needed a second mandating row. It does not.
+
