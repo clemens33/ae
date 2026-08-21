@@ -2805,6 +2805,57 @@ fact, and when review rejects a draft, **keep the rejected version as a comment 
 fix** — the wrong version looked right, and the next author will reach for it again unless
 they can see why it fails.
 
+### A STATED precondition is a hole; a MEASURED one is a closed bound
+
+A locator had to identify a field inside a rendered row. Two ways to fool it were found, both
+reachable in principle: a tab inside an upstream field shifts the offset, and a session row
+can be made to imitate an agent row because the only discriminator is a two-space prefix.
+
+The natural repair is to write the preconditions down — *assumes no tab in that field;
+assumes no name begins with two spaces* — and ship. That is honest, and it is still a hole:
+a commitment carrying unenforced preconditions hands every downstream consumer a defect they
+did not agree to, and the gate that consumes it inherits a mis-comparison rather than a
+failure.
+
+The better repair costs almost nothing: **measure whether the precondition is violable in the
+actual population.** The corpus is frozen; both questions are greppable. If no row anywhere
+contains the offending shape, the same sentence stops being an assumption and becomes a
+*measured bound for this run* — and if one does, you have found a real block instead of
+documenting it.
+
+**Same words, different epistemic status, decided by one grep.** When a finding's severity
+turns on reachability, measuring reachability is almost always cheaper than the argument
+about it — and unlike the argument, it terminates. Prefer it over both the confident dismissal
+and the cautious caveat.
+
+Two riders. Prefer a locator **robust by construction** over one **correct by precondition**
+even when both measure clean — here, indexing from the END of the row meant extra fields
+appear upstream of the target and the offset still lands, which kills the mechanism rather
+than its current instances. And file the defect anyway: unreachable in *this* population is
+not the same as fixed, and the next population is not frozen.
+
+### A COMMITMENT is not a RATIFICATION — and the artifact must say which it is
+
+The module being described declared, in its own comments, that its layout was **provisional
+and unratified**: those bytes were a seat decision to be informed by parity evidence. The
+parity gate *is* that evidence. So pinning the layout in a pre-registered manifest, before the
+gate runs, pins the very thing the gate was supposed to inform.
+
+The resolution is a distinction, not a compromise: the manifest states **what the successor
+currently emits** (a commitment), not **what it must emit** (a ratification). A commitment
+about present behaviour cannot pre-empt a later decision about required behaviour, so the
+circularity dissolves.
+
+**But the artifact's FORM argues against its status.** A pinned, hash-identified byte map
+*looks* ratified — that is what pinned byte maps usually are. A reader six months out finds it,
+reads it as settled layout, and the gate has quietly decided the question it existed to
+inform. The distinction lived in a message between two agents and nowhere in the file.
+
+So when a pre-registration artifact records current behaviour rather than required behaviour,
+**say so inside the artifact**, in those terms. The rule generalises past manifests: any
+document whose form implies more authority than its content claims must disclaim the
+difference where it will be read, not where it was decided.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
