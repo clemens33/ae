@@ -296,7 +296,14 @@ successful query of its recorded tmux server returns the exact session name with
 positive ae-ownership evidence; it is `stopped` only when a successful query of that
 same server proves the exact name absent. For a candidate sourced solely from a live
 tmux discovery, that successful discovery query is the positive server fact for this
-snapshot; it does not fabricate a durable server record. Ambient-server membership,
+snapshot; it does not fabricate a durable server record. A positively owned exact-name live
+sighting that SC-017j coalesces with exactly one durable candidate came from a successful
+query of that candidate's recorded server. It remains the positive server fact for that
+snapshot after coalescence, exactly as for a tmux-only candidate: the dual-provenance
+candidate is `running` without requiring another liveness query. A later or redundant
+query may not retroactively replace that accepted snapshot fact; changed liveness is
+observed by a fresh inventory/classification snapshot. A dual candidate without that
+matched sighting follows the ordinary durable-candidate query rule. Ambient-server membership,
 prefix success, and the renderer block that happened to print the row are not liveness
 facts. Implementations MAY group candidates by recorded server and query each server
 once; every candidate's answer must still come from its own server and exact name. IS at
