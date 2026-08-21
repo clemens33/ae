@@ -112,6 +112,27 @@ jobs:
           echo "CARGO_INSTALL_ROOT=$RUNNER_TEMP/ci-tools" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/ci-tools/bin" >> "$GITHUB_PATH"
 
+      # tmux is a TEST dependency, not a build one: SC-017k's liveness proof runs
+      # two isolated real tmux servers (one -L named, one -S socket) and asserts
+      # each answers with only its own sessions. Those tests PANIC with a stated
+      # reason when tmux is absent rather than skipping — a silent skip would let
+      # the strongest evidence in the phase-2 gate quietly stop running while the
+      # suite still reported green, which is the failure this project has now hit
+      # three times in other forms.
+      #
+      # Installed explicitly on both platforms rather than relied on: a runner
+      # image that happens to ship tmux today is not a contract, and discovering
+      # its absence as a red gate months from now costs more than one line here.
+      - name: Install tmux (test dependency)
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends tmux
+          else
+            brew list tmux >/dev/null 2>&1 || brew install tmux
+          fi
+          tmux -V
+
       # rustup is preinstalled on GitHub runners. The toolchain, its components
       # and its targets all come from rust-toolchain.toml — the same file the
       # laptop resolves — so CI cannot silently drift onto another compiler.
