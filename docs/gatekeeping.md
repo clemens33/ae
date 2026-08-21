@@ -25,6 +25,7 @@ invariant, not against the code.
 | you filtered a tool's output to the fields you expected to change | Your probe's SCOPE decides the finding, and you chose that scope from expectation |
 | you are claiming a body of evidence covers some condition | A condition that was never CAPTURED cannot later be shown to have been ABSENT |
 | a coverage count came back healthy and nobody has re-derived it | A measurement error that produces COMFORT gets used; one that produces alarm gets checked |
+| you are about to write acceptance criteria now that the diff has arrived | If a judgement must be INDEPENDENT of a thing, it has to be made BEFORE that thing exists |
 | your independent cross-check disagrees and you are about to adjust the cross-check | Fixing an instrument and TUNING it produce identical diffs |
 | you added a variant to a closed set, fixed everything the compiler flagged, and it went green | A type-system guarantee has a precise scope; the confidence it creates does not |
 | a number or pointer kept in two places has silently disagreed | Hand-maintained redundancy, of which stale pointers are one instance |
@@ -854,6 +855,34 @@ operation that can falsify a count, and it is the one a comfortable number never
 Its converse is the strongest argument for the check: a parity suite that verified only the
 512 rows expected to match **would pass a binary that faithfully reproduced every defect it
 was built to catch.** Coverage counted over the cases that agree is not coverage.
+
+### If a judgement must be INDEPENDENT of a thing, it has to be made BEFORE that thing exists
+
+Two decisions in one session ran into the same trap, from opposite directions.
+
+**First:** a per-row expected-outcome column was deferred until the implementation existed,
+on the reasoning that a divergence assertion needs something to assert against. But the
+column was meant to be **pre-registered**, and a verdict computed after the code exists is a
+verdict that had the opportunity to be shaped by what the code turned out to do. Waiting
+would have destroyed the exact property the column existed to provide.
+
+**Second:** acceptance criteria for a build were about to be written when the diff arrived —
+the natural moment, because that is when the work is concrete. It is also the moment they
+stop being independent. You read the implementation, the implementation suggests what to
+check, and the checks pass because they were derived from the thing under test.
+
+The general shape: **the intuitive schedule and the required schedule run opposite.** Work
+that must be independent of an artifact feels like it needs that artifact to be concrete, and
+every day you wait makes it easier to write and less worth having. The deferral never
+announces itself as a loss of independence; it announces itself as *being better informed*.
+
+So: **name the thing each judgement must be independent of, and schedule it before that thing
+exists.** Expected values before the run, acceptance criteria before the diff, the falsifying
+condition before the measurement.
+
+The practical tell that you have waited too long: you can no longer state the criterion
+without referring to how the implementation works. At that point the criterion is a
+description, and a description cannot fail its subject.
 
 ### Fixing an instrument and TUNING it produce identical diffs
 
