@@ -814,6 +814,17 @@ And when a count stands in for a *condition*, state the condition's firing shape
 before counting: every simplification that drops an asymmetry, an ordering, or a negation
 produces a number that is too large, and too large is the comfortable direction.
 
+**The check, because "be suspicious" is not one:** when a measurement reports coverage, **go
+read one of the cases it says is covered** before believing the count. Not a sample, not a
+review of the query — open a single covered case and confirm it exhibits the condition. That
+is how the 146 was actually caught: its author went to quote a concrete example and the
+example did not behave the way the number implied. Reaching for an example is the cheapest
+operation that can falsify a count, and it is the one a comfortable number never prompts.
+
+Its converse is the strongest argument for the check: a parity suite that verified only the
+512 rows expected to match **would pass a binary that faithfully reproduced every defect it
+was built to catch.** Coverage counted over the cases that agree is not coverage.
+
 ### Fixing an instrument and TUNING it produce identical diffs
 
 An independent checker was built to cross-examine a normaliser: two methods, computed
