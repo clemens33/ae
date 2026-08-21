@@ -23,6 +23,7 @@ invariant, not against the code.
 | you and another person both confirmed a document contains X without re-reading the stated clause | Two people agreeing from memory about a document is not a reading of the document |
 | the commit that introduced a rule also violates it in the same text | Why rules get broken inside their own statement |
 | you filtered a tool's output to the fields you expected to change | Your probe's SCOPE decides the finding, and you chose that scope from expectation |
+| your criteria all pass but the obligation was about ordering, causality, or a matched pair | A check can only see obligations SHAPED like it — temporal ones survive a static gate |
 | you verified every flagged item and found nothing wrong | Forward verification cannot see a FALSE NEGATIVE — you have to check the converse |
 | you are claiming a body of evidence covers some condition | A condition that was never CAPTURED cannot later be shown to have been ABSENT |
 | a coverage count came back healthy and nobody has re-derived it | A measurement error that produces COMFORT gets used; one that produces alarm gets checked |
@@ -803,6 +804,35 @@ Practically: read a summary line **whole** the first time, and only then filter.
 comparing two probe results, compare the **invocations** before the outputs — if the flags
 differ, there is no finding yet. And when a tool emits counters you do not recognise, that is
 the moment to look them up, not the moment to drop them.
+
+### A check can only see obligations SHAPED like it — temporal ones survive a static gate
+
+A rule was named *"candidates exist **before** liveness is classified"* — the ordering was the
+whole point, the fix for a defect born of collapsing two phases into one. Nineteen acceptance
+criteria were written for it. Two were aimed at exactly this: one diffed for any status being
+assigned during discovery, another forbade discovery being *gated* on a query succeeding.
+
+Neither forbids **building the candidate set out of the liveness map**. Enumerate the servers
+first, construct candidates from the live names you got back, append the durable directories
+afterwards: no status is assigned, nothing is dropped, both criteria pass, and the ordering the
+rule exists to guarantee is exactly inverted. **A snapshot of a result cannot show the order in
+which it was built**, and every criterion observed a result.
+
+The general failure: an obligation about **sequence, causality, or provenance** checked by an
+instrument that only sees **final state**. The check is not wrong, it is the wrong *shape* — and
+it reports green with total sincerity. Temporal obligations need a temporal observable: a call
+trace, a construction-order assertion, a type that cannot be built out of the later phase's
+output, or a seam that makes the dependency direction structural rather than conventional.
+
+**The same mismatch has a second common form: a paired obligation with only one side checked.**
+The same gate guarded hard against candidates being wrongly *collapsed* — by basename, by
+prefix, by name alone — and never once asserted the collection was a **union**. An
+implementation emitting one identity twice, from two sources, passed every criterion. Guarding
+a failure direction intensely is what makes its opposite invisible: you are looking so hard at
+over-merging that under-merging never occurs to you.
+
+So before trusting a criteria list, ask of each obligation: **is this about a state, a sequence,
+or a pair?** and does anything in the list observe that kind of thing at all.
 
 ### Forward verification cannot see a FALSE NEGATIVE — you have to check the converse
 
