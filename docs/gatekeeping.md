@@ -100,6 +100,52 @@ days you are tired, rushed, or running on a smaller model.
    (hid the s18 violation), env assumed shared across processes (the s19 design
    BLOCKER). Name the blind spot out loud, then check that region by hand.
 
+## The second protocol — reviewing a CLAIM, a CRITERION, or a body of EVIDENCE
+
+The protocol above reads a diff against an invariant. This one is for the other half of the
+job: gating captured evidence, reviewing acceptance criteria, and judging whether a green
+result means anything. Same rule — run it mechanically, because every step below exists
+because someone competent skipped it.
+
+1. **Fix the subject before reading it.** Get an immutable identity — a blob hash, a commit —
+   and verify it yourself. Reviewing bytes that can move is a conversation, not a gate. A pin
+   also makes the *author's own summary* falsifiable: describe an artifact and cite its hash,
+   and the recipient can check your prose in one command.
+2. **Count the evidence base before measuring inside it.** Ask *what would have to be true for
+   this to be all of it?* A verification confirms within its scope and cannot see its scope, so
+   rigour inside a wrong boundary produces confident error. Absence findings are the most
+   scope-sensitive of all.
+3. **For every universal claim — every, always, even when empty — find where the artifacts are
+   ENUMERATED** and check the obligation is asserted there. Grep the claim's own noun through
+   the document: if it appears in one place while a different criterion generates instances,
+   that count is the finding.
+4. **For every claimed-independent pair, build the off-diagonals**, and prefer a flip test —
+   vary one axis, require the other unchanged — over four sampled cells. The diagonal is where
+   a derivation hides.
+5. **For every differential, name the axes it MOVES.** Anything constant in all arms is
+   invisible; an absent input is the most constant thing there is. Ask which arm carries the
+   proof — removal arms are usually the weakest, because a re-observation that *fails* looks
+   exactly like one that never happened.
+6. **For every fixture, trace provenance rather than preconditions.** By what path would the
+   *product* reach this state? A fixture can succeed at building something the product cannot
+   emit, and green then looks exactly like proof.
+7. **For every control, prove it applied AND that it changed an observable.** A patch that did
+   not land, a mutation that is semantically inert, and a run truncated by fail-fast all read
+   identically to "your tests are weak."
+8. **For every "covered elsewhere", go read the elsewhere and ask what it was written to
+   catch.** A delegation is a claim about scope; obligations written before a change do not
+   extend to what the change introduced.
+9. **Ask which CORRECT implementations this would reject.** Over-strong checks are defects
+   nobody hunts, and the answer is only checkable if the open choices are enumerated.
+10. **Read the whole output once before filtering it.** Your probe's scope decides the finding,
+    and expectation chose that scope. Compare invocations before comparing results.
+11. **Audit the REASSURING numbers.** An error that flatters coverage is systematically less
+    likely to be caught. When a measurement reports coverage, open one covered case and confirm
+    it exhibits the condition before believing the count.
+12. **Ask what the repair DESTROYED, not only what it removed.** Consolidation narrows types,
+    and a narrowed type is where a distinction goes to die. A structural criterion is a proxy;
+    satisfying it can relocate the violation somewhere the proxy does not look.
+
 ## The failure taxonomy
 
 Confirmed holes from two campaigns — the s18/s19 slice family (phase 3) and the
