@@ -1394,7 +1394,16 @@ weak, so you go strengthen a guard that was already fine: wasted work you would 
 was wasted, because the "evidence" for it was a green run that measured nothing.
 
 So **assert the perturbation landed before interpreting the response.** Confirm the anchor
-matched, the mutant compiled, the fixture wrote the bytes — then read the result. Noticing that
+matched, the mutant compiled, the fixture wrote the bytes — then read the result.
+
+**Landing is still not enough: a patch can apply cleanly and change nothing.** A control meant
+to simulate a fallback edited only the *read* side of a lookup — and the value it read was never
+in the answer set, so the mutation was **semantically inert**. It applied, it compiled, the
+anchor assertion passed, and the suite stayed green, which again reads as a weak test. An anchor
+check proves the bytes changed; it says nothing about whether the *behaviour* did. So a control
+owes a demonstration that it **alters an observable** — the patched build produces a different
+result on some input — before its failure to redden anything is treated as a finding about your
+tests. Noticing that
 output looks "suspiciously empty" is luck; the assertion is not.
 
 **And your own success message is not evidence of success.** A reviewer invoked a delivery
