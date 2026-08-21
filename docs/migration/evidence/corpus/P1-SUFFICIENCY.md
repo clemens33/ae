@@ -57,13 +57,41 @@ differ by exactly the asymmetry the defect depends on, and the plausible number 
 | `requests` / `events-tail` | 206 | green |
 | **total P1** | **1065** | **553 red, 512 green** |
 
-So the seat reading is confirmed and extended: parity cannot be "match the corpus" uniformly.
-It has to be **"match the corpus EXCEPT where a bucket-3 row mandates divergence"**, and those
-rows need **expected-divergence** treatment — a recorded statement of *what must differ and how* —
-rather than expected-match. The 325 healthy-server JSON rows show that the exception is not a
-narrow special case: it is the majority of the machine surface, driven by one enum value.
+### SEAT RULING — parity is a pre-registered verdict per row, not a match with exemptions
 
-## 4. What capture would be needed (NOT built)
+Parity is **not** "match the corpus, with exemptions". **Exemptions are holes, and 553 of them is
+not a test.**
+
+**Every P1 row carries a pre-registered verdict — `EXPECTED-MATCH` or `EXPECTED-DIVERGENCE` —
+derived from which contract rows govern its output shape.** An `EXPECTED-DIVERGENCE` row is
+**not skipped**: it **asserts the mandated divergence**. A row that must move `stopped` →
+`unknown` **fails if it still says `stopped`, and fails if it says anything other than
+`unknown`.**
+
+That inverts the problem. Under a match-with-exemptions rule the 553 are the weakest part of the
+suite — the part that proves nothing because it is excused. Under pre-registered verdicts they are
+the **strongest** part, because they are the rows that prove **the fix** rather than **the port**.
+A suite that only checks the 512 matching rows would pass a Rust binary that faithfully reproduced
+every defect in #105.
+
+## 4. What capture would be needed — and the ruling that it is NOT built now
+
+**SEAT RULING: do not capture these now.** The reasoning is recorded here so the not-built list
+carries *why*, and so it is not later mistaken for deferral by fatigue:
+
+- All five missing captures would capture **bash behaving defectively**. That is not needed to
+  build correctly: the rows already state what the successor must do.
+- **Bash defectiveness is already source-proven**, with the prefix behaviour observed at the tmux
+  primitive.
+- What is needed is proof the **successor behaves correctly**, and that is **Rust tests
+  constructing these scenarios directly** — which do not depend on the corpus at all.
+- Therefore an end-to-end bash capture **upgrades an empirical label**; it does not **gate an
+  implementation**.
+- **Frozen source means these captures are exactly as available later as now** — the subject
+  cannot move, so deferring costs nothing but queue position.
+
+**Trigger for revisiting:** the day an empirical label needs upgrading, or the day a parity row
+needs a divergence baseline it cannot construct.
 
 To close the two conditions the corpus cannot speak to:
 
