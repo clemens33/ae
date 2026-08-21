@@ -880,7 +880,16 @@ session we can see that we cannot prove is ours — and they are precisely the o
 author skips, because they feel like contrived corners rather than the point.
 
 So for every claimed-independent pair, **build the two off-diagonal cells first** and treat the
-diagonal as the cheap confirmation it is. Two further habits fall out:
+diagonal as the cheap confirmation it is.
+
+**And cells alone are still the weak form, because four points can agree with independence by
+coincidence.** The strong form tests the claim itself: **flip one axis and require the other to
+be unchanged.** Vary the record's readability and demand the identical liveness answer; vary
+the liveness proof and demand the identical degradation. That is an invariance assertion rather
+than a sample, and it fails against a derivation no matter which cells someone chose to build.
+Prefer it wherever the two facts can be varied independently in a fixture.
+
+Two further habits fall out:
 
 - **Name the derivation you are excluding, concretely**, before designing the cells. "X iff Y"
   is a hypothesis you can test; "they are orthogonal" is a hope you cannot.
