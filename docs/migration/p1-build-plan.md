@@ -40,8 +40,14 @@ shape is the thing being replaced, not ported.
 and SC-017n group order at one site; `Status::ALL` plus an exhaustive-match guard and a coverage
 test closing the array-literal hole.
 
-**Phase 1 itself is landed; its gate was assessed against `f6c8f0a` as DOES NOT PASS (not
-re-run since)** — see `p1-phase1-gate.md` for the 24 pre-registered criteria.
+**Phase 1 is landed and its gate PASSES** — see `p1-phase1-gate.md` for the 24
+pre-registered criteria. History, because the file's own `Status` header is stale and
+describes only its original run: all 24 criteria were re-run against gate blob `8e3c9ec0`
+at `fab19eb4` and reported 24/24 MET. Phase 1 then **reopened** when phase-2 rework
+changed inventory and session-snapshot code, and was independently re-gated against that
+same `8e3c9ec0` at `00196e32`, returning PASS. The test-only phase-2 repair that followed
+moved no phase-1 or product bytes, so that PASS is preserved by object identity rather
+than by assumption. Phase 2 therefore did not proceed on an unresolved phase-1 verdict.
 `src/inventory.rs` holds the candidate collection with its invariants **structural rather than
 defended**: `Roots` cannot
 spell an archive path, `durable_records()` opens nothing inside a candidate directory, and
