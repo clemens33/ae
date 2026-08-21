@@ -1042,8 +1042,24 @@ tripwire was narrowed to *claim only what it checks* — it now states that it s
 and **names what it cannot see**: `Path::exists`, `metadata`, `File::open`, any wrapper. Then
 the capability was closed **behaviourally**, where a spelling has no purchase: render the
 output, grow the filesystem underneath, render again, delete the tree, render again, and require
-all three byte-identical from the same captured input. **Any second observation, under any name
-anyone invents later, sees a different world and fails.**
+all three byte-identical from the same captured input. A second observation under any name then
+sees a different world and fails — **for the facts the fixture actually varies.**
+
+**That last qualifier was missing when this was first written, and the counterexample landed
+within the hour, against this very sentence.** The test grew and changed the *meta*. Every
+fixture in it had an **absent event log**, and an absent log maps to the same quiet stream
+before growth, after growth, and after deletion — so a reread of the event half, through any
+helper under any spelling, observes nothing different in any arm and passes all three byte
+comparisons. The guard was sound for one half of the record and blind to the other, while its
+title claimed the class: the same claim-exceeds-enforcement defect this entry exists to describe,
+committed into the entry itself.
+
+**A differential test discriminates exactly over the axes it MOVES.** Anything held constant in
+every arm is invisible to it, and an *absent* input is the most constant thing there is — which
+makes "we deleted it and nothing changed" the weakest available evidence about a source that was
+never there. So enumerate what the fixture varies, and either plant a live observable fact on
+every axis the claim covers, or narrow the claim to the axes actually planted. **An unused
+observation cannot be closed behaviourally at all**; only a real capability boundary closes that.
 
 And the control is what makes it evidence rather than design: a second read was planted using
 the spelling that had defeated the old guard — **invisible to the tripwire by construction** —
