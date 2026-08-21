@@ -22,6 +22,8 @@ invariant, not against the code.
 | you are briefing a worker and need to keep product conclusions off that channel | The seat boundary, in its finished form |
 | you and another person both confirmed a document contains X without re-reading the stated clause | Two people agreeing from memory about a document is not a reading of the document |
 | the commit that introduced a rule also violates it in the same text | Why rules get broken inside their own statement |
+| your independent cross-check disagrees and you are about to adjust the cross-check | Fixing an instrument and TUNING it produce identical diffs |
+| you added a variant to a closed set, fixed everything the compiler flagged, and it went green | A type-system guarantee has a precise scope; the confidence it creates does not |
 | a number or pointer kept in two places has silently disagreed | Hand-maintained redundancy, of which stale pointers are one instance |
 | your self-check grep reported CLEAN after you retyped the terms it was meant to enforce | A transcribed checklist can only under-report |
 | a prose "as arm N" reference now points at a different row after a split or rebuild | A back-reference by position is a pointer into a list that changes |
@@ -767,6 +769,67 @@ absent file standing in for a recorded absence.
 `sleep`, and the exec'd process exposes no environment. The control failed **for its own
 reasons**, and a control that fails for reasons unrelated to its subject reads exactly like
 the subject failing.
+
+### Fixing an instrument and TUNING it produce identical diffs
+
+An independent checker was built to cross-examine a normaliser: two methods, computed
+separately, expected to agree. They disagreed twice, and the two repairs looked the same
+from outside.
+
+**The first was a real bug in the instrument.** It reduced each path to its basename, so two
+genuinely different files collapsed to one — and it then reported the normaliser as wrong for
+having *correctly* distinguished them. **An instrument that discards a distinction cannot
+judge whether that distinction was preserved**; it will always report the more careful party
+as the defective one.
+
+**The second was the trap.** Two remaining disagreements were the same invocation recorded
+with and without an interpreter prefix. The available move was to keep adjusting the
+independent method until it agreed — and each adjustment would have been individually
+defensible, produced a smaller diff than the first fix, and turned the report green.
+
+That move **destroys the independence the check exists to provide.** An instrument tuned
+until it matches its subject is no longer evidence about the subject; it is a second copy of
+it. The honest repair was to stop editing the instrument and **declare the equivalences as
+rules** — an interpreter token carries no meaning; a binary path's meaning is its basename —
+so the claim is stated and reviewable rather than absorbed into code that now silently agrees.
+
+**Both edits touch the same file, shrink the same disagreement count, and end green.** Nothing
+in the diff, the commit, or the test output distinguishes them. The only thing that does is
+whether the change was derived from the instrument's own definition or from *the answer it
+was supposed to produce* — and that lives in the author's head unless they say so.
+
+So: when a cross-check disagrees, record *why* each repair was made before making it, and be
+suspicious of any instrument edit whose justification is that it removes a disagreement. The
+author who flags this about their own work — as happened here, unprompted, at the cost of a
+clean two-arm pass — is giving you the only signal that exists.
+
+### A type-system guarantee has a precise scope; the confidence it creates does not
+
+An enum gained a variant. The compiler pointed at one site — a `match` — it was fixed, the
+build went green, the suite passed, and the change looked complete.
+
+Elsewhere the same enum was enumerated in an **array literal**: a per-scope list of which
+variants that scope displays. Rust's exhaustiveness checking covers `match` and nothing else,
+so the array compiled unchanged and the new variant was silently absent from every scope. A
+session in the new state would have been dropped from all output — by a file the compiler had
+just implicitly certified by saying nothing about it.
+
+The trap is not the array. It is that **"the compiler found the sites" is a claim the
+compiler never made.** It reports the sites *it checks*; the reader hears *the sites*. Every
+other enumeration of the variants — const lists, map initializers, match arms behind a
+wildcard `_`, a `to_string` round-trip, serialization tables, test fixtures asserting
+"all" — is invisible to it, and each looks exactly like code that would have failed if it
+were wrong.
+
+So when a closed set gains a member, **grep for the set's members by name** and treat the
+compiler's list as a lower bound. Better, close it structurally: a test asserting the
+enumerated collection covers every variant fails when the next one is added, which is
+precisely the day the compiler will not.
+
+The generalisation past Rust: every automated guarantee has a documented scope, and the
+confidence it produces is scope-free. A tool that verifies X reliably will be heard as
+verifying "this is correct" — so the useful question about any green check is never *did it
+pass* but **what, exactly, did it look at, and what sits just outside that?**
 
 ### A rewrite inherits the original's CONFLATIONS through its type definitions, before any logic exists
 
