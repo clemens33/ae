@@ -27,6 +27,7 @@ invariant, not against the code.
 | a case with more information available is about to be handled by a different branch | Adding evidence must never SUBTRACT knowledge — check the richer case against the poorer one |
 | a rule says two facts are independent and you are choosing test cases | Orthogonality is proven on the OFF-DIAGONAL; the diagonal is where a derivation hides |
 | your control patch produced no failures and you are concluding the guard is weak | An instrument must be present when the fixture is BUILT, not only when it is READ |
+| you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
 | a document explains that your concern is covered by some other rule, and you are satisfied | A DELEGATION is a claim about scope, and being talked out of a concern is not resolving it |
 | a rule says EVERY / ALWAYS and one criterion demonstrates it on the case it happened to build | A UNIVERSAL obligation checked on ONE fixture is checked nowhere |
 | your fixture plants a precondition while other parts of the same fixture break its source | A fixture can succeed at building a state the product could never produce |
@@ -907,6 +908,38 @@ The same shape governs any claim of the form "these vary independently": orderin
 membership, identity versus reachability, presence versus permission. If the evidence only
 holds cases where both move together, the claim is untested no matter how many of them there
 are.
+
+### A test that is too STRONG is a defect, and nobody is looking for it
+
+Every instinct in review points one way: is this check thorough enough, could something slip
+past, what did we fail to assert. The opposite defect gets almost no attention — **a check that
+rejects a correct implementation** — and it is not harmless. It costs rework, and worse, it
+pressures whoever is building to change *correct* code until an unratified constraint is
+satisfied. The contract loses, quietly, to a test nobody ratified.
+
+Two exhibits from one project, in both directions.
+
+An implementer wrote two tests asserting a query count of exactly zero. The governing criterion
+explicitly made a redundant query an **open choice** that merely must not change the answer.
+Their own tests would therefore have failed a correct classifier for making a permitted choice —
+and **they found it, said so, and replaced it with the real requirement**: that the contradicting
+answer does not move the status. Reporting your own tests as *too strong* is much rarer than
+reporting them as too weak.
+
+Separately, a reviewer noticed a gap in a criteria list, found a sentence delegating it
+elsewhere, and accepted — the delegation's scope did not actually cover the case. Being talked
+out of a concern and over-constraining an implementation are the same failure seen from
+opposite ends: **in both, the document is trusted about its own coverage.**
+
+The mechanism that makes the over-strong direction findable is a **scope guard that fails the
+gate itself**: a criterion stating in terms that the gate FAILS if a test rejects an otherwise
+correct implementation for a choice no rule constrains, with the open choices enumerated beside
+it. That turns "do not over-reach" from an intention into something a reviewer can check, and it
+gives an implementer standing to push back with a citation rather than an opinion.
+
+Ask it explicitly, every pass: **which correct implementations would this reject?** If the
+answer is "none I can think of," the enumerated open choices are what make that checkable rather
+than hopeful.
 
 ### A DELEGATION is a claim about scope, and being talked out of a concern is not resolving it
 
