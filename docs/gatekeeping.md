@@ -22,6 +22,7 @@ invariant, not against the code.
 | you are briefing a worker and need to keep product conclusions off that channel | The seat boundary, in its finished form |
 | you and another person both confirmed a document contains X without re-reading the stated clause | Two people agreeing from memory about a document is not a reading of the document |
 | the commit that introduced a rule also violates it in the same text | Why rules get broken inside their own statement |
+| you filtered a tool's output to the fields you expected to change | Your probe's SCOPE decides the finding, and you chose that scope from expectation |
 | you are claiming a body of evidence covers some condition | A condition that was never CAPTURED cannot later be shown to have been ABSENT |
 | a coverage count came back healthy and nobody has re-derived it | A measurement error that produces COMFORT gets used; one that produces alarm gets checked |
 | your independent cross-check disagrees and you are about to adjust the cross-check | Fixing an instrument and TUNING it produce identical diffs |
@@ -771,6 +772,35 @@ absent file standing in for a recorded absence.
 `sleep`, and the exec'd process exposes no environment. The control failed **for its own
 reasons**, and a control that fails for reasons unrelated to its subject reads exactly like
 the subject failing.
+
+### Your probe's SCOPE decides the finding, and you chose that scope from expectation
+
+Two instances the same evening, by the same person, in the same role — which is what makes it
+a class rather than an accident.
+
+**One.** A tool's summary line reported twenty counters. The check grepped it down to the
+handful expected to move. A real regression landed in one of the omitted counters and was
+invisible for two commits — not hidden, *filtered*. The output had said it plainly.
+
+**Two.** The same fact was probed twice ten seconds apart, once case-insensitively and once
+not. The two answers disagreed, and the disagreement was briefly read as a finding about the
+document rather than about the probes.
+
+Both share a shape: **the instrument's scope was set by what the operator expected to matter,
+and then the result was read as though the scope were the subject's.** A filtered view of a
+green report looks exactly like a green report. A narrowed grep returns a smaller number that
+looks exactly like a smaller number.
+
+This bites hardest on the tools you trust most, because a trusted tool is the one you stop
+reading in full. And note the asymmetry with the comfort rule above: **filtering is how a
+comfortable reading gets manufactured without anyone intending it.** Nobody decided to ignore
+that counter; they decided which counters were interesting, which is the same act with better
+manners.
+
+Practically: read a summary line **whole** the first time, and only then filter. When
+comparing two probe results, compare the **invocations** before the outputs — if the flags
+differ, there is no finding yet. And when a tool emits counters you do not recognise, that is
+the moment to look them up, not the moment to drop them.
 
 ### A condition that was never CAPTURED cannot later be shown to have been ABSENT
 
