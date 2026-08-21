@@ -26,6 +26,7 @@ invariant, not against the code.
 | your criteria all pass but the obligation was about ordering, causality, or a matched pair | A check can only see obligations SHAPED like it — temporal ones survive a static gate |
 | a case with more information available is about to be handled by a different branch | Adding evidence must never SUBTRACT knowledge — check the richer case against the poorer one |
 | a rule says two facts are independent and you are choosing test cases | Orthogonality is proven on the OFF-DIAGONAL; the diagonal is where a derivation hides |
+| your fixture plants a precondition while other parts of the same fixture break its source | A fixture can succeed at building a state the product could never produce |
 | a rule lists cases and you just found one it does not cover | Adding the missing member to an enumerated rule PRESERVES the defect that produced it |
 | a rule was just clarified, refined, or split into two orthogonal facts | A clarification that SPLITS a concept creates a coverage gap in evidence captured before it |
 | you verified every flagged item and found nothing wrong | Forward verification cannot see a FALSE NEGATIVE — you have to check the converse |
@@ -903,6 +904,33 @@ The same shape governs any claim of the form "these vary independently": orderin
 membership, identity versus reachability, presence versus permission. If the evidence only
 holds cases where both move together, the claim is untested no matter how many of them there
 are.
+
+### A fixture can succeed at building a state the product could never produce
+
+A test needed a healthy source alongside two deliberately broken ones. The criterion said to
+use "an entitled server". Reasonable — until someone traced where entitlement comes from: it is
+derived from the ambient server plus selectors read out of durable records. The fixture had made
+**both durable roots unreadable**. So there were no records, hence no selectors, hence no
+entitlement except ambient.
+
+A generic "entitled server" in that construction is therefore a server the harness **planted**
+and the product could never have reached. The fixture builds fine. The code under test runs.
+Every assertion passes. And the run says **nothing about reachable behaviour**, because the
+precondition it depends on cannot occur.
+
+This is worse than a fixture that fails to create its condition — that one at least breaks. Here
+the setup **succeeds**, so nothing signals that the state is unreachable, and the green result
+looks exactly like proof.
+
+The check is to trace **provenance, not preconditions**. A criterion reads as a list of things
+that must be true; that framing is what invites planting them. Ask of each precondition: *by
+what path would the product itself arrive here?* If the answer requires a fact the rest of the
+fixture has just destroyed, the case is unreachable and the assertion is vacuous.
+
+It bites hardest exactly where fixtures are most aggressive — when several things are broken at
+once to test resilience, the breakages interact, and one of them quietly invalidates the
+premise another one needs. **The more thorough the setup, the more likely some part of it is
+unreachable.**
 
 ### Adding the missing member to an enumerated rule PRESERVES the defect that produced it
 
