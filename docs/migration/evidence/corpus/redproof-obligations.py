@@ -33,6 +33,9 @@ MUTATIONS = [
     ("VERDICT", OBL, "every obligation removed from a divergent row",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not l.startswith("arms/A1/c01-healthy-ro\tlist-all-json\t"))),
+    ("MISSING-509e", OBL, "an unreachable digest stripped of its agent-liveness move",
+     lambda s: "\n".join(l for l in s.split("\n")
+                         if not (l.startswith("arms/A1/c01-healthy-ro") and "\tSC-509e\t" in l))),
     ("STALE", FRESH, "the contract having moved since derivation",
      lambda s: s.replace("contract_blob\t", "contract_blob\tdeadbeef", 1)),
 ]

@@ -3,9 +3,11 @@ arms/A1/c01-healthy-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	
 arms/A1/c01-healthy-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c01-healthy-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c01-healthy-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c01-healthy-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c01-healthy-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c01-healthy-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c01-healthy-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c01-healthy-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c01-healthy-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c01-healthy-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c01-healthy-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -13,13 +15,16 @@ arms/A1/c01-healthy-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknown rows pres
 arms/A1/c01-healthy-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c01-healthy-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c01-healthy-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c01-healthy-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c01-healthy-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c01-healthy-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c01-healthy-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c01-healthy-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c01-healthy-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c01-healthy-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c01-healthy-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c01-healthy-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c01-healthy-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c01-healthy-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c01-healthy-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c01-healthy-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -27,6 +32,7 @@ arms/A1/c01-healthy-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknown rows pres
 arms/A1/c01-healthy-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c01-healthy-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c01-healthy-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c01-healthy-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c02-meta-mode-000-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c02-meta-mode-000-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c02-meta-mode-000-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
@@ -59,9 +65,11 @@ arms/A1/c03-malformed-line-ro	list	SC-017m	stdout	(row set)	empty	unknown rows p
 arms/A1/c03-malformed-line-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c03-malformed-line-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c03-malformed-line-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c03-malformed-line-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c03-malformed-line-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c03-malformed-line-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c03-malformed-line-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c03-malformed-line-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c03-malformed-line-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c03-malformed-line-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c03-malformed-line-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -69,13 +77,16 @@ arms/A1/c03-malformed-line-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknown ro
 arms/A1/c03-malformed-line-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c03-malformed-line-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c03-malformed-line-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c03-malformed-line-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c03-malformed-line-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c03-malformed-line-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c03-malformed-line-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c03-malformed-line-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c03-malformed-line-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c03-malformed-line-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c03-malformed-line-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c03-malformed-line-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c03-malformed-line-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c03-malformed-line-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c03-malformed-line-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c03-malformed-line-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -83,13 +94,16 @@ arms/A1/c03-malformed-line-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknown ro
 arms/A1/c03-malformed-line-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c03-malformed-line-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c03-malformed-line-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c03-malformed-line-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c04-empty-vs-omitted-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c04-empty-vs-omitted-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c04-empty-vs-omitted-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c04-empty-vs-omitted-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c04-empty-vs-omitted-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c04-empty-vs-omitted-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c04-empty-vs-omitted-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c04-empty-vs-omitted-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c04-empty-vs-omitted-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c04-empty-vs-omitted-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c04-empty-vs-omitted-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c04-empty-vs-omitted-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -97,13 +111,16 @@ arms/A1/c04-empty-vs-omitted-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknown 
 arms/A1/c04-empty-vs-omitted-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c04-empty-vs-omitted-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c04-empty-vs-omitted-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c04-empty-vs-omitted-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c04-empty-vs-omitted-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c04-empty-vs-omitted-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c04-empty-vs-omitted-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c04-empty-vs-omitted-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c04-empty-vs-omitted-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c04-empty-vs-omitted-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c04-empty-vs-omitted-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c04-empty-vs-omitted-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c04-empty-vs-omitted-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c04-empty-vs-omitted-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c04-empty-vs-omitted-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c04-empty-vs-omitted-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -111,13 +128,16 @@ arms/A1/c04-empty-vs-omitted-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknown 
 arms/A1/c04-empty-vs-omitted-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c04-empty-vs-omitted-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c04-empty-vs-omitted-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c04-empty-vs-omitted-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c05-recover-ref-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c05-recover-ref-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c05-recover-ref-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c05-recover-ref-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c05-recover-ref-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c05-recover-ref-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c05-recover-ref-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c05-recover-ref-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c05-recover-ref-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	1 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c05-recover-ref-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c05-recover-ref-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c05-recover-ref-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -125,13 +145,16 @@ arms/A1/c05-recover-ref-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknown rows 
 arms/A1/c05-recover-ref-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c05-recover-ref-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c05-recover-ref-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c05-recover-ref-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c05-recover-ref-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c05-recover-ref-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c05-recover-ref-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c05-recover-ref-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c05-recover-ref-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c05-recover-ref-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c05-recover-ref-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c05-recover-ref-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c05-recover-ref-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	1 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c05-recover-ref-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c05-recover-ref-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c05-recover-ref-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -139,13 +162,16 @@ arms/A1/c05-recover-ref-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknown rows 
 arms/A1/c05-recover-ref-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c05-recover-ref-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c05-recover-ref-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c05-recover-ref-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c06-escapes-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c06-escapes-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c06-escapes-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c06-escapes-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c06-escapes-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c06-escapes-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c06-escapes-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c06-escapes-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c06-escapes-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c06-escapes-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c06-escapes-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c06-escapes-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -153,13 +179,16 @@ arms/A1/c06-escapes-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknown rows pres
 arms/A1/c06-escapes-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c06-escapes-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c06-escapes-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c06-escapes-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c06-escapes-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c06-escapes-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c06-escapes-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c06-escapes-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c06-escapes-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c06-escapes-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c06-escapes-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c06-escapes-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c06-escapes-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c06-escapes-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c06-escapes-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c06-escapes-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -167,13 +196,16 @@ arms/A1/c06-escapes-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknown rows pres
 arms/A1/c06-escapes-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c06-escapes-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c06-escapes-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c06-escapes-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c07-dupkey-known-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c07-dupkey-known-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c07-dupkey-known-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c07-dupkey-known-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c07-dupkey-known-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c07-dupkey-known-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c07-dupkey-known-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c07-dupkey-known-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c07-dupkey-known-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c07-dupkey-known-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c07-dupkey-known-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c07-dupkey-known-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -181,13 +213,16 @@ arms/A1/c07-dupkey-known-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknown rows
 arms/A1/c07-dupkey-known-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c07-dupkey-known-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c07-dupkey-known-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c07-dupkey-known-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c07-dupkey-known-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c07-dupkey-known-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c07-dupkey-known-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c07-dupkey-known-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c07-dupkey-known-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c07-dupkey-known-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c07-dupkey-known-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c07-dupkey-known-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c07-dupkey-known-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c07-dupkey-known-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c07-dupkey-known-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c07-dupkey-known-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -195,13 +230,16 @@ arms/A1/c07-dupkey-known-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknown rows
 arms/A1/c07-dupkey-known-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c07-dupkey-known-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c07-dupkey-known-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c07-dupkey-known-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c08-dupkey-known-rev-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c08-dupkey-known-rev-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c08-dupkey-known-rev-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c08-dupkey-known-rev-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c08-dupkey-known-rev-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c08-dupkey-known-rev-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c08-dupkey-known-rev-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c08-dupkey-known-rev-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c08-dupkey-known-rev-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c08-dupkey-known-rev-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c08-dupkey-known-rev-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c08-dupkey-known-rev-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -209,13 +247,16 @@ arms/A1/c08-dupkey-known-rev-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknown 
 arms/A1/c08-dupkey-known-rev-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c08-dupkey-known-rev-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c08-dupkey-known-rev-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c08-dupkey-known-rev-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c08-dupkey-known-rev-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c08-dupkey-known-rev-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c08-dupkey-known-rev-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c08-dupkey-known-rev-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c08-dupkey-known-rev-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c08-dupkey-known-rev-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c08-dupkey-known-rev-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c08-dupkey-known-rev-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c08-dupkey-known-rev-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c08-dupkey-known-rev-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c08-dupkey-known-rev-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c08-dupkey-known-rev-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -223,13 +264,16 @@ arms/A1/c08-dupkey-known-rev-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknown 
 arms/A1/c08-dupkey-known-rev-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c08-dupkey-known-rev-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c08-dupkey-known-rev-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c08-dupkey-known-rev-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c09-dupkey-unknown-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c09-dupkey-unknown-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c09-dupkey-unknown-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c09-dupkey-unknown-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c09-dupkey-unknown-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c09-dupkey-unknown-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c09-dupkey-unknown-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c09-dupkey-unknown-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c09-dupkey-unknown-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c09-dupkey-unknown-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c09-dupkey-unknown-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c09-dupkey-unknown-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -237,13 +281,16 @@ arms/A1/c09-dupkey-unknown-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknown ro
 arms/A1/c09-dupkey-unknown-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c09-dupkey-unknown-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c09-dupkey-unknown-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c09-dupkey-unknown-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c09-dupkey-unknown-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c09-dupkey-unknown-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c09-dupkey-unknown-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c09-dupkey-unknown-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c09-dupkey-unknown-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c09-dupkey-unknown-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c09-dupkey-unknown-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c09-dupkey-unknown-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c09-dupkey-unknown-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c09-dupkey-unknown-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c09-dupkey-unknown-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c09-dupkey-unknown-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -251,13 +298,16 @@ arms/A1/c09-dupkey-unknown-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknown ro
 arms/A1/c09-dupkey-unknown-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c09-dupkey-unknown-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c09-dupkey-unknown-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c09-dupkey-unknown-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c10-dupkey-unknown-rev-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c10-dupkey-unknown-rev-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c10-dupkey-unknown-rev-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c10-dupkey-unknown-rev-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c10-dupkey-unknown-rev-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c10-dupkey-unknown-rev-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c10-dupkey-unknown-rev-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c10-dupkey-unknown-rev-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c10-dupkey-unknown-rev-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c10-dupkey-unknown-rev-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c10-dupkey-unknown-rev-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c10-dupkey-unknown-rev-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -265,13 +315,16 @@ arms/A1/c10-dupkey-unknown-rev-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknow
 arms/A1/c10-dupkey-unknown-rev-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c10-dupkey-unknown-rev-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c10-dupkey-unknown-rev-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c10-dupkey-unknown-rev-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c10-dupkey-unknown-rev-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c10-dupkey-unknown-rev-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c10-dupkey-unknown-rev-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c10-dupkey-unknown-rev-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c10-dupkey-unknown-rev-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c10-dupkey-unknown-rev-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c10-dupkey-unknown-rev-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c10-dupkey-unknown-rev-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c10-dupkey-unknown-rev-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c10-dupkey-unknown-rev-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c10-dupkey-unknown-rev-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c10-dupkey-unknown-rev-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -279,13 +332,16 @@ arms/A1/c10-dupkey-unknown-rev-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknow
 arms/A1/c10-dupkey-unknown-rev-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c10-dupkey-unknown-rev-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c10-dupkey-unknown-rev-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c10-dupkey-unknown-rev-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c11-routing-known-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c11-routing-known-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c11-routing-known-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c11-routing-known-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c11-routing-known-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c11-routing-known-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c11-routing-known-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c11-routing-known-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c11-routing-known-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	3 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c11-routing-known-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c11-routing-known-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c11-routing-known-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -293,13 +349,16 @@ arms/A1/c11-routing-known-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknown row
 arms/A1/c11-routing-known-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c11-routing-known-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c11-routing-known-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c11-routing-known-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c11-routing-known-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c11-routing-known-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c11-routing-known-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c11-routing-known-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c11-routing-known-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c11-routing-known-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c11-routing-known-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c11-routing-known-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c11-routing-known-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	3 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c11-routing-known-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c11-routing-known-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c11-routing-known-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -307,13 +366,16 @@ arms/A1/c11-routing-known-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknown row
 arms/A1/c11-routing-known-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c11-routing-known-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c11-routing-known-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c11-routing-known-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c12-routing-omitted-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c12-routing-omitted-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c12-routing-omitted-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c12-routing-omitted-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c12-routing-omitted-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c12-routing-omitted-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c12-routing-omitted-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c12-routing-omitted-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c12-routing-omitted-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c12-routing-omitted-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c12-routing-omitted-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c12-routing-omitted-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -321,13 +383,16 @@ arms/A1/c12-routing-omitted-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknown r
 arms/A1/c12-routing-omitted-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c12-routing-omitted-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c12-routing-omitted-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c12-routing-omitted-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c12-routing-omitted-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c12-routing-omitted-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c12-routing-omitted-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c12-routing-omitted-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c12-routing-omitted-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c12-routing-omitted-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c12-routing-omitted-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c12-routing-omitted-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c12-routing-omitted-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c12-routing-omitted-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c12-routing-omitted-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c12-routing-omitted-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -335,13 +400,16 @@ arms/A1/c12-routing-omitted-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknown r
 arms/A1/c12-routing-omitted-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c12-routing-omitted-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c12-routing-omitted-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c12-routing-omitted-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c13-same-display-routing-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c13-same-display-routing-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c13-same-display-routing-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c13-same-display-routing-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c13-same-display-routing-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c13-same-display-routing-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c13-same-display-routing-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c13-same-display-routing-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c13-same-display-routing-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	3 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c13-same-display-routing-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c13-same-display-routing-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c13-same-display-routing-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -349,13 +417,16 @@ arms/A1/c13-same-display-routing-ro	ls-alias	SC-017m	stdout	(row set)	empty	unkn
 arms/A1/c13-same-display-routing-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c13-same-display-routing-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c13-same-display-routing-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c13-same-display-routing-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c13-same-display-routing-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c13-same-display-routing-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c13-same-display-routing-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c13-same-display-routing-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c13-same-display-routing-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c13-same-display-routing-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c13-same-display-routing-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c13-same-display-routing-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c13-same-display-routing-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	3 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c13-same-display-routing-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c13-same-display-routing-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c13-same-display-routing-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -363,13 +434,16 @@ arms/A1/c13-same-display-routing-rw	ls-alias	SC-017m	stdout	(row set)	empty	unkn
 arms/A1/c13-same-display-routing-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c13-same-display-routing-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c13-same-display-routing-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c13-same-display-routing-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c14-display-only-legacy-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c14-display-only-legacy-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c14-display-only-legacy-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c14-display-only-legacy-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c14-display-only-legacy-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c14-display-only-legacy-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c14-display-only-legacy-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c14-display-only-legacy-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c14-display-only-legacy-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c14-display-only-legacy-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c14-display-only-legacy-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c14-display-only-legacy-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -377,13 +451,16 @@ arms/A1/c14-display-only-legacy-ro	ls-alias	SC-017m	stdout	(row set)	empty	unkno
 arms/A1/c14-display-only-legacy-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c14-display-only-legacy-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c14-display-only-legacy-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c14-display-only-legacy-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c14-display-only-legacy-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c14-display-only-legacy-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c14-display-only-legacy-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c14-display-only-legacy-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c14-display-only-legacy-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c14-display-only-legacy-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c14-display-only-legacy-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c14-display-only-legacy-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c14-display-only-legacy-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c14-display-only-legacy-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c14-display-only-legacy-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c14-display-only-legacy-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -391,13 +468,16 @@ arms/A1/c14-display-only-legacy-rw	ls-alias	SC-017m	stdout	(row set)	empty	unkno
 arms/A1/c14-display-only-legacy-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c14-display-only-legacy-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c14-display-only-legacy-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c14-display-only-legacy-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c15-meta-unknown-keys-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c15-meta-unknown-keys-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c15-meta-unknown-keys-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c15-meta-unknown-keys-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c15-meta-unknown-keys-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c15-meta-unknown-keys-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c15-meta-unknown-keys-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c15-meta-unknown-keys-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c15-meta-unknown-keys-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c15-meta-unknown-keys-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c15-meta-unknown-keys-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c15-meta-unknown-keys-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -405,13 +485,16 @@ arms/A1/c15-meta-unknown-keys-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknown
 arms/A1/c15-meta-unknown-keys-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c15-meta-unknown-keys-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c15-meta-unknown-keys-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c15-meta-unknown-keys-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c15-meta-unknown-keys-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c15-meta-unknown-keys-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c15-meta-unknown-keys-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c15-meta-unknown-keys-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c15-meta-unknown-keys-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c15-meta-unknown-keys-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c15-meta-unknown-keys-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c15-meta-unknown-keys-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c15-meta-unknown-keys-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c15-meta-unknown-keys-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c15-meta-unknown-keys-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c15-meta-unknown-keys-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -419,13 +502,16 @@ arms/A1/c15-meta-unknown-keys-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknown
 arms/A1/c15-meta-unknown-keys-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c15-meta-unknown-keys-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c15-meta-unknown-keys-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c15-meta-unknown-keys-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c16-events-unknown-keys-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c16-events-unknown-keys-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c16-events-unknown-keys-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c16-events-unknown-keys-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c16-events-unknown-keys-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c16-events-unknown-keys-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c16-events-unknown-keys-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c16-events-unknown-keys-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c16-events-unknown-keys-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c16-events-unknown-keys-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c16-events-unknown-keys-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c16-events-unknown-keys-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -433,13 +519,16 @@ arms/A1/c16-events-unknown-keys-ro	ls-alias	SC-017m	stdout	(row set)	empty	unkno
 arms/A1/c16-events-unknown-keys-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c16-events-unknown-keys-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c16-events-unknown-keys-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c16-events-unknown-keys-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c16-events-unknown-keys-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c16-events-unknown-keys-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c16-events-unknown-keys-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c16-events-unknown-keys-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c16-events-unknown-keys-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c16-events-unknown-keys-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c16-events-unknown-keys-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c16-events-unknown-keys-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c16-events-unknown-keys-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c16-events-unknown-keys-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c16-events-unknown-keys-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c16-events-unknown-keys-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -447,13 +536,16 @@ arms/A1/c16-events-unknown-keys-rw	ls-alias	SC-017m	stdout	(row set)	empty	unkno
 arms/A1/c16-events-unknown-keys-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c16-events-unknown-keys-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c16-events-unknown-keys-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c16-events-unknown-keys-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c17-unknown-action-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c17-unknown-action-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c17-unknown-action-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c17-unknown-action-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c17-unknown-action-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c17-unknown-action-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c17-unknown-action-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c17-unknown-action-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c17-unknown-action-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c17-unknown-action-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c17-unknown-action-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c17-unknown-action-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -461,13 +553,16 @@ arms/A1/c17-unknown-action-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknown ro
 arms/A1/c17-unknown-action-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c17-unknown-action-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c17-unknown-action-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c17-unknown-action-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c17-unknown-action-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c17-unknown-action-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c17-unknown-action-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c17-unknown-action-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c17-unknown-action-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c17-unknown-action-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c17-unknown-action-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c17-unknown-action-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c17-unknown-action-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c17-unknown-action-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c17-unknown-action-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c17-unknown-action-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -475,13 +570,16 @@ arms/A1/c17-unknown-action-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknown ro
 arms/A1/c17-unknown-action-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c17-unknown-action-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c17-unknown-action-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c17-unknown-action-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c18-no-trailing-newline-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c18-no-trailing-newline-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c18-no-trailing-newline-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c18-no-trailing-newline-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c18-no-trailing-newline-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c18-no-trailing-newline-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c18-no-trailing-newline-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c18-no-trailing-newline-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c18-no-trailing-newline-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c18-no-trailing-newline-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c18-no-trailing-newline-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c18-no-trailing-newline-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -489,13 +587,16 @@ arms/A1/c18-no-trailing-newline-ro	ls-alias	SC-017m	stdout	(row set)	empty	unkno
 arms/A1/c18-no-trailing-newline-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c18-no-trailing-newline-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c18-no-trailing-newline-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c18-no-trailing-newline-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c18-no-trailing-newline-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c18-no-trailing-newline-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c18-no-trailing-newline-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c18-no-trailing-newline-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c18-no-trailing-newline-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c18-no-trailing-newline-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c18-no-trailing-newline-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c18-no-trailing-newline-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c18-no-trailing-newline-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c18-no-trailing-newline-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c18-no-trailing-newline-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c18-no-trailing-newline-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -503,13 +604,16 @@ arms/A1/c18-no-trailing-newline-rw	ls-alias	SC-017m	stdout	(row set)	empty	unkno
 arms/A1/c18-no-trailing-newline-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c18-no-trailing-newline-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c18-no-trailing-newline-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c18-no-trailing-newline-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c19-partial-tail-ro	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c19-partial-tail-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c19-partial-tail-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c19-partial-tail-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c19-partial-tail-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c19-partial-tail-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c19-partial-tail-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c19-partial-tail-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c19-partial-tail-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c19-partial-tail-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c19-partial-tail-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c19-partial-tail-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -517,13 +621,16 @@ arms/A1/c19-partial-tail-ro	ls-alias	SC-017m	stdout	(row set)	empty	unknown rows
 arms/A1/c19-partial-tail-ro	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c19-partial-tail-ro	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c19-partial-tail-ro	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c19-partial-tail-ro	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c19-partial-tail-rw	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c19-partial-tail-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c19-partial-tail-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c19-partial-tail-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c19-partial-tail-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c19-partial-tail-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c19-partial-tail-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c19-partial-tail-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A1/c19-partial-tail-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A1/c19-partial-tail-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c19-partial-tail-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A1/c19-partial-tail-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -531,6 +638,7 @@ arms/A1/c19-partial-tail-rw	ls-alias	SC-017m	stdout	(row set)	empty	unknown rows
 arms/A1/c19-partial-tail-rw	ls-alias	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A1/c19-partial-tail-rw	ls-alias-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c19-partial-tail-rw	ls-alias-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A1/c19-partial-tail-rw	ls-alias-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A1/c20-405k-live	s0-baseline-clocale/list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	every successor digest carries the boolean
 arms/A1/c20-405k-live	s0-baseline-clocale/list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
 arms/A1/c20-405k-live	s0-baseline/list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	every successor digest carries the boolean
@@ -1051,9 +1159,11 @@ arms/A7/a7-c11-branch-stopped-ro	list	SC-017m	stdout	(row set)	empty	unknown row
 arms/A7/a7-c11-branch-stopped-ro	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A7/a7-c11-branch-stopped-ro	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A7/a7-c11-branch-stopped-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A7/a7-c11-branch-stopped-ro	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A7/a7-c11-branch-stopped-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A7/a7-c11-branch-stopped-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A7/a7-c11-branch-stopped-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A7/a7-c11-branch-stopped-ro	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	1 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A7/a7-c11-branch-stopped-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A7/a7-c11-branch-stopped-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A7/a7-c11-branch-stopped-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -1061,9 +1171,11 @@ arms/A7/a7-c11-branch-stopped-rw	list	SC-017m	stdout	(row set)	empty	unknown row
 arms/A7/a7-c11-branch-stopped-rw	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A7/a7-c11-branch-stopped-rw	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A7/a7-c11-branch-stopped-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A7/a7-c11-branch-stopped-rw	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A7/a7-c11-branch-stopped-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A7/a7-c11-branch-stopped-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A7/a7-c11-branch-stopped-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A7/a7-c11-branch-stopped-rw	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	1 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A7/a7-c11-branch-stopped-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A7/a7-c11-branch-stopped-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A7/a7-c11-branch-stopped-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -1131,9 +1243,11 @@ arms/A9/a9-c01-no-events-ro-noserver	list	SC-017m	stdout	(row set)	empty	unknown
 arms/A9/a9-c01-no-events-ro-noserver	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A9/a9-c01-no-events-ro-noserver	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A9/a9-c01-no-events-ro-noserver	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A9/a9-c01-no-events-ro-noserver	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A9/a9-c01-no-events-ro-noserver	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A9/a9-c01-no-events-ro-noserver	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A9/a9-c01-no-events-ro-noserver	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A9/a9-c01-no-events-ro-noserver	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A9/a9-c01-no-events-ro-noserver	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A9/a9-c01-no-events-ro-noserver	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A9/a9-c01-no-events-ro-noserver	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -1149,9 +1263,11 @@ arms/A9/a9-c02-zero-byte-events-ro-noserver	list	SC-017m	stdout	(row set)	empty	
 arms/A9/a9-c02-zero-byte-events-ro-noserver	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A9/a9-c02-zero-byte-events-ro-noserver	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A9/a9-c02-zero-byte-events-ro-noserver	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A9/a9-c02-zero-byte-events-ro-noserver	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A9/a9-c02-zero-byte-events-ro-noserver	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A9/a9-c02-zero-byte-events-ro-noserver	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A9/a9-c02-zero-byte-events-ro-noserver	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A9/a9-c02-zero-byte-events-ro-noserver	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A9/a9-c02-zero-byte-events-ro-noserver	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A9/a9-c02-zero-byte-events-ro-noserver	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A9/a9-c02-zero-byte-events-ro-noserver	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -1185,9 +1301,11 @@ arms/A9/a9-c04-malformed-event-ro-noserver	list	SC-017m	stdout	(row set)	empty	u
 arms/A9/a9-c04-malformed-event-ro-noserver	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A9/a9-c04-malformed-event-ro-noserver	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A9/a9-c04-malformed-event-ro-noserver	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A9/a9-c04-malformed-event-ro-noserver	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A9/a9-c04-malformed-event-ro-noserver	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A9/a9-c04-malformed-event-ro-noserver	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A9/a9-c04-malformed-event-ro-noserver	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A9/a9-c04-malformed-event-ro-noserver	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A9/a9-c04-malformed-event-ro-noserver	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A9/a9-c04-malformed-event-ro-noserver	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A9/a9-c04-malformed-event-ro-noserver	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
@@ -1221,9 +1339,11 @@ arms/A9/a9-c06-healthy-control-ro-noserver	list	SC-017m	stdout	(row set)	empty	u
 arms/A9/a9-c06-healthy-control-ro-noserver	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
 arms/A9/a9-c06-healthy-control-ro-noserver	list-all	SC-017l	stdout	status cell	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A9/a9-c06-healthy-control-ro-noserver	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	explicit diagnostic naming the loss count
+arms/A9/a9-c06-healthy-control-ro-noserver	list-all	SC-017r	stdout	agent health marker	blank	unambiguous unknown	all-of	OBSERVED	frozen renders alive and absent identically as a blank marker; unknown must be non-silent
 arms/A9/a9-c06-healthy-control-ro-noserver	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	1 captured occurrence(s) must all move
 arms/A9/a9-c06-healthy-control-ro-noserver	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A9/a9-c06-healthy-control-ro-noserver	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2
+arms/A9/a9-c06-healthy-control-ro-noserver	list-all-json	SC-509e	digest	agents[].alive	false	null	all-of	OBSERVED	2 agent(s) recorded false from an unavailable pane query; unprovable is null
 arms/A9/a9-c06-healthy-control-ro-noserver	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A9/a9-c06-healthy-control-ro-noserver	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	every successor digest carries the boolean
 arms/A9/a9-c06-healthy-control-ro-noserver	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	successor digest is schema version 2

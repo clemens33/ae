@@ -70,6 +70,32 @@ def main():
                          "OBSERVED" if incomplete else "SOURCE",
                          "every successor digest carries the boolean"))
 
+        # ---- SC-017p/q/r + SC-509e: per-agent liveness (contract 01353d8c) ----
+        # SC-017q's matrix is an IMPLICATION, not an orthogonality: session `unknown`
+        # implies agent `unknown`. So wherever the session diverges to unknown, every
+        # roster agent's health diverges with it — and the two surfaces move in
+        # OPPOSITE directions from the same frozen defect, which is why these are two
+        # separate obligations rather than one.
+        if incomplete:
+            if digest and '"alive"' in text:
+                n_false = len(re.findall(r'"alive"\s*:\s*false', text))
+                n_true = len(re.findall(r'"alive"\s*:\s*true', text))
+                if n_false:
+                    rows.append((case, consumer, "SC-509e", "digest", "agents[].alive",
+                                 "false", "null", "all-of", "OBSERVED",
+                                 f"{n_false} agent(s) recorded false from an unavailable "
+                                 "pane query; unprovable is null"))
+                if n_true:
+                    rows.append((case, consumer, "SC-509e", "digest", "agents[].alive",
+                                 "true", "null", "all-of", "OBSERVED",
+                                 f"{n_true} agent(s) recorded true, but session unknown "
+                                 "implies agent unknown"))
+            if listish and not digest and re.search(r"^\s{2}\S+:\S+\s", text, re.M):
+                rows.append((case, consumer, "SC-017r", "stdout", "agent health marker",
+                             "blank", "unambiguous unknown", "all-of", "OBSERVED",
+                             "frozen renders alive and absent identically as a blank "
+                             "marker; unknown must be non-silent"))
+
         if listish and incomplete:
             # TWO DISTINCT OBLIGATIONS, and which one applies is READ FROM THE BYTES
             # rather than assumed. The first version of this generator emitted a

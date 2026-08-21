@@ -112,6 +112,14 @@ def main(quiet=False):
             if other in ids:
                 fail(out, "WRONG-KIND", "%s/%s owes %s but its capture has %d `stopped`"
                      % (case, consumer, other, n))
+        # New rows, same converse discipline: what must owe, owes.
+        if unreachable(case) and '"schema_version"' in text and '"alive"' in text \
+           and "SC-509e" not in ids:
+            fail(out, "MISSING-509e", "%s/%s is an unreachable digest carrying agents[] and owes no alive->null"
+                 % (case, consumer))
+        if unreachable(case) and '"alive"' not in text and "SC-509e" in ids:
+            fail(out, "SURFACE", "%s/%s owes an agents[].alive move with no captured alive field"
+                 % (case, consumer))
         if not listish and ("SC-017l" in ids or "SC-017m" in ids):
             fail(out, "SURFACE", "%s/%s is not a listing yet owes a listing obligation" % (case, consumer))
 

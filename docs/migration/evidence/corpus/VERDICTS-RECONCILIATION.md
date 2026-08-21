@@ -146,3 +146,58 @@ OBLIGATIONS VERIFIED — fresh against COMMITTED contract a535f8ca69f8 at HEAD
 A gate whose green message does not name its reference invites being read as *fresh against what I
 just wrote*, which is the one thing it does not check.
 
+---
+
+## Re-derivation against the agent-liveness rows (contract `01353d8c`)
+
+The freshness gate fired for real: `derived against contract blob a535f8ca69f8; HEAD is 01353d8cdbdb — re-derive`. Re-derived, and the table now carries **1362 obligations** (was 1242):
+
+| row | obligations | what it mandates |
+|---|---|---|
+| SC-509d | 401 | `schema_version` 1 → 2 |
+| SC-017o | 573 | `inventory_complete` on every digest; stderr diagnostic on incomplete human rows |
+| SC-017l | 134 | `sessions[].status` `stopped` → `unknown` |
+| SC-017m | 134 | membership: absent rows become present as `unknown` |
+| **SC-509e** | **42** | `agents[].alive` → `null` on unreachable digests |
+| **SC-017r** | **78** | agent health marker: blank → an unambiguous `unknown` |
+
+Verdict counts are unchanged at **573 / 492** — the new obligations attach to rows already
+divergent, which is what a reason-projection repair should do.
+
+**SC-017q's matrix is an implication, not an orthogonality**, and that is what makes the agent
+obligations derivable: *session `unknown` implies agent `unknown`*. So wherever a session diverges
+to `unknown`, every roster agent's health diverges with it — **including agents captured as
+`alive:true`**, which is why SC-509e carries two `from` values (`true` and `false`) rather than one.
+The two surfaces move in opposite directions from the same frozen defect, so they are two
+obligations rather than one.
+
+---
+
+## FINDING RAISED, NOT RESOLVED — the recorded-server question reaches the EXISTING obligations
+
+While deriving, I checked which server the successor would actually query, because SC-017k requires
+the answer to come from the candidate's **recorded** server. The corpus's 91 cases partition:
+
+| | cases |
+|---|---|
+| queried/recorded server **proven unreachable** in the snapshot | 39 |
+| case runs **on** the template socket, so recorded == queried | 7 |
+| **case socket differs from the recorded server, and that server's state is UNRECORDED** | **45** |
+
+In the third group a session's meta records `tmux_server=/tmp/aecx/tpl/<t>/s.sock` while the case
+ran on `/tmp/aecx/arms/<a>/<c>/live.sock`. **Whether that recorded server was reachable during the
+run is not captured anywhere** — `tmux.before.txt` observes the case's socket only.
+
+**Why this reaches beyond the new rows.** My existing SC-017l/m obligations key on *case-level*
+unreachability. If the recorded server was in fact unreachable in those 45 cases, then under
+SC-017k/l their sessions are `unknown` too, and roughly half the corpus is currently scored
+`EXPECTED-MATCH` on status when it should diverge.
+
+**I am not re-scoping the table on my own reading**, for two reasons: it would silently change
+about half the corpus's verdicts, and the answer turns on what the successor does with a *stale*
+recorded server — a contract question rather than a derivation one. It is the third answer again:
+not present, not absent, **unobservable** — for 45 of 91 cases.
+
+The obligations emitted above are confined to cases where the server state **is** recorded, so
+nothing in the table asserts a fact the corpus cannot support.
+
