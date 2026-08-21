@@ -2630,6 +2630,41 @@ knowledge is pooled.** Share the coverage *boundary* freely — a fact about wha
 — and withhold the *conclusions* until the other seat has reached its own. Cold first,
 calibrate second.
 
+### A decision's PREMISES can be invalidated by a later ruling that never mentions the decision
+
+A ratification-priority document deferred one contract row. The recorded rationale included
+`NO-P1-FIXTURE-DEPENDENCY` — nothing in phase 1 needs it, so it can wait.
+
+Later, on the same day, a new P1 row was ratified that **cites the deferred row
+normatively.** The deferral's stated justification became false at that moment. Nothing
+announced it. The ratification document was never edited, because from its author's seat
+nothing about it had changed.
+
+**Neither document is wrong.** Each is internally consistent and would survive any careful
+reading of itself. The contradiction exists only in the *relation between them*, which is
+exactly why it survived both being read closely — and why it was found by someone doing
+neither, reading the new row in order to implement it.
+
+**The general mechanism: a decision records a conclusion and the premises that justified
+it, and then nothing ever watches the premises.** Conclusions are load-bearing and get
+cited; premises are prose in a rationale column. When a later change falsifies one, the
+conclusion persists — and it reads as *settled*, because a decision with a written
+rationale is the most convincing kind of artifact there is.
+
+This is the same shape as a scoped verdict copied without its scope, one level up: there,
+a claim outlived its scope; here, a decision outlived its reason.
+
+**The mechanism that catches it is a freshness relation, not more careful reading.** An
+obligation table that stores its contract blob hash and refuses to run when the contract
+moves is the working example. A deferral list, an exemption list, or a known-gaps register
+needs the same thing pointed at whatever its rationales depend on: *these deferrals were
+justified against ratification state X; if ratification has moved, re-derive.* Without it,
+every rationale is a claim about a world that is no longer being checked.
+
+Corollary for the reviewer: when you find one, **sweep for the class before fixing the
+instance.** One invalidated premise is a bug; several mean the list itself is missing its
+freshness relation, and repairing the instances leaves the generator running.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
