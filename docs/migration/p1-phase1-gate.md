@@ -215,7 +215,7 @@ misreading.
     (SC-405e/SC-509b).
 
 24. **INCOMPLETE ENUMERATION IS AN EXPLICIT SNAPSHOT FACT, NOT A MISSING CANDIDATE.**
-    Exercise three terminal failures separately while another healthy source contributes a known
+    Exercise the three direct-candidate enumeration failures separately while another healthy source contributes a known
     candidate: (a) an existing canonical durable root cannot be listed, (b) a discovered worktree
     `.ae` subtree cannot be listed, and (c) an entitled tmux server cannot be enumerated. Before
     classification, observe `inventory_complete = false`, one logical loss fact for the failed
@@ -228,9 +228,12 @@ misreading.
     discovered-subtree arm separately; it proves the next graph depth is covered when the parent
     enumeration succeeds. Then combine two independent failures in one snapshot — an unlistable
     canonical root and an unlistable WORKTREES ROOT — and require two distinguishable
-    logical-source loss facts, not a boolean or first-loss-only record; an entitled-server live
-    candidate supplies the healthy third source. Opposed controls — missing durable
-    root, absent worktree `.ae`, readable empty source, and live server outside the entitled set —
+    logical-source loss facts, not a boolean or first-loss-only record; a positively owned live candidate on the ORDINARY AMBIENT
+    SERVER supplies the healthy third source — with both durable roots unlistable no durable
+    selector exists, so ambient is the only entitlement the product can derive and any other
+    planted server would be a fixture the product could not reach. Opposed controls — missing canonical
+    root, MISSING WORKTREES ROOT, absent worktree `.ae`, readable empty source, and live server
+    outside the entitled set —
     remain complete and add no loss. A discovered candidate whose meta is absent or unreadable
     remains inventory-complete and carries only its independent criterion-21/SC-509b record-loss
     fact. FAIL if one bad source aborts the scan, the loss stays silent, a guessed
