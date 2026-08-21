@@ -23,6 +23,7 @@ invariant, not against the code.
 | you and another person both confirmed a document contains X without re-reading the stated clause | Two people agreeing from memory about a document is not a reading of the document |
 | the commit that introduced a rule also violates it in the same text | Why rules get broken inside their own statement |
 | you filtered a tool's output to the fields you expected to change | Your probe's SCOPE decides the finding, and you chose that scope from expectation |
+| you verified every flagged item and found nothing wrong | Forward verification cannot see a FALSE NEGATIVE — you have to check the converse |
 | you are claiming a body of evidence covers some condition | A condition that was never CAPTURED cannot later be shown to have been ABSENT |
 | a coverage count came back healthy and nobody has re-derived it | A measurement error that produces COMFORT gets used; one that produces alarm gets checked |
 | you are about to write acceptance criteria now that the diff has arrived | If a judgement must be INDEPENDENT of a thing, it has to be made BEFORE that thing exists |
@@ -802,6 +803,33 @@ Practically: read a summary line **whole** the first time, and only then filter.
 comparing two probe results, compare the **invocations** before the outputs — if the flags
 differ, there is no finding yet. And when a tool emits counters you do not recognise, that is
 the moment to look them up, not the moment to drop them.
+
+### Forward verification cannot see a FALSE NEGATIVE — you have to check the converse
+
+A classification pass labelled 1065 rows as expected-to-differ or expected-to-match, and was
+then verified: open the rows marked *differ*, confirm they really do. Every one checked out.
+
+The error was in the other set. Rows whose captured output carried **no status field at all**
+— an empty listing, `"sessions":[]` — had been scored *match*, because the derivation keyed on
+whether a status label was present to change. But the governing rule changed the view's
+**membership**, not just its labels: entries that become `unknown` appear where the old
+product showed nothing. **The output that diverges most visibly was the one the derivation
+excused**, and 268 rows carried it.
+
+No amount of forward checking finds this. Confirming that flagged items deserve their flag is
+structurally blind to items that were never flagged — the check ranges over the positives, and
+the defect lives in the negatives. This is the same asymmetry that makes a green test suite
+weak evidence: it tells you what you asserted, not what you failed to assert.
+
+**So verify both directions, and state the converse as its own assertion.** Not "each divergence
+row really diverges" but also "no row carrying a machine digest is scored a match" and "no
+unreachable-server listing is scored a match" — claims that a wrong *exclusion* violates. Then
+red-proof the converse arm by flipping one correctly-flagged row into the excluded set and
+confirming it is caught.
+
+A rule of thumb for where to look: **the cheap half of a verification is the half that ranges
+over the things you already found.** The expensive half ranges over everything you didn't, and
+only a converse property makes that set checkable at all.
 
 ### A condition that was never CAPTURED cannot later be shown to have been ABSENT
 
