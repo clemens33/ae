@@ -4,6 +4,14 @@
 verbatim by fable5:lead. Transcription can only under-report, so where this disagrees with the
 author's message, the message is the original.
 
+**Amended before any implementation repair, still without reading the implementation.** An
+independent completeness critique by opus5:lexec found that the forward list admitted a missing
+exactly-one union, collapsed record-loss provenance, and an unproved phase boundary; it also
+found the query-trace/set wording conflict and the gate's unstated exhaustive-discovery policy.
+The joint SC-400d/SC-405l/SC-017j ruling resolved the normative gaps. Criteria 2–4, 10 and 18
+were narrowed or strengthened; criteria 20–23 are the durable additions. The temporal repair
+requires union-before-classification but deliberately does not invent an order within discovery.
+
 Written before the diff deliberately: acceptance criteria derived *from* an implementation are
 shaped by it — you read the code, the code suggests what to check, and the checks pass because
 they came from the thing under test. See `docs/gatekeeping.md`, *"If a judgement must be
@@ -15,12 +23,17 @@ a substitute.
 
 ## Status against `f6c8f0a` (phase 1 as landed)
 
-**DOES NOT PASS — and the failures are contract gaps, not code defects.**
+**DOES NOT PASS.** The original failures exposed contract gaps; SC-400d, SC-405l and
+the SC-017j reconciliation precision now resolve them normatively. Against the landed
+phase-1 report (not an implementation read by this gate's author), the one-root build
+still fails the two-layout obligation, and the selector/reconciliation cases remain
+unimplemented or unproved. The criteria were amended before any implementation repair.
 
 | blocked by | criteria |
 |---|---|
-| no row defines a durable **server selector** key (`SC-017k` has nothing to read) | 10, 11, 12, and part of 14 |
-| unresolved whether there are **two durable roots** | 2, 6 |
+| SC-405l now defines the durable **server selector** read domain; landed phase 1 has no reported reader/tests for it | 10, 11, 12, 20, 23, and part of 14 |
+| SC-400d now requires **two durable layouts**; landed phase 1 has one root | 2, 6, 20 |
+| SC-017j now defines one-to-one source reconciliation; no reported exactly-one or ambiguous-cardinality proof exists | 20 |
 
 The gate independently re-derived both gaps from the normative side, while the builder hit them
 from the implementation side. That convergence is what establishes they are real rather than a
@@ -35,22 +48,27 @@ misreading.
 
 2. **BOTH DURABLE ROOT CLASSES.** Test must construct one valid durable candidate under the
    canonical sessions root and one under the ratified legacy-readable worktree layout, with
-   distinct stable identities. Observable: both identities present in the phase-1 candidate
-   collection. FAIL if either is absent or the legacy root is treated as archive/history.
+   distinct stable identities. The legacy fixture's outer worktree name MUST differ from its
+   inner session-name leaf; add a bare worktree-directory control with no nested state directory.
+   Observable: both state-directory identities present in the phase-1 candidate collection,
+   the legacy candidate named by its inner leaf, and the bare control absent. FAIL if either
+   candidate is absent, the outer name becomes the inventory name, the bare worktree appears,
+   or the legacy root is treated as archive/history.
 
 3. **ARCHIVES ARE ZERO INPUT.** Take a baseline candidate collection, then add (a) an
    archive-only identity, (b) an archive entry whose basename collides with a live durable
    candidate, (c) an archive meta record naming an otherwise unentitled server. Observable:
-   semantic candidate collection and queried-server trace identical to baseline. FAIL if an
+   semantic candidate collection and **set of queried servers** identical to baseline. FAIL if an
    archive-only identity appears, a durable candidate changes, or archive bytes confer
    entitlement.
 
 4. **UNREADABLE META DOES NOT DELETE THE DIRECTORY CANDIDATE.** Create a real durable directory
-   whose meta read demonstrably fails under the invoking uid; **chmod alone is insufficient if
-   the runner can still read it.** Observable: the directory identity/path remains a candidate,
-   while no server entitlement is derived from unread bytes. FAIL on omission, whole-inventory
-   error, fabricated meta facts, or a server query sourced from the unreadable record.
-   *OPEN CHOICE:* how the read failure is carried forward for later degradation.
+   in EACH SC-400d layout whose meta read demonstrably fails under the invoking uid; **chmod
+   alone is insufficient if the runner can still read it.** Observable: both directory
+   identities/paths remain candidates, while no server entitlement is derived from unread bytes.
+   FAIL on omission, whole-inventory error, fabricated meta facts, or a server query sourced from
+   either unreadable record. The carrier is an *OPEN CHOICE*; preserving a separately observable
+   durable-source/read-failure fact is not (criterion 21).
 
 5. **ENTITLED LIVE-ONLY DISCOVERY, WITH OWNERSHIP CONTROL.** Two tmux-only sessions on the
    already-resolved ambient server, neither with durable state: one with positive `AE_SESSION`
@@ -87,7 +105,9 @@ misreading.
     discoverable to the harness but named by no durable candidate. A positively marked tmux-only
     session on each. Observable: A and B live-only identities appear, C does not, and the
     backend query trace names only A and B. FAIL if C is queried or appears, or if B is not
-    queried. *OPEN CHOICE:* query grouping/caching — do not assert an exact query count.
+    queried. This is exhaustive over the finite entitled set because SC-017j now requires an
+    enumeration attempt for every distinct entitled server. *OPEN CHOICE:* positively proven
+    equivalent-server grouping, caching, retries, and exact query count.
 
 11. **MISSING AND AMBIGUOUS SELECTORS CONFER NOTHING BUT DELETE NOTHING.** One durable candidate
     with no selector, one with a demonstrably ambiguous/invalid selector, plus marked live-only
@@ -135,11 +155,52 @@ misreading.
     emission of it is.
 
 18. **NO UNMANDATED ORDER GATE.** Candidate collection order, map/set type, server query order,
-    and same-identity multi-source merge representation are *OPEN CHOICES* here. Tests compare
-    semantic identities/facts, never iteration bytes. `SC-017n` owns final rendered order; this
-    gate must not reject a correct inventory for choosing a different internal order.
+    and the carrier used for a correctly coalesced candidate's multiple provenances are *OPEN
+    CHOICES* here. Semantic cardinality is fixed by criterion 20. Tests compare semantic
+    identities/facts, never iteration bytes. `SC-017n` owns final rendered order; this gate must
+    not reject a correct inventory for choosing a different internal order.
 
 19. **NO AMBIENT-SELECTION POLICY GATE.** Tests inject or establish the ordinary ambient server
     before inventory runs. FAIL only if inventory ignores that resolved input or expands beyond
     it. How `AE_TMUX_SERVER` selects the ambient server belongs to `SC-1410c` and is an
     *OPEN CHOICE* outside this phase.
+
+20. **THE UNION COALESCES EXACTLY ONE MATCH AND REFUSES AMBIGUOUS CARDINALITY.** Test A constructs
+    one durable candidate with a positive server selector plus one positively owned live sighting
+    from that recorded server under the exact SC-400d inventory name. Observable: exactly ONE
+    semantic candidate carrying both durable and live provenance/facts. FAIL if two candidates
+    remain, either provenance is lost, or equality by name alone is sufficient. Control: the same
+    name on a different entitled server remains distinct. Test B constructs TWO root-distinct
+    durable candidates with the same positive server and exact inventory name plus one positively
+    owned live sighting. Observable: all three remain and the sighting is attached to neither
+    durable record. FAIL if either durable record absorbs it or candidate cardinality drops below
+    three. Representation is open; one-to-one join semantics are not.
+
+21. **SOURCE MEMBERSHIP AND RECORD-READ LOSS ARE INDEPENDENT FACTS.** Construct (a) a tmux-only
+    candidate with no durable state and (b) a durable-directory candidate whose meta read
+    demonstrably fails. Observe the phase-1 carrier before classification. It must distinguish
+    durable-source presence, live-source presence, and durable-record read outcome so SC-509b can
+    later derive degradation without re-running discovery. FAIL if both fixtures collapse to one
+    undifferentiated `no readable meta` state, if source provenance is lost, or if read failure is
+    inferred from absence of live evidence. Exact enum/field representation is an *OPEN CHOICE*.
+
+22. **THE COMPLETE UNION CROSSES THE BOUNDARY BEFORE CLASSIFICATION.** Phase 1 must expose a
+    standalone inventory operation over raw durable/live discovery facts; it must not accept a
+    preclassified liveness/status map, call a classifier, or materialize candidates only inside a
+    classifier. A test with both durable and live-only inputs observes their complete semantic
+    union at that boundary. FAIL now on reversed dependency or no standalone union seam. When
+    phase 2 wires the caller, its integration test must additionally record `inventory complete`
+    before first `classify enter`, with the classifier input equal to that union. Raw entitled-
+    server discovery may run before or after durable discovery — SC-017j does not mandate order
+    within inventory, and this criterion must not invent one.
+
+23. **SC-405l SELECTOR NORMALIZATION IS A DISCRIMINATING MATRIX.** Unit-test the normalized
+    server fact with opposed inputs: `name` + nonempty value -> positive name; `socket` +
+    nonempty absolute path -> positive socket; explicit `ambiguous` -> ambiguous; kind ABSENT +
+    nonempty value -> legacy positive name; both selector fields absent/empty -> missing. Test
+    invalid combinations separately: unknown kind, typed empty value, relative socket,
+    present-but-empty kind beside a nonempty value, duplicate equal keys, and duplicate
+    conflicting keys must all be ambiguous. The absent-kind and present-empty-kind fixtures must
+    differ by construction. FAIL if any candidate disappears, any invalid form becomes positive,
+    name/socket payloads lose their type, or a missing/ambiguous form enters the queried-server
+    set. Whether malformed forms also set `degraded` is outside this criterion (SC-405e/SC-509b).

@@ -246,14 +246,38 @@ Authority: commands.md:83. Empirical: pending. Conflict: none.
 
 **SC-017j — inventory candidates exist before liveness is classified.** Bucket 3 —
 fix-known-defect(#105). The list inventory is the union of (a) durable current-session
-state under the canonical sessions root plus SC-400a's legacy-readable worktree layout
+state under SC-400d's canonical and legacy-readable layouts
 and (b) positively identified ae-owned live tmux sessions on a server the product is
-already entitled to query. The entitled server set is finite and pointer-derived: (1) the single ambient server selected by this invocation's ordinary tmux transport, and (2) every distinct positive, unambiguous server selector read from a durable inventory candidate under that candidate's ratified current or legacy format. A missing/ambiguous selector confers no entitlement; it leaves that durable candidate in inventory with liveness unknown. Enumerating an entitled server may add every positively ae-owned live session found there. ae does not gain entitlement by sweeping arbitrary tmux socket paths or server names. A live session with no durable candidate on a server outside this set is absent from inventory by epistemic limit — not classified stopped or unknown — and may become visible later when an ambient selection or durable record supplies a pointer. SC-1410c separately owns whether/how AE_TMUX_SERVER selects the ambient server; this row consumes the selected ambient server and does not ratify that environment control. Archives are inert and never enter this inventory. Every
+already entitled to query. The entitled server set is finite and pointer-derived: (1)
+the single ambient server selected by this invocation's ordinary tmux transport, and
+(2) every distinct positive, unambiguous server selector read from a durable inventory
+candidate under that candidate's ratified current or legacy format. A
+missing/ambiguous selector confers no entitlement; it leaves that durable candidate in
+inventory with liveness unknown. Inventory attempts enumeration of every distinct
+entitled server; positively proven equivalent selectors MAY share one query, and every
+successful enumeration contributes every positively ae-owned live session it found.
+ae does not gain entitlement by sweeping arbitrary tmux socket paths or server names. A
+live session with no durable candidate on a server outside this set is absent from
+inventory by epistemic limit — not classified stopped or unknown — and may become
+visible later when an ambient selection or durable record supplies a pointer. SC-1410c
+separately owns whether/how AE_TMUX_SERVER selects the ambient server; this row consumes
+the selected ambient server and does not ratify that environment control. Archives are
+inert and never enter this inventory. Every
 durable candidate survives into classification: a failed liveness query, a prefix-only
 name match, or a live exact-name session whose ownership marker is missing cannot delete
 the candidate. A positively live tmux-only candidate remains visible; loss of its
 durable record is the separate SC-509b `degraded` fact. This row does NOT authorize
-basename-only deduplication of distinct identities. IS at 72c7293: VIOLATED —
+basename-only deduplication of distinct identities. Discovery completes before
+reconciliation. A positively ae-owned live sighting MAY coalesce with a durable
+candidate only when the durable selector is positive, the sighting came from a
+successful query of that candidate's recorded server, its tmux name exactly equals the
+SC-400d inventory name, and **exactly one** durable candidate matches that server/name
+tuple. With zero durable matches the live-only candidate remains; with more than one,
+NONE merges and every durable candidate plus the live sighting remains. Missing or
+ambiguous selectors, name-only equality, prefix equality, ambient membership, and
+unproved equivalence between selector spellings never authorize a merge. Server plus
+exact name is a one-to-one **join witness**, not stable identity. IS at 72c7293:
+VIOLATED —
 `list_ae_sessions` discovers ambient tmux sessions and requires `AE_SESSION` at
 ae:2682-2693, while `iter_stopped_sessions` separately discovers disk directories and
 then removes them through `tmux has-session -t "$name"` at ae:2697-2708. A missing
@@ -263,7 +287,7 @@ blocks. The prefix behavior itself was observed on isolated tmux 3.7b/Darwin
 source-proven, not yet captured end-to-end. Empirical: primitive prefix behavior
 observed; product disappearance source-proven, end-to-end capture pending. Authority:
 architecture.md@72c7293:61-83 +
-SC-400a + SC-509b + joint P1 ruling. Issue #105 records IS/conflict only; it is not
+SC-400a + SC-400d + SC-509b + joint P1 ruling. Issue #105 records IS/conflict only; it is not
 normative authority. Conflict: fix-known-defect(#105).
 
 **SC-017k — list liveness is a positive, exact fact from the session's own server.**
@@ -723,6 +747,23 @@ write ownership stated at the flip commit. Authority: DR-001. Empirical: n/a
 Authority: DR-006 + epic #79 P2 + #76. Empirical: n/a (successor design).
 Conflict: DR-006.
 
+**SC-400d — durable current-session inventory has two readable state layouts.** Bucket
+2 — a durable candidate is a state directory at either
+`<AE_HOME>/sessions/<session-name>/` (canonical) or
+`<AE_HOME>/worktrees/<worktree-name>/.ae/<session-name>/` (legacy worktree-nested).
+The `<session-name>` leaf is the candidate's inventory name; the root-qualified state
+directory is its discovery identity/provenance, so equal leaves across paths never
+deduplicate candidates. Presence of the state directory is sufficient for discovery:
+missing or unreadable `meta` loses/degrades facts under SC-405i/SC-509b but cannot remove
+the candidate. A bare worktree directory without the nested state directory is not a
+session candidate. Archives remain inert and excluded by SC-017j. Authority: SC-400a's
+legacy-read promise + joint P1 ruling. Empirical: source-proven legacy shape — frozen ae
+resolves `${WORKTREES_DIR}/${name}/.ae/${name}` at ae:3200-3209 and independently scans
+`${WORKTREES_DIR}/*/.ae/*/meta` at ae:8893, taking the inner directory leaf as the
+session name; successor end-to-end inventory pending. Conflict: none.
+**classified_by:** SC-400d — two-root P1 inventory ruling, 2026-08-21;
+fable5:lead + gpt56sol:colead. Bucket 2, conflict none.
+
 **SC-401a — the archive payload is the five-part set.** Bucket 2 — generated `meta`,
 rendered `digest.md`, `memo.tsv`, `events.jsonl`, `messages/*` bodies (#48 format;
 inertness proofs are SC-804/805). Survives all flips. Authority:
@@ -782,6 +823,37 @@ a live census never becomes contract; per-family S5 rows only when successor wri
 need a SHOULD; the inventory stays evidence). Authority: slice-1b joint ruling.
 Empirical: builder name-census + C-cluster pending. Conflict: none. **classified_by:
 both seats, 2026-08-20.**
+
+**SC-405l — a durable tmux-server selector normalizes to a typed knowledge fact.**
+Bucket 2 — every durable candidate exposes exactly one of
+`positive(name:<nonempty>)`, `positive(socket:<absolute-path>)`, `missing`, or
+`ambiguous`. Only `positive` confers SC-017j server entitlement or can support SC-017k
+liveness; `missing` and `ambiguous` leave the candidate inventoried and route liveness
+through SC-017l `unknown`.
+
+The well-formed bash-era two-key read mapping is exact: one
+`tmux_server_kind=name` plus nonempty `tmux_server` is `positive(name)`;
+`kind=socket` plus a nonempty absolute value is `positive(socket)`;
+`kind=ambiguous` is `ambiguous`; and an **absent** kind plus a nonempty value is the
+legacy `positive(name)` form. A selector with no value and no nonempty kind is
+`missing`. Every other selector-level combination — including an unknown kind, typed
+empty value, non-absolute socket, present-empty kind beside a nonempty value, or
+duplicate/conflicting selector keys — is `ambiguous` and MUST NOT confer entitlement.
+Whether malformed selector bytes also mark the record `degraded` remains
+SC-405e/SC-509b's separate question.
+
+This row defines READ normalization only. A successor writer owes a separately
+ratified, round-tripping encoding before it emits this fact. It supersedes SC-405d's
+catch-all treatment only for the exact `tmux_server` / `tmux_server_kind` family in the
+P1 successor; every other unknown key remains tolerated and uninterpreted, and
+SC-405b/c remain true rather than exhaustive. Authority: SC-400a legacy readability +
+SC-017j/k/l + joint P1 ruling. Empirical: frozen ae's released reader treats a
+kind-absent nonempty value as `-L <name>` and explicit `ambiguous` as no target at
+ae:7594-7599; the typed writer emits the two keys at ae:17558-17559. Those bytes prove
+the legacy mapping, not the successor write format. Successor read-path capture pending.
+Conflict: none.
+**classified_by:** SC-405l — durable-server normalization ruling,
+2026-08-21; fable5:lead + gpt56sol:colead. Bucket 2, conflict none.
 
 **SC-405i — a present session dir with MISSING meta is degraded.** Bucket 2 —
 (slice-1b Q8): identity beyond the directory name and the entire roster are lost at
