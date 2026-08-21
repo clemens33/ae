@@ -1,0 +1,1425 @@
+case	consumer	rc	phase	surface	normalised_argv	instrument	reason
+arms/A1/c01-healthy-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c01-healthy-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c01-healthy-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c01-healthy-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c01-healthy-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c01-healthy-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c01-healthy-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c01-healthy-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c01-healthy-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c01-healthy-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c01-healthy-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c01-healthy-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c01-healthy-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c01-healthy-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c01-healthy-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c01-healthy-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c01-healthy-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c01-healthy-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c01-healthy-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c01-healthy-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c01-healthy-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c01-healthy-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c02-meta-mode-000-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c02-meta-mode-000-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c03-malformed-line-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c03-malformed-line-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c03-malformed-line-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c03-malformed-line-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c03-malformed-line-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c03-malformed-line-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c03-malformed-line-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c03-malformed-line-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c03-malformed-line-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c03-malformed-line-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c03-malformed-line-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c03-malformed-line-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c03-malformed-line-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c03-malformed-line-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c03-malformed-line-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c03-malformed-line-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c03-malformed-line-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c03-malformed-line-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c03-malformed-line-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c03-malformed-line-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c03-malformed-line-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c03-malformed-line-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	status	0	P1	ae status	ae status ta1b	frozen	read surface
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta1b/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/ta1b/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/ta1b/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	status	0	P1	ae status	ae status ta1b	frozen	read surface
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta1b/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/ta1b/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/ta1b/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c05-recover-ref-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c05-recover-ref-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c05-recover-ref-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c05-recover-ref-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c05-recover-ref-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c05-recover-ref-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c05-recover-ref-ro/consumers.tsv	status	0	P1	ae status	ae status ta1c	frozen	read surface
+arms/A1/c05-recover-ref-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c05-recover-ref-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta1c/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c05-recover-ref-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/ta1c/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c05-recover-ref-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/ta1c/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c05-recover-ref-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c05-recover-ref-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c05-recover-ref-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c05-recover-ref-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c05-recover-ref-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c05-recover-ref-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c05-recover-ref-rw/consumers.tsv	status	0	P1	ae status	ae status ta1c	frozen	read surface
+arms/A1/c05-recover-ref-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c05-recover-ref-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta1c/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c05-recover-ref-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/ta1c/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c05-recover-ref-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/ta1c/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c06-escapes-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c06-escapes-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c06-escapes-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c06-escapes-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c06-escapes-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c06-escapes-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c06-escapes-ro/consumers.tsv	status	0	P1	ae status	ae status tg11	frozen	read surface
+arms/A1/c06-escapes-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c06-escapes-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg11/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c06-escapes-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg11/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c06-escapes-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg11/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c06-escapes-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c06-escapes-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c06-escapes-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c06-escapes-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c06-escapes-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c06-escapes-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c06-escapes-rw/consumers.tsv	status	0	P1	ae status	ae status tg11	frozen	read surface
+arms/A1/c06-escapes-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c06-escapes-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg11/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c06-escapes-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg11/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c06-escapes-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg11/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c07-dupkey-known-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c07-dupkey-known-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c07-dupkey-known-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c07-dupkey-known-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c07-dupkey-known-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c07-dupkey-known-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c07-dupkey-known-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c07-dupkey-known-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c07-dupkey-known-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c07-dupkey-known-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c07-dupkey-known-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c07-dupkey-known-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c07-dupkey-known-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c07-dupkey-known-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c07-dupkey-known-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c07-dupkey-known-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c07-dupkey-known-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c07-dupkey-known-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c07-dupkey-known-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c07-dupkey-known-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c07-dupkey-known-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c07-dupkey-known-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c09-dupkey-unknown-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c09-dupkey-unknown-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c11-routing-known-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c11-routing-known-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c11-routing-known-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c11-routing-known-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c11-routing-known-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c11-routing-known-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c11-routing-known-ro/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A1/c11-routing-known-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c11-routing-known-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c11-routing-known-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg5/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c11-routing-known-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg5/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c11-routing-known-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c11-routing-known-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c11-routing-known-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c11-routing-known-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c11-routing-known-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c11-routing-known-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c11-routing-known-rw/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A1/c11-routing-known-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c11-routing-known-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c11-routing-known-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg5/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c11-routing-known-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg5/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c12-routing-omitted-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c12-routing-omitted-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c12-routing-omitted-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c12-routing-omitted-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c12-routing-omitted-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c12-routing-omitted-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c12-routing-omitted-ro/consumers.tsv	status	0	P1	ae status	ae status ta1r	frozen	read surface
+arms/A1/c12-routing-omitted-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c12-routing-omitted-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta1r/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c12-routing-omitted-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/ta1r/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c12-routing-omitted-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/ta1r/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c12-routing-omitted-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c12-routing-omitted-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c12-routing-omitted-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c12-routing-omitted-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c12-routing-omitted-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c12-routing-omitted-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c12-routing-omitted-rw/consumers.tsv	status	0	P1	ae status	ae status ta1r	frozen	read surface
+arms/A1/c12-routing-omitted-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c12-routing-omitted-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta1r/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c12-routing-omitted-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/ta1r/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c12-routing-omitted-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/ta1r/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c13-same-display-routing-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c13-same-display-routing-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c13-same-display-routing-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c13-same-display-routing-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c13-same-display-routing-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c13-same-display-routing-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c13-same-display-routing-ro/consumers.tsv	status	0	P1	ae status	ae status tg10	frozen	read surface
+arms/A1/c13-same-display-routing-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c13-same-display-routing-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg10/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c13-same-display-routing-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg10/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c13-same-display-routing-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg10/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c13-same-display-routing-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c13-same-display-routing-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c13-same-display-routing-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c13-same-display-routing-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c13-same-display-routing-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c13-same-display-routing-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c13-same-display-routing-rw/consumers.tsv	status	0	P1	ae status	ae status tg10	frozen	read surface
+arms/A1/c13-same-display-routing-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c13-same-display-routing-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg10/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c13-same-display-routing-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg10/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c13-same-display-routing-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg10/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c14-display-only-legacy-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c14-display-only-legacy-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c16-events-unknown-keys-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c16-events-unknown-keys-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c17-unknown-action-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c17-unknown-action-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c17-unknown-action-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c17-unknown-action-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c17-unknown-action-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c17-unknown-action-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c17-unknown-action-ro/consumers.tsv	status	0	P1	ae status	ae status tg7a	frozen	read surface
+arms/A1/c17-unknown-action-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c17-unknown-action-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg7a/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c17-unknown-action-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg7a/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c17-unknown-action-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg7a/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c17-unknown-action-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c17-unknown-action-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c17-unknown-action-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c17-unknown-action-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c17-unknown-action-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c17-unknown-action-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c17-unknown-action-rw/consumers.tsv	status	0	P1	ae status	ae status tg7a	frozen	read surface
+arms/A1/c17-unknown-action-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c17-unknown-action-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg7a/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c17-unknown-action-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg7a/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c17-unknown-action-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg7a/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c18-no-trailing-newline-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c18-no-trailing-newline-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c19-partial-tail-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c19-partial-tail-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c19-partial-tail-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c19-partial-tail-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c19-partial-tail-ro/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c19-partial-tail-ro/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c19-partial-tail-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c19-partial-tail-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c19-partial-tail-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c19-partial-tail-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c19-partial-tail-ro/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c19-partial-tail-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c19-partial-tail-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c19-partial-tail-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c19-partial-tail-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A1/c19-partial-tail-rw/consumers.tsv	ls-alias	0	P1	ae ls	ae ls	frozen	read surface
+arms/A1/c19-partial-tail-rw/consumers.tsv	ls-alias-all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A1/c19-partial-tail-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A1/c19-partial-tail-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c19-partial-tail-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c19-partial-tail-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c19-partial-tail-rw/consumers.tsv	events-tail	143	P1	helper:events-tail	<AE_HOME>/sessions/tg1/events-tail	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline/list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline/list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline/list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline/status	0	P1	ae status	ae status ta1k	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline/next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline/agents	0	P1	helper:agents	<AE_HOME>/sessions/ta1k/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline/requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta1k/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline-clocale/list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline-clocale/list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline-clocale/status	0	P1	ae status	ae status ta1k	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline-clocale/next	0	P1	ae next	ae next	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s0-baseline-clocale/agents	0	P1	helper:agents	<AE_HOME>/sessions/ta1k/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c20-405k-live/consumers.tsv	s1-extra-pane/list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s1-extra-pane/list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s1-extra-pane/list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s1-extra-pane/status	0	P1	ae status	ae status ta1k	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s1-extra-pane/next	1	P1	ae next	ae next	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s1-extra-pane/agents	0	P1	helper:agents	<AE_HOME>/sessions/ta1k/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c20-405k-live/consumers.tsv	s1-extra-pane/requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta1k/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c20-405k-live/consumers.tsv	s2-extra-pane-and-missing-roster-pane/list	0	P1	ae list	ae list	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s2-extra-pane-and-missing-roster-pane/list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s2-extra-pane-and-missing-roster-pane/list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s2-extra-pane-and-missing-roster-pane/status	0	P1	ae status	ae status ta1k	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s2-extra-pane-and-missing-roster-pane/next	0	P1	ae next	ae next	frozen	read surface
+arms/A1/c20-405k-live/consumers.tsv	s2-extra-pane-and-missing-roster-pane/agents	0	P1	helper:agents	<AE_HOME>/sessions/ta1k/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A1/c20-405k-live/consumers.tsv	s2-extra-pane-and-missing-roster-pane/requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta1k/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A2/c01-filters-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls	0	P1	ae ls	ae ls	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_json	0	P1	ae ls	ae ls --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_running	0	P1	ae list	ae list --running	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_running_json	0	P1	ae list	ae list --running --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_running	0	P1	ae ls	ae ls --running	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_running_json	0	P1	ae ls	ae ls --running --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_all_json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_all_json	0	P1	ae ls	ae ls --all --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_stopped	0	P1	ae list	ae list --stopped	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_stopped_json	0	P1	ae list	ae list --stopped --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_stopped	0	P1	ae ls	ae ls --stopped	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_stopped_json	0	P1	ae ls	ae ls --stopped --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_needsattn_json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_needsattn	0	P1	ae ls	ae ls --needs-attn	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_needsattn_json	0	P1	ae ls	ae ls --needs-attn --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_needsme	0	P1	ae list	ae list --needs-me	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_needsme_json	0	P1	ae list	ae list --needs-me --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_needsme	0	P1	ae ls	ae ls --needs-me	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_needsme_json	0	P1	ae ls	ae ls --needs-me --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_needs	0	P1	ae list	ae list --needs	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_needs_json	0	P1	ae list	ae list --needs --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_needs	0	P1	ae ls	ae ls --needs	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_needs_json	0	P1	ae ls	ae ls --needs --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_attn	0	P1	ae list	ae list --attn	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_attn_json	0	P1	ae list	ae list --attn --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_attn	0	P1	ae ls	ae ls --attn	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_attn_json	0	P1	ae ls	ae ls --attn --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_active_json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_active	0	P1	ae ls	ae ls --active	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_active_json	0	P1	ae ls	ae ls --active --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_busy	0	P1	ae list	ae list --busy	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_busy_json	0	P1	ae list	ae list --busy --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_busy	0	P1	ae ls	ae ls --busy	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	ls_busy_json	0	P1	ae ls	ae ls --busy --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	inter_needsattnall	0	P1	ae list	ae list --needs-attn --all	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	inter_needsattnall_json	0	P1	ae list	ae list --needs-attn --all --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	inter_allneedsattn	0	P1	ae list	ae list --all --needs-attn	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	inter_allneedsattn_json	0	P1	ae list	ae list --all --needs-attn --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	inter_activeall	0	P1	ae list	ae list --active --all	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	inter_activeall_json	0	P1	ae list	ae list --active --all --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	inter_allactive	0	P1	ae list	ae list --all --active	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	inter_allactive_json	0	P1	ae list	ae list --all --active --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	inter_needsattnstopped	0	P1	ae list	ae list --needs-attn --stopped	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	inter_needsattnstopped_json	0	P1	ae list	ae list --needs-attn --stopped --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	inter_activestopped	0	P1	ae list	ae list --active --stopped	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	inter_activestopped_json	0	P1	ae list	ae list --active --stopped --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_badflag	1	P1	ae list	ae list --no-such-flag	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	list_help	0	P1	ae list	ae list --help	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_list_active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_list_active_json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_list_busy	0	P1	ae list	ae list --busy	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_active_all	0	P1	ae list	ae list --active --all	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_all_active	0	P1	ae list	ae list --all --active	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_active_stopped	0	P1	ae list	ae list --active --stopped	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_stopped_active	0	P1	ae list	ae list --stopped --active	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_needsattn_active	0	P1	ae list	ae list --needs-attn --active	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_inside_active_needsattn	0	P1	ae list	ae list --active --needs-attn	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_list_active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_list_active_json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_list_busy	0	P1	ae list	ae list --busy	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_active_all	0	P1	ae list	ae list --active --all	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_all_active	0	P1	ae list	ae list --all --active	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_active_stopped	0	P1	ae list	ae list --active --stopped	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_stopped_active	0	P1	ae list	ae list --stopped --active	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_needsattn_active	0	P1	ae list	ae list --needs-attn --active	frozen	read surface
+arms/A2/c01-filters-ro/consumers.tsv	win_outside_active_needsattn	0	P1	ae list	ae list --active --needs-attn	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls	0	P1	ae ls	ae ls	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_json	0	P1	ae ls	ae ls --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_running	0	P1	ae list	ae list --running	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_running_json	0	P1	ae list	ae list --running --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_running	0	P1	ae ls	ae ls --running	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_running_json	0	P1	ae ls	ae ls --running --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_all_json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_all	0	P1	ae ls	ae ls --all	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_all_json	0	P1	ae ls	ae ls --all --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_stopped	0	P1	ae list	ae list --stopped	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_stopped_json	0	P1	ae list	ae list --stopped --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_stopped	0	P1	ae ls	ae ls --stopped	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_stopped_json	0	P1	ae ls	ae ls --stopped --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_needsattn_json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_needsattn	0	P1	ae ls	ae ls --needs-attn	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_needsattn_json	0	P1	ae ls	ae ls --needs-attn --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_needsme	0	P1	ae list	ae list --needs-me	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_needsme_json	0	P1	ae list	ae list --needs-me --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_needsme	0	P1	ae ls	ae ls --needs-me	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_needsme_json	0	P1	ae ls	ae ls --needs-me --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_needs	0	P1	ae list	ae list --needs	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_needs_json	0	P1	ae list	ae list --needs --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_needs	0	P1	ae ls	ae ls --needs	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_needs_json	0	P1	ae ls	ae ls --needs --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_attn	0	P1	ae list	ae list --attn	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_attn_json	0	P1	ae list	ae list --attn --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_attn	0	P1	ae ls	ae ls --attn	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_attn_json	0	P1	ae ls	ae ls --attn --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_active_json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_active	0	P1	ae ls	ae ls --active	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_active_json	0	P1	ae ls	ae ls --active --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_busy	0	P1	ae list	ae list --busy	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_busy_json	0	P1	ae list	ae list --busy --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_busy	0	P1	ae ls	ae ls --busy	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	ls_busy_json	0	P1	ae ls	ae ls --busy --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	inter_needsattnall	0	P1	ae list	ae list --needs-attn --all	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	inter_needsattnall_json	0	P1	ae list	ae list --needs-attn --all --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	inter_allneedsattn	0	P1	ae list	ae list --all --needs-attn	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	inter_allneedsattn_json	0	P1	ae list	ae list --all --needs-attn --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	inter_activeall	0	P1	ae list	ae list --active --all	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	inter_activeall_json	0	P1	ae list	ae list --active --all --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	inter_allactive	0	P1	ae list	ae list --all --active	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	inter_allactive_json	0	P1	ae list	ae list --all --active --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	inter_needsattnstopped	0	P1	ae list	ae list --needs-attn --stopped	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	inter_needsattnstopped_json	0	P1	ae list	ae list --needs-attn --stopped --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	inter_activestopped	0	P1	ae list	ae list --active --stopped	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	inter_activestopped_json	0	P1	ae list	ae list --active --stopped --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_badflag	1	P1	ae list	ae list --no-such-flag	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	list_help	0	P1	ae list	ae list --help	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_list_active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_list_active_json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_list_busy	0	P1	ae list	ae list --busy	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_active_all	0	P1	ae list	ae list --active --all	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_all_active	0	P1	ae list	ae list --all --active	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_active_stopped	0	P1	ae list	ae list --active --stopped	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_stopped_active	0	P1	ae list	ae list --stopped --active	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_needsattn_active	0	P1	ae list	ae list --needs-attn --active	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_inside_active_needsattn	0	P1	ae list	ae list --active --needs-attn	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_list_active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_list_active_json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_list_busy	0	P1	ae list	ae list --busy	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_active_all	0	P1	ae list	ae list --active --all	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_all_active	0	P1	ae list	ae list --all --active	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_active_stopped	0	P1	ae list	ae list --active --stopped	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_stopped_active	0	P1	ae list	ae list --stopped --active	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_needsattn_active	0	P1	ae list	ae list --needs-attn --active	frozen	read surface
+arms/A2/c01-filters-rw/consumers.tsv	win_outside_active_needsattn	0	P1	ae list	ae list --active --needs-attn	frozen	read surface
+arms/A3/c01-dead-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c01-dead-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c01-dead-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c01-dead-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c01-dead-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c01-dead-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c01-dead-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c01-dead-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c01-dead-ro/consumers.tsv	status	0	P1	ae status	ae status twda1	frozen	read surface
+arms/A3/c01-dead-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/twda1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c01-dead-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c01-dead-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c01-dead-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c01-dead-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c01-dead-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c01-dead-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c01-dead-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c01-dead-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c01-dead-rw/consumers.tsv	status	0	P1	ae status	ae status twda1	frozen	read surface
+arms/A3/c01-dead-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/twda1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c02-stale-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c02-stale-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c02-stale-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c02-stale-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c02-stale-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c02-stale-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c02-stale-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c02-stale-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c02-stale-ro/consumers.tsv	status	0	P1	ae status	ae status twda2	frozen	read surface
+arms/A3/c02-stale-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/twda2/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c02-stale-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c02-stale-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c02-stale-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c02-stale-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c02-stale-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c02-stale-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c02-stale-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c02-stale-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c02-stale-rw/consumers.tsv	status	0	P1	ae status	ae status twda2	frozen	read surface
+arms/A3/c02-stale-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/twda2/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c03-throttled-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c03-throttled-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c03-throttled-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c03-throttled-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c03-throttled-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c03-throttled-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c03-throttled-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c03-throttled-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c03-throttled-ro/consumers.tsv	status	0	P1	ae status	ae status twda3	frozen	read surface
+arms/A3/c03-throttled-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/twda3/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c03-throttled-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c03-throttled-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c03-throttled-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c03-throttled-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c03-throttled-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c03-throttled-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c03-throttled-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c03-throttled-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c03-throttled-rw/consumers.tsv	status	0	P1	ae status	ae status twda3	frozen	read surface
+arms/A3/c03-throttled-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/twda3/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c04-waiting-user-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c04-waiting-user-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c04-waiting-user-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c04-waiting-user-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c04-waiting-user-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c04-waiting-user-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c04-waiting-user-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c04-waiting-user-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c04-waiting-user-ro/consumers.tsv	status	0	P1	ae status	ae status tg2wu	frozen	read surface
+arms/A3/c04-waiting-user-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg2wu/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c04-waiting-user-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c04-waiting-user-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c04-waiting-user-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c04-waiting-user-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c04-waiting-user-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c04-waiting-user-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c04-waiting-user-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c04-waiting-user-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c04-waiting-user-rw/consumers.tsv	status	0	P1	ae status	ae status tg2wu	frozen	read surface
+arms/A3/c04-waiting-user-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg2wu/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c05-blocked-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c05-blocked-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c05-blocked-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c05-blocked-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c05-blocked-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c05-blocked-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c05-blocked-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c05-blocked-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c05-blocked-ro/consumers.tsv	status	0	P1	ae status	ae status tg2bl	frozen	read surface
+arms/A3/c05-blocked-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg2bl/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c05-blocked-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c05-blocked-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c05-blocked-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c05-blocked-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c05-blocked-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c05-blocked-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c05-blocked-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c05-blocked-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c05-blocked-rw/consumers.tsv	status	0	P1	ae status	ae status tg2bl	frozen	read surface
+arms/A3/c05-blocked-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg2bl/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c06-unanswered-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c06-unanswered-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c06-unanswered-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c06-unanswered-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c06-unanswered-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c06-unanswered-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c06-unanswered-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c06-unanswered-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c06-unanswered-ro/consumers.tsv	status	0	P1	ae status	ae status tg2un	frozen	read surface
+arms/A3/c06-unanswered-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg2un/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c06-unanswered-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c06-unanswered-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c06-unanswered-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c06-unanswered-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c06-unanswered-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c06-unanswered-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c06-unanswered-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c06-unanswered-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c06-unanswered-rw/consumers.tsv	status	0	P1	ae status	ae status tg2un	frozen	read surface
+arms/A3/c06-unanswered-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg2un/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c07-competing-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c07-competing-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c07-competing-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c07-competing-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c07-competing-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c07-competing-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c07-competing-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c07-competing-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c07-competing-ro/consumers.tsv	status	0	P1	ae status	ae status tg2b	frozen	read surface
+arms/A3/c07-competing-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg2b/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c07-competing-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c07-competing-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c07-competing-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c07-competing-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c07-competing-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c07-competing-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c07-competing-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c07-competing-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c07-competing-rw/consumers.tsv	status	0	P1	ae status	ae status tg2b	frozen	read surface
+arms/A3/c07-competing-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg2b/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	status	0	P1	ae status	ae status ta3g	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta3g/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	status	0	P1	ae status	ae status ta3g	frozen	read surface
+arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta3g/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	status	0	P1	ae status	ae status tpairdeadoverstale	frozen	read surface
+arms/A3b/c01-dead-over-stale-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tpairdeadoverstale/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	status	0	P1	ae status	ae status tpairdeadoverstale	frozen	read surface
+arms/A3b/c01-dead-over-stale-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tpairdeadoverstale/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	status	0	P1	ae status	ae status tpairstaleoverwaitinguser	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tpairstaleoverwaitinguser/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	status	0	P1	ae status	ae status tpairstaleoverwaitinguser	frozen	read surface
+arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tpairstaleoverwaitinguser/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	status	0	P1	ae status	ae status tpairwaitinguseroverblocked	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tpairwaitinguseroverblocked/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	status	0	P1	ae status	ae status tpairwaitinguseroverblocked	frozen	read surface
+arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tpairwaitinguseroverblocked/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	status	0	P1	ae status	ae status tpairblockedoverthrottled	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tpairblockedoverthrottled/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	status	0	P1	ae status	ae status tpairblockedoverthrottled	frozen	read surface
+arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tpairblockedoverthrottled/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	status	0	P1	ae status	ae status tpairthrottledoverunanswered	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tpairthrottledoverunanswered/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	status	0	P1	ae status	ae status tpairthrottledoverunanswered	frozen	read surface
+arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tpairthrottledoverunanswered/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	status	0	P1	ae status	ae status tcompetingnoclear	frozen	read surface
+arms/A3b/c06-competing-noclear-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tcompetingnoclear/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-active	0	P1	ae list	ae list --active	frozen	read surface
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-active-json	0	P1	ae list	ae list --active --json	frozen	read surface
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	status	0	P1	ae status	ae status tcompetingnoclear	frozen	read surface
+arms/A3b/c06-competing-noclear-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tcompetingnoclear/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A4/c01-status-live-live/consumers.tsv	status	0	P1	ae status	ae status ta4c01statuslive	frozen	read surface
+arms/A4/c01-status-live-live/consumers.tsv	status-noarg	1	P1	ae status	ae status	frozen	read surface
+arms/A4/c01-status-live-live/consumers.tsv	status-missing	1	P1	ae status	ae status no-such-session	frozen	read surface
+arms/A4/c01-status-live-live/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A4/c01-status-live-live/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A4/c01-status-live-live/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A4/c01-status-live-live/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/ta4c01statuslive/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A4/c02-status-016b-live/consumers.tsv	status	0	P1	ae status	ae status ta4c02status016b	frozen	read surface
+arms/A4/c02-status-016b-live/consumers.tsv	status-noarg	1	P1	ae status	ae status	frozen	read surface
+arms/A4/c02-status-016b-live/consumers.tsv	status-missing	1	P1	ae status	ae status no-such-session	frozen	read surface
+arms/A4/c02-status-016b-live/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A4/c02-status-016b-live/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A4/c02-status-016b-live/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A4/c02-status-016b-live/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/ta4c02status016b/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A4/c03-next-noattach-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A4/c03-next-noattach-ro/consumers.tsv	next-again	0	P1	ae next	ae next	frozen	read surface
+arms/A4/c03-next-noattach-ro/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A4/c03-next-noattach-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A4/c03-next-noattach-rw/consumers.tsv	next-again	0	P1	ae next	ae next	frozen	read surface
+arms/A4/c03-next-noattach-rw/consumers.tsv	list-needsattn-json	0	P1	ae list	ae list --needs-attn --json	frozen	read surface
+arms/A4/c04-next-attach-outside-ro/consumers.tsv	next-attach	1	P2	ae next --attach	ae next --attach	frozen	performs an action beyond reporting
+arms/A4/c04-next-attach-outside-rw/consumers.tsv	next-attach	1	P2	ae next --attach	ae next --attach	frozen	performs an action beyond reporting
+arms/A4/c05-020b-barrier-rw/consumers.tsv	barrier-next	0	P1	ae next	AE_HOOK=H_NEXT_SELECTED ae next	hooked	read surface
+arms/A5/a5-clean-controlled-path/consumers.tsv	doctor	0	P1	ae doctor	ae doctor under PATH=<CASE>/a5-clean/bin	unrecorded	read surface
+arms/A5/a5-no-bash-on-path-controlled-path/consumers.tsv	doctor	0	P1	ae doctor	ae doctor under PATH=<CASE>/a5-no-bash-on-path/bin	unrecorded	read surface
+arms/A5/a5-no-config-controlled-path/consumers.tsv	doctor	1	P1	ae doctor	ae doctor under PATH=<CASE>/a5-no-config/bin	unrecorded	read surface
+arms/A5/a5-no-flock-controlled-path/consumers.tsv	doctor	0	P1	ae doctor	ae doctor under PATH=<CASE>/a5-no-flock/bin	unrecorded	read surface
+arms/A5/a5-no-git-controlled-path/consumers.tsv	doctor	1	P1	ae doctor	ae doctor under PATH=<CASE>/a5-no-git/bin	unrecorded	read surface
+arms/A5/a5-no-tail-controlled-path/consumers.tsv	doctor	1	P1	ae doctor	ae doctor under PATH=<CASE>/a5-no-tail/bin	unrecorded	read surface
+arms/A5/a5-no-tmux-controlled-path/consumers.tsv	doctor	1	P1	ae doctor	ae doctor under PATH=<CASE>/a5-no-tmux/bin	unrecorded	read surface
+arms/A6/a6-c01-m1-control-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c01-m1-control-ro/consumers.tsv	requests-mine	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests mine	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c01-m1-control-ro/consumers.tsv	requests-inbox	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests inbox	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c01-m1-control-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-c01-m1-control-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c01-m1-control-rw/consumers.tsv	requests-mine	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests mine	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c01-m1-control-rw/consumers.tsv	requests-inbox	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests inbox	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c01-m1-control-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-c02-m2-wrong-ref-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c02-m2-wrong-ref-ro/consumers.tsv	requests-mine	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests mine	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c02-m2-wrong-ref-ro/consumers.tsv	requests-inbox	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests inbox	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c02-m2-wrong-ref-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-c02-m2-wrong-ref-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c02-m2-wrong-ref-rw/consumers.tsv	requests-mine	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests mine	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c02-m2-wrong-ref-rw/consumers.tsv	requests-inbox	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests inbox	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c02-m2-wrong-ref-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-c03-m3-wrong-actor-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c03-m3-wrong-actor-ro/consumers.tsv	requests-mine	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests mine	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c03-m3-wrong-actor-ro/consumers.tsv	requests-inbox	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests inbox	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c03-m3-wrong-actor-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-c03-m3-wrong-actor-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c03-m3-wrong-actor-rw/consumers.tsv	requests-mine	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests mine	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c03-m3-wrong-actor-rw/consumers.tsv	requests-inbox	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests inbox	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c03-m3-wrong-actor-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-c04-m4-wrong-target-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c04-m4-wrong-target-ro/consumers.tsv	requests-mine	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests mine	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c04-m4-wrong-target-ro/consumers.tsv	requests-inbox	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests inbox	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c04-m4-wrong-target-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-c04-m4-wrong-target-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c04-m4-wrong-target-rw/consumers.tsv	requests-mine	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests mine	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c04-m4-wrong-target-rw/consumers.tsv	requests-inbox	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests inbox	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c04-m4-wrong-target-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-ro/consumers.tsv	requests-mine	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests mine	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-ro/consumers.tsv	requests-inbox	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests inbox	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-rw/consumers.tsv	requests-mine	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests mine	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-rw/consumers.tsv	requests-inbox	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests inbox	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c05-m5-routed-vs-routed-mismatch-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-c06-m6-mixed-routed-display-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c06-m6-mixed-routed-display-ro/consumers.tsv	requests-mine	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests mine	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c06-m6-mixed-routed-display-ro/consumers.tsv	requests-inbox	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests inbox	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c06-m6-mixed-routed-display-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-c06-m6-mixed-routed-display-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c06-m6-mixed-routed-display-rw/consumers.tsv	requests-mine	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests mine	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c06-m6-mixed-routed-display-rw/consumers.tsv	requests-inbox	1	P1	helper:requests	<AE_HOME>/sessions/tg5/requests inbox	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A6/a6-c06-m6-mixed-routed-display-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age10_list_json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age10_list_needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age10_next	1	P1	ae next	ae next	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1799_list_json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1799_list_needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1799_next	1	P1	ae next	ae next	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1800_list_json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1800_list_needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1800_next	0	P1	ae next	ae next	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1801_list_json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1801_list_needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1801_next	0	P1	ae next	ae next	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age100000_list_json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age100000_list_needsattn	0	P1	ae list	ae list --needs-attn	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	age100000_next	0	P1	ae next	ae next	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	env_unset_list_json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	env_500_list_json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A6/a6-threshold-fixed-clock/consumers.tsv	env_900x_list_json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	status	0	P1	ae status	ae status ta7a	frozen	read surface
+arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7a/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	status	0	P1	ae status	ae status ta7a	frozen	read surface
+arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7a/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	status	0	P1	ae status	ae status ta7a	frozen	read surface
+arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7a/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	status	0	P1	ae status	ae status ta7a	frozen	read surface
+arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7a/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	status	0	P1	ae status	ae status ta7goalorderopposed	frozen	read surface
+arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7goalorderopposed/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	status	0	P1	ae status	ae status ta7goalorderopposed	frozen	read surface
+arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7goalorderopposed/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	status	0	P1	ae status	ae status ta7goalorderagreeing	frozen	read surface
+arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7goalorderagreeing/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	status	0	P1	ae status	ae status ta7goalorderagreeing	frozen	read surface
+arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7goalorderagreeing/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	status	0	P1	ae status	ae status ta7goalordersingle	frozen	read surface
+arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7goalordersingle/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	status	0	P1	ae status	ae status ta7goalordersingle	frozen	read surface
+arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7goalordersingle/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	status	0	P1	ae status	ae status tg9	frozen	read surface
+arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg9/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	status	0	P1	ae status	ae status tg9	frozen	read surface
+arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg9/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c10-branch-live-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c10-branch-live-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c10-branch-live-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c10-branch-live-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c10-branch-live-ro/consumers.tsv	status	0	P1	ae status	ae status ta7g	frozen	read surface
+arms/A7/a7-c10-branch-live-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c10-branch-live-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7g/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c10-branch-live-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c10-branch-live-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c10-branch-live-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c10-branch-live-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c10-branch-live-rw/consumers.tsv	status	0	P1	ae status	ae status ta7g	frozen	read surface
+arms/A7/a7-c10-branch-live-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c10-branch-live-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7g/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	status	0	P1	ae status	ae status ta7g	frozen	read surface
+arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7g/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	status	0	P1	ae status	ae status ta7g	frozen	read surface
+arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/ta7g/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	status	0	P1	ae status	ae status tg5	frozen	read surface
+arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	next	0	P1	ae next	ae next	frozen	read surface
+arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg5/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A8/a8-c01-fastpath-running-mutating/consumers.tsv	ae-name-running	1	P2	ae <session>	ae ta8a8c01fastpathrunning	frozen	session-name token is a launch candidate, a lifecycle surface
+arms/A8/a8-c02-resume-stopped-mutating/consumers.tsv	ae-name-stopped	1	P2	ae <session>	ae ta8a8c02resumestopped	frozen	session-name token is a launch candidate, a lifecycle surface
+arms/A8/a8-c03-inside-session-mutating/consumers.tsv	inside-session	1	P2	ae <session>	ae ta8a8c03insidesession from inside the session	unrecorded	session-name token is a launch candidate, a lifecycle surface
+arms/A8/a8-c04-use-existing-mutating/consumers.tsv	ae-local-existing	1	P2	ae <session>	ae --local ta8a8c04useexisting	frozen	session-name token is a launch candidate, a lifecycle surface
+arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c01-no-events-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c01-no-events-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c01-no-events-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c01-no-events-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c01-no-events-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c01-no-events-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c01-no-events-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c01-no-events-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c01-no-events-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c01-no-events-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c01-no-events-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c01-no-events-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c01-no-events-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c01-no-events-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c01-no-events-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c01-no-events-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c04-malformed-event-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c04-malformed-event-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c04-malformed-event-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c04-malformed-event-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c04-malformed-event-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c04-malformed-event-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c04-malformed-event-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c04-malformed-event-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c04-malformed-event-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c04-malformed-event-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c04-malformed-event-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c04-malformed-event-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c04-malformed-event-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c04-malformed-event-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c04-malformed-event-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c04-malformed-event-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c05-meta-absent-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c05-meta-absent-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c05-meta-absent-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c05-meta-absent-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c05-meta-absent-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c05-meta-absent-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c05-meta-absent-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c05-meta-absent-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c05-meta-absent-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c05-meta-absent-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c05-meta-absent-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c05-meta-absent-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c05-meta-absent-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c05-meta-absent-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c05-meta-absent-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c05-meta-absent-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c06-healthy-control-ro/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c06-healthy-control-ro/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c06-healthy-control-ro/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c06-healthy-control-ro/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c06-healthy-control-ro/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c06-healthy-control-ro/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c06-healthy-control-ro/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c06-healthy-control-ro/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c06-healthy-control-rw/consumers.tsv	list	0	P1	ae list	ae list	frozen	read surface
+arms/A9/a9-c06-healthy-control-rw/consumers.tsv	list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/A9/a9-c06-healthy-control-rw/consumers.tsv	list-all	0	P1	ae list	ae list --all	frozen	read surface
+arms/A9/a9-c06-healthy-control-rw/consumers.tsv	list-all-json	0	P1	ae list	ae list --all --json	frozen	read surface
+arms/A9/a9-c06-healthy-control-rw/consumers.tsv	status	0	P1	ae status	ae status tg1	frozen	read surface
+arms/A9/a9-c06-healthy-control-rw/consumers.tsv	next	1	P1	ae next	ae next	frozen	read surface
+arms/A9/a9-c06-healthy-control-rw/consumers.tsv	requests-all	0	P1	helper:requests	<AE_HOME>/sessions/tg1/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/A9/a9-c06-healthy-control-rw/consumers.tsv	agents	0	P1	helper:agents	<AE_HOME>/sessions/tg1/agents	generated-helper	read surface; VISION:93 names requests/events queries
+arms/D/d01-controller-only-twin-twin/consumers.tsv	baseline-list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/D/d01-controller-only-twin-twin/consumers.tsv	rerun-list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/D/d01-list-vs-goal-writer-barrier/consumers.tsv	baseline-list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/D/d01-list-vs-goal-writer-barrier/consumers.tsv	barrier-list-json	0	P1	ae list	ae list --json	hooked	read surface
+arms/D/d01-list-vs-goal-writer-barrier/consumers.tsv	rerun-list-json	0	P1	ae list	ae list --json	frozen	read surface
+arms/D/d02-controller-only-twin-twin/consumers.tsv	baseline-requests	0	P1	helper:requests	<AE_HOME>/sessions/td02/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/D/d02-controller-only-twin-twin/consumers.tsv	clean-rerun-requests	0	P1	helper:requests	<AE_HOME>/sessions/td02/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/D/d02-requests-vs-reply-writer-barrier/consumers.tsv	baseline-requests	0	P1	helper:requests	<AE_HOME>/sessions/td02/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/D/d02-requests-vs-reply-writer-barrier/consumers.tsv	barrier-requests	0	P1	helper:requests	<AE_HOME>/sessions/td02/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/D/d02-requests-vs-reply-writer-barrier/consumers.tsv	clean-rerun-requests	0	P1	helper:requests	<AE_HOME>/sessions/td02/requests all	generated-helper	read surface; VISION:93 names requests/events queries
+arms/D/d04a-exact-barrier-barrier/consumers.tsv	barrier-status	0	P1	ae status	ae status td04aexabar	unrecorded	read surface
+arms/D/d04a-exact-barrier-barrier/consumers.tsv	clean-rerun-status	0	P1	ae status	ae status td04aexabar	frozen	read surface
+arms/D/d04a-exact-twin-twin/consumers.tsv	clean-rerun-status	0	P1	ae status	ae status td04aexatwi	frozen	read surface
+arms/D/d04a-prefix-barrier-barrier/consumers.tsv	barrier-status	0	P1	ae status	ae status td04aprebar	unrecorded	read surface
+arms/D/d04a-prefix-barrier-barrier/consumers.tsv	clean-rerun-status	0	P1	ae status	ae status td04aprebar	frozen	read surface
+arms/D/d04a-prefix-twin-twin/consumers.tsv	clean-rerun-status	0	P1	ae status	ae status td04apretwi	frozen	read surface
+arms/D/d04b-arm1-kill-at-selected-attach/consumers.tsv	attach-next	1	P2	ae next --attach	ae next --attach (from the caller pane inside the attached client)	unrecorded	performs an action beyond reporting
+arms/D/d04b-arm2-prefix-kill-after-recheck-attach/consumers.tsv	attach-next	0	P2	ae next --attach	ae next --attach (from the caller pane inside the attached client)	unrecorded	performs an action beyond reporting
+arms/D/d04b-arm3-nosibling-kill-after-recheck-attach/consumers.tsv	attach-next	1	P2	ae next --attach	ae next --attach (from the caller pane inside the attached client)	unrecorded	performs an action beyond reporting
+arms/D/d04b-twin-no-kill-attach/consumers.tsv	attach-next	0	P2	ae next --attach	ae next --attach (from the caller pane inside the attached client)	unrecorded	performs an action beyond reporting

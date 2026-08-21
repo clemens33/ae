@@ -79,32 +79,69 @@ The corpus **content** stays at `docs/migration/evidence/batch-c-artifacts/`.
 6. **Never write into the corpus.** A parity run that can update its own baseline is not a
    comparison; it is a recording with extra steps.
 
-## 5. THE BLOCKING FINDING: argv is host- and run-specific
+## 5. Invocations: partitioned by READ vs WRITE, and the normaliser proven both ways
 
-**A parity run cannot use the recorded argv as-is, and this must be settled before parity is
-written.** The argv column embeds absolute paths from the capture host, including a scratch
-directory named after a session UUID that will never exist again. Measured shapes across the 1424
-rows:
+**The axis is read versus write, not binary versus helper** (seat ruling). My first partition was
+on invocation *shape*, and it was wrong: a generated helper can be a P1 surface — VISION:93 names
+`requests` explicitly — and the binary can carry a write. Shape now governs **normalisation only**,
+never scope.
 
-| shape | rows | example prefix |
+`classify-invocations.py` partitions all 1424 consumer rows into `INVOCATIONS.tsv`:
+
+| phase | rows | surfaces |
 |---|---|---|
-| frozen `ae` via bash | 1141 | `/opt/homebrew/bin/bash /private/tmp/claude-501/…/scratchpad/frozen/ae` |
-| generated session helper | 259 | `/tmp/aecx/arms/A1/c01-healthy-ro/home/.ae/sessions/tg1/agents` |
-| bare `ae` | 14 | `ae …` |
-| template-path helper | 9 | `/tmp/aecx/tpl/a1405k/home/.ae/sessions/ta1k/agents` |
-| env-prefixed | 1 | `AE_HOOK=H_NEXT_SELECTED …` |
+| **P1 (read)** | 1414 | `ae list` 743, `helper:requests` 168, `ae status` 140, `ae next` 140, `ae ls` 116, `helper:agents` 62, `helper:events-tail` 38, `ae doctor` 7 |
+| **P2 (write)** | 10 | `ae next --attach` 6, `ae <session>` launch 4 |
+| **UNRESOLVED** | 0 | — |
 
-So normalisation is not one rule but at least five shapes, and two of them (`helper`,
-`template-path helper`) invoke **generated session helpers rather than the binary** — those are
-not `ae` subcommands at all and may not be in P1's parity scope. **Recorded as UNRESOLVED and
-flagged for a seat**: which of the five shapes are in P1 parity scope, and what the normalisation
-rule is for each. This worker is not deciding it, because the answer changes what P1 is
-accountable for reproducing.
+**Read/write is decided against the frozen script's own documented contract, never inferred from
+shape.** `ae next` is classed read because its usage text says "**Read-only by default**" and
+scopes the action to `--attach` ("switch-client inside tmux, attach-session outside"). Plain
+`ae doctor` is classed read because its 224-line span contains no filesystem write — every `>` in
+it is `>&2`, and `doctor_report` is a `printf`; `--refresh` is the write path and no corpus row
+uses it. **P2 rows are frozen and KEPT**, labelled P2 parity inputs — never deleted, never quietly
+dropped, for the same reason `twd-precursor` is frozen as out-of-scope.
+
+**A SCOPE GAP I AM FLAGGING RATHER THAN RESOLVING.** The ruling says reads are P1 inputs, and
+VISION:93 enumerates P1 as "`list --json`, requests, events queries" — which is **narrower than
+all reads**. `status`, `next`, `agents` and `doctor` are reads that the VISION line does not name.
+I have classed them P1 per the ruling, but whether P1 is accountable for reproducing them is a
+seat question, and the partition is a column so re-deciding it costs a re-run rather than a
+rebuild.
+
+### Normalisation, and the two-sided proof
+
+Stripped as host- or run-specific: absolute scratch prefixes, the capture host's `.ae` home,
+per-case directories, and the interpreter token. Preserved as semantic: subcommand, flags, **flag
+order**, session names, env prefixes, and the shape distinction. **Which binary produced a capture
+— `frozen` vs `hooked` — is provenance, not invocation**: those are the same invocation through
+different instruments, so they normalise together and the distinction is kept in an `instrument`
+column rather than discarded.
+
+`verify-invocations.py` proves both arms the ruling requires, and **has no write path**:
+
+- **Arm A — convergence.** 160 normalised forms; **49 of them were reached from more than one host
+  prefix**, so convergence is exercised rather than vacuous. The gate fails explicitly if that
+  count is zero, because a convergence arm that never converges anything proves nothing.
+- **Arm B — no collision.** 160 normalised forms against 160 distinct semantic invocations
+  computed by an **independent method** (suffix-after-marker, not regex substitution): zero forms
+  cover more than one invocation. **Red-proofed**: an over-normaliser that erases `--json`
+  produces 26 collisions and fails the arm.
+
+**One honesty note about that independent method.** I corrected it twice. The first was a genuine
+bug — it kept only a path's basename, so `sessions/ta1b/requests` and `sessions/ta1c/requests`
+collapsed and it reported the normaliser for correctly distinguishing them; an instrument that
+discards a distinction cannot judge whether that distinction was preserved. The second added two
+**declared equivalences** (an interpreter token carries no meaning; a binary path's meaning is its
+basename), stated as rules rather than tuned until the two methods agreed — because tuning an
+independent instrument to match the thing it checks destroys the independence, which is precisely
+the circular self-test this programme has already been caught by once.
 
 ## 6. What this promotion does not claim
 
 - **It does not re-verify the captures.** They were seat-accepted; this records and pins them.
-- **It does not decide argv normalisation** (§5), which is a scope question for a seat.
+- **It does not decide P1 SCOPE** (§5): reads outside VISION:93's three named surfaces are
+  classed P1 per the ruling and flagged for a seat.
 - **It does not assert that the corpus is sufficient for P1 parity.** It is complete, pinned and
   reconstructible; whether it *covers* the P1 surface is a coverage question against rows this
   worker does not read.
