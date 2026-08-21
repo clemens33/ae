@@ -377,8 +377,8 @@ item declared, every target id must exist):
 S1MAP: launch -> SC-100 SC-101 SC-102a SC-102b SC-813
 S1MAP: --local/--copy/--worktree -> SC-306
 S1MAP: --from -> SC-822 SC-823 SC-824a SC-824b SC-825a
-S1MAP: list -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a
-S1MAP: ls -> SC-021 SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a
+S1MAP: list -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c
+S1MAP: ls -> SC-021 SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c
 S1MAP: status -> SC-016a SC-016b SC-016c SC-016d SC-1306b
 S1MAP: next -> SC-513a SC-513b SC-513c SC-020a SC-020b SC-020c SC-1306c
 S1MAP: jump -> SC-019
@@ -1026,6 +1026,22 @@ semantics the docs do not state and failing silently on `--stopped --running`.
 Authority: commands.md:81-87 + joint ruling. Empirical: observed(ae@72c7293:4077-4089
 — case loop reassigns show_running/show_stopped per selector). Conflict: none.
 **classified_by: both seats, 2026-08-20.**
+
+**SC-521c — schema-v2 attention/activity filters apply to every session not known
+stopped.** Bucket 2 — under SC-509d, `--needs-attn` and `--active` test positive
+attention/activity facts on status `running` OR `unknown`; status remains unchanged. A
+stopped session never satisfies either live-scope predicate. Therefore default/`--running`
+with either filter keeps matching running and unknown sessions; `--all` with either keeps
+matching running and unknown sessions; `--stopped` with either remains empty. This
+supersedes SC-521a's "matching running sessions" domain and SC-017m's
+"positive-running predicates" sentence ONLY for schema version 2; their
+selector-intersection, no-relabel, and frozen two-valued conclusions stand. Liveness
+uncertainty never erases an independently established record fact. Authority: SC-017d/e +
+SC-017l/m + SC-509d + joint P1 ruling. Empirical: successor implementation pending; frozen
+schema v1 has no unknown state. Conflict: none.
+**classified_by: both seats, 2026-08-21 — attention/liveness independence ruling; bucket 2,
+conflict none. Successor semantics, not a frozen-Bash defect: #105 motivates first-class
+unknown but is not this row's authority.**
 
 **SC-522 — the unanswered threshold is strictly past.** Bucket 2 — (slice-1 Q7e): age
 must EXCEED the threshold; equality is not past it. Authority: commands.md:60-76
