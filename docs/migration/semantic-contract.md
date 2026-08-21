@@ -420,6 +420,92 @@ fable5:lead + gpt56sol:colead. Bucket 3 fix-known-defect(#105); grain is an iden
 whole-snapshot property that neither SC-017j membership nor SC-017m per-session rendering
 can absorb without conflating subjects.**
 
+**SC-017p — per-agent liveness is a positive, exact fact from the session's own
+server.** Bucket 3 — fix-known-defect(#105). `agents[]` membership remains the durable
+SC-405k roster; liveness classifies each roster member without inventing agents. An
+agent is `alive` only when a successful observation of the candidate's positively
+recorded server and exact session establishes an exact association to that agent's
+pane/slot and positively recognizes its agent process as live. An agent is `dead` only
+when an equally successful observation positively proves that exact roster agent has
+no live pane/slot, or that its exactly associated pane satisfies the ratified dead
+predicate of SC-906. A successful complete pane enumeration that returns no pane
+associated with the roster agent proves `dead` only when every observed pane carries a usable,
+unambiguous association to some other identity (or no panes exist); an unassociated or
+ambiguously associated pane leaves the missing roster agent `unknown` under SC-017q.
+A successful exact-session absence proof proves every roster agent dead for that
+snapshot; successful exact-session presence alone proves no individual agent health.
+Implementations MAY share one server/session/pane enumeration across agents,
+but every answer must still belong to that server, exact session, and exact roster
+agent. Ambient-server membership, prefix success, which renderer emitted the row, and
+another agent's pane are not agent-liveness facts. Frozen IS at 72c7293: VIOLATED —
+`cmd_list` invokes ambient `tmux list-panes -s -t "$name"` and discards every error
+(ae:4200-4207), then treats absence from the resulting map as not alive
+(ae:4053-4058). Successor IS at 92a20ee9: listing runtime is constructed with no agents
+(`src/listing.rs:139-151`) and a missing runtime member maps to false
+(`src/session.rs:519-533`). Empirical: frozen and successor relations source-proven;
+successor end-to-end agent-liveness matrix pending. Authority:
+commands.md@72c7293:56-59 + SC-017k's own-server/exact-identity rule + SC-906 + joint
+P1 ruling.
+Issue #105 names the session-level instance; this ruling extends the same epistemic
+defect family to per-agent health and does not take normative authority from the issue.
+Conflict: fix-known-defect(#105).
+
+**SC-017q — unprovable agent liveness is first-class `unknown`.** Bucket 3 —
+fix-known-defect(#105). A session whose liveness is `unknown`; a missing or ambiguous
+recorded server; a failed exact-session or pane query; or an unusable, missing,
+duplicate, conflicting, or otherwise ambiguous pane/slot marker that prevents
+SC-017p's positive or negative proof yields agent health `unknown` — never `dead`,
+never removal of the roster agent. A successful complete enumeration returning no
+matching pane is not ambiguous merely because other panes carry usable markers for
+other identities: that is SC-017p's negative proof. A successfully observed exact live
+session with an unowned or ambiguously owned pane does not turn that pane into this
+agent and does not prove the roster agent absent.
+
+Session and agent liveness are separate grains but not a free Cartesian product in one
+snapshot. `stopped` from successful exact-session absence implies every roster agent
+`dead`; session `unknown` implies agent `unknown`; `running` permits agent `alive`,
+`dead`, or `unknown` according to the pane observation. For a roster agent whose
+identity survives discovery, SC-509b record degradation, the agent's declared state,
+and its independently established attention reason remain orthogonal to agent
+liveness: none supplies a missing liveness fact, and each retains only its
+independently established value. Until the real transport exists, `unknown`
+is the honest output. Frozen IS at 72c7293: VIOLATED — a failed `list-panes` query
+is indistinguishable from an empty successful result at ae:4200-4207, so JSON emits
+`alive:false` at ae:4057-4065. Successor IS at 92a20ee9: the absent runtime member
+described in SC-017p repeats the collapse. Empirical: frozen and successor
+relations source-proven; successor positive/negative/unknown matrix pending.
+Authority: SC-816 + SC-835c's rule that inability to verify is not absence + SC-017l
++ joint P1 ruling. Issue #105 is the defect-family label, never normative authority.
+Conflict: fix-known-defect(#105).
+
+**SC-017r — human list renders agent liveness without collapsing `unknown`.** Bucket 3
+— fix-known-defect(#105). Every selected roster agent's human row has three
+distinguishable, non-silent health renderings carrying SC-017p/q unchanged. The exact
+alive/dead/unknown words or glyphs are OPEN CHOICE, but the unknown rendering must be
+unambiguously recognizable as unknown rather than absence or blank output. Agent
+`unknown` never silently renders as alive or dead, never disappears, never overwrites
+the agent's separately known declared state or reason, and does not by itself
+manufacture the session-level `attn:dead` marker. Session selection and ordering remain
+the SC-017m/n facts; this row changes presentation of an agent fact, not session status
+or filter membership. `status` is out of scope: it renders pane content/existence, not
+the list/ls per-agent health field, and its failed-query-versus-empty-session behavior
+requires a separately classified row before migration.
+
+Frozen IS at 72c7293: VIOLATED — dead is `!`, alive is the empty marker, and the human
+row also defaults a missing map entry to the empty marker (ae:4200-4207, 4247-4255).
+A failed pane query therefore renders every agent exactly like a healthy agent, while
+JSON on the same failure emits `alive:false` under SC-017q: the two surfaces collapse
+the same unknown in opposite directions. Successor IS at 92a20ee9: every absent runtime
+member prints as `dead` (`src/listing.rs:240-267`). Empirical:
+frozen and successor relations source-proven; successor end-to-end rendering pending.
+Authority: commands.md@72c7293:56-59 + SC-017h + SC-017p/q + joint P1 ruling. Issue
+#105 is the defect-family label, never normative authority. Conflict:
+fix-known-defect(#105).
+**classified_by:** SC-017p SC-017q SC-017r — per-agent liveness P1 ruling,
+2026-08-21; fable5:lead + gpt56sol:colead. Exact enumeration; all three are bucket 3
+fix-known-defect(#105). Knowledge, epistemic state, and human rendering are separate
+grains; normative/conflict lane only, with empirical scope stated per row.**
+
 **SC-020a — `next --attach` switches inside tmux, attaches outside.** Bucket 2 —
 `tmux switch-client` when already in tmux, `tmux attach-session` otherwise; `--switch`
 is its alias. Authority: commands.md:155-157. Empirical: pending. Conflict: none.
@@ -463,8 +549,8 @@ item declared, every target id must exist):
 S1MAP: launch -> SC-100 SC-101 SC-102a SC-102b SC-813
 S1MAP: --local/--copy/--worktree -> SC-306
 S1MAP: --from -> SC-822 SC-823 SC-824a SC-824b SC-825a
-S1MAP: list -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c SC-017o
-S1MAP: ls -> SC-021 SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c SC-017o
+S1MAP: list -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c SC-017o SC-017p SC-017q SC-017r SC-509e
+S1MAP: ls -> SC-021 SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c SC-017o SC-017p SC-017q SC-017r SC-509e
 S1MAP: status -> SC-016a SC-016b SC-016c SC-016d SC-1306b
 S1MAP: next -> SC-513a SC-513b SC-513c SC-020a SC-020b SC-020c SC-1306c
 S1MAP: jump -> SC-019
@@ -1229,6 +1315,29 @@ Issue #105 records the defect requiring this change, never its normative authori
 Conflict: fix-known-defect(#105).
 **classified_by:** P1 schema-v2 joint ruling, 2026-08-21 — SC-509d; fable5:lead +
 gpt56sol:colead; bucket 3 fix-known-defect(#105), normative/conflict lane.**
+
+**SC-509e — schema version 2 carries three-valued agent liveness.** Bucket 3 —
+fix-known-defect(#105). Every successor version-2 digest retains the SC-509
+`agents[].alive` field with the closed JSON domain `true | false | null`: `true` and
+`false` carry SC-017p's positively established alive/dead facts, and `null` carries
+SC-017q `unknown`. The field is present even when null. Version 1 remains the true
+frozen-Bash contract and emits only boolean agent liveness; it never emits null. All
+other SC-509 agent fields, SC-509b degradation semantics, and SC-509d session-status
+domain carry forward unchanged. Agent liveness null never nulls or relabels an
+independently known `state` or `reason`. Schema version 2 has not shipped, so this row
+extends its not-yet-released contract rather than creating version 3. Until the real
+transport exists, null is the honest output. Frozen IS at 72c7293: VIOLATED — schema
+version 1 initializes each agent's `alive` to false and changes it only on a positive map hit
+(ae:4053-4065), so unavailable evidence is encoded as a negative fact. Successor IS at
+92a20ee9: `AgentEntry.alive` is still `bool` (`src/digest.rs:93-105`) and emits
+false for absent runtime evidence. Empirical: frozen and successor relations
+source-proven; successor schema-v2 capture pending. Authority: SC-509's consumer-gating
+design + SC-017p/q + SC-509d + joint P1 ruling. Issue #105 is the defect-family label,
+never normative authority. Conflict: fix-known-defect(#105).
+**classified_by:** SC-509e — per-agent liveness schema-v2 ruling, 2026-08-21;
+fable5:lead + gpt56sol:colead; bucket 3 fix-known-defect(#105). A boolean-to-nullable
+domain change is consumer-visible even though the field name is unchanged; normative/
+conflict lane only, with successor capture pending.**
 
 **SC-510a — event required keys.** Bucket 2 — every event carries `ts` (ISO 8601 UTC,
 second precision), `actor`, `action`. Authority: events.md:47-60. Empirical: pending.
