@@ -425,7 +425,12 @@ server.** Bucket 3 — fix-known-defect(#105). `agents[]` membership remains the
 SC-405k roster; liveness classifies each roster member without inventing agents. An
 agent is `alive` only when a successful observation of the candidate's positively
 recorded server and exact session establishes an exact association to that agent's
-pane/slot and positively recognizes its agent process as live. An agent is `dead` only
+pane/slot and that pane satisfies the ratified live predicate of SC-017s. **Amended
+2026-08-21**: this clause previously read "positively recognizes its agent process as
+live" — a PROCESS claim whose phrase occurred exactly once in this contract, inside this
+row, and which no row defined. It is amended to a pane-observation claim in the same
+ruling that ratifies SC-017s, called out here rather than folded into that row's landing,
+because a ratified row is being altered. An agent is `dead` only
 when an equally successful observation positively proves that exact roster agent has
 no live pane/slot, or that its exactly associated pane satisfies the ratified dead
 predicate of SC-906. A successful complete pane enumeration that returns no pane
@@ -444,7 +449,8 @@ another agent's pane are not agent-liveness facts. Frozen IS at 72c7293: VIOLATE
 (`src/listing.rs:139-151`) and a missing runtime member maps to false
 (`src/session.rs:519-533`). Empirical: frozen and successor relations source-proven;
 successor end-to-end agent-liveness matrix pending. Authority:
-commands.md@72c7293:56-59 + SC-017k's own-server/exact-identity rule + SC-906 + joint
+commands.md@72c7293:56-59 + SC-017k's own-server/exact-identity rule + SC-017s
+(the alive route) + SC-906 (the dead route, and see that row's status) + joint
 P1 ruling.
 Issue #105 names the session-level instance; this ruling extends the same epistemic
 defect family to per-agent health and does not take normative authority from the issue.
@@ -506,6 +512,70 @@ fix-known-defect(#105).
 fix-known-defect(#105). Knowledge, epistemic state, and human rendering are separate
 grains; normative/conflict lane only, with empirical scope stated per row.**
 
+**SC-017s — a pane-observed live predicate: the only ratified route to `alive`.**
+Bucket 3 — fix-known-defect(#105). SC-017p grants `alive` only on an observation that
+recognizes the agent as live, and no row defined one. This row supplies it, IN ONE
+DIRECTION ONLY, from tmux format fields.
+
+OBSERVATION — no new query and no new observation type: the pane enumeration SC-017p
+already requires, one `tmux list-panes -s -t <exact session>` against the candidate's
+POSITIVELY RECORDED server (SC-017k), reading `#{pane_dead}` and
+`#{pane_current_command}` beside the pane's identity marker.
+
+ASSOCIATION: the pane must carry a usable, unambiguous association to that exact roster
+agent under SC-017p. Missing, unusable, duplicate, conflicting or ambiguous markers never
+reach this predicate — they are SC-017q `unknown`.
+
+PREDICATE: the pane proves `alive` iff `#{pane_dead}` is `0` AND
+`#{pane_current_command}` is NOT a member of the closed shell set `bash`, `zsh`, `fish`,
+`sh`, `dash`, AND THE EMPTY STRING. An empty or absent command reading is NOT alive: an
+unreadable field is the absence of evidence, and reading absence as positive proof is
+#105's own defect. The `pane_dead` conjunct is measured rather than theoretical — a pane
+retained by `remain-on-exit` keeps reporting the exited process's command (measured: a
+pane that ran `true` reports `pane_dead=1` with `pane_current_command=true`), so the
+command field alone would prove a DEAD agent alive. Neither ae@72c7293 nor the successor
+sets `remain-on-exit`, so the hazard is operator-configurable rather than default; the
+guard costs one more field in a query already being made.
+
+DIRECTION: this row grants `alive` ONLY. A shell foreground command proves nothing — not
+`dead` — and leaves the agent `unknown` under SC-017q. The watchdog's dead test is a
+CONJUNCTION of shell-foreground and no-agent-descendant; negating one conjunct is sound in
+one direction only, so the alive half stands alone while the dead half does not. A
+symmetric row would re-import the unratified SC-906 and, with it, a process-ancestry
+observation this row does not make.
+
+CAPABILITY: this row observes TMUX FORMAT FIELDS and asserts nothing about processes,
+process ancestry, or descendants. It neither requires nor grants any process-inspection
+capability.
+
+KNOWN FALSE NEGATIVE, accepted and recorded so a measurement of it is not reported as a
+violation: under SC-812 a `cmd || fallback` resume chain leaves bash as the pane process,
+so a genuinely live agent reports `bash` and lands in `unknown`.
+
+WHY NOT-IN-SHELL-SET RATHER THAN RECOGNIZE-THE-TOOL: SC-705 measures that a real Claude
+pane reports its VERSION STRING as `#{pane_current_command}`, and opencode reports
+`opencode.exe`. A predicate that never has to recognize a tool cannot be broken by a tool
+changing what it reports.
+
+Frozen IS at 72c7293: VIOLATED — the shape exists in the list path (ae:4201-4206) but its
+set OMITS the empty string that `command_is_shell` (ae:428-434) includes, so a failed or
+absent read falls to the non-shell arm and yields a positive alive; there is no
+`pane_dead` guard; and the map is keyed on `#{@ae_agent}` (ae:4207), the field SC-602
+designates DISPLAY-only, when identity is `@ae_slot`. That map is also NAMED `_alive`
+while storing its marker for SHELL panes — anyone citing it as precedent must read the
+case arms, not the identifier. Successor IS at 92a20ee9: ABSENT — listing runtime is
+constructed with no agents (`src/listing.rs:139-151`), so there is no alive route to
+violate. Empirical: observed(docs/migration/evidence/sc-017s/, 2026-08-21 — throwaway
+`tmux -S` server, marker-uniqueness instrument check, then non-shell foreground -> alive,
+shell foreground -> unknown, empty reading -> unknown; the ae:4201-4206 set reproduced
+turning an empty reading into a positive alive). Authority: SC-017k's
+own-server/exact-identity rule + SC-017p's exact-association rule + SC-705 and SC-812 (the
+contract's existing recognition of `#{pane_current_command}`) + ae@72c7293:428-434
+(`command_is_shell`) as the predicate + ae@72c7293:4201-4206 as the ENUMERATION precedent
+ONLY + joint P1 ruling 2026-08-21. Deliberately NOT watchdog.md: that is SC-906's
+authority, and citing it would recreate the dependency this row exists to remove.
+Conflict: fix-known-defect(#105).
+
 **SC-020a — `next --attach` switches inside tmux, attaches outside.** Bucket 2 —
 `tmux switch-client` when already in tmux, `tmux attach-session` otherwise; `--switch`
 is its alias. Authority: commands.md:155-157. Empirical: pending. Conflict: none.
@@ -549,8 +619,8 @@ item declared, every target id must exist):
 S1MAP: launch -> SC-100 SC-101 SC-102a SC-102b SC-813
 S1MAP: --local/--copy/--worktree -> SC-306
 S1MAP: --from -> SC-822 SC-823 SC-824a SC-824b SC-825a
-S1MAP: list -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c SC-017o SC-017p SC-017q SC-017r SC-509e
-S1MAP: ls -> SC-021 SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c SC-017o SC-017p SC-017q SC-017r SC-509e
+S1MAP: list -> SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c SC-017o SC-017p SC-017q SC-017r SC-017s SC-509e
+S1MAP: ls -> SC-021 SC-017i SC-017a SC-017b SC-017c SC-017d SC-017e SC-017f SC-017g SC-017h SC-017j SC-017k SC-017l SC-017m SC-017n SC-509 SC-509d SC-506 SC-1306a SC-521c SC-017o SC-017p SC-017q SC-017r SC-017s SC-509e
 S1MAP: status -> SC-016a SC-016b SC-016c SC-016d SC-1306b
 S1MAP: next -> SC-513a SC-513b SC-513c SC-020a SC-020b SC-020c SC-1306c
 S1MAP: jump -> SC-019
