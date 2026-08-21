@@ -25,6 +25,7 @@ invariant, not against the code.
 | you filtered a tool's output to the fields you expected to change | Your probe's SCOPE decides the finding, and you chose that scope from expectation |
 | your criteria all pass but the obligation was about ordering, causality, or a matched pair | A check can only see obligations SHAPED like it — temporal ones survive a static gate |
 | a case with more information available is about to be handled by a different branch | Adding evidence must never SUBTRACT knowledge — check the richer case against the poorer one |
+| a rule says two facts are independent and you are choosing test cases | Orthogonality is proven on the OFF-DIAGONAL; the diagonal is where a derivation hides |
 | a rule was just clarified, refined, or split into two orthogonal facts | A clarification that SPLITS a concept creates a coverage gap in evidence captured before it |
 | you verified every flagged item and found nothing wrong | Forward verification cannot see a FALSE NEGATIVE — you have to check the converse |
 | you are claiming a body of evidence covers some condition | A condition that was never CAPTURED cannot later be shown to have been ABSENT |
@@ -860,6 +861,38 @@ conditions turned out to be **the same conditions** — same recorded server, ex
 ownership, exactly one match. That is not a coincidence, and when it happens it usually means
 one of the two steps has already established what the other is about to re-derive. Look for it
 before adding a second query, a second read, or a second verification pass.
+
+### Orthogonality is proven on the OFF-DIAGONAL; the diagonal is where a derivation hides
+
+A contract declared two facts independent — either, both, or neither may hold. The gate for it
+constructed the obvious cases: both present, and both absent. It read as thorough. It proves
+nothing about independence.
+
+Consider the defect it is meant to exclude: an implementation that **computes X from Y**. On
+the diagonal, the derivation and the truth **agree** — when Y holds, the derived X holds, and
+the correct X happens to hold too. Both-present passes. Both-absent passes. A criteria list
+built from those cells is fully satisfied by exactly the implementation the orthogonality claim
+exists to forbid.
+
+**Only the off-diagonal cells discriminate**: X without Y, and Y without X. Those are the cells
+that read as odd combinations — a record we could read whose server we could not reach; a
+session we can see that we cannot prove is ours — and they are precisely the ones a fixture
+author skips, because they feel like contrived corners rather than the point.
+
+So for every claimed-independent pair, **build the two off-diagonal cells first** and treat the
+diagonal as the cheap confirmation it is. Two further habits fall out:
+
+- **Name the derivation you are excluding, concretely**, before designing the cells. "X iff Y"
+  is a hypothesis you can test; "they are orthogonal" is a hope you cannot.
+- **Test both directions.** X-from-Y and Y-from-X are different implementations with different
+  off-diagonals. The reverse is the one that gets forgotten — the interesting failure is often
+  not *liveness derived from provenance* but *provenance quietly discarded once liveness is
+  known*.
+
+The same shape governs any claim of the form "these vary independently": ordering versus
+membership, identity versus reachability, presence versus permission. If the evidence only
+holds cases where both move together, the claim is untested no matter how many of them there
+are.
 
 ### A clarification that SPLITS a concept creates a coverage gap in evidence captured before it
 
