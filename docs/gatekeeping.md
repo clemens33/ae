@@ -1530,6 +1530,16 @@ that includes it is unfounded rather than optimistic.
 Report it as a third answer — present / absent / **unobservable** — because folding it into
 "absent" is how it becomes coverage.
 
+**And size it as a fraction of the evidence base, not as a list of cells.** In this project the
+unobservable answer came back three times, and the third instance covered **45 of 91 cases** —
+half the corpus — where a session's recorded server differed from the one the capture observed,
+and that server's state was never written down anywhere. The first two instances were a single
+missing field and a single unvaried axis, which is what made the third one surprising: the
+same answer at a completely different scale.
+So the useful question is not *does any case exercise this?* but **what fraction of the evidence
+base can answer on this axis at all** — because a corpus that is 50% silent about something
+will still contain plenty of cases that look like they cover it.
+
 **And keep the third answer separate afterwards, because the two gaps cost different things to
 close.** *Absent* means the evidence could have recorded the condition and no case happened to
 exhibit it — one new fixture closes it. *Unobservable* means no field in the capture could have
