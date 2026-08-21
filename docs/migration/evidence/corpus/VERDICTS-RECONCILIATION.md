@@ -317,3 +317,104 @@ disagreement was pointing at a **third thing** — a stale conditional neither c
 disagreement between two competent derivations is not only a population question; it can be a defect
 in whatever produced one of them, and deferring is exactly what stops you finding out.
 
+---
+
+## THE WRONG-SET SEQUENCE — five defects, one confusion, and the arithmetic was never wrong
+
+The session's spine, named so it can be cited instead of rediscovered. Every instance below
+produced a **number**, every number was **computed correctly**, and every one was **about the wrong
+set**. Not one was an arithmetic error, which is why not one was caught by re-checking the sum.
+
+| # | mechanism | instance | wrong number | right number |
+|---|---|---|---|---|
+| 1 | **GRAIN** — the field answers about a coarser object than the row it is read on | `server_unreachable` is a CASE-level fact, consumed as if row-level | 659 | 573 |
+| 2 | **PREDICATE** — the population is narrowed by filters nobody stated | class-B partition, 86 cases excluded silently | 45 of 91 | 91 |
+| 3 | **PROXY** — the deciding field is inferred from a neighbouring one instead of read | `case.txt` read where `AE_TMUX_SERVER` in `env.txt` decides | class by inference | class by comparison |
+| 4 | **GATE** — a fine-grained fact conditioned on a coarse-grained test *in code* | `sup` consulted only inside `if incomplete:` | 1362 obligations | 1378 |
+| 5 | **SPELLING** — the membership test admits neighbours | `P1` matched as a SUBSTRING, which also admits `P1-ADJACENT` | 1414 | 1065 |
+
+Four of the five were in **analysis**; the fourth was in **code**, inside the generator that exists
+to prevent exactly this. The fifth was in a hand-written probe by the person who had written the
+entry about the fourth twenty minutes earlier — which is the most useful datum in the table, because
+it shows the failure is not about care.
+
+### Why none of them is caught by checking your work
+
+Each mechanism is invisible from inside its own derivation. The sum is right, the code runs, the
+filter looks like the filter you meant, and the output is a plausible number of the right order of
+magnitude. **A wrong set produces a right-looking answer** — that is the whole difficulty.
+
+What actually caught them, every time, was **a second number derived a different way that
+disagreed** — and then somebody *reconciling* rather than picking a winner.
+
+### The corollary that cost the most to learn
+
+**Reconciliation does not always resolve the disagreement, and that is when it is most valuable.**
+Six versus ten looked like a population question and was one — both counts were right for their own
+populations. But the disagreement was simultaneously pointing at **a third thing** neither count was
+about: a stale conditional in the generator. Had either side deferred, both numbers would have
+stayed correct and the defect would have stayed shipped.
+
+So: **a disagreement between two competent derivations is not only a population question. It can be
+a defect in whatever produced one of them, and deferring is precisely what stops you finding out.**
+
+Deference feels like humility and is a way of not looking. Ranking sources by recent accuracy is a
+heuristic for deciding *whom to believe*; reconciling is what tells you *whether either is right* —
+and only one of those finds a stale conditional.
+
+### The one that is now a gate
+
+Mechanism 5 is the only member of the family currently enforced: `verify-obligations.py` matches
+`phase` exactly and red-proves it with the single mutation a substring matcher **structurally cannot
+fail** — relabel a carrying row `P1` → `P1-ADJACENT`. Measured both directions: the exact gate
+FAILS it (`POPULATION`), the substring variant returns clean. The other four remain human-caught,
+which is an honest statement of coverage rather than a plan.
+
+---
+
+## Retirement: `VERDICTS.tsv` is superseded by `OBLIGATIONS.tsv`
+
+**Ruled 2026-08-21.** The stored verdict column is retired — marked superseded in place, not
+deleted, pointing at `OBLIGATIONS.tsv`. Its generator `verdicts.py` and gate `verify-verdicts.py`
+retire with it; all three are recoverable from `da61fa5b`.
+
+**The reason is not that the column was wrong.** It went stale, and a *human* noticed rather than a
+gate. That staleness was not repaired — the **possibility** of it was removed, by deriving the
+verdict from the obligations that justify it. Keeping a stored copy alive reintroduces the
+possibility together with a checker to manage it, and **a check that exists only to police a
+redundancy is a reason to delete the redundancy**.
+
+The interim asymmetric cross-check (stored DIVERGENCE with no obligation fails; stored MATCH behind
+the table reports) was correct reasoning for an interim and the wrong thing to maintain. It is gone.
+
+### What had to be proven before retiring, and was
+
+Verdict-as-derived means rows with **zero** obligations do not appear in `OBLIGATIONS.tsv` at all,
+so `EXPECTED-MATCH` is the **complement** of the carrying set — and a complement is meaningless
+without a verified denominator. If that denominator had lived in `VERDICTS.tsv`, retiring it would
+have removed the population rather than a redundancy.
+
+Measured on `INVOCATIONS.tsv` alone, `phase` matched **exactly**:
+
+| claim | result |
+|---|---|
+| `phase == "P1"` | **1065** |
+| `"P1" in phase` (the trap) | 1414 = 1065 + 349 P1-ADJACENT |
+| P1 `(case, consumer)` keys distinct | 1065 of 1065 — a population, not a bag |
+| retired `VERDICTS.tsv` key set vs P1 universe | **equal**, after normalising the case path to its directory |
+| `OBLIGATIONS.tsv` keys | 581, **subset** of the universe, no strays |
+| derived split | 581 DIVERGENCE + 484 MATCH = **1065** |
+
+The denominator is recoverable from `INVOCATIONS.tsv` alone. **One caveat the consumer needs:** the
+two tables key differently — `INVOCATIONS.tsv` on the `consumers.tsv` **path**, `OBLIGATIONS.tsv` on
+the case **directory** — so the join takes a `dirname`. Recorded in the tombstone, because a
+recoverability that depends on an undocumented normalisation is not recoverability.
+
+### What replaced the cross-check
+
+Not nothing, and not a smaller version of the same thing. `verify-obligations.py` now asserts what
+the stored column could never assert: that the derivation **covers the whole population it claims to
+speak for** — the denominator is a set of distinct keys, and every carrying key lies inside it. Two
+red-proof mutations, both landing on `POPULATION`: an obligation for a row outside the universe, and
+the exactness mutation above.
+

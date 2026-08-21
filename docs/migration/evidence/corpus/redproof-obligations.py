@@ -10,6 +10,7 @@ import difflib, os, shutil, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 OBL = os.path.join(HERE, "OBLIGATIONS.tsv")
 FRESH = os.path.join(HERE, "FRESHNESS.tsv")
+INV = os.path.join(HERE, "INVOCATIONS.tsv")
 
 def run():
     r = subprocess.run([sys.executable, os.path.join(HERE, "verify-obligations.py")],
@@ -30,9 +31,16 @@ MUTATIONS = [
     ("MISSING-509d", OBL, "a digest row stripped of its schema obligation",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A1/c01-healthy-ro\tlist-json\tSC-509d")))),
-    ("VERDICT-UNREASONED", OBL, "a stored divergence left with no obligation to justify it",
-     lambda s: "\n".join(l for l in s.split("\n")
-                         if not l.startswith("arms/A1/c01-healthy-ro\tlist-all-json\t"))),
+    ("POPULATION", OBL, "an obligation for a row outside the P1 universe it claims to cover",
+     lambda s: s.rstrip("\n") + "\n" + "\t".join(
+         ["arms/ZZ/not-a-case", "list", "SC-509d", "digest", "schema_version", "1", "2",
+          "equals", "OBSERVED", "OBSERVED", "seeded"]) + "\n"),
+    # The label check, red-proved by the ONE mutation a substring matcher cannot fail:
+    # relabel a carrying row P1 -> P1-ADJACENT. Exact matching drops it from the universe
+    # and its obligations become stray; substring matching still admits it and stays green.
+    ("POPULATION", INV, "a carrying row relabelled out of P1 (substring matching would not notice)",
+     lambda s: s.replace("arms/A1/c01-healthy-ro/consumers.tsv\tlist-json\t0\tP1\t",
+                         "arms/A1/c01-healthy-ro/consumers.tsv\tlist-json\t0\tP1-ADJACENT\t", 1)),
     ("SUPPORT", OBL, "an obligation with no support verdict",
      lambda s: s.replace("\tUNSCORABLE\t", "\tmaybe\t", 1)),
     ("MISSING-509e", OBL, "an unreachable digest stripped of its agent-liveness move",

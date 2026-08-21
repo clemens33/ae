@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GATE — checks the obligation table against the captured bytes, the verdict column,
+"""GATE — checks the obligation table against the captured bytes, the P1 population,
 and the contract's CURRENT hash. No write path: no open-for-write, no temp, no rename.
 
 Four classes, and the freshness one is the reason this file exists. A derived artifact
@@ -12,7 +12,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.normpath(os.path.join(HERE, "..", "batch-c-artifacts"))
 OBL = os.path.join(HERE, "OBLIGATIONS.tsv")
 FRESH = os.path.join(HERE, "FRESHNESS.tsv")
-VERD = os.path.join(HERE, "VERDICTS.tsv")
 INV = os.path.join(HERE, "INVOCATIONS.tsv")
 STREAMS = {"digest", "stdout", "stderr"}
 PREDICATES = {"equals", "at-least", "all-of", "present"}
@@ -37,7 +36,7 @@ def unreachable(case):
 
 def main(quiet=False):
     out = []
-    for p in (OBL, FRESH, VERD, INV):
+    for p in (OBL, FRESH, INV):
         if not os.path.exists(p):
             print("FAIL  MISSING  %s" % os.path.basename(p)); return 1
     rec = {}
@@ -127,39 +126,40 @@ def main(quiet=False):
         if not listish and ("SC-017l" in ids or "SC-017m" in ids):
             fail(out, "SURFACE", "%s/%s is not a listing yet owes a listing obligation" % (case, consumer))
 
-    # ---- 5. VERDICT IS DERIVED, and must agree with the stored column ----
-    # VERDICTS.tsv keys on the consumers.tsv PATH; OBLIGATIONS.tsv keys on the case
-    # DIRECTORY. Normalise, rather than letting a key mismatch read as 573 disagreements.
-    stored = {(os.path.dirname(r["case"]), r["consumer"]): r["verdict"]
-              for r in csv.DictReader(open(VERD, encoding="utf-8"), delimiter="\t")}
-    # verdict is DERIVED from obligations; VERDICTS.tsv's stored column is legacy.
-    # The two directions of disagreement are NOT symmetric:
-    #   stored DIVERGENCE with no obligation -> a verdict that cannot say WHY. FAIL.
-    #   stored MATCH where an obligation now exists -> the stored column is BEHIND,
-    #     which is what happens every time the obligation set grows. Report, do not fail.
-    unreasoned, behind = 0, 0
-    for key, v in stored.items():
-        derived = "EXPECTED-DIVERGENCE" if carriers.get(key) else "EXPECTED-MATCH"
-        if derived == v:
-            continue
-        if v == "EXPECTED-DIVERGENCE":
-            unreasoned += 1
-            if unreasoned <= 5:
-                fail(out, "VERDICT-UNREASONED",
-                     "%s/%s stored DIVERGENCE but carries no obligation" % key)
-        else:
-            behind += 1
-    if unreasoned > 5:
-        fail(out, "VERDICT-UNREASONED", "...and %d more" % (unreasoned - 5))
-    if behind and not quiet:
-        print("note: VERDICTS.tsv is BEHIND on %d row(s) — obligations derive divergence "
-              "where the legacy column stored match. Expected whenever the obligation set "
-              "grows; the obligation table is authoritative." % behind)
+    # ---- 5. VERDICT IS DERIVED — so the check is COVERAGE, not agreement ----
+    # The stored VERDICTS.tsv column is RETIRED (superseded by this table). A stored
+    # verdict beside a derived one is EXACTLY the shape that went stale, and we did not
+    # repair that staleness, we removed the possibility of it. Keeping a copy alive would
+    # reintroduce the possibility together with a checker to manage it — and a check that
+    # exists only to police a redundancy is a reason to delete the redundancy.
+    #
+    # What replaces it is the check the stored column could never perform: that the
+    # derivation covers the WHOLE population it claims to speak for. Rows with zero
+    # obligations do not appear in OBLIGATIONS.tsv at all, so EXPECTED-MATCH is the
+    # COMPLEMENT of the carrying set — and a complement is only meaningful against a
+    # denominator that is itself verified.
+    #
+    # `phase` is matched EXACTLY, never by substring: `P1` as a substring also admits
+    # `P1-ADJACENT` and silently inflates the universe 1065 -> 1414. That is not
+    # hypothetical — it happened in a hand-written probe, and the arithmetic on top of it
+    # was correct. Red-proved by a mutation a substring matcher structurally cannot fail.
+    universe = {(os.path.dirname(r["case"]), r["consumer"]) for r in p1}
+    if len(universe) != len(p1):
+        fail(out, "DENOMINATOR", "%d P1 rows collapse to %d keys — the denominator is a bag, not a population"
+             % (len(p1), len(universe)))
+    stray = sorted(set(carriers) - universe)
+    for k in stray[:5]:
+        fail(out, "POPULATION", "%s/%s carries obligations but is not a P1 row" % k)
+    if len(stray) > 5:
+        fail(out, "POPULATION", "...and %d more" % (len(stray) - 5))
+    divergence = len(set(carriers) & universe)
 
     if not quiet:
         per = collections.Counter(o["obligation_id"] for o in obls)
         print("obligations %d over %d carrying rows; contract blob %s"
               % (len(obls), len(carriers), rec.get("contract_blob", "?")[:12]))
+        print("verdict (DERIVED, no stored column): %d EXPECTED-DIVERGENCE + %d EXPECTED-MATCH "
+              "= %d P1 rows" % (divergence, len(universe) - divergence, len(universe)))
         for k in sorted(per): print("  %-10s %4d" % (k, per[k]))
         for cid, msg in out[:20]: print("FAIL  %-14s %s" % (cid, msg))
         if not out:
