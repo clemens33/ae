@@ -733,6 +733,37 @@ absent file standing in for a recorded absence.
 reasons**, and a control that fails for reasons unrelated to its subject reads exactly like
 the subject failing.
 
+### A rewrite inherits the original's CONFLATIONS through its type definitions, before any logic exists
+
+A rewrite froze its predecessor and set out to re-derive every behaviour from ratified
+evidence rather than copy it. It was careful: the new binary literally **refuses** to perform
+its main command, on the ground that the surfaces involved are not ratified yet.
+
+Meanwhile its `Status` type had two variants, `Running` and `Stopped`.
+
+The predecessor could not distinguish "this session is stopped" from "I could not reach the
+server to ask" — it printed `stopped` for both. That is a real defect, filed and confirmed.
+And the rewrite had **already inherited it**, not through ported logic (there was none) but
+through a type that offered nowhere to put the third answer. Whoever eventually writes the
+enumeration will pick one of the two variants because those are the two that exist, and the
+defect will be reproduced **by omission rather than by decision**.
+
+The mechanism is that **data shape gets ported before behaviour**, usually early, usually by
+someone modelling "what the output looks like" rather than "what we can know". Output shape
+is exactly where an implicit conflation is invisible: the original's two spellings look like
+the complete set precisely *because* the original never had a third.
+
+**So a re-derivation discipline that governs logic and not types is not a re-derivation
+discipline.** Every enum ported from a system under replacement deserves the question: *what
+states did the original fail to distinguish, and does this type let us distinguish them?*
+Ask it when the type is written, because after that the answer is load-bearing and the change
+is breaking.
+
+The three dispositions, and only the third is a defect: make the missing state
+first-class; **or** keep the collapse deliberately, in a written row that says so in those
+words; **or** leave the type as it is because nobody looked — which reads identically to the
+second from inside the code, and identically to the first from inside the intent.
+
 ### A gate that GENERATES its input validates its own output, not the commit
 
 A tree gate emitted a derived index into the tree it audited, then reported over that index.
