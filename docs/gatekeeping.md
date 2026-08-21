@@ -30,6 +30,7 @@ invariant, not against the code.
 | you are checking whether a test is thorough enough, and have not asked the other question | A test that is too STRONG is a defect, and nobody is looking for it |
 | a document explains that your concern is covered by some other rule, and you are satisfied | A DELEGATION is a claim about scope, and being talked out of a concern is not resolving it |
 | a rule says EVERY / ALWAYS and one criterion demonstrates it on the case it happened to build | A UNIVERSAL obligation checked on ONE fixture is checked nowhere |
+| you found two rules that contradict and routed the question upward | Settling an ambiguity is not the same as finding what happened while it was ambiguous |
 | your fixture plants a precondition while other parts of the same fixture break its source | A fixture can succeed at building a state the product could never produce |
 | a rule lists cases and you just found one it does not cover | Adding the missing member to an enumerated rule PRESERVES the defect that produced it |
 | a rule was just clarified, refined, or split into two orthogonal facts | A clarification that SPLITS a concept creates a coverage gap in evidence captured before it |
@@ -1027,6 +1028,41 @@ It bites hardest exactly where fixtures are most aggressive — when several thi
 once to test resilience, the breakages interact, and one of them quietly invalidates the
 premise another one needs. **The more thorough the setup, the more likely some part of it is
 unreachable.**
+
+A second exhibit, and note where it landed. A test existing to prove two facts **independent**
+hand-built its cells by pairing a positive selector with an absent record — a combination the
+constructor cannot emit, because it assigns that selector only on the branch where the record
+parsed. So the criterion whose entire purpose was proving independence demonstrated only that
+manually contradictory structs survive processing, and said nothing about whether the product
+reaches those cells at all. **The off-diagonal has to be reconstructed through the real
+constructor**, with the second axis varied by an independent, product-valid cause. Both exhibits
+were caught by the *other* seat, each in work the first had already reviewed and passed —
+unreachability is close to invisible to whoever built the fixture, because they know what they
+meant it to represent.
+
+### Settling an ambiguity is not the same as finding what happened while it was ambiguous
+
+Two rules contradicted each other. The reviewer who found it routed the question upward — which
+reading governs? — and treated that as the finding. The ruling came back, and the ruling was
+the easy half.
+
+The other seat answered the reading **and then went to look at what the implementation had
+already done under it.** The product was violating the rule on either reading: a second read of
+mutable state, in a place neither reading permitted. That would have shipped behind a resolved
+ambiguity, because everyone's attention had moved to the wording.
+
+An unresolved rule never stops code from being written. It just means **nobody checked which
+side the code landed on** — and the interval where a rule is ambiguous is precisely the interval
+where an implementation guesses, unreviewed, with the honest excuse that the rule did not say.
+So an ambiguity is a *lead*, not a finding. The finding is downstream of it.
+
+Routing an ambiguity feels like discharging it: you noticed, you escalated, someone with the
+authority answers. But the answer changes nothing about code already written against the gap.
+**Every ambiguity report should carry the survey with it** — here is the question, and here is
+what the current implementation does on each reading. Sometimes the survey makes the question
+moot, because one reading is already violated and the answer cannot save it.
+
+
 
 ### Adding the missing member to an enumerated rule PRESERVES the defect that produced it
 
