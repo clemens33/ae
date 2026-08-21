@@ -733,6 +733,40 @@ absent file standing in for a recorded absence.
 reasons**, and a control that fails for reasons unrelated to its subject reads exactly like
 the subject failing.
 
+### Value-blindness is a DESIGN forcing function, not only anti-contamination hygiene
+
+A gate found that a design document cited the wrong source for a product claim. The correct
+source was deliberately **withheld** from the document's author, under the rule that a source
+anchor may travel but the relation it proves may not — the expectation being that they would
+re-derive the right anchor from their own reading.
+
+They did something better. Unable to look the answer up, they asked why the *document* was
+asserting it at all — and **withdrew the claim** instead of re-anchoring it. Where the
+behaviour lives is a product outcome; the arm exists to capture it; so the design should
+assert nothing about it. The author's own note: *"that is where it should have been from the
+start, and is also why I did not go looking for the real location after you withheld it."*
+
+The general form: **a design document that asserts a product outcome has pre-judged the
+experiment meant to establish it.** That defect is invisible while the author can look the
+outcome up, because a correct-looking assertion with a resolving citation reads as diligence.
+Take the lookup away and the only honest move left is to stop asserting.
+
+So the blindness rule earns its cost twice: it stops a known answer from contaminating a
+result, **and** it exposes the places where a document was quietly doing the arm's job.
+
+### A citation that RESOLVES is the most dangerous kind of wrong
+
+The bad anchor above was not a broken link. It pointed at a real file, a real line, in the
+right repository, at the pinned revision — and the line was the **Telegram outbound drain**,
+a different subsystem entirely from the watchdog claim it was cited for.
+
+Every mechanical check in the chain reported green, because every mechanical check asks
+*does this pin resolve*, and none asks *does the thing at the other end say what the sentence
+claims it says*. A dangling reference announces itself on the first run. **A resolving
+reference to the wrong thing survives every automated pass and is only caught by someone
+reading both ends** — which is why anchor-resolution tooling must never be described as
+citation verification.
+
 ### An instrument must be present when the fixture is BUILT, not only when it is READ
 
 A hooked copy of the product was used to observe a mid-write boundary. The hook was
