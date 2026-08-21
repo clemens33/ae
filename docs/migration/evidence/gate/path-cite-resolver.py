@@ -142,20 +142,35 @@ for tok in TOKEN.findall(text):
         continue
     rows.append((tok, "path", hit[0], "1", hit[1][len(TREE)+1:] if hit[1].startswith(TREE) else hit[1]))
 
+# The recorded resolution is normalised to TREE-RELATIVE. It used to be whatever
+# string the glob produced, which depends on whether the caller passed the tree as an
+# absolute or a relative path — so the same tree, gated two ways, produced two
+# different committed files and a "dirty tree" that was an invocation artifact.
+def _rel(x):
+    ax, at = os.path.abspath(x), os.path.abspath(TREE)
+    return os.path.relpath(ax, at) + ("/" if x.endswith("/") else "") if ax.startswith(at) else x
+rows = [tuple(list(r[:4]) + [_rel(r[4])]) if len(r) > 4 else r for r in rows]
+buf = ["citation\tclass\tresolved_base\texpansions\tfirst_resolution\n"]
+for r in sorted(rows):
+    buf.append("\t".join(r) + "\n")
+for b in sorted(bad):
+    buf.append("\t".join((b[0], b[1], "UNRESOLVED", "0", b[2])) + "\n")
+new = "".join(buf)
+# Visible, not fatal: a committed-but-stale index used to be overwritten in silence
+# and the gate reported over the freshly generated file. A mid-capture tree
+# legitimately has a stale index, so mismatch must not change exit status.
+if os.path.exists(OUT):
+    old = open(OUT).read()
+    if old != new:
+        # Drift SIGNAL only: this is a positional mismatch count, not an edit
+        # distance. Insert one line at the top and nearly every later line
+        # compares unequal, so the number is magnitude-of-disagreement, not
+        # how many edits it would take to repair.
+        ol, nl = old.splitlines(), new.splitlines()
+        n = sum(1 for a, b in zip(ol, nl) if a != b) + abs(len(ol) - len(nl))
+        print(f"DRIFT file={OUT} positional_mismatches={n}")
 with open(OUT, "w") as fh:
-    # The recorded resolution is normalised to TREE-RELATIVE. It used to be whatever
-    # string the glob produced, which depends on whether the caller passed the tree as an
-    # absolute or a relative path — so the same tree, gated two ways, produced two
-    # different committed files and a "dirty tree" that was an invocation artifact.
-    def _rel(x):
-        ax, at = os.path.abspath(x), os.path.abspath(TREE)
-        return os.path.relpath(ax, at) + ("/" if x.endswith("/") else "") if ax.startswith(at) else x
-    rows = [tuple(list(r[:4]) + [_rel(r[4])]) if len(r) > 4 else r for r in rows]
-    fh.write("citation\tclass\tresolved_base\texpansions\tfirst_resolution\n")
-    for r in sorted(rows):
-        fh.write("\t".join(r) + "\n")
-    for b in sorted(bad):
-        fh.write("\t".join((b[0], b[1], "UNRESOLVED", "0", b[2])) + "\n")
+    fh.write(new)
 
 print(f"tree={TREE}")
 print(f"citations_checked={len(rows)+len(bad)} resolved={len(rows)} unresolved={len(bad)}")
