@@ -1,0 +1,45 @@
+OCC_ID	SOURCE	BLOB	LINE	SPAN	OWNER	CLASS	CHOICE_ID	LOCUS
+P1-L047	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	47	1	C1	internal	-	test-only observation seam (private function / internal type)
+P1-L070	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	70	1	C4	internal	-	unreadable-record carrier representation
+P1-L089	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	89	1	C7	internal	-	inventory diagnostic/error side channel
+P1-L109	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	109	1	C10	internal	-	equivalent-server grouping, caching, retries, query count
+P1-L148	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	148	1	C16	internal	-	candidate representation and raw facts carried into phase 2
+P1-L158	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	158	2	C18	internal	-	collection order, map/set type, query order, multi-provenance carrier
+P1-L166	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	166	1	C19	internal	-	AE_TMUX_SERVER ambient selection (outside phase 1)
+P1-L189	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	189	1	C21	internal	-	exact enum/field representation of record-read facts
+P1-L242	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	242	1	C24	internal	-	phase-1 loss carrier, error detail, retry policy, ordering
+P2-L031	P2	29db943aa85319534301332052105ba16df03b4d	31	1	C1	internal	-	discovery order within inventory
+P2-L039	P2	29db943aa85319534301332052105ba16df03b4d	39	1	C2	internal	-	retaining source provenance/selector after liveness
+P2-L041	P2	29db943aa85319534301332052105ba16df03b4d	41	1	C2	internal	-	collection type and iteration order
+P2-L090	P2	29db943aa85319534301332052105ba16df03b4d	90	2	C7	internal	-	retry and diagnostic policy
+P2-L109	P2	29db943aa85319534301332052105ba16df03b4d	109	1	C9	internal	-	in-memory carrier for the snapshot proof
+P2-L121	P2	29db943aa85319534301332052105ba16df03b4d	121	1	C10	internal	-	redundant query and in-memory proof carrier
+P2-L155	P2	29db943aa85319534301332052105ba16df03b4d	155	1	C13	product-output	OC-P2-SEMANTIC-FALSE-PRESENCE	exact JSON presence versus omission of semantic-false degraded
+P2-L183	P2	29db943aa85319534301332052105ba16df03b4d	183	2	C16	product-output	OC-P3-JSON-FIELD-ORDER	JSON object member order
+P2-L201	P2	29db943aa85319534301332052105ba16df03b4d	201	1	C18	internal	-	local/WIP commit topology
+P2-L219	P2	29db943aa85319534301332052105ba16df03b4d	219	1	C20	internal	-	fake backend versus isolated tmux in the query recorder
+P2-L225	P2	29db943aa85319534301332052105ba16df03b4d	225	1	C21	internal	-	classifier representation, grouping/count/order, cache, retry, diagnostic channel
+P2-L238	P2	29db943aa85319534301332052105ba16df03b4d	238	1	C22	internal	-	how phase 2 carries an allowed entitled-server subset
+P2-L240	P2	29db943aa85319534301332052105ba16df03b4d	240	1	C22	internal	-	querying a subset, grouping, query order, caching, retry count
+P2-L279	P2	29db943aa85319534301332052105ba16df03b4d	279	1	HANDOFF	product-output	OC-P3-HUMAN-DIAGNOSTIC	incomplete-human wording, optional paths/targets, and process rc
+P2-L284	P2	29db943aa85319534301332052105ba16df03b4d	284	1	HANDOFF	product-output	OC-P3-MACHINE-LOSS-RECORDS	detailed machine loss records (boolean remains required)
+P3-L056	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	56	2	C1	internal	-	refusal-removal site and internal wiring
+P3-L069	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	69	1	C2	internal	-	move/borrow/copy/stream; filter-versus-sort sequence; buffered vs iterator presentation
+P3-L145	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	145	2	C9	product-output	OC-P3-EQUAL-NAME-TIE	relative order of distinct identities with byte-identical session names
+P3-L158	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	158	1	C10	internal	-	sort implementation, stable-sort algorithm, filter-versus-sort sequence
+P3-L189	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	189	1	C12	product-output	OC-P3-HUMAN-DIAGNOSTIC	incomplete-human wording, optional paths/targets, and process rc
+P3-L202a	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	202	1	C13	product-output	OC-P3-MACHINE-LOSS-RECORDS	detailed machine loss records and their order
+P3-L202b	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	202	1	C13	product-output	OC-P3-JSON-WARNING	JSON stderr warning policy (JSON process rc retained)
+P3-L215	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-set	-	finite open-choice set; each member keeps the surface scope of its owning criterion
+P3-L229	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	229	1	C15	review-rule	-	reviewer rejects a criterion that fails a correct implementation solely for a named open choice
+P3-C15-HUMAN-LAYOUT	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-HUMAN-LAYOUT	human table layout, colors, headers, whitespace
+P3-C15-HUMAN-DIAGNOSTIC	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-HUMAN-DIAGNOSTIC	incomplete-human diagnostic wording, path detail, and exit status from C12
+P3-C15-JSON-WARNING	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-JSON-WARNING	JSON stderr warning policy from C13; JSON process rc retained
+P3-C15-JSON-FIELD-ORDER	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-JSON-FIELD-ORDER	JSON object field order
+P3-C15-MACHINE-LOSS	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-MACHINE-LOSS-RECORDS	detailed machine loss records and their order
+P3-C15-INTERNAL-SORT	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	internal-member	-	internal collection or sort implementation (subtracts no product-output locus)
+P3-C15-EQUAL-NAME	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-EQUAL-NAME-TIE	equal-name tie-breaking
+SC-L399	SC	896d08ea3ac753095c04af17dfba92cd9d15fb38	399	1	SC-017o	product-output	OC-P3-HUMAN-DIAGNOSTIC	human diagnostic wording, whether paths/targets are named, and exit status
+SC-L490	SC	896d08ea3ac753095c04af17dfba92cd9d15fb38	490	1	SC-017r	product-output	OC-P3-AGENT-HEALTH-TOKEN	exact alive/dead/unknown words or glyphs
+SC-L402	SC	896d08ea3ac753095c04af17dfba92cd9d15fb38	402	1	SC-017o	sc-arm	OC-P3-MACHINE-LOSS-RECORDS	internal loss representation and ordering remain open (phrase is remain open, not OPEN CHOICE)
+SC-509-GENERATED-AT	SC	896d08ea3ac753095c04af17dfba92cd9d15fb38	1367	1	SC-509	sc-arm	OC-P3-GENERATED-AT	generated_at is a required digest field whose exact timestamp bytes are unspecified
