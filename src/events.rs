@@ -50,6 +50,7 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use crate::attention::Reason;
 use crate::json::{self, Value};
 use crate::time::Timestamp;
 
@@ -166,6 +167,23 @@ pub enum RefMeaning<'a> {
     /// Any other action. SC-510c says `ref` is *usually* absent there — never
     /// categorically absent — so a value that turns up carries no meaning the
     /// table defines, which is not the same as carrying none at all.
+    Undefined,
+}
+
+/// What one event says about the watchdog's standing verdict on an agent.
+///
+/// Three answers rather than two, because a CLEAR is not the absence of an
+/// alert — it is the watchdog retracting one — while an event that is neither
+/// must leave a backward scan looking further rather than answering it. Collapse
+/// the third into the second and every nudge in the log silently cancels the
+/// alert it was sent about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertMeaning {
+    /// The watchdog says this agent needs a human, for this reason.
+    Raised(Reason),
+    /// The watchdog says the condition it alerted on is over.
+    Cleared,
+    /// Not a watchdog verdict at all.
     Undefined,
 }
 
@@ -329,6 +347,79 @@ impl Event {
         let display = self.target.as_deref()?;
         Some(identity(&self.target_slot, &self.target_session, display))
     }
+
+    /// The watchdog verdict this event carries — SC-509c's alert-derived half.
+    ///
+    /// **SC-980 rules that an alert carries a TYPED reason key and that
+    /// free-text `summary` is never a discriminator — and no row names that
+    /// key.** There is therefore nothing here to read it from, and picking a
+    /// spelling would be fabrication. The row's own escape clause is taken
+    /// instead: the incumbent action/summary byte shapes are "T-WD probe
+    /// material for the LEGACY ADAPTER", empirical and never SHOULD. This is
+    /// that adapter. When SC-980's key is named it is read FIRST and this
+    /// cascade becomes the fallback for records written before it existed.
+    ///
+    /// `ref` is deliberately not pressed into service as that key. SC-510c
+    /// makes `ref`'s meaning the ACTION's to decide, and no row decides it for
+    /// `alert` — so [`RefMeaning::Undefined`] is the honest answer and reading a
+    /// reason out of it would invent the very schema this doc refuses to invent.
+    #[must_use]
+    pub fn alert_meaning(&self) -> AlertMeaning {
+        match self.action.as_str() {
+            "alert" => AlertMeaning::Raised(alert_class(self.summary.as_deref())),
+            // The watchdog's own retractions. `throttle-cleared` is documented
+            // (events.md:105); `alert-cleared` is not in that table but is
+            // emitted by both reference implementations, so it is READ here
+            // without being published as a row this crate invented.
+            "alert-cleared" | "throttle-cleared" => AlertMeaning::Cleared,
+            // A CARRIER, and the ACTION is the whole discrimination: SC-509c
+            // wants an owner plus an active contribution, `target` names the
+            // owner, and `throttled` names the contribution outright. Reading
+            // the summary here would NARROW a decision the action has already
+            // made — neither needed nor permitted. Ruled 2026-08-24, after both
+            // reference implementations were found to define the carrier class
+            // this way; events.md:106's "first cycle of a streak" says WHEN the
+            // watchdog emits it, not whether the agent owns it.
+            "throttled" => AlertMeaning::Raised(Reason::Throttled),
+            _ => AlertMeaning::Undefined,
+        }
+    }
+}
+
+/// The reason an incumbent alert `summary` names.
+///
+/// Pinned by two INDEPENDENT implementations of one algorithm that agree on
+/// every arm: `_agents_alert_reasons` in `ae` @72c7293 and
+/// `_agent_alert_reason` in `contrib/aewatch/aewatch`. Both are empirical
+/// probe material under SC-980, never authority — which is exactly why they are
+/// reproduced rather than improved on.
+///
+/// **The ORDER is load-bearing, in one place only.** The meta-agent wedge alert
+/// says "not sweeping" and must reach [`Reason::Stale`] before any later arm can
+/// claim its text; the incumbent carries that same warning at the same line.
+///
+/// An unrecognised summary is `Stale`, never [`AlertMeaning::Undefined`]:
+/// `alert` MEANS attention is required, so an alert whose class this cascade
+/// cannot read is an alert of unknown class — dropping it would hide the one
+/// thing it exists to report.
+fn alert_class(summary: Option<&str>) -> Reason {
+    let summary = summary.unwrap_or_default();
+    if summary.contains("not sweeping") {
+        return Reason::Stale;
+    }
+    // Both spellings, because the incumbent matches both and the match is
+    // case-SENSITIVE in every implementation of it.
+    if ["dead", "dropped", "missing", "MISSING"]
+        .iter()
+        .any(|mark| summary.contains(mark))
+    {
+        return Reason::Dead;
+    }
+    if summary.contains("throttl") {
+        return Reason::Throttled;
+    }
+    // "max nudges reached (...)", and every alert shape not yet enumerated.
+    Reason::Stale
 }
 
 /// SC-511b + SC-405j, in one sentence: BOTH halves present and valid route,
@@ -771,9 +862,10 @@ mod tests {
     )]
 
     use super::{
-        Cursor, Event, EventError, EventLog, GenerationSource, Identity, KNOWN_KEYS, RefMeaning,
-        RoutingMember,
+        AlertMeaning, Cursor, Event, EventError, EventLog, GenerationSource, Identity, KNOWN_KEYS,
+        RefMeaning, RoutingMember, alert_class,
     };
+    use crate::attention::Reason;
     use crate::time::Timestamp;
     use std::fs;
     use std::path::PathBuf;
@@ -1833,5 +1925,160 @@ mod tests {
         let log = EventLog::discover(&scratch.0);
         let err = log.drain(Cursor::start_of(7)).expect_err("no generation 7");
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    /// Every alert summary the frozen watchdog can actually emit, taken from the
+    /// `ae_emit_event "alert"` call sites in `ae` @72c7293 and from
+    /// `aewatch`. This is the whole probe population SC-980 names, so the
+    /// cascade is asserted against ALL of it rather than against examples.
+    const INCUMBENT_ALERT_SUMMARIES: [(&str, Reason); 7] = [
+        ("agent process dead — dropped to shell", Reason::Dead),
+        (
+            "pane missing — agent no longer visible in session",
+            Reason::Dead,
+        ),
+        (
+            "max nudges reached (no recent events), needs attention",
+            Reason::Stale,
+        ),
+        ("throttled for 10s — may need attention", Reason::Throttled),
+        (
+            "meta-agent not sweeping — heartbeat stopped (may be stuck)",
+            Reason::Stale,
+        ),
+        (
+            "meta-agent unreachable — 3 sweep nudges undelivered (not sweeping)",
+            Reason::Stale,
+        ),
+        (
+            "nudge unreachable/occupied — 2 undelivered attempts (idle 900s)",
+            Reason::Stale,
+        ),
+    ];
+
+    #[test]
+    fn sc_980_every_incumbent_alert_summary_names_its_class() {
+        for (summary, want) in INCUMBENT_ALERT_SUMMARIES {
+            assert_eq!(alert_class(Some(summary)), want, "{summary:?}");
+        }
+    }
+
+    #[test]
+    fn sc_980_an_unreadable_alert_is_stale_and_never_silent() {
+        // `alert` MEANS attention is required, so a class this cascade cannot
+        // read is an alert of unknown class — not a non-event. Dropping it
+        // would hide the one thing the record exists to report.
+        for summary in [
+            None,
+            Some(""),
+            Some("something the watchdog has not emitted yet"),
+        ] {
+            assert_eq!(alert_class(summary), Reason::Stale, "{summary:?}");
+        }
+    }
+
+    #[test]
+    fn sc_980_the_wedge_alert_is_stale_even_when_its_text_names_another_class() {
+        // The one place the cascade's ORDER is load-bearing. A wedge summary
+        // that also says "throttled" must not be downgraded by the later arm,
+        // and one that also says "dead" must not be taken by the earlier one.
+        assert_eq!(
+            alert_class(Some("meta-agent not sweeping — throttled upstream")),
+            Reason::Stale,
+        );
+        assert_eq!(
+            alert_class(Some("meta-agent not sweeping — pane looks dead")),
+            Reason::Stale,
+        );
+    }
+
+    #[test]
+    fn sc_980_the_missing_marker_is_matched_in_both_spellings() {
+        // The incumbent lists `missing` AND `MISSING` and its match is
+        // case-sensitive. Keeping only one spelling silently reclassifies a
+        // real pane-missing alert as stale.
+        assert_eq!(alert_class(Some("pane is MISSING")), Reason::Dead);
+        assert_eq!(alert_class(Some("pane is missing")), Reason::Dead);
+    }
+
+    fn event(action: &str, summary: Option<&str>) -> Event {
+        let summary = summary.map_or_else(String::new, |text| format!(r#","summary":"{text}""#));
+        let line = format!(
+            r#"{{"ts":"2026-08-20T15:00:19Z","actor":"_watchdog","action":"{action}","target":"fake:probe"{summary}}}"#
+        );
+        Event::parse_line(&line).expect("a well-formed watchdog record")
+    }
+
+    #[test]
+    fn sc_509c_an_alert_raises_the_class_its_summary_names() {
+        assert_eq!(
+            event("alert", Some("agent process dead — dropped to shell")).alert_meaning(),
+            AlertMeaning::Raised(Reason::Dead),
+        );
+        assert_eq!(
+            event("alert", Some("max nudges reached, needs attention")).alert_meaning(),
+            AlertMeaning::Raised(Reason::Stale),
+        );
+    }
+
+    #[test]
+    fn sc_509c_a_watchdog_clear_retracts_rather_than_deciding_nothing() {
+        // Cleared and Undefined are different answers: a clear ENDS the scan,
+        // an undefined record lets it look further back.
+        for action in ["alert-cleared", "throttle-cleared"] {
+            assert_eq!(
+                event(action, Some("recovered")).alert_meaning(),
+                AlertMeaning::Cleared,
+                "{action}"
+            );
+        }
+    }
+
+    #[test]
+    fn sc_509c_an_ordinary_record_carries_no_watchdog_verdict() {
+        // `nudge` is the load-bearing entry: the watchdog writes it, it names
+        // the agent as TARGET, and it is what PRECEDES an alert — so a reader
+        // that let it carry a verdict would answer from the question instead of
+        // from the answer.
+        for action in ["state", "send", "nudge", "ask", "reply", "memo", "recover"] {
+            assert_eq!(
+                event(action, Some("agent process dead — dropped to shell")).alert_meaning(),
+                AlertMeaning::Undefined,
+                "{action}: only `alert` may classify a summary"
+            );
+        }
+    }
+
+    #[test]
+    fn sc_509c_a_throttled_action_is_a_carrier_on_its_action_alone() {
+        // The ruled evidence class: `target` names the owner and the ACTION
+        // names the contribution, so no summary is consulted. Each summary
+        // below would classify DIFFERENTLY if one were — "pausing nudges"
+        // carries no marker and would fall to Stale, and the second says
+        // "dead". The action deciding alone is the property, not a shortcut.
+        for summary in [
+            Some("upstream throttling detected — pausing nudges"),
+            Some("the process looks dead"),
+            None,
+        ] {
+            assert_eq!(
+                event("throttled", summary).alert_meaning(),
+                AlertMeaning::Raised(Reason::Throttled),
+                "{summary:?}: the action decides, and the summary may not narrow it"
+            );
+        }
+    }
+
+    #[test]
+    fn sc_510c_an_alert_ref_is_not_pressed_into_service_as_a_typed_reason() {
+        // SC-980's typed key is unnamed by any row, so `ref` on an alert stays
+        // Undefined. A reader that took it would be inventing the schema.
+        let line = concat!(
+            r#"{"ts":"2026-08-20T15:00:19Z","actor":"_watchdog","action":"alert","#,
+            r#""target":"fake:probe","ref":"throttled","summary":"agent process dead"}"#
+        );
+        let event = Event::parse_line(line).expect("a well-formed record");
+        assert_eq!(event.ref_meaning(), RefMeaning::Undefined);
+        assert_eq!(event.alert_meaning(), AlertMeaning::Raised(Reason::Dead));
     }
 }

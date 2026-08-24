@@ -30,9 +30,12 @@
 //! * **`status` and `alive`** — tmux facts. The contract never defines liveness
 //!   detection as row behavior.
 //! * **`branch`** — SC-405g: the live tmux branch with a git fallback.
-//! * **`dead` / `stale` / `throttled`** — SC-980: successor alert events carry a
-//!   typed reason, and free text is never a discriminator, so the decided
-//!   reason is handed in rather than parsed out of prose here.
+//! * **`dead` / `stale` / `throttled`** from a source OUTSIDE the ledger —
+//!   SC-980 lets a successor watchdog hand in a decided reason, and
+//!   [`AgentRuntime::alert`] is where it arrives. It is no longer the ONLY
+//!   route: the same three classes are also derivable from the ledger's own
+//!   `alert` records, which is what [`SessionRead::alert_reason_of`] does and
+//!   what SC-509c's alert-derived evidence class means. Both feed one rollup.
 //!
 //! # The known limitation, written down
 //!
@@ -48,7 +51,7 @@ use std::path::Path;
 use crate::attention::Reason;
 use crate::digest::{AgentEntry, SessionEntry, Status};
 use crate::events::{
-    Cursor, Drain, Event, EventLog, Identity, RefMeaning, RoutingMember, SkippedLine,
+    AlertMeaning, Cursor, Drain, Event, EventLog, Identity, RefMeaning, RoutingMember, SkippedLine,
 };
 use crate::meta::{Anomaly, Meta};
 use crate::time::Timestamp;
@@ -216,6 +219,63 @@ impl SessionRead {
             .map(|(_, state)| state)
     }
 
+    /// The watchdog's standing verdict on `agent` — SC-509c's alert-derived
+    /// evidence class.
+    ///
+    /// # The currency rule
+    ///
+    /// An alert is a claim about a moment, and the ledger keeps claiming it
+    /// forever. So the answer is not "is there an alert" but "what is the
+    /// NEWEST thing the log says about this agent" — and only some events say
+    /// anything:
+    ///
+    /// * an `alert` RAISES its class ([`Event::alert_meaning`]);
+    /// * a watchdog clear RETRACTS whatever stood;
+    /// * **any other event the agent itself wrote is recovery** — it is alive
+    ///   and working, so nothing the watchdog said earlier still holds;
+    /// * anything else — most of all a `nudge`, which names the agent as TARGET
+    ///   and is written by the watchdog — decides nothing and the scan looks
+    ///   further back.
+    ///
+    /// That third rule is why an inbound event cannot clear an alert. A nudge is
+    /// the watchdog asking whether the agent is there; treating the question as
+    /// its own answer would clear every alert the moment it was raised, since
+    /// the nudges are what precede it. `tpairdeadoverstale` in the corpus is
+    /// exactly that shape: two nudges, then the alert.
+    ///
+    /// # Why the agent's own event, and not merely a newer timestamp
+    ///
+    /// Recovery is an ownership fact. Only the agent can prove it is back, so
+    /// only the agent's own record supersedes — an event addressed TO it proves
+    /// somebody tried, and nothing more.
+    #[must_use]
+    pub fn alert_reason_of(&self, session: &str, slot: &str, reference: &str) -> Option<Reason> {
+        self.events
+            .iter()
+            .enumerate()
+            .filter_map(|(index, event)| {
+                let own = is_actor(event, session, slot, reference);
+                if !own && !is_addressed_to(event, session, slot, reference) {
+                    return None;
+                }
+                let verdict = match event.alert_meaning() {
+                    AlertMeaning::Raised(reason) => Some(reason),
+                    AlertMeaning::Cleared => None,
+                    // The agent's OWN activity is recovery; an inbound event is
+                    // not decisive at all, so it must not enter the ordering.
+                    AlertMeaning::Undefined if own => None,
+                    AlertMeaning::Undefined => return None,
+                };
+                Some((event.ts, index, verdict))
+            })
+            // Newest decisive record wins. `index` breaks a timestamp tie
+            // toward the LATER record, which is the order the incumbent's
+            // reverse file walk gives and the only tie-break an append-only log
+            // can justify.
+            .max_by_key(|(ts, index, _)| (*ts, *index))
+            .and_then(|(_, _, verdict)| verdict)
+    }
+
     /// Whether this read lost anything — SC-509b's "ACTUAL read/parse loss".
     ///
     /// SC-520: a skipped malformed COMPLETE record is loss and must reach the
@@ -302,6 +362,43 @@ fn is_actor(event: &Event, session: &str, slot: &str, reference: &str) -> bool {
         // Partial, or present-and-empty: routed, to nobody nameable.
         _ => false,
     }
+}
+
+/// Whether `event` is ADDRESSED TO the agent at `slot` / `reference` in
+/// `session` — the mirror of [`is_actor`] on the target side.
+///
+/// It exists because an agent never writes the record that says it is dead. The
+/// watchdog is the actor of every alert, so a per-agent attention reason that
+/// only ever consulted the actor could not see a single one of them.
+///
+/// Same three-state identity rule as [`is_actor`], for the same reason: SC-405j
+/// makes a partial or present-and-empty routing key match NOBODY rather than
+/// fall through to a display name, so an alert with half a key is a loud
+/// non-match instead of a possible false attribution.
+fn is_addressed_to(event: &Event, session: &str, slot: &str, reference: &str) -> bool {
+    match event.target_identity() {
+        Some(Identity::Routed {
+            slot: event_slot,
+            session: event_session,
+        }) => event_slot == slot && event_session == session,
+        Some(Identity::Display(name)) => {
+            name == reference || is_cross_session_form(name, session, reference)
+        }
+        // Half a routing key addresses nobody, and neither does no target.
+        Some(Identity::Unassociated) | None => false,
+    }
+}
+
+/// Whether `name` is the `@<session>:<agent>` spelling of THIS session's agent.
+///
+/// The helpers accept that form and pass it through, so a locally-addressed
+/// event can wear it. Matched by stripping rather than by building the string,
+/// because this runs once per agent per record.
+fn is_cross_session_form(name: &str, session: &str, reference: &str) -> bool {
+    name.strip_prefix('@')
+        .and_then(|rest| rest.strip_prefix(session))
+        .and_then(|rest| rest.strip_prefix(':'))
+        .is_some_and(|rest| rest == reference)
 }
 
 /// The SC-509 entry for the session directory at `dir`.
@@ -564,14 +661,28 @@ fn agent_entries(
                 session_id: slot.session_id.clone(),
                 alive: agent_liveness(runtime, runtime_agent),
                 state: declared.map(ToOwned::to_owned),
-                // SC-017g: dead/stale/throttled come from the watchdog (SC-980
-                // hands them here typed); waiting-user/blocked are
-                // self-declared. An agent can be both, so the more actionable
-                // one wins — the same rollup the session marker uses.
+                // SC-509c: this agent's OWN contribution, from the two
+                // evidence classes the row recognises — ALERT-DERIVED
+                // dead/stale/throttled, and SELF-DECLARED waiting-user/blocked.
+                // The alert arrives from the ledger (`alert_reason_of`) or from
+                // a successor watchdog that hands it in (SC-980); both are the
+                // same fact, so both enter the same rollup and the more
+                // actionable one wins.
+                //
+                // `None` here MEANS no agent-owned contribution exists, and the
+                // session marker's extra term is the reason that matters: a
+                // session-level `unanswered` never reaches this field, because
+                // no agent owns a pair fact. Fabricating an owner for it is the
+                // failure this row was written against.
                 reason: Reason::rollup(
                     runtime_agent
                         .and_then(|agent| agent.alert)
                         .into_iter()
+                        .chain(
+                            read.and_then(|read| {
+                                read.alert_reason_of(session, &slot.slot, &reference)
+                            }),
+                        )
                         .chain(declared.and_then(declared_reason)),
                 ),
             }
@@ -1863,6 +1974,606 @@ mod tests {
         assert_eq!(
             read.last_active,
             Some(Timestamp::from_epoch(NOW.epoch() - 10))
+        );
+    }
+
+    // ---- SC-509c: the ALERT-DERIVED evidence class -------------------------
+
+    /// Two agents, so a test can prove an alert reaches the one it names and
+    /// only that one.
+    const PAIR_META: &str =
+        "mode=local\nagent.main=fake:high:pending\nagent.worker.0=fake:low:pending\n";
+
+    /// The corpus's own alert bytes, at the ruled grain: the summary a real
+    /// watchdog wrote, and the class SC-509c says the targeted agent owns.
+    /// Copied from `templates/{A2,G2,A3b}/fixture-bytes/*/sessions/*/events.jsonl`
+    /// — the same records the phase-4 corpus scores, so a change that would
+    /// have flipped a corpus row flips a test here first.
+    const CORPUS_ALERTS: [(&str, Reason); 3] = [
+        ("agent process dead — dropped to shell", Reason::Dead),
+        (
+            "max nudges reached (no recent events), needs attention",
+            Reason::Stale,
+        ),
+        ("throttled for 10s — may need attention", Reason::Throttled),
+    ];
+
+    #[test]
+    fn sc_509c_an_alert_naming_an_agent_as_target_is_that_agents_own_reason() {
+        // The defect this closes: every one of these rendered `reason: null`
+        // beside a session `attention` that named the same class, so the digest
+        // said a session needed a human and named no owner.
+        for (summary, want) in CORPUS_ALERTS {
+            let scratch = Scratch::new("alertderived");
+            scratch.meta(META);
+            scratch.events(&[event(
+                &at(600),
+                "_watchdog",
+                "alert",
+                &format!(r#","target":"claude:lead","summary":"{summary}""#),
+            )]);
+            let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+            assert_eq!(entry.agents[0].reason, Some(want), "{summary:?}");
+            assert_eq!(
+                entry.attention,
+                Some(want),
+                "and the session marker is the rollup over it, not a second derivation"
+            );
+        }
+    }
+
+    #[test]
+    fn sc_509c_an_alert_reaches_only_the_agent_it_names() {
+        // A session-level reason with no owner is exactly what SC-509c forbids;
+        // a reason smeared across the roster is the same error inverted.
+        let scratch = Scratch::new("alertone");
+        scratch.meta(PAIR_META);
+        scratch.events(&[event(
+            &at(600),
+            "_watchdog",
+            "alert",
+            r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+        )]);
+        let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].reference, "fake:high");
+        assert_eq!(entry.agents[0].reason, Some(Reason::Dead));
+        assert_eq!(entry.agents[1].reference, "fake:low");
+        assert_eq!(entry.agents[1].reason, None, "no carrier names fake:low");
+        assert_eq!(entry.attention, Some(Reason::Dead));
+    }
+
+    #[test]
+    fn sc_509c_each_agent_owns_its_own_class_and_the_session_takes_the_worst() {
+        // `tpairdeadoverstale`, record for record: an alert for the main slot,
+        // two nudges at the worker, then the worker's own alert. The nudges are
+        // the instrument — they sit between the alerts and name the worker as
+        // TARGET, so a matcher that read an inbound event as recovery would
+        // clear the very alert that follows them.
+        let scratch = Scratch::new("deadoverstale");
+        scratch.meta(PAIR_META);
+        scratch.events(&[
+            event(
+                &at(900),
+                "_watchdog",
+                "alert",
+                r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+            ),
+            event(
+                &at(600),
+                "watchdog",
+                "nudge",
+                r#","target":"fake:low","summary":"no recent events, no recent ae activity""#,
+            ),
+            event(
+                &at(300),
+                "watchdog",
+                "nudge",
+                r#","target":"fake:low","summary":"no recent events, no recent ae activity""#,
+            ),
+            event(
+                &at(60),
+                "_watchdog",
+                "alert",
+                r#","target":"fake:low","summary":"max nudges reached (no recent events), needs attention""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].reason, Some(Reason::Dead));
+        assert_eq!(entry.agents[1].reason, Some(Reason::Stale));
+        assert_eq!(
+            entry.attention,
+            Some(Reason::Dead),
+            "the session marker is the most actionable of the two, not the newest"
+        );
+    }
+
+    #[test]
+    fn sc_509c_the_agents_own_later_event_supersedes_the_alert() {
+        // THE CURRENCY RULE, and the corpus proves it: `tg2b` carries a dead
+        // alert for fake:bravo and then fake:bravo's own `ask`, and the frozen
+        // digest's session attention is waiting-user — NOT dead. An alert is a
+        // claim about a moment; the ledger keeps claiming it forever.
+        let scratch = Scratch::new("superseded");
+        scratch.meta(PAIR_META);
+        scratch.events(&[
+            event(
+                &at(900),
+                "_watchdog",
+                "alert",
+                r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+            ),
+            event(
+                &at(300),
+                "fake:high",
+                "ask",
+                r#","target":"fake:low","ref":"ae-1","summary":"still here""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(
+            entry.agents[0].reason, None,
+            "an agent that spoke after the alert is not dead"
+        );
+        assert_eq!(entry.attention, None);
+    }
+
+    #[test]
+    fn sc_509c_the_agents_own_event_before_the_alert_does_not_rescue_it() {
+        // The mirror of the rule above, and the one a `!=` in the wrong place
+        // still satisfies. Same two records, opposite order.
+        let scratch = Scratch::new("notrescued");
+        scratch.meta(PAIR_META);
+        scratch.events(&[
+            event(
+                &at(900),
+                "fake:high",
+                "ask",
+                r#","target":"fake:low","ref":"ae-1","summary":"working""#,
+            ),
+            event(
+                &at(300),
+                "_watchdog",
+                "alert",
+                r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].reason, Some(Reason::Dead));
+    }
+
+    #[test]
+    fn sc_509c_an_inbound_event_after_the_alert_is_not_recovery() {
+        // Only the agent can prove it is back. An event ADDRESSED to it proves
+        // somebody tried — and a nudge is the watchdog asking the very question
+        // the alert answers, so reading it as recovery would clear every alert
+        // the moment it was raised.
+        for (actor, action) in [("watchdog", "nudge"), ("fake:low", "send")] {
+            let scratch = Scratch::new("inbound");
+            scratch.meta(PAIR_META);
+            scratch.events(&[
+                event(
+                    &at(900),
+                    "_watchdog",
+                    "alert",
+                    r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+                ),
+                event(
+                    &at(300),
+                    actor,
+                    action,
+                    r#","target":"fake:high","summary":"anyone there?""#,
+                ),
+            ]);
+            let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+            assert_eq!(
+                entry.agents[0].reason,
+                Some(Reason::Dead),
+                "{actor}/{action}"
+            );
+        }
+    }
+
+    #[test]
+    fn sc_509c_a_watchdog_clear_after_the_alert_retracts_it() {
+        // The watchdog owns its own retractions, so a clear ends the scan
+        // without the agent having to speak. No corpus fixture carries one —
+        // which is precisely why it needs a test rather than a capture.
+        for clear in ["alert-cleared", "throttle-cleared"] {
+            let scratch = Scratch::new("cleared");
+            scratch.meta(PAIR_META);
+            scratch.events(&[
+                event(
+                    &at(900),
+                    "_watchdog",
+                    "alert",
+                    r#","target":"fake:high","summary":"throttled for 10s — may need attention""#,
+                ),
+                event(
+                    &at(300),
+                    "_watchdog",
+                    clear,
+                    r#","target":"fake:high","summary":"throttling cleared after 3 cycles""#,
+                ),
+            ]);
+            let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+            assert_eq!(entry.agents[0].reason, None, "{clear}");
+            assert_eq!(entry.attention, None, "{clear}");
+        }
+    }
+
+    #[test]
+    fn sc_509c_an_older_alert_survives_a_newer_one_being_absent() {
+        // An ancient alert under a long quiet log is still the newest thing
+        // said ABOUT the agent. The scan is unbounded on purpose: capping it
+        // would make an agent's deadness expire with nobody having recovered.
+        let scratch = Scratch::new("ancient");
+        scratch.meta(PAIR_META);
+        let mut lines = vec![event(
+            &at(100_000),
+            "_watchdog",
+            "alert",
+            r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+        )];
+        for age in (100..900).step_by(100) {
+            lines.push(event(
+                &at(age),
+                "fake:low",
+                "memo",
+                r#","ref":"design","summary":"somebody else's traffic""#,
+            ));
+        }
+        scratch.events(&lines);
+        let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].reason, Some(Reason::Dead));
+    }
+
+    #[test]
+    fn sc_405j_an_alert_addressed_by_routing_key_reaches_its_slot_and_no_other() {
+        // FIXTURE ORDER IS THE INSTRUMENT, as in the SC-511b state test: the
+        // records that must NOT match are the NEWEST, so a matcher that accepts
+        // them changes the answer instead of being rescued by latest-wins.
+        let scratch = Scratch::new("routedalert");
+        scratch.meta(PAIR_META);
+        scratch.events(&[
+            // Should win: this session's main slot, under a churned name.
+            event(
+                &at(900),
+                "_watchdog",
+                "alert",
+                concat!(
+                    r#","target":"fake:renamed","summary":"agent process dead — dropped to shell""#,
+                    r#","target_slot":"main","target_session":"pair""#,
+                ),
+            ),
+            // Same slot, ANOTHER session. Newer.
+            event(
+                &at(600),
+                "_watchdog",
+                "alert",
+                concat!(
+                    r#","target":"fake:high","summary":"throttled for 10s — may need attention""#,
+                    r#","target_slot":"main","target_session":"somewhere-else""#,
+                ),
+            ),
+            // This session, ANOTHER slot. Newer still.
+            event(
+                &at(300),
+                "_watchdog",
+                "alert",
+                concat!(
+                    r#","target":"fake:high","summary":"max nudges reached, needs attention""#,
+                    r#","target_slot":"worker.0","target_session":"pair""#,
+                ),
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(
+            entry.agents[0].reason,
+            Some(Reason::Dead),
+            "neither half of the routing key alone addresses an agent"
+        );
+        assert_eq!(
+            entry.agents[1].reason,
+            Some(Reason::Stale),
+            "and the worker.0 alert lands on worker.0"
+        );
+    }
+
+    #[test]
+    fn sc_405j_an_alert_with_half_a_routing_key_addresses_nobody() {
+        // Half a key is a key, and a key that says main-slot-of-nowhere must not
+        // fall through to the display name it also carries. The loud
+        // false-negative beats attributing a death to the wrong agent.
+        for partial in [
+            r#","target_slot":"main""#,
+            r#","target_session":"pair""#,
+            r#","target_slot":"","target_session":"pair""#,
+        ] {
+            let scratch = Scratch::new("partialalert");
+            scratch.meta(PAIR_META);
+            scratch.events(&[event(
+                &at(600),
+                "_watchdog",
+                "alert",
+                &format!(
+                    r#","target":"fake:high","summary":"agent process dead — dropped to shell"{partial}"#
+                ),
+            )]);
+            let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+            assert_eq!(entry.agents[0].reason, None, "{partial}");
+        }
+    }
+
+    #[test]
+    fn the_cross_session_spelling_of_this_sessions_agent_is_still_this_sessions_agent() {
+        // `@<session>:<agent>` is the form the helpers accept and pass through,
+        // so a locally-addressed record can wear it — and a foreign session's
+        // spelling of the same NAME must not match.
+        let scratch = Scratch::new("crosssession");
+        scratch.meta(PAIR_META);
+        scratch.events(&[event(
+            &at(600),
+            "_watchdog",
+            "alert",
+            r#","target":"@pair:fake:high","summary":"agent process dead — dropped to shell""#,
+        )]);
+        let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].reason, Some(Reason::Dead));
+
+        let other = Scratch::new("crosssessionforeign");
+        other.meta(PAIR_META);
+        other.events(&[event(
+            &at(600),
+            "_watchdog",
+            "alert",
+            r#","target":"@elsewhere:fake:high","summary":"agent process dead — dropped to shell""#,
+        )]);
+        let entry = entry_for(&other.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(
+            entry.agents[0].reason, None,
+            "another session's agent of the same name is another agent"
+        );
+    }
+
+    #[test]
+    fn the_newest_decisive_record_is_the_newest_by_timestamp_not_by_position() {
+        // A deliberate divergence from the incumbent's reverse FILE walk, and
+        // the loud direction under SC-524's clock-skew doctrine: a stale-clocked
+        // recovery does not silence a newer alert. `ts` is the contract's clock
+        // everywhere else in this reader (SC-017e, SC-405f, `declared_state_of`).
+        let scratch = Scratch::new("byts");
+        scratch.meta(PAIR_META);
+        scratch.events(&[
+            event(
+                &at(300),
+                "_watchdog",
+                "alert",
+                r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+            ),
+            // Written later, stamped earlier. Position says recovery, the clock
+            // says the alert still stands.
+            event(
+                &at(900),
+                "fake:high",
+                "state",
+                r#","ref":"working","summary":"a skewed clock""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].reason, Some(Reason::Dead));
+    }
+
+    #[test]
+    fn two_decisive_records_at_one_instant_are_settled_by_the_later_one() {
+        // Second precision means a tie is ordinary, not exotic. The tie-break
+        // is the only one an append-only log can justify — and it must be
+        // decided, or the answer depends on iteration order.
+        let scratch = Scratch::new("tie");
+        scratch.meta(PAIR_META);
+        let same = at(600);
+        scratch.events(&[
+            event(
+                &same,
+                "_watchdog",
+                "alert",
+                r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+            ),
+            event(
+                &same,
+                "_watchdog",
+                "alert-cleared",
+                r#","target":"fake:high","summary":"back""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].reason, None);
+    }
+
+    #[test]
+    fn sc_509c_an_agent_with_no_carrier_stays_null_beside_a_session_that_needs_a_human() {
+        // `tcompetingnoclear`, at the grain the corpus scores it: one alert, one
+        // self-declaration, one aged unanswered ask between two OTHER agents.
+        // The session needs a human for three separate reasons and exactly two
+        // agents own one — the other two must stay null. Fabricating owners for
+        // the session's own facts is the failure SC-509c was written against.
+        const FOUR: &str = concat!(
+            "mode=local\nagent.main=fake:high:pending\nagent.worker.0=fake:low:pending\n",
+            "agent.worker.1=fake:third:pending\nagent.worker.2=fake:asker:pending\n",
+        );
+        let scratch = Scratch::new("competing");
+        scratch.meta(FOUR);
+        scratch.events(&[
+            event(
+                &at(900),
+                "_watchdog",
+                "alert",
+                r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
+            ),
+            event(
+                &at(600),
+                "fake:low",
+                "state",
+                r#","ref":"waiting-user","summary":"asked the human""#,
+            ),
+            event(
+                &at(100_000),
+                "fake:asker",
+                "ask",
+                r#","target":"fake:third","ref":"ae-never-answered","summary":"a question""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "four", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].reason, Some(Reason::Dead), "alert-derived");
+        assert_eq!(
+            entry.agents[1].reason,
+            Some(Reason::WaitingUser),
+            "self-declared"
+        );
+        assert_eq!(
+            entry.agents[2].reason, None,
+            "the TARGET of an unanswered ask owns nothing: unanswered is a pair fact"
+        );
+        assert_eq!(entry.agents[3].reason, None, "and neither does the asker");
+        assert_eq!(entry.attention, Some(Reason::Dead));
+    }
+
+    #[test]
+    fn sc_509c_a_handed_in_alert_and_a_ledger_alert_are_one_fact_in_one_rollup() {
+        // SC-980's seam stays open: a successor watchdog that hands in a typed
+        // reason is not competing with the ledger route, and neither silences
+        // the other. Both enter the same rollup as the self-declaration.
+        let scratch = Scratch::new("bothroutes");
+        scratch.meta(PAIR_META);
+        scratch.events(&[event(
+            &at(600),
+            "_watchdog",
+            "alert",
+            r#","target":"fake:low","summary":"throttled for 10s — may need attention""#,
+        )]);
+        let runtime = SessionRuntime {
+            status: Status::Running,
+            branch: None,
+            agents: vec![AgentRuntime {
+                slot: "main".to_owned(),
+                alive: Some(true),
+                alert: Some(Reason::Stale),
+            }],
+        };
+        let entry = entry_for(&scratch.0, "pair", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(
+            entry.agents[0].reason,
+            Some(Reason::Stale),
+            "the handed-in reason still reaches its slot"
+        );
+        assert_eq!(
+            entry.agents[1].reason,
+            Some(Reason::Throttled),
+            "and the ledger's alert still reaches the other"
+        );
+        assert_eq!(entry.attention, Some(Reason::Stale));
+    }
+
+    #[test]
+    fn sc_509c_a_throttled_action_reaches_the_agent_it_names() {
+        // `tpairblockedoverthrottled` and `tpairthrottledoverunanswered`, at the
+        // grain the corpus records them: the watchdog's `throttled` action names
+        // the owner in `target` and the contribution in the action itself, so no
+        // summary is read. The two of them are the ONLY corpus addresses where
+        // this route decides anything, which is why it gets its own test rather
+        // than riding on the alert cases.
+        let scratch = Scratch::new("throttledaction");
+        scratch.meta(PAIR_META);
+        scratch.events(&[
+            event(
+                &at(900),
+                "fake:high",
+                "state",
+                r#","ref":"blocked","summary":"the higher-rank declaration""#,
+            ),
+            event(
+                &at(600),
+                "_watchdog",
+                "throttled",
+                r#","target":"fake:low","summary":"upstream throttling detected — pausing nudges""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].reason, Some(Reason::Blocked));
+        assert_eq!(entry.agents[1].reason, Some(Reason::Throttled));
+        assert_eq!(
+            entry.attention,
+            Some(Reason::Blocked),
+            "blocked outranks throttled, and the NEWER record does not win the rollup"
+        );
+    }
+
+    #[test]
+    fn sc_509c_a_throttled_action_is_cleared_and_superseded_like_any_other_carrier() {
+        // Currentness is a property of the CARRIER CLASS, not of the `alert`
+        // action — so the two ways a verdict stops being current are proven
+        // against `throttled` separately. Asserting them only against `alert`
+        // would leave a whole carrier that never expires.
+        for ending in [
+            // The watchdog retracts it.
+            event(
+                &at(300),
+                "_watchdog",
+                "throttle-cleared",
+                r#","target":"fake:low","summary":"throttling cleared after 3 cycles""#,
+            ),
+            // The agent itself speaks: recovery.
+            event(
+                &at(300),
+                "fake:low",
+                "memo",
+                r#","ref":"notes","summary":"back""#,
+            ),
+        ] {
+            let scratch = Scratch::new("throttledended");
+            scratch.meta(PAIR_META);
+            scratch.events(&[
+                event(
+                    &at(900),
+                    "_watchdog",
+                    "throttled",
+                    r#","target":"fake:low","summary":"upstream throttling detected""#,
+                ),
+                ending.clone(),
+            ]);
+            let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+            assert_eq!(entry.agents[1].reason, None, "{ending}");
+            assert_eq!(entry.attention, None, "{ending}");
+        }
+    }
+
+    #[test]
+    fn sc_509c_a_throttle_that_escalated_to_an_alert_reads_as_the_alert() {
+        // `twda3`, record for record: the streak's first cycle, then the alert
+        // that escalated it. Both carriers name the same agent and both say
+        // throttled, so the ANSWER cannot discriminate — the assertion that can
+        // is that the newer record is the one consulted, proven by making the
+        // alert say something else.
+        let scratch = Scratch::new("escalated");
+        scratch.meta(META);
+        scratch.events(&[
+            event(
+                &at(900),
+                "_watchdog",
+                "throttled",
+                r#","target":"claude:lead","summary":"upstream throttling detected — pausing nudges""#,
+            ),
+            event(
+                &at(600),
+                "_watchdog",
+                "alert",
+                r#","target":"claude:lead","summary":"pane missing — agent no longer visible in session""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(
+            entry.agents[0].reason,
+            Some(Reason::Dead),
+            "the newest carrier decides, not the most severe and not the first"
         );
     }
 }
