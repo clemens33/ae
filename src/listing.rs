@@ -896,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn sc_522_the_stamp_and_the_attention_it_justifies_come_from_one_sampling() {
+    fn sc_522_the_stamp_and_the_attention_it_justifies_cannot_describe_two_moments() {
         // **THE PRECONDITION, not a convenience.** `unanswered` is RELATIONAL on
         // the reader's clock — SC-522 makes it true only once the age EXCEEDS the
         // threshold — while `generated_at` is that same clock printed. Sample
@@ -907,7 +907,18 @@ mod tests {
         // The expectation is DERIVED FROM THE DOCUMENT'S OWN STAMP rather than
         // from the local variable. Asserting both against `now` independently
         // would pass on two coincidences; recomputing the relation from the stamp
-        // that was actually printed is what makes this a single-sampling proof.
+        // that was actually printed is what closes the hole.
+        //
+        // **WHAT THIS DOES AND DOES NOT ESTABLISH**, scoped rather than swept
+        // (pubfp's sharpening, and it is the accurate statement): the guarantee
+        // is OBSERVATIONAL. What is foreclosed is a second clock whose value
+        // DIFFERS — used for the entries it disagrees with the parsed
+        // `generated_at` at an exact-threshold arm, used for the stamp it
+        // disagrees with the supplied `World.now`. Two samplings landing in the
+        // same second pass this test, and correctly so: they are
+        // indistinguishable in the document and therefore not a contradiction in
+        // it. So this pins SELF-CONSISTENCY, not the call count. The call count
+        // is a separate, and weaker, fact about `current_world`.
         let asked_at = Timestamp::from_epoch(1_780_000_000);
         let fixture = Unanswered::new("sc522", asked_at);
         let snapshot = fixture.snapshot();
