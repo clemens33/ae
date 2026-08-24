@@ -3124,6 +3124,39 @@ file** before switching to single-string edits asserted unique-before-apply: the
 not the care, is what changed the outcome — which is the rules-need-mechanisms principle
 applied to one's own editing hands.
 
+### A gating test ratifies by enforcement, whatever its label says
+
+A contract deliberately left a question open — which of two policies governs a case with no
+ruled answer — and wrote the natural safeguard: *a successor test MAY record either
+behaviour; neither becomes normative by being tested.* The sentence is operationally false
+in one word: **gating**. A test in a gating suite that fails under the other policy has
+ratified one choice by enforcement — every future implementer who tries the unchosen policy
+meets a red gate, reads it as the decision, and conforms. The label "this is not normative"
+changes nothing about what the mechanism does, which is the reservations-cover-mechanisms
+rule meeting its sharpest instance: **a test IS a mechanism, and enforcement IS
+ratification.**
+
+The repaired form separates three things the original sentence collapsed:
+
+- a **gating** test MUST NOT assert either unratified outcome;
+- it MAY test the shared mechanics (attachment, causality) **outcome-neutrally** — written
+  so it passes under both candidate policies and fails only when the shared mechanics
+  break;
+- a clearly **non-gating diagnostic** may record current measured behaviour, because a
+  record that blocks nothing decides nothing.
+
+The general test when an open question touches a suite: for each assertion, ask **what does
+this fail under?** If the answer includes "the other legitimate answer to an open
+question," the assertion is a ruling wearing a test's name — and it will be discovered not
+by review but by the first person the red gate corrals, long after everyone has forgotten
+the question was open.
+
+Credit where the form originated: the winner-neutral shape was invented by a builder who
+refused to encode a ruling inside a matcher, pinned the disagreement as a test that fails
+WHICHEVER way the seats rule, and thereby made the open question loud instead of silently
+settled. That is the template: when you must test near an open question, make the open
+question the thing that fails, not one of its answers.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
