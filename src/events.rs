@@ -335,6 +335,31 @@ impl Event {
         }
     }
 
+    /// The work state this record DECLARES, if any — SC-510c as amended.
+    ///
+    /// Two shapes, because the ledger has always held two. A `state` event
+    /// carries the value in `ref` ([`RefMeaning::DeclaredState`]). A bare `done`
+    /// event declares `done` outright: events.md's action table says
+    /// "`mark-done` is a shim over `state done`; both are read as `done`", and a
+    /// session that predates the `state` helper has only the second shape.
+    ///
+    /// The frozen readers are split on this and the split is why it is written
+    /// down here rather than inferred: `_session_states` (ae:3369 — the reader
+    /// the LIST path actually uses) and `ae_latest_state_for` (ae:13263) both
+    /// accept `done`, while `_ar_latest_state` (ae:4637) requires `state`.
+    /// Ruled 2026-08-24 in favour of retaining the legacy record, which is what
+    /// the list path did all along.
+    ///
+    /// A `state` event with no `ref` declares nothing — it has not said what.
+    #[must_use]
+    pub fn declared_state(&self) -> Option<&str> {
+        match self.ref_meaning() {
+            RefMeaning::DeclaredState(state) => Some(state),
+            _ if self.action == "done" => Some("done"),
+            _ => None,
+        }
+    }
+
     /// How to name this event's actor, preferring the routing key (SC-511b).
     #[must_use]
     pub fn actor_identity(&self) -> Identity<'_> {

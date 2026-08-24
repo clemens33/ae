@@ -202,21 +202,37 @@ impl SessionRead {
 
     /// The work state `agent` last declared — SC-510c as amended.
     ///
-    /// The declared value rides in `ref` on a `state` event. Identity follows
-    /// SC-511b: the routing key when the event carries one for THIS session,
-    /// the display name otherwise. A renamed session's older events fall back
-    /// to the display name, which is why both paths exist rather than one.
+    /// Identity follows SC-511b: the routing key when the event carries one for
+    /// THIS session, the display name otherwise. A renamed session's older
+    /// events fall back to the display name, which is why both paths exist.
+    ///
+    /// # Newest by LEDGER ORDER, not by timestamp
+    ///
+    /// The LAST APPENDED declaration wins, whatever `ts` it claims. Ruled
+    /// 2026-08-24 on recorded authority, not by analogy with alert currency:
+    /// three frozen readers scan this backward and take the first match —
+    /// `_session_states` (ae:3369, the reader the LIST path uses),
+    /// `ae_latest_state_for` (ae:13263) and `_ar_latest_state` (ae:4637), all
+    /// via `_ae_tac`. SC-510c fixes what `ref` MEANS and ratifies no ordering,
+    /// and no register row opens one.
+    ///
+    /// Ordering by `ts` let a skewed clock outrank a later record: a stale-stamped
+    /// declaration appended afterwards would overwrite the real latest one, and
+    /// silently, since both values are legal states. That reached
+    /// `agents[].state` AND — through `waiting-user`/`blocked` — the attention
+    /// rollup. The 120 obligations passing over this scan never crossed the two
+    /// orders, so none of them could see it.
+    ///
+    /// [`SessionRead::goal_set_at`] still maxes on `ts`, and must: SC-405f asks
+    /// for the latest goal TIMESTAMP, which is a question about clocks rather
+    /// than about which record came last.
     #[must_use]
     pub fn declared_state_of(&self, session: &str, slot: &str, reference: &str) -> Option<&str> {
         self.events
             .iter()
             .filter(|event| is_actor(event, session, slot, reference))
-            .filter_map(|event| match event.ref_meaning() {
-                RefMeaning::DeclaredState(state) => Some((event.ts, state)),
-                _ => None,
-            })
-            .max_by_key(|(ts, _)| *ts)
-            .map(|(_, state)| state)
+            .filter_map(Event::declared_state)
+            .next_back()
     }
 
     /// The watchdog's standing verdict on `agent` — SC-509c's alert-derived
@@ -2650,5 +2666,138 @@ mod tests {
             Some(Reason::Dead),
             "the newest carrier decides, not the most severe and not the first"
         );
+    }
+
+    #[test]
+    fn sc_510c_the_ledger_order_decides_a_declaration_when_a_clock_disagrees() {
+        // THE CROSSED SEED colead's ruling requires: the LATER-APPENDED
+        // declaration carries the EARLIER timestamp and must win. Under
+        // `max_by_key(ts)` the stale-stamped record loses to the one it was
+        // appended after, so the agent reads `working` while the ledger's last
+        // word is `blocked` — silently, because both are legal states.
+        let scratch = Scratch::new("statecrossed");
+        scratch.meta(META);
+        scratch.events(&[
+            event(
+                &at(300),
+                "claude:lead",
+                "state",
+                r#","ref":"working","summary":"earlier append, later clock""#,
+            ),
+            event(
+                &at(900),
+                "claude:lead",
+                "state",
+                r#","ref":"blocked","summary":"later append, earlier clock""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(
+            entry.agents[0].state.as_deref(),
+            Some("blocked"),
+            "the last APPENDED declaration wins, whatever ts it claims"
+        );
+        assert_eq!(
+            entry.agents[0].reason,
+            Some(Reason::Blocked),
+            "and it reaches the attention rollup, which is why the ordering is \
+             not merely a display question"
+        );
+        assert_eq!(entry.attention, Some(Reason::Blocked));
+    }
+
+    #[test]
+    fn sc_510c_the_ordinary_monotonic_case_is_unchanged() {
+        // THE CONTROL. Every corpus fixture looks like this — ts and append
+        // order agree — so the ruling must leave it alone. Without this, the
+        // crossed test alone could be satisfied by an implementation that
+        // simply read the ledger backwards for the wrong reason.
+        let scratch = Scratch::new("statemonotonic");
+        scratch.meta(META);
+        scratch.events(&[
+            event(
+                &at(900),
+                "claude:lead",
+                "state",
+                r#","ref":"working","summary":"first""#,
+            ),
+            event(
+                &at(600),
+                "claude:lead",
+                "state",
+                r#","ref":"blocked","summary":"second""#,
+            ),
+            event(
+                &at(300),
+                "claude:lead",
+                "state",
+                r#","ref":"waiting-user","summary":"third""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].state.as_deref(), Some("waiting-user"));
+        assert_eq!(entry.agents[0].reason, Some(Reason::WaitingUser));
+    }
+
+    #[test]
+    fn sc_510c_a_legacy_done_event_is_still_a_declaration() {
+        // The ruling retains it, and the frozen readers were split: the LIST
+        // path's own reader (`_session_states`, ae:3369) and
+        // `ae_latest_state_for` accept `done`, `_ar_latest_state` does not.
+        // `tg1` in the corpus emits `state ref=done` AND a bare `done` at the
+        // same second, so every reader agrees there by accident — which is
+        // exactly why the shape needs a test rather than a fixture.
+        let scratch = Scratch::new("legacydone");
+        scratch.meta(META);
+        scratch.events(&[
+            event(
+                &at(600),
+                "claude:lead",
+                "state",
+                r#","ref":"working","summary":"still going""#,
+            ),
+            event(
+                &at(300),
+                "claude:lead",
+                "done",
+                r#","summary":"finished, pre-state-helper shape""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(
+            entry.agents[0].state.as_deref(),
+            Some("done"),
+            "a bare `done` is the declaration a pre-state-helper session leaves"
+        );
+        assert_eq!(
+            entry.agents[0].reason, None,
+            "and `done` is not an attention reason"
+        );
+    }
+
+    #[test]
+    fn sc_510c_a_state_event_that_says_nothing_declares_nothing() {
+        // A `state` event with no `ref` has not said WHAT, so it must not
+        // displace the declaration before it — the failure mode the `done` arm
+        // above could easily have introduced by matching on action alone.
+        let scratch = Scratch::new("statenoref");
+        scratch.meta(META);
+        scratch.events(&[
+            event(
+                &at(600),
+                "claude:lead",
+                "state",
+                r#","ref":"blocked","summary":"a real declaration""#,
+            ),
+            event(
+                &at(300),
+                "claude:lead",
+                "state",
+                r#","summary":"no ref at all""#,
+            ),
+        ]);
+        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.agents[0].state.as_deref(), Some("blocked"));
+        assert_eq!(entry.agents[0].reason, Some(Reason::Blocked));
     }
 }
