@@ -506,8 +506,15 @@ function trim(value) {
   return value
 }
 
+# The batch names below are ENUMERATED, and an enumeration is caught by the first
+# new member of the set it was written before: S-GATE and S-PENDING are ratified
+# successor observer-provenance tags, and every one of the fifteen lines carrying
+# them read as MALFORMED until they were added here. This is the mechanical
+# now-fix. The class fix — derive the allowed tags from their direct authority
+# instead of restating their names in a checker — is the queued
+# registry-freshness harness slice, not this change.
 function known_assignment_batch(batch) {
-  return batch ~ /^(B0|C|L-END|L-PURGE|L-STOP|L-COMPACT|L-FROM|L-RENTRANS|T-AUTH|T-WD|T-CTRL|T-STORE|H-HELPER|H-DELIVERY|H-ENV|F-CONFIG|F-FORMAT|F-TMUX|F-ADAPTER|F-IDENTITY|F-INSTALL|F-PLATFORM|F-CONTRIB)$/
+  return batch ~ /^(B0|C|L-END|L-PURGE|L-STOP|L-COMPACT|L-FROM|L-RENTRANS|T-AUTH|T-WD|T-CTRL|T-STORE|H-HELPER|H-DELIVERY|H-ENV|F-CONFIG|F-FORMAT|F-TMUX|F-ADAPTER|F-IDENTITY|F-INSTALL|F-PLATFORM|F-CONTRIB|S-GATE|S-PENDING)$/
 }
 
 function parse_crit_assign(line, rest, fields, field_count, id, batch, arm, malformed_reason) {
