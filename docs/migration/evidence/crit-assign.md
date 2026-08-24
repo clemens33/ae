@@ -363,12 +363,9 @@ observe them. Two tags, introduced here:
 - `S-PENDING` — the only observer is a named future arm; the line records WHICH one, so
   the gap stays a tracked obligation rather than an unassigned id.
 
-SOURCE: docs/migration/evidence/ratification-critical.md blob cea25b254ef5df5e6adada2b9cf44109bf170881
-CLASSIFIED-BY: the SOURCE declaration above is the single checked pin for this file's
-classification authority (supersession chain: 84e3a837 -> 9cde93c7 at c8acf9e2 when
-SC-518a entered -> cea25b25 at ef95eec6 under the gating-test tightening). This line
-restates no hash: two pin authorities in one file drift apart, and this file proved it
-within a single commit.
+SOURCE: docs/migration/evidence/ratification-critical.md blob 0b30c771c3cd532fda28b43fdf8d77655eeed6bd
+CLASSIFIED-BY: follows the single checked SOURCE declaration above; prior identities live
+in Git history and are not restated here.
 
 CRIT-ASSIGN: SC-518a | S-PENDING | observers are in flight, named per the tag's rule: the phase-4 table scorer once the cascade identity carries the A6 m2 ro/rw directional loci (reply-precedes-opening: the OBSERVED pre-opening-terminal specimen — replied-to-pending plus the separately-addressed summary consequence), and reqevents2's ordering tests once committed and accepted, pinning SC-518a's TWO ratified zero-specimen ordering gaps: re-ask new lifecycle, and cancel causality CONDITIONAL on authorization (cancel authorization has NO row; the frozen policy at ae@72c7293:4567-4599 is measured IS, ratified by nothing). Inverse-MIXED identity is SC-518's gap, not this row's; cancel-vs-reply precedence is a named UNRATIFIED gap no gate may pin. Moves to S-GATE when both observer byte sets are committed and accepted.
 
