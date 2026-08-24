@@ -101,6 +101,15 @@ MUTATIONS = [
                       s, count=1, flags=re.M)),
     ("DUPLICATE-ADDRESS", OBL, "an identical duplicate — the easy case, kept as the control",
      lambda s: re.sub(r"^([^\n]*\tSC-509d\t[^\n]*)$", r"\1\n\1", s, count=1, flags=re.M)),
+    # colead's converse seed: the required rows still there, an INVENTED third beside
+    # them. Proving the owed rows exist never proved nothing else does.
+    ("EXTRA-017o", OBL, "an invented third SC-017o locus inflating the denominator",
+     lambda s: re.sub(
+         r"^([^\n]*\tSC-017o\tdigest\tinventory_complete\tABSENT\tpresent\tpresent\t[^\n]*)$",
+         lambda m: m.group(1) + "\n" + m.group(1)
+             .replace("\tinventory_complete\t", "\tGARBAGE-THIRD-LOCUS\t", 1)
+             .replace("\tpresent\tpresent\t", "\tGARBAGE\tequals\t", 1),
+         s, count=1, flags=re.M)),
     ("PRESENCE-SHAPE", OBL, "the presence locus existing BY NAME while asserting nothing",
      lambda s: re.sub(r"^([^\n]*\tSC-017o\tdigest\tinventory_complete\tABSENT\t)present\tpresent\t",
                       r"\1GARBAGE\tequals\t", s, count=1, flags=re.M)),

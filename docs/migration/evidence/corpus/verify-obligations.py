@@ -245,14 +245,27 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
             continue
         loci = {o["locus"] for o in carriers.get((case2, consumer2), [])
                 if o["obligation_id"] == "SC-017o"}
-        shapes = collections.Counter(
-            tuple(o[c] for c in FIXED) for o in carriers.get((case2, consumer2), []))
-        for want, name in ((PRESENCE_ROW, "presence"), (VALUE_ROW, "value")):
-            n = shapes.get(want, 0)
-            if n != 1:
-                fail(out, "DUPLICATE-017o" if n > 1 else "MISSING-017o-SHAPE",
-                     "%s/%s carries %d row(s) equal to the exact SC-017o %s shape; "
-                     "exactly one is owed" % (case2, consumer2, n, name))
+        # THE COMPLETE MULTISET, not two membership tests. Requiring that each exact
+        # shape appears once proves the required rows EXIST and never that nothing
+        # ELSE does — presence-verified, removals-unverified, wearing an arity
+        # costume. An invented third SC-017o locus with its own logical address
+        # passed every check while inflating the obligation denominator with a
+        # fabricated comparison. The owed set is exactly two rows, so the check is
+        # equality against exactly two rows.
+        owed = collections.Counter({PRESENCE_ROW: 1, VALUE_ROW: 1})
+        got = collections.Counter(tuple(o[c] for c in FIXED)
+                                  for o in carriers.get((case2, consumer2), [])
+                                  if o["obligation_id"] == "SC-017o")
+        if got != owed:
+            for shape in sorted(set(got) - set(owed)):
+                fail(out, "EXTRA-017o", "%s/%s carries an SC-017o row that is neither "
+                     "owed shape: %s" % (case2, consumer2, shape))
+            for shape, n in sorted(owed.items()):
+                if got.get(shape, 0) != n:
+                    fail(out, "DUPLICATE-017o" if got.get(shape, 0) > n
+                         else "MISSING-017o-SHAPE",
+                         "%s/%s carries %d row(s) equal to an owed SC-017o shape where "
+                         "%d is owed: %s" % (case2, consumer2, got.get(shape, 0), n, shape))
         if "inventory_complete" not in loci:
             fail(out, "MISSING-017o", "%s/%s is a digest owing no inventory_complete "
                  "presence locus" % (case2, consumer2))
