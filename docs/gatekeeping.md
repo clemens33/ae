@@ -3157,6 +3157,32 @@ WHICHEVER way the seats rule, and thereby made the open question loud instead of
 settled. That is the template: when you must test near an open question, make the open
 question the thing that fails, not one of its answers.
 
+### A fact that must be UPDATED to stay true does not belong beside a fact that is CHECKED
+
+One afternoon produced three instances of a single design rule, each starting as a helpful
+convenience written next to a verified thing:
+
+- a **supersession chain** in prose ("pin history: A → B → C") fell one movement behind the
+  git history it restated, inside the very commit that repaired the pin beside it;
+- a **restated count** in a header drifted from the machine-checked record it summarized;
+- a **review that quoted a hash** became a stale pin between its writing and the repair it
+  ordered — a review is a pin too, and it drifts like one.
+
+The rule: near any checked value, every UPDATE-to-stay-TRUE companion is a second place to
+drift, and it will — because the checker watches the checked value and nothing watches the
+companion. The repairs all have one shape: **replace the maintained restatement with a
+pointer to the system that already holds the truth losslessly.** "Prior identities live in
+Git history and are not restated here" beats any chain, because git stores that history and
+a restatement can only ever agree with it or be wrong. One value, one checker, one place to
+drift.
+
+The complement rule, from the same day's keyset ruling: when a companion's value IS its
+fixedness — a historical census, a cut-point record — pin it as explicitly HISTORICAL
+(CUT-FROM, never SOURCE), proven equal at its cut and never re-derived, so it cannot rot
+*because it cannot move*. The two forms partition the space: a companion either points at
+living truth or declares itself dead on a named date. What it must never be is alive and
+unmaintained.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
