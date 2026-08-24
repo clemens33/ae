@@ -202,8 +202,37 @@ commands.md:85. Empirical: pending. Conflict: none.
 Conflict: none.
 
 **SC-017e — `--active` filters on recent activity.** Bucket 2 — an ae event within
-~5min, `AE_LIST_ACTIVE_SECS` tunes, `--busy` alias. Authority: commands.md:87.
-Empirical: pending. Conflict: none.
+~5min, `AE_LIST_ACTIVE_SECS` tunes, `--busy` alias.
+**RELATIVE-TIME SPANS ARE SEMANTICALLY SCORED, NOT EXEMPTED** (Option A as ruled,
+colead 2026-08-25). This row hosts the mechanism for BOTH human relative spans —
+this row's active age and SC-405f's goal age — and SC-405f cross-references it, so
+the rule has one home.
+**The scored requirement is a SINGLE WITNESS EPOCH, not per-span membership.** One
+human invocation samples ONE `World.now`, so the comparison must find one epoch `t`
+inside the runner's recorded before/after wall-clock bracket for that invocation
+which explains ALL rendered relative spans JOINTLY — each against its own fixed
+epoch, through the frozen formatter.
+**Per-span independent scoring is the FORBIDDEN WEAKER FORM**, named here so it is
+refused rather than merely unmentioned: checking each span for membership in its own
+allowed set accepts a document whose spans are valid at DIFFERENT moments. The
+mandatory red seed is exactly that — two spans individually valid at opposite
+bracket endpoints with NO common `t` MUST FAIL. A document whose relative texts
+imply two different reading moments describes no moment at all, which is the rule
+the digest already carries for its stamp and the attention beside it.
+**Fail-closed inputs.** A missing bracket, a backward clock, or an unbounded
+interval FAILS; none of them may widen the allowed set. A paired digest
+`generated_at` may CORROBORATE its own bracket and may never substitute as the human
+anchor. Unit formatter tests with a supplied `World.now` prove bytes and rounding
+only — they are not evidence about any invocation's epoch.
+**Why a mechanism rather than an open choice.** An open choice would exempt these
+bytes; this SCORES them, so a wrong relation FAILS rather than passing unexamined.
+It adds no harness seam to the product: the bracket is the runner's own recording,
+and nothing in the product is asked to expose a clock for it.
+The projection doc's BYTE-ROLE class for these spans is colead's authority and
+changes with their signature; this row governs how they are SCORED once classified,
+not which role they carry.
+Authority: commands.md:87 + colead Option-A ruling 2026-08-25. Empirical: pending.
+Conflict: none.
 
 **SC-017f — `--json` honours the active filters.** Bucket 2. Authority:
 commands.md:88. Empirical: pending. Conflict: none.
@@ -277,7 +306,16 @@ no declaration renders `-`; an inexact or unreadable event-derived state renders
 legitimate absence — SC-509b's rule is that damage is never rendered identically to
 legitimate sparsity. This row owns declared-state rendering only; agent health and
 liveness remain separate under SC-017p/q/r. Authority: commands.md:56-59 + SC-509b
-+ colead ruling 2026-08-24. Empirical: pending. Conflict: none.
++ colead ruling 2026-08-24.
+Empirical: **observed** — the measured human state-cell census is 34 cells whose
+frozen rendering moves under this row: 24 in A1 c03/c07/c08 rendering `-`, 8 in
+A9 c04 rendering `working` or `done` four each, and 2 in A9 c04's `ro-noserver`
+variant rendering `-`; each moves to `unknown`. Derived independently three times —
+colead, `sc017hscan`, and a third reading taken while drafting this amendment, which
+reproduced all three splits and their frozen VALUES exactly. Recorded as EVIDENCE
+for the ruling above and never as a normative count: the scorable rows are lexec's
+derivation, and a cardinality that must be UPDATED to stay true does not belong in a
+row beside facts that are CHECKED. Conflict: none.
 
 **SC-018 — `ae [name] use <alias>` starts the session with that agent as main.**
 Bucket 2. Authority: commands.md@72c7293:5 ("ae [name] use <alias> — Start session
@@ -1199,6 +1237,12 @@ called unforgeable (a writer or operator can alter ledger position). The lead's 
 Concurrency makes this real rather than hypothetical: the writer stamps `ts` at **ae:13214**
 but the flock is taken only inside `ae_log_append` at **ae:13174**, with the append at
 **ae:13256** — so two concurrent emitters can stamp in one order and append in the other.
+**The RENDERED goal age is semantically scored, per SC-017e.** Once this row fixes
+which event supplies the epoch, the human table's relative rendering of that epoch
+is scored under SC-017e's single-witness-epoch mechanism — jointly with the active
+age, against one `t` in the recorded bracket, with per-span independent scoring
+explicitly forbidden there. This row supplies the epoch; SC-017e governs how its
+rendering is compared.
 **SCOPE GUARD — required in-row.** This chooses **which EVENT supplies the epoch**. It does
 NOT bless goal/meta versus event-store tearing and does NOT claim both fields come from one
 snapshot; meta and events take **separate locks**, and that atomicity/coherence question is
