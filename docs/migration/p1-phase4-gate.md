@@ -382,13 +382,18 @@ Terms:
     result. A dead case server therefore cannot make the instrument check vacuous or
     impossible. After identity verification, apply the declared portable
     scratch-permission policy without changing tracked contents, paths, symlink targets,
-    or executable bits, and recompute canonical_sha256. Enforce the source corpus as
+    or executable bits, then recompute BOTH canonical_sha256 and the scratch
+    executable-bit projection: canonical must match the recorded value and the exec
+    projection must match the committed Git tree, because canonical_sha256 excludes every
+    mode bit and cannot see a permission step that drifts an executable bit on its own.
+    Enforce the source corpus as
     read-only by filesystem permission or read-only mount, never by path-prefix matching.
     Before relying on either protection, prove that a write through the successor
     execution identity and an alternate path spelling fails. Then invoke. Afterward
     compare the scratch state manifest against
-    that invocation's recorded no-mutation expectation. FAIL if invocation precedes both
-    published-member identity checks or either write-protection proof, a row is bound to the wrong
+    that invocation's recorded no-mutation expectation. FAIL if invocation precedes
+    either published-member identity check, either post-permission identity recheck, or
+    either write-protection proof, a row is bound to the wrong
     state in a multi-state case, a stale scratch tree is reused, the product sees corpus
     paths directly, one case can affect the next, the environment differs silently, the
     TAB oracle differs from the per-invocation record, or a read-side invocation mutates
