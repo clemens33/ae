@@ -22,6 +22,7 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "batch-c-artifacts"))
 INV = os.path.join(HERE, "INVOCATIONS.tsv")
 OUT = os.path.join(HERE, "OBLIGATIONS.tsv")
 UNPROVED = os.path.join(HERE, "SC-509C-UNPROVED.tsv")
+UNSCORABLE_O = os.path.join(HERE, "SC-017O-UNSCORABLE.tsv")
 FRESH = os.path.join(HERE, "FRESHNESS.tsv")
 CONTRACT = "docs/migration/semantic-contract.md"
 LISTING = ("ae list", "ae ls")
@@ -199,7 +200,7 @@ def loss_sessions(case):
 
 
 def main():
-    rows, seen, unproved = [], set(), []
+    rows, seen, unproved, unscorable_o = [], set(), [], []
     for r in csv.DictReader(open(INV, encoding="utf-8"), delimiter="\t"):
         if r["phase"] != "P1":
             continue
@@ -216,15 +217,31 @@ def main():
             rows.append((case, consumer, "SC-509d", "digest", "schema_version",
                          m.group(1) if m else "ABSENT", "2", "equals", "SOURCE", "OBSERVED",
                          "successor digest is schema version 2"))
-            # SC-017o: inventory_complete on EVERY successor digest, present even
-            # for an empty inventory. Absent from every version-1 capture.
+            # SC-017o, RE-DERIVED under the 2026-08-24 entitlement ruling.
+            #
+            # The FIELD is mandated unconditionally on every successor digest and its
+            # absence from every version-1 capture is decidable. That is the whole of
+            # what this corpus earns.
+            #
+            # The VALUE is not earned anywhere, measured rather than argued: `false`
+            # needs an INDEPENDENTLY ENTITLED enumeration with a FINAL FAILURE, and
+            # across all 148 P1 cases every captured connect failure names ONLY the
+            # case's own live.sock — ZERO name a session's RECORDED server. Ambient
+            # entitlement turns on a selected ambient server, and SC-1410c leaves
+            # AE_TMUX_SERVER selection unclassified, so the ambient probe cannot earn it
+            # either. A missing or unreadable meta is SC-405i/SC-509b record loss and
+            # never SC-017o by itself. So the VALUE is UNSCORABLE: recorded as a locus
+            # in SC-017O-UNSCORABLE.tsv, never guessed into a row.
             rows.append((case, consumer, "SC-017o", "digest", "inventory_complete",
                          "present" if '"inventory_complete"' in text else "ABSENT",
-                         "false" if incomplete else "true", "equals",
-                         "OBSERVED" if incomplete else "SOURCE",
-                         "OBSERVED" if incomplete else "UNSCORABLE",
-                         "field mandated unconditionally; the VALUE true needs every "
-                         "enumeration proven clean, including recorded servers never queried"))
+                         "present", "present", "OBSERVED", "OBSERVED",
+                         "the field is mandated unconditionally; its VALUE is unscorable "
+                         "on this corpus and is recorded as such, not asserted"))
+            unscorable_o.append((case, consumer, "sessions-inventory_complete-value",
+                                 "no captured connect failure names a session's RECORDED "
+                                 "server, so no independently entitled enumeration is shown "
+                                 "to have finally failed; ambient entitlement turns on the "
+                                 "AE_TMUX_SERVER selection SC-1410c leaves unclassified"))
 
             # ---- SC-509b + SC-509c, both JSON loci on a row that ALREADY carries
             # SC-509d, so neither can create a carrying row. The locus determines the
@@ -368,14 +385,11 @@ def main():
                 rows.append((case, consumer, "SC-017m", stream, "(row set)",
                              "empty", "unknown rows present", "present", "OBSERVED", sup,
                              "default view shows running then unknown; absent becomes present"))
-            if not digest:
-                # SC-017o human half: stderr diagnostic carrying the NUMBER of failed
-                # logical sources. at-least, not equals — a gate pinning the count
-                # would fail a correct implementation that lost two sources.
-                rows.append((case, consumer, "SC-017o", "stderr", "(whole stream)",
-                             "ABSENT", "1", "at-least", "OBSERVED", "OBSERVED",
-                             "the captured ambient/entitled-server failure is itself a "
-                             "loss, so incompleteness here needs no recorded-server outcome"))
+            # The SC-017o HUMAN DIAGNOSTIC is deliberately NOT emitted. It is earned
+            # only by an independently entitled enumeration with a final failure, and the
+            # previous derivation earned it from `unreachable(case)` — the ambient probe
+            # against the case's own live.sock, which is exactly the fact the ruling says
+            # cannot earn it. 172 obligations rested on that basis; none survives.
 
     unproved.sort()
     with open(UNPROVED, "w", encoding="utf-8") as fh:
@@ -391,6 +405,15 @@ def main():
         fh.write("\t".join(["case", "consumer", "session", "agent_ref", "locus",
                             "session_attention", "kind", "why"]) + "\n")
         for x in unproved:
+            fh.write("\t".join(str(v) for v in x) + "\n")
+
+    unscorable_o.sort()
+    with open(UNSCORABLE_O, "w", encoding="utf-8") as fh:
+        fh.write("# SC-017o completeness VALUES this corpus cannot score, at the ruled grain.\n")
+        fh.write("# The FIELD is an obligation and lives in OBLIGATIONS.tsv; only the VALUE is here.\n")
+        fh.write("# Recorded, never guessed — an undecidable trigger is UNSCORABLE, not OBSERVED.\n")
+        fh.write("\t".join(["case", "consumer", "locus", "why"]) + "\n")
+        for x in unscorable_o:
             fh.write("\t".join(str(v) for v in x) + "\n")
 
     rows.sort(key=lambda x: (x[0], x[1], x[2], x[4]))
@@ -418,6 +441,7 @@ def main():
         print(f"  {k:<10} {per[k]:4d}")
     print(f"derived EXPECTED-DIVERGENCE {carriers}   EXPECTED-MATCH {len(seen) - carriers}")
     kinds = collections.Counter(x[6] for x in unproved)
+    print(f"SC-017o VALUE loci UNSCORABLE: {len(unscorable_o)}")
     print(f"SC-509c loci EXCLUDED for want of exact evidence: {len(unproved)}")
     for k in sorted(kinds):
         print(f"  {k:<24} {kinds[k]:4d}")

@@ -30,10 +30,14 @@ def run(obl=None, fresh=None, inv=None):
 MUTATIONS = [
     ("FROM", OBL, "a captured value the table misreports",
      lambda s: s.replace("\tschema_version\t1\t2\t", "\tschema_version\t3\t2\t", 1)),
+    # Re-aimed: the SC-017o human diagnostic was the table's only `at-least` and its
+    # only `stderr` row, and the entitlement re-derivation removed it. The domain checks
+    # for those two values are therefore no longer exercised BY DATA — stated rather
+    # than papered over by picking a value that happens to exist.
     ("PREDICATE", OBL, "a predicate outside the closed set",
-     lambda s: s.replace("\tat-least\t", "\tvibes\t", 1)),
+     lambda s: s.replace("\tpresent\t", "\tvibes\t", 1)),
     ("STREAM", OBL, "a stream outside the closed set",
-     lambda s: s.replace("\tstderr\t", "\ttelepathy\t", 1)),
+     lambda s: s.replace("\tdigest\t", "\ttelepathy\t", 1)),
     ("WRONG-KIND", OBL, "a membership obligation where the capture shows a label move",
      lambda s: s.replace("\tSC-017l\tdigest\tsessions[].status\tstopped\tunknown\tall-of\t",
                          "\tSC-017m\tdigest\t(row set)\tempty\tunknown rows present\tpresent\t", 1)),
