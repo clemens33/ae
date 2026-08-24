@@ -15,21 +15,21 @@
 //! half a document, so there is no path to protect.
 //!
 //! Two consistency facts are enforced by construction rather than asserted:
-//! `needs_attention` is `attention.is_some()`, and `attention_rank` is that
-//! reason's own rank. They cannot drift apart because neither is stored.
+//! `needs_attention` is a partial-evidence indicator from
+//! `attention.is_some()`, and an exact `attention_rank` is that reason's own
+//! rank. They cannot drift apart because neither is stored.
 //!
 //! # Presence is a contract, not a serializer convenience
 //!
-//! **A member that was READ is rendered, whatever its value.** SC-017g as
-//! precised gives the session's attention triad (`false` / `null` / `0` when
-//! quiet) and SC-509c gives `agents[].reason` (`null` when no agent-owned
-//! contribution exists). `push_str` and `push_num` exist for the OTHER case —
-//! SC-509b's omission of a fact that could not be read — and the two must not be
-//! confused, because rendering a legitimate empty as an absence makes damage and
-//! sparsity the same bytes. Eight other optional members still take the
-//! `push_*` path and are universally present in frozen v1; whether that is
-//! correct is an open question recorded in SC-017g's scope guard, not something
-//! this module decides.
+//! **A member whose own source was complete is rendered, whatever its value.**
+//! SC-509b makes `degraded` aggregate visibility only: one failed source may
+//! never erase a fact another source established. The session triad is the
+//! special case: `needs_attention` always renders its partial-evidence value,
+//! while
+//! `attention` and `attention_rank` render only when their maximum is exact.
+//! `agents[].reason` follows the same exact-or-omitted rule. `null` remains the
+//! spelling of a complete, legitimate empty answer; it never stands in for an
+//! unreadable input.
 
 use crate::attention::Reason;
 use crate::json::Value;
@@ -138,13 +138,28 @@ impl AgentEntry {
     /// This agent as SC-509's object.
     #[must_use]
     pub fn to_json(&self) -> Value {
+        self.to_json_with_event_knowledge(true, false)
+    }
+
+    /// This agent as SC-509's object when the event source may be incomplete.
+    ///
+    /// Membership comes from a readable roster, but an [`AgentEntry`] does not
+    /// prove that the event stream supplying its state and reason was complete.
+    /// An incomplete event source omits both fields, even when a partial value
+    /// was parsed. Only a separately established runtime maximum can retain an
+    /// exact reason under event loss; a partial ledger maximum may be cleared.
+    fn to_json_with_event_knowledge(
+        &self,
+        events_complete: bool,
+        runtime_dead_established: bool,
+    ) -> Value {
         let mut fields = vec![
             ("ref".to_owned(), Value::str(&self.reference)),
             ("alias".to_owned(), Value::str(&self.alias)),
             ("name".to_owned(), Value::str(&self.name)),
         ];
-        // Unconditional, like `reason` below: an `AgentEntry` exists only because
-        // the roster was READ (SC-405k — membership is roster-defined), so the
+        // Unconditional: an `AgentEntry` exists only because the roster was READ
+        // (SC-405k — membership is roster-defined), so the
         // question "was this member readable" is answered yes by the entry's
         // existence. A session that lost its roster renders no agent entries.
         push_str_or_null(&mut fields, "session_id", self.session_id.as_deref());
@@ -153,23 +168,96 @@ impl AgentEntry {
             "alive".to_owned(),
             self.alive.map_or(Value::Null, Value::Bool),
         ));
-        push_str_or_null(&mut fields, "state", self.state.as_deref());
-        // SC-509c says `reason: null` MEANS no agent-owned contribution exists,
-        // so null is the ruled spelling of that answer and absence is not a
-        // synonym for it. Frozen v1 agrees: all 840 agent entries in the corpus
-        // render the member, every one of them as null.
-        //
-        // Unconditional here, unlike the session triad: an `AgentEntry` EXISTS
-        // only because the roster was read (SC-405k — membership is
-        // roster-defined), so the question "was this agent's reason readable" is
-        // already answered yes by the entry's existence. A session that lost its
-        // roster has no agent entries to render at all.
-        fields.push((
-            "reason".to_owned(),
-            self.reason
-                .map_or(Value::Null, |reason| Value::str(reason.as_str())),
-        ));
+        if events_complete {
+            push_str_or_null(&mut fields, "state", self.state.as_deref());
+        }
+        // SC-509c says `reason: null` means no contribution exists only when
+        // all inputs that could add or supersede one were read. A roster entry
+        // proves membership, not that completeness. A runtime `dead` is the
+        // only current maximum whose distinct source survives event loss. The
+        // frozen v1 census had 844 complete-event agent entries carrying its
+        // legitimate `reason: null`.
+        if events_complete
+            || (runtime_dead_established && self.reason.is_some_and(Reason::is_severity_maximum))
+        {
+            fields.push((
+                "reason".to_owned(),
+                self.reason
+                    .map_or(Value::Null, |reason| Value::str(reason.as_str())),
+            ));
+        }
         Value::Obj(fields)
+    }
+}
+
+/// Which sources settled each optional digest member.
+///
+/// This is deliberately independent of [`SessionEntry::degraded`]. The latter
+/// says some read or parse loss occurred; it cannot identify a member whose
+/// source was lost without erasing facts from unrelated readable sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FactState {
+    /// The source settled this member, including a legitimate empty value.
+    Complete,
+    /// The source lost data that could affect this member.
+    Incomplete,
+}
+
+impl FactState {
+    /// Whether this member may render its legitimate empty value.
+    #[must_use]
+    pub(crate) const fn is_complete(self) -> bool {
+        matches!(self, Self::Complete)
+    }
+
+    /// Turn a source-completeness predicate into its provenance state.
+    #[must_use]
+    pub(crate) const fn from_complete(complete: bool) -> Self {
+        if complete {
+            Self::Complete
+        } else {
+            Self::Incomplete
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RenderKnowledge {
+    /// The corresponding `meta` member was read completely.
+    pub mode: FactState,
+    /// The corresponding `meta` member was read completely.
+    pub origin: FactState,
+    /// The corresponding `meta` member was read completely.
+    pub work_dir: FactState,
+    /// The corresponding `meta` member was read completely.
+    pub goal: FactState,
+    /// The event stream was complete for event-derived members.
+    pub events: FactState,
+    /// The roster was fully enumerable, including a readable empty roster.
+    pub roster: FactState,
+}
+
+impl RenderKnowledge {
+    const fn complete() -> Self {
+        Self {
+            mode: FactState::Complete,
+            origin: FactState::Complete,
+            work_dir: FactState::Complete,
+            goal: FactState::Complete,
+            events: FactState::Complete,
+            roster: FactState::Complete,
+        }
+    }
+
+    const fn unavailable() -> Self {
+        Self {
+            mode: FactState::Incomplete,
+            origin: FactState::Incomplete,
+            work_dir: FactState::Incomplete,
+            goal: FactState::Incomplete,
+            events: FactState::Incomplete,
+            roster: FactState::Incomplete,
+        }
     }
 }
 
@@ -213,6 +301,13 @@ pub struct SessionEntry {
     /// legal at all, and an always-present `false` would change every existing
     /// entry's shape for nothing.
     pub degraded: bool,
+    /// Per-member source completeness. It stays private so callers cannot make
+    /// an aggregate `degraded` flag masquerade as member provenance.
+    knowledge: RenderKnowledge,
+    /// Roster references whose `Dead` came from a complete, typed runtime
+    /// hand-in. Ledger-derived `Dead` never enters this set: a skipped later
+    /// record may clear or supersede it.
+    established_runtime_dead_agents: Vec<String>,
 }
 
 impl SessionEntry {
@@ -232,6 +327,8 @@ impl SessionEntry {
             attention: None,
             agents: Vec::new(),
             degraded: false,
+            knowledge: RenderKnowledge::complete(),
+            established_runtime_dead_agents: Vec::new(),
         }
     }
 
@@ -239,16 +336,56 @@ impl SessionEntry {
     /// dropped, the loss visible, the document unharmed.
     #[must_use]
     pub fn degraded<N: Into<String>>(name: N, status: Status) -> Self {
-        Self {
-            degraded: true,
-            ..Self::new(name, status)
-        }
+        let mut entry = Self::new(name, status);
+        entry.degraded = true;
+        entry.knowledge = RenderKnowledge::unavailable();
+        entry
+    }
+
+    /// Attach the source knowledge captured at the presentation boundary.
+    ///
+    /// `degraded` remains a separate aggregate fact. A complete `mode`, for
+    /// example, stays present when only events were lost; an incomplete roster
+    /// does not make a listed agent's own complete event-derived reason unknown.
+    pub(crate) fn set_render_knowledge(&mut self, knowledge: RenderKnowledge) {
+        self.knowledge = knowledge;
+    }
+
+    /// Bind the independently established runtime maximum facts produced with
+    /// this raw snapshot. Keeping provenance on the entry lets JSON and the
+    /// table agree without treating a partial event record as complete.
+    pub(crate) fn set_established_runtime_dead_agents(&mut self, agents: Vec<String>) {
+        self.established_runtime_dead_agents = agents;
+    }
+
+    /// Whether the session's attention maximum is exact enough to render.
+    ///
+    /// `needs_attention` remains available even when this is false: it is a
+    /// partial-evidence indicator, not a quiet proof.
+    #[must_use]
+    pub(crate) fn attention_is_exact(&self) -> bool {
+        (self.knowledge.roster.is_complete() && self.knowledge.events.is_complete())
+            || (self.attention.is_some_and(Reason::is_severity_maximum)
+                && !self.established_runtime_dead_agents.is_empty())
+    }
+
+    /// Whether event-derived agent state is exact enough for a human cell.
+    ///
+    /// JSON uses this same source fact to decide whether `agents[].state`
+    /// exists. The table has a third spelling for incomplete input (`unknown`)
+    /// so it does not conflate read-none with unreadable.
+    #[must_use]
+    pub(crate) const fn agent_state_is_exact(&self) -> bool {
+        self.knowledge.events.is_complete()
     }
 
     /// Whether this session needs a human — SC-509's `needs_attention`.
     ///
-    /// Derived, never stored: a flag that can disagree with the reason beside it
-    /// is a flag that eventually will.
+    /// Derived, never stored: a partial-evidence indicator that cannot disagree
+    /// with the current readable contribution beside it. Later readable records
+    /// may clear a contribution, so this is not monotone. Under loss, `false`
+    /// means no readable contribution established attention — not that the
+    /// session is proven quiet.
     #[must_use]
     pub const fn needs_attention(&self) -> bool {
         self.attention.is_some()
@@ -261,68 +398,67 @@ impl SessionEntry {
             ("name".to_owned(), Value::str(&self.name)),
             ("status".to_owned(), Value::str(self.status.as_str())),
         ];
-        // SC-509 as ruled 2026-08-24: PRESENCE IS PART OF THE SCHEMA. Every
-        // documented member whose source was READ is present, carrying its
-        // legitimate empty value; omission is reserved for SC-509b loss. So a
-        // read entry renders `null` where it has nothing, and only a `degraded`
-        // entry omits — because for that entry the fact could not be read, and
-        // SC-509b says such a fact is "omitted, never fabricated, never null".
-        //
-        // The `degraded` flag is a COARSE proxy for "this member was unreadable":
-        // an entry degraded by a malformed meta line may have read its events
-        // perfectly and will still omit what it knows. That imprecision is
-        // reported, not resolved here — the type cannot yet say which member was
-        // lost, and guessing would put a value where the row demands silence.
+        // SC-509b: source knowledge, never aggregate loss, selects presence.
+        // A member renders only when its source completed. Incomplete sources
+        // omit even a partial value: publishing it as current would claim that
+        // unreadable bytes could not have changed the member.
+        push_known_str(
+            &mut fields,
+            "mode",
+            self.mode.as_deref(),
+            self.knowledge.mode.is_complete(),
+        );
+        push_known_str(
+            &mut fields,
+            "origin",
+            self.origin.as_deref(),
+            self.knowledge.origin.is_complete(),
+        );
+        push_known_str(
+            &mut fields,
+            "work_dir",
+            self.work_dir.as_deref(),
+            self.knowledge.work_dir.is_complete(),
+        );
+        push_known_str(
+            &mut fields,
+            "goal",
+            self.goal.as_deref(),
+            self.knowledge.goal.is_complete(),
+        );
+        push_known_num(
+            &mut fields,
+            "goal_set_epoch",
+            self.goal_set_epoch,
+            self.knowledge.events.is_complete(),
+        );
+        // Legacy SC-405g shape: the runtime has not yet supplied watchdog/git
+        // branch observation. Preserve the predecessor's two shapes until that
+        // source lands in its own slice: healthy `None` is `null`; degraded
+        // `None` is omitted. This is byte compatibility, not a claimed source
+        // completeness rule.
         if self.degraded {
-            push_str(&mut fields, "mode", self.mode.as_deref());
-            push_str(&mut fields, "origin", self.origin.as_deref());
-            push_str(&mut fields, "work_dir", self.work_dir.as_deref());
-            push_str(&mut fields, "goal", self.goal.as_deref());
-            push_num(&mut fields, "goal_set_epoch", self.goal_set_epoch);
-            push_str(&mut fields, "branch", self.branch.as_deref());
-            push_num(&mut fields, "last_active_epoch", self.last_active_epoch);
+            if let Some(branch) = self.branch.as_deref() {
+                fields.push(("branch".to_owned(), Value::str(branch)));
+            }
         } else {
-            push_str_or_null(&mut fields, "mode", self.mode.as_deref());
-            push_str_or_null(&mut fields, "origin", self.origin.as_deref());
-            push_str_or_null(&mut fields, "work_dir", self.work_dir.as_deref());
-            push_str_or_null(&mut fields, "goal", self.goal.as_deref());
-            push_num_or_null(&mut fields, "goal_set_epoch", self.goal_set_epoch);
             push_str_or_null(&mut fields, "branch", self.branch.as_deref());
-            push_num_or_null(&mut fields, "last_active_epoch", self.last_active_epoch);
         }
+        push_known_num(
+            &mut fields,
+            "last_active_epoch",
+            self.last_active_epoch,
+            self.knowledge.events.is_complete(),
+        );
         fields.push((
             "needs_attention".to_owned(),
             Value::Bool(self.needs_attention()),
         ));
-        // SC-017g as PRECISED (2026-08-24): a READ entry renders all three
-        // attention members, and a quiet one renders `false` / `null` / `0`.
-        // Omission is SC-509b's spelling for a fact that could not be READ, and
-        // reusing it for a legitimately empty one makes loss and legitimate-none
-        // the same byte pattern — the collapse that row's closing sentence
-        // forbids ("Damage is never rendered identically to legitimate
-        // sparsity").
-        //
-        // **AND THE CONVERSE, which is why this is conditional.** SC-509b says an
-        // unreadable optional fact is "omitted, never fabricated, NEVER NULL",
-        // so a degraded entry may not render `null` here either — null is the
-        // ruled spelling of "read, and empty", which is a claim a lossy entry
-        // cannot make. The two rows meet exactly at `degraded`.
-        //
-        // `degraded` is a COARSE proxy for "this particular fact was unreadable"
-        // and the type cannot currently do better: an entry degraded by a
-        // malformed meta line may have read its events perfectly, and would omit
-        // a triad it actually knows. Reported as an open boundary rather than
-        // guessed at — SC-017g's precision speaks only about entries that WERE
-        // read, and this is the conservative reading that satisfies both rows
-        // with the information the type has.
-        if self.degraded {
-            push_str(&mut fields, "attention", self.attention.map(Reason::as_str));
-            push_num(
-                &mut fields,
-                "attention_rank",
-                self.attention.map(Reason::rank),
-            );
-        } else {
+        // `needs_attention` always renders its partial-evidence value. The
+        // other two need the maximum to be exact: every relevant source
+        // completed, or a separately established runtime `dead` remains after
+        // the incomplete ledger is excluded.
+        if self.attention_is_exact() {
             fields.push((
                 "attention".to_owned(),
                 self.attention
@@ -335,7 +471,19 @@ impl SessionEntry {
         }
         fields.push((
             "agents".to_owned(),
-            Value::Arr(self.agents.iter().map(AgentEntry::to_json).collect()),
+            Value::Arr(
+                self.agents
+                    .iter()
+                    .map(|agent| {
+                        agent.to_json_with_event_knowledge(
+                            self.knowledge.events.is_complete(),
+                            self.established_runtime_dead_agents
+                                .iter()
+                                .any(|reference| reference == &agent.reference),
+                        )
+                    })
+                    .collect(),
+            ),
         ));
         // SC-509b, additive: present only when true. Member order is an open
         // choice; tests compare the member set, not this key's position.
@@ -429,31 +577,29 @@ impl Digest {
     }
 }
 
-/// Push a string field, or nothing at all when there is no value.
-///
-/// Omission, not `null`: SC-509's worked example shows no null, and a consumer
-/// gating on shape can test for a key's presence. The alternative — inventing a
-/// null convention the row does not describe — would be schema this slice has no
-/// authority to write.
-fn push_str<S: AsRef<str>>(fields: &mut Vec<(String, Value)>, key: &str, value: Option<S>) {
-    if let Some(value) = value {
-        fields.push((key.to_owned(), Value::str(value.as_ref())));
+/// Render a nullable string only when its own source completed.
+fn push_known_str<S: AsRef<str>>(
+    fields: &mut Vec<(String, Value)>,
+    key: &str,
+    value: Option<S>,
+    known: bool,
+) {
+    if known {
+        push_str_or_null(fields, key, value);
     }
 }
 
-/// Push a numeric field, or nothing at all. See [`push_str`].
-fn push_num(fields: &mut Vec<(String, Value)>, key: &str, value: Option<i64>) {
-    if let Some(value) = value {
-        fields.push((key.to_owned(), Value::Num(value)));
+/// Render a nullable number only when its own source completed.
+fn push_known_num(fields: &mut Vec<(String, Value)>, key: &str, value: Option<i64>, known: bool) {
+    if known {
+        push_num_or_null(fields, key, value);
     }
 }
 
 /// Push a string field, or an explicit `null` — SC-509's presence rule.
 ///
-/// The counterpart of [`push_str`], and the two are not interchangeable. This one
-/// says "read, and empty"; `push_str` says "could not be read" (SC-509b). Using
-/// the wrong one makes damage and legitimate sparsity the same bytes, which is
-/// what SC-509b's closing sentence forbids.
+/// Callers invoke this only when the source completed. It says "read, and
+/// empty"; an incomplete source omits the member before reaching this helper.
 fn push_str_or_null<S: AsRef<str>>(fields: &mut Vec<(String, Value)>, key: &str, value: Option<S>) {
     fields.push((
         key.to_owned(),
@@ -687,18 +833,11 @@ mod tests {
         let damaged_keys: BTreeSet<&str> = damaged_fields.iter().map(|(k, _)| k.as_str()).collect();
         let sparse_keys: BTreeSet<&str> = sparse_fields.iter().map(|(k, _)| k.as_str()).collect();
 
-        // NARROWED by the 2026-08-24 SC-017g precision, and the narrowing is the
-        // point. This test used to assert `sparse_keys ⊆ damaged_keys` and
-        // `damaged − sparse == {degraded}` — an ADDITIVE MEMBER SET. The row says
-        // something weaker: "additive KEY; normal entries may omit it", plus
-        // "identity (name + status) always survives". It also says the opposite
-        // of a superset for everything else — "unreadable optional facts are
-        // omitted". The old assertion held only because a normal entry ALSO
-        // omitted the attention triad, so the two omissions cancelled; once a
-        // read entry renders the triad, a superset over the whole member set and
-        // "unreadable facts are omitted" cannot both be true.
-        //
-        // So this now pins what SC-509b actually states.
+        // SC-509b's aggregate flag has no authority to select another member's
+        // presence. This entry's constructors established every source as
+        // complete; flipping only the aggregate loss flag must retain those
+        // known empties. `SessionEntry::degraded` below covers the opposite
+        // all-sources-unreadable construction.
         assert!(
             BTreeSet::from(["name", "status"]).is_subset(&damaged_keys),
             "identity always survives: {damaged}"
@@ -708,9 +847,21 @@ mod tests {
             "the loss key is additive — present on the damaged entry, omitted on the normal one"
         );
         assert!(
-            !damaged_keys.contains("attention") && !damaged_keys.contains("attention_rank"),
-            "and an unreadable optional fact is omitted, never null: {damaged}"
+            damaged_keys.contains("attention") && damaged_keys.contains("attention_rank"),
+            "known quiet remains explicit despite unrelated aggregate loss: {damaged}"
         );
+    }
+
+    #[test]
+    fn sc_509b_an_unproven_dead_is_not_exact_under_loss() {
+        // A raw `Dead` has no source provenance here. A lost ledger may contain
+        // a later clear, so its severity alone cannot make it exact.
+        let mut entry = SessionEntry::degraded("dead", Status::Running);
+        entry.attention = Some(Reason::Dead);
+        let value = entry.to_json();
+        assert_eq!(value.get("needs_attention"), Some(&json::Value::Bool(true)));
+        assert_eq!(value.get("attention"), None);
+        assert_eq!(value.get("attention_rank"), None);
     }
 
     #[test]
@@ -827,7 +978,7 @@ mod tests {
         // An AgentEntry exists only because the roster was READ (SC-405k), so
         // there is no unreadable case here and no conditional: all seven members,
         // always. `reason: null` is SC-509c's own spelling for "no agent-owned
-        // contribution exists", and frozen v1 renders it on all 840 of its agent
+        // contribution exists", and frozen v1 renders it on all 844 of its agent
         // entries.
         let value = AgentEntry {
             reference: "claude:lead".to_owned(),

@@ -62,6 +62,17 @@ impl Reason {
         }
     }
 
+    /// Whether this is the maximum class in the severity set.
+    ///
+    /// Kept beside [`Self::BY_SEVERITY`] and [`Self::rank`] so source-aware
+    /// callers cannot retain a stale `dead` special case when the set grows.
+    /// This says nothing about source completeness: a partial ledger record may
+    /// be superseded or cleared by an unread later record.
+    #[must_use]
+    pub fn is_severity_maximum(self) -> bool {
+        self == Self::BY_SEVERITY[0]
+    }
+
     /// The spelling SC-509 publishes as `attention`, and `ae list` shows after
     /// `attn:`.
     #[must_use]
@@ -201,5 +212,17 @@ mod tests {
         seen.sort_unstable();
         seen.dedup();
         assert_eq!(seen.len(), Reason::BY_SEVERITY.len());
+    }
+
+    #[test]
+    fn only_the_severity_maximum_is_marked_from_the_complete_set() {
+        assert_eq!(Reason::BY_SEVERITY[0], Reason::Dead);
+        assert!(Reason::BY_SEVERITY[0].is_severity_maximum());
+        assert!(
+            Reason::BY_SEVERITY[1..]
+                .iter()
+                .all(|reason| !reason.is_severity_maximum()),
+            "the maximum marker tracks the complete severity set"
+        );
     }
 }

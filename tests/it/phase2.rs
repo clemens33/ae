@@ -177,18 +177,27 @@ impl Scratch {
         )
     }
 
-    /// A session whose meta is READABLE and names a positive server selector,
-    /// but has NO ROSTER — SC-405k/SC-405i record loss.
+    /// A session whose meta is READABLE, names a positive server selector, and
+    /// has an event record the reader cannot parse.
     ///
     /// This is the pairing the phase-2 gate's criterion 13 needs and a
     /// hand-built struct cannot honestly supply: degradation from an
     /// INDEPENDENT record fact, sitting beside a selector positive enough to
-    /// reach a real liveness answer. An unreadable meta cannot do it — that
-    /// yields a `missing` selector by construction, so `running`+degraded would
-    /// be unreachable and any fixture asserting it would be describing a state
-    /// the product can never produce.
+    /// reach a real liveness answer. A readable empty roster is complete under
+    /// SC-509b, so it cannot stand in for loss. An unreadable meta cannot do it
+    /// either — that yields a `missing` selector by construction, so
+    /// `running`+degraded would be unreachable and any fixture asserting it
+    /// would be describing a state the product can never produce.
     fn degraded_but_addressable(&self, name: &str) -> PathBuf {
-        self.write(name, "mode=local\ntmux_server_kind=name\ntmux_server=B\n")
+        let dir = self.write(
+            name,
+            "mode=local\ntmux_server_kind=name\ntmux_server=B\nagent.main=cl:lead\n",
+        );
+        self.events(
+            name,
+            &[r#"{"ts":0,"actor":"broken","action":"state"}"#.to_owned()],
+        );
+        dir
     }
 
     /// A session directory whose meta is absent — SC-405i record loss, and a
@@ -495,8 +504,8 @@ fn manifest(root: &Path) -> Vec<String> {
 /// The criterion-13 matrix, built entirely by the PRODUCT reader.
 ///
 /// Every degraded cell earns its degradation from an independent record fact —
-/// a readable meta with a positive selector and no roster (SC-405k/SC-405i), or
-/// an absent meta — never from breaking the liveness query, and never from a
+/// a malformed event under a readable meta with a positive selector, or an
+/// absent meta — never from breaking the liveness query, and never from a
 /// hand-assembled struct pairing a positive selector with a failed read, which
 /// `record_at` cannot produce and the product therefore never emits.
 fn orthogonality_fixture(scratch: &Scratch) -> Vec<Candidate> {
@@ -844,6 +853,25 @@ fn criterion_17_the_version_bump_changes_the_version_and_the_status_domain_only(
         "SC-509b's omission rule for a healthy entry is unchanged"
     );
     assert!(entry.get("agents").is_some(), "the roster still renders");
+}
+
+#[test]
+fn sc_509b_unrelated_malformed_line_cannot_erase_a_read_member() {
+    let scratch = Scratch::new("read-member-survives-unattributed-loss");
+    scratch.write("damaged", "mode=local\nthis line has no equals sign\n");
+    let snapshot = classify(inventory(scratch.candidates()), &Recorder::new());
+    let document = digest_of(&snapshot);
+    let Some(json::Value::Arr(entries)) = document.get("sessions") else {
+        panic!("sessions must be an array");
+    };
+    let entry = &entries[0];
+
+    assert_eq!(entry.get_str("mode"), Some("local"));
+    assert_eq!(
+        entry.get("degraded"),
+        Some(&json::Value::Bool(true)),
+        "the malformed line remains visible as loss"
+    );
 }
 
 // ---- criterion 23: completeness crosses classification and emission --------

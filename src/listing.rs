@@ -300,9 +300,10 @@ pub fn render(args: &ListArgs, world: &World) -> String {
 /// The tabular view — SC-017h's three nouns.
 ///
 /// **The layout is PROVISIONAL and unratified** (see the module docs). What is
-/// contractual is that each session line carries the session's `attn:<reason>`
-/// marker when and only when it needs attention, and that each agent line
-/// carries that agent's health and its declared state.
+/// contractual is that an exact session maximum carries `attn:<reason>`.
+/// `--needs-attn` may still select a row on its partial-evidence `true`, but human
+/// output never fabricates an inexact class. Each agent line carries that
+/// agent's health and its declared state.
 #[must_use]
 pub fn table(sessions: &[&SessionEntry]) -> String {
     let mut out = String::new();
@@ -310,9 +311,12 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
         out.push_str(&session.name);
         out.push('\t');
         out.push_str(session.status.as_str());
-        // SC-017g's rollup, "when a session needs attention" — so the marker is
-        // absent rather than empty when nothing is wrong.
-        if let Some(reason) = session.attention {
+        // The filter may have selected this row on readable partial evidence, but
+        // a table marker names a class and therefore needs the same exactness as
+        // JSON's attention/rank pair.
+        if session.attention_is_exact()
+            && let Some(reason) = session.attention
+        {
             out.push('\t');
             out.push_str("attn:");
             out.push_str(reason.as_str());
@@ -337,10 +341,17 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
                 None => "unknown",
             });
             out.push('\t');
-            // The declared state, or a placeholder: an agent that has declared
-            // nothing must not render as an agent whose state is the empty
-            // string.
-            out.push_str(agent.state.as_deref().unwrap_or("-"));
+            // SC-017h's amended declared-state cell is three-way: an exact
+            // declaration, an exact no-declaration, or unreadable event input.
+            // The last spelling cannot reuse `-`, which means the reader did
+            // establish there was no declaration.
+            out.push_str(
+                match (session.agent_state_is_exact(), agent.state.as_deref()) {
+                    (true, Some(state)) => state,
+                    (true, None) => "-",
+                    (false, _) => "unknown",
+                },
+            );
             out.push('\n');
         }
     }
@@ -357,7 +368,9 @@ mod tests {
     use crate::json;
     use crate::liveness::{Classified, Snapshot};
     use crate::meta::ServerSelector;
-    use crate::session::{DEFAULT_UNANSWERED_SECS, MetaRead, RecordSnapshot};
+    use crate::session::{
+        DEFAULT_UNANSWERED_SECS, MetaRead, RecordSnapshot, SessionRuntime, entry_for,
+    };
     use crate::time::Timestamp;
 
     const NOW: Timestamp = Timestamp::from_epoch(1_780_000_000);
@@ -798,6 +811,327 @@ mod tests {
             actual.same_members(&expected),
             "complete empty digest members: {rendered}"
         );
+    }
+
+    // ---- SC-509b: source knowledge survives aggregate degradation ----------
+
+    /// One durable record projected through the real presentation boundary.
+    ///
+    /// The fixture writes only phase-1 inputs. Its tests never manufacture a
+    /// `SessionEntry`, because the point is the provenance attached while
+    /// projecting a captured record snapshot.
+    struct DigestFixture(std::path::PathBuf);
+
+    impl DigestFixture {
+        fn new(tag: &str, meta: Option<&str>, events: Option<&str>) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("ae-listing-sc509b-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch directory");
+            if let Some(meta) = meta {
+                std::fs::write(dir.join("meta"), meta).expect("a meta fixture");
+            }
+            if let Some(events) = events {
+                std::fs::write(dir.join("events.jsonl"), events).expect("an events fixture");
+            }
+            Self(dir)
+        }
+
+        fn snapshot(&self, name: &str) -> Snapshot {
+            let record = RecordSnapshot::read(&self.0);
+            Snapshot {
+                sessions: vec![Classified {
+                    candidate: Candidate {
+                        name: name.to_owned(),
+                        durable: Some(DurableRecord {
+                            path: self.0.clone(),
+                            name: name.to_owned(),
+                            layout: Layout::Canonical,
+                            server: ServerSelector::Missing,
+                            meta_read: record.meta_read,
+                            snapshot: record,
+                        }),
+                        live: None,
+                    },
+                    status: Status::Running,
+                }],
+                incomplete: Vec::new(),
+            }
+        }
+
+        fn entry(&self, name: &str) -> json::Value {
+            let world =
+                Presentation::enter(&self.snapshot(name)).world(NOW, DEFAULT_UNANSWERED_SECS);
+            let rendered = render(&args(&["--all", "--json"]), &world);
+            let document = json::parse(rendered.trim_end()).expect("one digest");
+            let Some(json::Value::Arr(sessions)) = document.get("sessions") else {
+                panic!("sessions must be an array");
+            };
+            sessions
+                .first()
+                .cloned()
+                .expect("the durable candidate remains")
+        }
+
+        fn entry_via_entry_for(&self, name: &str) -> json::Value {
+            entry_for(
+                &self.0,
+                name,
+                &SessionRuntime::new(Status::Running),
+                NOW,
+                DEFAULT_UNANSWERED_SECS,
+            )
+            .to_json()
+        }
+    }
+
+    impl Drop for DigestFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn sc_509b_event_loss_keeps_false_as_partial_evidence_and_omits_only_event_facts() {
+        let fixture = DigestFixture::new(
+            "event-loss",
+            Some("mode=local\norigin=/repo\nagent.main=claude:lead\n"),
+            Some("not json\n"),
+        );
+        let entry = fixture.entry("event-loss");
+
+        assert_eq!(entry.get("degraded"), Some(&json::Value::Bool(true)));
+        assert_eq!(entry.get_str("mode"), Some("local"));
+        assert_eq!(entry.get_str("origin"), Some("/repo"));
+        assert_eq!(entry.get("goal"), Some(&json::Value::Null));
+        assert_eq!(entry.get("goal_set_epoch"), None);
+        assert_eq!(entry.get("last_active_epoch"), None);
+
+        // No readable contribution currently establishes attention. Under loss,
+        // false is not quiet proof, so there is no null/zero pair.
+        assert_eq!(
+            entry.get("needs_attention"),
+            Some(&json::Value::Bool(false))
+        );
+        assert_eq!(entry.get("attention"), None);
+        assert_eq!(entry.get("attention_rank"), None);
+
+        let Some(json::Value::Arr(agents)) = entry.get("agents") else {
+            panic!("the readable roster remains an array");
+        };
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].get("state"), None);
+        assert_eq!(agents[0].get("reason"), None);
+    }
+
+    #[test]
+    fn sc_509b_a_listed_agent_needs_complete_reason_inputs() {
+        let fixture = DigestFixture::new(
+            "reason-loss",
+            Some("mode=local\nagent.main=claude:lead\n"),
+            Some(concat!(
+                r#"{"ts":"2026-05-29T14:00:00Z","actor":"claude:lead","action":"state","ref":"blocked"}"#,
+                "\nnot json\n",
+            )),
+        );
+        let entry = fixture.entry("reason-loss");
+
+        // A skipped event could change this agent's current state and reason,
+        // so partial evidence remains while current event-derived members omit.
+        assert_eq!(entry.get("needs_attention"), Some(&json::Value::Bool(true)));
+        assert_eq!(entry.get("attention"), None);
+        assert_eq!(entry.get("attention_rank"), None);
+        let Some(json::Value::Arr(agents)) = entry.get("agents") else {
+            panic!("the readable agent remains visible");
+        };
+        assert_eq!(agents[0].get_str("ref"), Some("claude:lead"));
+        assert_eq!(agents[0].get("state"), None);
+        assert_eq!(agents[0].get("reason"), None);
+    }
+
+    #[test]
+    fn sc_509b_entry_for_and_presentation_render_one_snapshot_identically() {
+        let fixture = DigestFixture::new(
+            "one-producer",
+            Some("mode=local\nagent.main=claude:lead\n"),
+            Some(concat!(
+                r#"{"ts":"2026-05-29T14:00:00Z","actor":"claude:lead","action":"state","ref":"blocked"}"#,
+                "\nnot json\n",
+            )),
+        );
+
+        assert_eq!(
+            fixture.entry("one-producer"),
+            fixture.entry_via_entry_for("one-producer"),
+            "the public producer, not presentation, owns provenance"
+        );
+    }
+
+    #[test]
+    fn sc_509b_needs_attention_selects_partial_evidence_without_printing_an_inexact_class() {
+        let fixture = DigestFixture::new(
+            "partial-evidence-table",
+            Some("mode=local\nagent.main=claude:lead\n"),
+            Some(concat!(
+                r#"{"ts":"2026-05-29T14:00:00Z","actor":"claude:lead","action":"state","ref":"blocked"}"#,
+                "\nnot json\n",
+            )),
+        );
+        let world = Presentation::enter(&fixture.snapshot("partial-evidence-table"))
+            .world(NOW, DEFAULT_UNANSWERED_SECS);
+        let human = render(&args(&["--needs-attn"]), &world);
+        let machine = render(&args(&["--needs-attn", "--json"]), &world);
+        let digest = json::parse(machine.trim_end()).expect("one digest");
+        let Some(json::Value::Arr(sessions)) = digest.get("sessions") else {
+            panic!("one selected partial-evidence row");
+        };
+
+        assert!(human.contains("partial-evidence-table\trunning"));
+        assert!(!human.contains("attn:blocked"));
+        assert!(
+            human.contains("  claude:lead\tunknown\tunknown\n"),
+            "the malformed event hides stale blocked state behind the human unknown: {human}"
+        );
+        assert!(!human.contains("\tblocked\n"));
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].get("needs_attention"),
+            Some(&json::Value::Bool(true))
+        );
+        assert_eq!(sessions[0].get("attention"), None);
+        let Some(json::Value::Arr(agents)) = sessions[0].get("agents") else {
+            panic!("the readable roster remains an array");
+        };
+        assert_eq!(agents[0].get("state"), None);
+    }
+
+    #[test]
+    fn sc_017h_declared_state_cell_distinguishes_exact_value_and_no_declaration() {
+        let mut session = SessionEntry::new("state-cell", Status::Running);
+        session.agents = vec![AgentEntry {
+            reference: "claude:lead".to_owned(),
+            alias: "claude".to_owned(),
+            name: "lead".to_owned(),
+            session_id: None,
+            alive: Some(true),
+            state: Some("blocked".to_owned()),
+            reason: None,
+        }];
+        assert!(table(&[&session]).contains("  claude:lead\talive\tblocked\n"));
+
+        session.agents[0].state = None;
+        assert!(table(&[&session]).contains("  claude:lead\talive\t-\n"));
+    }
+
+    #[test]
+    fn sc_509b_ledger_dead_with_event_loss_is_partial_for_session_and_agent() {
+        let fixture = DigestFixture::new(
+            "dead-dominates",
+            Some("mode=local\nagent.main=claude:lead\n"),
+            Some(concat!(
+                r#"{"ts":"2026-05-29T14:00:00Z","actor":"_watchdog","action":"alert","target":"claude:lead","summary":"agent process dead — dropped to shell"}"#,
+                "\nnot json\n",
+            )),
+        );
+        let entry = fixture.entry("dead-dominates");
+
+        assert_eq!(entry.get("degraded"), Some(&json::Value::Bool(true)));
+        assert_eq!(entry.get("needs_attention"), Some(&json::Value::Bool(true)));
+        assert_eq!(entry.get("attention"), None);
+        assert_eq!(entry.get("attention_rank"), None);
+        let Some(json::Value::Arr(agents)) = entry.get("agents") else {
+            panic!("the readable roster remains an array");
+        };
+        assert_eq!(agents[0].get("reason"), None);
+        let world = Presentation::enter(&fixture.snapshot("dead-dominates"))
+            .world(NOW, DEFAULT_UNANSWERED_SECS);
+        assert!(
+            !render(&args(&["--all"]), &world).contains("attn:"),
+            "partial ledger evidence may select a row but may not name an inexact class"
+        );
+    }
+
+    #[test]
+    fn sc_509b_a_readable_empty_roster_is_exact_and_not_degraded() {
+        let fixture = DigestFixture::new("empty-roster", Some("mode=local\n"), Some(""));
+        let entry = fixture.entry("empty-roster");
+
+        assert_eq!(entry.get("degraded"), None);
+        assert_eq!(entry.get("agents"), Some(&json::Value::Arr(vec![])));
+        assert_eq!(
+            entry.get("needs_attention"),
+            Some(&json::Value::Bool(false))
+        );
+        assert_eq!(entry.get("attention"), Some(&json::Value::Null));
+        assert_eq!(entry.get("attention_rank"), Some(&json::Value::Num(0)));
+    }
+
+    #[test]
+    fn sc_509b_unrelated_meta_loss_keeps_an_exact_attention_maximum() {
+        let fixture = DigestFixture::new(
+            "unrelated-meta-loss",
+            Some(
+                "mode=local\nmode=duplicate\norigin=/repo\nwork_dir=/work\nagent.main=claude:lead\n",
+            ),
+            Some(concat!(
+                r#"{"ts":"2026-05-29T14:00:00Z","actor":"claude:lead","action":"state","ref":"blocked"}"#,
+                "\n",
+            )),
+        );
+        let entry = fixture.entry("unrelated-meta-loss");
+
+        // The duplicate makes only `mode` unreadable. The complete roster and
+        // event stream still settle the session maximum exactly.
+        assert_eq!(entry.get("degraded"), Some(&json::Value::Bool(true)));
+        assert_eq!(entry.get("mode"), None);
+        assert_eq!(entry.get_str("origin"), Some("/repo"));
+        assert_eq!(entry.get_str("work_dir"), Some("/work"));
+        assert_eq!(
+            entry.get("goal"),
+            Some(&json::Value::Null),
+            "the absent goal is independently established despite duplicate mode"
+        );
+        assert_eq!(entry.get("needs_attention"), Some(&json::Value::Bool(true)));
+        assert_eq!(entry.get_str("attention"), Some("blocked"));
+        assert_eq!(
+            entry.get("attention_rank"),
+            Some(&json::Value::Num(Reason::Blocked.rank()))
+        );
+    }
+
+    #[test]
+    fn sc_509b_lost_roster_and_lost_events_omit_different_members() {
+        let events_lost = DigestFixture::new(
+            "events-separated",
+            Some("mode=local\nagent.main=claude:lead\n"),
+            Some("not json\n"),
+        )
+        .entry("events-separated");
+        let roster_lost = DigestFixture::new(
+            "roster-separated",
+            Some("mode=local\nagent.main=claude:lead\nagent.worker.0=broken\n"),
+            Some(concat!(
+                r#"{"ts":"2026-05-29T14:00:00Z","actor":"claude:lead","action":"state","ref":"blocked"}"#,
+                "\n",
+            )),
+        )
+        .entry("roster-separated");
+
+        assert_eq!(events_lost.get_str("mode"), Some("local"));
+        assert_eq!(events_lost.get("last_active_epoch"), None);
+        assert_eq!(roster_lost.get_str("mode"), Some("local"));
+        assert_eq!(
+            roster_lost.get("last_active_epoch"),
+            Some(&json::Value::Num(1_780_063_200)),
+            "the complete event stream remains known despite roster loss"
+        );
+        assert_eq!(roster_lost.get("attention"), None);
+        assert_eq!(roster_lost.get("attention_rank"), None);
+        let Some(json::Value::Arr(agents)) = roster_lost.get("agents") else {
+            panic!("the readable part of a damaged roster remains visible");
+        };
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].get_str("reason"), Some("blocked"));
     }
 
     // ---- SC-522: one clock for the stamp and for the relation it justifies ---

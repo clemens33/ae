@@ -9,8 +9,9 @@
 //! * `mode` / `origin` / `work_dir` / `goal` — the meta keys of SC-405b, read
 //!   through [`crate::meta`].
 //! * `agents[]` — the roster keys of SC-405c. **SC-405k**: membership is
-//!   roster-defined, so a runtime-only slot never invents an agent, and a
-//!   session with no roster degrades through SC-405i.
+//!   roster-defined, so a runtime-only slot never invents an agent. A missing
+//!   or unreadable meta loses the roster; a readable meta with zero `agent.*`
+//!   entries is the complete empty roster.
 //! * `last_active_epoch` — SC-017e makes an **ae event** the activity clock, so
 //!   the newest event's `ts` is when the session was last active.
 //! * `goal_set_epoch` — SC-405f: the latest `goal` EVENT, never a meta key.
@@ -49,7 +50,7 @@ use std::io;
 use std::path::Path;
 
 use crate::attention::Reason;
-use crate::digest::{AgentEntry, SessionEntry, Status};
+use crate::digest::{AgentEntry, FactState, RenderKnowledge, SessionEntry, Status};
 use crate::events::{
     AlertMeaning, Cursor, Drain, Event, EventLog, Identity, RefMeaning, RoutingMember, SkippedLine,
 };
@@ -380,6 +381,10 @@ pub struct AgentRuntime {
     /// unprovable agent liveness is first-class unknown and never removal.
     pub alive: Option<bool>,
     /// The watchdog's typed reason for this agent, if any (SC-980).
+    ///
+    /// `Some` is an established positive hand-in at this boundary, independent
+    /// of the event ledger. `None` is not an unread runtime source: positive
+    /// runtime alerts enter only when supplied by the caller.
     pub alert: Option<Reason>,
 }
 
@@ -657,46 +662,25 @@ pub fn entry_from(
     let mut entry = SessionEntry::new(name, runtime.status);
     entry.branch.clone_from(&runtime.branch);
 
-    // SC-405i: a present session dir with a missing meta is degraded. Identity
-    // beyond the directory name and the entire roster are lost at once, which
-    // is actual loss by SC-509b's test — unlike a missing EVENT log, which
-    // SC-519 makes quiet.
+    // This is the one raw-record producer. It attaches both the values and the
+    // provenance that decides whether every serializer may publish them.
     let meta = snapshot.meta.as_ref();
     if let Some(meta) = meta {
-        entry.degraded |= anomalies_degrade(meta.anomalies());
-        // SC-405k routes a MISSING ROSTER through SC-405i: a session that
-        // cannot name a single agent has lost the same thing a session with no
-        // meta lost, and a readable-but-empty file is not evidence that a
-        // session genuinely has no agents. An empty `agents` array with no
-        // `degraded` beside it would assert exactly that.
-        entry.degraded |= meta.roster().is_empty();
         entry.mode = meta.mode().map(ToOwned::to_owned);
         entry.origin = meta.origin().map(ToOwned::to_owned);
         entry.work_dir = meta.work_dir().map(ToOwned::to_owned);
         entry.goal = meta.goal().map(ToOwned::to_owned);
-    } else {
-        entry.degraded = true;
     }
 
-    // SC-519 has already turned an absent or zero-byte log into a quiet stream,
-    // so an error here is real loss: a log that EXISTS and will not read, a
-    // record the reader could not take, or — once generations exist — a cursor
-    // whose history is gone beneath it (DR-001). Every one of those is a fact
-    // SC-509b says the digest must show rather than render as silence.
     let read = snapshot.events.as_ref();
     if let Some(read) = read {
-        entry.degraded |= read.lost_records();
         entry.last_active_epoch = read.last_active.map(Timestamp::epoch);
         entry.goal_set_epoch = read.goal_set_at().map(Timestamp::epoch);
-    } else {
-        entry.degraded = true;
     }
 
-    // The roster comes from the META, so an unreadable event log costs the
-    // agents their declared STATE and nothing else. SC-509b omits the facts
-    // that were lost, not the ones that happen to sit next to them.
     if let Some(meta) = meta {
         entry.agents = agent_entries(meta, read, runtime, name);
+        entry.set_established_runtime_dead_agents(established_runtime_dead_agents(meta, runtime));
     }
     // SC-017g as AMENDED: the MAX across agent reasons PLUS session-level
     // unresolved-request facts. `unanswered` is a PAIR fact — a cross-session
@@ -709,7 +693,89 @@ pub fn entry_from(
             .filter_map(|agent| agent.reason)
             .chain(read.and_then(|read| read.attention_contribution(now, unanswered_secs))),
     );
+    entry.degraded =
+        meta.is_none_or(|meta| anomalies_degrade(meta.anomalies())) || !events_complete(snapshot);
+    entry.set_render_knowledge(render_knowledge(snapshot));
     entry
+}
+
+/// The runtime-origin `Dead` facts this snapshot may retain under ledger loss.
+///
+/// A typed runtime hand-in is independent of the event ledger, so a malformed
+/// ledger tail cannot clear it. We retain only rostered references: runtime-only
+/// slots never create digest agents or a session attention contribution.
+fn established_runtime_dead_agents(meta: &Meta, runtime: &SessionRuntime) -> Vec<String> {
+    meta.roster()
+        .iter()
+        .filter_map(|slot| {
+            runtime
+                .agent(&slot.slot)
+                .filter(|agent| agent.alert.is_some_and(Reason::is_severity_maximum))
+                .map(|_| slot.reference())
+        })
+        .collect()
+}
+
+/// Map one raw-record snapshot to the source knowledge each rendered member
+/// needs. Aggregate degradation is deliberately computed separately above.
+fn render_knowledge(snapshot: &RecordSnapshot) -> RenderKnowledge {
+    let meta = snapshot.meta.as_ref();
+    RenderKnowledge {
+        mode: FactState::from_complete(
+            meta.is_some_and(|meta| meta_member_complete(meta, "mode", meta.mode().is_some())),
+        ),
+        origin: FactState::from_complete(
+            meta.is_some_and(|meta| meta_member_complete(meta, "origin", meta.origin().is_some())),
+        ),
+        work_dir: FactState::from_complete(
+            meta.is_some_and(|meta| {
+                meta_member_complete(meta, "work_dir", meta.work_dir().is_some())
+            }),
+        ),
+        goal: FactState::from_complete(
+            meta.is_some_and(|meta| meta_member_complete(meta, "goal", meta.goal().is_some())),
+        ),
+        events: FactState::from_complete(events_complete(snapshot)),
+        roster: FactState::from_complete(meta.is_some_and(roster_complete)),
+    }
+}
+
+/// Whether the complete event stream was available to every event-derived fact.
+fn events_complete(snapshot: &RecordSnapshot) -> bool {
+    snapshot
+        .events
+        .as_ref()
+        .is_some_and(|read| !read.lost_records())
+}
+
+/// Whether one optional meta member was settled by the parsed record.
+///
+/// A duplicate of the member's own key makes its value unknowable. When no
+/// value was found, an unattributed malformed line makes its absence
+/// unknowable too. The current parser retains a value it already parsed beside
+/// such a line; whether that loss can be a truncated duplicate is an open
+/// contract choice, so this helper must not grow a stronger rule silently.
+fn meta_member_complete(meta: &Meta, key: &str, value_present: bool) -> bool {
+    let duplicate = meta.anomalies().iter().any(|anomaly| {
+        matches!(anomaly, Anomaly::DuplicateKey { key: duplicate, .. } if duplicate == key)
+    });
+    let unattributed_loss = meta
+        .anomalies()
+        .iter()
+        .any(|anomaly| matches!(anomaly, Anomaly::MalformedLine { .. }));
+    !duplicate && (value_present || !unattributed_loss)
+}
+
+/// Whether meta established the complete agent population.
+///
+/// A readable zero-entry roster is complete. Only missing meta or parse loss
+/// that could name an agent makes the population unenumerable.
+fn roster_complete(meta: &Meta) -> bool {
+    !meta.anomalies().iter().any(|anomaly| match anomaly {
+        Anomaly::MalformedLine { .. } | Anomaly::MalformedRosterEntry { .. } => true,
+        Anomaly::DuplicateKey { key, .. } => key.starts_with("agent."),
+        Anomaly::UnknownKey { .. } => false,
+    })
 }
 
 /// What is known about one roster agent's liveness — **SC-017p/SC-017q**.
@@ -745,7 +811,8 @@ fn agent_liveness(runtime: &SessionRuntime, agent: Option<&AgentRuntime>) -> Opt
 ///
 /// **SC-405k** — membership is roster-defined (SC-405c). A runtime-only pane or
 /// slot never invents an agent, because SC-509's `agents[]` fields ARE roster
-/// fields; a missing roster routes through SC-405i instead.
+/// fields. Liveness stays orthogonal to an independently established reason:
+/// an unknown pane never erases a ledger or explicitly handed-in alert fact.
 fn agent_entries(
     meta: &Meta,
     read: Option<&SessionRead>,
@@ -1479,10 +1546,10 @@ mod tests {
     }
 
     #[test]
-    fn sc_405k_a_rosterless_meta_degrades_and_still_emits_an_agents_array() {
-        // A readable meta that names no agent has lost what a missing meta
-        // loses. `agents` stays an ARRAY (SC-509b) — the loss is stated by the
-        // flag, not by a missing or null field.
+    fn sc_509b_a_readable_empty_roster_is_complete_and_quiet() {
+        // A readable meta that names zero `agent.*` entries completely
+        // enumerates an empty roster. This is distinct from a missing or
+        // unreadable meta, which loses the roster itself.
         for (meta_text, why) in [
             (String::new(), "an empty file"),
             (
@@ -1503,19 +1570,170 @@ mod tests {
                 NOW,
                 DEFAULT_UNANSWERED_SECS,
             );
-            assert!(entry.degraded, "{why}");
+            assert!(!entry.degraded, "{why}");
             assert!(entry.agents.is_empty(), "{why}");
             assert_eq!(
                 entry.to_json().get("agents"),
                 Some(&crate::json::Value::Arr(vec![])),
                 "{why}: agents stays an array"
             );
+            assert_eq!(entry.to_json().get("degraded"), None, "{why}");
             assert_eq!(
-                entry.to_json().get("degraded"),
-                Some(&crate::json::Value::Bool(true)),
-                "{why}"
+                entry.to_json().get("attention"),
+                Some(&crate::json::Value::Null),
+                "{why}: exact quiet"
             );
         }
+    }
+
+    #[test]
+    fn sc_509b_a_malformed_line_makes_absent_meta_members_unreadable() {
+        let scratch = Scratch::new("unattributed-meta-loss");
+        scratch.meta("mode=local\nthis line has no equals sign\nagent.main=claude:lead\n");
+        let entry = entry_for(
+            &scratch.0,
+            "damaged",
+            &running(),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+
+        let value = entry.to_json();
+        assert!(entry.degraded);
+        assert_eq!(
+            value.get("origin"),
+            None,
+            "the malformed line could have been the absent origin"
+        );
+        assert_eq!(
+            value.get("work_dir"),
+            None,
+            "the malformed line could have been the absent work_dir"
+        );
+        assert_eq!(
+            value.get("goal"),
+            None,
+            "the malformed line could have been the absent goal"
+        );
+    }
+
+    #[test]
+    fn sc_405g_branch_preserves_legacy_healthy_and_degraded_shapes_pending_a_source_slice() {
+        let healthy = Scratch::new("branch-observation-healthy");
+        healthy.meta(META);
+        let empty_roster = Scratch::new("branch-observation-empty-roster");
+        empty_roster.meta("mode=local\n");
+        let degraded = Scratch::new("branch-observation-degraded");
+        degraded.meta("mode=local\nthis line has no equals sign\nagent.main=claude:lead\n");
+        // SC-405g's watchdog-status/git-fallback source does not exist yet.
+        // Preserve the predecessor's distinct bytes rather than treating
+        // unimplemented observation as a new SC-509b fact.
+        let healthy = entry_for(&healthy.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        let empty_roster = entry_for(
+            &empty_roster.0,
+            "empty",
+            &running(),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+        let degraded = entry_for(
+            &degraded.0,
+            "damaged",
+            &running(),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+        assert_eq!(
+            healthy.to_json().get("branch"),
+            Some(&crate::json::Value::Null),
+            "healthy legacy bytes survive until the SC-405g source slice"
+        );
+        assert!(
+            !healthy.degraded,
+            "unimplemented branch observation is not loss"
+        );
+        assert_eq!(empty_roster.agents, Vec::new());
+        assert!(!empty_roster.degraded);
+        assert_eq!(
+            empty_roster.to_json().get("branch"),
+            Some(&crate::json::Value::Null),
+            "a readable empty roster keeps the healthy legacy branch bytes"
+        );
+        assert_eq!(
+            degraded.to_json().get("branch"),
+            None,
+            "degraded legacy rows omit an absent branch"
+        );
+        assert!(degraded.degraded);
+    }
+
+    #[test]
+    fn sc_509b_a_malformed_line_keeps_the_roster_unenumerable() {
+        let scratch = Scratch::new("malformed-roster-completeness");
+        scratch.meta("agent.main=claude:lead\nthis line has no equals sign\n");
+        let entry = entry_for(
+            &scratch.0,
+            "damaged",
+            &running(),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+        let value = entry.to_json();
+
+        assert!(entry.degraded);
+        assert_eq!(
+            value.get("needs_attention"),
+            Some(&crate::json::Value::Bool(false))
+        );
+        assert_eq!(
+            value.get("attention"),
+            None,
+            "a malformed line may name another roster member, so quiet is inexact"
+        );
+        assert_eq!(value.get("attention_rank"), None);
+    }
+
+    #[test]
+    fn sc_509b_an_unknown_meta_key_does_not_make_the_roster_incomplete() {
+        let scratch = Scratch::new("unknown-meta-key-roster");
+        scratch.meta("agent.main=claude:lead\nfuture_meta_key=permitted\n");
+        let entry = entry_for(
+            &scratch.0,
+            "tolerated",
+            &running(),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+        let value = entry.to_json();
+
+        assert!(!entry.degraded);
+        assert_eq!(value.get("attention"), Some(&crate::json::Value::Null));
+        assert_eq!(
+            value.get("attention_rank"),
+            Some(&crate::json::Value::Num(0))
+        );
+    }
+
+    #[test]
+    fn sc_509b_a_duplicate_agent_key_makes_quiet_attention_inexact() {
+        let scratch = Scratch::new("duplicate-agent-roster");
+        scratch.meta("agent.main=claude:lead\nagent.main=claude:replacement\n");
+        let entry = entry_for(
+            &scratch.0,
+            "damaged",
+            &running(),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+        let value = entry.to_json();
+
+        assert!(entry.degraded);
+        assert_eq!(
+            value.get("needs_attention"),
+            Some(&crate::json::Value::Bool(false))
+        );
+        assert_eq!(value.get("attention"), None);
+        assert_eq!(value.get("attention_rank"), None);
     }
 
     #[test]
@@ -1574,7 +1792,125 @@ mod tests {
         assert_eq!(
             entry.last_active_epoch,
             Some(NOW.epoch() - 10),
-            "and the records that DID read are still reported"
+            "the model retains its partially read fact"
+        );
+        assert_eq!(
+            entry.to_json().get("last_active_epoch"),
+            None,
+            "but the incomplete event source may not publish a stale current value"
+        );
+    }
+
+    #[test]
+    fn sc_509b_incomplete_events_omit_partial_current_members() {
+        let scratch = Scratch::new("partial-events");
+        scratch.meta(META);
+        scratch.events(&[
+            event(&at(600), "claude:lead", "goal", ""),
+            event(&at(300), "claude:lead", "state", r#","ref":"blocked""#),
+            "not an event".to_owned(),
+        ]);
+        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        let value = entry.to_json();
+        let Some(crate::json::Value::Arr(agents)) = value.get("agents") else {
+            panic!("the readable roster stays present");
+        };
+
+        assert_eq!(entry.goal_set_epoch, Some(NOW.epoch() - 600));
+        assert_eq!(entry.last_active_epoch, Some(NOW.epoch() - 300));
+        assert_eq!(entry.agents[0].state.as_deref(), Some("blocked"));
+        assert_eq!(value.get("goal_set_epoch"), None);
+        assert_eq!(value.get("last_active_epoch"), None);
+        assert_eq!(agents[0].get("state"), None);
+        assert_eq!(agents[0].get("reason"), None);
+        assert_eq!(value.get("attention"), None);
+        assert_eq!(value.get("attention_rank"), None);
+        assert_eq!(
+            value.get("needs_attention"),
+            Some(&crate::json::Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn sc_509b_runtime_dead_stays_exact_when_a_malformed_ledger_tail_is_lost() {
+        let scratch = Scratch::new("runtime-dead-with-event-loss");
+        scratch.meta(META);
+        scratch.events(&["not an event".to_owned()]);
+        let runtime = SessionRuntime {
+            status: Status::Running,
+            branch: None,
+            agents: vec![AgentRuntime {
+                slot: "main".to_owned(),
+                alive: None,
+                alert: Some(Reason::Dead),
+            }],
+        };
+        let entry = entry_for(&scratch.0, "live", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
+        let value = entry.to_json();
+        let Some(crate::json::Value::Arr(agents)) = value.get("agents") else {
+            panic!("the readable roster remains present");
+        };
+
+        assert!(entry.degraded);
+        assert_eq!(entry.attention, Some(Reason::Dead));
+        assert_eq!(value.get_str("attention"), Some("dead"));
+        assert_eq!(
+            value.get("attention_rank"),
+            Some(&crate::json::Value::Num(Reason::Dead.rank()))
+        );
+        assert_eq!(agents[0].get_str("reason"), Some("dead"));
+        assert!(
+            crate::listing::table(&[&entry]).contains("attn:dead"),
+            "the human surface shares the exactness predicate"
+        );
+        assert!(
+            crate::listing::table(&[&entry]).contains("\tunknown\n"),
+            "event loss keeps the SC-017h declared-state cell unknown"
+        );
+    }
+
+    #[test]
+    fn sc_017q_unknown_liveness_does_not_erase_a_handed_in_reason() {
+        let scratch = Scratch::new("reason-with-unknown-pane");
+        scratch.meta(META);
+        let runtime = SessionRuntime {
+            status: Status::Running,
+            branch: None,
+            agents: vec![AgentRuntime {
+                slot: "main".to_owned(),
+                alive: None,
+                alert: Some(Reason::Blocked),
+            }],
+        };
+        let entry = entry_for(&scratch.0, "live", &runtime, NOW, DEFAULT_UNANSWERED_SECS);
+
+        assert_eq!(entry.agents[0].alive, None);
+        assert_eq!(entry.agents[0].reason, Some(Reason::Blocked));
+        assert_eq!(entry.attention, Some(Reason::Blocked));
+    }
+
+    #[test]
+    fn sc_017q_stopped_liveness_does_not_manufacture_an_agent_reason() {
+        let scratch = Scratch::new("stopped-without-reason");
+        scratch.meta(META);
+        let entry = entry_for(
+            &scratch.0,
+            "stopped",
+            &SessionRuntime::new(Status::Stopped),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+
+        assert_eq!(entry.agents[0].alive, Some(false));
+        assert_eq!(entry.agents[0].reason, None);
+        assert_eq!(entry.attention, None);
+        assert_eq!(
+            entry.to_json().get("attention"),
+            Some(&crate::json::Value::Null)
+        );
+        assert!(
+            !crate::listing::table(&[&entry]).contains("attn:"),
+            "liveness never manufactures an attention class"
         );
     }
 
