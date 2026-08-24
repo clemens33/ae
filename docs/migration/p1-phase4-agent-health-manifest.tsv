@@ -58,18 +58,35 @@
 #
 # ============ WHY alive IS PINNED THOUGH UNREACHABLE ============
 #
-# No product predicate can currently produce alive: SC-017p grants it only on an
-# observation that "positively recognizes its agent process as live", and no
-# ratified row defines that predicate. This manifest describes the total
-# PRESENTATION DOMAIN, not liveness reachability, and criterion 8 feeds all
-# three values synthetically through the real presentation boundary.
+# THE PREDICATE IS NOW RATIFIED. SC-017s supplies the pane-observed live
+# predicate SC-017p depended on and no row previously defined. An earlier
+# revision of this file said no ratified predicate existed; that sentence was
+# true when written and is false now, which is why the pin below moves with the
+# artifacts it names rather than being asserted once.
+#
+# BUT NO PRODUCT-VALID PANE OBSERVATION ROUTE EXISTS YET, so alive still cannot
+# be reached by the product, and the mapping this manifest pins REMAINS
+# SYNTHETIC: criterion 8 feeds all three values through the real presentation
+# boundary rather than producing them from a live server.
+#
+# WHAT GREEN CALIBRATION THEREFORE DOES NOT BUY. A passing synthetic mapping
+# does NOT close criterion 12, and it does not score the 78 UNSCORABLE SC-017r
+# loci -- all 78 SC-017r obligations in the committed projection are UNSCORABLE.
+# Reading a green calibration as coverage of those loci is exactly the laundering
+# criterion 12 forbids: the corpus lacks the decisive fact, and a synthetic feed
+# supplies the value without supplying the evidence.
+#
+# This manifest describes the total PRESENTATION DOMAIN, not liveness
+# reachability. Reachability is not its subject and never was.
 #
 manifest_version	1
 manifest_kind	agent-health-presentation
-derived_from_commit	620aaf0d9dd3e8a262caa38049247d8299f3227e
+derived_from_commit	e74d99d8db2fa4e6feab70afbc521fcf9fd206cc
 derived_from_blob_path	src/listing.rs
-derived_from_blob_sha1	1c97375b65605a67fc538f4add1b4cfa6b23345c
+derived_from_blob_sha1	3dc4dfa6cb70588ee5373aa2db9a2cfe675f4b63
 emitter_symbol	ae::listing::table
+production_hunk_unchanged_since	1c97375b65605a67fc538f4add1b4cfa6b23345c
+production_hunk_check	the non-test half of src/listing.rs is byte-identical across both blobs (14741 bytes each) and so is the table() hunk; the blob moved on test-side changes only
 surfaces	list ls
 surfaces_view	human
 surfaces_note	both spellings parse to one Request::List (src/cli.rs) and render through one emitter; --json is a different surface and not this manifest's subject
