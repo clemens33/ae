@@ -6,9 +6,10 @@ the three accepted phase gates. Spec is phase-4 gate criterion 8.
 
 Identities: first (`697e8507`, blob `b4d0f34d`) used independent SC reading
 against gate `3a63f741`; second (`9294dbc5`, blob `6a155272`) pinned C3
-`0126d765` and HEAD gate `4612208d`. This identity rebinds the SC arm from
-`0126d765` to C3 `343fcd80` (`0194c465`). Occurrence row set unchanged;
-identity moves because the SC arm is a new named object.
+`0126d765` and HEAD gate `4612208d`; third (`47cb1c42`, blob `ecdbd5b2`)
+pinned C3 `343fcd80`. This identity updates only the phase-4 gate pin
+`4612208d` → `ea794124` (`97339caa`, the aggregate count sentence). Occurrence
+set and verdict unchanged: the count sentence is not an OPEN CHOICE phrase.
 
 This file is the independently produced open-choice-reconciliation blob
 criterion 1 pins. It does not modify the register or any gate. A mismatch is a
@@ -22,7 +23,8 @@ Isolated red-proof: `redproof-open-choice-reconciliation.py`.
 
 | Input | Blob |
 |---|---|
-| this gate (HEAD, C1 names C3) | `4612208d411f352cd6a049e24278e472f7c58e66` |
+| this gate (HEAD, C1 names C3) | `ea7941249d6c4d2297d2b67528246d311b514ca8` |
+| prior gate identity (replaced) | `4612208d411f352cd6a049e24278e472f7c58e66` |
 | C8 spec as first authored | `3a63f7416ccda870a503ac5e11fb2f53ccbea2a1` |
 | open-choice register | `2da4fb86933a6b8edee15fd61596d6f53fa6c550` |
 | accepted phase-1 gate | `8e3c9ec0b031f4947260d4e0327bad562a10fdcd` |
@@ -32,11 +34,18 @@ Isolated red-proof: `redproof-open-choice-reconciliation.py`.
 | prior C3 identity (replaced) | `0126d765d57da2f8cbe86e93660362121f96d2f8` |
 | contract (C3's pin, HEAD) | `896d08ea3ac753095c04af17dfba92cd9d15fb38` |
 
-C3 blob verified from HEAD before this pin: `git rev-parse
+C3 blob verified from HEAD before the previous pin: `git rev-parse
 HEAD:docs/migration/evidence/p1-phase4-contract-obligation-reconciliation.md`
 =`343fcd80916cdffc4a3d7a25e865056e0fb8d336`; sha256
 `f32a9242260df637c764b8e4b0be605bb5b3c006a0f401a6878ab76affd39848`.
 Commit `0194c465`, transport-approved and post-commit extended.
+
+Phase-4 gate pin verified from HEAD before this identity: `git rev-parse
+HEAD:docs/migration/p1-phase4-gate.md`
+=`ea7941249d6c4d2297d2b67528246d311b514ca8`. Diff against `4612208d` is the
+two-line aggregate control (`1,378`/`713` → `1,614`/`949`). Phrase census of
+both gate blobs is identical (16 hits, same lines). P1/P2/P3/SC extractor
+still 34 hits. Null re-census.
 
 Extractor reads `git cat-file -p` of the three accepted gate blobs, never the
 worktree file. Phrase: `open[\s\-]*choice` (covers `OPEN CHOICE`,
@@ -319,6 +328,7 @@ the directional true-after-loss grain; P2 C13 remains the false-presence
 open choice.
 
 Occurrence row set unchanged from first identity `b4d0f34d`. This identity
-exists because the SC arm moved `0126d765` → `343fcd80`.
+exists because the phase-4 gate moved `4612208d` → `ea794124` after the
+previous rebind. Verdict unchanged.
 
 No live FINDING. FINDING 3 is discharged by C3's raw-derived SC-509b row.
