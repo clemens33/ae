@@ -2973,6 +2973,43 @@ never rename the legitimate values back inside the stale list to make the counte
 The durable repair is the same in both cases: the name set stops being a list inside a
 checker and becomes a derivation from the source that owns it.
 
+### A key that is not a key — and the agreement it manufactures
+
+Two seats independently derived the same population and diverged: 128 versus 88. The
+adjudicator was warned, in advance, not to accept a cardinality match as a set match.
+Then the trap turned out to be live **inside one of the artifacts**: the handover's key was
+`(case, consumer, locus)` with the locus spelled `agents[].reason` — session-blind — so the
+128 obligations collapsed to **88 distinct keys**. Had the join run on that address, 128
+would have *presented* as 88 and **matched the other seat's 88 by cardinality while being a
+different set**. The two derivations would have agreed for the wrong reason, and agreement
+is where investigation stops.
+
+The repair attempt then hit the same defect one field over: keying on `agent_ref` was also
+insufficient — 64 triples named an agent appearing under more than one session in the same
+digest, silently overwriting eight rows per sub-population. Both failures are one mechanism:
+**an address that cannot tell two things apart is not a key, and everything joined on it
+inherits the collapse silently** — the same class as a total over a parse that drops rows,
+wearing different clothes.
+
+Three rules fall out:
+
+- **An address is a key only when its distinct-count equals the population it addresses.**
+  Measure it (here: 128 obligations, 128 keys after correcting to
+  `sessions[name].agents[ref].reason`); never assume it from the schema's shape.
+- **A comparison exists only at one declared key.** Joining two artifacts keyed at different
+  grains is not a comparison, however identical the columns look — verify BOTH sides
+  disambiguate before diffing.
+- **Matching cardinalities between independent derivations is the most dangerous form of
+  agreement**, because it is exactly what a key collapse produces and exactly what ends the
+  investigation. Two counts agreeing says almost nothing; two KEY SETS agreeing says
+  everything the counts pretended to.
+
+Note where it was caught: not by the warning — the warning was about the adjudication and
+the defect was in the artifact — but by **building the handover**, which forced the key to
+be materialized and its distinct-count measured. Preparing evidence for someone else's
+scrutiny is itself an instrument; the act of making a thing handable is what made the
+defect visible.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
