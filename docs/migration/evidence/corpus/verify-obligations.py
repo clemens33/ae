@@ -6,7 +6,7 @@ Four classes, and the freshness one is the reason this file exists. A derived ar
 goes stale the moment its source grows and nothing re-runs to say so; the previous
 column was found stale by a human noticing. This makes staleness a gate result.
 """
-import csv, json, os, re, subprocess, sys, collections
+import argparse, csv, json, os, re, subprocess, sys, collections
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.normpath(os.path.join(HERE, "..", "batch-c-artifacts"))
@@ -82,13 +82,14 @@ def unreachable(case):
     p = os.path.join(SRC, case, "tmux.before.txt")
     return os.path.exists(p) and "error connecting" in open(p, encoding="utf-8", errors="replace").read()
 
-def main(quiet=False):
+def main(quiet=False, obl=None, fresh=None, inv=None):
     out = []
-    for p in (OBL, FRESH, INV):
+    obl, fresh, inv = obl or OBL, fresh or FRESH, inv or INV
+    for p in (obl, fresh, inv):
         if not os.path.exists(p):
             print("FAIL  MISSING  %s" % os.path.basename(p)); return 1
     rec = {}
-    for line in open(FRESH, encoding="utf-8"):
+    for line in open(fresh, encoding="utf-8"):
         if line.startswith("#") or not line.strip(): continue
         k, _, v = line.rstrip("\n").partition("\t"); rec[k] = v
 
@@ -104,7 +105,7 @@ def main(quiet=False):
         fail(out, "STALE", "derived against contract blob %s; HEAD is %s — re-derive"
              % (rec.get("contract_blob", "?")[:12], now[:12]))
 
-    obls = list(csv.DictReader(open(OBL, encoding="utf-8"), delimiter="\t"))
+    obls = list(csv.DictReader(open(obl, encoding="utf-8"), delimiter="\t"))
     carriers = collections.defaultdict(list)
     for o in obls: carriers[(o["case"], o["consumer"])].append(o)
 
@@ -138,7 +139,7 @@ def main(quiet=False):
                      % (o["case"], o["consumer"]))
 
     # ---- 4. CONVERSE: what carries an obligation must, and what does not must not ----
-    p1 = [r for r in csv.DictReader(open(INV, encoding="utf-8"), delimiter="\t") if r["phase"] == "P1"]
+    p1 = [r for r in csv.DictReader(open(inv, encoding="utf-8"), delimiter="\t") if r["phase"] == "P1"]
     for r in p1:
         case, consumer = os.path.dirname(r["case"]), r["consumer"]
         text = body(case, consumer)
@@ -261,4 +262,12 @@ def main(quiet=False):
     return (1 if out else 0), {c for c, _ in out}
 
 if __name__ == "__main__":
-    sys.exit(main()[0])
+    # Path overrides exist so the red-proof can seed ISOLATED COPIES. A red-proof
+    # that mutates the tracked evidence file to test its own checker exposes seeded
+    # bytes to every concurrent reader, and this session has already shipped one.
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--obl")
+    ap.add_argument("--fresh")
+    ap.add_argument("--inv")
+    a = ap.parse_args()
+    sys.exit(main(obl=a.obl, fresh=a.fresh, inv=a.inv)[0])
