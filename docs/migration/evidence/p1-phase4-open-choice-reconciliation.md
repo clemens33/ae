@@ -2,12 +2,13 @@
 
 **By `grok46:txreview`, 2026-08-24.** Seat that did not author
 `docs/migration/p1-phase4-open-choices.tsv` (colead) and did not author any of
-the three accepted phase gates. Spec is phase-4 gate criterion 8. First
-identity (`697e8507`, blob `b4d0f34d`) used gate `3a63f741`. This identity
-rebinds the SC arm to the landed criterion-3 blob and cites HEAD gate
-`4612208d` (C1's two-line insertion naming that C3 blob; criterion 8 body
-unchanged). Colead's ruling: the rebind moves identity even if the occurrence
-row set is unchanged, because the rebinding establishes freshness, not content.
+the three accepted phase gates. Spec is phase-4 gate criterion 8.
+
+Identities: first (`697e8507`, blob `b4d0f34d`) used independent SC reading
+against gate `3a63f741`; second (`9294dbc5`, blob `6a155272`) pinned C3
+`0126d765` and HEAD gate `4612208d`. This identity rebinds the SC arm from
+`0126d765` to C3 `343fcd80` (`0194c465`). Occurrence row set unchanged;
+identity moves because the SC arm is a new named object.
 
 This file is the independently produced open-choice-reconciliation blob
 criterion 1 pins. It does not modify the register or any gate. A mismatch is a
@@ -27,13 +28,15 @@ Isolated red-proof: `redproof-open-choice-reconciliation.py`.
 | accepted phase-1 gate | `8e3c9ec0b031f4947260d4e0327bad562a10fdcd` |
 | accepted phase-2 gate | `29db943aa85319534301332052105ba16df03b4d` |
 | accepted phase-3 gate | `8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c` |
-| C3 contract-to-obligation recon | `0126d765d57da2f8cbe86e93660362121f96d2f8` |
+| C3 contract-to-obligation recon | `343fcd80916cdffc4a3d7a25e865056e0fb8d336` |
+| prior C3 identity (replaced) | `0126d765d57da2f8cbe86e93660362121f96d2f8` |
 | contract (C3's pin, HEAD) | `896d08ea3ac753095c04af17dfba92cd9d15fb38` |
 
 C3 blob verified from HEAD before this pin: `git rev-parse
 HEAD:docs/migration/evidence/p1-phase4-contract-obligation-reconciliation.md`
-=`0126d765d57da2f8cbe86e93660362121f96d2f8`; sha256
-`7a3fe7f7a75bc40f8b9dc624b8b3c72b128687c0d1cc8749615e551975a87f0a`.
+=`343fcd80916cdffc4a3d7a25e865056e0fb8d336`; sha256
+`f32a9242260df637c764b8e4b0be605bb5b3c006a0f401a6878ab76affd39848`.
+Commit `0194c465`, transport-approved and post-commit extended.
 
 Extractor reads `git cat-file -p` of the three accepted gate blobs, never the
 worktree file. Phrase: `open[\s\-]*choice` (covers `OPEN CHOICE`,
@@ -41,17 +44,18 @@ worktree file. Phrase: `open[\s\-]*choice` (covers `OPEN CHOICE`,
 `CHOICE**`). Criterion owner walks back to the last `N.` heading; the phase-2
 "Phase 3 handoff" section is `HANDOFF`, not C23.
 
-The SC arm is **the P1-applicable rows in C3 blob `0126d765`**, not this
-seat's independent contract reading. Per-row agreement or divergence against
-that census is recorded below. Divergence is a FINDING, not a silent merge.
+The SC arm is **the P1-applicable rows in C3 blob `343fcd80`**, not this
+seat's independent contract reading and not the superseded `0126d765` census.
+Per-row agreement or divergence against that census is recorded below.
+Divergence is a FINDING, not a silent merge.
 
 ## Method
 
 1. Extract every ratified OPEN CHOICE phrase occurrence from the three accepted
    gate blobs (34 hits).
-2. Bind C3 blob `0126d765` as the P1-applicable SC census. Compare every C3
-   inventory row to this seat's first-identity SC reading, agree or diverge per
-   row.
+2. Bind C3 blob `343fcd80` as the P1-applicable SC census. Compare every C3
+   inventory row to this seat's first-identity SC reading and to the previous
+   C3 pin `0126d765`, agree or diverge per row.
 3. Classify each phrase occurrence as a product-output locus with an exact
    register `CHOICE_ID`, or as an internal/test/topology/retry choice that
    subtracts no product-output locus.
@@ -168,7 +172,7 @@ spelling is excluded.
 
 | CHOICE_ID | Supporting occurrences | Orphan? |
 |---|---|---|
-| `OC-P2-SEMANTIC-FALSE-PRESENCE` | P2-L155 (C13) | no |
+| `OC-P2-SEMANTIC-FALSE-PRESENCE` | P2-L155 (C13). C3's SC-509b row is the distinct `degraded: true` after actual loss (14), not this OC | no |
 | `OC-P3-GENERATED-AT` | C3 `SC-509` / `generated_at VALUE` (underdetermined value locus, 401); P3 C3 opposed-clock residual; P2 C17 timestamp normalization (no phrase) | no — C3 pin |
 | `OC-P3-HUMAN-LAYOUT` | P3-C15-HUMAN-LAYOUT | no |
 | `OC-P3-HUMAN-DIAGNOSTIC` | P2-L279, P3-L189, P3-C15-HUMAN-DIAGNOSTIC, SC-L399 | no |
@@ -183,52 +187,66 @@ occurrences. Completeness set present: P2 C13, P3 C10, P3 C12, P3 C13, P3 C15.
 
 ## C3-bound SC arm
 
-C3 blob `0126d765` (`c6c65f2a`): 1,378 loci, six obligation IDs, contract
-`896d08ea`. Companion inventory
-`p1-phase4-contract-obligation-loci.tsv` is the per-row census this rebind
-reads. First identity (`b4d0f34d`) listed six independently read rows as the
-stand-in. Every C3 inventory row is compared to that reading below.
-**AGREE** = same P1-applicable grain and same open-choice consequence.
-**DIVERGE** = a FINDING, not silently merged.
+C3 blob `343fcd80` (`0194c465`): 1,614 relations, eight obligation IDs
+(including SC-509b 14 and SC-509c 222), contract `896d08ea`. Companion
+inventory `p1-phase4-contract-obligation-loci.tsv` is the per-row census.
+Compared to first identity (`b4d0f34d`) and to the superseded C3 pin
+`0126d765`. **AGREE** = same P1-applicable grain and same open-choice
+consequence. **DIVERGE** = a FINDING, not silently merged.
+
+### SC-509b (the hard row)
+
+C3 now inventories it as a **directional corpus locus, 14 relations, ID
+`SC-509b`**. Raw basis: 20 P1 JSON inputs whose fixture metadata marks that
+session's `meta` `UNREADABLE` or `FILE ABSENT`; fourteen of those coalesce to
+captured `sessions[].degraded` output loci. Successor pins: P2 C13 and P4
+C7/C9. C3's own prose: this row is **distinct from phase-2 criterion 13's
+open choice about emitting `false`**; C13 does not name this locus; the
+contract's fixed `degraded: true` requirement is selected from raw actual
+loss only.
+
+First identity claimed SC-509b as "permits omission of semantic false" and
+mapped that to `OC-P2-SEMANTIC-FALSE-PRESENCE`. That was the **false-presence**
+open choice, which lives at P2 C13, not the **true-after-loss** directional
+obligation. C3's re-derivation from raw inputs matches the register's
+`STILL_REQUIRED` clause (`degraded true is present and true`) and does not
+absorb the excluded locus (presence vs omission of semantic false).
+
+**AGREE.** FINDING 3 is discharged: the row exists, is re-derived not
+zero-stamped, and does not orphan or swallow `OC-P2-SEMANTIC-FALSE-PRESENCE`.
+No new product-output open choice.
 
 ### Rows this seat independently named as comparison-underdetermined
 
-| Row / locus | C3 disposition | First-identity reading | Verdict |
+| Row / locus | C3 `343fcd80` | vs first identity / vs `0126d765` | Verdict |
 |---|---|---|---|
-| SC-017o completeness JSON + human diagnostic | directional corpus locus, 573, ID `SC-017o` | OPEN CHOICE: human wording/paths/rc; JSON owes the boolean; internal loss representation remain open | **AGREE** — phrase SC-L399 maps to `OC-P3-HUMAN-DIAGNOSTIC`; machine-loss remains `OC-P3-MACHINE-LOSS-RECORDS` |
-| SC-017r human agent-health marker | directional corpus locus, 78, ID `SC-017r` | OPEN CHOICE: alive/dead/unknown words or glyphs | **AGREE** — phrase SC-L490 maps to `OC-P3-AGENT-HEALTH-TOKEN`; not in P1/P2/P3 gates |
-| SC-509 `generated_at` field presence/type | retained corpus locus, 401 | field required | **AGREE** |
-| SC-509 `generated_at` VALUE | underdetermined value locus, 401; successor P2 C17, P3 C3, P4 C8/C18 | exact timestamp bytes unspecified; register `OC-P3-GENERATED-AT` | **AGREE** — first-identity FINDING 2's prose note now has this referent. Ruled: SC-509 is the carrier |
-| SC-017h human per-agent health/state/attn | retained corpus locus, 458; retain non-SC-017r presentation facts | layout/colour/headers unspecified; OC via P3 C15 named member, not an SC phrase | **AGREE** as P1-applicable retained. Layout exclusion is a gate named-set member (`OC-P3-HUMAN-LAYOUT`), not a C3-declared underdetermination |
-| SC-017n C-byte group/name order | directional gap, 0; successor P3 C9/C10/C11 | no equal-name tie-breaker; OC via P3 C9 phrase | **AGREE** as P1-applicable. C3's gap is corpus-unscorable C-byte vs incidental order; the product-output OC is equal-name ties at P3 C9 (`OC-P3-EQUAL-NAME-TIE`) |
+| SC-017o completeness JSON + human diagnostic | directional, 573, ID `SC-017o` | unchanged | **AGREE** — SC-L399 → `OC-P3-HUMAN-DIAGNOSTIC`; machine-loss → `OC-P3-MACHINE-LOSS-RECORDS` |
+| SC-017r human agent-health marker | directional, 78, ID `SC-017r` | unchanged | **AGREE** — SC-L490 → `OC-P3-AGENT-HEALTH-TOKEN`; not in P1/P2/P3 gates |
+| SC-509 `generated_at` field presence/type | retained, 401 | unchanged | **AGREE** |
+| SC-509 `generated_at` VALUE | underdetermined value locus, 401; P2 C17, P3 C3, P4 C8/C18 | unchanged | **AGREE** — ruled SC-509 carrier |
+| SC-017h human per-agent presentation | retained, 458; non-SC-017r facts | unchanged | **AGREE**. Layout OC is P3 C15 (`OC-P3-HUMAN-LAYOUT`), not a C3-declared underdetermination |
+| SC-017n C-byte group/name order | directional gap, 0; P3 C9/C10/C11 | unchanged | **AGREE**. Product-output OC is equal-name ties at P3 C9 (`OC-P3-EQUAL-NAME-TIE`) |
 
-### C3 inventory rows this seat did not independently name
+### C3 inventory rows: unchanged grain, no new open choice
 
-None of these use an OPEN CHOICE phrase. Classification: no new product-output
-open-choice locus. **AGREE** they are P1-applicable as C3 dispositioned them.
-
-| Row / locus | C3 disposition | Open-choice consequence |
+| Row / locus | C3 `343fcd80` | Open-choice consequence |
 |---|---|---|
-| SC-017a default running-scope | retained, 859 | none — exact residue |
+| SC-017a default running-scope | retained, 859 | none |
 | SC-017b all-view status-group | retained, 859 | none |
 | SC-017c stopped-only | retained, 859 | none |
-| SC-017d attention filtering | retained, 859 | none; unknown-filter gap is SC-521c |
-| SC-017e activity filtering | retained, 859 | none; unknown-filter gap is SC-521c |
+| SC-017d attention filtering | retained, 859 | none |
+| SC-017e activity filtering | retained, 859 | none |
 | SC-017f JSON filter parity | retained, 401 | none |
 | SC-017g attention marker | retained, 859 | none |
 | SC-017i `--running` alias | retained, 859 | none |
-| SC-017j candidate membership | directional gap, 0 | none — not a product-output OC |
+| SC-017j candidate membership | directional gap, 0 | none |
 | SC-017k recorded-server liveness | directional gap, 0 | none |
-| SC-017l unknown session status | directional, 134 | none — mandated unknown, not open |
+| SC-017l unknown session status | directional, 134 | none |
 | SC-017m unknown membership/render | directional, 150 | none |
-| SC-017p positive agent liveness | input carrier, 0 | none — carried by SC-017r / SC-509e |
-| SC-017q unknown agent liveness | input carrier, 0 | none — carried by SC-017r / SC-509e |
-| SC-017s pane live predicate | input carrier, 0 | none |
 | SC-021 ls alias | retained, 116 | none |
 | SC-400d durable-root membership | directional gap, 0 | none |
 | SC-506 JSON validity | retained, 401 | none |
 | SC-405l selector normalization | input carrier, 0 | none |
-| SC-509 other retained v1 object fields | retained, 401 | see FINDING 3 on SC-509b |
 | SC-509d schema_version | directional, 401 | none |
 | SC-509e agents[].alive nullable | directional, 42 | none |
 | SC-518 requests closure | retained, 168 | none |
@@ -237,40 +255,37 @@ open-choice locus. **AGREE** they are P1-applicable as C3 dispositioned them.
 | SC-1306d requests snapshot cut | retained, 168 | none |
 | SC-1306e events-tail snapshot cut | retained, 38 | none |
 
-C3 explicitly does not list SC-508 (unclassified code-observation). **AGREE** —
-not a ratified P1 output obligation, so not an open-choice carrier.
+### C3 inventory rows that moved vs `0126d765`
 
-Helpers `requests` / `events-tail` appear as SC-518 / SC-1306d / SC-1306e
-retained exact. **AGREE** they carry none of the registered product-output
-open-choice loci.
+| Row / locus | `0126d765` | `343fcd80` | Open-choice consequence | Verdict |
+|---|---|---|---|---|
+| SC-509b degraded true after actual loss | absent (FINDING 3) | directional, 14, ID `SC-509b`; raw 20→14 | not the false-presence OC; P2 C13 still owns that | **AGREE** — FINDING 3 discharged; see hard-row section |
+| SC-509c agents[].reason contribution | absent | directional, 222, ID `SC-509c`; 128 state + 94 alert | none — mandated field value, not an OPEN CHOICE phrase | **AGREE** — P1-applicable; no product-output OC |
+| SC-509 other retained v1 object fields | retained exact except 509d/e and 017o | retained exact except 509b/d/e, 509c, and 017o | none | **AGREE** — the previous overclaim on remaining v1 fields is gone |
+| SC-017p positive agent liveness | input carrier, 0 | directional gap, 0; successor P4 C12 | none | **AGREE** — named-gap-plus-pinned-criterion; not fully-carried |
+| SC-017q unknown agent liveness | input carrier, 0 | partial, 120 carried by SC-017r/SC-509e; matrix still P4 C12 | none beyond SC-017r's already-registered token OC | **AGREE** |
+| SC-017s pane live predicate | input carrier, 0 | directional gap, 0; successor P4 C12 | none | **AGREE** |
 
-### First-identity rows C3 does not inventory
-
-| Row | First-identity claim | C3 | Verdict |
-|---|---|---|---|
-| SC-509b semantic-false omission | permits omission of semantic false; phrase occurrence is P2 C13 (`OC-P2-SEMANTIC-FALSE-PRESENCE`) | no inventory row | **DIVERGE** — FINDING 3 |
-| SC-510a event timestamp grammar | register cites it as `generated_at` format authority | no inventory row | **AGREE it is not a P1 output obligation.** C3 carries the value locus on SC-509 only. SC-510a is event keys, not list/ls output |
+C3 still does not list SC-508 (unclassified). **AGREE.** SC-510a is still not
+a P1 output obligation. **AGREE** — `generated_at` VALUE stays on SC-509.
+Helpers `requests` / `events-tail` remain SC-518 / SC-1306d / SC-1306e
+retained exact. **AGREE.**
 
 ## Findings (not repairs)
 
-1. **Discharged.** C3 recon is committed: blob `0126d765`, sha256
-   `7a3fe7f7a75bc40f8b9dc624b8b3c72b128687c0d1cc8749615e551975a87f0a`,
-   commit `c6c65f2a`. This identity pins it.
-2. **Pinned, not a defect.** `OC-P3-GENERATED-AT` has no OPEN CHOICE phrase in
-   the three accepted gates. C3 records it as SC-509 `generated_at VALUE`,
-   an underdetermined value locus on 401 digest rows. That is the carrier the
-   ruling named. The entry is supported, not orphaned.
-3. **C3 inventory has no SC-509b row.** Register authority for
-   `OC-P2-SEMANTIC-FALSE-PRESENCE` is `SC-509b + p1-phase2-gate.md criterion 13`.
-   The phrase occurrence remains P2 C13, so the register row is not orphaned by
-   this absence. C3's `SC-509` / `other retained version-1 object fields`
-   presents remaining v1 fields as retained exact except SC-509d/e and SC-017o
-   and does not split semantic-false `degraded` presence as underdetermined.
-   That grain is a FINDING to the lead, not a silent merge and not a register
-   edit.
-4. **No omitted product-output phrase occurrence. No orphan register row
-   under the accounting above.** Occurrence row set unchanged from `b4d0f34d`.
-   Register and gates were not edited.
+1. **Discharged.** C3 recon is committed at blob `343fcd80`, sha256
+   `f32a9242260df637c764b8e4b0be605bb5b3c006a0f401a6878ab76affd39848`,
+   commit `0194c465`. This identity pins it.
+2. **Pinned.** `OC-P3-GENERATED-AT` has no OPEN CHOICE phrase in the three
+   accepted gates. C3 still records it as SC-509 `generated_at VALUE` on 401
+   digest rows.
+3. **Discharged.** SC-509b is now a directional 14-locus row re-derived from
+   raw `UNREADABLE` / `FILE ABSENT` metadata, distinct from P2 C13's
+   false-presence open choice. `OC-P2-SEMANTIC-FALSE-PRESENCE` remains
+   supported by P2 C13.
+4. **No omitted product-output phrase occurrence. No orphan register row.
+   No live divergence against `343fcd80`.** Occurrence row set unchanged from
+   `b4d0f34d`. Register and gates were not edited.
 
 ## Red-proof
 
@@ -297,13 +312,13 @@ occurrence cites it.
 ## Verdict
 
 Accounting holds both directions against the pinned gate blobs, register
-`2da4fb86`, and C3 blob `0126d765`. Completeness set present. Health-token
+`2da4fb86`, and C3 blob `343fcd80`. Completeness set present. Health-token
 entry is SC-017r, not a prior gate. C15 is per-surface. P3 C10 stays
-unregistered internal. `generated_at` VALUE is SC-509-carried, as C3 records
-and as ruled.
+unregistered internal. `generated_at` VALUE is SC-509-carried. SC-509b is
+the directional true-after-loss grain; P2 C13 remains the false-presence
+open choice.
 
 Occurrence row set unchanged from first identity `b4d0f34d`. This identity
-exists because the SC arm is now the C3 blob, not an independent reading.
+exists because the SC arm moved `0126d765` → `343fcd80`.
 
-FINDING 3 (C3 has no SC-509b row) is the only live FINDING. It does not
-orphan `OC-P2-SEMANTIC-FALSE-PRESENCE` (P2 C13 still carries the phrase).
+No live FINDING. FINDING 3 is discharged by C3's raw-derived SC-509b row.
