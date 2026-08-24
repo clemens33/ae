@@ -1211,8 +1211,31 @@ fable5:lead + gpt56sol:colead, 2026-08-20.**
 
 **SC-405g — `branch` is the live tmux branch with a git fallback.** Bucket 2 — not a
 meta key; per commands.md:124-129 (the watchdog's status segment, git fallback).
-Authority: commands.md:124-129. Empirical: pending. Conflict: none. **classified_by:
-both seats, 2026-08-20.**
+**TEMPORARY EXCEPTION to SC-509b's per-member presence rule** (colead ruling,
+2026-08-25, option (a)). UNTIL the source-acquisition slice for this row lands,
+`sessions[].branch` ALONE retains its predecessor projection when NO branch
+observation exists: `null` on a non-degraded entry, ABSENT on a degraded entry. An
+OBSERVED branch renders regardless of `degraded`.
+**Why the exception rather than simply conforming.** The acquisition source named
+by this row — the watchdog status segment, with the git fallback — is not yet
+wired, so a `None` here does not distinguish "the source was read and reported no
+branch" from "the source was never read at all". Rendering `branch: null` on a
+degraded entry would therefore masquerade an UNAVAILABLE source as a legitimate
+empty: it removes the aggregate-erasure symptom by making a different false claim,
+which is the trade SC-509b exists to refuse. Retaining the predecessor's two shapes
+is the honest holding position until the source exists to be asked.
+**Scope, stated so it cannot be borrowed.** This is temporary byte compatibility. It
+is NOT evidence that `degraded` identifies `branch` loss — `degraded` remains
+aggregate visibility and identifies nothing per member. It is NOT precedent for any
+other member: every other optional member's presence is decided by its own source's
+provenance, with no appeal to this paragraph.
+**RETIREMENT TRIGGER — the commit that wires this row's watchdog-status and
+git-fallback acquisition.** From that identity onward, `branch` presence is governed
+solely by branch-source provenance and `degraded` MUST NOT select it. This paragraph
+retires with that commit and is not to be re-derived.
+Authority: commands.md:124-129 + colead ruling 2026-08-25. Empirical: pending.
+Conflict: none. **classified_by: both seats, 2026-08-20; temporary exception
+RE-MARKED 2026-08-25 — gpt56sol:colead ruling, drafted opus5:reason2.**
 
 **SC-404 — state roots derive from `AE_HOME` (default `~/.ae`) with explicit override
 exceptions.** Bucket 2 — the DEFAULT derivation covers config, `sessions/`,
@@ -1321,6 +1344,14 @@ read perfectly from the OTHER sources. Presence is decided PER MEMBER by the
 provenance of the member's own source: a known value renders, a known legitimate
 empty renders its empty (SC-509's presence rule), and only an UNREADABLE source
 omits. Unrelated loss cannot erase a known fact.
+**ONE NAMED EXCEPTION EXISTS, and it is temporary.** `sessions[].branch` is carved
+out at SC-405g until that row's source-acquisition slice lands, because its
+acquisition source is not yet wired and a `null` there would assert a legitimate
+empty about a source never read. The carve-out is byte compatibility with the
+predecessor, is NOT evidence that `degraded` identifies branch loss, and is
+precedent for nothing else. This cross-reference exists so the prohibition above is
+never read as unconditional while a conforming implementation contradicts it — and
+so that retiring the exception at SC-405g restores it to unconditional here.
 **The attention members are exact-or-omitted, and `needs_attention` is not one of
 them.** `attention` and `attention_rank` — and `agents[].reason` — render only when
 the answer is EXACT given the inputs actually read; when a lost input could change
