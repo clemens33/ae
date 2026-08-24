@@ -29,8 +29,8 @@ The corpus is the named, hash-pinned view recorded in
 `helper:requests`, and 38 `helper:events-tail` rows. P1-adjacent and P2 rows remain
 frozen but do not enter this gate.
 
-The obligation table's current committed projection contains 1,614 obligations over
-581 carrying invocation rows: 949 `OBSERVED` and 665 `UNSCORABLE`. These numbers are a
+The obligation table's current committed projection contains 1,843 obligations over
+581 carrying invocation rows: 1,082 `OBSERVED` and 761 `UNSCORABLE`. These numbers are a
 reconciliation control for the current contract, not hand-maintained authority. The
 table's contract-blob freshness relation is authoritative: if the contract moves, phase
 4 stops for re-derivation even when the old counts still happen to agree.
@@ -97,6 +97,8 @@ Terms:
    committed bytes. Record the corpus root digest, contract blob, invocation-table blob,
    obligation-table blob, accepted phase-1/2/3 gate blobs, open-choice-register blob,
    comparison-projection blob, agent-health-presentation-manifest blob,
+   published-projection-fingerprint artifact and its verifier/red-proof blobs specified
+   by criterion 14,
    independently produced contract-to-obligation-reconciliation blob specified by
    criterion 3,
    independently produced open-choice-reconciliation blob specified by criterion 8, this
@@ -352,23 +354,41 @@ Terms:
     `env-tab-selfcheck.txt` records `LANG=LC_ALL=C`, so bind both locale fields to `C`
     while retaining `TZ`, `TERM`, and `AE_TMUX_SERVER` from `env.txt`. Do not infer any
     value from a state-directory name such as `s0-baseline-clocale`. A future override
-    requires a fixed artifact that names the field and value. Prove the
-    clone fingerprint equals that invocation's recorded fingerprint; record effective
-    normalized argv and environment remapping; compare `TZ`, `LANG`, `LC_ALL`, `TERM`, and
-    `AE_TMUX_SERVER` to that per-invocation binding, naming and justifying every deliberate
-    remap without changing the recorded locale behavior.
+    requires a fixed artifact that names the field and value. Criterion 1 pins a
+    committed published-projection-fingerprint artifact derived only from the frozen
+    committed corpus. It contains exactly one row for each of the 70 published members
+    under batch-c-artifacts/templates, binds each row to the corpus root and committed
+    tree-ish, and records two differently purposed identities. git_tree_id is the exact
+    Git tree object at that commit-ish and member path, derived without the index or
+    working-tree stat; it is sensitive to the Git executable bit. canonical_sha256 is
+    computed from the artifact documented byte-exact framing of every normalized relative
+    tracked path, kind as file or symlink, file-content SHA-256 or exact symlink-target
+    bytes; it excludes all mode bits. The artifact states this algorithm in prose.
+    Missing, duplicate, unresolvable, dirty-index-selected, or unreproducible rows fail
+    before materialisation. Its isolated red proof requires a non-executable chmod to
+    move neither identity, an executable-bit flip to move only git_tree_id, and a content
+    change, path addition/removal, or symlink retarget to move both. Before invoking the
+    successor, recompute canonical_sha256 from the materialised scratch member and
+    require the recorded value; independently require its tracked path/kind/content set
+    and executable-bit projection to equal the committed Git tree. Record effective
+    normalized argv and environment remapping; compare `TZ`, `LANG`, `LC_ALL`, `TERM`,
+    and `AE_TMUX_SERVER` to that per-invocation binding, naming and justifying every
+    deliberate remap without changing the recorded locale behavior.
 
     Before the successor capture, run the corpus's TAB oracle in that effective locale
     against a throwaway pane on a throwaway tmux server, never the case server. Require the
     raw/split result recorded for that invocation's state: UTF-8 states preserve the TAB;
     the deliberate C-locale state reproduces the recorded underscore/no-second-field
     result. A dead case server therefore cannot make the instrument check vacuous or
-    impossible. Then invoke. Afterward compare the scratch state manifest against
-    that invocation's recorded no-mutation expectation. Enforce corpus read-only status by
-    filesystem permission or read-only mount, not path-prefix matching, and require zero
-    writes. Before relying on that protection, a write through the same execution
-    identity and an alternate path spelling must fail. FAIL if invocation precedes clone
-    verification, a row is bound to the wrong
+    impossible. After identity verification, apply the declared portable
+    scratch-permission policy without changing tracked contents, paths, symlink targets,
+    or executable bits, and recompute canonical_sha256. Enforce the source corpus as
+    read-only by filesystem permission or read-only mount, never by path-prefix matching.
+    Before relying on either protection, prove that a write through the successor
+    execution identity and an alternate path spelling fails. Then invoke. Afterward
+    compare the scratch state manifest against
+    that invocation's recorded no-mutation expectation. FAIL if invocation precedes both
+    published-member identity checks or either write-protection proof, a row is bound to the wrong
     state in a multi-state case, a stale scratch tree is reused, the product sees corpus
     paths directly, one case can affect the next, the environment differs silently, the
     TAB oracle differs from the per-invocation record, or a read-side invocation mutates
@@ -454,7 +474,8 @@ Terms:
 
 The phase-4 handback pins: successor commit; this gate blob; accepted phase-1/2/3 gate
 blobs; corpus root; contract, invocation, obligation, open-choice-register,
-comparison-projection, agent-health-presentation-manifest, open-choice-reconciliation,
+comparison-projection, agent-health-presentation-manifest, published-projection-fingerprint
+artifact and its verification/red-proof reports, open-choice-reconciliation,
 and verifier blobs; the independent contract reconciliation;
 the per-invocation state-and-environment
 bindings; effective-environment and TAB
