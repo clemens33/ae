@@ -229,8 +229,11 @@ def main():
             # entitlement turns on a selected ambient server, and SC-1410c leaves
             # AE_TMUX_SERVER selection unclassified, so the ambient probe cannot earn it
             # either. A missing or unreadable meta is SC-405i/SC-509b record loss and
-            # never SC-017o by itself. So the VALUE is UNSCORABLE: recorded as a locus
-            # in SC-017O-UNSCORABLE.tsv, never guessed into a row.
+            # never SC-017o by itself. So the VALUE is UNSCORABLE — and it is a ROW in
+            # this table, beside the presence locus, because C3/C5/C16 keep an
+            # unscorable obligation IN THE DENOMINATOR. It was briefly kept in a side
+            # file instead; that file is deleted, since a gate that reads an unpinned
+            # file has made it authority whatever its label says.
             rows.append((case, consumer, "SC-017o", "digest", "inventory_complete",
                          "present" if '"inventory_complete"' in text else "ABSENT",
                          "present", "present", "OBSERVED", "OBSERVED",
