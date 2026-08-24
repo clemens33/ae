@@ -1,0 +1,1 @@
+{"schema_version":2,"generated_at":"2026-08-24T14:27:01Z","sessions":[{"name":"twda3","status":"unknown","mode":"local","origin":"/tmp/aecx/twd/a3/work","work_dir":"/tmp/aecx/twd/a3/work","last_active_epoch":1787238421,"needs_attention":false,"agents":[{"ref":"fake:probe","alias":"fake","name":"probe","session_id":"pending","alive":null}]}],"inventory_complete":false}

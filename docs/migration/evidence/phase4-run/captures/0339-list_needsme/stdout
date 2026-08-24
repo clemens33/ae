@@ -1,0 +1,16 @@
+tg2b	unknown	attn:waiting-user
+  fake:lead	unknown	waiting-user
+  fake:bravo	unknown	-
+  fake:charlie	unknown	-
+tg2bl	unknown	attn:blocked
+  fake:lead	unknown	working
+  fake:worker	unknown	blocked
+tg2un	unknown	attn:unanswered
+  fake:lead	unknown	-
+  fake:worker	unknown	-
+tg2wu	unknown	attn:waiting-user
+  fake:lead	unknown	working
+  fake:worker	unknown	waiting-user
+tg6b	unknown	attn:blocked
+  fake:lead	unknown	working
+  fake:worker	unknown	blocked

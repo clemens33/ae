@@ -1,0 +1,1 @@
+{"schema_version":2,"generated_at":"2026-08-24T14:27:07Z","sessions":[{"name":"ta7g","status":"unknown","mode":"local","origin":"/tmp/aecx/tpl/a7g/work","work_dir":"/tmp/aecx/tpl/a7g/work","needs_attention":false,"agents":[{"ref":"fake:lead","alias":"fake","name":"lead","session_id":"pending","alive":null}]}],"inventory_complete":false}
