@@ -303,12 +303,31 @@ impl SessionRead {
     /// that in either direction, because it consults no clock.
     ///
     /// No SC row ratifies a clock rule for alert currency (SC-524 governs the
-    /// ACTIVITY filter's tolerance of future timestamps and says nothing about
-    /// this), which is the second reason not to invent one here.
-    /// [`SessionRead::declared_state_of`] and [`SessionRead::goal_set_at`] have
-    /// since been converted to the same order, each on its own recorded
-    /// authority — so every scan in this reader answers "which record came
-    /// last", and none of them consults a clock.
+    /// ACTIVITY filter and says nothing about this), which is the second reason
+    /// not to invent one here.
+    ///
+    /// # Scope: the three SEMANTIC selections, and the one ruled exception
+    ///
+    /// Ledger order governs the three scans that ask WHICH RECORD CAME LAST —
+    /// this one, [`SessionRead::declared_state_of`] and
+    /// [`SessionRead::goal_set_at`] — each on its own recorded authority.
+    ///
+    /// **`last_active` is NOT one of them and must not be converted.**
+    /// [`SessionRead::from_drain`] takes `max(ts)` deliberately: SC-017e makes
+    /// an ae event's TIMESTAMP the activity clock, and SC-524 rules that a
+    /// FUTURE timestamp counts as active because "clock skew fails toward the
+    /// loud false-positive rather than silently hiding a live session". Ledger
+    /// order would do exactly the hiding that row forbids — a future-stamped
+    /// event in the MIDDLE of the log would lose to the last line, and the
+    /// session would read idle. That is a ruled clock semantics, not an
+    /// oversight, and `sc_017e_the_activity_clock_is_the_newest_event_not_the_last_line`
+    /// exists to reject the conversion.
+    ///
+    /// Stated as a scope rather than as a sweep on purpose. Two earlier versions
+    /// of this paragraph over-generalised — first asserting a boundary that did
+    /// not exist (`goal_set_at`, corrected in 826eaa3f), then asserting that no
+    /// scan here consults a clock, which this exception falsifies. A claim about
+    /// EVERY scan is a claim to check against every scan.
     #[must_use]
     pub fn alert_reason_of(&self, session: &str, slot: &str, reference: &str) -> Option<Reason> {
         // LEDGER ORDER, not timestamp order: the LAST decisive record wins, and
