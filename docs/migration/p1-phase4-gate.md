@@ -29,8 +29,8 @@ The corpus is the named, hash-pinned view recorded in
 `helper:requests`, and 38 `helper:events-tail` rows. P1-adjacent and P2 rows remain
 frozen but do not enter this gate.
 
-The obligation table's current committed projection contains 1,378 obligations over
-581 carrying invocation rows: 713 `OBSERVED` and 665 `UNSCORABLE`. These numbers are a
+The obligation table's current committed projection contains 1,614 obligations over
+581 carrying invocation rows: 949 `OBSERVED` and 665 `UNSCORABLE`. These numbers are a
 reconciliation control for the current contract, not hand-maintained authority. The
 table's contract-blob freshness relation is authoritative: if the contract moves, phase
 4 stops for re-derivation even when the old counts still happen to agree.
