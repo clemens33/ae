@@ -103,6 +103,16 @@ MUTATIONS = [
      lambda s: re.sub(r"^([^\n]*\tSC-509d\t[^\n]*)$", r"\1\n\1", s, count=1, flags=re.M)),
     # colead's converse seed: the required rows still there, an INVENTED third beside
     # them. Proving the owed rows exist never proved nothing else does.
+    # colead's population seed, plus the sixth-ring sweep the lead asked me to run on
+    # myself: a fabricated obligation on a row class its id may not appear on. Two of
+    # the four ids I tested were previously caught only by the FROM check — payload,
+    # not population — so they were caught by luck rather than by design.
+    ("POPULATION-ID", OBL, "an SC-017o diagnostic fabricated on a HUMAN invocation",
+     lambda s: s.rstrip("\n") + "\narms/A1/c01-healthy-ro\tlist\tSC-017o\tstderr\tdiagnostic"
+               "\tABSENT\tGARBAGE\tequals\tOBSERVED\tOBSERVED\tseeded\n"),
+    ("POPULATION-ID", OBL, "a digest-only SC-509d fabricated on a human row",
+     lambda s: s.rstrip("\n") + "\narms/A1/c01-healthy-ro\tlist\tSC-509d\tdigest\tschema_version"
+               "\t1\t2\tequals\tSOURCE\tOBSERVED\tseeded\n"),
     ("EXTRA-017o", OBL, "an invented third SC-017o locus inflating the denominator",
      lambda s: re.sub(
          r"^([^\n]*\tSC-017o\tdigest\tinventory_complete\tABSENT\tpresent\tpresent\t[^\n]*)$",
@@ -120,7 +130,7 @@ MUTATIONS = [
     ("UNDECIDABLE", OBL, "the value row with a drifted baseline_provenance — outside the old tuple",
      lambda s: re.sub(r"^([^\n]*inventory_complete \(value\)\tABSENT\tthe enumeration's actual "
                       r"completeness\tundecidable\t)OBSERVED\t", r"\1GARBAGE\t", s, count=1, flags=re.M)),
-    ("MISSING-017o-VALUE", OBL, "a digest stripped of its completeness VALUE locus",
+    ("MISSING-017o-SHAPE", OBL, "a digest stripped of its completeness VALUE locus",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A1/c01-healthy-ro\tlist-json\tSC-017o")
                                  and "inventory_complete (value)" in l))),

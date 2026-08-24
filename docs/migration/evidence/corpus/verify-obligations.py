@@ -22,6 +22,22 @@ LISTING = ("ae list", "ae ls")
 # Keying an address on payload lets a contradictory duplicate buy its own address by
 # changing the very field that made it contradictory.
 ADDRESS = ("case", "consumer", "obligation_id", "locus")
+# THE POPULATION EACH ID MAY APPEAR ON, declared rather than left to whichever parse
+# condition a loop happened to use. Measured against the accepted table before being
+# written down: SC-017l/m appear on digest and human listings, SC-017r on human
+# listings, and SC-509b/c/d/e and SC-017o on digests only. OWED-ZERO IS AN OBLIGATION
+# TO CHECK, NOT A ROW TO SKIP — a loop that skips a class is quiet exactly outside the
+# domain its author imagined, which is where a fabricated row goes to hide.
+ID_POPULATION = {
+    "SC-017l": ("digest", "human-listing"),
+    "SC-017m": ("digest", "human-listing"),
+    "SC-017o": ("digest",),
+    "SC-017r": ("human-listing",),
+    "SC-509b": ("digest",),
+    "SC-509c": ("digest",),
+    "SC-509d": ("digest",),
+    "SC-509e": ("digest",),
+}
 # The FIXED SEMANTIC COLUMNS, in header order. `authority` is EXCLUDED BY DECLARATION,
 # not by omission: it is narrative, and binding prose would make a reworded explanation
 # a gate failure. Everything else is asserted WHOLE — a shape binding SOME fields leaves
@@ -241,18 +257,29 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
     for r in p1_rows:
         case2, consumer2 = os.path.dirname(r["case"]), r["consumer"]
         text2 = body(case2, consumer2)
-        if '"schema_version"' not in text2:
-            continue
+        is_digest = '"schema_version"' in text2
+        row_class = "digest" if is_digest else (
+            "human-listing" if r["surface"] in LISTING else "opaque")
+        # Every obligation must sit on a row its id is allowed to appear on. This is
+        # the same exact-set rule as the multiset above, applied to the population
+        # boundary instead of to one digest's row set.
+        for o in carriers.get((case2, consumer2), []):
+            allowed = ID_POPULATION.get(o["obligation_id"])
+            if allowed and row_class not in allowed:
+                fail(out, "POPULATION-ID", "%s/%s carries %s on a %s row; that id belongs "
+                     "to %s" % (case2, consumer2, o["obligation_id"], row_class,
+                                "/".join(allowed)))
         loci = {o["locus"] for o in carriers.get((case2, consumer2), [])
                 if o["obligation_id"] == "SC-017o"}
-        # THE COMPLETE MULTISET, not two membership tests. Requiring that each exact
+        # THE COMPLETE MULTISET, over EVERY P1 row rather than only digests. Requiring that each exact
         # shape appears once proves the required rows EXIST and never that nothing
         # ELSE does — presence-verified, removals-unverified, wearing an arity
         # costume. An invented third SC-017o locus with its own logical address
         # passed every check while inflating the obligation denominator with a
         # fabricated comparison. The owed set is exactly two rows, so the check is
         # equality against exactly two rows.
-        owed = collections.Counter({PRESENCE_ROW: 1, VALUE_ROW: 1})
+        owed = collections.Counter({PRESENCE_ROW: 1, VALUE_ROW: 1}) if is_digest \
+            else collections.Counter()
         got = collections.Counter(tuple(o[c] for c in FIXED)
                                   for o in carriers.get((case2, consumer2), [])
                                   if o["obligation_id"] == "SC-017o")
@@ -266,12 +293,11 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
                          else "MISSING-017o-SHAPE",
                          "%s/%s carries %d row(s) equal to an owed SC-017o shape where "
                          "%d is owed: %s" % (case2, consumer2, got.get(shape, 0), n, shape))
-        if "inventory_complete" not in loci:
-            fail(out, "MISSING-017o", "%s/%s is a digest owing no inventory_complete "
-                 "presence locus" % (case2, consumer2))
-        if "inventory_complete (value)" not in loci:
-            fail(out, "MISSING-017o-VALUE", "%s/%s is a digest owing no completeness "
-                 "VALUE locus" % (case2, consumer2))
+        # The two loci-NAME checks that used to sit here are SUBSUMED by the multiset
+        # equality above: a name present with the wrong shape, a name absent, and a
+        # name that should not be there at all are now one comparison with three
+        # named outcomes. Two checks answering half the question each is how the
+        # arity bypass survived.
 
     # ---- 4b. `undecidable` implies UNSCORABLE, and the side file is not authority ----
     # A semantic target nobody can decide cannot be OBSERVED: the predicate and the
