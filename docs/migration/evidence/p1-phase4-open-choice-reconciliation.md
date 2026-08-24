@@ -246,7 +246,7 @@ No new product-output open choice.
 
 | Row / locus | C3 `6bf2e7f8` | vs first identity / vs `343fcd80` | Verdict |
 |---|---|---|---|
-| SC-017o completeness JSON; human diagnostic scope | C3 6bf2e7f8: directional 802 = 401 OBSERVED presence + 401 UNSCORABLE value; human diagnostic 0 | changed from the prior 573 relation by the accepted entitlement re-derivation | AUTHORIZED BUT INERT — SC-L399 and P2/P3 gate occurrences still authorize `OC-P3-HUMAN-DIAGNOSTIC`, but human_incomplete_observed selects zero fixed rows. The exclusion is never applied and must not be reported as exercised; underlying human stderr/rc comparison remains exact. The 802 JSON loci do not exercise this row. |
+| SC-017o completeness JSON; human diagnostic scope | C3 6bf2e7f8: directional 802 = 401 OBSERVED presence + 401 UNSCORABLE value; human diagnostic 0 | changed from the prior 573 relation by the accepted entitlement re-derivation | AUTHORIZED BUT INERT — SC-L399 and P2/P3 gate occurrences still authorize OC-P3-HUMAN-DIAGNOSTIC, but human_incomplete_observed selects zero fixed rows. The exclusion is never applied and must not be reported as exercised; underlying human stderr/rc comparison remains exact. The 802 JSON loci do not exercise this row. |
 | SC-017r human agent-health marker | directional, 78, ID `SC-017r` | unchanged | **AGREE** — SC-L490 → `OC-P3-AGENT-HEALTH-TOKEN`; not in P1/P2/P3 gates |
 | SC-509 `generated_at` field presence/type | retained, 401 | unchanged | **AGREE** |
 | SC-509 `generated_at` VALUE | underdetermined value locus, 401; P2 C17, P3 C3, P4 C8/C18 | unchanged | **AGREE** — ruled SC-509 carrier |
