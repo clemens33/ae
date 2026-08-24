@@ -208,13 +208,52 @@ Empirical: pending. Conflict: none.
 **SC-017f — `--json` honours the active filters.** Bucket 2. Authority:
 commands.md:88. Empirical: pending. Conflict: none.
 
-**SC-017g — the attention marker is the single most-actionable reason.** Bucket 2 —
+**SC-017g — the attention marker is the single most-actionable reason, and a quiet
+entry RENDERS its triad rather than omitting it.** Bucket 2 —
 dead > stale > waiting-user > blocked > throttled > unanswered, derived as the MAX
 across agent reasons PLUS session-level unresolved-request facts (amended slice-1b:
 unanswered is a PAIR fact with no owning agent — cross-session ask/review makes
-target ownership non-local; agents[].reason never reads unanswered). Authority:
-commands.md:60-76 + slice-1b joint ruling. Empirical: pending. Conflict: none.
-**classified_by: RE-MARKED after amendment — both seats, 2026-08-20.**
+target ownership non-local; agents[].reason never reads unanswered).
+**REOPENED AND PRECISED** (colead ruling, 2026-08-24) after a successor serializer
+omitted `attention` and `attention_rank` on entries needing no attention, and a
+boundary test asserted that absence as correct.
+**The precision:** every session entry that was READ carries all three attention
+members — `needs_attention`, `attention`, `attention_rank`. An entry needing no
+attention renders them `false`, `null` and `0`. Absence of a member is NOT a
+spelling of "no attention"; a reader may treat a missing member only as the loss
+SC-509b describes.
+**This is not IS becoming SHOULD.** The frozen authority already fixes it and this
+row inherits it: SC-509 lists `needs_attention/attention/attention_rank` among "the
+documented session fields"; SC-509d carries "All other SC-509 fields and SC-509b
+degradation semantics carry forward unless another row changes them", and no row
+changes these; and no open-choice row authorises movement between presence and
+absence for any SC-509 member.
+**The row this would otherwise collide with rules the other way.** SC-509b's
+omission clause is scoped to "unreadable optional facts", and its closing
+sentence is the whole argument — "Damage is never rendered identically to legitimate
+sparsity". An omitted `attention` on a fully-read quiet entry is exactly that
+collapse: loss and legitimate-none become one byte pattern, the condition SC-509b
+exists to forbid. Reusing loss's spelling for a legitimate answer does not extend
+SC-509b; it destroys it.
+**SCOPE GUARD — required in-row.** This rules PRESENCE for the three attention
+members of a READ entry and nothing else. It does NOT rule presence for any other
+optional SC-509 member (`goal`, `goal_set_epoch`, `branch`, `mode`, `origin`,
+`work_dir`, `agents[].session_id`, `agents[].state`), each of which is also
+universally present in frozen v1 and separately omitted by the successor today;
+those need their own evidence read and are recorded as an open finding rather than
+swept in here. It does not touch `degraded`, whose omission on a normal entry
+SC-509b states positively. It does not rule the exact bytes of `generated_at`,
+which remain open. And it does not decide `agents[].reason`, which SC-509c already
+determines.
+Authority: commands.md:60-76 + slice-1b joint ruling + SC-509 field list + SC-509d
+carry-forward + SC-509b scope and its identical-rendering prohibition + colead
+ruling 2026-08-24. Empirical: **observed** — all 429 frozen v1 session entries in
+the corpus carry all three members, and all 193 quiet entries among them render
+exactly `false` / `null` / `0`; zero frozen entries carry `degraded`, so omission of
+these members is unattested anywhere in the frozen record while their presence is
+universal. Conflict: none — SC-509b is read, not overridden.
+**classified_by: RE-MARKED after the 2026-08-24 presence precision — gpt56sol:colead
+ruling, drafted opus5:reason2.**
 
 **SC-017h — the tabular view shows per-agent health, declared state, and the session
 attn marker.** Bucket 2. Authority: commands.md:56-59. Empirical: pending.
@@ -1252,7 +1291,11 @@ unit guard @72c7293. Conflict: none.
 (slice-1 Q5 seat ruling, both seats): a session entry whose data suffered ACTUAL
 read/parse loss carries `degraded: true` (additive key; normal entries may omit it);
 identity (name + status) always survives; unreadable optional facts are omitted, never
-fabricated, never null; `agents` remains an array. Damage is never rendered
+fabricated, never null; `agents` remains an array. **The omission clause is
+LOSS-ONLY** (scope stated 2026-08-24, no change of meaning): it licenses omission
+for a fact that could not be READ, and never for a fact that was read and is
+legitimately empty — see the SC-017g presence precision, which turns on this row's
+own closing sentence. Damage is never rendered
 identically to legitimate sparsity — a machine digest that hides loss lies by
 omission. Authority: slice-1 joint Q5 ruling + SC-509's `schema_version` consumer-
 gating design (the events evolution rule SC-511c is a different schema and is NOT the
