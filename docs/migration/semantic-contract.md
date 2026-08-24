@@ -239,9 +239,13 @@ SC-509b; it destroys it.
 describe an entry whose inputs were READ. When they were not, SC-509b governs:
 `attention` and `attention_rank` are OMITTED rather than nulled UNLESS the answer
 remains exact under SC-509b's maximum/upper-bound rule, and `needs_attention` always
-renders: `true` means >=1 contribution established from readable facts; `false` means
-none established FROM READABLE FACTS. With `degraded: true`, the input is incomplete,
-so `false` alone does not prove quiet. `null` here
+renders as an ALWAYS-PRESENT PARTIAL-EVIDENCE INDICATOR: `true` iff >=1 contribution
+remains established after reducing the READABLE facts; `false` iff none remains
+established in those readable facts. Later readable records may add, clear, or
+supersede a contribution, so more input may change `true` to `false` as well as
+`false` to `true`. With `degraded: true`, NEITHER value proves the exact final
+attention: missing facts may add, clear, or supersede, and `degraded: true` is the
+mandatory incompleteness qualifier. `null` here
 means read-and-quiet and nothing else, which is exactly why it may not stand in for
 "not established".
 **SCOPE GUARD — required in-row.** This row owns the attention triad's VALUES —
@@ -254,17 +258,23 @@ omission on a normal entry positively. `generated_at`'s exact bytes remain open.
 `agents[].reason`'s value is SC-509c's.
 Authority: commands.md:60-76 + slice-1b joint ruling + SC-509 field list + SC-509d
 carry-forward + SC-509b scope and its identical-rendering prohibition + colead
-ruling 2026-08-24. Empirical: **observed** — all 429 frozen v1 session entries in
-the corpus carry all three members, and all 193 quiet entries among them render
-exactly `false` / `null` / `0`; zero frozen entries carry `degraded`, so omission of
-these members is unattested anywhere in the frozen record while their presence is
-universal. Conflict: none — SC-509b is read, not overridden.
+ruling 2026-08-24. Empirical: **observed** — within SC-509's fixed 401-capture
+census, all 431 frozen v1 session entries carry all three members, and all 193 quiet
+entries among them render exactly `false` / `null` / `0`; zero frozen entries carry
+`degraded`, so omission of these members is unattested anywhere in the frozen record
+while their presence is universal. Conflict: none — SC-509b is read, not overridden.
 **classified_by: RE-MARKED after the 2026-08-24 presence precision — gpt56sol:colead
 ruling, drafted opus5:reason2.**
 
 **SC-017h — the tabular view shows per-agent health, declared state, and the session
-attn marker.** Bucket 2. Authority: commands.md:56-59. Empirical: pending.
-Conflict: none.
+attn marker.** Bucket 2. **IN-ROW JOINT RULING (colead, 2026-08-24):** declared
+state has three distinct renderings: exact `Some(state)` renders that state; exact
+no declaration renders `-`; an inexact or unreadable event-derived state renders
+`unknown`. Loss must not publish a stale partial state and must not collapse into
+legitimate absence — SC-509b's rule is that damage is never rendered identically to
+legitimate sparsity. This row owns declared-state rendering only; agent health and
+liveness remain separate under SC-017p/q/r. Authority: commands.md:56-59 + SC-509b
++ colead ruling 2026-08-24. Empirical: pending. Conflict: none.
 
 **SC-018 — `ae [name] use <alias>` starts the session with that agent as main.**
 Bucket 2. Authority: commands.md@72c7293:5 ("ae [name] use <alias> — Start session
@@ -1317,37 +1327,51 @@ the answer is EXACT given the inputs actually read; when a lost input could chan
 the reason or the rank, those members are OMITTED. `null` is unavailable here
 precisely because SC-017g defines `null` as read-and-quiet, so writing it under
 uncertainty would assert the very thing that was not established.
-**`needs_attention` STAYS, as an explicit CONTEXTUAL LOWER BOUND.** It renders
-always: `true` means >=1 contribution established from readable facts; `false` means
-none established FROM READABLE FACTS. With `degraded: true`, the input is incomplete,
-so `false` alone does not prove quiet. Consumers must interpret it JOINTLY with `degraded`:
-`false` beside `degraded: true` is a lower bound over an incomplete input set, and
-`degraded: true` is its mandatory qualifier. The bound is monotone — reading more
-can only raise it — which is what makes a boolean honest here where `null` for the
-reason is not.
+**`needs_attention` STAYS, as an ALWAYS-PRESENT PARTIAL-EVIDENCE INDICATOR.** It
+renders always: `true` iff >=1 contribution remains established after reducing the
+READABLE facts; `false` iff none remains established in those readable facts. Later
+readable records may add, clear, or supersede a contribution, so more input may
+change `true` to `false` as well as `false` to `true`. With
+`degraded: true`, NEITHER value proves the exact final attention: missing facts may
+add, clear, or supersede, and `degraded: true` is the mandatory incompleteness
+qualifier.
 **WHAT EXACT MEANS, and it is not "no loss anywhere".** SC-017g's marker is a MAX
 across the session's agents, so exactness is a question about that maximum, not
 about whether every byte was read. The rule: **the answer is EXACT iff every
-relevant source is complete, OR the established values together with known UPPER
-BOUNDS on the missing sources force one maximum.** There is no blanket
+relevant source is complete, OR the established values come from complete or
+independently established sources and known UPPER BOUNDS on the missing sources
+force one maximum.** UPPER BOUNDS constrain only contributions that missing
+sources may ADD; they do not prove that a value from a partial source cannot be
+cleared or superseded by a later readable record. There is no blanket
 any-loss-implies-omit.
 Three consequences, each a required discriminator (colead, 2026-08-24):
 a READABLE EMPTY roster is FULLY ENUMERATED and supports exact quiet — only a
 roster absent or unreadable THROUGH LOSS is unenumerable, because readable events
 cannot prove that no unenumerated agent contributed;
-an established **`dead`** stands however much else was lost — it is the top class,
-so no unseen contribution can beat it, and it is the mandatory canary for this rule;
+an established **`dead`** stands despite other-source loss only when its OWN source
+is complete or independently established; a `dead` derived from a partial source
+can be cleared or superseded by a later readable record, so it is not exact merely
+because it ranks first; a partial-ledger `dead` therefore omits exact
+`attention`/`attention_rank` and `agents[].reason` when a later readable record could
+clear or supersede it. A complete or independently established runtime hand-in
+`dead` observation is the mandatory top-class canary for this rule;
 and loss in a source that could not have changed the maximum leaves the triad
-exact and present.
+exact and present when the source establishing that maximum is complete or
+independently established; a partial source never earns exactness from rank alone.
 `agents[].reason` follows the same principle rather than a weaker one: an
 `AgentEntry` proves roster MEMBERSHIP (SC-405k) and nothing about the completeness
 of its own reason inputs, so it renders when its exact own contribution is
-established despite unrelated loss and omits when a relevant missing input could
-change it.
+established from a complete or independently established source despite unrelated
+loss. If its source is partial, a later readable record may clear or supersede the
+earlier contribution (including `dead` or `blocked`), so `agents[].reason` omits
+when a relevant missing input could change it.
 **What frozen v1 does and does not witness.** Its `needs_attention: false` on a
-loss entry is NOT defect evidence — under this row that boolean is the lower-bound
-proposition "nothing established from the readable facts", which is exactly what
-the incumbent had grounds to say. Its `attention: null` and `attention_rank: 0`
+loss entry is NOT defect evidence — under this row that boolean is the partial-
+evidence proposition "no contribution remains established after reducing the
+readable facts", which is exactly what the incumbent had grounds to say. But with
+`degraded: true`, NEITHER `true` nor `false` proves the exact final attention:
+missing facts may add, clear, or supersede a contribution, and `degraded: true` is
+the mandatory incompleteness qualifier. Its `attention: null` and `attention_rank: 0`
 ARE defect evidence wherever exact quiet or an exact maximum was not established,
 because those spellings assert read-and-quiet (SC-017g) about inputs that were not
 read. The incumbent could not have done otherwise — its emitter is one `printf`
@@ -1609,20 +1633,37 @@ remain open.
 **Why a class rule rather than a member-by-member one.** The argument does not vary
 across members: each is a documented SC-509 member, SC-509d carries it forward, no
 row authorises omitting it, frozen v1 always renders it, and SC-509b reserves
-omission for facts that could not be READ. Measured across the corpus: all 429
-frozen v1 session entries carry every session member listed above and all 840 agent
-entries carry every agent member — including the ones a successor is tempted to
-omit, `goal` (null in 322 of 429), `goal_set_epoch` (null in 332), `branch` (null
-in 6), `attention` (null in 193) and `agents[].reason` (null in all 840). Ruling
-these one at a time would have spent eight rounds re-deriving one argument.
+omission for facts that could not be READ. Fixed-selector provenance:
+`INVOCATIONS.tsv` blob `035c5fab48cf04229daa9285457922d90563fabe`; select rows with
+`rc=0`, `phase=P1`, surface in `{ae list,ae ls}`, and `normalised_argv` containing
+`--json` as an exact token. For each `(case, consumer)`, resolve committed stdout
+exactly as `CORPUS / dirname(case) / out / <consumer>.stdout`, where `CORPUS` is
+`docs/migration/evidence/batch-c-artifacts`; accept only one RFC 8259 JSON value
+followed only by JSON whitespace, with `schema_version=1` as the guard. This yields
+401 captures: 400 `instrument=frozen` and one `instrument=hooked`, the hooked row
+being `arms/D/d01-list-vs-goal-writer-barrier/consumers.tsv` /
+`barrier-list-json`. Its fixed hook-inactive equivalence is recorded in
+`docs/migration/evidence/batch-c-artifacts/arms/D/d01-list-vs-goal-writer-barrier/hook-inactive-equivalence.txt`:
+`AE_HOOK` is UNSET, the committed `hook.patch` is added-lines-only, control-vs-hooked
+`ae list --json` is IDENTICAL (`rc=0`, `stdout_bytes=598`), and
+`control_hooked_divergences=0`; the hook's first guard returns before side effects
+unless `AE_HOOK` names it. The hooked capture is therefore inert unless `AE_HOOK`
+is set and remains reconstructible as frozen-v1-era evidence. This supersedes the earlier shallow-glob 399/429/840 census, which IS reproducible (glob `batch-c-artifacts/arms/*/*/out/*json*.stdout` plus the `schema_version=1` guard; selected-path sha256 `f3544a89d58caf48521806d7168a6367576219e1cd6fc1e8b6a436c8c6a46534`) but is the wrong population: that artifact-path selector admits 2 D01 `trace-list-json.trace.stdout` non-invocation copies and excludes 4 valid frozen P1 A1/c20 captures nested under `out/<run>/` solely through path depth — minus the 2 traces, plus the 4 nested captures, yields exactly this census. The pinned INVOCATIONS P1 selector is the governed population. The 401 captures contain 431 session
+entries and 844 agents; all 431 frozen v1 session entries carry every session member
+listed above and all 844 agent entries carry every agent member — including the ones
+a successor is tempted to omit, `goal` (null in 326 of 431), `goal_set_epoch`
+(null in 336), `branch` (null in 6), `attention` (null in 193) and
+`agents[].reason` (null in all 844). The quiet attention triad is `false` / `null`
+/ `0` in all 193 quiet entries. Ruling these one at a time would have spent eight
+rounds re-deriving one argument.
 **The distinction this protects is SC-509b's own.** Its closing sentence — "Damage
 is never rendered identically to legitimate sparsity" — holds only if the two have
 different spellings. Presence-with-empty-value is the legitimate answer; omission
 is the loss. Spend omission on a legitimate empty and SC-509b has nothing left to
 say.
 Authority: commands.md:97-132 + SC-509d carry-forward + SC-509b scope + colead
-ruling 2026-08-24. Empirical: **observed** — 429/429 frozen v1 session entries and
-840/840 agent entries render every documented member. Conflict: none.
+ruling 2026-08-24. Empirical: **observed** — 431/431 frozen v1 session entries and
+844/844 agent entries render every documented member. Conflict: none.
 
 **SC-509d — the P1 successor schema is version 2 because status gains `unknown`.**
 Bucket 3 — fix-known-defect(#105). Once the P1 read-side flip implements SC-017l/m,
