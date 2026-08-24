@@ -267,6 +267,18 @@ fn args(tokens: &[&str]) -> ListArgs {
 /// that is an open choice (criterion 15), so nothing here reads a column
 /// position or a width.
 fn human_rows(text: &str) -> Vec<(String, String)> {
+    // These are messages, not zero-width session rows. Match the whole payload
+    // rather than a prefix so a future row cannot be silently discarded.
+    if matches!(
+        text,
+        "No running ae sessions. (try: ae list --all)\n"
+            | "No recently active sessions.\n"
+            | "No running sessions need your attention.\n"
+            | "No ae sessions.\n"
+            | "No stopped ae sessions.\n"
+    ) {
+        return Vec::new();
+    }
     text.lines()
         .filter(|line| !line.starts_with(char::is_whitespace) && !line.trim().is_empty())
         .map(|line| {

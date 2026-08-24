@@ -28,21 +28,21 @@
 //! **SC-017h names content, not form.** Its authority (commands.md:56-59) is a
 //! single sentence: a tabular view "with per-agent health, declared state, and
 //! a session-level `attn:<reason>` marker when a session needs attention". No
-//! columns, no field order, no widths, no empty-listing text. Ratified with the
-//! seats for this slice:
+//! columns, no field order and no widths. Ratified with the seats for this
+//! slice:
 //!
-//! * what [`table`] SHOWS is pinned — the row's three nouns, and nothing else;
-//! * what it LOOKS LIKE is **provisional and unratified** — no test asserts its
-//!   exact bytes, because layout bytes are a seat decision informed by parity
-//!   evidence rather than an implementer's taste.
+//! * what [`table`] SHOWS is pinned — the row's three nouns plus frozen's
+//!   per-session goal/git/version/activity subline;
+//! * what it LOOKS LIKE is **provisional and unratified** — only layout bytes
+//!   remain open; capture-backed residual bytes are not layout.
 //!
 //! Two things follow, and both are deliberate. An agent's own attention reason
 //! is NOT rendered: SC-017h names three nouns and `attn:` is the SESSION-level
-//! marker (SC-017g's rollup). And an empty selection prints nothing at all —
-//! the least-invented answer, since no row gives the text for "no sessions".
+//! marker (SC-017g's rollup). Frozen's three established empty-listing messages
+//! are retained; no message is invented for the remaining empty scopes.
 
 use crate::digest::{Digest, SessionEntry};
-use crate::filters::ListArgs;
+use crate::filters::{ListArgs, Scope};
 use crate::inventory::FailedSource;
 use crate::liveness::Snapshot;
 use crate::session::SessionRuntime;
@@ -249,10 +249,11 @@ pub fn diagnostic(world: &World) -> Option<String> {
 
 /// What `ae list` writes to stdout for `args` over `world`.
 ///
-/// The returned string is the complete payload including its final newline, or
-/// empty when a tabular listing selected nothing. A `--json` listing is never
-/// empty: SC-509's document exists whether or not any session survived the
-/// filters.
+/// The returned string is the complete payload including its final newline. A
+/// tabular listing retains frozen's established empty-state messages for every
+/// scope and filter combination.
+/// A `--json` listing is never empty: SC-509's document exists whether or not
+/// any session survived the filters.
 ///
 /// ```
 /// use ae::digest::{SessionEntry, Status};
@@ -292,8 +293,30 @@ pub fn render(args: &ListArgs, world: &World) -> String {
         // which is why it is added at the boundary and not inside `Digest`.
         out.push('\n');
         out
+    } else if selected.is_empty() {
+        frozen_empty_listing(args).to_owned()
     } else {
-        table(&selected)
+        table_at(&selected, world.now)
+    }
+}
+
+/// Frozen's three observed messages for an empty human selection.
+///
+/// Attention deliberately wins over activity, matching the predecessor's
+/// ordered checks when both filters were named. Frozen `ae:4313-4321` is the
+/// authority for the two source-derived messages whose empty states have no
+/// capture oracle in the phase-4 corpus.
+const fn frozen_empty_listing(args: &ListArgs) -> &'static str {
+    if args.selection.needs_attention {
+        "No running sessions need your attention.\n"
+    } else if args.selection.active_within_secs.is_some() {
+        "No recently active sessions.\n"
+    } else if matches!(args.selection.scope, Scope::Running) {
+        "No running ae sessions. (try: ae list --all)\n"
+    } else if matches!(args.selection.scope, Scope::All) {
+        "No ae sessions.\n"
+    } else {
+        "No stopped ae sessions.\n"
     }
 }
 
@@ -306,6 +329,20 @@ pub fn render(args: &ListArgs, world: &World) -> String {
 /// agent's health and its declared state.
 #[must_use]
 pub fn table(sessions: &[&SessionEntry]) -> String {
+    // `render` is the product route and supplies its snapshot time to
+    // `table_at`. This compatibility entry point preserves its deterministic
+    // epoch-zero clock: nonzero activity timestamps therefore have frozen's
+    // future-time spelling, `just now`, rather than an ambient-clock result.
+    table_at(sessions, Timestamp::from_epoch(0))
+}
+
+/// The tabular view at the snapshot time that supplied `sessions`.
+///
+/// Frozen bash's subline was clock-relative, so the production route must pass
+/// the same snapshot clock that selected the sessions. The header, columns and
+/// agent-row layout remain provisional; the subline is residual phase-4 output.
+#[must_use]
+pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
     let mut out = String::new();
     for session in sessions {
         out.push_str(&session.name);
@@ -322,6 +359,7 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
             out.push_str(reason.as_str());
         }
         out.push('\n');
+        push_frozen_session_subline(&mut out, session, now);
         for agent in &session.agents {
             out.push_str("  ");
             out.push_str(&agent.reference);
@@ -358,6 +396,85 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
     out
 }
 
+/// Append the retained, frozen-bash session summary.
+///
+/// The current table carries the session attention marker on its semantic
+/// session row. It intentionally does not repeat that marker here: phase 4
+/// classifies the frozen marker as semantic while this whole subline is
+/// residual, so duplicating it would turn a retained semantic fact into a
+/// residual divergence.
+fn push_frozen_session_subline(out: &mut String, session: &SessionEntry, now: Timestamp) {
+    out.push_str("  ");
+    if let Some(goal) = session.goal.as_deref().filter(|goal| !goal.is_empty()) {
+        out.push_str("goal");
+        if let Some(goal_set_epoch) = session.goal_set_epoch.filter(|epoch| *epoch > 0) {
+            out.push_str(" (");
+            out.push_str(&frozen_relative_time(now, Some(goal_set_epoch)));
+            out.push(')');
+        }
+        out.push_str(": ");
+        push_frozen_goal(out, goal);
+        out.push_str(" · ");
+    }
+    if let Some(branch) = session
+        .branch
+        .as_deref()
+        .filter(|branch| !branch.is_empty())
+    {
+        out.push_str("git:");
+        out.push_str(branch);
+        out.push_str(" · ");
+    } else if !session.degraded {
+        // SC-405g's temporary predecessor projection. Branch acquisition has
+        // not landed yet, so healthy `None` is a value placeholder rather than
+        // a missing atom; remove this arm with that acquisition slice.
+        out.push_str("git:? · ");
+    }
+    out.push_str("ae ");
+    out.push_str(
+        session
+            .ae_version
+            .as_deref()
+            .filter(|version| !version.is_empty())
+            .unwrap_or("?"),
+    );
+    out.push_str(" · active ");
+    out.push_str(&frozen_relative_time(now, session.last_active_epoch));
+    out.push('\n');
+}
+
+/// Frozen bash keeps at most 60 characters of a goal, reserving its final
+/// character for an ellipsis when truncation happens.
+fn push_frozen_goal(out: &mut String, goal: &str) {
+    if goal.chars().count() > 60 {
+        out.extend(goal.chars().take(59));
+        out.push('…');
+    } else {
+        out.push_str(goal);
+    }
+}
+
+/// Frozen `format_relative_time`, evaluated at the listing snapshot.
+fn frozen_relative_time(now: Timestamp, timestamp: Option<i64>) -> String {
+    let Some(timestamp) = timestamp.filter(|timestamp| *timestamp > 0) else {
+        return "-".to_owned();
+    };
+    let delta = now.epoch().saturating_sub(timestamp);
+    if delta < 0 {
+        "just now".to_owned()
+    } else if delta < 60 {
+        format!("{delta}s ago")
+    } else if delta < 3_600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86_400 {
+        format!("{}h ago", delta / 3_600)
+    } else if delta < 604_800 {
+        format!("{}d ago", delta / 86_400)
+    } else {
+        ">7d".to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Presentation, World, render, table};
@@ -374,6 +491,24 @@ mod tests {
     use crate::time::Timestamp;
 
     const NOW: Timestamp = Timestamp::from_epoch(1_780_000_000);
+    const GOAL_BRANCH_ACTIVE_CAPTURE: &str = include_str!(
+        "../docs/migration/evidence/batch-c-artifacts/arms/A1/c01-healthy-ro/out/list-all.stdout"
+    );
+    const NO_GOAL_CAPTURE: &str = include_str!(
+        "../docs/migration/evidence/batch-c-artifacts/arms/A1/c04-empty-vs-omitted-ro/out/list-all.stdout"
+    );
+    const DEGRADED_META_CAPTURE: &str = include_str!(
+        "../docs/migration/evidence/batch-c-artifacts/arms/A1/c02-meta-mode-000-ro/out/list-all.stdout"
+    );
+    const NO_RUNNING_CAPTURE: &str = include_str!(
+        "../docs/migration/evidence/batch-c-artifacts/arms/A1/c01-healthy-ro/out/list.stdout"
+    );
+    const NO_ACTIVE_CAPTURE: &str = include_str!(
+        "../docs/migration/evidence/batch-c-artifacts/arms/A2/c01-filters-ro/out/list_active.stdout"
+    );
+    const NO_NEEDS_ATTENTION_CAPTURE: &str = include_str!(
+        "../docs/migration/evidence/batch-c-artifacts/arms/A2/c01-filters-ro/out/win_inside_active_needsattn.stdout"
+    );
 
     fn args(flags: &[&str]) -> ListArgs {
         ListArgs::parse(flags).expect("documented flags")
@@ -389,6 +524,31 @@ mod tests {
             state: state.map(ToOwned::to_owned),
             reason: None,
         }
+    }
+
+    /// The one residual line after the session row, including its newline.
+    fn successor_subline_bytes(rendered: &str) -> &[u8] {
+        let (_, after_session) = rendered
+            .split_once('\n')
+            .unwrap_or_else(|| panic!("a selected session row: {rendered:?}"));
+        let end = after_session
+            .find('\n')
+            .unwrap_or_else(|| panic!("the session subline must end: {rendered:?}"));
+        &after_session.as_bytes()[..=end]
+    }
+
+    /// The matching frozen residual line after its header and session row.
+    fn frozen_capture_subline_bytes(capture: &str) -> &[u8] {
+        let (_, after_header) = capture
+            .split_once('\n')
+            .unwrap_or_else(|| panic!("a frozen header: {capture:?}"));
+        let (_, after_session) = after_header
+            .split_once('\n')
+            .unwrap_or_else(|| panic!("a frozen session row: {capture:?}"));
+        let end = after_session
+            .find('\n')
+            .unwrap_or_else(|| panic!("a frozen subline: {capture:?}"));
+        &after_session.as_bytes()[..=end]
     }
 
     fn world() -> World {
@@ -410,6 +570,193 @@ mod tests {
 
     fn json_of(flags: &[&str]) -> json::Value {
         json::parse(&render(&args(flags), &world())).expect("one complete document")
+    }
+
+    #[test]
+    fn formatter_goal_branch_version_and_active_match_the_frozen_capture_residual() {
+        // Fixed `World::now` exercises the relative-text FORMATTER only. It is
+        // not a claim that a later replay has the capture's clock.
+        let mut entry = SessionEntry::new("tg1", Status::Stopped);
+        entry.goal = Some("healthy fixture session goal".to_owned());
+        entry.goal_set_epoch = Some(NOW.epoch() - 1_440);
+        entry.branch = Some("master".to_owned());
+        entry.ae_version = Some("0.2.1".to_owned());
+        entry.last_active_epoch = Some(NOW.epoch() - 1_440);
+        let world = World::new(NOW, vec![entry]);
+
+        assert_eq!(
+            successor_subline_bytes(&render(&args(&["--all"]), &world)),
+            frozen_capture_subline_bytes(GOAL_BRANCH_ACTIVE_CAPTURE)
+        );
+    }
+
+    #[test]
+    fn formatter_null_goal_uses_the_frozen_no_goal_capture_shape() {
+        // Fixed `World::now` exercises the relative-text FORMATTER only. It is
+        // not a claim that a later replay has the capture's clock.
+        let mut entry = SessionEntry::new("ta1b", Status::Stopped);
+        entry.branch = Some("master".to_owned());
+        entry.ae_version = Some("0.2.1".to_owned());
+        entry.last_active_epoch = Some(NOW.epoch() - 1_380);
+        let world = World::new(NOW, vec![entry]);
+
+        assert_eq!(
+            successor_subline_bytes(&render(&args(&["--all"]), &world)),
+            frozen_capture_subline_bytes(NO_GOAL_CAPTURE)
+        );
+    }
+
+    #[test]
+    fn formatter_degraded_meta_uses_the_frozen_placeholder_capture_shape() {
+        // Fixed `World::now` exercises the relative-text FORMATTER only. It is
+        // not a claim that a later replay has the capture's clock.
+        let mut entry = SessionEntry::degraded("tg1", Status::Stopped);
+        entry.last_active_epoch = Some(NOW.epoch() - 1_440);
+        let world = World::new(NOW, vec![entry]);
+
+        assert_eq!(
+            successor_subline_bytes(&render(&args(&["--all"]), &world)),
+            frozen_capture_subline_bytes(DEGRADED_META_CAPTURE)
+        );
+    }
+
+    #[test]
+    fn formatter_goal_truncation_counts_characters_at_the_frozen_boundaries() {
+        // A 60-character goal with one two-byte character proves this is a
+        // character limit, not a UTF-8-byte limit. Frozen ae:3272 leaves it
+        // intact; at 61 characters it keeps 59 and appends an ellipsis.
+        let exactly_sixty = format!("{}é", "a".repeat(59));
+        let sixty_one = format!("{exactly_sixty}z");
+        let render_goal = |goal: String| {
+            let mut entry = SessionEntry::new("long-goal", Status::Running);
+            entry.goal = Some(goal);
+            entry.ae_version = Some("0.2.1".to_owned());
+            let world = World::new(NOW, vec![entry]);
+            String::from_utf8(successor_subline_bytes(&render(&args(&[]), &world)).to_vec())
+                .expect("the human output is UTF-8")
+        };
+
+        assert_eq!(
+            render_goal(exactly_sixty.clone()),
+            format!("  goal: {exactly_sixty} · git:? · ae 0.2.1 · active -\n")
+        );
+        assert_eq!(
+            render_goal(sixty_one),
+            format!(
+                "  goal: {}… · git:? · ae 0.2.1 · active -\n",
+                "a".repeat(59)
+            )
+        );
+    }
+
+    #[test]
+    fn formatter_sc_405g_temporary_unobserved_branch_keeps_the_git_atom() {
+        // Branch acquisition has not landed. This temporary placeholder arm
+        // keeps a healthy row's atom present until that source exists.
+        let mut entry = SessionEntry::new("no-branch", Status::Running);
+        entry.ae_version = Some("0.2.1".to_owned());
+        entry.last_active_epoch = Some(NOW.epoch() - 1_380);
+        let world = World::new(NOW, vec![entry]);
+        let rendered = render(&args(&[]), &world);
+        let subline = successor_subline_bytes(&rendered);
+
+        assert_eq!(
+            subline,
+            b"  git:? \xC2\xB7 ae 0.2.1 \xC2\xB7 active 23m ago\n"
+        );
+    }
+
+    #[test]
+    fn formatter_sc_405g_degraded_unobserved_branch_omits_the_git_atom() {
+        // Meta is readable in both cases, so the retained version remains
+        // visible. Their independent loss facts make the entry degraded and
+        // therefore retain frozen's no-branch placeholder shape.
+        let event_loss_fixture = DigestFixture::new(
+            "subline-event-loss",
+            Some("mode=local\nae_version=0.2.1\n"),
+            Some("not an event\n"),
+        );
+        let event_loss = entry_for(
+            &event_loss_fixture.0,
+            "event-loss",
+            &SessionRuntime::new(Status::Running),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+        let duplicate_goal_fixture = DigestFixture::new(
+            "subline-duplicate-goal",
+            Some("mode=local\ngoal=first\ngoal=second\nae_version=0.2.1\n"),
+            None,
+        );
+        let duplicate_goal = entry_for(
+            &duplicate_goal_fixture.0,
+            "duplicate-goal",
+            &SessionRuntime::new(Status::Running),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+
+        for entry in [event_loss, duplicate_goal] {
+            assert!(entry.degraded);
+            let world = World::new(NOW, vec![entry]);
+            assert_eq!(
+                successor_subline_bytes(&render(&args(&[]), &world)),
+                b"  ae 0.2.1 \xC2\xB7 active -\n"
+            );
+        }
+    }
+
+    #[test]
+    fn formatter_relative_time_matches_frozen_thresholds_at_a_fixed_snapshot() {
+        for (age, expected) in [
+            (-1, "just now"),
+            (0, "0s ago"),
+            (59, "59s ago"),
+            (60, "1m ago"),
+            (3_599, "59m ago"),
+            (3_600, "1h ago"),
+            (86_399, "23h ago"),
+            (86_400, "1d ago"),
+            (604_799, "6d ago"),
+            (604_800, ">7d"),
+        ] {
+            assert_eq!(
+                super::frozen_relative_time(NOW, Some(NOW.epoch() - age)),
+                expected,
+                "age {age}"
+            );
+        }
+        for missing in [None, Some(0), Some(-1)] {
+            assert_eq!(super::frozen_relative_time(NOW, missing), "-");
+        }
+    }
+
+    #[test]
+    fn frozen_empty_listing_messages_match_the_capture_bytes() {
+        let empty = World::new(NOW, Vec::new());
+        assert_eq!(render(&args(&[]), &empty), NO_RUNNING_CAPTURE);
+        assert_eq!(render(&args(&["--active"]), &empty), NO_ACTIVE_CAPTURE);
+        assert_eq!(
+            render(&args(&["--needs-attn"]), &empty),
+            NO_NEEDS_ATTENTION_CAPTURE
+        );
+        assert_eq!(
+            render(&args(&["--active", "--needs-attn"]), &empty),
+            NO_NEEDS_ATTENTION_CAPTURE,
+            "frozen gives attention priority when both filters are named"
+        );
+    }
+
+    #[test]
+    fn source_derived_no_capture_oracle_empty_all_and_stopped_messages_match_frozen() {
+        // The phase-4 corpus has no empty `--all` or `--stopped` invocation.
+        // Frozen ae:4316-4321 is therefore the byte authority for both values.
+        let empty = World::new(NOW, Vec::new());
+        assert_eq!(render(&args(&["--all"]), &empty), "No ae sessions.\n");
+        assert_eq!(
+            render(&args(&["--stopped"]), &empty),
+            "No stopped ae sessions.\n"
+        );
     }
 
     fn names(value: &json::Value) -> Vec<String> {
@@ -521,7 +868,7 @@ mod tests {
                 .collect();
             assert_eq!(
                 render(&args(&flags), &world),
-                table(&expected),
+                super::table_at(&expected, world.now),
                 "{flags:?}: the two renderings do not cover the same sessions"
             );
         }
@@ -723,13 +1070,10 @@ mod tests {
 
     #[test]
     fn a_tabular_listing_that_selected_nothing_carries_no_session() {
-        // Structural rather than byte-exact: a selection that matched nothing
-        // renders exactly as a world containing nothing does — no session leaks
-        // through the filter, whatever an empty listing eventually looks like.
-        // The empty-listing TEXT is provisional layout and stays unpinned.
+        // The exact empty-state bytes have their capture pin above. This keeps
+        // the selection claim separate: a message must not leak a filtered
+        // session back into the human output.
         let nothing_selected = render(&args(&["--stopped", "--needs-attn"]), &world());
-        let nothing_exists = render(&args(&[]), &World::new(NOW, Vec::new()));
-        assert_eq!(nothing_selected, nothing_exists, "{nothing_selected:?}");
         for name in ["live", "quiet", "old"] {
             assert!(
                 !nothing_selected.contains(name),
@@ -796,10 +1140,8 @@ mod tests {
     #[test]
     fn sc_509_a_world_with_no_sessions_still_renders_a_complete_document() {
         // Only the ratified half is pinned: the member set of a complete empty
-        // digest. Rendered member order is an open choice. What the TABULAR
-        // rendering prints for a world with nothing in it is provisional layout;
-        // that it carries no session is asserted structurally in
-        // `a_tabular_listing_that_selected_nothing_carries_no_session`.
+        // digest. Rendered member order is an open choice. The human's three
+        // established empty states are pinned separately from this document.
         let empty = World::new(NOW, Vec::new());
         let rendered = render(&args(&["--json"]), &empty);
         let actual = json::parse(rendered.trim_end()).expect("one complete document");

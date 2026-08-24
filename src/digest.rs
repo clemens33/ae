@@ -281,6 +281,11 @@ pub struct SessionEntry {
     pub work_dir: Option<String>,
     /// The session's one-line objective.
     pub goal: Option<String>,
+    /// The ae version captured when this session was created.
+    ///
+    /// This is carried solely for the frozen human-list subline. SC-509 never
+    /// published it, so [`Self::to_json`] deliberately does not add a member.
+    pub ae_version: Option<String>,
     /// When that goal was last set — "age it for staleness".
     pub goal_set_epoch: Option<i64>,
     /// The session's live git branch.
@@ -321,6 +326,7 @@ impl SessionEntry {
             origin: None,
             work_dir: None,
             goal: None,
+            ae_version: None,
             goal_set_epoch: None,
             branch: None,
             last_active_epoch: None,

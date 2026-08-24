@@ -670,6 +670,7 @@ pub fn entry_from(
         entry.origin = meta.origin().map(ToOwned::to_owned);
         entry.work_dir = meta.work_dir().map(ToOwned::to_owned);
         entry.goal = meta.goal().map(ToOwned::to_owned);
+        entry.ae_version = meta.ae_version().map(ToOwned::to_owned);
     }
 
     let read = snapshot.events.as_ref();
@@ -2045,6 +2046,20 @@ mod tests {
         assert_eq!(entry.agents[0].session_id.as_deref(), Some("e795c9e9"));
         assert_eq!(entry.agents[1].reference, "codex:coworker");
         assert_eq!(entry.agents[1].session_id, None);
+    }
+
+    #[test]
+    fn frozen_meta_version_reaches_the_human_entry_but_not_the_digest() {
+        let scratch = Scratch::new("human-version");
+        scratch.meta(&format!("{META}ae_version=0.2.1\n"));
+        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+
+        assert_eq!(entry.ae_version.as_deref(), Some("0.2.1"));
+        assert_eq!(
+            entry.to_json().get("ae_version"),
+            None,
+            "frozen's digest never carried the human-subline version"
+        );
     }
 
     #[test]

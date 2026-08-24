@@ -171,6 +171,12 @@ pub struct Meta {
     origin: Option<String>,
     work_dir: Option<String>,
     goal: Option<String>,
+    /// The frozen executable version recorded when ae created the session.
+    ///
+    /// This belongs to the human list subline, not the SC-509 digest.  Keeping
+    /// it here means presentation receives the value read from this session's
+    /// meta rather than substituting the version of the binary doing the read.
+    ae_version: Option<String>,
     roster: Vec<RosterEntry>,
     /// `agent_bin.<slot>` values whose `agent.<slot>` has not been read yet.
     /// A slot that never gets one simply never becomes an agent.
@@ -258,6 +264,7 @@ impl Meta {
             "origin" => self.origin = None,
             "work_dir" => self.work_dir = None,
             "goal" => self.goal = None,
+            "ae_version" => self.ae_version = None,
             // A repeated selector key is AMBIGUOUS by SC-405l, which is a
             // stronger statement than SC-405e's invalidation: the flag survives
             // even if the repeats agreed.
@@ -284,6 +291,7 @@ impl Meta {
             "origin" => self.origin = Some(value.to_owned()),
             "work_dir" => self.work_dir = Some(value.to_owned()),
             "goal" => self.goal = Some(value.to_owned()),
+            "ae_version" => self.ae_version = Some(value.to_owned()),
             // SC-405l supersedes SC-405d for exactly this family: these two are
             // read and normalized rather than tolerated-and-ignored. Every
             // OTHER unknown key stays uninterpreted below.
@@ -440,6 +448,13 @@ impl Meta {
     #[must_use]
     pub fn goal(&self) -> Option<&str> {
         self.goal.as_deref()
+    }
+
+    /// The ae version captured in this session's meta for the human list
+    /// subline. An absent or empty value has frozen's visible `?` fallback.
+    #[must_use]
+    pub fn ae_version(&self) -> Option<&str> {
+        self.ae_version.as_deref()
     }
 
     /// SC-405c — the roster, in the order the meta lists its `agent.<slot>`
@@ -660,6 +675,13 @@ mod tests {
     }
 
     #[test]
+    fn frozen_human_subline_version_is_retained_without_becoming_an_unknown_key() {
+        let meta = Meta::parse("mode=local\nae_version=0.2.1\n");
+        assert_eq!(meta.ae_version(), Some("0.2.1"));
+        assert!(meta.anomalies().is_empty());
+    }
+
+    #[test]
     fn sc_405c_a_roster_entry_carries_alias_name_and_an_optional_session_id() {
         let meta = Meta::parse(concat!(
             "agent.main=claude:lead:e795c9e9\n",
@@ -775,16 +797,16 @@ mod tests {
     }
 
     #[test]
-    fn sc_405e_every_context_key_invalidates_the_same_way() {
-        // One field tested is one field proven. All four of SC-405b's keys go
-        // through the same refusal, so all four are pinned to it — cargo-mutants
-        // walked past three of them while `goal` alone was covered.
+    fn sc_405e_every_retained_scalar_key_invalidates_the_same_way() {
+        // One field tested is one field proven. The four SC-405b keys and the
+        // frozen human-subline version all go through the same refusal.
         type Accessor = fn(&Meta) -> Option<&str>;
-        let read: [(&str, Accessor); 4] = [
+        let read: [(&str, Accessor); 5] = [
             ("mode", Meta::mode),
             ("origin", Meta::origin),
             ("work_dir", Meta::work_dir),
             ("goal", Meta::goal),
+            ("ae_version", Meta::ae_version),
         ];
         for (key, accessor) in read {
             let once = Meta::parse(&format!("{key}=only\n"));
