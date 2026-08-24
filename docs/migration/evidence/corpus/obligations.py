@@ -93,7 +93,15 @@ AGENT_OWNED = ("dead", "stale", "waiting-user", "blocked", "throttled")
 
 
 def declared_contributions(case):
-    """owner -> {contribution}, from the case's FIXED event bytes.
+    """(session, owner) -> {contribution}, from the case's FIXED event bytes.
+
+    KEYED BY SESSION AND ACTOR, never by actor alone. SC-509c is session+agent
+    grained, and a case-level ledger keyed on the actor would let one carrier
+    authorize EVERY same-ref agent in a composite digest — `fake:lead` appears under
+    six sessions in A2/c01-filters, so an actor-only key fabricates five addresses
+    the bytes never named. That is the key-collapse defect this locus was widened to
+    escape. The carrier's session comes from FIXED provenance: case.txt's own
+    `session=` line, which all 47 carrying cases declare (measured).
 
     SECONDARY evidence only, and measured to be empty in this corpus: every `state`
     event here carries ref `working` or `done`, neither of which is an agent-owned
@@ -105,6 +113,12 @@ def declared_contributions(case):
     p = os.path.join(SRC, case, "events.bytes.jsonl")
     if not os.path.exists(p):
         return out
+    cp = os.path.join(SRC, case, "case.txt")
+    sm = re.search(r"\bsession=(\S+)",
+                   open(cp, encoding="utf-8", errors="replace").read()) \
+        if os.path.exists(cp) else None
+    if not sm:
+        return out                    # unbindable carrier authorizes nothing
     for line in open(p, encoding="utf-8", errors="replace"):
         line = line.strip()
         if not line:
@@ -117,7 +131,7 @@ def declared_contributions(case):
             continue
         actor, cls = e.get("actor"), e.get("ref")
         if actor and cls in AGENT_OWNED:
-            out.setdefault(actor, set()).add(cls)
+            out.setdefault((sm.group(1), actor), set()).add(cls)
     return out
 
 
@@ -981,7 +995,7 @@ def main():
                     elif ref in alerts:
                         proved, evidence = [alerts[ref]], "a watchdog alert naming it as target"
                     else:
-                        proved = sorted(declared.get(ref, set()))
+                        proved = sorted(declared.get((name, ref), set()))
                         evidence = "a state event naming it as actor"
                     att = sess.get("attention")
                     if len(proved) == 1:

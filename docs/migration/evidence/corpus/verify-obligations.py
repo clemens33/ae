@@ -554,7 +554,12 @@ def owed_requests(case, consumer, dynamic):
 
 
 def gate_declared_contributions(case):
-    """actor -> {agent-owned classes}, from the case's own event bytes.
+    """(session, actor) -> {agent-owned classes}, from the case's own event bytes.
+
+    Keyed by SESSION and actor for the same reason the generator is: an actor-only
+    key lets one case-level carrier authorize every same-ref agent across a
+    composite digest, which is cross-session fabrication wearing a carrier's name.
+    The session comes from case.txt's fixed `session=` line.
 
     Re-derived independently of the generator. This is the THIRD branch of the
     ruled reason grammar and the one that produces most owed-EMPTY addresses: it
@@ -565,6 +570,12 @@ def gate_declared_contributions(case):
     out = {}
     p = os.path.join(SRC, case, "events.bytes.jsonl")
     if not os.path.exists(p):
+        return out
+    cp = os.path.join(SRC, case, "case.txt")
+    sm = re.search(r"\bsession=(\S+)",
+                   open(cp, encoding="utf-8", errors="replace").read()) \
+        if os.path.exists(cp) else None
+    if not sm:
         return out
     for line in open(p, encoding="utf-8", errors="replace"):
         line = line.strip()
@@ -578,7 +589,7 @@ def gate_declared_contributions(case):
             continue
         actor, cls = e.get("actor"), e.get("ref")
         if actor and cls in AGENT_OWNED:
-            out.setdefault(actor, set()).add(cls)
+            out.setdefault((sm.group(1), actor), set()).add(cls)
     return out
 
 
@@ -613,7 +624,7 @@ def owed_reason(case, doc):
             elif ref in alerts:
                 proved = [alerts[ref]]
             else:
-                proved = sorted(decl_case.get(ref, set()))
+                proved = sorted(decl_case.get((nm, ref), set()))
             if len(proved) != 1:
                 continue                      # OWNER-NOT-ESTABLISHED: owes EMPTY
             owed.add(("SC-509c", "digest",

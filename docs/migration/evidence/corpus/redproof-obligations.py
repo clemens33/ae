@@ -344,21 +344,24 @@ def third_branch_control():
     real = g.gate_declared_contributions
     _base_set = set(g.owed_reason(case, doc))
     base = len(_base_set)
-    g.gate_declared_contributions = lambda c: {ref: {"blocked"}}
+    # KEYED BY (session, actor). Keyed by actor alone this map added SIX rows for
+    # one carrier — every same-ref agent across the composite digest — and my first
+    # response was to relax the ASSERTION to match, which is repairing expectations
+    # to fit output. base+1 was the right grain and the derivation was the wrong
+    # thing; colead caught it.
+    g.gate_declared_contributions = lambda c: {(sess["name"], ref): {"blocked"}}
     seeded = g.owed_reason(case, doc)
     g.gate_declared_contributions = real
     want = ("SC-509c", "digest", "sessions[%s].agents[%s].reason" % (sess["name"], ref),
             "null", "blocked", "equals", "OBSERVED", "OBSERVED")
-    # A ref can appear in SEVERAL sessions, so the synthetic carrier legitimately
-    # owes one row per session holding it — asserting base+1 was wrong arithmetic
-    # about the right behaviour. What must hold: the named row appears, and every
-    # row the patch ADDS names that same agent.
+    # EXACTLY ONE ROW, at exactly the selected session address. A carrier bound to
+    # one session must not authorize its namesakes elsewhere.
     added = {t for t in seeded if t not in _base_set}
-    ok = want in seeded and added and all("agents[%s]" % ref in t[2] for t in added)
-    print("third-branch   corpus fires it 0 times; synthetic state-event carrier for "
-          "%s/%s -> %s  (%d -> %d owed)"
-          % (sess["name"], ref, "owed, as required" if ok else "<-- MISSED",
-             base, len(seeded)))
+    ok = added == {want}
+    print("third-branch   corpus fires it 0 times; synthetic (session, actor) carrier "
+          "for %s/%s -> %s  (%d -> %d owed, %d added)"
+          % (sess["name"], ref, "exactly its own address" if ok else "<-- MISSED",
+             base, len(seeded), len(added)))
     return 0 if ok else 1
 
 
