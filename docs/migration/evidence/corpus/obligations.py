@@ -283,15 +283,17 @@ def main():
                                      "%s in fixed producer bytes"
                                      % (ref, evidence, proved[0])))
                     elif len(proved) > 1:
-                        unproved.append((case, consumer, ref, str(att),
-                                         "AMBIGUOUS-CONTRIBUTION",
+                        unproved.append((case, consumer, name or "", ref,
+                                         "sessions[%s].agents[%s].reason" % (name, ref),
+                                         str(att), "AMBIGUOUS-CONTRIBUTION",
                                          "the owner is named but declared %s; which one "
                                          "the snapshot carries needs the latest-relevant "
                                          "rule of the UNRATIFIED SC-907, so it is not an "
                                          "EXACT contribution" % "/".join(proved)))
                     elif att in AGENT_OWNED:
-                        unproved.append((case, consumer, ref, str(att),
-                                         "OWNER-NOT-ESTABLISHED",
+                        unproved.append((case, consumer, name or "", ref,
+                                         "sessions[%s].agents[%s].reason" % (name, ref),
+                                         str(att), "OWNER-NOT-ESTABLISHED",
                                          "session attention is an agent-owned class, but "
                                          "no event names which roster agent owns it; "
                                          "dead/stale/throttled are derived, never declared"))
@@ -377,10 +379,17 @@ def main():
 
     unproved.sort()
     with open(UNPROVED, "w", encoding="utf-8") as fh:
-        fh.write("# SC-509c loci EXCLUDED for want of exact owner+contribution evidence.\n")
-        fh.write("# Reported, never guessed: a merely CONSISTENT locus is not OBSERVED.\n")
-        fh.write("\t".join(["case", "consumer", "agent_ref", "session_attention",
-                            "kind", "why"]) + "\n")
+        fh.write("# SC-509c loci EXCLUDED for want of a carrier. Reported, never guessed.\n")
+        fh.write("# AT THE RULED GRAIN: (case, consumer, session, agent_ref, locus), the same\n")
+        fh.write("# address the accepted table uses. It was previously keyed without the\n")
+        fh.write("# session, so 34 rows mapped ambiguously to two same-attention sessions and\n")
+        fh.write("# their no-carrier claim could not be evaluated per address. An exclusion\n")
+        fh.write("# file below the ruled grain cannot substantiate its own claims.\n")
+        fh.write("# NOT a claim of impossibility: no carrier was FOUND by the search this\n")
+        fh.write("# generator performs — the agent's own state, a state event naming it as\n")
+        fh.write("# actor, and a producer-template alert naming it as target.\n")
+        fh.write("\t".join(["case", "consumer", "session", "agent_ref", "locus",
+                            "session_attention", "kind", "why"]) + "\n")
         for x in unproved:
             fh.write("\t".join(str(v) for v in x) + "\n")
 
@@ -408,7 +417,7 @@ def main():
     for k in sorted(per):
         print(f"  {k:<10} {per[k]:4d}")
     print(f"derived EXPECTED-DIVERGENCE {carriers}   EXPECTED-MATCH {len(seen) - carriers}")
-    kinds = collections.Counter(x[4] for x in unproved)
+    kinds = collections.Counter(x[6] for x in unproved)
     print(f"SC-509c loci EXCLUDED for want of exact evidence: {len(unproved)}")
     for k in sorted(kinds):
         print(f"  {k:<24} {kinds[k]:4d}")
