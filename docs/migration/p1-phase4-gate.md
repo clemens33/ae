@@ -97,6 +97,8 @@ Terms:
    committed bytes. Record the corpus root digest, contract blob, invocation-table blob,
    obligation-table blob, accepted phase-1/2/3 gate blobs, open-choice-register blob,
    comparison-projection blob, agent-health-presentation-manifest blob,
+   independently produced contract-to-obligation-reconciliation blob specified by
+   criterion 3,
    independently produced open-choice-reconciliation blob specified by criterion 8, this
    gate blob, and successor commit in the run manifest.
    All must
