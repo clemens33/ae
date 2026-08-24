@@ -22,7 +22,6 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "batch-c-artifacts"))
 INV = os.path.join(HERE, "INVOCATIONS.tsv")
 OUT = os.path.join(HERE, "OBLIGATIONS.tsv")
 UNPROVED = os.path.join(HERE, "SC-509C-UNPROVED.tsv")
-UNSCORABLE_O = os.path.join(HERE, "SC-017O-UNSCORABLE.tsv")
 FRESH = os.path.join(HERE, "FRESHNESS.tsv")
 CONTRACT = "docs/migration/semantic-contract.md"
 LISTING = ("ae list", "ae ls")
@@ -200,7 +199,7 @@ def loss_sessions(case):
 
 
 def main():
-    rows, seen, unproved, unscorable_o = [], set(), [], []
+    rows, seen, unproved = [], set(), []
     for r in csv.DictReader(open(INV, encoding="utf-8"), delimiter="\t"):
         if r["phase"] != "P1":
             continue
@@ -251,11 +250,6 @@ def main():
                          "no independently entitled enumeration is shown to have finally "
                          "failed; ambient entitlement turns on the AE_TMUX_SERVER selection "
                          "SC-1410c leaves unclassified"))
-            unscorable_o.append((case, consumer, "inventory_complete (value)",
-                                 "no captured connect failure names a session's RECORDED "
-                                 "server, so no independently entitled enumeration is shown "
-                                 "to have finally failed; ambient entitlement turns on the "
-                                 "AE_TMUX_SERVER selection SC-1410c leaves unclassified"))
 
             # ---- SC-509b + SC-509c, both JSON loci on a row that ALREADY carries
             # SC-509d, so neither can create a carrying row. The locus determines the
@@ -421,17 +415,6 @@ def main():
         for x in unproved:
             fh.write("\t".join(str(v) for v in x) + "\n")
 
-    unscorable_o.sort()
-    with open(UNSCORABLE_O, "w", encoding="utf-8") as fh:
-        fh.write("# EXPLANATORY ONLY — NOT AUTHORITY. Every row here has a matching UNSCORABLE\n")
-        fh.write("# obligation in OBLIGATIONS.tsv, and the gate enforces TWO-WAY equality between\n")
-        fh.write("# the two sets. This file exists to carry the reasoning at length; the DENOMINATOR\n")
-        fh.write("# is the table, because C3/C5/C16 reconcile to the obligation inventory and an\n")
-        fh.write("# external file is neither the inventory nor a criterion-1 pinned input.\n")
-        fh.write("\t".join(["case", "consumer", "locus", "why"]) + "\n")
-        for x in unscorable_o:
-            fh.write("\t".join(str(v) for v in x) + "\n")
-
     rows.sort(key=lambda x: (x[0], x[1], x[2], x[4]))
     with open(OUT, "w", encoding="utf-8") as fh:
         fh.write("\t".join(HDR) + "\n")
@@ -457,7 +440,6 @@ def main():
         print(f"  {k:<10} {per[k]:4d}")
     print(f"derived EXPECTED-DIVERGENCE {carriers}   EXPECTED-MATCH {len(seen) - carriers}")
     kinds = collections.Counter(x[6] for x in unproved)
-    print(f"SC-017o VALUE loci UNSCORABLE: {len(unscorable_o)}")
     print(f"SC-509c loci EXCLUDED for want of exact evidence: {len(unproved)}")
     for k in sorted(kinds):
         print(f"  {k:<24} {kinds[k]:4d}")

@@ -11,17 +11,16 @@ Neutral must pass; each seeded mutation must be CAUGHT BY ITS OWN NAMED CHECK, w
 the seed diffed first. A seed that does not land is an INVALID TEST, not a pass — a
 mutation of an absent phrase produces silence indistinguishable from a working check.
 """
-import difflib, os, subprocess, sys, tempfile
+import difflib, os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OBL = os.path.join(HERE, "OBLIGATIONS.tsv")
 FRESH = os.path.join(HERE, "FRESHNESS.tsv")
-UNSC = os.path.join(HERE, "SC-017O-UNSCORABLE.tsv")
 INV = os.path.join(HERE, "INVOCATIONS.tsv")
 
-def run(obl=None, fresh=None, inv=None, unsc=None):
+def run(obl=None, fresh=None, inv=None):
     cmd = [sys.executable, os.path.join(HERE, "verify-obligations.py")]
-    for flag, val in (("--obl", obl), ("--fresh", fresh), ("--inv", inv), ("--unsc", unsc)):
+    for flag, val in (("--obl", obl), ("--fresh", fresh), ("--inv", inv)):
         if val:
             cmd += [flag, val]
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -74,15 +73,30 @@ MUTATIONS = [
     ("SURFACE", OBL, "a JSON-only obligation parked on a human row",
      lambda s: s.replace("arms/A1/c02-meta-mode-000-ro\tlist-all-json\tSC-509b\t",
                          "arms/A1/c02-meta-mode-000-ro\tlist\tSC-509b\t", 1)),
-    ("UNDECIDABLE", OBL, "an undecidable semantic target claiming OBSERVED support",
-     lambda s: s.replace("\tundecidable\tOBSERVED\tUNSCORABLE\t",
-                         "\tundecidable\tOBSERVED\tOBSERVED\t", 1)),
+    # colead's B1: an UNRELATED id adopting the new predicate. A closed-set member is
+    # open until something binds who may use it.
+    ("UNDECIDABLE", OBL, "an unrelated obligation adopting `undecidable` to launder itself",
+     lambda s: re.sub(r"^(arms/A1/c01-healthy-ro\tlist-json\tSC-509d\t[^\n]*?)"
+                      r"\tequals\tSOURCE\tOBSERVED\t",
+                      r"\1\tundecidable\tSOURCE\tUNSCORABLE\t", s, count=1, flags=re.M)),
+    # colead's B2b: the value row's target drifting while its predicate stays.
+    ("UNDECIDABLE", OBL, "the completeness-value row with a drifted `to` target",
+     lambda s: s.replace("the enumeration's actual completeness", "GARBAGE", 1)),
+    ("VALUE-SHAPE", OBL, "the completeness-value locus carrying a scorable predicate",
+     lambda s: s.replace("\tinventory_complete (value)\tABSENT\tthe enumeration's actual "
+                         "completeness\tundecidable\tOBSERVED\tUNSCORABLE\t",
+                         "\tinventory_complete (value)\tABSENT\tthe enumeration's actual "
+                         "completeness\tequals\tOBSERVED\tOBSERVED\t", 1)),
+    # colead's B2a: set membership where exact arity is owed.
+    ("DUPLICATE-017o", OBL, "a digest carrying two completeness-value loci",
+     lambda s: re.sub(r"^([^\n]*inventory_complete \(value\)[^\n]*)$", r"\1\n\1",
+                      s, count=1, flags=re.M)),
+    ("DUPLICATE-ADDRESS", OBL, "any obligation address appearing twice",
+     lambda s: re.sub(r"^([^\n]*\tSC-509d\t[^\n]*)$", r"\1\n\1", s, count=1, flags=re.M)),
     ("MISSING-017o-VALUE", OBL, "a digest stripped of its completeness VALUE locus",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A1/c01-healthy-ro\tlist-json\tSC-017o")
                                  and "inventory_complete (value)" in l))),
-    ("SIDE-EXTRA", UNSC, "the explanatory file claiming a locus the table does not carry",
-     lambda s: s.rstrip("\n") + "\narms/ZZ/not-a-case\tlist-json\tinventory_complete (value)\tseeded\n"),
     ("STALE", FRESH, "the contract having moved since derivation",
      lambda s: s.replace("contract_blob\t", "contract_blob\tdeadbeef", 1)),
 ]
@@ -108,7 +122,7 @@ def main():
                         if l[:1] in "+-" and l[:3] not in ("+++", "---"))
             seeded = os.path.join(tmp, os.path.basename(target))
             open(seeded, "w", encoding="utf-8").write(mutated)
-            kw = {OBL: "obl", FRESH: "fresh", INV: "inv", UNSC: "unsc"}[target]
+            kw = {OBL: "obl", FRESH: "fresh", INV: "inv"}[target]
             kw = {kw: seeded}
             rc2, ids2 = run(**kw)
             ok = rc2 != 0 and want in ids2
