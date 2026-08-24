@@ -91,8 +91,26 @@ MUTATIONS = [
     ("DUPLICATE-017o", OBL, "a digest carrying two completeness-value loci",
      lambda s: re.sub(r"^([^\n]*inventory_complete \(value\)[^\n]*)$", r"\1\n\1",
                       s, count=1, flags=re.M)),
-    ("DUPLICATE-ADDRESS", OBL, "any obligation address appearing twice",
+    # colead's seed, and the one that matters: a CONTRADICTORY duplicate, not an
+    # identical copy. The identical-copy seed is what let this escape — it tested the
+    # easy duplicate while the payload-keyed address let the contradictory one buy
+    # itself a new address by changing the very field that made it contradictory.
+    ("DUPLICATE-ADDRESS", OBL, "a duplicated row whose `from` was altered to differ",
+     lambda s: re.sub(r"^([^\n]*\tSC-509c\t[^\n]*)$",
+                      lambda m: m.group(1) + "\n" + m.group(1).replace("\tnull\t", "\tGARBAGE\t", 1),
+                      s, count=1, flags=re.M)),
+    ("DUPLICATE-ADDRESS", OBL, "an identical duplicate — the easy case, kept as the control",
      lambda s: re.sub(r"^([^\n]*\tSC-509d\t[^\n]*)$", r"\1\n\1", s, count=1, flags=re.M)),
+    ("PRESENCE-SHAPE", OBL, "the presence locus existing BY NAME while asserting nothing",
+     lambda s: re.sub(r"^([^\n]*\tSC-017o\tdigest\tinventory_complete\tABSENT\t)present\tpresent\t",
+                      r"\1GARBAGE\tequals\t", s, count=1, flags=re.M)),
+    # Fires UNDECIDABLE, not VALUE-SHAPE, and that is the gate being right rather than
+    # the seed: any `undecidable` row whose WHOLE shape is wrong is reported by the
+    # predicate branch, which prints the full shape including the drifted column. The
+    # VALUE-SHAPE id is for a value-locus row that does NOT claim `undecidable`.
+    ("UNDECIDABLE", OBL, "the value row with a drifted baseline_provenance — outside the old tuple",
+     lambda s: re.sub(r"^([^\n]*inventory_complete \(value\)\tABSENT\tthe enumeration's actual "
+                      r"completeness\tundecidable\t)OBSERVED\t", r"\1GARBAGE\t", s, count=1, flags=re.M)),
     ("MISSING-017o-VALUE", OBL, "a digest stripped of its completeness VALUE locus",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A1/c01-healthy-ro\tlist-json\tSC-017o")

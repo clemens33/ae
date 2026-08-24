@@ -17,8 +17,22 @@ STREAMS = {"digest", "stdout", "stderr"}
 PREDICATES = {"equals", "at-least", "all-of", "present", "undecidable"}
 SUPPORT = {"OBSERVED", "UNSCORABLE"}
 LISTING = ("ae list", "ae ls")
+# THE IDENTITY/PAYLOAD SPLIT, IN BYTES RATHER THAN IN A HEAD. For OBLIGATIONS.tsv the
+# ADDRESS is (case, consumer, obligation_id, locus); everything else is row DATA.
+# Keying an address on payload lets a contradictory duplicate buy its own address by
+# changing the very field that made it contradictory.
+ADDRESS = ("case", "consumer", "obligation_id", "locus")
+# The FIXED SEMANTIC COLUMNS, in header order. `authority` is EXCLUDED BY DECLARATION,
+# not by omission: it is narrative, and binding prose would make a reworded explanation
+# a gate failure. Everything else is asserted WHOLE — a shape binding SOME fields leaves
+# the rest free to drift while the row still looks like itself.
+FIXED = ("obligation_id", "stream", "locus", "from", "to", "predicate",
+         "baseline_provenance", "support")
+PRESENCE_ROW = ("SC-017o", "digest", "inventory_complete", "ABSENT", "present",
+                "present", "OBSERVED", "OBSERVED")
 VALUE_ROW = ("SC-017o", "digest", "inventory_complete (value)", "ABSENT",
-             "the enumeration's actual completeness", "undecidable", "UNSCORABLE")
+             "the enumeration's actual completeness", "undecidable",
+             "OBSERVED", "UNSCORABLE")
 AGENT_OWNED = ("dead", "stale", "waiting-user", "blocked", "throttled")
 ALERT_SUMMARY = (("agent process dead", "dead"), ("max nudges reached", "stale"),
                  ("throttled for", "throttled"))
@@ -231,12 +245,14 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
             continue
         loci = {o["locus"] for o in carriers.get((case2, consumer2), [])
                 if o["obligation_id"] == "SC-017o"}
-        counts = collections.Counter(o["locus"] for o in carriers.get((case2, consumer2), [])
-                                     if o["obligation_id"] == "SC-017o")
-        for want in ("inventory_complete", "inventory_complete (value)"):
-            if counts.get(want, 0) > 1:
-                fail(out, "DUPLICATE-017o", "%s/%s carries %d %s loci; exactly one is owed"
-                     % (case2, consumer2, counts[want], want))
+        shapes = collections.Counter(
+            tuple(o[c] for c in FIXED) for o in carriers.get((case2, consumer2), []))
+        for want, name in ((PRESENCE_ROW, "presence"), (VALUE_ROW, "value")):
+            n = shapes.get(want, 0)
+            if n != 1:
+                fail(out, "DUPLICATE-017o" if n > 1 else "MISSING-017o-SHAPE",
+                     "%s/%s carries %d row(s) equal to the exact SC-017o %s shape; "
+                     "exactly one is owed" % (case2, consumer2, n, name))
         if "inventory_complete" not in loci:
             fail(out, "MISSING-017o", "%s/%s is a digest owing no inventory_complete "
                  "presence locus" % (case2, consumer2))
@@ -255,11 +271,14 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
     # for, and the completeness-value locus is valid only with that same whole shape,
     # so neither the predicate nor the locus can drift alone.
     for o in obls:
-        shape = (o["obligation_id"], o["stream"], o["locus"], o["from"], o["to"],
-                 o["predicate"], o["support"])
+        shape = tuple(o[c] for c in FIXED)
         if o["predicate"] == "undecidable" and shape != VALUE_ROW:
             fail(out, "UNDECIDABLE", "%s/%s: only the SC-017o completeness-value row may "
                  "carry `undecidable`; this row is %s" % (o["case"], o["consumer"], shape))
+        elif o["obligation_id"] == "SC-017o" and shape[2] == PRESENCE_ROW[2] \
+                and shape != PRESENCE_ROW:
+            fail(out, "PRESENCE-SHAPE", "%s/%s: the completeness-presence locus must carry "
+                 "its exact fixed row; this one is %s" % (o["case"], o["consumer"], shape))
         elif shape[2] == VALUE_ROW[2] and shape != VALUE_ROW:
             fail(out, "VALUE-SHAPE", "%s/%s: the completeness-value locus must carry its "
                  "exact fixed row; this one is %s" % (o["case"], o["consumer"], shape))
@@ -268,12 +287,10 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
     # anywhere. Set membership is not exact shape: a duplicated value row and a garbage
     # `to` both passed before this. Distinct-count must equal the population — the same
     # key-that-is-not-a-key rule this table already learned one file over.
-    addr = collections.Counter((o["case"], o["consumer"], o["obligation_id"],
-                                o["locus"], o["from"]) for o in obls)
+    addr = collections.Counter(tuple(o[c] for c in ADDRESS) for o in obls)
     for k, n in sorted(addr.items()):
         if n > 1:
-            fail(out, "DUPLICATE-ADDRESS", "%s/%s %s %s from=%s appears %d times"
-                 % (k[0], k[1], k[2], k[3], k[4], n))
+            fail(out, "DUPLICATE-ADDRESS", "%s/%s %s %s appears %d times" % (k + (n,)))
     # ---- 5. VERDICT IS DERIVED — so the check is COVERAGE, not agreement ----
     # The stored VERDICTS.tsv column is RETIRED (superseded by this table). A stored
     # verdict beside a derived one is EXACTLY the shape that went stale, and we did not
