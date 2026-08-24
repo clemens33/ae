@@ -1377,12 +1377,18 @@ the row's FROM/TO columns show the OPENING's participants even while its summary
 terminal's, so a status moving back to pending carries the summary with it and moves nothing
 else.
 
-THREE ZERO-SPECIMEN GAPS, named rather than left to whoever implements first, each pinned by
-successor test: (1) INVERSE-MIXED IDENTITY — see SC-518 above; (2) RE-ASK AFTER TERMINAL —
-the re-ask is pending and the earlier lifecycle stays closed, and a successor test must
-separate this from the identity rule or it cannot tell which one it exercised; (3) CANCEL
-CAUSALITY — a cancel before its opening closes nothing. A FOURTH is named here rather than
-left to be discovered: a `cancel` AND a `reply` both carrying one ref, both AFTER the
+THIS ROW OWNS EXACTLY TWO RATIFIED ZERO-SPECIMEN GAPS, and the count is stated that way
+because an earlier "three" invited them to be read as three ORDERING gaps and a downstream
+assignment duly miscounted them. The two are: (1) RE-ASK AFTER TERMINAL — the re-ask is
+pending and the earlier lifecycle stays closed, and a successor test must separate this from
+the identity rule or it cannot tell which one it exercised; (2) CANCEL CAUSALITY, and only
+CONDITIONAL ON AUTHORIZATION — a cancel before its opening closes nothing, while whether any
+given cancel is authorized at all is unruled here.
+
+TWO MORE GAPS ARE NAMED NEARBY AND NEITHER BELONGS TO THIS ROW. INVERSE-MIXED IDENTITY is an
+SC-518 IDENTITY gap, not an ordering one, and is owned there. And note what is NOT a gap: A6
+m2's pre-opening terminal is OBSERVED, the specimen this row is built on. The last is an
+ordering question but is UNRATIFIED, so nothing may pin a winner on it: a `cancel` AND a `reply` both carrying one ref, both AFTER the
 opening. The newest-preceding rule decides which OPENING a terminal attaches to, not which of
 two terminals wins on one opening, so that case is UNDECIDED by this row. It cannot be closed by
 evidence either: the 6862-file corpus contains ZERO `cancel` events (measured), so no capture
