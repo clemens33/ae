@@ -17,7 +17,12 @@ OBL = os.path.join(HERE, "OBLIGATIONS.tsv")
 FRESH = os.path.join(HERE, "FRESHNESS.tsv")
 INV = os.path.join(HERE, "INVOCATIONS.tsv")
 STREAMS = {"digest", "stdout", "stderr"}
-PREDICATES = {"equals", "at-least", "all-of", "present", "undecidable"}
+# `relational` is the SC-522 run-time form, ruled 2026-08-24: the obligation is a
+# RELATION the successor's own output must satisfy, joined explicitly to PINNED
+# fixture input, never a static value derived from a frozen clock. It is not
+# `undecidable` — the rule is statable and this corpus simply cannot witness it —
+# and it is not `equals`, because there is no single owed value to equal.
+PREDICATES = {"equals", "at-least", "all-of", "present", "undecidable", "relational"}
 SUPPORT = {"OBSERVED", "UNSCORABLE"}
 LISTING = ("ae list", "ae ls")
 # THE IDENTITY/PAYLOAD SPLIT, IN BYTES RATHER THAN IN A HEAD. For OBLIGATIONS.tsv the
@@ -65,6 +70,8 @@ PRESENCE_ROW = ("SC-017o", "digest", "inventory_complete", "ABSENT", "present",
 # inside the locus, so a mandatory scorable locus still cannot launder itself into
 # `undecidable` by claiming the predicate — which is the exact laundering the
 # single-shape check was built to stop.
+RELATIONAL_LOCUS = re.compile(
+    r"^sessions\[[^\]]+\]\.(needs_attention|attention|attention_rank)$")
 ATTN_VALUE_LOCUS = re.compile(r"^sessions\[[^\]]+\]\.attention \(value\)$")
 ATTN_VALUE_ROW = ("SC-017g", "digest", None, "null",
                   "the most-actionable reason at capture time", "undecidable",
@@ -362,6 +369,10 @@ def _gsame(a, b):
 
 
 def gate_ruled_requests(case):
+    return gate_ruled_requests_for(case, None)
+
+
+def gate_ruled_requests_for(case, session):
     """ref -> (status, summary), RE-DERIVED from the producer ledger.
 
     Independent of the generator on purpose: without this the gate could police
@@ -376,11 +387,15 @@ def gate_ruled_requests(case):
     txt = open(p, encoding="utf-8", errors="replace").read()
     tm = re.search(r"\btemplate=(\S+)", txt)
     sm = re.search(r"\bsession=(\S+)", txt)
-    if not (tm and sm) or "/" not in tm.group(1):
+    # A MULTI-SESSION CASE DECLARES NO SINGLE `session=`, so an explicit session
+    # argument is the authority when one is given. Requiring case.txt's field
+    # unconditionally made every composite case derive None — which read as "no
+    # requests here" and silently disagreed with the generator.
+    if not tm or "/" not in tm.group(1) or (sm is None and session is None):
         return None
     arm, variant = tm.group(1).split("/", 1)
     f = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
-                     "sessions", sm.group(1), "events.jsonl")
+                     "sessions", session or sm.group(1), "events.jsonl")
     if not os.path.exists(f):
         return {}
     ev = []
@@ -406,14 +421,20 @@ def gate_ruled_requests(case):
     out = {}
     for ref, op in opening.items():
         status, summary = "pending", op.get("summary")
-        for t in ev:
-            if t.get("action") != "reply" or t.get("ref") != ref:
-                continue
+        replies = [t for t in ev if t.get("action") == "reply" and t.get("ref") == ref]
+        for t in replies:
             if t["_line"] > op["_line"] and \
                _gsame(_gident(t, "actor"), _gident(op, "target")) and \
                _gsame(_gident(t, "target"), _gident(op, "actor")):
                 status, summary = "replied", t.get("summary")
-        out[ref] = (status, summary)
+        # THE MOVER IS DERIVED HERE TOO, so a row can be checked for OWNERSHIP and
+        # not merely for existence. Measured bypass: relabelling one A6 m2 row
+        # SC-518a -> SC-518 moved the counts 20/4 -> 21/3 and the gate stayed green.
+        mover = None
+        if status == "pending" and replies:
+            pick = max(replies, key=lambda e: e["_line"])
+            mover = "SC-518a" if pick["_line"] < op["_line"] else "SC-518"
+        out[ref] = (status, summary, op.get("ts"), mover)
     return out
 
 
@@ -424,6 +445,155 @@ def gate_capture_requests(case, consumer):
         if len(f) >= 6:
             rows[f[2]] = (f[0], f[5])
     return rows
+
+
+# Re-derived symbolically, matching the generator: the below-threshold letter is
+# unruled (the successor OMITS attention/attention_rank there, measured 9eb470c6).
+BELOW_LETTER = "<ruled-letter-pending: omitted vs null/0>"
+ATTN_RANK = {"unanswered": 1, "throttled": 2, "blocked": 3,
+             "waiting-user": 4, "stale": 5, "dead": 6}
+
+
+def gate_pending_ts(case, session):
+    """The OLDEST still-pending opening's ts, re-derived through SC-518+SC-518a."""
+    ruled = gate_ruled_requests_for(case, session)
+    if not ruled:
+        return None
+    oldest = None
+    for ref, (status, _, ts, _m) in ruled.items():
+        if status == "pending" and ts and (oldest is None or ts < oldest):
+            oldest = ts
+    return oldest
+
+
+def held_shapes(carriers, case, consumer, ids, where=None):
+    """The FIXED tuple of every held row in `ids` — every column that carries
+    meaning, narrative authority excluded BY DECLARATION."""
+    return collections.Counter(
+        (o["obligation_id"], o["stream"], o["locus"], o["from"], o["to"],
+         o["predicate"], o["baseline_provenance"], o["support"])
+        for o in carriers.get((case, consumer), [])
+        if o["obligation_id"] in ids and (where is None or where(o)))
+
+
+def compare_owed(out, case, consumer, family, owed, held):
+    """THE ONE COMPARISON EVERY DERIVATION FEEDS. Counter equality over complete
+    FIXED tuples, both directions, owed-empty included.
+
+    Built after five measured bypasses that separate existence/value fragments all
+    let through: a relocated attention row, an invented state, an invented reason,
+    a relabelled mover, a collapsed from==to target, an empty-scope divergence
+    turned into a match, and a predicate swapped under unchanged values. Every one
+    of them is the same defect — an exact SHAPE checked without an exact
+    POPULATION — so the repair is one mechanism, not seven checkers.
+    """
+    owed = collections.Counter(owed)
+    for shape, n in (owed - held).items():
+        fail(out, "OWED-MISSING", "%s/%s [%s] owes %s x%d and carries no such row"
+             % (case, consumer, family, shape[:3], n))
+    for shape, n in (held - owed).items():
+        fail(out, "OWED-EXTRA", "%s/%s [%s] carries %s x%d, which the ruled derivation "
+             "does not owe" % (case, consumer, family, shape[:3], n))
+
+
+def _is_stopped_locus(case, doc, locus):
+    """Does this locus name a session the digest reports STOPPED?"""
+    m = re.match(r"^sessions\[([^\]]+)\]", locus or "")
+    if not m:
+        return False
+    for x in doc.get("sessions", []) or []:
+        if x.get("name") == m.group(1):
+            return x.get("status") == "stopped"
+    return False
+
+
+def owed_requests(case, consumer, dynamic):
+    """The COMPLETE owed FULL-SHAPE multiset for one requests invocation.
+
+    Shapes are the eight FIXED columns minus the narrative authority, so a row is
+    bound by its mover id, stream, locus, captured `from`, ruled `to`, predicate
+    and provenance/support — not by its locus name. Measured bypasses this closes,
+    both green before it existed: an SC-518a row relabelled SC-518, and a status
+    row whose target was collapsed to from==to while its locus stayed put.
+    A dynamic-excluded or template-less invocation owes EXACTLY THE EMPTY SET, and
+    that is compared like any other member.
+    """
+    if dynamic:
+        return set()
+    ruled = gate_ruled_requests_for(case, None)
+    if ruled is None:
+        return set()
+    cap = gate_capture_requests(case, consumer)
+    owed = set()
+    for ref, (got_st, got_sum) in cap.items():
+        if ref not in ruled:
+            continue
+        want_st, want_sum, _ts, mover = ruled[ref]
+        for field, got, want in (("status", got_st, want_st),
+                                 ("summary", got_sum, want_sum)):
+            if got == want:
+                continue
+            owed.add((mover or "SC-518", "stdout", "requests[%s].%s" % (ref, field),
+                      got, want, "equals", "OBSERVED", "OBSERVED"))
+    return owed
+
+
+def owed_stopped(case, doc):
+    """The COMPLETE owed fixed-shape multiset for the stopped-session families.
+
+    Returns {(obligation_id, locus, from, to, predicate, support)}. EMPTY IS A
+    MEMBER: a quiet stopped session owes nothing and that is an answer, not a gap.
+    Built because the previous checks proved required loci EXIST and never that
+    unrequired loci are ABSENT — measured: relabelling one attention row from a
+    pending session to a quiet one removed an owed row AND invented one, and the
+    gate returned rc=0. Exact shape without exact population is the same class as
+    the unbound predicate and the unbound id map.
+    """
+    owed = set()
+    for x in doc.get("sessions", []) or []:
+        if x.get("status") != "stopped":
+            continue
+        nm = x.get("name") or ""
+        decl = stopped_declared(case, nm)
+        owners = alert_owners(case, nm)
+        contrib = dict(owners)
+        for actor, st in decl.items():
+            if st in AGENT_OWNED:
+                contrib[actor] = st
+        for a in x.get("agents") or []:
+            ref = a.get("ref")
+            if decl.get(ref) and a.get("state") in (None, ""):
+                owed.add(("SC-509", "digest",
+                          "sessions[%s].agents[%s].state" % (nm, ref),
+                          "null", decl[ref], "equals", "OBSERVED", "OBSERVED"))
+            if contrib.get(ref) and a.get("reason") in (None, ""):
+                owed.add(("SC-509c", "digest",
+                          "sessions[%s].agents[%s].reason" % (nm, ref),
+                          "null", contrib[ref], "equals", "OBSERVED", "OBSERVED"))
+        if contrib:
+            best = max(contrib.values(), key=lambda c: ATTN_RANK.get(c, 0))
+            for locus, got, want in (
+                    ("needs_attention", x.get("needs_attention"), True),
+                    ("attention", x.get("attention"), best),
+                    ("attention_rank", x.get("attention_rank"), ATTN_RANK[best])):
+                if got == want:
+                    continue
+                owed.add(("SC-017g", "digest", "sessions[%s].%s" % (nm, locus),
+                          "null" if got is None else str(got).lower(),
+                          "null" if want is None else str(want).lower(),
+                          "equals", "OBSERVED", "OBSERVED"))
+            continue
+        pts = gate_pending_ts(case, nm)
+        if not pts:
+            continue                      # quiet: owes EMPTY, and that is checked
+        for locus, below, above, frm in (
+                ("needs_attention", "false", "true", "false"),
+                ("attention", BELOW_LETTER, "unanswered", "null"),
+                ("attention_rank", BELOW_LETTER, "1", "0")):
+            owed.add(("SC-017g", "digest", "sessions[%s].%s" % (nm, locus), frm,
+                      "%s when generated_at - %s <= threshold, %s when strictly greater"
+                      % (below, pts, above), "relational", "OBSERVED", "UNSCORABLE"))
+    return owed
 
 
 def stopped_declared(case, session):
@@ -630,92 +800,43 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
                 fail(out, "SC-521C-ARITY", "%s/%s has an empty live scope and carries %d "
                      "SC-521c set obligations; exactly one is owed"
                      % (case, consumer, n_521c))
+            # ---- SC-521c: COMPLETE OWED FULL-SHAPE MULTISET, both populations.
+            # Arity/locus fragments let two mutations through, both measured green:
+            # an empty-scope row collapsed to from==to (a mandated divergence turned
+            # into a match), and a clock-bound row whose predicate was changed from
+            # `equals` to `present` (same values, different meaning to the scorer).
+            # Shapes bind every column, so neither survives.
             bound = (case, consumer) in binding
-            if scope_empty and bound:
-                fail(out, "SC-521C-BOTH", "%s/%s is a clock-bound window invocation AND "
-                     "has an empty live scope; the two set obligations would collide on "
-                     "one address" % (case, consumer))
-            if not scope_empty and not bound and n_521c:
-                fail(out, "SC-521C-SURFACE", "%s/%s owes a set obligation with a non-empty "
-                     "live scope and no recorded clock" % (case, consumer))
-            if not scope_empty and bound and n_521c != 1:
-                fail(out, "SC-521C-CLOCK-ARITY", "%s/%s is bound to the %d clock and carries "
-                     "%d SC-521c set obligations; exactly one is owed"
-                     % (case, consumer, binding[(case, consumer)], n_521c))
-            if bound:
+            owed_521 = set()
+            if scope_empty:
+                n_s = len((doc or {}).get("sessions", []) or [])
+                owed_521.add(("SC-521c", "digest", "sessions[] (set)", str(n_s),
+                              "empty", "equals", "OBSERVED", "OBSERVED"))
+            elif bound:
                 now_ = binding[(case, consumer)]
-                want = "sessions[] (set) @ now=%d" % now_
-                # THE VALUE, not just the address. The gate used to check the clock
-                # and the locus and never what the row CLAIMED, which is why a
-                # successor set seeded from the frozen (mtime-sourced) document
-                # passed every check it had. Both halves are re-derived here: `from`
-                # from the captured document, `to` from event bytes.
-                cap = render_set([x.get("name") for x in
-                                  (json.loads(text).get("sessions") or [])]) \
-                    if '"schema_version"' in text else None
                 der = active_set_at(case, now_)
-                for o in carriers.get((case, consumer), []):
-                    if o["obligation_id"] != "SC-521c":
-                        continue
-                    if o["locus"] != want:
-                        fail(out, "SC-521C-CLOCK", "%s/%s was captured at %s but its set "
-                             "obligation is addressed %r" % (case, consumer, want, o["locus"]))
-                    if cap is not None and o["from"] != cap:
-                        fail(out, "SC-521C-FROM", "%s/%s captured %s, table says the "
-                             "capture was %s" % (case, consumer, cap, o["from"]))
-                    if der is not None and o["to"] != render_set(der):
-                        fail(out, "SC-521C-VALUE", "%s/%s owes %s at clock %d by SC-017e "
-                             "EVENT timestamps, table says %s — a set derived from the "
-                             "frozen document or from a file mtime lands here"
-                             % (case, consumer, render_set(der), now_, o["to"]))
-            # ---- THE STOPPED-SESSION CONVERSE, per FIELD CLASS. Without these the
-            # gate could only police the reason; a deletion of the state rows or the
-            # attention rows would restore the nulling defect and stay green, which
-            # is what "every affected field class must catch it" means.
-            want_state, want_attn = set(), set()
-            for x in ([] if scope_empty else doc.get("sessions", []) or []):
-                if x.get("status") != "stopped":
-                    continue
-                nm = x.get("name") or ""
-                decl = stopped_declared(case, nm)
-                for a in x.get("agents") or []:
-                    if decl.get(a.get("ref")) and a.get("state") in (None, ""):
-                        want_state.add("sessions[%s].agents[%s].state" % (nm, a.get("ref")))
-                owners = alert_owners(case, nm)
-                if (any(v in AGENT_OWNED for v in decl.values()) or owners) and \
-                        x.get("attention") is None:
-                    want_attn.add(nm)
-            have = {o["locus"] for o in carriers.get((case, consumer), [])}
-            for locus in sorted(want_state - have):
-                fail(out, "MISSING-509-STATE", "%s/%s: %s is null in the capture while the "
-                     "producer bytes declare a state, and no obligation restores it"
-                     % (case, consumer, locus))
-            # PER LOCUS, not per row. The row-level converse below asks only whether
-            # the row carries ANY SC-509c, so deleting ONE session's reason left the
-            # id present and passed — measured by red-proof, not reasoned about.
-            for x in ([] if scope_empty else doc.get("sessions", []) or []):
-                if x.get("status") != "stopped":
-                    continue
-                nm = x.get("name") or ""
-                decl = stopped_declared(case, nm)
-                owners = alert_owners(case, nm)
-                for a in x.get("agents") or []:
-                    ref = a.get("ref")
-                    if a.get("reason") not in (None, ""):
-                        continue
-                    if decl.get(ref) in AGENT_OWNED or ref in owners:
-                        locus = "sessions[%s].agents[%s].reason" % (nm, ref)
-                        if locus not in have:
-                            fail(out, "MISSING-509c", "%s/%s: %s is null while producer "
-                                 "bytes name an agent-owned contribution, and no "
-                                 "obligation restores it" % (case, consumer, locus))
-            for nm in sorted(want_attn):
-                if not any(o["obligation_id"] == "SC-017g" and
-                           o["locus"].startswith("sessions[%s]." % nm)
-                           for o in carriers.get((case, consumer), [])):
-                    fail(out, "MISSING-017G", "%s/%s: stopped session %s has a derivable "
-                         "attention fact and its capture shows none, yet nothing is owed"
-                         % (case, consumer, nm))
+                if der is not None:
+                    cap_set = render_set([x.get("name") for x in
+                                          ((doc or {}).get("sessions") or [])])
+                    owed_521.add(("SC-521c", "digest",
+                                  "sessions[] (set) @ now=%d" % now_, cap_set,
+                                  render_set(der), "equals", "OBSERVED", "OBSERVED"))
+            compare_owed(out, case, consumer, "SC-521c", owed_521,
+                         held_shapes(carriers, case, consumer, ("SC-521c",)))
+
+            # ---- THE STOPPED FAMILIES, through the same comparison. This block was
+            # destroyed once by an unbounded text slice of mine and re-added here;
+            # the SC-521c fragment checks it replaced (ARITY, BOTH, SURFACE,
+            # CLOCK-ARITY, CLOCK, FROM, VALUE) are all IMPLIED by exact multiset
+            # equality and are deliberately not restored — seven named fragments
+            # were what let the bypasses through.
+            live_doc = doc if not scope_empty else {}
+            compare_owed(out, case, consumer, "stopped facts",
+                         owed_stopped(case, live_doc),
+                         held_shapes(carriers, case, consumer,
+                                     ("SC-509", "SC-509c", "SC-017g"),
+                                     lambda o: o["locus"].startswith("sessions[")
+                                     and _is_stopped_locus(case, live_doc, o["locus"])))
             if want_c and "SC-509c" not in ids:
                 fail(out, "MISSING-509c", "%s/%s has a null-reason agent whose own state names "
                      "an agent-owned contribution and owes no reason move" % (case, consumer))
@@ -737,33 +858,19 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
         case2, consumer2 = os.path.dirname(r["case"]), r["consumer"]
         text2 = body(case2, consumer2)
         is_digest = '"schema_version"' in text2
-        # ---- SC-518 / SC-518a converse, re-derived. Every capture row whose
-        # frozen status or summary differs from the ruled one must be carried, and
-        # nothing else may be.
+        # ---- SC-518 / SC-518a: COMPLETE OWED FULL-SHAPE MULTISET, both ways.
+        # The earlier version derived got/want correctly and then reduced the
+        # table to LOCUS NAMES, so a relabelled mover and a collapsed from==to
+        # target both survived. Shapes bind the mover id and every value.
         if r["surface"] == REQ_SURFACE:
-            ruled = gate_ruled_requests(case2)
-            if ruled is not None:
-                cap = gate_capture_requests(case2, consumer2)
-                dyn = set()
-                for c3 in req_by_case.get(case2, []):
-                    for ref3, (st3, _) in gate_capture_requests(case2, c3).items():
-                        dyn.add((ref3, st3))
-                dynamic = len({r4 for r4, _ in dyn}) < len(dyn)
-                held = {o["locus"] for o in carriers.get((case2, consumer2), [])}
-                for ref, (got_st, got_sum) in sorted(cap.items()):
-                    if ref not in ruled or dynamic:
-                        continue
-                    for field, got, want in (("status", got_st, ruled[ref][0]),
-                                             ("summary", got_sum, ruled[ref][1])):
-                        locus = "requests[%s].%s" % (ref, field)
-                        if got != want and locus not in held:
-                            fail(out, "MISSING-518", "%s/%s: %s renders %r where SC-518 + "
-                                 "SC-518a require %r, and nothing is owed"
-                                 % (case2, consumer2, locus, got, want))
-                        if got == want and locus in held:
-                            fail(out, "SURFACE-518", "%s/%s: %s already matches the ruled "
-                                 "value yet carries an obligation"
-                                 % (case2, consumer2, locus))
+            dyn = collections.defaultdict(set)
+            for c3 in req_by_case.get(case2, []):
+                for ref3, (st3, _s3) in gate_capture_requests(case2, c3).items():
+                    dyn[ref3].add(st3)
+            dynamic = any(len(v) > 1 for v in dyn.values())
+            owed_r = owed_requests(case2, consumer2, dynamic)
+            compare_owed(out, case2, consumer2, "SC-518/518a", owed_r,
+                         held_shapes(carriers, case2, consumer2, ("SC-518", "SC-518a")))
         row_class = "digest" if is_digest else (
             "human-listing" if r["surface"] in LISTING else
             "requests" if r["surface"] == "helper:requests" else "opaque")
@@ -829,6 +936,14 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
     # so neither the predicate nor the locus can drift alone.
     for o in obls:
         shape = tuple(o[c] for c in FIXED)
+        if o["predicate"] == "relational":
+            if not (shape[0] == "SC-017g" and shape[1] == "digest"
+                    and RELATIONAL_LOCUS.match(shape[2] or "")
+                    and shape[6] == "OBSERVED" and shape[7] == "UNSCORABLE"):
+                fail(out, "RELATIONAL-SHAPE", "%s/%s: `relational` is the SC-522 stopped "
+                     "attention form only, and stays UNSCORABLE until the phase-4 scorer "
+                     "implements and red-proves it; this row is %s"
+                     % (o["case"], o["consumer"], shape))
         attn_ok = (ATTN_VALUE_LOCUS.match(shape[2] or "") is not None
                    and shape[:2] + shape[3:] == ATTN_VALUE_ROW[:2] + ATTN_VALUE_ROW[3:])
         if o["predicate"] == "undecidable" and shape != VALUE_ROW and not attn_ok:

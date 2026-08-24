@@ -603,6 +603,13 @@ def dynamic_subject(case, consumers):
 # captured scale runs the OTHER WAY: 1=unanswered rising to 6=dead, with 0 for no
 # attention. Reading the sentence as the numbering gives blocked=4; the bytes say
 # 3, across every P1 digest that carries an attention.
+# THE BELOW-THRESHOLD LETTER IS NOT YET RULED, so it is carried SYMBOLICALLY rather
+# than guessed. Measured by reason2 at 9eb470c6: below the threshold the successor
+# OMITS attention and attention_rank entirely — absent, null and 0 are THREE
+# different documents at these members, and writing "null"/"0" here would ratify a
+# letter nobody chose. One string changes when the seats rule omission-ratified or
+# null-required; nothing else in the derivation moves.
+BELOW_LETTER = "<ruled-letter-pending: omitted vs null/0>"
 ATTN_RANK = {"unanswered": 1, "throttled": 2, "blocked": 3,
              "waiting-user": 4, "stale": 5, "dead": 6}
 
@@ -650,16 +657,24 @@ def stopped_facts(template, session):
     # a coarse has-an-opening test would have called it undecidable.
     ledger = [dict(e, _line=n) for n, e in enumerate(events, 1)
               if e.get("action") in OPENINGS + ("reply", "cancel")]
-    pending = any(v[0] == "pending"
-                  for v in ruled_requests(session, ledger).values()) if ledger else False
+    pending_ts = None
+    if ledger:
+        ruled = ruled_requests(session, ledger)
+        openings = {e.get("ref"): e for e in ledger if e.get("action") in OPENINGS}
+        for ref, v in ruled.items():
+            if v[0] != "pending":
+                continue
+            ts = (openings.get(ref) or {}).get("ts")
+            if ts and (pending_ts is None or ts < pending_ts):
+                pending_ts = ts          # OLDEST pending opening: it crosses first
     contrib = dict(alert_contributions(template, session))
     for actor, st in states.items():
         if st in AGENT_OWNED:
             contrib[actor] = st
-    return states, contrib, pending
+    return states, contrib, pending_ts
 
 
-def stopped_attention(contrib, has_pending):
+def stopped_attention(contrib, pending_ts):
     """(needs_attention, attention, rank) or None when it is not decidable.
 
     An agent-owned contribution decides it outright. With none, the session is
@@ -673,7 +688,7 @@ def stopped_attention(contrib, has_pending):
     if contrib:
         best = max(contrib.values(), key=lambda c: ATTN_RANK.get(c, 0))
         return True, best, ATTN_RANK[best]
-    if has_pending:
+    if pending_ts:
         return None
     return False, None, 0
 
@@ -855,7 +870,7 @@ def main():
                 if facts is None:
                     stopped_unresolved.add((case, name))
                     continue
-                states, contrib, pending = facts
+                states, contrib, pending_ts = facts
                 for ag in sess.get("agents") or []:
                     ref = ag.get("ref")
                     want = states.get(ref)
@@ -872,18 +887,45 @@ def main():
                                      "null", contrib[ref], "equals", "OBSERVED", "OBSERVED",
                                      "%s: fixed producer bytes name the owner and the "
                                      "agent-owned contribution %s" % (ref, contrib[ref])))
-                attn = stopped_attention(contrib, pending)
+                attn = stopped_attention(contrib, pending_ts)
                 if attn is None:
+                    # SC-522, RULED RELATIONAL 2026-08-24. Not a static target
+                    # derived from the frozen generated_at — ae:4141 and ae:3648 are
+                    # SEPARATE ordered `date` calls, so the frozen generated_at is
+                    # provably not the clock the frozen answer used, and pinning it
+                    # would resurrect the dead clock seam as a table row. Not a
+                    # permanent `undecidable` either: the rule is statable, and this
+                    # corpus's inability to witness it is a property of the corpus.
+                    #
+                    # THE JOIN IS EXPLICIT AND IS NOT INTRA-DOCUMENT. The request ts
+                    # and its pendingness are NOT in the digest: pendingness is the
+                    # PINNED fixture ledger reduced through SC-518 + SC-518a, and the
+                    # scorer must join it to the successor's own generated_at. Saying
+                    # "both operands in one document" was wrong and is corrected here.
+                    #
+                    # ALL THREE SC-017g FIELDS ARE ADDRESSED. Checking `attention`
+                    # alone left needs_attention and attention_rank unaccounted, so
+                    # they move JOINTLY: false/null/0 below the threshold and
+                    # true/unanswered/1 strictly above it.
                     stopped_undecidable.add((case, name))
-                    rows.append((case, consumer, "SC-017g", "digest",
-                                 "sessions[%s].attention (value)" % name,
-                                 "null", "the most-actionable reason at capture time",
-                                 "undecidable", "OBSERVED", "UNSCORABLE",
-                                 "no agent-owned contribution exists and a request is "
-                                 "PENDING under SC-518/SC-518a, so `unanswered` may apply "
-                                 "— but SC-522's threshold is strictly-past and needs a "
-                                 "clock these captures do not record. Unanswered is rank "
-                                 "1, so this is the only shape it can decide"))
+                    for locus, below, above in (
+                            ("needs_attention", "false", "true"),
+                            ("attention", BELOW_LETTER, "unanswered"),
+                            ("attention_rank", BELOW_LETTER, "1")):
+                        rows.append((case, consumer, "SC-017g", "digest",
+                                     "sessions[%s].%s" % (name, locus),
+                                     "null" if locus == "attention" else
+                                     ("false" if locus == "needs_attention" else "0"),
+                                     "%s when generated_at - %s <= threshold, %s when "
+                                     "strictly greater" % (below, pending_ts, above),
+                                     "relational", "OBSERVED", "UNSCORABLE",
+                                     "SC-522 strictly-past, evaluated in the SUCCESSOR "
+                                     "digest's own frame: its generated_at joined to the "
+                                     "PINNED fixture opening %s left pending under "
+                                     "SC-518+SC-518a, against AE_ATTN_REQUEST_SECS "
+                                     "(default 1800). UNSCORABLE until the phase-4 scorer "
+                                     "implements and red-proves this predicate"
+                                     % pending_ts))
                 else:
                     need, value, rank = attn
                     for locus, got, wanted in (

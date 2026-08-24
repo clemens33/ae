@@ -28,6 +28,32 @@ def run(obl=None, fresh=None, inv=None):
     return r.returncode, ids
 
 MUTATIONS = [
+    # ---- THE SEVEN POPULATION SEEDS, all measured rc=0 against b1aeaacf's verifier
+    # by gpt56sol:colead before the repair. Each is an EXACT SHAPE that the old
+    # per-fragment checks accepted because they proved required loci EXIST and never
+    # that unrequired loci are ABSENT. They exercise the SHIPPED verifier text.
+    ("OWED-EXTRA", OBL, "an owed attention row RELOCATED from a pending session to a quiet one",
+     lambda s: s.replace("sessions[tg2un].attention\t", "sessions[tg6a].attention\t", 1)),
+    ("OWED-EXTRA", OBL, "an INVENTED SC-509 state on an agent with no producer declaration",
+     lambda s: s.rstrip("\n") + "\n" + "\t".join(
+         ["arms/A2/c01-filters-ro", "list_all_json", "SC-509", "digest",
+          "sessions[tg6a].agents[fake:worker].state", "null", "working", "equals",
+          "OBSERVED", "OBSERVED", "seeded"]) + "\n"),
+    ("OWED-EXTRA", OBL, "an INVENTED SC-509c reason on an address with no carrier",
+     lambda s: s.rstrip("\n") + "\n" + "\t".join(
+         ["arms/A2/c01-filters-ro", "list_all_json", "SC-509c", "digest",
+          "sessions[tg6a].agents[fake:worker].reason", "null", "blocked", "equals",
+          "OBSERVED", "OBSERVED", "seeded"]) + "\n"),
+    ("OWED-EXTRA", OBL, "the MOVER relabelled SC-518a -> SC-518 (counts move, ownership lies)",
+     lambda s: s.replace("a6-c02-m2-wrong-ref-ro\trequests-all\tSC-518a\t",
+                         "a6-c02-m2-wrong-ref-ro\trequests-all\tSC-518\t", 1)),
+    ("OWED-EXTRA", OBL, "a status target COLLAPSED to from==to, locus left in place",
+     lambda s: s.replace("].status\treplied\tpending\t", "].status\treplied\treplied\t", 1)),
+    ("OWED-EXTRA", OBL, "an empty-scope MANDATED DIVERGENCE turned into a match",
+     lambda s: s.replace("\tsessions[] (set)\t3\tempty\t", "\tsessions[] (set)\t3\t3\t", 1)),
+    ("OWED-EXTRA", OBL, "a clock-bound row's PREDICATE swapped under unchanged values",
+     lambda s: s.replace("(set) @ now=1787243367\ttg1\tempty\tequals\t",
+                         "(set) @ now=1787243367\ttg1\tempty\tpresent\t", 1)),
     # ---- THE STOPPED-SESSION NULLING DEFECT, one seed PER FIELD CLASS. Frozen ae
     # nulls needs_attention/attention/attention_rank and every agent state on a
     # stopped session; SC-521c changes SELECTION and never the facts of a row
@@ -35,22 +61,22 @@ MUTATIONS = [
     # carry those facts, so each class is deleted separately — a single seed that
     # removed them all would prove only that SOMETHING fired, and the requirement
     # is that every affected class catches its own loss.
-    ("MISSING-509-STATE", OBL, "the stopped-session agent states nulled again",
+    ("OWED-MISSING", OBL, "the stopped-session agent states nulled again",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A2/c01-filters-ro\tlist_all_json\tSC-509\t")
                                  and ".state\t" in l))),
-    ("MISSING-017G", OBL, "the stopped-session attention facts nulled again",
+    ("OWED-MISSING", OBL, "the stopped-session attention facts nulled again",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A2/c01-filters-ro\tlist_all_json\tSC-017g\t")
                                  and "sessions[tg6b]." in l))),
-    ("MISSING-509c", OBL, "the stopped-session reasons nulled again",
+    ("OWED-MISSING", OBL, "the stopped-session reasons nulled again",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A2/c01-filters-ro\tlist_all_json\tSC-509c\t")
                                  and "sessions[tg6b]." in l))),
     # ---- SC-518 / SC-518a. The identity move and the ordering move are separate
     # rows and each must be caught on its own; a seed that deleted both would not
     # show which rule the gate can actually police.
-    ("MISSING-518", OBL, "the SC-518a ordering move deleted from A6 m2",
+    ("OWED-MISSING", OBL, "the SC-518a ordering move deleted from A6 m2",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not l.startswith("arms/A6/a6-c02-m2-wrong-ref-ro\trequests-all\tSC-518a\t"))),
     # ---- THE SOURCE-DISCRIMINATION SEEDS. These are the incident's permanent
@@ -63,20 +89,20 @@ MUTATIONS = [
     # that substitutes mtime, or that seeds from the frozen set, produces `tg1`
     # here. The earlier seeds drifted only the CLOCK and the ADDRESS and were
     # structurally blind to the source error, which is exactly why it shipped.
-    ("SC-521C-VALUE", OBL, "the successor set seeded from the frozen mtime-sourced document",
+    ("OWED-EXTRA", OBL, "the successor set seeded from the frozen mtime-sourced document",
      lambda s: s.replace("@ now=1787243367\ttg1\tempty\t",
                          "@ now=1787243367\ttg1\ttg1\t", 1)),
-    ("SC-521C-FROM", OBL, "the captured half misreported, erasing the divergence",
+    ("OWED-EXTRA", OBL, "the captured half misreported, erasing the divergence",
      lambda s: s.replace("@ now=1787243367\ttg1\tempty\t",
                          "@ now=1787243367\tempty\tempty\t", 1)),
     # ---- MEMBER 3: the clock binding. Aimed at the DEFECT (a window invocation
     # scored at a clock it was not captured at), not at the code that carries it.
-    ("SC-521C-CLOCK-ARITY", OBL, "a clock-bound window invocation stripped of its set obligation",
+    ("OWED-MISSING", OBL, "a clock-bound window invocation stripped of its set obligation",
      lambda s: "\n".join(l for l in s.split("\n") if not (
          l.startswith("arms/A2/c01-filters-ro\twin_inside_list_active_json\tSC-521c")))),
-    ("SC-521C-CLOCK", OBL, "a set obligation addressed to a clock the capture did not run at",
+    ("OWED-EXTRA", OBL, "a set obligation addressed to a clock the capture did not run at",
      lambda s: s.replace("(set) @ now=1787243367\ttg1", "(set) @ now=1787243368\ttg1", 1)),
-    ("SC-521C-SURFACE", OBL, "a set obligation on a digest with no recorded clock",
+    ("OWED-EXTRA", OBL, "a set obligation on a digest with no recorded clock",
      lambda s: s.rstrip("\n") + "\n" + "\t".join(
          ["arms/A1/c01-healthy-ro", "list-json", "SC-521c", "digest", "sessions[] (set)",
           "1", "empty", "equals", "OBSERVED", "OBSERVED", "seeded"]) + "\n"),
@@ -211,7 +237,7 @@ MUTATIONS = [
     # fired ARITY, and it landed on a consumer name that does not exist in A2 (whose
     # consumers use underscores), so POPULATION fired too. A seed that trips three
     # checks proves none of them.
-    ("SC-521C-SURFACE", OBL, "an empty-set obligation on a document whose scope is not empty",
+    ("OWED-EXTRA", OBL, "an empty-set obligation on a document whose scope is not empty",
      lambda s: s.rstrip("\n") + "\narms/A2/c01-filters-ro\tlist_json\tSC-521c\tdigest"
                "\tsessions[] (set)\t3\tempty\tequals\tOBSERVED\tOBSERVED\tseeded\n"),
     ("STALE", FRESH, "the contract having moved since derivation",
