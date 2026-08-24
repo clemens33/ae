@@ -188,16 +188,33 @@ impl SessionRead {
 
     /// When the goal was last set — SC-405f.
     ///
-    /// NOT a meta key: the row is explicit that the digest derives this from
-    /// the latest `goal` event, so a meta that carried such a key would not be
-    /// consulted for it.
+    /// NOT a meta key: the row is explicit that the digest derives this from the
+    /// event stream, so a meta that carried such a key would not be consulted.
+    ///
+    /// **The `ts` of the LAST APPENDED goal event, and explicitly NOT the
+    /// numerically greatest `ts` among them.** SC-405f was REOPENED AND
+    /// PRECISED for exactly this, because "latest" was undecidable: the row now
+    /// says "canonical logical event-stream order (generation + offset under
+    /// DR-001) — **not** the numerically greatest `ts`", and gives the reason —
+    /// "a max-timestamp fold would invent clock-order semantics absent from
+    /// every one of those authorities and would let clock skew reorder committed
+    /// state".
+    ///
+    /// A7's opposed-order arm exists to make the two answers different strings:
+    /// a 13:00 goal appended first and a 12:00 goal appended second, where the
+    /// frozen digest renders 12:00. A last-record reader and a max-timestamp
+    /// reader cannot both be right, and the frozen one is last-record.
+    ///
+    /// So this is the SAME ordering as [`SessionRead::declared_state_of`] and
+    /// [`SessionRead::alert_reason_of`], not an exception to them: three scans,
+    /// one ledger order, no clock consulted anywhere.
     #[must_use]
     pub fn goal_set_at(&self) -> Option<Timestamp> {
         self.events
             .iter()
             .filter(|event| event.action == "goal")
             .map(|event| event.ts)
-            .max()
+            .next_back()
     }
 
     /// The work state `agent` last declared — SC-510c as amended.
@@ -223,9 +240,13 @@ impl SessionRead {
     /// rollup. The 120 obligations passing over this scan never crossed the two
     /// orders, so none of them could see it.
     ///
-    /// [`SessionRead::goal_set_at`] still maxes on `ts`, and must: SC-405f asks
-    /// for the latest goal TIMESTAMP, which is a question about clocks rather
-    /// than about which record came last.
+    /// [`SessionRead::goal_set_at`] is the SAME rule, not an exception. An
+    /// earlier version of this comment claimed a boundary there — that SC-405f
+    /// "asks for the latest goal TIMESTAMP" — and that was a PARAPHRASE
+    /// contradicted by the row's own text, which says "**not** the numerically
+    /// greatest `ts`". The boundary comment made the defect look ruled, which is
+    /// worse than leaving it undocumented; the row is quoted at that site now
+    /// instead of summarised.
     #[must_use]
     pub fn declared_state_of(&self, session: &str, slot: &str, reference: &str) -> Option<&str> {
         self.events
@@ -284,8 +305,10 @@ impl SessionRead {
     /// No SC row ratifies a clock rule for alert currency (SC-524 governs the
     /// ACTIVITY filter's tolerance of future timestamps and says nothing about
     /// this), which is the second reason not to invent one here.
-    /// [`SessionRead::declared_state_of`] does order by `ts`; that predates this
-    /// scan and is not re-opened by it.
+    /// [`SessionRead::declared_state_of`] and [`SessionRead::goal_set_at`] have
+    /// since been converted to the same order, each on its own recorded
+    /// authority — so every scan in this reader answers "which record came
+    /// last", and none of them consults a clock.
     #[must_use]
     pub fn alert_reason_of(&self, session: &str, slot: &str, reference: &str) -> Option<Reason> {
         // LEDGER ORDER, not timestamp order: the LAST decisive record wins, and
@@ -2799,5 +2822,46 @@ mod tests {
         let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
         assert_eq!(entry.agents[0].state.as_deref(), Some("blocked"));
         assert_eq!(entry.agents[0].reason, Some(Reason::Blocked));
+    }
+
+    #[test]
+    fn sc_405f_the_goal_epoch_is_the_last_appended_goal_not_the_best_stamped_one() {
+        // THE A7 OPPOSED-ORDER FIXTURE, byte for byte:
+        // templates/A7/fixture-bytes/goal-order-opposed/sessions/ta7goalorderopposed.
+        // It exists to make the two candidate answers DIFFERENT — 13:00 appended
+        // first, 12:00 appended second — so a last-record reader and a
+        // max-timestamp reader cannot both be right. The frozen digest renders
+        // goal_set_epoch 1755000000, the 12:00 one.
+        //
+        // SC-405f was REOPENED AND PRECISED for exactly this and says "canonical
+        // logical event-stream order ... NOT the numerically greatest ts".
+        let scratch = Scratch::new("goalopposed");
+        scratch.meta(META);
+        scratch.events(&[
+            r#"{"ts":"2025-08-12T13:00:00Z","actor":"claude:lead","action":"goal","summary":"GOAL-TEXT-WITH-NEWER-TS"}"#.to_owned(),
+            r#"{"ts":"2025-08-12T12:00:00Z","actor":"claude:lead","action":"goal","summary":"GOAL-TEXT-WITH-OLDER-TS"}"#.to_owned(),
+        ]);
+        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(
+            entry.goal_set_epoch,
+            Some(1_755_000_000),
+            "the LAST APPENDED goal supplies the epoch; 1755003600 is the \
+             max-timestamp answer the row forbids"
+        );
+    }
+
+    #[test]
+    fn sc_405f_the_agreeing_order_is_unchanged() {
+        // A7 ships this control beside the opposed arm for the same reason the
+        // declared-state ruling needed one: the opposed test alone could be
+        // satisfied by a reader that is backwards for the wrong reason.
+        let scratch = Scratch::new("goalagreeing");
+        scratch.meta(META);
+        scratch.events(&[
+            r#"{"ts":"2025-08-12T12:00:00Z","actor":"claude:lead","action":"goal","summary":"first"}"#.to_owned(),
+            r#"{"ts":"2025-08-12T13:00:00Z","actor":"claude:lead","action":"goal","summary":"second"}"#.to_owned(),
+        ]);
+        let entry = entry_for(&scratch.0, "live", &running(), NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(entry.goal_set_epoch, Some(1_755_003_600));
     }
 }
