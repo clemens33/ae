@@ -42,7 +42,7 @@ def git(args, cwd=HERE):
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def main(path=None, quiet=False, worktree=None):
+def main(path=None, quiet=False, worktree=None, contract_subject=None):
     out = []
     crit_path = path or CRIT
     wt_path = worktree or WORKTREE_CONTRACT
@@ -73,6 +73,13 @@ def main(path=None, quiet=False, worktree=None):
     if contract is None:
         out.append(("SUBJECT", "cannot read the contract blob being classified"))
         contract = ""
+    if contract_subject is not None:
+        # RED-PROOF ONLY, same contract as --worktree-contract. The parsed subject
+        # is normally the pinned BLOB, which no seed can reach: a planted blob
+        # makes the pin disagree with HEAD, STALE fires, and the parse falls back
+        # to HEAD — so the check under test is never reached. A guard that cannot
+        # be seeded cannot be proven.
+        contract = open(contract_subject, encoding="utf-8").read()
     if pinned:
         wt = git(["hash-object", wt_path])
         if wt is None:
@@ -82,7 +89,19 @@ def main(path=None, quiet=False, worktree=None):
                         "the worktree contract is %s but this file classifies %s — the bytes "
                         "on disk are not the bytes being classified" % (wt[:12], pinned[:12])))
 
-    rowset = {m.group(1) for m in (ROW.match(l) for l in contract.split("\n")) if m}
+    row_ids = [m.group(1) for m in (ROW.match(l) for l in contract.split("\n")) if m]
+    rowset = set(row_ids)
+    # A SET-SIZED total is not evidence of that many headings. Two headings for
+    # one id collapse here and every downstream count stays put, so the
+    # reassuring number is exactly the one that hides the defect. Measured twice
+    # while drafting the 2026-08-24 SC-017g precision: a bolded EMPHASIS label
+    # beginning with a row id ("**SC-509b is the row ...**") matches ROW and
+    # becomes a second heading, and nothing complained.
+    for rid in sorted({r for r in row_ids if row_ids.count(r) > 1}):
+        out.append(("DUPLICATE-ROW",
+                    "%s appears as a contract row heading %d times — one id, one heading; a "
+                    "bolded label starting with a row id is a heading"
+                    % (rid, row_ids.count(rid))))
 
     classified, dupes = {}, []
     for m in re.finditer(r"^- (SC-[0-9]+[a-z]*) — ([A-Z-]+)", crit, re.M):
@@ -190,5 +209,8 @@ if __name__ == "__main__":
     ap.add_argument("--file", default=None, help="verify a COPY instead of the tracked file")
     ap.add_argument("--worktree-contract", default=None,
                     help="hash this instead of the real worktree contract (red-proof only)")
+    ap.add_argument("--contract-subject", default=None,
+                    help="parse this instead of the pinned blob (red-proof only)")
     a = ap.parse_args()
-    sys.exit(main(a.file, worktree=a.worktree_contract)[0])
+    sys.exit(main(a.file, worktree=a.worktree_contract,
+                  contract_subject=a.contract_subject)[0])
