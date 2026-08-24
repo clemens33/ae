@@ -3089,6 +3089,41 @@ relaying a worker's claim into doctrine owes it the same verification as any oth
 endorsement is publication, and the doctrine file is the least recoverable place to publish
 a plausible falsehood, because doctrine is what nobody re-derives.
 
+### Seeds aimed at the CODE test the mechanism you built; seeds aimed at the DEFECT test the failure you fear
+
+A duplicate-detector shipped with a red-proof seed: an **identical copy** of a row. The seed
+landed, went red, and the check was declared proven. Then a reviewer duplicated a row and
+changed one payload field — and the contradictory duplicate sailed through, because the
+detector's address included that payload field, so changing it bought a "new" address.
+
+The identical-copy seed was aimed at the code: it exercised the mechanism as built, and the
+mechanism as built caught it. **It survives no plausible defect** — there is no realistic
+bug under which an exact copy passes a duplicate check, so the seed's redness proved almost
+nothing. The seed that mattered was aimed at the defect being guarded against: *a
+contradictory second claim at the same identity*. The author never wrote it, in their own
+words, "because I was seeding the mechanism I had built rather than the failure I was
+guarding against."
+
+This names the mechanism behind a pattern that repeated all week: **self-authored red-proofs
+green, novel bypasses walking through.** A builder's seeds are drawn from the mechanism in
+their head — the same head that built the holes — so they cluster where the code is strong.
+Aiming at the defect forces a different question: *what would a broken version of this let
+through that matters?* — and its answers cluster where the code is weak.
+
+The test for a seed under review: **name the plausible defect this seed detects.** If the
+only defect it catches is "someone deleted the check," it is a liveness probe, not a
+red-proof. Every seed should be traceable to a failure someone fears, not to a branch
+someone wrote.
+
+Two companion facts from the same repair, recorded with it: the identity/payload split that
+caused the hole is now **declared in the file** (ADDRESS vs ROW DATA vs NARRATIVE, the last
+excluded by declaration rather than omission) so the next checker derives it instead of
+re-deciding it — four defects in three files existed because that split lived in heads. And
+the author hit the unbounded-anchor-slice edit defect **three times in one day in one
+file** before switching to single-string edits asserted unique-before-apply: the technique,
+not the care, is what changed the outcome — which is the rules-need-mechanisms principle
+applied to one's own editing hands.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
