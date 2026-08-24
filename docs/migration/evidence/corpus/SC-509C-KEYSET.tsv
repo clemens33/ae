@@ -2,135 +2,232 @@
 # The key is (case, consumer, session, agent_ref). Neither the agent ref nor
 # the locus-without-session is unique: 64 (case, consumer, ref) triples name an
 # agent appearing under MORE THAN ONE session in the same digest.
-# P128 = every agent whose OWN state is an agent-owned class (this derivation).
-# P108 = P128 restricted to agents whose state equals the session attention.
-# P88  = P108 restricted to the waiting-user class.
-case	consumer	session	agent_ref	locus	from	to	session_attention	populations
-arms/A2/c01-filters-ro	inter_allneedsattn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	inter_allneedsattn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	inter_needsattnall_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	inter_needsattnall_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	inter_needsattnstopped_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	inter_needsattnstopped_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_all_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_all_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_attn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_attn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_needs_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_needs_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_needsattn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_needsattn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_needsme_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_needsme_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_running_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	list_running_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_all_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_all_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_attn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_attn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_needs_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_needs_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_needsattn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_needsattn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_needsme_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_needsme_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_running_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-ro	ls_running_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	inter_allneedsattn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	inter_allneedsattn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	inter_needsattnall_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	inter_needsattnall_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	inter_needsattnstopped_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	inter_needsattnstopped_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_all_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_all_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_attn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_attn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_needs_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_needs_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_needsattn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_needsattn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_needsme_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_needsme_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_running_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	list_running_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_all_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_all_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_attn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_attn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_needs_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_needs_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_needsattn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_needsattn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_needsme_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_needsme_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_running_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A2/c01-filters-rw	ls_running_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3/c04-waiting-user-ro	list-all-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3/c04-waiting-user-ro	list-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3/c04-waiting-user-ro	list-needsattn-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3/c04-waiting-user-rw	list-all-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3/c04-waiting-user-rw	list-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3/c04-waiting-user-rw	list-needsattn-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3/c05-blocked-ro	list-all-json	tg2bl	fake:worker	sessions[tg2bl].agents[fake:worker].reason	null	blocked	blocked	P128+P108
-arms/A3/c05-blocked-ro	list-json	tg2bl	fake:worker	sessions[tg2bl].agents[fake:worker].reason	null	blocked	blocked	P128+P108
-arms/A3/c05-blocked-ro	list-needsattn-json	tg2bl	fake:worker	sessions[tg2bl].agents[fake:worker].reason	null	blocked	blocked	P128+P108
-arms/A3/c05-blocked-rw	list-all-json	tg2bl	fake:worker	sessions[tg2bl].agents[fake:worker].reason	null	blocked	blocked	P128+P108
-arms/A3/c05-blocked-rw	list-json	tg2bl	fake:worker	sessions[tg2bl].agents[fake:worker].reason	null	blocked	blocked	P128+P108
-arms/A3/c05-blocked-rw	list-needsattn-json	tg2bl	fake:worker	sessions[tg2bl].agents[fake:worker].reason	null	blocked	blocked	P128+P108
-arms/A3/c07-competing-ro	list-all-json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3/c07-competing-ro	list-json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3/c07-competing-ro	list-needsattn-json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3/c07-competing-rw	list-all-json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3/c07-competing-rw	list-json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3/c07-competing-rw	list-needsattn-json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3/c08-unanswered-vs-agent-owned-ro	list-active-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	P128+P108
-arms/A3/c08-unanswered-vs-agent-owned-ro	list-all-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	P128+P108
-arms/A3/c08-unanswered-vs-agent-owned-ro	list-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	P128+P108
-arms/A3/c08-unanswered-vs-agent-owned-ro	list-needsattn-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	P128+P108
-arms/A3/c08-unanswered-vs-agent-owned-rw	list-active-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	P128+P108
-arms/A3/c08-unanswered-vs-agent-owned-rw	list-all-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	P128+P108
-arms/A3/c08-unanswered-vs-agent-owned-rw	list-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	P128+P108
-arms/A3/c08-unanswered-vs-agent-owned-rw	list-needsattn-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	P128+P108
-arms/A3b/c02-stale-over-waitinguser-ro	list-active-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	P128
-arms/A3b/c02-stale-over-waitinguser-ro	list-all-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	P128
-arms/A3b/c02-stale-over-waitinguser-ro	list-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	P128
-arms/A3b/c02-stale-over-waitinguser-ro	list-needsattn-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	P128
-arms/A3b/c02-stale-over-waitinguser-rw	list-active-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	P128
-arms/A3b/c02-stale-over-waitinguser-rw	list-all-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	P128
-arms/A3b/c02-stale-over-waitinguser-rw	list-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	P128
-arms/A3b/c02-stale-over-waitinguser-rw	list-needsattn-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	P128
-arms/A3b/c03-waitinguser-over-blocked-ro	list-all-json	tpairwaitinguseroverblocked	fake:high	sessions[tpairwaitinguseroverblocked].agents[fake:high].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3b/c03-waitinguser-over-blocked-ro	list-all-json	tpairwaitinguseroverblocked	fake:low	sessions[tpairwaitinguseroverblocked].agents[fake:low].reason	null	blocked	waiting-user	P128
-arms/A3b/c03-waitinguser-over-blocked-ro	list-json	tpairwaitinguseroverblocked	fake:high	sessions[tpairwaitinguseroverblocked].agents[fake:high].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3b/c03-waitinguser-over-blocked-ro	list-json	tpairwaitinguseroverblocked	fake:low	sessions[tpairwaitinguseroverblocked].agents[fake:low].reason	null	blocked	waiting-user	P128
-arms/A3b/c03-waitinguser-over-blocked-ro	list-needsattn-json	tpairwaitinguseroverblocked	fake:high	sessions[tpairwaitinguseroverblocked].agents[fake:high].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3b/c03-waitinguser-over-blocked-ro	list-needsattn-json	tpairwaitinguseroverblocked	fake:low	sessions[tpairwaitinguseroverblocked].agents[fake:low].reason	null	blocked	waiting-user	P128
-arms/A3b/c03-waitinguser-over-blocked-rw	list-all-json	tpairwaitinguseroverblocked	fake:high	sessions[tpairwaitinguseroverblocked].agents[fake:high].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3b/c03-waitinguser-over-blocked-rw	list-all-json	tpairwaitinguseroverblocked	fake:low	sessions[tpairwaitinguseroverblocked].agents[fake:low].reason	null	blocked	waiting-user	P128
-arms/A3b/c03-waitinguser-over-blocked-rw	list-json	tpairwaitinguseroverblocked	fake:high	sessions[tpairwaitinguseroverblocked].agents[fake:high].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3b/c03-waitinguser-over-blocked-rw	list-json	tpairwaitinguseroverblocked	fake:low	sessions[tpairwaitinguseroverblocked].agents[fake:low].reason	null	blocked	waiting-user	P128
-arms/A3b/c03-waitinguser-over-blocked-rw	list-needsattn-json	tpairwaitinguseroverblocked	fake:high	sessions[tpairwaitinguseroverblocked].agents[fake:high].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A3b/c03-waitinguser-over-blocked-rw	list-needsattn-json	tpairwaitinguseroverblocked	fake:low	sessions[tpairwaitinguseroverblocked].agents[fake:low].reason	null	blocked	waiting-user	P128
-arms/A3b/c04-blocked-over-throttled-ro	list-all-json	tpairblockedoverthrottled	fake:high	sessions[tpairblockedoverthrottled].agents[fake:high].reason	null	blocked	blocked	P128+P108
-arms/A3b/c04-blocked-over-throttled-ro	list-json	tpairblockedoverthrottled	fake:high	sessions[tpairblockedoverthrottled].agents[fake:high].reason	null	blocked	blocked	P128+P108
-arms/A3b/c04-blocked-over-throttled-ro	list-needsattn-json	tpairblockedoverthrottled	fake:high	sessions[tpairblockedoverthrottled].agents[fake:high].reason	null	blocked	blocked	P128+P108
-arms/A3b/c04-blocked-over-throttled-rw	list-all-json	tpairblockedoverthrottled	fake:high	sessions[tpairblockedoverthrottled].agents[fake:high].reason	null	blocked	blocked	P128+P108
-arms/A3b/c04-blocked-over-throttled-rw	list-json	tpairblockedoverthrottled	fake:high	sessions[tpairblockedoverthrottled].agents[fake:high].reason	null	blocked	blocked	P128+P108
-arms/A3b/c04-blocked-over-throttled-rw	list-needsattn-json	tpairblockedoverthrottled	fake:high	sessions[tpairblockedoverthrottled].agents[fake:high].reason	null	blocked	blocked	P128+P108
-arms/A3b/c06-competing-noclear-ro	list-all-json	tcompetingnoclear	fake:low	sessions[tcompetingnoclear].agents[fake:low].reason	null	waiting-user	dead	P128
-arms/A3b/c06-competing-noclear-ro	list-json	tcompetingnoclear	fake:low	sessions[tcompetingnoclear].agents[fake:low].reason	null	waiting-user	dead	P128
-arms/A3b/c06-competing-noclear-ro	list-needsattn-json	tcompetingnoclear	fake:low	sessions[tcompetingnoclear].agents[fake:low].reason	null	waiting-user	dead	P128
-arms/A3b/c06-competing-noclear-rw	list-all-json	tcompetingnoclear	fake:low	sessions[tcompetingnoclear].agents[fake:low].reason	null	waiting-user	dead	P128
-arms/A3b/c06-competing-noclear-rw	list-json	tcompetingnoclear	fake:low	sessions[tcompetingnoclear].agents[fake:low].reason	null	waiting-user	dead	P128
-arms/A3b/c06-competing-noclear-rw	list-needsattn-json	tcompetingnoclear	fake:low	sessions[tcompetingnoclear].agents[fake:low].reason	null	waiting-user	dead	P128
-arms/A4/c03-next-noattach-ro	list-needsattn-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
-arms/A4/c03-next-noattach-rw	list-needsattn-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	P128+P108+P88
+# evidence=state  : the entry's own agents[].state, a NORMATIVE self-declared
+#                   contribution (waiting-user, blocked only).
+# evidence=alert  : a watchdog alert whose target names the owner and whose
+#                   summary names the contribution, still current at capture.
+# P222 = the ruled population. P128/P108/P88 are the earlier state-only
+# sub-populations, retained so the prior comparison stays checkable.
+case	consumer	session	agent_ref	locus	from	to	session_attention	evidence	populations
+arms/A2/c01-filters-ro	inter_allneedsattn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	inter_allneedsattn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	inter_allneedsattn_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	inter_needsattnall_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	inter_needsattnall_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	inter_needsattnall_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	inter_needsattnstopped_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	inter_needsattnstopped_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	inter_needsattnstopped_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	list_all_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_all_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_all_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	list_all_json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	None	alert	P222+ALERT94
+arms/A2/c01-filters-ro	list_all_json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	None	alert	P222+ALERT94
+arms/A2/c01-filters-ro	list_attn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_attn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_attn_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	list_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	list_needs_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_needs_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_needs_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	list_needsattn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_needsattn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_needsattn_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	list_needsme_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_needsme_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_needsme_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	list_running_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_running_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	list_running_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	list_stopped_json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	None	alert	P222+ALERT94
+arms/A2/c01-filters-ro	list_stopped_json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	None	alert	P222+ALERT94
+arms/A2/c01-filters-ro	ls_all_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_all_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_all_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	ls_all_json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	None	alert	P222+ALERT94
+arms/A2/c01-filters-ro	ls_all_json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	None	alert	P222+ALERT94
+arms/A2/c01-filters-ro	ls_attn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_attn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_attn_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	ls_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	ls_needs_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_needs_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_needs_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	ls_needsattn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_needsattn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_needsattn_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	ls_needsme_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_needsme_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_needsme_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	ls_running_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_running_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-ro	ls_running_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-ro	ls_stopped_json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	None	alert	P222+ALERT94
+arms/A2/c01-filters-ro	ls_stopped_json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	None	alert	P222+ALERT94
+arms/A2/c01-filters-rw	inter_allneedsattn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	inter_allneedsattn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	inter_allneedsattn_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	inter_needsattnall_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	inter_needsattnall_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	inter_needsattnall_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	inter_needsattnstopped_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	inter_needsattnstopped_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	inter_needsattnstopped_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	list_all_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_all_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_all_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	list_all_json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	None	alert	P222+ALERT94
+arms/A2/c01-filters-rw	list_all_json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	None	alert	P222+ALERT94
+arms/A2/c01-filters-rw	list_attn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_attn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_attn_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	list_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	list_needs_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_needs_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_needs_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	list_needsattn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_needsattn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_needsattn_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	list_needsme_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_needsme_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_needsme_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	list_running_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_running_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	list_running_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	list_stopped_json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	None	alert	P222+ALERT94
+arms/A2/c01-filters-rw	list_stopped_json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	None	alert	P222+ALERT94
+arms/A2/c01-filters-rw	ls_all_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_all_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_all_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	ls_all_json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	None	alert	P222+ALERT94
+arms/A2/c01-filters-rw	ls_all_json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	None	alert	P222+ALERT94
+arms/A2/c01-filters-rw	ls_attn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_attn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_attn_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	ls_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	ls_needs_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_needs_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_needs_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	ls_needsattn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_needsattn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_needsattn_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	ls_needsme_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_needsme_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_needsme_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	ls_running_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_running_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A2/c01-filters-rw	ls_running_json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A2/c01-filters-rw	ls_stopped_json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	None	alert	P222+ALERT94
+arms/A2/c01-filters-rw	ls_stopped_json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	None	alert	P222+ALERT94
+arms/A3/c01-dead-ro	list-all-json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3/c01-dead-ro	list-json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3/c01-dead-ro	list-needsattn-json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3/c01-dead-rw	list-all-json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3/c01-dead-rw	list-json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3/c01-dead-rw	list-needsattn-json	twda1	fake:probe	sessions[twda1].agents[fake:probe].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3/c02-stale-ro	list-all-json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3/c02-stale-ro	list-json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3/c02-stale-ro	list-needsattn-json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3/c02-stale-rw	list-all-json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3/c02-stale-rw	list-json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3/c02-stale-rw	list-needsattn-json	twda2	fake:probe	sessions[twda2].agents[fake:probe].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3/c03-throttled-ro	list-all-json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	throttled	alert	P222+ALERT94
+arms/A3/c03-throttled-ro	list-json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	throttled	alert	P222+ALERT94
+arms/A3/c03-throttled-ro	list-needsattn-json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	throttled	alert	P222+ALERT94
+arms/A3/c03-throttled-rw	list-all-json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	throttled	alert	P222+ALERT94
+arms/A3/c03-throttled-rw	list-json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	throttled	alert	P222+ALERT94
+arms/A3/c03-throttled-rw	list-needsattn-json	twda3	fake:probe	sessions[twda3].agents[fake:probe].reason	null	throttled	throttled	alert	P222+ALERT94
+arms/A3/c04-waiting-user-ro	list-all-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3/c04-waiting-user-ro	list-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3/c04-waiting-user-ro	list-needsattn-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3/c04-waiting-user-rw	list-all-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3/c04-waiting-user-rw	list-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3/c04-waiting-user-rw	list-needsattn-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3/c05-blocked-ro	list-all-json	tg2bl	fake:worker	sessions[tg2bl].agents[fake:worker].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3/c05-blocked-ro	list-json	tg2bl	fake:worker	sessions[tg2bl].agents[fake:worker].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3/c05-blocked-ro	list-needsattn-json	tg2bl	fake:worker	sessions[tg2bl].agents[fake:worker].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3/c05-blocked-rw	list-all-json	tg2bl	fake:worker	sessions[tg2bl].agents[fake:worker].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3/c05-blocked-rw	list-json	tg2bl	fake:worker	sessions[tg2bl].agents[fake:worker].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3/c05-blocked-rw	list-needsattn-json	tg2bl	fake:worker	sessions[tg2bl].agents[fake:worker].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3/c07-competing-ro	list-all-json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3/c07-competing-ro	list-json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3/c07-competing-ro	list-needsattn-json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3/c07-competing-rw	list-all-json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3/c07-competing-rw	list-json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3/c07-competing-rw	list-needsattn-json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3/c08-unanswered-vs-agent-owned-ro	list-active-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3/c08-unanswered-vs-agent-owned-ro	list-all-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3/c08-unanswered-vs-agent-owned-ro	list-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3/c08-unanswered-vs-agent-owned-ro	list-needsattn-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3/c08-unanswered-vs-agent-owned-rw	list-active-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3/c08-unanswered-vs-agent-owned-rw	list-all-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3/c08-unanswered-vs-agent-owned-rw	list-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3/c08-unanswered-vs-agent-owned-rw	list-needsattn-json	ta3g	fake:bravo	sessions[ta3g].agents[fake:bravo].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3b/c01-dead-over-stale-ro	list-all-json	tpairdeadoverstale	fake:high	sessions[tpairdeadoverstale].agents[fake:high].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3b/c01-dead-over-stale-ro	list-all-json	tpairdeadoverstale	fake:low	sessions[tpairdeadoverstale].agents[fake:low].reason	null	stale	dead	alert	P222+ALERT94
+arms/A3b/c01-dead-over-stale-ro	list-json	tpairdeadoverstale	fake:high	sessions[tpairdeadoverstale].agents[fake:high].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3b/c01-dead-over-stale-ro	list-json	tpairdeadoverstale	fake:low	sessions[tpairdeadoverstale].agents[fake:low].reason	null	stale	dead	alert	P222+ALERT94
+arms/A3b/c01-dead-over-stale-ro	list-needsattn-json	tpairdeadoverstale	fake:high	sessions[tpairdeadoverstale].agents[fake:high].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3b/c01-dead-over-stale-ro	list-needsattn-json	tpairdeadoverstale	fake:low	sessions[tpairdeadoverstale].agents[fake:low].reason	null	stale	dead	alert	P222+ALERT94
+arms/A3b/c01-dead-over-stale-rw	list-all-json	tpairdeadoverstale	fake:high	sessions[tpairdeadoverstale].agents[fake:high].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3b/c01-dead-over-stale-rw	list-all-json	tpairdeadoverstale	fake:low	sessions[tpairdeadoverstale].agents[fake:low].reason	null	stale	dead	alert	P222+ALERT94
+arms/A3b/c01-dead-over-stale-rw	list-json	tpairdeadoverstale	fake:high	sessions[tpairdeadoverstale].agents[fake:high].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3b/c01-dead-over-stale-rw	list-json	tpairdeadoverstale	fake:low	sessions[tpairdeadoverstale].agents[fake:low].reason	null	stale	dead	alert	P222+ALERT94
+arms/A3b/c01-dead-over-stale-rw	list-needsattn-json	tpairdeadoverstale	fake:high	sessions[tpairdeadoverstale].agents[fake:high].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3b/c01-dead-over-stale-rw	list-needsattn-json	tpairdeadoverstale	fake:low	sessions[tpairdeadoverstale].agents[fake:low].reason	null	stale	dead	alert	P222+ALERT94
+arms/A3b/c02-stale-over-waitinguser-ro	list-active-json	tpairstaleoverwaitinguser	fake:high	sessions[tpairstaleoverwaitinguser].agents[fake:high].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3b/c02-stale-over-waitinguser-ro	list-active-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	state	P222+P128
+arms/A3b/c02-stale-over-waitinguser-ro	list-all-json	tpairstaleoverwaitinguser	fake:high	sessions[tpairstaleoverwaitinguser].agents[fake:high].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3b/c02-stale-over-waitinguser-ro	list-all-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	state	P222+P128
+arms/A3b/c02-stale-over-waitinguser-ro	list-json	tpairstaleoverwaitinguser	fake:high	sessions[tpairstaleoverwaitinguser].agents[fake:high].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3b/c02-stale-over-waitinguser-ro	list-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	state	P222+P128
+arms/A3b/c02-stale-over-waitinguser-ro	list-needsattn-json	tpairstaleoverwaitinguser	fake:high	sessions[tpairstaleoverwaitinguser].agents[fake:high].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3b/c02-stale-over-waitinguser-ro	list-needsattn-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	state	P222+P128
+arms/A3b/c02-stale-over-waitinguser-rw	list-active-json	tpairstaleoverwaitinguser	fake:high	sessions[tpairstaleoverwaitinguser].agents[fake:high].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3b/c02-stale-over-waitinguser-rw	list-active-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	state	P222+P128
+arms/A3b/c02-stale-over-waitinguser-rw	list-all-json	tpairstaleoverwaitinguser	fake:high	sessions[tpairstaleoverwaitinguser].agents[fake:high].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3b/c02-stale-over-waitinguser-rw	list-all-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	state	P222+P128
+arms/A3b/c02-stale-over-waitinguser-rw	list-json	tpairstaleoverwaitinguser	fake:high	sessions[tpairstaleoverwaitinguser].agents[fake:high].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3b/c02-stale-over-waitinguser-rw	list-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	state	P222+P128
+arms/A3b/c02-stale-over-waitinguser-rw	list-needsattn-json	tpairstaleoverwaitinguser	fake:high	sessions[tpairstaleoverwaitinguser].agents[fake:high].reason	null	stale	stale	alert	P222+ALERT94
+arms/A3b/c02-stale-over-waitinguser-rw	list-needsattn-json	tpairstaleoverwaitinguser	fake:low	sessions[tpairstaleoverwaitinguser].agents[fake:low].reason	null	waiting-user	stale	state	P222+P128
+arms/A3b/c03-waitinguser-over-blocked-ro	list-all-json	tpairwaitinguseroverblocked	fake:high	sessions[tpairwaitinguseroverblocked].agents[fake:high].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3b/c03-waitinguser-over-blocked-ro	list-all-json	tpairwaitinguseroverblocked	fake:low	sessions[tpairwaitinguseroverblocked].agents[fake:low].reason	null	blocked	waiting-user	state	P222+P128
+arms/A3b/c03-waitinguser-over-blocked-ro	list-json	tpairwaitinguseroverblocked	fake:high	sessions[tpairwaitinguseroverblocked].agents[fake:high].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3b/c03-waitinguser-over-blocked-ro	list-json	tpairwaitinguseroverblocked	fake:low	sessions[tpairwaitinguseroverblocked].agents[fake:low].reason	null	blocked	waiting-user	state	P222+P128
+arms/A3b/c03-waitinguser-over-blocked-ro	list-needsattn-json	tpairwaitinguseroverblocked	fake:high	sessions[tpairwaitinguseroverblocked].agents[fake:high].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3b/c03-waitinguser-over-blocked-ro	list-needsattn-json	tpairwaitinguseroverblocked	fake:low	sessions[tpairwaitinguseroverblocked].agents[fake:low].reason	null	blocked	waiting-user	state	P222+P128
+arms/A3b/c03-waitinguser-over-blocked-rw	list-all-json	tpairwaitinguseroverblocked	fake:high	sessions[tpairwaitinguseroverblocked].agents[fake:high].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3b/c03-waitinguser-over-blocked-rw	list-all-json	tpairwaitinguseroverblocked	fake:low	sessions[tpairwaitinguseroverblocked].agents[fake:low].reason	null	blocked	waiting-user	state	P222+P128
+arms/A3b/c03-waitinguser-over-blocked-rw	list-json	tpairwaitinguseroverblocked	fake:high	sessions[tpairwaitinguseroverblocked].agents[fake:high].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3b/c03-waitinguser-over-blocked-rw	list-json	tpairwaitinguseroverblocked	fake:low	sessions[tpairwaitinguseroverblocked].agents[fake:low].reason	null	blocked	waiting-user	state	P222+P128
+arms/A3b/c03-waitinguser-over-blocked-rw	list-needsattn-json	tpairwaitinguseroverblocked	fake:high	sessions[tpairwaitinguseroverblocked].agents[fake:high].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A3b/c03-waitinguser-over-blocked-rw	list-needsattn-json	tpairwaitinguseroverblocked	fake:low	sessions[tpairwaitinguseroverblocked].agents[fake:low].reason	null	blocked	waiting-user	state	P222+P128
+arms/A3b/c04-blocked-over-throttled-ro	list-all-json	tpairblockedoverthrottled	fake:high	sessions[tpairblockedoverthrottled].agents[fake:high].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3b/c04-blocked-over-throttled-ro	list-json	tpairblockedoverthrottled	fake:high	sessions[tpairblockedoverthrottled].agents[fake:high].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3b/c04-blocked-over-throttled-ro	list-needsattn-json	tpairblockedoverthrottled	fake:high	sessions[tpairblockedoverthrottled].agents[fake:high].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3b/c04-blocked-over-throttled-rw	list-all-json	tpairblockedoverthrottled	fake:high	sessions[tpairblockedoverthrottled].agents[fake:high].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3b/c04-blocked-over-throttled-rw	list-json	tpairblockedoverthrottled	fake:high	sessions[tpairblockedoverthrottled].agents[fake:high].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3b/c04-blocked-over-throttled-rw	list-needsattn-json	tpairblockedoverthrottled	fake:high	sessions[tpairblockedoverthrottled].agents[fake:high].reason	null	blocked	blocked	state	P222+P128+P108
+arms/A3b/c06-competing-noclear-ro	list-all-json	tcompetingnoclear	fake:high	sessions[tcompetingnoclear].agents[fake:high].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3b/c06-competing-noclear-ro	list-all-json	tcompetingnoclear	fake:low	sessions[tcompetingnoclear].agents[fake:low].reason	null	waiting-user	dead	state	P222+P128
+arms/A3b/c06-competing-noclear-ro	list-json	tcompetingnoclear	fake:high	sessions[tcompetingnoclear].agents[fake:high].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3b/c06-competing-noclear-ro	list-json	tcompetingnoclear	fake:low	sessions[tcompetingnoclear].agents[fake:low].reason	null	waiting-user	dead	state	P222+P128
+arms/A3b/c06-competing-noclear-ro	list-needsattn-json	tcompetingnoclear	fake:high	sessions[tcompetingnoclear].agents[fake:high].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3b/c06-competing-noclear-ro	list-needsattn-json	tcompetingnoclear	fake:low	sessions[tcompetingnoclear].agents[fake:low].reason	null	waiting-user	dead	state	P222+P128
+arms/A3b/c06-competing-noclear-rw	list-all-json	tcompetingnoclear	fake:high	sessions[tcompetingnoclear].agents[fake:high].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3b/c06-competing-noclear-rw	list-all-json	tcompetingnoclear	fake:low	sessions[tcompetingnoclear].agents[fake:low].reason	null	waiting-user	dead	state	P222+P128
+arms/A3b/c06-competing-noclear-rw	list-json	tcompetingnoclear	fake:high	sessions[tcompetingnoclear].agents[fake:high].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3b/c06-competing-noclear-rw	list-json	tcompetingnoclear	fake:low	sessions[tcompetingnoclear].agents[fake:low].reason	null	waiting-user	dead	state	P222+P128
+arms/A3b/c06-competing-noclear-rw	list-needsattn-json	tcompetingnoclear	fake:high	sessions[tcompetingnoclear].agents[fake:high].reason	null	dead	dead	alert	P222+ALERT94
+arms/A3b/c06-competing-noclear-rw	list-needsattn-json	tcompetingnoclear	fake:low	sessions[tcompetingnoclear].agents[fake:low].reason	null	waiting-user	dead	state	P222+P128
+arms/A4/c03-next-noattach-ro	list-needsattn-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
+arms/A4/c03-next-noattach-rw	list-needsattn-json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88

@@ -118,6 +118,62 @@ def declared_contributions(case):
     return out
 
 
+# The producer-side carriers for the three DERIVED contributions. dead, stale and
+# throttled are never self-declared, but the watchdog's own alert names the OWNER in
+# `target` and the contribution in `summary` — so an exact per-agent locus exists
+# where a session-attention-only reading could only guess.
+ALERT_SUMMARY = (("agent process dead", "dead"),
+                 ("max nudges reached", "stale"),
+                 ("throttled for", "throttled"))
+
+
+def template_of(case):
+    """The producer template this case was cloned from, from its own case.txt."""
+    p = os.path.join(SRC, case, "case.txt")
+    if not os.path.exists(p):
+        return None
+    m = re.search(r"\btemplate=(\S+)", open(p, encoding="utf-8", errors="replace").read())
+    return m.group(1) if m else None
+
+
+def alert_contributions(template, session):
+    """target -> its CURRENT contribution, from the producer template's event bytes.
+
+    Alert-once-then-quiet means a past alert is not by itself a present fact, so an
+    entry is dropped when the agent ACTS AGAIN after it: a later event whose `actor`
+    is that target supersedes the alert, because the agent that was dead or stale is
+    demonstrably neither. The latest qualifying alert wins. Everything here is read
+    from fixed producer bytes; nothing is inferred from the session's ranked
+    attention, which names a class without naming an owner."""
+    if not template or "/" not in template:
+        return {}
+    arm, variant = template.split("/", 1)
+    p = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                     "sessions", session, "events.jsonl")
+    if not os.path.exists(p):
+        return {}
+    events = []
+    for line in open(p, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except ValueError:
+            pass
+    current = {}
+    for i, e in enumerate(events):
+        target, summary = e.get("target"), str(e.get("summary") or "")
+        if e.get("action") in ("alert", "throttled") and target:
+            for prefix, contribution in ALERT_SUMMARY:
+                if summary.startswith(prefix):
+                    current[target] = (contribution, i)
+        actor = e.get("actor")
+        if actor in current and i > current[actor][1]:
+            del current[actor]
+    return {k: v[0] for k, v in current.items()}
+
+
 def loss_sessions(case):
     """Sessions whose data suffered ACTUAL read/parse loss, from the manifest.
 
@@ -179,8 +235,10 @@ def main():
                 doc = json.loads(text)
             except ValueError:
                 doc = None
+            template = template_of(case)
             for sess in (doc or {}).get("sessions", []) or []:
                 name = sess.get("name")
+                alerts = alert_contributions(template, name or "")
                 if name in loss:
                     rows.append((case, consumer, "SC-509b", "digest",
                                  "sessions[].degraded",
@@ -200,8 +258,13 @@ def main():
                     # information SC-509c says the surface already has and fails to
                     # put where the contract requires.
                     own = ag.get("state")
-                    proved = sorted({own} | declared.get(ref, set())
-                                    if own in AGENT_OWNED else declared.get(ref, set()))
+                    if own in AGENT_OWNED:
+                        proved, evidence = [own], "its own declared state"
+                    elif ref in alerts:
+                        proved, evidence = [alerts[ref]], "a watchdog alert naming it as target"
+                    else:
+                        proved = sorted(declared.get(ref, set()))
+                        evidence = "a state event naming it as actor"
                     att = sess.get("attention")
                     if len(proved) == 1:
                         # The locus names the SESSION AND THE AGENT, because neither
@@ -216,8 +279,9 @@ def main():
                                      "sessions[%s].agents[%s].reason" % (name, ref),
                                      "null", proved[0], "equals",
                                      "OBSERVED", "OBSERVED",
-                                     "%s declared %s in the fixed event bytes; owner and "
-                                     "exact contribution are both named" % (ref, proved[0])))
+                                     "%s: %s names the owner and the exact contribution "
+                                     "%s in fixed producer bytes"
+                                     % (ref, evidence, proved[0])))
                     elif len(proved) > 1:
                         unproved.append((case, consumer, ref, str(att),
                                          "AMBIGUOUS-CONTRIBUTION",

@@ -54,6 +54,9 @@ MUTATIONS = [
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A3/c07-competing-rw\t")
                                  and "\tSC-509c\t" in l))),
+    ("MISSING-509c", OBL, "an ALERT-derived reason move stripped (evidence class 2)",
+     lambda s: "\n".join(l for l in s.split("\n")
+                         if not ("\tSC-509c\t" in l and "sessions[twda1].agents[fake:probe]" in l))),
     ("SURFACE", OBL, "a JSON-only obligation parked on a human row",
      lambda s: s.replace("arms/A1/c02-meta-mode-000-ro\tlist-all-json\tSC-509b\t",
                          "arms/A1/c02-meta-mode-000-ro\tlist\tSC-509b\t", 1)),

@@ -18,6 +18,43 @@ PREDICATES = {"equals", "at-least", "all-of", "present"}
 SUPPORT = {"OBSERVED", "UNSCORABLE"}
 LISTING = ("ae list", "ae ls")
 AGENT_OWNED = ("dead", "stale", "waiting-user", "blocked", "throttled")
+ALERT_SUMMARY = (("agent process dead", "dead"), ("max nudges reached", "stale"),
+                 ("throttled for", "throttled"))
+
+
+def alert_owners(case, session):
+    """Re-derived INDEPENDENTLY of the generator, from the producer template bytes:
+    the watchdog alert's `target` names the owner, its `summary` the contribution,
+    and a later event by that agent supersedes it (alert-once-then-quiet)."""
+    cp = os.path.join(SRC, case, "case.txt")
+    if not os.path.exists(cp):
+        return {}
+    m = re.search(r"\btemplate=(\S+)", open(cp, encoding="utf-8", errors="replace").read())
+    if not m or "/" not in m.group(1):
+        return {}
+    arm, variant = m.group(1).split("/", 1)
+    ep = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                      "sessions", session, "events.jsonl")
+    if not os.path.exists(ep):
+        return {}
+    events = []
+    for line in open(ep, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if line:
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                pass
+    cur = {}
+    for i, e in enumerate(events):
+        t, sm = e.get("target"), str(e.get("summary") or "")
+        if e.get("action") in ("alert", "throttled") and t:
+            for prefix, contribution in ALERT_SUMMARY:
+                if sm.startswith(prefix):
+                    cur[t] = (contribution, i)
+        if e.get("actor") in cur and i > cur[e.get("actor")][1]:
+            del cur[e.get("actor")]
+    return {k: v[0] for k, v in cur.items()}
 
 
 def digest_text(text):
@@ -153,9 +190,13 @@ def main(quiet=False):
                 # the two agree on this corpus.
                 loss = {n for n in sess if n not in metas or metas[n] == "UNREADABLE"}
             want_b = any(x.get("name") in loss for x in doc.get("sessions", []) or [])
-            want_c = any(a.get("reason") is None and a.get("state") in AGENT_OWNED
-                         for x in doc.get("sessions", []) or []
-                         for a in (x.get("agents") or []))
+            want_c = False
+            for x in doc.get("sessions", []) or []:
+                owners = alert_owners(case, x.get("name") or "")
+                for a in x.get("agents") or []:
+                    if a.get("reason") is None and (a.get("state") in AGENT_OWNED
+                                                    or a.get("ref") in owners):
+                        want_c = True
             if want_b and "SC-509b" not in ids:
                 fail(out, "MISSING-509b", "%s/%s has a session with unreadable meta and owes "
                      "no degraded move" % (case, consumer))
