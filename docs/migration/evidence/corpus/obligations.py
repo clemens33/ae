@@ -204,8 +204,17 @@ def main():
                                     if own in AGENT_OWNED else declared.get(ref, set()))
                     att = sess.get("attention")
                     if len(proved) == 1:
+                        # The locus names the SESSION AND THE AGENT, because neither
+                        # alone is an address. `agents[].reason` collapsed 128
+                        # obligations to 88 keys — a cardinality that would have
+                        # matched the census's 88 while being a different set. And
+                        # (case, consumer, ref) is not unique either: 64 such keys
+                        # name an agent that appears under MORE THAN ONE session in
+                        # the same digest. A key that is not a key makes every set
+                        # comparison built on it meaningless.
                         rows.append((case, consumer, "SC-509c", "digest",
-                                     "agents[].reason", "null", proved[0], "equals",
+                                     "sessions[%s].agents[%s].reason" % (name, ref),
+                                     "null", proved[0], "equals",
                                      "OBSERVED", "OBSERVED",
                                      "%s declared %s in the fixed event bytes; owner and "
                                      "exact contribution are both named" % (ref, proved[0])))
