@@ -470,6 +470,13 @@ fallback value lands, and the feature reads as "nothing found" instead of
 shim (top of `ae`, and emitted into generated helpers via the `_lib`
 `declare -f` list).
 
+**This table governs the shell YOU are typing into, not only the script's
+code.** It reads as a product-behavior spec, so the ad-hoc command you run
+during a session does not feel like its subject — and two agents in one day
+reached for GNU-only `timeout`/flags on macOS while actively citing rows from
+this table for the product. Before running a measurement or probe, check your
+one-off command against the same rows you would check a diff against.
+
 | Raw (GNU-only) | Shim | BSD form |
 |---|---|---|
 | `tac` | `_ae_tac` | `tail -r` |
