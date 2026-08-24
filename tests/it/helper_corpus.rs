@@ -447,10 +447,33 @@ fn every_frozen_requests_row_matches_byte_for_byte() {
 
         let expected_err = row.captured(&root, "stderr");
         if expected_err.starts_with(b"grep: ") {
-            // HELD OUT, NAMED AND COUNTED — never normalised. These bytes are
-            // grep's, emitted by the `_lib` bootstrap prologue that every
-            // generated helper sources, and they carry the CAPTURE HOST's
-            // absolute scratch path. The finding is proved in its own test.
+            // NAMED AND COUNTED — never normalised. These bytes are grep's,
+            // emitted by the `_lib` bootstrap prologue every generated helper
+            // sources, and they carry the CAPTURE HOST's absolute scratch path.
+            // The finding is proved in its own test.
+            //
+            // What is asserted here is the SUCCESSOR side, and it is asserted
+            // rather than skipped: this surface writes EXACTLY NOTHING to
+            // stderr on a successful table. So the successor half of whatever
+            // subtraction the seats ratify is already true and already checked,
+            // and "held out" never means "unknown".
+            //
+            // FOLD CONDITION — when the member-4 stderr ruling lands, the
+            // BASELINE side changes shape and this branch must be re-keyed:
+            // scope comes from the ruling's fixed pre-successor JOINS
+            // (baseline-helper-bootstrap-grep), never from a byte prefix. The
+            // `starts_with(b"grep: ")` test above is a tolerance wearing a
+            // join's clothes and must be DELETED at that point — colead's seed
+            // list plants grep-shaped stderr OUTSIDE the keyed loci precisely to
+            // catch a prefix key, and a prefix key swallows it. The assertion
+            // below survives the change unaltered.
+            assert!(
+                produced.stderr.is_empty(),
+                "{}: the successor must write no stderr beside a successful \
+                 table, got {:?}",
+                row.label(),
+                String::from_utf8_lossy(&produced.stderr)
+            );
             grep_noise.push(row.label());
         } else if produced.stderr != expected_err {
             failures.push(describe(
