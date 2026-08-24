@@ -1390,10 +1390,12 @@ uncertainty would assert the very thing that was not established.
 renders always: `true` iff >=1 contribution remains established after reducing the
 READABLE facts; `false` iff none remains established in those readable facts. Later
 readable records may add, clear, or supersede a contribution, so more input may
-change `true` to `false` as well as `false` to `true`. With
-`degraded: true`, NEITHER value proves the exact final attention: missing facts may
-add, clear, or supersede, and `degraded: true` is the mandatory incompleteness
-qualifier.
+change `true` to `false` as well as `false` to `true`. When the loss could affect the ATTENTION INPUTS, neither
+boolean value alone proves the exact final attention: missing facts may add,
+clear, or supersede a contribution. When SC-509b's exactness rule establishes the
+maximum despite unrelated loss, the full triad remains exact — aggregate
+`degraded` does not make a per-member answer uncertain. Either way,
+`degraded: true` is the mandatory incompleteness qualifier.
 **WHAT EXACT MEANS, and it is not "no loss anywhere".** SC-017g's marker is a MAX
 across the session's agents, so exactness is a question about that maximum, not
 about whether every byte was read. The rule: **the answer is EXACT iff every
@@ -1427,10 +1429,12 @@ when a relevant missing input could change it.
 **What frozen v1 does and does not witness.** Its `needs_attention: false` on a
 loss entry is NOT defect evidence — under this row that boolean is the partial-
 evidence proposition "no contribution remains established after reducing the
-readable facts", which is exactly what the incumbent had grounds to say. But with
-`degraded: true`, NEITHER `true` nor `false` proves the exact final attention:
-missing facts may add, clear, or supersede a contribution, and `degraded: true` is
-the mandatory incompleteness qualifier. Its `attention: null` and `attention_rank: 0`
+readable facts", which is exactly what the incumbent had grounds to say. When the loss could affect the ATTENTION INPUTS, neither
+boolean value alone proves the exact final attention: missing facts may add,
+clear, or supersede a contribution. When SC-509b's exactness rule establishes the
+maximum despite unrelated loss, the full triad remains exact — aggregate
+`degraded` does not make a per-member answer uncertain. Either way,
+`degraded: true` is the mandatory incompleteness qualifier. Its `attention: null` and `attention_rank: 0`
 ARE defect evidence wherever exact quiet or an exact maximum was not established,
 because those spellings assert read-and-quiet (SC-017g) about inputs that were not
 read. The incumbent could not have done otherwise — its emitter is one `printf`
