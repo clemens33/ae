@@ -1,28 +1,32 @@
-=== FIXTURE (pane ids resolved, not guessed) ===
+=== FIXTURE (pane ids resolved, never guessed) ===
   nonshell=%0 shell=%1 exited=%2
 
 === RAW: the enumeration SC-017p already needs, one call ===
-  alias:nonshell	sleep	%0	0
-  alias:exited	true	%2	1
-  alias:shellpane	zsh	%1	0
-  instrument ok: all three markers present exactly once
+  alias:nonshell	sleep	0	%0
+  alias:exited	true	1	%2
+  alias:shellpane	zsh	0	%1
 
-=== READINGS (measured, before any assertion) ===
-  non-shell foreground           [sleep]
-  shell foreground               [zsh]
-  pane whose process exited      [true]
+=== PRECONDITIONS (measured, asserted BEFORE any verdict) ===
+  ok  all three markers present exactly once
+  ok  non-shell pane reports [sleep], outside the closed shell set
+  ok  shell pane reports [zsh], inside the closed shell set
+  ok  exited pane reports pane_dead=1 with command [true], outside the shell set
+      (that combination is the whole point: the command field alone would say alive)
 
-=== PREDICATE (applied after reading) ===
-  ok   non-shell foreground           alive    (cmd=[sleep])
-  ok   shell foreground               unknown  (cmd=[zsh])
-  -- exited pane: tmux reports [true]; predicate says alive
+=== VERDICTS (SC-017s as ratified) ===
+  ok   non-shell, live pane         alive    (dead=0 cmd=[sleep])
+  ok   shell foreground             unknown  (dead=0 cmd=[zsh])
+  ok   exited pane                  unknown  (dead=1 cmd=[true])
+  ok   empty command reading        unknown  (unit: live tmux produced no empty reading here)
 
-=== UNIT: the empty reading, which live tmux may never produce ===
-  empty string -> unknown (want unknown)
+=== RED-PROOF 1: the pane_dead conjunct, on the SAME measured bytes ===
+  command-only predicate  -> alive
+  SC-017s predicate       -> unknown
+  CAUGHT: the defect yields ALIVE on a pane_dead=1 pane; the conjunct yields unknown.
 
-=== CONTROL: the frozen LIST-PATH set (ae:4201-4206) omits the empty string ===
-  frozen list-path set on an empty reading -> alive
-  CONFIRMED: ae:4201-4206 turns an empty/failed read into a POSITIVE alive;
-  ae:428-434 (command_is_shell, which includes "") does not.
+=== RED-PROOF 2: the empty reading, frozen list-path set vs command_is_shell ===
+  ae:4201-4206 set on an empty reading -> alive
+  ae:428-434  set on an empty reading -> unknown
+  CAUGHT: the list-path set turns an empty/failed read into a POSITIVE alive.
 
 SC-017s PROBE: PASS
