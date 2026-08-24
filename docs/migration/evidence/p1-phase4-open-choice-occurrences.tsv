@@ -42,4 +42,4 @@ P3-C15-EQUAL-NAME	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-me
 SC-L399	SC	896d08ea3ac753095c04af17dfba92cd9d15fb38	399	1	SC-017o	product-output	OC-P3-HUMAN-DIAGNOSTIC	human diagnostic wording, whether paths/targets are named, and exit status
 SC-L490	SC	896d08ea3ac753095c04af17dfba92cd9d15fb38	490	1	SC-017r	product-output	OC-P3-AGENT-HEALTH-TOKEN	exact alive/dead/unknown words or glyphs
 SC-L402	SC	896d08ea3ac753095c04af17dfba92cd9d15fb38	402	1	SC-017o	sc-arm	OC-P3-MACHINE-LOSS-RECORDS	internal loss representation and ordering remain open (phrase is remain open, not OPEN CHOICE)
-SC-509-GENERATED-AT	SC	896d08ea3ac753095c04af17dfba92cd9d15fb38	1367	1	SC-509	sc-arm	OC-P3-GENERATED-AT	generated_at is a required digest field whose exact timestamp bytes are unspecified
+SC-509-GENERATED-AT	SC	896d08ea3ac753095c04af17dfba92cd9d15fb38	1367	1	SC-509	sc-arm	OC-P3-GENERATED-AT	C3 0126d765: generated_at VALUE is an SC-509-carried underdetermined locus; field presence/type retained

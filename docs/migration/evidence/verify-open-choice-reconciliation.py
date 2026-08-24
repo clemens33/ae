@@ -39,6 +39,8 @@ REGISTER_BLOB = "2da4fb86933a6b8edee15fd61596d6f53fa6c550"
 REGISTER_PATH = "docs/migration/p1-phase4-open-choices.tsv"
 OCC_PATH_DEFAULT = os.path.join(HERE, "p1-phase4-open-choice-occurrences.tsv")
 CONTRACT_PATH = "docs/migration/semantic-contract.md"
+C3_BLOB = "0126d765d57da2f8cbe86e93660362121f96d2f8"
+C3_PATH = "docs/migration/evidence/p1-phase4-contract-obligation-reconciliation.md"
 
 PHRASE = re.compile(r"open[\s\-]*choice", re.I)
 CRIT = re.compile(r"^(\d+)\.\s+")
@@ -218,6 +220,12 @@ def verify(
                 ids, "STALE-BLOB",
                 f"register HEAD blob {got or '(missing)'} != pin {REGISTER_BLOB}",
             )
+    got_c3 = git_blob(C3_PATH, cwd)
+    if got_c3 != C3_BLOB:
+        fail(
+            ids, "STALE-BLOB",
+            f"C3 recon HEAD blob {got_c3 or '(missing)'} != pin {C3_BLOB}",
+        )
     for src, (blob, path) in GATE_BLOBS.items():
         got = git_blob(path, cwd)
         if got != blob:
