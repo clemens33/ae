@@ -235,6 +235,13 @@ sparsity". An omitted `attention` on a fully-read quiet entry is exactly that
 collapse: loss and legitimate-none become one byte pattern, the condition SC-509b
 exists to forbid. Reusing loss's spelling for a legitimate answer does not extend
 SC-509b; it destroys it.
+**JOINT INTERPRETATION — required in-row (colead, 2026-08-24).** The values below
+describe an entry whose inputs were READ. When they were not, SC-509b governs:
+`attention` and `attention_rank` are OMITTED rather than nulled, and
+`needs_attention` remains as a contextual lower bound meaning "nothing established
+from the readable facts", to be read jointly with `degraded: true`. `null` here
+means read-and-quiet and nothing else, which is exactly why it may not stand in for
+"not established".
 **SCOPE GUARD — required in-row.** This row owns the attention triad's VALUES —
 `false` / `null` / `0` when quiet. It does NOT own presence as a class: SC-509 does,
 and its presence rule reaches every documented member on the same evidence. The
@@ -1293,7 +1300,56 @@ fabricated, never null; `agents` remains an array. **The omission clause is
 LOSS-ONLY** (scope stated 2026-08-24, no change of meaning): it licenses omission
 for a fact that could not be READ, and never for a fact that was read and is
 legitimately empty — see the SC-017g presence precision, which turns on this row's
-own closing sentence. Damage is never rendered
+own closing sentence.
+**PRECISED 2026-08-24 (colead) — `degraded` IS AGGREGATE VISIBILITY, NEVER
+PER-MEMBER EVIDENCE.** The flag says this entry lost something; it does not say
+WHICH member was lost, and it may not be used to select any member's omission. A
+digest that omits every optional member because one source failed erases facts it
+read perfectly from the OTHER sources. Presence is decided PER MEMBER by the
+provenance of the member's own source: a known value renders, a known legitimate
+empty renders its empty (SC-509's presence rule), and only an UNREADABLE source
+omits. Unrelated loss cannot erase a known fact.
+**The attention members are exact-or-omitted, and `needs_attention` is not one of
+them.** `attention` and `attention_rank` — and `agents[].reason` — render only when
+the answer is EXACT given the inputs actually read; when a lost input could change
+the reason or the rank, those members are OMITTED. `null` is unavailable here
+precisely because SC-017g defines `null` as read-and-quiet, so writing it under
+uncertainty would assert the very thing that was not established.
+**`needs_attention` STAYS, as an explicit CONTEXTUAL LOWER BOUND.** It renders
+always, and it means "no attention contribution was established from the readable
+facts" — NOT "proven quiet". Consumers must interpret it JOINTLY with `degraded`:
+`false` beside `degraded: true` is a lower bound over an incomplete input set, and
+`degraded: true` is its mandatory qualifier. The bound is monotone — reading more
+can only raise it — which is what makes a boolean honest here where `null` for the
+reason is not.
+**WHAT EXACT MEANS, and it is not "no loss anywhere".** SC-017g's marker is a MAX
+across the session's agents, so exactness is a question about that maximum, not
+about whether every byte was read. The rule: **the answer is EXACT iff every
+relevant source is complete, OR the established values together with known UPPER
+BOUNDS on the missing sources force one maximum.** There is no blanket
+any-loss-implies-omit.
+Three consequences, each a required discriminator (colead, 2026-08-24):
+a READABLE EMPTY roster is FULLY ENUMERATED and supports exact quiet — only a
+roster absent or unreadable THROUGH LOSS is unenumerable, because readable events
+cannot prove that no unenumerated agent contributed;
+an established **`dead`** stands however much else was lost — it is the top class,
+so no unseen contribution can beat it, and it is the mandatory canary for this rule;
+and loss in a source that could not have changed the maximum leaves the triad
+exact and present.
+`agents[].reason` follows the same principle rather than a weaker one: an
+`AgentEntry` proves roster MEMBERSHIP (SC-405k) and nothing about the completeness
+of its own reason inputs, so it renders when its exact own contribution is
+established despite unrelated loss and omits when a relevant missing input could
+change it.
+**What frozen v1 does and does not witness.** Its `needs_attention: false` on a
+loss entry is NOT defect evidence — under this row that boolean is the lower-bound
+proposition "nothing established from the readable facts", which is exactly what
+the incumbent had grounds to say. Its `attention: null` and `attention_rank: 0`
+ARE defect evidence wherever exact quiet or an exact maximum was not established,
+because those spellings assert read-and-quiet (SC-017g) about inputs that were not
+read. The incumbent could not have done otherwise — its emitter is one `printf`
+with every member positional, so it has no way to omit and no way to distinguish —
+which is why this row is the later explicit rule and takes precedence. Damage is never rendered
 identically to legitimate sparsity — a machine digest that hides loss lies by
 omission. Authority: slice-1 joint Q5 ruling + SC-509's `schema_version` consumer-
 gating design (the events evolution rule SC-511c is a different schema and is NOT the
