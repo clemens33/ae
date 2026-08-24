@@ -243,37 +243,53 @@ impl SessionRead {
     /// the nudges are what precede it. `tpairdeadoverstale` in the corpus is
     /// exactly that shape: two nudges, then the alert.
     ///
-    /// # Why the agent's own event, and not merely a newer timestamp
+    /// # Why the agent's own event, and not merely a newer record
     ///
     /// Recovery is an ownership fact. Only the agent can prove it is back, so
     /// only the agent's own record supersedes — an event addressed TO it proves
     /// somebody tried, and nothing more.
+    ///
+    /// # Newest by LEDGER ORDER, not by timestamp
+    ///
+    /// `events.md:110` and `:128` both define this class of scan as newest-first
+    /// **via `tac`** — reverse file order — and `:128` states it for
+    /// `_agent_done_epoch`, whose relevance test is the same three-way
+    /// actor/target/cross-session predicate used here. Both reference
+    /// implementations scan that way. So the rule is recorded, not chosen.
+    ///
+    /// **It is also the only ordering with no silent-erasure direction.** A `ts`
+    /// is a CLAIM by whoever wrote the record; the position is a FACT about an
+    /// append-only log written under one lock. Ordering by `ts` lets an
+    /// independently-clocked watchdog lose an alert it appended *after* the
+    /// agent's own event merely by stamping it earlier — the alert is silently
+    /// dropped and the agent reads as recovered. Ordering by position cannot do
+    /// that in either direction, because it consults no clock.
+    ///
+    /// No SC row ratifies a clock rule for alert currency (SC-524 governs the
+    /// ACTIVITY filter's tolerance of future timestamps and says nothing about
+    /// this), which is the second reason not to invent one here.
+    /// [`SessionRead::declared_state_of`] does order by `ts`; that predates this
+    /// scan and is not re-opened by it.
     #[must_use]
     pub fn alert_reason_of(&self, session: &str, slot: &str, reference: &str) -> Option<Reason> {
-        self.events
+        // LEDGER ORDER, not timestamp order: the LAST decisive record wins, and
+        // `self.events` arrives in append order (`EventLog::drain_all` walks
+        // generations in order, and `Drain` preserves each one's offsets).
+        //
+        // `next_back` rather than `last`: this walks BACKWARD and stops at the
+        // first decisive record, which is the incumbent's `tac` scan exactly
+        // (events.md:128 — "newest-first via tac and stops at the first
+        // relevant match"), and it does not read the whole log to find a
+        // verdict sitting at the end of it.
+        match self
+            .events
             .iter()
-            .enumerate()
-            .filter_map(|(index, event)| {
-                let own = is_actor(event, session, slot, reference);
-                if !own && !is_addressed_to(event, session, slot, reference) {
-                    return None;
-                }
-                let verdict = match event.alert_meaning() {
-                    AlertMeaning::Raised(reason) => Some(reason),
-                    AlertMeaning::Cleared => None,
-                    // The agent's OWN activity is recovery; an inbound event is
-                    // not decisive at all, so it must not enter the ordering.
-                    AlertMeaning::Undefined if own => None,
-                    AlertMeaning::Undefined => return None,
-                };
-                Some((event.ts, index, verdict))
-            })
-            // Newest decisive record wins. `index` breaks a timestamp tie
-            // toward the LATER record, which is the order the incumbent's
-            // reverse file walk gives and the only tie-break an append-only log
-            // can justify.
-            .max_by_key(|(ts, index, _)| (*ts, *index))
-            .and_then(|(_, _, verdict)| verdict)
+            .filter_map(|event| decisive_verdict(event, session, slot, reference))
+            .next_back()
+        {
+            Some(Verdict::Raised(reason)) => Some(reason),
+            Some(Verdict::Clear) | None => None,
+        }
     }
 
     /// Whether this read lost anything — SC-509b's "ACTUAL read/parse loss".
@@ -361,6 +377,37 @@ fn is_actor(event: &Event, session: &str, slot: &str, reference: &str) -> bool {
         (RoutingMember::Absent, RoutingMember::Absent) => event.actor == reference,
         // Partial, or present-and-empty: routed, to nobody nameable.
         _ => false,
+    }
+}
+
+/// What one record settles for one agent, when it settles anything at all.
+///
+/// Absence of a `Verdict` is the third answer and the load-bearing one: a record
+/// that decides nothing must leave the scan looking further back rather than
+/// answering it. Collapsing that into [`Verdict::Clear`] would let every
+/// watchdog nudge cancel the alert it was sent about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    /// The watchdog says this agent needs a human, for this reason.
+    Raised(Reason),
+    /// Nothing stands any more — a watchdog retraction, or the agent's own
+    /// activity proving it is back.
+    Clear,
+}
+
+/// What `event` settles for the agent at `slot` / `reference` in `session`.
+fn decisive_verdict(event: &Event, session: &str, slot: &str, reference: &str) -> Option<Verdict> {
+    let own = is_actor(event, session, slot, reference);
+    if !own && !is_addressed_to(event, session, slot, reference) {
+        return None;
+    }
+    match event.alert_meaning() {
+        AlertMeaning::Raised(reason) => Some(Verdict::Raised(reason)),
+        AlertMeaning::Cleared => Some(Verdict::Clear),
+        // The agent's OWN activity is recovery. An inbound record decides
+        // nothing, so it must not enter the ordering at all.
+        AlertMeaning::Undefined if own => Some(Verdict::Clear),
+        AlertMeaning::Undefined => None,
     }
 }
 
@@ -2336,38 +2383,66 @@ mod tests {
     }
 
     #[test]
-    fn the_newest_decisive_record_is_the_newest_by_timestamp_not_by_position() {
-        // A deliberate divergence from the incumbent's reverse FILE walk, and
-        // the loud direction under SC-524's clock-skew doctrine: a stale-clocked
-        // recovery does not silence a newer alert. `ts` is the contract's clock
-        // everywhere else in this reader (SC-017e, SC-405f, `declared_state_of`).
-        let scratch = Scratch::new("byts");
-        scratch.meta(PAIR_META);
-        scratch.events(&[
-            event(
-                &at(300),
-                "_watchdog",
-                "alert",
-                r#","target":"fake:high","summary":"agent process dead — dropped to shell""#,
-            ),
-            // Written later, stamped earlier. Position says recovery, the clock
-            // says the alert still stands.
-            event(
-                &at(900),
-                "fake:high",
-                "state",
-                r#","ref":"working","summary":"a skewed clock""#,
-            ),
+    fn sc_509c_the_ledger_order_decides_when_a_clock_disagrees_with_it() {
+        // BOTH CROSSED DIRECTIONS, in one test, so neither can regress alone.
+        // Ordering by `ts` gets exactly one of these two right, and the one it
+        // gets wrong it gets wrong SILENTLY — see the doc on `alert_reason_of`.
+        // The rule is events.md:110/:128 (this scan class is newest-first via
+        // `tac`), not a clock rule, because no row ratifies one for currency.
+        let alert = r#","target":"fake:high","summary":"agent process dead — dropped to shell""#;
+        let spoke = r#","ref":"working","summary":"an independently clocked agent""#;
+
+        // The alert is appended LAST and stamped EARLIER. The append-only log
+        // says the watchdog spoke last, so the alert stands. Timestamp order
+        // would drop it and read the agent as recovered — the quiet failure.
+        let late_alert = Scratch::new("ledgerlatealert");
+        late_alert.meta(PAIR_META);
+        late_alert.events(&[
+            event(&at(300), "fake:high", "state", spoke),
+            event(&at(900), "_watchdog", "alert", alert),
         ]);
-        let entry = entry_for(&scratch.0, "pair", &running(), NOW, DEFAULT_UNANSWERED_SECS);
-        assert_eq!(entry.agents[0].reason, Some(Reason::Dead));
+        let entry = entry_for(
+            &late_alert.0,
+            "pair",
+            &running(),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+        assert_eq!(
+            entry.agents[0].reason,
+            Some(Reason::Dead),
+            "an alert appended after the agent's own record is the newer claim, \
+             whatever clock stamped it"
+        );
+
+        // Mirrored: the agent speaks LAST and is stamped EARLIER. Recovery is
+        // the newer claim, so nothing stands. Timestamp order would keep the
+        // alert here — loud, but still wrong about what the log says.
+        let late_recovery = Scratch::new("ledgerlaterecovery");
+        late_recovery.meta(PAIR_META);
+        late_recovery.events(&[
+            event(&at(300), "_watchdog", "alert", alert),
+            event(&at(900), "fake:high", "state", spoke),
+        ]);
+        let entry = entry_for(
+            &late_recovery.0,
+            "pair",
+            &running(),
+            NOW,
+            DEFAULT_UNANSWERED_SECS,
+        );
+        assert_eq!(
+            entry.agents[0].reason, None,
+            "and an agent that spoke last has recovered, whatever clock stamped it"
+        );
     }
 
     #[test]
     fn two_decisive_records_at_one_instant_are_settled_by_the_later_one() {
-        // Second precision means a tie is ordinary, not exotic. The tie-break
-        // is the only one an append-only log can justify — and it must be
-        // decided, or the answer depends on iteration order.
+        // Second precision makes an equal-`ts` pair ordinary, and under ledger
+        // order it needs no special rule: the later APPEND wins because it is
+        // the later record. Kept as its own case because a reader reaches for a
+        // tie-break here, and there is deliberately none to get wrong.
         let scratch = Scratch::new("tie");
         scratch.meta(PAIR_META);
         let same = at(600);
