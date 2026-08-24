@@ -41,6 +41,16 @@ ID_POPULATION = {
     "SC-509d": ("digest",),
     "SC-509e": ("digest",),
     "SC-521c": ("digest",),
+    # The stopped-session families. SC-509 carries the agents[] state field and
+    # SC-017g the session attention value; both are JSON-only.
+    "SC-509": ("digest",),
+    "SC-017g": ("digest",),
+    # SC-518/SC-518a live on the requests capture, which is neither a digest nor
+    # a listing. It gets its OWN class rather than being called `opaque`: a
+    # structured status table is not an opaque blob, and a taxonomy that lies
+    # about a row's shape cannot police what may appear on it.
+    "SC-518": ("requests",),
+    "SC-518a": ("requests",),
 }
 # The FIXED SEMANTIC COLUMNS, in header order. `authority` is EXCLUDED BY DECLARATION,
 # not by omission: it is narrative, and binding prose would make a reworded explanation
@@ -50,6 +60,15 @@ FIXED = ("obligation_id", "stream", "locus", "from", "to", "predicate",
          "baseline_provenance", "support")
 PRESENCE_ROW = ("SC-017o", "digest", "inventory_complete", "ABSENT", "present",
                 "present", "OBSERVED", "OBSERVED")
+# The SECOND legal undecidable, and it is admitted as an EXACT SHAPE WITH ONE
+# VARIABLE, never as a loosened rule. Every field is fixed except the session name
+# inside the locus, so a mandatory scorable locus still cannot launder itself into
+# `undecidable` by claiming the predicate — which is the exact laundering the
+# single-shape check was built to stop.
+ATTN_VALUE_LOCUS = re.compile(r"^sessions\[[^\]]+\]\.attention \(value\)$")
+ATTN_VALUE_ROW = ("SC-017g", "digest", None, "null",
+                  "the most-actionable reason at capture time", "undecidable",
+                  "OBSERVED", "UNSCORABLE")
 VALUE_ROW = ("SC-017o", "digest", "inventory_complete (value)", "ABSENT",
              "the enumeration's actual completeness", "undecidable",
              "OBSERVED", "UNSCORABLE")
@@ -323,6 +342,121 @@ def check_keyset(out, obls, quiet):
               % (blob[:12], len(frozen), len(live), len(live - frozen), len(frozen - live)))
 
 
+REQ_SURFACE = "helper:requests"
+OPENINGS = ("ask", "review")
+
+
+def _gident(e, side):
+    slot, sess = e.get(side + "_slot"), e.get(side + "_session")
+    if slot and sess:
+        return ("routed", slot, sess)
+    if slot is None and sess is None:
+        return ("display", e.get(side), None)
+    return ("unassociated", None, None)
+
+
+def _gsame(a, b):
+    if a[0] != b[0] or a[0] == "unassociated":
+        return False
+    return a[1] is not None and a[1] == b[1] and a[2] == b[2]
+
+
+def gate_ruled_requests(case):
+    """ref -> (status, summary), RE-DERIVED from the producer ledger.
+
+    Independent of the generator on purpose: without this the gate could police
+    the ADDRESS of an SC-518/SC-518a row and never its existence, and a deleted
+    ordering move passed green — measured by red-proof.
+    Returns None when the case declares no template, or a cancel appears (whose
+    authorization no row defines, so no status may be derived).
+    """
+    p = os.path.join(SRC, case, "case.txt")
+    if not os.path.exists(p):
+        return None
+    txt = open(p, encoding="utf-8", errors="replace").read()
+    tm = re.search(r"\btemplate=(\S+)", txt)
+    sm = re.search(r"\bsession=(\S+)", txt)
+    if not (tm and sm) or "/" not in tm.group(1):
+        return None
+    arm, variant = tm.group(1).split("/", 1)
+    f = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                     "sessions", sm.group(1), "events.jsonl")
+    if not os.path.exists(f):
+        return {}
+    ev = []
+    for n, line in enumerate(open(f, encoding="utf-8", errors="replace"), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("action") in OPENINGS + ("reply", "cancel"):
+            e["_line"] = n
+            ev.append(e)
+    if any(e.get("action") == "cancel" for e in ev):
+        return None
+    opening = {}
+    for e in ev:
+        if e.get("action") in OPENINGS:
+            r = e.get("ref")
+            if r not in opening or e["_line"] > opening[r]["_line"]:
+                opening[r] = e
+    out = {}
+    for ref, op in opening.items():
+        status, summary = "pending", op.get("summary")
+        for t in ev:
+            if t.get("action") != "reply" or t.get("ref") != ref:
+                continue
+            if t["_line"] > op["_line"] and \
+               _gsame(_gident(t, "actor"), _gident(op, "target")) and \
+               _gsame(_gident(t, "target"), _gident(op, "actor")):
+                status, summary = "replied", t.get("summary")
+        out[ref] = (status, summary)
+    return out
+
+
+def gate_capture_requests(case, consumer):
+    rows = {}
+    for line in body(case, consumer).splitlines()[1:]:
+        f = line.split(None, 5)
+        if len(f) >= 6:
+            rows[f[2]] = (f[0], f[5])
+    return rows
+
+
+def stopped_declared(case, session):
+    """ref -> newest declared state, from the session's OWN producer bytes.
+
+    Re-derived here, not imported: the generator and the gate must be able to
+    disagree about what a stopped session declares.
+    """
+    p = os.path.join(SRC, case, "case.txt")
+    if not os.path.exists(p):
+        return {}
+    m = re.search(r"\btemplate=(\S+)", open(p, encoding="utf-8", errors="replace").read())
+    if not m or "/" not in m.group(1):
+        return {}
+    arm, variant = m.group(1).split("/", 1)
+    f = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                     "sessions", session, "events.jsonl")
+    if not os.path.exists(f):
+        return {}
+    out = {}
+    for line in open(f, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("action") == "state" and e.get("actor"):
+            out[e["actor"]] = e.get("ref")
+    return out
+
+
 def digest_text(text):
     """The captured document, or None when this row is not a digest at all."""
     if '"schema_version"' not in text:
@@ -407,6 +541,10 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
     # ---- 4. CONVERSE: what carries an obligation must, and what does not must not ----
     p1 = [r for r in csv.DictReader(open(inv, encoding="utf-8"), delimiter="\t") if r["phase"] == "P1"]
     p1_rows = p1
+    req_by_case = collections.defaultdict(list)
+    for r in p1:
+        if r["surface"] == REQ_SURFACE:
+            req_by_case[os.path.dirname(r["case"])].append(r["consumer"])
     binding = clock_binding(out, [(os.path.dirname(r["case"]), r["consumer"])
                                   for r in p1])
     for r in p1:
@@ -465,9 +603,17 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
             want_c = False
             for x in ([] if scope_empty else doc.get("sessions", []) or []):
                 owners = alert_owners(case, x.get("name") or "")
+                # A STOPPED SESSION'S CAPTURED STATE IS NULLED, so reading the
+                # document cannot see the fact that makes a reason owed. The
+                # producer bytes can, and the generator derives from them — so the
+                # gate re-derives the same way here rather than concluding from a
+                # field the defect erased.
+                declared = stopped_declared(case, x.get("name") or "") \
+                    if x.get("status") == "stopped" else {}
                 for a in x.get("agents") or []:
                     if a.get("reason") is None and (a.get("state") in AGENT_OWNED
-                                                    or a.get("ref") in owners):
+                                                    or a.get("ref") in owners
+                                                    or declared.get(a.get("ref")) in AGENT_OWNED):
                         want_c = True
             if want_b and "SC-509b" not in ids:
                 fail(out, "MISSING-509b", "%s/%s has a session with unreadable meta and owes "
@@ -522,6 +668,54 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
                              "EVENT timestamps, table says %s — a set derived from the "
                              "frozen document or from a file mtime lands here"
                              % (case, consumer, render_set(der), now_, o["to"]))
+            # ---- THE STOPPED-SESSION CONVERSE, per FIELD CLASS. Without these the
+            # gate could only police the reason; a deletion of the state rows or the
+            # attention rows would restore the nulling defect and stay green, which
+            # is what "every affected field class must catch it" means.
+            want_state, want_attn = set(), set()
+            for x in ([] if scope_empty else doc.get("sessions", []) or []):
+                if x.get("status") != "stopped":
+                    continue
+                nm = x.get("name") or ""
+                decl = stopped_declared(case, nm)
+                for a in x.get("agents") or []:
+                    if decl.get(a.get("ref")) and a.get("state") in (None, ""):
+                        want_state.add("sessions[%s].agents[%s].state" % (nm, a.get("ref")))
+                owners = alert_owners(case, nm)
+                if (any(v in AGENT_OWNED for v in decl.values()) or owners) and \
+                        x.get("attention") is None:
+                    want_attn.add(nm)
+            have = {o["locus"] for o in carriers.get((case, consumer), [])}
+            for locus in sorted(want_state - have):
+                fail(out, "MISSING-509-STATE", "%s/%s: %s is null in the capture while the "
+                     "producer bytes declare a state, and no obligation restores it"
+                     % (case, consumer, locus))
+            # PER LOCUS, not per row. The row-level converse below asks only whether
+            # the row carries ANY SC-509c, so deleting ONE session's reason left the
+            # id present and passed — measured by red-proof, not reasoned about.
+            for x in ([] if scope_empty else doc.get("sessions", []) or []):
+                if x.get("status") != "stopped":
+                    continue
+                nm = x.get("name") or ""
+                decl = stopped_declared(case, nm)
+                owners = alert_owners(case, nm)
+                for a in x.get("agents") or []:
+                    ref = a.get("ref")
+                    if a.get("reason") not in (None, ""):
+                        continue
+                    if decl.get(ref) in AGENT_OWNED or ref in owners:
+                        locus = "sessions[%s].agents[%s].reason" % (nm, ref)
+                        if locus not in have:
+                            fail(out, "MISSING-509c", "%s/%s: %s is null while producer "
+                                 "bytes name an agent-owned contribution, and no "
+                                 "obligation restores it" % (case, consumer, locus))
+            for nm in sorted(want_attn):
+                if not any(o["obligation_id"] == "SC-017g" and
+                           o["locus"].startswith("sessions[%s]." % nm)
+                           for o in carriers.get((case, consumer), [])):
+                    fail(out, "MISSING-017G", "%s/%s: stopped session %s has a derivable "
+                         "attention fact and its capture shows none, yet nothing is owed"
+                         % (case, consumer, nm))
             if want_c and "SC-509c" not in ids:
                 fail(out, "MISSING-509c", "%s/%s has a null-reason agent whose own state names "
                      "an agent-owned contribution and owes no reason move" % (case, consumer))
@@ -543,8 +737,36 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
         case2, consumer2 = os.path.dirname(r["case"]), r["consumer"]
         text2 = body(case2, consumer2)
         is_digest = '"schema_version"' in text2
+        # ---- SC-518 / SC-518a converse, re-derived. Every capture row whose
+        # frozen status or summary differs from the ruled one must be carried, and
+        # nothing else may be.
+        if r["surface"] == REQ_SURFACE:
+            ruled = gate_ruled_requests(case2)
+            if ruled is not None:
+                cap = gate_capture_requests(case2, consumer2)
+                dyn = set()
+                for c3 in req_by_case.get(case2, []):
+                    for ref3, (st3, _) in gate_capture_requests(case2, c3).items():
+                        dyn.add((ref3, st3))
+                dynamic = len({r4 for r4, _ in dyn}) < len(dyn)
+                held = {o["locus"] for o in carriers.get((case2, consumer2), [])}
+                for ref, (got_st, got_sum) in sorted(cap.items()):
+                    if ref not in ruled or dynamic:
+                        continue
+                    for field, got, want in (("status", got_st, ruled[ref][0]),
+                                             ("summary", got_sum, ruled[ref][1])):
+                        locus = "requests[%s].%s" % (ref, field)
+                        if got != want and locus not in held:
+                            fail(out, "MISSING-518", "%s/%s: %s renders %r where SC-518 + "
+                                 "SC-518a require %r, and nothing is owed"
+                                 % (case2, consumer2, locus, got, want))
+                        if got == want and locus in held:
+                            fail(out, "SURFACE-518", "%s/%s: %s already matches the ruled "
+                                 "value yet carries an obligation"
+                                 % (case2, consumer2, locus))
         row_class = "digest" if is_digest else (
-            "human-listing" if r["surface"] in LISTING else "opaque")
+            "human-listing" if r["surface"] in LISTING else
+            "requests" if r["surface"] == "helper:requests" else "opaque")
         # Every obligation must sit on a row its id is allowed to appear on. This is
         # the same exact-set rule as the multiset above, applied to the population
         # boundary instead of to one digest's row set.
@@ -607,9 +829,12 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
     # so neither the predicate nor the locus can drift alone.
     for o in obls:
         shape = tuple(o[c] for c in FIXED)
-        if o["predicate"] == "undecidable" and shape != VALUE_ROW:
-            fail(out, "UNDECIDABLE", "%s/%s: only the SC-017o completeness-value row may "
-                 "carry `undecidable`; this row is %s" % (o["case"], o["consumer"], shape))
+        attn_ok = (ATTN_VALUE_LOCUS.match(shape[2] or "") is not None
+                   and shape[:2] + shape[3:] == ATTN_VALUE_ROW[:2] + ATTN_VALUE_ROW[3:])
+        if o["predicate"] == "undecidable" and shape != VALUE_ROW and not attn_ok:
+            fail(out, "UNDECIDABLE", "%s/%s: `undecidable` is carried by exactly two row "
+                 "shapes — the SC-017o completeness value and the SC-017g stopped-session "
+                 "attention value; this row is %s" % (o["case"], o["consumer"], shape))
         elif o["obligation_id"] == "SC-017o" and shape[2] == PRESENCE_ROW[2] \
                 and shape != PRESENCE_ROW:
             fail(out, "PRESENCE-SHAPE", "%s/%s: the completeness-presence locus must carry "

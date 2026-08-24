@@ -28,6 +28,31 @@ def run(obl=None, fresh=None, inv=None):
     return r.returncode, ids
 
 MUTATIONS = [
+    # ---- THE STOPPED-SESSION NULLING DEFECT, one seed PER FIELD CLASS. Frozen ae
+    # nulls needs_attention/attention/attention_rank and every agent state on a
+    # stopped session; SC-521c changes SELECTION and never the facts of a row
+    # already selected. Restoring the defect means DELETING the obligations that
+    # carry those facts, so each class is deleted separately — a single seed that
+    # removed them all would prove only that SOMETHING fired, and the requirement
+    # is that every affected class catches its own loss.
+    ("MISSING-509-STATE", OBL, "the stopped-session agent states nulled again",
+     lambda s: "\n".join(l for l in s.split("\n")
+                         if not (l.startswith("arms/A2/c01-filters-ro\tlist_all_json\tSC-509\t")
+                                 and ".state\t" in l))),
+    ("MISSING-017G", OBL, "the stopped-session attention facts nulled again",
+     lambda s: "\n".join(l for l in s.split("\n")
+                         if not (l.startswith("arms/A2/c01-filters-ro\tlist_all_json\tSC-017g\t")
+                                 and "sessions[tg6b]." in l))),
+    ("MISSING-509c", OBL, "the stopped-session reasons nulled again",
+     lambda s: "\n".join(l for l in s.split("\n")
+                         if not (l.startswith("arms/A2/c01-filters-ro\tlist_all_json\tSC-509c\t")
+                                 and "sessions[tg6b]." in l))),
+    # ---- SC-518 / SC-518a. The identity move and the ordering move are separate
+    # rows and each must be caught on its own; a seed that deleted both would not
+    # show which rule the gate can actually police.
+    ("MISSING-518", OBL, "the SC-518a ordering move deleted from A6 m2",
+     lambda s: "\n".join(l for l in s.split("\n")
+                         if not l.startswith("arms/A6/a6-c02-m2-wrong-ref-ro\trequests-all\tSC-518a\t"))),
     # ---- THE SOURCE-DISCRIMINATION SEEDS. These are the incident's permanent
     # witness against its own recurrence. The shipped defect derived the successor
     # --active set by seeding it from the FROZEN document — the mtime-sourced

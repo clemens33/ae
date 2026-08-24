@@ -457,6 +457,227 @@ def loss_sessions(case):
     return sorted((sess - set(metas)) | {n for n, h in metas.items() if h == "UNREADABLE"})
 
 
+# ---- SC-518 (identity) and SC-518a (ordering), over the FULL requests population.
+#
+# The predicate is run over every P1 requests invocation, not over a named list of
+# shapes, so the conflict cases FALL OUT and the converse is proven rather than
+# asserted. Contract blob pinned in FRESHNESS.tsv.
+OPENINGS = ("ask", "review")
+REQ_SURFACE = "helper:requests"
+
+
+def _ident(e, side):
+    """Routed / Display / Unassociated for one participant of one event.
+
+    SC-518: routed compares when BOTH sides carry slot+session, display when
+    NEITHER does, anything between matches nothing. PRESENT-BUT-EMPTY IS BETWEEN,
+    not absent — ae@72c7293:4551 rejects an empty member with `-n` exactly as it
+    rejects a missing one, which is why A7 c17/c18 are mixed and not display.
+    """
+    slot, sess = e.get(side + "_slot"), e.get(side + "_session")
+    if slot and sess:
+        return ("routed", slot, sess)
+    if slot is None and sess is None:
+        return ("display", e.get(side), None)
+    return ("unassociated", None, None)
+
+
+def _same(a, b):
+    """Routed matches routed and display matches display. NOTHING else matches,
+    INCLUDING unassociated to unassociated."""
+    if a[0] != b[0] or a[0] == "unassociated":
+        return False
+    return a[1] is not None and a[1] == b[1] and a[2] == b[2]
+
+
+def req_ledger(case):
+    """Every request-lifecycle event of the case's producer session, in APPEND
+    order, each tagged with its 1-based LEDGER LINE.
+
+    SC-518a orders by ledger position and never by `ts`: a timestamp is a
+    writer's clock and skew must not carry a terminal across an opening.
+    """
+    p = os.path.join(SRC, case, "case.txt")
+    if not os.path.exists(p):
+        return None
+    txt = open(p, encoding="utf-8", errors="replace").read()
+    tm = re.search(r"\btemplate=(\S+)", txt)
+    sm = re.search(r"\bsession=(\S+)", txt)
+    if not (tm and sm) or "/" not in tm.group(1):
+        return None
+    arm, variant = tm.group(1).split("/", 1)
+    f = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                     "sessions", sm.group(1), "events.jsonl")
+    if not os.path.exists(f):
+        return []
+    out = []
+    for n, line in enumerate(open(f, encoding="utf-8", errors="replace"), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("action") in OPENINGS + ("reply", "cancel"):
+            e["_line"] = n
+            out.append(e)
+    return out
+
+
+def ruled_requests(case, events):
+    """ref -> (status, summary, mover) under SC-518 + SC-518a.
+
+    The SHOWN opening is the newest ask/review for the ref (events.md:112). A
+    reply closes it only if it sits LATER IN THE LEDGER (SC-518a) and mirrors both
+    ends (SC-518). `mover` names WHICH ROW rejected the reply frozen would have
+    used — derived from the reason, never assigned per case: a reply that
+    precedes its opening was rejected on ORDER, anything else on IDENTITY.
+    """
+    if any(e.get("action") == "cancel" for e in events):
+        raise SystemExit(
+            "FATAL: a cancel event reached the ruled derivation in %s. Cancel "
+            "authorization is defined by NO contract row, SC-518a authorizes none, "
+            "and the corpus measured ZERO cancels — so this is a new fixture that "
+            "needs a ruling. A default here would be a ruling nobody made." % case)
+    opening = {}
+    for e in events:
+        if e.get("action") in OPENINGS:
+            ref = e.get("ref")
+            if ref not in opening or e["_line"] > opening[ref]["_line"]:
+                opening[ref] = e
+    out = {}
+    for ref, op in opening.items():
+        replies = [e for e in events if e.get("action") == "reply" and e.get("ref") == ref]
+        status, summary, mover = "pending", op.get("summary"), None
+        for t in replies:
+            if t["_line"] > op["_line"] and \
+               _same(_ident(t, "actor"), _ident(op, "target")) and \
+               _same(_ident(t, "target"), _ident(op, "actor")):
+                status, summary = "replied", t.get("summary")
+        if status == "pending" and replies:
+            frozen_pick = max(replies, key=lambda e: e["_line"])
+            mover = "SC-518a" if frozen_pick["_line"] < op["_line"] else "SC-518"
+        out[ref] = (status, summary, mover)
+    return out
+
+
+def capture_requests(case, consumer):
+    """(ref -> (status, summary)) as the capture actually rendered it."""
+    text = body(case, consumer)
+    rows = {}
+    for line in text.splitlines()[1:]:
+        f = line.split(None, 5)
+        if len(f) >= 6:
+            rows[f[2]] = (f[0], f[5])
+    return rows
+
+
+def dynamic_subject(case, consumers):
+    """True when the case's OWN captures disagree about a ref's status.
+
+    THE CLAIM IS DELIBERATELY THE SMALL ONE: disagreement proves the fixed
+    template is NOT AN ENTITLED EXPECTED-VALUE SOURCE for both captures. It does
+    NOT prove the producer moved during the run — consumer nondeterminism or
+    another run-time input would look identical from here, and output
+    disagreement is not a provenance oracle. The stronger attribution belongs to
+    the D arm's own writer-barrier artifact, cited there and not derived here.
+    """
+    seen = collections.defaultdict(set)
+    for c in consumers:
+        for ref, (st, _) in capture_requests(case, c).items():
+            seen[ref].add(st)
+    return any(len(v) > 1 for v in seen.values())
+
+
+# ---- STOPPED-SESSION FACTS: selection changes what is SHOWN, never what is TRUE.
+#
+# Measured: all 96 stopped-session entries in the P1 digests carry
+# needs_attention/attention/attention_rank nulled, and every one that carries
+# agents has EVERY agent state null. SC-509 mandates the agents[] and session
+# attention fields, SC-017g defines the attention VALUE, SC-509c the reason —
+# and SC-521c changes SELECTION, never the facts of a row already selected.
+#
+# THE RANK SCALE IS MEASURED, NOT DERIVED FROM THE PRIORITY SENTENCE. SC-017g
+# reads "dead > stale > waiting-user > blocked > throttled > unanswered", and the
+# captured scale runs the OTHER WAY: 1=unanswered rising to 6=dead, with 0 for no
+# attention. Reading the sentence as the numbering gives blocked=4; the bytes say
+# 3, across every P1 digest that carries an attention.
+ATTN_RANK = {"unanswered": 1, "throttled": 2, "blocked": 3,
+             "waiting-user": 4, "stale": 5, "dead": 6}
+
+
+def session_events(template, session):
+    """A session's own producer ledger, or None when it cannot be resolved."""
+    if not template or "/" not in template:
+        return None
+    arm, variant = template.split("/", 1)
+    p = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                     "sessions", session, "events.jsonl")
+    if not os.path.exists(p):
+        return None
+    out = []
+    for line in open(p, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def stopped_facts(template, session):
+    """(states, contributions, has_opening) from a session's fixed bytes.
+
+    `states` is the NEWEST declared state per actor — the field SC-509 mandates,
+    which is not the same question as attention: A1 tg1 declares working/done and
+    owes state with NO attention at all, which is why the two classes move
+    independently and neither can be derived from the other.
+    """
+    events = session_events(template, session)
+    if events is None:
+        return None
+    states = {}
+    for e in events:
+        if e.get("action") == "state" and e.get("actor"):
+            states[e["actor"]] = e.get("ref")
+    # AN OPENING IS NOT AN UNANSWERED REQUEST. Only a request left PENDING under
+    # the ruled closure derivation can ever become `unanswered`, so the question
+    # is asked with SC-518 + SC-518a rather than by looking for an ask. A1 tg1
+    # holds an ask that its own reply closes: it owes STATE and no attention, and
+    # a coarse has-an-opening test would have called it undecidable.
+    ledger = [dict(e, _line=n) for n, e in enumerate(events, 1)
+              if e.get("action") in OPENINGS + ("reply", "cancel")]
+    pending = any(v[0] == "pending"
+                  for v in ruled_requests(session, ledger).values()) if ledger else False
+    contrib = dict(alert_contributions(template, session))
+    for actor, st in states.items():
+        if st in AGENT_OWNED:
+            contrib[actor] = st
+    return states, contrib, pending
+
+
+def stopped_attention(contrib, has_pending):
+    """(needs_attention, attention, rank) or None when it is not decidable.
+
+    An agent-owned contribution decides it outright. With none, the session is
+    quiet ONLY if nothing could make it unanswered — and `unanswered` is rank 1,
+    the LOWEST, so it can never outrank a contribution that exists. That makes
+    the split exact rather than approximate: it decides the answer only where no
+    contribution exists AND an opening does, and there SC-522's strictly-past
+    threshold needs a clock these captures do not record. Undecidable there, and
+    said so, rather than assumed quiet.
+    """
+    if contrib:
+        best = max(contrib.values(), key=lambda c: ATTN_RANK.get(c, 0))
+        return True, best, ATTN_RANK[best]
+    if has_pending:
+        return None
+    return False, None, 0
+
+
 def main():
     p1 = [r for r in csv.DictReader(open(INV, encoding="utf-8"), delimiter="\t")
           if r["phase"] == "P1"]
@@ -464,6 +685,12 @@ def main():
     # a table whose window rows would silently carry the wrong clock.
     binding = clock_binding([(os.path.dirname(r["case"]), r["consumer"]) for r in p1])
     rows, seen, unproved = [], set(), []
+    req_consumers = collections.defaultdict(list)
+    for r in p1:
+        if r["surface"] == REQ_SURFACE:
+            req_consumers[os.path.dirname(r["case"])].append(r["consumer"])
+    req_excluded, req_zero, req_live = set(), 0, 0
+    stopped_unresolved, stopped_undecidable = set(), set()
     for r in p1:
         case, consumer = os.path.dirname(r["case"]), r["consumer"]
         seen.add((case, consumer))
@@ -472,6 +699,57 @@ def main():
         listish = r["surface"] in LISTING
         incomplete = unreachable(case)
 
+        if r["surface"] == REQ_SURFACE:
+            # SC-518 / SC-518a over the FULL requests population. Every row is
+            # accounted: scanned, proven-zero-owed, or excluded WITH ITS REASON.
+            events = req_ledger(case)
+            cap = capture_requests(case, consumer)
+            if events is None:
+                # No template declaration (a LIVE case, not cloned). It owes
+                # nothing only if it renders no request rows — checked, because
+                # "no source" and "nothing owed" are different answers.
+                if cap:
+                    raise SystemExit("FATAL: %s/%s renders %d request row(s) with no "
+                                     "template to derive from" % (case, consumer, len(cap)))
+                req_live += 1
+            elif dynamic_subject(case, req_consumers[case]):
+                # DYNAMIC-SUBJECT / FIXED-TEMPLATE-INAPPLICABLE. The case's own
+                # captures disagree about a ref's status, which disqualifies the
+                # fixed template as an entitled expected-value source for BOTH.
+                # It does NOT establish why they disagree: run-time production,
+                # consumer nondeterminism and another run-time input all look
+                # identical from here. Disagreement is an entitlement
+                # disqualifier, never a provenance oracle.
+                req_excluded.add((case, consumer))
+            elif not events:
+                if cap:
+                    raise SystemExit("FATAL: %s/%s renders %d request row(s) with no "
+                                     "lifecycle events" % (case, consumer, len(cap)))
+                req_zero += 1
+            else:
+                ruled = ruled_requests(case, events)
+                for ref in sorted(cap):
+                    if ref not in ruled:
+                        continue
+                    got_st, got_sum = cap[ref]
+                    want_st, want_sum, mover = ruled[ref]
+                    # STATUS AND SUMMARY ARE SEPARATE OBLIGATIONS, derived and
+                    # addressed separately. Collapsing them would make a capture
+                    # count readable as a locus count, which the contract row
+                    # explicitly forbids.
+                    for field, got, want in (("status", got_st, want_st),
+                                             ("summary", got_sum, want_sum)):
+                        if got == want:
+                            continue
+                        rows.append((case, consumer, mover or "SC-518", "stdout",
+                                     "requests[%s].%s" % (ref, field), got, want,
+                                     "equals", "OBSERVED", "OBSERVED",
+                                     "%s: the reply frozen closed this with was rejected "
+                                     "on %s; the shown opening is at ledger line of the "
+                                     "newest ask/review for this ref and order is ledger "
+                                     "position, never ts"
+                                     % (ref, "ORDER (SC-518a)" if mover == "SC-518a"
+                                        else "IDENTITY (SC-518)")))
         if digest:
             # SC-509d: version 2, unconditionally, on every successor digest.
             m = re.search(r'"schema_version"\s*:\s*(\d+)', text)
@@ -564,6 +842,65 @@ def main():
                              "mtime, with SC-524 futures counted active"
                              % (now, win, CLOCK_HARNESS_SHA256[:12])))
             template = template_of(case)
+            # ---- STOPPED-SESSION FACTS. SC-521c changes SELECTION; a row already
+            # selected keeps its facts. Each output is bound to the row that
+            # governs IT — SC-509 for the agents[] state field, SC-509c for the
+            # reason, SC-017g for the attention value — never batch-stamped to
+            # whichever row happened to expose them.
+            for sess in ([] if scope_empty else (doc or {}).get("sessions", []) or []):
+                if sess.get("status") != "stopped":
+                    continue
+                name = sess.get("name")
+                facts = stopped_facts(template, name or "")
+                if facts is None:
+                    stopped_unresolved.add((case, name))
+                    continue
+                states, contrib, pending = facts
+                for ag in sess.get("agents") or []:
+                    ref = ag.get("ref")
+                    want = states.get(ref)
+                    if want and ag.get("state") in (None, ""):
+                        rows.append((case, consumer, "SC-509", "digest",
+                                     "sessions[%s].agents[%s].state" % (name, ref),
+                                     "null", want, "equals", "OBSERVED", "OBSERVED",
+                                     "%s declares state %s in fixed producer bytes; the "
+                                     "session being stopped changes what is SELECTED, "
+                                     "never what the record says" % (ref, want)))
+                    if contrib.get(ref) and ag.get("reason") in (None, ""):
+                        rows.append((case, consumer, "SC-509c", "digest",
+                                     "sessions[%s].agents[%s].reason" % (name, ref),
+                                     "null", contrib[ref], "equals", "OBSERVED", "OBSERVED",
+                                     "%s: fixed producer bytes name the owner and the "
+                                     "agent-owned contribution %s" % (ref, contrib[ref])))
+                attn = stopped_attention(contrib, pending)
+                if attn is None:
+                    stopped_undecidable.add((case, name))
+                    rows.append((case, consumer, "SC-017g", "digest",
+                                 "sessions[%s].attention (value)" % name,
+                                 "null", "the most-actionable reason at capture time",
+                                 "undecidable", "OBSERVED", "UNSCORABLE",
+                                 "no agent-owned contribution exists and a request is "
+                                 "PENDING under SC-518/SC-518a, so `unanswered` may apply "
+                                 "— but SC-522's threshold is strictly-past and needs a "
+                                 "clock these captures do not record. Unanswered is rank "
+                                 "1, so this is the only shape it can decide"))
+                else:
+                    need, value, rank = attn
+                    for locus, got, wanted in (
+                            ("needs_attention", sess.get("needs_attention"), need),
+                            ("attention", sess.get("attention"), value),
+                            ("attention_rank", sess.get("attention_rank"), rank)):
+                        if got == wanted:
+                            continue
+                        rows.append((case, consumer, "SC-017g", "digest",
+                                     "sessions[%s].%s" % (name, locus),
+                                     "null" if got is None else str(got).lower(),
+                                     "null" if wanted is None else str(wanted).lower(),
+                                     "equals", "OBSERVED", "OBSERVED",
+                                     "SC-017g takes the MAX across agent contributions; "
+                                     "the rank scale is MEASURED (1=unanswered rising to "
+                                     "6=dead), not read off the priority sentence, which "
+                                     "runs the other way"))
             for sess in ([] if scope_empty else (doc or {}).get("sessions", []) or []):
                 name = sess.get("name")
                 alerts = alert_contributions(template, name or "")
@@ -585,6 +922,16 @@ def main():
                     # (its own declared class) in the captured bytes — it is the
                     # information SC-509c says the surface already has and fails to
                     # put where the contract requires.
+                    # ONE WRITER PER LOCUS, scoped to THIS branch only. A stopped
+                    # session's reason rows are emitted by the stopped-facts path,
+                    # which derives from producer bytes because the captured state is
+                    # nulled; letting this branch also reach them duplicated the
+                    # address on every stopped session an alert named. Skipping the
+                    # whole SESSION instead was the over-broad first fix and silently
+                    # dropped its SC-509b degraded rows — both caught by the gate,
+                    # neither by reading the diff.
+                    if sess.get("status") == "stopped":
+                        continue
                     own = ag.get("state")
                     if own in AGENT_OWNED:
                         proved, evidence = [own], "its own declared state"
@@ -719,6 +1066,16 @@ def main():
             fh.write("\t".join(str(v) for v in x) + "\n")
 
     rows.sort(key=lambda x: (x[0], x[1], x[2], x[4]))
+    print("  stopped-session facts: %d session(s) UNDECIDABLE attention (pending request, "
+          "no clock), %d UNRESOLVED (no template/session bytes)"
+          % (len(stopped_undecidable), len(stopped_unresolved)))
+    for k in sorted(stopped_unresolved):
+        print("    UNRESOLVED  %s / %s" % k)
+    print("  requests population: %d excluded DYNAMIC-SUBJECT/FIXED-TEMPLATE-INAPPLICABLE, "
+          "%d proven zero-owed (no lifecycle events), %d live/no-template proven zero-owed"
+          % (len(req_excluded), req_zero, req_live))
+    for k in sorted(req_excluded):
+        print("    EXCLUDED  %s / %s" % k)
     with open(OUT, "w", encoding="utf-8") as fh:
         fh.write("\t".join(HDR) + "\n")
         for x in rows:
