@@ -686,9 +686,32 @@ def owed_loss(case, doc):
                   "false" if x.get("needs_attention") is False
                   else str(x.get("needs_attention")).lower(),
                   "false", "equals", "OBSERVED", "OBSERVED"))
+        # THE OPTIONAL MEMBERS. Dropped once from this very function, which is why
+        # the reconciliation control below is now CODE: an expectation that lives
+        # only in messages gets dropped exactly like that. They are exact-or-omitted
+        # and a loss session's roster is unenumerable, so missing facts could add,
+        # clear or supersede the maximum and neither member is established.
+        for member in ("attention", "attention_rank"):
+            val = x.get(member)
+            owed.add(("SC-509b", "digest", "sessions[%s].%s" % (nm, member),
+                      "null" if val is None else str(val).lower(),
+                      "ABSENT", "equals", "OBSERVED", "OBSERVED"))
         if "branch" in x and x.get("branch") is None:
             owed.add(("SC-405g", "digest", "sessions[%s].branch" % nm,
                       "null", "ABSENT", "equals", "OBSERVED", "OBSERVED"))
+    # RECONCILIATION CONTROL, ENCODED. Every loss occurrence owes EXACTLY FOUR
+    # SC-509b loci — degraded, needs_attention, attention, attention_rank — plus at
+    # most one SC-405g branch move. This is not a second authority over the table: it
+    # checks THIS DERIVATION's own completeness, which is the check that was missing
+    # when 28 loci silently vanished from it and the count lived only in a message.
+    occurrences = sum(1 for x in doc.get("sessions", []) or []
+                      if (x.get("name") or "") in loss)
+    b_rows = sum(1 for t in owed if t[0] == "SC-405g")
+    if len(owed) != occurrences * 4 + b_rows:
+        raise RuntimeError(
+            "LOSS-POPULATION-ARITY %s: %d loss occurrence(s) must owe %d SC-509b loci "
+            "plus %d branch move(s), got %d owed"
+            % (case, occurrences, occurrences * 4, b_rows, len(owed)))
     return owed
 
 

@@ -990,12 +990,30 @@ def main():
                                  "false" if sess.get("needs_attention") is False
                                  else str(sess.get("needs_attention")).lower(),
                                  "false", "equals", "OBSERVED", "OBSERVED",
-                                 "session %s: `false` is the DEGRADED-CONTEXT LOWER "
-                                 "BOUND — no contribution established from the "
-                                 "readable facts, qualified by degraded:true, NOT "
-                                 "proven quiet. It is non-monotone: more input may "
-                                 "add, clear or supersede a contribution, so neither "
-                                 "value proves the exact final attention" % name))
+                                 "session %s: needs_attention renders as an "
+                                 "ALWAYS-PRESENT PARTIAL-EVIDENCE INDICATOR — `false` "
+                                 "iff none remains established in those readable "
+                                 "facts. With `degraded: true`, NEITHER value proves "
+                                 "the exact final attention: missing facts may add, "
+                                 "clear, or supersede" % name))
+                    # THE OPTIONAL MEMBERS, which owed_loss dropped once and the
+                    # 28-loci reconciliation control existed to catch. `attention`
+                    # and `attention_rank` are exact-or-omitted: they render only
+                    # when the exact answer is established from readable sources,
+                    # and a loss session's roster is unenumerable, so missing facts
+                    # could add, clear or supersede the maximum. Both omit.
+                    for member, frozen_val in (("attention", sess.get("attention")),
+                                               ("attention_rank", sess.get("attention_rank"))):
+                        rows.append((case, consumer, "SC-509b", "digest",
+                                     "sessions[%s].%s" % (name, member),
+                                     "null" if frozen_val is None else str(frozen_val).lower(),
+                                     "ABSENT", "equals", "OBSERVED", "OBSERVED",
+                                     "session %s: the exact %s is UNPROVED under roster "
+                                     "loss — missing facts may add, clear, or supersede "
+                                     "the maximum — and the member is exact-or-omitted, "
+                                     "so it omits. `null` means read-and-quiet and "
+                                     "nothing else, which is exactly why it may not "
+                                     "stand in for \"not established\"" % (name, member)))
                     # SC-405g, the TEMPORARY branch exception (colead, 2026-08-25):
                     # `branch` ALONE keeps the predecessor projection until its
                     # source-acquisition slice lands — ABSENT on a degraded entry

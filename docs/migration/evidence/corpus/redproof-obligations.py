@@ -37,7 +37,7 @@ MUTATIONS = [
     ("OWED-MISSING", OBL, "the degraded qualifier dropped, its needs_attention half left standing",
      lambda s: "\n".join(l for l in s.split("\n") if not l.startswith(
          "arms/A1/c02-meta-mode-000-ro\tlist-all-json\tSC-509b\tdigest\tsessions[tg1].degraded\t"))),
-    ("OWED-MISSING", OBL, "the needs_attention lower-bound dropped, its qualifier left standing",
+    ("OWED-MISSING", OBL, "the needs_attention partial-evidence indicator dropped, its qualifier left standing",
      lambda s: "\n".join(l for l in s.split("\n") if not l.startswith(
          "arms/A1/c02-meta-mode-000-ro\tlist-all-json\tSC-509b\tdigest\tsessions[tg1].needs_attention\t"))),
     ("OWED-EXTRA", OBL, "a row left at the OLD unqualified locus — regrain performed, not enforced",
@@ -381,6 +381,36 @@ def third_branch_control():
     return 0 if ok else 1
 
 
+def loss_arity_control():
+    """SEED 56. The 28 optional-member loci were once DROPPED from owed_loss and the
+    only thing that would have caught it was a count living in a chat message. It is
+    code now: every loss occurrence owes exactly four SC-509b loci plus at most one
+    SC-405g branch move, asserted inside the derivation.
+
+    Like FAMILY-SET this cannot be seeded through --obl/--fresh/--inv, because the
+    subject is the DERIVATION's own completeness rather than any data file.
+    """
+    import importlib.util as iu
+    import json
+    spec = iu.spec_from_file_location("g", os.path.join(HERE, "verify-obligations.py"))
+    g = iu.module_from_spec(spec)
+    spec.loader.exec_module(g)
+    case = "arms/A1/c02-meta-mode-000-ro"
+    doc = json.loads(g.body(case, "list-all-json"))
+    full = g.owed_loss(case, doc)
+    occ = sum(1 for x in doc.get("sessions", []) or []
+              if (x.get("name") or "") in g.gate_loss_sessions(case))
+    branch = sum(1 for t in full if t[0] == "SC-405g")
+    for member in ("attention", "attention_rank", "needs_attention", "degraded"):
+        trimmed = {t for t in full if not t[2].endswith("." + member)}
+        if len(trimmed) == occ * 4 + branch:
+            print("loss-arity     dropping .%s left the arity intact <-- MISSED" % member)
+            return 1
+    print("loss-arity     %d occurrence(s) owe %d SC-509b loci + %d branch; dropping any "
+          "one member breaks the arity" % (occ, occ * 4, branch))
+    return 0
+
+
 def controls():
     """Prove the predicate discriminates its source before trusting any seed."""
     sys.path.insert(0, HERE)
@@ -403,6 +433,7 @@ def main():
     bad0 = controls()
     bad0 += family_set_guard()
     bad0 += third_branch_control()
+    bad0 += loss_arity_control()
     bad = 0
     # Every mutation target, read ONCE from the shared checkout and never written.
     originals = {t: open(t, encoding="utf-8").read()
