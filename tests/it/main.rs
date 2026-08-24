@@ -6,6 +6,7 @@
 
 mod cli;
 mod fixtures;
+mod helper_corpus;
 mod parity;
 mod parity_self_test;
 mod phase2;

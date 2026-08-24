@@ -1770,6 +1770,12 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
     assert_eq!(
         product,
         vec![
+            // The OPAQUE event-container read and existence test, shared by the
+            // `requests` and `events-tail` surfaces. One file rather than two:
+            // both surfaces read the same container the same quiet way, so the
+            // read sits with the framing in `event_text` and neither surface
+            // module opens anything itself.
+            "src/event_text.rs".to_owned(),
             "src/events.rs".to_owned(),
             "src/inventory.rs".to_owned(),
             "src/lib.rs".to_owned(),

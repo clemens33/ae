@@ -341,3 +341,239 @@ fn an_unknown_list_flag_exits_two_not_one() {
         assert!(stderr.contains(tail[1]), "{tail:?}: {stderr}");
     }
 }
+
+// ── the two internal helper surfaces (`_requests`, `_events-tail`) ───────────
+//
+// The LIBRARY behind them is compared against every frozen corpus row in
+// `super::helper_corpus`. What is proved here is the other half — the argv, the
+// exit-code mapping, which stream each answer lands on, and the fact that the
+// follow surface actually follows. A parity run invokes the binary, not the
+// library, so this is the half that makes the corpus comparison a claim about
+// the product.
+
+/// A session meta directory with the events container these tests need.
+fn plant_events(root: &std::path::Path, session: &str, lines: &[&str]) -> std::path::PathBuf {
+    let dir = root.join("sessions").join(session);
+    let mut body = String::new();
+    for line in lines {
+        body.push_str(line);
+        body.push('\n');
+    }
+    let written =
+        std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join("events.jsonl"), body));
+    assert!(written.is_ok(), "a planted event container");
+    dir
+}
+
+const PLANTED_ASK: &str = r#"{"ts":"2026-08-20T16:12:55Z","actor":"cl:lead","action":"ask","target":"cl:worker","ref":"ae-1","actor_slot":"main","actor_session":"s","target_slot":"worker.0","target_session":"s","summary":"the planted question"}"#;
+
+#[test]
+fn requests_all_prints_the_table_on_stdout_and_says_nothing_else() {
+    let root = scratch("requests-all");
+    let dir = plant_events(&root, "tg1", &[PLANTED_ASK]);
+
+    let out = ae()
+        .arg(ae::cli::REQUESTS)
+        .arg(&dir)
+        .arg("all")
+        .output()
+        .expect("the ae binary should run");
+
+    assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+    assert!(out.stderr.is_empty(), "stderr: {:?}", out.stderr);
+    // The bytes, not a substring: this surface's whole contract is its bytes.
+    let mut expected = ae::requests::header();
+    expected.extend_from_slice(
+        b"pending  ask      ae-1                         cl:lead              cl:worker            the planted question\n",
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&expected)
+    );
+}
+
+#[test]
+fn requests_defaults_to_mine_and_refuses_at_one_with_no_identity() {
+    // The default mode is `mine`, and outside a pane `mine` cannot be answered.
+    // `1` here is PINNED by 24 corpus rows and must not drift to the usage `2`.
+    let root = scratch("requests-default");
+    let dir = plant_events(&root, "tg1", &[PLANTED_ASK]);
+
+    for tail in [vec![], vec!["mine"], vec!["inbox"]] {
+        let mut command = ae();
+        command.arg(ae::cli::REQUESTS).arg(&dir);
+        command.args(&tail);
+        let out = command.output().expect("the ae binary should run");
+
+        assert_eq!(out.status.code(), Some(1), "{tail:?}: {:?}", out.status);
+        assert!(
+            out.stdout.is_empty(),
+            "{tail:?}: the refusal precedes the header, so stdout stays empty"
+        );
+        let stderr = String::from_utf8(out.stderr).expect("stderr should be utf-8");
+        assert_eq!(
+            stderr,
+            format!("{}\n", ae::requests::NO_IDENTITY),
+            "{tail:?}"
+        );
+    }
+}
+
+#[test]
+fn a_helper_surface_asked_wrong_exits_two_and_prints_nothing() {
+    let root = scratch("requests-usage");
+    let dir = plant_events(&root, "tg1", &[PLANTED_ASK]);
+    let dir = dir.to_string_lossy().into_owned();
+
+    let wrong: [Vec<&str>; 5] = [
+        vec![ae::cli::REQUESTS],
+        vec![ae::cli::REQUESTS, &dir, "bogus"],
+        vec![ae::cli::REQUESTS, &dir, "all", "extra"],
+        vec![ae::cli::EVENTS_TAIL],
+        vec![ae::cli::EVENTS_TAIL, &dir, "extra"],
+    ];
+    for argv in wrong {
+        let out = ae().args(&argv).output().expect("the ae binary should run");
+        assert_eq!(out.status.code(), Some(2), "{argv:?}: {:?}", out.status);
+        assert!(out.stdout.is_empty(), "{argv:?}: stdout must stay empty");
+        assert!(
+            !out.stderr.is_empty(),
+            "{argv:?}: a usage error has to say something"
+        );
+    }
+}
+
+#[test]
+fn the_underscore_spellings_are_commands_and_never_launch_candidates() {
+    // SC-022's grammar is not narrowed by these two: a leading underscore is
+    // not a legal session name, so nothing that WAS a launch candidate stopped
+    // being one. Both directions are asserted — the spelling dispatches, and it
+    // never falls through to the launcher's message.
+    for spelling in [ae::cli::REQUESTS, ae::cli::EVENTS_TAIL] {
+        let out = ae()
+            .arg(spelling)
+            .output()
+            .expect("the ae binary should run");
+        let stderr = String::from_utf8(out.stderr).expect("stderr should be utf-8");
+        assert!(
+            !stderr.contains("start is not implemented"),
+            "{spelling} reached the launcher: {stderr}"
+        );
+        assert_eq!(out.status.code(), Some(2), "{spelling}");
+    }
+    // And help names them, so a shipped surface is discoverable.
+    let out = ae()
+        .arg("--help")
+        .output()
+        .expect("the ae binary should run");
+    let help = String::from_utf8(out.stdout).expect("stdout should be utf-8");
+    for spelling in [ae::cli::REQUESTS, ae::cli::EVENTS_TAIL] {
+        assert!(help.contains(spelling), "help omits {spelling}: {help}");
+    }
+}
+
+#[test]
+fn events_tail_prints_its_opening_then_follows_what_is_appended() {
+    // THE ONLY TEST OF THE FOLLOW. Everything else about this surface is a pure
+    // function over bytes; the loop that keeps reading is not, and a monitor
+    // pane that shows the replay and then goes deaf would pass every other
+    // test in the tree.
+    //
+    // Shaped like the corpus instrument: start it, let it produce, kill it.
+    // Reads happen on a worker thread behind `recv_timeout` so a surface that
+    // produces too little fails the test instead of hanging the suite.
+    use std::io::Read as _;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let root = scratch("events-tail-follow");
+    let session = "tg1";
+    let dir = plant_events(&root, session, &[PLANTED_ASK]);
+
+    let mut opening = ae::events_tail::banner(session.as_bytes());
+    opening.extend_from_slice(&ae::events_tail::replay(
+        format!("{PLANTED_ASK}\n").as_bytes(),
+    ));
+
+    let appended = r#"{"ts":"2026-08-20T16:13:01Z","actor":"cl:worker","action":"reply","target":"cl:lead","ref":"ae-1","summary":"the appended answer"}"#;
+    let followed = ae::events_tail::format_event(appended.as_bytes()).expect("an event line");
+
+    let mut child = ae()
+        .arg(ae::cli::EVENTS_TAIL)
+        .arg(&dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the ae binary should start");
+    let mut piped = child.stdout.take().expect("stdout was piped");
+
+    // One reader thread for both reads, in order: the opening, then the follow
+    // line. Appending happens here, between them, so the record genuinely
+    // arrives after the process was already running.
+    let (sender, receiver) = mpsc::channel();
+    let want = (opening.len(), followed.len());
+    std::thread::spawn(move || {
+        let mut first = vec![0_u8; want.0];
+        let opening_read = piped.read_exact(&mut first).map(|()| first);
+        let _ = sender.send(opening_read);
+        let mut second = vec![0_u8; want.1];
+        let follow_read = piped.read_exact(&mut second).map(|()| second);
+        let _ = sender.send(follow_read);
+    });
+
+    let got_opening = receiver.recv_timeout(Duration::from_secs(15));
+
+    // THE APPEND IS TORN ON PURPOSE, and this is the part that matters most: a
+    // writer is not atomic, so the follow WILL read a record mid-write. Half of
+    // it lands, at least one poll goes by, then the rest. The single complete
+    // line asserted below is only what arrives if the follow refuses to yield an
+    // unterminated record — emit the fragment and these bytes are wrong.
+    let (half, rest) = appended.split_at(appended.len() / 2);
+    let open_for_append = || {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join("events.jsonl"))
+    };
+    let torn = open_for_append()
+        .and_then(|mut file| std::io::Write::write_all(&mut file, half.as_bytes()));
+    assert!(torn.is_ok(), "the first half should land");
+    // Two poll intervals, so a follow that emits fragments has had every chance
+    // to emit one before the record is finished.
+    std::thread::sleep(Duration::from_millis(2_100));
+    let completed = open_for_append()
+        .and_then(|mut file| std::io::Write::write_all(&mut file, format!("{rest}\n").as_bytes()));
+    assert!(completed.is_ok(), "the rest should land");
+
+    // The poll interval is one second, so this waits for a real poll to notice.
+    let got_follow = receiver.recv_timeout(Duration::from_secs(15));
+
+    let killed = child.kill();
+    let status = child.wait();
+    let mut leftover = Vec::new();
+    if let Some(mut errors) = child.stderr.take() {
+        let _ = errors.read_to_end(&mut leftover);
+    }
+
+    let opening_bytes = got_opening
+        .expect("the opening should arrive")
+        .expect("and be complete");
+    assert_eq!(
+        String::from_utf8_lossy(&opening_bytes),
+        String::from_utf8_lossy(&opening)
+    );
+    let follow_bytes = got_follow
+        .expect("the appended record should be followed")
+        .expect("and be complete");
+    assert_eq!(
+        String::from_utf8_lossy(&follow_bytes),
+        String::from_utf8_lossy(&followed)
+    );
+    assert!(killed.is_ok(), "the follow was still running to be killed");
+    assert!(status.is_ok());
+    assert!(
+        leftover.is_empty(),
+        "this surface writes nothing to stderr — the frozen capture's \
+         `Terminated: 15` was the SHELL's job notification, not ae's: {:?}",
+        String::from_utf8_lossy(&leftover)
+    );
+}

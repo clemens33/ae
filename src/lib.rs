@@ -31,7 +31,20 @@
 //! | [`transport`] | SC-017k, SC-017l — the exec, and why a run that did not answer is never absence |
 //! | [`session`] | SC-017e, SC-017g, SC-405d/f/g/i/j/k, SC-518, SC-520, SC-980 — what a session directory establishes, and what it must be told |
 //! | [`listing`] | SC-017f, SC-017h, SC-509, SC-506 — the two renderings of one selection, and the injected world they read |
-//! | [`cli`] | SC-021, and the argv half of SC-017a–i / SC-521a/b — which word is `list`, and which parser owns its flags |
+//! | [`cli`] | SC-021, SC-022, and the argv half of SC-017a–i / SC-521a/b — which word is `list`, and which parser owns its flags |
+//!
+//! # The read side, slice 2: the two helper query surfaces
+//!
+//! | Module | Rows |
+//! |---|---|
+//! | [`event_text`] | SC-211d, SC-211n — the OPAQUE extraction and framing the generated helpers read through, which is not [`events`]'s typed reader |
+//! | [`requests`] | SC-212c, SC-518, SC-1306d — pending, replied, cancelled, and the table that shows them |
+//! | [`events_tail`] | SC-211n, SC-1306e — the monitor pane's banner, replay and follow |
+//!
+//! These two are GENERATED SESSION HELPERS in the frozen tree, invoked as
+//! `<AE_HOME>/sessions/<name>/requests` and `…/events-tail`. Their successor
+//! spelling is [`cli::REQUESTS`] and [`cli::EVENTS_TAIL`], and the argv mapping a
+//! parity run must declare for them is recorded in each module's docs.
 //!
 //! Most of those rows exist BECAUSE this code was written. Two slices stopped on
 //! eleven questions rather than inferring answers, and the seats ratified the
@@ -54,13 +67,16 @@ pub mod attention;
 pub mod cli;
 pub mod digest;
 pub mod error;
+pub mod event_text;
 pub mod events;
+pub mod events_tail;
 pub mod filters;
 pub mod inventory;
 pub mod json;
 pub mod listing;
 pub mod liveness;
 pub mod meta;
+pub mod requests;
 pub mod session;
 pub mod time;
 pub mod tmux;
@@ -101,10 +117,17 @@ pub fn help_text() -> String {
          ae <COMMAND> [OPTIONS]\n\n\
          Commands:\n  \
          list, ls       List ae sessions (--json for the machine-readable digest)\n\n\
+         Internal commands (a session's own helpers call these):\n  \
+         {} <dir> [mine|inbox|all]\n                 \
+         Request state from a session's event log\n  \
+         {} <dir>\n                 \
+         Follow a session's event log\n\n\
          Options:\n  \
          -h, --help     Print help\n  \
          -V, --version  Print version\n",
-        version_line()
+        version_line(),
+        cli::REQUESTS,
+        cli::EVENTS_TAIL
     )
 }
 
@@ -309,6 +332,24 @@ pub fn run_with(
             writeln!(err, "ae: unknown argument: {token}")?;
             request.exit_code().unwrap_or(2)
         }
+        cli::Request::MissingOperand(command) => {
+            writeln!(err, "ae: {command} needs a session meta directory")?;
+            request.exit_code().unwrap_or(2)
+        }
+        // The frozen helper writes its table and its refusal to the streams a
+        // pane reads, and so does this: the refusal is a DIAGNOSTIC and never
+        // reaches stdout, which is why a refused invocation's stdout is empty
+        // rather than a bare header.
+        cli::Request::Requests { dir, mode } => {
+            let rendered = requests::render(dir, *mode, &requests::Viewer::default());
+            out.write_all(&rendered.stdout)?;
+            err.write_all(&rendered.stderr)?;
+            rendered.code
+        }
+        // NEVER RETURNS. The surface has no completion condition — see
+        // `events_tail::follow` — so the only way out is a signal or a write
+        // failure, and the write failure is the one this arm can report.
+        cli::Request::EventsTail { dir } => match events_tail::follow(dir, out)? {},
         cli::Request::List(list_args) => {
             if let Some(world) = world {
                 // SC-017o: the warning goes to STDERR and the table still

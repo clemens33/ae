@@ -5,7 +5,25 @@
 //! until a real error does" — applies here too. When the real command surface
 //! arrives (P1+), revisit with a measured need.
 
+use std::path::PathBuf;
+
 use crate::filters::{ListArgs, UnknownFlag};
+use crate::requests::Mode;
+
+/// The subcommand that carries the `requests` helper surface.
+///
+/// **The leading underscore is the whole argument for this spelling** (lead
+/// ruling on D1, 2026-08-24). `_validate_session_name` forbids a leading `_`, so
+/// an underscore-prefixed subcommand can never shadow a legal session name and
+/// SC-022's "a top-level bare word is a launch candidate" loses nothing to it.
+/// A `requests` spelling would have taken a real name out of the launch grammar;
+/// a `--session` flag would have invented an option no row names. `ae` already
+/// spells its internal surfaces this way — `_register-sid`, `_recover-pending`.
+pub const REQUESTS: &str = "_requests";
+
+/// The subcommand that carries the `events-tail` helper surface. Same
+/// underscore reasoning as [`REQUESTS`].
+pub const EVENTS_TAIL: &str = "_events-tail";
 
 /// What an argv asks the binary to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,6 +34,26 @@ pub enum Request {
     Help,
     /// `list` (or its `ls` spelling) with the filters its flags selected.
     List(ListArgs),
+    /// `_requests <meta-dir> [mine|inbox|all]` — the `requests` helper surface.
+    Requests {
+        /// The session meta directory the frozen helper derives from `$0`.
+        dir: PathBuf,
+        /// SC-212c's mode, defaulting to `mine`.
+        mode: Mode,
+    },
+    /// `_events-tail <meta-dir>` — the `events-tail` helper surface.
+    EventsTail {
+        /// The session meta directory the frozen helper derives from `$0`.
+        dir: PathBuf,
+    },
+    /// A usage error about a MISSING operand rather than an offending token.
+    ///
+    /// The successor spelling's own error class: the frozen helpers read their
+    /// meta directory from `$0`, so "you gave me no directory" is a state they
+    /// cannot be in and no row rules. It exits `2` like every other usage error,
+    /// and it is a separate variant because [`Request::UsageError`] promises to
+    /// carry the offending token verbatim — and an absence is not a token.
+    MissingOperand(&'static str),
     /// **SC-022** — a token that is a usage error: an unknown top-level OPTION,
     /// or an unknown token in a `list`/`ls` tail. Carries the token verbatim.
     UsageError(String),
@@ -81,6 +119,25 @@ impl Request {
     ///     Request::LaunchCandidate("my-feature".to_owned())
     /// );
     /// ```
+    ///
+    /// # The two internal helper surfaces
+    ///
+    /// ```
+    /// use ae::cli::Request;
+    /// use ae::requests::Mode;
+    ///
+    /// let argv = ["_requests".to_owned(), "/s/tg1".to_owned(), "all".to_owned()];
+    /// assert_eq!(
+    ///     Request::parse(&argv),
+    ///     Request::Requests { dir: "/s/tg1".into(), mode: Mode::All }
+    /// );
+    /// // The mode defaults, exactly as the helper's `${1:-mine}` does.
+    /// let argv = ["_requests".to_owned(), "/s/tg1".to_owned()];
+    /// assert_eq!(
+    ///     Request::parse(&argv),
+    ///     Request::Requests { dir: "/s/tg1".into(), mode: Mode::Mine }
+    /// );
+    /// ```
     #[must_use]
     pub fn parse(args: &[String]) -> Self {
         match args.first().map(String::as_str) {
@@ -90,10 +147,45 @@ impl Request {
                 Ok(parsed) => Self::List(parsed),
                 Err(UnknownFlag(token)) => Self::UsageError(token),
             },
+            Some(REQUESTS) => Self::parse_requests(&args[1..]),
+            Some(EVENTS_TAIL) => match &args[1..] {
+                [] => Self::MissingOperand(EVENTS_TAIL),
+                [dir] => Self::EventsTail { dir: dir.into() },
+                [_, extra, ..] => Self::UsageError(extra.clone()),
+            },
             // SC-022, in the order the row states it: option-shaped first,
             // because everything left over is a name and not an error.
             Some(other) if other.starts_with('-') => Self::UsageError(other.to_owned()),
             Some(other) => Self::LaunchCandidate(other.to_owned()),
+        }
+    }
+
+    /// `_requests <meta-dir> [mine|inbox|all]`.
+    ///
+    /// A mode token that is not one of the three is a usage error at `2`, not
+    /// the frozen helper's `1` (lead ruling on D2): no corpus row exercises this
+    /// path, and where the corpus pins nothing and the crate's exit-code
+    /// contract speaks, the contract wins — `1` for both conflates "you asked
+    /// wrong" with "it went wrong", which is the distinction `2` exists for.
+    /// The IDENTITY refusal keeps its pinned `1`; that one is
+    /// [`crate::requests::EXIT_NO_IDENTITY`] and is not decided from argv.
+    fn parse_requests(tail: &[String]) -> Self {
+        let (dir, token) = match tail {
+            [] => return Self::MissingOperand(REQUESTS),
+            [dir] => (dir, None),
+            [dir, mode] => (dir, Some(mode.as_str())),
+            [_, _, extra, ..] => return Self::UsageError(extra.clone()),
+        };
+        match Mode::parse(token) {
+            Some(mode) => Self::Requests {
+                dir: dir.into(),
+                mode,
+            },
+            // `token` is necessarily `Some` on this arm: `Mode::parse(None)` is
+            // the documented `mine` default and cannot fail. The fallback is
+            // written rather than unwrapped so the impossible case stays
+            // harmless instead of becoming a panic in a read surface.
+            None => Self::UsageError(token.unwrap_or_default().to_owned()),
         }
     }
 
@@ -108,20 +200,29 @@ impl Request {
     ///
     /// SC-022 fixes the one error code: `2` for a usage error, kept distinct
     /// from `1` so a caller can tell "you asked wrong" from "it went wrong".
+    /// [`Request::MissingOperand`] is the same class and takes the same code.
+    ///
+    /// The two helper surfaces answer `None` for the same reason `list` does:
+    /// `_requests` may still refuse for want of an identity (a pinned `1`), and
+    /// `_events-tail` has no completion at all — argv decides neither.
     #[must_use]
     pub fn exit_code(&self) -> Option<u8> {
         match self {
             Self::Version | Self::Help => Some(0),
-            Self::UsageError(_) => Some(2),
-            Self::List(_) | Self::LaunchCandidate(_) => None,
+            Self::UsageError(_) | Self::MissingOperand(_) => Some(2),
+            Self::List(_)
+            | Self::LaunchCandidate(_)
+            | Self::Requests { .. }
+            | Self::EventsTail { .. } => None,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Request;
+    use super::{EVENTS_TAIL, REQUESTS, Request};
     use crate::filters::{ListArgs, Scope};
+    use crate::requests::Mode;
 
     /// Every flag the rows name, as one list — used to prove DELEGATION rather
     /// than to re-test the grammar, which is [`crate::filters`]'s job.
@@ -299,6 +400,117 @@ mod tests {
             Request::LaunchCandidate("my-feature".to_owned()),
             "the same word at top level is not an error at all"
         );
+    }
+
+    #[test]
+    fn the_helper_spellings_both_begin_with_an_underscore() {
+        // Not decoration: this is the property that keeps SC-022 whole.
+        // `_validate_session_name` forbids a leading underscore, so no legal
+        // session name can reach these arms — a `requests`/`events-tail`
+        // spelling would have taken two real names out of the launch grammar.
+        for spelling in [REQUESTS, EVENTS_TAIL] {
+            assert!(spelling.starts_with('_'), "{spelling}");
+            assert!(
+                !spelling.starts_with('-'),
+                "{spelling}: not option-shaped either, or SC-022's first arm would take it"
+            );
+        }
+    }
+
+    #[test]
+    fn requests_takes_a_directory_and_an_optional_mode() {
+        assert_eq!(
+            Request::parse(&argv(&[REQUESTS, "/s/tg1"])),
+            Request::Requests {
+                dir: "/s/tg1".into(),
+                mode: Mode::Mine
+            },
+            "the absent mode is `mine`, as the helper's ${{1:-mine}} is"
+        );
+        for (token, mode) in [
+            ("mine", Mode::Mine),
+            ("inbox", Mode::Inbox),
+            ("all", Mode::All),
+        ] {
+            assert_eq!(
+                Request::parse(&argv(&[REQUESTS, "/s/tg1", token])),
+                Request::Requests {
+                    dir: "/s/tg1".into(),
+                    mode
+                },
+                "{token}"
+            );
+        }
+    }
+
+    #[test]
+    fn events_tail_takes_a_directory_and_nothing_else() {
+        assert_eq!(
+            Request::parse(&argv(&[EVENTS_TAIL, "/s/tg1"])),
+            Request::EventsTail {
+                dir: "/s/tg1".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_helper_surface_with_no_directory_is_a_missing_operand_at_two() {
+        for spelling in [REQUESTS, EVENTS_TAIL] {
+            let request = Request::parse(&argv(&[spelling]));
+            assert_eq!(request, Request::MissingOperand(spelling));
+            assert_eq!(request.exit_code(), Some(2), "{spelling}");
+        }
+    }
+
+    #[test]
+    fn a_bad_mode_token_is_the_usage_code_and_not_the_frozen_one() {
+        // D2's split: the pinned `1` belongs to the identity refusal, which argv
+        // cannot see. An unrecognised mode is a usage error like any other.
+        let request = Request::parse(&argv(&[REQUESTS, "/s/tg1", "bogus"]));
+        assert_eq!(request, Request::UsageError("bogus".to_owned()));
+        assert_eq!(request.exit_code(), Some(2));
+        assert_ne!(request.exit_code(), Some(1));
+    }
+
+    #[test]
+    fn a_token_past_the_helper_grammar_is_a_usage_error_carrying_that_token() {
+        assert_eq!(
+            Request::parse(&argv(&[REQUESTS, "/s/tg1", "all", "extra"])),
+            Request::UsageError("extra".to_owned())
+        );
+        assert_eq!(
+            Request::parse(&argv(&[EVENTS_TAIL, "/s/tg1", "extra"])),
+            Request::UsageError("extra".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_directory_is_taken_verbatim_however_it_is_spelled() {
+        // The runner hands over whatever `<AE_HOME>/sessions/<name>` expanded
+        // to. Nothing here normalises it: rewriting an operator's path is a
+        // decision no row makes, and a mode-shaped directory name is still a
+        // directory because position decides, not shape.
+        for path in ["/s/tg1", "relative/tg1", "all", "--json", ""] {
+            assert_eq!(
+                Request::parse(&argv(&[REQUESTS, path, "all"])),
+                Request::Requests {
+                    dir: path.into(),
+                    mode: Mode::All
+                },
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_helper_surface_declines_to_decide_its_exit_code_from_argv() {
+        for words in [vec![REQUESTS, "/s/tg1", "all"], vec![EVENTS_TAIL, "/s/tg1"]] {
+            assert_eq!(
+                Request::parse(&argv(&words)).exit_code(),
+                None,
+                "{words:?}: an identity refusal and a follow are not argv facts"
+            );
+        }
     }
 
     #[test]
