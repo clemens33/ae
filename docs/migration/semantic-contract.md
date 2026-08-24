@@ -1284,8 +1284,125 @@ routed identities (slot+session) compare when both sides carry them, display
 identities when neither does, and MIXED identity matches nothing — the loud
 false-pending direction is safer than silent false-closure by a reply sent to someone
 else. Authority: events.md:108-117 (normative dependency of SC-017g) + joint ruling.
-Empirical: pending (builder P1 implementation + C-cluster). Conflict: none.
+Empirical: OBSERVED (C-cluster A7 c12-c18 + A6 m6 + A1 c14, ro and rw).
+Conflict: frozen bash closes five of the six mixed shapes.
 **classified_by: fable5:lead + gpt56sol:colead, 2026-08-20.**
+
+**Amended 2026-08-24 — Empirical is now OBSERVED and Conflict is no longer none. The
+normative sentence above is UNCHANGED. MEASUREMENT below is exactly the C-cluster
+inventory, the frozen readings, the two capture counts, and the frozen branch predicate.
+The rest is NOT: "present-but-empty is not absent" and the named gap are RULINGS, labelled
+as such where they appear. A heading cannot call a ruling a measurement, and it must not
+identify its own scope by counting paragraphs either.**
+
+The C-cluster holds one ask carrying all four routing members and varies only the REPLY's, across `ro`
+and `rw` twins whose captures are byte-identical: A7 c12 all four matching, c13 all four
+naming a different slot and session, c14 slot members only, c15 session members only, c16
+none at all, c17 one member present as the EMPTY STRING, c18 all four present as empty
+strings; A6 m6 pairs a routed ask with a keyless reply; A1 c14-display-only-legacy is the
+corpus's only display-to-display pair.
+
+MEASURED — and every case id below names its ARM, because A7 c14 and A1 c14 are different
+cases that behave oppositely: frozen ae closes A7 c12, A7 c15, A7 c16, A7 c17, A7 c18,
+A6 m6 and A1 c14, and pends only A7 c13 and A7 c14. SIX of those shapes are MIXED under
+this row — a routed ask against a reply that is not fully routed — and none of them may
+close. Frozen pends exactly one of the six (A7 c14) and CLOSES FIVE: A7 c15, A7 c16,
+A7 c17, A7 c18 and A6 m6. Those five are the conflict; the row's strict reading stands
+over them, and the two that behave (A7 c12 routed-to-routed, A1 c14 display-to-display)
+are the only shapes entitled to close.
+
+TWO NUMBERS, AND NEITHER IS AN OBLIGATION COUNT. The identity matrix is TEN SHAPES, each
+with a `ro` and an `rw` capture, so TWENTY CAPTURED INVOCATION ROWS. SIX shapes move, so
+TWELVE CAPTURED ROWS change bytes — A7 c15/c16/c17/c18, A6 m6 and A6 m2, in both twins.
+Both numbers count CAPTURES. Neither may be used as a table count: the status token and the
+displayed summary are separate obligations derived and addressed separately, so the
+obligation-locus count over these captures EXCEEDS twelve and is whatever the derivation
+emits. Counting captures and counting loci are different questions and the same arithmetic
+answers neither.
+
+ONE PREDICATE EXPLAINS ALL SEVEN READINGS, which is why this is one source defect and not
+seven accidents. ae@72c7293:4551 selects the routed comparison iff `request.target_slot` is
+NONEMPTY **and** `reply.actor_slot` is NONEMPTY — those two fields alone select the branch;
+the other two routed members are compared inside it and never decide entry. So A7 c12 enters
+and matches, A7 c13 enters and mismatches, A7 c14 enters and breaks on its absent session
+half, while A7 c15, c16, c17, c18 and A6 m6 carry no NONEMPTY `reply.actor_slot` — c17 and c18
+carry it as the EMPTY STRING, which `-n` rejects exactly as it rejects an absent one — never
+enter, and fall back to the display comparison, which succeeds. The two cases that look backwards
+(slot-only pends, session-only closes) are one selector seen from two sides.
+
+PRESENT-BUT-EMPTY IS NOT ABSENT. c17 and c18 carry empty-string members and are MIXED, not
+display; c16 omits them and is display. All three fail here only because the request side is
+routed in all three. Against a DISPLAY-ONLY request they would diverge — keyless closing,
+all-empty not — and the corpus has no such specimen.
+
+THE NAMED GAP, and the reason "in BOTH directions" is a ruling rather than a reading: every
+mixed specimen in this corpus mixes in ONE direction, a routed ask against an under-routed
+reply. The INVERSE — an under-routed ask against a fully routed reply — has ZERO specimens.
+The symmetry is ruled and pinned by successor test, never latitude: a successor test that
+exercises only the direction the corpus owns would pass an implementation that is
+directional.
+
+**SC-518a — closure ordering is its own dimension.** Bucket 1 — (2026-08-24 joint
+ruling): a `reply` or `cancel` terminates ONLY THE NEWEST PRECEDING `ask`/`review` carrying
+that ref, where PRECEDING means an EARLIER COMPLETE RECORD IN APPEND (LEDGER) ORDER. A
+TIMESTAMP NEVER ORDERS A LIFECYCLE: `ts` is a writer's clock, and skew must not be able to
+carry a terminal across an opening. The ledger is the order — events.md:110 has the reader
+walking `events.jsonl` backward — so "newest preceding" is a position in the file, not a
+comparison of clocks. A terminal that precedes its opening closes nothing; causality is not
+a matching condition that ref equality can satisfy. A later re-`ask` on the same ref opens a NEW
+lifecycle, and an earlier terminal cannot reach forward to close it. This row governs ORDER ONLY, and
+AUTHORIZATION IS NOT SYMMETRIC BETWEEN THE TWO TERMINALS. A `reply` must ADDITIONALLY satisfy
+SC-518, whose unchanged sentence is a two-ended mirror over `reply.actor`/`reply.target`. A
+`cancel` has no target end and cannot satisfy that sentence, and NO ROW IN THIS CONTRACT
+DEFINES CANCEL AUTHORIZATION — SC-830 withdraws outstanding work under `--digest-only` and
+says nothing about which cancel event a reader accepts. So: SC-518a CONSTRAINS ORDER ONLY AND
+DOES NOT AUTHORIZE A CANCEL; cancel authorization requires a separate row or ruling, which is
+deliberately NOT added here. What this row does say about `cancel` is one-directional and
+safe: any otherwise-authorized cancel still cannot close an opening that FOLLOWS it. A
+successor test over the cancel gaps can therefore prove CAUSALITY CONDITIONAL ON
+AUTHORIZATION and can never prove authorization itself. SC-206's single minting authority
+makes ref reuse rare but does not authorize a pre-opening terminal; scarcity of collisions is
+not a causality argument. Authority: events.md:108-117 + joint ruling. Empirical: OBSERVED (A6 m2,
+ro and rw). Conflict: frozen bash matches on ref alone with no ordering test.
+**classified_by: fable5:lead + gpt56sol:colead, 2026-08-24.**
+
+MEASURED, one specimen, STATED IN LEDGER POSITIONS: in A6 m2's fixed `events.jsonl` the
+`reply` carrying ref `review-20260820T161305Z-dc302d09` is at LEDGER LINE 2 and the `review`
+that OPENS that ref is at LEDGER LINE 4. The terminal precedes its own opening by two
+records. (Their `ts` values, 16:13:04Z and 16:13:06Z, agree with that order here and are
+DESCRIPTIVE ONLY — had they disagreed, the ledger would still decide.) Frozen renders that review `replied`
+and displays the REPLY's summary. Under this row it is `pending` and displays the review's
+own summary. Note what frozen already does correctly, because it bounds the blast radius:
+the row's FROM/TO columns show the OPENING's participants even while its summary shows the
+terminal's, so a status moving back to pending carries the summary with it and moves nothing
+else.
+
+THREE ZERO-SPECIMEN GAPS, named rather than left to whoever implements first, each pinned by
+successor test: (1) INVERSE-MIXED IDENTITY — see SC-518 above; (2) RE-ASK AFTER TERMINAL —
+the re-ask is pending and the earlier lifecycle stays closed, and a successor test must
+separate this from the identity rule or it cannot tell which one it exercised; (3) CANCEL
+CAUSALITY — a cancel before its opening closes nothing. A FOURTH is named here rather than
+left to be discovered: a `cancel` AND a `reply` both carrying one ref, both AFTER the
+opening. The newest-preceding rule decides which OPENING a terminal attaches to, not which of
+two terminals wins on one opening, so that case is UNDECIDED by this row. It cannot be closed by
+evidence either: the 6862-file corpus contains ZERO `cancel` events (measured), so no capture
+will ever speak to it — which is why what follows is read from the frozen SOURCE and not from
+any capture, and is recorded as an IS rather than an OUGHT.
+
+FROZEN'S CANCEL BEHAVIOUR, MEASURED AT ae@72c7293 AND RATIFIED BY NOTHING. Authorization
+(4567-4589): only the request's own SENDER may withdraw it, checked as the ACTOR HALF of the
+question the reply asks — routed when `request.actor_slot` and `cancel.actor_slot` are both
+nonempty (comparing actor_slot + actor_session), display otherwise. Precedence (4591-4599):
+recency decides WITHIN a kind, and BETWEEN kinds a valid cancellation wins, on the stated
+reasoning that a straggler reply must not reopen a request nobody is waiting on.
+
+BOTH READINGS ARE MEASURED IS, NEVER RATIFICATION, and neither may be asserted as SC-518a
+behaviour. The authorization rule is recorded precisely because NO ROW DEFINES IT: the
+implementation has a policy the contract does not, which is the concrete form of the gap
+named above and the reason a cancel-authorization ruling is owed rather than optional. The
+precedence is recorded so that "undecided" plus a running implementation cannot make whichever
+arm someone writes the answer invisibly. A successor test MAY record either behaviour; neither
+becomes normative by being tested, and a seat ruling is the only thing that would move them.
 
 **SC-519 — absent and zero-byte event logs are quiet, not degraded.** Bucket 2 —
 (slice-1 Q7b seat ruling): a fresh session may have no events file until first write
