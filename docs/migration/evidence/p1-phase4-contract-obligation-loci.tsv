@@ -14,17 +14,19 @@ SC-017l	unknown session status	directional corpus locus	SC-017l	134	P1 list/ls -
 SC-017m	unknown session membership and rendering	directional corpus locus	SC-017m	150	default list/ls rows in error-connecting cases plus four live selector-missing rows	p1-phase4-gate.md C6,C7
 SC-017n	C-byte group/name order	directional gap	-	0	no P1 corpus ordering arm distinguishes required C-byte order from frozen incidental order	p1-phase3-gate.md C9,C10,C11
 SC-017o	inventory completeness JSON field and human diagnostic	directional corpus locus	SC-017o	573	all P1 JSON list/ls outputs; human list/ls outputs in error-connecting cases	p1-phase3-gate.md C12,C13,C14; p1-phase4-gate.md C7
-SC-017p	positive per-agent liveness proof	input carrier	SC-017r,SC-509e	0	no separate P1 output key; carried through SC-017r and SC-509e	p1-phase2-gate.md C5,C7; p1-phase4-gate.md C10
-SC-017q	unknown per-agent liveness	input carrier	SC-017r,SC-509e	0	no separate P1 output key; carried through SC-017r and SC-509e	p1-phase2-gate.md C5,C7; p1-phase4-gate.md C10
+SC-017p	positive per-agent liveness proof	directional gap	-	0	no P1 product-valid pane-to-agent association can prove alive or dead	p1-phase4-gate.md C12
+SC-017q	unknown per-agent liveness	partial corpus locus	SC-017r,SC-509e	120	120 captured unknown-health output loci carry failed-query unknown; the product-valid association matrix remains absent	p1-phase4-gate.md C12
 SC-017r	human agent-health marker	directional corpus locus	SC-017r	78	error-connecting P1 human --all rows whose frozen row visibly carries an agent	p1-phase4-gate.md C7,C10
-SC-017s	pane live predicate	input carrier	SC-017r,SC-509e	0	no separate P1 output key; supplies SC-017p's branch carried by SC-017r and SC-509e	p1-phase2-gate.md C5,C7
+SC-017s	pane live predicate	directional gap	-	0	predicate probe exists but no P1 product-valid pane-to-agent association route reaches output	p1-phase4-gate.md C12
 SC-021	ls alias equivalence	retained corpus locus	-	116	all P1 ae ls outputs remain exact except its inherited directional obligations	p1-phase4-gate.md C8
 SC-400d	canonical and legacy durable-root membership	directional gap	-	0	no legacy worktree-nested state layout occurs in Batch C	p1-phase1-gate.md C2
 SC-506	partial-failure JSON validity	retained corpus locus	-	401	all P1 JSON list/ls outputs retain valid object structure around directional fields	p1-phase4-gate.md C8,C9
 SC-405l	selector normalization	input carrier	SC-017l,SC-017m	0	no separate P1 output key; its missing/ambiguous result feeds SC-017l/m	p1-phase1-gate.md C11,C23; p1-phase4-gate.md C6
 SC-509	generated_at field presence/type	retained corpus locus	-	401	all P1 JSON list/ls outputs contain the SC-509 object; retained fields are compared outside this directional table	p1-phase4-gate.md C8,C9
 SC-509	generated_at VALUE	underdetermined value locus	-	401	SC-509 requires generated_at but fixes no timestamp value; exact clock bytes are deliberately not a directional obligation	p1-phase2-gate.md C17; p1-phase3-gate.md C3; p1-phase4-gate.md C8,C18
-SC-509	other retained version-1 object fields	retained corpus locus	-	401	all P1 JSON list/ls outputs; no contract-authorized directional change apart from SC-509d/e and SC-017o	p1-phase4-gate.md C8,C9
+SC-509	other retained version-1 object fields	retained corpus locus	-	401	all P1 JSON list/ls outputs; no contract-authorized directional change apart from SC-509b/d/e, SC-509c, and SC-017o	p1-phase4-gate.md C8,C9
+SC-509b	degraded true after actual metadata read/parse loss	directional corpus locus	SC-509b	14	20 raw G3/A9 P1 JSON inputs with metadata loss (UNREADABLE or FILE ABSENT) coalesce to 14 captured sessions[].degraded output loci	p1-phase2-gate.md C13; p1-phase4-gate.md C7,C9
+SC-509c	agents[].reason agent-owned active contribution	directional corpus locus	SC-509c	222	raw self-declared state and current target-named alert carriers identify 222 session-and-agent reason loci	p1-phase4-gate.md C7,C9
 SC-509d	schema_version	directional corpus locus	SC-509d	401	all P1 JSON list/ls outputs	p1-phase4-gate.md C7,C9
 SC-509e	agents[].alive nullable domain	directional corpus locus	SC-509e	42	error-connecting P1 JSON --all outputs with a nonempty frozen agents array	p1-phase4-gate.md C7,C10
 SC-518	requests closure presentation	retained corpus locus	-	168	all P1 helper:requests outputs remain exact; SC-518 has no ratified directional P1 change	p1-phase4-gate.md C8
