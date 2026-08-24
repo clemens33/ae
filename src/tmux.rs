@@ -34,21 +34,39 @@
 //! * SC-017o — DONE for the same reason: an entitled server that can be
 //!   enumerated stops counting as a failed source, so `inventory_complete` is no
 //!   longer false on every machine that records a server.
-//! * SC-017p/SC-017q — the DERIVATION AND THE READING ARE HERE NOW
-//!   ([`list_panes_args`], [`interpret_panes`], [`slot_observation`]), with
-//!   association on SC-602's `@ae_slot` and ambiguity representable rather than
-//!   collapsed. THE VERDICT IS NOT, and deliberately: SC-017p grants `alive`
-//!   only on an observation that "positively recognizes its agent process as
-//!   live", and no ratified row defines that predicate — the phrase occurs once
-//!   in the contract, inside the row that depends on it. SC-906 is the only
-//!   candidate, is unratified, and is a DEAD predicate rather than a live one.
-//!   So nothing here is wired to a liveness answer, and no seam is left for one:
-//!   a seam built toward an unratified predicate is a decision, not preparation.
-//!   Do not add `#{pane_current_command}` to the format to "get ready" — that
-//!   field IS the live predicate, and adding it is the decision.
+//! * SC-017p/SC-017q/SC-017s — the DERIVATION AND THE READING ARE HERE NOW
+//!   ([`list_panes_args`], [`interpret_panes`], [`slot_observation`]).
+//!   Association is SC-602's `@ae_slot`; ambiguity is representable rather than
+//!   collapsed; and both of SC-017s's conjuncts — `#{pane_dead}` and
+//!   `#{pane_current_command}` — are carried out of the read intact.
 //!
-//!   What a future slice needs from here is nothing: the facts are complete for
-//!   every route SC-017p describes. What it needs is the ratified predicate.
+//!   **THE PREDICATE IS RATIFIED.** An earlier version of this handover said no
+//!   ratified row defined "positively recognizes its agent process as live", and
+//!   told the next seat the work was blocked. SC-017s supplies it: the pane
+//!   proves `alive` iff `pane_dead` is `0` AND the command is outside the closed
+//!   shell set `bash`/`zsh`/`fish`/`sh`/`dash` AND the empty string. That
+//!   sentence was true when written and expired without anyone touching this
+//!   file — which is the argument for saying what a module OBSERVES rather than
+//!   what the world happens to lack.
+//!
+//!   **WHAT IS STILL OPEN, and it is not the predicate:**
+//!   * the PRODUCT ROUTE from this observation to an `alive` verdict — argv,
+//!     interpretation and association are here, and nothing wires them to a
+//!     status. That sequencing is a separate decision.
+//!   * SC-017p's `dead` half. SC-017s grants `alive` ONLY: a shell foreground
+//!     proves nothing and leaves the agent `unknown` (SC-017q). The watchdog's
+//!     dead test is a CONJUNCTION of shell-foreground and no-agent-descendant,
+//!     and negating one conjunct is sound in one direction only.
+//!   * the process-inspection capability, which stays RESERVED and unused.
+//!     SC-017s observes tmux format fields and asserts nothing about processes
+//!     or ancestry; a symmetric dead predicate would re-import the unratified
+//!     SC-906 and the ancestry observation with it. Do not reach for `pgrep` or
+//!     a parent walk here — if a change seems to need one, that is the signal to
+//!     stop, not to add it.
+//!
+//!   A known FALSE NEGATIVE is recorded in SC-017s rather than fixed: under
+//!   SC-812 a `cmd || fallback` resume chain leaves bash as the pane process, so
+//!   a genuinely live agent reports `bash` and lands in `unknown`.
 //!
 //! # Why the exit status decides and the bytes do not
 //!
@@ -159,19 +177,31 @@ pub fn interpret_marker(succeeded: bool, stdout: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// The format `list-panes` is asked for: one slot marker per pane.
+/// The format `list-panes` is asked for: three fields per pane, tab-separated.
 ///
 /// **`@ae_slot`, not `@ae_agent`** — SC-602 rules that the slot option carries
 /// IDENTITY and `@ae_agent` is display. The frozen script associated on the
 /// display field (`cmd_list`'s alive map is keyed on `#{@ae_agent}`, ae:4207),
-/// which is a second defect in the code SC-017p/q/r already indict.
+/// which is a second defect in the code SC-017p/q/r already indict (#106).
 ///
-/// One field, deliberately. `#{pane_current_command}` would ride the same
-/// enumeration for free and is exactly what a live predicate would need — which
-/// is why it is NOT here: no ratified row defines "positively recognizes its
-/// agent process as live", and a format that carried the field anyway would be
-/// building toward a decision nobody has made.
-pub const PANE_SLOT_FORMAT: &str = "#{@ae_slot}";
+/// **`pane_dead` and `pane_current_command` are SC-017s's fields**, and that row
+/// is why they are here: it ratifies the only route to `alive`, reading exactly
+/// these two beside the identity marker, in one query that was already being
+/// made. They were deliberately ABSENT while the predicate was unratified —
+/// carrying them then would have been a decision wearing the shape of a format
+/// string. The row made the decision; the field list follows it.
+///
+/// **`pane_dead` IS FIRST, and the order is a safety argument rather than
+/// taste.** It is the conjunct whose loss produces a FALSE ALIVE: measured on a
+/// real server, a `remain-on-exit` pane whose process has exited reports
+/// `pane_dead=1` with `pane_current_command=true`, and `true` is not in the
+/// shell set — so the command field ALONE proves a dead agent alive, which is
+/// #109. Putting it before every ae- or system-controlled field means nothing
+/// upstream can shift it out of position.
+pub const PANE_FORMAT: &str = "#{pane_dead}\t#{@ae_slot}\t#{pane_current_command}";
+
+/// How many tab-separated fields [`PANE_FORMAT`] produces per pane.
+pub const PANE_FIELDS: usize = 3;
 
 /// The full argument list for enumerating one session's panes.
 ///
@@ -194,26 +224,46 @@ pub fn list_panes_args(server: &ServerId, session: &str) -> Vec<String> {
     args.push("-t".to_owned());
     args.push(session.to_owned());
     args.push("-F".to_owned());
-    args.push(PANE_SLOT_FORMAT.to_owned());
+    args.push(PANE_FORMAT.to_owned());
     args
 }
 
-/// One pane the server reported, and the slot marker it carries.
+/// One pane the server reported, as three readings.
 ///
-/// Carries the marker and nothing else, because the marker is the only thing
-/// this phase is entitled to read. A pane with no usable marker is still A
-/// PANE — that is the whole reason this is a struct with an `Option` rather
-/// than a list of names.
+/// A pane with no usable reading is still A PANE. Every line of a successful
+/// enumeration becomes one of these, whatever it contained — dropping a line
+/// would delete exactly the evidence SC-017q needs to refuse a `dead`.
+///
+/// NO VERDICT IS COMPUTED HERE. SC-017s's predicate (`pane_dead` is `0` AND the
+/// command is outside the closed shell set, the empty string included) is
+/// deliberately NOT applied in this module: the route from observation to an
+/// `alive` verdict is a separate, unsequenced decision. What this type
+/// guarantees is that both conjuncts SURVIVE the read, so no downstream
+/// predicate can be forced to guess one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedPane {
+    /// `#{pane_dead}` — `Some(true)` for a dead pane, `Some(false)` for a live
+    /// one, `None` when the field was not a readable `0`/`1`.
+    ///
+    /// SC-017s's first conjunct, and the one that stops #109: an exited pane
+    /// retained by `remain-on-exit` keeps reporting the exited process's
+    /// command, so the command field alone would read `alive` for a dead agent.
+    pub dead: Option<bool>,
     /// The `@ae_slot` value, when the pane carries a usable one.
     ///
     /// `None` covers unset AND set-to-empty, which are byte-identical in a
-    /// format expansion (measured: a session of three panes whose middle pane
-    /// has no marker prints `main\n\nworker\n`, and setting that pane's option
-    /// to the empty string changes nothing). ae does not pretend to tell apart
-    /// two states tmux reports identically.
+    /// format expansion (measured), so ae does not pretend to tell apart two
+    /// states tmux reports identically.
     pub slot: Option<String>,
+    /// `#{pane_current_command}`, when the field carried one.
+    ///
+    /// `None` for an empty reading. SC-017s puts the empty string IN the
+    /// not-alive set for the reason this crate keeps rediscovering: an
+    /// unreadable field is the absence of evidence, and reading absence as
+    /// positive proof is #105 itself. The frozen script's set omitted it
+    /// (ae:4201-4206 versus `command_is_shell` at ae:428-434), so an absent
+    /// reading fell to the non-shell arm and yielded a positive alive.
+    pub command: Option<String>,
 }
 
 /// What a completed `list-panes` run means.
@@ -224,23 +274,58 @@ pub struct ObservedPane {
 /// SC-017q sends a failed pane query to `unknown`, exactly as SC-017l does for
 /// sessions. Measured: a `-t` naming no session exits 1.
 ///
-/// **AN EMPTY LINE IS A PANE HERE, and that is the opposite of
-/// [`interpret_sessions`].** A blank line in a `list-sessions` answer is not a
-/// session called nothing, so that reader drops it; a blank line in a
-/// `list-panes` answer IS a pane whose slot option is unset, and dropping it
-/// would delete exactly the evidence SC-017q needs — an unassociated pane is
-/// what keeps a missing roster agent `unknown` instead of `dead`. The two
-/// interpreters must not share a filter, however alike their shapes look.
+/// **EVERY LINE IS A PANE.** A line that does not split into exactly
+/// [`PANE_FIELDS`] fields still yields an [`ObservedPane`] — one with no usable
+/// reading at all — rather than being dropped. Dropping it would delete the
+/// pane whose existence is what keeps a missing roster agent `unknown` instead
+/// of `dead`, which is the same defect as the frozen script's
+/// `[[ -n "$ae_agent" ]] || continue` (ae:4202, #107), and the same one this
+/// module already refused when the format had a single field.
+///
+/// **ARITY IS EXACT, AND THAT IS A GUARD RATHER THAN TIDINESS.** None of the
+/// three fields may legitimately contain a tab, so a line with more than
+/// [`PANE_FIELDS`] fields is a reading nothing should trust. It matters because
+/// a slot carrying an embedded tab could otherwise split into a PREFIX that
+/// matches a real roster slot while pushing the rest of that slot into the
+/// command field — forging a non-shell command for a pane that is running a
+/// shell, which is a fabricated `alive` for the wrong agent. Refusing the whole
+/// line answers `unknown` instead (SC-017q), which is the direction that cannot
+/// assert.
 pub fn interpret_panes(succeeded: bool, stdout: &str) -> Result<Vec<ObservedPane>, QueryFailed> {
     if !succeeded {
         return Err(QueryFailed);
     }
-    Ok(stdout
-        .lines()
-        .map(|line| ObservedPane {
-            slot: Some(line.trim_end().to_owned()).filter(|slot| !slot.is_empty()),
-        })
-        .collect())
+    Ok(stdout.lines().map(read_pane).collect())
+}
+
+/// One enumeration line as an [`ObservedPane`].
+///
+/// Unreadable in any respect yields the all-`None` pane: present, and saying
+/// nothing. Each field is independent — an unreadable command does not discard
+/// a perfectly good `pane_dead`.
+fn read_pane(line: &str) -> ObservedPane {
+    let blank = ObservedPane {
+        dead: None,
+        slot: None,
+        command: None,
+    };
+    let fields: Vec<&str> = line.trim_end_matches('\r').split('\t').collect();
+    if fields.len() != PANE_FIELDS {
+        return blank;
+    }
+    let usable = |value: &str| Some(value.to_owned()).filter(|v| !v.is_empty());
+    ObservedPane {
+        // `0`/`1` and nothing else. A field that is neither is not a reading
+        // saying "alive" — it is no reading, and SC-017s refuses to build a
+        // positive proof on one.
+        dead: match fields[0] {
+            "0" => Some(false),
+            "1" => Some(true),
+            _ => None,
+        },
+        slot: usable(fields[1].trim_end()),
+        command: usable(fields[2].trim_end()),
+    }
 }
 
 /// What an enumeration says about one roster slot.
@@ -423,14 +508,27 @@ mod tests {
         );
     }
 
-    fn pane(slot: Option<&str>) -> ObservedPane {
+    /// A pane reading, spelled the way the fields arrive.
+    fn pane(dead: Option<bool>, slot: Option<&str>, command: Option<&str>) -> ObservedPane {
         ObservedPane {
+            dead,
             slot: slot.map(ToOwned::to_owned),
+            command: command.map(ToOwned::to_owned),
         }
     }
 
+    /// A pane with a usable slot and nothing else said about it.
+    fn slotted(slot: &str) -> ObservedPane {
+        pane(Some(false), Some(slot), Some("claude"))
+    }
+
+    /// A pane carrying no usable identity.
+    fn unslotted() -> ObservedPane {
+        pane(Some(false), None, Some("zsh"))
+    }
+
     #[test]
-    fn pane_enumeration_is_session_wide_and_asks_only_for_the_identity_marker() {
+    fn pane_enumeration_is_session_wide_and_asks_for_sc_017s_s_three_fields() {
         assert_eq!(
             list_panes_args(&named("work"), "my-feature"),
             [
@@ -441,26 +539,37 @@ mod tests {
                 "-t",
                 "my-feature",
                 "-F",
-                "#{@ae_slot}"
+                "#{pane_dead}\t#{@ae_slot}\t#{pane_current_command}"
             ]
         );
     }
 
     #[test]
-    fn the_pane_format_asks_for_identity_and_not_for_the_unratified_live_predicate() {
-        // `@ae_agent` is DISPLAY (SC-602), and the frozen script associated on it.
-        // `pane_current_command` is what a live predicate would need, and no row
-        // defines one — carrying it here would be building toward an undecided
-        // thing, which is a decision wearing the shape of a format string.
+    fn the_pane_format_asks_for_identity_and_never_for_the_display_field() {
+        // `@ae_agent` is DISPLAY (SC-602) and the frozen script associated on it
+        // (#106). The two SC-017s fields ARE here now — the row that ratified
+        // the predicate is what put them here, and their absence beforehand was
+        // the same decision in the other direction.
         let args = list_panes_args(&ServerId::Ambient, "s").join(" ");
         assert!(args.contains("#{@ae_slot}"));
+        assert!(args.contains("#{pane_dead}"), "{args}");
+        assert!(args.contains("#{pane_current_command}"), "{args}");
         assert!(!args.contains("@ae_agent"), "{args}");
-        assert!(!args.contains("pane_current_command"), "{args}");
+    }
+
+    #[test]
+    fn pane_dead_comes_first_so_nothing_upstream_can_shift_it() {
+        // ORDER IS THE SAFETY PROPERTY. `pane_dead` is the conjunct whose loss
+        // fabricates an `alive`; no ae- or system-controlled field precedes it.
+        let fields: Vec<&str> = super::PANE_FORMAT.split('\t').collect();
+        assert_eq!(fields.len(), super::PANE_FIELDS);
+        assert_eq!(fields[0], "#{pane_dead}");
+        assert_eq!(fields[2], "#{pane_current_command}", "free-est text last");
     }
 
     #[test]
     fn a_failed_pane_query_is_a_failure_whatever_it_printed() {
-        for payload in ["", "main\n", "can't find window: nosuch\n"] {
+        for payload in ["", "0\tmain\tclaude\n", "can't find window: nosuch\n"] {
             assert_eq!(
                 interpret_panes(false, payload),
                 Err(QueryFailed),
@@ -471,31 +580,135 @@ mod tests {
 
     #[test]
     fn an_unmarked_pane_is_a_pane_and_not_a_dropped_line() {
-        // MEASURED against a real server: three panes whose middle one has no
-        // marker print `main\n\nworker\n`. Dropping the blank would delete the
-        // pane whose existence is what keeps a missing roster agent `unknown`.
+        // MEASURED against a real server. A three-pane session whose middle pane
+        // carries no marker prints `0\tmain\tzsh\n0\t\tzsh\n1\t\ttrue\n`:
+        // the unmarked pane is an EMPTY MIDDLE FIELD, not a missing line.
         assert_eq!(
-            interpret_panes(true, "main\n\nworker\n"),
-            Ok(vec![pane(Some("main")), pane(None), pane(Some("worker"))]),
-            "the blank line is the unmarked pane"
-        );
-        assert_eq!(
-            interpret_panes(true, "\n"),
-            Ok(vec![pane(None)]),
-            "a lone blank line is one unmarked pane, not zero panes"
+            interpret_panes(true, "0\tmain\tzsh\n0\t\tzsh\n1\t\ttrue\n"),
+            Ok(vec![
+                pane(Some(false), Some("main"), Some("zsh")),
+                pane(Some(false), None, Some("zsh")),
+                pane(Some(true), None, Some("true")),
+            ]),
+            "three lines, three panes, and the unmarked one is still one"
         );
         assert_eq!(
             interpret_panes(true, ""),
             Ok(Vec::new()),
-            "and no output at all is no panes"
+            "no output at all is no panes"
+        );
+    }
+
+    #[test]
+    fn an_exited_pane_keeps_both_facts_that_tell_it_apart_from_a_live_one() {
+        // #109 IN ONE ASSERTION. A `remain-on-exit` pane reports the EXITED
+        // process's command, and `true` is not in SC-017s's shell set — so the
+        // command field alone reads like a live agent. The only thing that
+        // separates it from a live pane is `pane_dead`, and this pins that the
+        // read carries it rather than discarding it.
+        //
+        // Measured, not invented: `1\t\ttrue` is real output from a real
+        // server whose pane ran `true` under `remain-on-exit on`.
+        let exited = interpret_panes(true, "1\tworker\ttrue\n").expect("success");
+        assert_eq!(exited, vec![pane(Some(true), Some("worker"), Some("true"))]);
+        assert_eq!(
+            exited[0].dead,
+            Some(true),
+            "the conjunct that stops a dead agent reading alive survived the read"
+        );
+        assert_eq!(
+            exited[0].command.as_deref(),
+            Some("true"),
+            "and so did the command that would otherwise have proven it alive"
+        );
+    }
+
+    #[test]
+    fn a_marker_that_is_empty_or_blank_is_not_a_usable_identity() {
+        // RESTORED BY NAME, and not merely as bookkeeping. This name vanished in
+        // the three-field rewrite; its EMPTY-field half survived inside
+        // `an_unreadable_field_...`, but the WHITESPACE-ONLY field had no
+        // assertion anywhere, which panereview found by reading for the input
+        // rather than for the name. A vanished name is worth restoring only when
+        // something it covered is actually uncovered — here something was.
+        //
+        // Both spellings must reach the same answer: a slot is either usable or
+        // it is absent, and "present but blank" is not a third thing. The
+        // trailing-trim is what makes the whitespace case land, so the case is
+        // the guard on the trim.
+        assert_eq!(
+            interpret_panes(true, "0\t\tzsh\n"),
+            Ok(vec![pane(Some(false), None, Some("zsh"))]),
+            "an empty slot field is no identity"
+        );
+        assert_eq!(
+            interpret_panes(true, "0\t   \tzsh\n"),
+            Ok(vec![pane(Some(false), None, Some("zsh"))]),
+            "and neither is a whitespace-only one — same answer, different bytes"
+        );
+        assert_eq!(
+            interpret_panes(true, "0\tmain\t   \n"),
+            Ok(vec![pane(Some(false), Some("main"), None)]),
+            "the command field normalizes the same way, and SC-017s puts an \
+             unreadable command in the not-alive set for the same reason"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_field_is_no_reading_rather_than_a_convenient_one() {
+        // SC-017s: an empty or absent reading is NOT alive, because absence of
+        // evidence is not evidence. Each field fails independently.
+        assert_eq!(
+            interpret_panes(true, "0\tmain\t\n"),
+            Ok(vec![pane(Some(false), Some("main"), None)]),
+            "an empty command is no command, not a non-shell one"
+        );
+        assert_eq!(
+            interpret_panes(true, "\tmain\tclaude\n"),
+            Ok(vec![pane(None, Some("main"), Some("claude"))]),
+            "an empty pane_dead is no reading, and must not pass for `0`"
+        );
+        assert_eq!(
+            interpret_panes(true, "2\tmain\tclaude\n"),
+            Ok(vec![pane(None, Some("main"), Some("claude"))]),
+            "and neither does anything else that is not 0 or 1"
+        );
+        assert_eq!(
+            interpret_panes(true, "0\t\tclaude\n"),
+            Ok(vec![pane(Some(false), None, Some("claude"))]),
+            "an empty slot is no identity; the other two readings survive it"
+        );
+    }
+
+    #[test]
+    fn a_line_of_the_wrong_arity_is_a_pane_that_says_nothing() {
+        // A TAB CANNOT BE SMUGGLED THROUGH A FIELD. If a slot carried one, the
+        // line would split into four: the prefix could match a real roster slot
+        // while the remainder was pushed into the command field, forging a
+        // non-shell command for a pane running a shell — a fabricated `alive`
+        // attached to the wrong agent. Refusing the line answers `unknown`.
+        let forged = interpret_panes(true, "0\tmain\tevil\tzsh\n").expect("success");
+        assert_eq!(
+            forged,
+            vec![pane(None, None, None)],
+            "still one pane, and it says nothing at all"
+        );
+        assert_eq!(
+            interpret_panes(true, "\n"),
+            Ok(vec![pane(None, None, None)]),
+            "a blank line is a pane with no reading, never a dropped pane"
+        );
+        assert_eq!(
+            interpret_panes(true, "0\tmain\n"),
+            Ok(vec![pane(None, None, None)]),
+            "and too few fields is refused for the same reason as too many"
         );
     }
 
     #[test]
     fn the_two_interpreters_disagree_about_a_blank_line_on_purpose() {
-        // The same bytes, opposite readings, and both are right: a session
-        // called nothing does not exist, an unmarked pane does. A shared filter
-        // would be the bug.
+        // A session called nothing does not exist; a pane that reported nothing
+        // does. A shared filter would be the bug.
         assert_eq!(
             interpret_sessions(true, "a\n\nb\n"),
             Ok(vec!["a".to_owned(), "b".to_owned()])
@@ -507,58 +720,34 @@ mod tests {
     }
 
     #[test]
-    fn a_marker_that_is_empty_or_blank_is_not_a_usable_identity() {
-        // WHAT THIS CAN PIN, AND WHAT IT CANNOT. That tmux reports unset and
-        // set-to-empty IDENTICALLY is a fact about tmux, and no assertion over
-        // this parser can establish it. An earlier version of this test tried,
-        // by comparing this function's output to ITSELF — a test that cannot
-        // fail, which is the one defect every other test in this file exists to
-        // prevent. The platform fact is now proven where it is provable:
-        // `sc_017p_a_real_enumeration_...` enumerates a real server twice, once
-        // with a pane's option unset and once with it set to the empty string,
-        // and requires the two answers to be identical.
-        //
-        // What IS this parser's to answer: neither spelling is a usable slot.
-        assert_eq!(interpret_panes(true, "\n"), Ok(vec![pane(None)]));
-        assert_eq!(
-            interpret_panes(true, "  \n"),
-            Ok(vec![pane(None)]),
-            "whitespace is not an identity"
-        );
-        assert_eq!(
-            interpret_panes(true, "main\n\n"),
-            Ok(vec![pane(Some("main")), pane(None)]),
-            "and a trailing blank is the last pane, not a trailing nothing"
-        );
-    }
-
-    #[test]
     fn an_empty_roster_slot_matches_no_pane() {
         // A ROSTER SLOT CAN BE EMPTY: `absorb_roster` validates alias and name
         // and never the slot, so `agent.=cl:lead` in a hand-edited meta yields a
         // roster entry whose slot is "".
         //
         // It must associate to nothing, and today it does — but only because
-        // `interpret_panes` normalizes an empty marker to `None`, so no pane
-        // ever carries `Some("")`. THAT CORRECTNESS LIVES IN THE RELATION
-        // BETWEEN TWO FUNCTIONS AND IN NEITHER OF THEM, which is invisible to a
-        // review that reads either alone. Remove the normalization — it looks
-        // like defensive noise the moment you forget that tmux reports unset and
-        // set-to-empty identically — and an empty slot matches EVERY unmarked
-        // pane: a corrupt roster entry reading its health off somebody else's
-        // pane, which SC-017p forbids by name.
+        // `read_pane` normalizes an empty field to `None`, so no pane ever
+        // carries `Some("")`. THAT CORRECTNESS LIVES IN THE RELATION BETWEEN TWO
+        // FUNCTIONS AND IN NEITHER OF THEM, which is invisible to a review that
+        // reads either alone. Remove the normalization and an empty slot matches
+        // EVERY unmarked pane: a corrupt roster entry reading its health off
+        // somebody else's pane, which SC-017p forbids by name.
         //
-        // NAMED FOR THE FACT, NOT THE FILTER. A test named after the guard gets
-        // deleted by whoever deletes the guard, in the same breath, believing
-        // they are tidying.
+        // NAMED FOR THE FACT, NOT THE FILTER — a test named after the guard gets
+        // deleted by whoever deletes the guard, believing they are tidying.
         //
-        // THE PANES COME FROM `interpret_panes`, NOT FROM THE HELPER, and that
-        // is the whole test. A first draft built `pane(None)` by hand — which
-        // constructs the POST-NORMALIZATION value, so deleting the very filter
-        // this test exists to guard leaves it green. A fixture that builds the
-        // conclusion cannot observe the step that produces it. Caught in review
-        // by grok46; kept as a comment because the wrong version looked right.
-        let panes = interpret_panes(true, "\nmain\n").expect("a successful enumeration");
+        // THE PANES COME FROM `interpret_panes`, NOT FROM THE HELPER. A first
+        // draft built the post-normalization value by hand and stayed green
+        // under the very deletion it existed to catch; grok46 caught that in
+        // review. A fixture that builds the conclusion cannot observe the step
+        // that produces it.
+        //
+        // DELETED AND RESTORED ONCE: a block rewrite for SC-017s's three-field
+        // format swallowed this test whole, and only a test-NAME diff against
+        // HEAD found it. A count that holds while a name vanishes is the shape
+        // that hides a deletion.
+        let panes =
+            interpret_panes(true, "0\t\tzsh\n0\tmain\tclaude\n").expect("a successful enumeration");
         assert_eq!(
             slot_observation(&panes, ""),
             SlotObservation::Absent { unidentified: 1 },
@@ -568,7 +757,7 @@ mod tests {
 
     #[test]
     fn a_slot_is_found_only_by_exact_match() {
-        let panes = [pane(Some("main")), pane(Some("worker"))];
+        let panes = [slotted("main"), slotted("worker")];
         assert_eq!(slot_observation(&panes, "main"), SlotObservation::Unique);
         assert_eq!(
             slot_observation(&panes, "mai"),
@@ -584,7 +773,7 @@ mod tests {
 
     #[test]
     fn a_duplicated_slot_is_ambiguous_rather_than_a_match() {
-        let panes = [pane(Some("main")), pane(Some("main"))];
+        let panes = [slotted("main"), slotted("main")];
         assert_eq!(
             slot_observation(&panes, "main"),
             SlotObservation::Duplicated { panes: 2 },
@@ -598,11 +787,11 @@ mod tests {
         // roster agent absent is SC-017p's reading and is made where liveness is
         // decided; this reports what was seen.
         assert_eq!(
-            slot_observation(&[pane(Some("other"))], "main"),
+            slot_observation(&[slotted("other")], "main"),
             SlotObservation::Absent { unidentified: 0 }
         );
         assert_eq!(
-            slot_observation(&[pane(Some("other")), pane(None)], "main"),
+            slot_observation(&[slotted("other"), unslotted()], "main"),
             SlotObservation::Absent { unidentified: 1 },
             "an unassociated pane is exactly the fact SC-017q needs"
         );

@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use ae::inventory::{DiscoveredSession, Discovery, QueryFailed, ServerId};
 use ae::liveness::Snapshot;
 use ae::meta::Selector;
-use ae::tmux::{ObservedPane, SlotObservation, interpret_panes, list_panes_args, slot_observation};
+use ae::tmux::{interpret_panes, list_panes_args};
 use ae::transport::Tmux;
 
 use super::phase2::{run_tmux, tmux_present};
@@ -351,72 +351,160 @@ fn the_transport_reports_the_names_and_markers_the_server_holds() {
 // against what `src/tmux.rs` assumes, rather than against what its author
 // believed while writing the parser.
 
-/// Give pane `index` of `session` the `@ae_slot` marker `slot`.
-fn mark_pane(socket: &Path, scratch: &Path, session: &str, index: usize, slot: &str) {
+/// Give the pane at `target` the `@ae_slot` marker `slot`.
+///
+/// `target` is a PANE ID (`%N`), never an index — see [`split`].
+fn mark_pane(socket: &Path, scratch: &Path, target: &str, slot: &str) {
+    let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
+    let mut args = ae::tmux::server_args(&server);
+    args.extend(["set-option", "-p", "-t", target, "@ae_slot", slot].map(ToOwned::to_owned));
+    let (marked, _) = run_tmux(&args, scratch);
+    assert!(marked, "marking pane {target} must succeed");
+}
+
+/// Add a pane to `session`, optionally running `command` in it.
+///
+/// Returns the new pane's ID (`%N`), asked of tmux rather than assumed.
+///
+/// PANE INDICES ARE NOT IDENTIFIERS, measured twice on the way here. First: a
+/// split inserts relative to the ACTIVE pane, so creation order is not index
+/// order, and hard-coded indices marked the wrong pane. Then: two consecutive
+/// `split-window -d` calls BOTH reported index 1, because inserting renumbers
+/// the panes after it — so even an index captured at creation is stale by the
+/// next split. `pane_id` is unique and stable for the pane's lifetime; index is
+/// a position, and positions move.
+///
+/// Both bugs were invisible as fixture bugs: the first surfaced as an assertion
+/// about an exited pane reading a live one, which looks exactly like a product
+/// defect in the field this slice exists to add.
+fn split(socket: &Path, scratch: &Path, session: &str, command: Option<&str>) -> String {
     let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
     let mut args = ae::tmux::server_args(&server);
     args.extend(
         [
-            "set-option",
-            "-p",
+            "split-window",
+            "-d",
+            "-P",
+            "-F",
+            "#{pane_id}",
             "-t",
-            &format!("{session}.{index}"),
-            "@ae_slot",
-            slot,
+            session,
         ]
         .map(ToOwned::to_owned),
     );
-    let (marked, _) = run_tmux(&args, scratch);
-    assert!(marked, "marking pane {index} of {session} must succeed");
+    if let Some(command) = command {
+        args.push(command.to_owned());
+    }
+    let (made, out) = run_tmux(&args, scratch);
+    assert!(made, "splitting {session} must succeed");
+    let id = out.trim().to_owned();
+    assert!(
+        id.starts_with('%'),
+        "tmux must report the new pane id, got {out:?}"
+    );
+    id
 }
 
-/// Add a pane to `session`.
-fn split(socket: &Path, scratch: &Path, session: &str) {
+/// The pane id of a session that has exactly one pane.
+///
+/// NIT 1, and it was MY OWN LESSON surviving in my own fixture: after teaching
+/// `split` to return a pane id because indices are not identifiers, this test
+/// still reached the first pane as `marked.0`. That spelling is correct only
+/// while nothing has been inserted before it — which is exactly the assumption
+/// two measured bugs already broke. Asked of tmux, and asserted to be the only
+/// pane, so it cannot silently become the wrong one.
+fn only_pane_id(socket: &Path, scratch: &Path, session: &str) -> String {
     let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
     let mut args = ae::tmux::server_args(&server);
-    args.extend(["split-window", "-d", "-t", session].map(ToOwned::to_owned));
-    let (made, _) = run_tmux(&args, scratch);
-    assert!(made, "splitting {session} must succeed");
+    args.extend(["list-panes", "-s", "-t", session, "-F", "#{pane_id}"].map(ToOwned::to_owned));
+    let (ok, out) = run_tmux(&args, scratch);
+    assert!(ok, "listing panes of {session} must succeed");
+    let ids: Vec<&str> = out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert_eq!(ids.len(), 1, "expected a single-pane session, got {ids:?}");
+    ids[0].to_owned()
+}
+
+/// Wait until `session` reports a dead pane, or fail loudly.
+///
+/// BOUNDED POLLING, NOT A SLEEP. The pane's process exits on its own schedule;
+/// a fixed delay is a guess at how long that takes, and the failure mode of a
+/// guess that is too short is a flaky test that blames the product.
+fn wait_for_a_dead_pane(socket: &Path, scratch: &Path, session: &str) {
+    let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
+    let mut args = ae::tmux::server_args(&server);
+    args.extend(["list-panes", "-s", "-t", session, "-F", "#{pane_dead}"].map(ToOwned::to_owned));
+    for _ in 0..100 {
+        let (ok, out) = run_tmux(&args, scratch);
+        if ok && out.lines().any(|line| line.trim() == "1") {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("no pane ever reported pane_dead=1; the #109 arm cannot be proven");
+}
+
+/// Turn on `remain-on-exit`, so a pane whose process exits is RETAINED.
+///
+/// Neither ae nor the successor sets this; SC-017s records it as
+/// operator-configurable. It is what makes an exited pane observable at all,
+/// and therefore what makes #109 reproducible instead of theoretical.
+fn retain_exited_panes(socket: &Path, scratch: &Path) {
+    let server = ServerId::Selected(Selector::Socket(socket.to_path_buf()));
+    let mut args = ae::tmux::server_args(&server);
+    args.extend(["set-option", "-g", "remain-on-exit", "on"].map(ToOwned::to_owned));
+    let (set, _) = run_tmux(&args, scratch);
+    assert!(set, "remain-on-exit must be settable");
 }
 
 #[test]
-fn sc_017p_a_real_enumeration_reports_every_pane_and_marks_only_the_ones_that_carry_a_slot() {
-    // THE ASSUMPTION THIS EXISTS TO CHECK: that an unmarked pane arrives as an
-    // EMPTY LINE rather than as no line at all. The parser's correctness turns
-    // entirely on it — drop the blank and the pane disappears, and with it the
-    // one fact (SC-017q) that keeps a missing roster agent `unknown` instead of
-    // `dead`. Asserting it against real tmux is the difference between a parser
-    // that matches the format and a parser that matches its author's belief.
+fn sc_017s_a_real_enumeration_carries_identity_and_both_liveness_conjuncts() {
+    // WHAT THIS PROVES AGAINST A REAL SERVER, and why each arm is here.
+    //
+    // The parser's correctness turns on tmux's actual bytes, not on what its
+    // author believed while writing it. Three facts are checked against a live
+    // server rather than a fixture: an unmarked pane arrives as an EMPTY MIDDLE
+    // FIELD (not a dropped line), a marker SET to the empty string is
+    // indistinguishable from unset, and — the one that matters — AN EXITED PANE
+    // REPORTS A NON-SHELL COMMAND.
+    //
+    // That last one is #109. A `remain-on-exit` pane whose process has exited
+    // keeps reporting the exited process's command, so `pane_current_command`
+    // ALONE says a dead agent is alive. Only `pane_dead` separates them, and
+    // this asserts the read carries it.
     let scratch = scratch("panes");
     require_tmux(&scratch);
     let socket = scratch.join("t.sock");
     start_server(&socket, &scratch, &[("marked", Some("marked"))]);
-    split(&socket, &scratch, "marked");
-    split(&socket, &scratch, "marked");
-    mark_pane(&socket, &scratch, "marked", 0, "main");
-    mark_pane(&socket, &scratch, "marked", 2, "worker");
+    // Captured BEFORE any split, while "the only pane" is a checkable fact.
+    let original = only_pane_id(&socket, &scratch, "marked");
+    retain_exited_panes(&socket, &scratch);
+    let unmarked = split(&socket, &scratch, "marked", None);
+    let exited = split(&socket, &scratch, "marked", Some("true"));
+    assert_ne!(
+        unmarked, exited,
+        "the fixture needs two distinct extra panes"
+    );
+    mark_pane(&socket, &scratch, &original, "main");
+    mark_pane(&socket, &scratch, &exited, "gone");
+    wait_for_a_dead_pane(&socket, &scratch, "marked");
 
     let server = ServerId::Selected(Selector::Socket(socket.clone()));
     let (ok, out) = run_tmux(&list_panes_args(&server, "marked"), &scratch);
     let panes = interpret_panes(ok, &out);
 
-    // THE PLATFORM FACT, PROVEN WHERE IT IS PROVABLE. That tmux reports an UNSET
-    // option and one SET TO THE EMPTY STRING identically is a claim about tmux,
-    // and no assertion over the parser can establish it — an earlier unit test
-    // tried and ended up comparing a function to itself. So it is asked of a
-    // real server: enumerate with pane 1's option unset, set it to the empty
-    // string, enumerate again, and require the two answers to be identical.
-    mark_pane(&socket, &scratch, "marked", 1, "");
+    // The platform fact, asked of a real server because no assertion over the
+    // parser can establish it: unset and set-to-empty are indistinguishable.
+    mark_pane(&socket, &scratch, &unmarked, "");
     let (empty_ok, empty_out) = run_tmux(&list_panes_args(&server, "marked"), &scratch);
     let after_setting_empty = interpret_panes(empty_ok, &empty_out);
 
-    // The prefix hazard, on the same primitive and in the same run: `-t marke`
-    // is not a different session, it is THIS one. That is why the argv's docs
-    // require an exact name from a `list-sessions` answer.
+    // Prefix hazard and failed query, on the same primitive and the same run.
     let (prefix_ok, prefix_out) = run_tmux(&list_panes_args(&server, "marke"), &scratch);
     let by_prefix = interpret_panes(prefix_ok, &prefix_out);
-
-    // And a target naming nothing is a FAILED query, not an empty session.
     let (absent_ok, absent_out) = run_tmux(&list_panes_args(&server, "nosuch"), &scratch);
     let absent = interpret_panes(absent_ok, &absent_out);
 
@@ -424,50 +512,66 @@ fn sc_017p_a_real_enumeration_reports_every_pane_and_marks_only_the_ones_that_ca
     let _ = fs::remove_dir_all(&scratch);
 
     let panes = panes.expect("a live session enumerates");
-    let panes_snapshot = panes.clone();
     assert_eq!(
         panes.len(),
         3,
         "three panes, and the unmarked one is one of them"
     );
+
+    // FOUND BY IDENTITY, NEVER BY POSITION — see `split`'s docs for why.
+    let by_slot = |slot: &str| {
+        panes
+            .iter()
+            .find(|pane| pane.slot.as_deref() == Some(slot))
+            .unwrap_or_else(|| panic!("no pane carries slot {slot}: {out:?}"))
+    };
+    let main = by_slot("main");
+    let gone = by_slot("gone");
     assert_eq!(
-        panes,
-        vec![
-            ObservedPane {
-                slot: Some("main".to_owned())
-            },
-            ObservedPane { slot: None },
-            ObservedPane {
-                slot: Some("worker".to_owned())
-            },
-        ],
-        "the middle pane carries no slot and is still a pane"
+        panes.iter().filter(|pane| pane.slot.is_none()).count(),
+        1,
+        "exactly one pane is present and anonymous: {out:?}"
+    );
+
+    // THE #109 ARM. The exited pane's command is NOT in SC-017s's shell set, so
+    // the command field alone would read alive; `pane_dead` is the only thing
+    // that says otherwise, and it survived the read.
+    assert_eq!(
+        gone.dead,
+        Some(true),
+        "an exited pane reports pane_dead=1: {out:?}"
+    );
+    assert_eq!(
+        gone.command.as_deref(),
+        Some("true"),
+        "and still reports the EXITED process's command, which is not a shell: {out:?}"
+    );
+    assert_eq!(
+        main.dead,
+        Some(false),
+        "while a live pane reports pane_dead=0, or the arm above proves nothing"
+    );
+    // The live panes' command is the machine's login shell and is deliberately
+    // NOT asserted by name: it differs across machines, and pinning it would
+    // make this test a statement about the developer's shell.
+    assert!(
+        main.command.is_some(),
+        "a live pane reports SOME command: {out:?}"
     );
 
     assert_eq!(
-        after_setting_empty.as_ref(),
-        Ok(&panes_snapshot),
-        "a marker SET to the empty string reads exactly like an unset one — ae \
-         does not invent a distinction tmux does not report"
+        after_setting_empty
+            .as_ref()
+            .map(|panes| panes.iter().filter(|pane| pane.slot.is_none()).count()),
+        Ok(1),
+        "a marker SET to the empty string reads exactly like an unset one — still \
+         exactly one anonymous pane, not two and not none"
     );
-
-    assert_eq!(
-        slot_observation(&panes, "main"),
-        SlotObservation::Unique,
-        "the roster slot is found by exact match"
-    );
-    assert_eq!(
-        slot_observation(&panes, "mai"),
-        SlotObservation::Absent { unidentified: 1 },
-        "a PREFIX of a real slot is absent — and the unmarked pane is counted, \
-         which is what SC-017q needs to refuse a `dead` here"
-    );
-
     assert_eq!(
         by_prefix.map(|panes| panes.len()),
         Ok(3),
-        "tmux answered a PREFIX target with this session's panes — measured, not \
-         assumed, and the reason the caller must supply an exact name"
+        "tmux answered a PREFIX target with this session's panes — measured, and \
+         the reason the caller must supply an exact name"
     );
     assert_eq!(
         absent,
