@@ -28,6 +28,21 @@ def run(obl=None, fresh=None, inv=None):
     return r.returncode, ids
 
 MUTATIONS = [
+    # ---- THE TWO NON-STOPPED REASON SEEDS. Both sit on A2/c01-filters-ro
+    # list_all_json, a digest carrying SEVEN legitimate SC-509c reasons, so the OLD
+    # row-level any/none converse stays green for both: deleting one leaves six, and
+    # fabricating one adds an eighth beside them. Only exact Counter equality over
+    # the complete owed set can see either. tg2b is RUNNING, so these exercise the
+    # non-stopped half of the grammar the stopped-only derivation could not reach.
+    ("OWED-MISSING", OBL, "one of seven owed reason loci deleted, six left standing",
+     lambda s: "\n".join(l for l in s.split("\n") if not l.startswith(
+         "arms/A2/c01-filters-ro\tlist_all_json\tSC-509c\tdigest\t"
+         "sessions[tg2b].agents[fake:lead].reason\t"))),
+    ("OWED-EXTRA", OBL, "a reason fabricated for a live agent with no carrier at all",
+     lambda s: s.rstrip("\n") + "\n" + "\t".join(
+         ["arms/A2/c01-filters-ro", "list_all_json", "SC-509c", "digest",
+          "sessions[tg2b].agents[fake:bravo].reason", "null", "blocked", "equals",
+          "OBSERVED", "OBSERVED", "seeded"]) + "\n"),
     # ---- THE SEVEN POPULATION SEEDS, all measured rc=0 against b1aeaacf's verifier
     # by gpt56sol:colead before the repair. Each is an EXACT SHAPE that the old
     # per-fragment checks accepted because they proved required loci EXIST and never
@@ -151,7 +166,7 @@ MUTATIONS = [
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A3/c07-competing-rw\t")
                                  and "\tSC-509c\t" in l))),
-    ("MISSING-509c", OBL, "an ALERT-derived reason move stripped (evidence class 2)",
+    ("OWED-MISSING", OBL, "an ALERT-derived reason move stripped (evidence class 2)",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not ("\tSC-509c\t" in l and "sessions[twda1].agents[fake:probe]" in l))),
     ("SURFACE", OBL, "a JSON-only obligation parked on a human row",

@@ -447,9 +447,14 @@ def gate_capture_requests(case, consumer):
     return rows
 
 
-# Re-derived symbolically, matching the generator: the below-threshold letter is
-# unruled (the successor OMITS attention/attention_rank there, measured 9eb470c6).
-BELOW_LETTER = "<ruled-letter-pending: omitted vs null/0>"
+# THE BELOW-THRESHOLD LETTER IS RULED (colead option b: present as false/null/0,
+# never omitted) BUT NOT YET PINNED. A ruling in a message is not the source of
+# truth; the contract blob is, and reason2's SC-509/SC-017g amendment has not
+# landed. Encoding it from the message would be the provenance shortcut this table
+# refuses everywhere else, so the letter stays SYMBOLIC until the amended contract
+# is the pin — then one string in each file resolves and the table re-derives
+# against that identity.
+BELOW_LETTER = "<ruled false/null/0, pending the amended contract blob>"
 ATTN_RANK = {"unanswered": 1, "throttled": 2, "blocked": 3,
              "waiting-user": 4, "stale": 5, "dead": 6}
 
@@ -476,6 +481,15 @@ def held_shapes(carriers, case, consumer, ids, where=None):
         if o["obligation_id"] in ids and (where is None or where(o)))
 
 
+# THE DIRECT GUARD ON THE FAILURE MODE THAT DESTROYED THIS FILE ONCE. An unbounded
+# text slice removed a comparison block and the gate then reported VERIFIED — a
+# green verdict for checks that no longer existed, which is the loudest a lost check
+# ever gets. Green rc is not evidence that the checks ran; the NAME SET is. If a
+# structural edit drops a call site, or renames one, this fails instead of passing.
+EXPECTED_FAMILIES = {"SC-518/518a", "SC-521c", "SC-509c reasons", "stopped facts"}
+_families_seen = set()
+
+
 def compare_owed(out, case, consumer, family, owed, held):
     """THE ONE COMPARISON EVERY DERIVATION FEEDS. Counter equality over complete
     FIXED tuples, both directions, owed-empty included.
@@ -487,6 +501,7 @@ def compare_owed(out, case, consumer, family, owed, held):
     of them is the same defect — an exact SHAPE checked without an exact
     POPULATION — so the repair is one mechanism, not seven checkers.
     """
+    _families_seen.add(family)
     owed = collections.Counter(owed)
     for shape, n in (owed - held).items():
         fail(out, "OWED-MISSING", "%s/%s [%s] owes %s x%d and carries no such row"
@@ -538,6 +553,75 @@ def owed_requests(case, consumer, dynamic):
     return owed
 
 
+def gate_declared_contributions(case):
+    """actor -> {agent-owned classes}, from the case's own event bytes.
+
+    Re-derived independently of the generator. This is the THIRD branch of the
+    ruled reason grammar and the one that produces most owed-EMPTY addresses: it
+    is empty across this corpus, so an agent with no captured state and no alert
+    naming it proves nothing, and OWNER-NOT-ESTABLISHED is the owed answer for
+    that address rather than a reason to stop checking it.
+    """
+    out = {}
+    p = os.path.join(SRC, case, "events.bytes.jsonl")
+    if not os.path.exists(p):
+        return out
+    for line in open(p, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("action") != "state":
+            continue
+        actor, cls = e.get("actor"), e.get("ref")
+        if actor and cls in AGENT_OWNED:
+            out.setdefault(actor, set()).add(cls)
+    return out
+
+
+def owed_reason(case, doc):
+    """The COMPLETE owed SC-509c multiset over EVERY digest agent, not only stopped.
+
+    The ruled state/alert/action grammar, in priority order: the agent's own
+    declared state (the CAPTURED one for a live session, the PRODUCER-declared one
+    for a stopped session whose capture is nulled), else a watchdog alert naming it
+    as target, else a state event naming it as actor. Exactly one proved
+    contribution owes a row; anything else — none, or ambiguous — owes EMPTY, and
+    owed-empty is compared like any other member.
+
+    Built because the row-level any/none converse could not see a single deleted
+    locus or a single fabricated one whenever the row carried legitimate reasons
+    elsewhere, which is every interesting digest.
+    """
+    owed = set()
+    decl_case = gate_declared_contributions(case)
+    for x in doc.get("sessions", []) or []:
+        nm = x.get("name") or ""
+        stopped = x.get("status") == "stopped"
+        sdecl = stopped_declared(case, nm) if stopped else {}
+        alerts = alert_owners(case, nm)
+        for a in x.get("agents") or []:
+            ref = a.get("ref")
+            if a.get("reason") not in (None, ""):
+                continue
+            own = sdecl.get(ref) if stopped else a.get("state")
+            if own in AGENT_OWNED:
+                proved = [own]
+            elif ref in alerts:
+                proved = [alerts[ref]]
+            else:
+                proved = sorted(decl_case.get(ref, set()))
+            if len(proved) != 1:
+                continue                      # OWNER-NOT-ESTABLISHED: owes EMPTY
+            owed.add(("SC-509c", "digest",
+                      "sessions[%s].agents[%s].reason" % (nm, ref),
+                      "null", proved[0], "equals", "OBSERVED", "OBSERVED"))
+    return owed
+
+
 def owed_stopped(case, doc):
     """The COMPLETE owed fixed-shape multiset for the stopped-session families.
 
@@ -566,10 +650,9 @@ def owed_stopped(case, doc):
                 owed.add(("SC-509", "digest",
                           "sessions[%s].agents[%s].state" % (nm, ref),
                           "null", decl[ref], "equals", "OBSERVED", "OBSERVED"))
-            if contrib.get(ref) and a.get("reason") in (None, ""):
-                owed.add(("SC-509c", "digest",
-                          "sessions[%s].agents[%s].reason" % (nm, ref),
-                          "null", contrib[ref], "equals", "OBSERVED", "OBSERVED"))
+            # The reason family moved to owed_reason(), which covers EVERY digest
+            # agent rather than only stopped ones — a stopped-only set left the
+            # non-stopped carriers on the boolean converse.
         if contrib:
             best = max(contrib.values(), key=lambda c: ATTN_RANK.get(c, 0))
             for locus, got, want in (
@@ -592,7 +675,7 @@ def owed_stopped(case, doc):
                 ("attention_rank", BELOW_LETTER, "1", "0")):
             owed.add(("SC-017g", "digest", "sessions[%s].%s" % (nm, locus), frm,
                       "%s when generated_at - %s <= threshold, %s when strictly greater"
-                      % (below, pts, above), "relational", "OBSERVED", "UNSCORABLE"))
+                      % (below, pts, above), "relational", "OBSERVED", "OBSERVED"))
     return owed
 
 
@@ -831,10 +914,13 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
             # equality and are deliberately not restored — seven named fragments
             # were what let the bypasses through.
             live_doc = doc if not scope_empty else {}
+            compare_owed(out, case, consumer, "SC-509c reasons",
+                         owed_reason(case, live_doc),
+                         held_shapes(carriers, case, consumer, ("SC-509c",)))
             compare_owed(out, case, consumer, "stopped facts",
                          owed_stopped(case, live_doc),
                          held_shapes(carriers, case, consumer,
-                                     ("SC-509", "SC-509c", "SC-017g"),
+                                     ("SC-509", "SC-017g"),
                                      lambda o: o["locus"].startswith("sessions[")
                                      and _is_stopped_locus(case, live_doc, o["locus"])))
             if want_c and "SC-509c" not in ids:
@@ -939,7 +1025,7 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
         if o["predicate"] == "relational":
             if not (shape[0] == "SC-017g" and shape[1] == "digest"
                     and RELATIONAL_LOCUS.match(shape[2] or "")
-                    and shape[6] == "OBSERVED" and shape[7] == "UNSCORABLE"):
+                    and shape[6] == "OBSERVED" and shape[7] == "OBSERVED"):
                 fail(out, "RELATIONAL-SHAPE", "%s/%s: `relational` is the SC-522 stopped "
                      "attention form only, and stays UNSCORABLE until the phase-4 scorer "
                      "implements and red-proves it; this row is %s"
@@ -998,6 +1084,15 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
         per = collections.Counter(o["obligation_id"] for o in obls)
         print("obligations %d over %d carrying rows; contract blob %s"
               % (len(obls), len(carriers), rec.get("contract_blob", "?")[:12]))
+    missing_fam = EXPECTED_FAMILIES - _families_seen
+    extra_fam = _families_seen - EXPECTED_FAMILIES
+    if missing_fam:
+        fail(out, "FAMILY-SET", "the owed-multiset comparison never ran for %s — a check "
+             "that does not run cannot fail, and green rc says nothing about it"
+             % sorted(missing_fam))
+    if extra_fam:
+        fail(out, "FAMILY-SET", "an undeclared comparison family ran: %s; the declared set "
+             "is the contract" % sorted(extra_fam))
     check_keyset(out, obls, quiet)
     if not quiet:
         print("verdict (DERIVED, no stored column): %d EXPECTED-DIVERGENCE + %d EXPECTED-MATCH "

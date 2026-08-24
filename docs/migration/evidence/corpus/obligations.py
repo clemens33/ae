@@ -603,13 +603,14 @@ def dynamic_subject(case, consumers):
 # captured scale runs the OTHER WAY: 1=unanswered rising to 6=dead, with 0 for no
 # attention. Reading the sentence as the numbering gives blocked=4; the bytes say
 # 3, across every P1 digest that carries an attention.
-# THE BELOW-THRESHOLD LETTER IS NOT YET RULED, so it is carried SYMBOLICALLY rather
-# than guessed. Measured by reason2 at 9eb470c6: below the threshold the successor
-# OMITS attention and attention_rank entirely — absent, null and 0 are THREE
-# different documents at these members, and writing "null"/"0" here would ratify a
-# letter nobody chose. One string changes when the seats rule omission-ratified or
-# null-required; nothing else in the derivation moves.
-BELOW_LETTER = "<ruled-letter-pending: omitted vs null/0>"
+# THE BELOW-THRESHOLD LETTER IS RULED (colead option b: present as false/null/0,
+# never omitted) BUT NOT YET PINNED. A ruling in a message is not the source of
+# truth; the contract blob is, and reason2's SC-509/SC-017g amendment has not
+# landed. Encoding it from the message would be the provenance shortcut this table
+# refuses everywhere else, so the letter stays SYMBOLIC until the amended contract
+# is the pin — then one string in each file resolves and the table re-derives
+# against that identity.
+BELOW_LETTER = "<ruled false/null/0, pending the amended contract blob>"
 ATTN_RANK = {"unanswered": 1, "throttled": 2, "blocked": 3,
              "waiting-user": 4, "stale": 5, "dead": 6}
 
@@ -918,7 +919,7 @@ def main():
                                      ("false" if locus == "needs_attention" else "0"),
                                      "%s when generated_at - %s <= threshold, %s when "
                                      "strictly greater" % (below, pending_ts, above),
-                                     "relational", "OBSERVED", "UNSCORABLE",
+                                     "relational", "OBSERVED", "OBSERVED",
                                      "SC-522 strictly-past, evaluated in the SUCCESSOR "
                                      "digest's own frame: its generated_at joined to the "
                                      "PINNED fixture opening %s left pending under "
