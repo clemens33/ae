@@ -962,23 +962,32 @@ mod tests {
                 "{label}: needs_attention follows the stamp"
             );
 
-            // The two optional members are ABSENT below the threshold, not null
-            // and not zero — asserted as absence so the shape is pinned too.
-            if implied {
-                assert_eq!(
-                    attention,
-                    Some(&json::Value::Str("unanswered".to_owned())),
-                    "{label}: attention follows the stamp"
-                );
-                assert_eq!(
-                    rank,
-                    Some(&json::Value::Num(Reason::Unanswered.rank())),
-                    "{label}: attention_rank follows the stamp"
-                );
-            } else {
-                assert_eq!(attention, None, "{label}: no reason, no member");
-                assert_eq!(rank, None, "{label}: no reason, no rank");
-            }
+            // FLIPPED by colead's ruling (2026-08-24). This arm previously
+            // asserted the two optional members were ABSENT below the threshold,
+            // and that enforced the wrong letter: absence is SC-509b's spelling
+            // for a fact that could not be READ, so a quiet entry that omits them
+            // makes loss and legitimate-none the same bytes. Both members are now
+            // PRESENT on both sides of the boundary, and only their VALUES move —
+            // which is a stronger statement of the same relation, because the
+            // member set no longer changes with the clock.
+            assert_eq!(
+                attention,
+                Some(&if implied {
+                    json::Value::Str("unanswered".to_owned())
+                } else {
+                    json::Value::Null
+                }),
+                "{label}: attention is present either way and follows the stamp"
+            );
+            assert_eq!(
+                rank,
+                Some(&json::Value::Num(if implied {
+                    Reason::Unanswered.rank()
+                } else {
+                    0
+                })),
+                "{label}: attention_rank is present either way and follows the stamp"
+            );
         }
     }
 }

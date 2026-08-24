@@ -17,6 +17,19 @@
 //! Two consistency facts are enforced by construction rather than asserted:
 //! `needs_attention` is `attention.is_some()`, and `attention_rank` is that
 //! reason's own rank. They cannot drift apart because neither is stored.
+//!
+//! # Presence is a contract, not a serializer convenience
+//!
+//! **A member that was READ is rendered, whatever its value.** SC-017g as
+//! precised gives the session's attention triad (`false` / `null` / `0` when
+//! quiet) and SC-509c gives `agents[].reason` (`null` when no agent-owned
+//! contribution exists). `push_str` and `push_num` exist for the OTHER case —
+//! SC-509b's omission of a fact that could not be read — and the two must not be
+//! confused, because rendering a legitimate empty as an absence makes damage and
+//! sparsity the same bytes. Eight other optional members still take the
+//! `push_*` path and are universally present in frozen v1; whether that is
+//! correct is an open question recorded in SC-017g's scope guard, not something
+//! this module decides.
 
 use crate::attention::Reason;
 use crate::json::Value;
@@ -130,14 +143,32 @@ impl AgentEntry {
             ("alias".to_owned(), Value::str(&self.alias)),
             ("name".to_owned(), Value::str(&self.name)),
         ];
-        push_str(&mut fields, "session_id", self.session_id.as_deref());
+        // Unconditional, like `reason` below: an `AgentEntry` exists only because
+        // the roster was READ (SC-405k — membership is roster-defined), so the
+        // question "was this member readable" is answered yes by the entry's
+        // existence. A session that lost its roster renders no agent entries.
+        push_str_or_null(&mut fields, "session_id", self.session_id.as_deref());
         // Present even when null — see the field's own docs.
         fields.push((
             "alive".to_owned(),
             self.alive.map_or(Value::Null, Value::Bool),
         ));
-        push_str(&mut fields, "state", self.state.as_deref());
-        push_str(&mut fields, "reason", self.reason.map(Reason::as_str));
+        push_str_or_null(&mut fields, "state", self.state.as_deref());
+        // SC-509c says `reason: null` MEANS no agent-owned contribution exists,
+        // so null is the ruled spelling of that answer and absence is not a
+        // synonym for it. Frozen v1 agrees: all 840 agent entries in the corpus
+        // render the member, every one of them as null.
+        //
+        // Unconditional here, unlike the session triad: an `AgentEntry` EXISTS
+        // only because the roster was read (SC-405k — membership is
+        // roster-defined), so the question "was this agent's reason readable" is
+        // already answered yes by the entry's existence. A session that lost its
+        // roster has no agent entries to render at all.
+        fields.push((
+            "reason".to_owned(),
+            self.reason
+                .map_or(Value::Null, |reason| Value::str(reason.as_str())),
+        ));
         Value::Obj(fields)
     }
 }
@@ -230,23 +261,78 @@ impl SessionEntry {
             ("name".to_owned(), Value::str(&self.name)),
             ("status".to_owned(), Value::str(self.status.as_str())),
         ];
-        push_str(&mut fields, "mode", self.mode.as_deref());
-        push_str(&mut fields, "origin", self.origin.as_deref());
-        push_str(&mut fields, "work_dir", self.work_dir.as_deref());
-        push_str(&mut fields, "goal", self.goal.as_deref());
-        push_num(&mut fields, "goal_set_epoch", self.goal_set_epoch);
-        push_str(&mut fields, "branch", self.branch.as_deref());
-        push_num(&mut fields, "last_active_epoch", self.last_active_epoch);
+        // SC-509 as ruled 2026-08-24: PRESENCE IS PART OF THE SCHEMA. Every
+        // documented member whose source was READ is present, carrying its
+        // legitimate empty value; omission is reserved for SC-509b loss. So a
+        // read entry renders `null` where it has nothing, and only a `degraded`
+        // entry omits — because for that entry the fact could not be read, and
+        // SC-509b says such a fact is "omitted, never fabricated, never null".
+        //
+        // The `degraded` flag is a COARSE proxy for "this member was unreadable":
+        // an entry degraded by a malformed meta line may have read its events
+        // perfectly and will still omit what it knows. That imprecision is
+        // reported, not resolved here — the type cannot yet say which member was
+        // lost, and guessing would put a value where the row demands silence.
+        if self.degraded {
+            push_str(&mut fields, "mode", self.mode.as_deref());
+            push_str(&mut fields, "origin", self.origin.as_deref());
+            push_str(&mut fields, "work_dir", self.work_dir.as_deref());
+            push_str(&mut fields, "goal", self.goal.as_deref());
+            push_num(&mut fields, "goal_set_epoch", self.goal_set_epoch);
+            push_str(&mut fields, "branch", self.branch.as_deref());
+            push_num(&mut fields, "last_active_epoch", self.last_active_epoch);
+        } else {
+            push_str_or_null(&mut fields, "mode", self.mode.as_deref());
+            push_str_or_null(&mut fields, "origin", self.origin.as_deref());
+            push_str_or_null(&mut fields, "work_dir", self.work_dir.as_deref());
+            push_str_or_null(&mut fields, "goal", self.goal.as_deref());
+            push_num_or_null(&mut fields, "goal_set_epoch", self.goal_set_epoch);
+            push_str_or_null(&mut fields, "branch", self.branch.as_deref());
+            push_num_or_null(&mut fields, "last_active_epoch", self.last_active_epoch);
+        }
         fields.push((
             "needs_attention".to_owned(),
             Value::Bool(self.needs_attention()),
         ));
-        push_str(&mut fields, "attention", self.attention.map(Reason::as_str));
-        push_num(
-            &mut fields,
-            "attention_rank",
-            self.attention.map(Reason::rank),
-        );
+        // SC-017g as PRECISED (2026-08-24): a READ entry renders all three
+        // attention members, and a quiet one renders `false` / `null` / `0`.
+        // Omission is SC-509b's spelling for a fact that could not be READ, and
+        // reusing it for a legitimately empty one makes loss and legitimate-none
+        // the same byte pattern — the collapse that row's closing sentence
+        // forbids ("Damage is never rendered identically to legitimate
+        // sparsity").
+        //
+        // **AND THE CONVERSE, which is why this is conditional.** SC-509b says an
+        // unreadable optional fact is "omitted, never fabricated, NEVER NULL",
+        // so a degraded entry may not render `null` here either — null is the
+        // ruled spelling of "read, and empty", which is a claim a lossy entry
+        // cannot make. The two rows meet exactly at `degraded`.
+        //
+        // `degraded` is a COARSE proxy for "this particular fact was unreadable"
+        // and the type cannot currently do better: an entry degraded by a
+        // malformed meta line may have read its events perfectly, and would omit
+        // a triad it actually knows. Reported as an open boundary rather than
+        // guessed at — SC-017g's precision speaks only about entries that WERE
+        // read, and this is the conservative reading that satisfies both rows
+        // with the information the type has.
+        if self.degraded {
+            push_str(&mut fields, "attention", self.attention.map(Reason::as_str));
+            push_num(
+                &mut fields,
+                "attention_rank",
+                self.attention.map(Reason::rank),
+            );
+        } else {
+            fields.push((
+                "attention".to_owned(),
+                self.attention
+                    .map_or(Value::Null, |reason| Value::str(reason.as_str())),
+            ));
+            fields.push((
+                "attention_rank".to_owned(),
+                Value::Num(self.attention.map_or(0, Reason::rank)),
+            ));
+        }
         fields.push((
             "agents".to_owned(),
             Value::Arr(self.agents.iter().map(AgentEntry::to_json).collect()),
@@ -360,6 +446,24 @@ fn push_num(fields: &mut Vec<(String, Value)>, key: &str, value: Option<i64>) {
     if let Some(value) = value {
         fields.push((key.to_owned(), Value::Num(value)));
     }
+}
+
+/// Push a string field, or an explicit `null` — SC-509's presence rule.
+///
+/// The counterpart of [`push_str`], and the two are not interchangeable. This one
+/// says "read, and empty"; `push_str` says "could not be read" (SC-509b). Using
+/// the wrong one makes damage and legitimate sparsity the same bytes, which is
+/// what SC-509b's closing sentence forbids.
+fn push_str_or_null<S: AsRef<str>>(fields: &mut Vec<(String, Value)>, key: &str, value: Option<S>) {
+    fields.push((
+        key.to_owned(),
+        value.map_or(Value::Null, |value| Value::str(value.as_ref())),
+    ));
+}
+
+/// Push a numeric field, or an explicit `null`. See [`push_str_or_null`].
+fn push_num_or_null(fields: &mut Vec<(String, Value)>, key: &str, value: Option<i64>) {
+    fields.push((key.to_owned(), value.map_or(Value::Null, Value::Num)));
 }
 
 #[cfg(test)]
@@ -487,16 +591,28 @@ mod tests {
     }
 
     #[test]
-    fn a_session_with_nothing_to_report_still_answers_the_attention_question() {
-        // needs_attention is a predicate, always answerable; the reason and its
-        // rank are the things that may not exist.
+    fn sc_017g_a_quiet_read_entry_renders_the_whole_triad() {
+        // CHANGED by the 2026-08-24 SC-017g precision. This test previously
+        // asserted that `attention` and `attention_rank` were ABSENT on a quiet
+        // entry — "the things that may not exist" — and that was the wrong
+        // letter: absence is SC-509b's spelling for a fact that could not be
+        // READ, so spending it on a legitimately empty one makes loss and
+        // legitimate-none the same bytes.
         let value = SessionEntry::new("quiet", Status::Running).to_json();
         assert_eq!(
             value.get("needs_attention"),
             Some(&json::Value::Bool(false))
         );
-        assert_eq!(value.get("attention"), None);
-        assert_eq!(value.get("attention_rank"), None);
+        assert_eq!(
+            value.get("attention"),
+            Some(&json::Value::Null),
+            "null, not absent — a read entry answers"
+        );
+        assert_eq!(
+            value.get("attention_rank"),
+            Some(&json::Value::Num(0)),
+            "zero, not absent — frozen v1 renders 0 on all 193 of its quiet entries"
+        );
         assert_eq!(value.get("agents"), Some(&json::Value::Arr(vec![])));
     }
 
@@ -570,14 +686,30 @@ mod tests {
         };
         let damaged_keys: BTreeSet<&str> = damaged_fields.iter().map(|(k, _)| k.as_str()).collect();
         let sparse_keys: BTreeSet<&str> = sparse_fields.iter().map(|(k, _)| k.as_str()).collect();
+
+        // NARROWED by the 2026-08-24 SC-017g precision, and the narrowing is the
+        // point. This test used to assert `sparse_keys ⊆ damaged_keys` and
+        // `damaged − sparse == {degraded}` — an ADDITIVE MEMBER SET. The row says
+        // something weaker: "additive KEY; normal entries may omit it", plus
+        // "identity (name + status) always survives". It also says the opposite
+        // of a superset for everything else — "unreadable optional facts are
+        // omitted". The old assertion held only because a normal entry ALSO
+        // omitted the attention triad, so the two omissions cancelled; once a
+        // read entry renders the triad, a superset over the whole member set and
+        // "unreadable facts are omitted" cannot both be true.
+        //
+        // So this now pins what SC-509b actually states.
         assert!(
-            sparse_keys.is_subset(&damaged_keys),
-            "no existing member is replaced when the loss key appears"
+            BTreeSet::from(["name", "status"]).is_subset(&damaged_keys),
+            "identity always survives: {damaged}"
         );
-        assert_eq!(
-            &damaged_keys - &sparse_keys,
-            BTreeSet::from(["degraded"]),
-            "the new key is the only addition"
+        assert!(
+            damaged_keys.contains("degraded") && !sparse_keys.contains("degraded"),
+            "the loss key is additive — present on the damaged entry, omitted on the normal one"
+        );
+        assert!(
+            !damaged_keys.contains("attention") && !damaged_keys.contains("attention_rank"),
+            "and an unreadable optional fact is omitted, never null: {damaged}"
         );
     }
 
@@ -634,5 +766,98 @@ mod tests {
             actual.same_members(&expected),
             "empty still carries version, stamp, sessions, completeness: {rendered}"
         );
+    }
+
+    #[test]
+    fn sc_509_a_read_entry_renders_every_documented_session_member() {
+        // SC-509's presence rule as a SET, not member by member. Written this way
+        // because the member-by-member version is what let four of these regress
+        // unnoticed: mutating `goal`, `mode`, `state` or `reason` back to the
+        // omitting push survived the whole suite until this test existed.
+        //
+        // The entry is maximally EMPTY and NOT degraded — every source was read
+        // and had nothing in it, which is precisely the case that must render.
+        let value = SessionEntry::new("bare", Status::Running).to_json();
+        let json::Value::Obj(fields) = &value else {
+            panic!("an object")
+        };
+        let members: BTreeSet<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            members,
+            BTreeSet::from([
+                "name",
+                "status",
+                "mode",
+                "origin",
+                "work_dir",
+                "goal",
+                "goal_set_epoch",
+                "branch",
+                "last_active_epoch",
+                "needs_attention",
+                "attention",
+                "attention_rank",
+                "agents",
+            ]),
+            "every documented member of a READ entry is present: {value}"
+        );
+        // ...and each empty one carries its legitimate empty VALUE, never absence.
+        for key in [
+            "mode",
+            "origin",
+            "work_dir",
+            "goal",
+            "goal_set_epoch",
+            "branch",
+            "last_active_epoch",
+            "attention",
+        ] {
+            assert_eq!(value.get(key), Some(&json::Value::Null), "{key} is null");
+        }
+        assert_eq!(value.get("attention_rank"), Some(&json::Value::Num(0)));
+        assert_eq!(
+            value.get("needs_attention"),
+            Some(&json::Value::Bool(false))
+        );
+        assert_eq!(value.get("degraded"), None, "and loss is not claimed");
+    }
+
+    #[test]
+    fn sc_509_an_agent_entry_renders_every_documented_member() {
+        // An AgentEntry exists only because the roster was READ (SC-405k), so
+        // there is no unreadable case here and no conditional: all seven members,
+        // always. `reason: null` is SC-509c's own spelling for "no agent-owned
+        // contribution exists", and frozen v1 renders it on all 840 of its agent
+        // entries.
+        let value = AgentEntry {
+            reference: "claude:lead".to_owned(),
+            alias: "claude".to_owned(),
+            name: "lead".to_owned(),
+            session_id: None,
+            alive: None,
+            state: None,
+            reason: None,
+        }
+        .to_json();
+        let json::Value::Obj(fields) = &value else {
+            panic!("an object")
+        };
+        let members: BTreeSet<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            members,
+            BTreeSet::from([
+                "ref",
+                "alias",
+                "name",
+                "session_id",
+                "alive",
+                "state",
+                "reason"
+            ]),
+            "every documented agent member is present: {value}"
+        );
+        for key in ["session_id", "alive", "state", "reason"] {
+            assert_eq!(value.get(key), Some(&json::Value::Null), "{key} is null");
+        }
     }
 }
