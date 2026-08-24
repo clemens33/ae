@@ -363,11 +363,14 @@ observe them. Two tags, introduced here:
 - `S-PENDING` — the only observer is a named future arm; the line records WHICH one, so
   the gap stays a tracked obligation rather than an unassigned id.
 
-SOURCE: docs/migration/evidence/ratification-critical.md blob 84e3a837d43b1f9c84b5e10bc73d19165bc8b142
-CLASSIFIED-BY: ratification-critical.md blob 9cde93c743822952e974143775eef00e2b5cee2d
-(prior pin 84e3a837 superseded when SC-518a entered the classification at c8acf9e2)
+SOURCE: docs/migration/evidence/ratification-critical.md blob cea25b254ef5df5e6adada2b9cf44109bf170881
+CLASSIFIED-BY: the SOURCE declaration above is the single checked pin for this file's
+classification authority (supersession chain: 84e3a837 -> 9cde93c7 at c8acf9e2 when
+SC-518a entered -> cea25b25 at ef95eec6 under the gating-test tightening). This line
+restates no hash: two pin authorities in one file drift apart, and this file proved it
+within a single commit.
 
-CRIT-ASSIGN: SC-518a | S-GATE | phase-4 apparatus scores the A6 m2 ro/rw directional loci (reply-precedes-opening: replied-to-pending plus the summary consequence; table identity carrying them is the in-flight cascade); successor-only tests pin the three zero-specimen ordering gaps — inverse-temporal terminal, re-ask new lifecycle, cancel causality conditional on authorization (cancel authorization itself has NO row; the frozen policy at ae@72c7293:4567-4599 is measured IS, ratified by nothing)
+CRIT-ASSIGN: SC-518a | S-PENDING | observers are in flight, named per the tag's rule: the phase-4 table scorer once the cascade identity carries the A6 m2 ro/rw directional loci (reply-precedes-opening: the OBSERVED pre-opening-terminal specimen — replied-to-pending plus the separately-addressed summary consequence), and reqevents2's ordering tests once committed and accepted, pinning SC-518a's TWO ratified zero-specimen ordering gaps: re-ask new lifecycle, and cancel causality CONDITIONAL on authorization (cancel authorization has NO row; the frozen policy at ae@72c7293:4567-4599 is measured IS, ratified by nothing). Inverse-MIXED identity is SC-518's gap, not this row's; cancel-vs-reply precedence is a named UNRATIFIED gap no gate may pin. Moves to S-GATE when both observer byte sets are committed and accepted.
 
 CRIT-ASSIGN: SC-017j | S-GATE | phase-1 gate (8e3c9ec0) inventory criteria + src/inventory.rs candidate tests: union of durable roots and live discovery, archives inert, no basename dedup
 CRIT-ASSIGN: SC-017k | S-GATE | phase-2 gate (29db943a) + tests/it/transport.rs sc_017k one-real-query arm: recorded-server exact-name evidence, per-name attribution incl. prefix sibling
