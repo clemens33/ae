@@ -11,10 +11,11 @@ import argparse, csv, json, os, re, subprocess, sys, collections
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.normpath(os.path.join(HERE, "..", "batch-c-artifacts"))
 OBL = os.path.join(HERE, "OBLIGATIONS.tsv")
+UNSCORABLE_O = os.path.join(HERE, "SC-017O-UNSCORABLE.tsv")
 FRESH = os.path.join(HERE, "FRESHNESS.tsv")
 INV = os.path.join(HERE, "INVOCATIONS.tsv")
 STREAMS = {"digest", "stdout", "stderr"}
-PREDICATES = {"equals", "at-least", "all-of", "present"}
+PREDICATES = {"equals", "at-least", "all-of", "present", "undecidable"}
 SUPPORT = {"OBSERVED", "UNSCORABLE"}
 LISTING = ("ae list", "ae ls")
 AGENT_OWNED = ("dead", "stale", "waiting-user", "blocked", "throttled")
@@ -82,9 +83,10 @@ def unreachable(case):
     p = os.path.join(SRC, case, "tmux.before.txt")
     return os.path.exists(p) and "error connecting" in open(p, encoding="utf-8", errors="replace").read()
 
-def main(quiet=False, obl=None, fresh=None, inv=None):
+def main(quiet=False, obl=None, fresh=None, inv=None, unsc=None):
     out = []
     obl, fresh, inv = obl or OBL, fresh or FRESH, inv or INV
+    unsc = unsc or UNSCORABLE_O
     for p in (obl, fresh, inv):
         if not os.path.exists(p):
             print("FAIL  MISSING  %s" % os.path.basename(p)); return 1
@@ -140,6 +142,7 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
 
     # ---- 4. CONVERSE: what carries an obligation must, and what does not must not ----
     p1 = [r for r in csv.DictReader(open(inv, encoding="utf-8"), delimiter="\t") if r["phase"] == "P1"]
+    p1_rows = p1
     for r in p1:
         case, consumer = os.path.dirname(r["case"]), r["consumer"]
         text = body(case, consumer)
@@ -217,6 +220,46 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
         if not listish and ("SC-017l" in ids or "SC-017m" in ids):
             fail(out, "SURFACE", "%s/%s is not a listing yet owes a listing obligation" % (case, consumer))
 
+    # Every digest owes BOTH SC-017o loci: the mandated boolean PRESENCE and the
+    # semantic VALUE. Checked against the P1 population rather than against the table,
+    # so a wholesale removal of either has nowhere to hide — the denominator does not
+    # come from the thing being checked.
+    for r in p1_rows:
+        case2, consumer2 = os.path.dirname(r["case"]), r["consumer"]
+        text2 = body(case2, consumer2)
+        if '"schema_version"' not in text2:
+            continue
+        loci = {o["locus"] for o in carriers.get((case2, consumer2), [])
+                if o["obligation_id"] == "SC-017o"}
+        if "inventory_complete" not in loci:
+            fail(out, "MISSING-017o", "%s/%s is a digest owing no inventory_complete "
+                 "presence locus" % (case2, consumer2))
+        if "inventory_complete (value)" not in loci:
+            fail(out, "MISSING-017o-VALUE", "%s/%s is a digest owing no completeness "
+                 "VALUE locus" % (case2, consumer2))
+
+    # ---- 4b. `undecidable` implies UNSCORABLE, and the side file is not authority ----
+    # A semantic target nobody can decide cannot be OBSERVED: the predicate and the
+    # support must agree, or the row claims a scoring it does not have.
+    for o in obls:
+        if o["predicate"] == "undecidable" and o["support"] != "UNSCORABLE":
+            fail(out, "UNDECIDABLE", "%s/%s %s is `undecidable` yet claims support %s"
+                 % (o["case"], o["consumer"], o["locus"], o["support"]))
+    # TWO-WAY equality against the explanatory file. It may carry the reasoning; it may
+    # not carry a locus the table lacks, and the table may not carry one it omits.
+    table_val = {(o["case"], o["consumer"], o["locus"]) for o in obls
+                 if o["obligation_id"] == "SC-017o" and o["predicate"] == "undecidable"}
+    side = set()
+    if os.path.exists(unsc):
+        for row in csv.reader((l for l in open(unsc, encoding="utf-8")
+                               if not l.startswith("#")), delimiter="\t"):
+            if row and row[0] != "case":
+                side.add((row[0], row[1], row[2]))
+    for k in sorted(table_val - side)[:5]:
+        fail(out, "SIDE-MISSING", "%s/%s %s is an undecidable obligation with no explanatory row" % k)
+    for k in sorted(side - table_val)[:5]:
+        fail(out, "SIDE-EXTRA", "%s/%s %s is explained but is not an obligation" % k)
+
     # ---- 5. VERDICT IS DERIVED — so the check is COVERAGE, not agreement ----
     # The stored VERDICTS.tsv column is RETIRED (superseded by this table). A stored
     # verdict beside a derived one is EXACTLY the shape that went stale, and we did not
@@ -269,5 +312,6 @@ if __name__ == "__main__":
     ap.add_argument("--obl")
     ap.add_argument("--fresh")
     ap.add_argument("--inv")
+    ap.add_argument("--unsc")
     a = ap.parse_args()
-    sys.exit(main(obl=a.obl, fresh=a.fresh, inv=a.inv)[0])
+    sys.exit(main(obl=a.obl, fresh=a.fresh, inv=a.inv, unsc=a.unsc)[0])

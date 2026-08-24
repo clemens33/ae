@@ -16,11 +16,12 @@ import difflib, os, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 OBL = os.path.join(HERE, "OBLIGATIONS.tsv")
 FRESH = os.path.join(HERE, "FRESHNESS.tsv")
+UNSC = os.path.join(HERE, "SC-017O-UNSCORABLE.tsv")
 INV = os.path.join(HERE, "INVOCATIONS.tsv")
 
-def run(obl=None, fresh=None, inv=None):
+def run(obl=None, fresh=None, inv=None, unsc=None):
     cmd = [sys.executable, os.path.join(HERE, "verify-obligations.py")]
-    for flag, val in (("--obl", obl), ("--fresh", fresh), ("--inv", inv)):
+    for flag, val in (("--obl", obl), ("--fresh", fresh), ("--inv", inv), ("--unsc", unsc)):
         if val:
             cmd += [flag, val]
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -73,6 +74,15 @@ MUTATIONS = [
     ("SURFACE", OBL, "a JSON-only obligation parked on a human row",
      lambda s: s.replace("arms/A1/c02-meta-mode-000-ro\tlist-all-json\tSC-509b\t",
                          "arms/A1/c02-meta-mode-000-ro\tlist\tSC-509b\t", 1)),
+    ("UNDECIDABLE", OBL, "an undecidable semantic target claiming OBSERVED support",
+     lambda s: s.replace("\tundecidable\tOBSERVED\tUNSCORABLE\t",
+                         "\tundecidable\tOBSERVED\tOBSERVED\t", 1)),
+    ("MISSING-017o-VALUE", OBL, "a digest stripped of its completeness VALUE locus",
+     lambda s: "\n".join(l for l in s.split("\n")
+                         if not (l.startswith("arms/A1/c01-healthy-ro\tlist-json\tSC-017o")
+                                 and "inventory_complete (value)" in l))),
+    ("SIDE-EXTRA", UNSC, "the explanatory file claiming a locus the table does not carry",
+     lambda s: s.rstrip("\n") + "\narms/ZZ/not-a-case\tlist-json\tinventory_complete (value)\tseeded\n"),
     ("STALE", FRESH, "the contract having moved since derivation",
      lambda s: s.replace("contract_blob\t", "contract_blob\tdeadbeef", 1)),
 ]
@@ -98,7 +108,7 @@ def main():
                         if l[:1] in "+-" and l[:3] not in ("+++", "---"))
             seeded = os.path.join(tmp, os.path.basename(target))
             open(seeded, "w", encoding="utf-8").write(mutated)
-            kw = {OBL: "obl", FRESH: "fresh", INV: "inv"}[target]
+            kw = {OBL: "obl", FRESH: "fresh", INV: "inv", UNSC: "unsc"}[target]
             kw = {kw: seeded}
             rc2, ids2 = run(**kw)
             ok = rc2 != 0 and want in ids2

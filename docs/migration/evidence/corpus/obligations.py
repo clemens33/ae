@@ -237,7 +237,21 @@ def main():
                          "present", "present", "OBSERVED", "OBSERVED",
                          "the field is mandated unconditionally; its VALUE is unscorable "
                          "on this corpus and is recorded as such, not asserted"))
-            unscorable_o.append((case, consumer, "sessions-inventory_complete-value",
+            # THE VALUE IS AN OBLIGATION, NOT A FOOTNOTE. C3/C5/C16 define UNSCORABLE
+            # as an obligation that REMAINS IN THE DENOMINATOR and require every
+            # unscorable locus preserved in the result, so moving it to a side file
+            # broke three criteria at once. It is a row, addressable beside the
+            # presence locus, carrying the predicate `undecidable` — a schema extension
+            # made because the accounting needs the locus, not a locus dropped because
+            # the schema was inconvenient.
+            rows.append((case, consumer, "SC-017o", "digest", "inventory_complete (value)",
+                         "ABSENT", "the enumeration's actual completeness", "undecidable",
+                         "OBSERVED", "UNSCORABLE",
+                         "no captured connect failure names a session's RECORDED server, so "
+                         "no independently entitled enumeration is shown to have finally "
+                         "failed; ambient entitlement turns on the AE_TMUX_SERVER selection "
+                         "SC-1410c leaves unclassified"))
+            unscorable_o.append((case, consumer, "inventory_complete (value)",
                                  "no captured connect failure names a session's RECORDED "
                                  "server, so no independently entitled enumeration is shown "
                                  "to have finally failed; ambient entitlement turns on the "
@@ -409,9 +423,11 @@ def main():
 
     unscorable_o.sort()
     with open(UNSCORABLE_O, "w", encoding="utf-8") as fh:
-        fh.write("# SC-017o completeness VALUES this corpus cannot score, at the ruled grain.\n")
-        fh.write("# The FIELD is an obligation and lives in OBLIGATIONS.tsv; only the VALUE is here.\n")
-        fh.write("# Recorded, never guessed — an undecidable trigger is UNSCORABLE, not OBSERVED.\n")
+        fh.write("# EXPLANATORY ONLY — NOT AUTHORITY. Every row here has a matching UNSCORABLE\n")
+        fh.write("# obligation in OBLIGATIONS.tsv, and the gate enforces TWO-WAY equality between\n")
+        fh.write("# the two sets. This file exists to carry the reasoning at length; the DENOMINATOR\n")
+        fh.write("# is the table, because C3/C5/C16 reconcile to the obligation inventory and an\n")
+        fh.write("# external file is neither the inventory nor a criterion-1 pinned input.\n")
         fh.write("\t".join(["case", "consumer", "locus", "why"]) + "\n")
         for x in unscorable_o:
             fh.write("\t".join(str(v) for v in x) + "\n")
