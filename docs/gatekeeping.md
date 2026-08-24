@@ -3010,6 +3010,44 @@ be materialized and its distinct-count measured. Preparing evidence for someone 
 scrutiny is itself an instrument; the act of making a thing handable is what made the
 defect visible.
 
+### A negative claim inherits the scope of the search that produced it — and quietly sheds it in the reporting
+
+A derivation excluded 94 loci with the phrase **"unguessable by construction"** — the
+owner-naming evidence, it said, could not exist. The evidence existed. It sat in the
+producer template's event bytes, one join away, reachable from every case through the
+`template=` line each case's own file records. The author had searched the case's CAPTURED
+events, and only one action kind — and reported absence-in-the-place-searched as
+absence-in-principle.
+
+**An exhaustive-sounding negative is the most expensive thing to get wrong**, because it
+closes the question for everyone downstream. "No carrier exists" ends the search; "I found
+no carrier in the captured case events" invites exactly the second look that broke this one
+open. The two claims cost the same to write, and only the author knows which one the search
+actually supports.
+
+The mechanism is scope-shedding at the report boundary: the SEARCH has a precise scope (one
+file class, one action kind); the SENTENCE describing its result defaults to the unscoped
+form, because that is how conclusions are naturally worded. Same family as a check reported
+without its coverage boundary and a verdict copied without its scoping heading — the scope
+is structurally the part that falls off, and with negatives it falls furthest, because a
+positive claim carries its own witness while a negative claim carries only the author's
+search.
+
+Three notes from the incident worth keeping with the rule:
+
+- **It was the third evidence-source defect in one day from a seat whose logic was sound
+  every time.** A wrong source with correct logic is undetectable from inside the
+  derivation — internally consistent, confidently wrong — and only a DIFFERENT source
+  contradicts it. Budget for source-level review, not just logic-level.
+- **The catch came from an adjudicator reading the EXCLUSION file**, not the result. The
+  excluded set is where an over-scoped negative hides, because nobody audits what a
+  derivation declined to claim.
+- The repair is the honest smaller claim, written into the artifact: the re-derived
+  exclusion file says *no carrier FOUND*, names what was searched, and thereby stays an
+  open invitation instead of a closed door. Reserve *by construction* for impossibility
+  you can actually derive — an argument from the shape of the data, not from the
+  emptiness of one search.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
