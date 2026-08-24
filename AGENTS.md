@@ -306,6 +306,48 @@ dependency exists until a real error does" generalises. `Cargo.lock` is committe
 **Trigger:** cargo-fuzz is required *before* any hostile persisted-state parser cuts over
 (a P2/P3 entry condition, recorded so it is not rediscovered late).
 
+### Dependency posture: the researched line (2026-08-24)
+
+Two model families researched crate reuse independently (gemini 3.7 flash and grok 4.6,
+online sources, no coordination) and converged on every material verdict. Full reports with
+sources: `docs/research/rust-sota-agy.md` and `docs/research/rust-sota-grok.md` — version
+numbers, dependency counts, and advisory IDs live THERE, not here; re-verify them at
+adoption time, because this table records decisions, and the facts under them age.
+
+**The line, in one sentence: std owns every byte we currently write; cross it for TLS HTTP,
+for fuzzing the hostile parser, and for auditing the TLS graph — not for clap, thiserror,
+or chrono.** Zero-dep is doctrine with recorded triggers, not dogma.
+
+| Surface | Verdict | Trigger to revisit |
+|---|---|---|
+| CLI parsing (`cli.rs`) | **Keep from-scratch.** clap fights our grammar and costs ~half a MiB; pico-args is stale and parses in arbitrary order (breaks SC-521) | Subcommand growth (P5): adopt **lexopt** (0-dep lexer), never clap |
+| JSON (`json.rs`) | **Keep from-scratch** — it enforces SC-510d's escape set, SC-506 infallible rendering, SC-511b forward tolerance; serde_json's `Map`/`Result`/`Number` shapes fight all three | If cargo-fuzz shows the *grammar* is the expensive part: serde_json as **lexer only**, our `Value`+renderer kept. Telegram-API JSON at P4 is an **open choice** (the one point the two families split: scoped serde_json vs keep ours) — decide it then |
+| Errors (`error.rs`) | **Keep the single enum.** anyhow rejected outright (type erasure + advisory history) | Variant explosion: **thiserror** (compile-time only), preferably in the same commit as the first runtime dep |
+| Unix/fs | **Keep std.** rustix/nix would sit in front of `read_dir` and punch the clippy capability boundary, whose deny is premised on empty dep tables | flock / signals / unix sockets (P2/P4): **rustix**, not nix (advisory history) |
+| Time | **Keep std.** jiff pre-1.0; chrono and time both carry advisory history; our contract rows refuse the tolerance those crates sell | A real timezone/calendar need, none foreseen |
+| HTTP (P4 telegram) | **ureq + rustls**, `json` feature OFF, native-tls OFF, pin the ring CryptoProvider (musl static). attohttpc disqualified on license alone (MPL-2.0 vs deny.toml) | Arrives WITH the telegram daemon, not before |
+| Daemon concurrency (P4) | **OS threads + mpsc.** Two to four background loops do not justify an async runtime | Only if the loop count changes shape |
+
+**Costs of the first `[dependencies]` row, all three recorded so they are paid knowingly:**
+drop `--allow license-not-encountered` from `rust-deny` (already recorded above); the
+clippy `disallowed_types` capability boundary loses its empty-dep-tables premise and
+degrades toward a naming convention — **cargo-vet arrives in the same change** to replace
+what it loses; and the first dep graph (ring, for TLS) is exactly the one to vet first.
+
+**Std replaces crates since our MSRV** — use these, never the crate equivalents:
+`std::process::ExitCode`/`Termination` (1.61) over raw `exit()`, `std::io::IsTerminal`
+(1.70) over atty/is-terminal, `core::error::Error` (1.81) for no-std-shaped error trees.
+
+**Dev-lane roadmap:** cargo-fuzz at P2 (already doctrine, above); **proptest** as dev-dep
+beside it for parser round-trip invariants; **cargo-vet** with the first runtime dep
+(orthogonal to cargo-deny — do not add cargo-audit, that duplication is already refused
+above); **skip insta** (snapshot tests would pin unratified digest order — the exact
+over-pinning class criterion 15 polices); **cargo-semver-checks at P5** (publish=false,
+version 0.0.0 until then). Candidate clippy hardening lints to evaluate in their own quiet
+slice, not mid-flight: `cast_possible_truncation`, `cast_sign_loss`, `dbg_macro`, `todo`,
+`unimplemented`, `panic_in_result_fn` — evaluation means running them against the tree,
+not appending them to the table.
+
 ### Fresh-clone reproducibility
 
 The bootstrap contract, in full — nothing else is assumed to exist:
