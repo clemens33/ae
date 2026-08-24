@@ -2943,6 +2943,36 @@ onto the absence branch. Two instances in one week: when a value can legally arr
 than one shape, the parser needs a seed in every shape, or its "absent" arm silently
 accumulates everything it never learned to read.
 
+### Two name-enumerating validators, one day apart — and only the FAIL-CLOSED one told anyone
+
+Two validators in the same evidence chain enumerated accepted names where they should have
+validated a grammar, and both were exposed by the first new member of their set. A letter
+gate matched `CRITICAL\(([A-D,]+)\)` — a seeded `C,E` fell OUT of its denominator and the
+artifact **passed**. A batch checker matched a hardcoded alternation of capture-cluster
+tags — the first genuinely new tag since the list was written was reported malformed and
+the summary **failed**.
+
+Same defect class. **Opposite failure directions, and the direction decides everything about
+discovery.** The fail-open one is silent: a name outside the enumeration simply stops being
+counted, and the check stays green until somebody thinks to seed the case — it was found by
+an adversarial control, days after shipping. The fail-closed one is self-reporting: it
+announced itself within minutes of the first legitimate new value appearing, loudly, with a
+count of exactly the new lines. Nobody had to suspect it.
+
+The known hierarchy stands — validate a grammar, not a list; adding the missing member
+preserves the generator. But when a grammar is genuinely unavailable and an enumeration is
+what you can have, **the direction is a choice, and fail-closed is the defensible one**: an
+enumeration that REJECTS the unknown converts its own staleness into a visible finding at
+the first new member, while one that EXCLUDES the unknown converts its staleness into a
+silently narrowed population. You will not remember to re-audit the list; arrange for the
+list to complain.
+
+Corollary for reading counters: a fail-closed enumeration's false alarm (`MALFORMED=15` on a
+ruled-legitimate taxonomy) is the *checker* behind the *taxonomy* — repair the checker,
+never rename the legitimate values back inside the stale list to make the counter quiet.
+The durable repair is the same in both cases: the name set stops being a list inside a
+checker and becomes a derivation from the source that owns it.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
