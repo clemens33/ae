@@ -3,7 +3,7 @@
 Derived mechanically from the canonical set reported by sweep-check.sh; letters are criteria only.
 
 - Canonical IDs (checker at HEAD): SC=427, D=43, total=470; manifest lines=470 (exact; SET_EXTRA=0, SET_MISSING=0)
-- Class counts (mechanically regenerated 2026-08-20 post slice-1d + SC-021 (ls-alias row, s2 Q4): SC-510e/f event-format heads + SC-021 added; earlier folds retained; SC-012b bare-invocation residue added 2026-08-20 per seat ruling ae-20260820T165746Z-fb9c4fb6, CRITICAL(A) in-class with SC-013/SC-014; SC-509c reason-null defect row added per ba95a5e seat read, CRITICAL(B) in-class with SC-1106; D01/D02/SC-509c flipped to OBSERVED on the ba95a5e closure — evidence + both-seat transcription, second-gate ruling): CRITICAL=323, DEFERRABLE=103, OBSERVED=44
+- Class counts (mechanically regenerated 2026-08-20 post slice-1d + SC-021 (ls-alias row, s2 Q4): SC-510e/f event-format heads + SC-021 added; earlier folds retained; SC-012b bare-invocation residue added 2026-08-20 per seat ruling ae-20260820T165746Z-fb9c4fb6, CRITICAL(A) in-class with SC-013/SC-014; SC-509c reason-null defect row added per ba95a5e seat read, CRITICAL(B) in-class with SC-1106; D01/D02/SC-509c flipped to OBSERVED on the ba95a5e closure — evidence + both-seat transcription, second-gate ruling): CRITICAL=341, DEFERRABLE=103, OBSERVED=43
 - Critical-letter counts (overlaps counted): A=123, B=39, C=59, D=198
 - D24 remains critical/non-observed pending its negative-evidence pointer; when it lands: CRITICAL=322, OBSERVED=45
 - Outstanding critical observations: 323. Clusters build only from the CRIT-ASSIGN table.
@@ -49,6 +49,16 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-017g — CRITICAL(C)
 - SC-017h — CRITICAL(C)
 - SC-017i — CRITICAL(C)
+- SC-017j — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-017k — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-017l — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-017m — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-017n — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-017o — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-017p — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-017q — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-017r — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-017s — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
 - D18 — OBSERVED (census-audit, two-lane closure)
 - SC-018 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
 - SC-018b — CRITICAL(A)
@@ -145,6 +155,7 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-400a — CRITICAL(D)
 - SC-400b — CRITICAL(B,D)
 - SC-400c — CRITICAL(B,D)
+- SC-400d — CRITICAL(A) — no-P1-fixture-dependency is FALSE: a joint-P1-ruling row whose fixture dependency is recorded in corpus/P1-SUFFICIENCY.md §8 (worktree-nested layout, ABSENT, zero specimens) rather than in S1MAP. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
 - SC-401a — CRITICAL(D)
 - SC-401b — CRITICAL(B,D)
 - SC-402 — CRITICAL(D)
@@ -488,4 +499,30 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-405i — CRITICAL(C,D)
 - SC-405j — CRITICAL(C,D)
 - SC-405k — CRITICAL(C)
+- SC-405l — CRITICAL(A) — no-P1-fixture-dependency is FALSE: a joint-P1-ruling row whose fixture dependency is recorded in corpus/P1-SUFFICIENCY.md §8 (four selector states, two ABSENT) rather than in S1MAP. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-509d — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-509e — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-521c — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
 
+## Freshness — this file is ABOUT a contract, and now says which one
+
+```
+contract_blob: 896d08ea3ac753095c04af17dfba92cd9d15fb38
+```
+
+Checked by `verify-ratification.py` (a gate: no write path). It fails when a contract row
+has no class, when a classified id is not a contract row, when the header counts disagree
+with the entries, or when the recorded blob is not the contract blob at HEAD.
+
+**Why a blob and not a date.** This file previously said only "mechanically regenerated
+2026-08-20". That is a statement about when someone last ran something; it is not a
+relation to the thing being classified. Fifteen rows landed after it — the entire P1
+list/ls liveness and selector family, the rows P1 is gated on — and nothing could have
+said so, because nothing was comparing. A date says when the generator last ran; A BLOB
+SAYS WHETHER THE THING IT DESCRIBES HAS MOVED SINCE. Same mechanism as the obligation
+table's contract-blob relation, which has fired for real.
+
+**What the existing checker does and does not do.** `sweep-check.sh` checks field
+presence, closure-map membership, the CRIT-ASSIGN coupling and an expected-id-set diff —
+it never asks whether every contract row HAS a class. That was the hole, and it is why
+this gate is a separate program from that one.
