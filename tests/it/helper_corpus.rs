@@ -73,6 +73,33 @@ const EVENTS_TAIL_ROWS: usize = 38;
 /// was caught here reporting 62.
 const UNREPLAYABLE_ROWS: usize = 3;
 
+/// The rows the SC-518 / SC-518a ruling MOVES, and nothing else.
+///
+/// **A MANDATED DIVERGENCE IS ASSERTED AS PRECISELY AS PARITY IS.** These twelve
+/// rows must differ from their captures, must differ in exactly the ruled way
+/// (the status token and the summary, never an identity column), and must be the
+/// ONLY rows that differ. A thirteenth fails; a twelfth that stops differing
+/// fails too, because that is the ruling silently coming un-applied.
+///
+/// Twelve rows and not twenty: the pinned matrix has ten shapes with byte-
+/// identical `-ro`/`-rw` twins, but only SIX shapes move, so twelve rows change
+/// bytes. Both numbers are true of different things and the distinction is
+/// recorded here because a reader checking twenty against a diff finds twelve.
+const RULED_DIVERGENCE: [&str; 12] = [
+    "arms/A6/a6-c02-m2-wrong-ref-ro",
+    "arms/A6/a6-c02-m2-wrong-ref-rw",
+    "arms/A6/a6-c06-m6-mixed-routed-display-ro",
+    "arms/A6/a6-c06-m6-mixed-routed-display-rw",
+    "arms/A7/a7-c15-405j-pair-session-only-ro",
+    "arms/A7/a7-c15-405j-pair-session-only-rw",
+    "arms/A7/a7-c16-405j-pair-keyless-ro",
+    "arms/A7/a7-c16-405j-pair-keyless-rw",
+    "arms/A7/a7-c17-405j-pair-one-empty-ro",
+    "arms/A7/a7-c17-405j-pair-one-empty-rw",
+    "arms/A7/a7-c18-405j-pair-all-empty-ro",
+    "arms/A7/a7-c18-405j-pair-all-empty-rw",
+];
+
 /// Rows whose captured stderr is `grep(1)`'s, not `ae`'s — see
 /// [`the_meta_bootstrap_grep_noise_is_not_ae_output`] for the proof and the
 /// finding. Their stdout and rc still compare exactly; only the stderr
@@ -324,6 +351,46 @@ fn describe(label: &str, expected: &[u8], actual: &[u8]) -> String {
     )
 }
 
+/// What the stdout comparison found for one row.
+enum Stdout {
+    /// Byte-identical to its capture, as 153 of the rows must be.
+    Matched,
+    /// Differs, and differs in exactly the way the ruling requires.
+    Diverged,
+    /// Differs in a way nothing authorises. Carries the account of it.
+    Wrong(String),
+}
+
+/// Compare one row's stdout, holding the RULED rows to the ruled DIFFERENCE and
+/// every other row to byte identity.
+fn check_stdout(row: &Row, expected: &[u8], produced: &[u8]) -> Stdout {
+    let ruled = RULED_DIVERGENCE.contains(&row.case.to_string_lossy().as_ref())
+        && row.consumer == "requests-all";
+    if !ruled {
+        return if produced == expected {
+            Stdout::Matched
+        } else {
+            Stdout::Wrong(describe(
+                &format!("{} stdout", row.label()),
+                expected,
+                produced,
+            ))
+        };
+    }
+    // A ruled row that still matches its capture is the ruling silently coming
+    // un-applied, which is a failure and not a pass.
+    if produced == expected {
+        return Stdout::Wrong(format!(
+            "{}: the ruling was NOT applied — this row still matches its pre-ruling capture",
+            row.label()
+        ));
+    }
+    match ruled_flip(expected, produced) {
+        Some(wrong) => Stdout::Wrong(format!("{}: {wrong}", row.label())),
+        None => Stdout::Diverged,
+    }
+}
+
 #[test]
 fn every_frozen_requests_row_matches_byte_for_byte() {
     let root = evidence();
@@ -341,6 +408,7 @@ fn every_frozen_requests_row_matches_byte_for_byte() {
     let mut compared = 0;
     let mut unreplayable = Vec::new();
     let mut grep_noise = Vec::new();
+    let mut diverged = Vec::new();
     for row in &rows {
         let Some(container) = row.container(&root) else {
             unreplayable.push(row.label());
@@ -371,13 +439,12 @@ fn every_frozen_requests_row_matches_byte_for_byte() {
         compared += 1;
 
         let expected_out = row.captured(&root, "stdout");
-        if produced.stdout != expected_out {
-            failures.push(describe(
-                &format!("{} stdout", row.label()),
-                &expected_out,
-                &produced.stdout,
-            ));
+        match check_stdout(row, &expected_out, &produced.stdout) {
+            Stdout::Matched => {}
+            Stdout::Diverged => diverged.push(row.label()),
+            Stdout::Wrong(why) => failures.push(why),
         }
+
         let expected_err = row.captured(&root, "stderr");
         if expected_err.starts_with(b"grep: ") {
             // HELD OUT, NAMED AND COUNTED — never normalised. These bytes are
@@ -412,6 +479,16 @@ fn every_frozen_requests_row_matches_byte_for_byte() {
         GREP_NOISE_ROWS,
         "the set of rows whose stderr is grep's changed: {grep_noise:?}"
     );
+    diverged.sort();
+    let mut expected_divergence: Vec<String> = RULED_DIVERGENCE
+        .iter()
+        .map(|case| format!("{case} :: requests-all"))
+        .collect();
+    expected_divergence.sort();
+    assert_eq!(
+        diverged, expected_divergence,
+        "the set of rows the ruling moves changed"
+    );
     assert_eq!(compared, REQUESTS_ROWS - UNREPLAYABLE_ROWS);
     assert!(
         failures.is_empty(),
@@ -419,6 +496,53 @@ fn every_frozen_requests_row_matches_byte_for_byte() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// `None` when `produced` differs from `frozen` in exactly the way the ruling
+/// requires, or the reason it does not.
+///
+/// The ruled difference is narrow and worth checking rather than assuming: same
+/// number of lines, the header untouched, and every changed line changed only in
+/// its STATUS token and its SUMMARY — `replied` becoming `pending`, with the
+/// identity columns byte-identical. Anything else is a defect wearing a
+/// ruling's clothes.
+fn ruled_flip(frozen: &[u8], produced: &[u8]) -> Option<String> {
+    let (frozen, produced) = (
+        String::from_utf8_lossy(frozen),
+        String::from_utf8_lossy(produced),
+    );
+    let (before, after): (Vec<&str>, Vec<&str>) =
+        (frozen.lines().collect(), produced.lines().collect());
+    if before.len() != after.len() {
+        return Some(format!(
+            "row count moved: {} -> {}",
+            before.len(),
+            after.len()
+        ));
+    }
+    let mut flips = 0;
+    for (index, (was, now)) in before.iter().zip(&after).enumerate() {
+        if was == now {
+            continue;
+        }
+        if index == 0 {
+            return Some("the header changed".to_owned());
+        }
+        if fields(was)[1..5] != fields(now)[1..5] {
+            return Some(format!("an identity column moved: {was:?} -> {now:?}"));
+        }
+        let ((was_status, _), (now_status, _)) = (status_and_summary(was), status_and_summary(now));
+        if (was_status, now_status) != ("replied", "pending") {
+            return Some(format!(
+                "the status moved {was_status} -> {now_status}, not replied -> pending"
+            ));
+        }
+        flips += 1;
+    }
+    if flips == 0 {
+        return Some("nothing actually changed".to_owned());
+    }
+    None
 }
 
 #[test]
@@ -687,147 +811,114 @@ fn the_frozen_argv_of_every_covered_row_maps_to_the_successor_spelling() {
     }
 }
 
-/// One frozen closure fixture: which routing keys each side carried, and the
-/// status the CAPTURE recorded.
+/// One pinned closure fixture: what the CAPTURE says, and what the RULING says.
 struct ClosureShape {
-    /// A case directory that runs this fixture (`requests-all`).
+    /// A case directory that runs this fixture (`requests-all`), `-ro` half.
     case: &'static str,
     /// A distinguishing fragment of the request id whose row is examined.
     id_fragment: &'static str,
-    /// What the frozen capture says that row's status is.
+    /// The status the frozen capture recorded.
     frozen: &'static str,
-    /// Whether SC-518, read strictly, agrees.
-    row_agrees: bool,
-    /// What the fixture actually contains, for the failure message.
+    /// The status the RULED matcher must produce.
+    ruled: &'static str,
+    /// The summary the RULED matcher must produce.
+    ///
+    /// This is the consequence that is easy to miss: a row moving from
+    /// `replied` back to `pending` loses the reply's text and shows the
+    /// OPENING's again. The frozen capture already takes FROM/TO from the
+    /// opening and only the summary from the terminal — visible directly in the
+    /// m2 capture, whose row reads `fake:lead -> fake:worker` (the review's
+    /// participants) beside `G5 mirror answer` (the reply's text) — which is why
+    /// the identity columns do not move and this one does.
+    ruled_summary: &'static str,
+    /// Why this shape lands where it lands.
     shape: &'static str,
 }
 
-/// THE CLOSURE MATRIX — a ratified row against the captures built to test it.
-///
-/// **This test asserts a CONFLICT, and the conflict is the deliverable.** It is
-/// not a tolerance and it is not a claim that either side is right; it is the
-/// evidence, pinned, so a seat can rule on it and so neither side can be lost.
-///
-/// SC-518 says identity compares as "routing identities (slot+session) when both
-/// sides carry them, display identities when neither does, and MIXED identity
-/// matches nothing". `src/session.rs::same_participant` implements exactly that,
-/// for the `list` attention consumer, and it is right to.
-///
-/// The frozen `requests` implementation does something different, and the corpus
-/// PINS it: it branches on whether the request's target slot and the reply's
-/// ACTOR slot are both nonempty, and falls back to display names otherwise. So a
-/// request with full routing keys is closed by a keyless reply whose display
-/// names mirror it — MIXED identity closing a request. Six fixture shapes below
-/// disagree with the row, across twelve `rc=0` corpus rows.
-///
-/// SC-518's own row records `Empirical: pending (builder P1 implementation +
-/// C-cluster)`. The C-cluster is this evidence. It has arrived, and it does not
-/// agree with the ruling — which is a finding for the seats that ratified the
-/// row, not a thing an implementation may settle by choosing a side.
-///
-/// Until it is ruled, this surface reproduces the CAPTURES, because byte-identity
-/// against the frozen captures is this slice's stated acceptance and a divergence
-/// here would be invisible in the one place it is measured.
-///
-/// # THE SCOPE OF THAT, EXACTLY (reviewer's condition, pubfp 2026-08-24)
-///
-/// What passing this test proves is FROZEN HELPER PARITY on the ten named
-/// shapes. It does NOT prove that the legacy semantics are correct, and it
-/// settles nothing about three shapes the corpus never exercises:
-///
-/// 1. the INVERSE mixed pair — a display-only opening and a routed reply. No
-///    fixture has one;
-/// 2. a valid reply to an opening that is then RE-ASKED. No fixture re-asks a
-///    ref, so nothing pins whether the earlier reply may close the later
-///    opening;
-/// 3. any `cancel` causality at all. There is not one `cancel` event in the
-///    6,862-file corpus.
-///
-/// This crate's matcher DOES behave some way in all three, because code must:
-/// it applies the display fallback symmetrically, and it bounds terminal
-/// candidates by identity alone rather than by position. **Neither choice is
-/// ratified and neither is captured.** They are the least-surprising extension
-/// of the shapes that ARE pinned, chosen so one rule covers both directions
-/// rather than being strict one way and loose the other — and they are named
-/// here so a seat ruling lands on a decision somebody can see, instead of on a
-/// behavior nobody knew was being asserted.
 const MATRIX: [ClosureShape; 10] = [
     ClosureShape {
         case: "arms/A7/a7-c12-405j-pair-full-fresh-ro",
         id_fragment: "c2c01848",
         frozen: "replied",
-        row_agrees: true,
-        shape: "both sides fully routed and mirrored",
+        ruled: "replied",
+        ruled_summary: "G5 mirror answer",
+        shape: "routed to routed, mirrored — the only closing shape left besides display to display",
     },
     ClosureShape {
         case: "arms/A7/a7-c13-405j-pair-stale-keys-ro",
         id_fragment: "c2c01848",
         frozen: "pending",
-        row_agrees: true,
-        shape: "both sides fully routed, keys do not mirror",
+        ruled: "pending",
+        ruled_summary: "G5 mirror question",
+        shape: "routed to routed, naming a different slot AND session",
     },
     ClosureShape {
         case: "arms/A7/a7-c14-405j-pair-slot-only-ro",
         id_fragment: "c2c01848",
         frozen: "pending",
-        row_agrees: true,
-        shape: "reply carries slots but no sessions — half a key matches nothing either way",
+        ruled: "pending",
+        ruled_summary: "G5 mirror question",
+        shape: "reply carries slots and no sessions — Unassociated, matches nothing",
     },
     ClosureShape {
         case: "arms/A7/a7-c15-405j-pair-session-only-ro",
         id_fragment: "c2c01848",
         frozen: "replied",
-        row_agrees: false,
-        shape: "reply carries sessions but NO SLOTS; request is fully routed — MIXED",
+        ruled: "pending",
+        ruled_summary: "G5 mirror question",
+        shape: "reply carries sessions and no slots — Unassociated. Frozen never entered its \
+                routed branch (no actor_slot) and fell back to names, which is why this one \
+                moves while slot-only does not",
     },
     ClosureShape {
         case: "arms/A7/a7-c16-405j-pair-keyless-ro",
         id_fragment: "c2c01848",
         frozen: "replied",
-        row_agrees: false,
-        shape: "reply carries no keys at all; request is fully routed — MIXED",
+        ruled: "pending",
+        ruled_summary: "G5 mirror question",
+        shape: "reply carries no keys — Display against a Routed request, the MIXED pair",
     },
     ClosureShape {
         case: "arms/A7/a7-c17-405j-pair-one-empty-ro",
         id_fragment: "c2c01848",
         frozen: "replied",
-        row_agrees: false,
-        shape: "reply's actor_slot is empty, its other three keys are present — MIXED",
+        ruled: "pending",
+        ruled_summary: "G5 mirror question",
+        shape: "reply's actor_slot is present and EMPTY, its other three real — Unassociated, \
+                and NOT the same thing as absent",
     },
     ClosureShape {
         case: "arms/A7/a7-c18-405j-pair-all-empty-ro",
         id_fragment: "c2c01848",
         frozen: "replied",
-        row_agrees: false,
-        shape: "reply's four keys are all empty strings; request is fully routed — MIXED",
+        ruled: "pending",
+        ruled_summary: "G5 mirror question",
+        shape: "reply's four keys all present and EMPTY — Unassociated, which matches nothing \
+                including another Unassociated",
     },
     ClosureShape {
         case: "arms/A6/a6-c06-m6-mixed-routed-display-ro",
         id_fragment: "c2c01848",
         frozen: "replied",
-        row_agrees: false,
-        shape: "the fixture built for this: routed ask, display-only reply — MIXED",
+        ruled: "pending",
+        ruled_summary: "G5 mirror question",
+        shape: "the fixture built for this: routed ask, display-only reply",
     },
     ClosureShape {
         case: "arms/A1/c14-display-only-legacy-ro",
         id_fragment: "6fb0847b",
         frozen: "replied",
-        row_agrees: true,
-        shape: "neither side routed — the row's own display fallback",
+        ruled: "replied",
+        ruled_summary: "healthy fixture answer",
+        shape: "ZERO routing keys on BOTH events — the only display-to-display specimen there is",
     },
     ClosureShape {
         case: "arms/A6/a6-c02-m2-wrong-ref-ro",
         id_fragment: "dc302d09",
         frozen: "replied",
-        // The SECOND disagreement, and it is about CAUSALITY rather than
-        // identity: this reply is a full routed mirror but it sits at line 1
-        // and the `review` it closes is at line 3. The frozen sensor's
-        // reverse scan retains every candidate and validates by identity
-        // alone, so a reply that PRECEDES its own request closes it.
-        // `session.rs`'s forward pass cannot: a reply finds nothing open.
-        // SC-518's text rules on identity and is silent on ordering.
-        row_agrees: false,
-        shape: "full routed mirror, but the reply PRECEDES the review it closes",
+        ruled: "pending",
+        ruled_summary: "G5 review request (second well-formed ref donor)",
+        shape: "SC-518a, not identity: a full routed mirror that PRECEDES the review it closes",
     },
 ];
 
@@ -877,31 +968,226 @@ fn produced_table(root: &Path, shape: &ClosureShape) -> String {
         .unwrap_or_else(|err| panic!("{}: the table is utf-8: {err}", shape.case))
 }
 
+/// THE CLOSURE MATRIX — the ruled semantics against the captures they replace.
+///
+/// **SC-518 WAS RULED STRICT (2026-08-24) and SC-518a was born beside it.** The
+/// safety direction decided it: a false PENDING is loud and costs a human a
+/// second glance, while a false CLOSURE silently erases a real request. So
+/// frozen's mixed-identity closure is a DEFECT, and so is its pre-opening
+/// closure — this surface DIVERGES from six of the ten captures below, and that
+/// divergence is MANDATED rather than tolerated.
+///
+/// This test is the ledger of it. Each shape carries what the capture recorded
+/// AND what the ruling requires, so:
+///
+/// * a shape that stops diverging fails — the ruling would have been silently
+///   un-applied;
+/// * a shape that starts diverging fails — parity would have been silently lost
+///   somewhere the ruling does not reach;
+/// * and `ruled_summary` pins the consequence easiest to miss: a row falling
+///   back to `pending` shows the OPENING's text again, not the reply's.
+///
+/// The ruled values were derived TWICE, independently — once from the fixture
+/// bytes by a script sharing no code with the matcher, and once by `opus5:lexec`
+/// from the same bytes before either derivation was shared. They agreed on all
+/// ten statuses and all ten summaries. That agreement is why these are
+/// hard-coded values and not something computed from the thing under test.
 #[test]
-fn sc_518_the_frozen_closure_matrix_disagrees_with_the_row_on_mixed_identity() {
+fn sc_518_the_ruled_closure_matrix_replaces_six_of_the_frozen_captures() {
     let root = evidence();
-    let mut disagreements = Vec::new();
+    let mut moved = Vec::new();
     for shape in &MATRIX {
-        let row = frozen_row(&root, shape);
-        // And THIS surface reproduces that capture — the 168-row comparison
-        // covers it, but naming the specific rows here is what makes the
-        // conflict legible instead of buried in a population count.
+        let frozen = frozen_row(&root, shape);
         let produced = produced_table(&root, shape);
-        assert!(
-            produced.lines().any(|line| line == row),
-            "{}: this surface does not reproduce {row:?}\n{produced}",
+        let ruled = produced
+            .lines()
+            .find(|line| line.contains(shape.id_fragment))
+            .unwrap_or_else(|| panic!("{}: no ruled row for {}", shape.case, shape.id_fragment));
+
+        let (status, summary) = status_and_summary(ruled);
+        assert_eq!(status, shape.ruled, "{}: {}", shape.case, shape.shape);
+        assert_eq!(
+            summary, shape.ruled_summary,
+            "{}: the summary follows the status back to the opening",
             shape.case
         );
-        if !shape.row_agrees {
-            disagreements.push(format!("  {} — {}", shape.case, shape.shape));
+
+        // The identity columns never move. Frozen already took FROM/TO from the
+        // OPENING and only the summary from the terminal — visible in the m2
+        // capture itself, whose row names the review's participants beside the
+        // reply's text — so a status falling back carries the summary and
+        // nothing else with it.
+        assert_eq!(
+            fields(ruled)[1..5],
+            fields(&frozen)[1..5],
+            "{}: kind/id/from/to must be identical",
+            shape.case
+        );
+        let (frozen_status, _) = status_and_summary(&frozen);
+        assert_eq!(frozen_status, shape.frozen, "{}", shape.case);
+        if frozen_status != shape.ruled {
+            moved.push(format!("  {} — {}", shape.case, shape.shape));
         }
     }
+    assert_eq!(
+        moved.len(),
+        6,
+        "the set of shapes the ruling moves changed:\n{}",
+        moved.join("\n")
+    );
+}
+
+/// The five fixed columns of a table line, as whitespace-separated tokens.
+///
+/// Split on whitespace rather than at column offsets because a column can
+/// OVERFLOW — the A6 fixture carries a 31-character request id in a 28-wide
+/// column. None of the five can contain a space, so this is exact.
+fn fields(line: &str) -> [String; 5] {
+    let mut words = line.split_whitespace();
+    core::array::from_fn(|_| words.next().unwrap_or_default().to_owned())
+}
+
+/// A table line's status token and its summary remainder.
+///
+/// The summary is whatever follows the five fixed columns, taken as a
+/// REMAINDER rather than as a token: it contains spaces, and one of these
+/// fixtures ends its summary in a parenthesis.
+fn status_and_summary(line: &str) -> (&str, &str) {
+    let mut rest = line;
+    let mut status = "";
+    for index in 0..5 {
+        let trimmed = rest.trim_start();
+        let end = trimmed.find(' ').unwrap_or(trimmed.len());
+        if index == 0 {
+            status = &trimmed[..end];
+        }
+        rest = &trimmed[end..];
+    }
+    (status, rest.trim_start())
+}
+
+/// THE CROSS-CONSUMER AGREEMENT — one container, both readers, same verdict.
+///
+/// `Identity::matches` is now shared (`events.rs`, landed by `opus5:reason2`), so
+/// the two consumers can no longer disagree about what an identity IS. They can
+/// still disagree about how they USE it, and that is the interesting half:
+/// `session.rs::pending_requests` walks a FORWARD pass and retains-on-close,
+/// while `requests::states` walks a REVERSED pass and picks a winner per ref.
+/// Two different algorithms over one rule is exactly the shape that drifts.
+///
+/// **This is the mechanism a shared function is not.** It compares the two
+/// CONSUMERS on containers that include the shapes the SC-518 ruling FLIPPED —
+/// per `reason2`'s design note, because a flip changes which record supplies a
+/// row's summary, so a flipped shape is a second place to disagree beyond the
+/// closure verdict itself. Both facts are asserted on the same bytes.
+///
+/// A disagreement here is a finding against WHICHEVER reader is wrong, and the
+/// two of us agreed in advance that it is not presumed to be either one.
+#[test]
+fn the_two_request_readers_agree_on_closure_and_on_the_summary_source() {
+    use ae::events::{Cursor, EventLog};
+    use ae::requests::Status;
+
+    // Every shape that matters, in one container: a closing routed pair, a
+    // MIXED pair the ruling flipped, an inverse-mixed pair with no corpus
+    // specimen, a keyless closing pair, a pre-opening terminal, and a re-ask.
+    const CONTAINER_LINES: [&str; 11] = [
+        // r1 — routed mirror, CLOSES.
+        r#"{"ts":"2026-08-20T16:00:01Z","actor":"a:lead","action":"ask","target":"a:worker","ref":"r1","actor_slot":"main","actor_session":"s","target_slot":"worker.0","target_session":"s","summary":"r1 asked"}"#,
+        r#"{"ts":"2026-08-20T16:00:02Z","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","actor_slot":"worker.0","actor_session":"s","target_slot":"main","target_session":"s","summary":"r1 answered"}"#,
+        // r2 — routed ask, keyless reply: the MIXED shape the ruling flipped.
+        r#"{"ts":"2026-08-20T16:00:03Z","actor":"a:lead","action":"ask","target":"a:worker","ref":"r2","actor_slot":"main","actor_session":"s","target_slot":"worker.0","target_session":"s","summary":"r2 asked"}"#,
+        r#"{"ts":"2026-08-20T16:00:04Z","actor":"a:worker","action":"reply","target":"a:lead","ref":"r2","summary":"r2 answered"}"#,
+        // r3 — keyless ask, routed reply: the INVERSE mixed shape.
+        r#"{"ts":"2026-08-20T16:00:05Z","actor":"a:lead","action":"ask","target":"a:worker","ref":"r3","summary":"r3 asked"}"#,
+        r#"{"ts":"2026-08-20T16:00:06Z","actor":"a:worker","action":"reply","target":"a:lead","ref":"r3","actor_slot":"worker.0","actor_session":"s","target_slot":"main","target_session":"s","summary":"r3 answered"}"#,
+        // r4 — keyless on both sides: display to display, CLOSES.
+        r#"{"ts":"2026-08-20T16:00:07Z","actor":"a:lead","action":"ask","target":"a:worker","ref":"r4","summary":"r4 asked"}"#,
+        r#"{"ts":"2026-08-20T16:00:08Z","actor":"a:worker","action":"reply","target":"a:lead","ref":"r4","summary":"r4 answered"}"#,
+        // r5 — the terminal PRECEDES its opening (SC-518a).
+        r#"{"ts":"2026-08-20T16:00:09Z","actor":"a:worker","action":"reply","target":"a:lead","ref":"r5","summary":"r5 answered early"}"#,
+        r#"{"ts":"2026-08-20T16:00:10Z","actor":"a:lead","action":"ask","target":"a:worker","ref":"r5","summary":"r5 asked"}"#,
+        // r6 — asked, answered, then RE-ASKED: a new lifecycle.
+        r#"{"ts":"2026-08-20T16:00:11Z","actor":"a:lead","action":"ask","target":"a:worker","ref":"r6","summary":"r6 asked"}"#,
+    ];
+    // r6's reply and re-ask are appended below so the line count stays readable.
+    let mut body = String::new();
+    for line in CONTAINER_LINES {
+        body.push_str(line);
+        body.push('\n');
+    }
+    body.push_str(
+        r#"{"ts":"2026-08-20T16:00:12Z","actor":"a:worker","action":"reply","target":"a:lead","ref":"r6","summary":"r6 answered"}"#,
+    );
+    body.push('\n');
+    body.push_str(
+        r#"{"ts":"2026-08-20T16:00:13Z","actor":"a:lead","action":"ask","target":"a:worker","ref":"r6","summary":"r6 re-asked"}"#,
+    );
+    body.push('\n');
+
+    // Which refs each reader considers OPEN.
+    let table_rows = requests::states(body.as_bytes());
+    let mut open_per_table: Vec<&str> = table_rows
+        .iter()
+        .filter(|row| row.status != Status::Replied && row.status != Status::Cancelled)
+        .map(|row| std::str::from_utf8(&row.id).expect("ascii ids"))
+        .collect();
+    open_per_table.sort_unstable();
+
+    let scratch = std::env::temp_dir().join(format!("ae-crossreader-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).expect("scratch");
+    std::fs::write(scratch.join(ae::event_text::CONTAINER), &body).expect("write");
+    let drain = EventLog::discover(&scratch)
+        .drain(Cursor::default())
+        .expect("the container reads");
+    let read = ae::session::SessionRead::from_drain(&drain);
+    let mut open_per_session: Vec<&str> = read
+        .pending
+        .iter()
+        .map(|request| request.id.as_str())
+        .collect();
+    open_per_session.sort_unstable();
+    let _ = std::fs::remove_dir_all(&scratch);
 
     assert_eq!(
-        disagreements.len(),
-        6,
-        "the set of fixtures where SC-518 as written and the frozen captures \
-         disagree changed:\n{}",
-        disagreements.join("\n")
+        open_per_table, open_per_session,
+        "the two readers disagree about which requests are open"
+    );
+    // And the set is what the RULING says it is, so agreement on a wrong answer
+    // cannot pass: r1 and r4 close (routed mirror, display mirror), r2 and r3
+    // do not (both mixed, one in each direction), r5 does not (its terminal
+    // precedes it), r6 does not (its terminal belongs to the old lifecycle).
+    assert_eq!(open_per_table, vec!["r2", "r3", "r5", "r6"]);
+
+    // THE SUMMARY SOURCE, on the same bytes — reason2's second place to
+    // disagree. A closed row shows the TERMINAL's text; an open row shows the
+    // OPENING's, including the two the ruling flipped back.
+    let summary_of = |id: &str| -> String {
+        table_rows
+            .iter()
+            .find(|row| row.id == id.as_bytes())
+            .map_or_else(
+                || panic!("no row for {id}"),
+                |row| String::from_utf8_lossy(&row.summary).into_owned(),
+            )
+    };
+    assert_eq!(
+        summary_of("r1"),
+        "r1 answered",
+        "closed: the terminal's text"
+    );
+    assert_eq!(summary_of("r4"), "r4 answered");
+    assert_eq!(
+        summary_of("r2"),
+        "r2 asked",
+        "flipped back: the opening's text"
+    );
+    assert_eq!(summary_of("r3"), "r3 asked");
+    assert_eq!(summary_of("r5"), "r5 asked");
+    assert_eq!(
+        summary_of("r6"),
+        "r6 re-asked",
+        "the NEW lifecycle's opening"
     );
 }

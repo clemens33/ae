@@ -38,6 +38,8 @@
 //! then framed by the one [`read_lines`], because in the pipeline both are the
 //! same `while IFS= read -r line` loop.
 
+use std::borrow::Cow;
+
 /// The event container's filename under a session meta directory.
 ///
 /// One spelling for both surfaces. DR-001 defers the written multi-generation
@@ -202,12 +204,76 @@ pub fn event_line(line: &[u8]) -> Option<&[u8]> {
 /// ```
 #[must_use]
 pub fn extract(line: &[u8], key: &str) -> Vec<u8> {
+    member(line, key).value().unwrap_or_default().to_vec()
+}
+
+/// A flat string member's three states — SC-511b's, read off opaque text.
+///
+/// [`extract`] answers with bytes and so cannot tell an ABSENT key from one
+/// that is present and EMPTY. The frozen `requests` matcher never needed to:
+/// it tested `-n` and both look the same to that. **The RULED matcher does**,
+/// because SC-511b/SC-405j make those two different identities — both members
+/// absent falls back to the display name, while a member present and empty is
+/// a writer that meant to route and did not say where, which identifies
+/// nobody. Collapsing them would silently make an `Unassociated` side compare
+/// as a `Display` side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Member<'a> {
+    /// The key is not in the record.
+    Absent,
+    /// The key is present and its value is empty.
+    Empty,
+    /// The key carries a nonempty value.
+    ///
+    /// Borrowed on the fast path and owned only when the value carried an
+    /// escape, so the common case costs no copy while an unescaped value still
+    /// has somewhere to live.
+    Value(Cow<'a, [u8]>),
+}
+
+impl Member<'_> {
+    /// The bytes, or `None` when the key is absent. `Empty` answers `Some(&[])`.
+    #[must_use]
+    pub fn value(&self) -> Option<&[u8]> {
+        match self {
+            Self::Absent => None,
+            Self::Empty => Some(&[]),
+            Self::Value(bytes) => Some(bytes),
+        }
+    }
+}
+
+/// Read one flat `"key":"…"` member, keeping absent and empty apart.
+///
+/// This is [`extract`]'s own body; `extract` is the byte-only view of it. The
+/// unescaping and the first-occurrence rule are identical, because they have to
+/// be: one reader, two views, so a value cannot mean one thing to a matcher and
+/// another to a formatter.
+///
+/// A member whose value is present but empty AFTER unescaping — `"\r"`, say,
+/// which the emitter's escape set drops entirely — answers [`Member::Empty`],
+/// because what the identity rule compares is the value, not the spelling.
+///
+/// ```
+/// use ae::event_text::{Member, member};
+///
+/// let line = br#"{"actor_slot":"","actor_session":"s"}"#;
+/// assert_eq!(member(line, "actor_slot"), Member::Empty);
+/// assert_eq!(member(line, "target_slot"), Member::Absent);
+/// assert_eq!(member(line, "actor_session").value(), Some(b"s".as_slice()));
+///
+/// // Empty and Absent both have no bytes, and are NOT the same identity.
+/// assert_eq!(member(line, "actor_slot").value(), Some(b"".as_slice()));
+/// assert_eq!(member(line, "target_slot").value(), None);
+/// ```
+#[must_use]
+pub fn member<'a>(line: &'a [u8], key: &str) -> Member<'a> {
     let mut needle = Vec::with_capacity(key.len() + 4);
     needle.push(b'"');
     needle.extend_from_slice(key.as_bytes());
     needle.extend_from_slice(b"\":\"");
     let Some(offset) = find(line, &needle) else {
-        return Vec::new();
+        return Member::Absent;
     };
     let rest = &line[offset + needle.len()..];
     // The frozen fast path: when nothing before the first quote is a backslash,
@@ -216,10 +282,19 @@ pub fn extract(line: &[u8], key: &str) -> Vec<u8> {
         Some(end) => &rest[..end],
         None => rest,
     };
-    if !head.contains(&b'\\') {
-        return head.to_vec();
+    let resolved = if head.contains(&b'\\') {
+        Cow::Owned(unescape(rest))
+    } else {
+        Cow::Borrowed(head)
+    };
+    // A value that RESOLVES to nothing is `Empty`, however it was spelled: the
+    // identity rule compares values, not spellings, and `"\r"` unescapes away
+    // entirely under the emitter's own escape set.
+    if resolved.is_empty() {
+        Member::Empty
+    } else {
+        Member::Value(resolved)
     }
-    unescape(rest)
 }
 
 /// The per-character walk both frozen bodies fall through to.

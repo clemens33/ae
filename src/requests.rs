@@ -40,45 +40,100 @@
 //!
 //! # Pending, replied, cancelled
 //!
-//! SC-518 is the whole of the pairing rule and the reason the sensor is subtle:
+//! **SC-518 and SC-518a together, and a terminal must satisfy BOTH.**
 //!
-//! - the NEWEST `ask`/`review` per `ref` opens the request (newest-first scan,
-//!   first one seen wins);
-//! - a `reply` closes it only on a FULL MIRROR — routing identities
-//!   (slot + session) when the request's target slot and the reply's actor slot
-//!   are both present, display names when they are not. A reply carrying the
-//!   right ref from the right agent but addressed elsewhere leaves the request
-//!   `pending`, because a loud false-pending beats a silent false-closure;
-//! - a `cancel` closes it when its actor is the request's own sender, and a
-//!   VALID cancel is terminal even against a later reply;
-//! - every candidate of each kind is retained and validated afterwards. Keeping
-//!   only the newest raw one lets an INVALID newer event discard a VALID older
-//!   one — measured in the frozen tree: ask, valid withdrawal, then a stranger's
+//! - the NEWEST `ask`/`review` per `ref` opens the request shown;
+//! - **SC-518 (identity)** — a `reply` closes it only on a FULL MIRROR: the
+//!   reply's actor is the request's target AND the reply's target is the
+//!   request's sender, each compared by [`Identity::matches`]. Routing keys
+//!   compare to routing keys, display names to display names, and a MIXED pair
+//!   matches nothing — as does an `Unassociated` side, including against another
+//!   `Unassociated`. Two events that each failed to say where they came from
+//!   have not thereby said the same thing;
+//! - **SC-518a (order)** — a terminal terminates only the NEWEST PRECEDING
+//!   opening with that ref. A terminal that PRECEDES its opening closes
+//!   nothing: causality is not a matching condition that `ref` equality can
+//!   satisfy. A later re-`ask` opens a NEW lifecycle and an earlier terminal
+//!   cannot reach forward into it;
+//! - a `cancel` is a terminal and not a third thing, so **SC-518a's order rule
+//!   governs it exactly as it governs a reply**. Its AUTHORIZATION is a
+//!   different matter and **has no row at all**: SC-518 defines a REPLY MIRROR,
+//!   and a cancel has no target end to mirror. What this module does — accept a
+//!   cancel whose actor identity is the request's own sender — is therefore an
+//!   UNAUTHORIZED INTERIM, not an implementation of SC-518, and is marked as
+//!   such at [`Opening::withdrawn_by`]. No closure is claimed for cancel until a
+//!   ruling exists.
+//!
+//!   **AND NO GATING TEST ASSERTS IT.** The contract's rule is ENFORCEMENT and
+//!   not labelling: a gate that fails under the other policy has ratified this
+//!   one whatever its comment says. So the gated suite asserts only the
+//!   OUTCOME-NEUTRAL half — that a cancel placed before its opening leaves the
+//!   row identical to a container with no cancel at all, which is true under
+//!   every possible authorization — and the current policy is recorded in
+//!   `#[ignore]`d diagnostics that no lane runs. PROVEN, not asserted: replacing
+//!   the interim policy with accept-anyone, accept-nobody or accept-the-target
+//!   leaves `just rust-check` GREEN in all three cases;
+//! - every candidate is retained and validated afterwards. Keeping only the
+//!   newest raw one lets an INVALID newer event discard a VALID older one —
+//!   measured in the frozen tree: ask, valid withdrawal, then a stranger's
 //!   cancel rendered `pending`.
 //!
-//! # WHAT THE PAIRING RULE DOES **NOT** SETTLE
+//! The safety direction is the ruling's reason, and it is worth stating because
+//! it decides every close call above: a false PENDING is LOUD and costs a human
+//! a second glance, while a false CLOSURE silently erases a real request.
 //!
-//! SC-518 as ratified says a MIXED pair — one side routed, the other
-//! display-only — matches nothing, and [`crate::session`]'s reader implements
-//! exactly that for the `list` attention consumer. **The frozen captures for
-//! THIS surface disagree with the row**, and the fixtures built to measure it
-//! (the `A7` 405j pair matrix, `G5/m6-mixed-routed-display`,
-//! `G5/m2-wrong-ref`) pin the disagreement across twelve corpus rows. That is a
-//! row-versus-capture conflict escalated to the seats that ratified SC-518,
-//! whose own row still reads `Empirical: pending (… + C-cluster)` — the
-//! C-cluster being that evidence. It is asserted, shape by shape, in
-//! `tests/it/helper_corpus.rs`, not described here, so a ruling either way fails
-//! a test rather than needing someone to remember this paragraph.
+//! # WHERE THIS DIVERGES FROM THE FROZEN CAPTURES, DELIBERATELY
 //!
-//! Three shapes are unpinned in BOTH directions and this module's behavior in
-//! them is a CHOICE, not a contract: the inverse mixed pair (display-only
-//! opening, routed reply), a valid reply to an opening that is later re-asked,
-//! and every `cancel` causality question — the corpus contains no inverse-mixed
-//! pair, no re-asked ref, and not one `cancel` event. The choice made here is
-//! the symmetric one (the display fallback applies in both directions, and
-//! terminal candidates are bounded by identity rather than by position),
-//! because a rule that is strict one way and loose the other is a third
-//! behavior nobody ruled.
+//! Twelve corpus rows. Frozen bash entered its routed comparison on exactly two
+//! selectors — `request.target_slot` nonempty AND `reply.actor_slot` nonempty,
+//! all four keys compared only after that — and fell back to display names
+//! otherwise, so it closed five of the six mixed shapes. And it matched on `ref`
+//! with no ordering test at all, so it let a reply close a request it preceded.
+//! The seats ruled both DEFECTS on 2026-08-24. This surface therefore no longer
+//! reproduces `A7` 405j pair session-only / keyless / one-empty / all-empty,
+//! `G5/m6-mixed-routed-display`, or `G5/m2-wrong-ref` — each `-ro` and `-rw`.
+//!
+//! That divergence is asserted as precisely as the parity is, in
+//! `tests/it/helper_corpus.rs`: the twelve must differ, must differ only in the
+//! status token and the summary, and must be the ONLY rows that differ.
+//!
+//! # WHAT IS STILL UNRULED, NAMED SO IT IS NOT DECIDED BY ACCIDENT
+//!
+//! Four shapes, and the corpus can never speak to three of them — it contains
+//! **zero** `cancel` events across all 6,862 files, so no future capture will
+//! settle those either. Each is pinned by a successor test instead, because a
+//! successor test is the only evidence they will ever have:
+//!
+//! 1. **the inverse mixed pair** — a display-only opening and a routed reply.
+//!    Every corpus specimen mixes the OTHER way, so "both directions" is a
+//!    ruling and not a measurement, and the test exercises the direction the
+//!    corpus lacks so a directional implementation fails;
+//! 2. **a re-ask after a terminal** — the re-ask is `pending` and the earlier
+//!    lifecycle stays closed by its own terminal;
+//! 3. **cancel causality** — a cancel before its opening closes nothing;
+//! 4. **a `cancel` AND a `reply` both after one opening.** SC-518a ATTACHES
+//!    terminals to openings; it does not choose between two that both attach to
+//!    one. **Undecided, and the frozen behavior here is MEASURED IS AND NEVER
+//!    NORMATIVE** (colead ruling, 2026-08-24). This module has to do something,
+//!    so it resolves by KIND — cancellation wins, on frozen's reason that a
+//!    straggler answer must not reopen a request nobody is waiting on.
+//!
+//!    **THE GATE SAYS NOTHING ABOUT THIS SHAPE, and the second attempt is why.**
+//!    A test asserting only that the outcome is INDEPENDENT of the two
+//!    terminals' arrival order looks neutral and is not: "the later terminal
+//!    wins" is a legitimate unresolved policy, under which the two orders
+//!    DISAGREE, so an equality assertion forbids it. Arrival-order independence
+//!    is itself a precedence law — resolve-by-kind rather than resolve-by-
+//!    recency — one level up from the winner it declines to name. There is
+//!    therefore no outcome-neutral gating assertion available here at all, and
+//!    the whole shape lives in an `#[ignore]`d diagnostic. If the product needs
+//!    a winner, that is a separate joint ruling to request.
+//!
+//! And one CHOICE consequent on the ruling rather than contained in it: the
+//! `mine`/`inbox` filter uses the same identity rule as closure, because "is
+//! this row's sender me?" is the same question. No corpus row constrains it —
+//! all 24 of those rows are identity refusals — so it is named at
+//! [`Request::shown_to`] where a seat can overrule it visibly.
 //!
 //! # SC-1306d
 //!
@@ -90,8 +145,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::event_text::{
-    CONTAINER, event_line, extract, pad_left_aligned, read_container, read_lines, reversed,
+    CONTAINER, Member, event_line, extract, member, pad_left_aligned, read_container, read_lines,
+    reversed,
 };
+use crate::events::Identity;
 
 /// `requests [mine|inbox|all]` — SC-212c's signature, defaulting to `mine`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -161,6 +218,24 @@ impl Viewer {
     pub fn is_known(&self) -> bool {
         !self.display.is_empty()
     }
+
+    /// This viewer, classified by the same rule the rows are.
+    ///
+    /// A pane either has both routing halves or neither: `ae_current_slot` and
+    /// the tmux session are read together, so the `Unassociated` middle is not
+    /// reachable from a real pane. It is still spelled out rather than assumed,
+    /// because a viewer assembled from partial data must not silently become a
+    /// display-name match.
+    fn identity(&self) -> Identity<'_> {
+        match (self.slot.is_empty(), self.session.is_empty()) {
+            (false, false) => Identity::Routed {
+                slot: &self.slot,
+                session: &self.session,
+            },
+            (true, true) => Identity::Display(&self.display),
+            _ => Identity::Unassociated,
+        }
+    }
 }
 
 /// One request, as the sensor emits it.
@@ -189,13 +264,18 @@ pub struct Request {
     /// The opening event's `body_file`.
     pub body_file: Vec<u8>,
     /// Routing key of the sender.
-    pub from_slot: Vec<u8>,
+    ///
+    /// A three-state member, not bytes. Under the ruled identity rule an ABSENT
+    /// key and one present-but-EMPTY are different identities — the first falls
+    /// back to a display name, the second names nobody — so a published row that
+    /// flattened them would have thrown away what the comparison reads.
+    pub from_slot: Key,
     /// Routing key of the target.
-    pub to_slot: Vec<u8>,
+    pub to_slot: Key,
     /// Session of the sender's routing key.
-    pub from_session: Vec<u8>,
+    pub from_session: Key,
     /// Session of the target's routing key.
-    pub to_session: Vec<u8>,
+    pub to_session: Key,
     /// The DISPLAY summary: the request's own text while pending, the closing
     /// event's text once closed.
     pub summary: Vec<u8>,
@@ -227,27 +307,35 @@ impl Status {
 impl Request {
     /// Whether `mode` shows this row to `viewer`.
     ///
-    /// Slot when BOTH the row's stored slot and the viewer's slot are nonempty —
-    /// which survives a display-name change — and display names otherwise. The
-    /// "both" is not a convenience: a row with no routing keys predates them,
-    /// and comparing an empty slot to an empty slot would match every such row
-    /// to every viewer.
+    /// **The SAME identity rule as closure**, and that is a CHOICE consequent on
+    /// the SC-518 ruling rather than a thing the ruling says. "Is this row's
+    /// sender me?" is an identity comparison between two participants, so
+    /// answering it by a different rule than "did this reply come from the
+    /// agent I asked?" would put two identity semantics in one module — and the
+    /// frozen source's own warning is about exactly that kind of second copy.
+    ///
+    /// No corpus row constrains it: all 24 `mine`/`inbox` rows are identity
+    /// refusals, so the filter never ran with a viewer at all. Named here as a
+    /// choice so a seat can overrule it visibly.
     #[must_use]
     pub fn shown_to(&self, mode: Mode, viewer: &Viewer) -> bool {
         match mode {
             Mode::All => true,
-            Mode::Mine => {
-                Self::side_matches(&self.from_slot, &self.from_session, &self.from, viewer)
-            }
-            Mode::Inbox => Self::side_matches(&self.to_slot, &self.to_session, &self.to, viewer),
+            Mode::Mine => self.asker_identity().matches(viewer.identity()),
+            Mode::Inbox => self.askee_identity().matches(viewer.identity()),
         }
     }
 
-    fn side_matches(slot: &[u8], session: &[u8], display: &[u8], viewer: &Viewer) -> bool {
-        if slot.is_empty() || viewer.slot.is_empty() {
-            return display == viewer.display.as_bytes();
-        }
-        slot == viewer.slot.as_bytes() && session == viewer.session.as_bytes()
+    /// This row's sender, as an identity.
+    #[must_use]
+    fn asker_identity(&self) -> Identity<'_> {
+        identity_of(&self.from_slot, &self.from_session, &self.from)
+    }
+
+    /// This row's target, as an identity.
+    #[must_use]
+    fn askee_identity(&self) -> Identity<'_> {
+        identity_of(&self.to_slot, &self.to_session, &self.to)
     }
 
     /// The table line for this row, `\n` included.
@@ -371,16 +459,29 @@ pub fn table(container: &[u8], mode: Mode, viewer: &Viewer) -> Vec<u8> {
 #[must_use]
 pub fn states(container: &[u8]) -> Vec<Request> {
     let stream = reversed(container);
-    let mut opened: HashMap<Vec<u8>, Opening> = HashMap::new();
-    let mut replies: HashMap<Vec<u8>, Vec<Closing>> = HashMap::new();
-    let mut cancels: HashMap<Vec<u8>, Vec<Closing>> = HashMap::new();
+    // Every retained record carries its SCAN ORDINAL — its position in the
+    // container, i.e. LEDGER ORDER, which is APPEND ORDER and NEVER `ts`
+    // (colead ruling, 2026-08-24). `ts` is read and published as a field and is
+    // never compared: a writer's clock is not the ledger, and two records
+    // sharing a timestamp still have an order while two records with skewed
+    // clocks do not have the order their timestamps claim.
+    //
+    // The scan runs newest first, so a SMALLER ordinal is a NEWER event — which
+    // is the only comparison SC-518a needs.
+    let mut opened: HashMap<Vec<u8>, (usize, Opening)> = HashMap::new();
+    let mut replies: HashMap<Vec<u8>, Vec<(usize, Closing)>> = HashMap::new();
+    let mut cancels: HashMap<Vec<u8>, Vec<(usize, Closing)>> = HashMap::new();
     // Newest first, because that is the order they are met in.
     let mut refs: Vec<Vec<u8>> = Vec::new();
+    let mut scan = 0_usize;
 
     for line in read_lines(&stream) {
         let Some(line) = event_line(line) else {
             continue;
         };
+        // Counted for every brace-prefixed line, before the `ref` test, exactly
+        // where the frozen sensor counts it.
+        scan += 1;
         let reference = extract(line, "ref");
         if reference.is_empty() {
             continue;
@@ -391,17 +492,17 @@ pub fn states(container: &[u8]) -> Vec<Request> {
                 if opened.contains_key(&reference) {
                     continue;
                 }
-                opened.insert(reference.clone(), Opening::read(line, action));
+                opened.insert(reference.clone(), (scan, Opening::read(line, action)));
                 refs.push(reference);
             }
             b"reply" => replies
                 .entry(reference)
                 .or_default()
-                .push(Closing::read(line)),
+                .push((scan, Closing::read(line))),
             b"cancel" => cancels
                 .entry(reference)
                 .or_default()
-                .push(Closing::read(line)),
+                .push((scan, Closing::read(line))),
             _ => {}
         }
     }
@@ -410,23 +511,44 @@ pub fn states(container: &[u8]) -> Vec<Request> {
     refs.reverse();
     refs.into_iter()
         .filter_map(|reference| {
-            let opening = opened.remove(&reference)?;
+            let (opened_at, opening) = opened.remove(&reference)?;
             let no_candidates = Vec::new();
-            let cancel = cancels
-                .get(&reference)
-                .unwrap_or(&no_candidates)
+            // **SC-518a** — a terminal event terminates only the newest opening
+            // that PRECEDES it. The row shown for a ref is its newest opening,
+            // so a terminal attaches to it exactly when the terminal came
+            // after it: no newer opening can sit between them. A terminal
+            // BEFORE this opening belonged to an earlier lifecycle of the same
+            // ref and cannot reach forward into this one.
+            //
+            // `after` reads as `<` because the scan is newest-first.
+            let after = |(at, _): &&(usize, Closing)| *at < opened_at;
+            let cancelled = cancels.get(&reference).unwrap_or(&no_candidates);
+            let answered = replies.get(&reference).unwrap_or(&no_candidates);
+            // Candidates were appended newest-first, so the FIRST that passes
+            // both tests is the newest that counts — and an invalid newer one
+            // cannot bury a valid older one, because validity is decided here
+            // and not during the scan.
+            let cancel = cancelled
                 .iter()
-                .find(|candidate| opening.withdrawn_by(candidate));
-            let reply = replies
-                .get(&reference)
-                .unwrap_or(&no_candidates)
+                .filter(after)
+                .find(|(_, candidate)| opening.withdrawn_by(candidate));
+            let reply = answered
                 .iter()
-                .find(|candidate| opening.answered_by(candidate));
+                .filter(after)
+                .find(|(_, candidate)| opening.answered_by(candidate));
             // A valid withdrawal wins over any reply, however late: a straggler
             // answer must not reopen a request nobody is waiting on.
+            //
+            // **UNRULED, AND NAMED AS SUCH.** Which KIND wins when a valid
+            // cancel and a valid reply both follow one opening is a different
+            // question from SC-518a, which decides which OPENING a terminal
+            // attaches to. There is no corpus specimen — the 6,862-file corpus
+            // contains no `cancel` event at all — so this keeps the frozen
+            // precedence together with the frozen reason, and the choice is
+            // recorded in the module docs rather than made invisibly.
             let (status, summary) = match (cancel, reply) {
-                (Some(closing), _) => (Status::Cancelled, closing.summary.clone()),
-                (None, Some(closing)) => (Status::Replied, closing.summary.clone()),
+                (Some((_, closing)), _) => (Status::Cancelled, closing.summary.clone()),
+                (None, Some((_, closing))) => (Status::Replied, closing.summary.clone()),
                 (None, None) => (Status::Pending, opening.summary.clone()),
             };
             Some(Request {
@@ -447,6 +569,81 @@ pub fn states(container: &[u8]) -> Vec<Request> {
         .collect()
 }
 
+/// One routing member, owned — [`Member`]'s three states, kept past the life of
+/// the line they were read from.
+///
+/// [`Member`] is a VIEW: it borrows from the event line on the fast path, which
+/// is right for an extractor and useless for a sensor that outlives the scan.
+/// The three states survive the copy because they are what the identity rule
+/// compares; collapsing `Absent` and `Empty` into "no bytes" here would undo
+/// exactly what [`Member`] exists to preserve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Key {
+    /// The key is not in the record.
+    Absent,
+    /// The key is present and resolves to nothing.
+    Empty,
+    /// The key carries a value.
+    Value(Vec<u8>),
+}
+
+impl Key {
+    /// The value, or `None` when the key is absent; `Empty` answers `Some(&[])`.
+    #[must_use]
+    pub fn value(&self) -> Option<&[u8]> {
+        match self {
+            Self::Absent => None,
+            Self::Empty => Some(&[]),
+            Self::Value(bytes) => Some(bytes),
+        }
+    }
+
+    /// Read one routing member off an event line.
+    fn read(line: &[u8], name: &str) -> Self {
+        match member(line, name) {
+            Member::Absent => Self::Absent,
+            Member::Empty => Self::Empty,
+            Member::Value(bytes) => Self::Value(bytes.into_owned()),
+        }
+    }
+}
+
+/// This side's participant, as [`Identity`] names one — or `Unassociated` when
+/// the bytes cannot be one.
+///
+/// **The classification and the comparison both live in [`crate::events`]**, on
+/// the type whose own doc has always stated the rule. There is no second copy
+/// here: this function only converts what an OPAQUE read produced into the input
+/// that shared rule takes. `session.rs` and this module now reach the same
+/// [`Identity::matches`], which is what the seats ruled when they ruled SC-518
+/// strict.
+///
+/// **The UTF-8 gate is a decision, and it is the ruling's own direction.**
+/// [`Identity`] compares `&str`; this surface reads arbitrary bytes. A routing
+/// member or display name that is not valid UTF-8 was never written by `ae` —
+/// slots are `main`/`worker.<n>`/`spawned.<n>`, and both agent and session names
+/// are ASCII allowlists — so this is unreachable through any real writer, and
+/// no corpus fixture contains one. When it happens anyway the value cannot be
+/// established as an identity, and SC-518's direction says what to do with an
+/// identity you cannot establish: refuse to close. It answers
+/// [`Identity::Unassociated`], which matches nothing. Comparing the raw bytes
+/// instead would let two equally-unreadable slots close a request on the
+/// strength of two values neither of which names an agent.
+fn identity_of<'a>(slot: &'a Key, session: &'a Key, display: &'a [u8]) -> Identity<'a> {
+    let text = |bytes: &'a [u8]| std::str::from_utf8(bytes).ok();
+    match (slot, session) {
+        (Key::Value(slot), Key::Value(session)) => match (text(slot), text(session)) {
+            (Some(slot), Some(session)) => Identity::Routed { slot, session },
+            _ => Identity::Unassociated,
+        },
+        (Key::Absent, Key::Absent) => match text(display) {
+            Some(display) => Identity::Display(display),
+            None => Identity::Unassociated,
+        },
+        _ => Identity::Unassociated,
+    }
+}
+
 /// The `ask`/`review` that opened a request.
 struct Opening {
     kind: Vec<u8>,
@@ -454,10 +651,12 @@ struct Opening {
     to: Vec<u8>,
     at: Vec<u8>,
     body_file: Vec<u8>,
-    from_slot: Vec<u8>,
-    to_slot: Vec<u8>,
-    from_session: Vec<u8>,
-    to_session: Vec<u8>,
+    /// Kept as KEYS rather than bytes: the ruled identity rule needs absent and
+    /// present-but-empty told apart, and bytes cannot.
+    from_slot: Key,
+    to_slot: Key,
+    from_session: Key,
+    to_session: Key,
     summary: Vec<u8>,
 }
 
@@ -467,10 +666,10 @@ struct Opening {
 struct Closing {
     actor: Vec<u8>,
     target: Vec<u8>,
-    actor_slot: Vec<u8>,
-    target_slot: Vec<u8>,
-    actor_session: Vec<u8>,
-    target_session: Vec<u8>,
+    actor_slot: Key,
+    target_slot: Key,
+    actor_session: Key,
+    target_session: Key,
     summary: Vec<u8>,
 }
 
@@ -482,45 +681,70 @@ impl Opening {
             to: extract(line, "target"),
             at: extract(line, "ts"),
             body_file: extract(line, "body_file"),
-            from_slot: extract(line, "actor_slot"),
-            to_slot: extract(line, "target_slot"),
-            from_session: extract(line, "actor_session"),
-            to_session: extract(line, "target_session"),
+            from_slot: Key::read(line, "actor_slot"),
+            to_slot: Key::read(line, "target_slot"),
+            from_session: Key::read(line, "actor_session"),
+            to_session: Key::read(line, "target_session"),
             summary: fold_newlines(extract(line, "summary")),
         }
     }
 
-    /// SC-518's full mirror: the reply's actor is this request's TARGET and its
-    /// target is this request's SENDER.
-    fn answered_by(&self, reply: &Closing) -> bool {
-        if self.to_slot.is_empty() || reply.actor_slot.is_empty() {
-            return reply.actor == self.to && reply.target == self.from;
-        }
-        reply.actor_slot == self.to_slot
-            && reply.actor_session == self.to_session
-            && reply.target_slot == self.from_slot
-            && reply.target_session == self.from_session
+    /// This request's SENDER.
+    fn asker(&self) -> Identity<'_> {
+        identity_of(&self.from_slot, &self.from_session, &self.from)
     }
 
-    /// Only the request's own SENDER may withdraw it. A cancel has no target
-    /// side to verify, so this is the actor half of the same question.
+    /// This request's TARGET.
+    fn askee(&self) -> Identity<'_> {
+        identity_of(&self.to_slot, &self.to_session, &self.to)
+    }
+
+    /// **SC-518, strict** — the full mirror: the reply's actor is this
+    /// request's TARGET and the reply's target is this request's SENDER, with
+    /// both comparisons made by [`Identity::matches`]. A mixed pair closes
+    /// nothing.
+    fn answered_by(&self, reply: &Closing) -> bool {
+        self.askee().matches(reply.actor_identity())
+            && self.asker().matches(reply.target_identity())
+    }
+
+    /// **UNAUTHORIZED INTERIM — no row rules this.** SC-518 defines a REPLY
+    /// MIRROR; a cancel has no target end to mirror, and cancel authorization
+    /// has no row at all. Corrected contract text is awaited.
+    ///
+    /// What this does meanwhile: accept a cancel whose actor identity is the
+    /// request's own sender, by the same strict [`Identity::matches`] the reply
+    /// mirror uses. That is the narrowest thing that is not a guess — a state
+    /// which closes a request is as consequential whether it closes it with an
+    /// answer or without one — and it is the actor HALF of a rule whose other
+    /// half does not apply, rather than an application of that rule.
+    ///
+    /// SC-518a's ORDER rule does govern cancel, and that part IS ruled. So the
+    /// causality tests for cancel prove causality CONDITIONAL on whatever
+    /// authorization is eventually ratified; they do not prove the
+    /// authorization.
     fn withdrawn_by(&self, cancel: &Closing) -> bool {
-        if self.from_slot.is_empty() || cancel.actor_slot.is_empty() {
-            return !cancel.actor.is_empty() && cancel.actor == self.from;
-        }
-        cancel.actor_slot == self.from_slot && cancel.actor_session == self.from_session
+        self.asker().matches(cancel.actor_identity())
     }
 }
 
 impl Closing {
+    fn actor_identity(&self) -> Identity<'_> {
+        identity_of(&self.actor_slot, &self.actor_session, &self.actor)
+    }
+
+    fn target_identity(&self) -> Identity<'_> {
+        identity_of(&self.target_slot, &self.target_session, &self.target)
+    }
+
     fn read(line: &[u8]) -> Self {
         Self {
             actor: extract(line, "actor"),
             target: extract(line, "target"),
-            actor_slot: extract(line, "actor_slot"),
-            target_slot: extract(line, "target_slot"),
-            actor_session: extract(line, "actor_session"),
-            target_session: extract(line, "target_session"),
+            actor_slot: Key::read(line, "actor_slot"),
+            target_slot: Key::read(line, "target_slot"),
+            actor_session: Key::read(line, "actor_session"),
+            target_session: Key::read(line, "target_session"),
             summary: fold_newlines(extract(line, "summary")),
         }
     }
@@ -546,7 +770,7 @@ fn fold_newlines(mut value: Vec<u8>) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EXIT_NO_IDENTITY, Mode, NO_IDENTITY, Status, Viewer, header, render, states, table,
+        EXIT_NO_IDENTITY, Key, Mode, NO_IDENTITY, Status, Viewer, header, render, states, table,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -688,59 +912,358 @@ mod tests {
     }
 
     #[test]
-    fn sc_518_a_keyless_request_falls_back_to_display_names() {
-        // The "both sides" guard, from the other direction: a request that
-        // predates routing keys must still close on names, and must not be
-        // matched to everything by two empty slots comparing equal.
+    fn sc_518_a_keyless_request_is_not_closed_by_a_routed_reply() {
+        // GAP 1, THE ASYMMETRIC DIRECTION — the shape the corpus does not have.
+        //
+        // Every mixed specimen in the corpus mixes ONE way: a fully routed
+        // opening and an under-routed reply. So "mixed matches nothing in BOTH
+        // directions" is a RULING and not a measurement, and a test that only
+        // exercised the corpus's direction would pass on an implementation that
+        // is directional. This is the other direction: a keyless (Display)
+        // opening and a fully routed reply whose display names mirror it
+        // perfectly. It closes NOTHING.
+        //
+        // Note what makes it sharp: the names DO mirror. An implementation that
+        // reaches for the display fallback whenever either side lacks a key
+        // closes this, and that is exactly the frozen defect the ruling
+        // reverses.
         let body = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","actor_slot":"worker.0","actor_session":"s","target_slot":"main","target_session":"s","summary":"routed reply"}"#,
         ]);
-        assert_eq!(states(&body)[0].status, Status::Replied);
+        let rows = states(&body);
+        assert_eq!(rows[0].status, Status::Pending);
+        assert_eq!(
+            rows[0].summary, b"the question",
+            "and it keeps the opening's own text"
+        );
+
+        // The control that makes the assertion mean something: the SAME opening
+        // closed by a keyless reply, which is Display to Display and DOES
+        // close. Without this arm the test would also pass on an
+        // implementation that never closes anything.
+        let both_keyless = container(&[
+            ASK,
+            r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"keyless reply"}"#,
+        ]);
+        assert_eq!(states(&both_keyless)[0].status, Status::Replied);
     }
 
     #[test]
-    fn sc_518_a_valid_cancel_is_terminal_against_a_later_reply() {
+    fn sc_518_an_empty_routing_member_is_not_an_absent_one() {
+        // GAP 5 (lexec's): the ONE shape where Empty and Absent diverge, and the
+        // one a reader who thinks they are the same gets wrong while passing
+        // every byte the corpus owns.
+        //
+        // Against a ROUTED opening both fail, which is why all four corpus
+        // shapes agree. Against a DISPLAY-only opening they separate: an absent
+        // pair is a Display identity and closes, while a present-and-empty pair
+        // is Unassociated and closes nothing — a writer that meant to route and
+        // did not say where has not thereby named the agent whose display name
+        // happens to sit beside it.
+        let keyless_reply = r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"absent keys"}"#;
+        let empty_reply = r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","actor_slot":"","actor_session":"","target_slot":"","target_session":"","summary":"empty keys"}"#;
+
+        // ASK is keyless, so the opening is a Display identity.
+        assert_eq!(
+            states(&container(&[ASK, keyless_reply]))[0].status,
+            Status::Replied,
+            "absent on both sides is the display fallback"
+        );
+        assert_eq!(
+            states(&container(&[ASK, empty_reply]))[0].status,
+            Status::Pending,
+            "present-and-empty is Unassociated, and matches nothing"
+        );
+
+        // And the pair that shows why the corpus could not tell them apart: a
+        // routed opening refuses both, so every captured shape agrees.
+        let routed_ask = r#"{"ts":"t1","actor":"a:lead","action":"ask","target":"a:worker","ref":"r1","actor_slot":"main","actor_session":"s","target_slot":"worker.0","target_session":"s","summary":"q"}"#;
+        for reply in [keyless_reply, empty_reply] {
+            assert_eq!(
+                states(&container(&[routed_ask, reply]))[0].status,
+                Status::Pending,
+                "a routed opening refuses both, which is why no capture separates them"
+            );
+        }
+    }
+
+    #[test]
+    fn sc_518_half_a_routing_key_names_nobody_even_beside_a_display_opening() {
+        // THE THIRD SHAPE IN THE Unassociated FAMILY, and the corpus cannot see
+        // it either. `Empty` and `Absent` have a sibling: exactly ONE routing
+        // member present. Against a ROUTED opening it fails like everything
+        // else, which is why the A7 slot-only capture reads the same under both
+        // the frozen rule and the ruling. Against a DISPLAY-only opening the
+        // difference appears: `Unassociated` matches nothing, so it must NOT
+        // fall through to the display name sitting beside it.
+        //
+        // Found by red-proof: an implementation that treats a half key as a
+        // display identity passes every other test in this module and every one
+        // of the 168 corpus rows.
+        let half_keyed_reply = r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","actor_slot":"worker.0","target_slot":"main","summary":"half a key"}"#;
+        // ASK is keyless, so its participants are Display identities.
+        assert_eq!(
+            states(&container(&[ASK, half_keyed_reply]))[0].status,
+            Status::Pending,
+            "a slot with no session names nobody, and does not become its display name"
+        );
+        // The control, on the same opening: a fully keyless reply DOES close it,
+        // so the assertion above is about the half key and not about the reply.
+        let keyless_reply = r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"no keys"}"#;
+        assert_eq!(
+            states(&container(&[ASK, keyless_reply]))[0].status,
+            Status::Replied
+        );
+        // And the other half of the pair, for completeness: a session with no
+        // slot is the same species.
+        let session_only_reply = r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","actor_session":"s","target_session":"s","summary":"the other half"}"#;
+        assert_eq!(
+            states(&container(&[ASK, session_only_reply]))[0].status,
+            Status::Pending
+        );
+    }
+
+    #[test]
+    fn an_identity_that_is_not_valid_utf8_names_nobody() {
+        // THE UTF-8 GATE, as a test rather than as a paragraph. `Identity`
+        // compares `&str` and this surface reads arbitrary bytes, so the
+        // conversion needs a decision for the impossible case — and SC-518's
+        // direction supplies it: an identity you cannot establish does not close
+        // a request.
+        //
+        // Unreachable through any real writer (slots are `main`/`worker.<n>`/
+        // `spawned.<n>`, agent and session names are ASCII allowlists, and no
+        // fixture in the corpus carries one), which is exactly why it needs an
+        // assertion: nothing else in the tree would ever notice if it silently
+        // fell back to a display match.
+        //
+        // The two undecodable slots below are byte-IDENTICAL. A byte comparison
+        // would close on them; the gate refuses, because two equally unreadable
+        // values name no agent between them.
+        let mut ask = Vec::from(
+            &br#"{"ts":"t1","actor":"a:lead","action":"ask","target":"a:worker","ref":"r1","actor_slot":"main","actor_session":"s","target_slot":""#[..],
+        );
+        ask.extend_from_slice(&[0xFF, 0xFE]);
+        ask.extend_from_slice(br#"","target_session":"s","summary":"q"}"#);
+        let mut reply = Vec::from(
+            &br#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","actor_slot":""#[..],
+        );
+        reply.extend_from_slice(&[0xFF, 0xFE]);
+        reply.extend_from_slice(
+            br#"","actor_session":"s","target_slot":"main","target_session":"s","summary":"a"}"#,
+        );
+        let mut body = ask;
+        body.push(b'\n');
+        body.extend_from_slice(&reply);
+        body.push(b'\n');
+
+        let rows = states(&body);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].status,
+            Status::Pending,
+            "identical undecodable slots are still not an identity"
+        );
+        // The member was READ — this is a gate on the comparison, not on the
+        // extraction, and the published row still carries the bytes verbatim.
+        assert_eq!(rows[0].to_slot, Key::Value(vec![0xFF, 0xFE]));
+    }
+
+    #[test]
+    fn sc_518a_a_terminal_that_precedes_its_opening_closes_nothing() {
+        // The ORDER rule alone, with identity deliberately PERFECT so a failure
+        // can only be about ordering. This is the corpus's one specimen shape
+        // (G5/m2) reduced to its mechanism.
+        let reply_first = container(&[
+            r#"{"ts":"t1","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"answered before it was asked"}"#,
+            ASK,
+        ]);
+        let rows = states(&reply_first);
+        assert_eq!(rows[0].status, Status::Pending);
+        assert_eq!(rows[0].summary, b"the question");
+
+        // The control, and it is what makes the assertion about ORDER: the same
+        // two records the other way round DO close. Without this arm the test
+        // would pass on an implementation whose identity rule rejected the
+        // reply for an unrelated reason.
+        let ask_first = container(&[
+            ASK,
+            r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"answered after it was asked"}"#,
+        ]);
+        assert_eq!(states(&ask_first)[0].status, Status::Replied);
+    }
+
+    #[test]
+    fn sc_518a_a_re_ask_opens_a_new_lifecycle_that_the_old_terminal_cannot_close() {
+        // GAP 2. Identity is perfect throughout, so this test can ONLY fail on
+        // the ordering rule — which is the point: a re-ask whose reply is also
+        // identity-invalid would be pending for two reasons and could not tell
+        // you which rule you had broken.
         let body = container(&[
+            ASK,
+            r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"the first answer"}"#,
+            r#"{"ts":"t3","actor":"a:lead","action":"ask","target":"a:worker","ref":"r1","summary":"asked again"}"#,
+        ]);
+        let rows = states(&body);
+        assert_eq!(rows.len(), 1, "one row per ref");
+        assert_eq!(
+            rows[0].status,
+            Status::Pending,
+            "the new lifecycle is not born closed by the old lifecycle's reply"
+        );
+        assert_eq!(rows[0].summary, b"asked again");
+
+        // And the earlier terminal is not merely ignored — a reply AFTER the
+        // re-ask closes the new lifecycle, so the rule is about reach and not
+        // about discarding replies.
+        let answered_again = container(&[
+            ASK,
+            r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"the first answer"}"#,
+            r#"{"ts":"t3","actor":"a:lead","action":"ask","target":"a:worker","ref":"r1","summary":"asked again"}"#,
+            r#"{"ts":"t4","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"the second answer"}"#,
+        ]);
+        let rows = states(&answered_again);
+        assert_eq!(rows[0].status, Status::Replied);
+        assert_eq!(rows[0].summary, b"the second answer");
+    }
+
+    #[test]
+    fn sc_518a_a_cancel_before_its_opening_has_no_effect_whatever_authorization_says() {
+        // GAP 3, AND OUTCOME-NEUTRAL BY CONSTRUCTION.
+        //
+        // SC-518a's ORDER rule is ruled and does govern cancel. Cancel
+        // AUTHORIZATION is not ruled at all, so this test must not depend on
+        // whether a given cancel would have been authorised — a gating test that
+        // fails under a future authorization policy has ratified one BY
+        // ENFORCEMENT whatever its comment says (semantic-contract.md, and the
+        // rule came out of this very slice).
+        //
+        // The neutral formulation: a cancel placed BEFORE its opening leaves the
+        // row IDENTICAL to a container that has no cancel in it at all. That is
+        // exactly what "closes nothing" means, and it holds under every possible
+        // authorization ruling, because a terminal that never reaches its
+        // opening cannot be authorised to do anything to it. Whole rows are
+        // compared, not statuses, so the summary cannot move either.
+        let re_ask = r#"{"ts":"t3","actor":"a:lead","action":"ask","target":"a:worker","ref":"r1","summary":"asked again"}"#;
+        let own =
+            r#"{"ts":"t2","actor":"a:lead","action":"cancel","ref":"r1","summary":"withdrawn"}"#;
+        let stranger =
+            r#"{"ts":"t2","actor":"a:stranger","action":"cancel","ref":"r1","summary":"not mine"}"#;
+        let anonymous = r#"{"ts":"t2","action":"cancel","ref":"r1","summary":"nobody"}"#;
+
+        let without = states(&container(&[ASK]));
+        for cancel in [own, stranger, anonymous] {
+            // The cancel precedes the opening. Whoever sent it, it is a no-op.
+            let with = states(&container(&[cancel, ASK]));
+            assert_eq!(
+                with, without,
+                "a pre-opening cancel changed the row: {cancel}"
+            );
+        }
+
+        // The same rule from the re-ask side: an earlier lifecycle's cancel
+        // cannot reach forward, so the re-asked row is identical to the row of a
+        // container holding only the re-ask. Also neutral — it says nothing
+        // about what the cancel did to the lifecycle it COULD reach.
+        let only_re_ask = states(&container(&[re_ask]));
+        for cancel in [own, stranger, anonymous] {
+            let re_asked = states(&container(&[ASK, cancel, re_ask]));
+            assert_eq!(
+                re_asked, only_re_ask,
+                "an earlier lifecycle's cancel reached the re-ask: {cancel}"
+            );
+        }
+    }
+
+    /// **NON-GATING DIAGNOSTIC** — a `cancel` AND a `reply` both attached to one
+    /// opening. GAP 4, and the gate now says NOTHING about it.
+    ///
+    /// My first attempt at this asserted that the outcome does not depend on the
+    /// two terminals' arrival order, on the reasoning that naming no winner made
+    /// it neutral. `gpt56terra:pubfp` showed that it does not: **"the later
+    /// terminal wins" is a legitimate unresolved resolver policy**, and under it
+    /// `cancel`-then-`reply` yields `Replied` while `reply`-then-`cancel` yields
+    /// `Cancelled` — so the two are NOT equal, and an equality assertion fails
+    /// that policy. Equality across arrival orders is itself a rule about which
+    /// terminal controls the row: it rules out recency-based precedence. Which
+    /// is exactly the undecided question, one level up from the one I thought I
+    /// was avoiding.
+    ///
+    /// So there is no outcome-neutral gating assertion available for this shape.
+    /// Both terminals attaching is already gated by the single-terminal tests,
+    /// and the only observable of it here — the row being terminal at all — is
+    /// witnessed by the ratified REPLY on its own. Nothing is lost by moving the
+    /// whole shape out of the gate, and a precedence law would have been
+    /// smuggled in by keeping any part of it.
+    #[test]
+    #[ignore = "records unratified two-terminal precedence behavior; not a gate"]
+    fn diagnostic_two_terminals_on_one_opening() {
+        let cancel_then_reply = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:lead","action":"cancel","ref":"r1","summary":"never mind"}"#,
             r#"{"ts":"t3","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"too late"}"#,
         ]);
-        let rows = states(&body);
-        assert_eq!(rows[0].status, Status::Cancelled);
-        assert_eq!(rows[0].summary, b"never mind");
+        let reply_then_cancel = container(&[
+            ASK,
+            r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"answered"}"#,
+            r#"{"ts":"t3","actor":"a:lead","action":"cancel","ref":"r1","summary":"withdrawn anyway"}"#,
+        ]);
+        // IS, not contract, and BOTH orders are recorded rather than related:
+        // this build resolves by KIND (cancellation wins) rather than by
+        // recency, so the two agree — but that agreement is a property of the
+        // current resolver and not of anything ruled.
+        assert_eq!(states(&cancel_then_reply)[0].status, Status::Cancelled);
+        assert_eq!(states(&reply_then_cancel)[0].status, Status::Cancelled);
+    }
+
+    /// **NON-GATING DIAGNOSTIC — `#[ignore]`d ON PURPOSE, and the attribute is
+    /// the whole point.**
+    ///
+    /// This records what this build currently DOES about cancel authorization,
+    /// which no row rules. `semantic-contract.md` permits a clearly non-gating
+    /// diagnostic to record the current IS, and forbids a GATING test from
+    /// asserting an unratified authorization outcome — because a gate that fails
+    /// under the other policy has ratified this one by enforcement, whatever its
+    /// comment says. `cargo nextest run` skips ignored tests and no lane passes
+    /// `--run-ignored`, so nothing here can fail the gate; run it deliberately
+    /// with `cargo nextest run --run-ignored all` to read the current behavior.
+    ///
+    /// When cancel authorization is ratified, this becomes a gating test by
+    /// deleting one attribute — and if the ruling differs from what is below,
+    /// this is the record of what had to change.
+    #[test]
+    #[ignore = "records unratified cancel-authorization behavior; not a gate"]
+    fn diagnostic_the_interim_withdrawal_policy_this_build_applies() {
+        let after = |actor: &str, summary: &str| {
+            let cancel = format!(
+                r#"{{"ts":"t2",{actor}"action":"cancel","ref":"r1","summary":"{summary}"}}"#
+            );
+            states(&container(&[ASK, &cancel]))[0].status
+        };
+        // IS, not contract: the request's own sender withdraws it; a stranger
+        // and an unattributed cancel do not.
+        assert_eq!(
+            after(r#""actor":"a:lead","#, "withdrawn"),
+            Status::Cancelled
+        );
+        assert_eq!(
+            after(r#""actor":"a:stranger","#, "not mine"),
+            Status::Pending
+        );
+        assert_eq!(after("", "nobody"), Status::Pending);
     }
 
     #[test]
-    fn sc_518_only_the_sender_may_withdraw() {
-        let body = container(&[
-            ASK,
-            r#"{"ts":"t2","actor":"a:worker","action":"cancel","ref":"r1","summary":"not yours"}"#,
-        ]);
-        assert_eq!(states(&body)[0].status, Status::Pending);
-        // An anonymous cancel is not a withdrawal either.
-        let anonymous = container(&[
-            ASK,
-            r#"{"ts":"t2","action":"cancel","ref":"r1","summary":"nobody"}"#,
-        ]);
-        assert_eq!(states(&anonymous)[0].status, Status::Pending);
-    }
-
-    #[test]
-    fn sc_518_an_invalid_newer_candidate_cannot_bury_a_valid_older_one() {
-        // The measured regression the frozen sensor's retain-then-validate
-        // shape exists to prevent: keeping only the newest raw cancel made this
-        // render `pending`.
-        let body = container(&[
-            ASK,
-            r#"{"ts":"t2","actor":"a:lead","action":"cancel","ref":"r1","summary":"valid withdrawal"}"#,
-            r#"{"ts":"t3","actor":"a:stranger","action":"cancel","ref":"r1","summary":"stranger cancel"}"#,
-        ]);
-        let rows = states(&body);
-        assert_eq!(rows[0].status, Status::Cancelled);
-        assert_eq!(rows[0].summary, b"valid withdrawal");
-
-        // And the same shape with two replies.
+    fn an_invalid_newer_reply_cannot_bury_a_valid_older_one() {
+        // The measured regression the frozen sensor's retain-then-validate shape
+        // exists to prevent: keeping only the newest RAW candidate and
+        // validating it afterwards rendered this `pending`.
+        //
+        // REPLIES ONLY. The identical shape with two cancels is the same
+        // mechanism, but asserting its outcome would assert who may cancel —
+        // unratified — so it lives in the non-gating diagnostic below instead.
+        // Reply authorization IS ratified (SC-518), so this half is a gate.
         let replies = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"valid answer"}"#,
@@ -749,6 +1272,23 @@ mod tests {
         let rows = states(&replies);
         assert_eq!(rows[0].status, Status::Replied);
         assert_eq!(rows[0].summary, b"valid answer");
+    }
+
+    /// **NON-GATING DIAGNOSTIC** — the cancel half of retain-then-validate.
+    /// Same mechanism as the reply half above; its outcome depends on who may
+    /// cancel, which no row rules. See the other diagnostic for why the
+    /// attribute rather than a comment is what keeps this out of the gate.
+    #[test]
+    #[ignore = "records unratified cancel-authorization behavior; not a gate"]
+    fn diagnostic_retain_then_validate_over_two_cancels() {
+        let body = container(&[
+            ASK,
+            r#"{"ts":"t2","actor":"a:lead","action":"cancel","ref":"r1","summary":"valid withdrawal"}"#,
+            r#"{"ts":"t3","actor":"a:stranger","action":"cancel","ref":"r1","summary":"stranger cancel"}"#,
+        ]);
+        let rows = states(&body);
+        assert_eq!(rows[0].status, Status::Cancelled);
+        assert_eq!(rows[0].summary, b"valid withdrawal");
     }
 
     #[test]
@@ -841,17 +1381,37 @@ mod tests {
     }
 
     #[test]
-    fn a_keyless_row_filters_by_display_name() {
-        let body = container(&[ASK]);
-        let lead = Viewer {
+    fn the_filter_uses_the_same_identity_rule_as_closure() {
+        // A CHOICE, not a ruling — see `Request::shown_to`. No corpus row
+        // constrains the filter (all 24 mine/inbox rows are refusals), and this
+        // pins the choice so a seat can overrule it visibly.
+        let keyless = container(&[ASK]);
+        // A keyless ROW is a Display identity; a ROUTED viewer is not it, even
+        // though the display names agree.
+        let routed_viewer = Viewer {
             slot: "main".to_owned(),
             session: "s".to_owned(),
             display: "a:lead".to_owned(),
         };
-        assert!(
-            text(&table(&body, Mode::Mine, &lead)).contains("r1"),
-            "an empty stored slot falls back to the name, not to nothing"
+        assert_eq!(
+            table(&keyless, Mode::Mine, &routed_viewer),
+            header(),
+            "mixed identity does not select a row either"
         );
+        // A viewer with no routing keys IS a Display identity, and matches.
+        let display_viewer = Viewer {
+            slot: String::new(),
+            session: String::new(),
+            display: "a:lead".to_owned(),
+        };
+        assert!(text(&table(&keyless, Mode::Mine, &display_viewer)).contains("r1"));
+        // And the same viewer does not collect somebody else's row.
+        let stranger = Viewer {
+            slot: String::new(),
+            session: String::new(),
+            display: "a:third".to_owned(),
+        };
+        assert_eq!(table(&keyless, Mode::Mine, &stranger), header());
     }
 
     #[test]
@@ -913,9 +1473,19 @@ mod tests {
         let row = &states(&body)[0];
         assert_eq!(row.at, b"2026-08-20T16:12:55Z");
         assert_eq!(row.body_file, b"/m/r1.ask.txt");
-        assert_eq!(row.from_slot, b"main");
-        assert_eq!(row.to_slot, b"worker.0");
-        assert_eq!(row.from_session, b"s");
-        assert_eq!(row.to_session, b"s");
+        assert_eq!(row.from_slot, Key::Value(b"main".to_vec()));
+        assert_eq!(row.to_slot, Key::Value(b"worker.0".to_vec()));
+        assert_eq!(row.from_session, Key::Value(b"s".to_vec()));
+        assert_eq!(row.to_session, Key::Value(b"s".to_vec()));
+        // And the three states are told apart on a published row, which is the
+        // whole reason these are Keys and not bytes.
+        let mixed = container(&[
+            r#"{"ts":"t1","actor":"a:lead","action":"ask","target":"a:w","ref":"r2","actor_slot":"","summary":"q"}"#,
+        ]);
+        let row = &states(&mixed)[0];
+        assert_eq!(row.from_slot, Key::Empty, "present and empty");
+        assert_eq!(row.from_session, Key::Absent, "not in the record at all");
+        assert_eq!(row.from_slot.value(), Some(b"".as_slice()));
+        assert_eq!(row.from_session.value(), None);
     }
 }
