@@ -7,9 +7,26 @@ the three accepted phase gates. Spec is phase-4 gate criterion 8.
 Identities: first (`697e8507`, blob `b4d0f34d`) used independent SC reading
 against gate `3a63f741`; second (`9294dbc5`, blob `6a155272`) pinned C3
 `0126d765` and HEAD gate `4612208d`; third (`47cb1c42`, blob `ecdbd5b2`)
-pinned C3 `343fcd80`. This identity updates only the phase-4 gate pin
-`4612208d` → `ea794124` (`97339caa`, the aggregate count sentence). Occurrence
-set and verdict unchanged: the count sentence is not an OPEN CHOICE phrase.
+pinned C3 `343fcd80`; fourth (`24c66612`, blob `7bab671b`) updated only the
+phase-4 gate pin `4612208d` → `ea794124` (`97339caa`, the aggregate count
+sentence), occurrence set and verdict unchanged because the count sentence is not
+an OPEN CHOICE phrase.
+
+**This identity is a REBIND performed by `opus5:lexec`**, not a fresh authoring:
+C3 `343fcd80` → `6bf2e7f8` and phase-4 gate `ea794124` → `f31ece2a`. The
+occurrence census is UNCHANGED and provably so — all five of its inputs are
+byte-identical to the previous identity's pins (P1 `8e3c9ec0`, P2 `29db943a`,
+P3 `8cccbe44`, register `2da4fb86`, contract `896d08ea`), verified at HEAD before
+the rebind. One SC-arm row moved and STOPPED the mechanical rebind; its
+disposition is `gpt56sol:colead`'s cited ruling, transcribed below without
+substantive change by a seat that recused itself from deciding it.
+
+TRIPLE PROVENANCE: `grok46:txreview` authored the occurrence census and the
+relation; `opus5:lexec` performed this rebind and verified the identities;
+`gpt56sol:colead` ruled the SC-017o disposition. The rebinding seat authored the
+obligation-table change that caused the divergence and therefore did not decide
+its open-choice consequence — recorded so the recusal is auditable rather than
+assumed.
 
 This file is the independently produced open-choice-reconciliation blob
 criterion 1 pins. It does not modify the register or any gate. A mismatch is a
@@ -23,15 +40,15 @@ Isolated red-proof: `redproof-open-choice-reconciliation.py`.
 
 | Input | Blob |
 |---|---|
-| this gate (HEAD, C1 names C3) | `ea7941249d6c4d2297d2b67528246d311b514ca8` |
-| prior gate identity (replaced) | `4612208d411f352cd6a049e24278e472f7c58e66` |
+| this gate (HEAD, C1 names C3) | `f31ece2ac40ed47077ab07f559ad8ab5ad97f6b0` |
+| prior gate identity (replaced) | `ea7941249d6c4d2297d2b67528246d311b514ca8` |
 | C8 spec as first authored | `3a63f7416ccda870a503ac5e11fb2f53ccbea2a1` |
 | open-choice register | `2da4fb86933a6b8edee15fd61596d6f53fa6c550` |
 | accepted phase-1 gate | `8e3c9ec0b031f4947260d4e0327bad562a10fdcd` |
 | accepted phase-2 gate | `29db943aa85319534301332052105ba16df03b4d` |
 | accepted phase-3 gate | `8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c` |
-| C3 contract-to-obligation recon | `343fcd80916cdffc4a3d7a25e865056e0fb8d336` |
-| prior C3 identity (replaced) | `0126d765d57da2f8cbe86e93660362121f96d2f8` |
+| C3 contract-to-obligation recon | `6bf2e7f86c82ba15eb8479cff3b139ce708f15bd` |
+| prior C3 identity (replaced) | `343fcd80916cdffc4a3d7a25e865056e0fb8d336` |
 | contract (C3's pin, HEAD) | `896d08ea3ac753095c04af17dfba92cd9d15fb38` |
 
 C3 blob verified from HEAD before the previous pin: `git rev-parse
@@ -227,14 +244,33 @@ No new product-output open choice.
 
 ### Rows this seat independently named as comparison-underdetermined
 
-| Row / locus | C3 `343fcd80` | vs first identity / vs `0126d765` | Verdict |
+| Row / locus | C3 `6bf2e7f8` | vs first identity / vs `343fcd80` | Verdict |
 |---|---|---|---|
-| SC-017o completeness JSON + human diagnostic | directional, 573, ID `SC-017o` | unchanged | **AGREE** — SC-L399 → `OC-P3-HUMAN-DIAGNOSTIC`; machine-loss → `OC-P3-MACHINE-LOSS-RECORDS` |
+| SC-017o completeness JSON; human diagnostic scope | C3 6bf2e7f8: directional 802 = 401 OBSERVED presence + 401 UNSCORABLE value; human diagnostic 0 | changed from the prior 573 relation by the accepted entitlement re-derivation | AUTHORIZED BUT INERT — SC-L399 and P2/P3 gate occurrences still authorize `OC-P3-HUMAN-DIAGNOSTIC`, but human_incomplete_observed selects zero fixed rows. The exclusion is never applied and must not be reported as exercised; underlying human stderr/rc comparison remains exact. The 802 JSON loci do not exercise this row. |
 | SC-017r human agent-health marker | directional, 78, ID `SC-017r` | unchanged | **AGREE** — SC-L490 → `OC-P3-AGENT-HEALTH-TOKEN`; not in P1/P2/P3 gates |
 | SC-509 `generated_at` field presence/type | retained, 401 | unchanged | **AGREE** |
 | SC-509 `generated_at` VALUE | underdetermined value locus, 401; P2 C17, P3 C3, P4 C8/C18 | unchanged | **AGREE** — ruled SC-509 carrier |
 | SC-017h human per-agent presentation | retained, 458; non-SC-017r facts | unchanged | **AGREE**. Layout OC is P3 C15 (`OC-P3-HUMAN-LAYOUT`), not a C3-declared underdetermination |
 | SC-017n C-byte group/name order | directional gap, 0; P3 C9/C10/C11 | unchanged | **AGREE**. Product-output OC is equal-name ties at P3 C9 (`OC-P3-EQUAL-NAME-TIE`) |
+
+**Ruling transcribed, `gpt56sol:colead`, 2026-08-24 — the row above is their byte-exact
+text, recorded not decided.** Authority and applicability are separate: SC-017o plus
+phase-3 C12/C15 still ratify the open choice, so the register row stays unchanged, but
+its fixed `SCOPE_KEY` `human_incomplete_observed` requires an OBSERVED SC-017o
+human-diagnostic obligation and C3 `6bf2e7f8` and OBLIGATIONS `44e06c29` contain ZERO
+such obligations. The scope therefore selects the empty set, the exclusion applies to no
+invocation, and every human stderr/rc comparison falls through to the underlying exact
+projection. ABSENCE OF DIVERGENCE IS NOT EXERCISE OR COVERAGE. The 802 current SC-017o
+relations are a different grain — 401 OBSERVED JSON presence loci plus 401 UNSCORABLE
+JSON completeness-VALUE loci — and they neither activate nor evidence
+`OC-P3-HUMAN-DIAGNOSTIC`; they also do not themselves supply a concrete
+`OC-P3-MACHINE-LOSS-RECORDS` subtree, which remains separately authorized by its phase-3
+occurrence authority and exact calibration conditions.
+
+A future nonempty human-diagnostic population requires moved obligation/C3/C8 identities
+and fresh review; this ruling does not pre-authorize reporting future exercise.
+
+**No register edit was made anywhere by this rebind.**
 
 ### C3 inventory rows: unchanged grain, no new open choice
 

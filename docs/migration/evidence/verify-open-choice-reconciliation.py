@@ -39,7 +39,7 @@ REGISTER_BLOB = "2da4fb86933a6b8edee15fd61596d6f53fa6c550"
 REGISTER_PATH = "docs/migration/p1-phase4-open-choices.tsv"
 OCC_PATH_DEFAULT = os.path.join(HERE, "p1-phase4-open-choice-occurrences.tsv")
 CONTRACT_PATH = "docs/migration/semantic-contract.md"
-C3_BLOB = "343fcd80916cdffc4a3d7a25e865056e0fb8d336"
+C3_BLOB = "6bf2e7f86c82ba15eb8479cff3b139ce708f15bd"
 C3_PATH = "docs/migration/evidence/p1-phase4-contract-obligation-reconciliation.md"
 
 PHRASE = re.compile(r"open[\s\-]*choice", re.I)
