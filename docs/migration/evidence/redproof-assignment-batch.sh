@@ -1,49 +1,58 @@
 #!/usr/bin/env bash
-# RED-PROOF for sweep-check.sh's known_assignment_batch().
+# RED-PROOF for sweep-check.sh's batch-taxonomy derivation.
 #
-# It exercises the SHIPPED function text, extracted from sweep-check.sh at run
-# time rather than retyped here: a red-proof against a copy of the predicate
-# proves the copy. It never reads or mutates crit-assign.md — the subject is the
-# predicate, and the assignment file is not needed to test it.
+# It runs sweep-check END TO END against ISOLATED COPIES of crit-assign.md (arg 5),
+# never the tracked file. The predicate can no longer be tested in isolation because
+# it no longer carries its own answer: it reads the declaration, which is the repair.
+# So the subject is now the derivation, and the only honest way to exercise it is
+# through the program that performs it.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SRC="$HERE/sweep-check.sh"
+SRC="$HERE/crit-assign.md"
+TMP="$(mktemp -d "/tmp/rp-batch.XXXXXX")"
+trap 'rm -rf "$TMP"' EXIT
 fail=0
 
-fn="$(awk '/^function known_assignment_batch\(batch\) \{/{f=1} f{print} f&&/^\}/{exit}' "$SRC")"
-[[ -n "$fn" ]] || { echo "ABORT: could not extract known_assignment_batch from $SRC"; exit 2; }
-grep -q 'S-GATE' <<<"$fn" || { echo "ABORT: extracted predicate does not mention S-GATE — wrong function or stale file"; exit 2; }
-
-check() { # tag expected(accept|reject) why
-  local got
-  got="$(printf '%s\n' "$1" | awk "$fn"'{ print known_assignment_batch($0) ? "accept" : "reject" }')"
-  if [[ "$got" == "$2" ]]; then printf '  ok   %-12s %-7s  %s\n' "[$1]" "$got" "$3"
-  else printf '  FAIL %-12s got=%-7s want=%-7s  %s\n' "[$1]" "$got" "$2" "$3"; fail=1; fi
+malformed() { # seeded-file -> ASSIGN_MALFORMED count
+  bash "$HERE/sweep-check.sh" "" "" "" "" "$1" 2>/dev/null \
+    | grep -oE 'ASSIGN_MALFORMED=[0-9]+' | head -1 | cut -d= -f2
+}
+# sweep-check takes positional paths; empty strings must fall back to defaults, so
+# pass the real ones explicitly rather than relying on that.
+R="$HERE/../../.."
+malformed() {
+  bash "$HERE/sweep-check.sh" "$R/docs/migration/semantic-contract.md" \
+    "$R/docs/migration/ownership.md" "$R/docs/migration/evidence/closure-map.md" \
+    "$R/docs/migration/evidence/closure-map.md" "$1" 2>/dev/null \
+    | grep -oE 'ASSIGN_MALFORMED=[0-9]+' | head -1 | cut -d= -f2
 }
 
-echo "=== the two ratified tags this change adds ==="
-check 'S-GATE'    accept 'ratified successor observer-provenance tag'
-check 'S-PENDING' accept 'ratified successor observer-provenance tag'
+check() { # name seeded-file expected-comparison why
+  local got; got="$(malformed "$2")"
+  if [ "$got" $3 ]; then printf '  ok   %-22s ASSIGN_MALFORMED=%-4s %s\n' "$1" "$got" "$4"
+  else printf '  FAIL %-22s ASSIGN_MALFORMED=%-4s want %s  %s\n' "$1" "$got" "$3" "$4"; fail=1; fi
+}
 
-echo "=== an unknown S-* must STILL fail — the point is not to open the namespace ==="
-check 'S-BOGUS'   reject 'unknown S-* tag'
-check 'S-'        reject 'bare prefix'
-check 'S'         reject 'prefix alone'
+cp "$SRC" "$TMP/neutral.md"
+base="$(malformed "$TMP/neutral.md")"
+if [ "$base" != "0" ]; then echo "ABORT: neutral is not clean (ASSIGN_MALFORMED=$base)"; exit 1; fi
+echo "neutral                     ASSIGN_MALFORMED=0  (tracked file only read)"
 
-echo "=== anchors hold: no prefix/suffix/case slippage ==="
-check 'S-GATEX'   reject 'suffix past a valid tag'
-check 'XS-GATE'   reject 'prefix before a valid tag'
-check 's-gate'    reject 'lowercase'
-check ''          reject 'empty batch'
+# 1. a row whose tag is not in the declaration
+awk -F'|' 'BEGIN{OFS="|"} /^CRIT-ASSIGN:/ && !done {$2=" NOT-A-BATCH "; done=1} {print}' "$SRC" > "$TMP/unknown.md"
+cmp -s "$SRC" "$TMP/unknown.md" && { echo "  SEED-DID-NOT-LAND unknown-tag — invalid test"; fail=1; } \
+  || check "unknown tag in a row" "$TMP/unknown.md" "-ge 1" "a tag outside the declaration must fail"
 
-echo "=== pre-existing tags unchanged ==="
-check 'B0'        accept 'existing'
-check 'C'         accept 'existing'
-check 'T-WD'      accept 'existing'
-check 'F-CONTRIB' accept 'existing'
-check 'L-STOP'    accept 'existing'
-check 'NOPE'      reject 'never valid'
+# 2. the declaration removed entirely -> FAIL CLOSED, every row malformed
+grep -v '^BATCH-TAXONOMY:' "$SRC" > "$TMP/nodecl.md"
+cmp -s "$SRC" "$TMP/nodecl.md" && { echo "  SEED-DID-NOT-LAND no-declaration — invalid test"; fail=1; } \
+  || check "declaration removed" "$TMP/nodecl.md" "-ge 300" "no taxonomy must mean accept NOTHING, loudly"
+
+# 3. one ratified tag dropped from the declaration -> only its rows fail
+sed 's/^\(BATCH-TAXONOMY:.*\) S-GATE\( .*\)$/\1\2/' "$SRC" > "$TMP/drop.md"
+cmp -s "$SRC" "$TMP/drop.md" && { echo "  SEED-DID-NOT-LAND drop-S-GATE — invalid test"; fail=1; } \
+  || check "one tag dropped" "$TMP/drop.md" "-eq 14" "exactly the 14 S-GATE rows must fail, and no others"
 
 echo
-if [[ $fail -eq 0 ]]; then echo "ASSIGNMENT-BATCH RED-PROOF: PASS"; else echo "ASSIGNMENT-BATCH RED-PROOF: FAIL"; fi
+[ $fail -eq 0 ] && echo "ASSIGNMENT-BATCH RED-PROOF: PASS" || echo "ASSIGNMENT-BATCH RED-PROOF: FAIL"
 exit $fail

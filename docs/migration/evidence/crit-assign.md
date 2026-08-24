@@ -1,5 +1,21 @@
 # CRIT-ASSIGN table — exact batch/arm per outstanding critical id
 
+BATCH-TAXONOMY: B0 C L-END L-PURGE L-STOP L-COMPACT L-FROM L-RENTRANS T-AUTH T-WD T-CTRL T-STORE H-HELPER H-DELIVERY H-ENV F-CONFIG F-FORMAT F-TMUX F-ADAPTER F-IDENTITY F-INSTALL F-PLATFORM F-CONTRIB S-GATE S-PENDING
+
+The line above is the taxonomy sweep-check.sh validates rows against; it no longer
+carries a hardcoded list of its own. Adding a ratified tag is a change HERE, where the
+rows using it live, rather than an edit to a checker — which is what made the S-GATE and
+S-PENDING rows read as malformed the day they landed: the checker was written before the
+names it had to accept, and an enumeration is caught by the first new member of its set.
+
+SCOPE OF THAT REPAIR, stated rather than implied: this defends against a TYPO in a row,
+because a tag not in the declaration fails. It does NOT defend against an unratified tag
+added to the declaration — that is a review question, not a checker question. The header
+below cites cluster-plan.md as the batch authority, but the granular tags are not in it:
+B0 appears there, and L-END, T-AUTH, H-HELPER, F-CONTRIB, S-GATE and S-PENDING appear
+ZERO times (measured 2026-08-24). So the cited authority does not currently carry the
+taxonomy, and until it does, this declaration is the nearest thing to one.
+
 Lead-authored per the cluster-plan gate; one line per CRITICAL id in
 ratification-critical.md. Checker-asserted as the expected/assignment input
 (sweep-check arg 4; default once the dormancy delta lands). Batches per
@@ -347,6 +363,7 @@ observe them. Two tags, introduced here:
 - `S-PENDING` — the only observer is a named future arm; the line records WHICH one, so
   the gap stays a tracked obligation rather than an unassigned id.
 
+SOURCE: docs/migration/evidence/ratification-critical.md blob 84e3a837d43b1f9c84b5e10bc73d19165bc8b142
 CLASSIFIED-BY: ratification-critical.md blob 84e3a837d43b1f9c84b5e10bc73d19165bc8b142
 
 CRIT-ASSIGN: SC-017j | S-GATE | phase-1 gate (8e3c9ec0) inventory criteria + src/inventory.rs candidate tests: union of durable roots and live discovery, archives inert, no basename dedup

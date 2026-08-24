@@ -1,8 +1,13 @@
 # P0 closure evidence map
 
-- contract-head: `abf5155a7a112eda16f8d7c74691e301f11bfd08`
+- contract-head: `abf5155a7a112eda16f8d7c74691e301f11bfd08` (COMMIT — kept for lineage; the
+  checked relation is the blob below, because a commit says where this came from and a
+  blob says whether the thing it maps has moved since)
+
+SOURCE: docs/migration/semantic-contract.md blob 896d08ea3ac753095c04af17dfba92cd9d15fb38
+
 - frozen-baseline: `72c7293` (`72c729343a0117af2968b66e1c43f89ad25fc0b2`)
-- canonical set: SC rows `443`; ownership records `43`; total entries `486`
+- canonical set: SC rows `444`; ownership records `43`; total entries `487`
 - evidence-kind counts: TEST `82`; CENSUS `3`; CENSUS/CODE `23`; CODE `10`; OBSERVED `3`; OBSERVED/CODE `4`; PROBE `361`
 
 AMENDMENT (both seats, 2026-08-20, preflight ae-20260820T111048Z-352d6eea): TEST and
@@ -484,6 +489,7 @@ D30c | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isola
 SC-509b | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures | manipulate=deterministic per C/T-WD design | barriers=frozen inputs, before/after barriers | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted
 SC-509c | OBSERVED | artifact=A3/A3b attention-fields @ba95a5e (null per-agent reason beside non-null session attention, all five reason classes) + root-cause code-read ae:3714 | environment=frozen 72c7293; A3/A3b live topologies | manipulate=none further (seat-read finding) | barriers=n/a | capture=already captured | expected-values=classified by both seats (fix-known-defect #97)
 SC-509d | CODE | artifact=git show 72c7293:ae | heading=ae:4141 schema_version 1; ae:4235,4244,4281,4290 running/stopped literals | recheck=frozen version-1 domain SOURCE-PROVEN; successor version-2 implementation/capture PENDING | expected-values=classified by both seats (fix-known-defect #105); issue is evidence only, never authority
+SC-017s | OBSERVED/CODE | artifact=git show 72c7293:ae + docs/migration/evidence/sc-017s/probe.sh | heading=ae:428-434 (command_is_shell, the predicate) and ae:4201-4206 (the list enumeration, cited as precedent only); probe-run.txt | recheck=frozen list path omits the empty string from its shell set so a failed pane_current_command read yields a positive alive, and has no pane_dead guard; successor has no alive route at all (src/listing.rs:139-151 builds runtime with no agents) | scope=alive ONLY; a shell foreground proves nothing and stays SC-017q unknown; the empty-reading case is a unit assertion because live tmux produced none | expected-values=classified by both seats (fix-known-defect #105); issue is a defect-family label only, never authority
 SC-509e | CODE | artifact=git show 72c7293:ae + git show 92a20ee9:src/digest.rs + git show 92a20ee9:src/session.rs | heading=ae:4053-4065; successor digest.rs:93-105,session.rs:519-533 | recheck=frozen version 1 initializes alive false and changes it only on a positive map hit; successor AgentEntry alive remains bool and missing runtime evidence emits false; both relations SOURCE-PROVEN | scope=successor version-2 true-false-null implementation and capture PENDING; version 1 remains boolean-only | expected-values=classified by both seats (fix-known-defect #105); issue is a defect-family label only, never authority
 SC-518 | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures | manipulate=deterministic per C/T-WD design | barriers=frozen inputs, before/after barriers | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted
 SC-519 | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures | manipulate=deterministic per C/T-WD design | barriers=frozen inputs, before/after barriers | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted

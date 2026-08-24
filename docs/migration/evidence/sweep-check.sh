@@ -2,6 +2,19 @@
 
 # Deterministic, presence-only migration evidence checker.
 #
+# MISSING_FIELDS DISPOSITION (2026-08-24, baseline 458 with SC_ROWS=444).
+#
+# MISSING_FIELDS is a LIVE SCHEMA-COMPLETENESS RESULT, not a registry, and NO
+# FRESHNESS PIN CAN REPAIR IT. It counts contract rows whose bucket/empirical/conflict
+# fields this parser cannot identify — some genuinely absent, some present in a prose
+# or wrapped form the line parser does not recognise (the NOTES at the end of a run say
+# so). Pinning a blob beside it would make a stale number look supervised while the
+# rows stayed exactly as incomplete; that is laundering an open result into a closed
+# one, and it is the reason this note exists instead of a pin.
+#
+# It is recorded here as a BASELINE so a change is visible: 458 at SC_ROWS=444. It is
+# NOT a gate, NOT a target, and NOT owned by the registry-freshness slice.
+#
 # Usage:
 #   sweep-check.sh [semantic-contract] [ownership] [closure-map] [expected-id-set] [assignment-file]
 #
@@ -506,18 +519,34 @@ function trim(value) {
   return value
 }
 
-# The batch names below are ENUMERATED, and an enumeration is caught by the first
-# new member of the set it was written before: S-GATE and S-PENDING are ratified
-# successor observer-provenance tags, and every one of the fifteen lines carrying
-# them read as MALFORMED until they were added here. This is the mechanical
-# now-fix. The class fix — derive the allowed tags from their direct authority
-# instead of restating their names in a checker — is the queued
-# registry-freshness harness slice, not this change.
+# The batch taxonomy is DERIVED FROM THE OWN DECLARATION OF THE ASSIGNMENT FILE, not
+# restated here. A checker carrying a list of names is caught by the first new name:
+# S-GATE and S-PENDING read as malformed the day they landed, because this function
+# was written before them. There is now one place to add a tag, and it is the file
+# whose rows use it.
+#
+# Fail CLOSED and LOUD when no declaration is found: an absent taxonomy must not mean
+# "accept anything", and it must not be silent either.
 function known_assignment_batch(batch) {
-  return batch ~ /^(B0|C|L-END|L-PURGE|L-STOP|L-COMPACT|L-FROM|L-RENTRANS|T-AUTH|T-WD|T-CTRL|T-STORE|H-HELPER|H-DELIVERY|H-ENV|F-CONFIG|F-FORMAT|F-TMUX|F-ADAPTER|F-IDENTITY|F-INSTALL|F-PLATFORM|F-CONTRIB|S-GATE|S-PENDING)$/
+  if (!batch_taxonomy_seen)
+    return 0
+  return (batch in batch_taxonomy)
+}
+
+function parse_batch_taxonomy(line,   rest, parts, n, i) {
+  if (line !~ /^[[:space:]]*BATCH-TAXONOMY:/)
+    return
+  batch_taxonomy_seen = 1
+  rest = line
+  sub(/^[[:space:]]*BATCH-TAXONOMY:[[:space:]]*/, "", rest)
+  n = split(rest, parts, /[[:space:]]+/)
+  for (i = 1; i <= n; i++)
+    if (parts[i] != "")
+      batch_taxonomy[parts[i]] = 1
 }
 
 function parse_crit_assign(line, rest, fields, field_count, id, batch, arm, malformed_reason) {
+  parse_batch_taxonomy(line)
   if (line !~ /^[[:space:]]*CRIT-ASSIGN:/)
     return
   crit_assign_present = 1
