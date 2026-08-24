@@ -217,9 +217,48 @@ pub fn current_world(root: &std::path::Path) -> (liveness::Snapshot, listing::Wo
     // entitlement without a pointer is exactly what SC-017j forbids.
     let taken = inventory::take(scan, None, &transport::Tmux);
     let snapshot = liveness::classify(taken, &transport::Tmux);
+    // Criterion 3 only: the opposed disk must change HERE, on this function's
+    // path, not after it returns. A test that mutates then calls
+    // `Presentation::enter` itself is below the list/ls caller. Compiled out
+    // when `debug_assertions` is off.
+    //
+    // Not precedent for the rejected transport seam. The rejected route-(c)
+    // seam would have created a presentation-only product route supplying a
+    // product fact. This callback schedules a product-valid external change
+    // inside the existing route and can inject nothing — not a snapshot, a
+    // World, a Discovery, or a tmux substitute. It serves a ratified
+    // criterion's mandated arm (C3) and is compiled out when
+    // `debug_assertions` is off. Single-purpose: a new consumer needs a new
+    // ruling.
+    #[cfg(debug_assertions)]
+    AFTER_CLASSIFY.with(|slot| {
+        if let Some(hook) = slot.get() {
+            hook(root);
+        }
+    });
     let world = listing::Presentation::enter(&snapshot)
         .world(time::Timestamp::now(), session::DEFAULT_UNANSWERED_SECS);
     (snapshot, world)
+}
+
+#[cfg(debug_assertions)]
+thread_local! {
+    static AFTER_CLASSIFY: std::cell::Cell<Option<fn(&std::path::Path)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Arm a callback between classification and [`listing::Presentation::enter`].
+///
+/// **Single-purpose.** Criterion 3's opposed-disk plant, and nothing else. A
+/// new consumer requires a new ruling. Not the rejected transport seam: that
+/// route-(c) hook would have created a presentation-only product route
+/// supplying a product fact. This callback schedules a product-valid external
+/// change inside the existing route and can inject nothing. Compiled out when
+/// `debug_assertions` is off. Integration tests cannot see `cfg(test)` on this
+/// crate, which is why the hook is not `cfg(test)`.
+#[cfg(debug_assertions)]
+pub fn set_after_classify_hook(hook: Option<fn(&std::path::Path)>) {
+    AFTER_CLASSIFY.with(|slot| slot.set(hook));
 }
 
 /// Run the CLI against `args` over `world` — the injected session source.

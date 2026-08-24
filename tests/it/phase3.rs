@@ -2,7 +2,7 @@
 //! a consumer sees out.
 //!
 //! Gate: `docs/migration/p1-phase3-gate.md`, blob
-//! `49c20d9ad5d8d2e131c41cbc04f91e9d086d3da2` — fifteen criteria. Each test
+//! `8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c` — fifteen criteria. Each test
 //! names the one it answers.
 //!
 //! # The reference snapshot
@@ -29,12 +29,14 @@ use std::fmt::Write as _;
 
 use ae::attention::Reason;
 use ae::digest::{AgentEntry, SessionEntry, Status};
-use ae::filters::ListArgs;
-use ae::inventory::FailedSource;
+use ae::filters::{DEFAULT_ACTIVE_WINDOW_SECS, ListArgs};
+use ae::inventory::{FailedSource, Roots, durable_records};
 use ae::json;
 use ae::listing::{World, diagnostic, render};
+use ae::meta::Meta;
+use ae::session::{DEFAULT_UNANSWERED_SECS, SessionRead, SessionRuntime, entry_for};
 use ae::time::Timestamp;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::parity::Invocation;
 use super::parity::capture::ExitOutcome;
@@ -299,6 +301,48 @@ fn json_rows(text: &str) -> Vec<(String, String)> {
 
 fn names(rows: &[(String, String)]) -> Vec<String> {
     rows.iter().map(|(name, _)| name.clone()).collect()
+}
+
+fn parse_json(text: &str) -> json::Value {
+    match json::parse(text.trim_end()) {
+        Ok(document) => document,
+        Err(why) => panic!("one complete document: {why:?}"),
+    }
+}
+
+/// Object field order is an open choice; arrays stay order-sensitive.
+fn json_members_match(left: &json::Value, right: &json::Value) -> bool {
+    match (left, right) {
+        (json::Value::Obj(left), json::Value::Obj(right)) => {
+            left.len() == right.len()
+                && left.iter().all(|(key, value)| {
+                    right.iter().any(|(other_key, other_value)| {
+                        other_key == key && json_members_match(value, other_value)
+                    })
+                })
+        }
+        (json::Value::Arr(left), json::Value::Arr(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| json_members_match(left, right))
+        }
+        (left, right) => left == right,
+    }
+}
+
+fn without_key(value: &json::Value, key: &str) -> json::Value {
+    match value {
+        json::Value::Obj(fields) => json::Value::Obj(
+            fields
+                .iter()
+                .filter(|(name, _)| name != key)
+                .cloned()
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 /// Every view the phase-3 criteria exercise, as flag lists WITHOUT `--json`.
@@ -642,7 +686,12 @@ fn criterion_12_every_human_view_warns_with_the_distinct_source_count() {
         for spelling in ["list", "ls"] {
             for flags in every_human_view() {
                 let (stdout, stderr, code) = invoke_over(spelling, &flags, Some(&world));
-                assert_eq!(code, 0, "{spelling} {flags:?}");
+                // Per-surface (gate blob 8cccbe44): incomplete-human rc is
+                // open; this loop is human-only. Pin rc only on the complete
+                // control.
+                if expected.is_none() {
+                    assert_eq!(code, 0, "{spelling} {flags:?}");
+                }
                 match expected {
                     None => assert!(
                         stderr.is_empty(),
@@ -795,11 +844,23 @@ fn criterion_14_flipping_completeness_changes_only_the_warning_and_the_boolean()
         );
         let mut json_flags = flags.clone();
         json_flags.push("--json");
-        let one = render(&args(&json_flags), &complete);
-        let other = render(&args(&json_flags), &incomplete);
+        let one = parse_json(&render(&args(&json_flags), &complete));
+        let other = parse_json(&render(&args(&json_flags), &incomplete));
         assert_eq!(
-            one.replace(r#""inventory_complete":true"#, "X"),
-            other.replace(r#""inventory_complete":false"#, "X"),
+            one.get("inventory_complete"),
+            Some(&json::Value::Bool(true)),
+            "{flags:?}"
+        );
+        assert_eq!(
+            other.get("inventory_complete"),
+            Some(&json::Value::Bool(false)),
+            "{flags:?}"
+        );
+        assert!(
+            json_members_match(
+                &without_key(&one, "inventory_complete"),
+                &without_key(&other, "inventory_complete"),
+            ),
             "{flags:?}: the ONLY difference in the document is the boolean"
         );
     }
@@ -828,12 +889,18 @@ fn criterion_15_this_suite_asserts_no_unratified_presentation_choice() {
         // Layout, colour and width are open choices.
         concat!("col", "umn_width"),
         concat!("\\u{1b}", "["),
-        // Diagnostic wording and exit status are open choices; the COUNT is not,
-        // and `contains(&count.to_string())` is how this file checks it.
+        // Incomplete-human diagnostic wording is an open choice (criterion 12);
+        // the COUNT is not, and `contains(&count.to_string())` is how this
+        // file checks it. Per-surface (gate blob 8cccbe44): incomplete-human
+        // rc is open, JSON process rc is retained. The grep does not forbid
+        // `assert_eq!(code, 0)` because JSON legs must keep that shape; it
+        // requires the retained-JSON phrase below so a wholesale drop fails.
         concat!("warning: inv", "entory incomplete"),
         // JSON object field order is an open choice: nothing may compare a
-        // whole rendered object to a literal.
+        // whole rendered object to a literal, or treat compact `"k":v` order
+        // as the document.
         concat!("\"name\":\"Alpha", "R\",\"status\""),
+        concat!("inventory_complete\":", "true"),
     ] {
         assert!(
             !code.contains(forbidden),
@@ -844,6 +911,10 @@ fn criterion_15_this_suite_asserts_no_unratified_presentation_choice() {
     assert!(
         !code.contains(concat!("assert_eq!(", "render(")),
         "no test compares a human rendering to expected bytes"
+    );
+    assert!(
+        code.contains("JSON process rc is retained"),
+        "criterion 15 retains JSON process rc — dropping every rc pin is too wide"
     );
 }
 
@@ -969,86 +1040,531 @@ impl ae::inventory::Discovery for Down {
     }
 }
 
-// ---- criterion 3: a renderer presents facts, it never re-derives them ---
+// ---- criterion 3: presentation output does not re-derive any planted snapshot fact ---
+//
+// Live gate blob 8cccbe44: one fixed snapshot, two opposed external worlds AFTER
+// `presentation enter`, through the real `ae::current_world` → `Presentation::enter`
+// → `list`/`ls` route. An injected `World` never observed those bytes, so a
+// re-derivation on the real path was invisible.
 
-#[test]
-fn criterion_3_the_output_is_a_function_of_the_snapshot_and_nothing_else() {
-    // WHAT THIS MEASURES, AND WHAT IT DOES NOT. It moves the filesystem
-    // underneath a fixed snapshot and requires the output not to move. That
-    // catches a re-derivation whose result REACHES the output — and nothing
-    // else. A read whose result is discarded changes no byte and is invisible
-    // here, which is exactly what colead demonstrated against an earlier version
-    // of this test.
-    //
-    // The CAPABILITY is closed by
-    // `criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones`,
-    // which asks the compiler instead of the output. This arm is the behavioural
-    // half, and it claims only its half.
-    let root = std::env::temp_dir().join(format!("ae-p3-{}", std::process::id()));
+/// One row's planted external facts. Attention and activity ride the event
+/// stream; goal and mode ride the durable `meta`.
+#[derive(Clone, Copy)]
+struct ExternalFacts {
+    name: &'static str,
+    attention: bool,
+    active: bool,
+    goal: &'static str,
+    mode: &'static str,
+}
+
+/// World A: four independent fact pairs, C-order names, canonical layout.
+const WORLD_A: [ExternalFacts; 4] = [
+    ExternalFacts {
+        name: "AlphaR",
+        attention: true,
+        active: true,
+        goal: "alpha-a",
+        mode: "local",
+    },
+    ExternalFacts {
+        name: "ZetaR",
+        attention: false,
+        active: true,
+        goal: "zeta-a",
+        mode: "local",
+    },
+    ExternalFacts {
+        name: "alpha10R",
+        attention: true,
+        active: false,
+        goal: "ten-a",
+        mode: "local",
+    },
+    ExternalFacts {
+        name: "alpha9R",
+        attention: false,
+        active: false,
+        goal: "nine-a",
+        mode: "local",
+    },
+];
+
+/// World B: every planted fact opposed, same identities.
+const WORLD_B: [ExternalFacts; 4] = [
+    ExternalFacts {
+        name: "AlphaR",
+        attention: false,
+        active: false,
+        goal: "alpha-b",
+        mode: "copy",
+    },
+    ExternalFacts {
+        name: "ZetaR",
+        attention: true,
+        active: false,
+        goal: "zeta-b",
+        mode: "copy",
+    },
+    ExternalFacts {
+        name: "alpha10R",
+        attention: false,
+        active: true,
+        goal: "ten-b",
+        mode: "copy",
+    },
+    ExternalFacts {
+        name: "alpha9R",
+        attention: true,
+        active: true,
+        goal: "nine-b",
+        mode: "copy",
+    },
+];
+
+/// Extra identities planted AFTER enter so a re-walk changes durable order.
+const ORDER_EXTRAS: [&str; 2] = ["AAA", "zzz"];
+
+fn c3_root(tag: &str) -> PathBuf {
+    let root = PathBuf::from(format!("/tmp/ae-p3-c3-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    let reference = Reference::new(Supply::Creation);
-    let world = reference.world();
-
-    let render_all = || -> Vec<(Vec<String>, String)> {
-        every_human_view()
-            .into_iter()
-            .map(|flags| {
-                let (stdout, stderr, _) = invoke_over("list", &flags, Some(&world));
-                (names(&human_rows(&stdout)), stderr)
-            })
-            .collect()
-    };
-    let before = render_all();
-
-    // A world on disk that contradicts every planted row.
     assert!(
         std::fs::create_dir_all(root.join("sessions")).is_ok(),
-        "an opposed world on disk"
+        "a scratch state root"
     );
-    for row in &reference.manifest {
-        let dir = root.join("sessions").join(&row.name);
-        let written = std::fs::create_dir_all(&dir).and_then(|()| {
-            std::fs::write(
-                dir.join("meta"),
-                "mode=copy\nagent.main=cl:other\ngoal=the opposite\n",
-            )
-        });
-        assert!(written.is_ok(), "an opposed record");
-    }
-    let after = render_all();
-    let _ = std::fs::remove_dir_all(&root);
+    root
+}
 
-    assert_eq!(
-        before, after,
-        "an external fact reached the presentation, so something re-derived it"
+fn event_line(offset: i64, action: &str, extra: &str) -> String {
+    format!(
+        r#"{{"ts":"{}","actor":"cl:lead","action":"{action}"{extra}}}"#,
+        Timestamp::from_epoch(NOW.epoch() + offset)
+    )
+}
+
+fn write_session(dir: &Path, facts: ExternalFacts) {
+    assert!(
+        std::fs::create_dir_all(dir).is_ok(),
+        "session dir {}",
+        facts.name
     );
+    let meta = format!(
+        "mode={}\nagent.main=cl:lead\ngoal={}\n",
+        facts.mode, facts.goal
+    );
+    assert!(
+        std::fs::write(dir.join("meta"), meta).is_ok(),
+        "meta {}",
+        facts.name
+    );
+    // Recent events sit well inside the 300s activity window of NOW and NOW+1.
+    // Old events sit far outside it, so the opposed clock cannot flip --active.
+    let events = match (facts.attention, facts.active) {
+        (true, true) => format!("{}\n", event_line(-10, "state", r#","ref":"blocked""#)),
+        (false, true) => format!("{}\n", event_line(-10, "done", "")),
+        (true, false) => format!("{}\n", event_line(-10_000, "state", r#","ref":"blocked""#)),
+        (false, false) => String::new(),
+    };
+    if events.is_empty() {
+        let _ = std::fs::remove_file(dir.join("events.jsonl"));
+    } else {
+        assert!(
+            std::fs::write(dir.join("events.jsonl"), events).is_ok(),
+            "events {}",
+            facts.name
+        );
+    }
+}
+
+fn plant(root: &Path, world: &[ExternalFacts]) {
+    for facts in world {
+        write_session(&root.join("sessions").join(facts.name), *facts);
+    }
+}
+
+fn record_paths(snapshot: &ae::liveness::Snapshot) -> Vec<PathBuf> {
+    snapshot
+        .sessions
+        .iter()
+        .map(|classified| {
+            classified.candidate.durable.as_ref().map_or_else(
+                || {
+                    panic!(
+                        "{} has no durable path the product observed",
+                        classified.candidate.name
+                    )
+                },
+                |record| record.path.clone(),
+            )
+        })
+        .collect()
+}
+
+fn durable_names(root: &Path) -> Vec<String> {
+    durable_records(&Roots::under(root))
+        .records
+        .into_iter()
+        .map(|record| record.name)
+        .collect()
+}
+
+/// Prove the planted facts through the primitives that originally supplied them.
+fn assert_facts_via_product(paths: &[PathBuf], world: &[ExternalFacts]) {
+    let runtime = SessionRuntime::new(Status::Unknown);
+    for facts in world {
+        let dir = paths
+            .iter()
+            .find(|path| path.file_name().is_some_and(|name| name == facts.name))
+            .unwrap_or_else(|| panic!("the product never observed {}", facts.name));
+
+        // (a) event/attention bytes — `SessionRead::open` is the event-store
+        // primitive; `entry_for` is how those bytes become listing facts.
+        let events = SessionRead::open(dir);
+        if facts.active || facts.attention {
+            assert!(
+                events.as_ref().is_ok_and(|read| !read.events.is_empty()),
+                "{}: event bytes must be readable through SessionRead::open",
+                facts.name
+            );
+        }
+        let entry = entry_for(dir, facts.name, &runtime, NOW, DEFAULT_UNANSWERED_SECS);
+        assert_eq!(
+            entry.needs_attention(),
+            facts.attention,
+            "{}: attention through entry_for",
+            facts.name
+        );
+        let active = entry.last_active_epoch.is_some_and(|epoch| {
+            Timestamp::from_epoch(epoch).seconds_until(NOW) <= DEFAULT_ACTIVE_WINDOW_SECS
+        });
+        assert_eq!(
+            active, facts.active,
+            "{}: activity through entry_for",
+            facts.name
+        );
+
+        // (b) durable session bytes — `Meta::read` is the meta primitive.
+        let meta = match Meta::read(dir) {
+            Ok(meta) => meta,
+            Err(why) => panic!("{}: Meta::read: {why}", facts.name),
+        };
+        assert_eq!(
+            meta.goal(),
+            Some(facts.goal),
+            "{}: goal through Meta::read",
+            facts.name
+        );
+        assert_eq!(
+            meta.mode(),
+            Some(facts.mode),
+            "{}: mode through Meta::read",
+            facts.name
+        );
+        assert_eq!(
+            entry.goal.as_deref(),
+            Some(facts.goal),
+            "{}: goal through entry_for",
+            facts.name
+        );
+        assert_eq!(
+            entry.mode.as_deref(),
+            Some(facts.mode),
+            "{}: mode through entry_for",
+            facts.name
+        );
+    }
+}
+
+/// Identity + status per view, human and JSON. Filtering membership and order
+/// live in the row sequence; durable fields ride the JSON payload below.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PresentedView {
+    label: String,
+    human: Vec<(String, String)>,
+    machine: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlantedPayload {
+    name: String,
+    needs_attention: bool,
+    last_active_epoch: Option<i64>,
+    goal: Option<String>,
+    mode: Option<String>,
+}
+
+impl PlantedPayload {
+    fn recently_active(&self) -> bool {
+        self.last_active_epoch.is_some_and(|epoch| {
+            Timestamp::from_epoch(epoch).seconds_until(NOW) <= DEFAULT_ACTIVE_WINDOW_SECS
+        })
+    }
+}
+
+fn presented(world: &World) -> Vec<PresentedView> {
+    let mut out = Vec::new();
+    for spelling in ["list", "ls"] {
+        for flags in every_human_view() {
+            // Per-surface (gate blob 8cccbe44): human rc unpinned; JSON
+            // process rc is retained.
+            let (human, _, _) = invoke_over(spelling, &flags, Some(world));
+            let mut json_flags = flags.clone();
+            json_flags.push("--json");
+            let (machine, _, json_code) = invoke_over(spelling, &json_flags, Some(world));
+            assert_eq!(
+                json_code, 0,
+                "{spelling} {json_flags:?}: JSON process rc is retained"
+            );
+            out.push(PresentedView {
+                label: format!("{spelling} {flags:?}"),
+                human: human_rows(&human),
+                machine: json_rows(&machine),
+            });
+        }
+    }
+    out
+}
+
+fn planted_payload(world: &World) -> Vec<PlantedPayload> {
+    let (text, _, _) = invoke_over("list", &["--all", "--json"], Some(world));
+    let document = match json::parse(text.trim_end()) {
+        Ok(document) => document,
+        Err(why) => panic!("one document: {why:?}"),
+    };
+    let Some(json::Value::Arr(entries)) = document.get("sessions") else {
+        panic!("sessions must be an array");
+    };
+    entries
+        .iter()
+        .map(|entry| PlantedPayload {
+            name: entry.get_str("name").unwrap_or_default().to_owned(),
+            needs_attention: entry.get("needs_attention") == Some(&json::Value::Bool(true)),
+            last_active_epoch: match entry.get("last_active_epoch") {
+                Some(json::Value::Num(epoch)) => Some(*epoch),
+                _ => None,
+            },
+            goal: entry.get_str("goal").map(ToOwned::to_owned),
+            mode: entry.get_str("mode").map(ToOwned::to_owned),
+        })
+        .collect()
+}
+
+fn project(snapshot: &ae::liveness::Snapshot, now: Timestamp) -> World {
+    ae::listing::Presentation::enter(snapshot).world(now, DEFAULT_UNANSWERED_SECS)
+}
+
+/// Oppose every planted axis under `root`. Called from the after-classify hook
+/// so the disk changes on `current_world`'s path, not after it returns.
+fn oppose_external_world(root: &Path) {
+    for facts in WORLD_B {
+        write_session(&root.join("sessions").join(facts.name), facts);
+    }
+    for name in ORDER_EXTRAS {
+        write_session(
+            &root.join("sessions").join(name),
+            ExternalFacts {
+                name,
+                attention: false,
+                active: false,
+                goal: "extra",
+                mode: "local",
+            },
+        );
+    }
+}
+
+struct AfterClassifyHook;
+
+impl AfterClassifyHook {
+    fn arm() -> Self {
+        ae::set_after_classify_hook(Some(oppose_external_world));
+        Self
+    }
+}
+
+impl Drop for AfterClassifyHook {
+    fn drop(&mut self) {
+        ae::set_after_classify_hook(None);
+    }
+}
+
+fn snapshot_names(snapshot: &ae::liveness::Snapshot) -> Vec<String> {
+    snapshot
+        .sessions
+        .iter()
+        .map(|classified| classified.candidate.name.clone())
+        .collect()
 }
 
 #[test]
-fn criterion_3_the_output_differential_fires_when_a_fact_actually_changes() {
-    // CALIBRATION for the arm above, and calibrated for what that arm can see:
-    // a change that REACHES the output. It does not calibrate an access
-    // recorder, because that arm has none — the compiler probe is the recorder,
-    // and its own non-vacuity check is inside it.
-    let reference = Reference::new(Supply::Creation);
-    let world = reference.world();
-    let (stdout, _, _) = invoke_over("list", &[], Some(&world));
-    let baseline = names(&human_rows(&stdout));
+fn criterion_3_presentation_output_does_not_rederive_any_planted_snapshot_fact() {
+    // THE REAL ROUTE is `current_world`: classify, then Presentation::enter.
+    // Mutating the disk AFTER that function returns and calling enter on the
+    // carried snapshot is below the list/ls caller — a reread between classify
+    // and enter is invisible. The opposed world is planted by a hook that
+    // `current_world` itself runs in that window.
+    let root = c3_root("fixed");
+    plant(&root, &WORLD_A);
 
-    let mut leaked = world.sessions.clone();
-    if let Some(first) = leaked
-        .iter_mut()
-        .find(|entry| entry.status == Status::Unknown)
-    {
-        first.status = Status::Stopped;
+    let (snapshot_a, world_a) = ae::current_world(&root);
+    let paths = record_paths(&snapshot_a);
+    assert_eq!(paths.len(), 4, "the fixture reached the real route");
+    assert_facts_via_product(&paths, &WORLD_A);
+    let order_a = durable_names(&root);
+    assert_eq!(
+        order_a,
+        ["AlphaR", "ZetaR", "alpha10R", "alpha9R"],
+        "canonical path order is the product's durable-records primitive"
+    );
+
+    let before = presented(&world_a);
+    let payload_a = planted_payload(&world_a);
+    let names_a = snapshot_names(&snapshot_a);
+
+    let (snapshot_b, world_b) = {
+        let _hook = AfterClassifyHook::arm();
+        ae::current_world(&root)
+    };
+
+    assert_eq!(
+        snapshot_names(&snapshot_b),
+        names_a,
+        "classification ran on world A; extras must not be in the fixed snapshot"
+    );
+    assert_facts_via_product(&paths, &WORLD_B);
+    let order_b = durable_names(&root);
+    assert_ne!(
+        order_a, order_b,
+        "durable traversal order must actually change, through durable_records"
+    );
+    assert!(
+        order_b.first().is_some_and(|name| name == "AAA")
+            && order_b.last().is_some_and(|name| name == "zzz"),
+        "the extras bookend the walk: {order_b:?}"
+    );
+
+    let after = presented(&world_b);
+    let payload_b = planted_payload(&world_b);
+    assert_eq!(
+        before, after,
+        "an opposed external fact reached the presentation of a fixed snapshot"
+    );
+    assert_eq!(
+        payload_a, payload_b,
+        "durable goal/mode/attention/activity bytes reached the JSON surface"
+    );
+
+    // Opposed clock. NOW is even; NOW+1 is odd. Both keep every active row
+    // inside the 300s window and every inactive row outside it. Clock is a
+    // world() parameter after enter, so this arm re-projects the SAME snapshot.
+    let clock_base = presented(&project(&snapshot_b, NOW));
+    let world_clock = project(&snapshot_b, Timestamp::from_epoch(NOW.epoch() + 1));
+    assert_eq!(
+        presented(&world_clock),
+        clock_base,
+        "an opposed clock changed selection, status, filtering or order"
+    );
+    assert_eq!(
+        planted_payload(&world_clock),
+        payload_a,
+        "an opposed clock rewrote planted payload fields"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn criterion_3_a_new_listing_through_the_real_route_sees_every_opposed_axis() {
+    // CALIBRATION. The arm above is a non-difference. A non-difference is
+    // vacuous unless a NEW listing on the same real route, after the same
+    // opposed plant, actually moves — per axis, through the primitives that
+    // supplied the facts. If this fails, the main arm's agreement proves nothing.
+    let root = c3_root("fresh");
+    plant(&root, &WORLD_A);
+    let (snapshot_a, world_a) = ae::current_world(&root);
+    let paths = record_paths(&snapshot_a);
+    let before = presented(&world_a);
+    let payload_a = planted_payload(&world_a);
+    let attn_a: Vec<String> = payload_a
+        .iter()
+        .filter(|row| row.needs_attention)
+        .map(|row| row.name.clone())
+        .collect();
+    let active_a: Vec<String> = payload_a
+        .iter()
+        .filter(|row| row.recently_active())
+        .map(|row| row.name.clone())
+        .collect();
+    let goals_a: Vec<Option<String>> = payload_a.iter().map(|row| row.goal.clone()).collect();
+    let order_a = durable_names(&root);
+
+    for facts in WORLD_B {
+        let dir = paths
+            .iter()
+            .find(|path| path.file_name().is_some_and(|name| name == facts.name))
+            .unwrap_or_else(|| panic!("no observed path for {}", facts.name));
+        write_session(dir, facts);
     }
-    let (leaked_stdout, _, _) = invoke_over("list", &[], Some(&World::new(NOW, leaked)));
+    for name in ORDER_EXTRAS {
+        write_session(
+            &root.join("sessions").join(name),
+            ExternalFacts {
+                name,
+                attention: false,
+                active: false,
+                goal: "extra",
+                mode: "local",
+            },
+        );
+    }
+
+    let (snapshot_b, world_b) = ae::current_world(&root);
+    let after = presented(&world_b);
+    let payload_b = planted_payload(&world_b);
+    let attn_b: Vec<String> = payload_b
+        .iter()
+        .filter(|row| row.needs_attention)
+        .map(|row| row.name.clone())
+        .collect();
+    let active_b: Vec<String> = payload_b
+        .iter()
+        .filter(|row| row.recently_active())
+        .map(|row| row.name.clone())
+        .collect();
+    let goals_b: Vec<Option<String>> = payload_b.iter().map(|row| row.goal.clone()).collect();
+    let order_b = durable_names(&root);
+    let names_b: Vec<String> = snapshot_b
+        .sessions
+        .iter()
+        .map(|classified| classified.candidate.name.clone())
+        .collect();
 
     assert_ne!(
-        baseline,
-        names(&human_rows(&leaked_stdout)),
-        "the differential cannot see a changed fact, so its non-difference proves nothing"
+        attn_a, attn_b,
+        "(a) attention: a new listing must see the flipped event facts"
     );
+    assert_ne!(
+        active_a, active_b,
+        "(a) activity: a new listing must see the flipped event facts"
+    );
+    assert_ne!(
+        goals_a, goals_b,
+        "(b) durable bytes: a new listing must see the flipped meta"
+    );
+    assert_ne!(
+        order_a, order_b,
+        "(c) durable order: durable_records must see the extras"
+    );
+    assert!(
+        names_b.iter().any(|name| name == "AAA") && names_b.iter().any(|name| name == "zzz"),
+        "(c) current_world must observe the extras: {names_b:?}"
+    );
+    assert_ne!(
+        before, after,
+        "the differential cannot see a changed fact, so the main arm's non-difference proves nothing"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 // ---- criterion 10: the locale arm, with a demonstrated control ----------
@@ -1234,10 +1750,9 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
     // reading them as covering the enumeration is what let an earlier version of
     // this file call a name list a boundary.
     //
-    // What actually bounds re-derivation is
-    // `criterion_3_presentation_cannot_address_ae_s_own_state` below: with no
-    // root and no record path in its input, presentation has nothing to open.
-    // This test is the cheap early warning for the eleven, and claims only them.
+    // The live criterion 3 residual is explicit: a source-name inventory is NOT
+    // a capability boundary and makes no zero-access claim. This test stays as
+    // the cheap early warning for the eleven named doors, and claims only them.
     let sites = world_reading_sites();
     assert!(
         !sites.is_empty(),
@@ -1279,9 +1794,8 @@ fn the_presentation_input_declares_no_path_typed_field() {
     // the session name. `work_dir` is payload contractually and an address
     // operationally, and no scan of field TYPES can see that.
     //
-    // So this is a narrow structural fact, not a boundary. Criterion 3's
-    // zero-access obligation is NOT met by it; see the report accompanying this
-    // change for what instrument would meet it.
+    // So this is a narrow structural fact, not a boundary. Live criterion 3
+    // does not claim zero post-boundary access; this test does not pretend to.
     let module = product_module("listing.rs");
     let world = module
         .split_once("pub struct World {")
