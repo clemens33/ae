@@ -2883,6 +2883,38 @@ the merits and only the mechanism needed changing. *Acting inside a reservation*
 the wrong answer* are different failures and warrant different responses; conflating them
 teaches people to defend their reasoning instead of respecting the hold.
 
+### A discovery that changes a ratified row must GRADUATE into an assertion — or the row rests on a note
+
+A probe observing real tmux panes noticed something its author had not gone looking for: an
+exited pane still reports a plausible foreground command. That discovery was strong enough to
+change a **ratified contract row** — the live predicate gained a `pane_dead` conjunct.
+
+Then the probe shipped with the discovery as a `note()` line. Nothing asserted it. The
+predicate under test read only the command field, so a `pane_dead=1` row read as alive, the
+probe passed, and the README **cited that pass as proof of the very conjunct nothing was
+checking.** The strongest finding in the run was the one assertion never written — and its
+absence was invisible because everything around it was green.
+
+The mechanism: **discovery and assertion are different artifacts, and the pipeline from one
+to the other has no natural forcing step.** A discovery lands in prose (a note, a comment, a
+README sentence, a contract amendment) because that is where observations go. An assertion
+has to be *written*, and by the time the row is amended the author's attention has moved to
+the row — the probe already "found" the fact, so re-instrumenting it feels redundant. It is
+the expertise trap one door down: the fact is so established in the author's head that a line
+*mentioning* it reads as a line *checking* it.
+
+The rule: **when an observation changes a contract, the observation's instrument changes in
+the same commit** — the noticed fact becomes an asserted precondition or a verdict arm, and
+the red-proof includes the pre-discovery predicate failing against it. A row amended on
+evidence whose instrument still cannot see that evidence is a row resting on a memory.
+
+Companion repair from the same incident, worth copying: the probe now exits **2 for FIXTURE
+ABORT** and **1 for PRODUCT FAIL**, because three consecutive versions were broken in the
+fixture rather than the subject, each presenting as a confident verdict about the subject. An
+instrument that cannot say "I am broken" says "the subject is" instead — give the fixture its
+own exit code, assert every precondition before reading any verdict, and have the red-proof
+harness refuse to run (SEED DID NOT LAND) when the defect it injects is already what is live.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
