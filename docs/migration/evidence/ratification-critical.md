@@ -3,7 +3,7 @@
 Derived mechanically from the canonical set reported by sweep-check.sh; letters are criteria only.
 
 - Canonical IDs — **NOT OWNED BY THIS FILE'S GATE**: these are `sweep-check.sh`'s output, reported here for convenience and verified there. They were stale when measured (SC=427/D=43/total=470 against a fixed input of 444/43/487), which is exactly why an unverified derived fact does not belong beside a verified one. Run `sweep-check.sh` for the current values.
-- Class counts (mechanically regenerated 2026-08-20 post slice-1d + SC-021 (ls-alias row, s2 Q4): SC-510e/f event-format heads + SC-021 added; earlier folds retained; SC-012b bare-invocation residue added 2026-08-20 per seat ruling ae-20260820T165746Z-fb9c4fb6, CRITICAL(A) in-class with SC-013/SC-014; SC-509c reason-null defect row added per ba95a5e seat read, CRITICAL(B) in-class with SC-1106; D01/D02/SC-509c flipped to OBSERVED on the ba95a5e closure — evidence + both-seat transcription, second-gate ruling): see the machine-checked `class_counts` record below
+- Class counts (mechanically regenerated 2026-08-20 post slice-1d + SC-021 (ls-alias row, s2 Q4): SC-510e/f event-format heads + SC-021 added; earlier folds retained; SC-012b bare-invocation residue added 2026-08-20 per seat ruling ae-20260820T165746Z-fb9c4fb6, CRITICAL(A) in-class with SC-013/SC-014; SC-509c reason-null defect row added per ba95a5e seat read, CRITICAL(B) in-class with SC-1106; D01/D02/SC-509c flipped to OBSERVED on the ba95a5e closure — evidence + both-seat transcription, second-gate ruling; SC-518a closure-ordering row added 2026-08-24 per joint ruling, CRITICAL(C,D) IN-CLASS WITH SC-518 — C is the P1 requests fixture dependency, D is the status/summary/order output boundary — following the SC-012b precedent that a new row takes the class of the row it splits from): see the machine-checked `class_counts` record below
 - D24 remains critical/non-observed pending its negative-evidence pointer. The former projected post-landing counts are REMOVED: nothing verified them and they were stale (322/45 against present arithmetic). A projection that no gate owns reads as a fact and ages like one.
 - Outstanding critical observations: see `class_counts` below — the number is the CRITICAL count and is machine-checked there rather than restated here, because a restated count is a second place to go stale. Clusters build only from the CRIT-ASSIGN table.
 
@@ -476,6 +476,7 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-509b — CRITICAL(C,D)
 - SC-509c — OBSERVED (ba95a5e A3/A3b attention-fields + ae:3714 root cause; classified both seats, #97)
 - SC-518 — CRITICAL(C,D)
+- SC-518a — CRITICAL(C,D)
 - SC-519 — CRITICAL(C)
 - SC-520 — CRITICAL(C,D)
 - SC-521a — CRITICAL(C)
@@ -506,9 +507,9 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 ## Freshness — this file is ABOUT a contract, and now says which one
 
 ```
-contract_blob: 896d08ea3ac753095c04af17dfba92cd9d15fb38
-class_counts: CRITICAL=341 DEFERRABLE=103 OBSERVED=43
-letter_counts: A=123 B=50 C=74 D=205
+contract_blob: ffaf10614e6790c371de92dc93b8d936358d2147
+class_counts: CRITICAL=342 DEFERRABLE=103 OBSERVED=43
+letter_counts: A=123 B=50 C=75 D=206
 ```
 
 Every key above is required EXACTLY ONCE and is compared against the entries. The previous
