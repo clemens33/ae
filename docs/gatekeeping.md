@@ -3157,6 +3157,21 @@ WHICHEVER way the seats rule, and thereby made the open question loud instead of
 settled. That is the template: when you must test near an open question, make the open
 question the thing that fails, not one of its answers.
 
+**Two completions from the same builder's later work, both earned the hard way.** First:
+neutrality is MEASURED, never labelled or reasoned. The builder twice believed a test was
+neutral — once by calling it "conditional," once by asserting an equality that "named no
+winner" — and the second was the subtler trap: *arrival-order independence is itself a
+precedence law* (resolve-by-kind rather than resolve-by-recency), so an assertion that two
+orders agree forbids every policy under which they legitimately differ. Naming no winner is
+not the same as forbidding none. The operational test: **enumerate the unruled policy
+dimensions and flip each one — the gate must stay green under every candidate answer** (here:
+three authorization policies × two precedence policies, five flips, all green), with the
+ruled red-proof retained so neutrality is not achieved by deleting coverage. Second, for
+verifying the edit that moves such tests: **diff the result against an artifact you
+published before making the change** — a name set already sent to a reviewer is a baseline
+your memory cannot quietly revise, and it caught a backwards anchor-slice that duplicated
+19KB where the compiler only caught the illegal half of what could have gone wrong.
+
 ### A fact that must be UPDATED to stay true does not belong beside a fact that is CHECKED
 
 One afternoon produced three instances of a single design rule, each starting as a helpful
