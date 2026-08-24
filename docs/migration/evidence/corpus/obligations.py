@@ -603,13 +603,13 @@ def dynamic_subject(case, consumers):
 # captured scale runs the OTHER WAY: 1=unanswered rising to 6=dead, with 0 for no
 # attention. Reading the sentence as the numbering gives blocked=4; the bytes say
 # 3, across every P1 digest that carries an attention.
-# THE BELOW-THRESHOLD LETTER IS RULED (colead option b: present as false/null/0,
-# never omitted) BUT NOT YET PINNED. A ruling in a message is not the source of
-# truth; the contract blob is, and reason2's SC-509/SC-017g amendment has not
-# landed. Encoding it from the message would be the provenance shortcut this table
-# refuses everywhere else, so the letter stays SYMBOLIC until the amended contract
-# is the pin — then one string in each file resolves and the table re-derives
-# against that identity.
+# THE BELOW-THRESHOLD LETTER IS RULED — false/null/0, present, never omitted — and
+# the amendment that would pin it (b5368a27, blob 8c7c9e5d) has been RETURNED for one
+# class-wide SC-509 presence precision, so the contract identity will move again. A
+# ruling in a message is not the pin and neither is a returned amendment, so the
+# letter stays symbolic through one more contract move. The successor half IS landed
+# (src/digest.rs:299-309 emits Value::Null and Num(0) for a non-degraded quiet entry;
+# omission survives only under `degraded`), so nothing here waits on product behaviour.
 BELOW_LETTER = "<ruled false/null/0, pending the amended contract blob>"
 ATTN_RANK = {"unanswered": 1, "throttled": 2, "blocked": 3,
              "waiting-user": 4, "stale": 5, "dead": 6}

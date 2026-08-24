@@ -11,6 +11,7 @@ Neutral must pass; each seeded mutation must be CAUGHT BY ITS OWN NAMED CHECK, w
 the seed diffed first. A seed that does not land is an INVALID TEST, not a pass — a
 mutation of an absent phrase produces silence indistinguishable from a working check.
 """
+import json
 import difflib, os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -278,6 +279,89 @@ CONTROLS = [
 ]
 
 
+def family_set_guard():
+    """SEED 51, and it is a seed rather than a note BECAUSE a guard whose red-proof
+    lives only in a report regresses silently.
+
+    FAMILY-SET asserts that every declared owed-multiset comparison actually RAN.
+    It exists because an unbounded text slice of mine once removed a comparison
+    block and the verifier then reported VERIFIED — a green verdict for checks that
+    no longer existed. It cannot be seeded through --obl/--fresh/--inv, because the
+    subject is the VERIFIER's own call graph rather than any data file, so it is
+    exercised here against the shipped module: declare a family nothing runs, and
+    require rc=1.
+    """
+    import importlib.util as iu
+    import io
+    import contextlib
+    spec = iu.spec_from_file_location("g", os.path.join(HERE, "verify-obligations.py"))
+    g = iu.module_from_spec(spec)
+    spec.loader.exec_module(g)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc_clean, ids_clean = g.main(quiet=True)
+    g._families_seen = set(g._families_seen)
+    g.EXPECTED_FAMILIES = g.EXPECTED_FAMILIES | {"a-family-nobody-runs"}
+    with contextlib.redirect_stdout(buf):
+        rc_seeded, ids = g.main(quiet=True)
+    # The claim is that a declared-but-unrun family FAILS — not that the table is
+    # fresh. Requiring rc_clean == 0 coupled this guard to an unrelated STALE state
+    # and made it unrunnable exactly while the table awaits a contract identity.
+    ok = ("FAMILY-SET" not in ids_clean) and rc_seeded != 0 and "FAMILY-SET" in ids
+    print("FAMILY-SET     control rc=%d (no FAMILY-SET)  seeded rc=%d ids=%s  %s  "
+          "(a declared comparison family that never runs)"
+          % (rc_clean, rc_seeded, ",".join(sorted(ids))[:34] or "-",
+             "caught" if ok else "<-- MISSED"))
+    return 0 if ok else 1
+
+
+def third_branch_control():
+    """The reason grammar's THIRD branch — a state event naming an agent as actor —
+    is measured NEVER TO FIRE on this corpus: 47 events.bytes.jsonl files carry 72
+    state events, all `working` or `done`, and neither is an agent-owned class. So
+    the corpus proves the first two branches and CANNOT prove this one.
+
+    Saying so is the point. What follows is not a claim that the corpus exercises
+    it; it is a synthetic check that the branch behaves when fed a qualifying event,
+    so the gap is bounded rather than merely admitted. Full-grammar proof is NOT
+    claimed and must not be read into a green run.
+    """
+    import importlib.util as iu
+    spec = iu.spec_from_file_location("g", os.path.join(HERE, "verify-obligations.py"))
+    g = iu.module_from_spec(spec)
+    spec.loader.exec_module(g)
+    case = "arms/A2/c01-filters-ro"
+    doc = json.loads(g.body(case, "list_all_json"))
+    live = [x for x in doc["sessions"]
+            if x.get("status") != "stopped" and any(
+                a.get("reason") is None and a.get("state") not in g.AGENT_OWNED
+                for a in x.get("agents") or [])]
+    if not live:
+        print("third-branch   NO SYNTHETIC SUBJECT — cannot bound the gap"); return 1
+    sess = live[0]
+    ref = next(a["ref"] for a in sess["agents"]
+               if a.get("reason") is None and a.get("state") not in g.AGENT_OWNED)
+    real = g.gate_declared_contributions
+    _base_set = set(g.owed_reason(case, doc))
+    base = len(_base_set)
+    g.gate_declared_contributions = lambda c: {ref: {"blocked"}}
+    seeded = g.owed_reason(case, doc)
+    g.gate_declared_contributions = real
+    want = ("SC-509c", "digest", "sessions[%s].agents[%s].reason" % (sess["name"], ref),
+            "null", "blocked", "equals", "OBSERVED", "OBSERVED")
+    # A ref can appear in SEVERAL sessions, so the synthetic carrier legitimately
+    # owes one row per session holding it — asserting base+1 was wrong arithmetic
+    # about the right behaviour. What must hold: the named row appears, and every
+    # row the patch ADDS names that same agent.
+    added = {t for t in seeded if t not in _base_set}
+    ok = want in seeded and added and all("agents[%s]" % ref in t[2] for t in added)
+    print("third-branch   corpus fires it 0 times; synthetic state-event carrier for "
+          "%s/%s -> %s  (%d -> %d owed)"
+          % (sess["name"], ref, "owed, as required" if ok else "<-- MISSED",
+             base, len(seeded)))
+    return 0 if ok else 1
+
+
 def controls():
     """Prove the predicate discriminates its source before trusting any seed."""
     sys.path.insert(0, HERE)
@@ -298,6 +382,8 @@ def main():
         print("ABORT: neutral is not clean — %s" % sorted(ids)); return 1
     print("neutral            rc=0  clean")
     bad0 = controls()
+    bad0 += family_set_guard()
+    bad0 += third_branch_control()
     bad = 0
     # Every mutation target, read ONCE from the shared checkout and never written.
     originals = {t: open(t, encoding="utf-8").read()

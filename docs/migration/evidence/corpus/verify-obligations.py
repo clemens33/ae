@@ -447,13 +447,13 @@ def gate_capture_requests(case, consumer):
     return rows
 
 
-# THE BELOW-THRESHOLD LETTER IS RULED (colead option b: present as false/null/0,
-# never omitted) BUT NOT YET PINNED. A ruling in a message is not the source of
-# truth; the contract blob is, and reason2's SC-509/SC-017g amendment has not
-# landed. Encoding it from the message would be the provenance shortcut this table
-# refuses everywhere else, so the letter stays SYMBOLIC until the amended contract
-# is the pin — then one string in each file resolves and the table re-derives
-# against that identity.
+# THE BELOW-THRESHOLD LETTER IS RULED — false/null/0, present, never omitted — and
+# the amendment that would pin it (b5368a27, blob 8c7c9e5d) has been RETURNED for one
+# class-wide SC-509 presence precision, so the contract identity will move again. A
+# ruling in a message is not the pin and neither is a returned amendment, so the
+# letter stays symbolic through one more contract move. The successor half IS landed
+# (src/digest.rs:299-309 emits Value::Null and Num(0) for a non-degraded quiet entry;
+# omission survives only under `degraded`), so nothing here waits on product behaviour.
 BELOW_LETTER = "<ruled false/null/0, pending the amended contract blob>"
 ATTN_RANK = {"unanswered": 1, "throttled": 2, "blocked": 3,
              "waiting-user": 4, "stale": 5, "dead": 6}
@@ -853,36 +853,24 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
             scope_empty = empty_live_scope(r["normalised_argv"])
             want_b = (not scope_empty) and any(
                 x.get("name") in loss for x in doc.get("sessions", []) or [])
-            want_c = False
-            for x in ([] if scope_empty else doc.get("sessions", []) or []):
-                owners = alert_owners(case, x.get("name") or "")
-                # A STOPPED SESSION'S CAPTURED STATE IS NULLED, so reading the
-                # document cannot see the fact that makes a reason owed. The
-                # producer bytes can, and the generator derives from them — so the
-                # gate re-derives the same way here rather than concluding from a
-                # field the defect erased.
-                declared = stopped_declared(case, x.get("name") or "") \
-                    if x.get("status") == "stopped" else {}
-                for a in x.get("agents") or []:
-                    if a.get("reason") is None and (a.get("state") in AGENT_OWNED
-                                                    or a.get("ref") in owners
-                                                    or declared.get(a.get("ref")) in AGENT_OWNED):
-                        want_c = True
+            # `want_c` and its MISSING-509c / SURFACE pair are DELETED, not kept as a
+            # cheap second opinion. They knew only two of the reason grammar's three
+            # branches, so a running agent owed via the THIRD — a state event naming
+            # it as actor, with no captured state and no alert — would have been
+            # emitted by the generator, owed by owed_reason, and then rejected SURFACE
+            # by this. A second authority that is a subset of the first is not
+            # redundancy; it is a false-failure waiting for the fixture that reaches
+            # its blind spot. Exact Counter equality subsumes both directions.
             if want_b and "SC-509b" not in ids:
                 fail(out, "MISSING-509b", "%s/%s has a session with unreadable meta and owes "
                      "no degraded move" % (case, consumer))
             if not want_b and "SC-509b" in ids:
                 fail(out, "SURFACE", "%s/%s owes a degraded move with no read-loss session"
                      % (case, consumer))
-            # BOTH DIRECTIONS on the empty-scope set obligation, added now rather
-            # than after a review round: an empty-scope digest owes exactly one, and a
-            # non-empty-scope digest owes none.
-            n_521c = sum(1 for o in carriers.get((case, consumer), [])
-                         if o["obligation_id"] == "SC-521c")
-            if scope_empty and n_521c != 1:
-                fail(out, "SC-521C-ARITY", "%s/%s has an empty live scope and carries %d "
-                     "SC-521c set obligations; exactly one is owed"
-                     % (case, consumer, n_521c))
+            # SC-521C-ARITY is deleted too. It outlived the comment below that said
+            # all seven fragments were gone — the comment was false while it stood,
+            # which is worse than the fragment. Exact Counter equality already proves
+            # arity in both directions.
             # ---- SC-521c: COMPLETE OWED FULL-SHAPE MULTISET, both populations.
             # Arity/locus fragments let two mutations through, both measured green:
             # an empty-scope row collapsed to from==to (a mandated divergence turned
@@ -923,12 +911,6 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
                                      ("SC-509", "SC-017g"),
                                      lambda o: o["locus"].startswith("sessions[")
                                      and _is_stopped_locus(case, live_doc, o["locus"])))
-            if want_c and "SC-509c" not in ids:
-                fail(out, "MISSING-509c", "%s/%s has a null-reason agent whose own state names "
-                     "an agent-owned contribution and owes no reason move" % (case, consumer))
-            if not want_c and "SC-509c" in ids:
-                fail(out, "SURFACE", "%s/%s owes a reason move with no such agent"
-                     % (case, consumer))
         elif "SC-509b" in ids or "SC-509c" in ids:
             fail(out, "SURFACE", "%s/%s is not a digest yet owes a JSON-only obligation"
                  % (case, consumer))
