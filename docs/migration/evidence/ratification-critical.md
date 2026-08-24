@@ -2,11 +2,10 @@
 
 Derived mechanically from the canonical set reported by sweep-check.sh; letters are criteria only.
 
-- Canonical IDs (checker at HEAD): SC=427, D=43, total=470; manifest lines=470 (exact; SET_EXTRA=0, SET_MISSING=0)
-- Class counts (mechanically regenerated 2026-08-20 post slice-1d + SC-021 (ls-alias row, s2 Q4): SC-510e/f event-format heads + SC-021 added; earlier folds retained; SC-012b bare-invocation residue added 2026-08-20 per seat ruling ae-20260820T165746Z-fb9c4fb6, CRITICAL(A) in-class with SC-013/SC-014; SC-509c reason-null defect row added per ba95a5e seat read, CRITICAL(B) in-class with SC-1106; D01/D02/SC-509c flipped to OBSERVED on the ba95a5e closure — evidence + both-seat transcription, second-gate ruling): CRITICAL=341, DEFERRABLE=103, OBSERVED=43
-- Critical-letter counts (overlaps counted): A=123, B=39, C=59, D=198
-- D24 remains critical/non-observed pending its negative-evidence pointer; when it lands: CRITICAL=322, OBSERVED=45
-- Outstanding critical observations: 323. Clusters build only from the CRIT-ASSIGN table.
+- Canonical IDs — **NOT OWNED BY THIS FILE'S GATE**: these are `sweep-check.sh`'s output, reported here for convenience and verified there. They were stale when measured (SC=427/D=43/total=470 against a fixed input of 444/43/487), which is exactly why an unverified derived fact does not belong beside a verified one. Run `sweep-check.sh` for the current values.
+- Class counts (mechanically regenerated 2026-08-20 post slice-1d + SC-021 (ls-alias row, s2 Q4): SC-510e/f event-format heads + SC-021 added; earlier folds retained; SC-012b bare-invocation residue added 2026-08-20 per seat ruling ae-20260820T165746Z-fb9c4fb6, CRITICAL(A) in-class with SC-013/SC-014; SC-509c reason-null defect row added per ba95a5e seat read, CRITICAL(B) in-class with SC-1106; D01/D02/SC-509c flipped to OBSERVED on the ba95a5e closure — evidence + both-seat transcription, second-gate ruling): see the machine-checked `class_counts` record below
+- D24 remains critical/non-observed pending its negative-evidence pointer. The former projected post-landing counts are REMOVED: nothing verified them and they were stale (322/45 against present arithmetic). A projection that no gate owns reads as a fact and ages like one.
+- Outstanding critical observations: see `class_counts` below — the number is the CRITICAL count and is machine-checked there rather than restated here, because a restated count is a second place to go stale. Clusters build only from the CRIT-ASSIGN table.
 
 - A includes explicit UNCLASSIFIED, authority=code-observation, literal Authority: UNRESOLVED(...) rows, and D records whose TBD fields feed a seat ruling; ALREADY-OBSERVED takes pin-audit PROVES priority.
 
@@ -49,16 +48,16 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-017g — CRITICAL(C)
 - SC-017h — CRITICAL(C)
 - SC-017i — CRITICAL(C)
-- SC-017j — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
-- SC-017k — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
-- SC-017l — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
-- SC-017m — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
-- SC-017n — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
-- SC-017o — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
-- SC-017p — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
-- SC-017q — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
-- SC-017r — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
-- SC-017s — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-017j — CRITICAL(B,C) — cannot be DEFERRABLE: bucket 3 fix-known-defect, and its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23 rather than by S1MAP membership. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
+- SC-017k — CRITICAL(B,C) — cannot be DEFERRABLE: bucket 3 fix-known-defect, and its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23 rather than by S1MAP membership. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
+- SC-017l — CRITICAL(B,C) — cannot be DEFERRABLE: bucket 3 fix-known-defect, and its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23 rather than by S1MAP membership. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
+- SC-017m — CRITICAL(B,C) — cannot be DEFERRABLE: bucket 3 fix-known-defect, and its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23 rather than by S1MAP membership. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
+- SC-017n — CRITICAL(C) — cannot be DEFERRABLE: its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23; bucket 2, so the bucket conjunct is not what fails. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
+- SC-017o — CRITICAL(B,C) — cannot be DEFERRABLE: bucket 3 fix-known-defect, and its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23 rather than by S1MAP membership. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
+- SC-017p — CRITICAL(B,C) — cannot be DEFERRABLE: bucket 3 fix-known-defect, and its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23 rather than by S1MAP membership. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
+- SC-017q — CRITICAL(B,C) — cannot be DEFERRABLE: bucket 3 fix-known-defect, and its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23 rather than by S1MAP membership. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
+- SC-017r — CRITICAL(B,C) — cannot be DEFERRABLE: bucket 3 fix-known-defect, and its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23 rather than by S1MAP membership. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
+- SC-017s — CRITICAL(B,C) — cannot be DEFERRABLE: bucket 3 fix-known-defect, and its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23 rather than by S1MAP membership. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
 - D18 — OBSERVED (census-audit, two-lane closure)
 - SC-018 — DEFERRABLE(bucket-1/2 + normative authority + conflict=none + no-P1 fixture dependency)
 - SC-018b — CRITICAL(A)
@@ -155,7 +154,7 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-400a — CRITICAL(D)
 - SC-400b — CRITICAL(B,D)
 - SC-400c — CRITICAL(B,D)
-- SC-400d — CRITICAL(A) — no-P1-fixture-dependency is FALSE: a joint-P1-ruling row whose fixture dependency is recorded in corpus/P1-SUFFICIENCY.md §8 (worktree-nested layout, ABSENT, zero specimens) rather than in S1MAP. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-400d — CRITICAL(C) — cannot be DEFERRABLE: its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23; bucket 2, so the bucket conjunct is not what fails. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
 - SC-401a — CRITICAL(D)
 - SC-401b — CRITICAL(B,D)
 - SC-402 — CRITICAL(D)
@@ -499,16 +498,24 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 - SC-405i — CRITICAL(C,D)
 - SC-405j — CRITICAL(C,D)
 - SC-405k — CRITICAL(C)
-- SC-405l — CRITICAL(A) — no-P1-fixture-dependency is FALSE: a joint-P1-ruling row whose fixture dependency is recorded in corpus/P1-SUFFICIENCY.md §8 (four selector states, two ABSENT) rather than in S1MAP. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
-- SC-509d — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
-- SC-509e — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
-- SC-521c — CRITICAL(A) — no-P1-fixture-dependency is FALSE: in the S1MAP list/ls surface map. Letters unassigned by a seat; recorded as explicit UNCLASSIFIED, which criterion A already covers (see the A note above).
+- SC-405l — CRITICAL(C) — cannot be DEFERRABLE: its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23; bucket 2, so the bucket conjunct is not what fails. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
+- SC-509d — CRITICAL(B,C) — cannot be DEFERRABLE: bucket 3 fix-known-defect, and its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23 rather than by S1MAP membership. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
+- SC-509e — CRITICAL(B,C) — cannot be DEFERRABLE: bucket 3 fix-known-defect, and its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23 rather than by S1MAP membership. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
+- SC-521c — CRITICAL(C) — cannot be DEFERRABLE: its P1 fixture dependency is carried by the accepted phase-1 gate criteria 2/6/10-12/20/23; bucket 2, so the bucket conjunct is not what fails. Letters per gpt56sol:colead's review of ce2dafcb (B for bucket-3 fix-known-defect rows, C for P1 query/fixture rows); D remains a seat decision for the durable-format/schema boundaries.
 
 ## Freshness — this file is ABOUT a contract, and now says which one
 
 ```
 contract_blob: 896d08ea3ac753095c04af17dfba92cd9d15fb38
+class_counts: CRITICAL=341 DEFERRABLE=103 OBSERVED=43
+letter_counts: A=123 B=50 C=74 D=201
 ```
+
+Every key above is required EXACTLY ONCE and is compared against the entries. The previous
+header stated its counts as prose in a sentence, and the gate parsed the first three
+`NAME=N` matches it found anywhere — so a header reading `CRITICAL=341, CRITICAL=341,
+DEFERRABLE=103` passed as "counts agree" with `OBSERVED` absent entirely. A checker that
+takes the first three matches is not checking a record, it is sampling prose.
 
 Checked by `verify-ratification.py` (a gate: no write path). It fails when a contract row
 has no class, when a classified id is not a contract row, when the header counts disagree

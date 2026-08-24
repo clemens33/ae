@@ -2,23 +2,24 @@
 """GATE — is ratification-critical.md still about the contract it classifies?
 
 NO WRITE PATH: no open-for-write, no temp, no rename. It reports; something else
-repairs.
+repairs. `--file PATH` points it at a COPY, so a red-proof never has to mutate the
+tracked evidence file in a shared checkout to test its own checker.
 
-It exists because the classification document had NO RELATION to the contract.
-`sweep-check.sh` checks a great deal — field presence, closure-map membership,
-CRIT-ASSIGN coupling, an expected-id-set diff — but it never asks whether every
-contract row HAS a class. Fifteen rows had landed without one, and they were not
-random: the entire P1 list/ls liveness and selector family, the rows P1 is gated
-on. Nothing would have said so.
+IT PARSES THE PINNED OBJECT, NOT THE WORKTREE. An earlier version read the worktree
+contract for rows while comparing the recorded blob to HEAD's — so it classified one
+set of bytes and pinned another, and a normative change that kept every row heading
+passed as fresh (red-proved by gpt56sol:colead in an isolated worktree). The subject
+of this file is now the blob it names, by construction; worktree disagreement is its
+own named finding rather than a silent substitution.
 
-Three checks, and the freshness one is why this file exists:
-  COVERAGE   every contract SC row heading has exactly one classification entry,
-             and every classified id is a real contract row.
-  COUNTS     the header's stated class counts equal the entries actually present.
-  FRESHNESS  the contract blob recorded here equals the contract blob at HEAD.
-             HEAD-relative by design: a date says when someone last ran the
-             generator, a blob says whether the thing it describes has moved.
+Checks:
+  COVERAGE        every contract SC row has exactly one class; every class a real row
+  DUPLICATE       one row classified twice — SC and D alike
+  COUNTS          the machine-checked record equals the entries, every key exactly once
+  FRESHNESS       a contract blob is recorded, is well formed, and equals HEAD's
+  WORKTREE-DRIFT  the worktree contract differs from the blob being classified
 """
+import argparse
 import os
 import re
 import subprocess
@@ -27,110 +28,141 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 CRIT = os.path.join(HERE, "ratification-critical.md")
 CONTRACT_REL = "docs/migration/semantic-contract.md"
-CONTRACT = os.path.normpath(os.path.join(HERE, "..", "semantic-contract.md"))
+WORKTREE_CONTRACT = os.path.normpath(os.path.join(HERE, "..", "semantic-contract.md"))
 CLASSES = ("CRITICAL", "DEFERRABLE", "OBSERVED", "ALREADY-OBSERVED")
+COUNT_KEYS = ("CRITICAL", "DEFERRABLE", "OBSERVED")
+LETTER_KEYS = ("A", "B", "C", "D")
+ROW = re.compile(r"^\s*(?:- )?\*\*(SC-[0-9]+[a-z]*)\b")
 
 
-def head_blob():
-    root = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"], cwd=HERE, capture_output=True, text=True
-    ).stdout.strip()
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD:" + CONTRACT_REL], cwd=root, capture_output=True, text=True
-    ).stdout.strip()
+def git(args, cwd=HERE):
+    """Return stdout, or None when git itself failed — never an empty string that
+    a caller could mistake for a legitimate answer."""
+    r = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
 
 
-def main(quiet=False):
+def main(path=None, quiet=False, worktree=None):
     out = []
-    crit = open(CRIT, encoding="utf-8").read()
-    contract = open(CONTRACT, encoding="utf-8").read()
+    crit_path = path or CRIT
+    wt_path = worktree or WORKTREE_CONTRACT
+    crit = open(crit_path, encoding="utf-8").read()
 
-    rows = []
-    for line in contract.split("\n"):
-        m = re.match(r"^\s*(?:- )?\*\*(SC-[0-9]+[a-z]*)\b", line)
-        if m:
-            rows.append(m.group(1))
-    rowset = set(rows)
+    root = git(["rev-parse", "--show-toplevel"])
+    head = git(["rev-parse", "HEAD:" + CONTRACT_REL], cwd=root or HERE) if root else None
 
-    classified = {}
-    dupes = []
+    # ---- FRESHNESS, three outcomes: absent / malformed / stale ---------------
+    line = re.search(r"^contract_blob:\s*(\S*)\s*$", crit, re.M)
+    pinned = None
+    if line is None:
+        out.append(("FRESHNESS", "no contract_blob is recorded — the file asserts no relation"))
+    elif not re.fullmatch(r"[0-9a-f]{40}", line.group(1)):
+        out.append(("MALFORMED", "contract_blob is not a 40-hex blob id: %r" % line.group(1)[:24]))
+    elif head is None:
+        out.append(("FRESHNESS", "git could not resolve HEAD:%s" % CONTRACT_REL))
+    elif line.group(1) != head:
+        out.append(("STALE", "recorded contract blob %s but HEAD carries %s — the contract "
+                             "moved and this classification has not been re-derived"
+                    % (line.group(1)[:12], head[:12])))
+    else:
+        pinned = line.group(1)
+
+    # ---- the subject is the PINNED blob -------------------------------------
+    blob = pinned or head
+    contract = git(["cat-file", "blob", blob], cwd=root or HERE) if blob else None
+    if contract is None:
+        out.append(("SUBJECT", "cannot read the contract blob being classified"))
+        contract = ""
+    if pinned:
+        wt = git(["hash-object", wt_path])
+        if wt is None:
+            out.append(("WORKTREE-DRIFT", "cannot hash the worktree contract"))
+        elif wt != pinned:
+            out.append(("WORKTREE-DRIFT",
+                        "the worktree contract is %s but this file classifies %s — the bytes "
+                        "on disk are not the bytes being classified" % (wt[:12], pinned[:12])))
+
+    rowset = {m.group(1) for m in (ROW.match(l) for l in contract.split("\n")) if m}
+
+    classified, dupes = {}, []
     for m in re.finditer(r"^- (SC-[0-9]+[a-z]*) — ([A-Z-]+)", crit, re.M):
-        if m.group(1) in classified:
-            dupes.append(m.group(1))
+        (dupes if m.group(1) in classified else []).append(m.group(1))
         classified[m.group(1)] = m.group(2)
+    drec, ddupes = {}, []
+    for m in re.finditer(r"^- (D[0-9]+[a-z]*) — ([A-Z-]+)", crit, re.M):
+        (ddupes if m.group(1) in drec else []).append(m.group(1))
+        drec[m.group(1)] = m.group(2)
 
     # ---- COVERAGE ----------------------------------------------------------
     for rid in sorted(rowset - set(classified)):
         out.append(("COVERAGE", "%s is a contract row with no classification entry" % rid))
     for cid in sorted(set(classified) - rowset):
         out.append(("ORPHAN", "%s is classified but is not a contract row heading" % cid))
-    for did in sorted(set(dupes)):
+    for did in sorted(set(dupes) | set(ddupes)):
         out.append(("DUPLICATE", "%s has more than one classification entry" % did))
-    for cid, cls in sorted(classified.items()):
+    for cid, cls in sorted(classified.items()) + sorted(drec.items()):
         if cls not in CLASSES:
             out.append(("CLASS", "%s carries an unknown class %r" % (cid, cls)))
 
-    # ---- COUNTS ------------------------------------------------------------
-    # The header states combined SC+D counts, so D records are counted too.
-    drec = dict(re.findall(r"^- (D[0-9]+[a-z]*) — ([A-Z-]+)", crit, re.M))
+    # ---- COUNTS: one record, every key EXACTLY ONCE -------------------------
+    def record(name, keys, pattern):
+        m = re.search(r"^%s:\s*(.+)$" % name, crit, re.M)
+        if not m:
+            out.append(("COUNTS", "no %s record" % name))
+            return None
+        seen = re.findall(pattern, m.group(1))
+        got = {}
+        for k, v in seen:
+            if k in got:
+                out.append(("COUNTS", "%s names %s more than once" % (name, k)))
+            got[k] = int(v)
+        for k in keys:
+            if k not in got:
+                out.append(("COUNTS", "%s does not name %s" % (name, k)))
+        for k in got:
+            if k not in keys:
+                out.append(("COUNTS", "%s names unknown key %s" % (name, k)))
+        return got
+
     actual = {}
     for cls in list(classified.values()) + list(drec.values()):
         actual[cls] = actual.get(cls, 0) + 1
-    stated = dict(
-        (k, int(v))
-        for k, v in re.findall(r"\b(CRITICAL|DEFERRABLE|OBSERVED)=([0-9]+)", crit)[:3]
-    )
-    obs = actual.get("OBSERVED", 0) + actual.get("ALREADY-OBSERVED", 0)
-    for name, got in (
-        ("CRITICAL", actual.get("CRITICAL", 0)),
-        ("DEFERRABLE", actual.get("DEFERRABLE", 0)),
-        ("OBSERVED", obs),
-    ):
-        if name in stated and stated[name] != got:
-            out.append(
-                ("COUNT", "header states %s=%d, entries give %d" % (name, stated[name], got))
-            )
+    actual["OBSERVED"] = actual.get("OBSERVED", 0) + actual.get("ALREADY-OBSERVED", 0)
+    stated = record("class_counts", COUNT_KEYS, r"\b(CRITICAL|DEFERRABLE|OBSERVED)=([0-9]+)\b")
+    if stated:
+        for k in COUNT_KEYS:
+            if k in stated and stated[k] != actual.get(k, 0):
+                out.append(("COUNTS", "class_counts says %s=%d, entries give %d"
+                            % (k, stated[k], actual.get(k, 0))))
 
-    # ---- FRESHNESS ---------------------------------------------------------
-    # Three outcomes, not two. A blob that is PRESENT BUT MALFORMED is a different
-    # defect from one that is absent, and a single regex that requires 40 hex digits
-    # collapses them: the red-proof caught exactly that — a corrupted blob reported
-    # "no relation asserted" instead of "the contract moved".
-    line = re.search(r"^contract_blob:\s*(\S*)\s*$", crit, re.M)
-    rec = line if (line and re.fullmatch(r"[0-9a-f]{40}", line.group(1))) else None
-    now = head_blob()
-    if line is None:
-        out.append(("FRESHNESS", "no contract_blob is recorded — the file asserts no relation"))
-    elif rec is None:
-        out.append(("MALFORMED", "contract_blob is recorded but is not a 40-hex blob id: %r"
-                    % line.group(1)[:24]))
-    elif not now:
-        out.append(("FRESHNESS", "cannot resolve HEAD:%s" % CONTRACT_REL))
-    elif rec.group(1) != now:
-        out.append(
-            (
-                "STALE",
-                "recorded contract blob %s but HEAD carries %s — the contract moved and "
-                "this classification has not been re-derived" % (rec.group(1)[:12], now[:12]),
-            )
-        )
+    letters = {}
+    for m in re.finditer(r"^- (?:SC|D)[0-9a-zA-Z-]* — CRITICAL\(([A-D,]+)\)", crit, re.M):
+        for L in m.group(1).split(","):
+            letters[L.strip()] = letters.get(L.strip(), 0) + 1
+    stated_l = record("letter_counts", LETTER_KEYS, r"\b([A-D])=([0-9]+)\b")
+    if stated_l:
+        for k in LETTER_KEYS:
+            if k in stated_l and stated_l[k] != letters.get(k, 0):
+                out.append(("COUNTS", "letter_counts says %s=%d, entries give %d"
+                            % (k, stated_l[k], letters.get(k, 0))))
 
     if not quiet:
-        print(
-            "contract rows %d; classified %d (SC) + %d (D); contract blob %s"
-            % (len(rowset), len(classified), len(drec), (now or "?")[:12])
-        )
+        print("contract rows %d (from blob %s); classified %d SC + %d D"
+              % (len(rowset), (blob or "?")[:12], len(classified), len(drec)))
         for cid, msg in out[:25]:
-            print("FAIL  %-10s %s" % (cid, msg))
+            print("FAIL  %-15s %s" % (cid, msg))
         if len(out) > 25:
             print("      ...and %d more" % (len(out) - 25))
-        if not out:
-            print("RATIFICATION CLASSIFICATION VERIFIED — every contract row has a class, "
-                  "counts agree, fresh against the COMMITTED contract at HEAD")
-        else:
-            print("NOT VERIFIED — %d finding(s)" % len(out))
+        print("RATIFICATION CLASSIFICATION VERIFIED — every row classified, both count "
+              "records agree, fresh against HEAD, worktree matches"
+              if not out else "NOT VERIFIED — %d finding(s)" % len(out))
     return (1 if out else 0), {c for c, _ in out}
 
 
 if __name__ == "__main__":
-    sys.exit(main()[0])
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--file", default=None, help="verify a COPY instead of the tracked file")
+    ap.add_argument("--worktree-contract", default=None,
+                    help="hash this instead of the real worktree contract (red-proof only)")
+    a = ap.parse_args()
+    sys.exit(main(a.file, worktree=a.worktree_contract)[0])
