@@ -122,9 +122,63 @@ def declared_contributions(case):
 # throttled are never self-declared, but the watchdog's own alert names the OWNER in
 # `target` and the contribution in `summary` — so an exact per-agent locus exists
 # where a session-attention-only reading could only guess.
-ALERT_SUMMARY = (("agent process dead", "dead"),
-                 ("max nudges reached", "stale"),
+# THE NAMED-LEDGER CARRIER GRAMMAR, DERIVED rather than enumerated as "the actions we
+# searched". A ledger event is a carrier iff it NAMES A TARGET and supplies a
+# contribution, and there are exactly two ways to supply one:
+#   the ACTION IS the contribution      — action in AGENT_OWNED (e.g. `throttled`)
+#   the action is `alert`               — the contribution is named in its summary
+# The first branch is why enumerating searched actions was wrong: the four
+# `action=throttled` events carry summary "upstream throttling detected — pausing
+# nudge", which no summary prefix for `throttled` matches, so a summary-only reading
+# dropped a carrier whose ACTION already said what it was. Summary parsing is neither
+# needed nor permitted to narrow an action that is itself a contribution.
+ALERT_SUMMARY = (("agent process dead", "dead"), ("max nudges reached", "stale"),
                  ("throttled for", "throttled"))
+# A carrier stops being current when the newest DECISIVE event for that target is a
+# clearance: the agent acting again (actor == target), or a target-named clear. The
+# clear ACTIONS are derived from the same grammar — any action of the form
+# <contribution>-cleared, or `alert-cleared` — and have NO specimen in this corpus, so
+# that branch is asserted by construction and red-proved synthetically, never claimed
+# as exercised.
+CLEAR_ACTIONS = tuple("%s-cleared" % c for c in AGENT_OWNED) + ("alert-cleared",)
+
+
+LIVE_SCOPE_FILTERS = ("--needs-attn", "--active")
+SELECTORS = ("--running", "--stopped", "--all")
+
+
+def empty_live_scope(argv):
+    """True when the selector makes this document's session set EMPTY.
+
+    SELECTOR-FIRST, and it is derived rather than pattern-matched on the consumer
+    name: SC-521b makes same-dimension selectors ALTERNATIVES with the last distinct
+    one winning, so the winning selector is the last of --running/--stopped/--all in
+    argv order; SC-521c then says a stopped session never satisfies a live-scope
+    predicate, so `--stopped` plus --needs-attn or --active is empty in BOTH
+    orderings. Establishing the session set first is what makes a descendant
+    obligation admissible at all — the previous derivation reached inside documents
+    whose session set the contract forbids."""
+    words = argv.split()
+    winner = None
+    for w in words:
+        if w in SELECTORS:
+            winner = w
+    return winner == "--stopped" and any(f in words for f in LIVE_SCOPE_FILTERS)
+
+
+def carrier_contribution(event):
+    """The contribution this event supplies, or None if it is not a carrier."""
+    if not event.get("target"):
+        return None
+    action = event.get("action")
+    if action in AGENT_OWNED:
+        return action
+    if action == "alert":
+        summary = str(event.get("summary") or "")
+        for prefix, contribution in ALERT_SUMMARY:
+            if summary.startswith(prefix):
+                return contribution
+    return None
 
 
 def template_of(case):
@@ -137,14 +191,12 @@ def template_of(case):
 
 
 def alert_contributions(template, session):
-    """target -> its CURRENT contribution, from the producer template's event bytes.
+    """target -> its CURRENT contribution, from the producer template's ledger bytes.
 
-    Alert-once-then-quiet means a past alert is not by itself a present fact, so an
-    entry is dropped when the agent ACTS AGAIN after it: a later event whose `actor`
-    is that target supersedes the alert, because the agent that was dead or stale is
-    demonstrably neither. The latest qualifying alert wins. Everything here is read
-    from fixed producer bytes; nothing is inferred from the session's ranked
-    attention, which names a class without naming an owner."""
+    Newest decisive event wins. A carrier is cleared by the agent ACTING AGAIN
+    (actor == target) or by a target-named clearance action — a past carrier is not a
+    present fact. Nothing is inferred from the session's ranked attention, which names
+    a class without naming an owner."""
     if not template or "/" not in template:
         return {}
     arm, variant = template.split("/", 1)
@@ -163,12 +215,13 @@ def alert_contributions(template, session):
             pass
     current = {}
     for i, e in enumerate(events):
-        target, summary = e.get("target"), str(e.get("summary") or "")
-        if e.get("action") in ("alert", "throttled") and target:
-            for prefix, contribution in ALERT_SUMMARY:
-                if summary.startswith(prefix):
-                    current[target] = (contribution, i)
-        actor = e.get("actor")
+        contribution = carrier_contribution(e)
+        if contribution:
+            current[e["target"]] = (contribution, i)
+        target, actor, action = e.get("target"), e.get("actor"), e.get("action")
+        if target and action in CLEAR_ACTIONS and target in current \
+                and i > current[target][1]:
+            del current[target]
         if actor in current and i > current[actor][1]:
             del current[actor]
     return {k: v[0] for k, v in current.items()}
@@ -259,12 +312,28 @@ def main():
             # row; there is no assignment choice to make.
             loss = loss_sessions(case)
             declared = declared_contributions(case)
+            scope_empty = empty_live_scope(r["normalised_argv"])
             try:
                 doc = json.loads(text)
             except ValueError:
                 doc = None
+            if scope_empty:
+                # SC-521c: the whole session set must be empty, so the document's
+                # MEMBERSHIP is the obligation and nothing inside it can be. Deleting
+                # the impossible descendants alone would leave the retained comparison
+                # still expecting the frozen nonempty document.
+                # NOTE the ordering: this reads `doc`, so it must run AFTER the parse.
+                # It first ran before it and silently reported the PREVIOUS row's
+                # session count — a stale-variable read that the from-values exposed
+                # only because I printed them.
+                n_sessions = len((doc or {}).get("sessions", []) or [])
+                rows.append((case, consumer, "SC-521c", "digest", "sessions[] (set)",
+                             str(n_sessions), "empty", "equals", "OBSERVED", "OBSERVED",
+                             "--stopped is the winning selector under SC-521b and a "
+                             "stopped session satisfies no live-scope predicate under "
+                             "SC-521c, so this set is empty in both orderings"))
             template = template_of(case)
-            for sess in (doc or {}).get("sessions", []) or []:
+            for sess in ([] if scope_empty else (doc or {}).get("sessions", []) or []):
                 name = sess.get("name")
                 alerts = alert_contributions(template, name or "")
                 if name in loss:

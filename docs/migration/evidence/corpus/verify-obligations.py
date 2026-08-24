@@ -37,6 +37,7 @@ ID_POPULATION = {
     "SC-509c": ("digest",),
     "SC-509d": ("digest",),
     "SC-509e": ("digest",),
+    "SC-521c": ("digest",),
 }
 # The FIXED SEMANTIC COLUMNS, in header order. `authority` is EXCLUDED BY DECLARATION,
 # not by omission: it is narrative, and binding prose would make a reworded explanation
@@ -52,6 +53,24 @@ VALUE_ROW = ("SC-017o", "digest", "inventory_complete (value)", "ABSENT",
 AGENT_OWNED = ("dead", "stale", "waiting-user", "blocked", "throttled")
 ALERT_SUMMARY = (("agent process dead", "dead"), ("max nudges reached", "stale"),
                  ("throttled for", "throttled"))
+
+
+LIVE_SCOPE_FILTERS = ("--needs-attn", "--active")
+SELECTORS = ("--running", "--stopped", "--all")
+
+
+def empty_live_scope(argv):
+    """SELECTOR-FIRST, re-derived here rather than trusted from the generator: the
+    winning selector is the LAST of --running/--stopped/--all (SC-521b), and a stopped
+    session satisfies no live-scope predicate (SC-521c), so --stopped plus a live
+    filter is empty in both orderings. No descendant obligation is owed inside a
+    session set the contract makes empty."""
+    words = argv.split()
+    winner = None
+    for w in words:
+        if w in SELECTORS:
+            winner = w
+    return winner == "--stopped" and any(f in words for f in LIVE_SCOPE_FILTERS)
 
 
 def alert_owners(case, session):
@@ -80,10 +99,22 @@ def alert_owners(case, session):
     cur = {}
     for i, e in enumerate(events):
         t, sm = e.get("target"), str(e.get("summary") or "")
-        if e.get("action") in ("alert", "throttled") and t:
-            for prefix, contribution in ALERT_SUMMARY:
-                if sm.startswith(prefix):
-                    cur[t] = (contribution, i)
+        # Same derived carrier grammar, re-implemented independently: the ACTION is
+        # the contribution when it names one, otherwise an `alert` names it in its
+        # summary. A summary-only reading dropped every action=throttled carrier.
+        if t:
+            got = None
+            if e.get("action") in AGENT_OWNED:
+                got = e.get("action")
+            elif e.get("action") == "alert":
+                for prefix, contribution in ALERT_SUMMARY:
+                    if sm.startswith(prefix):
+                        got = contribution
+            if got:
+                cur[t] = (got, i)
+        if t and str(e.get("action") or "").endswith("-cleared") and t in cur \
+                and i > cur[t][1]:
+            del cur[t]
         if e.get("actor") in cur and i > cur[e.get("actor")][1]:
             del cur[e.get("actor")]
     return {k: v[0] for k, v in cur.items()}
@@ -223,9 +254,11 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
                 # generator's loss_sessions for why, and for the measurement that
                 # the two agree on this corpus.
                 loss = {n for n in sess if n not in metas or metas[n] == "UNREADABLE"}
-            want_b = any(x.get("name") in loss for x in doc.get("sessions", []) or [])
+            scope_empty = empty_live_scope(r["normalised_argv"])
+            want_b = (not scope_empty) and any(
+                x.get("name") in loss for x in doc.get("sessions", []) or [])
             want_c = False
-            for x in doc.get("sessions", []) or []:
+            for x in ([] if scope_empty else doc.get("sessions", []) or []):
                 owners = alert_owners(case, x.get("name") or "")
                 for a in x.get("agents") or []:
                     if a.get("reason") is None and (a.get("state") in AGENT_OWNED
@@ -237,6 +270,18 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
             if not want_b and "SC-509b" in ids:
                 fail(out, "SURFACE", "%s/%s owes a degraded move with no read-loss session"
                      % (case, consumer))
+            # BOTH DIRECTIONS on the empty-scope set obligation, added now rather
+            # than after a review round: an empty-scope digest owes exactly one, and a
+            # non-empty-scope digest owes none.
+            n_521c = sum(1 for o in carriers.get((case, consumer), [])
+                         if o["obligation_id"] == "SC-521c")
+            if scope_empty and n_521c != 1:
+                fail(out, "SC-521C-ARITY", "%s/%s has an empty live scope and carries %d "
+                     "SC-521c set obligations; exactly one is owed"
+                     % (case, consumer, n_521c))
+            if not scope_empty and n_521c:
+                fail(out, "SC-521C-SURFACE", "%s/%s owes an empty-set obligation with a "
+                     "non-empty live scope" % (case, consumer))
             if want_c and "SC-509c" not in ids:
                 fail(out, "MISSING-509c", "%s/%s has a null-reason agent whose own state names "
                      "an agent-owned contribution and owes no reason move" % (case, consumer))

@@ -139,6 +139,23 @@ MUTATIONS = [
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A1/c01-healthy-ro\tlist-json\tSC-017o")
                                  and "inventory_complete (value)" in l))),
+    # Member 1: the action-supplied carrier. Its contribution comes from action=throttled,
+    # which no summary prefix matches — a summary-only reading dropped it entirely.
+    ("MISSING-509c", OBL, "an ACTION-supplied throttled carrier stripped of its reason move",
+     lambda s: "\n".join(l for l in s.split("\n")
+                         if "sessions[tpairthrottledoverunanswered].agents[fake:high]" not in l)),
+    # Member 2, both directions.
+    ("SC-521C-ARITY", OBL, "an empty-scope digest stripped of its empty-set obligation",
+     lambda s: "\n".join(l for l in s.split("\n")
+                         if not (l.startswith("arms/A2/c01-filters-ro\tinter_needsattnstopped_json")
+                                 and "\tSC-521c\t" in l))),
+    # ADDS a row rather than MOVING one: moving it also emptied the source document and
+    # fired ARITY, and it landed on a consumer name that does not exist in A2 (whose
+    # consumers use underscores), so POPULATION fired too. A seed that trips three
+    # checks proves none of them.
+    ("SC-521C-SURFACE", OBL, "an empty-set obligation on a document whose scope is not empty",
+     lambda s: s.rstrip("\n") + "\narms/A2/c01-filters-ro\tlist_json\tSC-521c\tdigest"
+               "\tsessions[] (set)\t3\tempty\tequals\tOBSERVED\tOBSERVED\tseeded\n"),
     ("STALE", FRESH, "the contract having moved since derivation",
      lambda s: s.replace("contract_blob\t", "contract_blob\tdeadbeef", 1)),
 ]
