@@ -333,3 +333,34 @@ CRIT-ASSIGN: SC-405i | C | read-side fixture cluster: missing-meta-degrades arm 
 CRIT-ASSIGN: SC-405j | C | read-side fixture cluster: stale-session routed event stays unassociated (renamed-session fixture, loud false-negative capture)
 CRIT-ASSIGN: SC-405k | C | read-side fixture cluster: runtime-only slot never invents an agent (roster-vs-runtime divergence fixture)
 
+
+## Successor-era assignments (2026-08-24, lead-authored, colead countersigned)
+
+The fifteen rows below are the P1 list/ls liveness and selector family, classified
+CRITICAL in ratification-critical.md (blob pinned below per the direct-provenance rule:
+this table's classification source is that file, not the contract). They are NOT bash
+capture batches: their observing instruments are accepted successor gates, successor
+tests, and successor probes, so stamping batch `C` would name a capture that cannot
+observe them. Two tags, introduced here:
+
+- `S-GATE` — observed by an ACCEPTED successor gate/test/probe that exists today.
+- `S-PENDING` — the only observer is a named future arm; the line records WHICH one, so
+  the gap stays a tracked obligation rather than an unassigned id.
+
+CLASSIFIED-BY: ratification-critical.md blob 84e3a837d43b1f9c84b5e10bc73d19165bc8b142
+
+CRIT-ASSIGN: SC-017j | S-GATE | phase-1 gate (8e3c9ec0) inventory criteria + src/inventory.rs candidate tests: union of durable roots and live discovery, archives inert, no basename dedup
+CRIT-ASSIGN: SC-017k | S-GATE | phase-2 gate (29db943a) + tests/it/transport.rs sc_017k one-real-query arm: recorded-server exact-name evidence, per-name attribution incl. prefix sibling
+CRIT-ASSIGN: SC-017l | S-GATE | phase-2 gate (29db943a) + tests/it/transport.rs sc_017l arms + tests/it/cli.rs criterion_1 not-stopped: every failed/unreachable query yields unknown, exit status decides
+CRIT-ASSIGN: SC-017m | S-GATE | phase-3 gate (8cccbe44) criteria 4-8: scope membership per view (default/--running = running+unknown; --stopped; --all), intersections
+CRIT-ASSIGN: SC-017n | S-GATE | phase-3 gate (8cccbe44) criteria 9-11: C-byte name order within status group, group order, human/JSON identical sequences; equal-name tie order open (OC-P3-EQUAL-NAME-TIE)
+CRIT-ASSIGN: SC-017o | S-GATE | phase-3 gate (8cccbe44) criteria 12-14: inventory_complete fact, loss-count diagnostics per surface, completeness flip control
+CRIT-ASSIGN: SC-017p | S-PENDING | phase-4 (3a63f741) criterion 12 pane-observation matrix: no product-valid pane route exists; dead routes unobservable until it lands — closure gap, not a start blocker
+CRIT-ASSIGN: SC-017q | S-GATE | tests/it/phase3.rs sc_017q arms (unknown agents reported, state/reason kept) — positive/negative pane arms remain with the SC-017p pending matrix
+CRIT-ASSIGN: SC-017r | S-GATE | phase-3 criterion 15 audit artifact + agent-health presentation manifest (pinned by phase-4 criterion 1) + phase-4 criterion 8 presentation calibration; all 78 corpus loci UNSCORABLE by measurement
+CRIT-ASSIGN: SC-017s | S-GATE | docs/migration/evidence/sc-017s/probe.sh: one-directional live predicate, exited/shell/non-shell arms asserted, rc=2 fixture-abort vs rc=1 fail split
+CRIT-ASSIGN: SC-400d | S-GATE | phase-1 gate (8e3c9ec0) criterion 2 layout fixture: both durable layouts enumerated; worktree-nested absent from corpus (0/1065) so successor fixture is the only evidence
+CRIT-ASSIGN: SC-405l | S-GATE | phase-2 gate (29db943a) criterion 20 two-isolated-servers arm + src/meta.rs selector tests: typed selector normalization of persisted tmux_server/kind bytes
+CRIT-ASSIGN: SC-509d | S-GATE | phase-3 gate (8cccbe44) criterion 13: schema_version 2 exactly once per document, every view; v1 emit path absent from crate
+CRIT-ASSIGN: SC-509e | S-GATE | tests/it/phase3.rs sc_509e (alive field present even when null) + phase-4 criterion 8 synthetic three-value calibration (presentation only, closes no liveness locus)
+CRIT-ASSIGN: SC-521c | S-GATE | phase-3 gate (8cccbe44) criteria 6-7: attention/activity filters keep matching unknown rows, drop stopped regardless of flag order
