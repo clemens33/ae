@@ -209,6 +209,30 @@ def symlink_retarget_seed(source: Path, scratch: Path, specimen: tuple[str, byte
     assert_movement("symlink-retarget", before, after, True, True)
 
 
+def synthetic_symlink_retarget_seed(source: Path, scratch: Path) -> None:
+    """Exercise the grammar branch without misreporting a published specimen."""
+    repo = clone(source, scratch, "synthetic-symlink-retarget")
+    module = load_verifier(repo)
+    member = module.published_members(repo, module.fixture_roots(repo))[0]
+    target = repo / member / "redproof-synthetic-link"
+    before = fingerprints(module, repo)[member]
+    os.symlink("synthetic-target-a", target)
+    git(repo, "add", "--", str(target.relative_to(repo)))
+    git(repo, "commit", "-qm", "redproof synthetic symlink addition")
+    landed(repo, target)
+    print("LANDING VERIFIED synthetic-symlink-addition")
+    with_link = fingerprints(module, repo)[member]
+    assert_movement("synthetic-symlink-addition", before, with_link, True, True)
+    target.unlink()
+    os.symlink("synthetic-target-b", target)
+    git(repo, "add", "--", str(target.relative_to(repo)))
+    git(repo, "commit", "-qm", "redproof synthetic symlink retarget")
+    landed(repo, target)
+    print("LANDING VERIFIED synthetic-symlink-retarget")
+    after = fingerprints(module, repo)[member]
+    assert_movement("synthetic-symlink-retarget", with_link, after, True, True)
+
+
 def main() -> int:
     source = source_repo()
     module = load_verifier(source)
@@ -256,6 +280,7 @@ def main() -> int:
             symlink_retarget_seed(source, scratch, specimens[0])
         else:
             print("SKIP symlink-retarget — no published symlink specimen exists")
+        synthetic_symlink_retarget_seed(source, scratch)
     print("RED-PROOFS FRESH — all executed seeds passed")
     return 0
 

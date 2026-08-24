@@ -81,19 +81,19 @@ def parse_ls_tree(raw: bytes) -> list[tuple[str, str, str, bytes]]:
     return rows
 
 
-def fixture_roots(repo: Path) -> list[bytes]:
-    rows = parse_ls_tree(run_git(repo, "ls-tree", "-r", "-d", "-z", "HEAD", "--", SOURCE_ROOT))
+def fixture_roots(repo: Path, treeish: str = "HEAD") -> list[bytes]:
+    rows = parse_ls_tree(run_git(repo, "ls-tree", "-r", "-d", "-z", treeish, "--", SOURCE_ROOT))
     roots = sorted(path for mode, kind, _, path in rows if mode == "040000" and kind == "tree" and path.endswith(b"/fixture-bytes"))
     if not roots:
         raise Malformed("no published fixture-bytes roots exist in HEAD")
     return roots
 
 
-def published_members(repo: Path, roots: list[bytes]) -> list[str]:
+def published_members(repo: Path, roots: list[bytes], treeish: str = "HEAD") -> list[str]:
     members: list[bytes] = []
     for root in roots:
         root_text = root.decode("utf-8")
-        rows = parse_ls_tree(run_git(repo, "ls-tree", "-d", "-z", "HEAD", "--", root_text + "/"))
+        rows = parse_ls_tree(run_git(repo, "ls-tree", "-d", "-z", treeish, "--", root_text + "/"))
         members.extend(path for mode, kind, _, path in rows if mode == "040000" and kind == "tree")
     try:
         decoded = [member.decode("utf-8") for member in sorted(members)]
@@ -117,12 +117,12 @@ def blob_bytes(repo: Path, object_id: str) -> bytes:
     return run_git(repo, "cat-file", "blob", object_id)
 
 
-def fingerprint_member(repo: Path, member: str) -> Fingerprint:
-    tree_id = run_git(repo, "rev-parse", "--verify", f"HEAD:{member}").decode("ascii").strip()
+def fingerprint_member(repo: Path, member: str, treeish: str = "HEAD") -> Fingerprint:
+    tree_id = run_git(repo, "rev-parse", "--verify", f"{treeish}:{member}").decode("ascii").strip()
     if len(tree_id) != 40 or any(ch not in "0123456789abcdef" for ch in tree_id):
-        raise Malformed(f"HEAD:{member} did not resolve to a SHA-1 tree identity")
+        raise Malformed(f"{treeish}:{member} did not resolve to a SHA-1 tree identity")
     prefix = member.encode("utf-8") + b"/"
-    entries = parse_ls_tree(run_git(repo, "ls-tree", "-r", "-z", "HEAD", "--", member))
+    entries = parse_ls_tree(run_git(repo, "ls-tree", "-r", "-z", treeish, "--", member))
     manifest: list[tuple[bytes, bytes]] = []
     for mode, git_kind, object_id, full_path in entries:
         if git_kind != "blob" or not full_path.startswith(prefix):
@@ -143,13 +143,14 @@ def fingerprint_member(repo: Path, member: str) -> Fingerprint:
     return Fingerprint(member, len(manifest), tree_id, digest)
 
 
-def derive(repo: Path) -> list[Fingerprint]:
-    roots = fixture_roots(repo)
-    dirty_source(repo, roots)
-    members = published_members(repo, roots)
+def derive(repo: Path, treeish: str = "HEAD", enforce_source_clean: bool = True) -> list[Fingerprint]:
+    roots = fixture_roots(repo, treeish)
+    if enforce_source_clean:
+        dirty_source(repo, fixture_roots(repo))
+    members = published_members(repo, roots, treeish)
     if len(members) != EXPECTED_MEMBERS:
         raise Malformed(f"published-member census is {len(members)}, expected {EXPECTED_MEMBERS}")
-    return [fingerprint_member(repo, member) for member in members]
+    return [fingerprint_member(repo, member, treeish) for member in members]
 
 
 def working_blob_id(repo: Path, path: str) -> str:
@@ -164,6 +165,7 @@ def working_blob_id(repo: Path, path: str) -> str:
 
 def render(repo: Path, rows: list[Fingerprint]) -> str:
     algorithm_blob = working_blob_id(repo, ALGORITHM_REL)
+    source_commit = run_git(repo, "rev-parse", "--verify", "HEAD^{commit}").decode("ascii").strip()
     header = [
         f"# format\t{FORMAT}",
         f"# corpus_root_sha256\t{CORPUS_ROOT_SHA256}",
@@ -171,6 +173,7 @@ def render(repo: Path, rows: list[Fingerprint]) -> str:
         f"# algorithm_git_blob\t{algorithm_blob}",
         f"# source_root\t{SOURCE_ROOT}",
         "# committed_treeish\tHEAD",
+        f"# derived_from_commit\t{source_commit}",
         f"# member_count\t{EXPECTED_MEMBERS}",
         f"# git_tree_id_role\t{TREE_ID_ROLE}",
         f"# canonical_sha256_role\t{CANONICAL_ROLE}",
@@ -235,7 +238,7 @@ def parse_artifact(path: Path) -> tuple[dict[str, str], list[Fingerprint]]:
         "canonical_entry_grammar": CANONICAL_GRAMMAR,
         "directories": "implied by tracked leaf paths; not manifest entries",
     }
-    if set(header) != set(required) | {"algorithm_git_blob"}:
+    if set(header) != set(required) | {"algorithm_git_blob", "derived_from_commit"}:
         raise Malformed("artifact header keys do not match the fixed schema")
     for key, value in required.items():
         if header[key] != value:
@@ -243,6 +246,9 @@ def parse_artifact(path: Path) -> tuple[dict[str, str], list[Fingerprint]]:
     blob = header["algorithm_git_blob"]
     if len(blob) != 40 or any(ch not in "0123456789abcdef" for ch in blob):
         raise Malformed("artifact algorithm_git_blob is not a lowercase SHA-1")
+    source_commit = header["derived_from_commit"]
+    if len(source_commit) != 40 or any(ch not in "0123456789abcdef" for ch in source_commit):
+        raise Malformed("artifact derived_from_commit is not a lowercase SHA-1")
     if len(rows) != EXPECTED_MEMBERS or len({row.source_path for row in rows}) != len(rows):
         raise Malformed("artifact does not contain exactly 70 unique member rows")
     return header, rows
@@ -253,7 +259,12 @@ def verify(repo: Path) -> tuple[str, list[str]]:
     roots = fixture_roots(repo)
     dirty_source(repo, roots)
     header, expected_rows = parse_artifact(repo / ARTIFACT_REL)
-    actual_rows = derive(repo)
+    source_commit = header["derived_from_commit"]
+    resolved_source_commit = run_git(repo, "rev-parse", "--verify", f"{source_commit}^{{commit}}")
+    if resolved_source_commit.decode("ascii").strip() != source_commit:
+        raise Malformed("artifact derived_from_commit does not resolve to its named commit")
+    source_rows = derive(repo, source_commit, enforce_source_clean=False)
+    actual_rows = derive(repo, enforce_source_clean=False)
     findings: list[str] = []
     try:
         committed_algorithm_blob = run_git(repo, "rev-parse", "--verify", f"HEAD:{ALGORITHM_REL}").decode("ascii").strip()
@@ -265,21 +276,29 @@ def verify(repo: Path) -> tuple[str, list[str]]:
     if header["algorithm_git_blob"] != working_blob_id(repo, ALGORITHM_REL):
         findings.append("working algorithm bytes differ from the artifact pin")
     expected = {row.source_path: row for row in expected_rows}
+    source_actual = {row.source_path: row for row in source_rows}
     actual = {row.source_path: row for row in actual_rows}
+    findings.extend(compare_rows("artifact does not agree with its declared derivation commit", expected, source_actual))
+    findings.extend(compare_rows("source fixture moved since derivation", expected, actual))
+    return ("FRESH", []) if not findings else ("STALE", findings)
+
+
+def compare_rows(label: str, expected: dict[str, Fingerprint], actual: dict[str, Fingerprint]) -> list[str]:
+    findings = []
     for source_path in sorted(expected.keys() - actual.keys()):
-        findings.append(f"published member deleted: {source_path}")
+        findings.append(f"{label}: member deleted: {source_path}")
     for source_path in sorted(actual.keys() - expected.keys()):
-        findings.append(f"published member added: {source_path}")
+        findings.append(f"{label}: member added: {source_path}")
     for source_path in sorted(expected.keys() & actual.keys()):
         if expected[source_path] != actual[source_path]:
             findings.append(
-                f"fingerprint differs: {source_path} expected "
+                f"{label}: {source_path} expected "
                 f"{expected[source_path].entry_count}/{expected[source_path].git_tree_id}/"
                 f"{expected[source_path].canonical_sha256}, got "
                 f"{actual[source_path].entry_count}/{actual[source_path].git_tree_id}/"
                 f"{actual[source_path].canonical_sha256}"
             )
-    return ("FRESH", []) if not findings else ("STALE", findings)
+    return findings
 
 
 def main() -> int:

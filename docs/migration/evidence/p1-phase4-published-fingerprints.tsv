@@ -4,6 +4,7 @@
 # algorithm_git_blob	d78ee392e946e1f0a658843656819dee88fb7f61
 # source_root	docs/migration/evidence/batch-c-artifacts/templates
 # committed_treeish	HEAD
+# derived_from_commit	83473dc1784850ca4a996cef56940d8dfb487686
 # member_count	70
 # git_tree_id_role	reproducibility anchor and exec-coverage carrier
 # canonical_sha256_role	mode-free scratch-comparison grain the runner recomputes
