@@ -1229,10 +1229,29 @@ is NOT evidence that `degraded` identifies `branch` loss — `degraded` remains
 aggregate visibility and identifies nothing per member. It is NOT precedent for any
 other member: every other optional member's presence is decided by its own source's
 provenance, with no appeal to this paragraph.
+**While the exception stands, `branch` VALUE is UNSCORED under the registered open
+choice `OC-P4-BRANCH-VALUE`.** The successor renders `null` on a healthy entry
+because no observation exists to render — production constructs its runtime with
+`branch: None` unconditionally, and only the acquisition slice changes that. The
+predecessor renders the branch its live acquisition recorded. Neither is scored
+against the other for the value.
+**Branch PRESENCE is policed independently of this exception**, by the derived
+presence-only obligations across the loss population — not by this paragraph, which
+grants no policing and is not the authority for it. The exception governs one thing:
+whether the VALUE bytes are compared.
+**Why the values are unscored rather than reconciled either way.** An implementation
+gap is not a ruling, so it may not mint a MANDATED divergence — scoring the
+successor's `null` as correct would ratify the absence of a source this row
+requires. Nor may the reverse be written down: a clause asserting `null` forever
+would gate against this contract's own end state on the day acquisition wires, and
+the retirement trigger below would then have to fight the row that survives it.
+Unscored is the only reading that is true now and still true afterwards.
 **RETIREMENT TRIGGER — the commit that wires this row's watchdog-status and
 git-fallback acquisition.** From that identity onward, `branch` presence is governed
 solely by branch-source provenance and `degraded` MUST NOT select it. This paragraph
-retires with that commit and is not to be re-derived.
+AND the `OC-P4-BRANCH-VALUE` register row retire together with that commit, as ONE
+unit, and neither is to be re-derived. Retiring either alone leaves the other
+asserting a state that no longer exists.
 Authority: commands.md:124-129 + colead ruling 2026-08-25. Empirical: pending.
 Conflict: none. **classified_by: both seats, 2026-08-20; temporary exception
 RE-MARKED 2026-08-25 — gpt56sol:colead ruling, drafted opus5:reason2.**
