@@ -40,12 +40,30 @@ def require_red(label: str, mutate) -> None:
     print(f"RED {label}: manifest changed")
 
 
+def require_stable() -> None:
+    runner = load_runner()
+    with tempfile.TemporaryDirectory(prefix="ae-p4-run2-manifest-stability-") as raw:
+        root = Path(raw)
+        (root / "nested").mkdir()
+        (root / "nested" / "payload").write_bytes(b"baseline")
+        os.symlink("nested/payload", root / "current")
+        before = runner.state_manifest(root)
+        after = runner.state_manifest(root)
+        if before != after:
+            raise RuntimeError("INVALID stability-control: unchanged tree produced different manifests")
+    print("GREEN stability-control: unchanged manifest is exact")
+
+
 def main() -> int:
+    require_stable()
     require_red("path-add", lambda root: (root / "added").write_bytes(b"new"))
+    require_red("empty-directory-add", lambda root: (root / "empty").mkdir())
     require_red("path-delete", lambda root: (root / "nested" / "payload").unlink())
     require_red("content-change", lambda root: (root / "nested" / "payload").write_bytes(b"changed"))
     require_red("symlink-retarget", lambda root: ((root / "current").unlink(), os.symlink("nested", root / "current")))
-    require_red("mode-change", lambda root: os.chmod(root / "nested" / "payload", 0o444))
+    require_red("symlink-to-same-content-file", lambda root: ((root / "current").unlink(), (root / "current").write_bytes(b"baseline")))
+    require_red("mode-change-file", lambda root: os.chmod(root / "nested" / "payload", 0o444))
+    require_red("mode-change-directory", lambda root: os.chmod(root / "nested", 0o555))
     print("C14-MANIFEST-REDPROOF PASS")
     return 0
 

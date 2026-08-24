@@ -17,13 +17,18 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[4]
-RUN = Path(__file__).resolve().parent / "run2-results"
+# A run produces mutable build products, sockets, fixture copies, and captures.  Those
+# must never make the checked-out evidence tree dirty or make the next clean-tree
+# preflight depend on manual cleanup.  Operators may select an external durable output
+# location explicitly; the default is deliberately outside the repository.
+RUN = Path(os.environ.get("AE_P4_RUN2_OUTPUT", str(Path(tempfile.gettempdir()) / "ae-p4run2-results"))).expanduser()
 CORPUS = REPO / "docs/migration/evidence/batch-c-artifacts"
 INV = REPO / "docs/migration/evidence/corpus/INVOCATIONS.tsv"
 OBL = REPO / "docs/migration/evidence/corpus/OBLIGATIONS.tsv"
@@ -53,6 +58,59 @@ INPUTS = {
     "open_choice_occurrences": ("docs/migration/evidence/p1-phase4-open-choice-occurrences.tsv", "29c80d6bcd40b27d726157791abb6919655fd479"),
     "phase4_gate": ("docs/migration/p1-phase4-gate.md", "f31ece2ac40ed47077ab07f559ad8ab5ad97f6b0"),
 }
+
+# This is an input schema, not a census derived at runtime.  A new case.txt key is a
+# new possible state transformation and must stop for a new runner/input identity.
+# Values in BOUND are copied into each fixture binding.  Values in INAPPLICABLE are
+# explicitly recorded by key and value hash with the named reason; they are historical
+# observations, not inputs to the fresh materialisation ruled for C14.
+CASE_BOUND_KEYS = frozenset({
+    "arm", "case", "clone_mode", "clone_preserves_mtime", "template",
+})
+CASE_INAPPLICABLE_KEYS = frozenset({
+    "added_paths", "admissibility_note", "arm_kind", "ask_ts_epoch", "attach_client",
+    "attention_candidates_by_construction", "caller_pane", "caller_session",
+    "capability_manipulation", "client_mapping_changed", "client_snapshot_identical",
+    "clone_fingerprint", "clone_fingerprint_matches_template",
+    "consumer", "controlled_bin_dir", "controller_connection", "design", "doctor_rc",
+    "documented_default_threshold", "events_inode_at_end", "events_inode_at_start",
+    "fake_agent_sha256", "flock_spy", "frozen_ae_sha256", "frozen_sha",
+    "harness_topology_note", "harness_touched_declared", "harness_written_paths", "hook",
+    "hook_design", "hook_patch_sha256", "hooked_ae_sha256", "interpreter", "kill_when",
+    "last", "launch_barrier", "lead_pane", "live_topology", "live_topology_agent_binary",
+    "live_topology_session_env", "live_topology_sessions", "manifest_after_sha256",
+    "manifest_before_sha256", "manifest_diff_lines", "manipulation_1", "manipulation_2",
+    "mutating_arm", "mutation_recorded_at", "note", "patch_sha256", "prefix_sibling",
+    "product_written_paths", "removed_paths", "removed_tool", "rewritten_paths", "rows",
+    "seeded_events", "session", "sha256", "shim_default_mode", "sibling", "size",
+    "socket", "stopped_sessions", "target_session", "template_fingerprint_pre_protection",
+    "template_fingerprint_protected", "tmux_diff_lines", "tmux_shim",
+    "tmux_snapshot_identical", "tmux_socket", "topology", "unmodified_ae_sha256",
+    "utc_end", "utc_start", "worker_pane", "write_confirmation",
+})
+CASE_KEY_ALLOWLIST = CASE_BOUND_KEYS | CASE_INAPPLICABLE_KEYS
+CASE_REPEATABLE_KEYS = frozenset({"size"})
+CLONE_MODE_ALLOWLIST = frozenset({"ro", "rw", "live", "mutating", "controlled-path", "ro-noserver"})
+SINGLE_TOKEN_CASE_KEYS = frozenset({"arm", "case", "clone_mode", "template"})
+CASE_PARSE_ERROR = "__case_parse_error__"
+CASE_FIELD_RE = re.compile(r"(?<!\S)([A-Za-z][A-Za-z0-9_]*)=")
+
+
+def ensure_external_run_root() -> None:
+    """Reject an output directory inside the source tree before creating evidence."""
+    try:
+        RUN.resolve().relative_to(REPO.resolve())
+    except ValueError:
+        return
+    raise RuntimeError(f"RUN-REFUSED output root is inside the repository: {RUN}")
+
+
+def assert_bound_run_root() -> None:
+    ensure_external_run_root()
+    manifest = RUN / "RUN-MANIFEST.txt"
+    bound = f"run_output_root\t{RUN.resolve()}"
+    if bound not in manifest.read_text(encoding="utf-8").splitlines():
+        raise RuntimeError("RUN-REFUSED output root differs from the preflight manifest")
 
 
 def utc() -> str:
@@ -108,11 +166,67 @@ def load_tsv(path: Path) -> list[dict[str, str]]:
 
 def case_values(case_file: Path) -> dict[str, str]:
     values: dict[str, str] = {}
-    for token in case_file.read_text(encoding="utf-8").replace("\n", " ").split():
-        if "=" in token:
-            key, value = token.split("=", 1)
+    # A case file permits several ``key=value`` fields on one line and values with
+    # spaces on later lines.  Token splitting loses the latter and can silently turn
+    # a fixture input into an unobserved one.
+    source = case_file.read_text(encoding="utf-8")
+    fields = list(CASE_FIELD_RE.finditer(source))
+    spans = [(field.start(), fields[index + 1].start() if index + 1 < len(fields) else len(source)) for index, field in enumerate(fields)]
+    if not spans or spans[0][0] != 0 or spans[-1][1] != len(source) or any(end != spans[index + 1][0] for index, (_start, end) in enumerate(spans[:-1])):
+        return {CASE_PARSE_ERROR: f"MALFORMED-FIXTURE-INPUT key=value spans do not cover every byte of {case_file}"}
+    for index, field in enumerate(fields):
+        key = field.group(1)
+        end = fields[index + 1].start() if index + 1 < len(fields) else len(source)
+        value = source[field.end():end].strip()
+        if key in values:
+            if key not in CASE_REPEATABLE_KEYS:
+                values[CASE_PARSE_ERROR] = f"MALFORMED-FIXTURE-INPUT duplicate case key {key} in {case_file}"
+                continue
+            # D03 records a size beside both the start and end inode facts.  Keep
+            # both values under the one explicitly repeatable schema key.
+            values[key] = f"{values[key]}\n{value}"
+        else:
             values[key] = value
     return values
+
+
+def case_key_declarations(values: dict[str, str]) -> list[str]:
+    """Keep parsed evidence even when its case is rejected."""
+    records = []
+    for key in sorted(key for key in values if key != CASE_PARSE_ERROR):
+        encoded = json.dumps(values[key], ensure_ascii=False)
+        if key not in CASE_KEY_ALLOWLIST:
+            records.append(f"case-key\t{key}\tUNMAPPED\t{encoded}\tnew key requires a new runner/input identity")
+        elif key in CASE_BOUND_KEYS:
+            records.append(f"case-key\t{key}\tBOUND\t{encoded}\tcontrols fresh fixture selection")
+        else:
+            records.append(
+                f"case-key\t{key}\tINAPPLICABLE\t{sha256(values[key].encode('utf-8'))}\t"
+                "historical observation; C14 authority is published member plus bound environment and permission policy"
+            )
+    return records
+
+
+def case_key_records(values: dict[str, str]) -> tuple[bool, str, list[str]]:
+    """Declare every case key consumed or inapplicable, failing closed on novelty."""
+    records = case_key_declarations(values)
+    if CASE_PARSE_ERROR in values:
+        return False, values[CASE_PARSE_ERROR], records
+    unknown = sorted(set(values) - CASE_KEY_ALLOWLIST)
+    if unknown:
+        return False, f"NEW-UNMAPPED-INPUT unknown case.txt key(s): {','.join(unknown)}", records
+    for key in sorted(SINGLE_TOKEN_CASE_KEYS & set(values)):
+        tokens = values[key].split()
+        if len(tokens) != 1:
+            if key == "clone_mode" and tokens and tokens[0] in CLONE_MODE_ALLOWLIST:
+                population = "live/no-materialisable fixture population" if tokens[0] == "live" else f"declared {tokens[0]!r} fixture population"
+                return False, f"MALFORMED-FIXTURE-INPUT clone_mode carries unowned bytes after declared {tokens[0]!r}; retained in {population}", records
+            return False, f"MALFORMED-FIXTURE-INPUT {key} must be one token, got {values[key]!r}", records
+    if (clone_mode := values.get("clone_mode")) is not None and clone_mode not in CLONE_MODE_ALLOWLIST:
+        return False, f"NEW-UNMAPPED-INPUT clone_mode is outside the declared input schema: {clone_mode!r}", records
+    if (mtime_policy := values.get("clone_preserves_mtime")) is not None and not (mtime_policy == "yes" or mtime_policy.startswith("yes ")):
+        return False, "NEW-UNMAPPED-INPUT clone_preserves_mtime is not the bound copy2 policy", records
+    return True, "", records
 
 
 def recorded_environment(path: Path) -> dict[str, str]:
@@ -133,7 +247,7 @@ def published_corpus_digest() -> str:
 
 
 def input_manifest(binary_sha256: str | None = None) -> list[str]:
-    rows = [f"run_started_utc\t{utc()}", f"product_successor_commit\t{PRODUCT_SUCCESSOR}", f"runner_commit\t{git('rev-parse', 'HEAD')}", f"corpus_root_sha256\t{published_corpus_digest()}"]
+    rows = [f"run_started_utc\t{utc()}", f"run_output_root\t{RUN.resolve()}", f"product_successor_commit\t{PRODUCT_SUCCESSOR}", f"runner_commit\t{git('rev-parse', 'HEAD')}", f"corpus_root_sha256\t{published_corpus_digest()}"]
     for name, (path, expected) in INPUTS.items():
         actual = git("rev-parse", f"HEAD:{path}")
         if actual != expected:
@@ -168,7 +282,7 @@ def run_verifier(phase: str, label: str, relative: str) -> None:
     (root / f"{label}.stderr").write_bytes(result.stderr)
     (root / f"{label}.rc").write_text(f"{result.returncode}\n", encoding="utf-8")
     if result.returncode:
-        raise RuntimeError(f"PREFLIGHT-FAILED {label} rc={result.returncode}")
+        raise RuntimeError(f"{phase.upper()}-FAILED {label} rc={result.returncode}")
 
 
 def build_successor() -> str:
@@ -181,6 +295,7 @@ def build_successor() -> str:
 
 
 def preflight() -> None:
+    ensure_external_run_root()
     RUN.mkdir(parents=True, exist_ok=True)
     if (RUN / "RUN-MANIFEST.txt").exists():
         raise RuntimeError("REFUSE-REUSE existing run manifest")
@@ -222,8 +337,12 @@ def expected_fingerprints() -> dict[str, tuple[int, str, str]]:
 def census_manifest_shapes(expected: dict[str, tuple[int, str, str]]) -> Counter[str]:
     """Classify every published member by its recorded no-mutation manifest grain."""
     manifests: dict[str, list[Path]] = {member: [] for member in expected}
+    malformed: list[str] = []
     for case_file in CORPUS.rglob("case.txt"):
         values = case_values(case_file)
+        if CASE_PARSE_ERROR in values:
+            malformed.append(f"{case_file.relative_to(CORPUS)}\t{values[CASE_PARSE_ERROR]}")
+            continue
         before = case_file.parent / "manifest.before.tsv"
         template = values.get("template")
         if not template or not before.is_file():
@@ -251,6 +370,7 @@ def census_manifest_shapes(expected: dict[str, tuple[int, str, str]]) -> Counter
         raise RuntimeError(f"C14 manifest-shape census covers {sum(counts.values())}, expected 70")
     write(RUN / "C14-MANIFEST-SHAPE-CENSUS.tsv", "member\tpublished_entries\tmanifest_count\tmanifest_line_counts\tclassification\n" + "\n".join(rows) + "\n")
     write(RUN / "C14-MANIFEST-SHAPE-SUMMARY.txt", "\n".join(f"{key}\t{counts[key]}" for key in sorted(counts)) + "\n")
+    write(RUN / "C14-MANIFEST-MALFORMED-CASES.tsv", "case\treason\n" + "\n".join(malformed) + ("\n" if malformed else ""))
     return counts
 
 
@@ -276,6 +396,17 @@ def fingerprint_tree(root: Path) -> tuple[str, str, int]:
     canonical = hashlib.sha256(b"".join(item[1] for item in entries)).hexdigest()
     executable = hashlib.sha256(b"".join(item[2] for item in entries)).hexdigest()
     return canonical, executable, len(entries)
+
+
+def mtime_projection(root: Path) -> str:
+    """Metadata projection used only when a case explicitly binds copy2 mtime preservation."""
+    entries = [(b".", root.lstat().st_mtime_ns)]
+    for base, dirs, files in os.walk(root, followlinks=False):
+        for name in dirs + files:
+            path = Path(base) / name
+            entries.append((os.fsencode(str(path.relative_to(root))), path.lstat().st_mtime_ns))
+    entries.sort(key=lambda item: item[0])
+    return sha256(b"".join(path + b"\0" + str(mtime).encode("ascii") + b"\0" for path, mtime in entries))
 
 
 def git_executable_projection(member: str) -> tuple[str, str]:
@@ -320,8 +451,9 @@ def make_writable(root: Path) -> None:
 
 
 def prove_readonly(source: Path, env: dict[str, str], record_path: Path) -> None:
-    nested = next((path for path in source.rglob("*") if path.is_dir() and not path.is_symlink()), None)
-    existing = next((path for path in source.rglob("*") if path.is_file() and not path.is_symlink()), None)
+    paths = sorted(source.rglob("*"), key=lambda path: os.fsencode(str(path.relative_to(source))))
+    nested = next((path for path in paths if path.is_dir() and not path.is_symlink()), None)
+    existing = next((path for path in paths if path.is_file() and not path.is_symlink()), None)
     if nested is None or existing is None:
         raise RuntimeError(f"READONLY-PROOF-UNAVAILABLE {source}")
     original, mode = existing.read_bytes(), existing.stat().st_mode & 0o777
@@ -339,12 +471,15 @@ def prove_readonly(source: Path, env: dict[str, str], record_path: Path) -> None
         if result.returncode == 0:
             # This only operates on the disposable source/scratch copy. Restore
             # unexpected overwrite/unlink effects before surfacing the failure.
+            parent = candidate.parent
+            parent_mode = parent.stat().st_mode & 0o777
+            os.chmod(parent, parent_mode | stat.S_IWUSR)
             if candidate == existing:
-                existing.parent.chmod(existing.parent.stat().st_mode | stat.S_IWUSR)
                 existing.write_bytes(original)
                 os.chmod(existing, mode)
             elif candidate.exists():
                 candidate.unlink()
+            os.chmod(parent, parent_mode)
             raise RuntimeError(f"READONLY-PROOF-FAILED {label} {candidate}")
     write(record_path, "\n".join(lines) + "\n")
 
@@ -483,8 +618,14 @@ def score_obligation(row: dict[str, str], stdout: bytes) -> tuple[str, str]:
         return ("PASS" if ok else "FAIL"), "unknown JSON session row"
     if oid == "SC-509b":
         values = [item.get("degraded") for item in sessions if isinstance(item, dict)]
-        ok = any(value is True for value in values)
+        if wanted not in ("true", "false"):
+            return "NOT-EVALUATED", f"unsupported degraded expectation {wanted!r}"
+        ok = any(value is (wanted == "true") for value in values)
         return ("PASS" if ok else "FAIL"), f"degraded={values!r}"
+    if oid == "SC-521c":
+        if locus != "sessions[] (set)" or row.get("predicate") != "equals" or wanted != "empty":
+            return "NOT-EVALUATED", f"unsupported empty-session predicate {locus}/{row.get('predicate')}/{wanted!r}"
+        return ("PASS" if sessions == [] else "FAIL"), f"sessions={sessions!r}"
     if oid == "SC-509c":
         match = re.fullmatch(r"sessions\[([^]]+)\]\.agents\[([^]]+)\]\.reason", locus)
         if not match:
@@ -520,6 +661,7 @@ def validate_population(invocations: list[dict[str, str]]) -> None:
 def run() -> None:
     if not (RUN / "RUN-MANIFEST.txt").exists():
         raise RuntimeError("RUN-REFUSED no preflight manifest")
+    assert_bound_run_root()
     if not AE.is_file():
         raise RuntimeError(f"RUN-REFUSED missing successor binary {AE}")
     expected = expected_fingerprints()
@@ -536,10 +678,18 @@ def run() -> None:
         case_dir = CORPUS / Path(row["case"]).parent
         key = (str(Path(row["case"]).parent), row["consumer"])
         values = case_values(case_dir / "case.txt")
+        case_ok, case_issue, case_records = case_key_records(values)
+        case_input = RUN / "case-inputs" / f"{index:04d}.tsv"
+        if case_ok:
+            write(case_input, "key\tname\tdisposition\tvalue-or-sha256\trationale\n" + "\n".join(case_records) + "\n")
+        else:
+            write(case_input, f"key\tname\tdisposition\tvalue-or-sha256\trationale\ncase-key\t-\tREJECTED\t-\t{case_issue}\n")
         state, reason, rc, stdout, stderr, no_mutation = "", "", None, b"", b"", "NOT-EVALUATED"
         base_out = (case_dir / "out" / f"{row['consumer']}.stdout").read_bytes() if (case_dir / "out" / f"{row['consumer']}.stdout").exists() else b""
         base_err = (case_dir / "out" / f"{row['consumer']}.stderr").read_bytes() if (case_dir / "out" / f"{row['consumer']}.stderr").exists() else b""
-        if row["surface"].startswith("helper:"):
+        if not case_ok:
+            state, reason = "FIXTURE-ABORT", case_issue
+        elif row["surface"].startswith("helper:"):
             state, reason = "NOT-EXECUTED", "product surface not implemented at the pinned pre-slice successor"
         elif values.get("clone_mode") == "live":
             state, reason = "FIXTURE-ABORT", "no materialisable fixed fixture bytes"
@@ -558,11 +708,11 @@ def run() -> None:
                 state, reason = "FIXTURE-ABORT", "template not a published fingerprint member"
             elif not all((case_dir / name).is_file() for name in ("env.txt", "env-tab-selfcheck.txt")):
                 state, reason = "FIXTURE-ABORT", "per-invocation environment binding absent"
-            elif values.get("state_transform") not in (None, "published-member+bound-environment+permission-policy"):
-                state, reason = "FIXTURE-ABORT", "NEW-UNMAPPED-INPUT state_transform is outside member/environment/permission policy"
             else:
                 want_count, want_tree, want_canonical = expected[source_key]
                 source_canonical, source_exec, source_count = fingerprint_tree(source)
+                preserves_mtime = values.get("clone_preserves_mtime", "").startswith("yes")
+                source_mtime = mtime_projection(source) if preserves_mtime else None
                 tree_id, expected_exec = git_executable_projection(source_key)
                 if (source_count, source_canonical, tree_id, source_exec) != (want_count, want_canonical, want_tree, expected_exec):
                     state, reason = "FIXTURE-ABORT", "published source member identity mismatch"
@@ -571,6 +721,7 @@ def run() -> None:
                     env, remaps = effective_environment(case_dir, home, instrument_root)
                     binding = {
                         "case_txt_sha256": sha256_file(case_dir / "case.txt"),
+                        "case_key_declarations_sha256": sha256_file(case_input),
                         "env_sha256": sha256_file(case_dir / "env.txt"),
                         "tab_selfcheck_sha256": sha256_file(case_dir / "env-tab-selfcheck.txt"),
                         "normalised_argv": row["normalised_argv"],
@@ -580,8 +731,10 @@ def run() -> None:
                         binding["legacy_manifest_before_sha256_inapplicable"] = sha256_file(legacy_before)
                     shutil.copytree(source, readonly_source, symlinks=True)
                     source_copy_canonical, source_copy_exec, source_copy_count = fingerprint_tree(readonly_source)
+                    source_copy_mtime = mtime_projection(readonly_source) if preserves_mtime else None
                     make_readonly(readonly_source)
                     source_ro_canonical, source_ro_exec, source_ro_count = fingerprint_tree(readonly_source)
+                    source_ro_mtime = mtime_projection(readonly_source) if preserves_mtime else None
                     instrument_root.mkdir(parents=True, exist_ok=True)
                     (instrument_root / "tmux-tmp").mkdir(parents=True, exist_ok=True)
                     prove_readonly(readonly_source, env, RUN / "readonly-source" / f"{index:04d}.tsv")
@@ -589,6 +742,7 @@ def run() -> None:
                     make_writable(readonly_source)
                     shutil.rmtree(readonly_source)
                     pre_canonical, pre_exec, pre_count = fingerprint_tree(ae_home)
+                    scratch_pre_mtime = mtime_projection(ae_home) if preserves_mtime else None
                     make_readonly(ae_home)
                     postperm_canonical, postperm_exec, postperm_count = fingerprint_tree(ae_home)
                     fixture_rows = [
@@ -600,9 +754,18 @@ def run() -> None:
                         f"scratch_postperm_count\t{postperm_count}", f"scratch_postperm_canonical\t{postperm_canonical}", f"scratch_postperm_exec\t{postperm_exec}",
                         *(f"remap\t{remap}" for remap in remaps),
                     ]
+                    if preserves_mtime:
+                        fixture_rows.extend([
+                            f"source_mtime_projection\t{source_mtime}",
+                            f"source_copy_mtime_projection\t{source_copy_mtime}",
+                            f"source_readonly_mtime_projection\t{source_ro_mtime}",
+                            f"scratch_pre_mtime_projection\t{scratch_pre_mtime}",
+                        ])
                     write(fixture, "\n".join(fixture_rows) + "\n")
                     if (source_copy_count, source_copy_canonical, source_copy_exec) != (want_count, want_canonical, expected_exec) or (source_ro_count, source_ro_canonical, source_ro_exec) != (want_count, want_canonical, expected_exec) or (pre_count, pre_canonical, pre_exec) != (want_count, want_canonical, expected_exec) or (postperm_count, postperm_canonical, postperm_exec) != (want_count, want_canonical, expected_exec):
                         state, reason = "FIXTURE-ABORT", "C14 scratch published identity mismatch"
+                    elif preserves_mtime and (source_copy_mtime, source_ro_mtime, scratch_pre_mtime) != (source_mtime, source_mtime, source_mtime):
+                        state, reason = "FIXTURE-ABORT", "NEW-UNMAPPED-INPUT copy2 did not preserve the bound mtime projection"
                     else:
                         prove_readonly(ae_home, env, RUN / "readonly-scratch" / f"{index:04d}.tsv")
                         expected_c_locale = env["LANG"] == "C" and env["LC_ALL"] == "C"
@@ -647,6 +810,7 @@ def run() -> None:
 def postflight() -> None:
     if not (RUN / "SUMMARY.txt").exists():
         raise RuntimeError("POSTFLIGHT-REFUSED no completed run")
+    assert_bound_run_root()
     if git_rc("diff", "--quiet", PRODUCT_SUCCESSOR, "HEAD", "--", "src") != 0:
         raise RuntimeError("PRODUCT-TREE-MOVED before postflight")
     recorded_binary = (RUN / "SUCCESSOR-BINARY-SHA256.txt").read_text(encoding="utf-8").strip()
@@ -677,7 +841,63 @@ def selftest() -> None:
     unsupported = score_obligation({"support": "OBSERVED", "stream": "stderr", "obligation_id": "SC-X", "locus": "x", "to": "x"}, b"")
     if unsupported[0] != "NOT-EVALUATED":
         raise RuntimeError("fail-closed selftest: unimplemented predicate became product FAIL")
+    sc521_rows = [row for row in load_tsv(OBL) if row["obligation_id"] == "SC-521c"]
+    # The currently pinned pre-rebind table has no SC-521c rows.  Exercise the
+    # exact pending row shape now; once the apparatus identity is re-pinned this
+    # branch consumes every committed SC-521c row directly.
+    if not sc521_rows:
+        sc521_source = "pending exact row shape (pre-rebind pin has none)"
+        sc521_rows = [{"support": "OBSERVED", "stream": "digest", "obligation_id": "SC-521c", "locus": "sessions[] (set)", "predicate": "equals", "to": "empty"}]
+    else:
+        sc521_source = f"{len(sc521_rows)} pinned obligation row(s)"
+    for obligation in sc521_rows:
+        empty_sessions = score_obligation(obligation, b'{"sessions": []}')
+        nonempty_sessions = score_obligation(obligation, b'{"sessions": [{"name": "unexpected"}]}')
+        if empty_sessions[0] != "PASS" or nonempty_sessions[0] != "FAIL":
+            raise RuntimeError(f"SC-521c selftest: real empty-set row was not scored: {obligation}")
     expected = expected_fingerprints()
+    observed_case_keys: set[str] = set()
+    rejected_cases: list[tuple[str, str]] = []
+    for case_file in CORPUS.rglob("case.txt"):
+        source = case_file.read_text(encoding="utf-8")
+        fields = list(CASE_FIELD_RE.finditer(source))
+        spans = [(field.start(), fields[index + 1].start() if index + 1 < len(fields) else len(source)) for index, field in enumerate(fields)]
+        if not spans or spans[0][0] != 0 or spans[-1][1] != len(source) or any(end != spans[index + 1][0] for index, (_start, end) in enumerate(spans[:-1])):
+            raise RuntimeError(f"case parser selftest: key=value spans do not cover every byte of {case_file}")
+        values = case_values(case_file)
+        observed_case_keys.update(key for key in values if key != CASE_PARSE_ERROR)
+        okay, reason, _records = case_key_records(values)
+        if not okay:
+            rejected_cases.append((str(case_file.relative_to(CORPUS)), reason))
+    if observed_case_keys - CASE_KEY_ALLOWLIST:
+        raise RuntimeError("case input selftest: uncatalogued case key")
+    expected_rejections = [("arms/A1/c20-405k-live/case.txt", "MALFORMED-FIXTURE-INPUT clone_mode carries unowned bytes after declared 'live'; retained in live/no-materialisable fixture population")]
+    if rejected_cases != expected_rejections:
+        raise RuntimeError(f"case input selftest: unexpected schema rejections {rejected_cases!r}")
+    c20 = case_values(CORPUS / "arms/A1/c20-405k-live/case.txt")
+    c20_ok, _c20_reason, c20_records = case_key_records(c20)
+    if c20_ok or not any(record.startswith('case-key\tclone_mode\tBOUND\t"live\\nlive"\t') for record in c20_records):
+        raise RuntimeError("case input selftest: malformed c20 dropped its parsed clone_mode binding")
+    if case_key_records({"new_state_transform": "unmapped"})[0]:
+        raise RuntimeError("case input selftest: unknown case key was accepted")
+    if case_key_records({"clone_preserves_mtime": "no"})[0]:
+        raise RuntimeError("case input selftest: unbound mtime policy was accepted")
+    with tempfile.TemporaryDirectory(prefix="ae-p4-run2-duplicate-key-selftest-") as raw:
+        duplicate = Path(raw) / "case.txt"
+        duplicate.write_text("arm=A1 arm=A2\n", encoding="utf-8")
+        duplicate_ok, duplicate_reason, _records = case_key_records(case_values(duplicate))
+        if duplicate_ok or not duplicate_reason.startswith("MALFORMED-FIXTURE-INPUT"):
+            raise RuntimeError("case input selftest: duplicate case key was accepted")
+    with tempfile.TemporaryDirectory(prefix="ae-p4-run2-copy2-selftest-") as raw:
+        source = Path(raw) / "source"
+        source.mkdir()
+        (source / "nested").mkdir()
+        (source / "nested" / "payload").write_bytes(b"mtime")
+        os.utime(source / "nested" / "payload", ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+        copied = Path(raw) / "copied"
+        shutil.copytree(source, copied, symlinks=True)
+        if mtime_projection(source) != mtime_projection(copied):
+            raise RuntimeError("copy2 selftest: mtime preservation failed")
     mismatches = []
     for member, (count, tree, canonical) in expected.items():
         actual = REPO / member
@@ -687,7 +907,8 @@ def selftest() -> None:
             mismatches.append(member)
     if mismatches:
         raise RuntimeError(f"published fingerprint selftest mismatches: {mismatches}")
-    print("RUN2-SELFTEST PASS: B1 accounting; fail-closed scoring; 70/70 published identities")
+    mtime_bound = sum("clone_preserves_mtime" in case_values(case_file) for case_file in CORPUS.rglob("case.txt"))
+    print(f"RUN2-SELFTEST PASS: B1 accounting; fail-closed scoring; SC-521c={sc521_source}; case-key allowlist; 1 known malformed fixture; mtime-bound={mtime_bound}/177 cases; 70/70 published identities")
 
 
 def main() -> int:
