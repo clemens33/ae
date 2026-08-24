@@ -6,6 +6,7 @@ Four classes, and the freshness one is the reason this file exists. A derived ar
 goes stale the moment its source grows and nothing re-runs to say so; the previous
 column was found stale by a human noticing. This makes staleness a gate result.
 """
+import hashlib
 import argparse, csv, json, os, re, subprocess, sys, collections
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -120,6 +121,134 @@ def alert_owners(case, session):
     return {k: v[0] for k, v in cur.items()}
 
 
+# The clock binding, RE-DERIVED HERE rather than imported. A gate that imports
+# the generator's constants cannot disagree with it, and gate/generator drift is
+# exactly the defect this file exists to catch — it has already shipped once,
+# when the gate kept an old carrier grammar and demanded moves the generator had
+# correctly stopped emitting. These literals are transcribed from the same fixed
+# bytes (arms/A2/harness/arm-a2.sh lines 122-134, manifest-pinned PROVENANCE).
+CLOCK_HARNESS = "arms/A2/harness/arm-a2.sh"
+CLOCK_HARNESS_SHA256 = \
+    "f9e5a07f17865a488e65fb5e1e1c2e4a088bcd80bbdd35e9953b4201fd1c5932"
+CLOCK_WINDOWS = ("inside", "outside")
+CLOCK_SUFFIXES = ("list_active", "list_active_json", "list_busy", "active_all",
+                  "all_active", "active_stopped", "stopped_active",
+                  "needsattn_active", "active_needsattn")
+
+
+def clock_binding(out, pairs):
+    """(case, consumer) -> now_epoch, or {} with a finding if the source moved."""
+    h = os.path.join(SRC, CLOCK_HARNESS)
+    try:
+        sha = hashlib.sha256(open(h, "rb").read()).hexdigest()
+    except IOError:
+        fail(out, "CLOCK-SOURCE", "%s is unreadable, so no window invocation can be "
+             "bound to the clock it was captured at" % CLOCK_HARNESS)
+        return {}
+    if sha != CLOCK_HARNESS_SHA256:
+        fail(out, "CLOCK-SOURCE", "%s is sha256 %s, not the pinned %s; the transcribed "
+             "binding no longer cites these bytes" % (CLOCK_HARNESS, sha[:12],
+                                                      CLOCK_HARNESS_SHA256[:12]))
+        return {}
+    binding = {}
+    for case in sorted({c for c, _ in pairs}):
+        p = os.path.join(SRC, case, "activity-window.txt")
+        if not os.path.exists(p):
+            continue
+        txt = open(p, encoding="utf-8").read()
+        clocks = {}
+        for win in CLOCK_WINDOWS:
+            m = re.search(r"^%s_window_now=(\d+)" % win, txt, re.M)
+            if m:
+                clocks[win] = int(m.group(1))
+        if len(clocks) != len(CLOCK_WINDOWS) or len(set(clocks.values())) != len(clocks):
+            fail(out, "CLOCK-SOURCE", "%s does not record two distinct window clocks"
+                 % case)
+            continue
+        for win in CLOCK_WINDOWS:
+            for suf in CLOCK_SUFFIXES:
+                binding[(case, "win_%s_%s" % (win, suf))] = clocks[win]
+    counts = collections.Counter(p for p in pairs if p[1].startswith("win_"))
+    for cid, extra_set, msg in (
+            ("CLOCK-MISSING", set(binding) - set(counts),
+             "harness-produced window consumer(s) absent from fixed INVOCATIONS.tsv"),
+            ("CLOCK-UNMAPPED", set(counts) - set(binding),
+             "window consumer(s) the pinned harness does not produce"),
+            ("CLOCK-AMBIGUOUS", {k for k, n in counts.items() if n > 1},
+             "window consumer(s) appearing more than once, so uniquely bound to nothing")):
+        if extra_set:
+            fail(out, cid, "%d %s: %s" % (len(extra_set), msg, sorted(extra_set)[:3]))
+    return binding
+
+
+KEYSET = os.path.join(HERE, "SC-509C-KEYSET.tsv")
+KEYSET_DECL = re.compile(r"^# CUT-FROM:\s+(\S+)\s+blob\s+([0-9a-f]{40})\s*$", re.M)
+REASON_LOCUS = re.compile(r"^sessions\[([^\]]+)\]\.agents\[([^\]]+)\]\.reason$")
+
+
+def _509c_keys(rows):
+    """(case, consumer, session, agent_ref) for every SC-509c row of a table."""
+    keys = set()
+    for r in rows:
+        if r.get("obligation_id") != "SC-509c":
+            continue
+        m = REASON_LOCUS.match(r.get("locus", ""))
+        if m:
+            keys.add((r["case"], r["consumer"], m.group(1), m.group(2)))
+    return keys
+
+
+def check_keyset(out, obls, quiet):
+    """SC-509C-KEYSET.tsv is FROZEN, and this proves the freeze is honest.
+
+    The relation is historical — the file must equal the SC-509c key set of the
+    blob it declares it was cut from — so it never demands re-derivation, unlike
+    the `^SOURCE:` freshness grammar. What CAN rot is the claim itself: a hand
+    edit, a partial regeneration, or a declaration pointing at the wrong blob.
+    The live delta is printed rather than asserted, because a frozen census
+    diverging from a moving table is the expected state, not a finding.
+    """
+    if not os.path.exists(KEYSET):
+        return
+    text = open(KEYSET, encoding="utf-8").read()
+    decls = KEYSET_DECL.findall(text)
+    if len(decls) != 1:
+        fail(out, "KEYSET-FROZEN", "SC-509C-KEYSET.tsv declares %d CUT-FROM relations; "
+             "exactly one is required, or the freeze is a claim nothing checks" % len(decls))
+        return
+    _, blob = decls[0]
+    try:
+        src = subprocess.run(["git", "cat-file", "blob", blob], cwd=HERE,
+                             capture_output=True, text=True, check=True).stdout
+    except (subprocess.CalledProcessError, OSError):
+        fail(out, "KEYSET-FROZEN", "SC-509C-KEYSET.tsv is cut from blob %s, which git "
+             "cannot resolve" % blob[:12])
+        return
+    cut = _509c_keys(csv.DictReader(src.splitlines(), delimiter="\t"))
+    body_lines = [l for l in text.split("\n") if l and not l.startswith("#")]
+    head = body_lines[0].split("\t")
+    col = {k: head.index(k) for k in ("case", "consumer", "session", "agent_ref")
+           if k in head}
+    if len(col) != 4:
+        fail(out, "KEYSET-FROZEN", "SC-509C-KEYSET.tsv is missing key column(s) %s"
+             % sorted({"case", "consumer", "session", "agent_ref"} - set(col)))
+        return
+    frozen = set()
+    for l in body_lines[1:]:
+        f = l.split("\t")
+        frozen.add(tuple(f[col[k]] for k in ("case", "consumer", "session", "agent_ref")))
+    if frozen != cut:
+        fail(out, "KEYSET-FROZEN", "SC-509C-KEYSET.tsv holds %d keys but blob %s holds "
+             "%d SC-509c keys (+%d/-%d); the declared freeze does not describe this file"
+             % (len(frozen), blob[:12], len(cut), len(frozen - cut), len(cut - frozen)))
+        return
+    live = _509c_keys(obls)
+    if not quiet:
+        print("  SC-509C-KEYSET.tsv frozen at blob %s: %d keys, honest; live table has "
+              "%d (+%d/-%d since the cut)"
+              % (blob[:12], len(frozen), len(live), len(live - frozen), len(frozen - live)))
+
+
 def digest_text(text):
     """The captured document, or None when this row is not a digest at all."""
     if '"schema_version"' not in text:
@@ -204,6 +333,8 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
     # ---- 4. CONVERSE: what carries an obligation must, and what does not must not ----
     p1 = [r for r in csv.DictReader(open(inv, encoding="utf-8"), delimiter="\t") if r["phase"] == "P1"]
     p1_rows = p1
+    binding = clock_binding(out, [(os.path.dirname(r["case"]), r["consumer"])
+                                  for r in p1])
     for r in p1:
         case, consumer = os.path.dirname(r["case"]), r["consumer"]
         text = body(case, consumer)
@@ -279,9 +410,24 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
                 fail(out, "SC-521C-ARITY", "%s/%s has an empty live scope and carries %d "
                      "SC-521c set obligations; exactly one is owed"
                      % (case, consumer, n_521c))
-            if not scope_empty and n_521c:
-                fail(out, "SC-521C-SURFACE", "%s/%s owes an empty-set obligation with a "
-                     "non-empty live scope" % (case, consumer))
+            bound = (case, consumer) in binding
+            if scope_empty and bound:
+                fail(out, "SC-521C-BOTH", "%s/%s is a clock-bound window invocation AND "
+                     "has an empty live scope; the two set obligations would collide on "
+                     "one address" % (case, consumer))
+            if not scope_empty and not bound and n_521c:
+                fail(out, "SC-521C-SURFACE", "%s/%s owes a set obligation with a non-empty "
+                     "live scope and no recorded clock" % (case, consumer))
+            if not scope_empty and bound and n_521c != 1:
+                fail(out, "SC-521C-CLOCK-ARITY", "%s/%s is bound to the %d clock and carries "
+                     "%d SC-521c set obligations; exactly one is owed"
+                     % (case, consumer, binding[(case, consumer)], n_521c))
+            if bound:
+                want = "sessions[] (set) @ now=%d" % binding[(case, consumer)]
+                for o in carriers.get((case, consumer), []):
+                    if o["obligation_id"] == "SC-521c" and o["locus"] != want:
+                        fail(out, "SC-521C-CLOCK", "%s/%s was captured at %s but its set "
+                             "obligation is addressed %r" % (case, consumer, want, o["locus"]))
             if want_c and "SC-509c" not in ids:
                 fail(out, "MISSING-509c", "%s/%s has a null-reason agent whose own state names "
                      "an agent-owned contribution and owes no reason move" % (case, consumer))
@@ -418,6 +564,8 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
         per = collections.Counter(o["obligation_id"] for o in obls)
         print("obligations %d over %d carrying rows; contract blob %s"
               % (len(obls), len(carriers), rec.get("contract_blob", "?")[:12]))
+    check_keyset(out, obls, quiet)
+    if not quiet:
         print("verdict (DERIVED, no stored column): %d EXPECTED-DIVERGENCE + %d EXPECTED-MATCH "
               "= %d P1 rows" % (divergence, len(universe) - divergence, len(universe)))
         for k in sorted(per): print("  %-10s %4d" % (k, per[k]))

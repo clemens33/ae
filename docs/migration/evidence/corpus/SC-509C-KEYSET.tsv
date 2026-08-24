@@ -8,6 +8,31 @@
 #                   summary names the contribution, still current at capture.
 # P222 = the ruled population. P128/P108/P88 are the earlier state-only
 # sub-populations, retained so the prior comparison stays checkable.
+#
+# THIS FILE IS FROZEN, AND THAT IS A DECLARATION, NOT A DEFECT. It is a census of
+# ONE table state, kept fixed so an independent derivation has a stable reference
+# to compare against. It has no generator, which is why its divergence from the
+# live table went unnoticed until it was measured; the relation below makes the
+# freeze checkable instead of assumed.
+#
+# CUT-FROM: docs/migration/evidence/corpus/OBLIGATIONS.tsv blob 44e06c29cc078e6933298139d204413966419d81
+#
+# The relation is HISTORICAL, so it can never go stale: this file's key set must
+# EQUAL the SC-509c key set of that blob, forever. verify-obligations.py checks
+# it (KEYSET-FROZEN) and reports the live delta against the current table, so
+# drift stays visible without the file pretending to be current. The spelling is
+# CUT-FROM, not SOURCE, deliberately: `^SOURCE:` is the registry-freshness
+# grammar, which demands re-derivation whenever its source moves — the wrong
+# relation for an artifact whose whole value is that it does NOT move.
+#
+# Measured drift at declaration (2026-08-24), AS SETS, because a count comparison
+# reports the wrong thing in both directions here — 222 -> 228 reads as a net +6
+# and is actually +12 and -6:
+#   +12  A3b c04/c05 ro+rw x 3 json consumers: fake:low and fake:high, carried by
+#        `action=throttled` events whose summary does not begin "throttled for".
+#    -6  A2 c01-filters ro+rw x 3 sessions on inter_needsattnstopped_json, whose
+#        live scope is empty under SC-521b/SC-521c, so no session is a possible
+#        descendant and no reason obligation is owed there.
 case	consumer	session	agent_ref	locus	from	to	session_attention	evidence	populations
 arms/A2/c01-filters-ro	inter_allneedsattn_json	tg2b	fake:lead	sessions[tg2b].agents[fake:lead].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88
 arms/A2/c01-filters-ro	inter_allneedsattn_json	tg2wu	fake:worker	sessions[tg2wu].agents[fake:worker].reason	null	waiting-user	waiting-user	state	P222+P128+P108+P88

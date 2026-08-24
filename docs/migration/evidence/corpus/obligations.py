@@ -15,6 +15,7 @@ possibility rather than repairing the symptom.
 `from` IS READ FROM THE CAPTURED BYTES, never assumed — the gate re-reads and compares.
 """
 import csv
+import hashlib
 import json, os, re, subprocess, sys, collections
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -166,6 +167,142 @@ def empty_live_scope(argv):
     return winner == "--stopped" and any(f in words for f in LIVE_SCOPE_FILTERS)
 
 
+# ---- THE PER-INVOCATION CLOCK BINDING, RESOLVED FROM FIXED BYTES.
+#
+# Ruled 2026-08-24 (gpt56sol:colead, relayed by fable5:lead): the consumer-name
+# prefix is NOT authority. Binding a clock by label shape is consumer-shape
+# inference, the same class the C-locale binding was corrected for. The binding
+# is a RECORDED fact, and the record is the pinned capture harness
+# arms/A2/harness/arm-a2.sh — CORPUS-MANIFEST.tsv line 1730, class PROVENANCE,
+# sha256 f9e5a07f..., 10468 bytes — whose lines 122-134 read:
+#
+#     local win now
+#     for win in inside outside; do
+#         [[ "$win" == inside ]] && now=$inside || now=$outside
+#         ARM_FAKE_NOW=$now run_consumer "win_${win}_list_active"      ... list --active
+#         ...                                                          (nine labels)
+#     done
+#
+# ARM_FAKE_NOW=$now is set in the SAME STATEMENT that names the consumer, so the
+# window an invocation ran at is recorded at the point of capture rather than
+# inferred afterwards from what it was called. The nine suffixes below are
+# TRANSCRIBED from lines 125-133; the two numeric clocks are PARSED from each
+# case's own activity-window.txt (harness lines 112-113 derive them as the tg1
+# events mtime + 60s and + 100000s against a documented 300s window).
+#
+# There is deliberately no startswith("win_inside_") inference anywhere: the map
+# is a literal cross-product of transcribed constants, and it is RECONCILED with
+# fixed INVOCATIONS.tsv in BOTH directions. A missing, extra, renamed, ambiguous
+# or unmapped window consumer is FATAL. The harness sha256 is re-checked at
+# generation, so a transcription whose source has moved fails instead of
+# quietly citing bytes that no longer say what it claims.
+CLOCK_HARNESS = "arms/A2/harness/arm-a2.sh"
+CLOCK_HARNESS_SHA256 = \
+    "f9e5a07f17865a488e65fb5e1e1c2e4a088bcd80bbdd35e9953b4201fd1c5932"
+CLOCK_WINDOWS = ("inside", "outside")
+CLOCK_SUFFIXES = ("list_active", "list_active_json", "list_busy", "active_all",
+                  "all_active", "active_stopped", "stopped_active",
+                  "needsattn_active", "active_needsattn")
+
+
+def clock_windows(case):
+    """The two recorded numeric clocks for a case, or None if it records none."""
+    p = os.path.join(SRC, case, "activity-window.txt")
+    if not os.path.exists(p):
+        return None
+    txt = open(p, encoding="utf-8").read()
+    got = {}
+    for win in CLOCK_WINDOWS:
+        m = re.search(r"^%s_window_now=(\d+)" % win, txt, re.M)
+        if not m:
+            raise SystemExit("FATAL: %s records no %s_window_now" % (p, win))
+        got[win] = int(m.group(1))
+    if got["inside"] == got["outside"]:
+        raise SystemExit("FATAL: %s records one clock twice, so the two windows "
+                         "are indistinguishable and neither is bound" % p)
+    return got
+
+
+def clock_binding(pairs):
+    """(case, consumer) -> (window, now_epoch) for every window invocation.
+
+    `pairs` is every (case, consumer) row of fixed INVOCATIONS.tsv AS A LIST, not
+    a set: a set would collapse a duplicated row and hide the ambiguity the
+    ruling requires to fail.
+    """
+    h = os.path.join(SRC, CLOCK_HARNESS)
+    sha = hashlib.sha256(open(h, "rb").read()).hexdigest()
+    if sha != CLOCK_HARNESS_SHA256:
+        raise SystemExit("FATAL: %s is sha256 %s, not the manifest-pinned %s; the "
+                         "binding transcribed above no longer cites these bytes"
+                         % (CLOCK_HARNESS, sha, CLOCK_HARNESS_SHA256))
+    binding = {}
+    for case in sorted({c for c, _ in pairs}):
+        clocks = clock_windows(case)
+        if clocks is None:
+            continue
+        for win in CLOCK_WINDOWS:
+            for suf in CLOCK_SUFFIXES:
+                binding[(case, "win_%s_%s" % (win, suf))] = (win, clocks[win])
+    counts = collections.Counter(p for p in pairs if p[1].startswith("win_"))
+    ambiguous = sorted(k for k, n in counts.items() if n > 1)
+    if ambiguous:
+        raise SystemExit("FATAL: %d window consumer(s) appear more than once in fixed "
+                         "INVOCATIONS.tsv, so no invocation they name is uniquely "
+                         "bound: %s" % (len(ambiguous), ambiguous[:4]))
+    absent = sorted(set(binding) - set(counts))
+    extra = sorted(set(counts) - set(binding))
+    if absent:
+        raise SystemExit("FATAL: %d harness-produced window consumer(s) missing from "
+                         "fixed INVOCATIONS.tsv: %s" % (len(absent), absent[:4]))
+    if extra:
+        raise SystemExit("FATAL: %d window consumer(s) in fixed INVOCATIONS.tsv that "
+                         "the pinned harness does not produce: %s"
+                         % (len(extra), extra[:4]))
+    return binding
+
+
+CLOCK_POPULATION = "list_all_json"
+
+
+def render_set(names):
+    """A stable rendering of a session set — sorted, so two derivations of the
+    same set are byte-comparable, and never a bare count."""
+    return "+".join(sorted(names)) if names else "empty"
+
+
+def clock_active_set(case, now, frozen):
+    """The successor's `--active` set at the harness-recorded clock `now`.
+
+    DERIVED, not assumed equal to the frozen set: it starts from what the frozen
+    filter returned and is then checked against the case's OWN `--all` capture,
+    so a session the frozen bash dropped is examined rather than presumed absent.
+    SC-524 puts a future timestamp INSIDE the window, so a running session whose
+    last_active_epoch is strictly beyond `now` is owed even though frozen v1 did
+    not return it.
+
+    An unreachable case is FATAL rather than silently equal: SC-521c widens
+    `--active` to status `unknown`, and which sessions the successor would call
+    unknown is not decidable from a v1 capture. No such case is bound today; the
+    guard exists so that the day one is, this stops instead of inventing a set.
+    """
+    if unreachable(case):
+        raise SystemExit("FATAL: %s is unreachable, so SC-521c's `unknown` widening "
+                         "makes its --active set underivable from a v1 capture" % case)
+    text = body(case, CLOCK_POPULATION)
+    try:
+        pop = json.loads(text).get("sessions", []) or []
+    except ValueError:
+        raise SystemExit("FATAL: %s has no parseable %s capture, so its --active set "
+                         "at %d cannot be derived" % (case, CLOCK_POPULATION, now))
+    out = set(frozen)
+    for s in pop:
+        la = s.get("last_active_epoch")
+        if s.get("status") == "running" and isinstance(la, int) and la > now:
+            out.add(s.get("name"))
+    return out
+
+
 def carrier_contribution(event):
     """The contribution this event supplies, or None if it is not a carrier."""
     if not event.get("target"):
@@ -252,10 +389,13 @@ def loss_sessions(case):
 
 
 def main():
+    p1 = [r for r in csv.DictReader(open(INV, encoding="utf-8"), delimiter="\t")
+          if r["phase"] == "P1"]
+    # Built FIRST, so a broken clock binding stops the generator before it writes
+    # a table whose window rows would silently carry the wrong clock.
+    binding = clock_binding([(os.path.dirname(r["case"]), r["consumer"]) for r in p1])
     rows, seen, unproved = [], set(), []
-    for r in csv.DictReader(open(INV, encoding="utf-8"), delimiter="\t"):
-        if r["phase"] != "P1":
-            continue
+    for r in p1:
         case, consumer = os.path.dirname(r["case"]), r["consumer"]
         seen.add((case, consumer))
         text = body(case, consumer)
@@ -332,6 +472,24 @@ def main():
                              "--stopped is the winning selector under SC-521b and a "
                              "stopped session satisfies no live-scope predicate under "
                              "SC-521c, so this set is empty in both orderings"))
+            elif (case, consumer) in binding and doc is not None:
+                # MEMBER 3 — the window invocations, at the clock the pinned capture
+                # harness RECORDED for each one (see CLOCK_HARNESS above). Nothing
+                # here reads the consumer's name for meaning; `binding` supplies the
+                # clock and the label is only its key.
+                win, now = binding[(case, consumer)]
+                froz = [x.get("name") for x in (doc.get("sessions") or [])]
+                succ = clock_active_set(case, now, froz)
+                rows.append((case, consumer, "SC-521c", "digest",
+                             "sessions[] (set) @ now=%d" % now,
+                             render_set(froz), render_set(succ), "equals",
+                             "OBSERVED", "OBSERVED",
+                             "ARM_FAKE_NOW=%d is the %s-window clock this invocation "
+                             "was captured at, bound in the same statement that named "
+                             "it (arm-a2.sh:125-133, sha256 %s); the set is derived "
+                             "against the case's own --all capture, so SC-524's "
+                             "future-timestamp widening is checked rather than assumed"
+                             % (now, win, CLOCK_HARNESS_SHA256[:12])))
             template = template_of(case)
             for sess in ([] if scope_empty else (doc or {}).get("sessions", []) or []):
                 name = sess.get("name")

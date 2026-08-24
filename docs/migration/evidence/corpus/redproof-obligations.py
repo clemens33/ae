@@ -28,6 +28,23 @@ def run(obl=None, fresh=None, inv=None):
     return r.returncode, ids
 
 MUTATIONS = [
+    # ---- MEMBER 3: the clock binding. Aimed at the DEFECT (a window invocation
+    # scored at a clock it was not captured at), not at the code that carries it.
+    ("SC-521C-CLOCK-ARITY", OBL, "a clock-bound window invocation stripped of its set obligation",
+     lambda s: "\n".join(l for l in s.split("\n") if not (
+         l.startswith("arms/A2/c01-filters-ro\twin_inside_list_active_json\tSC-521c")))),
+    ("SC-521C-CLOCK", OBL, "a set obligation addressed to a clock the capture did not run at",
+     lambda s: s.replace("(set) @ now=1787243367\ttg1", "(set) @ now=1787243368\ttg1", 1)),
+    ("SC-521C-SURFACE", OBL, "a set obligation on a digest with no recorded clock",
+     lambda s: s.rstrip("\n") + "\n" + "\t".join(
+         ["arms/A1/c01-healthy-ro", "list-json", "SC-521c", "digest", "sessions[] (set)",
+          "1", "empty", "equals", "OBSERVED", "OBSERVED", "seeded"]) + "\n"),
+    ("CLOCK-UNMAPPED", INV, "a window consumer the pinned harness does not produce",
+     lambda s: s.replace("\twin_inside_list_busy\t", "\twin_inside_list_idle\t", 1)),
+    ("CLOCK-AMBIGUOUS", INV, "a window consumer recorded twice, so bound to no single clock",
+     lambda s: s.rstrip("\n") + "\n" + "\t".join(
+         ["arms/A2/c01-filters-ro/consumers.tsv", "win_inside_list_busy", "0", "P1",
+          "ae list", "list --busy", "seeded", "seeded"]) + "\n"),
     ("FROM", OBL, "a captured value the table misreports",
      lambda s: s.replace("\tschema_version\t1\t2\t", "\tschema_version\t3\t2\t", 1)),
     # Re-aimed: the SC-017o human diagnostic was the table's only `at-least` and its
