@@ -475,7 +475,11 @@ code.** It reads as a product-behavior spec, so the ad-hoc command you run
 during a session does not feel like its subject — and two agents in one day
 reached for GNU-only `timeout`/flags on macOS while actively citing rows from
 this table for the product. Before running a measurement or probe, check your
-one-off command against the same rows you would check a diff against.
+one-off command against the same rows you would check a diff against — and
+note the class's expensive member is SILENT: a missing `timeout` is loud at
+rc=127, but `tac`, `stat -c` and `date -d` fail quietly through the very
+fallback idiom above, so the cost is not a broken command but a wrong number
+in an evidence report.
 
 | Raw (GNU-only) | Shim | BSD form |
 |---|---|---|
