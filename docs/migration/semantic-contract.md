@@ -235,16 +235,14 @@ sparsity". An omitted `attention` on a fully-read quiet entry is exactly that
 collapse: loss and legitimate-none become one byte pattern, the condition SC-509b
 exists to forbid. Reusing loss's spelling for a legitimate answer does not extend
 SC-509b; it destroys it.
-**SCOPE GUARD — required in-row.** This rules PRESENCE for the three attention
-members of a READ entry and nothing else. It does NOT rule presence for any other
-optional SC-509 member (`goal`, `goal_set_epoch`, `branch`, `mode`, `origin`,
-`work_dir`, `agents[].session_id`, `agents[].state`), each of which is also
-universally present in frozen v1 and separately omitted by the successor today;
-those need their own evidence read and are recorded as an open finding rather than
-swept in here. It does not touch `degraded`, whose omission on a normal entry
-SC-509b states positively. It does not rule the exact bytes of `generated_at`,
-which remain open. And it does not decide `agents[].reason`, which SC-509c already
-determines.
+**SCOPE GUARD — required in-row.** This row owns the attention triad's VALUES —
+`false` / `null` / `0` when quiet. It does NOT own presence as a class: SC-509 does,
+and its presence rule reaches every documented member on the same evidence. The
+first draft of this guard claimed the eight neighbouring members "need their own
+evidence read", which the census in this very row had already falsified; corrected
+on colead's ruling, 2026-08-24. `degraded` is untouched — SC-509b states its
+omission on a normal entry positively. `generated_at`'s exact bytes remain open.
+`agents[].reason`'s value is SC-509c's.
 Authority: commands.md:60-76 + slice-1b joint ruling + SC-509 field list + SC-509d
 carry-forward + SC-509b scope and its identical-rendering prohibition + colead
 ruling 2026-08-24. Empirical: **observed** — all 429 frozen v1 session entries in
@@ -1541,7 +1539,31 @@ doctrine). Empirical: pending. Conflict: none. **classified_by: both seats,
 (name/status/mode/origin/work_dir/goal/goal_set_epoch/branch/last_active_epoch/
 needs_attention/attention/attention_rank) and `agents[]` fields (ref/alias/name/
 session_id/alive/state/reason); `schema_version` lets consumers gate on shape.
-Authority: commands.md:97-132. Empirical: pending. Conflict: none.
+**PRESENCE IS PART OF THE SCHEMA** (colead ruling, 2026-08-24): every documented
+member above whose SOURCE WAS READ is PRESENT, carrying its legitimate empty value
+— `null` for an absent string or reason, `0` for `attention_rank`, `false` for
+`needs_attention`. Omission requires SC-509b loss or another explicit row, and
+nothing else. This rules PRESENCE as a class and invents no VALUES: what each
+member's legitimate empty value IS stays with the row that owns it (SC-017g for the
+attention triad, SC-509c for `agents[].reason`), and `generated_at`'s exact bytes
+remain open.
+**Why a class rule rather than a member-by-member one.** The argument does not vary
+across members: each is a documented SC-509 member, SC-509d carries it forward, no
+row authorises omitting it, frozen v1 always renders it, and SC-509b reserves
+omission for facts that could not be READ. Measured across the corpus: all 429
+frozen v1 session entries carry every session member listed above and all 840 agent
+entries carry every agent member — including the ones a successor is tempted to
+omit, `goal` (null in 322 of 429), `goal_set_epoch` (null in 332), `branch` (null
+in 6), `attention` (null in 193) and `agents[].reason` (null in all 840). Ruling
+these one at a time would have spent eight rounds re-deriving one argument.
+**The distinction this protects is SC-509b's own.** Its closing sentence — "Damage
+is never rendered identically to legitimate sparsity" — holds only if the two have
+different spellings. Presence-with-empty-value is the legitimate answer; omission
+is the loss. Spend omission on a legitimate empty and SC-509b has nothing left to
+say.
+Authority: commands.md:97-132 + SC-509d carry-forward + SC-509b scope + colead
+ruling 2026-08-24. Empirical: **observed** — 429/429 frozen v1 session entries and
+840/840 agent entries render every documented member. Conflict: none.
 
 **SC-509d — the P1 successor schema is version 2 because status gains `unknown`.**
 Bucket 3 — fix-known-defect(#105). Once the P1 read-side flip implements SC-017l/m,
