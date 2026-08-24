@@ -122,7 +122,7 @@ pub struct AgentEntry {
 }
 
 impl AgentEntry {
-    /// This agent as SC-509's object, in the documented field order.
+    /// This agent as SC-509's object.
     #[must_use]
     pub fn to_json(&self) -> Value {
         let mut fields = vec![
@@ -223,7 +223,7 @@ impl SessionEntry {
         self.attention.is_some()
     }
 
-    /// This session as SC-509's object, in the documented field order.
+    /// This session as SC-509's object.
     #[must_use]
     pub fn to_json(&self) -> Value {
         let mut fields = vec![
@@ -251,8 +251,8 @@ impl SessionEntry {
             "agents".to_owned(),
             Value::Arr(self.agents.iter().map(AgentEntry::to_json).collect()),
         ));
-        // SC-509b, additive: appended AFTER the documented field set, so
-        // SC-509's order survives intact as this object's prefix.
+        // SC-509b, additive: present only when true. Member order is an open
+        // choice; tests compare the member set, not this key's position.
         if self.degraded {
             fields.push(("degraded".to_owned(), Value::Bool(true)));
         }
@@ -285,8 +285,9 @@ impl Digest {
     /// completeness fact.
     ///
     /// The stamp is a parameter rather than a clock read: a document whose
-    /// content depends on the wall clock cannot be asserted byte-for-byte, and
-    /// a snapshot format is exactly the thing worth asserting byte-for-byte.
+    /// `generated_at` depends on the wall clock cannot be asserted, and the
+    /// snapshot's members and values are exactly the thing worth asserting.
+    /// Rendered member order is an open choice (phase-3 criterion 15).
     ///
     /// `inventory_complete` is a parameter for the same reason it is not
     /// derived from `sessions`: an incomplete snapshot can hold any number of
@@ -316,9 +317,7 @@ impl Digest {
                 "sessions",
                 Value::Arr(self.sessions.iter().map(SessionEntry::to_json).collect()),
             ),
-            // SC-017o, appended AFTER SC-509's documented set, exactly as
-            // SC-509b's `degraded` is appended inside a session object: the
-            // documented order survives intact as this object's prefix.
+            // SC-017o, an additional member of every successor document.
             ("inventory_complete", Value::Bool(self.inventory_complete)),
         ])
     }
@@ -336,7 +335,7 @@ impl Digest {
     ///     vec![SessionEntry::new("my-feature", Status::Running)],
     ///     true,
     /// );
-    /// assert!(digest.render().starts_with(r#"{"schema_version":2,"#));
+    /// assert!(digest.render().contains(r#""schema_version":2"#));
     /// ```
     #[must_use]
     pub fn render(&self) -> String {
@@ -365,10 +364,11 @@ fn push_num(fields: &mut Vec<(String, Value)>, key: &str, value: Option<i64>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentEntry, Digest, SCHEMA_VERSION, SessionEntry, Status};
+    use super::{AgentEntry, Digest, SessionEntry, Status, SCHEMA_VERSION};
     use crate::attention::Reason;
     use crate::json;
     use crate::time::Timestamp;
+    use std::collections::BTreeSet;
 
     /// The worked example from commands.md's `--json digest` block, rebuilt as
     /// the model. The expected bytes below are read off that block, not off any
@@ -401,6 +401,8 @@ mod tests {
 
     #[test]
     fn sc_509_renders_the_documented_example_field_for_field() {
+        // Member set and values, read off commands.md's worked example. The
+        // concat below is that bag of members, not a pin of rendered order.
         let rendered = documented_example().render();
         let expected = concat!(
             r#"{"schema_version":2,"generated_at":"2026-05-29T14:00:00Z","sessions":[{"#,
@@ -413,7 +415,12 @@ mod tests {
             r#""session_id":"e795c9e9","alive":true,"state":"blocked","reason":"blocked"}]"#,
             r#"}],"inventory_complete":true}"#
         );
-        assert_eq!(rendered, expected);
+        let actual = json::parse(&rendered).expect("the digest is json");
+        let expected = json::parse(expected).expect("the documented bag is json");
+        assert!(
+            actual.same_members(&expected),
+            "documented members and values, any order: {rendered}"
+        );
     }
 
     #[test]
@@ -451,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn sc_509_the_document_is_one_object_carrying_the_version_first() {
+    fn sc_509_the_document_is_one_object_carrying_the_version() {
         let value = json::parse(&documented_example().render()).expect("the digest is json");
         assert_eq!(
             value.get("schema_version"),
@@ -532,16 +539,17 @@ mod tests {
         // omission. These two entries carry the same FACTS and must not render
         // identically, because one of them lost data and the other did not.
         let damaged = SessionEntry::degraded("x", Status::Stopped).to_json();
-        let json::Value::Obj(fields) = &damaged else {
-            panic!("an object");
-        };
-        let keys: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(
-            keys,
-            ["name", "status", "needs_attention", "agents", "degraded"],
-            "identity survives, the loss is stated, nothing is fabricated"
+        let expected = json::Value::obj([
+            ("name", json::Value::str("x")),
+            ("status", json::Value::str("stopped")),
+            ("needs_attention", json::Value::Bool(false)),
+            ("agents", json::Value::Arr(vec![])),
+            ("degraded", json::Value::Bool(true)),
+        ]);
+        assert!(
+            damaged.same_members(&expected),
+            "identity survives, the loss is stated, nothing is fabricated: {damaged}"
         );
-        assert_eq!(damaged.get("degraded"), Some(&json::Value::Bool(true)));
 
         let sparse = SessionEntry::new("x", Status::Stopped).to_json();
         assert_eq!(sparse.get("degraded"), None, "a normal entry omits the key");
@@ -549,17 +557,27 @@ mod tests {
     }
 
     #[test]
-    fn sc_509b_is_additive_so_the_documented_order_is_still_a_prefix() {
+    fn sc_509b_is_additive_so_a_degraded_entry_keeps_the_other_members() {
         let mut entry = SessionEntry::new("x", Status::Running);
         entry.degraded = true;
-        let json::Value::Obj(fields) = entry.to_json() else {
+        let damaged = entry.to_json();
+        let sparse = SessionEntry::new("x", Status::Running).to_json();
+        let json::Value::Obj(damaged_fields) = &damaged else {
             panic!("an object");
         };
-        let keys: Vec<String> = fields.iter().map(|(k, _)| k.clone()).collect();
+        let json::Value::Obj(sparse_fields) = &sparse else {
+            panic!("an object");
+        };
+        let damaged_keys: BTreeSet<&str> = damaged_fields.iter().map(|(k, _)| k.as_str()).collect();
+        let sparse_keys: BTreeSet<&str> = sparse_fields.iter().map(|(k, _)| k.as_str()).collect();
+        assert!(
+            sparse_keys.is_subset(&damaged_keys),
+            "no existing member is replaced when the loss key appears"
+        );
         assert_eq!(
-            keys.last().map(String::as_str),
-            Some("degraded"),
-            "the new key goes after the documented set, never inside it"
+            &damaged_keys - &sparse_keys,
+            BTreeSet::from(["degraded"]),
+            "the new key is the only addition"
         );
     }
 
@@ -606,12 +624,15 @@ mod tests {
     #[test]
     fn an_empty_digest_is_still_a_versioned_document() {
         let rendered = Digest::new(Timestamp::from_epoch(0), Vec::new(), true).render();
-        assert_eq!(
-            rendered,
-            concat!(
-                r#"{"schema_version":2,"generated_at":"1970-01-01T00:00:00Z","sessions":[],"#,
-                r#""inventory_complete":true}"#
-            )
+        let actual = json::parse(&rendered).expect("the empty digest is json");
+        let expected = json::parse(concat!(
+            r#"{"schema_version":2,"generated_at":"1970-01-01T00:00:00Z","sessions":[],"#,
+            r#""inventory_complete":true}"#
+        ))
+        .expect("the expected bag is json");
+        assert!(
+            actual.same_members(&expected),
+            "empty still carries version, stamp, sessions, completeness: {rendered}"
         );
     }
 }

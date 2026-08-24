@@ -10,9 +10,9 @@
               PRODUCT code may reach"
 )]
 
-use super::parity::Invocation;
-use super::parity::capture::ExitOutcome;
 use super::parity::capture::raw;
+use super::parity::capture::ExitOutcome;
+use super::parity::Invocation;
 
 // ONE OF THREE DOORS — `clippy.toml` denies `std::process::Command` crate-wide
 // and `parity_self_test::the_capability_boundary_holds_against_any_lint_relaxation`
@@ -103,11 +103,17 @@ fn criterion_1_the_real_list_and_ls_surfaces_answer_over_a_real_state_root() {
             let stdout = String::from_utf8(out.stdout).expect("stdout should be utf-8");
             let stderr = String::from_utf8(out.stderr).expect("stderr should be utf-8");
 
-            assert_eq!(
-                out.status.code(),
-                Some(0),
-                "{spelling}/json={json}: {stderr}"
-            );
+            // Per-surface (gate blob 8cccbe44 / OC-P3-HUMAN-DIAGNOSTIC vs
+            // OC-P3-JSON-WARNING): incomplete-human rc is open; JSON process
+            // rc is retained. These planted sessions record a server this
+            // invocation cannot query, so the snapshot is incomplete.
+            if json {
+                assert_eq!(
+                    out.status.code(),
+                    Some(0),
+                    "{spelling}/json={json}: {stderr}"
+                );
+            }
             assert!(
                 !stderr.contains("no session source"),
                 "{spelling}/json={json}: the unwired refusal came back: {stderr}"

@@ -349,10 +349,10 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{World, render, table};
+    use super::{render, table, World};
     use crate::attention::Reason;
     use crate::digest::{AgentEntry, SessionEntry, Status};
-    use crate::filters::{DEFAULT_ACTIVE_WINDOW_SECS, ListArgs};
+    use crate::filters::{ListArgs, DEFAULT_ACTIVE_WINDOW_SECS};
     use crate::json;
     use crate::time::Timestamp;
 
@@ -778,16 +778,21 @@ mod tests {
 
     #[test]
     fn sc_509_a_world_with_no_sessions_still_renders_a_complete_document() {
-        // Only the ratified half is pinned. What the TABULAR rendering prints
-        // for a world with nothing in it is provisional layout; that it carries
-        // no session is asserted structurally in
+        // Only the ratified half is pinned: the member set of a complete empty
+        // digest. Rendered member order is an open choice. What the TABULAR
+        // rendering prints for a world with nothing in it is provisional layout;
+        // that it carries no session is asserted structurally in
         // `a_tabular_listing_that_selected_nothing_carries_no_session`.
         let empty = World::new(NOW, Vec::new());
-        assert_eq!(
-            render(&args(&["--json"]), &empty),
-            format!(
-                "{{\"schema_version\":2,\"generated_at\":\"{NOW}\",\"sessions\":[],\"inventory_complete\":true}}\n"
-            )
+        let rendered = render(&args(&["--json"]), &empty);
+        let actual = json::parse(rendered.trim_end()).expect("one complete document");
+        let expected = json::parse(&format!(
+            r#"{{"schema_version":2,"generated_at":"{NOW}","sessions":[],"inventory_complete":true}}"#
+        ))
+        .expect("the expected bag is json");
+        assert!(
+            actual.same_members(&expected),
+            "complete empty digest members: {rendered}"
         );
     }
 }

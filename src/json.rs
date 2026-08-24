@@ -21,9 +21,10 @@ use std::fmt::Write as _;
 
 /// A JSON value, in the subset ae's own formats use.
 ///
-/// Objects keep their fields as an ordered list rather than a map: SC-509
-/// documents a field ORDER (`schema_version`, `generated_at`, `sessions`), and
-/// a diff between two digests is far easier to read when order is stable.
+/// Objects keep their fields as an ordered list rather than a map so rendering
+/// is deterministic: [`Value::obj`] preserves insertion order instead of
+/// hashing. That is a property of this type, not a schema contract — list-digest
+/// member order is an open choice (phase-3 criterion 15 / SC-509).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     /// A string.
@@ -141,6 +142,36 @@ impl Value {
         let mut out = String::new();
         self.render_into(&mut out);
         out
+    }
+
+    /// True when both values carry the same members and values, ignoring object
+    /// field order. Arrays remain order-sensitive.
+    ///
+    /// List-digest member *order* is an open choice (phase-3 criterion 15).
+    /// Tests that need the member set compare with this rather than `==` or
+    /// rendered bytes. Insertion-order preservation is a separate determinism
+    /// property of [`Value::obj`].
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn same_members(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Obj(left), Self::Obj(right)) => {
+                left.len() == right.len()
+                    && left.iter().all(|(key, value)| {
+                        right.iter().any(|(other_key, other_value)| {
+                            other_key == key && value.same_members(other_value)
+                        })
+                    })
+            }
+            (Self::Arr(left), Self::Arr(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .zip(right)
+                        .all(|(left, right)| left.same_members(right))
+            }
+            (left, right) => left == right,
+        }
     }
 }
 
@@ -484,7 +515,7 @@ fn utf8_len(lead: u8) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{Value, escape_into, parse};
+    use super::{escape_into, parse, Value};
 
     #[test]
     fn sc_510d_escapes_the_documented_set() {
@@ -512,7 +543,11 @@ mod tests {
 
     #[test]
     fn objects_render_in_field_order() {
-        // SC-509 documents an order; a map would not keep it.
+        // Determinism of this type: `Value::obj` preserves insertion order
+        // rather than hashing. A HashMap-backed object would make two renders
+        // of the same construction incomparable. List-digest member order is a
+        // separate, open choice (phase-3 criterion 15); this test does not
+        // document a schema order.
         let v = Value::obj([
             ("schema_version", Value::Num(1)),
             ("generated_at", Value::str("2026-05-29T14:00:00Z")),
@@ -521,6 +556,21 @@ mod tests {
         assert_eq!(
             v.render(),
             r#"{"schema_version":1,"generated_at":"2026-05-29T14:00:00Z","sessions":[]}"#
+        );
+    }
+
+    #[test]
+    fn object_member_equality_ignores_field_order() {
+        let left = Value::obj([("a", Value::Num(1)), ("b", Value::Num(2))]);
+        let right = Value::obj([("b", Value::Num(2)), ("a", Value::Num(1))]);
+        assert!(
+            left.same_members(&right),
+            "the same members in either order are the same document"
+        );
+        assert_ne!(
+            left, right,
+            "PartialEq on this type stays order-sensitive: that is why tests that \
+             must not pin order go through same_members"
         );
     }
 
