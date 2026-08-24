@@ -6,7 +6,9 @@ Four classes, and the freshness one is the reason this file exists. A derived ar
 goes stale the moment its source grows and nothing re-runs to say so; the previous
 column was found stale by a human noticing. This makes staleness a gate result.
 """
+import calendar
 import hashlib
+import time
 import argparse, csv, json, os, re, subprocess, sys, collections
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -179,6 +181,78 @@ def clock_binding(out, pairs):
         if extra_set:
             fail(out, cid, "%d %s: %s" % (len(extra_set), msg, sorted(extra_set)[:3]))
     return binding
+
+
+ACTIVE_WINDOW_SECS = 300
+
+
+def _epoch(ts):
+    try:
+        return calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ"))
+    except (ValueError, TypeError):
+        return None
+
+
+def template_of(case):
+    p = os.path.join(SRC, case, "case.txt")
+    if not os.path.exists(p):
+        return None
+    m = re.search(r"\btemplate=(\S+)", open(p, encoding="utf-8", errors="replace").read())
+    return m.group(1) if m else None
+
+
+def last_event_epoch(template, session):
+    """The newest ae EVENT timestamp, RE-DERIVED here from the fixture bytes.
+
+    EVENTS, NEVER MTIME, and never the frozen document's last_active_epoch. This
+    check exists because the generator once derived the successor `--active` set
+    by SEEDING IT FROM THE FROZEN DOCUMENT — the mtime-sourced artifact under
+    test — so it could add SC-524 futures but never remove an mtime false
+    positive. The gate was structurally blind to it: it verified the clock and
+    the address and never the VALUE. Re-derived, not imported, so the two can
+    disagree.
+    """
+    if not template or "/" not in template:
+        return None
+    arm, variant = template.split("/", 1)
+    p = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                     "sessions", session, "events.jsonl")
+    if not os.path.exists(p):
+        return None
+    newest = None
+    for line in open(p, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        t = _epoch(e.get("ts"))
+        if t is not None and (newest is None or t > newest):
+            newest = t
+    return newest
+
+
+def active_set_at(case, now):
+    """The successor `--active` set at `now`, from event bytes and --all alone."""
+    try:
+        pop = json.loads(body(case, "list_all_json")).get("sessions", []) or []
+    except ValueError:
+        return None
+    template = template_of(case)
+    active = set()
+    for s in pop:
+        if s.get("status") != "running":
+            continue
+        t = last_event_epoch(template, s.get("name"))
+        if t is not None and (t > now or now - t <= ACTIVE_WINDOW_SECS):
+            active.add(s.get("name"))
+    return active
+
+
+def render_set(names):
+    return "+".join(sorted(names)) if names else "empty"
 
 
 KEYSET = os.path.join(HERE, "SC-509C-KEYSET.tsv")
@@ -423,11 +497,31 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
                      "%d SC-521c set obligations; exactly one is owed"
                      % (case, consumer, binding[(case, consumer)], n_521c))
             if bound:
-                want = "sessions[] (set) @ now=%d" % binding[(case, consumer)]
+                now_ = binding[(case, consumer)]
+                want = "sessions[] (set) @ now=%d" % now_
+                # THE VALUE, not just the address. The gate used to check the clock
+                # and the locus and never what the row CLAIMED, which is why a
+                # successor set seeded from the frozen (mtime-sourced) document
+                # passed every check it had. Both halves are re-derived here: `from`
+                # from the captured document, `to` from event bytes.
+                cap = render_set([x.get("name") for x in
+                                  (json.loads(text).get("sessions") or [])]) \
+                    if '"schema_version"' in text else None
+                der = active_set_at(case, now_)
                 for o in carriers.get((case, consumer), []):
-                    if o["obligation_id"] == "SC-521c" and o["locus"] != want:
+                    if o["obligation_id"] != "SC-521c":
+                        continue
+                    if o["locus"] != want:
                         fail(out, "SC-521C-CLOCK", "%s/%s was captured at %s but its set "
                              "obligation is addressed %r" % (case, consumer, want, o["locus"]))
+                    if cap is not None and o["from"] != cap:
+                        fail(out, "SC-521C-FROM", "%s/%s captured %s, table says the "
+                             "capture was %s" % (case, consumer, cap, o["from"]))
+                    if der is not None and o["to"] != render_set(der):
+                        fail(out, "SC-521C-VALUE", "%s/%s owes %s at clock %d by SC-017e "
+                             "EVENT timestamps, table says %s — a set derived from the "
+                             "frozen document or from a file mtime lands here"
+                             % (case, consumer, render_set(der), now_, o["to"]))
             if want_c and "SC-509c" not in ids:
                 fail(out, "MISSING-509c", "%s/%s has a null-reason agent whose own state names "
                      "an agent-owned contribution and owes no reason move" % (case, consumer))

@@ -15,7 +15,9 @@ possibility rather than repairing the symptom.
 `from` IS READ FROM THE CAPTURED BYTES, never assumed — the gate re-reads and compares.
 """
 import csv
+import calendar
 import hashlib
+import time
 import json, os, re, subprocess, sys, collections
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -265,42 +267,109 @@ def clock_binding(pairs):
 CLOCK_POPULATION = "list_all_json"
 
 
+ACTIVE_WINDOW_SECS = 300
+
+
+def _epoch(ts):
+    """An ISO-Z timestamp as epoch seconds, or None if it is not one."""
+    try:
+        return calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ"))
+    except (ValueError, TypeError):
+        return None
+
+
+def last_event_epoch(template, session):
+    """The newest ae EVENT timestamp for a session, from the fixture bytes.
+
+    EVENTS. NEVER THE FILE MTIME, AND NEVER THE FROZEN DOCUMENT'S OWN
+    last_active_epoch. SC-017e names "an ae event within ~5min"; the frozen bash
+    sourced the events.jsonl FILE MTIME instead, and in the A2 composite fixture
+    the two differ by 930s — tg1's newest event is 16:12:57Z (1787242377) while
+    the file's mtime is 16:28:27Z (1787243307), which is what put tg1 60s inside
+    a 300s window it is really 990s outside of.
+    """
+    if not template or "/" not in template:
+        return None
+    arm, variant = template.split("/", 1)
+    p = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                     "sessions", session, "events.jsonl")
+    if not os.path.exists(p):
+        return None
+    newest = None
+    for line in open(p, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        t = _epoch(e.get("ts"))
+        if t is not None and (newest is None or t > newest):
+            newest = t
+    return newest
+
+
+def clock_population(case):
+    """Every session the case's own --all capture reports, with its status.
+
+    --all does not filter on activity, so this names the inventory without
+    consulting the predicate under test.
+    """
+    text = body(case, CLOCK_POPULATION)
+    try:
+        return json.loads(text).get("sessions", []) or []
+    except ValueError:
+        raise SystemExit("FATAL: %s has no parseable %s capture, so its session "
+                         "inventory is unknown" % (case, CLOCK_POPULATION))
+
+
 def render_set(names):
     """A stable rendering of a session set — sorted, so two derivations of the
     same set are byte-comparable, and never a bare count."""
     return "+".join(sorted(names)) if names else "empty"
 
 
-def clock_active_set(case, now, frozen):
-    """The successor's `--active` set at the harness-recorded clock `now`.
+def clock_active_set(case, now):
+    """The successor's `--active` set at `now`, derived from EVENT bytes alone.
 
-    DERIVED, not assumed equal to the frozen set: it starts from what the frozen
-    filter returned and is then checked against the case's OWN `--all` capture,
-    so a session the frozen bash dropped is examined rather than presumed absent.
-    SC-524 puts a future timestamp INSIDE the window, so a running session whose
-    last_active_epoch is strictly beyond `now` is owed even though frozen v1 did
-    not return it.
+    NEVER SEEDED FROM THE FROZEN DOCUMENT. The first cut of this function started
+    from the captured `--active` set and only ADDED sessions passing an event
+    test, so it could never remove a frozen false positive: its prose said
+    successor set, its algorithm was retained frozen set plus SC-524 additions.
+    The frozen set is the mtime-sourced artifact under test, so seeding from it
+    reproduced the defect with measurement's authority behind it.
 
-    An unreachable case is FATAL rather than silently equal: SC-521c widens
-    `--active` to status `unknown`, and which sessions the successor would call
-    unknown is not decidable from a v1 capture. No such case is bound today; the
-    guard exists so that the day one is, this stops instead of inventing a set.
+    SC-521c: only status running or unknown can satisfy a live-scope predicate.
+    SC-017e: an ae event within the window. SC-524: a FUTURE event counts as
+    active, so the comparison is one-sided — an event newer than `now` is inside
+    the window however far ahead it sits, which is the loud-false-positive
+    direction the ruling chose. NO MTIME INPUT ANYWHERE.
+
+    An unreachable case is FATAL: SC-521c widens `--active` to status `unknown`,
+    and which sessions the successor would call unknown is not decidable from a
+    v1 capture. No bound case is unreachable today; the guard exists so that the
+    day one is, this stops rather than inventing a set.
     """
     if unreachable(case):
         raise SystemExit("FATAL: %s is unreachable, so SC-521c's `unknown` widening "
                          "makes its --active set underivable from a v1 capture" % case)
-    text = body(case, CLOCK_POPULATION)
-    try:
-        pop = json.loads(text).get("sessions", []) or []
-    except ValueError:
-        raise SystemExit("FATAL: %s has no parseable %s capture, so its --active set "
-                         "at %d cannot be derived" % (case, CLOCK_POPULATION, now))
-    out = set(frozen)
-    for s in pop:
-        la = s.get("last_active_epoch")
-        if s.get("status") == "running" and isinstance(la, int) and la > now:
-            out.add(s.get("name"))
-    return out
+    template = template_of(case)
+    live = [s for s in clock_population(case) if s.get("status") == "running"]
+    resolved, active = 0, set()
+    for s in live:
+        t = last_event_epoch(template, s.get("name"))
+        if t is None:
+            continue
+        resolved += 1
+        if t > now or now - t <= ACTIVE_WINDOW_SECS:
+            active.add(s.get("name"))
+    if live and not resolved:
+        raise SystemExit("FATAL: %s has %d running session(s) and event bytes for none "
+                         "of them under template %r; an empty --active set here would "
+                         "be a path bug wearing the right answer"
+                         % (case, len(live), template))
+    return active
 
 
 def carrier_contribution(event):
@@ -478,17 +547,21 @@ def main():
                 # here reads the consumer's name for meaning; `binding` supplies the
                 # clock and the label is only its key.
                 win, now = binding[(case, consumer)]
+                # `froz` is the CAPTURED set and is this obligation's `from`. The
+                # successor set is derived INDEPENDENTLY from event bytes — never
+                # seeded from `froz`, which is the mtime-sourced document under test.
                 froz = [x.get("name") for x in (doc.get("sessions") or [])]
-                succ = clock_active_set(case, now, froz)
+                succ = clock_active_set(case, now)
                 rows.append((case, consumer, "SC-521c", "digest",
                              "sessions[] (set) @ now=%d" % now,
                              render_set(froz), render_set(succ), "equals",
                              "OBSERVED", "OBSERVED",
                              "ARM_FAKE_NOW=%d is the %s-window clock this invocation "
                              "was captured at, bound in the same statement that named "
-                             "it (arm-a2.sh:125-133, sha256 %s); the set is derived "
-                             "against the case's own --all capture, so SC-524's "
-                             "future-timestamp widening is checked rather than assumed"
+                             "it (arm-a2.sh:125-133, sha256 %s); the successor set is "
+                             "derived from the case's --all population and SC-017e EVENT "
+                             "timestamps, never from this document and never from a file "
+                             "mtime, with SC-524 futures counted active"
                              % (now, win, CLOCK_HARNESS_SHA256[:12])))
             template = template_of(case)
             for sess in ([] if scope_empty else (doc or {}).get("sessions", []) or []):

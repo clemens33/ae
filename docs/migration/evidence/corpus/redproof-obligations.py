@@ -28,6 +28,22 @@ def run(obl=None, fresh=None, inv=None):
     return r.returncode, ids
 
 MUTATIONS = [
+    # ---- THE SOURCE-DISCRIMINATION SEEDS. These are the incident's permanent
+    # witness against its own recurrence. The shipped defect derived the successor
+    # --active set by seeding it from the FROZEN document — the mtime-sourced
+    # artifact under test — so it could add SC-524 futures but never remove an
+    # mtime false positive. tg1 is the discriminating session: its newest EVENT is
+    # 990s before the inside clock (INACTIVE under SC-017e), while its events.jsonl
+    # MTIME is 60s before it (ACTIVE under the frozen bash rule). Any predicate
+    # that substitutes mtime, or that seeds from the frozen set, produces `tg1`
+    # here. The earlier seeds drifted only the CLOCK and the ADDRESS and were
+    # structurally blind to the source error, which is exactly why it shipped.
+    ("SC-521C-VALUE", OBL, "the successor set seeded from the frozen mtime-sourced document",
+     lambda s: s.replace("@ now=1787243367\ttg1\tempty\t",
+                         "@ now=1787243367\ttg1\ttg1\t", 1)),
+    ("SC-521C-FROM", OBL, "the captured half misreported, erasing the divergence",
+     lambda s: s.replace("@ now=1787243367\ttg1\tempty\t",
+                         "@ now=1787243367\tempty\tempty\t", 1)),
     # ---- MEMBER 3: the clock binding. Aimed at the DEFECT (a window invocation
     # scored at a clock it was not captured at), not at the code that carries it.
     ("SC-521C-CLOCK-ARITY", OBL, "a clock-bound window invocation stripped of its set obligation",
@@ -177,11 +193,45 @@ MUTATIONS = [
      lambda s: s.replace("contract_blob\t", "contract_blob\tdeadbeef", 1)),
 ]
 
+# The two purpose-built source-discrimination fixtures, asserted on every run.
+# c09 has a FUTURE event ts with an ordinary mtime; c10 has an ordinary event ts
+# with a future mtime. A predicate reading events answers active/inactive; one
+# reading mtime answers the opposite on both. Neither case carries a member-3 row
+# (neither records a capture clock), so these prove the PREDICATE, not the table.
+#
+# NOTE ON c10, measured rather than assumed: its "future mtime" is set by the
+# capture harness at run time and is NOT recoverable from the tracked bytes — git
+# does not preserve mtimes, so the checked-out file shows an ordinary one. That is
+# itself the argument for an event-sourced predicate: the mtime a reviewer can see
+# is not the mtime the capture saw, while the event ts is the same bytes forever.
+CONTROLS = [
+    ("c09 future EVENT ts -> active", "arms/A3/c09-524a-future-ts-ordinary-mtime-ro",
+     lambda ev, now: ev is not None and ev > now),
+    ("c10 ordinary EVENT ts -> inactive", "arms/A3/c10-524b-ordinary-ts-future-mtime-ro",
+     lambda ev, now: ev is not None and now - ev > 300),
+]
+
+
+def controls():
+    """Prove the predicate discriminates its source before trusting any seed."""
+    sys.path.insert(0, HERE)
+    import obligations as o
+    now, bad = 1787243367, 0
+    for label, case, ok in CONTROLS:
+        ev = o.last_event_epoch(o.template_of(case), "tg1")
+        good = ok(ev, now)
+        bad += 0 if good else 1
+        print("control  %-36s event_epoch=%-12s %s"
+              % (label, ev, "holds" if good else "<-- BROKEN"))
+    return bad
+
+
 def main():
     rc, ids = run()
     if rc != 0:
         print("ABORT: neutral is not clean — %s" % sorted(ids)); return 1
     print("neutral            rc=0  clean")
+    bad0 = controls()
     bad = 0
     # Every mutation target, read ONCE from the shared checkout and never written.
     originals = {t: open(t, encoding="utf-8").read()
@@ -211,6 +261,7 @@ def main():
     rc3, _ = run()
     print("restored           rc=%d  %s" % (rc3, "clean" if rc3 == 0 else "DIRTY"))
     if rc3 != 0: bad += 1
+    bad += bad0
     print("RED-PROOF: %s" % ("ALL PATHS PROVEN BY NAMED CHECK" if bad == 0 else "%d FAILURE(S)" % bad))
     return 1 if bad else 0
 
