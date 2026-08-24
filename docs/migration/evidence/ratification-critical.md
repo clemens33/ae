@@ -507,7 +507,7 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 ## Freshness — this file is ABOUT a contract, and now says which one
 
 ```
-contract_blob: 87d150b94ff8d4875d08245388d7459fb8c0bbfd
+contract_blob: 3ba5fdf1716c6c936f404480032c8c87868d37fa
 class_counts: CRITICAL=342 DEFERRABLE=103 OBSERVED=43
 letter_counts: A=123 B=50 C=75 D=206
 ```
