@@ -238,8 +238,9 @@ SC-509b; it destroys it.
 **JOINT INTERPRETATION — required in-row (colead, 2026-08-24).** The values below
 describe an entry whose inputs were READ. When they were not, SC-509b governs:
 `attention` and `attention_rank` are OMITTED rather than nulled, and
-`needs_attention` remains as a contextual lower bound meaning "nothing established
-from the readable facts", to be read jointly with `degraded: true`. `null` here
+`needs_attention` always renders: `true` means at least one contribution was
+established from readable facts; `false` means none was established. With
+`degraded: true`, the input is incomplete, so `false` is not proven quiet. `null` here
 means read-and-quiet and nothing else, which is exactly why it may not stand in for
 "not established".
 **SCOPE GUARD — required in-row.** This row owns the attention triad's VALUES —
@@ -1316,8 +1317,9 @@ the reason or the rank, those members are OMITTED. `null` is unavailable here
 precisely because SC-017g defines `null` as read-and-quiet, so writing it under
 uncertainty would assert the very thing that was not established.
 **`needs_attention` STAYS, as an explicit CONTEXTUAL LOWER BOUND.** It renders
-always, and it means "no attention contribution was established from the readable
-facts" — NOT "proven quiet". Consumers must interpret it JOINTLY with `degraded`:
+always: `true` means at least one contribution was established from readable facts;
+`false` means none was established. With `degraded: true`, the input is incomplete,
+so `false` is not proven quiet. Consumers must interpret it JOINTLY with `degraded`:
 `false` beside `degraded: true` is a lower bound over an incomplete input set, and
 `degraded: true` is its mandatory qualifier. The bound is monotone — reading more
 can only raise it — which is what makes a boolean honest here where `null` for the
