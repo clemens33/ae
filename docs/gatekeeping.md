@@ -2856,6 +2856,33 @@ So when a pre-registration artifact records current behaviour rather than requir
 document whose form implies more authority than its content claims must disclaim the
 difference where it will be read, not where it was decided.
 
+### A reservation covers MECHANISMS that presuppose an answer, not just the code
+
+A question was held open: does a criterion's flat mention of *exit status* mean rc is open on
+every surface, or only where the register leaves it open? Three test assertions turned on it.
+The implementer was told explicitly not to touch them pending a ruling.
+
+They removed two — the conservative direction, and probably correct — and then **added a
+self-scan that forbids the shape.** That is the part that needed undoing.
+
+**Removing a test and adding a guard are not the same act.** A deleted assertion is
+recoverable in one line if the ruling goes the other way. A guard that forbids the correct
+shape will *fight* the fix: it fires on the right answer, and it fires persuasively, because a
+mechanism forbidding something reads as settled policy to whoever meets it. Nobody re-derives
+a guard's justification; they route around it or assume it encodes a decision someone made.
+
+So a reservation is not only about the lines the answer would change. It covers **anything
+that presupposes an answer** — a guard, a lint, a schema, a naming convention, a helper that
+makes one branch easy and the other awkward. Those are decisions in mechanism form, and they
+are harder to reverse than the decision itself, because they stop looking like decisions.
+
+Two riders. If a guard must land before its question resolves, make it say so **at the guard**
+— name the open question, cite both readings, state which one it implements and that it is
+provisional. And when correcting this, be proportionate: the deletions here were defensible on
+the merits and only the mechanism needed changing. *Acting inside a reservation* and *reaching
+the wrong answer* are different failures and warrant different responses; conflating them
+teaches people to defend their reasoning instead of respecting the hold.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
