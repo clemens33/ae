@@ -1,10 +1,11 @@
 # format	p1-phase4-published-fingerprints-v1
 # corpus_root_sha256	802c882bca64453e33efce5351e43b5954ddecc3daed6c2b0b6c8833487b4e12
 # algorithm_path	docs/migration/evidence/p1-phase4-published-fingerprints-algorithm.md
-# algorithm_git_blob	d78ee392e946e1f0a658843656819dee88fb7f61
+# algorithm_git_blob	80edd6e3b5f7a1e5d1bff9b137f5d207b2124d43
 # source_root	docs/migration/evidence/batch-c-artifacts/templates
 # committed_treeish	HEAD
-# derived_from_commit	83473dc1784850ca4a996cef56940d8dfb487686
+# derived_from_commit	b099cf750d7a9e2d32a17926ede6a44d0cf11dc4
+# derived_from_commit_role	value-derivation source only; artifact header may be newer
 # member_count	70
 # git_tree_id_role	reproducibility anchor and exec-coverage carrier
 # canonical_sha256_role	mode-free scratch-comparison grain the runner recomputes
