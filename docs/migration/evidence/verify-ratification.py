@@ -106,11 +106,17 @@ def main(path=None, quiet=False, worktree=None):
 
     # ---- COUNTS: one record, every key EXACTLY ONCE -------------------------
     def record(name, keys, pattern):
-        m = re.search(r"^%s:\s*(.+)$" % name, crit, re.M)
-        if not m:
+        # EXACTLY ONE record, not the first one found. re.search takes the first
+        # match and a second, contradictory record then rides along unread —
+        # the same shape as deriving a total from a parse that drops rows.
+        found = re.findall(r"^%s:\s*(.+)$" % name, crit, re.M)
+        if not found:
             out.append(("COUNTS", "no %s record" % name))
             return None
-        seen = re.findall(pattern, m.group(1))
+        if len(found) > 1:
+            out.append(("COUNTS", "%d %s records — exactly one is required" % (len(found), name)))
+            return None
+        seen = re.findall(pattern, found[0])
         got = {}
         for k, v in seen:
             if k in got:
@@ -135,10 +141,30 @@ def main(path=None, quiet=False, worktree=None):
                 out.append(("COUNTS", "class_counts says %s=%d, entries give %d"
                             % (k, stated[k], actual.get(k, 0))))
 
+    # Every CRITICAL entry must carry exactly one immediate, nonempty, duplicate-free
+    # set drawn from A-D — and the totals are derived FROM THAT VALIDATED PARSE.
+    # Deriving them from a permissive pattern instead let a row with an invented
+    # letter, or no letters at all, drop silently out of the denominator: a count
+    # check over a filtered population is always satisfiable by filtering more.
     letters = {}
-    for m in re.finditer(r"^- (?:SC|D)[0-9a-zA-Z-]* — CRITICAL\(([A-D,]+)\)", crit, re.M):
-        for L in m.group(1).split(","):
-            letters[L.strip()] = letters.get(L.strip(), 0) + 1
+    for m in re.finditer(r"^- ((?:SC|D)[0-9a-zA-Z-]*) — CRITICAL(\S*)", crit, re.M):
+        rid, tail = m.group(1), m.group(2)
+        g = re.fullmatch(r"\(([A-Z](?:,[A-Z])*)\)", tail)
+        if not g:
+            out.append(("LETTERS", "%s is CRITICAL with no immediate letter set: %r"
+                        % (rid, tail[:16] or "<bare>")))
+            continue
+        ls = [x for x in g.group(1).split(",")]
+        unknown = [x for x in ls if x not in LETTER_KEYS]
+        if unknown:
+            out.append(("LETTERS", "%s carries unknown criterion letter(s) %s"
+                        % (rid, ",".join(sorted(set(unknown))))))
+            continue
+        if len(ls) != len(set(ls)):
+            out.append(("LETTERS", "%s repeats a criterion letter: %s" % (rid, g.group(1))))
+            continue
+        for L in ls:
+            letters[L] = letters.get(L, 0) + 1
     stated_l = record("letter_counts", LETTER_KEYS, r"\b([A-D])=([0-9]+)\b")
     if stated_l:
         for k in LETTER_KEYS:
