@@ -885,42 +885,11 @@ fn closes(request: &Event, reply: &Event, reply_ref: &str) -> bool {
     }
     let from_the_target = request
         .target_identity()
-        .is_some_and(|target| same_participant(target, reply.actor_identity()));
+        .is_some_and(|target| target.matches(reply.actor_identity()));
     let to_the_asker = reply
         .target_identity()
-        .is_some_and(|target| same_participant(target, request.actor_identity()));
+        .is_some_and(|target| target.matches(request.actor_identity()));
     from_the_target && to_the_asker
-}
-
-/// Whether two identities name the same participant (SC-511b, SC-405j).
-///
-/// Routing keys compare to routing keys — that is the whole point of a
-/// churn-proof key. When NEITHER side carries one, the display name is all
-/// there is, and the row's own fallback applies.
-///
-/// Everything else is false, and the two ways that happens are worth naming
-/// separately because both are loud-direction rulings:
-///
-/// * a MIXED pair — one side routed, the other display-only — has nothing in
-///   common to compare (SC-518);
-/// * an [`Identity::Unassociated`] side is half a routing key, and matches
-///   nothing INCLUDING another `Unassociated`. Two events that each failed to
-///   say where they came from have not thereby said the same thing.
-fn same_participant(left: Identity<'_>, right: Identity<'_>) -> bool {
-    match (left, right) {
-        (
-            Identity::Routed {
-                slot: left_slot,
-                session: left_session,
-            },
-            Identity::Routed {
-                slot: right_slot,
-                session: right_session,
-            },
-        ) => left_slot == right_slot && left_session == right_session,
-        (Identity::Display(left), Identity::Display(right)) => left == right,
-        _ => false,
-    }
 }
 
 #[cfg(test)]

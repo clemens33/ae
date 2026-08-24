@@ -213,6 +213,59 @@ pub enum Identity<'a> {
     Unassociated,
 }
 
+impl Identity<'_> {
+    /// Whether two identities name the same participant (SC-511b, SC-405j).
+    ///
+    /// **This lives on the type because the type's own doc already asserts the
+    /// rule** — "`Unassociated` matches nothing, including another
+    /// `Unassociated`" — and a rule stated beside a type but implemented in
+    /// another module is a rule with two homes. The frozen script warns about
+    /// exactly this at its own sensor: `_ar_request_states` exists as ONE
+    /// definition because two copies had already diverged, one checking both
+    /// ends of a reply and the other only the actor end.
+    ///
+    /// Routing keys compare to routing keys — that is the whole point of a
+    /// churn-proof key. When NEITHER side carries one, the display name is all
+    /// there is, and SC-511b's own fallback applies.
+    ///
+    /// Everything else is false, and the two ways that happens are worth naming
+    /// separately because both are loud-direction rulings:
+    ///
+    /// * a MIXED pair — one side routed, the other display-only — has nothing in
+    ///   common to compare (SC-518);
+    /// * an [`Identity::Unassociated`] side is half a routing key, and matches
+    ///   nothing INCLUDING another `Unassociated`. Two events that each failed to
+    ///   say where they came from have not thereby said the same thing.
+    ///
+    /// ```
+    /// use ae::events::Identity;
+    /// let routed = Identity::Routed { slot: "main", session: "s" };
+    /// assert!(routed.matches(Identity::Routed { slot: "main", session: "s" }));
+    /// assert!(!routed.matches(Identity::Routed { slot: "main", session: "other" }));
+    /// // A mixed pair has nothing in common to compare.
+    /// assert!(!routed.matches(Identity::Display("alias:name")));
+    /// // And half a key matches nothing, including its own kind.
+    /// assert!(!Identity::Unassociated.matches(Identity::Unassociated));
+    /// ```
+    #[must_use]
+    pub fn matches(self, other: Self) -> bool {
+        match (self, other) {
+            (
+                Self::Routed {
+                    slot: left_slot,
+                    session: left_session,
+                },
+                Self::Routed {
+                    slot: right_slot,
+                    session: right_session,
+                },
+            ) => left_slot == right_slot && left_session == right_session,
+            (Self::Display(left), Self::Display(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
 /// Why a line is not an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventError {
@@ -2105,5 +2158,31 @@ mod tests {
         let event = Event::parse_line(line).expect("a well-formed record");
         assert_eq!(event.ref_meaning(), RefMeaning::Undefined);
         assert_eq!(event.alert_meaning(), AlertMeaning::Raised(Reason::Dead));
+    }
+
+    #[test]
+    fn sc_511b_a_routing_key_needs_both_halves_to_match() {
+        // Added after moving this comparison onto the type: mutating the routed
+        // arm to compare the SLOT ONLY survived the nextest lane, because the
+        // only assertion covering it was the doctest — and nextest does not run
+        // doctests. `just rust-check` caught it, the fast lane did not. Same
+        // slot in another session is another agent, and that is the whole point
+        // of a churn-proof key.
+        let here = Identity::Routed {
+            slot: "main",
+            session: "s",
+        };
+        assert!(here.matches(Identity::Routed {
+            slot: "main",
+            session: "s"
+        }));
+        assert!(!here.matches(Identity::Routed {
+            slot: "main",
+            session: "other"
+        }));
+        assert!(!here.matches(Identity::Routed {
+            slot: "worker.0",
+            session: "s"
+        }));
     }
 }
