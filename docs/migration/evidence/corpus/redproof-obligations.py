@@ -46,6 +46,17 @@ MUTATIONS = [
     ("MISSING-509e", OBL, "an unreachable digest stripped of its agent-liveness move",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A1/c01-healthy-ro") and "\tSC-509e\t" in l))),
+    ("MISSING-509b", OBL, "a read-loss digest stripped of its degraded move",
+     lambda s: "\n".join(l for l in s.split("\n")
+                         if not (l.startswith("arms/A1/c02-meta-mode-000-ro\tlist-all-json")
+                                 and "\tSC-509b\t" in l))),
+    ("MISSING-509c", OBL, "a digest stripped of the reason move its own agent state proves",
+     lambda s: "\n".join(l for l in s.split("\n")
+                         if not (l.startswith("arms/A3/c07-competing-rw\t")
+                                 and "\tSC-509c\t" in l))),
+    ("SURFACE", OBL, "a JSON-only obligation parked on a human row",
+     lambda s: s.replace("arms/A1/c02-meta-mode-000-ro\tlist-all-json\tSC-509b\t",
+                         "arms/A1/c02-meta-mode-000-ro\tlist\tSC-509b\t", 1)),
     ("STALE", FRESH, "the contract having moved since derivation",
      lambda s: s.replace("contract_blob\t", "contract_blob\tdeadbeef", 1)),
 ]

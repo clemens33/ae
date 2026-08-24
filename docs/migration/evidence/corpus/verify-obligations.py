@@ -6,7 +6,7 @@ Four classes, and the freshness one is the reason this file exists. A derived ar
 goes stale the moment its source grows and nothing re-runs to say so; the previous
 column was found stale by a human noticing. This makes staleness a gate result.
 """
-import csv, os, re, subprocess, sys, collections
+import csv, json, os, re, subprocess, sys, collections
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.normpath(os.path.join(HERE, "..", "batch-c-artifacts"))
@@ -17,6 +17,17 @@ STREAMS = {"digest", "stdout", "stderr"}
 PREDICATES = {"equals", "at-least", "all-of", "present"}
 SUPPORT = {"OBSERVED", "UNSCORABLE"}
 LISTING = ("ae list", "ae ls")
+AGENT_OWNED = ("dead", "stale", "waiting-user", "blocked", "throttled")
+
+
+def digest_text(text):
+    """The captured document, or None when this row is not a digest at all."""
+    if '"schema_version"' not in text:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
 
 def fail(out, cid, msg): out.append((cid, msg))
 
@@ -123,6 +134,44 @@ def main(quiet=False):
         if unreachable(case) and '"alive"' not in text and "SC-509e" in ids:
             fail(out, "SURFACE", "%s/%s owes an agents[].alive move with no captured alive field"
                  % (case, consumer))
+        # ---- SC-509b / SC-509c converse, both directions -------------------
+        # Their evidence is in the captured JSON itself, so the gate re-derives the
+        # trigger from those bytes rather than trusting the generator's word.
+        if digest_text(text) is not None:
+            doc = digest_text(text)
+            loss = set()
+            mp = os.path.join(SRC, case, "manifest.before.tsv")
+            if os.path.exists(mp):
+                rowsm = [l.rstrip("\n").split("\t") for l in open(mp, encoding="utf-8")]
+                sess = {r[-1].split("/")[2] for r in rowsm
+                        if r and r[0] == "dir" and re.match(r"\./sessions/[^./][^/]*$", r[-1])}
+                metas = {r[-1].split("/")[2]: r[2] for r in rowsm
+                         if r and r[0] == "file"
+                         and re.match(r"\./sessions/[^./][^/]*/meta$", r[-1])}
+                # The manifest's OWN marker, not a mode enumeration — see the
+                # generator's loss_sessions for why, and for the measurement that
+                # the two agree on this corpus.
+                loss = {n for n in sess if n not in metas or metas[n] == "UNREADABLE"}
+            want_b = any(x.get("name") in loss for x in doc.get("sessions", []) or [])
+            want_c = any(a.get("reason") is None and a.get("state") in AGENT_OWNED
+                         for x in doc.get("sessions", []) or []
+                         for a in (x.get("agents") or []))
+            if want_b and "SC-509b" not in ids:
+                fail(out, "MISSING-509b", "%s/%s has a session with unreadable meta and owes "
+                     "no degraded move" % (case, consumer))
+            if not want_b and "SC-509b" in ids:
+                fail(out, "SURFACE", "%s/%s owes a degraded move with no read-loss session"
+                     % (case, consumer))
+            if want_c and "SC-509c" not in ids:
+                fail(out, "MISSING-509c", "%s/%s has a null-reason agent whose own state names "
+                     "an agent-owned contribution and owes no reason move" % (case, consumer))
+            if not want_c and "SC-509c" in ids:
+                fail(out, "SURFACE", "%s/%s owes a reason move with no such agent"
+                     % (case, consumer))
+        elif "SC-509b" in ids or "SC-509c" in ids:
+            fail(out, "SURFACE", "%s/%s is not a digest yet owes a JSON-only obligation"
+                 % (case, consumer))
+
         if not listish and ("SC-017l" in ids or "SC-017m" in ids):
             fail(out, "SURFACE", "%s/%s is not a listing yet owes a listing obligation" % (case, consumer))
 

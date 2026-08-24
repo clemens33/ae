@@ -39,6 +39,7 @@ arms/A1/c02-meta-mode-000-ro	list-all	SC-017l	stdout	status cell	stopped	unknown
 arms/A1/c02-meta-mode-000-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	OBSERVED	the captured ambient/entitled-server failure is itself a loss, so incompleteness here needs no recorded-server outcome
 arms/A1/c02-meta-mode-000-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c02-meta-mode-000-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A1/c02-meta-mode-000-ro	list-all-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A1/c02-meta-mode-000-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A1/c02-meta-mode-000-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c02-meta-mode-000-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
@@ -53,6 +54,7 @@ arms/A1/c02-meta-mode-000-rw	list-all	SC-017l	stdout	status cell	stopped	unknown
 arms/A1/c02-meta-mode-000-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	OBSERVED	the captured ambient/entitled-server failure is itself a loss, so incompleteness here needs no recorded-server outcome
 arms/A1/c02-meta-mode-000-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	OBSERVED	1 captured occurrence(s) must all move
 arms/A1/c02-meta-mode-000-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A1/c02-meta-mode-000-rw	list-all-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A1/c02-meta-mode-000-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A1/c02-meta-mode-000-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A1/c02-meta-mode-000-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
@@ -654,48 +656,82 @@ arms/A2/c01-filters-ro	inter_activestopped_json	SC-509d	digest	schema_version	1	
 arms/A2/c01-filters-ro	inter_allactive_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-ro	inter_allactive_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	inter_allneedsattn_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	inter_allneedsattn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	inter_allneedsattn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	inter_allneedsattn_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	inter_needsattnall_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	inter_needsattnall_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	inter_needsattnall_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	inter_needsattnall_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	inter_needsattnstopped_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	inter_needsattnstopped_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	inter_needsattnstopped_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	inter_needsattnstopped_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	list_active_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-ro	list_active_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	list_all_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	list_all_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	list_all_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	list_all_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	list_attn_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	list_attn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	list_attn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	list_attn_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	list_busy_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-ro	list_busy_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	list_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	list_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	list_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	list_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	list_needs_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	list_needs_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	list_needs_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	list_needs_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	list_needsattn_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	list_needsattn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	list_needsattn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	list_needsattn_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	list_needsme_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	list_needsme_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	list_needsme_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	list_needsme_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	list_running_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	list_running_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	list_running_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	list_running_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	list_stopped_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-ro	list_stopped_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	ls_active_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-ro	ls_active_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	ls_all_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	ls_all_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	ls_all_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	ls_all_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	ls_attn_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	ls_attn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	ls_attn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	ls_attn_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	ls_busy_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-ro	ls_busy_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	ls_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	ls_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	ls_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	ls_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	ls_needs_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	ls_needs_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	ls_needs_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	ls_needs_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	ls_needsattn_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	ls_needsattn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	ls_needsattn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	ls_needsattn_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	ls_needsme_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	ls_needsme_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	ls_needsme_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	ls_needsme_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	ls_running_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-ro	ls_running_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-ro	ls_running_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-ro	ls_running_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-ro	ls_stopped_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-ro	ls_stopped_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
@@ -710,48 +746,82 @@ arms/A2/c01-filters-rw	inter_activestopped_json	SC-509d	digest	schema_version	1	
 arms/A2/c01-filters-rw	inter_allactive_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-rw	inter_allactive_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	inter_allneedsattn_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	inter_allneedsattn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	inter_allneedsattn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	inter_allneedsattn_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	inter_needsattnall_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	inter_needsattnall_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	inter_needsattnall_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	inter_needsattnall_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	inter_needsattnstopped_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	inter_needsattnstopped_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	inter_needsattnstopped_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	inter_needsattnstopped_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	list_active_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-rw	list_active_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	list_all_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	list_all_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	list_all_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	list_all_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	list_attn_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	list_attn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	list_attn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	list_attn_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	list_busy_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-rw	list_busy_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	list_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	list_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	list_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	list_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	list_needs_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	list_needs_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	list_needs_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	list_needs_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	list_needsattn_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	list_needsattn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	list_needsattn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	list_needsattn_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	list_needsme_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	list_needsme_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	list_needsme_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	list_needsme_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	list_running_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	list_running_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	list_running_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	list_running_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	list_stopped_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-rw	list_stopped_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	ls_active_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-rw	ls_active_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	ls_all_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	ls_all_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	ls_all_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	ls_all_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	ls_attn_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	ls_attn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	ls_attn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	ls_attn_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	ls_busy_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-rw	ls_busy_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	ls_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	ls_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	ls_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	ls_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	ls_needs_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	ls_needs_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	ls_needs_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	ls_needs_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	ls_needsattn_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	ls_needsattn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	ls_needsattn_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	ls_needsattn_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	ls_needsme_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	ls_needsme_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	ls_needsme_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	ls_needsme_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	ls_running_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A2/c01-filters-rw	ls_running_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A2/c01-filters-rw	ls_running_json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A2/c01-filters-rw	ls_running_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A2/c01-filters-rw	ls_stopped_json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A2/c01-filters-rw	ls_stopped_json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
@@ -810,34 +880,46 @@ arms/A3/c03-throttled-rw	list-needsattn-json	SC-509d	digest	schema_version	1	2	e
 arms/A3/c04-waiting-user-ro	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3/c04-waiting-user-ro	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c04-waiting-user-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c04-waiting-user-ro	list-all-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c04-waiting-user-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c04-waiting-user-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c04-waiting-user-ro	list-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c04-waiting-user-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c04-waiting-user-ro	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c04-waiting-user-ro	list-needsattn-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c04-waiting-user-ro	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c04-waiting-user-rw	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3/c04-waiting-user-rw	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c04-waiting-user-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c04-waiting-user-rw	list-all-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c04-waiting-user-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c04-waiting-user-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c04-waiting-user-rw	list-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c04-waiting-user-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c04-waiting-user-rw	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c04-waiting-user-rw	list-needsattn-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c04-waiting-user-rw	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c05-blocked-ro	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3/c05-blocked-ro	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c05-blocked-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c05-blocked-ro	list-all-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:worker declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c05-blocked-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c05-blocked-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c05-blocked-ro	list-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:worker declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c05-blocked-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c05-blocked-ro	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c05-blocked-ro	list-needsattn-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:worker declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c05-blocked-ro	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c05-blocked-rw	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3/c05-blocked-rw	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c05-blocked-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c05-blocked-rw	list-all-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:worker declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c05-blocked-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c05-blocked-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c05-blocked-rw	list-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:worker declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c05-blocked-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c05-blocked-rw	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c05-blocked-rw	list-needsattn-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:worker declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c05-blocked-rw	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c06-unanswered-ro	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3/c06-unanswered-ro	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
@@ -858,34 +940,48 @@ arms/A3/c06-unanswered-rw	list-needsattn-json	SC-509d	digest	schema_version	1	2	
 arms/A3/c07-competing-ro	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3/c07-competing-ro	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c07-competing-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c07-competing-ro	list-all-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c07-competing-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c07-competing-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c07-competing-ro	list-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c07-competing-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c07-competing-ro	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c07-competing-ro	list-needsattn-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c07-competing-ro	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c07-competing-rw	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3/c07-competing-rw	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c07-competing-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c07-competing-rw	list-all-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c07-competing-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c07-competing-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c07-competing-rw	list-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c07-competing-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c07-competing-rw	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c07-competing-rw	list-needsattn-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:lead declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c07-competing-rw	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c08-unanswered-vs-agent-owned-ro	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c08-unanswered-vs-agent-owned-ro	list-active-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:bravo declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c08-unanswered-vs-agent-owned-ro	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c08-unanswered-vs-agent-owned-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c08-unanswered-vs-agent-owned-ro	list-all-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:bravo declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c08-unanswered-vs-agent-owned-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c08-unanswered-vs-agent-owned-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c08-unanswered-vs-agent-owned-ro	list-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:bravo declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c08-unanswered-vs-agent-owned-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c08-unanswered-vs-agent-owned-ro	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c08-unanswered-vs-agent-owned-ro	list-needsattn-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:bravo declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c08-unanswered-vs-agent-owned-ro	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c08-unanswered-vs-agent-owned-rw	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c08-unanswered-vs-agent-owned-rw	list-active-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:bravo declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c08-unanswered-vs-agent-owned-rw	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c08-unanswered-vs-agent-owned-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c08-unanswered-vs-agent-owned-rw	list-all-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:bravo declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c08-unanswered-vs-agent-owned-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c08-unanswered-vs-agent-owned-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c08-unanswered-vs-agent-owned-rw	list-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:bravo declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c08-unanswered-vs-agent-owned-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c08-unanswered-vs-agent-owned-rw	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3/c08-unanswered-vs-agent-owned-rw	list-needsattn-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:bravo declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3/c08-unanswered-vs-agent-owned-rw	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3/c09-524a-future-ts-ordinary-mtime-ro	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3/c09-524a-future-ts-ordinary-mtime-ro	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
@@ -936,52 +1032,78 @@ arms/A3b/c01-dead-over-stale-rw	list-json	SC-509d	digest	schema_version	1	2	equa
 arms/A3b/c01-dead-over-stale-rw	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3b/c01-dead-over-stale-rw	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c02-stale-over-waitinguser-ro	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c02-stale-over-waitinguser-ro	list-active-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c02-stale-over-waitinguser-ro	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c02-stale-over-waitinguser-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c02-stale-over-waitinguser-ro	list-all-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c02-stale-over-waitinguser-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c02-stale-over-waitinguser-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c02-stale-over-waitinguser-ro	list-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c02-stale-over-waitinguser-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c02-stale-over-waitinguser-ro	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c02-stale-over-waitinguser-ro	list-needsattn-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c02-stale-over-waitinguser-ro	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c02-stale-over-waitinguser-rw	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c02-stale-over-waitinguser-rw	list-active-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c02-stale-over-waitinguser-rw	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c02-stale-over-waitinguser-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c02-stale-over-waitinguser-rw	list-all-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c02-stale-over-waitinguser-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c02-stale-over-waitinguser-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c02-stale-over-waitinguser-rw	list-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c02-stale-over-waitinguser-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c02-stale-over-waitinguser-rw	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c02-stale-over-waitinguser-rw	list-needsattn-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c02-stale-over-waitinguser-rw	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c03-waitinguser-over-blocked-ro	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3b/c03-waitinguser-over-blocked-ro	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c03-waitinguser-over-blocked-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c03-waitinguser-over-blocked-ro	list-all-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:high declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A3b/c03-waitinguser-over-blocked-ro	list-all-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:low declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c03-waitinguser-over-blocked-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c03-waitinguser-over-blocked-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c03-waitinguser-over-blocked-ro	list-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:high declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A3b/c03-waitinguser-over-blocked-ro	list-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:low declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c03-waitinguser-over-blocked-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c03-waitinguser-over-blocked-ro	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c03-waitinguser-over-blocked-ro	list-needsattn-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:high declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A3b/c03-waitinguser-over-blocked-ro	list-needsattn-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:low declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c03-waitinguser-over-blocked-ro	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c03-waitinguser-over-blocked-rw	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3b/c03-waitinguser-over-blocked-rw	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c03-waitinguser-over-blocked-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c03-waitinguser-over-blocked-rw	list-all-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:high declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A3b/c03-waitinguser-over-blocked-rw	list-all-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:low declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c03-waitinguser-over-blocked-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c03-waitinguser-over-blocked-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c03-waitinguser-over-blocked-rw	list-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:high declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A3b/c03-waitinguser-over-blocked-rw	list-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:low declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c03-waitinguser-over-blocked-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c03-waitinguser-over-blocked-rw	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c03-waitinguser-over-blocked-rw	list-needsattn-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:high declared waiting-user in the fixed event bytes; owner and exact contribution are both named
+arms/A3b/c03-waitinguser-over-blocked-rw	list-needsattn-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:low declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c03-waitinguser-over-blocked-rw	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c04-blocked-over-throttled-ro	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3b/c04-blocked-over-throttled-ro	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c04-blocked-over-throttled-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c04-blocked-over-throttled-ro	list-all-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:high declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c04-blocked-over-throttled-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c04-blocked-over-throttled-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c04-blocked-over-throttled-ro	list-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:high declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c04-blocked-over-throttled-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c04-blocked-over-throttled-ro	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c04-blocked-over-throttled-ro	list-needsattn-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:high declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c04-blocked-over-throttled-ro	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c04-blocked-over-throttled-rw	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3b/c04-blocked-over-throttled-rw	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c04-blocked-over-throttled-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c04-blocked-over-throttled-rw	list-all-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:high declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c04-blocked-over-throttled-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c04-blocked-over-throttled-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c04-blocked-over-throttled-rw	list-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:high declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c04-blocked-over-throttled-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c04-blocked-over-throttled-rw	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c04-blocked-over-throttled-rw	list-needsattn-json	SC-509c	digest	agents[].reason	null	blocked	equals	OBSERVED	OBSERVED	fake:high declared blocked in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c04-blocked-over-throttled-rw	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c05-throttled-over-unanswered-ro	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3b/c05-throttled-over-unanswered-ro	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
@@ -1002,26 +1124,34 @@ arms/A3b/c05-throttled-over-unanswered-rw	list-needsattn-json	SC-509d	digest	sch
 arms/A3b/c06-competing-noclear-ro	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3b/c06-competing-noclear-ro	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c06-competing-noclear-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c06-competing-noclear-ro	list-all-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c06-competing-noclear-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c06-competing-noclear-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c06-competing-noclear-ro	list-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c06-competing-noclear-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c06-competing-noclear-ro	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c06-competing-noclear-ro	list-needsattn-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c06-competing-noclear-ro	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c06-competing-noclear-rw	list-active-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A3b/c06-competing-noclear-rw	list-active-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c06-competing-noclear-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c06-competing-noclear-rw	list-all-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c06-competing-noclear-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c06-competing-noclear-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c06-competing-noclear-rw	list-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c06-competing-noclear-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A3b/c06-competing-noclear-rw	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A3b/c06-competing-noclear-rw	list-needsattn-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:low declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A3b/c06-competing-noclear-rw	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A4/c01-status-live-live	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A4/c01-status-live-live	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A4/c02-status-016b-live	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A4/c02-status-016b-live	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A4/c03-next-noattach-ro	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A4/c03-next-noattach-ro	list-needsattn-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A4/c03-next-noattach-ro	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A4/c03-next-noattach-rw	list-needsattn-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A4/c03-next-noattach-rw	list-needsattn-json	SC-509c	digest	agents[].reason	null	waiting-user	equals	OBSERVED	OBSERVED	fake:worker declared waiting-user in the fixed event bytes; owner and exact contribution are both named
 arms/A4/c03-next-noattach-rw	list-needsattn-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A6/a6-c01-m1-control-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A6/a6-c01-m1-control-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
@@ -1101,6 +1231,7 @@ arms/A7/a7-c05-meta-mode-000-ro	list-all	SC-017l	stdout	status cell	stopped	unkn
 arms/A7/a7-c05-meta-mode-000-ro	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	OBSERVED	the captured ambient/entitled-server failure is itself a loss, so incompleteness here needs no recorded-server outcome
 arms/A7/a7-c05-meta-mode-000-ro	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	OBSERVED	1 captured occurrence(s) must all move
 arms/A7/a7-c05-meta-mode-000-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A7/a7-c05-meta-mode-000-ro	list-all-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A7/a7-c05-meta-mode-000-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A7/a7-c05-meta-mode-000-ro	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A7/a7-c05-meta-mode-000-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
@@ -1111,6 +1242,7 @@ arms/A7/a7-c05-meta-mode-000-rw	list-all	SC-017l	stdout	status cell	stopped	unkn
 arms/A7/a7-c05-meta-mode-000-rw	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	OBSERVED	the captured ambient/entitled-server failure is itself a loss, so incompleteness here needs no recorded-server outcome
 arms/A7/a7-c05-meta-mode-000-rw	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	OBSERVED	1 captured occurrence(s) must all move
 arms/A7/a7-c05-meta-mode-000-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A7/a7-c05-meta-mode-000-rw	list-all-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A7/a7-c05-meta-mode-000-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A7/a7-c05-meta-mode-000-rw	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A7/a7-c05-meta-mode-000-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
@@ -1279,9 +1411,11 @@ arms/A9/a9-c03-meta-mode-000-ro	list	SC-017m	stdout	unknown row present	present	
 arms/A9/a9-c03-meta-mode-000-ro	list-all	SC-017m	stdout	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c03-meta-mode-000-ro	list-all-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c03-meta-mode-000-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A9/a9-c03-meta-mode-000-ro	list-all-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A9/a9-c03-meta-mode-000-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c03-meta-mode-000-ro	list-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c03-meta-mode-000-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A9/a9-c03-meta-mode-000-ro	list-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A9/a9-c03-meta-mode-000-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c03-meta-mode-000-ro-noserver	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A9/a9-c03-meta-mode-000-ro-noserver	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	OBSERVED	the captured ambient/entitled-server failure is itself a loss, so incompleteness here needs no recorded-server outcome
@@ -1289,6 +1423,7 @@ arms/A9/a9-c03-meta-mode-000-ro-noserver	list-all	SC-017l	stdout	status cell	sto
 arms/A9/a9-c03-meta-mode-000-ro-noserver	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	OBSERVED	the captured ambient/entitled-server failure is itself a loss, so incompleteness here needs no recorded-server outcome
 arms/A9/a9-c03-meta-mode-000-ro-noserver	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	OBSERVED	1 captured occurrence(s) must all move
 arms/A9/a9-c03-meta-mode-000-ro-noserver	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A9/a9-c03-meta-mode-000-ro-noserver	list-all-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A9/a9-c03-meta-mode-000-ro-noserver	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c03-meta-mode-000-ro-noserver	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A9/a9-c03-meta-mode-000-ro-noserver	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
@@ -1297,9 +1432,11 @@ arms/A9/a9-c03-meta-mode-000-rw	list	SC-017m	stdout	unknown row present	present	
 arms/A9/a9-c03-meta-mode-000-rw	list-all	SC-017m	stdout	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c03-meta-mode-000-rw	list-all-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c03-meta-mode-000-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A9/a9-c03-meta-mode-000-rw	list-all-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A9/a9-c03-meta-mode-000-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c03-meta-mode-000-rw	list-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c03-meta-mode-000-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A9/a9-c03-meta-mode-000-rw	list-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A9/a9-c03-meta-mode-000-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c04-malformed-event-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c04-malformed-event-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
@@ -1325,9 +1462,11 @@ arms/A9/a9-c05-meta-absent-ro	list	SC-017m	stdout	unknown row present	present	un
 arms/A9/a9-c05-meta-absent-ro	list-all	SC-017m	stdout	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c05-meta-absent-ro	list-all-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c05-meta-absent-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A9/a9-c05-meta-absent-ro	list-all-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A9/a9-c05-meta-absent-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c05-meta-absent-ro	list-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c05-meta-absent-ro	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A9/a9-c05-meta-absent-ro	list-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A9/a9-c05-meta-absent-ro	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c05-meta-absent-ro-noserver	list	SC-017m	stdout	(row set)	empty	unknown rows present	present	OBSERVED	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A9/a9-c05-meta-absent-ro-noserver	list	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	OBSERVED	the captured ambient/entitled-server failure is itself a loss, so incompleteness here needs no recorded-server outcome
@@ -1335,6 +1474,7 @@ arms/A9/a9-c05-meta-absent-ro-noserver	list-all	SC-017l	stdout	status cell	stopp
 arms/A9/a9-c05-meta-absent-ro-noserver	list-all	SC-017o	stderr	(whole stream)	ABSENT	1	at-least	OBSERVED	OBSERVED	the captured ambient/entitled-server failure is itself a loss, so incompleteness here needs no recorded-server outcome
 arms/A9/a9-c05-meta-absent-ro-noserver	list-all-json	SC-017l	digest	sessions[].status	stopped	unknown	all-of	OBSERVED	OBSERVED	1 captured occurrence(s) must all move
 arms/A9/a9-c05-meta-absent-ro-noserver	list-all-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A9/a9-c05-meta-absent-ro-noserver	list-all-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A9/a9-c05-meta-absent-ro-noserver	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c05-meta-absent-ro-noserver	list-json	SC-017m	digest	(row set)	empty	unknown rows present	present	OBSERVED	OBSERVED	default view shows running then unknown; absent becomes present
 arms/A9/a9-c05-meta-absent-ro-noserver	list-json	SC-017o	digest	inventory_complete	ABSENT	false	equals	OBSERVED	OBSERVED	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
@@ -1343,9 +1483,11 @@ arms/A9/a9-c05-meta-absent-rw	list	SC-017m	stdout	unknown row present	present	un
 arms/A9/a9-c05-meta-absent-rw	list-all	SC-017m	stdout	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c05-meta-absent-rw	list-all-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c05-meta-absent-rw	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A9/a9-c05-meta-absent-rw	list-all-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A9/a9-c05-meta-absent-rw	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c05-meta-absent-rw	list-json	SC-017m	digest	unknown row present	present	unknown	present	OBSERVED	OBSERVED	selector missing by construction; tg1
 arms/A9/a9-c05-meta-absent-rw	list-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
+arms/A9/a9-c05-meta-absent-rw	list-json	SC-509b	digest	sessions[].degraded	ABSENT	true	equals	OBSERVED	OBSERVED	session tg1: the manifest proves its meta absent or unreadable, so this entry suffered ACTUAL read/parse loss rather than sparsity
 arms/A9/a9-c05-meta-absent-rw	list-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2
 arms/A9/a9-c06-healthy-control-ro	list-all-json	SC-017o	digest	inventory_complete	ABSENT	true	equals	SOURCE	UNSCORABLE	field mandated unconditionally; the VALUE true needs every enumeration proven clean, including recorded servers never queried
 arms/A9/a9-c06-healthy-control-ro	list-all-json	SC-509d	digest	schema_version	1	2	equals	SOURCE	OBSERVED	successor digest is schema version 2

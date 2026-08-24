@@ -14,12 +14,14 @@ possibility rather than repairing the symptom.
 
 `from` IS READ FROM THE CAPTURED BYTES, never assumed — the gate re-reads and compares.
 """
-import csv, json, os, re, subprocess, sys, collections
+import csv
+import json, os, re, subprocess, sys, collections
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.normpath(os.path.join(HERE, "..", "batch-c-artifacts"))
 INV = os.path.join(HERE, "INVOCATIONS.tsv")
 OUT = os.path.join(HERE, "OBLIGATIONS.tsv")
+UNPROVED = os.path.join(HERE, "SC-509C-UNPROVED.tsv")
 FRESH = os.path.join(HERE, "FRESHNESS.tsv")
 CONTRACT = "docs/migration/semantic-contract.md"
 LISTING = ("ae list", "ae ls")
@@ -79,8 +81,69 @@ def unreachable(case):
     p = os.path.join(SRC, case, "tmux.before.txt")
     return os.path.exists(p) and "error connecting" in open(p, encoding="utf-8", errors="replace").read()
 
+
+# SC-509c's agent-owned contribution classes, verbatim from the row: "agent-owned
+# active contributions (dead, stale, waiting-user, blocked, throttled)". `unanswered`
+# is deliberately absent — SC-017g makes the aged-request rank SESSION-level, and the
+# row forbids fabricating a per-agent reason from it.
+AGENT_OWNED = ("dead", "stale", "waiting-user", "blocked", "throttled")
+
+
+def declared_contributions(case):
+    """owner -> {contribution}, from the case's FIXED event bytes.
+
+    SECONDARY evidence only, and measured to be empty in this corpus: every `state`
+    event here carries ref `working` or `done`, neither of which is an agent-owned
+    ACTIVE contribution. Kept because an event names owner and class explicitly and
+    would be decisive where one exists — but a predicate resting on it ALONE derives
+    zero obligations, which is what the first version of this derivation did before
+    the bytes were read."""
+    out = {}
+    p = os.path.join(SRC, case, "events.bytes.jsonl")
+    if not os.path.exists(p):
+        return out
+    for line in open(p, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if e.get("action") != "state":
+            continue
+        actor, cls = e.get("actor"), e.get("ref")
+        if actor and cls in AGENT_OWNED:
+            out.setdefault(actor, set()).add(cls)
+    return out
+
+
+def loss_sessions(case):
+    """Sessions whose data suffered ACTUAL read/parse loss, from the manifest.
+
+    SC-509b's trigger is actual loss, not sparsity. The evidence is the manifest's
+    OWN marker: a session directory whose `meta` is absent from the manifest, or
+    present with the hash column reading UNREADABLE. Deliberately NOT the mode
+    enumeration `missing_selector_sessions` uses — an enumerated mode list is a
+    checker carrying a list of names, and the first mode nobody thought of reads as
+    readable. Measured on this corpus: the two predicates agree exactly (every meta
+    is 444, 644, or mode 0 with hash UNREADABLE, and all seven mode-0 metas are
+    UNREADABLE), so this is the same population by better evidence, not a different
+    one. Selector-missing and read-loss are different facts that coincide here, so
+    they get different predicates rather than one alias."""
+    mb = os.path.join(SRC, case, "manifest.before.tsv")
+    if not os.path.exists(mb):
+        return []
+    rows = [l.rstrip("\n").split("\t") for l in open(mb, encoding="utf-8", errors="replace")]
+    sess = {r[-1].split("/")[2] for r in rows
+            if r[0] == "dir" and re.match(r"\./sessions/[^./][^/]*$", r[-1])}
+    metas = {r[-1].split("/")[2]: r[2] for r in rows
+             if r[0] == "file" and re.match(r"\./sessions/[^./][^/]*/meta$", r[-1])}
+    return sorted((sess - set(metas)) | {n for n, h in metas.items() if h == "UNREADABLE"})
+
+
 def main():
-    rows, seen = [], set()
+    rows, seen, unproved = [], set(), []
     for r in csv.DictReader(open(INV, encoding="utf-8"), delimiter="\t"):
         if r["phase"] != "P1":
             continue
@@ -106,6 +169,59 @@ def main():
                          "OBSERVED" if incomplete else "UNSCORABLE",
                          "field mandated unconditionally; the VALUE true needs every "
                          "enumeration proven clean, including recorded servers never queried"))
+
+            # ---- SC-509b + SC-509c, both JSON loci on a row that ALREADY carries
+            # SC-509d, so neither can create a carrying row. The locus determines the
+            # row; there is no assignment choice to make.
+            loss = loss_sessions(case)
+            declared = declared_contributions(case)
+            try:
+                doc = json.loads(text)
+            except ValueError:
+                doc = None
+            for sess in (doc or {}).get("sessions", []) or []:
+                name = sess.get("name")
+                if name in loss:
+                    rows.append((case, consumer, "SC-509b", "digest",
+                                 "sessions[].degraded",
+                                 "present" if "degraded" in sess else "ABSENT",
+                                 "true", "equals", "OBSERVED", "OBSERVED",
+                                 "session %s: the manifest proves its meta absent or "
+                                 "unreadable, so this entry suffered ACTUAL read/parse "
+                                 "loss rather than sparsity" % name))
+                for ag in sess.get("agents", []) or []:
+                    ref = ag.get("ref")
+                    if not ref or ag.get("reason") is not None:
+                        continue
+                    # PRIMARY evidence: the frozen digest populates `agents[].state`
+                    # for the very agent whose `reason` it leaves null. That field
+                    # names the OWNER (this entry's ref) and the EXACT contribution
+                    # (its own declared class) in the captured bytes — it is the
+                    # information SC-509c says the surface already has and fails to
+                    # put where the contract requires.
+                    own = ag.get("state")
+                    proved = sorted({own} | declared.get(ref, set())
+                                    if own in AGENT_OWNED else declared.get(ref, set()))
+                    att = sess.get("attention")
+                    if len(proved) == 1:
+                        rows.append((case, consumer, "SC-509c", "digest",
+                                     "agents[].reason", "null", proved[0], "equals",
+                                     "OBSERVED", "OBSERVED",
+                                     "%s declared %s in the fixed event bytes; owner and "
+                                     "exact contribution are both named" % (ref, proved[0])))
+                    elif len(proved) > 1:
+                        unproved.append((case, consumer, ref, str(att),
+                                         "AMBIGUOUS-CONTRIBUTION",
+                                         "the owner is named but declared %s; which one "
+                                         "the snapshot carries needs the latest-relevant "
+                                         "rule of the UNRATIFIED SC-907, so it is not an "
+                                         "EXACT contribution" % "/".join(proved)))
+                    elif att in AGENT_OWNED:
+                        unproved.append((case, consumer, ref, str(att),
+                                         "OWNER-NOT-ESTABLISHED",
+                                         "session attention is an agent-owned class, but "
+                                         "no event names which roster agent owns it; "
+                                         "dead/stale/throttled are derived, never declared"))
 
         # ---- SC-017p/q/r + SC-509e: per-agent liveness (contract 01353d8c) ----
         # SC-017q's matrix is an IMPLICATION, not an orthogonality: session `unknown`
@@ -186,6 +302,15 @@ def main():
                              "the captured ambient/entitled-server failure is itself a "
                              "loss, so incompleteness here needs no recorded-server outcome"))
 
+    unproved.sort()
+    with open(UNPROVED, "w", encoding="utf-8") as fh:
+        fh.write("# SC-509c loci EXCLUDED for want of exact owner+contribution evidence.\n")
+        fh.write("# Reported, never guessed: a merely CONSISTENT locus is not OBSERVED.\n")
+        fh.write("\t".join(["case", "consumer", "agent_ref", "session_attention",
+                            "kind", "why"]) + "\n")
+        for x in unproved:
+            fh.write("\t".join(str(v) for v in x) + "\n")
+
     rows.sort(key=lambda x: (x[0], x[1], x[2], x[4]))
     with open(OUT, "w", encoding="utf-8") as fh:
         fh.write("\t".join(HDR) + "\n")
@@ -210,6 +335,10 @@ def main():
     for k in sorted(per):
         print(f"  {k:<10} {per[k]:4d}")
     print(f"derived EXPECTED-DIVERGENCE {carriers}   EXPECTED-MATCH {len(seen) - carriers}")
+    kinds = collections.Counter(x[4] for x in unproved)
+    print(f"SC-509c loci EXCLUDED for want of exact evidence: {len(unproved)}")
+    for k in sorted(kinds):
+        print(f"  {k:<24} {kinds[k]:4d}")
 
 if __name__ == "__main__":
     main()
