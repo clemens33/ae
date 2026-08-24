@@ -107,6 +107,11 @@ MUTATIONS = [
     # myself: a fabricated obligation on a row class its id may not appear on. Two of
     # the four ids I tested were previously caught only by the FROM check — payload,
     # not population — so they were caught by luck rather than by design.
+    # colead's seed one level up: an id the declaration never heard of. Declaring who
+    # may use each KNOWN member does not close the set unless an UNDECLARED member fails.
+    ("UNKNOWN-ID", OBL, "an obligation id absent from the population declaration",
+     lambda s: s.rstrip("\n") + "\narms/A1/c01-healthy-ro\tlist\tSC-BOGUS\tstdout"
+               "\tfabricated locus\tABSENT\tsomething\tequals\tOBSERVED\tOBSERVED\tseeded\n"),
     ("POPULATION-ID", OBL, "an SC-017o diagnostic fabricated on a HUMAN invocation",
      lambda s: s.rstrip("\n") + "\narms/A1/c01-healthy-ro\tlist\tSC-017o\tstderr\tdiagnostic"
                "\tABSENT\tGARBAGE\tequals\tOBSERVED\tOBSERVED\tseeded\n"),

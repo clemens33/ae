@@ -264,11 +264,22 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
         # the same exact-set rule as the multiset above, applied to the population
         # boundary instead of to one digest's row set.
         for o in carriers.get((case2, consumer2), []):
-            allowed = ID_POPULATION.get(o["obligation_id"])
-            if allowed and row_class not in allowed:
+            # DECLARING WHO MAY USE EACH KNOWN MEMBER DOES NOT CLOSE THE SET UNLESS AN
+            # UNDECLARED MEMBER FAILS. The map was consulted with .get() and skipped
+            # when it missed, so an id absent from the declaration received no check at
+            # all and could inflate the denominator anywhere. That is the same
+            # closed-set defect as the unbound `undecidable` predicate, one level up —
+            # third instance in this file, each time because a new declaration made the
+            # DECLARED members safe and left the undeclared ones free. Adding a future
+            # obligation id must add its population declaration in the same change.
+            if o["obligation_id"] not in ID_POPULATION:
+                fail(out, "UNKNOWN-ID", "%s/%s carries %s, which declares no population; "
+                     "an id with no declaration is not checkable and must not exist"
+                     % (case2, consumer2, o["obligation_id"]))
+            elif row_class not in ID_POPULATION[o["obligation_id"]]:
                 fail(out, "POPULATION-ID", "%s/%s carries %s on a %s row; that id belongs "
                      "to %s" % (case2, consumer2, o["obligation_id"], row_class,
-                                "/".join(allowed)))
+                                "/".join(ID_POPULATION[o["obligation_id"]])))
         loci = {o["locus"] for o in carriers.get((case2, consumer2), [])
                 if o["obligation_id"] == "SC-017o"}
         # THE COMPLETE MULTISET, over EVERY P1 row rather than only digests. Requiring that each exact
