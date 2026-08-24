@@ -29,6 +29,22 @@ def run(obl=None, fresh=None, inv=None):
     return r.returncode, ids
 
 MUTATIONS = [
+    # ---- THE THREE-WAY REGRAIN PROOF. The qualifier and the qualified are one pair
+    # per loss session, and the locus must NAME that session. Arm three is the one
+    # that distinguishes a regrain ENFORCED from a regrain merely PERFORMED: a row
+    # left at the old unqualified `sessions[].degraded` address must fail, or the
+    # rename was cosmetic.
+    ("OWED-MISSING", OBL, "the degraded qualifier dropped, its needs_attention half left standing",
+     lambda s: "\n".join(l for l in s.split("\n") if not l.startswith(
+         "arms/A1/c02-meta-mode-000-ro\tlist-all-json\tSC-509b\tdigest\tsessions[tg1].degraded\t"))),
+    ("OWED-MISSING", OBL, "the needs_attention lower-bound dropped, its qualifier left standing",
+     lambda s: "\n".join(l for l in s.split("\n") if not l.startswith(
+         "arms/A1/c02-meta-mode-000-ro\tlist-all-json\tSC-509b\tdigest\tsessions[tg1].needs_attention\t"))),
+    ("OWED-EXTRA", OBL, "a row left at the OLD unqualified locus — regrain performed, not enforced",
+     lambda s: s.replace("\tsessions[tg1].degraded\t", "\tsessions[].degraded\t", 1)),
+    ("OWED-MISSING", OBL, "the SC-405g branch move deleted from a degraded entry",
+     lambda s: "\n".join(l for l in s.split("\n")
+                         if "\tSC-405g\tdigest\tsessions[tg1].branch\t" not in l)),
     # ---- THE TWO NON-STOPPED REASON SEEDS. Both sit on A2/c01-filters-ro
     # list_all_json, a digest carrying SEVEN legitimate SC-509c reasons, so the OLD
     # row-level any/none converse stays green for both: deleting one leaves six, and
@@ -163,7 +179,7 @@ MUTATIONS = [
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A1/c02-meta-mode-000-ro\tlist-all-json")
                                  and "\tSC-509b\t" in l))),
-    ("MISSING-509c", OBL, "a digest stripped of the reason move its own agent state proves",
+    ("OWED-MISSING", OBL, "a digest stripped of the reason move its own agent state proves",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A3/c07-competing-rw\t")
                                  and "\tSC-509c\t" in l))),
@@ -241,11 +257,11 @@ MUTATIONS = [
                                  and "inventory_complete (value)" in l))),
     # Member 1: the action-supplied carrier. Its contribution comes from action=throttled,
     # which no summary prefix matches — a summary-only reading dropped it entirely.
-    ("MISSING-509c", OBL, "an ACTION-supplied throttled carrier stripped of its reason move",
+    ("OWED-MISSING", OBL, "an ACTION-supplied throttled carrier stripped of its reason move",
      lambda s: "\n".join(l for l in s.split("\n")
                          if "sessions[tpairthrottledoverunanswered].agents[fake:high]" not in l)),
     # Member 2, both directions.
-    ("SC-521C-ARITY", OBL, "an empty-scope digest stripped of its empty-set obligation",
+    ("OWED-MISSING", OBL, "an empty-scope digest stripped of its empty-set obligation",
      lambda s: "\n".join(l for l in s.split("\n")
                          if not (l.startswith("arms/A2/c01-filters-ro\tinter_needsattnstopped_json")
                                  and "\tSC-521c\t" in l))),

@@ -3,6 +3,6 @@
 # comparison says whether the source has MOVED since.
 field	value
 contract_path	docs/migration/semantic-contract.md
-contract_blob	3ba5fdf1716c6c936f404480032c8c87868d37fa
+contract_blob	327d1733aa0768e9a69f787cc7d2a6abaa09ed8f
 p1_rows	1065
-obligation_rows	2133
+obligation_rows	2153

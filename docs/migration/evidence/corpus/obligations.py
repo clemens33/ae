@@ -617,14 +617,16 @@ def dynamic_subject(case, consumers):
 # captured scale runs the OTHER WAY: 1=unanswered rising to 6=dead, with 0 for no
 # attention. Reading the sentence as the numbering gives blocked=4; the bytes say
 # 3, across every P1 digest that carries an attention.
-# THE BELOW-THRESHOLD LETTER IS RULED — false/null/0, present, never omitted — and
-# the amendment that would pin it (b5368a27, blob 8c7c9e5d) has been RETURNED for one
-# class-wide SC-509 presence precision, so the contract identity will move again. A
-# ruling in a message is not the pin and neither is a returned amendment, so the
-# letter stays symbolic through one more contract move. The successor half IS landed
-# (src/digest.rs:299-309 emits Value::Null and Num(0) for a non-degraded quiet entry;
-# omission survives only under `degraded`), so nothing here waits on product behaviour.
-BELOW_LETTER = "<ruled false/null/0, pending the amended contract blob>"
+# THE BELOW-THRESHOLD LETTER, PINNED TO THE ACCEPTED CONTRACT. blob 327d1733
+# (commit d4534483, sha256 09025346...), colead-accepted. SC-017g rules it in bytes:
+# an entry needing no attention "renders them `false`, `null` and `0`. Absence of a
+# member is NOT" a quiet signal. These relational loci sit on tg5/tg2un/tg10, none of
+# which is in the loss population, so the COMPLETE-entry shape applies — the degraded
+# omission rule and SC-405g's branch exception reach none of them.
+#
+# Below the threshold the ruled letters EQUAL what the capture already shows, so the
+# relation is a move only above it. The row is owed either way, because which side a
+# successor lands on is not knowable from fixed bytes.
 ATTN_RANK = {"unanswered": 1, "throttled": 2, "blocked": 3,
              "waiting-user": 4, "stale": 5, "dead": 6}
 
@@ -925,8 +927,8 @@ def main():
                     stopped_undecidable.add((case, name))
                     for locus, below, above in (
                             ("needs_attention", "false", "true"),
-                            ("attention", BELOW_LETTER, "unanswered"),
-                            ("attention_rank", BELOW_LETTER, "1")):
+                            ("attention", "null", "unanswered"),
+                            ("attention_rank", "0", "1")):
                         rows.append((case, consumer, "SC-017g", "digest",
                                      "sessions[%s].%s" % (name, locus),
                                      "null" if locus == "attention" else
@@ -962,13 +964,52 @@ def main():
                 name = sess.get("name")
                 alerts = alert_contributions(template, name or "")
                 if name in loss:
+                    # THE QUALIFIER AND THE QUALIFIED TRAVEL TOGETHER, and both are
+                    # SESSION-GRAINED. The locus was `sessions[].degraded` with no
+                    # session name in it at all — a near-miss rather than a collision
+                    # only because every loss case here happens to carry exactly one
+                    # loss session (measured: 10 cases, one each). An unqualified
+                    # locus is not an address, which is the same defect the SC-509c
+                    # reason locus was widened to escape.
                     rows.append((case, consumer, "SC-509b", "digest",
-                                 "sessions[].degraded",
+                                 "sessions[%s].degraded" % name,
                                  "present" if "degraded" in sess else "ABSENT",
                                  "true", "equals", "OBSERVED", "OBSERVED",
                                  "session %s: the manifest proves its meta absent or "
                                  "unreadable, so this entry suffered ACTUAL read/parse "
                                  "loss rather than sparsity" % name))
+                    # THE EXPECTED-MATCH HALF. Ruled 2026-08-24 (colead): owed-zero
+                    # means the exact tuple is required even when the bytes do not
+                    # move. Silence would leave the newly ruled population
+                    # requirement unscored and erase entitled-versus-coincidental
+                    # agreement — an incumbent that GUESSED false and a successor
+                    # that ESTABLISHES false agree in bytes and differ in
+                    # entitlement, and only a recorded tuple can tell them apart.
+                    rows.append((case, consumer, "SC-509b", "digest",
+                                 "sessions[%s].needs_attention" % name,
+                                 "false" if sess.get("needs_attention") is False
+                                 else str(sess.get("needs_attention")).lower(),
+                                 "false", "equals", "OBSERVED", "OBSERVED",
+                                 "session %s: `false` is the DEGRADED-CONTEXT LOWER "
+                                 "BOUND — no contribution established from the "
+                                 "readable facts, qualified by degraded:true, NOT "
+                                 "proven quiet. It is non-monotone: more input may "
+                                 "add, clear or supersede a contribution, so neither "
+                                 "value proves the exact final attention" % name))
+                    # SC-405g, the TEMPORARY branch exception (colead, 2026-08-25):
+                    # `branch` ALONE keeps the predecessor projection until its
+                    # source-acquisition slice lands — ABSENT on a degraded entry
+                    # when NO branch observation exists, and an OBSERVED branch
+                    # renders regardless of degraded. Explicitly not precedent for
+                    # any other member, so nothing else reads this branch.
+                    if "branch" in sess and sess.get("branch") is None:
+                        rows.append((case, consumer, "SC-405g", "digest",
+                                     "sessions[%s].branch" % name,
+                                     "null", "ABSENT", "equals", "OBSERVED", "OBSERVED",
+                                     "session %s: no branch observation exists and the "
+                                     "entry is degraded, so rendering `null` would "
+                                     "masquerade an UNAVAILABLE source as a legitimate "
+                                     "empty — the trade SC-509b refuses" % name))
                 for ag in sess.get("agents", []) or []:
                     ref = ag.get("ref")
                     if not ref or ag.get("reason") is not None:

@@ -55,6 +55,7 @@ ID_POPULATION = {
     # structured status table is not an opaque blob, and a taxonomy that lies
     # about a row's shape cannot police what may appear on it.
     "SC-518": ("requests",),
+    "SC-405g": ("digest",),
     "SC-518a": ("requests",),
 }
 # The FIXED SEMANTIC COLUMNS, in header order. `authority` is EXCLUDED BY DECLARATION,
@@ -447,14 +448,16 @@ def gate_capture_requests(case, consumer):
     return rows
 
 
-# THE BELOW-THRESHOLD LETTER IS RULED — false/null/0, present, never omitted — and
-# the amendment that would pin it (b5368a27, blob 8c7c9e5d) has been RETURNED for one
-# class-wide SC-509 presence precision, so the contract identity will move again. A
-# ruling in a message is not the pin and neither is a returned amendment, so the
-# letter stays symbolic through one more contract move. The successor half IS landed
-# (src/digest.rs:299-309 emits Value::Null and Num(0) for a non-degraded quiet entry;
-# omission survives only under `degraded`), so nothing here waits on product behaviour.
-BELOW_LETTER = "<ruled false/null/0, pending the amended contract blob>"
+# THE BELOW-THRESHOLD LETTER, PINNED TO THE ACCEPTED CONTRACT. blob 327d1733
+# (commit d4534483, sha256 09025346...), colead-accepted. SC-017g rules it in bytes:
+# an entry needing no attention "renders them `false`, `null` and `0`. Absence of a
+# member is NOT" a quiet signal. These relational loci sit on tg5/tg2un/tg10, none of
+# which is in the loss population, so the COMPLETE-entry shape applies — the degraded
+# omission rule and SC-405g's branch exception reach none of them.
+#
+# Below the threshold the ruled letters EQUAL what the capture already shows, so the
+# relation is a move only above it. The row is owed either way, because which side a
+# successor lands on is not knowable from fixed bytes.
 ATTN_RANK = {"unanswered": 1, "throttled": 2, "blocked": 3,
              "waiting-user": 4, "stale": 5, "dead": 6}
 
@@ -486,7 +489,8 @@ def held_shapes(carriers, case, consumer, ids, where=None):
 # green verdict for checks that no longer existed, which is the loudest a lost check
 # ever gets. Green rc is not evidence that the checks ran; the NAME SET is. If a
 # structural edit drops a call site, or renames one, this fails instead of passing.
-EXPECTED_FAMILIES = {"SC-518/518a", "SC-521c", "SC-509c reasons", "stopped facts"}
+EXPECTED_FAMILIES = {"SC-518/518a", "SC-521c", "SC-509c reasons", "stopped facts",
+                     "loss facts"}
 _families_seen = set()
 
 
@@ -633,6 +637,61 @@ def owed_reason(case, doc):
     return owed
 
 
+def gate_loss_sessions(case):
+    """Sessions with ACTUAL read/parse loss, RE-DERIVED from the manifest's own
+    marker: a session directory whose `meta` is absent, or present with the hash
+    column reading UNREADABLE. Never the capture's `degraded` key — that is a
+    successor-only member no frozen entry carries, so asking for it returns an empty
+    population that reads like a proof of absence.
+    """
+    mb = os.path.join(SRC, case, "manifest.before.tsv")
+    if not os.path.exists(mb):
+        return []
+    rows = [l.rstrip("\n").split("\t") for l in open(mb, encoding="utf-8", errors="replace")]
+    sess = {r[-1].split("/")[2] for r in rows
+            if r[0] == "dir" and re.match(r"\./sessions/[^./][^/]*$", r[-1])}
+    metas = {r[-1].split("/")[2]: r[2] for r in rows
+             if r[0] == "file" and re.match(r"\./sessions/[^./][^/]*/meta$", r[-1])}
+    return sorted((sess - set(metas)) | {n for n, h in metas.items() if h == "UNREADABLE"})
+
+
+def owed_loss(case, doc):
+    """The COMPLETE owed multiset for the LOSS families: SC-509b and SC-405g.
+
+    Independent of the generator. The loss population is proved from FIXED sources —
+    the manifest showing a meta absent or unreadable — never from a `degraded` key in
+    the capture, because `degraded` is a SUCCESSOR-ONLY member that zero frozen
+    entries carry. Asking the captures for it measures ZERO and reads as "no
+    population"; that mistake is why this derivation reads the manifest instead.
+
+    Per loss occurrence the qualifier and the qualified travel together:
+      sessions[<n>].degraded        ABSENT -> true
+      sessions[<n>].needs_attention false  -> false   (the degraded-context lower
+                                                       bound, owed even though the
+                                                       bytes do not move)
+    SC-405g adds `branch` null -> ABSENT where NO branch observation exists; an
+    OBSERVED branch renders regardless of degraded, and that exception reaches no
+    other member by its own terms.
+    """
+    owed = set()
+    loss = gate_loss_sessions(case)
+    for x in doc.get("sessions", []) or []:
+        nm = x.get("name") or ""
+        if nm not in loss:
+            continue
+        owed.add(("SC-509b", "digest", "sessions[%s].degraded" % nm,
+                  "present" if "degraded" in x else "ABSENT", "true",
+                  "equals", "OBSERVED", "OBSERVED"))
+        owed.add(("SC-509b", "digest", "sessions[%s].needs_attention" % nm,
+                  "false" if x.get("needs_attention") is False
+                  else str(x.get("needs_attention")).lower(),
+                  "false", "equals", "OBSERVED", "OBSERVED"))
+        if "branch" in x and x.get("branch") is None:
+            owed.add(("SC-405g", "digest", "sessions[%s].branch" % nm,
+                      "null", "ABSENT", "equals", "OBSERVED", "OBSERVED"))
+    return owed
+
+
 def owed_stopped(case, doc):
     """The COMPLETE owed fixed-shape multiset for the stopped-session families.
 
@@ -682,8 +741,8 @@ def owed_stopped(case, doc):
             continue                      # quiet: owes EMPTY, and that is checked
         for locus, below, above, frm in (
                 ("needs_attention", "false", "true", "false"),
-                ("attention", BELOW_LETTER, "unanswered", "null"),
-                ("attention_rank", BELOW_LETTER, "1", "0")):
+                ("attention", "null", "unanswered", "null"),
+                ("attention_rank", "0", "1", "0")):
             owed.add(("SC-017g", "digest", "sessions[%s].%s" % (nm, locus), frm,
                       "%s when generated_at - %s <= threshold, %s when strictly greater"
                       % (below, pts, above), "relational", "OBSERVED", "OBSERVED"))
@@ -913,6 +972,9 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
             # equality and are deliberately not restored — seven named fragments
             # were what let the bypasses through.
             live_doc = doc if not scope_empty else {}
+            compare_owed(out, case, consumer, "loss facts",
+                         owed_loss(case, live_doc),
+                         held_shapes(carriers, case, consumer, ("SC-509b", "SC-405g")))
             compare_owed(out, case, consumer, "SC-509c reasons",
                          owed_reason(case, live_doc),
                          held_shapes(carriers, case, consumer, ("SC-509c",)))

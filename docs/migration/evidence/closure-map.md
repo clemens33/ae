@@ -4,7 +4,7 @@
   checked relation is the blob below, because a commit says where this came from and a
   blob says whether the thing it maps has moved since)
 
-SOURCE: docs/migration/semantic-contract.md blob 8c7c9e5ddaf7654e28ac2d735b538a1cc941c33f
+SOURCE: docs/migration/semantic-contract.md blob 327d1733aa0768e9a69f787cc7d2a6abaa09ed8f
 
 - frozen-baseline: `72c7293` (`72c729343a0117af2968b66e1c43f89ad25fc0b2`)
 - canonical set: SC rows `444`; ownership records `43`; total entries `487`
