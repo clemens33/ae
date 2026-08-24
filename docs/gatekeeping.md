@@ -2915,6 +2915,34 @@ instrument that cannot say "I am broken" says "the subject is" instead — give 
 own exit code, assert every precondition before reading any verdict, and have the red-proof
 harness refuse to run (SEED DID NOT LAND) when the defect it injects is already what is live.
 
+### ABSENT and MALFORMED are different defects — a gate that collapses them misdirects the reader
+
+A freshness gate red-proofed its own STALE detection: the seed prepended text to the pinned
+blob hash. The gate reported **FRESHNESS — "no contract_blob is recorded"** — because the
+extracting regex demanded exactly 40 hex digits, so a corrupted pin matched nothing and read
+as no pin at all.
+
+"The file asserts no relation" and "the file asserts a relation you cannot parse" send the
+investigator to **different places** — one to the file's author, one to whatever mangled it.
+A gate that reports the wrong one is not weaker, it is *misdirecting*: the reader debugs the
+absence that isn't there. Extraction failure needs its own outcome (MALFORMED), its own seed,
+and its own red-proof, because the collapse is invisible until the day the wrong report costs
+the diagnosis.
+
+The general rule: **wherever a parser's "no match" feeds a verdict, ask which distinct
+real-world states all map to that no-match** — and give each state the gate can be wrong
+about its own name. This is the same family as exit-status-decides (empty output from a
+failed query vs a truly empty answer) and rc=2 FIXTURE ABORT vs rc=1 FAIL: instruments must
+be able to say *I am broken* and *the input is broken* separately from *the subject failed*.
+
+Same sweep, same author, second instance of an adjacent class: a field parser read
+`Bucket (\d)` on one line, and a row that wrapped "Bucket" and "2" across two lines reported
+the bucket **absent**. A wrapped field read as a missing field is the empty-string-is-a-shell
+defect one layer up — the parser's blind spot maps a present-but-differently-shaped input
+onto the absence branch. Two instances in one week: when a value can legally arrive in more
+than one shape, the parser needs a seed in every shape, or its "absent" arm silently
+accumulates everything it never learned to read.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
