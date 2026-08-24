@@ -1,0 +1,459 @@
+idx	case	consumer	verdict	detail	b_sessions	s_sessions	b_cover	s_cover
+1	arms/A1/c01-healthy-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+3	arms/A1/c01-healthy-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+5	arms/A1/c01-healthy-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+6	arms/A1/c01-healthy-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+9	arms/A1/c01-healthy-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+11	arms/A1/c01-healthy-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+13	arms/A1/c01-healthy-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+14	arms/A1/c01-healthy-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+17	arms/A1/c02-meta-mode-000-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+19	arms/A1/c02-meta-mode-000-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+21	arms/A1/c02-meta-mode-000-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+22	arms/A1/c02-meta-mode-000-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+25	arms/A1/c02-meta-mode-000-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+27	arms/A1/c02-meta-mode-000-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+29	arms/A1/c02-meta-mode-000-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+30	arms/A1/c02-meta-mode-000-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+33	arms/A1/c03-malformed-line-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+35	arms/A1/c03-malformed-line-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+37	arms/A1/c03-malformed-line-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+38	arms/A1/c03-malformed-line-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+41	arms/A1/c03-malformed-line-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+43	arms/A1/c03-malformed-line-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+45	arms/A1/c03-malformed-line-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+46	arms/A1/c03-malformed-line-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+49	arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+51	arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+53	arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+54	arms/A1/c04-empty-vs-omitted-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+57	arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+59	arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+61	arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+62	arms/A1/c04-empty-vs-omitted-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+65	arms/A1/c05-recover-ref-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+67	arms/A1/c05-recover-ref-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+69	arms/A1/c05-recover-ref-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+70	arms/A1/c05-recover-ref-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+73	arms/A1/c05-recover-ref-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+75	arms/A1/c05-recover-ref-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+77	arms/A1/c05-recover-ref-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+78	arms/A1/c05-recover-ref-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+81	arms/A1/c06-escapes-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+83	arms/A1/c06-escapes-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+85	arms/A1/c06-escapes-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+86	arms/A1/c06-escapes-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+89	arms/A1/c06-escapes-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+91	arms/A1/c06-escapes-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+93	arms/A1/c06-escapes-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+94	arms/A1/c06-escapes-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+97	arms/A1/c07-dupkey-known-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+99	arms/A1/c07-dupkey-known-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+101	arms/A1/c07-dupkey-known-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+102	arms/A1/c07-dupkey-known-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+105	arms/A1/c07-dupkey-known-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+107	arms/A1/c07-dupkey-known-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+109	arms/A1/c07-dupkey-known-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+110	arms/A1/c07-dupkey-known-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+113	arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+115	arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+117	arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+118	arms/A1/c08-dupkey-known-rev-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+121	arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+123	arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+125	arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+126	arms/A1/c08-dupkey-known-rev-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+129	arms/A1/c09-dupkey-unknown-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+131	arms/A1/c09-dupkey-unknown-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+133	arms/A1/c09-dupkey-unknown-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+134	arms/A1/c09-dupkey-unknown-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+137	arms/A1/c09-dupkey-unknown-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+139	arms/A1/c09-dupkey-unknown-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+141	arms/A1/c09-dupkey-unknown-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+142	arms/A1/c09-dupkey-unknown-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+145	arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+147	arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+149	arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+150	arms/A1/c10-dupkey-unknown-rev-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+153	arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+155	arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+157	arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+158	arms/A1/c10-dupkey-unknown-rev-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+161	arms/A1/c11-routing-known-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+163	arms/A1/c11-routing-known-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+165	arms/A1/c11-routing-known-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+166	arms/A1/c11-routing-known-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+169	arms/A1/c11-routing-known-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+171	arms/A1/c11-routing-known-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+173	arms/A1/c11-routing-known-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+174	arms/A1/c11-routing-known-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+177	arms/A1/c12-routing-omitted-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+179	arms/A1/c12-routing-omitted-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+181	arms/A1/c12-routing-omitted-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+182	arms/A1/c12-routing-omitted-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+185	arms/A1/c12-routing-omitted-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+187	arms/A1/c12-routing-omitted-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+189	arms/A1/c12-routing-omitted-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+190	arms/A1/c12-routing-omitted-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+193	arms/A1/c13-same-display-routing-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+195	arms/A1/c13-same-display-routing-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+197	arms/A1/c13-same-display-routing-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+198	arms/A1/c13-same-display-routing-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+201	arms/A1/c13-same-display-routing-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+203	arms/A1/c13-same-display-routing-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+205	arms/A1/c13-same-display-routing-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+206	arms/A1/c13-same-display-routing-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+209	arms/A1/c14-display-only-legacy-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+211	arms/A1/c14-display-only-legacy-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+213	arms/A1/c14-display-only-legacy-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+214	arms/A1/c14-display-only-legacy-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+217	arms/A1/c14-display-only-legacy-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+219	arms/A1/c14-display-only-legacy-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+221	arms/A1/c14-display-only-legacy-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+222	arms/A1/c14-display-only-legacy-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+225	arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+227	arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+229	arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+230	arms/A1/c15-meta-unknown-keys-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+233	arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+235	arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+237	arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+238	arms/A1/c15-meta-unknown-keys-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+241	arms/A1/c16-events-unknown-keys-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+243	arms/A1/c16-events-unknown-keys-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+245	arms/A1/c16-events-unknown-keys-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+246	arms/A1/c16-events-unknown-keys-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+249	arms/A1/c16-events-unknown-keys-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+251	arms/A1/c16-events-unknown-keys-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+253	arms/A1/c16-events-unknown-keys-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+254	arms/A1/c16-events-unknown-keys-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+257	arms/A1/c17-unknown-action-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+259	arms/A1/c17-unknown-action-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+261	arms/A1/c17-unknown-action-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+262	arms/A1/c17-unknown-action-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+265	arms/A1/c17-unknown-action-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+267	arms/A1/c17-unknown-action-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+269	arms/A1/c17-unknown-action-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+270	arms/A1/c17-unknown-action-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+273	arms/A1/c18-no-trailing-newline-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+275	arms/A1/c18-no-trailing-newline-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+277	arms/A1/c18-no-trailing-newline-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+278	arms/A1/c18-no-trailing-newline-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+281	arms/A1/c18-no-trailing-newline-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+283	arms/A1/c18-no-trailing-newline-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+285	arms/A1/c18-no-trailing-newline-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+286	arms/A1/c18-no-trailing-newline-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+289	arms/A1/c19-partial-tail-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+291	arms/A1/c19-partial-tail-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+293	arms/A1/c19-partial-tail-ro/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+294	arms/A1/c19-partial-tail-ro/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+297	arms/A1/c19-partial-tail-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+299	arms/A1/c19-partial-tail-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+301	arms/A1/c19-partial-tail-rw/consumers.tsv	ls-alias	layout-open	semantic-held	0	1	1	1
+302	arms/A1/c19-partial-tail-rw/consumers.tsv	ls-alias-all	layout-open	semantic-held	1	1	1	1
+305	arms/A1/c20-405k-live/consumers.tsv	s0-baseline/list	fixture-abort	no-capture				
+307	arms/A1/c20-405k-live/consumers.tsv	s0-baseline/list-all	fixture-abort	no-capture				
+309	arms/A1/c20-405k-live/consumers.tsv	s0-baseline-clocale/list	fixture-abort	no-capture				
+311	arms/A1/c20-405k-live/consumers.tsv	s1-extra-pane/list	fixture-abort	no-capture				
+313	arms/A1/c20-405k-live/consumers.tsv	s1-extra-pane/list-all	fixture-abort	no-capture				
+315	arms/A1/c20-405k-live/consumers.tsv	s2-extra-pane-and-missing-roster-pane/list	fixture-abort	no-capture				
+317	arms/A1/c20-405k-live/consumers.tsv	s2-extra-pane-and-missing-roster-pane/list-all	fixture-abort	no-capture				
+319	arms/A2/c01-filters-ro/consumers.tsv	list	layout-open	semantic-held	4	10	1	1
+321	arms/A2/c01-filters-ro/consumers.tsv	ls	layout-open	semantic-held	4	10	1	1
+323	arms/A2/c01-filters-ro/consumers.tsv	list_running	layout-open	semantic-held	4	10	1	1
+325	arms/A2/c01-filters-ro/consumers.tsv	ls_running	layout-open	semantic-held	4	10	1	1
+327	arms/A2/c01-filters-ro/consumers.tsv	list_all	semantic-fail	shared-order ['tg1', 'tg2b', 'tg2wu', 'twda1', 'tg2bl', 'tg2un', 'tg6a', 'tg6b', 'twda2', 'twda3'] vs ['tg1', 'tg2b', 'tg2bl', 'tg2un', 'tg2wu', 'tg6a', 'tg6b', 'twda1', 'twda2', 'twda3']	10	10	1	1
+329	arms/A2/c01-filters-ro/consumers.tsv	ls_all	semantic-fail	shared-order ['tg1', 'tg2b', 'tg2wu', 'twda1', 'tg2bl', 'tg2un', 'tg6a', 'tg6b', 'twda2', 'twda3'] vs ['tg1', 'tg2b', 'tg2bl', 'tg2un', 'tg2wu', 'tg6a', 'tg6b', 'twda1', 'twda2', 'twda3']	10	10	1	1
+331	arms/A2/c01-filters-ro/consumers.tsv	list_stopped	layout-open	semantic-held	6	0	1	1
+333	arms/A2/c01-filters-ro/consumers.tsv	ls_stopped	layout-open	semantic-held	6	0	1	1
+335	arms/A2/c01-filters-ro/consumers.tsv	list_needsattn	layout-open	semantic-held	3	5	1	1
+337	arms/A2/c01-filters-ro/consumers.tsv	ls_needsattn	layout-open	semantic-held	3	5	1	1
+339	arms/A2/c01-filters-ro/consumers.tsv	list_needsme	layout-open	semantic-held	3	5	1	1
+341	arms/A2/c01-filters-ro/consumers.tsv	ls_needsme	layout-open	semantic-held	3	5	1	1
+343	arms/A2/c01-filters-ro/consumers.tsv	list_needs	layout-open	semantic-held	3	5	1	1
+345	arms/A2/c01-filters-ro/consumers.tsv	ls_needs	layout-open	semantic-held	3	5	1	1
+347	arms/A2/c01-filters-ro/consumers.tsv	list_attn	layout-open	semantic-held	3	5	1	1
+349	arms/A2/c01-filters-ro/consumers.tsv	ls_attn	layout-open	semantic-held	3	5	1	1
+351	arms/A2/c01-filters-ro/consumers.tsv	list_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+353	arms/A2/c01-filters-ro/consumers.tsv	ls_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+355	arms/A2/c01-filters-ro/consumers.tsv	list_busy	residual-fail	empty-state-copy vs empty	0	0	1	1
+357	arms/A2/c01-filters-ro/consumers.tsv	ls_busy	residual-fail	empty-state-copy vs empty	0	0	1	1
+359	arms/A2/c01-filters-ro/consumers.tsv	inter_needsattnall	layout-open	semantic-held	3	5	1	1
+361	arms/A2/c01-filters-ro/consumers.tsv	inter_allneedsattn	layout-open	semantic-held	3	5	1	1
+363	arms/A2/c01-filters-ro/consumers.tsv	inter_activeall	residual-fail	empty-state-copy vs empty	0	0	1	1
+365	arms/A2/c01-filters-ro/consumers.tsv	inter_allactive	residual-fail	empty-state-copy vs empty	0	0	1	1
+367	arms/A2/c01-filters-ro/consumers.tsv	inter_needsattnstopped	layout-open	semantic-held	3	0	1	1
+369	arms/A2/c01-filters-ro/consumers.tsv	inter_activestopped	residual-fail	empty-state-copy vs empty	0	0	1	1
+371	arms/A2/c01-filters-ro/consumers.tsv	list_badflag	exact	bytes	0	0	1	1
+372	arms/A2/c01-filters-ro/consumers.tsv	list_help	exact	bytes	0	0	1	1
+373	arms/A2/c01-filters-ro/consumers.tsv	win_inside_list_active	layout-open	semantic-held	1	0	1	1
+375	arms/A2/c01-filters-ro/consumers.tsv	win_inside_list_busy	layout-open	semantic-held	1	0	1	1
+376	arms/A2/c01-filters-ro/consumers.tsv	win_inside_active_all	layout-open	semantic-held	1	0	1	1
+377	arms/A2/c01-filters-ro/consumers.tsv	win_inside_all_active	layout-open	semantic-held	1	0	1	1
+378	arms/A2/c01-filters-ro/consumers.tsv	win_inside_active_stopped	layout-open	semantic-held	1	0	1	1
+379	arms/A2/c01-filters-ro/consumers.tsv	win_inside_stopped_active	layout-open	semantic-held	1	0	1	1
+380	arms/A2/c01-filters-ro/consumers.tsv	win_inside_needsattn_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+381	arms/A2/c01-filters-ro/consumers.tsv	win_inside_active_needsattn	residual-fail	empty-state-copy vs empty	0	0	1	1
+382	arms/A2/c01-filters-ro/consumers.tsv	win_outside_list_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+384	arms/A2/c01-filters-ro/consumers.tsv	win_outside_list_busy	residual-fail	empty-state-copy vs empty	0	0	1	1
+385	arms/A2/c01-filters-ro/consumers.tsv	win_outside_active_all	residual-fail	empty-state-copy vs empty	0	0	1	1
+386	arms/A2/c01-filters-ro/consumers.tsv	win_outside_all_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+387	arms/A2/c01-filters-ro/consumers.tsv	win_outside_active_stopped	residual-fail	empty-state-copy vs empty	0	0	1	1
+388	arms/A2/c01-filters-ro/consumers.tsv	win_outside_stopped_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+389	arms/A2/c01-filters-ro/consumers.tsv	win_outside_needsattn_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+390	arms/A2/c01-filters-ro/consumers.tsv	win_outside_active_needsattn	residual-fail	empty-state-copy vs empty	0	0	1	1
+391	arms/A2/c01-filters-rw/consumers.tsv	list	layout-open	semantic-held	4	10	1	1
+393	arms/A2/c01-filters-rw/consumers.tsv	ls	layout-open	semantic-held	4	10	1	1
+395	arms/A2/c01-filters-rw/consumers.tsv	list_running	layout-open	semantic-held	4	10	1	1
+397	arms/A2/c01-filters-rw/consumers.tsv	ls_running	layout-open	semantic-held	4	10	1	1
+399	arms/A2/c01-filters-rw/consumers.tsv	list_all	semantic-fail	shared-order ['tg1', 'tg2b', 'tg2wu', 'twda1', 'tg2bl', 'tg2un', 'tg6a', 'tg6b', 'twda2', 'twda3'] vs ['tg1', 'tg2b', 'tg2bl', 'tg2un', 'tg2wu', 'tg6a', 'tg6b', 'twda1', 'twda2', 'twda3']	10	10	1	1
+401	arms/A2/c01-filters-rw/consumers.tsv	ls_all	semantic-fail	shared-order ['tg1', 'tg2b', 'tg2wu', 'twda1', 'tg2bl', 'tg2un', 'tg6a', 'tg6b', 'twda2', 'twda3'] vs ['tg1', 'tg2b', 'tg2bl', 'tg2un', 'tg2wu', 'tg6a', 'tg6b', 'twda1', 'twda2', 'twda3']	10	10	1	1
+403	arms/A2/c01-filters-rw/consumers.tsv	list_stopped	layout-open	semantic-held	6	0	1	1
+405	arms/A2/c01-filters-rw/consumers.tsv	ls_stopped	layout-open	semantic-held	6	0	1	1
+407	arms/A2/c01-filters-rw/consumers.tsv	list_needsattn	layout-open	semantic-held	3	5	1	1
+409	arms/A2/c01-filters-rw/consumers.tsv	ls_needsattn	layout-open	semantic-held	3	5	1	1
+411	arms/A2/c01-filters-rw/consumers.tsv	list_needsme	layout-open	semantic-held	3	5	1	1
+413	arms/A2/c01-filters-rw/consumers.tsv	ls_needsme	layout-open	semantic-held	3	5	1	1
+415	arms/A2/c01-filters-rw/consumers.tsv	list_needs	layout-open	semantic-held	3	5	1	1
+417	arms/A2/c01-filters-rw/consumers.tsv	ls_needs	layout-open	semantic-held	3	5	1	1
+419	arms/A2/c01-filters-rw/consumers.tsv	list_attn	layout-open	semantic-held	3	5	1	1
+421	arms/A2/c01-filters-rw/consumers.tsv	ls_attn	layout-open	semantic-held	3	5	1	1
+423	arms/A2/c01-filters-rw/consumers.tsv	list_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+425	arms/A2/c01-filters-rw/consumers.tsv	ls_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+427	arms/A2/c01-filters-rw/consumers.tsv	list_busy	residual-fail	empty-state-copy vs empty	0	0	1	1
+429	arms/A2/c01-filters-rw/consumers.tsv	ls_busy	residual-fail	empty-state-copy vs empty	0	0	1	1
+431	arms/A2/c01-filters-rw/consumers.tsv	inter_needsattnall	layout-open	semantic-held	3	5	1	1
+433	arms/A2/c01-filters-rw/consumers.tsv	inter_allneedsattn	layout-open	semantic-held	3	5	1	1
+435	arms/A2/c01-filters-rw/consumers.tsv	inter_activeall	residual-fail	empty-state-copy vs empty	0	0	1	1
+437	arms/A2/c01-filters-rw/consumers.tsv	inter_allactive	residual-fail	empty-state-copy vs empty	0	0	1	1
+439	arms/A2/c01-filters-rw/consumers.tsv	inter_needsattnstopped	layout-open	semantic-held	3	0	1	1
+441	arms/A2/c01-filters-rw/consumers.tsv	inter_activestopped	residual-fail	empty-state-copy vs empty	0	0	1	1
+443	arms/A2/c01-filters-rw/consumers.tsv	list_badflag	exact	bytes	0	0	1	1
+444	arms/A2/c01-filters-rw/consumers.tsv	list_help	exact	bytes	0	0	1	1
+445	arms/A2/c01-filters-rw/consumers.tsv	win_inside_list_active	layout-open	semantic-held	1	0	1	1
+447	arms/A2/c01-filters-rw/consumers.tsv	win_inside_list_busy	layout-open	semantic-held	1	0	1	1
+448	arms/A2/c01-filters-rw/consumers.tsv	win_inside_active_all	layout-open	semantic-held	1	0	1	1
+449	arms/A2/c01-filters-rw/consumers.tsv	win_inside_all_active	layout-open	semantic-held	1	0	1	1
+450	arms/A2/c01-filters-rw/consumers.tsv	win_inside_active_stopped	layout-open	semantic-held	1	0	1	1
+451	arms/A2/c01-filters-rw/consumers.tsv	win_inside_stopped_active	layout-open	semantic-held	1	0	1	1
+452	arms/A2/c01-filters-rw/consumers.tsv	win_inside_needsattn_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+453	arms/A2/c01-filters-rw/consumers.tsv	win_inside_active_needsattn	residual-fail	empty-state-copy vs empty	0	0	1	1
+454	arms/A2/c01-filters-rw/consumers.tsv	win_outside_list_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+456	arms/A2/c01-filters-rw/consumers.tsv	win_outside_list_busy	residual-fail	empty-state-copy vs empty	0	0	1	1
+457	arms/A2/c01-filters-rw/consumers.tsv	win_outside_active_all	residual-fail	empty-state-copy vs empty	0	0	1	1
+458	arms/A2/c01-filters-rw/consumers.tsv	win_outside_all_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+459	arms/A2/c01-filters-rw/consumers.tsv	win_outside_active_stopped	residual-fail	empty-state-copy vs empty	0	0	1	1
+460	arms/A2/c01-filters-rw/consumers.tsv	win_outside_stopped_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+461	arms/A2/c01-filters-rw/consumers.tsv	win_outside_needsattn_active	residual-fail	empty-state-copy vs empty	0	0	1	1
+462	arms/A2/c01-filters-rw/consumers.tsv	win_outside_active_needsattn	residual-fail	empty-state-copy vs empty	0	0	1	1
+463	arms/A3/c01-dead-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+466	arms/A3/c01-dead-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	0	1	1
+468	arms/A3/c01-dead-ro/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+471	arms/A3/c01-dead-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+474	arms/A3/c01-dead-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	0	1	1
+476	arms/A3/c01-dead-rw/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+479	arms/A3/c02-stale-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+482	arms/A3/c02-stale-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	0	1	1
+484	arms/A3/c02-stale-ro/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+487	arms/A3/c02-stale-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+490	arms/A3/c02-stale-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	0	1	1
+492	arms/A3/c02-stale-rw/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+495	arms/A3/c03-throttled-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+498	arms/A3/c03-throttled-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	0	1	1
+500	arms/A3/c03-throttled-ro/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+503	arms/A3/c03-throttled-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+506	arms/A3/c03-throttled-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	0	1	1
+508	arms/A3/c03-throttled-rw/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+511	arms/A3/c04-waiting-user-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+514	arms/A3/c04-waiting-user-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+516	arms/A3/c04-waiting-user-ro/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+519	arms/A3/c04-waiting-user-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+522	arms/A3/c04-waiting-user-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+524	arms/A3/c04-waiting-user-rw/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+527	arms/A3/c05-blocked-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+530	arms/A3/c05-blocked-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+532	arms/A3/c05-blocked-ro/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+535	arms/A3/c05-blocked-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+538	arms/A3/c05-blocked-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+540	arms/A3/c05-blocked-rw/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+543	arms/A3/c06-unanswered-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+546	arms/A3/c06-unanswered-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+548	arms/A3/c06-unanswered-ro/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+551	arms/A3/c06-unanswered-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+554	arms/A3/c06-unanswered-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+556	arms/A3/c06-unanswered-rw/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+559	arms/A3/c07-competing-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+562	arms/A3/c07-competing-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+564	arms/A3/c07-competing-ro/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+567	arms/A3/c07-competing-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+570	arms/A3/c07-competing-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+572	arms/A3/c07-competing-rw/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+575	arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+578	arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+580	arms/A3/c08-unanswered-vs-agent-owned-ro/consumers.tsv	list-active	layout-open	semantic-held	1	0	1	1
+583	arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+586	arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+588	arms/A3/c08-unanswered-vs-agent-owned-rw/consumers.tsv	list-active	layout-open	semantic-held	1	0	1	1
+591	arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+594	arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-needsattn	residual-fail	empty-state-copy vs empty	0	0	1	1
+596	arms/A3/c09-524a-future-ts-ordinary-mtime-ro/consumers.tsv	list-active	layout-open	semantic-held	0	1	1	1
+599	arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+602	arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-needsattn	residual-fail	empty-state-copy vs empty	0	0	1	1
+604	arms/A3/c09-524a-future-ts-ordinary-mtime-rw/consumers.tsv	list-active	layout-open	semantic-held	0	1	1	1
+607	arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+610	arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-needsattn	residual-fail	empty-state-copy vs empty	0	0	1	1
+612	arms/A3/c10-524b-ordinary-ts-future-mtime-ro/consumers.tsv	list-active	layout-open	semantic-held	1	0	1	1
+615	arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+618	arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-needsattn	residual-fail	empty-state-copy vs empty	0	0	1	1
+620	arms/A3/c10-524b-ordinary-ts-future-mtime-rw/consumers.tsv	list-active	layout-open	semantic-held	1	0	1	1
+623	arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+626	arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	0	1	1
+628	arms/A3b/c01-dead-over-stale-ro/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+631	arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+634	arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	0	1	1
+636	arms/A3b/c01-dead-over-stale-rw/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+639	arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+642	arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+644	arms/A3b/c02-stale-over-waitinguser-ro/consumers.tsv	list-active	layout-open	semantic-held	1	0	1	1
+647	arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+650	arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+652	arms/A3b/c02-stale-over-waitinguser-rw/consumers.tsv	list-active	layout-open	semantic-held	1	0	1	1
+655	arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+658	arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+660	arms/A3b/c03-waitinguser-over-blocked-ro/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+663	arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+666	arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+668	arms/A3b/c03-waitinguser-over-blocked-rw/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+671	arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+674	arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+676	arms/A3b/c04-blocked-over-throttled-ro/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+679	arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+682	arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+684	arms/A3b/c04-blocked-over-throttled-rw/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+687	arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+690	arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+692	arms/A3b/c05-throttled-over-unanswered-ro/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+695	arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+698	arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+700	arms/A3b/c05-throttled-over-unanswered-rw/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+703	arms/A3b/c06-competing-noclear-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+706	arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+708	arms/A3b/c06-competing-noclear-ro/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+711	arms/A3b/c06-competing-noclear-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+714	arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-needsattn	layout-open	semantic-held	1	1	1	1
+716	arms/A3b/c06-competing-noclear-rw/consumers.tsv	list-active	residual-fail	empty-state-copy vs empty	0	0	1	1
+719	arms/A4/c01-status-live-live/consumers.tsv	list	fixture-abort	no-capture				
+721	arms/A4/c02-status-016b-live/consumers.tsv	list	fixture-abort	no-capture				
+774	arms/A6/a6-threshold-fixed-clock/consumers.tsv	age10_list_needsattn	layout-open	semantic-held	0	1	1	1
+776	arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1799_list_needsattn	layout-open	semantic-held	0	1	1	1
+778	arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1800_list_needsattn	layout-open	semantic-held	1	1	1	1
+780	arms/A6/a6-threshold-fixed-clock/consumers.tsv	age1801_list_needsattn	layout-open	semantic-held	1	1	1	1
+782	arms/A6/a6-threshold-fixed-clock/consumers.tsv	age100000_list_needsattn	layout-open	semantic-held	1	1	1	1
+786	arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+788	arms/A7/a7-c01-meta-multi-equals-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+791	arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+793	arms/A7/a7-c01-meta-multi-equals-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+796	arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+798	arms/A7/a7-c02-meta-duplicate-key-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+801	arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+803	arms/A7/a7-c02-meta-duplicate-key-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+806	arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+808	arms/A7/a7-c03-meta-unknown-keys-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+811	arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+813	arms/A7/a7-c03-meta-unknown-keys-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+816	arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+818	arms/A7/a7-c04-healthy-baseline-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+821	arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+823	arms/A7/a7-c04-healthy-baseline-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+826	arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+828	arms/A7/a7-c05-meta-mode-000-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+831	arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+833	arms/A7/a7-c05-meta-mode-000-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+836	arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+838	arms/A7/a7-c06-goal-order-opposed-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+841	arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+843	arms/A7/a7-c06-goal-order-opposed-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+846	arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+848	arms/A7/a7-c07-goal-order-agreeing-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+851	arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+853	arms/A7/a7-c07-goal-order-agreeing-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+856	arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+858	arms/A7/a7-c08-goal-order-single-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+861	arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+863	arms/A7/a7-c08-goal-order-single-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+866	arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+868	arms/A7/a7-c09-goals-distinct-ts-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+871	arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+873	arms/A7/a7-c09-goals-distinct-ts-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+876	arms/A7/a7-c10-branch-live-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+878	arms/A7/a7-c10-branch-live-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+881	arms/A7/a7-c10-branch-live-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+883	arms/A7/a7-c10-branch-live-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+886	arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+888	arms/A7/a7-c11-branch-stopped-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+891	arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+893	arms/A7/a7-c11-branch-stopped-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+896	arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+898	arms/A7/a7-c12-405j-pair-full-fresh-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+901	arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+903	arms/A7/a7-c12-405j-pair-full-fresh-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+906	arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+908	arms/A7/a7-c13-405j-pair-stale-keys-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+911	arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+913	arms/A7/a7-c13-405j-pair-stale-keys-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+916	arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+918	arms/A7/a7-c14-405j-pair-slot-only-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+921	arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+923	arms/A7/a7-c14-405j-pair-slot-only-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+926	arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+928	arms/A7/a7-c15-405j-pair-session-only-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+931	arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+933	arms/A7/a7-c15-405j-pair-session-only-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+936	arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+938	arms/A7/a7-c16-405j-pair-keyless-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+941	arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+943	arms/A7/a7-c16-405j-pair-keyless-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+946	arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+948	arms/A7/a7-c17-405j-pair-one-empty-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+951	arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+953	arms/A7/a7-c17-405j-pair-one-empty-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+956	arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+958	arms/A7/a7-c18-405j-pair-all-empty-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+961	arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+963	arms/A7/a7-c18-405j-pair-all-empty-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+966	arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+968	arms/A9/a9-c01-no-events-ro-noserver/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+971	arms/A9/a9-c01-no-events-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+973	arms/A9/a9-c01-no-events-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+976	arms/A9/a9-c01-no-events-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+978	arms/A9/a9-c01-no-events-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+981	arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+983	arms/A9/a9-c02-zero-byte-events-ro-noserver/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+986	arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+988	arms/A9/a9-c02-zero-byte-events-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+991	arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+993	arms/A9/a9-c02-zero-byte-events-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+996	arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+998	arms/A9/a9-c03-meta-mode-000-ro-noserver/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+1001	arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+1003	arms/A9/a9-c03-meta-mode-000-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+1006	arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+1008	arms/A9/a9-c03-meta-mode-000-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+1011	arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+1013	arms/A9/a9-c04-malformed-event-ro-noserver/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+1016	arms/A9/a9-c04-malformed-event-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+1018	arms/A9/a9-c04-malformed-event-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+1021	arms/A9/a9-c04-malformed-event-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+1023	arms/A9/a9-c04-malformed-event-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+1026	arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+1028	arms/A9/a9-c05-meta-absent-ro-noserver/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+1031	arms/A9/a9-c05-meta-absent-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+1033	arms/A9/a9-c05-meta-absent-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+1036	arms/A9/a9-c05-meta-absent-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+1038	arms/A9/a9-c05-meta-absent-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+1041	arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	list	layout-open	semantic-held	0	1	1	1
+1043	arms/A9/a9-c06-healthy-control-ro-noserver/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+1046	arms/A9/a9-c06-healthy-control-ro/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+1048	arms/A9/a9-c06-healthy-control-ro/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
+1051	arms/A9/a9-c06-healthy-control-rw/consumers.tsv	list	layout-open	semantic-held	1	1	1	1
+1053	arms/A9/a9-c06-healthy-control-rw/consumers.tsv	list-all	layout-open	semantic-held	1	1	1	1
