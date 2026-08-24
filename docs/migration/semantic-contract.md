@@ -1401,8 +1401,15 @@ behaviour. The authorization rule is recorded precisely because NO ROW DEFINES I
 implementation has a policy the contract does not, which is the concrete form of the gap
 named above and the reason a cancel-authorization ruling is owed rather than optional. The
 precedence is recorded so that "undecided" plus a running implementation cannot make whichever
-arm someone writes the answer invisibly. A successor test MAY record either behaviour; neither
-becomes normative by being tested, and a seat ruling is the only thing that would move them.
+arm someone writes the answer invisibly.
+
+WHAT A SUCCESSOR TEST MAY DO WITH THEM, and the distinction is ENFORCEMENT, not labelling: a
+GATING test MUST NOT assert either unratified outcome — authorization or precedence — because
+a gating test that fails under the other policy has ratified one choice BY ENFORCEMENT
+whatever its comment says, and "recorded, not normative" is not a property a merge gate can
+honour. A gating test MAY exercise the shared attachment and causality mechanics in an
+OUTCOME-NEUTRAL way, since those are ruled. A clearly NON-GATING diagnostic may record the
+current IS. A seat ruling remains the only thing that makes either outcome normative.
 
 **SC-519 — absent and zero-byte event logs are quiet, not degraded.** Bucket 2 —
 (slice-1 Q7b seat ruling): a fresh session may have no events file until first write
