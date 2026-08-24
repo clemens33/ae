@@ -3048,6 +3048,47 @@ Three notes from the incident worth keeping with the rule:
   you can actually derive — an argument from the shape of the data, not from the
   emptiness of one search.
 
+### A checker that iterates the subject gets QUIETER as the defect grows — and a false claim about your own instrument nearly became doctrine
+
+An editing accident deleted an entire generator block: 236 obligations across two ids,
+silently gone. The author caught it within seconds — the generator prints the id list it
+emitted, and six ids sat where eight belonged — restored, and reported the incident with a
+conclusion attached: *the gate would NOT have caught this, because a missing generator block
+produces a table with no rows to check, and the MISSING-seeds fire on rows that carry the
+trigger, which the deleted code no longer visited.*
+
+That claim was internally plausible, carried a mechanism, arrived beside a genuinely good
+catch — and was **false**. Tested later by actually stripping every such row and running the
+gate: it fires immediately, across the population. **The converse loop iterates
+INVOCATIONS.tsv — an independent fixed input — not the obligation table.** It visits every
+row that carries the trigger and asks whether the obligation exists, and that question is
+answered the same way whether one obligation is missing or all of them. The absence has
+nowhere to hide because the denominator does not come from the thing being checked.
+
+**The inverted lesson is the durable one:**
+
+- A converse check over an **independent population** is precisely the guard that sees
+  wholesale absence.
+- A check that **iterates the artifact under test** goes quieter as the defect grows —
+  deleting rows deletes the questions, and the check is silent exactly when it is needed
+  most. That is the failure mode to hunt for in any verifier: *where does this loop's
+  denominator come from?* If from the subject, absence is invisible; if from an independent
+  input, absence is loud.
+- The cheap fast detector (the generator printing its emitted id census) is a real first
+  line — it fired seconds before any gate could — but it is a first line, not the guard.
+
+**And the meta-incident matters as much as the mechanics.** The false claim was a confident
+negative about the author's OWN instrument, produced by *reasoning about* the gate instead
+of running it — "I had a story for it, and nothing in my own head could have contradicted
+it" — inside a report to a seat that was about to write it into this document, adjacent to a
+self-caught error that lent the whole report credibility. The lead had already endorsed the
+claim in a routed message; only the doc commit had not happened. Two rules from that:
+**reasoning about an instrument is not a test of it — instruments answer questions about
+themselves only when run**, on a seeded copy, exactly like any other subject; and **a lead
+relaying a worker's claim into doctrine owes it the same verification as any other claim** —
+endorsement is publication, and the doctrine file is the least recoverable place to publish
+a plausible falsehood, because doctrine is what nobody re-derives.
+
 ## Verification mechanics
 
 - **Rerun the gate legs yourself, on committed main, with unmasked exit codes.**
