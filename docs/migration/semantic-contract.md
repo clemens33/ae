@@ -243,9 +243,12 @@ renders as an ALWAYS-PRESENT PARTIAL-EVIDENCE INDICATOR: `true` iff >=1 contribu
 remains established after reducing the READABLE facts; `false` iff none remains
 established in those readable facts. Later readable records may add, clear, or
 supersede a contribution, so more input may change `true` to `false` as well as
-`false` to `true`. With `degraded: true`, NEITHER value proves the exact final
-attention: missing facts may add, clear, or supersede, and `degraded: true` is the
-mandatory incompleteness qualifier. `null` here
+`false` to `true`. When the loss could affect the ATTENTION INPUTS, neither
+boolean value alone proves the exact final attention: missing facts may add,
+clear, or supersede a contribution. When SC-509b's exactness rule establishes the
+maximum despite unrelated loss, the full triad remains exact — aggregate
+`degraded` does not make a per-member answer uncertain. Either way,
+`degraded: true` is the mandatory incompleteness qualifier. `null` here
 means read-and-quiet and nothing else, which is exactly why it may not stand in for
 "not established".
 **SCOPE GUARD — required in-row.** This row owns the attention triad's VALUES —
