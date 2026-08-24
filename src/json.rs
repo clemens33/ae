@@ -515,7 +515,7 @@ fn utf8_len(lead: u8) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_into, parse, Value};
+    use super::{Value, escape_into, parse};
 
     #[test]
     fn sc_510d_escapes_the_documented_set() {

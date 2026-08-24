@@ -10,9 +10,9 @@
               PRODUCT code may reach"
 )]
 
-use super::parity::capture::raw;
-use super::parity::capture::ExitOutcome;
 use super::parity::Invocation;
+use super::parity::capture::ExitOutcome;
+use super::parity::capture::raw;
 
 // ONE OF THREE DOORS — `clippy.toml` denies `std::process::Command` crate-wide
 // and `parity_self_test::the_capability_boundary_holds_against_any_lint_relaxation`

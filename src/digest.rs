@@ -364,7 +364,7 @@ fn push_num(fields: &mut Vec<(String, Value)>, key: &str, value: Option<i64>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentEntry, Digest, SessionEntry, Status, SCHEMA_VERSION};
+    use super::{AgentEntry, Digest, SCHEMA_VERSION, SessionEntry, Status};
     use crate::attention::Reason;
     use crate::json;
     use crate::time::Timestamp;

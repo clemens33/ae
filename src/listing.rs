@@ -349,10 +349,10 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{render, table, World};
+    use super::{World, render, table};
     use crate::attention::Reason;
     use crate::digest::{AgentEntry, SessionEntry, Status};
-    use crate::filters::{ListArgs, DEFAULT_ACTIVE_WINDOW_SECS};
+    use crate::filters::{DEFAULT_ACTIVE_WINDOW_SECS, ListArgs};
     use crate::json;
     use crate::time::Timestamp;
 
