@@ -1229,16 +1229,25 @@ is NOT evidence that `degraded` identifies `branch` loss — `degraded` remains
 aggregate visibility and identifies nothing per member. It is NOT precedent for any
 other member: every other optional member's presence is decided by its own source's
 provenance, with no appeal to this paragraph.
-**While the exception stands, `branch` VALUE is UNSCORED under the registered open
-choice `OC-P4-BRANCH-VALUE`.** The successor renders `null` on a healthy entry
+**While the exception stands, `branch` VALUE is UNSCORED across the P1 DIGEST
+comparison under the registered open choice `OC-P4-BRANCH-VALUE`.** Prose alone
+would not carry it: the closed phase-4 open-choices register is the only
+product-output exclusion the gates honour, so an exemption asserted here and
+unregistered there is residual divergence. Scoped to the digest comparison
+deliberately — whether `branch` appears in the human-table P1 comparison is being
+measured separately, and this clause widens by amendment with that measurement as
+its authority rather than by assumption now. The successor renders `null` on a healthy entry
 because no observation exists to render — production constructs its runtime with
 `branch: None` unconditionally, and only the acquisition slice changes that. The
 predecessor renders the branch its live acquisition recorded. Neither is scored
 against the other for the value.
-**Branch PRESENCE is policed independently of this exception**, by the derived
-presence-only obligations across the loss population — not by this paragraph, which
-grants no policing and is not the authority for it. The exception governs one thing:
-whether the VALUE bytes are compared.
+**Branch PRESENCE is policed independently of this exception**, by the DERIVED
+presence-only obligations across the loss population — the ones carrying the
+predecessor's recorded value or `null` to ABSENT. That policing is not granted by
+this paragraph and this paragraph is not its authority; the exception governs one
+thing only, whether the VALUE bytes are compared. The occurrence COUNT lives in the
+obligation table and the register, never here: a cardinality written into a row goes
+stale on the next derivation and then reads as a rule.
 **Why the values are unscored rather than reconciled either way.** An implementation
 gap is not a ruling, so it may not mint a MANDATED divergence — scoring the
 successor's `null` as correct would ratify the absence of a source this row
