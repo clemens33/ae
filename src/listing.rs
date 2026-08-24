@@ -349,11 +349,15 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{World, render, table};
+    use super::{Presentation, World, render, table};
     use crate::attention::Reason;
     use crate::digest::{AgentEntry, SessionEntry, Status};
     use crate::filters::{DEFAULT_ACTIVE_WINDOW_SECS, ListArgs};
+    use crate::inventory::{Candidate, DurableRecord, Layout};
     use crate::json;
+    use crate::liveness::{Classified, Snapshot};
+    use crate::meta::ServerSelector;
+    use crate::session::{DEFAULT_UNANSWERED_SECS, MetaRead, RecordSnapshot};
     use crate::time::Timestamp;
 
     const NOW: Timestamp = Timestamp::from_epoch(1_780_000_000);
@@ -794,5 +798,176 @@ mod tests {
             actual.same_members(&expected),
             "complete empty digest members: {rendered}"
         );
+    }
+
+    // ---- SC-522: one clock for the stamp and for the relation it justifies ---
+
+    /// A real session directory whose only event is an `ask` nobody answered.
+    ///
+    /// Written to disk and read back through [`RecordSnapshot::read`] on purpose:
+    /// the proof below is about the CLOCK, so every other input has to travel the
+    /// production path rather than be hand-assembled around it.
+    struct Unanswered(std::path::PathBuf);
+
+    impl Unanswered {
+        fn new(tag: &str, asked_at: Timestamp) -> Self {
+            let dir = std::env::temp_dir().join(format!("ae-listing-{}-{tag}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch dir");
+            std::fs::write(
+                dir.join("meta"),
+                "mode=local\nagent.main=claude:lead:e795c9e9\nagent.worker.0=codex:hand:pending\n",
+            )
+            .expect("writing a fixture");
+            std::fs::write(
+                dir.join("events.jsonl"),
+                format!(
+                    concat!(
+                        r#"{{"ts":"{}","actor":"claude:lead","action":"ask","#,
+                        r#""target":"codex:hand","ref":"ae-1","summary":"nobody answered"}}"#,
+                        "\n",
+                    ),
+                    asked_at,
+                ),
+            )
+            .expect("writing a fixture");
+            Self(dir)
+        }
+
+        fn snapshot(&self) -> Snapshot {
+            Snapshot {
+                sessions: vec![Classified {
+                    candidate: Candidate {
+                        name: "waiting".to_owned(),
+                        durable: Some(DurableRecord {
+                            path: self.0.clone(),
+                            name: "waiting".to_owned(),
+                            layout: Layout::Canonical,
+                            server: ServerSelector::Missing,
+                            meta_read: MetaRead::Parsed,
+                            snapshot: RecordSnapshot::read(&self.0),
+                        }),
+                        live: None,
+                    },
+                    status: Status::Running,
+                }],
+                incomplete: Vec::new(),
+            }
+        }
+    }
+
+    impl Drop for Unanswered {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The stamp and the three SC-017g members, read out of ONE rendered
+    /// document, EXACTLY as the document holds them.
+    ///
+    /// Returns the raw members rather than normalised values. An absent member,
+    /// a null and a zero are three different documents, and a helper that folded
+    /// them together would let the threshold arm below pass for the wrong reason
+    /// — which is what an earlier version of it did.
+    fn attention_beside_its_stamp(
+        document: &json::Value,
+    ) -> (
+        Timestamp,
+        Option<&json::Value>,
+        Option<&json::Value>,
+        Option<&json::Value>,
+    ) {
+        let stamped = Timestamp::parse(
+            document
+                .get_str("generated_at")
+                .expect("SC-509 stamps every document"),
+        )
+        .expect("the stamp is the documented spelling");
+        let Some(json::Value::Arr(sessions)) = document.get("sessions") else {
+            panic!("SC-509 renders sessions as an array")
+        };
+        let session = sessions.first().expect("the one selected session");
+        (
+            stamped,
+            session.get("needs_attention"),
+            session.get("attention"),
+            session.get("attention_rank"),
+        )
+    }
+
+    #[test]
+    fn sc_522_the_stamp_and_the_attention_it_justifies_come_from_one_sampling() {
+        // **THE PRECONDITION, not a convenience.** `unanswered` is RELATIONAL on
+        // the reader's clock — SC-522 makes it true only once the age EXCEEDS the
+        // threshold — while `generated_at` is that same clock printed. Sample
+        // twice and the document can assert a stamp that contradicts the
+        // attention beside it: a reader cannot tell which moment the digest
+        // describes, and the two halves were never true together.
+        //
+        // The expectation is DERIVED FROM THE DOCUMENT'S OWN STAMP rather than
+        // from the local variable. Asserting both against `now` independently
+        // would pass on two coincidences; recomputing the relation from the stamp
+        // that was actually printed is what makes this a single-sampling proof.
+        let asked_at = Timestamp::from_epoch(1_780_000_000);
+        let fixture = Unanswered::new("sc522", asked_at);
+        let snapshot = fixture.snapshot();
+
+        // Both arms read the SAME bytes. Only the supplied clock moves, so any
+        // difference in the answer is the clock's doing and nothing else's.
+        //
+        // `--all` rather than `--needs-attn` is load-bearing: this proof compares
+        // the session's FIELDS across the boundary, so the session has to be
+        // present in both arms. Under `--needs-attn` the threshold arm selects
+        // nothing and there would be no fields left to disagree about.
+        for (label, offset) in [
+            ("at the threshold", DEFAULT_UNANSWERED_SECS),
+            ("one second past it", DEFAULT_UNANSWERED_SECS + 1),
+        ] {
+            let now = Timestamp::from_epoch(asked_at.epoch() + offset);
+            let world = Presentation::enter(&snapshot).world(now, DEFAULT_UNANSWERED_SECS);
+            let rendered = render(&args(&["--all", "--json"]), &world);
+            let document = json::parse(&rendered).expect("one complete document");
+            let (stamped, needs, attention, rank) = attention_beside_its_stamp(&document);
+
+            // 1. The stamp IS the clock the caller supplied. A `generated_at`
+            //    re-sampled inside render would be the wall clock and fail here.
+            assert_eq!(
+                stamped, now,
+                "{label}: the document stamps the supplied now"
+            );
+
+            // 2. The relation the document reports is the one ITS OWN stamp
+            //    implies. A second sampling behind the fields would compute from
+            //    a different moment and disagree with the stamp it printed.
+            let implied = asked_at.seconds_until(stamped) > DEFAULT_UNANSWERED_SECS;
+            assert_eq!(
+                implied,
+                offset > DEFAULT_UNANSWERED_SECS,
+                "{label}: the fixture sits where this test says it sits"
+            );
+            assert_eq!(
+                needs,
+                Some(&json::Value::Bool(implied)),
+                "{label}: needs_attention follows the stamp"
+            );
+
+            // The two optional members are ABSENT below the threshold, not null
+            // and not zero — asserted as absence so the shape is pinned too.
+            if implied {
+                assert_eq!(
+                    attention,
+                    Some(&json::Value::Str("unanswered".to_owned())),
+                    "{label}: attention follows the stamp"
+                );
+                assert_eq!(
+                    rank,
+                    Some(&json::Value::Num(Reason::Unanswered.rank())),
+                    "{label}: attention_rank follows the stamp"
+                );
+            } else {
+                assert_eq!(attention, None, "{label}: no reason, no member");
+                assert_eq!(rank, None, "{label}: no reason, no rank");
+            }
+        }
     }
 }
