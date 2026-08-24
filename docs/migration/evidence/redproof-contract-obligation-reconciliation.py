@@ -15,6 +15,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 RELATIVE = [
     Path("docs/migration/semantic-contract.md"),
+    Path("docs/migration/p1-phase4-gate.md"),
     Path("docs/migration/evidence/corpus/INVOCATIONS.tsv"),
     Path("docs/migration/evidence/corpus/OBLIGATIONS.tsv"),
     Path("docs/migration/evidence/corpus/SC-509C-UNPROVED.tsv"),
@@ -48,9 +49,14 @@ def write_rows(path: Path, header: list[str], rows: list[list[str]]) -> None:
         writer.writerows(rows)
 
 
-def require_red(temp_root: Path, label: str, expected_error: str) -> None:
+def require_red(
+    temp_root: Path, label: str, expected_error: str, *, allow_mutated_table: bool = True
+) -> None:
+    command = [sys.executable, str(VERIFY), "--root", str(temp_root)]
+    if allow_mutated_table:
+        command.append("--allow-mutated-obligation-table")
     completed = subprocess.run(
-        [sys.executable, str(VERIFY), "--root", str(temp_root)],
+        command,
         text=True,
         capture_output=True,
         check=False,
@@ -411,6 +417,73 @@ def omitted_sc509c_seed() -> None:
         )
 
 
+def sc017o_value_omission_seed() -> None:
+    """Detect a checker that sees presence but forgets the VALUE owed set."""
+    with tempfile.TemporaryDirectory(prefix="ae-c3-017o-value-omitted-") as temp:
+        temp_root = Path(temp)
+        copy_inputs(temp_root)
+        table = temp_root / "docs/migration/evidence/corpus/OBLIGATIONS.tsv"
+        header, rows = read_rows(table)
+        target = next(row for row in rows if row[2] == "SC-017o" and row[4] == "inventory_complete (value)")
+        rows.remove(target)
+        write_rows(table, header, rows)
+        _, landed = read_rows(table)
+        if target in landed:
+            raise RuntimeError("SC-017o VALUE omission seed did not land")
+        require_red(temp_root, "omitted SC-017o VALUE locus", "contract-selected locus missing from table")
+
+
+def accepted_table_blob_seed() -> None:
+    """Detect a verifier that reads a changed accepted table without rejecting its pin."""
+    with tempfile.TemporaryDirectory(prefix="ae-c3-table-blob-") as temp:
+        temp_root = Path(temp)
+        copy_inputs(temp_root)
+        table = temp_root / "docs/migration/evidence/corpus/OBLIGATIONS.tsv"
+        original = table.read_bytes()
+        mutated = original.replace(b"the field is mandated unconditionally", b"the field is mandated conditionally", 1)
+        table.write_bytes(mutated)
+        if b"the field is mandated conditionally" not in table.read_bytes():
+            raise RuntimeError("accepted-table-blob seed did not land")
+        require_red(
+            temp_root,
+            "accepted obligation-table blob drift",
+            "accepted obligation-table blob drift",
+            allow_mutated_table=False,
+        )
+
+
+def sc017o_payload_shape_seed() -> None:
+    """Detect a checker that accepts an UNSCORABLE VALUE as an observed fact."""
+    with tempfile.TemporaryDirectory(prefix="ae-c3-017o-payload-") as temp:
+        temp_root = Path(temp)
+        copy_inputs(temp_root)
+        table = temp_root / "docs/migration/evidence/corpus/OBLIGATIONS.tsv"
+        header, rows = read_rows(table)
+        target = next(row for row in rows if row[2] == "SC-017o" and row[4] == "inventory_complete (value)")
+        target[9] = "OBSERVED"
+        write_rows(table, header, rows)
+        _, landed = read_rows(table)
+        if target not in landed or target[9] != "OBSERVED":
+            raise RuntimeError("SC-017o payload-shape seed did not land")
+        require_red(temp_root, "SC-017o VALUE support", "SC-017o payload shape drift")
+
+
+def sc017o_payload_map_unknown_key_seed() -> None:
+    """Detect a payload map that silently defaults an unknown locus."""
+    with tempfile.TemporaryDirectory(prefix="ae-c3-017o-map-key-") as temp:
+        temp_root = Path(temp)
+        copy_inputs(temp_root)
+        table = temp_root / "docs/migration/evidence/corpus/OBLIGATIONS.tsv"
+        header, rows = read_rows(table)
+        target = next(row for row in rows if row[2] == "SC-017o" and row[4] == "inventory_complete (value)")
+        target[4] = "inventory_complete (unknown map key)"
+        write_rows(table, header, rows)
+        _, landed = read_rows(table)
+        if target not in landed or target[4] != "inventory_complete (unknown map key)":
+            raise RuntimeError("SC-017o unknown-map-key seed did not land")
+        require_red(temp_root, "SC-017o payload unknown map key", "SC-017o payload shape drift")
+
+
 def sc509b_raw_loss_seed() -> None:
     with tempfile.TemporaryDirectory(prefix="ae-c3-509b-raw-") as temp:
         temp_root = Path(temp)
@@ -544,6 +617,18 @@ def contract_blob_seed() -> None:
         require_red(temp_root, "contract blob drift", "contract blob drift")
 
 
+def gate_blob_seed() -> None:
+    """Detect a rerun that retains values after criterion 3's gate input moved."""
+    with tempfile.TemporaryDirectory(prefix="ae-c3-gate-") as temp:
+        temp_root = Path(temp)
+        copy_inputs(temp_root)
+        gate = temp_root / "docs/migration/p1-phase4-gate.md"
+        gate.write_bytes(gate.read_bytes() + b"\nseed gate drift\n")
+        if not gate.read_bytes().endswith(b"seed gate drift\n"):
+            raise RuntimeError("gate-drift seed did not land")
+        require_red(temp_root, "phase-4 gate blob drift", "phase-4 gate blob drift")
+
+
 def inventory_header_seed() -> None:
     with tempfile.TemporaryDirectory(prefix="ae-c3-inventory-header-") as temp:
         temp_root = Path(temp)
@@ -555,6 +640,26 @@ def inventory_header_seed() -> None:
         if landed_header[0] != "wrong_contract_id":
             raise RuntimeError("inventory-header seed did not land")
         require_red(temp_root, "inventory header", "inventory header drift")
+
+
+def obligation_header_seed() -> None:
+    """Detect a parser that accepts a reordered or renamed identity column."""
+    with tempfile.TemporaryDirectory(prefix="ae-c3-obligation-header-") as temp:
+        temp_root = Path(temp)
+        copy_inputs(temp_root)
+        table = temp_root / "docs/migration/evidence/corpus/OBLIGATIONS.tsv"
+        header, rows = read_rows(table)
+        header[0] = "wrong_case"
+        write_rows(table, header, rows)
+        landed_header, _ = read_rows(table)
+        if landed_header[0] != "wrong_case":
+            raise RuntimeError("obligation-header seed did not land")
+        require_red(
+            temp_root,
+            "obligation header",
+            "OBLIGATIONS.tsv header drift",
+            allow_mutated_table=False,
+        )
 
 
 def p1_population_seed() -> None:
@@ -614,13 +719,19 @@ def main() -> int:
     obligation_ids_seed()
     omitted_sc509b_seed()
     omitted_sc509c_seed()
+    sc017o_value_omission_seed()
+    accepted_table_blob_seed()
+    sc017o_payload_shape_seed()
+    sc017o_payload_map_unknown_key_seed()
     sc509b_raw_loss_seed()
     sc509c_alert_currency_seed()
     sc509c_duplicate_key_seed()
     sc509c_carrier_overlap_seed()
     sc509c_exclusion_carrier_seed()
     contract_blob_seed()
+    gate_blob_seed()
     inventory_header_seed()
+    obligation_header_seed()
     p1_population_seed()
     duplicate_key_seed()
     return 0

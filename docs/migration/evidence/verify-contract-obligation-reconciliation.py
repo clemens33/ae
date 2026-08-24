@@ -18,6 +18,8 @@ from pathlib import Path, PurePosixPath
 
 
 CONTRACT_BLOB = "896d08ea3ac753095c04af17dfba92cd9d15fb38"
+GATE_BLOB = "f31ece2ac40ed47077ab07f559ad8ab5ad97f6b0"
+OBLIGATIONS_BLOB = "44e06c29cc078e6933298139d204413966419d81"
 EXPECTED_IDS = {
     "SC-017l",
     "SC-017m",
@@ -31,14 +33,16 @@ EXPECTED_IDS = {
 EXPECTED_COUNTS = {
     "SC-017l": 134,
     "SC-017m": 150,
-    "SC-017o": 573,
+    "SC-017o": 802,
     "SC-017r": 78,
     "SC-509b": 14,
     "SC-509c": 222,
     "SC-509d": 401,
     "SC-509e": 42,
 }
-EXPECTED_RELATION_COUNT = 1614
+EXPECTED_RELATION_COUNT = 1843
+EXPECTED_SUPPORT_COUNTS = {"OBSERVED": 1082, "UNSCORABLE": 761}
+EXPECTED_CARRYING_ROWS = 581
 EXPECTED_B_LOSS_INSTANCE_COUNT = 20
 EXPECTED_UNPROVED_COUNT = 184
 UNPROVED_HEADER = [
@@ -66,7 +70,8 @@ INVENTORY_EXPECTATIONS = {
     ("SC-017l", "unknown session status"): ("directional corpus locus", "SC-017l", 134),
     ("SC-017m", "unknown session membership and rendering"): ("directional corpus locus", "SC-017m", 150),
     ("SC-017n", "C-byte group/name order"): ("directional gap", "-", 0),
-    ("SC-017o", "inventory completeness JSON field and human diagnostic"): ("directional corpus locus", "SC-017o", 573),
+    ("SC-017o", "inventory completeness boolean presence"): ("directional corpus locus", "SC-017o", 401),
+    ("SC-017o", "inventory completeness VALUE"): ("underdetermined value locus", "SC-017o", 401),
     ("SC-017p", "positive per-agent liveness proof"): ("directional gap", "-", 0),
     ("SC-017q", "unknown per-agent liveness"): ("partial corpus locus", "SC-017r,SC-509e", 120),
     ("SC-017r", "human agent-health marker"): ("directional corpus locus", "SC-017r", 78),
@@ -117,6 +122,22 @@ INVENTORY_HEADER = [
     "independent_raw_basis",
     "pinned_successor",
 ]
+OBLIGATION_HEADER = [
+    "case", "consumer", "obligation_id", "stream", "locus", "from", "to",
+    "predicate", "baseline_provenance", "support", "authority",
+]
+RECONCILIATION_KEY_COLUMNS = ("case", "consumer", "obligation_id", "stream", "locus")
+PAYLOAD_COLUMNS = ("from", "to", "predicate", "baseline_provenance", "support", "authority")
+SC017O_PAYLOADS = {
+    "inventory_complete": (
+        "ABSENT", "present", "present", "OBSERVED", "OBSERVED",
+        "the field is mandated unconditionally; its VALUE is unscorable on this corpus and is recorded as such, not asserted",
+    ),
+    "inventory_complete (value)": (
+        "ABSENT", "the enumeration's actual completeness", "undecidable", "OBSERVED", "UNSCORABLE",
+        "no captured connect failure names a session's RECORDED server, so no independently entitled enumeration is shown to have finally failed; ambient entitlement turns on the AE_TMUX_SERVER selection SC-1410c leaves unclassified",
+    ),
+}
 INVENTORY_IDS = {contract_id for contract_id, _ in INVENTORY_EXPECTATIONS}
 
 
@@ -135,6 +156,25 @@ def read_comment_tsv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
             (line for line in handle if not line.startswith("#")), delimiter="\t"
         )
         return reader.fieldnames or [], list(reader)
+
+
+def read_obligation_rows(path: Path, errors: list[str]) -> list[dict[str, str]]:
+    """Parse before pinning so malformed and drifted inputs stay distinct."""
+    try:
+        with path.open(newline="") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            if reader.fieldnames != OBLIGATION_HEADER:
+                failure(errors, f"OBLIGATIONS.tsv header drift: {reader.fieldnames!r}")
+                return []
+            rows = list(reader)
+    except (OSError, UnicodeError, csv.Error) as exc:
+        failure(errors, f"OBLIGATIONS.tsv malformed: {exc}")
+        return []
+    for index, row in enumerate(rows, start=2):
+        if None in row or any(row.get(column) is None for column in OBLIGATION_HEADER):
+            failure(errors, f"OBLIGATIONS.tsv malformed row at line {index}")
+            return []
+    return rows
 
 
 def failure(errors: list[str], message: str) -> None:
@@ -450,12 +490,12 @@ def expected_loci(
             if affected_sessions:
                 result.add((case, consumer, "SC-509b", "digest", "sessions[].degraded"))
 
-        # SC-017o: every JSON digest gains completeness; a failed enumeration
-        # makes every P1 human list/ls output carry the diagnostic.
+        # SC-017o has two separate JSON loci.  Raw case bytes identify every
+        # captured connection failure as ambient/no-server rather than an
+        # entitled enumeration failure, so no human diagnostic is owed.
         if json_output:
             result.add((case, consumer, "SC-017o", "digest", "inventory_complete"))
-        elif failed_server:
-            result.add((case, consumer, "SC-017o", "stderr", "(whole stream)"))
+            result.add((case, consumer, "SC-017o", "digest", "inventory_complete (value)"))
 
         # SC-017l: an unavailable server changes the all-view status in either
         # rendering.  It intentionally excludes the selector-missing live arm.
@@ -614,14 +654,39 @@ def verify_inventory(path: Path, contract: str, errors: list[str]) -> None:
             failure(errors, f"unnamed successor for zero-locus gap {row['contract_id']}")
 
 
+def verify_payloads(rows: list[dict[str, str]], errors: list[str]) -> None:
+    """Validate payload separately from identity; neither column set is implicit."""
+    supports = Counter(row["support"] for row in rows)
+    if supports != EXPECTED_SUPPORT_COUNTS:
+        failure(errors, f"support population drift: expected {EXPECTED_SUPPORT_COUNTS}, got {dict(supports)}")
+    carrying = {(row["case"], row["consumer"]) for row in rows}
+    if len(carrying) != EXPECTED_CARRYING_ROWS:
+        failure(errors, f"carrying-row population drift: expected {EXPECTED_CARRYING_ROWS}, got {len(carrying)}")
+    sc017o_rows = [row for row in rows if row["obligation_id"] == "SC-017o"]
+    if Counter(row["locus"] for row in sc017o_rows) != {
+        "inventory_complete": 401,
+        "inventory_complete (value)": 401,
+    }:
+        failure(errors, "SC-017o two-locus population drift")
+    for row in sc017o_rows:
+        expected = SC017O_PAYLOADS.get(row["locus"])
+        actual = tuple(row[column] for column in PAYLOAD_COLUMNS)
+        if expected is None or actual != expected:
+            failure(errors, f"SC-017o payload shape drift at {tuple(row[column] for column in RECONCILIATION_KEY_COLUMNS)!r}")
+    if any(row["obligation_id"] == "SC-017o" and row["stream"] != "digest" for row in rows):
+        failure(errors, "SC-017o has a non-digest identity")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--allow-mutated-obligation-table", action="store_true")
     args = parser.parse_args()
     root = args.root.resolve()
     evidence = root / "docs/migration/evidence"
     corpus = evidence / "corpus"
     contract_path = root / "docs/migration/semantic-contract.md"
+    gate_path = root / "docs/migration/p1-phase4-gate.md"
     inventory_path = evidence / "p1-phase4-contract-obligation-loci.tsv"
     obligations_path = corpus / "OBLIGATIONS.tsv"
     invocations_path = corpus / "INVOCATIONS.tsv"
@@ -630,6 +695,7 @@ def main() -> int:
 
     required = [
         contract_path,
+        gate_path,
         inventory_path,
         obligations_path,
         invocations_path,
@@ -643,9 +709,25 @@ def main() -> int:
         print("\n".join(errors))
         return 1
 
+    actual_rows = read_obligation_rows(obligations_path, errors)
+    if errors:
+        print("FAIL contract-obligation reconciliation")
+        print("\n".join(errors))
+        return 1
     contract_bytes = contract_path.read_bytes()
     if git_blob(contract_bytes) != CONTRACT_BLOB:
         failure(errors, "contract blob drift: reconciliation must be re-derived")
+    if git_blob(gate_path.read_bytes()) != GATE_BLOB:
+        failure(errors, "phase-4 gate blob drift: reconciliation must be re-derived")
+    if (
+        not args.allow_mutated_obligation_table
+        and git_blob(obligations_path.read_bytes()) != OBLIGATIONS_BLOB
+    ):
+        failure(errors, "accepted obligation-table blob drift: reconciliation must be re-derived")
+    if errors:
+        print("FAIL contract-obligation reconciliation")
+        print("\n".join(errors))
+        return 1
     contract = contract_bytes.decode(errors="replace")
     verify_inventory(inventory_path, contract, errors)
 
@@ -681,19 +763,8 @@ def main() -> int:
             "SC-509c state and alert carriers overlap at session-and-agent grain: "
             f"{sorted(state_addresses & alert_addresses)[:3]!r}",
         )
-    actual_rows = read_tsv(obligations_path)
-    required_header = {
-        "case",
-        "consumer",
-        "obligation_id",
-        "stream",
-        "locus",
-        "from",
-        "to",
-        "predicate",
-    }
-    if actual_rows and not required_header.issubset(actual_rows[0]):
-        failure(errors, "OBLIGATIONS.tsv lacks reconciliation key columns")
+    if not actual_rows:
+        failure(errors, "OBLIGATIONS.tsv is empty")
     non_agent_rows = [row for row in actual_rows if row["obligation_id"] != "SC-509c"]
     agent_rows = [row for row in actual_rows if row["obligation_id"] == "SC-509c"]
     actual = {
@@ -725,6 +796,7 @@ def main() -> int:
         failure(errors, f"orphan obligation ID(s): {sorted(unexpected_ids)}")
     if missing_ids:
         failure(errors, f"missing obligation ID(s): {sorted(missing_ids)}")
+    verify_payloads(actual_rows, errors)
     if expected != actual:
         missing = sorted(expected - actual)
         extra = sorted(actual - expected)
@@ -769,9 +841,11 @@ def main() -> int:
         print("FAIL contract-obligation reconciliation")
         print("\n".join(errors))
         return 1
+    suffix = " (accepted-table pin SKIPPED)" if args.allow_mutated_obligation_table else ""
     print(
         "PASS contract-obligation reconciliation: "
-        "1614 relations / 8 IDs / contract 896d08ea"
+        "1843 relations / 1082 OBSERVED / 761 UNSCORABLE / contract 896d08ea"
+        + suffix
     )
     return 0
 

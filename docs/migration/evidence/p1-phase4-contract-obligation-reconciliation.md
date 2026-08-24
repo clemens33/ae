@@ -1,13 +1,16 @@
 # Phase-4 contract-to-obligation reconciliation
 
-Independent reconciliation required by phase-4 gate criterion 3. It is a
-contract reading and raw-corpus check by `gpt56terra:c3recon`, not a projection
+Independent reconciliation required by phase-4 gate criterion 3. It supersedes
+the reconciliation artifacts pinned by commits `343fcd80` and `a555379f`. It is a
+contract reading and raw-corpus check by `gpt56terra:pubfp`, not a projection
 of the obligation generator.
 
 Fixed contract: `docs/migration/semantic-contract.md`, git blob
 `896d08ea3ac753095c04af17dfba92cd9d15fb38`. The verifier rejects any other
 contract bytes. The governing criterion is phase-4 gate blob
-`3a63f7416ccda870a503ac5e11fb2f53ccbea2a1`, criterion 3. Corpus inputs are
+`f31ece2ac40ed47077ab07f559ad8ab5ad97f6b0`, at commit `f88379ce`, criterion 3.
+The accepted obligation table is blob `44e06c29cc078e6933298139d204413966419d81`.
+Corpus inputs are
 `INVOCATIONS.tsv`, the frozen Batch C case artifacts, and `OBLIGATIONS.tsv`.
 The contract byte pin is also the contract-to-inventory completeness control:
 a newly ratified or reclassified row changes the pin and forces this inventory
@@ -38,6 +41,18 @@ authority prose. It independently:
    obligation_id, stream, session-and-agent-qualified locus, from, to,
    predicate)` set for SC-509c, then compares each in both directions with
    `OBLIGATIONS.tsv`.
+
+The obligation table's declared `ADDRESS` is exactly `case, consumer,
+obligation_id, locus`. C3 deliberately uses the wider reconciliation key
+`case, consumer, obligation_id, stream, locus`: stream is a product channel
+and retaining it prevents a stdout/digest/stderr projection drift from being
+hidden by address agreement. This does not redefine the table address. Payload
+is exactly `from, to, predicate, baseline_provenance, support, authority`.
+Unknown IDs and either header drift fail closed. The verifier compares the
+complete independent reconciliation-key set both directions, then validates
+payload separately, including the two exact SC-017o payload forms. Every
+selector names its raw P1 population; empty owed sets are asserted as empty
+rather than inferred from an absent row.
 
 The raw selectors are intentionally different in shape from a contract-table
 generator: JSON is discovered from argv, failed transport only from an explicit
@@ -70,14 +85,15 @@ future difference appears as a reverse-direction failure.
 
 ## Result
 
-The independent result has **1,614** directional relations. The table has the
-same 1,614 relations, with exactly these IDs:
+The independent result has **1,843** directional relations across **581**
+carrying rows: **1,082 OBSERVED** and **761 UNSCORABLE**. The table has the
+same relations, with exactly these IDs:
 
 | Contract row | Relations | Raw basis |
 | --- | ---: | ---: |
 | SC-017l | 134 | failed-server `--all` status changes |
 | SC-017m | 150 | default-view and selector-missing unknown membership |
-| SC-017o | 573 | completeness JSON and incomplete human diagnostic |
+| SC-017o | 802 | 401 boolean-presence loci plus 401 UNSCORABLE completeness-VALUE loci |
 | SC-017r | 78 | human unknown agent-health presentation |
 | SC-509b | 14 | 20 fixture-proven loss sessions coalesced by JSON field |
 | SC-509c | 222 | 128 self-declared state + 94 current target-named alert carriers |
@@ -118,6 +134,16 @@ SC-508 is not listed: it remains an unclassified code-observation row and
 therefore is not a ratified output obligation. SC-517b/c and SC-703/704 have
 no P1 corpus surface.
 
+## SC-017o completeness split
+
+Each of the 401 JSON digest identities carries two SC-017o rows. Boolean
+presence is `ABSENT -> present`, predicate `present`, support `OBSERVED`.
+Completeness VALUE is `ABSENT -> the enumeration's actual completeness`,
+predicate `undecidable`, support `UNSCORABLE`. No human diagnostic is selected:
+a captured connection error alone is not an entitled enumeration failure, and
+the frozen case bytes provide no such failure. This preserves the contract's
+whole-snapshot grain without promoting an ambient socket probe into loss fact.
+
 ## SC-509b/c source and exclusion reading
 
 The SC-509b row is distinct from phase-2 criterion 13's open choice about
@@ -157,4 +183,7 @@ python3 docs/migration/evidence/redproof-contract-obligation-reconciliation.py
 Both commands are read-only with respect to tracked files. The red proof makes
 each seed only in a new temporary directory, verifies the mutation landed
 there before inspecting the verifier result, and deletes that directory on
-exit.
+exit. Its table-content seeds pass the verifier's explicit test-only
+`--allow-mutated-obligation-table` switch; that distinct PASS line says the
+accepted-table pin was skipped. The accepted-table blob-drift seed does not
+pass that switch and proves the normal pin fires.

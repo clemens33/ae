@@ -13,7 +13,8 @@ SC-017k	recorded-server exact liveness	directional gap	-	0	Batch C has no non-am
 SC-017l	unknown session status	directional corpus locus	SC-017l	134	P1 list/ls --all rows whose case tmux.before.txt says error connecting	p1-phase4-gate.md C6,C7
 SC-017m	unknown session membership and rendering	directional corpus locus	SC-017m	150	default list/ls rows in error-connecting cases plus four live selector-missing rows	p1-phase4-gate.md C6,C7
 SC-017n	C-byte group/name order	directional gap	-	0	no P1 corpus ordering arm distinguishes required C-byte order from frozen incidental order	p1-phase3-gate.md C9,C10,C11
-SC-017o	inventory completeness JSON field and human diagnostic	directional corpus locus	SC-017o	573	all P1 JSON list/ls outputs; human list/ls outputs in error-connecting cases	p1-phase3-gate.md C12,C13,C14; p1-phase4-gate.md C7
+SC-017o	inventory completeness boolean presence	directional corpus locus	SC-017o	401	all P1 JSON list/ls outputs owe the top-level boolean; captured connection errors target ambient/no-server sockets, not an independently entitled enumeration	p1-phase3-gate.md C12,C13,C14; p1-phase4-gate.md C7,C9
+SC-017o	inventory completeness VALUE	underdetermined value locus	SC-017o	401	the same 401 JSON digests have no independently entitled enumeration-failure fact; only the exact UNSCORABLE undecidable VALUE row is permitted	p1-phase4-gate.md C9,C11
 SC-017p	positive per-agent liveness proof	directional gap	-	0	no P1 product-valid pane-to-agent association can prove alive or dead	p1-phase4-gate.md C12
 SC-017q	unknown per-agent liveness	partial corpus locus	SC-017r,SC-509e	120	120 captured unknown-health output loci carry failed-query unknown; the product-valid association matrix remains absent	p1-phase4-gate.md C12
 SC-017r	human agent-health marker	directional corpus locus	SC-017r	78	error-connecting P1 human --all rows whose frozen row visibly carries an agent	p1-phase4-gate.md C7,C10
