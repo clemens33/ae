@@ -180,6 +180,26 @@ def dirty_new_member_seed(source: Path, scratch: Path) -> None:
     raise RuntimeError(f"{name}: derivation emitted a value despite indexed new member")
 
 
+def dirty_ignored_seed(source: Path, scratch: Path) -> None:
+    name = "dirty-ignored-member-path"
+    repo = clone(source, scratch, name)
+    module = load_verifier(repo)
+    member = module.published_members(repo, module.fixture_roots(repo))[0]
+    target = repo / member / "redproof-ignored.txt"
+    target.write_text("redproof ignored fixture path\n", encoding="utf-8")
+    exclude = repo / ".git" / "info" / "exclude"
+    exclude.write_text(exclude.read_text(encoding="utf-8") + "\nredproof-ignored.txt\n", encoding="utf-8")
+    require(git(repo, "check-ignore", "-q", "--", str(target.relative_to(repo)), check=False).returncode == 0,
+            "ignored dirty seed did not land")
+    print(f"LANDING VERIFIED {name}")
+    try:
+        module.derive(repo)
+    except module.DirtySource:
+        print(f"PASS {name} — DIRTY-SOURCE refused derivation")
+        return
+    raise RuntimeError(f"{name}: derivation emitted a value despite ignored member path")
+
+
 def symlink_specimens(module: ModuleType, repo: Path) -> list[tuple[str, bytes]]:
     found: list[tuple[str, bytes]] = []
     for member in module.published_members(repo, module.fixture_roots(repo)):
@@ -276,6 +296,7 @@ def main() -> int:
         dirty_existing_seed(source, scratch, staged=True)
         dirty_existing_seed(source, scratch, staged=False)
         dirty_new_member_seed(source, scratch)
+        dirty_ignored_seed(source, scratch)
         if specimens:
             symlink_retarget_seed(source, scratch, specimens[0])
         else:

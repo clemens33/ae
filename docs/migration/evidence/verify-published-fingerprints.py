@@ -107,7 +107,16 @@ def published_members(repo: Path, roots: list[bytes], treeish: str = "HEAD") -> 
 def dirty_source(repo: Path, roots: list[bytes]) -> None:
     paths = [root.decode("utf-8") for root in roots]
     # `status` rather than `diff` sees staged, unstaged, and untracked paths.
-    raw = run_git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", *paths)
+    raw = run_git(
+        repo,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=matching",
+        "--",
+        *paths,
+    )
     if raw:
         items = [entry.decode("utf-8", "backslashreplace") for entry in raw.split(b"\0") if entry]
         raise DirtySource("published fixture path differs from HEAD: " + "; ".join(items))
@@ -174,6 +183,7 @@ def render(repo: Path, rows: list[Fingerprint]) -> str:
         f"# source_root\t{SOURCE_ROOT}",
         "# committed_treeish\tHEAD",
         f"# derived_from_commit\t{source_commit}",
+        "# derived_from_commit_role\tvalue-derivation source only; artifact header may be newer",
         f"# member_count\t{EXPECTED_MEMBERS}",
         f"# git_tree_id_role\t{TREE_ID_ROLE}",
         f"# canonical_sha256_role\t{CANONICAL_ROLE}",
@@ -232,6 +242,7 @@ def parse_artifact(path: Path) -> tuple[dict[str, str], list[Fingerprint]]:
         "algorithm_path": ALGORITHM_REL,
         "source_root": SOURCE_ROOT,
         "committed_treeish": "HEAD",
+        "derived_from_commit_role": "value-derivation source only; artifact header may be newer",
         "member_count": str(EXPECTED_MEMBERS),
         "git_tree_id_role": TREE_ID_ROLE,
         "canonical_sha256_role": CANONICAL_ROLE,

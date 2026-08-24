@@ -15,13 +15,13 @@ tracked leaf paths; they are not manifest entries.
 
 Derivation refuses with `DIRTY-SOURCE` when any path below a published
 `fixture-bytes` root differs between `HEAD` and the working tree, whether the
-change is staged, unstaged, or untracked.  Dirt elsewhere in the repository is
-out of scope.  The guard matters even though the value below is derived from
-`HEAD`: phase 4 materialises fixtures from the working tree, so publishing a
-`HEAD` value while a fixture is locally changed would recreate the old
-wrong-referent defect.  Derivation never uses `git write-tree`, the index tree,
-working-tree `stat`, or working-tree file contents.  For a member path `P`, its
-reproducibility anchor is obtained only from the committed tree:
+change is staged, unstaged, untracked, or ignored.  Dirt elsewhere in the
+repository is out of scope.  The guard matters even though the value below is
+derived from `HEAD`: phase 4 materialises fixtures from the working tree, so
+publishing a `HEAD` value while a fixture is locally changed would recreate the
+old wrong-referent defect.  Derivation never uses `git write-tree`, the index
+tree, working-tree `stat`, or working-tree file contents.  For a member path
+`P`, its reproducibility anchor is obtained only from the committed tree:
 
 ```text
 git rev-parse --verify HEAD:P
