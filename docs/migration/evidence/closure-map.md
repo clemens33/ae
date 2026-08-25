@@ -4,11 +4,11 @@
   checked relation is the blob below, because a commit says where this came from and a
   blob says whether the thing it maps has moved since)
 
-SOURCE: docs/migration/semantic-contract.md blob 327d1733aa0768e9a69f787cc7d2a6abaa09ed8f
+SOURCE: docs/migration/semantic-contract.md blob 2c832b31a890d4e08a45ed6dcb98a0562d023e5b
 
 - frozen-baseline: `72c7293` (`72c729343a0117af2968b66e1c43f89ad25fc0b2`)
-- canonical set: SC rows `444`; ownership records `43`; total entries `487`
-- evidence-kind counts: TEST `82`; CENSUS `3`; CENSUS/CODE `23`; CODE `10`; OBSERVED `3`; OBSERVED/CODE `4`; PROBE `361`
+- canonical set: SC rows `445`; ownership records `43`; total entries `488`
+- evidence-kind counts: TEST `82`; CENSUS `3`; CENSUS/CODE `23`; CODE `10`; OBSERVED `3`; OBSERVED/CODE `8`; PROBE `359`
 
 AMENDMENT (both seats, 2026-08-20, preflight ae-20260820T111048Z-352d6eea): TEST and
 CENSUS/CODE entries are CANDIDATE evidence pointers pending the pin audit;
@@ -518,4 +518,3 @@ SC-405i | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; is
 SC-405j | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures | manipulate=deterministic per C design | barriers=frozen inputs, before/after barriers | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted
 SC-405k | PROBE | artifact=not-yet-run | environment=frozen 72c7293 checkout; isolated AE_HOME; fixed fixtures | manipulate=deterministic per C design | barriers=frozen inputs, before/after barriers | capture=stdout,stderr,rc,files,tmux state | expected-values=omitted
 SC-405l | CODE | artifact=git show 72c7293:ae | heading=ae:7594-7599,17558-17559 | recheck=released reader maps kindless nonempty to -L name and explicit ambiguous to no target; typed writer emits the two-key representation; successor normalized reader pending | expected-values=classified by both seats (bucket 2, conflict none)
-

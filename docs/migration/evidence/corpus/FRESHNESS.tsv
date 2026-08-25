@@ -1,8 +1,13 @@
 # Freshness relation — the SOURCE this derivation was made against.
 # A lineage stamp says where an artifact came from; only a hash
-# comparison says whether the source has MOVED since.
+# comparison says whether the source has MOVED since. FRESHNESS is also the
+# tuple manifest and is published LAST, after atomic replacement of all three
+# data members: OBLIGATIONS, UNOBSERVABLE-ADDED-ROSTER and SC-509C-UNPROVED.
 field	value
 contract_path	docs/migration/semantic-contract.md
-contract_blob	327d1733aa0768e9a69f787cc7d2a6abaa09ed8f
+contract_blob	2c832b31a890d4e08a45ed6dcb98a0562d023e5b
 p1_rows	1065
-obligation_rows	2153
+obligation_rows	6730
+obligations_sha256	d67f2a9819df24a21255c2dca92b349e98a78274630cb5b0488342f8fda12dd4
+added_roster_gap_sha256	bc16e65516ab61aba5bc28a5f49310a778d87e63100e8e53530947fb5c169341
+sc509c_unproved_sha256	e6cef753e9dc88dbb46cc5b6d1468d007f7c986953576a63d23140f98767d489

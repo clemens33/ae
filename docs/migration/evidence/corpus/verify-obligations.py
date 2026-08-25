@@ -9,10 +9,11 @@ column was found stale by a human noticing. This makes staleness a gate result.
 import calendar
 import hashlib
 import time
-import argparse, csv, json, os, re, subprocess, sys, collections
+import argparse, csv, io, json, os, re, subprocess, sys, collections
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.normpath(os.path.join(HERE, "..", "batch-c-artifacts"))
+CONTRACT = "docs/migration/semantic-contract.md"
 OBL = os.path.join(HERE, "OBLIGATIONS.tsv")
 FRESH = os.path.join(HERE, "FRESHNESS.tsv")
 INV = os.path.join(HERE, "INVOCATIONS.tsv")
@@ -25,6 +26,10 @@ STREAMS = {"digest", "stdout", "stderr"}
 PREDICATES = {"equals", "at-least", "all-of", "present", "undecidable", "relational"}
 SUPPORT = {"OBSERVED", "UNSCORABLE"}
 LISTING = ("ae list", "ae ls")
+FRESH_REQUIRED_FIELDS = frozenset({
+    "contract_path", "contract_blob", "p1_rows", "obligation_rows",
+    "obligations_sha256", "added_roster_gap_sha256", "sc509c_unproved_sha256",
+})
 # THE IDENTITY/PAYLOAD SPLIT, IN BYTES RATHER THAN IN A HEAD. For OBLIGATIONS.tsv the
 # ADDRESS is (case, consumer, obligation_id, locus); everything else is row DATA.
 # Keying an address on payload lets a contradictory duplicate buy its own address by
@@ -32,7 +37,7 @@ LISTING = ("ae list", "ae ls")
 ADDRESS = ("case", "consumer", "obligation_id", "locus")
 # THE POPULATION EACH ID MAY APPEAR ON, declared rather than left to whichever parse
 # condition a loop happened to use. Measured against the accepted table before being
-# written down: SC-017l/m appear on digest and human listings, SC-017r on human
+# written down: SC-017l/m appear on digest and human listings, SC-017h/r on human
 # listings, and SC-509b/c/d/e and SC-017o on digests only. OWED-ZERO IS AN OBLIGATION
 # TO CHECK, NOT A ROW TO SKIP — a loop that skips a class is quiet exactly outside the
 # domain its author imagined, which is where a fabricated row goes to hide.
@@ -40,6 +45,7 @@ ID_POPULATION = {
     "SC-017l": ("digest", "human-listing"),
     "SC-017m": ("digest", "human-listing"),
     "SC-017o": ("digest",),
+    "SC-017h": ("human-listing",),
     "SC-017r": ("human-listing",),
     "SC-509b": ("digest",),
     "SC-509c": ("digest",),
@@ -474,6 +480,550 @@ def gate_pending_ts(case, session):
     return oldest
 
 
+# ---- THE MODULE INVARIANT, stated because it took three instances to see:
+#
+#   THE OWED SIDE IS WHERE DERIVATION AND SCOPING LIVE.
+#   THE HELD SIDE IS COMPARED IN ITS ENTIRETY, NEVER FILTERED.
+#
+# Every filter applied to the HELD side re-scopes the gate to the population its
+# author imagined, so anything outside that imagination is discarded before the
+# comparison can see it. Today's three instances, each a reasonable-looking
+# optimisation: want_attn compared only agent-owned contributions; ID_POPULATION
+# constrained a row CLASS and was mistaken for an owed population; held_shapes
+# filtered to stopped loci, so an addition on a RUNNING session was invisible.
+#
+# The mechanism: one GLOBAL comparison in which every table row is CONSUMED EXACTLY
+# ONCE by some family's owed set, and an unconsumed row is a finding. An id with no
+# owed family cannot consume anything, so it is DECLARED here rather than silently
+# exempt — which is what once let the entire SC-017r family be deleted wholesale
+# and stay green.
+GAP = os.path.join(HERE, "UNOBSERVABLE-ADDED-ROSTER.tsv")
+UNPROVED = os.path.join(HERE, "SC-509C-UNPROVED.tsv")
+
+OWED_FAMILY_IDS = frozenset({
+    "SC-509b", "SC-405g",          # loss facts
+    "SC-509d",                     # schema_version, one per digest
+    "SC-017o",                     # inventory_complete, the two fixed rows
+    "SC-509e",                     # agent liveness on unreachable digests
+    "SC-509", "SC-017g",           # stopped facts
+    "SC-509c",                     # reason carriers
+    "SC-518", "SC-518a",           # request closure
+    "SC-521c",                     # live-scope set obligations
+    "SC-017l", "SC-017m",          # unknown liveness, graduated 2026-08-25
+    "SC-017h",                     # human declared state at fixed roster grain
+    "SC-017r",                     # human agent health at fixed roster grain
+})
+# Ids with no owed derivation YET. STAGING ONLY — none of these may survive into a
+# final artifact, per colead's ruling, and the doctrine line is theirs verbatim:
+#
+#     UNSCORABLE IS SUPPORT, NEVER PERMISSION FOR UNKNOWN POPULATION.
+#
+# A gap listed here is visible rather than accidental, which is the only virtue it
+# has; it is not a licence. Each entry names the source ruled for its family, all
+# derived IN THIS VERIFIER from INVOCATIONS + committed stdout + tmux.before and the
+# manifest — never from the generator, because a family imported from the thing it
+# checks cannot police it. Removing an entry requires building that family.
+# EMPTY, and that is the point: colead's rule is that no staging gap may survive
+# into a final artifact. The dict stays because the partition line prints its size,
+# and a future gap must be DECLARED here rather than silently exempt.
+NO_OWED_FAMILY = {
+}
+
+
+def gate_manifest_candidate_modes(case):
+    """Independent manifest traversal: candidate -> recorded meta mode."""
+    path = os.path.join(SRC, case, "manifest.before.tsv")
+    if not os.path.exists(path):
+        return {}
+    out = {}
+    for row in csv.reader(open(path, encoding="utf-8", errors="replace"),
+                          delimiter="\t"):
+        if len(row) < 2 or row[0] != "file":
+            continue
+        match = re.fullmatch(r"\./sessions/([^./][^/]*)/meta", row[-1])
+        if match:
+            out[match.group(1)] = row[1]
+    return out
+
+
+def gate_recorded_selector(case, candidate):
+    """Independent `(state, server)` normalization for one fixed candidate."""
+    case_path = os.path.join(SRC, case, "case.txt")
+    case_lines = (open(case_path, encoding="utf-8", errors="replace").readlines()
+                  if os.path.exists(case_path) else [])
+    direct = set()
+    for line in case_lines:
+        fields = dict(part.split("=", 1) for part in line.split()
+                      if "=" in part and len(part.split("=", 1)) == 2)
+        if fields.get("session") == candidate and fields.get("socket"):
+            direct.add(fields["socket"])
+    if len(direct) == 1:
+        return "positive", next(iter(direct))
+    if len(direct) > 1:
+        return "ambiguous", None
+
+    modes = gate_manifest_candidate_modes(case)
+    if candidate not in modes:
+        return "meta-absent", None
+    if modes[candidate] in {"000", "0", "100", "200"}:
+        return "mode-unusable", None
+    template = template_of(case)
+    if not template or "/" not in template:
+        return "unresolved", None
+    arm, variant = template.split("/", 1)
+    path = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                        "sessions", candidate, "meta")
+    if not os.path.exists(path):
+        return "unresolved", None
+    values = collections.defaultdict(list)
+    for line in open(path, encoding="utf-8", errors="replace"):
+        key, sep, value = line.rstrip("\n").partition("=")
+        if sep:
+            values[key].append(value)
+    servers = values.get("tmux_server", [])
+    kinds = values.get("tmux_server_kind", [])
+    if len(servers) == 1 and servers[0] and len(kinds) <= 1 \
+            and (not kinds or kinds == ["socket"]):
+        return "positive", servers[0]
+    if not servers or servers == [""]:
+        return "missing", None
+    return "ambiguous", None
+
+
+def gate_attempted_servers(case, consumer):
+    """Server spellings on actual session/pane enumeration trace commands."""
+    path = os.path.join(SRC, case, "out", consumer + ".tmuxtrace")
+    if not os.path.exists(path):
+        return frozenset()
+    out = set()
+    for line in open(path, encoding="utf-8", errors="replace"):
+        cells = {}
+        for cell in line.rstrip("\n").split("\t"):
+            key, sep, value = cell.partition("=")
+            if sep:
+                cells[key] = value
+        argv = cells.get("argv", "")
+        if any(command in argv.split() for command in
+               ("list-sessions", "list-panes", "has-session")):
+            if cells.get("AE_TMUX_SERVER"):
+                out.add(cells["AE_TMUX_SERVER"])
+    return frozenset(out)
+
+
+def gate_topology_text(case, consumer):
+    stage = consumer.partition("/")[0] if "/" in consumer else ""
+    paths = ([os.path.join(SRC, case, "tmux.%s.txt" % stage)] if stage else [])
+    paths += [os.path.join(SRC, case, "tmux.before.txt")]
+    for path in paths:
+        if os.path.isfile(path):
+            return open(path, encoding="utf-8", errors="replace").read()
+    return ""
+
+
+def gate_query_outcome(case, consumer, server):
+    attempts = gate_attempted_servers(case, consumer)
+    if attempts != frozenset({server}):
+        return "unobserved"
+    text = gate_topology_text(case, consumer)
+    if not text:
+        return "unobserved"
+    if any(marker in text for marker in ("error connecting", "no server running")):
+        return "failed"
+    sections = {line for line in text.splitlines() if line.startswith("## ")}
+    return "success" if {"## panes", "## sessions"} <= sections else "unobserved"
+
+
+def gate_candidate_causes(case, consumer):
+    """Candidate-grained liveness causes, independently traversed from the gate."""
+    attempts = gate_attempted_servers(case, consumer)
+    out = {}
+    for candidate in durable_candidates(case):
+        state, server = gate_recorded_selector(case, candidate)
+        if state in ("meta-absent", "mode-unusable"):
+            out[candidate] = ("selector-%s" % state,)
+        elif state != "positive":
+            out[candidate] = ("selector-%s" % state,)
+        elif server not in attempts:
+            out[candidate] = ("selector-server-unattempted",)
+        else:
+            outcome = gate_query_outcome(case, consumer, server)
+            if outcome == "failed":
+                out[candidate] = ("selector-server-failed",)
+            elif outcome == "unobserved":
+                out[candidate] = ("selector-server-outcome-unobserved",)
+    return out
+
+
+def gate_candidate_support(causes):
+    return ("UNSCORABLE" if any(c in ("selector-server-unattempted",
+                                       "selector-server-outcome-unobserved")
+                                for c in causes)
+            else "OBSERVED")
+
+
+def view_shows_unknown(argv):
+    """SC-017m's selection rule, read off the invocation.
+
+    `--stopped` shows ONLY stopped, so an unknown candidate is filtered out of it;
+    the default/`--running` view and `--all` both show unknown. Written as a positive
+    test for the one view that excludes it, so a new flag defaults to INCLUDING
+    unknown rather than silently hiding it -- hiding it is the #105 defect itself.
+    """
+    return "--stopped" not in argv.split()
+
+def owed_unknown_v(case, consumer, argv, text, surface):
+    """SC-017l + SC-017m owed shapes, derived by the CONTRACT'S OWN PHRASING.
+
+    A second METHOD, not a second copy. The generator classifies each candidate and
+    branches on the class; this builds the two sets the contract names -- "derive the
+    contract-required exact identity/status set from fixed candidates plus view
+    semantics" and compare it against what the frozen document actually renders --
+    then reads the obligations off the difference. Same rows, opposite direction of
+    travel, so a wrong branch on one side shows up as a shape the other does not owe.
+    """
+    if surface not in LISTING:
+        return set()
+    cause_by_candidate = gate_candidate_causes(case, consumer)
+    if not cause_by_candidate:
+        return set()
+    digest = '"schema_version"' in text
+    stream = "digest" if digest else "stdout"
+    lpat = "sessions[%s].status" if digest else "candidate[%s].status"
+    mpat = "sessions[%s]" if digest else "view.members[%s]"
+    rep = candidate_representation(case, consumer, text)
+    # THE REQUIRED SET: every durable candidate whose true status is `unknown` is
+    # selected by a view that shows unknown, and by no view that does not.
+    shows_unknown = view_shows_unknown(argv)
+    required = set(cause_by_candidate) if shows_unknown else set()
+    # THE FROZEN SET: what the captured document actually renders for those names.
+    frozen = {c for c, v in rep.items()
+              if c in cause_by_candidate and v.startswith("aligned:")}
+
+    owed = set()
+    for c in sorted(cause_by_candidate):
+        causes = cause_by_candidate[c]
+        support = gate_candidate_support(causes)
+        present = c in frozen
+        if c in required and not present:
+            owed.add(("SC-017l", stream, lpat % c, "ABSENT", "unknown",
+                      "equals", "OBSERVED", support))
+            owed.add(("SC-017m", stream, mpat % c, "ABSENT", "present",
+                      "equals", "OBSERVED", support))
+        elif c in required and present:
+            owed.add(("SC-017l", stream, lpat % c, rep[c].split(":", 1)[1], "unknown",
+                      "equals", "OBSERVED", support))
+        elif present and c not in required:
+            owed.add(("SC-017m", stream, mpat % c, "present", "ABSENT",
+                      "equals", "OBSERVED", support))
+    return owed
+
+
+def gate_agent_rows(text):
+    """Independent human table traversal with the status-specific row grammar."""
+    lines = text.splitlines()
+    head = [n for n, l in enumerate(lines) if re.match(r"^SESSION\s+STATUS\b", l)]
+    if not head:
+        return []
+    offset = lines[head[0]].index("STATUS")
+    out, session, status = [], None, None
+    for line in lines[head[0] + 1:]:
+        if not line.strip():
+            break
+        toks = [(m.start(), m.group()) for m in re.finditer(r"\S+", line)]
+        if not line[0].isspace():
+            caps = [v for _, v in toks if v.isalpha() and v.isupper()]
+            if len(caps) >= 3 or len(toks) < 2 or toks[1][0] < offset:
+                break
+            session, status = toks[0][1], toks[1][1]
+            continue
+        agent = gate_human_agent_row(line, status)
+        if agent and session is not None:
+            raw_sid = agent[1]
+            sid = "-" if raw_sid in (None, "", "pending", "-") else raw_sid[:8]
+            out.append((session, status, agent[0], sid, agent[2], agent[3]))
+    return out
+
+
+def gate_fixed_roster_slots(case, consumer, session):
+    """Independently recover fixed slot/ref/SID records, never from pane display."""
+    stage = consumer.partition("/")[0] if "/" in consumer else ""
+    sources = ([os.path.join(SRC, case, "roster.%s.txt" % stage)] if stage else [])
+    template = template_of(case)
+    if template and "/" in template:
+        arm, variant = template.split("/", 1)
+        sources.append(os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                                    "sessions", session, "meta"))
+    path = next((p for p in sources if os.path.isfile(p)), None)
+    if path is None:
+        return []
+    out = []
+    for raw in open(path, encoding="utf-8", errors="replace"):
+        match = re.fullmatch(r"agent\.([^=]+)=(.+):([^:]*)", raw.rstrip("\n"))
+        if not match:
+            continue
+        slot, ref, raw_sid = match.groups()
+        sid = "-" if raw_sid in ("", "pending", "-") else raw_sid[:8]
+        out.append((slot, ref, sid))
+    return out
+
+
+def gate_topology_observation(case, consumer, server):
+    """Gate-side topology reader retaining slot identity and display separately."""
+    outcome = gate_query_outcome(case, consumer, server)
+    if outcome != "success":
+        return outcome, set(), {}
+    sessions, panes, section = set(), collections.defaultdict(list), None
+    unscoped = []
+    for raw in gate_topology_text(case, consumer).splitlines():
+        if raw.startswith("## "):
+            section = raw[3:]
+            continue
+        fields = raw.split("|") if raw else []
+        if section == "sessions" and fields:
+            sessions.add(fields[0])
+        elif section == "panes" and len(fields) in (5, 6, 7):
+            # Discriminate the frozen capture schemas by pane-id provenance.
+            if re.fullmatch(r"%\d+", fields[0]) and len(fields) == 7:
+                panes[fields[-1]].append(
+                    (fields[2], fields[1], fields[3], fields[5]))
+            elif re.fullmatch(r"%\d+", fields[0]) and len(fields) == 6:
+                unscoped.append((fields[2], fields[1], fields[3], None))
+            elif len(fields) == 5 and re.fullmatch(
+                    r"%\d+", fields[1] if len(fields) > 1 else ""):
+                panes[fields[0]].append(
+                    (fields[3], fields[2], fields[4], None))
+    if len(sessions) == 1 and unscoped:
+        panes[next(iter(sessions))].extend(unscoped)
+    return outcome, sessions, dict(panes)
+
+
+def gate_health_target(case, consumer, session, slot, candidate_causes):
+    causes = candidate_causes.get(session)
+    if causes:
+        return "unambiguous unknown", causes, gate_candidate_support(causes)
+    state, server = gate_recorded_selector(case, session)
+    if state != "positive":
+        return None
+    if server not in gate_attempted_servers(case, consumer):
+        causes = ("selector-server-unattempted",)
+        return "unambiguous unknown", causes, gate_candidate_support(causes)
+    outcome, sessions, panes = gate_topology_observation(case, consumer, server)
+    if outcome != "success":
+        causes = (("selector-server-failed",) if outcome == "failed"
+                  else ("selector-server-outcome-unobserved",))
+        return "unambiguous unknown", causes, gate_candidate_support(causes)
+    if session not in sessions:
+        return "dead", ("exact-session-absent",), "OBSERVED"
+    if slot is None:
+        return "unambiguous unknown", ("pane-slot-unbound",), "OBSERVED"
+    entries = panes.get(session, [])
+    by_slot = collections.Counter(entry[0] for entry in entries)
+    matches = [entry for entry in entries if entry[0] == slot]
+    if not matches:
+        if all(re.fullmatch(r"\S+", pane_slot or "") and by_slot[pane_slot] == 1
+               for pane_slot, _ref, _cmd, _dead in entries):
+            return "dead", ("exact-pane-absent",), "OBSERVED"
+        return "unambiguous unknown", ("pane-association-unusable",), "OBSERVED"
+    if len(matches) != 1:
+        return "unambiguous unknown", ("pane-association-ambiguous",), "OBSERVED"
+    _slot, _display_ref, command, pane_dead = matches[0]
+    if pane_dead == "1":
+        return "dead", ("pane-dead",), "OBSERVED"
+    shells = {"", "bash", "zsh", "fish", "sh", "dash"}
+    if pane_dead == "0" and command not in shells:
+        return "alive", ("pane-alive",), "OBSERVED"
+    return "unambiguous unknown", ("pane-live-predicate-unproved",), "OBSERVED"
+
+
+def gate_state_target(case, session, agent):
+    if "events-skipped" in gate_loss_kinds(case, session):
+        return "unknown"
+    value = stopped_declared(case, session).get(agent, "-")
+    return value if value not in (None, "") else "unknown"
+
+
+def owed_agent_state_v(case, consumer, text, surface):
+    """SC-017h fixed-projection Counters, independently derived."""
+    if surface not in LISTING or '"schema_version"' in text:
+        return set()
+    grouped = collections.defaultdict(list)
+    for session, _status, name, sid, state, _health in gate_agent_rows(text):
+        grouped[(session, name, sid)].append(
+            ("ABSENT" if state is None else state,
+             gate_state_target(case, session, name)))
+    owed = set()
+    for (session, name, sid), pairs in grouped.items():
+        sources, targets = zip(*pairs)
+        if collections.Counter(sources) == collections.Counter(targets):
+            continue
+        suffix = "(class)" if len(pairs) > 1 else ""
+        locus = "agents[%s:%s:%s]%s.state" % (session, name, sid, suffix)
+        frm = (" ".join("%s x%d" % (v, n) for v, n in
+                        sorted(collections.Counter(sources).items()))
+               if len(pairs) > 1 else sources[0])
+        to = (" ".join("%s x%d" % (v, n) for v, n in
+                       sorted(collections.Counter(targets).items()))
+              if len(pairs) > 1 else targets[0])
+        owed.add(("SC-017h", "stdout", locus, frm, to, "equals",
+                  "OBSERVED", "OBSERVED"))
+    return owed
+
+
+def owed_agent_health_v(case, consumer, text, surface):
+    """SC-017r fixed-projection Counters, independently derived."""
+    if surface not in LISTING or '"schema_version"' in text:
+        return set()
+    candidate_causes = gate_candidate_causes(case, consumer)
+    per_session = collections.defaultdict(list)
+    for session, _status, name, sid, _state, marker in gate_agent_rows(text):
+        per_session[session].append(
+            (name, sid, "ABSENT" if marker is None else (marker or "blank")))
+
+    owed = set()
+    for session, entries in per_session.items():
+        identities = collections.Counter((name, sid) for name, sid, _ in entries)
+        for (name, sid), count in identities.items():
+            values = collections.Counter(
+                value for entry_name, entry_sid, value in entries
+                if (entry_name, entry_sid) == (name, sid)
+            )
+            roster_slots = [slot for slot, roster_name, roster_sid
+                            in gate_fixed_roster_slots(case, consumer, session)
+                            if (roster_name, roster_sid) == (name, sid)]
+            slots = roster_slots if len(roster_slots) == count else [None] * count
+            targets = [gate_health_target(case, consumer, session, slot,
+                                          candidate_causes)
+                       for slot in slots]
+            if any(target is None for target in targets):
+                continue
+            target_values = [target[0] for target in targets]
+            support = ("UNSCORABLE" if any(target[2] == "UNSCORABLE"
+                                           for target in targets) else "OBSERVED")
+            # Presentation is the scored value. Frozen blank is semantically alive
+            # but is not the successor's literal `alive` cell, so semantic
+            # normalization here would erase the exact divergence SC-017r records.
+            if values == collections.Counter(target_values):
+                continue
+            if count == 1:
+                owed.add(("SC-017r", "stdout",
+                          "agents[%s:%s:%s].health" % (session, name, sid),
+                          next(iter(values)), target_values[0],
+                          "equals", "OBSERVED", support))
+            else:
+                owed.add(("SC-017r", "stdout",
+                          "agents[%s:%s:%s](class).health" % (session, name, sid),
+                          " ".join("%s x%d" % (v, n) for v, n in sorted(values.items())),
+                          " ".join("%s x%d" % (v, n) for v, n
+                                   in sorted(collections.Counter(target_values).items())),
+                          "equals", "OBSERVED", support))
+    return owed
+
+
+def gate_human_agent_row(line, status):
+    """Independent status-aware reading of a frozen human agent subrow.
+
+    Unlike the generator's printer-format regex, this derives the schema from token
+    arity after the enclosing session row has supplied status.  Stopped has exactly
+    ref+session_id.  Running has ref+session_id+state and an optional fourth health
+    token.  This keeps an empty trailing health cell empty instead of consuming the
+    state token, and keeps stopped membership without inventing value cells.
+    """
+    if not line.startswith("  "):
+        return None
+    fields = line.split()
+    if not fields or not re.fullmatch(r"\S+:\S+", fields[0]):
+        return None
+    if status == "stopped" and len(fields) == 2:
+        return fields[0], fields[1], None, None
+    if status == "running" and len(fields) in (3, 4):
+        return fields[0], fields[1], fields[2], fields[3] if len(fields) == 4 else ""
+    return None
+
+
+def unobservable_added_roster(case, consumer, argv, text, surface):
+    """The UNOBSERVABLE-ADDED-ROSTER population, ENUMERATED BY OCCURRENCE.
+
+    SC-017h's and SC-017r's duties over agents on rows SC-017m ADDS are UNCHANGED by
+    the amendment -- "what is absent is evidence, not obligation". This evidence
+    base cannot name those agents: each session's meta is carried as a HASH and the
+    captured agents output is scoped to its own capturing session. Measured
+    recoverable rosters for added rows: ZERO.
+
+    A NAMED POPULATION rather than a paragraph, because a prose bound is not checkable
+    and cannot be subtracted from a completeness claim. Every added-session occurrence
+    is an explicit member, so the gap has a size, an enumeration and a membership test,
+    and cannot quietly absorb a session nobody noticed. It records what CANNOT be
+    observed; it never licenses minting an agent fact for it.
+    """
+    if surface not in LISTING:
+        return set()
+    rep = candidate_representation(case, consumer, text)
+    if not view_shows_unknown(argv):
+        return set()
+    causes = gate_candidate_causes(case, consumer)
+    return {(case, consumer, c) for c, v in rep.items()
+            if c in causes and not v.startswith("aligned:")}
+
+def added_roster_gap_population():
+    """Enumerated over the DECLARED invocation universe, never accumulated as a side
+    effect of whichever block happened to run.
+
+    First cut hooked this into the consumption block and reported 767, because that
+    block does not run for every invocation -- a population measured wherever the code
+    passes is a population shaped by control flow. HUMAN surfaces only (SC-017h/r do
+    not own JSON agent state/health; SC-509/default parity does) and only views where
+    unknown qualifies, because a `--stopped` view adds no rows for m and therefore
+    no agent rosters for h or r.
+    """
+    members = set()
+    with open(INV, encoding="utf-8") as fh:
+        for r in csv.DictReader(fh, delimiter="\t"):
+            if r["phase"] != "P1" or r["surface"] not in LISTING:
+                continue
+            case = os.path.dirname(r["case"])
+            text = body(case, r["consumer"])
+            if '"schema_version"' in text:
+                continue
+            if not view_shows_unknown(r["normalised_argv"]):
+                continue
+            members |= unobservable_added_roster(case, r["consumer"],
+                                                 r["normalised_argv"], text,
+                                                 r["surface"])
+    return members
+
+
+def gate_added_roster_gap(out, members, gap_text, gap_label):
+    """The gap must be DECLARED, and the declaration must MATCH.
+
+    First cut failed whenever SC-017r had an owed family at all, which would have
+    made the gate permanently red the moment r graduated -- and that is not what the
+    amendment says. The row is explicit that this is an EMPIRICAL COVERAGE GAP and
+    not a normative exclusion: "the duty stands UNCHANGED; what is absent is
+    evidence, not obligation". So an owed family over the OBSERVABLE population is
+    correct, and what must never pass is an UNDECLARED gap -- coverage that looks
+    total because nothing says otherwise.
+
+    The declaration is a committed enumeration, compared in BOTH directions against
+    the derived population. A member the file omits is a session quietly absorbed; a
+    member the file invents is a gap claimed where none exists. Prose could do
+    neither check.
+    """
+    declared = set()
+    with io.StringIO(gap_text) as fh:
+        # The reasoning header is part of the artifact, so the reader skips comment
+        # lines rather than the artifact dropping its reasoning to suit the reader.
+        rows = (l for l in fh if not l.startswith("#"))
+        for row in csv.DictReader(rows, delimiter="\t"):
+            declared.add((row["case"], row["consumer"], row["added_session"]))
+    for m in sorted(members - declared):
+        fail(out, "ADDED-ROSTER-GAP", "%s/%s adds %s whose roster is unnameable and "
+             "which the declaration omits" % m)
+    for m in sorted(declared - members):
+        fail(out, "ADDED-ROSTER-GAP", "%s/%s declares %s as an unnameable roster, but "
+             "it is not in the derived population" % m)
+    return len(members)
+
+
 def held_shapes(carriers, case, consumer, ids, where=None):
     """The FIXED tuple of every held row in `ids` — every column that carries
     meaning, narrative authority excluded BY DECLARATION."""
@@ -490,8 +1040,11 @@ def held_shapes(carriers, case, consumer, ids, where=None):
 # ever gets. Green rc is not evidence that the checks ran; the NAME SET is. If a
 # structural edit drops a call site, or renames one, this fails instead of passing.
 EXPECTED_FAMILIES = {"SC-518/518a", "SC-521c", "SC-509c reasons", "stopped facts",
-                     "loss facts"}
+                     "loss facts", "unknown liveness l/m", "agent declared state h",
+                     "agent health r",
+                     "schema version", "inventory completeness", "agent liveness e"}
 _families_seen = set()
+_rows_compared = collections.Counter()
 
 
 def compare_owed(out, case, consumer, family, owed, held):
@@ -506,6 +1059,14 @@ def compare_owed(out, case, consumer, family, owed, held):
     POPULATION — so the repair is one mechanism, not seven checkers.
     """
     _families_seen.add(family)
+    # COVERAGE IS ASSERTED, NEVER INFERRED. A comparison inherits the scope of the
+    # block it is written in, so where a check LIVES is part of what it asserts --
+    # this one sat inside a digest-only branch and compared 160 of 434 rows while the
+    # gate reported green. Every held row a comparison actually sees is counted here
+    # and reconciled against the table at the end, so a check hoisted into a narrower
+    # scope fails loudly with its own arithmetic instead of passing quietly.
+    for shape, n in held.items():
+        _rows_compared[shape[0]] += n
     owed = collections.Counter(owed)
     for shape, n in (owed - held).items():
         fail(out, "OWED-MISSING", "%s/%s [%s] owes %s x%d and carries no such row"
@@ -622,6 +1183,10 @@ def owed_reason(case, doc):
             ref = a.get("ref")
             if a.get("reason") not in (None, ""):
                 continue
+            # ONE WRITER PER LOCUS: a session whose loss makes `reason` unreadable
+            # owes ABSENCE under SC-509b, emitted by owed_loss, not a contribution.
+            if "reason" in owed_loss_members(gate_loss_kinds(case, nm), gate_duplicated_meta_keys(case, nm))[1]:
+                continue
             own = sdecl.get(ref) if stopped else a.get("state")
             if own in AGENT_OWNED:
                 proved = [own]
@@ -635,6 +1200,79 @@ def owed_reason(case, doc):
                       "sessions[%s].agents[%s].reason" % (nm, ref),
                       "null", proved[0], "equals", "OBSERVED", "OBSERVED"))
     return owed
+
+
+EVENT_STABLE_KEYS = frozenset({
+    "ts", "actor", "action", "target", "ref", "summary", "body_file",
+    "actor_slot", "actor_session", "target_slot", "target_session",
+})
+# Re-declared from the SAME CONTRACT ROWS the generator cites (SC-405b, SC-405f,
+# SC-017e/g/h, SC-509c, with SC-509b's omit rule) — not imported, so the two can
+# disagree. The serializer is corroboration elsewhere and never the source here.
+# The closed kind list, re-declared here. `degraded` is the ONLY common member;
+# `needs_attention` is owed only where the lost input feeds attention, so a
+# duplicated `goal` leaves the quiet triad exact.
+LOSS_KINDS = ("meta-absent", "meta-duplicate", "events-skipped")
+DOCUMENTED_META_KEYS = frozenset({"mode", "origin", "work_dir", "goal", "branch",
+                                  "status", "created", "uuid"})
+LOSS_MEMBERS = {
+    "common": {"session": ("degraded",), "agent": ()},
+    "meta-absent": {"session": ("needs_attention", "mode", "origin",
+                                "work_dir", "goal"), "agent": ()},
+    "meta-duplicate": {"session": (), "agent": ()},       # data-dependent
+    "events-skipped": {"session": ("needs_attention", "goal_set_epoch",
+                                   "last_active_epoch", "attention",
+                                   "attention_rank"),
+                       "agent": ("state", "reason")},
+}
+
+
+def gate_duplicated_meta_keys(case, session):
+    """Documented meta keys appearing more than once — SC-405a + SC-509b make a
+    duplicate ACTUAL parse loss for THAT KEY, since no row defines duplicate-member
+    precedence and first/last-winner selection would be fabrication."""
+    p = os.path.join(SRC, case, "case.txt")
+    if not os.path.exists(p):
+        return ()
+    m = re.search(r"\btemplate=(\S+)", open(p, encoding="utf-8", errors="replace").read())
+    if not m or "/" not in m.group(1):
+        return ()
+    arm, variant = m.group(1).split("/", 1)
+    f = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                     "sessions", session, "meta")
+    if not os.path.exists(f):
+        return ()
+    keys = [l.split("=", 1)[0].strip()
+            for l in open(f, encoding="utf-8", errors="replace") if "=" in l]
+    counts = collections.Counter(keys)
+    return tuple(sorted(k for k, c in counts.items()
+                        if c > 1 and k in DOCUMENTED_META_KEYS))
+
+
+def owed_loss_members(kinds, duplicated=()):
+    session, agent = [], []
+    for kind in ("common",) + tuple(sorted(kinds)):
+        if kind == "meta-duplicate":
+            session.extend(m for m in duplicated if m not in session)
+            continue
+        spec = LOSS_MEMBERS.get(kind)
+        if not spec:
+            continue
+        session.extend(m for m in spec["session"] if m not in session)
+        agent.extend(m for m in spec["agent"] if m not in agent)
+    return tuple(session), tuple(agent)
+
+
+def gate_loss_kinds(case, session):
+    kinds = set()
+    if session in gate_loss_sessions(case):
+        kinds.add("meta-absent")
+    if gate_duplicated_meta_keys(case, session):
+        kinds.add("meta-duplicate")
+    if not gate_events_complete(case, session):
+        kinds.add("events-skipped")
+    assert kinds <= set(LOSS_KINDS), "a kind outside the declared closed list"
+    return kinds
 
 
 def gate_loss_sessions(case):
@@ -655,63 +1293,342 @@ def gate_loss_sessions(case):
     return sorted((sess - set(metas)) | {n for n, h in metas.items() if h == "UNREADABLE"})
 
 
+def gate_events_complete(case, session):
+    """Re-derived independently: is the session's ledger free of malformed COMPLETE
+    records? SC-975b's buffered unterminated TAIL is exempt and is a DIFFERENT fact —
+    measured across every template, exactly one session has each and they are not the
+    same session, so a predicate fusing them would be wrong about both."""
+    p = os.path.join(SRC, case, "case.txt")
+    if not os.path.exists(p):
+        return True
+    m = re.search(r"\btemplate=(\S+)", open(p, encoding="utf-8", errors="replace").read())
+    if not m or "/" not in m.group(1):
+        return True
+    arm, variant = m.group(1).split("/", 1)
+    f = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                     "sessions", session, "events.jsonl")
+    if not os.path.exists(f):
+        return True
+    lines = open(f, encoding="utf-8", errors="replace").read().split("\n")
+    unterminated = bool(lines) and lines[-1] != ""
+    for n, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        if n == len(lines) and unterminated:
+            continue
+        seen = []
+        try:
+            json.loads(line, object_pairs_hook=lambda ps: (
+                seen.extend(k for k, _ in ps), dict(ps))[1])
+        except ValueError:
+            return False                   # SC-520: a malformed COMPLETE record
+        counts = collections.Counter(seen)
+        if any(c > 1 and k in EVENT_STABLE_KEYS for k, c in counts.items()):
+            return False                   # SC-510e; SC-510f keeps unknown dups inert
+    return True
+
+
+# ---- THE AUTHORITY SIGNATURE, ruled 2026-08-25.
+#
+# A from==to row is indistinguishable from an unreasoned coincidence unless the
+# bytes that carry its entitlement are FIXED. But binding full prose would make the
+# gate transcribe paragraphs, so the ruling splits the field: a canonical
+# machine-readable PREFIX that joins the owed-vs-held comparison, and a free prose
+# tail that stays narrative. The gate constructs the SIGNATURE independently — an
+# order of magnitude lighter than the prose — and a disagreement is a FINDING
+# against one of them, never a resolution.
+ENTITLEMENT_CLASSES = {
+    "partial-evidence-from-readable-facts",   # a false->false indicator row
+    "unreadable-member-omits",                # any member whose source failed
+    "actual-loss-visible",                    # the degraded qualifier itself
+    "temporary-presence-projection/value-unscored",   # SC-405g branch presence
+}
+# Terms the accepted contract RETIRED. Forbidden across the WHOLE authority field,
+# prefix and prose alike — a retired term in narrative still teaches the wrong rule
+# to the next reader, and this table's rows are read as the ruling.
+RETIRED_AUTHORITY_TERMS = ("lower bound", "lower-bound", "monotone lower")
+
+
+def authority_signature(owner, kinds, member, entitlement):
+    """The canonical prefix. Field order is fixed so the string is comparable."""
+    if entitlement not in ENTITLEMENT_CLASSES:
+        raise SystemExit("FATAL: %r is not a declared entitlement class" % entitlement)
+    return "SIG owner=%s kind=%s member=%s class=%s ::" % (
+        owner, ",".join(sorted(kinds)) if kinds else "-", member, entitlement)
+
+
+def parse_signature(authority):
+    """(owner, kinds, member, class) or None when the prefix is absent/malformed."""
+    # `member` is a LOCUS and a locus may contain spaces — `sessions[tg1].branch
+    # (presence)` did, so a \S+ capture silently failed to parse 29 real rows and
+    # reported them as unsigned. Anchor on the next field name instead of on
+    # whitespace: the delimiter is `class=`, not a space.
+    m = re.match(r"^SIG owner=(\S+) kind=(\S+) member=(.+?) class=(\S+) ::", authority or "")
+    if not m:
+        return None
+    return (m.group(1), tuple(sorted(m.group(2).split(","))) if m.group(2) != "-" else (),
+            m.group(3), m.group(4))
+
+
+def owed_schema_version(case, consumer, text):
+    """SC-509d: every digest owes EXACTLY ONE schema_version row.
+
+    The `from` is READ from the capture, never assumed — the same discipline the
+    relational rows are being repaired to. A capture that is not a digest owes
+    EMPTY, and that empty is compared like any other member.
+    """
+    if '"schema_version"' not in text:
+        return set()
+    m = re.search(r'"schema_version"\s*:\s*(\d+)', text)
+    return {("SC-509d", "digest", "schema_version", m.group(1) if m else "ABSENT",
+             "2", "equals", "SOURCE", "OBSERVED")}
+
+
+def owed_inventory_complete(text):
+    """SC-017o: every digest owes EXACTLY the two fixed rows, presence and value.
+
+    Folded INTO the union rather than left beside it. Enforced-beside meant the
+    rows were checked for shape by their own guard while the global consumption
+    comparison could not see them, so an SC-017o row at an invented locus was
+    unconsumed by nobody.
+    """
+    if '"schema_version"' not in text:
+        return set()
+    return {PRESENCE_ROW, VALUE_ROW}
+
+
+def owed_agent_liveness(case, consumer, text):
+    """SC-509e: the UNREACHABLE digest population owes one agents[].alive move.
+
+    The population is the unreachable case set — the same evidence SC-017l/m join
+    against — and the row is owed once per digest that carries agent entries. A
+    digest with NO agent rows owes EMPTY, and that empty is compared like any other
+    member: owed-zero is an obligation to check, not a row to skip.
+    """
+    if '"schema_version"' not in text or not unreachable(case):
+        return set()
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return set()
+    has_agents = any((s.get("agents") or [])
+                     for s in (doc.get("sessions") or []))
+    if not has_agents:
+        return set()                     # owes EMPTY, and the empty is compared
+    return {("SC-509e", "digest", "agents[].alive", "false", "null", "all-of",
+             "OBSERVED", "UNSCORABLE")}
+
+
+def selector_legs(case):
+    """(meta-absent identities, present-but-unusable identities), classified.
+
+    A PREDICATE THAT SCANS ROWS CANNOT SEE A MISSING ROW. The repair is not a
+    better marker — it is to derive the population from the DECLARED UNIVERSE and
+    SUBTRACT what is present, so absence is COMPUTED rather than detected. Same
+    shape as owed-zero, and as asking a capture for `degraded: true` (a
+    successor-only key) and reading the empty result as proof of absence. Third
+    instance of that shape in this slice.
+
+    So: enumerate the durable candidates first, then classify each. The first
+    version scanned rows for a bad mode and could therefore only ever find the
+    present-but-unusable leg; it reported 10 invocations where there are 20 and lost
+    a9-c05-meta-absent entirely.
+
+    THE TWO LEGS ARE DIFFERENT CAUSES WEARING ONE LABEL, and they are returned
+    separately for that reason: `meta-absent` is a missing recorded server,
+    `mode-unusable` is an exact live name whose ownership evidence is unreadable —
+    SC-017l's first and third clauses. Both land on `unknown`, so the VALUE is the
+    same and the CITATION is not. A single `selector-missing` cause value in an
+    emitted row would re-collapse the exact distinction whose collapse produced this
+    bug, and the next reader would inherit the collapsed form as the analysed one.
+
+    Two legs, returned separately so each can be deleted and re-proved on its own:
+    a total hides which leg went missing.
+    """
+    mb = os.path.join(SRC, case, "manifest.before.tsv")
+    if not os.path.exists(mb):
+        return (), ()
+    rows = [l.rstrip("\n").split("\t") for l in open(mb, encoding="utf-8", errors="replace")]
+    candidates = {r[-1].split("/")[2] for r in rows
+                  if r[0] == "dir" and re.match(r"\./sessions/[^./][^/]*$", r[-1])}
+    metas = {r[-1].split("/")[2]: r[1] for r in rows
+             if r[0] == "file" and re.match(r"\./sessions/[^./][^/]*/meta$", r[-1])}
+    absent = tuple(sorted(c for c in candidates if c not in metas))
+    unusable = tuple(sorted(c for c in candidates
+                            if metas.get(c) in ("000", "0", "100", "200")))
+    return absent, unusable
+
+
+def gate_missing_selector(case):
+    """Identities whose selector is missing, either leg."""
+    absent, unusable = selector_legs(case)
+    return sorted(set(absent) | set(unusable))
+
+
+def durable_candidates(case):
+    """Durable session candidates, enumerated from the MANIFEST.
+
+    An independent source: the manifest lists what exists on disk, so a candidate
+    the frozen view OMITTED is still enumerable here. That is the whole point —
+    absence cannot be read from an output that does not contain it.
+
+    Contract-blob independent, so this is derivable while the pin is held.
+    """
+    mb = os.path.join(SRC, case, "manifest.before.tsv")
+    if not os.path.exists(mb):
+        return []
+    rows = [l.rstrip("\n").split("\t") for l in open(mb, encoding="utf-8", errors="replace")]
+    return sorted({r[-1].split("/")[2] for r in rows
+                   if r[0] == "dir" and re.match(r"\./sessions/[^./][^/]*$", r[-1])})
+
+
+def owed_candidate_rows(case, candidates, support):
+    """ONE ROW PER CANDIDATE, which is why the loop exists rather than a scalar.
+
+    Measured on this corpus: all 268 unreachable listing cases carry EXACTLY ONE
+    durable candidate, so 268 passes prove nothing about the plural path. The
+    synthetic control in the red-proof feeds a fabricated two-candidate view and
+    requires two rows — the gap is BOUNDED rather than admitted, exactly as the
+    reason grammar's unexercised third branch is.
+    """
+    return {("SC-017l", "stdout", "candidate[%s].status" % c, "ABSENT", "unknown",
+             "equals", "OBSERVED", support) for c in candidates}
+
+
+SESSION_STATUS_DECLARED = frozenset({"running", "stopped"})
+
+
+def candidate_representation(case, consumer, text):
+    """candidate -> 'omitted' | 'aligned:<status>' | 'live-only-namesake'.
+
+    A live-only namesake is a frozen row carrying the candidate's NAME whose status
+    is running while the durable candidate itself is unrepresented — SC-017j keeps
+    them two identities, so the namesake does not consume the candidate and the
+    candidate is still owed its pair.
+    """
+    # THE TWO DERIVATIONS SHARED A DEFECT HERE, which is worth more than the defect.
+    # This function and the generator's candidate_class were written by one author
+    # from one reading, so they carried the SAME unbounded scrape and the SAME
+    # catch-all third branch -- and on any future off-universe status they would have
+    # AGREED, silently. Agreement between two copies of one mistake is not
+    # confirmation; independence only exists where the two actually differ in method.
+    # So the repair is deliberately NOT the generator's: it restricts by universe
+    # first and reports an unanalysed status through the gate's own failure channel,
+    # where the generator asserts and stops. Different mechanism, same bound.
+    want = frozenset(durable_candidates(case))
+    shown = {}
+    if '"schema_version"' in text:
+        try:
+            for sess in json.loads(text).get("sessions") or []:
+                shown[sess.get("name")] = sess.get("status")
+        except ValueError:
+            pass
+    else:
+        # SECOND METHOD, NOT A SECOND COPY. The generator bounds the region and reads
+        # field 1 of each column-0 row; this binds to the header's own COLUMN OFFSET
+        # and takes the first whole token at or after it. Two different structural
+        # claims about the same table, so a wrong one diverges instead of agreeing.
+        #
+        # Probed before adoption, and the probe EARNED ITS KEEP: the naive form
+        # (text[offset:]) disagreed on 8 bodies because a 27-character session name
+        # overflows the 26-column SESSION field and pushed the status right -- the
+        # slice landed mid-name and read its last character, `d`, as the status. Two
+        # names in this corpus are at or over the width. Corrected to whole tokens,
+        # the two methods agree on all 664 text bodies.
+        lines = text.splitlines()
+        head = [n for n, l in enumerate(lines) if re.match(r"^SESSION\s+STATUS\b", l)]
+        if head:
+            offset = lines[head[0]].index("STATUS")
+            for line in lines[head[0] + 1:]:
+                if not line.strip():
+                    break
+                if line[0].isspace():
+                    continue
+                toks = [(m.start(), m.group())
+                        for m in re.finditer(r"\S+", line)]
+                # A SECOND END CONDITION, not a second copy of the generator's. It
+                # bounds the region by NEW-TABLE DETECTION -- three or more all-caps
+                # word tokens is a header row, not a session -- where the generator
+                # bounds it by column alignment. Both hold on the butted-together
+                # fixture and on the overflowing name; a wrong one diverges.
+                caps = [v for _, v in toks if v.isalpha() and v.isupper()]
+                if len(caps) >= 3:
+                    break
+                tail = [v for p, v in toks if p >= offset]
+                if toks and tail:
+                    shown[toks[0][1]] = tail[0]
+    out = {}
+    for c in sorted(want):
+        if c not in shown:
+            out[c] = "omitted"
+        # SC-017j: a live-only running row carrying the candidate's NAME is a
+        # DIFFERENT IDENTITY and does not consume it. There is deliberately no flag
+        # here — a seam that can select the known-wrong behaviour is an alternate
+        # gate behaviour in shipped code, and it can be invoked by accident or drift
+        # into use. The red-proof mutates a SCRATCH COPY of this file instead, so
+        # production has one identity-preserving path and no switch.
+        elif shown[c] == "running":
+            out[c] = "live-only-namesake"
+        elif shown[c] in SESSION_STATUS_DECLARED:
+            out[c] = "aligned:%s" % shown[c]
+        else:
+            # Not classified. An unanalysed status becomes a NAMED value the gate
+            # fails on, never a silent member of the aligned class.
+            out[c] = "unanalysed-status:%s" % shown[c]
+    return out
+
+
 def owed_loss(case, doc):
-    """The COMPLETE owed multiset for the LOSS families: SC-509b and SC-405g.
+    """The COMPLETE owed multiset for the LOSS families, MAPPING-DRIVEN.
 
-    Independent of the generator. The loss population is proved from FIXED sources —
-    the manifest showing a meta absent or unreadable — never from a `degraded` key in
-    the capture, because `degraded` is a SUCCESSOR-ONLY member that zero frozen
-    entries carry. Asking the captures for it measures ZERO and reads as "no
-    population"; that mistake is why this derivation reads the manifest instead.
+    The owed member set is DERIVED from the declared source-to-member mapping — the
+    checker reads the terms it enforces rather than carrying a copy. The previous
+    control transcribed a four-member list and was therefore self-confirming: it
+    caught a dropped ROW and could never catch a dropped MEMBER CLASS, which is
+    exactly how a narrowed population greened.
 
-    Per loss occurrence the qualifier and the qualified travel together:
-      sessions[<n>].degraded        ABSENT -> true
-      sessions[<n>].needs_attention false  -> false   (the degraded-context lower
-                                                       bound, owed even though the
-                                                       bytes do not move)
-    SC-405g adds `branch` null -> ABSENT where NO branch observation exists; an
-    OBSERVED branch renders regardless of degraded, and that exception reaches no
-    other member by its own terms.
+    The population itself is proved from FIXED sources — the manifest for meta loss,
+    the ledger and the contract's SC-520/SC-510e rules for event loss — never from a
+    `degraded` key, which is successor-only and identifies nothing per member.
     """
     owed = set()
-    loss = gate_loss_sessions(case)
     for x in doc.get("sessions", []) or []:
         nm = x.get("name") or ""
-        if nm not in loss:
+        kinds = gate_loss_kinds(case, nm)
+        if not kinds:
             continue
-        owed.add(("SC-509b", "digest", "sessions[%s].degraded" % nm,
-                  "present" if "degraded" in x else "ABSENT", "true",
-                  "equals", "OBSERVED", "OBSERVED"))
-        owed.add(("SC-509b", "digest", "sessions[%s].needs_attention" % nm,
-                  "false" if x.get("needs_attention") is False
-                  else str(x.get("needs_attention")).lower(),
-                  "false", "equals", "OBSERVED", "OBSERVED"))
-        # THE OPTIONAL MEMBERS. Dropped once from this very function, which is why
-        # the reconciliation control below is now CODE: an expectation that lives
-        # only in messages gets dropped exactly like that. They are exact-or-omitted
-        # and a loss session's roster is unenumerable, so missing facts could add,
-        # clear or supersede the maximum and neither member is established.
-        for member in ("attention", "attention_rank"):
+        smem, amem = owed_loss_members(kinds, gate_duplicated_meta_keys(case, nm))
+        for member in smem:
+            # Same asymmetry as the generator: `degraded` is SUCCESSOR-ONLY and never
+            # in a frozen capture — its obligation IS its absence — so the
+            # present-in-capture guard must not reach it. Fixing this in the
+            # generator alone left the two derivations disagreeing on all 29.
+            if member != "degraded" and member not in x:
+                continue
             val = x.get(member)
-            owed.add(("SC-509b", "digest", "sessions[%s].%s" % (nm, member),
-                      "null" if val is None else str(val).lower(),
-                      "ABSENT", "equals", "OBSERVED", "OBSERVED"))
-        if "branch" in x and x.get("branch") is None:
-            owed.add(("SC-405g", "digest", "sessions[%s].branch" % nm,
-                      "null", "ABSENT", "equals", "OBSERVED", "OBSERVED"))
-    # RECONCILIATION CONTROL, ENCODED. Every loss occurrence owes EXACTLY FOUR
-    # SC-509b loci — degraded, needs_attention, attention, attention_rank — plus at
-    # most one SC-405g branch move. This is not a second authority over the table: it
-    # checks THIS DERIVATION's own completeness, which is the check that was missing
-    # when 28 loci silently vanished from it and the count lived only in a message.
-    occurrences = sum(1 for x in doc.get("sessions", []) or []
-                      if (x.get("name") or "") in loss)
-    b_rows = sum(1 for t in owed if t[0] == "SC-405g")
-    if len(owed) != occurrences * 4 + b_rows:
-        raise RuntimeError(
-            "LOSS-POPULATION-ARITY %s: %d loss occurrence(s) must owe %d SC-509b loci "
-            "plus %d branch move(s), got %d owed"
-            % (case, occurrences, occurrences * 4, b_rows, len(owed)))
+            rendered = "null" if val is None else str(val).lower()
+            if member == "degraded":
+                owed.add(("SC-509b", "digest", "sessions[%s].degraded" % nm,
+                          "present" if "degraded" in x else "ABSENT", "true",
+                          "equals", "OBSERVED", "OBSERVED"))
+            elif member == "needs_attention":
+                owed.add(("SC-509b", "digest", "sessions[%s].needs_attention" % nm,
+                          rendered, "false", "equals", "OBSERVED", "OBSERVED"))
+            else:
+                owed.add(("SC-509b", "digest", "sessions[%s].%s" % (nm, member),
+                          rendered, "ABSENT", "equals", "OBSERVED", "OBSERVED"))
+        for a in x.get("agents") or []:
+            for member in amem:
+                if member not in a:
+                    continue
+                av = a.get(member)
+                owed.add(("SC-509b", "digest",
+                          "sessions[%s].agents[%s].%s" % (nm, a.get("ref"), member),
+                          "null" if av is None else str(av).lower(), "ABSENT",
+                          "equals", "OBSERVED", "OBSERVED"))
+        if "branch" in x:
+            owed.add(("SC-405g", "digest", "sessions[%s].branch (presence)" % nm,
+                      "present", "ABSENT", "equals", "OBSERVED", "OBSERVED"))
     return owed
 
 
@@ -739,7 +1656,10 @@ def owed_stopped(case, doc):
                 contrib[actor] = st
         for a in x.get("agents") or []:
             ref = a.get("ref")
-            if decl.get(ref) and a.get("state") in (None, ""):
+            # ONE WRITER PER LOCUS: when the LOSS derivation owns this member for this
+            # session, owed_loss emits it and the stopped family must not.
+            if decl.get(ref) and a.get("state") in (None, "") \
+                    and "state" not in owed_loss_members(gate_loss_kinds(case, nm), gate_duplicated_meta_keys(case, nm))[1]:
                 owed.add(("SC-509", "digest",
                           "sessions[%s].agents[%s].state" % (nm, ref),
                           "null", decl[ref], "equals", "OBSERVED", "OBSERVED"))
@@ -762,10 +1682,14 @@ def owed_stopped(case, doc):
         pts = gate_pending_ts(case, nm)
         if not pts:
             continue                      # quiet: owes EMPTY, and that is checked
-        for locus, below, above, frm in (
-                ("needs_attention", "false", "true", "false"),
-                ("attention", "null", "unanswered", "null"),
-                ("attention_rank", "0", "1", "0")):
+        # B4: THE BASELINE IS READ HERE TOO, from the same capture the generator
+        # reads — independently, so the two can disagree. Both sides held literals
+        # before this, so the 36 `from` cells were shared constants under a module
+        # whose FROM check is named "re-read, never trusted".
+        for locus, below, above in (("needs_attention", "false", "true"),
+                                    ("attention", "null", "unanswered"),
+                                    ("attention_rank", "0", "1")):
+            frm = "null" if x.get(locus) is None else str(x.get(locus)).lower()
             owed.add(("SC-017g", "digest", "sessions[%s].%s" % (nm, locus), frm,
                       "%s when generated_at - %s <= threshold, %s when strictly greater"
                       % (below, pts, above), "relational", "OBSERVED", "OBSERVED"))
@@ -828,30 +1752,122 @@ def unreachable(case):
     p = os.path.join(SRC, case, "tmux.before.txt")
     return os.path.exists(p) and "error connecting" in open(p, encoding="utf-8", errors="replace").read()
 
-def main(quiet=False, obl=None, fresh=None, inv=None):
+def main(quiet=False, obl=None, fresh=None, inv=None, gap=None, unproved=None):
     out = []
-    obl, fresh, inv = obl or OBL, fresh or FRESH, inv or INV
-    for p in (obl, fresh, inv):
+    # FRESHNESS plus its three data members — OBLIGATIONS, the added-roster
+    # declaration and SC-509C-UNPROVED — form one generated four-file tuple. A
+    # partial override once compared a temporary table against the live declaration
+    # and manufactured a semantic mismatch. Refuse that crossing: callers either
+    # select the entire tuple or the entire live set.
+    artifact_overrides = (obl, fresh, gap, unproved)
+    if any(p is not None for p in artifact_overrides) and not all(
+            p is not None for p in artifact_overrides):
+        fail(out, "ARTIFACT-TUPLE",
+             "--obl, --fresh, --gap and --unproved must be overridden together; "
+             "partial selection crosses generated artifact sets")
+        if not quiet:
+            for cid, msg in out:
+                print("FAIL  %-14s %s" % (cid, msg))
+        return 1, {c for c, _ in out}
+    obl, fresh, gap, unproved, inv = (obl or OBL, fresh or FRESH, gap or GAP,
+                                      unproved or UNPROVED, inv or INV)
+    for p in (obl, fresh, gap, unproved, inv):
         if not os.path.exists(p):
             print("FAIL  MISSING  %s" % os.path.basename(p)); return 1
-    rec = {}
-    for line in open(fresh, encoding="utf-8"):
-        if line.startswith("#") or not line.strip(): continue
-        k, _, v = line.rstrip("\n").partition("\t"); rec[k] = v
+
+    # Snapshot every generated DATA member exactly once, then read the manifest
+    # LAST. Semantic checks below parse these exact in-memory bytes. Reopening a path
+    # after hashing would admit a rename between the hash and parse (TOCTOU), making
+    # a mixed generation look coherent even though no coherent snapshot was read.
+    data_bytes = {}
+    for path in (obl, gap, unproved):
+        with open(path, "rb") as fh:
+            data_bytes[path] = fh.read()
+    with open(fresh, "rb") as fh:
+        fresh_bytes = fh.read()
+    obl_text = data_bytes[obl].decode("utf-8")
+    gap_text = data_bytes[gap].decode("utf-8")
+    unproved_text = data_bytes[unproved].decode("utf-8")
+    fresh_text = fresh_bytes.decode("utf-8")
+    # Exact manifest schema. A dict comprehension would silently choose a winner for
+    # duplicate claims, so a file stating both X and !X could verify when the matching
+    # value happened to come last. Comments are permitted; the sole data header and
+    # every key/value record are closed and unique.
+    manifest_lines = [line.rstrip("\n") for line in io.StringIO(fresh_text)
+                      if line.strip() and not line.startswith("#")]
+    rec, rec_counts = {}, collections.Counter()
+    if not manifest_lines or manifest_lines[0] != "field\tvalue":
+        fail(out, "FRESHNESS-SCHEMA",
+             "%s must start its data region with exact header field<TAB>value" % fresh)
+    for lineno, line in enumerate(manifest_lines[1:], 2):
+        fields = line.split("\t")
+        if len(fields) != 2:
+            fail(out, "FRESHNESS-SCHEMA", "%s data row %d has %d fields, expected 2"
+                 % (fresh, lineno, len(fields)))
+            continue
+        key, value = fields
+        rec_counts[key] += 1
+        rec[key] = value
+    missing = sorted(FRESH_REQUIRED_FIELDS - set(rec_counts))
+    unknown = sorted(set(rec_counts) - FRESH_REQUIRED_FIELDS)
+    duplicated = sorted(key for key, count in rec_counts.items() if count != 1)
+    if missing:
+        fail(out, "FRESHNESS-SCHEMA", "%s omits required field(s) %s"
+             % (fresh, missing))
+    if unknown:
+        fail(out, "FRESHNESS-SCHEMA", "%s carries unknown field(s) %s"
+             % (fresh, unknown))
+    if duplicated:
+        fail(out, "FRESHNESS-SCHEMA", "%s repeats field(s) %s; manifests have no "
+             "winner rule" % (fresh, duplicated))
+    if rec.get("contract_path") != CONTRACT:
+        fail(out, "FRESHNESS-SCHEMA", "%s records contract_path=%r, expected %r"
+             % (fresh, rec.get("contract_path"), CONTRACT))
+
+    # FRESHNESS is the content manifest for the other three generator outputs and
+    # publishes last. Counts alone cannot distinguish equal-cardinality generations;
+    # exact hashes make any mixed live/temp or old/new tuple a named failure.
+    for field, path, content in (
+            ("obligations_sha256", obl, data_bytes[obl]),
+            ("added_roster_gap_sha256", gap, data_bytes[gap]),
+            ("sc509c_unproved_sha256", unproved, data_bytes[unproved])):
+        got = rec.get(field)
+        actual = hashlib.sha256(content).hexdigest()
+        if got is None:
+            fail(out, "ARTIFACT-TUPLE", "%s records no %s content identity"
+                 % (fresh, field))
+        elif got != actual:
+            fail(out, "ARTIFACT-TUPLE", "%s records %s=%s but %s hashes to %s"
+                 % (fresh, field, got, path, actual))
 
     # ---- 1. FRESHNESS: has the source moved since this was derived? ----
-    # THE RELATION IS HEAD-RELATIVE, DELIBERATELY. It answers "is the COMMITTED table
-    # fresh against the COMMITTED contract", which is the question a reviewer or CI
-    # asks, and it means one agent's in-flight edit cannot fail everyone's gate. The
-    # cost is that someone editing the contract LOCALLY and running this gets a pass
-    # that says nothing about their own edit — so the success line names HEAD too,
-    # and not only the failure line.
+    # THE CONTRACT SIDE IS HEAD-RELATIVE, DELIBERATELY; the tuple side is the loaded
+    # WORKTREE snapshot. In CI those coincide with committed bytes. In a shared
+    # developer checkout they may not, so the success line names both read sides.
+    # ---- B5: A FRESHNESS FILE MAY NOT PUBLISH UNCHECKED NUMBERS. Both counts were
+    # decoration: seeding p1_rows=999 and obligation_rows=7 passed rc=0. They are
+    # now bound to INDEPENDENTLY LOADED inputs — the P1 rows this gate reads from
+    # INVOCATIONS and the data rows it reads from the table — so a recorded number
+    # that stopped matching what it counts is a named failure rather than prose.
+    def _count_check():
+        want_p1 = sum(1 for r in csv.DictReader(open(inv, encoding="utf-8"),
+                                                delimiter="\t") if r["phase"] == "P1")
+        want_obl = len(obl_text.splitlines()) - 1
+        for field, want in (("p1_rows", want_p1), ("obligation_rows", want_obl)):
+            got = rec.get(field)
+            if got is None:
+                fail(out, "FRESHNESS-COUNT", "%s records no %s; a freshness file may "
+                     "not omit a number it is meant to publish" % (fresh, field))
+            elif got.strip() != str(want):
+                fail(out, "FRESHNESS-COUNT", "%s records %s=%s but the loaded inputs "
+                     "carry %d" % (fresh, field, got, want))
+    _count_check()
     now = head_blob()
     if rec.get("contract_blob") != now:
         fail(out, "STALE", "derived against contract blob %s; HEAD is %s — re-derive"
              % (rec.get("contract_blob", "?")[:12], now[:12]))
 
-    obls = list(csv.DictReader(open(obl, encoding="utf-8"), delimiter="\t"))
+    obls = list(csv.DictReader(io.StringIO(obl_text), delimiter="\t"))
     carriers = collections.defaultdict(list)
     for o in obls: carriers[(o["case"], o["consumer"])].append(o)
 
@@ -902,21 +1918,44 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
         if '"schema_version"' in text and "SC-017o" not in ids:
             fail(out, "MISSING-017o", "%s/%s carries a digest and owes no inventory_complete" % (case, consumer))
         listish = r["surface"] in LISTING
-        if listish and unreachable(case):
-            # WHICH obligation applies is re-derived here from the bytes, not merely
-            # accepted from the table: a capture containing `stopped` owes a LABEL
-            # move (SC-017l), one showing no sessions owes a MEMBERSHIP change
-            # (SC-017m). Accepting "either" would let the generator pick wrongly.
-            n = len(re.findall(r'"status"\s*:\s*"stopped"', text)) if '"schema_version"' in text \
-                else len(re.findall(r"^\S+\s+stopped\b", text, re.M))
-            want = "SC-017l" if n else "SC-017m"
-            other = "SC-017m" if n else "SC-017l"
-            if want not in ids:
-                fail(out, "MISSING-" + want[3:], "%s/%s is an unreachable listing with %d captured `stopped` and owes no %s"
-                     % (case, consumer, n, want))
-            if other in ids:
-                fail(out, "WRONG-KIND", "%s/%s owes %s but its capture has %d `stopped`"
-                     % (case, consumer, other, n))
+        # ---- SC-017l/m, COMPARED FOR EVERY INVOCATION, not only the digest ones.
+        # This comparison first sat inside `if digest_text(text) is not None:` and
+        # the gate went green while 274 of the 434 l/m rows -- every stdout row --
+        # were compared by NOTHING. Two red-proof seeds went MISSED and that is the
+        # only reason it surfaced: the mutations they applied happened to land on
+        # human rows. Third instance today of the same shape, and the first one in a
+        # check rather than in a population: a comparison inherits the scope of the
+        # block it is written in, so where a check LIVES is part of what it asserts.
+        owed_lm = owed_unknown_v(case, consumer, r["normalised_argv"], text,
+                                 r["surface"])
+        compare_owed(out, case, consumer, "unknown liveness l/m", owed_lm,
+                     held_shapes(carriers, case, consumer,
+                                 ("SC-017l", "SC-017m")))
+        compare_owed(out, case, consumer, "agent declared state h",
+                     owed_agent_state_v(case, consumer, text, r["surface"]),
+                     held_shapes(carriers, case, consumer, ("SC-017h",)))
+        compare_owed(out, case, consumer, "agent health r",
+                     owed_agent_health_v(case, consumer, text, r["surface"]),
+                     held_shapes(carriers, case, consumer, ("SC-017r",)))
+        compare_owed(out, case, consumer, "schema version",
+                     owed_schema_version(case, consumer, text),
+                     held_shapes(carriers, case, consumer, ("SC-509d",)))
+        compare_owed(out, case, consumer, "inventory completeness",
+                     owed_inventory_complete(text),
+                     held_shapes(carriers, case, consumer, ("SC-017o",)))
+        compare_owed(out, case, consumer, "agent liveness e",
+                     owed_agent_liveness(case, consumer, text),
+                     held_shapes(carriers, case, consumer, ("SC-509e",)))
+        # THE EXCLUSIVE-SPLIT CHECK IS GONE, and its removal is the ruling rather
+        # than a convenience. It required a listing to owe EITHER SC-017l OR
+        # SC-017m and failed WRONG-KIND on both -- 138 findings against the
+        # re-derived table. The pinned contract retracts exactly that: "Absence is
+        # owned HERE and ALSO by SC-017m, at DIFFERENT GRAINS (ruling, colead
+        # 2026-08-25, retracting an earlier exclusive split): an omitted durable
+        # candidate owes BOTH." What replaces it is stronger, because it is the
+        # invariant the contract states: every owed shape is derived per candidate
+        # and compared in one place, so a missing pair member fails as OWED-MISSING
+        # at its own identity instead of as a kind dispute at the invocation.
         # New rows, same converse discipline: what must owe, owes.
         if unreachable(case) and '"schema_version"' in text and '"alive"' in text \
            and "SC-509e" not in ids:
@@ -944,22 +1983,11 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
                 # the two agree on this corpus.
                 loss = {n for n in sess if n not in metas or metas[n] == "UNREADABLE"}
             scope_empty = empty_live_scope(r["normalised_argv"])
-            want_b = (not scope_empty) and any(
-                x.get("name") in loss for x in doc.get("sessions", []) or [])
-            # `want_c` and its MISSING-509c / SURFACE pair are DELETED, not kept as a
-            # cheap second opinion. They knew only two of the reason grammar's three
-            # branches, so a running agent owed via the THIRD — a state event naming
-            # it as actor, with no captured state and no alert — would have been
-            # emitted by the generator, owed by owed_reason, and then rejected SURFACE
-            # by this. A second authority that is a subset of the first is not
-            # redundancy; it is a false-failure waiting for the fixture that reaches
-            # its blind spot. Exact Counter equality subsumes both directions.
-            if want_b and "SC-509b" not in ids:
-                fail(out, "MISSING-509b", "%s/%s has a session with unreadable meta and owes "
-                     "no degraded move" % (case, consumer))
-            if not want_b and "SC-509b" in ids:
-                fail(out, "SURFACE", "%s/%s owes a degraded move with no read-loss session"
-                     % (case, consumer))
+            # `want_b` and its MISSING-509b / SURFACE pair are DELETED for the same
+            # reason `want_c` was: they know only the READ-LOSS trigger for SC-509b,
+            # so a row owed because a session's event LEDGER is damaged reads to them
+            # as a degraded move with no read-loss session. The exact Counter owns
+            # this population in both directions.
             # SC-521C-ARITY is deleted too. It outlived the comment below that said
             # all seven fragments were gone — the comment was false while it stood,
             # which is worse than the fragment. Exact Counter equality already proves
@@ -995,6 +2023,27 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
             # equality and are deliberately not restored — seven named fragments
             # were what let the bypasses through.
             live_doc = doc if not scope_empty else {}
+            # ---- W3: THE GLOBAL CONSUMPTION COMPARISON. The union of every
+            # family's owed set is compared against ALL held rows whose id has a
+            # family — no `where` filter, because a filter on the HELD side
+            # re-scopes the gate to the population its author imagined and
+            # discards additions outside it before they can be seen. An id with no
+            # family cannot consume anything and is listed in NO_OWED_FAMILY as
+            # STAGING ONLY.
+            union = (owed_loss(case, live_doc)
+                     | owed_reason(case, live_doc)
+                     | owed_stopped(case, live_doc)
+                     | owed_schema_version(case, consumer, text))
+            union |= owed_521
+            union |= owed_inventory_complete(text)
+            union |= owed_agent_liveness(case, consumer, text)
+            union |= owed_lm
+            held_all = held_shapes(carriers, case, consumer, OWED_FAMILY_IDS)
+            for shape, n in (held_all - collections.Counter(union)).items():
+                fail(out, "UNCONSUMED-ROW", "%s/%s carries %s x%d, which no owed family "
+                     "claims — the held side is compared in its entirety, so an "
+                     "addition outside every derivation is visible here"
+                     % (case, consumer, shape[:3], n))
             compare_owed(out, case, consumer, "loss facts",
                          owed_loss(case, live_doc),
                          held_shapes(carriers, case, consumer, ("SC-509b", "SC-405g")))
@@ -1171,6 +2220,69 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
     if extra_fam:
         fail(out, "FAMILY-SET", "an undeclared comparison family ran: %s; the declared set "
              "is the contract" % sorted(extra_fam))
+    # THE PARTITION PRINTS ITS OWN COUNT. I wrote "four gaps" in a report and then
+    # listed five ids — prose carrying a count that the code already knows is the
+    # same defect as a control carrying a copy of its list, one register down.
+    # THE GAP CHECK RUNS WHETHER OR NOT ANYONE IS LOOKING. It is a gate check, not
+    # a report line, so it sits OUTSIDE the quiet guard -- a check that only fires
+    # when output is enabled is a check with a flag that disables it.
+    in_table = collections.Counter(o["obligation_id"] for o in obls
+                                   if o["obligation_id"] in OWED_FAMILY_IDS)
+    for oid in sorted(set(in_table) | set(_rows_compared)):
+        if in_table[oid] != _rows_compared[oid]:
+            fail(out, "COVERAGE", "%s: %d row(s) in the table, %d reached a "
+                 "comparison — a check compares what its enclosing scope lets it "
+                 "reach, and the difference is invisible unless it is counted"
+                 % (oid, in_table[oid], _rows_compared[oid]))
+    n_gap = gate_added_roster_gap(out, added_roster_gap_population(),
+                                  gap_text, gap)
+    if not quiet:
+        print("  UNOBSERVABLE-ADDED-ROSTER: %d occurrence(s) enumerated; SC-017h/SC-017r "
+              "completeness is refused while nonempty; declaration matched "
+              "in both directions" % n_gap)
+        print("  owed-family partition: %d id(s) with a family, %d STAGING-ONLY gap(s) "
+              "(%s)" % (len(OWED_FAMILY_IDS), len(NO_OWED_FAMILY),
+                        ", ".join(sorted(NO_OWED_FAMILY))))
+    # ---- THE AUTHORITY SIGNATURE, checked. The prefix is the bytes that
+    # distinguish an entitled row from an unreasoned coincidence, so it joins the
+    # comparison; the prose tail stays narrative. The gate CONSTRUCTS the expected
+    # signature independently — a disagreement is a finding against one side, never
+    # a resolution. And retired terms are forbidden across the WHOLE field, prefix
+    # and prose alike: a retired term in narrative still teaches the wrong rule.
+    for o in obls:
+        auth = o.get("authority") or ""
+        low = auth.lower()
+        for term in RETIRED_AUTHORITY_TERMS:
+            if term in low:
+                fail(out, "AUTHORITY-RETIRED", "%s/%s %s carries the retired term %r in "
+                     "its authority" % (o["case"], o["consumer"], o["locus"], term))
+                break
+        if o["obligation_id"] not in ("SC-509b", "SC-405g"):
+            continue
+        sig = parse_signature(auth)
+        if sig is None:
+            fail(out, "AUTHORITY-SIGNATURE", "%s/%s %s carries no parseable signature "
+                 "prefix; a from==to row without one is indistinguishable from an "
+                 "unreasoned coincidence" % (o["case"], o["consumer"], o["locus"]))
+            continue
+        owner, _kinds, member, klass = sig
+        if owner != o["obligation_id"]:
+            fail(out, "AUTHORITY-SIGNATURE", "%s/%s %s signs owner=%s on an %s row"
+                 % (o["case"], o["consumer"], o["locus"], owner, o["obligation_id"]))
+        if member != o["locus"]:
+            fail(out, "AUTHORITY-SIGNATURE", "%s/%s signs member=%s on locus %s"
+                 % (o["case"], o["consumer"], member, o["locus"]))
+        if klass not in ENTITLEMENT_CLASSES:
+            fail(out, "AUTHORITY-SIGNATURE", "%s/%s %s signs entitlement class %r, "
+                 "which is not in the closed vocabulary"
+                 % (o["case"], o["consumer"], o["locus"], klass))
+        elif o["to"] == "ABSENT" and klass not in (
+                "unreadable-member-omits", "temporary-presence-projection/value-unscored"):
+            fail(out, "AUTHORITY-SIGNATURE", "%s/%s %s omits a member but signs %r"
+                 % (o["case"], o["consumer"], o["locus"], klass))
+        elif o["from"] == o["to"] and klass != "partial-evidence-from-readable-facts":
+            fail(out, "AUTHORITY-SIGNATURE", "%s/%s %s is a from==to row signed %r"
+                 % (o["case"], o["consumer"], o["locus"], klass))
     check_keyset(out, obls, quiet)
     if not quiet:
         print("verdict (DERIVED, no stored column): %d EXPECTED-DIVERGENCE + %d EXPECTED-MATCH "
@@ -1178,9 +2290,10 @@ def main(quiet=False, obl=None, fresh=None, inv=None):
         for k in sorted(per): print("  %-10s %4d" % (k, per[k]))
         for cid, msg in out[:20]: print("FAIL  %-14s %s" % (cid, msg))
         if not out:
-            print("OBLIGATIONS VERIFIED — fresh against COMMITTED contract %s at HEAD"
-                  % now[:12])
-            print("  (HEAD-relative: an uncommitted local edit to the contract is NOT assessed)")
+            print("OBLIGATIONS VERIFIED — WORKTREE table tuple is fresh against "
+                  "COMMITTED contract %s at HEAD" % now[:12])
+            print("  (contract is read from HEAD; OBLIGATIONS/FRESHNESS/GAP/UNPROVED "
+                  "are read from the worktree; a clean checkout may differ)")
         else:
             print("NOT VERIFIED — %d finding(s)" % len(out))
     return (1 if out else 0), {c for c, _ in out}
@@ -1192,6 +2305,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--obl")
     ap.add_argument("--fresh")
+    ap.add_argument("--gap")
+    ap.add_argument("--unproved")
     ap.add_argument("--inv")
     a = ap.parse_args()
-    sys.exit(main(obl=a.obl, fresh=a.fresh, inv=a.inv)[0])
+    sys.exit(main(obl=a.obl, fresh=a.fresh, gap=a.gap,
+                  unproved=a.unproved, inv=a.inv)[0])

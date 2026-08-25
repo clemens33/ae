@@ -18,14 +18,16 @@ import csv
 import calendar
 import hashlib
 import time
-import json, os, re, subprocess, sys, collections
+import json, os, re, subprocess, sys, collections, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.normpath(os.path.join(HERE, "..", "..", "..", ".."))
 SRC = os.path.normpath(os.path.join(HERE, "..", "batch-c-artifacts"))
 INV = os.path.join(HERE, "INVOCATIONS.tsv")
 OUT = os.path.join(HERE, "OBLIGATIONS.tsv")
 UNPROVED = os.path.join(HERE, "SC-509C-UNPROVED.tsv")
 FRESH = os.path.join(HERE, "FRESHNESS.tsv")
+GAP = os.path.join(HERE, "UNOBSERVABLE-ADDED-ROSTER.tsv")
 CONTRACT = "docs/migration/semantic-contract.md"
 LISTING = ("ae list", "ae ls")
 
@@ -75,6 +77,28 @@ def contract_blob():
                           capture_output=True, text=True).stdout.strip()
     return subprocess.run(["git", "rev-parse", f"HEAD:{CONTRACT}"], cwd=root,
                           capture_output=True, text=True).stdout.strip()
+
+
+def atomic_write_text(path, text):
+    """Publish one complete text artifact by same-directory atomic replacement."""
+    directory = os.path.dirname(os.path.abspath(path))
+    mode = (os.stat(path).st_mode & 0o777) if os.path.exists(path) else 0o644
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".tmp.", dir=directory)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
 
 def body(case, consumer):
     p = os.path.join(SRC, case, "out", consumer + ".stdout")
@@ -652,6 +676,1205 @@ def session_events(template, session):
     return out
 
 
+# The documented stable event keys, from events.md's own table. SC-510e's rule is
+# stated over "any documented stable key", so this list IS the rule's domain and a
+# key missing from it silently narrows the rule.
+EVENT_STABLE_KEYS = frozenset({
+    "ts", "actor", "action", "target", "ref", "summary", "body_file",
+    "actor_slot", "actor_session", "target_slot", "target_session",
+})
+
+
+def events_complete(template, session):
+    """Is this session's event ledger COMPLETE, i.e. free of malformed records?
+
+    SC-520 makes a skipped malformed COMPLETE line observable; SC-975b exempts a
+    buffered UNTERMINATED TAIL, which is a different fact and must not be conflated
+    with it. Measured across every template: exactly one session has a malformed
+    complete line (G3/tg1) and exactly one has an unterminated tail (G8/tg1) — they
+    are different sessions, so a predicate that fused them would be wrong on both.
+
+    A state parsed out of a damaged ledger is NOT ESTABLISHED. The parsers here skip
+    unparseable lines to stay robust, and that robustness is exactly what let six
+    rows claim the successor would render `working`/`done` from a source SC-509b
+    rules unreadable.
+    """
+    if not template or "/" not in template:
+        return True
+    arm, variant = template.split("/", 1)
+    p = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                     "sessions", session, "events.jsonl")
+    if not os.path.exists(p):
+        return True
+    lines = open(p, encoding="utf-8", errors="replace").read().split("\n")
+    unterminated = bool(lines) and lines[-1] != ""
+    for n, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        if n == len(lines) and unterminated:
+            continue                       # SC-975b: a buffered tail is not malformed
+        seen = []
+        try:
+            json.loads(line, object_pairs_hook=lambda ps: (
+                seen.extend(k for k, _ in ps), dict(ps))[1])
+        except ValueError:
+            return False                   # SC-520: a malformed COMPLETE record
+        # SC-510e: a record carrying two members of any DOCUMENTED STABLE key is
+        # skipped and counted, degrading the session by SC-520's path — RFC 8259
+        # makes duplicate-name resolution non-interoperable and first/last-winner
+        # selection is forbidden fabrication. SC-510f: duplicate UNKNOWN keys stay
+        # INERT and never degrade, which is why the c09/c10 fixtures are tolerated
+        # BY RULE rather than by anything the parser happens to do.
+        counts = collections.Counter(seen)
+        if any(c > 1 and k in EVENT_STABLE_KEYS for k, c in counts.items()):
+            return False
+    return True
+
+
+# The members each loss KIND makes unreadable, taken from the successor's own gates
+# rather than from a list someone maintained: src/digest.rs pushes `state` and
+# `reason` only `if events_complete`, and `goal_set_epoch` under
+# `self.knowledge.events.is_complete()`. `degraded` is AGGREGATE visibility and
+# identifies nothing per member, so it is owed by either kind and neither kind's
+# member list may be read off it.
+EVENT_DERIVED_SESSION_MEMBERS = ("goal_set_epoch", "last_active_epoch",
+                                 "attention", "attention_rank")
+EVENT_DERIVED_AGENT_MEMBERS = ("state", "reason")
+
+
+# ---- THE DECLARED SOURCE-TO-MEMBER MAPPING, AND THE ONLY COPY OF IT.
+#
+# THE AUTHORITY IS THE CONTRACT, NOT THE SERIALIZER. A table whose owed-member list
+# is read off the product cannot police the product: if the serializer wrongly gates
+# a member tomorrow, a product-derived mapping inherits the mistake and the table
+# agrees with the defect BY CONSTRUCTION. That is the schema-serves-tool inversion
+# pointing the other way, and the first draft of this block made exactly that error.
+#
+# Each member's source is stated by its own contract row:
+#   SC-405b   mode, origin, work_dir, goal are META keys
+#   SC-405f   goal_set_epoch is "not a meta key; the digest derives it from the
+#             event stream"
+#   SC-017e   last_active_epoch is an ae EVENT within the window
+#   SC-017g   the attention triad's value is the MAX across agent contributions,
+#             which are event-derived
+#   SC-017h   declared state is event-derived ("an inexact or unreadable
+#             event-derived state renders `unknown`")
+#   SC-509c   a reason is an agent-owned contribution, event-derived
+# and SC-509b supplies the rule that an unreadable optional fact OMITS while
+# `degraded` stays AGGREGATE visibility identifying nothing per member.
+#
+# The successor's gates are CORROBORATION, checked separately by
+# serializer_agrees(): a disagreement between this contract-derived mapping and what
+# src/digest.rs actually gates is a FINDING against one of them, never a resolution.
+# That check is what catches the next serializer regression; deriving from the gates
+# would have made such a regression unobservable here.
+#
+# THE CHECKER READS THIS DECLARATION; IT DOES NOT CARRY A COPY. The previous control
+# transcribed a four-member list and so was self-confirming — it caught a dropped ROW
+# and could never catch a dropped MEMBER CLASS, which is precisely how a narrowed
+# population greened. A transcribed expectation can only ever under-report.
+# THE CLOSED LIST OF LOSS KINDS THIS DERIVATION RECOGNIZES. Every census correction
+# in this slice came from a kind the predicate had not enumerated — meta-only, then
+# malformed JSON only, then duplicate-known event keys, then duplicate meta keys. A
+# predicate hides an unrecognized kind; a LIST shows it as a gap. Adding a kind here
+# is the visible act; a kind absent from this tuple is not derived at all.
+LOSS_KINDS = (
+    "meta-absent",      # manifest: the meta is absent or UNREADABLE
+    "meta-duplicate",   # SC-405a + SC-509b: a DUPLICATED documented meta key
+    "events-skipped",   # SC-520 malformed COMPLETE record, or SC-510e duplicate
+                        # documented event key (SC-510f keeps unknown dups inert)
+)
+
+# The member set each kind makes unreadable. THE GRAIN IS (KIND, MEMBER), not source
+# alone: losing the whole meta takes out all four meta members, while a duplicate of
+# ONE documented key takes out THAT KEY ONLY — the same duplicate-vs-unattributed
+# asymmetry the serializer draws, where a duplicate of a specific key is always
+# incomplete FOR THAT KEY while an unattributed fault is incomplete only where the
+# value is also absent. `meta-duplicate` therefore carries no fixed list: its members
+# are the keys actually duplicated.
+LOSS_MEMBERS = {
+    # `degraded` is the ONLY truly common member — it is the aggregate visibility
+    # flag and every established loss raises it. `needs_attention` is NOT common:
+    # it is owed only where the loss actually reaches the attention inputs. A
+    # duplicated `goal` leaves the roster and the ledger intact, so false/null/0
+    # stays EXACT quiet there and a partial-evidence row would be false. Relevance
+    # is derived per kind, never assumed from `degraded` — which is exactly what
+    # `degraded` identifies nothing per member means, applied to itself.
+    "common": {"session": ("degraded",), "agent": ()},
+    "meta-absent": {"session": ("needs_attention", "mode", "origin",
+                                "work_dir", "goal"), "agent": ()},
+    "meta-duplicate": {"session": (), "agent": ()},        # data-dependent, see below
+    "events-skipped": {"session": ("needs_attention", "goal_set_epoch",
+                                   "last_active_epoch", "attention",
+                                   "attention_rank"),
+                       "agent": ("state", "reason")},
+}
+
+# Scalars the PRODUCT treats as meta keys, named here so the comparison has a
+# subject. This is not authority — it is the other side of the corroboration.
+PRODUCT_META_SCALARS = frozenset({"ae_version", "goal", "branch", "mode", "origin",
+                                  "work_dir", "status", "created", "uuid"})
+DOCUMENTED_META_KEYS = frozenset({"mode", "origin", "work_dir", "goal", "branch",
+                                  "status", "created", "uuid"})
+
+# THE ANOMALY ROW UNIVERSE IS DERIVED FROM THE CONTRACT, NOT TRANSCRIBED. A new
+# anomaly row widens this census automatically the moment it lands, which a
+# hand-kept class list cannot do — and a kind no predicate constructs shows up as a
+# row with no disposition rather than as an invisible hole. The previous version
+# asserted `kinds <= LOSS_KINDS`, which was tautological: the same function built
+# the set it then checked.
+ANOMALY_HEADLINE = re.compile(
+    r"\bmalformed|\bduplicate|\bdegrad|\bunreadable|\bskipped|\bunterminated|\binert\b",
+    re.I)
+
+# Every anomaly row's DISPOSITION, one of: a recognizer kind, `benign` with the
+# reason the row itself gives, or `out-of-scope` with the surface it governs. A row
+# derived from the contract with NO entry here is the gap this control exists to
+# show. Zero-population classes stay listed with their zero measured — owed-zero
+# discipline applied to kinds rather than to rows.
+ANOMALY_DISPOSITION = {
+    "SC-405i": "meta-absent",
+    "SC-405e": "meta-duplicate",
+    "SC-520": "events-skipped",
+    "SC-510e": "events-skipped",
+    "SC-405d": "benign: unknown meta keys are tolerated and never degrade",
+    "SC-510f": "benign: duplicate UNKNOWN event keys stay inert",
+    "SC-519": "benign: absent and zero-byte event logs are quiet, not degraded",
+    "SC-975b": "benign: a buffered unterminated tail is not malformed",
+    "SC-307": "out-of-scope: bash-era malformed-line behavior, not a digest member",
+    "SC-210": "out-of-scope: delivery degradation, not a session member",
+    "SC-211a": "out-of-scope: helper refusal mode",
+    "SC-211b": "out-of-scope: helper refusal mode",
+    "SC-211c": "out-of-scope: helper refusal mode",
+    "SC-211d": "out-of-scope: helper refusal mode",
+    "SC-805": "out-of-scope: archive inertness",
+    "SC-830": "out-of-scope: compact digest-only degradation",
+    "SC-1409b": "out-of-scope: telegram config",
+    "SC-1409c": "out-of-scope: telegram config",
+}
+
+
+def contract_anomaly_rows():
+    """Anomaly/loss rows, READ OUT OF THE PINNED CONTRACT BLOB."""
+    txt = subprocess.run(["git", "cat-file", "blob", contract_blob()],
+                         capture_output=True, text=True,
+                         cwd=REPO_ROOT).stdout
+    rows = re.findall(r"^\*\*(SC-[0-9a-z]+) — (.+?)\*\*", txt, re.M | re.S)
+    return {rid for rid, head in rows if ANOMALY_HEADLINE.search(head)}
+
+
+KIND_REASON = {
+    "meta-absent": "the manifest proves its meta absent or unreadable",
+    "meta-duplicate": "the meta carries a DUPLICATED documented key, which SC-405a "
+                      "with SC-509b makes actual parse loss for that key",
+    "events-skipped": "the event ledger carries a record the contract rules SKIPPED "
+                      "— a malformed COMPLETE record under SC-520, or a duplicate "
+                      "DOCUMENTED key under SC-510e",
+}
+
+
+def owed_loss_members(kinds, duplicated=()):
+    """(session members, agent members) owed for a session, from the declaration.
+
+    Restored after a text slice of mine swallowed it — the sixth time an unbounded
+    span between two anchors removed more than it was aimed at. The rule I keep
+    relearning: assert what the span CONTAINS, not merely that it starts and ends
+    where expected.
+    """
+    session, agent = [], []
+    for kind in ("common",) + tuple(sorted(kinds)):
+        if kind == "meta-duplicate":
+            session.extend(m for m in duplicated if m not in session)
+            continue
+        spec = LOSS_MEMBERS.get(kind)
+        if not spec:
+            continue
+        session.extend(m for m in spec["session"] if m not in session)
+        agent.extend(m for m in spec["agent"] if m not in agent)
+    return tuple(session), tuple(agent)
+
+
+def member_owner(member, kinds, duplicated=()):
+    """Which ESTABLISHED kind makes THIS member unreadable.
+
+    One union-level reason cannot truthfully explain each member when two kinds
+    coincide: a session with both a lost meta and a skipped record would have had
+    every member blamed on whichever branch the code happened to take. The authority
+    text is bound to the member's OWN source, and `degraded` — owed by any loss — is
+    bound to the whole established kind set instead of to one of them.
+    """
+    if member == "degraded":
+        return None
+    if "meta-duplicate" in kinds and member in duplicated:
+        return "meta-duplicate"
+    for kind in sorted(kinds):
+        spec = LOSS_MEMBERS.get(kind, {})
+        if member in spec.get("session", ()) or member in spec.get("agent", ()):
+            return kind
+    return None
+
+
+# ---- THE AUTHORITY SIGNATURE, ruled 2026-08-25.
+#
+# A from==to row is indistinguishable from an unreasoned coincidence unless the
+# bytes that carry its entitlement are FIXED. But binding full prose would make the
+# gate transcribe paragraphs, so the ruling splits the field: a canonical
+# machine-readable PREFIX that joins the owed-vs-held comparison, and a free prose
+# tail that stays narrative. The gate constructs the SIGNATURE independently — an
+# order of magnitude lighter than the prose — and a disagreement is a FINDING
+# against one of them, never a resolution.
+ENTITLEMENT_CLASSES = {
+    "partial-evidence-from-readable-facts",   # a false->false indicator row
+    "unreadable-member-omits",                # any member whose source failed
+    "actual-loss-visible",                    # the degraded qualifier itself
+    "temporary-presence-projection/value-unscored",   # SC-405g branch presence
+}
+# Terms the accepted contract RETIRED. Forbidden across the WHOLE authority field,
+# prefix and prose alike — a retired term in narrative still teaches the wrong rule
+# to the next reader, and this table's rows are read as the ruling.
+RETIRED_AUTHORITY_TERMS = ("lower bound", "lower-bound", "monotone lower")
+
+
+def authority_signature(owner, kinds, member, entitlement):
+    """The canonical prefix. Field order is fixed so the string is comparable."""
+    if entitlement not in ENTITLEMENT_CLASSES:
+        raise SystemExit("FATAL: %r is not a declared entitlement class" % entitlement)
+    return "SIG owner=%s kind=%s member=%s class=%s ::" % (
+        owner, ",".join(sorted(kinds)) if kinds else "-", member, entitlement)
+
+
+def parse_signature(authority):
+    """(owner, kinds, member, class) or None when the prefix is absent/malformed."""
+    # `member` is a LOCUS and a locus may contain spaces — `sessions[tg1].branch
+    # (presence)` did, so a \S+ capture silently failed to parse 29 real rows and
+    # reported them as unsigned. Anchor on the next field name instead of on
+    # whitespace: the delimiter is `class=`, not a space.
+    m = re.match(r"^SIG owner=(\S+) kind=(\S+) member=(.+?) class=(\S+) ::", authority or "")
+    if not m:
+        return None
+    return (m.group(1), tuple(sorted(m.group(2).split(","))) if m.group(2) != "-" else (),
+            m.group(3), m.group(4))
+
+
+def serializer_agrees():
+    """Does the SUCCESSOR's gating match the CONTRACT-derived mapping?
+
+    CORROBORATION, NEVER AUTHORITY. A disagreement is a FINDING against one of them
+    — possibly a serializer regression, possibly a contract row that has not caught
+    up — and it is reported rather than resolved in either direction. Deriving the
+    mapping FROM these gates would make a regression unobservable, because the table
+    would agree with the defect by construction.
+
+    This function was lost to one of my own text slices and rebuilt; the first
+    version also compared only the EVENT-derived members, so it would have stayed
+    silent on a meta-key disagreement. That silence was itself the finding, and the
+    meta comparison below exists because of it.
+    """
+    src = os.path.join(REPO_ROOT, "src", "digest.rs")
+    if not os.path.exists(src):
+        return []
+    text = open(src, encoding="utf-8", errors="replace").read()
+    findings = []
+    for member in LOSS_MEMBERS["events-skipped"]["session"] + \
+            LOSS_MEMBERS["events-skipped"]["agent"]:
+        if '"%s"' % member not in text:
+            findings.append("serializer does not mention %r, which the contract makes "
+                            "event-derived" % member)
+    if "events_complete" not in text and "events.is_complete()" not in text:
+        findings.append("serializer has no events-completeness gate at all")
+    # THE META KEY UNIVERSE, both directions. A scalar the product recognizes but
+    # this derivation does not is a duplicate the census cannot see; one this
+    # derivation names and the product does not is a rule with no implementation.
+    product_meta = set(re.findall(r"pub (\w+): Option<", text))
+    unknown = sorted(product_meta & PRODUCT_META_SCALARS - DOCUMENTED_META_KEYS)
+    for key in unknown:
+        findings.append(
+            "META-KEY DISAGREEMENT %r: the product recognizes it as a meta scalar "
+            "(a duplicate emits DuplicateKey, degrades, and SC-405g then omits "
+            "branch) while DOCUMENTED_META_KEYS excludes it and the pinned contract "
+            "carries no source/provenance row for it. NOT RESOLVED HERE — reported "
+            "as the disagreement it is; the ruling is authority-amendment versus "
+            "presentation-only read path" % key)
+    return findings
+
+
+# ---- SC-017l / SC-017m, the settled DELTA three-way. Both keys turned 2026-08-25.
+#
+#   (1) frozen-omitted where unknown qualifies   m ADD + paired l   at one identity
+#   (2) present-stopped in an all-like view      l ALONE            (membership stable)
+#   (3) present-stopped in a --stopped view      m REMOVAL only     (no aligned candidate)
+#
+# THE PREMISE, NAMED SO IT IS CONTESTABLE ONCE RATHER THAN INHERITED FOREVER: case (2)
+# owes no m row because DEFAULT PARITY already polices stable membership — in an
+# all-like view the membership entitlement is unconditional in both worlds, so bytes
+# AND semantics agree and a row recording nothing would be duplicate authority.
+#
+# THAT PREMISE IS A DEPENDENCY, NOT AN ASSUMPTION, and it is only half-satisfied
+# today. Measured: parity is real on the HUMAN surface (human_project.compare fails
+# on an unowned extra and on a missing retained session) and ABSENT on the DIGEST
+# surface (no default-parity scorer exists in the tree). Of the 134 case-(2)
+# occurrences, 48 ARE DIGEST and 86 are human — so 48 are unpoliced until the digest
+# parity component lands. The delta rule is sound WHERE PARITY EXISTS, and parity is
+# a component that must RUN on that surface, never an assumption about one.
+#
+# Arm (3) has population ZERO in this corpus. It is implemented with its zero stated
+# rather than dropped — owed-zero applied to a ruled arm — and carries a synthetic
+# control, because a ruled arm with no population is not proven by having been ruled.
+VIEW_SELECTORS = ("--running", "--stopped", "--all")
+
+
+def view_kind(argv):
+    """default | all-like | stopped-only, from the invocation's own normalised argv."""
+    winner = None
+    for w in argv.split():
+        if w in VIEW_SELECTORS:
+            winner = w
+    if winner == "--stopped":
+        return "stopped-only"
+    if winner in ("--all", "--running"):
+        return "all-like"
+    return "default"
+
+
+def unknown_qualifies(kind):
+    """SC-017m's own selection rule: --stopped shows only stopped, so an unknown
+    candidate does not qualify there; default and --all include it."""
+    return kind != "stopped-only"
+
+
+SESSION_STATUS = frozenset({"running", "stopped"})
+SESSION_HEADER = re.compile(r"^SESSION\s+STATUS\b")
+
+
+def candidate_shown(text):
+    """name -> status, read from the SESSION TABLE ITSELF.
+
+    PROVENANCE, NOT INTERSECTION. This was a whole-body line scrape filtered by the
+    caller's candidate universe, and colead is right that the filter only converts a
+    silent misclassification into a loud stop: the scrape yields 36 keys that are not
+    sessions at all, and three of them -- STATUS, pending, replied -- are LEGAL
+    SESSION NAMES, so a durable candidate literally named `pending` would have let an
+    unrelated requests-table row through the universe filter to shadow its real
+    listing row or abort an otherwise valid corpus. A filter cannot fix that, because
+    the two rows are indistinguishable ONCE BOTH ARE KEYS. Only the section they came
+    from tells them apart.
+
+    So the region is bound by the table's own grammar: the `SESSION STATUS ...`
+    header, then its column-0 rows, ending at the first blank line or EOF (measured
+    across 302 tables here: none contains a blank line, and nothing at column 0
+    follows one). Indented lines are that row's continuations -- the goal line and
+    the agent cells -- never session rows.
+    """
+    shown = {}
+    if '"schema_version"' in text:
+        try:
+            for s in json.loads(text).get("sessions") or []:
+                shown[s.get("name")] = s.get("status")
+        except ValueError:
+            pass
+        return shown
+    lines = text.splitlines()
+    head = [i for i, l in enumerate(lines) if SESSION_HEADER.match(l)]
+    if not head:
+        return shown
+    # THE BLANK LINE IS NOT THE BOUNDARY. Measured: with a blank separator the region
+    # stopped correctly, but with the requests table butted straight onto the session
+    # table it ran on and `pending` came back as `ask` -- the exact shadowing colead
+    # named, reproduced. The region ends where the LAYOUT ends: a session row's
+    # status token starts at or after the header's STATUS column (a name that
+    # overflows its column pushes it right, never left), and another table's row has
+    # its second token far to the left of it.
+    offset = lines[head[0]].index("STATUS")
+    for line in lines[head[0] + 1:]:
+        if not line.strip():
+            break
+        if line[0].isspace():
+            continue
+        toks = [(m.start(), m.group()) for m in re.finditer(r"\S+", line)]
+        if len(toks) < 2 or toks[1][0] < offset:
+            break
+        shown[toks[0][1]] = toks[1][1]
+    return shown
+
+
+def candidate_class(case, text):
+    """candidate -> (class, frozen status). SC-017j keeps a live-only running row
+    and a durable candidate of the same NAME as two identities, so a namesake never
+    consumes the candidate — there is no flag here, deliberately: a seam that can
+    select the known-wrong behaviour is an alternate path in shipped code."""
+    universe = frozenset(loss_candidates(case))
+    shown = candidate_shown(text)
+    out = {}
+    for c in sorted(universe):
+        if c not in shown:
+            out[c] = ("omitted", None)
+        elif shown[c] == "running":
+            out[c] = ("live-only-namesake", shown[c])
+        else:
+            # NO CATCH-ALL. The third branch used to be a bare `else`, so any status
+            # that was not `running` became `aligned` -- a class whose population is
+            # unbound. Measured, every one of the 230 is literally `stopped`, so the
+            # branch has never been exercised by a second value and an unanalysed one
+            # (exited, dead, unknown) would be silently called aligned and emit a row
+            # claiming alignment for a state nobody analysed. The corpus is FROZEN and
+            # digest-pinned, so an off-universe status cannot arise from data drift --
+            # only from a moved pin or a changed parser, both of which must stop the
+            # run rather than produce a row. Same repair shape as the selector legs:
+            # bind the population to the declared universe instead of accepting a
+            # remainder.
+            assert shown[c] in SESSION_STATUS, (
+                "unanalysed session status %r for candidate %r in %s -- the aligned "
+                "class is declared over %s; extend the analysis, do not widen the "
+                "branch" % (shown[c], c, case, sorted(SESSION_STATUS)))
+            out[c] = ("aligned", shown[c])
+    return out
+
+
+def loss_candidates(case):
+    """Durable candidates from the MANIFEST — the only source that can see one an
+    output omitted, since absence cannot be read from a document lacking it."""
+    mb = os.path.join(SRC, case, "manifest.before.tsv")
+    if not os.path.exists(mb):
+        return []
+    rows = [l.rstrip("\n").split("\t") for l in open(mb, encoding="utf-8", errors="replace")]
+    return sorted({r[-1].split("/")[2] for r in rows
+                   if r[0] == "dir" and re.match(r"\./sessions/[^./][^/]*$", r[-1])})
+
+
+def _manifest_meta_modes(case):
+    """candidate -> recorded mode for meta files the manifest can see."""
+    mb = os.path.join(SRC, case, "manifest.before.tsv")
+    if not os.path.exists(mb):
+        return {}
+    rows = [line.rstrip("\n").split("\t")
+            for line in open(mb, encoding="utf-8", errors="replace")]
+    return {row[-1].split("/")[2]: row[1] for row in rows
+            if row[0] == "file"
+            and re.match(r"\./sessions/[^./][^/]*/meta$", row[-1])}
+
+
+def candidate_recorded_selector(case, candidate):
+    """Normalize one durable candidate's fixed recorded-server selector.
+
+    Template-backed cases bind clone bytes through case.txt's template identity and
+    clone fingerprint. Direct live cases record session+socket together in case.txt.
+    Never substitute the ambient AE_TMUX_SERVER: SC-017j/k make that a different
+    provenance even when its basename happens to match.
+    """
+    # A direct-live capture binds session and socket together in case.txt and has
+    # stage-specific manifests rather than manifest.before.tsv.  Read that binding
+    # before consulting the clone-manifest leg; otherwise c20's positive selector is
+    # incorrectly called absent and its exact pane observation can never reach p.
+    case_path = os.path.join(SRC, case, "case.txt")
+    case_text = open(case_path, encoding="utf-8", errors="replace").read() \
+        if os.path.exists(case_path) else ""
+    direct = []
+    for line in case_text.splitlines():
+        sm = re.search(r"\bsession=(\S+)", line)
+        sock = re.search(r"\bsocket=(\S+)", line)
+        if sm and sock and sm.group(1) == candidate:
+            direct.append(sock.group(1))
+    if len(set(direct)) == 1:
+        return "positive", direct[0]
+    if len(set(direct)) > 1:
+        return "ambiguous", None
+
+    modes = _manifest_meta_modes(case)
+    if candidate not in modes:
+        return "meta-absent", None
+    if modes[candidate] in ("000", "0", "100", "200"):
+        return "mode-unusable", None
+    meta = None
+    template = template_of(case)
+    if template and "/" in template:
+        arm, variant = template.split("/", 1)
+        path = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                            "sessions", candidate, "meta")
+        if os.path.exists(path):
+            meta = open(path, encoding="utf-8", errors="replace").read()
+    if meta is None:
+        return "unresolved", None
+    servers = re.findall(r"^tmux_server=(.*)$", meta, re.M)
+    kinds = re.findall(r"^tmux_server_kind=(.*)$", meta, re.M)
+    if len(servers) == 1 and servers[0] and len(kinds) <= 1 \
+            and (not kinds or kinds[0] == "socket"):
+        return "positive", servers[0]
+    if not servers or (len(servers) == 1 and not servers[0]):
+        return "missing", None
+    return "ambiguous", None
+
+
+def attempted_servers(case, consumer):
+    """Recorded server spellings actually attempted by this frozen invocation."""
+    path = os.path.join(SRC, case, "out", consumer + ".tmuxtrace")
+    if not os.path.exists(path):
+        return frozenset()
+    attempted = set()
+    for line in open(path, encoding="utf-8", errors="replace"):
+        if not re.search(r"\b(list-sessions|list-panes|has-session)\b", line):
+            continue
+        m = re.search(r"\bAE_TMUX_SERVER=(\S+)", line)
+        if m:
+            attempted.add(m.group(1))
+    return frozenset(attempted)
+
+
+def topology_text(case, consumer):
+    """The fixed topology snapshot paired with this invocation stage."""
+    stage = consumer.split("/", 1)[0] if "/" in consumer else None
+    candidates = ([os.path.join(SRC, case, "tmux.%s.txt" % stage)] if stage else [])
+    candidates.append(os.path.join(SRC, case, "tmux.before.txt"))
+    return next((open(p, encoding="utf-8", errors="replace").read()
+                 for p in candidates if os.path.exists(p)), "")
+
+
+def topology_query_state(case, consumer, server):
+    """success | failed | unobserved for one attempted recorded server.
+
+    A topology snapshot carries no socket label.  It can answer for a server only
+    when the trace contains exactly one attempted server and it is that server.  A
+    multi-server trace without per-server outcome artifacts remains unobserved rather
+    than letting one success paint all candidates.
+    """
+    if attempted_servers(case, consumer) != frozenset({server}):
+        return "unobserved"
+    text = topology_text(case, consumer)
+    if not text:
+        return "unobserved"
+    if "error connecting" in text or "no server running" in text:
+        return "failed"
+    return "success" if "## sessions" in text and "## panes" in text else "unobserved"
+
+
+def candidate_causes(case, consumer):
+    """candidate -> its OWN SC-017l cause tuple.
+
+    ATTEMPT PRECEDES OUTCOME. A trace that never queried a candidate's positively
+    recorded server is `selector-server-unattempted`, never a failed query. This is
+    why only c20 varies in the current corpus: its direct-live case records the same
+    socket its consumer trace queries. Template clones preserve their `/tmp/aecx/tpl`
+    selectors while their consumers query per-case ambient sockets; a successful
+    ambient snapshot cannot answer for those durable candidates.
+
+    Per-candidate grain is essential in composite cases: one bad selector cannot
+    paint another candidate whose own recorded server was attempted successfully.
+    """
+    attempts = attempted_servers(case, consumer)
+    out = {}
+    for candidate in loss_candidates(case):
+        state, server = candidate_recorded_selector(case, candidate)
+        if state == "meta-absent":
+            out[candidate] = ("selector-meta-absent",)
+        elif state == "mode-unusable":
+            out[candidate] = ("selector-mode-unusable",)
+        elif state != "positive":
+            out[candidate] = ("selector-%s" % state,)
+        elif server not in attempts:
+            out[candidate] = ("selector-server-unattempted",)
+        else:
+            outcome = topology_query_state(case, consumer, server)
+            if outcome == "failed":
+                out[candidate] = ("selector-server-failed",)
+            elif outcome == "unobserved":
+                out[candidate] = ("selector-server-outcome-unobserved",)
+    return out
+
+
+# The surface column of INVOCATIONS.tsv is a CLOSED VOCABULARY, and the non-selecting
+# half is independently corroborated: the Run1 runner classifies both helper surfaces
+# as unimplemented in the successor CLI, so they render no selection view.
+SURFACE_UNIVERSE = frozenset({"ae list", "ae ls", "helper:requests",
+                              "helper:events-tail"})
+
+def emit_unknown_family(case, consumer, argv, text, surface):
+    """SC-017l and SC-017m rows for one invocation, under the settled delta split.
+
+    Every row carries its CAUSE — required, never optional, because an optional
+    field goes missing quietly and a required one cannot. The cause values are the
+    ANALYSED ones (unreachable / selector-meta-absent / selector-mode-unusable), not
+    a single collapsed label: those three cite different SC-017l clauses even though
+    all three land on `unknown`.
+    """
+    # THE POPULATION IS THE LISTING SURFACES, and the function owns that rather than
+    # trusting its caller to filter. Unguarded it emitted 90 pairs on helper:requests
+    # and helper:events-tail -- documents with NO session-selection view at all, where
+    # every durable candidate is trivially "not shown" and the omission branch fires
+    # on nothing. Same class as every unbound population today: the code could not
+    # see the surface, so it answered for all of them.
+    # DECLARED SET, AND AN ASSERT OUTSIDE IT — reason2's pointer, and it is the same
+    # repair as the aligned branch and the selector legs. `not helper-prefixed` is the
+    # bare-else shape: it answers for surfaces nobody has classified. The surface
+    # column is a closed vocabulary, so a fifth surface must STOP the run and be
+    # classified deliberately, rather than be silently dropped by a filter -- silence
+    # is how a population goes missing without anything disagreeing.
+    assert surface in SURFACE_UNIVERSE, (
+        "unclassified surface %r -- SC-017l/m owe rows on the listing surfaces %s and "
+        "nothing on the non-selecting ones %s; classify it, do not let a filter answer"
+        % (surface, sorted(LISTING), sorted(SURFACE_UNIVERSE - set(LISTING))))
+    if surface not in LISTING:
+        return []
+    cause_by_candidate = candidate_causes(case, consumer)
+    if not cause_by_candidate:
+        return []
+    # SURFACE IS PART OF THE IDENTITY, ruled. The first cut hardcoded stream=stdout
+    # and the human loci for BOTH surfaces, so 104 l and 56 m rows sat on JSON
+    # documents wearing a human address -- two surfaces collapsed into one identity,
+    # in the family whose cause field exists to stop exactly that collapse. The
+    # vocabulary is the table's established convention, not a new invention: SC-509b
+    # already addresses JSON members as digest / sessions[<name>].<member>, and the
+    # JSON membership row is object PRESENCE, the shape the degraded ABSENT->true
+    # rows already use.
+    if '"schema_version"' in text:
+        stream = "digest"
+        loc_value, loc_member = "sessions[%s].status", "sessions[%s]"
+    else:
+        stream = "stdout"
+        loc_value, loc_member = "candidate[%s].status", "view.members[%s]"
+    kind = view_kind(argv)
+    qualifies = unknown_qualifies(kind)
+    rows = []
+    for cand, (cls, frozen) in sorted(candidate_class(case, text).items()):
+        causes = cause_by_candidate.get(cand, ())
+        if not causes:
+            continue
+        support = ("OBSERVED" if any(c in ("selector-meta-absent",
+                                           "selector-mode-unusable") for c in causes)
+                   else "UNSCORABLE")
+        cause = ",".join(causes)
+        loc_l = loc_value % cand
+        loc_m = loc_member % cand
+        if cls in ("omitted", "live-only-namesake") and qualifies:
+            # (1) the candidate does not appear and unknown qualifies here: the
+            # membership ADD and its paired value row, AT ONE IDENTITY.
+            rows.append((case, consumer, "SC-017l", stream, loc_l, "ABSENT",
+                         "unknown", "equals", "OBSERVED", support,
+                         authority_signature("SC-017l", causes, loc_l,
+                                             "unreadable-member-omits")
+                         + " cause=%s class=%s: the durable candidate is not "
+                         "represented%s, and SC-017l yields unknown — never stopped, "
+                         "never absence"
+                         % (cause, cls,
+                            "; a live-only running row carries its NAME but SC-017j "
+                            "keeps them two identities and the namesake does not "
+                            "consume it" if cls == "live-only-namesake" else "")))
+            rows.append((case, consumer, "SC-017m", stream, loc_m, "ABSENT",
+                         "present", "equals", "OBSERVED", support,
+                         authority_signature("SC-017m", causes, loc_m,
+                                             "unreadable-member-omits")
+                         + " cause=%s view=%s: unknown qualifies for this view, so "
+                         "the candidate joins its exact selected set — the membership "
+                         "half of the pair" % (cause, kind)))
+        elif cls == "aligned" and qualifies:
+            # (2) present and still selected: membership is STABLE, so no m row —
+            # default parity polices stable membership and a row recording nothing
+            # would be duplicate authority. NOTE the dependency: parity is a
+            # component that must RUN on this surface, and it is measured present on
+            # human and ABSENT on digest, where 48 of these sit.
+            rows.append((case, consumer, "SC-017l", stream, loc_l,
+                         str(frozen).lower(), "unknown", "equals", "OBSERVED", support,
+                         authority_signature("SC-017l", causes, loc_l,
+                                             "partial-evidence-from-readable-facts")
+                         + " cause=%s class=aligned view=%s: the candidate is present "
+                         "and still selected, so membership is stable and only its "
+                         "VALUE moves — l's own grain" % (cause, kind)))
+        elif cls == "aligned" and not qualifies:
+            # (3) present in a --stopped view where unknown does NOT qualify: the
+            # successor excludes it, so an m REMOVAL and no l row, since no aligned
+            # candidate remains in that view. POPULATION ZERO in this corpus —
+            # implemented with its zero stated, and controlled synthetically,
+            # because a ruled arm with no population is not proven by the ruling.
+            rows.append((case, consumer, "SC-017m", stream, loc_m, "present",
+                         "ABSENT", "equals", "OBSERVED", support,
+                         authority_signature("SC-017m", causes, loc_m,
+                                             "unreadable-member-omits")
+                         + " cause=%s view=stopped-only: unknown does not qualify "
+                         "where only stopped shows, so the successor excludes the "
+                         "candidate — a membership REMOVAL with no l row, because no "
+                         "aligned candidate remains in this view" % cause))
+    return rows
+
+
+def added_roster_gap_population(p1):
+    """Added-session occurrences whose h/r roster members fixed bytes cannot name.
+
+    Generator-side traversal uses `candidate_class`; the gate derives the same set
+    through its independent `candidate_representation` path.
+    """
+    members = set()
+    for row in p1:
+        if row["surface"] not in LISTING:
+            continue
+        case, consumer = os.path.dirname(row["case"]), row["consumer"]
+        if not unknown_qualifies(view_kind(row["normalised_argv"])):
+            continue
+        text = body(case, consumer)
+        if '"schema_version"' in text:
+            continue
+        causes = candidate_causes(case, consumer)
+        for candidate, (cls, _status) in candidate_class(case, text).items():
+            if candidate in causes and cls in ("omitted", "live-only-namesake"):
+                members.add((case, consumer, candidate))
+    return members
+
+
+def parse_human_agent_row(line, status):
+    """Parse one frozen human agent subrow at the printer's actual schema.
+
+    Running and stopped rows are DIFFERENT records in frozen ae@72c7293:
+
+      running: two-space indent, ref, session_id, declared state, health
+      stopped: two-space indent, ref, session_id
+
+    The running health cell is trailing and may be empty.  The stopped row has no
+    state or health cell at all; its session_id is still roster evidence and must
+    never be relabelled as either value.  Return (ref, session_id, state, health),
+    using None for fields the stopped printer does not emit and "" for an emitted
+    but empty running health cell.
+    """
+    if status == "stopped":
+        m = re.fullmatch(r"  (\S+:\S+) {2,}(\S+) *", line)
+        return (m.group(1), m.group(2), None, None) if m else None
+    if status == "running":
+        m = re.fullmatch(r"  (\S+:\S+) {2,}(\S+) {2,}(\S+) {2,}(\S*) *", line)
+        return (m.group(1), m.group(2), m.group(3), m.group(4)) if m else None
+    return None
+
+
+def rendered_short_session_id(value):
+    """Frozen `_parse_agent_entry`'s stable rendered session-id identity field."""
+    if value in (None, "", "pending", "-"):
+        return "-"
+    return value[:8]
+
+
+def rendered_roster(text):
+    """(session, agent, short sid, health) rows, associated by human nesting.
+
+    An agent row is INDENTED under the session row it belongs to, so the association
+    is positional and must be read that way -- collecting agent lines without tracking
+    which session row precedes them would produce a roster with no owner, which is the
+    nameless-locus shape the legacy r rows died of.  The rendered short session_id is
+    a retained stable identity field on BOTH printer schemas and is fixed before the
+    independently mutable state and health cells are read.
+    """
+    return [(session, agent, sid, health)
+            for session, _status, agent, sid, _state, health
+            in rendered_agent_rows(text)]
+
+
+def rendered_agent_rows(text):
+    """Human agent rows with enclosing session/status and all printer fields.
+
+    Return `(session, status, ref, short_sid, state, health)`.  The status-aware
+    printer parser is the only column reader; h and r consume named tuple fields
+    from this literal grammar instead of independently re-parsing columns.
+    """
+    out = []
+    if '"schema_version"' in text:
+        return out                  # h/r are human-only; digest families own JSON
+    lines = text.splitlines()
+    head = [i for i, l in enumerate(lines) if SESSION_HEADER.match(l)]
+    if not head:
+        return out
+    offset = lines[head[0]].index("STATUS")
+    session = status = None
+    for line in lines[head[0] + 1:]:
+        if not line.strip():
+            break
+        toks = [(m.start(), m.group()) for m in re.finditer(r"\S+", line)]
+        if not line[0].isspace():
+            if len(toks) < 2 or toks[1][0] < offset:
+                break
+            session, status = toks[0][1], toks[1][1]
+            continue
+        agent = parse_human_agent_row(line, status)
+        if agent and session:
+            out.append((session, status, agent[0],
+                        rendered_short_session_id(agent[1]), agent[2], agent[3]))
+    return out
+
+
+def health_multiset(markers):
+    """An ORDER-FREE canonical rendering of a class's health values.
+
+    A string, deliberately, because the obligation table's columns are text and a
+    Counter's repr is not stable across readers. Sorted by value so the SAME multiset
+    always renders identically no matter what order the rows arrived in -- which is
+    the whole point: exchanging two entries inside the class must produce byte-equal
+    output, or the emission would key an obligation on a binding the human bytes do
+    not carry.
+    """
+    return " ".join("%s x%d" % (v, n)
+                    for v, n in sorted(collections.Counter(markers).items()))
+
+
+def _candidate_support(causes):
+    """Whether fixed artifacts contain the deciding candidate fact."""
+    return ("UNSCORABLE" if any(c in ("selector-server-unattempted",
+                                       "selector-server-outcome-unobserved")
+                                for c in causes)
+            else "OBSERVED")
+
+
+def fixed_roster_slots(case, consumer, session):
+    """Fixed ``(slot, rendered ref, short sid)`` roster records for one session.
+
+    SC-602 makes ``@ae_slot`` identity and ``@ae_agent`` display-only.  The live
+    c20 arm froze its stage roster separately; template-backed cases froze the same
+    ``agent.<slot>=<ref>:<session_id>`` records in meta.  Pane display text is never
+    used to infer a slot.
+    """
+    stage = consumer.split("/", 1)[0] if "/" in consumer else None
+    paths = ([os.path.join(SRC, case, "roster.%s.txt" % stage)] if stage else [])
+    template = template_of(case)
+    if template and "/" in template:
+        arm, variant = template.split("/", 1)
+        paths.append(os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                                  "sessions", session, "meta"))
+    path = next((p for p in paths if os.path.exists(p)), None)
+    if path is None:
+        return []
+    roster = []
+    for line in open(path, encoding="utf-8", errors="replace"):
+        key, sep, value = line.rstrip("\n").partition("=")
+        if not sep or not key.startswith("agent.") or key.startswith("agent_bin."):
+            continue
+        slot = key[len("agent."):]
+        ref, sid_sep, sid = value.rpartition(":")
+        if slot and sid_sep and ref:
+            roster.append((slot, ref, rendered_short_session_id(sid)))
+    return roster
+
+
+def topology_observation(case, consumer, server):
+    """One successful server snapshot as `(sessions, panes)` or its query state.
+
+    `panes[session]` contains `(slot, rendered_ref, command, pane_dead)`.  Slot is
+    retained before display is inspected: SC-602 makes ``@ae_slot`` identity while
+    ``@ae_agent`` is display-only.  The two fixed capture grammars are explicit:
+    template captures put session first; live captures put pane id first and session
+    last.  No basename, ambient, or display-ref join occurs.
+    """
+    state = topology_query_state(case, consumer, server)
+    if state != "success":
+        return state, set(), {}
+    sessions, panes, section, sole_session_panes = set(), {}, None, []
+    for line in topology_text(case, consumer).splitlines():
+        if line == "## panes":
+            section = "panes"
+            continue
+        if line == "## sessions":
+            section = "sessions"
+            continue
+        if line.startswith("## "):
+            section = None
+            continue
+        if not line:
+            continue
+        fields = line.split("|")
+        if section == "sessions" and fields:
+            sessions.add(fields[0])
+        elif section == "panes":
+            if fields[0].startswith("%") and len(fields) == 7:
+                session, ref, slot, command, pane_dead = (
+                    fields[-1], fields[1], fields[2], fields[3], fields[5])
+            elif fields[0].startswith("%") and len(fields) == 6:
+                # A4's fixed live snapshot omits session and pane_dead from each
+                # pane row. Its sessions section is singleton, so association is
+                # still exact; health stays unknown because SC-017s requires the
+                # absent pane_dead field for the positive alive route.
+                sole_session_panes.append((fields[2], fields[1], fields[3], None))
+                continue
+            elif len(fields) == 5:
+                session, ref, slot, command, pane_dead = (
+                    fields[0], fields[2], fields[3], fields[4], None)
+            else:
+                continue
+            panes.setdefault(session, []).append((slot, ref, command, pane_dead))
+    if len(sessions) == 1 and sole_session_panes:
+        panes.setdefault(next(iter(sessions)), []).extend(sole_session_panes)
+    return state, sessions, panes
+
+
+def agent_health_target(case, consumer, session, slot, cause_by_candidate):
+    """`(target, causes, support)` for one exact roster slot, or None.
+
+    Candidate liveness unknown routes to q before pane inspection.  The p route is
+    reachable only through a positive recorded selector, an actual attempt against
+    that exact spelling, and its successful session/pane snapshot.
+    """
+    causes = cause_by_candidate.get(session)
+    if causes:
+        return "unambiguous unknown", causes, _candidate_support(causes)
+
+    selector_state, server = candidate_recorded_selector(case, session)
+    if selector_state != "positive":
+        return None                    # neither durable nor direct-live identity
+    if server not in attempted_servers(case, consumer):
+        causes = ("selector-server-unattempted",)
+        return "unambiguous unknown", causes, _candidate_support(causes)
+    state, sessions, panes = topology_observation(case, consumer, server)
+    if state != "success":
+        causes = (("selector-server-failed",) if state == "failed"
+                  else ("selector-server-outcome-unobserved",))
+        return "unambiguous unknown", causes, _candidate_support(causes)
+    if session not in sessions:
+        return "dead", ("exact-session-absent",), "OBSERVED"
+
+    # A human row names a display ref, not its pane identity.  Without fixed roster
+    # bytes joining that ref+sid class to a slot, a successful session snapshot does
+    # not authorize a pane target.  In particular, a pane displaying the same ref
+    # under another slot is not evidence about this roster member.
+    if slot is None:
+        return "unambiguous unknown", ("pane-slot-unbound",), "OBSERVED"
+    observed = panes.get(session, [])
+    matches = [p for p in observed if p[0] == slot]
+    usable = all(bool(re.fullmatch(r"\S+", pane_slot or ""))
+                 for pane_slot, _ref, _command, _dead in observed)
+    unambiguous = all(n == 1 for n in collections.Counter(
+        pane_slot for pane_slot, _ref, _command, _dead in observed).values())
+    if not matches:
+        if usable and unambiguous:
+            return "dead", ("exact-pane-absent",), "OBSERVED"
+        return "unambiguous unknown", ("pane-association-unusable",), "OBSERVED"
+    if len(matches) != 1:
+        return "unambiguous unknown", ("pane-association-ambiguous",), "OBSERVED"
+    _slot, _display_ref, command, pane_dead = matches[0]
+    if pane_dead == "1":
+        return "dead", ("pane-dead",), "OBSERVED"
+    if pane_dead == "0" and command not in ("", "bash", "zsh", "fish", "sh", "dash"):
+        return "alive", ("pane-alive",), "OBSERVED"
+    return "unambiguous unknown", ("pane-live-predicate-unproved",), "OBSERVED"
+
+
+def declared_state_for(case, session, agent):
+    """Contract-required state from the candidate's own fixed producer ledger."""
+    template = template_of(case)
+    if not events_complete(template, session):
+        return "unknown", ("events-skipped",)
+    facts = stopped_facts(template, session)
+    states = facts[0] if facts is not None else {}
+    value = states.get(agent, "-")
+    if value in (None, ""):
+        return "unknown", ("event-state-inexact",)
+    return value, ("producer-ledger-exact",)
+
+
+def emit_agent_state(case, consumer, text, surface):
+    """SC-017h at fixed `(session, rendered ref, short sid)` class grain."""
+    assert surface in SURFACE_UNIVERSE, "unclassified surface %r" % surface
+    if surface not in LISTING or '"schema_version"' in text:
+        return []
+    classes = {}
+    for session, _status, agent, sid, _state, _health in rendered_agent_rows(text):
+        classes.setdefault((session, agent, sid), [])
+    for session, _status, agent, sid, state, _health in rendered_agent_rows(text):
+        source = "ABSENT" if state is None else state
+        target, causes = declared_state_for(case, session, agent)
+        classes[(session, agent, sid)].append((source, target, causes))
+
+    rows = []
+    for (session, agent, sid), values in sorted(classes.items()):
+        sources = [v[0] for v in values]
+        targets = [v[1] for v in values]
+        if collections.Counter(sources) == collections.Counter(targets):
+            continue
+        if len(values) == 1:
+            locus = "agents[%s:%s:%s].state" % (session, agent, sid)
+            frm, to = sources[0], targets[0]
+        else:
+            locus = "agents[%s:%s:%s](class).state" % (session, agent, sid)
+            frm, to = health_multiset(sources), health_multiset(targets)
+        causes = tuple(sorted({c for _s, _t, cs in values for c in cs}))
+        rows.append((case, consumer, "SC-017h", "stdout", locus, frm, to,
+                     "equals", "OBSERVED", "OBSERVED",
+                     authority_signature("SC-017h", causes, locus,
+                                         "partial-evidence-from-readable-facts")
+                     + " source state follows the status-specific frozen printer; "
+                     "target state follows the candidate's own fixed producer "
+                     "ledger, at exact class multiplicity"))
+    return rows
+
+
+def emit_agent_health(case, consumer, text, surface):
+    """SC-017r at the grain ruled in contract blob 2c832b31, read from those
+    bytes rather than from any summary of them.
+
+    IDENTITY IS A FIXED PRE-SUCCESSOR HUMAN PROJECTION and value bytes are no part of
+    it: session identity + rendered agent ref + rendered short session_id, the stable
+    identity fields the human projection RETAINS, EXCLUDING health and every
+    independently mutable state, reason and attention cell. Keying on those would let
+    a value edit silently re-partition the population -- which is why the rejected
+    v2's "retained non-health tuple" was a mutable key and this is not.
+
+    THE CLASS IS FIXED BEFORE ANY HEALTH VALUE IS READ. The partition below is built
+    from the projection alone and only then are the values collected, so a health
+    difference can never move an agent between classes.
+
+    Cardinality ONE is identity-addressed. Cardinality >1 owes an ORDER-FREE COUNT of
+    source AND per-slot target health values at EXACT multiplicity: target slots can
+    legitimately disagree even though their human ref+SID class collides. DROP fails,
+    WRONG MULTIPLICITY fails, and EXCHANGE is not observed and therefore neutral -- a
+    consequence of the evidence, not a tolerance granted. Neither a LIST (which
+    invents an order the bytes do not carry) nor a SET (which drops a real agent) is
+    permitted; both make their totals agree with something.
+
+    HUMAN-ONLY. Digest agent multiplicity and health stay with the JSON rows and
+    default parity; the frozen digest corroborates that no cross-surface escape
+    recovers the lost identity, and corroborating evidence is not a scored surface.
+    """
+    assert surface in SURFACE_UNIVERSE, "unclassified surface %r" % surface
+    if surface not in LISTING or '"schema_version"' in text:
+        return []
+    cause_by_candidate = candidate_causes(case, consumer)
+
+    # STEP 1 -- PARTITION BY THE PROJECTION, health not yet consulted.
+    classes = {}
+    for session, agent, sid, _marker in rendered_roster(text):
+        classes.setdefault((session, agent, sid), [])
+    # STEP 2 -- only now collect the values into their already-settled classes.
+    for session, agent, sid, marker in rendered_roster(text):
+        # The frozen printers distinguish two source facts: stopped rows do not
+        # emit a health cell at all, while running rows emit one whose trailing
+        # bytes may be empty.  Preserve that semantic split in the table.
+        classes[(session, agent, sid)].append(
+            "ABSENT" if marker is None else (marker or "blank")
+        )
+
+    rows = []
+    for (session, agent, sid), markers in sorted(classes.items()):
+        # Join the fixed human class back to its fixed roster slots BEFORE reading
+        # pane values.  A class may contain several slots with different targets;
+        # calling the target function once per display ref and repeating that answer
+        # would erase the heterogeneous multiset SC-017p/r explicitly preserve.
+        roster_slots = [slot for slot, roster_ref, roster_sid
+                        in fixed_roster_slots(case, consumer, session)
+                        if (roster_ref, roster_sid) == (agent, sid)]
+        slots = roster_slots if len(roster_slots) == len(markers) \
+            else [None] * len(markers)
+        targets = [agent_health_target(case, consumer, session, slot,
+                                       cause_by_candidate)
+                   for slot in slots]
+        if any(target is None for target in targets):
+            continue
+        target_values = [target[0] for target in targets]
+        causes = tuple(dict.fromkeys(cause for target in targets
+                                     for cause in target[1]))
+        support = ("UNSCORABLE" if any(target[2] == "UNSCORABLE"
+                                       for target in targets) else "OBSERVED")
+        # This table binds PRESENTATION divergence, not only semantic liveness. The
+        # frozen carrier `blank` means alive but renders an empty cell; successor
+        # literal `alive` is different observable output and remains an obligation.
+        # Compare carrier bytes to target presentation directly — never normalize
+        # blank->alive or !->dead before deciding whether a row exists.
+        if collections.Counter(markers) == collections.Counter(target_values):
+            continue
+        if len(markers) == 1:
+            locus = "agents[%s:%s:%s].health" % (session, agent, sid)
+            frm, to = markers[0], target_values[0]
+            note = ("the projection establishes the roster association at this "
+                    "identity, so health is owed at it")
+        else:
+            locus = "agents[%s:%s:%s](class).health" % (session, agent, sid)
+            frm = health_multiset(markers)
+            to = health_multiset(target_values)
+            note = ("%d agents render under one display name and short session_id "
+                    "and the human bytes carry no occurrence identity for them, so "
+                    "the owed fact is an "
+                    "ORDER-FREE COUNT at exact multiplicity: dropping one fails, the "
+                    "wrong multiplicity fails, exchanging two is NOT OBSERVED and "
+                    "therefore neutral -- the collision stays a frozen defect and "
+                    "this grain is not its licence" % len(markers))
+        rows.append((case, consumer, "SC-017r", "stdout", locus, frm, to, "equals",
+                     "OBSERVED", support,
+                     authority_signature("SC-017r", causes, locus,
+                                         "partial-evidence-from-readable-facts")
+                     + " cause=%s: SC-017p/q derives this target from the "
+                     "candidate's recorded server, exact session and exact pane "
+                     "observation; the human cell stays non-silent and three-way "
+                     "distinguishable; %s" % (",".join(causes), note)))
+    return rows
+
+
+def loss_class_census():
+    """Every contract anomaly row, and what this derivation does with it.
+
+    The check the tautological assertion pretended to be. The row set is DERIVED
+    from the pinned contract, so a new anomaly row appears here without anyone
+    remembering to add it, and any row without a disposition is reported.
+    """
+    gaps = []
+    derived = contract_anomaly_rows()
+    for rid in sorted(derived - set(ANOMALY_DISPOSITION)):
+        gaps.append("UNDISPOSED-ANOMALY-ROW %s: the contract defines an anomaly row "
+                    "that no recognizer derives and nothing declares benign or "
+                    "out-of-scope" % rid)
+    for rid in sorted(set(ANOMALY_DISPOSITION) - derived):
+        if ANOMALY_DISPOSITION[rid].startswith("benign") and rid == "SC-975b":
+            continue          # cited by the predicate, headline carries no keyword
+        gaps.append("STALE-DISPOSITION %s: disposed here but no longer an anomaly row "
+                    "in the pinned contract" % rid)
+    kinds = {v for v in ANOMALY_DISPOSITION.values()
+             if not v.startswith(("benign", "out-of-scope"))}
+    for k in sorted(kinds - set(LOSS_KINDS)):
+        gaps.append("UNIMPLEMENTED-KIND %s: a row is disposed to it and no predicate "
+                    "constructs it" % k)
+    return gaps
+
+
+def duplicated_meta_keys(case, session):
+    """Documented meta keys appearing MORE THAN ONCE, from the fixed bytes.
+
+    SC-405a's metadata-anomaly semantics with SC-509b make a duplicated documented
+    key ACTUAL parse loss for THAT KEY: no row defines duplicate-member precedence,
+    so first/last-winner selection would be fabrication. An UNKNOWN duplicated key is
+    a tolerated control and never appears here.
+    """
+    p = os.path.join(SRC, case, "case.txt")
+    if not os.path.exists(p):
+        return ()
+    m = re.search(r"\btemplate=(\S+)", open(p, encoding="utf-8", errors="replace").read())
+    if not m or "/" not in m.group(1):
+        return ()
+    arm, variant = m.group(1).split("/", 1)
+    f = os.path.join(SRC, "templates", arm, "fixture-bytes", variant,
+                     "sessions", session, "meta")
+    if not os.path.exists(f):
+        return ()
+    keys = [l.split("=", 1)[0].strip()
+            for l in open(f, encoding="utf-8", errors="replace") if "=" in l]
+    counts = collections.Counter(keys)
+    return tuple(sorted(k for k, c in counts.items()
+                        if c > 1 and k in DOCUMENTED_META_KEYS))
+
+
+def loss_kinds(case, session):
+    """The kinds of ACTUAL loss established for a session, from fixed sources.
+
+    Two independent triggers, and conflating them was the defect: loss_sessions()
+    read the MANIFEST only, so it saw a meta absent or unreadable and was blind to
+    every SC-520 malformed COMPLETE event record. `degraded` is aggregate and
+    identifies nothing per member, so which members omit is decided by WHICH SOURCE
+    failed, never by the flag.
+    """
+    kinds = set()
+    if session in loss_sessions(case):
+        kinds.add("meta-absent")
+    if duplicated_meta_keys(case, session):
+        kinds.add("meta-duplicate")
+    if not events_complete(template_of(case), session):
+        kinds.add("events-skipped")
+    # NOT `assert kinds <= LOSS_KINDS` — that was TAUTOLOGICAL. This function
+    # constructs its set from exactly those three predicates, so the assertion could
+    # never fire and could never reveal a fourth kind, while its comment claimed to
+    # close the missing-kind failure. A check whose subject is generated by the code
+    # it checks is the self-confirming class, one level up from the arity control
+    # that carried a copy of its own member list. The real check is
+    # loss_class_census() below, which compares the RECOGNIZED kinds against the
+    # contract's own anomaly classes and reports what has no predicate.
+    return kinds
+
+
 def stopped_facts(template, session):
     """(states, contributions, has_opening) from a session's fixed bytes.
 
@@ -888,17 +2111,26 @@ def main():
                     stopped_unresolved.add((case, name))
                     continue
                 states, contrib, pending_ts = facts
+                # ONE WRITER PER LOCUS. When the loss derivation owns a member for this
+                # session, the stopped path must not emit it too — disabling the old
+                # guard alone put the SC-509 state rows straight back beside the new
+                # SC-509b ones, which the gate would have caught as a duplicate address.
+                _loss_amem = owed_loss_members(
+                    loss_kinds(case, name or ""),
+                    duplicated_meta_keys(case, name or ""))[1]
                 for ag in sess.get("agents") or []:
                     ref = ag.get("ref")
                     want = states.get(ref)
-                    if want and ag.get("state") in (None, ""):
-                        rows.append((case, consumer, "SC-509", "digest",
+                    if want and ag.get("state") in (None, "") and "state" not in _loss_amem:
+                        if True:
+                            rows.append((case, consumer, "SC-509", "digest",
                                      "sessions[%s].agents[%s].state" % (name, ref),
                                      "null", want, "equals", "OBSERVED", "OBSERVED",
                                      "%s declares state %s in fixed producer bytes; the "
                                      "session being stopped changes what is SELECTED, "
                                      "never what the record says" % (ref, want)))
-                    if contrib.get(ref) and ag.get("reason") in (None, ""):
+                    if contrib.get(ref) and ag.get("reason") in (None, "") \
+                            and "reason" not in _loss_amem:
                         rows.append((case, consumer, "SC-509c", "digest",
                                      "sessions[%s].agents[%s].reason" % (name, ref),
                                      "null", contrib[ref], "equals", "OBSERVED", "OBSERVED",
@@ -931,8 +2163,8 @@ def main():
                             ("attention_rank", "0", "1")):
                         rows.append((case, consumer, "SC-017g", "digest",
                                      "sessions[%s].%s" % (name, locus),
-                                     "null" if locus == "attention" else
-                                     ("false" if locus == "needs_attention" else "0"),
+                                     ("null" if sess.get(locus) is None
+                                      else str(sess.get(locus)).lower()),
                                      "%s when generated_at - %s <= threshold, %s when "
                                      "strictly greater" % (below, pending_ts, above),
                                      "relational", "OBSERVED", "OBSERVED",
@@ -963,71 +2195,130 @@ def main():
             for sess in ([] if scope_empty else (doc or {}).get("sessions", []) or []):
                 name = sess.get("name")
                 alerts = alert_contributions(template, name or "")
-                if name in loss:
-                    # THE QUALIFIER AND THE QUALIFIED TRAVEL TOGETHER, and both are
-                    # SESSION-GRAINED. The locus was `sessions[].degraded` with no
-                    # session name in it at all — a near-miss rather than a collision
-                    # only because every loss case here happens to carry exactly one
-                    # loss session (measured: 10 cases, one each). An unqualified
-                    # locus is not an address, which is the same defect the SC-509c
-                    # reason locus was widened to escape.
-                    rows.append((case, consumer, "SC-509b", "digest",
-                                 "sessions[%s].degraded" % name,
-                                 "present" if "degraded" in sess else "ABSENT",
-                                 "true", "equals", "OBSERVED", "OBSERVED",
-                                 "session %s: the manifest proves its meta absent or "
-                                 "unreadable, so this entry suffered ACTUAL read/parse "
-                                 "loss rather than sparsity" % name))
-                    # THE EXPECTED-MATCH HALF. Ruled 2026-08-24 (colead): owed-zero
-                    # means the exact tuple is required even when the bytes do not
-                    # move. Silence would leave the newly ruled population
-                    # requirement unscored and erase entitled-versus-coincidental
-                    # agreement — an incumbent that GUESSED false and a successor
-                    # that ESTABLISHES false agree in bytes and differ in
-                    # entitlement, and only a recorded tuple can tell them apart.
-                    rows.append((case, consumer, "SC-509b", "digest",
-                                 "sessions[%s].needs_attention" % name,
-                                 "false" if sess.get("needs_attention") is False
-                                 else str(sess.get("needs_attention")).lower(),
-                                 "false", "equals", "OBSERVED", "OBSERVED",
-                                 "session %s: needs_attention renders as an "
-                                 "ALWAYS-PRESENT PARTIAL-EVIDENCE INDICATOR — `false` "
-                                 "iff none remains established in those readable "
-                                 "facts. With `degraded: true`, NEITHER value proves "
-                                 "the exact final attention: missing facts may add, "
-                                 "clear, or supersede" % name))
-                    # THE OPTIONAL MEMBERS, which owed_loss dropped once and the
-                    # 28-loci reconciliation control existed to catch. `attention`
-                    # and `attention_rank` are exact-or-omitted: they render only
-                    # when the exact answer is established from readable sources,
-                    # and a loss session's roster is unenumerable, so missing facts
-                    # could add, clear or supersede the maximum. Both omit.
-                    for member, frozen_val in (("attention", sess.get("attention")),
-                                               ("attention_rank", sess.get("attention_rank"))):
-                        rows.append((case, consumer, "SC-509b", "digest",
-                                     "sessions[%s].%s" % (name, member),
-                                     "null" if frozen_val is None else str(frozen_val).lower(),
-                                     "ABSENT", "equals", "OBSERVED", "OBSERVED",
-                                     "session %s: the exact %s is UNPROVED under roster "
-                                     "loss — missing facts may add, clear, or supersede "
-                                     "the maximum — and the member is exact-or-omitted, "
-                                     "so it omits. `null` means read-and-quiet and "
-                                     "nothing else, which is exactly why it may not "
-                                     "stand in for \"not established\"" % (name, member)))
-                    # SC-405g, the TEMPORARY branch exception (colead, 2026-08-25):
-                    # `branch` ALONE keeps the predecessor projection until its
-                    # source-acquisition slice lands — ABSENT on a degraded entry
-                    # when NO branch observation exists, and an OBSERVED branch
-                    # renders regardless of degraded. Explicitly not precedent for
-                    # any other member, so nothing else reads this branch.
-                    if "branch" in sess and sess.get("branch") is None:
+                kinds = loss_kinds(case, name or "")
+                if kinds:
+                    # MAPPING-DRIVEN. The owed member set comes from the declared
+                    # SOURCE-TO-MEMBER mapping, which is read from the CONTRACT rows
+                    # — never from the serializer, and never from a copy carried by
+                    # the checker. Adding a member class here is one line in the
+                    # declaration and the emission follows.
+                    smem, _amem = owed_loss_members(
+                        kinds, duplicated_meta_keys(case, name or ""))
+                    dupk = duplicated_meta_keys(case, name or "")
+
+                    def _why(member):
+                        """The reason for THIS member, from its own owning kind."""
+                        k = member_owner(member, kinds, dupk)
+                        if k is None:      # `degraded` is owed by the whole set
+                            return " and ".join(KIND_REASON[x] for x in sorted(kinds))
+                        return KIND_REASON[k]
+                    for member in smem:
+                        # `degraded` is SUCCESSOR-ONLY and is never in a frozen
+                        # capture — its whole obligation is ABSENT -> true — so a
+                        # blanket present-in-capture guard silently deleted every
+                        # qualifier row this slice exists for. Measured: 14 became 0.
+                        if member != "degraded" and member not in sess:
+                            continue
+                        val = sess.get(member)
+                        rendered = "null" if val is None else str(val).lower()
+                        if member == "degraded":
+                            rows.append((case, consumer, "SC-509b", "digest",
+                                         "sessions[%s].degraded" % name,
+                                         "present" if "degraded" in sess else "ABSENT",
+                                         "true", "equals", "OBSERVED", "OBSERVED",
+                                         authority_signature(
+                                             "SC-509b", kinds,
+                                             "sessions[%s].degraded" % name,
+                                             "actual-loss-visible")
+                                         + " session %s: %s, so this entry suffered "
+                                         "ACTUAL loss rather than sparsity"
+                                         % (name, _why(member))))
+                        elif member == "needs_attention":
+                            rows.append((case, consumer, "SC-509b", "digest",
+                                         "sessions[%s].needs_attention" % name,
+                                         rendered, "false", "equals", "OBSERVED",
+                                         "OBSERVED",
+                                         "session %s: needs_attention renders as an "
+                                         "ALWAYS-PRESENT PARTIAL-EVIDENCE INDICATOR, and "
+                                         "it is owed here because %s — a loss that "
+                                         "REACHES THE ATTENTION INPUTS. Neither value "
+                                         "proves the exact final attention only when the "
+                                         "loss could affect those inputs; where exactness "
+                                         "is established despite UNRELATED loss the triad "
+                                         "stays exact, which is why a duplicated `goal` "
+                                         "owes no row here" % (name, _why("needs_attention"))))
+                            rows[-1] = rows[-1][:10] + (
+                                authority_signature(
+                                    "SC-509b", kinds,
+                                    "sessions[%s].needs_attention" % name,
+                                    "partial-evidence-from-readable-facts")
+                                + " " + rows[-1][10],)
+                        else:
+                            rows.append((case, consumer, "SC-509b", "digest",
+                                         "sessions[%s].%s" % (name, member),
+                                         rendered, "ABSENT", "equals", "OBSERVED",
+                                         "OBSERVED",
+                                         "session %s: %s is unreadable here — %s — and "
+                                         "an unreadable optional fact OMITS. `degraded` "
+                                         "is aggregate visibility and identifies nothing "
+                                         "per member; this member's own source is what "
+                                         "decides" % (name, member, _why(member))))
+                            rows[-1] = rows[-1][:10] + (
+                                authority_signature(
+                                    "SC-509b", {member_owner(member, kinds, dupk)}
+                                    if member_owner(member, kinds, dupk) else kinds,
+                                    "sessions[%s].%s" % (name, member),
+                                    "unreadable-member-omits")
+                                + " " + rows[-1][10],)
+                    # AGENT MEMBERS, emitted HERE rather than on the stopped path.
+                    # They rode the stopped-session branch, so a RUNNING event-loss
+                    # session got none of them — four occurrences owing ten rows
+                    # produced six, and only predicting the total first exposed it.
+                    # Membership belongs to the LOSS derivation; being stopped is a
+                    # different fact that happened to coincide.
+                    for ag in sess.get("agents") or []:
+                        aref = ag.get("ref")
+                        for member in _amem:
+                            if member not in ag:
+                                continue
+                            aval = ag.get(member)
+                            rows.append((case, consumer, "SC-509b", "digest",
+                                         "sessions[%s].agents[%s].%s" % (name, aref, member),
+                                         "null" if aval is None else str(aval).lower(),
+                                         "ABSENT", "equals", "OBSERVED", "OBSERVED",
+                                         "%s: %s — so this agent's %s is unreadable and "
+                                         "the member omits. A value parsed out of a "
+                                         "skipped-record ledger is not established, "
+                                         "however cleanly the surviving lines parse"
+                                         % (aref, _why(member), member)))
+                            rows[-1] = rows[-1][:10] + (
+                                authority_signature(
+                                    "SC-509b", kinds,
+                                    "sessions[%s].agents[%s].%s" % (name, aref, member),
+                                    "unreadable-member-omits")
+                                + " " + rows[-1][10],)
+                    # SC-405g / OC-P4-BRANCH-VALUE: PRESENCE ONLY. The value is
+                    # exempted by the register, so an exact-value row here would
+                    # partially score the very value the OC exempts — and two rows on
+                    # one locus is the second-authority class. One row, presence
+                    # predicate, across the WHOLE union rather than a hardcoded count.
+                    if "branch" in sess:
+                        bval = sess.get("branch")
                         rows.append((case, consumer, "SC-405g", "digest",
-                                     "sessions[%s].branch" % name,
-                                     "null", "ABSENT", "equals", "OBSERVED", "OBSERVED",
-                                     "session %s: no branch observation exists and the "
-                                     "entry is degraded, so rendering `null` would "
-                                     "masquerade an UNAVAILABLE source as a legitimate "
-                                     "empty — the trade SC-509b refuses" % name))
+                                     "sessions[%s].branch (presence)" % name,
+                                     "present", "ABSENT", "equals", "OBSERVED",
+                                     "OBSERVED",
+                                     "session %s: a degraded entry with no branch "
+                                     "observation omits the member; the VALUE is "
+                                     "exempted by OC-P4-BRANCH-VALUE, so only its "
+                                     "PRESENCE is scored here (frozen renders %s)"
+                                     % (name, "null" if bval is None else repr(bval))))
+                        rows[-1] = rows[-1][:10] + (
+                            authority_signature(
+                                "SC-405g", kinds,
+                                "sessions[%s].branch (presence)" % name,
+                                "temporary-presence-projection/value-unscored")
+                            + " " + rows[-1][10],)
                 for ag in sess.get("agents", []) or []:
                     ref = ag.get("ref")
                     if not ref or ag.get("reason") is not None:
@@ -1111,11 +2402,6 @@ def main():
                                  "true", "null", "all-of", "OBSERVED", sup,
                                  f"{n_true} agent(s) recorded true, but session unknown "
                                  "implies agent unknown"))
-            if listish and not digest and re.search(r"^\s{2}\S+:\S+\s", text, re.M):
-                rows.append((case, consumer, "SC-017r", "stdout", "agent health marker",
-                             "blank", "unambiguous unknown", "all-of", "OBSERVED", sup,
-                             "frozen renders alive and absent identically as a blank "
-                             "marker; unknown must be non-silent"))
 
         # SELECTOR-MISSING IS AN INDEPENDENT SUFFICIENT CAUSE OF `unknown`, and gating
         # the liveness obligations on `incomplete` hid that. The chain never touches
@@ -1129,57 +2415,50 @@ def main():
         # from the manifest and the frozen bytes even where the full row set is not.
         # Deliberately NOT relabelled SC-017l (no status transition is claimed) and
         # deliberately NOT a whole-row-set prediction.
-        if listish and sel_missing and not incomplete:
-            names = missing_selector_sessions(case)
-            shown = [n for n in names if re.search(r"\b%s\b" % re.escape(n), text)]
-            rows.append((case, consumer, "SC-017m",
-                         "digest" if digest else "stdout", "unknown row present",
-                         "present" if shown else "absent", "unknown", "present",
-                         "OBSERVED", "OBSERVED",
-                         "selector missing by construction; %s"
-                         % (", ".join(names) if names else "candidate")))
+        # ---- SC-017h / SC-017l / SC-017m / SC-017r, independently derived.
+        # The shipped rows were nameless and invocation-grained: an l locus of
+        # `status cell` with no candidate in it, an m locus of `(row set)`, an r
+        # marker naming no agent. None can satisfy the pinned CANDIDATE-GRAINED
+        # invariant -- "for every omitted durable candidate, its SC-017m
+        # view-membership contribution must PAIR with an SC-017l absent-to-unknown
+        # obligation AT THE SAME CANDIDATE IDENTITY" -- because a row carrying no
+        # identity has nothing to pair at. They are replaced, not deleted: the old
+        # occurrence keys are re-fed as EVIDENCE and every one is reconciled, while
+        # the cardinalities are deliberately NOT inherited.
+        rows.extend(emit_unknown_family(case, consumer, r["normalised_argv"], text,
+                                        r["surface"]))
+        # SC-017h shares r's fixed pre-value human identity. Stopped rows contribute
+        # source state ABSENT because their printer grammar has no state cell.
+        rows.extend(emit_agent_state(case, consumer, text, r["surface"]))
+        # SC-017r is emitted at fixed session + rendered ref + rendered short-sid
+        # identity, with exact semantic-value multiplicity for collisions.  The
+        # printer-schema parser preserves stopped membership while distinguishing
+        # its absent health cell from the stopped session_id field.
+        rows.extend(emit_agent_health(case, consumer, text, r["surface"]))
 
-        if listish and incomplete:
-            # TWO DISTINCT OBLIGATIONS, and which one applies is READ FROM THE BYTES
-            # rather than assumed. The first version of this generator emitted a
-            # `stopped`->`unknown` move for every unreachable listing; the gate
-            # rejected 140 of them because their capture contains no `stopped` at
-            # all. That is the label-versus-MEMBERSHIP distinction again: a default
-            # view on an unreachable server shows NOTHING, so nothing is relabelled —
-            # sessions that were absent become present as `unknown` (SC-017m).
-            n = len(re.findall(r'"status"\s*:\s*"stopped"', text)) if digest \
-                else len(re.findall(r"^\S+\s+stopped\b", text, re.M))
-            stream = "digest" if digest else "stdout"
-            if n:
-                rows.append((case, consumer, "SC-017l", stream,
-                             "sessions[].status" if digest else "status cell",
-                             "stopped", "unknown", "all-of", "OBSERVED", sup,
-                             f"{n} captured occurrence(s) must all move"))
-            else:
-                rows.append((case, consumer, "SC-017m", stream, "(row set)",
-                             "empty", "unknown rows present", "present", "OBSERVED", sup,
-                             "default view shows running then unknown; absent becomes present"))
-            # The SC-017o HUMAN DIAGNOSTIC is deliberately NOT emitted. It is earned
-            # only by an independently entitled enumeration with a final failure, and the
-            # previous derivation earned it from `unreachable(case)` — the ambient probe
-            # against the case's own live.sock, which is exactly the fact the ruling says
-            # cannot earn it. 172 obligations rested on that basis; none survives.
+        # The SC-017o HUMAN DIAGNOSTIC is deliberately NOT emitted. It is earned
+        # only by an independently entitled enumeration with a final failure, and the
+        # previous derivation earned it from `unreachable(case)` — the ambient probe
+        # against the case's own live.sock, which is exactly the fact the ruling says
+        # cannot earn it. 172 obligations rested on that basis; none survives.
 
     unproved.sort()
-    with open(UNPROVED, "w", encoding="utf-8") as fh:
-        fh.write("# SC-509c loci EXCLUDED for want of a carrier. Reported, never guessed.\n")
-        fh.write("# AT THE RULED GRAIN: (case, consumer, session, agent_ref, locus), the same\n")
-        fh.write("# address the accepted table uses. It was previously keyed without the\n")
-        fh.write("# session, so 34 rows mapped ambiguously to two same-attention sessions and\n")
-        fh.write("# their no-carrier claim could not be evaluated per address. An exclusion\n")
-        fh.write("# file below the ruled grain cannot substantiate its own claims.\n")
-        fh.write("# NOT a claim of impossibility: no carrier was FOUND by the search this\n")
-        fh.write("# generator performs — the agent's own state, a state event naming it as\n")
-        fh.write("# actor, and a producer-template alert naming it as target.\n")
-        fh.write("\t".join(["case", "consumer", "session", "agent_ref", "locus",
-                            "session_attention", "kind", "why"]) + "\n")
-        for x in unproved:
-            fh.write("\t".join(str(v) for v in x) + "\n")
+    unproved_lines = [
+        "# SC-509c loci EXCLUDED for want of a carrier. Reported, never guessed.\n",
+        "# AT THE RULED GRAIN: (case, consumer, session, agent_ref, locus), the same\n",
+        "# address the accepted table uses. It was previously keyed without the\n",
+        "# session, so 34 rows mapped ambiguously to two same-attention sessions and\n",
+        "# their no-carrier claim could not be evaluated per address. An exclusion\n",
+        "# file below the ruled grain cannot substantiate its own claims.\n",
+        "# NOT a claim of impossibility: no carrier was FOUND by the search this\n",
+        "# generator performs — the agent's own state, a state event naming it as\n",
+        "# actor, and a producer-template alert naming it as target.\n",
+        "\t".join(["case", "consumer", "session", "agent_ref", "locus",
+                    "session_attention", "kind", "why"]) + "\n",
+    ]
+    unproved_lines.extend("\t".join(str(v) for v in x) + "\n" for x in unproved)
+    unproved_text = "".join(unproved_lines)
+    atomic_write_text(UNPROVED, unproved_text)
 
     rows.sort(key=lambda x: (x[0], x[1], x[2], x[4]))
     print("  stopped-session facts: %d session(s) UNDECIDABLE attention (pending request, "
@@ -1192,20 +2471,47 @@ def main():
           % (len(req_excluded), req_zero, req_live))
     for k in sorted(req_excluded):
         print("    EXCLUDED  %s / %s" % k)
-    with open(OUT, "w", encoding="utf-8") as fh:
-        fh.write("\t".join(HDR) + "\n")
-        for x in rows:
-            fh.write("\t".join(str(v) for v in x) + "\n")
+    gap = added_roster_gap_population(p1)
+    contract_id = contract_blob()
+    out_text = "\t".join(HDR) + "\n" + "".join(
+        "\t".join(str(v) for v in x) + "\n" for x in rows)
+    gap_text = (
+        "# SC-017h's and SC-017r's duties over these agents are UNCHANGED (contract\n"
+        "# %s): what is absent is EVIDENCE, not obligation. Each session's meta is\n"
+        "# carried as a HASH and the captured agents output is scoped to its own capturing\n"
+        "# session, so no added row's roster is nameable from this corpus. Enumerated per\n"
+        "# occurrence so the gap has a size and a membership test and cannot absorb a\n"
+        "# session unnoticed.\n"
+        "case\tconsumer\tadded_session\n" % contract_id[:12]
+        + "".join("\t".join(member) + "\n" for member in sorted(gap))
+    )
+    out_sha256 = hashlib.sha256(out_text.encode("utf-8")).hexdigest()
+    gap_sha256 = hashlib.sha256(gap_text.encode("utf-8")).hexdigest()
+    unproved_sha256 = hashlib.sha256(unproved_text.encode("utf-8")).hexdigest()
+    fresh_text = (
+        "# Freshness relation — the SOURCE this derivation was made against.\n"
+        "# A lineage stamp says where an artifact came from; only a hash\n"
+        "# comparison says whether the source has MOVED since. FRESHNESS is also the\n"
+        "# tuple manifest and is published LAST, after atomic replacement of all three\n"
+        "# data members: OBLIGATIONS, UNOBSERVABLE-ADDED-ROSTER and SC-509C-UNPROVED.\n"
+        "field\tvalue\n"
+        f"contract_path\t{CONTRACT}\n"
+        f"contract_blob\t{contract_id}\n"
+        f"p1_rows\t{len(seen)}\n"
+        f"obligation_rows\t{len(rows)}\n"
+        f"obligations_sha256\t{out_sha256}\n"
+        f"added_roster_gap_sha256\t{gap_sha256}\n"
+        f"sc509c_unproved_sha256\t{unproved_sha256}\n"
+    )
 
-    with open(FRESH, "w", encoding="utf-8") as fh:
-        fh.write("# Freshness relation — the SOURCE this derivation was made against.\n")
-        fh.write("# A lineage stamp says where an artifact came from; only a hash\n")
-        fh.write("# comparison says whether the source has MOVED since.\n")
-        fh.write("field\tvalue\n")
-        fh.write(f"contract_path\t{CONTRACT}\n")
-        fh.write(f"contract_blob\t{contract_blob()}\n")
-        fh.write(f"p1_rows\t{len(seen)}\n")
-        fh.write(f"obligation_rows\t{len(rows)}\n")
+    # FRESHNESS is the commit marker for this four-file snapshot. UNPROVED was
+    # published above; OUT and GAP follow. Before FRESHNESS moves, a verifier seeing
+    # any new member rejects the old hashes; after it moves, all three bound content
+    # identities are already live. No member is ever truncated in place because
+    # every publication is same-directory temp + rename.
+    atomic_write_text(OUT, out_text)
+    atomic_write_text(GAP, gap_text)
+    atomic_write_text(FRESH, fresh_text)
 
     sup = collections.Counter(x[9] for x in rows)
     for k in sorted(sup): print("  support %-11s %4d" % (k, sup[k]))
