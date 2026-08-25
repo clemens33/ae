@@ -135,3 +135,31 @@ schema_version 2, SC-017o `inventory_complete` boolean presence.
 - `pre/` `post/` — verifier transcripts
 - `runner.py` — the successor driver
 - `exec.log` — child/tmux instrumentation
+
+---
+
+## Retrospective scope addendum (2026-08-25, colead audit; result bytes above unchanged)
+
+A retroactive instrument audit (gpt56sol:colead, direct probes against `runner.py`)
+narrowed what this run's labels CLAIM. The historical bytes stand; their scope is
+corrected here rather than relabelled, because relabelling without a rerun would
+assert a measurement nobody made.
+
+- The 395 executed digest rows carrying `stdout_cmp=pass` / `why=digest-scored` assert
+  **JSON envelope/type admissibility only** — `runner.py:150-182` validates
+  `schema_version=2`, `inventory_complete` bool, `generated_at` str, `sessions` list,
+  then records `base_n`/`suc_n` WITHOUT comparing them or any name/content. Probed
+  directly: an identical digest, a digest with one extra session, and a digest with
+  zero sessions all return `ok=True / digest-scored`. The label is not stdout or
+  digest parity.
+- The 813/949 obligation figure covers **enumerated obligations only**
+  (`score-obligations.py` scores listed rows; no unowned/default parity component
+  existed in this run).
+- Run 1 therefore establishes **no absence of unauthorized/unowned digest
+  differences**. Its own top-level handback said P1 parity was not closed (C7 NOT
+  MET, C16 PARTIAL); this addendum extends that honesty to the per-row labels, whose
+  wording claimed more than the instrument measured.
+- Digest default parity is a **required component of Run 2** (pre-obligation parity
+  gate: an unowned extra/missing session or member fails; only an exact OBSERVED
+  owner or registered open-choice row relaxes) and every parity conclusion is to be
+  re-derived under it.
