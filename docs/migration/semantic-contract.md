@@ -417,7 +417,14 @@ IS/conflict only. Conflict: fix-known-defect(#105).
 **SC-017l — unprovable liveness is first-class `unknown`.** Bucket 3 —
 fix-known-defect(#105). An unreachable, missing, or ambiguous recorded server; a failed
 server query; or an exact live name with missing/mismatched ownership evidence yields
-`unknown` — never `stopped`, never absence. `unknown` is a fact about liveness knowledge.
+`unknown` — never `stopped`.
+**Absence is equally a violation, and it belongs to SC-017m** (encoding ruling,
+colead 2026-08-25): this row owns the VALUE of an ALIGNED candidate — the
+classification change on a row that IS present — while a selected durable unknown
+ABSENT from the frozen identity, including same-name live-only coexistence, is a
+MEMBERSHIP fact under SC-017m. Both rows previously claimed the absent case; this
+cross-reference ends the overlap and changes nothing about what is owed, only which
+row owes it. `unknown` is a fact about liveness knowledge.
 It is orthogonal to SC-509b's `degraded`, which is a fact about record read/parse loss:
 either, both, or neither may hold. IS at 72c7293: VIOLATED — a failed ambient
 `list-sessions` produces zero running rows (ae:2692), and each stopped-side
@@ -583,7 +590,19 @@ Conflict: fix-known-defect(#105).
 
 **SC-017r — human list renders agent liveness without collapsing `unknown`.** Bucket 3
 — fix-known-defect(#105). Every selected roster agent's human row has three
-distinguishable, non-silent health renderings carrying SC-017p/q unchanged. The exact
+distinguishable, non-silent health renderings carrying SC-017p/q unchanged.
+**The owed POPULATION is every selected roster agent, and an UNATTEMPTED observation
+changes the VALUE rather than the membership** (ruling 2026-08-25, fable5:lead;
+colead no-contest). SC-017p/q's unattempted state is what the unknown rendering
+RENDERS, so a row is owed for an agent whose observation was never attempted exactly
+as for one whose observation failed — excluding unattempted would exclude the case
+this row's own violation narrative is about.
+**This includes rows the successor ADDS under SC-017m's membership obligations that
+the predecessor omitted.** Membership is SC-017m's grain and member VALUE is this
+row's, so a newly present row owes per-agent health correctness here. Stated
+explicitly because the contrary carve-out was tentatively held and then WITHDRAWN,
+and would otherwise be reinvented by a reader who assumes an added row is SC-017m's
+business alone. The exact
 alive/dead/unknown words or glyphs are OPEN CHOICE, but the unknown rendering must be
 unambiguously recognizable as unknown rather than absence or blank output. Agent
 `unknown` never silently renders as alive or dead, never disappears, never overwrites
