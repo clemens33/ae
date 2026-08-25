@@ -614,7 +614,61 @@ the predecessor omitted.** Membership is SC-017m's grain and member VALUE is thi
 row's, so a newly present row owes per-agent health correctness here. Stated
 explicitly because the contrary carve-out was tentatively held and then WITHDRAWN,
 and would otherwise be reinvented by a reader who assumes an added row is SC-017m's
-business alone. The exact
+business alone.
+**The identity this row addresses is a FIXED PRE-SUCCESSOR HUMAN PROJECTION, and VALUE
+bytes are no part of it** (ruling 2026-08-25, gpt56sol:colead + fable5:lead, on a
+two-derivation comparison that a name-free obligation could not have surfaced). The
+projection is the SESSION identity plus the agent display and identity fields the human
+projection RETAINS. It EXCLUDES health, and every independently mutable state, reason and
+attention cell — those are values this row and its neighbours may legitimately change, so
+keying identity on them would let a value edit silently re-partition the population. The
+ruled minimal form is per-session rendered NAME plus the health MULTISET.
+**The class is fixed BEFORE any health value is read.** Partitioning uses the projection
+and nothing else, so a health difference can never move an agent between classes — the
+population is settled first, and only then is the owed fact for each class determined.
+**Differing values do not manufacture roster identity.** Two agents rendering under one
+display name may carry DIFFERENT health and remain UNBOUND: nothing in the human bytes
+associates either value with either roster slot. A class of cardinality ONE is
+identity-addressed only where the projection actually establishes the roster association;
+where it does, health is owed at that identity exactly as before. Where the projection
+leaves two or more agents in one class, the owed fact for that class is an ORDER-FREE
+COUNT of semantic health values at EXACT multiplicity.
+**Order-freedom is owned HERE, by the evidence, and borrowed from nothing.** The human
+bytes carry no occurrence identity for such a class — the subline simply repeats the
+display name — so an obligation cannot be keyed on a distinction the evidence does not
+carry, and this row declines to invent one. No registered open choice is cited or relied
+on: the registered equal-name tie is session-candidate order and does not reach agent
+rows, and widening it by citation is exactly what this paragraph refuses. A display name
+was never an identity.
+**What that makes fail on THIS ROW'S SURFACE, and what it does not.** On the HUMAN
+surface: DROPPING one of the indistinguishable entries FAILS, and rendering the class at
+the WRONG MULTIPLICITY of health values FAILS. EXCHANGING two entries inside the class is
+NOT OBSERVED and therefore neutral — no obligation is keyed on a binding the evidence does
+not carry. That is a consequence of the evidence, not a tolerance granted, and not a
+licence for agent order anywhere else. A derivation may choose neither a LIST, which
+invents an order the bytes do not carry, nor a SET, which drops a real agent; both make
+their totals agree with something.
+**This row is HUMAN-ONLY and this grain does NOT reach the digest.** Digest agent
+multiplicity and health stay owned by the existing JSON rows and by default parity, never
+by SC-017r. The frozen digest is invoked here for ONE purpose only — to CORROBORATE that
+no cross-surface escape recovers the lost identity, its entries for such a class being
+byte-identical down to `session_id` — and corroborating evidence is not a scored surface.
+**The collision stays a frozen DEFECT and this grain is not its licence.** Naming the
+count is how the obligation remains checkable while indistinguishable agents exist; it
+ratifies nothing about rendering them that way.
+**EMPIRICAL COVERAGE GAP — the rosters of rows SC-017m ADDS are not observable in this
+corpus.** The paragraph above owes their agents' health and that duty stands UNCHANGED;
+what is absent is evidence, not obligation. Each session's meta is carried as a HASH and
+the captured agents output is scoped to its own capturing session, so no added row's
+roster is recoverable here. The gap is named PER KNOWN ADDED SESSION rather than as one
+blanket hole, so it stays enumerable in the obligation table and cannot quietly absorb a
+session nobody noticed. This is a stated limit on what the corpus can EXERCISE — never a
+normative exclusion, and never a claim that the exercised population is complete.
+Occurrence counts live in the obligation table, never here.
+**The two are DIFFERENT KINDS and must not be merged.** An indistinguishable collision is
+ADDRESSABLE, as an order-free count, and is owed. An added row's roster is not observable
+at all, and is declared. Collapsing them would either mint obligations for agents no
+evidence can name, or excuse obligations that are perfectly checkable. The exact
 alive/dead/unknown words or glyphs are OPEN CHOICE, but the unknown rendering must be
 unambiguously recognizable as unknown rather than absence or blank output. Agent
 `unknown` never silently renders as alive or dead, never disappears, never overwrites
