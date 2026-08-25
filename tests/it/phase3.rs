@@ -1919,9 +1919,17 @@ fn health_cell(alive: Option<bool>) -> String {
         .lines()
         .find(|line| line.starts_with(char::is_whitespace) && line.contains("cl:lead"))
         .unwrap_or_else(|| panic!("the agent row must render for alive={alive:?}"));
-    // The cell after the agent reference. Which column and how wide is layout,
-    // and layout is not this gate's business.
-    row.split_whitespace().nth(1).unwrap_or_default().to_owned()
+    // The cell after the agent reference AND its short session id. Which column
+    // and how wide is layout, and layout is not this gate's business — but WHICH
+    // cell is, so the two skipped fields are named rather than counted. The id
+    // sits between them because frozen rendered it on both agent grammars
+    // (ae@72c7293:4254 running, ae:4299 stopped) and our table had omitted it;
+    // an unnamed `nth(1)` silently returned that id for every health value and
+    // collapsed all three of this gate's cells into one.
+    let mut cells = row.split_whitespace();
+    let _reference = cells.next();
+    let _short_session_id = cells.next();
+    cells.next().unwrap_or_default().to_owned()
 }
 
 #[test]
@@ -2015,12 +2023,12 @@ fn sc_017q_the_entry_point_reports_unknown_agents_rather_than_dead_ones() {
         .find(|line| line.starts_with(char::is_whitespace) && line.contains("cl:lead"))
         .unwrap_or_else(|| panic!("the agent row must be rendered: {human}"));
     assert_eq!(
-        agent_row.split_whitespace().nth(1),
+        agent_row.split_whitespace().nth(2),
         Some(null_cell.as_str()),
         "an unobservable agent renders as the product's UNKNOWN cell: {human}"
     );
     assert_ne!(
-        agent_row.split_whitespace().nth(1),
+        agent_row.split_whitespace().nth(2),
         Some(dead_cell.as_str()),
         "and never as its dead cell: {human}"
     );

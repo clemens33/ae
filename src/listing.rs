@@ -364,6 +364,14 @@ pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
             out.push_str("  ");
             out.push_str(&agent.reference);
             out.push('\t');
+            // Frozen rendered the short session id on BOTH grammars — running
+            // (ae@72c7293:4254) and stopped (ae:4299) — and our table omitted it
+            // entirely, which run 2 semantic-fails independently of every health
+            // or state question. It sits between the reference and the semantic
+            // fields, and it is the SAME helper the digest consumes so the two
+            // surfaces cannot drift.
+            out.push_str(agent.display_session_id());
+            out.push('\t');
             // Per-agent HEALTH. `dead` here is the boolean `alive: false` — a
             // pane fact — and is not SC-980's `attn:dead` alert, which reaches
             // the session marker above by way of SC-017g's rollup.
@@ -1330,8 +1338,21 @@ mod tests {
 
         assert!(human.contains("partial-evidence-table\trunning"));
         assert!(!human.contains("attn:blocked"));
+        // The dash in the id cell is the RULED outcome for an arm that NO standing
+        // authority reaches. SC-509 governs this member's PRESENCE and disclaims
+        // value authority in its own next sentence — what a member's legitimate
+        // empty value IS stays with the row that owns it. Default parity would
+        // decide the value, but the governed corpus carries a MEASURED ZERO of
+        // two-field entries, so parity has no specimen here either. Frozen's
+        // `_parse_agent_entry` leaks the agent NAME into the session id when the
+        // entry carries only two fields: `${rest#*:}` has nothing to match without
+        // a second colon, so it returns `rest` whole — measured, not read.
+        // The dated ruling therefore FILLS that gap; it excepts no default,
+        // because on this arm there was none to except.
+        // Authority: SC-509's dated in-row two-field `session_id` ruling
+        // (fix-known-defect, 2026-08-25) + ae@72c7293:3150-3161.
         assert!(
-            human.contains("  claude:lead\tunknown\tunknown\n"),
+            human.contains("  claude:lead\t-\tunknown\tunknown\n"),
             "the malformed event hides stale blocked state behind the human unknown: {human}"
         );
         assert!(!human.contains("\tblocked\n"));
@@ -1345,6 +1366,82 @@ mod tests {
             panic!("the readable roster remains an array");
         };
         assert_eq!(agents[0].get("state"), None);
+        // THE SAME two-field entry on the machine surface, from the same parsed
+        // fixture: the member is PRESENT and is the string dash — never `null`,
+        // never the leaked name. One fixture covering both surfaces is what stops
+        // them drifting apart unnoticed, which is the defect this slice repaired.
+        assert_eq!(
+            agents[0].get("session_id"),
+            Some(&json::Value::Str("-".to_owned()))
+        );
+    }
+
+    /// Frozen rendered the short session id on BOTH agent grammars — running at
+    /// ae@72c7293:4254 and stopped at ae:4299 — and our table omitted it
+    /// entirely, which run 2 semantic-fails independently of every health or
+    /// state question. Its only captured non-dash specimen is on a STOPPED
+    /// session: arms/A1/c05-recover-ref-ro renders `fake:lead` with `11111111`
+    /// under `ta1c`/stopped, and the same case's digest carries those eight
+    /// characters. Dash specimens exist on every status.
+    ///
+    /// This does NOT reproduce frozen's stopped omission of health and state:
+    /// all four facts are owed on every status, so the row is asserted whole.
+    #[test]
+    fn the_agent_row_carries_frozen_s_short_session_id_on_every_status() {
+        for status in [Status::Running, Status::Stopped, Status::Unknown] {
+            let mut session = SessionEntry::new("ta1c", status);
+            session.agents = vec![AgentEntry {
+                reference: "fake:lead".to_owned(),
+                alias: "fake".to_owned(),
+                name: "lead".to_owned(),
+                session_id: Some("11111111".to_owned()),
+                alive: Some(false),
+                state: Some("working".to_owned()),
+                reason: None,
+            }];
+            let rendered = table(&[&session]);
+            assert!(
+                rendered.contains("  fake:lead\t11111111\tdead\tworking\n"),
+                "the captured specimen renders on {status:?}: {rendered}"
+            );
+
+            session.agents[0].session_id = None;
+            let rendered = table(&[&session]);
+            assert!(
+                rendered.contains("  fake:lead\t-\tdead\tworking\n"),
+                "an absent id is frozen's dash on {status:?}: {rendered}"
+            );
+        }
+    }
+
+    /// The id was inserted INTO the row that already carried SC-017h's declared
+    /// state and SC-017r's health, so this asserts nothing was displaced: four
+    /// cells, in the ruled order, reference first and the id between it and the
+    /// semantic fields. An insertion that shifted a cell would still `contains`
+    /// its way to green against a looser assertion.
+    #[test]
+    fn the_short_session_id_displaces_no_h_r_noun() {
+        let mut session = SessionEntry::new("order", Status::Running);
+        session.agents = vec![AgentEntry {
+            reference: "fake:lead".to_owned(),
+            alias: "fake".to_owned(),
+            name: "lead".to_owned(),
+            session_id: Some("e795c9e9-1c2b-4a3d-8e5f-0a1b2c3d4e5f".to_owned()),
+            alive: Some(true),
+            state: Some("blocked".to_owned()),
+            reason: None,
+        }];
+        let rendered = table(&[&session]);
+        let row = rendered
+            .lines()
+            .find(|line| line.contains("fake:lead"))
+            .unwrap_or_else(|| panic!("the agent row renders: {rendered}"));
+        let cells: Vec<&str> = row.trim_start().split('\t').collect();
+        assert_eq!(
+            cells,
+            ["fake:lead", "e795c9e9", "alive", "blocked"],
+            "reference, short id, health, declared state — in that order: {rendered}"
+        );
     }
 
     #[test]
@@ -1359,10 +1456,18 @@ mod tests {
             state: Some("blocked".to_owned()),
             reason: None,
         }];
-        assert!(table(&[&session]).contains("  claude:lead\talive\tblocked\n"));
+        // The short session id now sits between the reference and the semantic
+        // fields, on every status, because frozen rendered it on both grammars
+        // (ae@72c7293:4254 running, ae:4299 stopped) and our table omitted it.
+        // This fixture records no id, so the cell is frozen's dash.
+        assert!(table(&[&session]).contains("  claude:lead\t-\talive\tblocked\n"));
 
         session.agents[0].state = None;
-        assert!(table(&[&session]).contains("  claude:lead\talive\t-\n"));
+        // TWO dashes, two different facts: the first is an absent session id,
+        // the second is SC-017h's exact no-declaration. They are told apart by
+        // POSITION, exactly as frozen told them apart — its stopped grammar put
+        // the id where its running grammar put the state default.
+        assert!(table(&[&session]).contains("  claude:lead\t-\talive\t-\n"));
     }
 
     #[test]

@@ -134,7 +134,56 @@ pub struct AgentEntry {
     pub reason: Option<Reason>,
 }
 
+/// Frozen's placeholder for an agent whose session id is absent or unresolved.
+const ABSENT_SESSION_ID: &str = "-";
+
+/// The literal an unresolved id is recorded as, before capture succeeds.
+const PENDING_SESSION_ID: &str = "pending";
+
+/// Frozen's short-id width, in CHARACTERS (ae@72c7293:3143, 3158).
+const SHORT_SESSION_ID_CHARS: usize = 8;
+
 impl AgentEntry {
+    /// The DISPLAY session id — frozen's short form, shared by BOTH surfaces.
+    ///
+    /// Frozen bash normalised at parse time (`_parse_agent_entry`,
+    /// ae@72c7293:3150-3161): `_AGENT_SID` starts as `-` and becomes
+    /// `${sid:0:8}` only when the recorded id is non-empty AND not the literal
+    /// `pending`. So `None`, empty and `pending` are one rule with three inputs.
+    ///
+    /// The truncation is CHARACTER-based, not byte-based. ae:3143 calls the
+    /// result an "8-char short session id", and bash substring expansion counts
+    /// characters — measured on a multibyte string, `${s:0:8}` yields eight
+    /// characters. This slices on a char boundary for that reason, so no ASCII
+    /// grammar is asserted for a recorded id that arrives from a foreign tool.
+    ///
+    /// The RAW field is preserved: normalization is a rendering concern and
+    /// resume/capture logic still needs the full id. One helper, two call sites,
+    /// so the table and the digest cannot drift — the defect this replaces was
+    /// exactly that drift, the digest emitting the raw value or `null` where
+    /// frozen emitted a short id or a dash.
+    /// Crate-internal: this is a PRESENTATION helper, and the two renderers that
+    /// consume it both live here. Publishing it would put a rendering decision on
+    /// the crate's API surface. What it produces is RULED PRESENTATION, shared by
+    /// the arms frozen captured and by the fix-known-defect arm it deliberately
+    /// does NOT reproduce, so it retires when the presentation contract changes —
+    /// never when some reproduced behaviour does, and never as a caller's shape.
+    #[must_use]
+    pub(crate) fn display_session_id(&self) -> &str {
+        let Some(id) = self.session_id.as_deref() else {
+            return ABSENT_SESSION_ID;
+        };
+        if id.is_empty() || id == PENDING_SESSION_ID {
+            return ABSENT_SESSION_ID;
+        }
+        match id.char_indices().nth(SHORT_SESSION_ID_CHARS) {
+            // The ninth character's offset, so the slice is the first eight —
+            // and it is a char boundary by construction, never a byte cut.
+            Some((end, _)) => &id[..end],
+            None => id,
+        }
+    }
+
     /// This agent as SC-509's object.
     #[must_use]
     pub fn to_json(&self) -> Value {
@@ -162,7 +211,15 @@ impl AgentEntry {
         // (SC-405k — membership is roster-defined), so the
         // question "was this member readable" is answered yes by the entry's
         // existence. A session that lost its roster renders no agent entries.
-        push_str_or_null(&mut fields, "session_id", self.session_id.as_deref());
+        // Frozen normalised this at parse time and rendered a DASH for an absent
+        // or pending id — on both surfaces, never `null`, never a full id, never
+        // the literal `pending`. Measured over the frozen digest captures: every
+        // agent id is either `-` or an eight-character short id. So this field is
+        // always a STRING here; `push_str_or_null` was the drift.
+        fields.push((
+            "session_id".to_owned(),
+            Value::str(self.display_session_id()),
+        ));
         // Present even when null — see the field's own docs.
         fields.push((
             "alive".to_owned(),
@@ -620,7 +677,108 @@ fn push_num_or_null(fields: &mut Vec<(String, Value)>, key: &str, value: Option<
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentEntry, Digest, SCHEMA_VERSION, SessionEntry, Status};
+    use super::{ABSENT_SESSION_ID, AgentEntry, Digest, SCHEMA_VERSION, SessionEntry, Status};
+    /// Frozen normalised the agent session id at PARSE time and both of its
+    /// surfaces rendered the normalised value: an eight-character prefix, or a
+    /// dash for absent and `pending`. Never `null`, never the raw id, never the
+    /// literal `pending` — measured over the governed frozen digest population,
+    /// where every agent id is a dash or an eight-character short id.
+    ///
+    /// Our digest emitted the RAW field or `null`, so a meta holding a full UUID
+    /// rendered the UUID and a meta holding `pending` rendered `pending`. The
+    /// normalisation is a rendering concern, so the raw field stays intact and
+    /// one helper feeds both surfaces.
+    #[test]
+    fn sc_509_the_agent_session_id_renders_frozen_s_short_form_never_null_or_raw() {
+        let cases = [
+            (None, "-", "an absent id is frozen's dash, not JSON null"),
+            (
+                Some(""),
+                "-",
+                "an empty recorded id normalises like an absent one",
+            ),
+            (
+                Some("pending"),
+                "-",
+                "the literal `pending` is not a session id",
+            ),
+            (
+                Some("11111111"),
+                "11111111",
+                "a captured eight-char id is unchanged",
+            ),
+            (
+                Some("e795c9e9-1c2b-4a3d-8e5f-0a1b2c3d4e5f"),
+                "e795c9e9",
+                "a full uuid is truncated to frozen's eight characters",
+            ),
+            (
+                Some("abc"),
+                "abc",
+                "an id shorter than eight characters is whole",
+            ),
+        ];
+        for (recorded, want, why) in cases {
+            let agent = AgentEntry {
+                reference: "fake:lead".to_owned(),
+                alias: "fake".to_owned(),
+                name: "lead".to_owned(),
+                session_id: recorded.map(ToOwned::to_owned),
+                alive: Some(true),
+                state: None,
+                reason: None,
+            };
+            assert_eq!(agent.display_session_id(), want, "{why}");
+            // The RAW field is untouched: resume and capture logic still need it.
+            assert_eq!(agent.session_id.as_deref(), recorded, "raw field preserved");
+            let rendered = agent.to_json().render();
+            assert!(
+                rendered.contains(&format!(r#""session_id":"{want}""#)),
+                "{why}: {rendered}"
+            );
+            assert!(
+                !rendered.contains(r#""session_id":null"#),
+                "the digest never spells this field null: {rendered}"
+            );
+        }
+    }
+
+    /// Frozen truncated with `${sid:0:8}`, and bash substring expansion counts
+    /// CHARACTERS — its own comment at ae@72c7293:3143 says "8-char short session
+    /// id". A byte slice at index 8 would panic mid-character on a multibyte id,
+    /// and an id recorded by a foreign tool is not a proven-ASCII grammar, so the
+    /// boundary is found rather than assumed.
+    #[test]
+    fn the_short_session_id_truncates_on_a_character_boundary() {
+        let mut agent = AgentEntry {
+            reference: "fake:lead".to_owned(),
+            alias: "fake".to_owned(),
+            name: "lead".to_owned(),
+            session_id: Some(
+                "\u{3b1}\u{3b1}\u{3b1}\u{3b1}\u{3b1}\u{3b1}\u{3b1}\u{3b1}\u{3b2}\u{3b2}".to_owned(),
+            ),
+            alive: None,
+            state: None,
+            reason: None,
+        };
+        let short = agent.display_session_id();
+        assert_eq!(
+            short.chars().count(),
+            8,
+            "eight CHARACTERS, not eight bytes"
+        );
+        assert_eq!(short.len(), 16, "those eight characters are sixteen bytes");
+        assert!(
+            !short.contains('\u{3b2}'),
+            "the ninth character is dropped whole"
+        );
+
+        // A multibyte id shorter than the boundary is returned intact rather
+        // than sliced at a byte index that is not a character boundary.
+        agent.session_id = Some("\u{3b1}\u{3b2}".to_owned());
+        assert_eq!(agent.display_session_id(), "\u{3b1}\u{3b2}");
+    }
+
     use crate::attention::Reason;
     use crate::json;
     use crate::time::Timestamp;
@@ -1013,7 +1171,20 @@ mod tests {
             ]),
             "every documented agent member is present: {value}"
         );
-        for key in ["session_id", "alive", "state", "reason"] {
+        // `session_id` is the ONE member here that is never null. Frozen
+        // normalised it at parse time and rendered a DASH for an absent or
+        // `pending` id, on both surfaces — the governed frozen population is 842
+        // dashes plus 2 eight-character ids across 844 agent entries, with zero
+        // nulls, zero full ids and zero `pending`. This assertion previously
+        // demanded `null` and so locked in the divergence rather than the
+        // contract; the expectation moved because the frozen evidence says so,
+        // not because the code changed.
+        assert_eq!(
+            value.get("session_id"),
+            Some(&json::Value::Str(ABSENT_SESSION_ID.to_owned())),
+            "an absent session id is frozen's dash, never null: {value}"
+        );
+        for key in ["alive", "state", "reason"] {
             assert_eq!(value.get(key), Some(&json::Value::Null), "{key} is null");
         }
     }
