@@ -1337,41 +1337,72 @@ def state_carrier_control():
     return 0 if ok else 1
 
 
-def sole_session_six_field_control():
-    """SEED 78 — A4's real sole-session pane shape is not an empty enumeration.
+def sole_session_six_field_control(generator_path=None, verifier_path=None):
+    """SEED 78 — a roster-bound six-field pane is unknown for the named cause.
 
-    The fixed rows are `%pane|ref|slot|command|pid|geometry`; session is supplied by
-    the snapshot's singleton `## sessions` section and pane_dead is genuinely absent.
-    Both roster refs therefore match exact panes, but SC-017s cannot prove them alive:
-    the result is q/unknown, never p/dead from a parser-created empty pane map.
+    A4 proves the real frozen grammar, but its candidates have no fixed roster and
+    therefore route through `pane-slot-unbound` before pane parsing can matter.  This
+    source-shaped fixture keeps A4's `%pane|ref|slot|command|pid|geometry` record and
+    singleton sessions section while adding an explicit fixed `main` roster member.
+    Both derivations must bind that exact slot, retain the pane with absent pane_dead,
+    and derive `pane-live-predicate-unproved` -> unknown.  Optional module paths let
+    the focused branch-deletion control prove each derivation fails by name.
     """
     import importlib.util as iu
 
     def load(name, path):
-        spec = iu.spec_from_file_location(name, os.path.join(HERE, path))
+        source = path if os.path.isabs(path) else os.path.join(HERE, path)
+        spec = iu.spec_from_file_location(name, source)
         mod = iu.module_from_spec(spec)
         spec.loader.exec_module(mod)
         return mod
 
-    case, consumer = "arms/A4/c01-status-live-live", "list"
-    g, v = load("g78", "obligations.py"), load("v78", "verify-obligations.py")
-    text = g.body(case, consumer)
-    expected = {
-        ("agents[ta4c01statuslive:fake:lead:-].health", "blank",
-         "unambiguous unknown"),
-        ("agents[ta4c01statuslive:fake:worker:-].health", "blank",
-         "unambiguous unknown"),
-    }
-    generated = {(row[4], row[5], row[6])
-                 for row in g.emit_agent_health(case, consumer, text, "ae list")}
-    verified = {(row[2], row[3], row[4])
-                for row in v.owed_agent_health_v(case, consumer, text, "ae list")}
-    results = {
-        "generator-six-field-pane-not-empty": generated == expected,
-        "verifier-six-field-pane-not-empty": verified == expected,
-        "six-field-no-false-dead": all(to != "dead"
-                                        for _locus, _frm, to in generated | verified),
-    }
+    results = {}
+    with tempfile.TemporaryDirectory(prefix="rp-six-field-") as td:
+        case, text = _source_case(
+            td, {"six": "/sock/q"}, "/sock/q",
+            [("six", "fake:lead", "main")],
+            [("six", "fake:lead", "-", "working", "")],
+            rosters={"six": [("main", "fake:lead", "pending")]},
+        )
+        topology = os.path.join(td, case, "tmux.before.txt")
+        with open(topology, "w", encoding="utf-8") as f:
+            f.write("## panes\n%0|fake:lead|main|aefake|123|80x24\n"
+                    "## sessions\nsix|1\n")
+
+        modules = (
+            ("generator", load("g78", generator_path or "obligations.py"),
+             "fixed_roster_slots", "topology_observation", "candidate_causes",
+             "agent_health_target", "emit_agent_health"),
+            ("verifier", load("v78", verifier_path or "verify-obligations.py"),
+             "gate_fixed_roster_slots", "gate_topology_observation",
+             "gate_candidate_causes", "gate_health_target", "owed_agent_health_v"),
+        )
+        expected_row = {
+            ("agents[six:fake:lead:-].health", "blank", "unambiguous unknown")
+        }
+        expected_panes = {"six": [("main", "fake:lead", "aefake", None)]}
+        expected_target = ("unambiguous unknown",
+                           ("pane-live-predicate-unproved",), "OBSERVED")
+        for label, mod, roster_fn, topology_fn, causes_fn, target_fn, emit_fn in modules:
+            mod.SRC = td
+            roster = getattr(mod, roster_fn)(case, "list", "six")
+            observed = getattr(mod, topology_fn)(case, "list", "/sock/q")
+            causes = getattr(mod, causes_fn)(case, "list")
+            target = getattr(mod, target_fn)(
+                case, "list", "six", "main", causes)
+            rows = getattr(mod, emit_fn)(case, "list", text, "ae list")
+            shaped = ({(row[4], row[5], row[6]) for row in rows}
+                      if label == "generator" else
+                      {(row[2], row[3], row[4]) for row in rows})
+            results[label + "-six-field-roster-slot"] = (
+                roster == [("main", "fake:lead", "-")])
+            results[label + "-six-field-pane-bound"] = (
+                observed == ("success", {"six"}, expected_panes))
+            results[label + "-six-field-cause"] = target[1] == expected_target[1]
+            results[label + "-six-field-target"] = target[0] == expected_target[0]
+            results[label + "-six-field-support"] = target[2] == expected_target[2]
+            results[label + "-six-field-row"] = shaped == expected_row
     ok = all(results.values())
     print("six-field-pane  %s  %s" % (
         "; ".join("%s=%s" % item for item in sorted(results.items())),
