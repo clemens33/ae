@@ -35,7 +35,7 @@ REPO = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
 P1_BLOB = "8e3c9ec0b031f4947260d4e0327bad562a10fdcd"
 P2_BLOB = "29db943aa85319534301332052105ba16df03b4d"
 P3_BLOB = "8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c"
-REGISTER_BLOB = "2da4fb86933a6b8edee15fd61596d6f53fa6c550"
+REGISTER_BLOB = "931773e99e30bea49d0303550cd08d68122a5054"
 REGISTER_PATH = "docs/migration/p1-phase4-open-choices.tsv"
 OCC_PATH_DEFAULT = os.path.join(HERE, "p1-phase4-open-choice-occurrences.tsv")
 CONTRACT_PATH = "docs/migration/semantic-contract.md"
@@ -164,14 +164,25 @@ def read_tsv(path: str) -> tuple[str, list[list[str]]]:
     return rows[0][0] + ("\t" + "\t".join(rows[0][1:]) if len(rows[0]) > 1 else ""), rows[1:]
 
 
-def parse_register(path: str) -> tuple[str, dict[str, list[str]]]:
+def parse_register(path: str) -> tuple[str, dict[str, list[str]], list[tuple[list[str], list[str]]]]:
+    """Parse the register, and report ids claimed more than once.
+
+    A dict keyed by CHOICE_ID silently keeps the LAST row for a repeated id, so
+    a duplicate does not merely lose a row: the surviving row wears the dropped
+    row's id, ORPHAN cannot fire because the id is still present, and the only
+    visible failures land on the healthy occurrence rows that cite the dropped
+    surface.  Returning the collisions lets the caller name the real defect.
+    """
     header, rows = read_tsv(path)
-    by_id = {}
+    by_id: dict[str, list[str]] = {}
+    duplicates: list[tuple[list[str], list[str]]] = []
     for row in rows:
         if not row or row[0].startswith("#"):
             continue
+        if row[0] in by_id:
+            duplicates.append((by_id[row[0]], row))
         by_id[row[0]] = row
-    return header, by_id
+    return header, by_id, duplicates
 
 
 def parse_occurrences(path: str) -> tuple[str, list[dict]]:
@@ -239,7 +250,17 @@ def verify(
     if not contract_blob:
         fail(ids, "STALE-BLOB", "contract blob missing")
 
-    header, register = parse_register(register_path)
+    header, register, register_duplicates = parse_register(register_path)
+    for first, later in register_duplicates:
+        fail(
+            ids, "DUPLICATE-CHOICE-ID",
+            f"register id {first[0]} is claimed twice: "
+            f"{first[2] if len(first) > 2 else '?'}/{first[3] if len(first) > 3 else '?'} "
+            f"then {later[2] if len(later) > 2 else '?'}/{later[3] if len(later) > 3 else '?'}; "
+            "the later row REPLACED the earlier one under that id, so any "
+            "OMITTED or ORPHAN line for it is a consequence of this defect, "
+            "not a defect in the occurrences table",
+        )
     if header != REGISTER_HEADER:
         fail(ids, "HEADER", f"register header mismatch: {header!r}")
 

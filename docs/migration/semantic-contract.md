@@ -1308,13 +1308,42 @@ aggregate visibility and identifies nothing per member. It is NOT precedent for 
 other member: every other optional member's presence is decided by its own source's
 provenance, with no appeal to this paragraph.
 **While the exception stands, `branch` VALUE is UNSCORED across the P1 DIGEST
-comparison under the registered open choice `OC-P4-BRANCH-VALUE`.** Prose alone
+comparison under `OC-P4-BRANCH-VALUE` and across the P1 HUMAN comparison under
+`OC-P4-HUMAN-BRANCH-VALUE`.** Prose alone
 would not carry it: the closed phase-4 open-choices register is the only
 product-output exclusion the gates honour, so an exemption asserted here and
-unregistered there is residual divergence. Scoped to the digest comparison
-deliberately — whether `branch` appears in the human-table P1 comparison is being
-measured separately, and this clause widens by amendment with that measurement as
-its authority rather than by assumption now. The successor renders `null` on a healthy entry
+unregistered there is residual divergence. The human surface joined by amendment
+(colead measurement, 2026-08-25) on the authority this clause promised, not by
+assumption. TWO CHOICES AND TWO REGISTER ROWS, one per surface, under two DISTINCT
+ids — two populations, two predicates, two names, because a folded count cannot say
+which surface moved. The ids are distinct rather than one id spanning two rows
+because a register id is unique by gate criterion 8: two rows sharing one id is a
+schema the register cannot hold, and the digest id is preserved unchanged so
+existing digest obligations do not churn.
+**The partition is ENUMERATED BEFORE THE SUCCESSOR RUNS, at the session-subline
+occurrence grain.** Among the fixed P1 human occurrences whose FROZEN subline
+carries a `git:` atom, the contract-derived presence-loss set MUST omit that atom,
+and its COMPLEMENT is the VALUE set, which MUST render exactly one syntactically
+valid, NONEMPTY `git:<value>` atom. An occurrence whose frozen subline carries NO
+`git:` atom is in NEITHER set and MUST remain atom-free under default parity, which
+this row does not govern. Membership is derived from the frozen corpus plus this
+row's temporary projection rule — both fixed before any successor output exists.
+**ACTUAL OUTPUT NEVER SELECTS ITS CLASS.** A rule reading the class off what the
+successor rendered would let a defective successor choose which obligation it owes:
+omit the atom and be scored a presence move, emit one and be scored an unscored
+value. The class is an INPUT to scoring, never an output of it. The occurrence sets
+live in the register, never here.
+**ATOM SHAPE is not the value, and only the VALUE is open.** Which bytes the
+required atom carries is the open choice; that it is present, single and nonempty
+across the VALUE set is not. Mandating a particular placeholder here would
+contradict declaring the value open in the same breath — the successor's current
+placeholder is implementation EVIDENCE, not a mandated byte, and it becomes one
+only if the open choice is deliberately narrowed by its own amendment.
+**What the register must STILL assert.** The exclusion is the value bytes and
+nothing else, so BOTH choices' `STILL_REQUIRED` facts carry the atom-shape rule
+above on the human side and this row's presence discipline on the digest side. An
+implementation that dropped the atom from a non-loss row, emitted an empty one, or
+emitted more than one fails the register with the value still open. The successor renders `null` on a healthy entry
 because no observation exists to render — production constructs its runtime with
 `branch: None` unconditionally, and only the acquisition slice changes that. The
 predecessor renders the branch its live acquisition recorded. Neither is scored
@@ -1336,9 +1365,10 @@ Unscored is the only reading that is true now and still true afterwards.
 **RETIREMENT TRIGGER — the commit that wires this row's watchdog-status and
 git-fallback acquisition.** From that identity onward, `branch` presence is governed
 solely by branch-source provenance and `degraded` MUST NOT select it. This paragraph
-AND the `OC-P4-BRANCH-VALUE` register row retire together with that commit, as ONE
-unit, and neither is to be re-derived. Retiring either alone leaves the other
-asserting a state that no longer exists.
+AND BOTH register rows — `OC-P4-BRANCH-VALUE` and `OC-P4-HUMAN-BRANCH-VALUE` —
+retire together with that commit, as ONE unit, and none of the three is to be
+re-derived. Retiring any one alone leaves the others asserting a state that no
+longer exists.
 Authority: commands.md:124-129 + colead ruling 2026-08-25. Empirical: pending.
 Conflict: none. **classified_by: both seats, 2026-08-20; temporary exception
 RE-MARKED 2026-08-25 — gpt56sol:colead ruling, drafted opus5:reason2.**

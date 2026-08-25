@@ -5,10 +5,18 @@ IT NEVER MUTATES THE TRACKED REGISTER OR OCCURRENCES TABLE. Seeds are written
 to an isolated temp directory and the verifier is pointed at them with
 --register / --occurrences --allow-register-drift.
 
-Criterion 8 names two failure directions and requires a seed of each:
+Criterion 8 names three failure directions and requires a seed of each:
 
-  OMITTED  a product-output locus with no exact register row
-  ORPHAN   a register row with no supporting occurrence
+  OMITTED              a product-output locus with no exact register row
+  ORPHAN               a register row with no supporting occurrence
+  DUPLICATE-CHOICE-ID  one id claimed by two register rows
+
+The third is the quiet one. A dict keyed by CHOICE_ID keeps the LAST row, so
+the survivor wears the dropped row's id, ORPHAN cannot fire because the id is
+still present, and the only visible failures land on the HEALTHY occurrence
+rows that cite the dropped surface — an investigation pointed at the wrong
+artifact. The seed below exists because a guard whose red proof lives only in
+a report regresses silently.
 
 A seed that does not land is an INVALID TEST, not a pass.
 """
@@ -124,6 +132,44 @@ def main() -> int:
             if not ok:
                 print(out2)
 
+        # DUPLICATE-CHOICE-ID: give the SECOND data row the FIRST row's id, so
+        # one id is claimed by two rows with different surfaces. Positional
+        # rather than by name, so register growth cannot silently unland it.
+        reg_lines = orig_reg.splitlines()
+        dup_text = None
+        if len(reg_lines) >= 3:
+            first_id = reg_lines[1].split("\t")[0]
+            second = reg_lines[2].split("\t")
+            second[0] = first_id
+            dup_lines = reg_lines[:2] + ["\t".join(second)] + reg_lines[3:]
+            dup_text = "\n".join(dup_lines) + "\n"
+            claims = sum(1 for ln in dup_lines[1:] if ln.split("\t")[0] == first_id)
+        if dup_text is None or dup_text == orig_reg or claims != 2:
+            print("DUPLICATE-CHOICE  SEED-DID-NOT-LAND — invalid test, NOT a pass")
+            bad += 1
+        else:
+            d = delta_lines(orig_reg, dup_text)
+            rp = os.path.join(tmp, "register-duplicate.tsv")
+            open(rp, "w", encoding="utf-8").write(dup_text)
+            op = os.path.join(tmp, "occ-duplicate.tsv")
+            shutil.copy(OCC, op)
+            rc2, ids2, out2, _ = run(rp, op, True)
+            ok = rc2 != 0 and "DUPLICATE-CHOICE-ID" in ids2
+            bad += 0 if ok else 1
+            print(
+                "%-16s delta=%-3d rc=%d ids=%-22s %s  (%s claimed twice)"
+                % (
+                    "DUPLICATE-CHOICE",
+                    d,
+                    rc2,
+                    ",".join(sorted(ids2))[:22] or "-",
+                    "caught" if ok else "<-- MISSED",
+                    first_id,
+                )
+            )
+            if not ok:
+                print(out2)
+
     rc3, ids3, out3, err3 = run()
     print("restored           rc=%d  %s" % (rc3, "clean" if rc3 == 0 else "DIRTY"))
     if rc3 != 0:
@@ -141,7 +187,7 @@ def main() -> int:
 
     print(
         "RED-PROOF: %s"
-        % ("BOTH DIRECTIONS PROVEN BY NAMED CHECK" if bad == 0 else "%d FAILURE(S)" % bad)
+        % ("ALL THREE DIRECTIONS PROVEN BY NAMED CHECK" if bad == 0 else "%d FAILURE(S)" % bad)
     )
     return 1 if bad else 0
 

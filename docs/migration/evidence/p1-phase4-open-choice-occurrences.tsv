@@ -39,7 +39,12 @@ P3-C15-JSON-FIELD-ORDER	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	na
 P3-C15-MACHINE-LOSS	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-MACHINE-LOSS-RECORDS	detailed machine loss records and their order
 P3-C15-INTERNAL-SORT	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	internal-member	-	internal collection or sort implementation (subtracts no product-output locus)
 P3-C15-EQUAL-NAME	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-EQUAL-NAME-TIE	equal-name tie-breaking
-SC-L399	SC	896d08ea3ac753095c04af17dfba92cd9d15fb38	399	1	SC-017o	product-output	OC-P3-HUMAN-DIAGNOSTIC	human diagnostic wording, whether paths/targets are named, and exit status
-SC-L490	SC	896d08ea3ac753095c04af17dfba92cd9d15fb38	490	1	SC-017r	product-output	OC-P3-AGENT-HEALTH-TOKEN	exact alive/dead/unknown words or glyphs
-SC-L402	SC	896d08ea3ac753095c04af17dfba92cd9d15fb38	402	1	SC-017o	sc-arm	OC-P3-MACHINE-LOSS-RECORDS	internal loss representation and ordering remain open (phrase is remain open, not OPEN CHOICE)
-SC-509-GENERATED-AT	SC	896d08ea3ac753095c04af17dfba92cd9d15fb38	1367	1	SC-509	sc-arm	OC-P3-GENERATED-AT	C3 343fcd80: generated_at VALUE is an SC-509-carried underdetermined locus; field presence/type retained
+SC-L399	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	515	1	SC-017o	product-output	OC-P3-HUMAN-DIAGNOSTIC	human diagnostic wording, whether paths/targets are named, and exit status
+SC-L490	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	618	1	SC-017r	product-output	OC-P3-AGENT-HEALTH-TOKEN	exact alive/dead/unknown words or glyphs
+SC-L402	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	402	1	SC-017o	sc-arm	OC-P3-MACHINE-LOSS-RECORDS	internal loss representation and ordering remain open (phrase is remain open, not OPEN CHOICE)
+SC-509-GENERATED-AT	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	1397	1	SC-509	sc-arm	OC-P3-GENERATED-AT	C3 343fcd80: generated_at VALUE is an SC-509-carried underdetermined locus; field presence/type retained
+SC-017E-MECHANISM-NOT-CHOICE	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	227	1	SC-017e	review-rule	-	SC-017e ARGUES AGAINST an open choice for the activity clock; the phrase is a rejection, not a registration
+SC-017G-NO-OC-MOVEMENT	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	258	1	SC-017g	review-rule	-	SC-017g rules that no open-choice row authorises movement between presence and value; a rule ABOUT the register, not an entry in it
+SC-405G-REGISTER-NECESSITY	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	1313	1	SC-405g	product-output	OC-P4-BRANCH-VALUE	digest sessions[<name>].branch VALUE bytes; the human sibling OC-P4-HUMAN-BRANCH-VALUE is carried by the atom-shape clauses below
+SC-405G-HUMAN-ATOM-VALUE	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	1337	1	SC-405g	product-output	OC-P4-HUMAN-BRANCH-VALUE	exact value bytes inside the human git atom on the contract-derived non-loss complement; atom presence, singularity and nonemptiness stay required
+SC-405G-HUMAN-ATOM-NARROWING	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	1341	1	SC-405g	product-output	OC-P4-HUMAN-BRANCH-VALUE	the same human value choice: the successor placeholder is evidence, and narrowing to a mandated byte needs its own amendment
