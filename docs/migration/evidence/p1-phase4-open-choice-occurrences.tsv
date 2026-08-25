@@ -1,50 +1,52 @@
-OCC_ID	SOURCE	BLOB	LINE	SPAN	OWNER	CLASS	CHOICE_ID	LOCUS
-P1-L047	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	47	1	C1	internal	-	test-only observation seam (private function / internal type)
-P1-L070	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	70	1	C4	internal	-	unreadable-record carrier representation
-P1-L089	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	89	1	C7	internal	-	inventory diagnostic/error side channel
-P1-L109	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	109	1	C10	internal	-	equivalent-server grouping, caching, retries, query count
-P1-L148	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	148	1	C16	internal	-	candidate representation and raw facts carried into phase 2
-P1-L158	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	158	2	C18	internal	-	collection order, map/set type, query order, multi-provenance carrier
-P1-L166	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	166	1	C19	internal	-	AE_TMUX_SERVER ambient selection (outside phase 1)
-P1-L189	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	189	1	C21	internal	-	exact enum/field representation of record-read facts
-P1-L242	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	242	1	C24	internal	-	phase-1 loss carrier, error detail, retry policy, ordering
-P2-L031	P2	29db943aa85319534301332052105ba16df03b4d	31	1	C1	internal	-	discovery order within inventory
-P2-L039	P2	29db943aa85319534301332052105ba16df03b4d	39	1	C2	internal	-	retaining source provenance/selector after liveness
-P2-L041	P2	29db943aa85319534301332052105ba16df03b4d	41	1	C2	internal	-	collection type and iteration order
-P2-L090	P2	29db943aa85319534301332052105ba16df03b4d	90	2	C7	internal	-	retry and diagnostic policy
-P2-L109	P2	29db943aa85319534301332052105ba16df03b4d	109	1	C9	internal	-	in-memory carrier for the snapshot proof
-P2-L121	P2	29db943aa85319534301332052105ba16df03b4d	121	1	C10	internal	-	redundant query and in-memory proof carrier
-P2-L155	P2	29db943aa85319534301332052105ba16df03b4d	155	1	C13	product-output	OC-P2-SEMANTIC-FALSE-PRESENCE	exact JSON presence versus omission of semantic-false degraded
-P2-L183	P2	29db943aa85319534301332052105ba16df03b4d	183	2	C16	product-output	OC-P3-JSON-FIELD-ORDER	JSON object member order
-P2-L201	P2	29db943aa85319534301332052105ba16df03b4d	201	1	C18	internal	-	local/WIP commit topology
-P2-L219	P2	29db943aa85319534301332052105ba16df03b4d	219	1	C20	internal	-	fake backend versus isolated tmux in the query recorder
-P2-L225	P2	29db943aa85319534301332052105ba16df03b4d	225	1	C21	internal	-	classifier representation, grouping/count/order, cache, retry, diagnostic channel
-P2-L238	P2	29db943aa85319534301332052105ba16df03b4d	238	1	C22	internal	-	how phase 2 carries an allowed entitled-server subset
-P2-L240	P2	29db943aa85319534301332052105ba16df03b4d	240	1	C22	internal	-	querying a subset, grouping, query order, caching, retry count
-P2-L279	P2	29db943aa85319534301332052105ba16df03b4d	279	1	HANDOFF	product-output	OC-P3-HUMAN-DIAGNOSTIC	incomplete-human wording, optional paths/targets, and process rc
-P2-L284	P2	29db943aa85319534301332052105ba16df03b4d	284	1	HANDOFF	product-output	OC-P3-MACHINE-LOSS-RECORDS	detailed machine loss records (boolean remains required)
-P3-L056	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	56	2	C1	internal	-	refusal-removal site and internal wiring
-P3-L069	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	69	1	C2	internal	-	move/borrow/copy/stream; filter-versus-sort sequence; buffered vs iterator presentation
-P3-L145	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	145	2	C9	product-output	OC-P3-EQUAL-NAME-TIE	relative order of distinct identities with byte-identical session names
-P3-L158	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	158	1	C10	internal	-	sort implementation, stable-sort algorithm, filter-versus-sort sequence
-P3-L189	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	189	1	C12	product-output	OC-P3-HUMAN-DIAGNOSTIC	incomplete-human wording, optional paths/targets, and process rc
-P3-L202a	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	202	1	C13	product-output	OC-P3-MACHINE-LOSS-RECORDS	detailed machine loss records and their order
-P3-L202b	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	202	1	C13	product-output	OC-P3-JSON-WARNING	JSON stderr warning policy (JSON process rc retained)
-P3-L215	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-set	-	finite open-choice set; each member keeps the surface scope of its owning criterion
-P3-L229	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	229	1	C15	review-rule	-	reviewer rejects a criterion that fails a correct implementation solely for a named open choice
-P3-C15-HUMAN-LAYOUT	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-HUMAN-LAYOUT	human table layout, colors, headers, whitespace
-P3-C15-HUMAN-DIAGNOSTIC	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-HUMAN-DIAGNOSTIC	incomplete-human diagnostic wording, path detail, and exit status from C12
-P3-C15-JSON-WARNING	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-JSON-WARNING	JSON stderr warning policy from C13; JSON process rc retained
-P3-C15-JSON-FIELD-ORDER	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-JSON-FIELD-ORDER	JSON object field order
-P3-C15-MACHINE-LOSS	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-MACHINE-LOSS-RECORDS	detailed machine loss records and their order
-P3-C15-INTERNAL-SORT	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	internal-member	-	internal collection or sort implementation (subtracts no product-output locus)
-P3-C15-EQUAL-NAME	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-EQUAL-NAME-TIE	equal-name tie-breaking
-SC-L399	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	515	1	SC-017o	product-output	OC-P3-HUMAN-DIAGNOSTIC	human diagnostic wording, whether paths/targets are named, and exit status
-SC-L490	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	618	1	SC-017r	product-output	OC-P3-AGENT-HEALTH-TOKEN	exact alive/dead/unknown words or glyphs
-SC-L402	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	402	1	SC-017o	sc-arm	OC-P3-MACHINE-LOSS-RECORDS	internal loss representation and ordering remain open (phrase is remain open, not OPEN CHOICE)
-SC-509-GENERATED-AT	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	1397	1	SC-509	sc-arm	OC-P3-GENERATED-AT	C3 343fcd80: generated_at VALUE is an SC-509-carried underdetermined locus; field presence/type retained
-SC-017E-MECHANISM-NOT-CHOICE	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	227	1	SC-017e	review-rule	-	SC-017e ARGUES AGAINST an open choice for the activity clock; the phrase is a rejection, not a registration
-SC-017G-NO-OC-MOVEMENT	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	258	1	SC-017g	review-rule	-	SC-017g rules that no open-choice row authorises movement between presence and value; a rule ABOUT the register, not an entry in it
-SC-405G-REGISTER-NECESSITY	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	1313	1	SC-405g	product-output	OC-P4-BRANCH-VALUE	digest sessions[<name>].branch VALUE bytes; the human sibling OC-P4-HUMAN-BRANCH-VALUE is carried by the atom-shape clauses below
-SC-405G-HUMAN-ATOM-VALUE	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	1337	1	SC-405g	product-output	OC-P4-HUMAN-BRANCH-VALUE	exact value bytes inside the human git atom on the contract-derived non-loss complement; atom presence, singularity and nonemptiness stay required
-SC-405G-HUMAN-ATOM-NARROWING	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	1341	1	SC-405g	product-output	OC-P4-HUMAN-BRANCH-VALUE	the same human value choice: the successor placeholder is evidence, and narrowing to a mandated byte needs its own amendment
+OCC_ID	SOURCE	BLOB	LINE	SPAN	OWNER	CLASS	CHOICE_ID	LOCUS	PHRASE_SHA256
+P1-L047	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	47	1	C1	internal	-	test-only observation seam (private function / internal type)	8043d963c864749eb9bed0b2d6f910bf5ad03abfda18e1ee8185e5ef3905e493
+P1-L070	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	70	1	C4	internal	-	unreadable-record carrier representation	3426c144b7713eecb70cbc9a127dbbd875226f9a2de2eae2771c63c99a354619
+P1-L089	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	89	1	C7	internal	-	inventory diagnostic/error side channel	4e9cc1d33f6c76e859234598f6205d799f9125b90f37d801a26b3b19210a9224
+P1-L109	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	109	1	C10	internal	-	equivalent-server grouping, caching, retries, query count	9571b89ae153caf5716f56fca960a63a904fb17d35bd5fa53d301415bb49659e
+P1-L148	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	148	1	C16	internal	-	candidate representation and raw facts carried into phase 2	5cbe33c213ce332b2eef635f5bc355fe56e7bd6d26d4e1f8a37251c595c4839b
+P1-L158	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	158	2	C18	internal	-	collection order, map/set type, query order, multi-provenance carrier	53773cadb77d5acd8c18b25fa1a11209e5db73a670d4eedae617351a08389556
+P1-L166	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	166	1	C19	internal	-	AE_TMUX_SERVER ambient selection (outside phase 1)	e668df121fdc1e924da8ff783489d76580f30e385f3f5ebdf5fc46cfe43683b9
+P1-L189	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	189	1	C21	internal	-	exact enum/field representation of record-read facts	3fde31dda9866087724e5eb8f876db2d3ff77425a9b5103aff3523a6c2f56f9c
+P1-L242	P1	8e3c9ec0b031f4947260d4e0327bad562a10fdcd	242	1	C24	internal	-	phase-1 loss carrier, error detail, retry policy, ordering	9e66195ea7584c34dea101756c2c67db4e9c63811e33ae7be70188f5d2e6a66e
+P2-L031	P2	29db943aa85319534301332052105ba16df03b4d	31	1	C1	internal	-	discovery order within inventory	ab382dd88184ee7590740c6a9eff3c846b5e874d959d21782efc53c685cbb940
+P2-L039	P2	29db943aa85319534301332052105ba16df03b4d	39	1	C2	internal	-	retaining source provenance/selector after liveness	90e341ad5b1b3f0b9b0ebe7d585299bab80a3f81f9927db9665d8979591824a8
+P2-L041	P2	29db943aa85319534301332052105ba16df03b4d	41	1	C2	internal	-	collection type and iteration order	a09422f679c293322a0aa190e639318e5b3616e0036b22e85473a9bc95877458
+P2-L090	P2	29db943aa85319534301332052105ba16df03b4d	90	2	C7	internal	-	retry and diagnostic policy	ccdd9c9abc6dbfad887b689f591a3e6f6f2925c185121b41a9f5a3e4f7fe31db
+P2-L109	P2	29db943aa85319534301332052105ba16df03b4d	109	1	C9	internal	-	in-memory carrier for the snapshot proof	4f4fb49d2f5c7778fcad5ee5adb86991d87e40333c3dd1df17b251ebab7f897a
+P2-L121	P2	29db943aa85319534301332052105ba16df03b4d	121	1	C10	internal	-	redundant query and in-memory proof carrier	21232ddaa01d88c454b6290ec18036c3a872e19a07c0ab5271d142b3719da9b7
+P2-L155	P2	29db943aa85319534301332052105ba16df03b4d	155	1	C13	product-output	OC-P2-SEMANTIC-FALSE-PRESENCE	exact JSON presence versus omission of semantic-false degraded	2c7cca4e3acceaa93b7102b9050f62b6aa28bb7f842e6cf4c09e577a757c83a8
+P2-L183	P2	29db943aa85319534301332052105ba16df03b4d	183	2	C16	product-output	OC-P3-JSON-FIELD-ORDER	JSON object member order	7990af025e76ee1964bb847bce940cc8140a82ec862a32729540fd8d258f0702
+P2-L201	P2	29db943aa85319534301332052105ba16df03b4d	201	1	C18	internal	-	local/WIP commit topology	2d8b9f2990b92bc778adf22bc01dbb9187bf1dded13cc6fdfc52ae249626cb20
+P2-L219	P2	29db943aa85319534301332052105ba16df03b4d	219	1	C20	internal	-	fake backend versus isolated tmux in the query recorder	fce60bdccaec287cf362c878549bcfdd4e2ed8bdce8ccd97f03906bca56739bf
+P2-L225	P2	29db943aa85319534301332052105ba16df03b4d	225	1	C21	internal	-	classifier representation, grouping/count/order, cache, retry, diagnostic channel	999edc2110e6bfe990125b7733affd7da2c01abe1ac26dd3646e67ba6a012c21
+P2-L238	P2	29db943aa85319534301332052105ba16df03b4d	238	1	C22	internal	-	how phase 2 carries an allowed entitled-server subset	5a569350a41ebb3a81dc2312d2f23b2c9213188c4b32e563b7a6c3ca7e8050b9
+P2-L240	P2	29db943aa85319534301332052105ba16df03b4d	240	1	C22	internal	-	querying a subset, grouping, query order, caching, retry count	09f3ffd267b0340549209900e6c8d03e7d9f10b9d228aef67128ac59b4659e84
+P2-L279	P2	29db943aa85319534301332052105ba16df03b4d	279	1	HANDOFF	product-output	OC-P3-HUMAN-DIAGNOSTIC	incomplete-human wording, optional paths/targets, and process rc	b9541a8d8b0e31a06139dc568f30acc0dfdbd02668667f5a25aefb6a52f59ecf
+P2-L284	P2	29db943aa85319534301332052105ba16df03b4d	284	1	HANDOFF	product-output	OC-P3-MACHINE-LOSS-RECORDS	detailed machine loss records (boolean remains required)	22dfa59dea64d56f9b9daf065bc14a35d4a2d33b32e85ea199b195e81ab7fe66
+P3-L056	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	56	2	C1	internal	-	refusal-removal site and internal wiring	0226e9b7cbff5b148aa1b97d711e3fad0159c922dd832c1ee79d116e44ed9d6e
+P3-L069	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	69	1	C2	internal	-	move/borrow/copy/stream; filter-versus-sort sequence; buffered vs iterator presentation	5baf1a2798bd8ca23c3a238223cea3e1240bc10c558fdbc9f96822e2aa984ffd
+P3-L145	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	145	2	C9	product-output	OC-P3-EQUAL-NAME-TIE	relative order of distinct identities with byte-identical session names	d1c884f6881b37f942db76fd39d4818a38a9a58581a625b6ac99b032112e97c9
+P3-L158	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	158	1	C10	internal	-	sort implementation, stable-sort algorithm, filter-versus-sort sequence	e3bb7bb754a9c70daf01f003fddb0cf40f3b07651da67e550379e7a193e9856e
+P3-L189	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	189	1	C12	product-output	OC-P3-HUMAN-DIAGNOSTIC	incomplete-human wording, optional paths/targets, and process rc	bcacd112790bacc51384d8451bdf30257a134c8cd4ef5749e303b7a70c16a370
+P3-L202a	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	202	1	C13	product-output	OC-P3-MACHINE-LOSS-RECORDS	detailed machine loss records and their order	9da6d3f512bce86ecee9959eae2213ce251cc77a7f8ebda96f3670c8338e7abd
+P3-L202b	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	202	1	C13	product-link	OC-P3-JSON-WARNING	JSON stderr warning policy (JSON process rc retained)	-
+P3-L215	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-set	-	finite open-choice set; each member keeps the surface scope of its owning criterion	ae0f988801fd67ada1ca509e3d27a2980f58f22dba07fa22fb70b6a112fe04a7
+P3-L229	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	229	1	C15	review-rule	-	reviewer rejects a criterion that fails a correct implementation solely for a named open choice	dc6056edaca31e9185d90bccf8021bdafa56be06180a0da52ddaf7a720a01883
+P3-C15-HUMAN-LAYOUT	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-HUMAN-LAYOUT	human table layout, colors, headers, whitespace	-
+P3-C15-HUMAN-DIAGNOSTIC	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-HUMAN-DIAGNOSTIC	incomplete-human diagnostic wording, path detail, and exit status from C12	-
+P3-C15-JSON-WARNING	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-JSON-WARNING	JSON stderr warning policy from C13; JSON process rc retained	-
+P3-C15-JSON-FIELD-ORDER	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-JSON-FIELD-ORDER	JSON object field order	-
+P3-C15-MACHINE-LOSS	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-MACHINE-LOSS-RECORDS	detailed machine loss records and their order	-
+P3-C15-INTERNAL-SORT	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	internal-member	-	internal collection or sort implementation (subtracts no product-output locus)	-
+P3-C15-EQUAL-NAME	P3	8cccbe44787d4ea6007ad9cf9d1cc83a3d03936c	215	1	C15	named-member	OC-P3-EQUAL-NAME-TIE	equal-name tie-breaking	-
+SC-L399	SC	7c6285a6cf3959832e7d6e0717db0968cb294572	515	1	SC-017o	product-output	OC-P3-HUMAN-DIAGNOSTIC	human diagnostic wording, whether paths/targets are named, and exit status	83057b7614247334f8122b2c2034608b34ee53f1481145f5068277d130571f73
+SC-017R-NO-REGISTERED-CHOICE	SC	7c6285a6cf3959832e7d6e0717db0968cb294572	639	1	SC-017r	review-rule	-	SC-017r rejects registering evidence-derived collision order freedom as an open choice	f96f8f74d353334827ddeb9c320c32c5640cb383ffecad22688ec624120a5a63
+SC-L490	SC	7c6285a6cf3959832e7d6e0717db0968cb294572	672	1	SC-017r	product-output	OC-P3-AGENT-HEALTH-TOKEN	exact alive/dead/unknown words or glyphs	0fac4e4d43a303921befd38a2f01388ff39c94902faed739dc54349f13306395
+SC-L402	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	402	1	SC-017o	sc-arm	OC-P3-MACHINE-LOSS-RECORDS	internal loss representation and ordering remain open (phrase is remain open, not OPEN CHOICE)	-
+SC-509-GENERATED-AT	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	1397	1	SC-509	sc-arm	OC-P3-GENERATED-AT	C3 343fcd80: generated_at VALUE is an SC-509-carried underdetermined locus; field presence/type retained	-
+SC-017E-MECHANISM-NOT-CHOICE	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	227	1	SC-017e	review-rule	-	SC-017e ARGUES AGAINST an open choice for the activity clock; the phrase is a rejection, not a registration	51d02f94238ff63fc623156f7b558b37ea9a09fcb8416b3119cf290448a5f698
+SC-017E-NO-EXEMPTION	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	227	1	SC-017e	review-rule	-	SC-017e rejects an open-choice exemption for bytes that this row scores	cde95fcbff18d69833ff6e73640c3adbec511b5afb5ba55f808f32bcd752f439
+SC-017G-NO-OC-MOVEMENT	SC	15f98d4d14e50d223281a80f0aa5f30cbee31c89	258	1	SC-017g	review-rule	-	SC-017g rules that no open-choice row authorises movement between presence and value; a rule ABOUT the register, not an entry in it	37603215a6ca29cf30f0b246ed3eed3aae61e615364f71981f311e716a28eb0f
+SC-405G-REGISTER-NECESSITY	SC	7c6285a6cf3959832e7d6e0717db0968cb294572	1367	1	SC-405g	product-output	OC-P4-BRANCH-VALUE	digest sessions[<name>].branch VALUE bytes; the human sibling OC-P4-HUMAN-BRANCH-VALUE is carried by the atom-shape clauses below	837a516e562df9df08903a3071275937228c8e746ca9c54904ee9b0c53e1a41d
+SC-405G-HUMAN-ATOM-VALUE	SC	7c6285a6cf3959832e7d6e0717db0968cb294572	1391	1	SC-405g	product-output	OC-P4-HUMAN-BRANCH-VALUE	exact value bytes inside the human git atom on the contract-derived non-loss complement; atom presence, singularity and nonemptiness stay required	753d7ac61f050f62c6549c74647f4b0f0228bee8affc2037e4be4c113e510413
+SC-405G-HUMAN-ATOM-NARROWING	SC	7c6285a6cf3959832e7d6e0717db0968cb294572	1395	1	SC-405g	product-output	OC-P4-HUMAN-BRANCH-VALUE	the same human value choice: the successor placeholder is evidence, and narrowing to a mandated byte needs its own amendment	e6d52296d8e4ebf21a871b2b1c072ee33ba27edec985e1d188214486e6d5a151

@@ -3,13 +3,17 @@
 
 Reads the exact accepted phase-1/2/3 gate blobs and the current contract blob,
 extracts every ratified OPEN CHOICE phrase occurrence, and checks the committed
-classification table against the closed register. Independent of any phase-4
-runner. Does not import obligations.py.
+classification table against the closed register. Phrase identity is a normalized,
+line-independent bounded token-context SHA-256 plus source and owner; line/blob/span
+are provenance only. A Counter preserves multiplicity where a normalized phrase
+repeats. Independent of any phase-4 runner. Does not import obligations.py.
 
 FAIL ids this check can emit:
 
   STALE-BLOB            a pinned input is no longer the named object
+  BLOB-PROVENANCE       an occurrence's source object is not a HEAD-reachable blob
   HEADER                register or occurrences table has the wrong header
+  MALFORMED-PHRASE-HASH a phrase hash is missing/malformed, or a non-phrase carries one
   EXTRACT-UNCLASSIFIED  a blob occurrence has no classification row
   CLASS-WITHOUT-EXTRACT a gate/SC phrase row cites a line the extractor did not hit
   OMITTED               a product-output locus has no exact register row
@@ -24,6 +28,8 @@ An unlanded seed is INVALID, never a pass — the red-proof diffs first.
 from __future__ import annotations
 
 import argparse
+import collections
+import hashlib
 import os
 import re
 import subprocess
@@ -43,9 +49,15 @@ C3_BLOB = "6bf2e7f86c82ba15eb8479cff3b139ce708f15bd"
 C3_PATH = "docs/migration/evidence/p1-phase4-contract-obligation-reconciliation.md"
 
 PHRASE = re.compile(r"open[\s\-]*choice", re.I)
+TOKEN = re.compile(r"\S+")
 CRIT = re.compile(r"^(\d+)\.\s+")
 H2 = re.compile(r"^##\s+")
-SC_HEAD = re.compile(r"^\*\*(SC-\S+)\s")
+# Must match verify-ratification.py's row definition. In particular, a bolded
+# label beginning ``SC-017m-...`` is a second SC-017m heading, not an invented
+# distinct owner. The contract avoids that ambiguous label shape altogether.
+SC_HEAD = re.compile(r"^\s*(?:- )?\*\*(SC-[0-9]+[a-z]*)\b")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+FINGERPRINT_RADIUS = 12
 
 REGISTER_HEADER = (
     "CHOICE_ID\tAUTHORITY\tSURFACE\tSCOPE_KEY\t"
@@ -53,6 +65,7 @@ REGISTER_HEADER = (
 )
 OCC_HEADER = (
     "OCC_ID\tSOURCE\tBLOB\tLINE\tSPAN\tOWNER\tCLASS\tCHOICE_ID\tLOCUS"
+    "\tPHRASE_SHA256"
 )
 
 GATE_BLOBS = {
@@ -61,8 +74,18 @@ GATE_BLOBS = {
     "P3": (P3_BLOB, "docs/migration/p1-phase3-gate.md"),
 }
 
-PRODUCT_CLASSES = {"product-output", "named-member"}
+# A product-link is a second product locus ratified by an already-counted physical
+# phrase (P3-L202b). It remains a citation, but must not counterfeit a second phrase
+# occurrence merely because one sentence names two choices.
+PRODUCT_CLASSES = {"product-output", "named-member", "product-link"}
 PHRASE_CLASSES = {"internal", "product-output", "named-set", "review-rule"}
+NON_PHRASE_CLASSES = {"internal-member", "named-member", "product-link", "sc-arm"}
+KNOWN_CLASSES = PHRASE_CLASSES | NON_PHRASE_CLASSES
+
+
+def phrase_sha256(text: str) -> str:
+    """Hash one normalized, line-independent phrase-context fingerprint."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def git_blob(path: str, cwd: str = REPO) -> str:
@@ -75,6 +98,26 @@ def git_blob(path: str, cwd: str = REPO) -> str:
     return r.stdout.strip()
 
 
+def head_reachable_objects(cwd: str = REPO) -> set[str]:
+    """Return object ids in HEAD ancestry, never merely local scratch refs."""
+    r = subprocess.run(
+        ["git", "rev-list", "--objects", "HEAD"],
+        cwd=cwd, capture_output=True, text=True, check=False,
+    )
+    if r.returncode != 0:
+        return set()
+    return {line.split(" ", 1)[0] for line in r.stdout.splitlines() if line}
+
+
+def object_type(object_id: str, cwd: str = REPO) -> str:
+    """Return the exact Git object type, or empty when no object can be read."""
+    r = subprocess.run(
+        ["git", "cat-file", "-t", object_id],
+        cwd=cwd, capture_output=True, text=True, check=False,
+    )
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def cat_blob(blob: str, cwd: str = REPO) -> list[str]:
     r = subprocess.run(
         ["git", "cat-file", "-p", blob],
@@ -85,72 +128,112 @@ def cat_blob(blob: str, cwd: str = REPO) -> list[str]:
     return r.stdout.splitlines()
 
 
-def extract_gate(source: str, blob: str, cwd: str = REPO) -> list[dict]:
-    lines = cat_blob(blob, cwd)
-    owner = "PREAMBLE"
-    hits: list[dict] = []
-    i = 0
-    while i < len(lines):
-        if H2.match(lines[i]) and lines[i][3:].strip().lower().startswith(
-            "phase 3 handoff"
-        ):
-            owner = "HANDOFF"
-        m = CRIT.match(lines[i])
-        if m:
-            owner = f"C{int(m.group(1))}"
-        this = lines[i]
-        nxt = lines[i + 1] if i + 1 < len(lines) else ""
-        hit_here = bool(PHRASE.search(this))
-        hit_split = (
-            not hit_here
-            and bool(PHRASE.search(this + " " + nxt))
-            and not PHRASE.search(nxt)
+def normalized_block(rows: list[tuple[int, str]]) -> tuple[str, list[tuple[int, int]]]:
+    """Join one owner block exactly as the old extractor normalized whitespace."""
+    parts: list[str] = []
+    starts: list[tuple[int, int]] = []
+    length = 0
+    for line, raw in rows:
+        part = " ".join(raw.split())
+        if not part:
+            continue
+        if parts:
+            length += 1
+        starts.append((length, line))
+        parts.append(part)
+        length += len(part)
+    return " ".join(parts), starts
+
+
+def provenance_line(starts: list[tuple[int, int]], offset: int) -> int:
+    """Return a line only as informational provenance, never as identity."""
+    line = starts[0][1]
+    for start, candidate in starts:
+        if start > offset:
+            break
+        line = candidate
+    return line
+
+
+def extract_block(
+    source: str, blob: str, owner: str, rows: list[tuple[int, str]]
+) -> list[dict]:
+    """Extract line-independent bounded token fingerprints within one owner."""
+    text, starts = normalized_block(rows)
+    if not text:
+        return []
+    tokens = list(TOKEN.finditer(text))
+    hits = []
+    for match in PHRASE.finditer(text):
+        matched = [
+            n
+            for n, token in enumerate(tokens)
+            if token.start() < match.end() and token.end() > match.start()
+        ]
+        if not matched:
+            raise RuntimeError("open-choice match did not overlap a normalized token")
+        left = max(0, matched[0] - FINGERPRINT_RADIUS)
+        right = min(len(tokens), matched[-1] + FINGERPRINT_RADIUS + 1)
+        fingerprint = " ".join(token.group(0) for token in tokens[left:right])
+        line = provenance_line(starts, match.start())
+        end_line = provenance_line(starts, max(match.start(), match.end() - 1))
+        hits.append(
+            {
+                "source": source,
+                "blob": blob,
+                "line": line,
+                "span": end_line - line + 1,
+                "owner": owner,
+                "text": fingerprint,
+                "phrase_sha256": phrase_sha256(fingerprint),
+            }
         )
-        if hit_here or hit_split:
-            text = this.strip() if hit_here else (this + " " + nxt).strip()
-            hits.append(
-                {
-                    "source": source,
-                    "blob": blob,
-                    "line": i + 1,
-                    "span": 1 if hit_here else 2,
-                    "owner": owner,
-                    "text": " ".join(text.split()),
-                }
-            )
-            if hit_split:
-                i += 1
-        i += 1
+    return hits
+
+
+def extract_gate(source: str, blob: str, cwd: str = REPO) -> list[dict]:
+    owner = "PREAMBLE"
+    active: list[tuple[int, str]] = []
+    hits: list[dict] = []
+
+    def flush() -> None:
+        if active:
+            hits.extend(extract_block(source, blob, owner, active))
+
+    for line, raw in enumerate(cat_blob(blob, cwd), start=1):
+        next_owner = owner
+        if H2.match(raw) and raw[3:].strip().lower().startswith("phase 3 handoff"):
+            next_owner = "HANDOFF"
+        if m := CRIT.match(raw):
+            next_owner = f"C{int(m.group(1))}"
+        if next_owner != owner:
+            flush()
+            active = []
+            owner = next_owner
+        active.append((line, raw))
+    flush()
     return hits
 
 
 def extract_sc(blob: str, cwd: str = REPO) -> list[dict]:
-    lines = cat_blob(blob, cwd)
-    sc = None
+    owner = "UNKNOWN"
+    active: list[tuple[int, str]] = []
     hits: list[dict] = []
-    for i, this in enumerate(lines):
-        m = SC_HEAD.match(this)
-        if m:
-            sc = m.group(1)
-        nxt = lines[i + 1] if i + 1 < len(lines) else ""
-        hit_here = bool(PHRASE.search(this))
-        hit_split = (
-            not hit_here
-            and bool(PHRASE.search(this + " " + nxt))
-            and not PHRASE.search(nxt)
-        )
-        if hit_here or hit_split:
-            text = this.strip() if hit_here else (this + " " + nxt).strip()
-            hits.append(
-                {
-                    "source": "SC",
-                    "blob": blob,
-                    "line": i + 1,
-                    "span": 1 if hit_here else 2,
-                    "owner": sc or "UNKNOWN",
-                    "text": " ".join(text.split()),
-                }
-            )
+
+    def flush() -> None:
+        if active:
+            hits.extend(extract_block("SC", blob, owner, active))
+
+    for line, raw in enumerate(cat_blob(blob, cwd), start=1):
+        next_owner = owner
+        if m := SC_HEAD.match(raw):
+            next_owner = m.group(1)
+        if next_owner != owner:
+            flush()
+            active = []
+            owner = next_owner
+        active.append((line, raw))
+    flush()
     return hits
 
 
@@ -185,29 +268,37 @@ def parse_register(path: str) -> tuple[str, dict[str, list[str]], list[tuple[lis
     return header, by_id, duplicates
 
 
-def parse_occurrences(path: str) -> tuple[str, list[dict]]:
+def parse_occurrences(path: str) -> tuple[str, list[dict], list[str]]:
     header, rows = read_tsv(path)
     out = []
-    for row in rows:
+    malformed = []
+    for n, row in enumerate(rows, start=2):
         if not row or row[0].startswith("#"):
             continue
-        # pad to 9
-        while len(row) < 9:
-            row.append("")
+        if len(row) != 10:
+            malformed.append(f"line {n} has {len(row)} column(s), expected 10")
+            continue
+        try:
+            line = int(row[3])
+            span = int(row[4])
+        except ValueError:
+            malformed.append(f"line {n} has non-integer LINE or SPAN")
+            continue
         out.append(
             {
                 "occ_id": row[0],
                 "source": row[1],
                 "blob": row[2],
-                "line": int(row[3]),
-                "span": int(row[4]),
+                "line": line,
+                "span": span,
                 "owner": row[5],
                 "class": row[6],
                 "choice_id": row[7],
                 "locus": row[8],
+                "phrase_sha256": row[9],
             }
         )
-    return header, out
+    return header, out, malformed
 
 
 def fail(ids: set[str], code: str, msg: str) -> None:
@@ -264,42 +355,104 @@ def verify(
     if header != REGISTER_HEADER:
         fail(ids, "HEADER", f"register header mismatch: {header!r}")
 
-    occ_header, occs = parse_occurrences(occ_path)
+    occ_header, occs, malformed_rows = parse_occurrences(occ_path)
     if occ_header != OCC_HEADER:
         fail(ids, "HEADER", f"occurrences header mismatch: {occ_header!r}")
+    for msg in malformed_rows:
+        fail(ids, "MALFORMED-PHRASE-HASH", f"occurrence {msg}")
+
+    # BLOB, LINE and SPAN are provenance, not phrase identity, but provenance
+    # still must be reproducible. Gate rows name their exact accepted source;
+    # SC rows may cite a historical contract blob because identity
+    # is source/owner/phrase hash, not a mutable line pointer. Every such SC
+    # object must be a blob reachable from HEAD ancestry. `--all` is too broad:
+    # a local scratch ref is not guaranteed in a clone of the pushed branch;
+    # reachability alone is too broad because commits and trees are not blobs.
+    expected_gate_blobs = {src: blob for src, (blob, _path) in GATE_BLOBS.items()}
+    head_reachable = head_reachable_objects(cwd)
+    for o in occs:
+        source = o["source"]
+        blob = o["blob"]
+        kind = object_type(blob, cwd)
+        if kind != "blob":
+            fail(
+                ids, "BLOB-PROVENANCE",
+                f"{o['occ_id']} BLOB {blob[:12]} has type {kind or '(unreadable)'}, expected blob",
+            )
+            continue
+        if source in expected_gate_blobs:
+            if blob != expected_gate_blobs[source]:
+                fail(
+                    ids, "BLOB-PROVENANCE",
+                    f"{o['occ_id']} {source} blob {blob[:12]} != accepted "
+                    f"{expected_gate_blobs[source][:12]}",
+                )
+        elif source == "SC":
+            if blob not in head_reachable:
+                fail(
+                    ids, "BLOB-PROVENANCE",
+                    f"{o['occ_id']} SC blob {blob[:12]} is not reachable from HEAD ancestry",
+                )
+        else:
+            fail(ids, "BLOB-PROVENANCE", f"{o['occ_id']} has unknown source {source!r}")
 
     extracts: list[dict] = []
     for src, (blob, _path) in GATE_BLOBS.items():
         extracts.extend(extract_gate(src, blob, cwd))
     extracts.extend(extract_sc(contract_blob, cwd))
 
-    extract_keys = {(h["source"], h["line"]) for h in extracts}
-    extract_owner = {(h["source"], h["line"]): h["owner"] for h in extracts}
-
-    phrase_rows = [o for o in occs if o["class"] in PHRASE_CLASSES]
-    phrase_keys = {(o["source"], o["line"]) for o in phrase_rows}
-
-    for h in extracts:
-        if (h["source"], h["line"]) not in phrase_keys:
+    phrase_rows = []
+    for o in occs:
+        if o["class"] not in KNOWN_CLASSES:
             fail(
-                ids, "EXTRACT-UNCLASSIFIED",
-                f"{h['source']} L{h['line']} {h['owner']}: {h['text'][:80]}",
+                ids,
+                "MALFORMED-PHRASE-HASH",
+                f"{o['occ_id']} has unknown occurrence class {o['class']!r}",
             )
-
-    for o in phrase_rows:
-        key = (o["source"], o["line"])
-        if key not in extract_keys:
-            fail(
-                ids, "CLASS-WITHOUT-EXTRACT",
-                f"{o['occ_id']} {o['source']} L{o['line']} has no blob occurrence",
-            )
-        else:
-            want = extract_owner[key]
-            if o["owner"] != want:
+            continue
+        is_phrase = o["class"] in PHRASE_CLASSES
+        actual = o["phrase_sha256"]
+        if is_phrase:
+            if not SHA256.fullmatch(actual):
                 fail(
-                    ids, "CLASS-WITHOUT-EXTRACT",
-                    f"{o['occ_id']} owner {o['owner']} != extracted {want}",
+                    ids, "MALFORMED-PHRASE-HASH",
+                    f"{o['occ_id']} phrase row needs lowercase 64-hex SHA-256, got {actual!r}",
                 )
+                continue
+            phrase_rows.append(o)
+        elif actual != "-":
+            fail(
+                ids, "MALFORMED-PHRASE-HASH",
+                f"{o['occ_id']} non-phrase row must carry '-', got {actual!r}",
+            )
+
+    extract_counter = collections.Counter(
+        (h["source"], h["owner"], h["phrase_sha256"]) for h in extracts
+    )
+    phrase_counter = collections.Counter(
+        (o["source"], o["owner"], o["phrase_sha256"]) for o in phrase_rows
+    )
+    extract_by_key = {
+        (h["source"], h["owner"], h["phrase_sha256"]): h for h in extracts
+    }
+    rows_by_key = collections.defaultdict(list)
+    for o in phrase_rows:
+        rows_by_key[(o["source"], o["owner"], o["phrase_sha256"])].append(o)
+
+    for key, n in sorted((extract_counter - phrase_counter).items()):
+        h = extract_by_key[key]
+        fail(
+            ids, "EXTRACT-UNCLASSIFIED",
+            f"{key[0]} {key[1]} sha256={key[2]} missing={n}: {h['text'][:80]}",
+        )
+
+    for key, n in sorted((phrase_counter - extract_counter).items()):
+        o = rows_by_key[key][0]
+        fail(
+            ids, "CLASS-WITHOUT-EXTRACT",
+            f"{o['occ_id']} {key[0]} {key[1]} sha256={key[2]} extra={n}; "
+            f"provenance=L{o['line']}/{o['blob'][:12]}",
+        )
 
     cited: set[str] = set()
     for o in occs:
@@ -371,7 +524,8 @@ def dump(cwd: str = REPO) -> int:
     for h in extracts:
         print(
             f"{h['source']}-L{h['line']:03d}\t{h['source']}\t{h['blob'][:12]}\t"
-            f"{h['line']}\t{h['span']}\t{h['owner']}\t?\t-\t{h['text']}"
+            f"{h['line']}\t{h['span']}\t{h['owner']}\t?\t-\t{h['text']}\t"
+            f"{h['phrase_sha256']}"
         )
     return 0
 

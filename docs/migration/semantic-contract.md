@@ -300,22 +300,36 @@ ruling, drafted opus5:reason2.**
 
 **SC-017h — the tabular view shows per-agent health, declared state, and the session
 attn marker.** Bucket 2. **IN-ROW JOINT RULING (colead, 2026-08-24):** declared
-state has three distinct renderings: exact `Some(state)` renders that state; exact
-no declaration renders `-`; an inexact or unreadable event-derived state renders
-`unknown`. Loss must not publish a stale partial state and must not collapse into
-legitimate absence — SC-509b's rule is that damage is never rendered identically to
-legitimate sparsity. This row owns declared-state rendering only; agent health and
-liveness remain separate under SC-017p/q/r. Authority: commands.md:56-59 + SC-509b
-+ colead ruling 2026-08-24.
-Empirical: **observed** — the measured human state-cell census is 34 cells whose
-frozen rendering moves under this row: 24 in A1 c03/c07/c08 rendering `-`, 8 in
-A9 c04 rendering `working` or `done` four each, and 2 in A9 c04's `ro-noserver`
-variant rendering `-`; each moves to `unknown`. Derived independently three times —
-colead, `sc017hscan`, and a third reading taken while drafting this amendment, which
-reproduced all three splits and their frozen VALUES exactly. Recorded as EVIDENCE
-for the ruling above and never as a normative count: the scorable rows are lexec's
-derivation, and a cardinality that must be UPDATED to stay true does not belong in a
-row beside facts that are CHECKED. Conflict: none.
+state has four frozen source-carrier forms: a selected running agent's exact
+`Some(state)`; its exact no declaration; its inexact or unreadable event-derived
+state; and a selected stopped agent's `ABSENT` state carrier, because the stopped
+human grammar emits no state cell. The contract-required target state is derived from
+ledger knowledge, not that carrier's grammar: exact `Some(state)` renders that state,
+exact no declaration renders `-`, and unreadable or inexact state renders `unknown`.
+Stopped-ness selects the frozen carrier only; `ABSENT` is never a blanket target
+state. Loss must not publish a stale partial state and must not collapse into legitimate
+absence — SC-509b's rule is that damage is never rendered identically to legitimate
+sparsity. This applies to **EVERY SELECTED ROSTER AGENT**. This row owns
+declared-state rendering only; agent health and liveness remain separate under
+SC-017p/q/r.
+**The evidence identity is a FIXED PRE-VALUE HUMAN PROJECTION:** `(session,
+rendered ref, rendered short session_id)`. State, health, reason, and attention are
+values and cannot partition their own population. A full collision on that projection
+establishes no roster binding, so its owed fact is an exact ORDER-FREE multiset of
+source carriers, including `ABSENT`, AND an exact ORDER-FREE multiset of the
+contract-required target states at the same multiplicity. It never manufactures a
+per-occurrence source-to-target pairing. A singleton is identity-addressed only where
+this projection establishes that association. Neither a list, which invents an order,
+nor a set, which drops multiplicity, is truthful to the human bytes.
+**Sessions added under SC-017m share one enumerated added-roster evidence gap with
+SC-017r.** Both duties remain universal; an unnameable roster is an evidence limit,
+never a normative exclusion. Authority: commands.md:56-59 + SC-509b + colead ruling
+2026-08-24 + 2026-08-25 audit ruling. Empirical: **observed** — frozen captures
+exercise both grammars: running rows carry a declared-state column and stopped rows
+carry only rendered ref plus short session id. The former supplies the loss-to-
+`unknown` evidence; the latter's visible trailing `-` is its session-id value, not a
+declared state. No cardinality is stated here: the checked scorable population belongs
+to the obligation derivation. Conflict: none.
 
 **SC-018 — `ae [name] use <alias>` starts the session with that agent as main.**
 Bucket 2. Authority: commands.md@72c7293:5 ("ae [name] use <alias> — Start session
@@ -622,20 +636,22 @@ projection is the SESSION identity plus the agent display and identity fields th
 projection RETAINS. It EXCLUDES health, and every independently mutable state, reason and
 attention cell — those are values this row and its neighbours may legitimately change, so
 keying identity on them would let a value edit silently re-partition the population. The
-ruled minimal form is per-session rendered NAME plus the health MULTISET.
+ruled minimal form is `(session, rendered ref, rendered short session_id)` plus the
+health MULTISET.
 **The class is fixed BEFORE any health value is read.** Partitioning uses the projection
 and nothing else, so a health difference can never move an agent between classes — the
 population is settled first, and only then is the owed fact for each class determined.
-**Differing values do not manufacture roster identity.** Two agents rendering under one
-display name may carry DIFFERENT health and remain UNBOUND: nothing in the human bytes
+**Differing values do not manufacture roster identity.** Two agents whose full projection
+collides may carry DIFFERENT health and remain UNBOUND: nothing in the human bytes
 associates either value with either roster slot. A class of cardinality ONE is
 identity-addressed only where the projection actually establishes the roster association;
 where it does, health is owed at that identity exactly as before. Where the projection
 leaves two or more agents in one class, the owed fact for that class is an ORDER-FREE
 COUNT of semantic health values at EXACT multiplicity.
 **Order-freedom is owned HERE, by the evidence, and borrowed from nothing.** The human
-bytes carry no occurrence identity for such a class — the subline simply repeats the
-display name — so an obligation cannot be keyed on a distinction the evidence does not
+bytes carry no occurrence identity inside a full-projection collision — the subline
+repeats the same rendered ref and short session id — so an obligation cannot be keyed on
+a distinction the evidence does not
 carry, and this row declines to invent one. No registered open choice is cited or relied
 on: the registered equal-name tie is session-candidate order and does not reach agent
 rows, and widening it by citation is exactly what this paragraph refuses. A display name
@@ -1855,6 +1871,20 @@ nothing else. This rules PRESENCE as a class and invents no VALUES: what each
 member's legitimate empty value IS stays with the row that owns it (SC-017g for the
 attention triad, SC-509c for `agents[].reason`), and `generated_at`'s exact bytes
 remain open.
+**DATED TWO-FIELD `agents[].session_id` RULING (colead, 2026-08-25).** A readable
+roster entry spelled only `alias:name` has no third session-id field. SC-509
+determines the member's PRESENCE only: `agents[].session_id` is present because its
+roster source was read. Every accepted template entry is three-field; no accepted
+template supplies a two-field specimen, so parity establishes no value for that form.
+This dated ruling fills the uncovered value arm and DETERMINES the string `"-"` on
+both JSON and HUMAN surfaces, never `null` and never the agent name that Bash's
+two-field expansion leaks into `session_id`.
+**Why this fills a gap rather than extending presence.** Presence was already owned by
+SC-509; the precise value was not. The Bash expansion's leaked name is measured legacy
+behavior, not a value authority, and the all-three-field parity population cannot supply
+one. Authority: SC-509 presence rule + ae@72c7293:3150-3161 + colead ruling
+2026-08-25. Empirical: source-proven; accepted templates supply no exact two-field
+specimen. Conflict: fix-known-defect (session-id presentation).
 **Why a class rule rather than a member-by-member one.** The argument does not vary
 across members: each is a documented SC-509 member, SC-509d carries it forward, no
 row authorises omitting it, frozen v1 always renders it, and SC-509b reserves

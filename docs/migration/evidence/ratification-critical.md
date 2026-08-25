@@ -2,7 +2,7 @@
 
 Derived mechanically from the canonical set reported by sweep-check.sh; letters are criteria only.
 
-- Canonical IDs — **NOT OWNED BY THIS FILE'S GATE**: these are `sweep-check.sh`'s output, reported here for convenience and verified there. They were stale when measured (SC=427/D=43/total=470 against a fixed input of 444/43/487), which is exactly why an unverified derived fact does not belong beside a verified one. Run `sweep-check.sh` for the current values.
+- Canonical IDs — **NOT OWNED BY THIS FILE'S GATE**: these are `sweep-check.sh`'s output, reported here for convenience and verified there. They were stale when measured (SC=427/D=43/total=470 against a fixed input of 445/43/488), which is exactly why an unverified derived fact does not belong beside a verified one. Run `sweep-check.sh` for the current values.
 - Class counts (mechanically regenerated 2026-08-20 post slice-1d + SC-021 (ls-alias row, s2 Q4): SC-510e/f event-format heads + SC-021 added; earlier folds retained; SC-012b bare-invocation residue added 2026-08-20 per seat ruling ae-20260820T165746Z-fb9c4fb6, CRITICAL(A) in-class with SC-013/SC-014; SC-509c reason-null defect row added per ba95a5e seat read, CRITICAL(B) in-class with SC-1106; D01/D02/SC-509c flipped to OBSERVED on the ba95a5e closure — evidence + both-seat transcription, second-gate ruling; SC-518a closure-ordering row added 2026-08-24 per joint ruling, CRITICAL(C,D) IN-CLASS WITH SC-518 — C is the P1 requests fixture dependency, D is the status/summary/order output boundary — following the SC-012b precedent that a new row takes the class of the row it splits from): see the machine-checked `class_counts` record below
 - D24 remains critical/non-observed pending its negative-evidence pointer. The former projected post-landing counts are REMOVED: nothing verified them and they were stale (322/45 against present arithmetic). A projection that no gate owns reads as a fact and ages like one.
 - Outstanding critical observations: see `class_counts` below — the number is the CRITICAL count and is machine-checked there rather than restated here, because a restated count is a second place to go stale. Clusters build only from the CRIT-ASSIGN table.
@@ -507,7 +507,7 @@ Derived mechanically from the canonical set reported by sweep-check.sh; letters 
 ## Freshness — this file is ABOUT a contract, and now says which one
 
 ```
-contract_blob: 327d1733aa0768e9a69f787cc7d2a6abaa09ed8f
+contract_blob: 2c832b31a890d4e08a45ed6dcb98a0562d023e5b
 class_counts: CRITICAL=342 DEFERRABLE=103 OBSERVED=43
 letter_counts: A=123 B=50 C=75 D=206
 ```
