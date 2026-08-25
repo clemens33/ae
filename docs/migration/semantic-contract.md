@@ -417,14 +417,20 @@ IS/conflict only. Conflict: fix-known-defect(#105).
 **SC-017l — unprovable liveness is first-class `unknown`.** Bucket 3 —
 fix-known-defect(#105). An unreachable, missing, or ambiguous recorded server; a failed
 server query; or an exact live name with missing/mismatched ownership evidence yields
-`unknown` — never `stopped`.
-**Absence is equally a violation, and it belongs to SC-017m** (encoding ruling,
-colead 2026-08-25): this row owns the VALUE of an ALIGNED candidate — the
-classification change on a row that IS present — while a selected durable unknown
-ABSENT from the frozen identity, including same-name live-only coexistence, is a
-MEMBERSHIP fact under SC-017m. Both rows previously claimed the absent case; this
-cross-reference ends the overlap and changes nothing about what is owed, only which
-row owes it. `unknown` is a fact about liveness knowledge.
+`unknown` — never `stopped`, never absence.
+**Absence is owned HERE and ALSO by SC-017m, at DIFFERENT GRAINS** (ruling, colead
+2026-08-25, retracting an earlier exclusive split): an omitted durable candidate owes
+BOTH — an obligation under this row that its liveness fact is `unknown` rather than
+absent, which is the PER-CANDIDATE grain, and SC-017m's PER-VIEW membership
+contribution that the view's exact candidate set includes it. One omission violates
+two rows. That is not double counting, because the grains differ — the same shape as
+`needs_attention` and `degraded`, two obligations on one occurrence rather than one
+obligation stated twice.
+**The consequence is a coverage test, not a bookkeeping note.** A table filing an
+absence under SC-017m ALONE is UNDERCOVERED: the same occurrence also owes the
+per-candidate obligation here. Two owed populations of equal size with wholly
+disjoint members is the shape undercoverage takes when one grain has been collapsed
+into the other, and it is a finding about the table rather than about the rows. `unknown` is a fact about liveness knowledge.
 It is orthogonal to SC-509b's `degraded`, which is a fact about record read/parse loss:
 either, both, or neither may hold. IS at 72c7293: VIOLATED — a failed ambient
 `list-sessions` produces zero running rows (ae:2692), and each stopped-side
