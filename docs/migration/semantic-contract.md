@@ -426,11 +426,17 @@ contribution that the view's exact candidate set includes it. One omission viola
 two rows. That is not double counting, because the grains differ — the same shape as
 `needs_attention` and `degraded`, two obligations on one occurrence rather than one
 obligation stated twice.
-**The consequence is a coverage test, not a bookkeeping note.** A table filing an
-absence under SC-017m ALONE is UNDERCOVERED: the same occurrence also owes the
-per-candidate obligation here. Two owed populations of equal size with wholly
-disjoint members is the shape undercoverage takes when one grain has been collapsed
-into the other, and it is a finding about the table rather than about the rows. `unknown` is a fact about liveness knowledge.
+**The enforceable invariant is CANDIDATE-GRAINED.** For every omitted durable
+candidate, its SC-017m view-membership contribution must PAIR with an SC-017l
+absent-to-unknown obligation AT THE SAME CANDIDATE IDENTITY. A table carrying one
+without the other is undercovered at that identity, and the identity is where the
+test lives.
+**Aggregate counts and set-disjointness between the two families are DIAGNOSTIC
+EVIDENCE ONLY, never the test.** They are neither necessary nor sufficient for
+undercoverage; they compare different grains, since one family counts invocations
+while the obligation counts candidates; and they go stale the moment the table is
+repaired. A symptom that disappears when the defect is fixed cannot be the rule that
+detects it. `unknown` is a fact about liveness knowledge.
 It is orthogonal to SC-509b's `degraded`, which is a fact about record read/parse loss:
 either, both, or neither may hold. IS at 72c7293: VIOLATED — a failed ambient
 `list-sessions` produces zero running rows (ae:2692), and each stopped-side
