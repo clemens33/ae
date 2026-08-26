@@ -343,7 +343,7 @@ fn an_unknown_list_flag_exits_two_not_one() {
     }
 }
 
-// ── the two internal helper surfaces (`_requests`, `_events-tail`) ───────────
+// ── the internal helper surfaces (`_requests`, `_events-tail`, `_state`) ─────
 //
 // The LIBRARY behind them is compared against every frozen corpus row in
 // `super::helper_corpus`. What is proved here is the other half — the argv, the
@@ -459,6 +459,148 @@ fn requests_mine_and_inbox_answer_for_the_pane_tmux_pane_names() {
         String::from_utf8_lossy(&ae::requests::header()),
         "not the asker, so only the header: {mine:?}"
     );
+}
+
+#[test]
+fn state_refuses_without_a_pane_identity_and_writes_nothing() {
+    let root = scratch("state-noid");
+    let dir = root.join("sessions").join("s1");
+    std::fs::create_dir_all(&dir).expect("a session dir");
+    let out = ae()
+        .env_remove("TMUX_PANE")
+        .arg(ae::cli::STATE)
+        .arg(&dir)
+        .arg("working")
+        .arg("nothing should land")
+        .output()
+        .expect("the ae binary should run");
+    assert_eq!(out.status.code(), Some(1), "{:?}", out.status);
+    assert!(out.stdout.is_empty(), "no success line: {:?}", out.stdout);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("{}\n", ae::state::NO_IDENTITY)
+    );
+    assert!(
+        !dir.join("events.jsonl").exists(),
+        "a refused declaration opens nothing"
+    );
+    // Usage errors are 2, decided before any identity question.
+    for tail in [vec!["Working"], vec!["blocked"], vec![]] {
+        let mut command = ae();
+        command
+            .env_remove("TMUX_PANE")
+            .arg(ae::cli::STATE)
+            .arg(&dir);
+        command.args(&tail);
+        let out = command.output().expect("the ae binary should run");
+        assert_eq!(out.status.code(), Some(2), "{tail:?}: {:?}", out.status);
+        assert!(
+            String::from_utf8_lossy(&out.stderr)
+                .contains("Usage: state <working|waiting-user|blocked|done> [reason]"),
+            "{tail:?}"
+        );
+    }
+}
+
+#[test]
+fn state_declares_for_the_pane_and_a_held_lock_fails_it_at_the_bound() {
+    // A real isolated server, as in the requests identity test.
+    let scratch_dir = std::path::PathBuf::from(format!("/tmp/aest.{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+    std::fs::create_dir_all(&scratch_dir).expect("a scratch directory");
+    let sock = scratch_dir.join("sock");
+    let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(sock.clone()));
+    let tmux = |tail: &[&str]| {
+        let mut args = ae::tmux::server_args(&server);
+        args.extend(tail.iter().map(|arg| (*arg).to_owned()));
+        run_tmux(&args, &scratch_dir)
+    };
+    assert!(tmux(&["-f", "/dev/null", "new-session", "-d", "-s", "stsess"]).0);
+    let (_, pane) = tmux(&["display-message", "-p", "-t", "stsess", "#{pane_id}"]);
+    let pane = pane.trim().to_owned();
+    assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "main"]).0);
+    assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "cl:lead"]).0);
+
+    let root = scratch("state-pane");
+    let dir = root.join("sessions").join("stsess");
+    std::fs::create_dir_all(&dir).expect("a session dir");
+    std::fs::write(dir.join("meta"), "session=stsess\n").expect("a meta file");
+    let run = |tail: &[&str]| {
+        let out = ae()
+            .env("TMUX", format!("{},0,0", sock.display()))
+            .env("TMUX_PANE", &pane)
+            .arg(ae::cli::STATE)
+            .arg(&dir)
+            .args(tail)
+            .output()
+            .expect("the ae binary should run");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    let done = run(&["done", "all", "green"]);
+    let container = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+
+    // Now hold the lock the way a bash writer does and try again.
+    let lock = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("events.jsonl.lock"))
+        .expect("the lock file the declaration created");
+    lock.lock().expect("an exclusive flock");
+    let started = std::time::Instant::now();
+    let held = run(&["working", "must not land"]);
+    let waited = started.elapsed();
+    drop(lock);
+    let after_hold = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+    let released = run(&["working", "lands now"]);
+    let _ = tmux(&["kill-server"]);
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+
+    assert_eq!(done.0, Some(0), "{done:?}");
+    assert_eq!(done.1, "Marked cl:lead done: all green\n");
+    assert!(done.2.is_empty(), "{done:?}");
+    let lines: Vec<&str> = container.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "state line plus the legacy done line: {container}"
+    );
+    assert!(
+        lines[0].contains(
+            "\"actor\":\"cl:lead\",\"action\":\"state\",\"ref\":\"done\",\"summary\":\"all green\"}"
+        ),
+        "{container}"
+    );
+    assert!(
+        lines[1].contains("\"actor\":\"cl:lead\",\"action\":\"done\",\"summary\":\"all green\"}"),
+        "{container}"
+    );
+
+    assert_eq!(held.0, Some(1), "held lock: {held:?}");
+    assert!(
+        held.1.is_empty(),
+        "no success line under a held lock: {held:?}"
+    );
+    assert!(held.2.contains("could not lock"), "{held:?}");
+    assert!(
+        waited >= std::time::Duration::from_secs(5),
+        "the 5s bound was honoured: {waited:?}"
+    );
+    assert!(
+        waited < std::time::Duration::from_secs(20),
+        "and it is a bound: {waited:?}"
+    );
+    assert_eq!(
+        after_hold, container,
+        "nothing was appended under the held lock"
+    );
+
+    assert_eq!(released.0, Some(0), "after release: {released:?}");
+    let final_lines = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
+    assert_eq!(final_lines.lines().count(), 3, "{final_lines}");
 }
 
 #[test]

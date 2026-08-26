@@ -730,6 +730,7 @@ case "\$1" in
         case "\$*" in *nonsense*) exit 64 ;; esac
         echo "CORE_TOKEN_9f3a mode=\${3:-none}"
         ;;
+    _state) echo "CORE_TOKEN_9f3a state=\${3:-none}" ;;
     *) exit 64 ;;
 esac
 EOF
@@ -769,6 +770,19 @@ for _cb_mode in mine inbox ""; do
         "$(grep -c 'bash implementation' "$_cb_root/err" | tr -d '[:space:]')"
 done
 unset _cb_mode _cb_args
+
+# STATE (P2.2): the WRITE form goes to the core — through `state` and through
+# the `mark-done` shim over it — and the no-argument READ does not. The stub
+# echoes the value it was handed, so a wrong value would mean the shim rewrote
+# the caller's argument; the read must still answer from the bash body.
+_cb_out="$("$_cb_meta/state" working "from the stub" 2>/dev/null || true)"
+assert_contains "core binding: state <value> reaches the core" "CORE_TOKEN_9f3a state=working" "$_cb_out"
+_cb_out="$("$_cb_meta/mark-done" 2>/dev/null || true)"
+assert_contains "core binding: mark-done is state done through the core" "CORE_TOKEN_9f3a state=done" "$_cb_out"
+"$_cb_meta/state" >"$_cb_root/out" 2>"$_cb_root/err" || true
+assert_eq "core binding: the state READ stays on the bash body" "0" \
+    "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/out" | tr -d '[:space:]')"
+assert_contains "core binding: and still answers" "state:" "$(cat "$_cb_root/out")"
 
 # THE SHIM MUST NOT SWALLOW THE CORE'S EXIT STATUS. It execs, so the status is
 # the core's by construction — this pins that, because the obvious alternative

@@ -1871,7 +1871,7 @@ assert_eq "state: template fns defined in the template library before the dispat
 
 assert_eq "state: emission via declare -f inside the marker region (atomic mv)" \
     "1" \
-    "$([[ "$AE_SOURCE" == *'SYNC_SESSION_ASSETS_BODY_START'*'declare -f helper_state_usage helper_state_main'*'mv "${AE_META}/state.tmp.$$" "${AE_META}/state"'*'SYNC_SESSION_ASSETS_BODY_END'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'SYNC_SESSION_ASSETS_BODY_START'*'declare -f _ae_core_complain _ae_core_try helper_state_usage helper_state_main'*'mv "${AE_META}/state.tmp.$$" "${AE_META}/state"'*'SYNC_SESSION_ASSETS_BODY_END'* ]] && echo 1 || echo 0)"
 
 # Same wiring guard for _lib: prologue heredoc + declare -f function set +
 # atomic mv, all inside the marker region.

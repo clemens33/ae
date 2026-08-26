@@ -25,6 +25,10 @@ pub const REQUESTS: &str = "_requests";
 /// underscore reasoning as [`REQUESTS`].
 pub const EVENTS_TAIL: &str = "_events-tail";
 
+/// The `state` helper's write surface — `_state <meta-dir> <value> [reason…]`.
+/// Underscored like [`REQUESTS`]: launched by the generated helper, not typed.
+pub const STATE: &str = "_state";
+
 /// What an argv asks the binary to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -42,6 +46,15 @@ pub enum Request {
         mode: Mode,
     },
     /// `_events-tail <meta-dir>` — the `events-tail` helper surface.
+    /// `_state <meta-dir> <value> [reason…]` — the `state` helper's write path.
+    /// The tail is validated by [`crate::state::parse`], not here: the usage
+    /// text is the helper's own and belongs beside the rule it states.
+    State {
+        /// The session meta directory.
+        dir: std::path::PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
     EventsTail {
         /// The session meta directory the frozen helper derives from `$0`.
         dir: PathBuf,
@@ -120,7 +133,7 @@ impl Request {
     /// );
     /// ```
     ///
-    /// # The two internal helper surfaces
+    /// # The internal helper surfaces: `_requests`, `_events-tail`, `_state`
     ///
     /// ```
     /// use ae::cli::Request;
@@ -148,6 +161,13 @@ impl Request {
                 Err(UnknownFlag(token)) => Self::UsageError(token),
             },
             Some(REQUESTS) => Self::parse_requests(&args[1..]),
+            Some(STATE) => match &args[1..] {
+                [] => Self::MissingOperand(STATE),
+                [dir, rest @ ..] => Self::State {
+                    dir: dir.into(),
+                    tail: rest.to_vec(),
+                },
+            },
             Some(EVENTS_TAIL) => match &args[1..] {
                 [] => Self::MissingOperand(EVENTS_TAIL),
                 [dir] => Self::EventsTail { dir: dir.into() },
@@ -202,7 +222,7 @@ impl Request {
     /// from `1` so a caller can tell "you asked wrong" from "it went wrong".
     /// [`Request::MissingOperand`] is the same class and takes the same code.
     ///
-    /// The two helper surfaces answer `None` for the same reason `list` does:
+    /// The helper surfaces answer `None` for the same reason `list` does:
     /// `_requests` may still refuse for want of an identity (a pinned `1`), and
     /// `_events-tail` has no completion at all — argv decides neither.
     #[must_use]
@@ -213,6 +233,7 @@ impl Request {
             Self::List(_)
             | Self::LaunchCandidate(_)
             | Self::Requests { .. }
+            | Self::State { .. }
             | Self::EventsTail { .. } => None,
         }
     }
@@ -220,7 +241,7 @@ impl Request {
 
 #[cfg(test)]
 mod tests {
-    use super::{EVENTS_TAIL, REQUESTS, Request};
+    use super::{EVENTS_TAIL, REQUESTS, Request, STATE};
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
 
@@ -403,12 +424,12 @@ mod tests {
     }
 
     #[test]
-    fn the_helper_spellings_both_begin_with_an_underscore() {
+    fn the_helper_spellings_all_begin_with_an_underscore() {
         // Not decoration: this is the property that keeps SC-022 whole.
         // `_validate_session_name` forbids a leading underscore, so no legal
         // session name can reach these arms — a `requests`/`events-tail`
         // spelling would have taken two real names out of the launch grammar.
-        for spelling in [REQUESTS, EVENTS_TAIL] {
+        for spelling in [REQUESTS, EVENTS_TAIL, STATE] {
             assert!(spelling.starts_with('_'), "{spelling}");
             assert!(
                 !spelling.starts_with('-'),
@@ -455,11 +476,29 @@ mod tests {
 
     #[test]
     fn a_helper_surface_with_no_directory_is_a_missing_operand_at_two() {
-        for spelling in [REQUESTS, EVENTS_TAIL] {
+        for spelling in [REQUESTS, EVENTS_TAIL, STATE] {
             let request = Request::parse(&argv(&[spelling]));
             assert_eq!(request, Request::MissingOperand(spelling));
             assert_eq!(request.exit_code(), Some(2), "{spelling}");
         }
+    }
+
+    #[test]
+    fn state_takes_a_directory_and_keeps_the_rest_for_the_state_module() {
+        // argv is not validated here: the usage text is the helper's own and
+        // lives beside the rule in `crate::state`. The parser only splits.
+        assert_eq!(
+            Request::parse(&argv(&[STATE, "/s/tg1", "blocked", "on", "x"])),
+            Request::State {
+                dir: "/s/tg1".into(),
+                tail: argv(&["blocked", "on", "x"]),
+            }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[STATE, "/s/tg1"])).exit_code(),
+            None,
+            "argv alone does not decide a declaration's outcome"
+        );
     }
 
     #[test]

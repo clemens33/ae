@@ -78,6 +78,7 @@ pub mod liveness;
 pub mod meta;
 pub mod requests;
 pub mod session;
+pub mod state;
 pub mod time;
 pub mod tmux;
 pub mod transport;
@@ -387,6 +388,31 @@ pub fn run_with(
         // pane reads, and so does this: the refusal is a DIAGNOSTIC and never
         // reaches stdout, which is why a refused invocation's stdout is empty
         // rather than a bare header.
+        // The write path: nothing reaches stdout until the bytes are down, and
+        // every refusal or failure is stderr plus a non-zero code.
+        cli::Request::State { dir, tail } => match state::parse(tail) {
+            Err(usage) => {
+                write!(err, "{}", usage.render())?;
+                state::EXIT_USAGE
+            }
+            Ok(declaration) => {
+                match state::declare(
+                    dir,
+                    &calling_viewer(dir),
+                    &declaration,
+                    time::Timestamp::now(),
+                ) {
+                    Ok(line) => {
+                        out.write_all(line.as_bytes())?;
+                        0
+                    }
+                    Err(failure) => {
+                        writeln!(err, "{}", failure.message())?;
+                        state::EXIT_FAILED
+                    }
+                }
+            }
+        },
         cli::Request::Requests { dir, mode } => {
             let rendered = requests::render(dir, *mode, &calling_viewer(dir));
             out.write_all(&rendered.stdout)?;

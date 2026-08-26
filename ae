@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.2"
+AE_VERSION="0.2.3"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -12907,6 +12907,15 @@ USAGE
 }
 
 helper_state_main() {
+    # The WRITE form goes to the pinned Rust core (P2.2): it takes the same
+    # events.jsonl.lock, appends under it, and prints `Marked …` only after the
+    # bytes are down — where this body prints first and can lose the event on a
+    # lock timeout. The core refuses a caller with no pane identity instead of
+    # writing actor "human". The no-argument READ stays here, unchanged.
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    if [[ $# -ge 1 ]]; then
+        _ae_core_try _state "$@" || true
+    fi
     local self
     self="$(ae_current_agent_ref)"
     [[ -n "$self" ]] || self="human"
@@ -17957,7 +17966,7 @@ REQUESTSPROLOGUE
         printf '%s\n' "$_ae_sb"
         # shellcheck disable=SC2016  # literal $(...) belongs to the generated file
         printf 'source "$(cd "$(dirname "$0")" && pwd)/_lib"\n'
-        declare -f helper_state_usage helper_state_main
+        declare -f _ae_core_complain _ae_core_try helper_state_usage helper_state_main
         printf 'helper_state_main "$@"\n'
     } >"${AE_META}/state.tmp.$$"
     chmod 0700 "${AE_META}/state.tmp.$$"
