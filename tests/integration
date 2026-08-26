@@ -755,19 +755,17 @@ _cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
 assert_contains "core binding: OPPOSED CONTROL — the pinned core really runs" "CORE_TOKEN_9f3a" "$_cb_out"
 assert_contains "core binding: the core receives the caller's arguments" "mode=all" "$_cb_out"
 
-# THE MODE GATE. Only `all` reaches the core in P2.1: mine/inbox filter on the
-# caller's pane identity, which the core does not read yet — measured inside a
-# stamped pane, it refuses where the bash body answers. The stub prints its
-# token for ANY mode it is handed, so a token on these calls would mean the gate
-# is gone; and the fallback is SILENT, because an unflipped surface is not a
-# fault. The bare call is the default mode, `mine`, on both sides.
+# EVERY MODE REACHES THE CORE (P2.1b lifted the all-only gate of P2.1). The stub
+# prints its token for any mode and echoes the mode it was handed, so a missing
+# token here would mean a gate is back, and a wrong mode would mean the shim
+# rewrote the caller's argument. The bare call carries no mode word at all —
+# the core defaults to `mine` like the bash body, and the stub echoes `none`.
 for _cb_mode in mine inbox ""; do
     _cb_args=()
     [[ -n "$_cb_mode" ]] && _cb_args=("$_cb_mode")
     "$_cb_meta/requests" ${_cb_args[@]+"${_cb_args[@]}"} >"$_cb_root/out" 2>"$_cb_root/err" || true
-    assert_eq "core binding: mode '${_cb_mode:-<bare>}' cannot reach the core even with a valid binding" "0" \
-        "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/out" | tr -d '[:space:]')"
-    assert_eq "core binding: and mode '${_cb_mode:-<bare>}' falls back without a diagnostic" "0" \
+    assert_contains "core binding: mode '${_cb_mode:-<bare>}' reaches the core" "CORE_TOKEN_9f3a mode=${_cb_mode:-none}" "$(cat "$_cb_root/out")"
+    assert_eq "core binding: and mode '${_cb_mode:-<bare>}' draws no diagnostic" "0" \
         "$(grep -c 'bash implementation' "$_cb_root/err" | tr -d '[:space:]')"
 done
 unset _cb_mode _cb_args

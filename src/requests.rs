@@ -27,16 +27,26 @@
 //!
 //! # What this surface deliberately does not do
 //!
-//! `mine` and `inbox` filter against the CALLER's pane identity, which the
-//! frozen helper reads from tmux through `ae_current_agent_ref` and
-//! `ae_current_slot`. That sensor is a different ownership record and has not
-//! flipped, so this build supplies an empty [`Viewer`] and both modes take the
-//! frozen "could not detect current agent identity" refusal. That is not a stub
-//! answer dressed as a real one: the message states exactly what is true of this
-//! build, it is the same refusal the frozen helper gives outside a pane, and all
-//! 24 corpus rows for those two modes pin `rc=1` with those bytes. The typed API
-//! takes a `Viewer` so the identity slice can supply one without touching this
-//! module.
+//! `mine` and `inbox` filter against the CALLER's pane identity. The binary
+//! reads it from the pane `TMUX_PANE` names, in one `display-message` round
+//! trip ([`crate::tmux::viewer_args`]), and [`Viewer::from_pane`] applies the
+//! frozen helper's rules to the readings. Without a `TMUX_PANE` there is no
+//! identity and both modes take the frozen "could not detect current agent
+//! identity" refusal, which 24 corpus rows pin at `rc=1`.
+//!
+//! Two places this is deliberately NOT the frozen helper, both Rust-native
+//! decisions under the delivery-first ruling rather than parity gaps:
+//!
+//! * **No `TMUX_PANE` means no identity.** The frozen `ae_current_pane` falls
+//!   back to a bare `tmux display-message -p '#{pane_id}'`, which on a live
+//!   server answers with whatever pane the server last touched — an identity
+//!   that is somebody's, not necessarily the caller's. Refusing is the
+//!   deterministic answer.
+//! * **Mixed identity never matches.** A routed viewer (slot + session) against
+//!   a keyless row, or the reverse, is no match — SC-518 strict, the rule
+//!   [`crate::events::Identity`] already applies to closure. The frozen filter
+//!   falls back to display-name matching whenever EITHER side lacks a slot.
+//!   Only rows written by unstamped panes can tell the two apart.
 //!
 //! # Pending, replied, cancelled
 //!
@@ -149,6 +159,7 @@ use crate::event_text::{
     reversed,
 };
 use crate::events::Identity;
+use crate::tmux::ObservedViewer;
 
 /// `requests [mine|inbox|all]` — SC-212c's signature, defaulting to `mine`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -217,6 +228,47 @@ impl Viewer {
     #[must_use]
     pub fn is_known(&self) -> bool {
         !self.display.is_empty()
+    }
+
+    /// The viewer a pane's readings make, by the frozen helper's rules.
+    ///
+    /// * No `@ae_agent` is no identity at all (`ae_current_agent_ref` returns
+    ///   nothing, and the helper refuses on `-z "$self"`).
+    /// * No session is no identity either. Every real pane has a non-empty
+    ///   `#{session_name}`, so an empty one is a malformed reading — and
+    ///   treating it as "the helper's own session" would silently drop the
+    ///   cross-session qualification that keeps `@other:cl:lead` from being
+    ///   read as `cl:lead`. Fail closed.
+    /// * The display ref is the agent, prefixed `@<session>:` when the pane's
+    ///   session is not `own_session` — the helper's cross-session spelling.
+    /// * The routing half exists only when the slot is one of the closed
+    ///   grammar `main`/`worker.<n>`/`spawned.<n>` (`_valid_slot`) AND the
+    ///   session was read; otherwise the viewer is a display identity, which is
+    ///   what the helper's "fall back to name matching" for an unstamped pane
+    ///   means in [`crate::events::Identity`]'s terms.
+    #[must_use]
+    pub fn from_pane(observed: &ObservedViewer, own_session: &str) -> Self {
+        let (Some(agent), Some(session)) = (observed.agent.as_deref(), observed.session.as_deref())
+        else {
+            return Self::default();
+        };
+        let display = if session == own_session {
+            agent.to_owned()
+        } else {
+            format!("@{session}:{agent}")
+        };
+        match observed.slot.as_deref() {
+            Some(slot) if is_slot(slot) => Self {
+                slot: slot.to_owned(),
+                session: session.to_owned(),
+                display,
+            },
+            _ => Self {
+                slot: String::new(),
+                session: String::new(),
+                display,
+            },
+        }
     }
 
     /// This viewer, classified by the same rule the rows are.
@@ -369,6 +421,20 @@ fn write_row(
     }
     out.extend_from_slice(summary);
     out.push(b'\n');
+}
+
+/// Whether `text` is a routing slot: exactly `main`, `worker.<digits>` or
+/// `spawned.<digits>` — the frozen `_valid_slot`, anchored, so a tampered
+/// `@ae_slot` such as `worker.0x` cannot route.
+#[must_use]
+pub fn is_slot(text: &str) -> bool {
+    if text == "main" {
+        return true;
+    }
+    ["worker.", "spawned."].iter().any(|prefix| {
+        text.strip_prefix(prefix)
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+    })
 }
 
 /// The refusal for `mine`/`inbox` when no identity could be detected.
@@ -770,7 +836,8 @@ fn fold_newlines(mut value: Vec<u8>) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EXIT_NO_IDENTITY, Key, Mode, NO_IDENTITY, Status, Viewer, header, render, states, table,
+        EXIT_NO_IDENTITY, Key, Mode, NO_IDENTITY, Status, Viewer, header, is_slot, render, states,
+        table,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -1412,6 +1479,79 @@ mod tests {
             display: "a:third".to_owned(),
         };
         assert_eq!(table(&keyless, Mode::Mine, &stranger), header());
+    }
+
+    #[test]
+    fn a_pane_s_readings_become_a_viewer_by_the_frozen_rules() {
+        use crate::tmux::ObservedViewer;
+        let stamped = ObservedViewer {
+            slot: Some("worker.2".to_owned()),
+            session: Some("s".to_owned()),
+            agent: Some("cl:w".to_owned()),
+        };
+        assert_eq!(
+            Viewer::from_pane(&stamped, "s"),
+            Viewer {
+                slot: "worker.2".to_owned(),
+                session: "s".to_owned(),
+                display: "cl:w".to_owned()
+            }
+        );
+        // Cross-session: the display ref carries the helper's @session: prefix,
+        // and the routing half is the pane's own session.
+        assert_eq!(
+            Viewer::from_pane(&stamped, "other").display,
+            "@s:cl:w".to_owned()
+        );
+        assert_eq!(Viewer::from_pane(&stamped, "other").session, "s".to_owned());
+        // An unstamped pane, and a tampered slot, are display identities.
+        for slot in [None, Some("worker.0x".to_owned()), Some("boss".to_owned())] {
+            let unstamped = ObservedViewer {
+                slot,
+                session: Some("s".to_owned()),
+                agent: Some("cl:w".to_owned()),
+            };
+            let viewer = Viewer::from_pane(&unstamped, "s");
+            assert!(viewer.is_known());
+            assert_eq!((viewer.slot.as_str(), viewer.session.as_str()), ("", ""));
+            assert_eq!(viewer.display, "cl:w");
+        }
+        // No agent is no identity, whatever else was read.
+        let anonymous = ObservedViewer {
+            slot: Some("main".to_owned()),
+            session: Some("s".to_owned()),
+            agent: None,
+        };
+        assert!(!Viewer::from_pane(&anonymous, "s").is_known());
+        assert_eq!(Viewer::from_pane(&anonymous, "s"), Viewer::default());
+        // No session is no identity: a real pane always has one, and reading
+        // its absence as "own session" would drop the cross-session prefix.
+        let sessionless = ObservedViewer {
+            slot: Some("main".to_owned()),
+            session: None,
+            agent: Some("cl:lead".to_owned()),
+        };
+        assert_eq!(Viewer::from_pane(&sessionless, "s"), Viewer::default());
+        assert!(!Viewer::from_pane(&sessionless, "s").is_known());
+    }
+
+    #[test]
+    fn a_slot_is_the_closed_grammar_and_nothing_near_it() {
+        for good in ["main", "worker.0", "worker.12", "spawned.3"] {
+            assert!(is_slot(good), "{good}");
+        }
+        for bad in [
+            "",
+            "Main",
+            "worker",
+            "worker.",
+            "worker.0x",
+            "spawned.-1",
+            "main2",
+            " main",
+        ] {
+            assert!(!is_slot(bad), "{bad}");
+        }
     }
 
     #[test]

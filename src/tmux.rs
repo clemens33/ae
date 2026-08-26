@@ -382,8 +382,129 @@ pub fn is_addressable_socket(path: &Path) -> bool {
     path.is_absolute()
 }
 
+/// The format the viewer query asks for: the calling pane's routing slot, its
+/// tmux session and its display ref — the three readings `ae_current_slot`,
+/// `#S` and `ae_current_agent` take in the frozen helper, in ONE round trip
+/// rather than three, so the pane cannot change identity between them.
+///
+/// Tab-separated. None of the three may contain a tab: slots are a closed
+/// grammar, session and agent names are ASCII allowlists. An unset user option
+/// expands to the empty string (measured), which is why the interpreter treats
+/// empty and unset alike.
+pub const VIEWER_FORMAT: &str = "#{@ae_slot}\t#{session_name}\t#{@ae_agent}";
+
+/// The number of fields [`VIEWER_FORMAT`] yields.
+const VIEWER_FIELDS: usize = 3;
+
+/// The arguments that read [`VIEWER_FORMAT`] off `pane` on `server`.
+///
+/// `display-message -p` prints the expansion instead of showing it, and `-t`
+/// names the pane whose options and session are expanded. There is no
+/// no-target form: a query that let tmux pick "the current pane" would answer
+/// with whichever pane the server last touched, which the frozen helper does
+/// and which is a misattribution rather than an identity.
+#[must_use]
+pub fn viewer_args(server: &ServerId, pane: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["display-message", "-p", "-t", pane, VIEWER_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// The calling pane's three identity readings. `None` is unset-or-empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ObservedViewer {
+    /// `@ae_slot` — the routing key, unvalidated here.
+    pub slot: Option<String>,
+    /// `#{session_name}` of the pane.
+    pub session: Option<String>,
+    /// `@ae_agent` — the display `alias:name`.
+    pub agent: Option<String>,
+}
+
+/// What a completed viewer query means.
+///
+/// A failed run is no identity (`None`): a pane that does not exist, a server
+/// that is not there, or a `tmux` that could not be spawned all leave the
+/// caller unidentified, and the requests surface then refuses `mine`/`inbox`
+/// the way the frozen helper does outside a pane.
+///
+/// **Exactly one record.** `display-message -p` prints one expansion and one
+/// `\n`; stdout is that line with at most its terminating `\n`, and it must
+/// split into exactly [`VIEWER_FIELDS`] fields. Anything beyond — a second
+/// line, an embedded newline in a user option somebody set by hand — is a
+/// reading nothing should trust, for the same reason [`interpret_panes`]
+/// refuses odd arity: taking "the first line" would let injected content
+/// choose which record is read.
+#[must_use]
+pub fn interpret_viewer(succeeded: bool, stdout: &str) -> Option<ObservedViewer> {
+    if !succeeded {
+        return None;
+    }
+    let line = stdout.strip_suffix('\n').unwrap_or(stdout);
+    if line.contains('\n') {
+        return None;
+    }
+    let fields: Vec<&str> = line.split('\t').collect();
+    if fields.len() != VIEWER_FIELDS {
+        return None;
+    }
+    let reading = |field: &str| (!field.is_empty()).then(|| field.to_owned());
+    Some(ObservedViewer {
+        slot: reading(fields[0]),
+        session: reading(fields[1]),
+        agent: reading(fields[2]),
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_viewer_query_addresses_the_pane_and_asks_for_the_three_readings() {
+        use super::{ObservedViewer, VIEWER_FORMAT, interpret_viewer, viewer_args};
+        use crate::inventory::ServerId;
+        assert_eq!(
+            viewer_args(&ServerId::Ambient, "%7"),
+            ["display-message", "-p", "-t", "%7", VIEWER_FORMAT]
+        );
+        // A stamped agent pane.
+        assert_eq!(
+            interpret_viewer(true, "main\taerewrite\tcl:lead\n"),
+            Some(ObservedViewer {
+                slot: Some("main".to_owned()),
+                session: Some("aerewrite".to_owned()),
+                agent: Some("cl:lead".to_owned()),
+            })
+        );
+        // An unstamped pane: unset options expand to empty, and empty is None.
+        assert_eq!(
+            interpret_viewer(true, "\taerewrite\t\n"),
+            Some(ObservedViewer {
+                slot: None,
+                session: Some("aerewrite".to_owned()),
+                agent: None,
+            })
+        );
+        // A failed run, a short line and a long line are all no identity.
+        assert_eq!(interpret_viewer(false, "main\ts\ta:b\n"), None);
+        // MORE THAN ONE RECORD is no identity either: a second line, however
+        // well-formed the first, is content the query never asked for, and
+        // reading the first would let it pick the record.
+        assert_eq!(
+            interpret_viewer(true, "main\ts\ta:b\nworker.0\ts\ta:c\n"),
+            None
+        );
+        assert_eq!(interpret_viewer(true, "main\ts\ta:b\n\n"), None);
+        assert_eq!(interpret_viewer(true, "main\ts\ta:b\nx"), None);
+        // One record with or without its terminating newline is the same record.
+        assert_eq!(
+            interpret_viewer(true, "main\ts\ta:b"),
+            interpret_viewer(true, "main\ts\ta:b\n")
+        );
+        assert_eq!(interpret_viewer(true, "main\ts\n"), None);
+        assert_eq!(interpret_viewer(true, "main\ts\ta:b\textra\n"), None);
+        assert_eq!(interpret_viewer(true, ""), None);
+    }
+
     use super::{
         ObservedPane, SlotObservation, interpret_marker, interpret_panes, interpret_sessions,
         is_addressable_socket, list_panes_args, list_sessions_args, marker_args, server_args,

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.1"
+AE_VERSION="0.2.2"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -14548,14 +14548,13 @@ helper_requests_main() {
     # The Rust core serves this surface when the session pins one. Everything
     # below is the LEGACY body, kept whole and reachable for the whole of P2 —
     # it is the rollback, so it may not rot into unreachable code.
-    # Only mode `all` reaches the core in P2.1. `mine`/`inbox` filter on the
-    # caller's pane identity, which the core does not read yet — measured inside
-    # a stamped pane (2026-08-26): it refuses where this body answers. An
-    # unflipped surface is not a fault, so the fallback is silent. Widen the
-    # case when the identity slice lands. The default is `mine` on both sides.
-    case "${1:-mine}" in
-        all) _ae_core_try _requests "$@" || true ;;
-    esac
+    # Every mode reaches the core (P2.1b): it reads the caller's identity from
+    # the pane TMUX_PANE names, so `mine`/`inbox` answer inside a stamped pane
+    # and refuse outside one, as this body does. Two documented differences,
+    # both Rust-native decisions: the core does not fall back to the server's
+    # current pane when TMUX_PANE is unset, and a routed viewer never matches a
+    # keyless row (SC-518 strict) where this body falls back to name matching.
+    _ae_core_try _requests "$@" || true
     mode="${1:-mine}"
     self="$(ae_current_agent_ref)"
 

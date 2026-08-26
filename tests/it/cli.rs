@@ -13,6 +13,7 @@
 use super::parity::Invocation;
 use super::parity::capture::ExitOutcome;
 use super::parity::capture::raw;
+use crate::phase2::run_tmux;
 
 // ONE OF THREE DOORS — `clippy.toml` denies `std::process::Command` crate-wide
 // and `parity_self_test::the_capability_boundary_holds_against_any_lint_relaxation`
@@ -393,6 +394,74 @@ fn requests_all_prints_the_table_on_stdout_and_says_nothing_else() {
 }
 
 #[test]
+fn requests_mine_and_inbox_answer_for_the_pane_tmux_pane_names() {
+    // A REAL isolated server, created and stamped through the harness's pinned
+    // process door (`-S` addressing). The product runs a BARE `tmux`, which
+    // takes its socket from `$TMUX`, so pointing that at the same socket is
+    // what makes the product's ambient server this one and no other. Short
+    // path on purpose — `sun_path` is 104 bytes on macOS.
+    let scratch_dir = std::path::PathBuf::from(format!("/tmp/aeid.{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+    std::fs::create_dir_all(&scratch_dir).expect("a scratch directory");
+    let sock = scratch_dir.join("sock");
+    let server = ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(sock.clone()));
+    let tmux = |tail: &[&str]| {
+        let mut args = ae::tmux::server_args(&server);
+        args.extend(tail.iter().map(|arg| (*arg).to_owned()));
+        run_tmux(&args, &scratch_dir)
+    };
+    let (created, _) = tmux(&["-f", "/dev/null", "new-session", "-d", "-s", "idsess"]);
+    assert!(created, "creating the session must succeed");
+    let (_, pane) = tmux(&["display-message", "-p", "-t", "idsess", "#{pane_id}"]);
+    let pane = pane.trim().to_owned();
+    assert!(pane.starts_with('%'), "a pane id, got {pane:?}");
+    assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_slot", "worker.0"]).0);
+    assert!(tmux(&["set-option", "-p", "-t", &pane, "@ae_agent", "cl:worker"]).0);
+
+    // The planted row is routed main -> worker.0 in session `idsess`, so the
+    // stamped pane is its addressee and not its asker.
+    let root = scratch("requests-identity");
+    let planted = PLANTED_ASK
+        .replace(r#""actor_session":"s""#, r#""actor_session":"idsess""#)
+        .replace(r#""target_session":"s""#, r#""target_session":"idsess""#);
+    let dir = plant_events(&root, "idsess", &[&planted]);
+    std::fs::write(dir.join("meta"), "session=idsess\n").expect("a meta file");
+
+    let run = |mode: &str| {
+        let out = ae()
+            .env("TMUX", format!("{},0,0", sock.display()))
+            .env("TMUX_PANE", &pane)
+            .arg(ae::cli::REQUESTS)
+            .arg(&dir)
+            .arg(mode)
+            .output()
+            .expect("the ae binary should run");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let inbox = run("inbox");
+    let mine = run("mine");
+    let _ = tmux(&["kill-server"]);
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+
+    assert_eq!(inbox.0, Some(0), "{inbox:?}");
+    assert!(inbox.2.is_empty(), "{inbox:?}");
+    assert!(
+        inbox.1.contains("the planted question"),
+        "the addressee sees the row: {inbox:?}"
+    );
+    assert_eq!(mine.0, Some(0), "{mine:?}");
+    assert_eq!(
+        mine.1,
+        String::from_utf8_lossy(&ae::requests::header()),
+        "not the asker, so only the header: {mine:?}"
+    );
+}
+
+#[test]
 fn requests_defaults_to_mine_and_refuses_at_one_with_no_identity() {
     // The default mode is `mine`, and outside a pane `mine` cannot be answered.
     // `1` here is PINNED by 24 corpus rows and must not drift to the usage `2`.
@@ -401,6 +470,9 @@ fn requests_defaults_to_mine_and_refuses_at_one_with_no_identity() {
 
     for tail in [vec![], vec!["mine"], vec!["inbox"]] {
         let mut command = ae();
+        // The test itself may run inside an ae pane; the product must not
+        // inherit that pane's identity, or "no identity" is not what is tested.
+        command.env_remove("TMUX_PANE");
         command.arg(ae::cli::REQUESTS).arg(&dir);
         command.args(&tail);
         let out = command.output().expect("the ae binary should run");

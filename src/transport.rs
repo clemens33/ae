@@ -92,6 +92,19 @@ impl Discovery for Tmux {
     }
 }
 
+/// The calling pane's identity readings, from the AMBIENT server.
+///
+/// Ambient, deliberately: a generated helper is invoked inside the session it
+/// serves, and the frozen helper it replaces runs a bare `tmux` for exactly
+/// this read. The listing's refusal to select an ambient server (SC-1410c) is
+/// about entitlement to sessions ae did not record; a pane asking who it is
+/// has already been placed by tmux.
+#[must_use]
+pub fn observe_viewer(pane: &str) -> Option<tmux::ObservedViewer> {
+    let (succeeded, stdout) = run(PROGRAM, &tmux::viewer_args(&ServerId::Ambient, pane));
+    tmux::interpret_viewer(succeeded, &stdout)
+}
+
 /// Whether `server` is something this transport may put on the wire.
 ///
 /// Only sockets can fail this, and only by being relative — SC-405l's

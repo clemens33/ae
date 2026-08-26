@@ -192,6 +192,53 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     run_with(args, None, out, err)
 }
 
+/// Who is invoking a helper: the pane `TMUX_PANE` names, read from the ambient
+/// server and classified by [`requests::Viewer::from_pane`].
+///
+/// No `TMUX_PANE`, an empty one, or a pane the server does not answer for is
+/// [`requests::Viewer::default`] — no identity — and the requests surface then
+/// refuses `mine`/`inbox`. See the `requests` module docs for why this does not
+/// copy the frozen helper's fallback to the server's current pane.
+fn calling_viewer(dir: &std::path::Path) -> requests::Viewer {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the pane a helper was invoked from is TMUX_PANE, which tmux sets in every pane's environment — see clippy.toml"
+    )]
+    let pane = std::env::var_os("TMUX_PANE");
+    let Some(pane) = pane.filter(|value| !value.is_empty()) else {
+        return requests::Viewer::default();
+    };
+    let Some(pane) = pane.to_str() else {
+        return requests::Viewer::default();
+    };
+    transport::observe_viewer(pane)
+        .map(|observed| requests::Viewer::from_pane(&observed, &own_session(dir)))
+        .unwrap_or_default()
+}
+
+/// The session a helper serves — `session=` in `<dir>/meta`, which is what the
+/// frozen `_lib` reads into `_AE_SESSION`; the directory's own name when the
+/// key is missing, because that is what the directory IS named.
+fn own_session(dir: &std::path::Path) -> String {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the session name a helper serves, read the way _lib reads _AE_SESSION — see clippy.toml"
+    )]
+    let raw = std::fs::read(dir.join("meta"));
+    let from_meta = raw.ok().and_then(|meta| {
+        String::from_utf8_lossy(&meta)
+            .lines()
+            .find_map(|line| line.strip_prefix("session="))
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    });
+    from_meta.unwrap_or_else(|| {
+        dir.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    })
+}
+
 /// Where this invocation's state lives — **SC-404**'s default derivation.
 ///
 /// `AE_HOME` if it names something, else `<HOME>/.ae`. An empty value is
@@ -341,7 +388,7 @@ pub fn run_with(
         // reaches stdout, which is why a refused invocation's stdout is empty
         // rather than a bare header.
         cli::Request::Requests { dir, mode } => {
-            let rendered = requests::render(dir, *mode, &requests::Viewer::default());
+            let rendered = requests::render(dir, *mode, &calling_viewer(dir));
             out.write_all(&rendered.stdout)?;
             err.write_all(&rendered.stderr)?;
             rendered.code
@@ -387,6 +434,24 @@ mod tests {
     use crate::digest::{SessionEntry, Status};
     use crate::time::Timestamp;
     use std::io::{self, Write};
+
+    #[test]
+    fn the_own_session_is_the_meta_key_or_the_directory_name() {
+        let root = std::path::PathBuf::from(format!("/tmp/ae-own-session-{}", std::process::id()));
+        let dir = root.join("named");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            super::own_session(&dir),
+            "named",
+            "no meta: the directory's name"
+        );
+        std::fs::write(dir.join("meta"), "name=x\nsession=renamed\n").unwrap();
+        assert_eq!(super::own_session(&dir), "renamed");
+        std::fs::write(dir.join("meta"), "session=\n").unwrap();
+        assert_eq!(super::own_session(&dir), "named", "an empty key is no key");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
