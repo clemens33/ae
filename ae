@@ -2638,6 +2638,79 @@ _resolve_spawned() {
     return 0
 }
 
+# Resolve the operator's Rust core binding, or nothing.
+#
+# OPERATOR-OWNED INPUTS ONLY: the AE_CORE_BIN environment variable, then the
+# config key `workspace.core`. Deliberately NOT the PATH and NOT a build-layout
+# guess such as `target/release/ae`. PATH is wrong because a helper runs in the
+# AGENT's inherited environment rather than the operator's shell, so it can
+# resolve differently, or to a different VERSION than the one that created the
+# session; a build layout is wrong because it is a developer artifact that does
+# not exist on a clean install. Resolved ONCE, at creation or refresh, and
+# recorded — never re-resolved at helper-run time.
+#
+# An empty result is the normal supported state: no binding means every helper
+# stays on its bash body.
+_ae_core_bin_input() {
+    local candidate="${AE_CORE_BIN:-}"
+    if [[ -z "$candidate" ]]; then
+        candidate="$(get_config workspace.core 2>/dev/null || true)"
+    fi
+    [[ -n "$candidate" ]] || return 1
+    printf '%s\n' "$candidate"
+    return 0
+}
+
+# The version a core binary reports, normalised to the bare version string.
+# `ae --version` prints `ae <version>`, so the value is the last field.
+_ae_core_bin_version() {
+    local line
+    line="$("$1" --version 2>/dev/null | head -1)" || return 1
+    [[ -n "$line" ]] || return 1
+    printf '%s\n' "${line##* }"
+    return 0
+}
+
+# Evaluate the operator's core input and publish the session's binding. Called
+# from BOTH sync_session_assets preambles (launch and `doctor --refresh`), so the
+# rules live once:
+#   no input       -> both keys cleared, silently. Removing the config is a
+#                     rollback, and an absent binding is not a fault.
+#   usable input   -> the PAIR is pinned: the path and the version it reported.
+#   unusable input -> the path is pinned with an EMPTY version, and a warning
+#                     goes to the launching/refreshing terminal. A helper reads
+#                     that shape as configured-but-unusable and says so once,
+#                     which keeps it distinguishable from blank config. The
+#                     session still launches: the core is optional in P2.
+# Every evaluation removes the helpers' once-per-session diagnostic marker: a
+# repaired binding that breaks again must be reported again, not swallowed by
+# the marker its first failure left behind.
+_ae_core_bind() {
+    local meta_dir="$1" candidate reason="" ver=""
+    rm -f "${meta_dir}/.ae_core_unusable"
+    if ! candidate="$(_ae_core_bin_input)"; then
+        set_session_meta_value "${meta_dir}/meta" "ae_core" ""
+        set_session_meta_value "${meta_dir}/meta" "ae_core_version" ""
+        return 0
+    fi
+    # Absolute only: a relative path would resolve against whatever directory a
+    # helper happened to be run from.
+    if [[ "$candidate" != /* ]]; then
+        reason="not an absolute path"
+    elif [[ ! -x "$candidate" ]]; then
+        reason="missing or not executable"
+    elif ! ver="$(_ae_core_bin_version "$candidate")"; then
+        reason="reports no version"
+    fi
+    set_session_meta_value "${meta_dir}/meta" "ae_core" "$candidate"
+    set_session_meta_value "${meta_dir}/meta" "ae_core_version" "$ver"
+    if [[ -n "$reason" ]]; then
+        printf 'ae: warning: the configured core is unusable (%s); helpers use the bash implementation: %s\n' \
+            "$reason" "$candidate" >&2
+    fi
+    return 0
+}
+
 sync_session_assets() {
     local session_name="$1" meta_dir="$2" work_dir="$3" origin="$4" mode="$5" main_pane="$6" config_file="${7:-$CONFIG_FILE}"
     local previous_config="$CONFIG_FILE" previous_local_config="${AE_LOCAL_CONFIG:-}"
@@ -2653,6 +2726,11 @@ sync_session_assets() {
     if [[ -f "${meta_dir}/meta" ]]; then
         set_session_meta_value "${meta_dir}/meta" "ae_path" "$ae_path"
         set_session_meta_value "${meta_dir}/meta" "ae_version" "$AE_VERSION"
+        # The Rust core binding, pinned per session as a PAIR (path + the
+        # version it reported): a helper that finds a binary whose version is
+        # not the pinned one refuses it. One rule set for launch and refresh —
+        # see _ae_core_bind.
+        _ae_core_bind "$meta_dir"
         if [[ -n "$config_file" ]]; then
             set_session_meta_value "${meta_dir}/meta" "config" "$config_file"
         fi
@@ -14403,9 +14481,81 @@ helper_reply_main() {
         "${META_DIR}/send" "$reply_target" "[${req_id}] ${message}"
 }
 
+# One visible complaint per session about a broken core binding.
+#
+# A fallback nobody can see is how a Rust core ships and never once runs: every
+# invocation quietly does the bash thing, the feature looks delivered, and the
+# binding has been dead since the day it was written. So a CONFIGURED binding
+# that cannot be used says so — once, on stderr, marked in the session dir so
+# the next thousand invocations stay quiet.
+#
+# An ABSENT binding is silent by contrast, and deliberately: no configuration is
+# not a fault, it is the default.
+_ae_core_complain() {
+    local marker="${META_DIR}/.ae_core_unusable"
+    [[ -e "$marker" ]] && return 0
+    : >"$marker" 2>/dev/null || true
+    printf 'ae: using the bash implementation - %s\n' "$1" >&2
+    return 0
+}
+
+# Hand this invocation to the pinned Rust core, or return so the caller runs its
+# own bash body.
+#
+# Returns only when the caller should fall back; on success it EXECs and never
+# returns. The version is re-checked at RUN time against the pin because the
+# binary at that path can be replaced under a long-lived session, and running a
+# core that is not the pinned one is exactly the silent-drift failure the pair
+# exists to prevent.
+_ae_core_try() {
+    local sub="$1"
+    shift
+    # AE_CORE explicitly EMPTY forces the bash body for this one invocation.
+    # Set-but-empty is the signal; unset means "no opinion", not "off".
+    if [[ -n "${AE_CORE+set}" && -z "${AE_CORE:-}" ]]; then
+        return 1
+    fi
+    local bin ver actual
+    bin="$(grep '^ae_core=' "${META_DIR}/meta" 2>/dev/null | cut -d= -f2- || true)"
+    ver="$(grep '^ae_core_version=' "${META_DIR}/meta" 2>/dev/null | cut -d= -f2- || true)"
+    # Absent or blank binding: the ordinary un-configured session. Silent.
+    [[ -n "$bin" ]] || return 1
+    # A path with no version is the shape _ae_core_bind publishes for operator
+    # input it could not use. Configured-but-unusable is worth one line; blank
+    # config is not.
+    if [[ -z "$ver" ]]; then
+        _ae_core_complain "the configured core could not be bound when this session was created or refreshed: ${bin}"
+        return 1
+    fi
+    if [[ ! -x "$bin" ]]; then
+        _ae_core_complain "the configured core is missing or not executable: ${bin}"
+        return 1
+    fi
+    actual="$("$bin" --version 2>/dev/null | head -1 || true)"
+    actual="${actual##* }"
+    if [[ "$actual" != "$ver" ]]; then
+        _ae_core_complain "core version mismatch: this session pins ${ver}, ${bin} reports ${actual:-nothing}"
+        return 1
+    fi
+    # TMUX_PANE and the rest of the environment pass through untouched: the core
+    # derives the acting agent from the pane it was invoked in.
+    exec "$bin" "$sub" "$META_DIR" "$@"
+}
+
 # requests:
 helper_requests_main() {
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    # The Rust core serves this surface when the session pins one. Everything
+    # below is the LEGACY body, kept whole and reachable for the whole of P2 —
+    # it is the rollback, so it may not rot into unreachable code.
+    # Only mode `all` reaches the core in P2.1. `mine`/`inbox` filter on the
+    # caller's pane identity, which the core does not read yet — measured inside
+    # a stamped pane (2026-08-26): it refuses where this body answers. An
+    # unflipped surface is not a fault, so the fallback is silent. Widen the
+    # case when the identity slice lands. The default is `mine` on both sides.
+    case "${1:-mine}" in
+        all) _ae_core_try _requests "$@" || true ;;
+    esac
     mode="${1:-mine}"
     self="$(ae_current_agent_ref)"
 
@@ -17651,6 +17801,11 @@ sync_session_assets() {
     if [[ -f "${meta_dir}/meta" ]]; then
         set_session_meta_value "${meta_dir}/meta" "ae_path" "$ae_path"
         set_session_meta_value "${meta_dir}/meta" "ae_version" "$AE_VERSION"
+        # The Rust core binding, pinned per session as a PAIR (path + the
+        # version it reported): a helper that finds a binary whose version is
+        # not the pinned one refuses it. One rule set for launch and refresh —
+        # see _ae_core_bind.
+        _ae_core_bind "$meta_dir"
         if [[ -n "$config_file" ]]; then
             set_session_meta_value "${meta_dir}/meta" "config" "$config_file"
         fi
@@ -17778,7 +17933,7 @@ REPLYPROLOGUE
         cat <<'REQUESTSPROLOGUE'
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 REQUESTSPROLOGUE
-        declare -f _ar_request_states helper_requests_main
+        declare -f _ae_core_complain _ae_core_try _ar_request_states helper_requests_main
         printf 'helper_requests_main "$@"\n'
     } >"${AE_META}/requests.tmp.$$"
     chmod 0700 "${AE_META}/requests.tmp.$$"

@@ -703,6 +703,219 @@ done
 assert_eq "helpers: every shebang names a bash >= 4 that can parse the helper" "" "$_sb_bad"
 fi
 
+# ── P2.1: the Rust core binding for generated helpers ────────────────────────
+if _itest_section 'core binding: requests shims to a pinned Rust core, or falls back visibly'; then
+
+# THE OPPOSED CONTROL IS THE POINT OF THIS SECTION. A fallback path that always
+# runs looks exactly like a working shim: every assertion about legacy output
+# passes whether or not the core was ever reachable. So the core here is a STUB
+# that prints a token nothing else can print, and the negative cases differ from
+# the positive one by ONE FACT each. If the token can never appear, the shim is
+# dead and every other test in this block is vacuous.
+_cb_root="$HOME/.ae/corebind"
+mkdir -p "$_cb_root"
+_cb_core="$_cb_root/ae-core"
+_cb_write_core() {
+    cat >"$_cb_core" <<EOF
+#!/bin/sh
+case "\$1" in
+    --version) echo "ae $1" ;;
+    _requests)
+        # The shim always passes _requests as the subcommand, so the stub's
+        # own unknown-subcommand arm is unreachable THROUGH the shim, and
+        # only mode all is routed at all. The fact that discriminates the
+        # exit-status probe must therefore ride on an argument the CALLER
+        # controls PAST the mode: the sentinel word anywhere in argv is a
+        # refusal.
+        case "\$*" in *nonsense*) exit 64 ;; esac
+        echo "CORE_TOKEN_9f3a mode=\${3:-none}"
+        ;;
+    *) exit 64 ;;
+esac
+EOF
+    chmod 0755 "$_cb_core"
+}
+_cb_write_core "9.9.9"
+
+REPO="$(setup_repo)"
+(cd "$REPO" && AE_CORE_BIN="$_cb_core" "$AE" --local test-core &) 2>/dev/null
+wait_for_session "test-core"
+sleep 1
+_cb_meta="$HOME/.ae/sessions/test-core"
+
+# The binding is PINNED AS A PAIR at creation, from the operator's input only.
+assert_eq "core binding: meta pins the absolute core path" "$_cb_core" \
+    "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
+assert_eq "core binding: meta pins the version the binary reported" "9.9.9" \
+    "$(grep '^ae_core_version=' "$_cb_meta/meta" | cut -d= -f2- || true)"
+
+# POSITIVE: the core actually executes. This is the assertion every other one
+# in this block depends on being able to fail.
+_cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
+assert_contains "core binding: OPPOSED CONTROL — the pinned core really runs" "CORE_TOKEN_9f3a" "$_cb_out"
+assert_contains "core binding: the core receives the caller's arguments" "mode=all" "$_cb_out"
+
+# THE MODE GATE. Only `all` reaches the core in P2.1: mine/inbox filter on the
+# caller's pane identity, which the core does not read yet — measured inside a
+# stamped pane, it refuses where the bash body answers. The stub prints its
+# token for ANY mode it is handed, so a token on these calls would mean the gate
+# is gone; and the fallback is SILENT, because an unflipped surface is not a
+# fault. The bare call is the default mode, `mine`, on both sides.
+for _cb_mode in mine inbox ""; do
+    _cb_args=()
+    [[ -n "$_cb_mode" ]] && _cb_args=("$_cb_mode")
+    "$_cb_meta/requests" ${_cb_args[@]+"${_cb_args[@]}"} >"$_cb_root/out" 2>"$_cb_root/err" || true
+    assert_eq "core binding: mode '${_cb_mode:-<bare>}' cannot reach the core even with a valid binding" "0" \
+        "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/out" | tr -d '[:space:]')"
+    assert_eq "core binding: and mode '${_cb_mode:-<bare>}' falls back without a diagnostic" "0" \
+        "$(grep -c 'bash implementation' "$_cb_root/err" | tr -d '[:space:]')"
+done
+unset _cb_mode _cb_args
+
+# THE SHIM MUST NOT SWALLOW THE CORE'S EXIT STATUS. It execs, so the status is
+# the core's by construction — this pins that, because the obvious alternative
+# implementation (run, then fall back on any non-zero) would silently convert a
+# core that ran and REFUSED into a legacy retry, and the caller would never know
+# which answered. The stub refuses argv carrying "nonsense" with exit 64; the
+# probe rides on mode all because that is the only mode the gate routes.
+"$_cb_meta/requests" all nonsense >/dev/null 2>&1 || _cb_rc=$?
+assert_eq "core binding: the core's own exit status reaches the caller" "64" "${_cb_rc:-0}"
+unset _cb_rc
+
+# A MEASURED, ACCEPTED DIVERGENCE, pinned so it stays a decision. On a usage
+# error the Rust core exits 2 — the documented contract, where 2 means "you
+# asked wrong" and 1 means "it went wrong" — while the legacy bash body exits 1.
+# Bash is reference, not spec, so the core's code is the right one and this is an
+# improvement rather than a regression. It is recorded because a caller testing
+# for 1 would not notice the change any other way.
+
+# NEGATIVE 1 — version mismatch. Same binary, same path, same permissions: the
+# ONLY changed fact is the version it reports, so a token here would mean the
+# gate does not read it.
+_cb_write_core "0.0.0-other"
+rm -f "$_cb_meta/.ae_core_unusable"
+"$_cb_meta/requests" all >"$_cb_root/out" 2>"$_cb_root/err" || true
+_cb_out="$(cat "$_cb_root/out")"
+_cb_err="$(cat "$_cb_root/err")"
+assert_eq "core binding: a mismatched version does not run the core" "0" \
+    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
+assert_contains "core binding: and says so, naming both versions" "9.9.9" "$_cb_err"
+assert_contains "core binding: the legacy body served the call instead" "STATUS" "$_cb_out"
+
+# The complaint is ONCE PER SESSION, not once per invocation.
+rm -f "$_cb_meta/.ae_core_unusable"
+_cb_first="$("$_cb_meta/requests" all 2>&1 >/dev/null || true)"
+_cb_second="$("$_cb_meta/requests" all 2>&1 >/dev/null || true)"
+assert_eq "core binding: the diagnostic appears the first time" "1" \
+    "$([[ -n "$_cb_first" ]] && echo 1 || echo 0)"
+assert_eq "core binding: and not the second" "" "$_cb_second"
+
+# NEGATIVE 2 — present, correct version, NOT executable.
+_cb_write_core "9.9.9"
+chmod 0644 "$_cb_core"
+rm -f "$_cb_meta/.ae_core_unusable"
+"$_cb_meta/requests" all >"$_cb_root/out" 2>"$_cb_root/err" || true
+_cb_out="$(cat "$_cb_root/out")"
+_cb_err="$(cat "$_cb_root/err")"
+assert_eq "core binding: a non-executable core does not run" "0" \
+    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
+assert_contains "core binding: and is reported as such" "executable" "$_cb_err"
+chmod 0755 "$_cb_core"
+
+# NEGATIVE 3 — AE_CORE explicitly EMPTY forces legacy for ONE invocation, with
+# the binding left entirely intact. Set-but-empty is the signal; the very next
+# call with it unset must reach the core again, or this is a latch, not a switch.
+rm -f "$_cb_meta/.ae_core_unusable"
+_cb_out="$(AE_CORE="" "$_cb_meta/requests" all 2>/dev/null || true)"
+assert_eq "core binding: AE_CORE empty forces the legacy body" "0" \
+    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
+_cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
+assert_contains "core binding: and the override is per-invocation, not sticky" "CORE_TOKEN_9f3a" "$_cb_out"
+
+# NEGATIVE 4 — no binding at all. The un-configured default: legacy, and SILENT,
+# because an absent binding is not a fault.
+sed -e 's|^ae_core=.*|ae_core=|' -e 's|^ae_core_version=.*|ae_core_version=|' \
+    "$_cb_meta/meta" >"$_cb_meta/meta.tmp" && mv "$_cb_meta/meta.tmp" "$_cb_meta/meta"
+rm -f "$_cb_meta/.ae_core_unusable"
+"$_cb_meta/requests" all >"$_cb_root/out" 2>"$_cb_root/err" || true
+_cb_out="$(cat "$_cb_root/out")"
+_cb_err="$(cat "$_cb_root/err")"
+assert_eq "core binding: a blank binding uses the legacy body" "0" \
+    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
+assert_eq "core binding: and says NOTHING, because no configuration is not a fault" "" "$_cb_err"
+assert_contains "core binding: the legacy body still works" "STATUS" "$_cb_out"
+
+# REFRESH re-pins the binding, so an operator who fixes their config does not
+# have to recreate the session — and a REMOVED input clears the pin rather than
+# leaving a stale one, which is what makes deleting the config a real rollback.
+(cd "$REPO" && AE_CORE_BIN="$_cb_core" "$AE" doctor --refresh >/dev/null 2>&1 || true)
+assert_eq "core binding: refresh re-pins a repaired binding" "$_cb_core" \
+    "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
+_cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
+assert_contains "core binding: and the core serves the call again after refresh" "CORE_TOKEN_9f3a" "$_cb_out"
+
+# REPAIRED, THEN BROKEN AGAIN. The once-per-session marker is left behind by a
+# real complaint (no manual removal anywhere in this block from here on): a
+# refresh that publishes a healthy binding must reset it, or the NEXT fault is
+# swallowed by the diagnostic of the previous one and the fallback goes silent.
+_cb_write_core "0.0.0-other"
+_cb_first="$("$_cb_meta/requests" all 2>&1 >/dev/null || true)"
+assert_contains "core binding: a fault after refresh is reported" "9.9.9" "$_cb_first"
+assert_eq "core binding: and its marker is on disk" "1" "$([[ -e "$_cb_meta/.ae_core_unusable" ]] && echo 1 || echo 0)"
+_cb_write_core "9.9.9"
+(cd "$REPO" && AE_CORE_BIN="$_cb_core" "$AE" doctor --refresh >/dev/null 2>&1 || true)
+assert_eq "core binding: refresh resets the once-marker" "0" "$([[ -e "$_cb_meta/.ae_core_unusable" ]] && echo 1 || echo 0)"
+_cb_out="$("$_cb_meta/requests" all 2>/dev/null || true)"
+assert_contains "core binding: the repaired core serves" "CORE_TOKEN_9f3a" "$_cb_out"
+_cb_write_core "0.0.0-other"
+_cb_first="$("$_cb_meta/requests" all 2>&1 >/dev/null || true)"
+_cb_second="$("$_cb_meta/requests" all 2>&1 >/dev/null || true)"
+assert_contains "core binding: broken again after a repair is reported afresh" "9.9.9" "$_cb_first"
+assert_eq "core binding: and still only once" "" "$_cb_second"
+_cb_write_core "9.9.9"
+
+# CONFIGURED BUT UNUSABLE AT REFRESH. Operator input that exists but cannot be
+# bound is a FAULT the operator must see — at the terminal that refreshed, and
+# once more from the helper — while the session keeps working on the bash body.
+# It must stay distinguishable from blank config, which says nothing.
+printf '#!/bin/sh\nexit 0\n' >"$_cb_root/mute-core" && chmod 0755 "$_cb_root/mute-core"
+(cd "$REPO" && AE_CORE_BIN="$_cb_root/mute-core" "$AE" doctor --refresh >"$_cb_root/refresh.log" 2>&1 || true)
+assert_contains "core binding: refresh warns about input it cannot bind" "reports no version" "$(cat "$_cb_root/refresh.log")"
+assert_eq "core binding: the unusable path is still recorded" "$_cb_root/mute-core" \
+    "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
+assert_eq "core binding: with no version, so it can never run" "" \
+    "$(grep '^ae_core_version=' "$_cb_meta/meta" | cut -d= -f2- || true)"
+"$_cb_meta/requests" all >"$_cb_root/out" 2>"$_cb_root/err" || true
+assert_contains "core binding: the helper reports the unbound core once" "could not be bound" "$(cat "$_cb_root/err")"
+assert_contains "core binding: and the legacy body served" "STATUS" "$(cat "$_cb_root/out")"
+_cb_second="$("$_cb_meta/requests" all 2>&1 >/dev/null || true)"
+assert_eq "core binding: unbound-core diagnostic is once per session too" "" "$_cb_second"
+
+(cd "$REPO" && "$AE" doctor --refresh >/dev/null 2>&1 || true)
+assert_eq "core binding: refresh with no operator input CLEARS the pin" "" \
+    "$(grep '^ae_core=' "$_cb_meta/meta" | cut -d= -f2- || true)"
+
+# CONFIGURED BUT UNUSABLE AT CREATION: same rule at the other boundary. A missing
+# binary must not fail the launch — the core is optional in P2 — but the launch
+# says so, meta records the attempt, and the helper says so once.
+REPO_BAD="$(setup_repo)"
+(cd "$REPO_BAD" && AE_CORE_BIN="$_cb_root/absent-core" "$AE" --local test-core-bad >"$_cb_root/launch-bad.log" 2>&1 &)
+wait_for_session "test-core-bad"
+sleep 1
+_cb_bad="$HOME/.ae/sessions/test-core-bad"
+assert_contains "core binding: a launch with unusable input warns" "missing or not executable" "$(cat "$_cb_root/launch-bad.log")"
+assert_eq "core binding: and records the path it could not bind" "$_cb_root/absent-core" \
+    "$(grep '^ae_core=' "$_cb_bad/meta" | cut -d= -f2- || true)"
+assert_eq "core binding: with an empty version" "" \
+    "$(grep '^ae_core_version=' "$_cb_bad/meta" | cut -d= -f2- || true)"
+"$_cb_bad/requests" all >"$_cb_root/out" 2>"$_cb_root/err" || true
+assert_contains "core binding: the helper of that session reports it" "could not be bound" "$(cat "$_cb_root/err")"
+assert_contains "core binding: and serves the call on the bash body" "STATUS" "$(cat "$_cb_root/out")"
+"$AE" end test-core-bad --force >/dev/null 2>&1 || true
+
+"$AE" end test-core --force >/dev/null 2>&1 || true
+fi
+
 # ── hostile PATH: ae must survive its own re-exec marker ──────────────
 if _itest_section 'hostile PATH: ae must survive its own re-exec marker'; then
 # On a macOS login shell path_helper puts /bin first, so ae's own

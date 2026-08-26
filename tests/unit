@@ -12116,8 +12116,22 @@ assert_eq "sensor-cancel: the digest's count agrees" "1" \
 # stays green, because the suite calls the function straight out of ae. This block proves
 # three things in order: the list names it, the omission is SILENT rather than loud, and
 # the guard that forbids the omission actually fails on it.
-assert_eq "requests emission: the list names the shared sensor before the helper's main" "1" \
-    "$([[ "$AE_SOURCE" == *'declare -f _ar_request_states helper_requests_main'* ]] && echo 1 || echo 0)"
+# The list is checked as an INVARIANT rather than as one frozen literal: every
+# support function the helper calls must be emitted beside it, and its main must
+# come last. A literal match had to be rewritten the first time a support
+# function was added — which is a guard that fails on legal change and passes on
+# the illegal one it was written for, since dropping a DIFFERENT name from a
+# longer list still matched. Each name below breaks the live helper at runtime
+# if it is missing, and the unit suite would stay green either way.
+_ar48_emit_line="$(grep -oE "declare -f [_a-zA-Z0-9 ]*helper_requests_main" <<<"$AE_SOURCE" | head -1)"
+assert_eq "requests emission: the list exists at all" "1" \
+    "$([[ -n "$_ar48_emit_line" ]] && echo 1 || echo 0)"
+for _ar48_needed in _ar_request_states _ae_core_complain _ae_core_try; do
+    assert_eq "requests emission: the list names $_ar48_needed" "1" \
+        "$([[ " $_ar48_emit_line " == *" $_ar48_needed "* ]] && echo 1 || echo 0)"
+done
+assert_eq "requests emission: the helper's main is emitted LAST" "1" \
+    "$([[ "$_ar48_emit_line" == *helper_requests_main ]] && echo 1 || echo 0)"
 
 # Build the artifact BOTH ways and run each against a real event log. The omission does
 # not crash and does not warn — it prints a header and no rows, which reads exactly like
