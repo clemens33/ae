@@ -1792,6 +1792,15 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             "src/inventory.rs".to_owned(),
             "src/lib.rs".to_owned(),
             "src/meta.rs".to_owned(),
+            // The git branch read: `HEAD` under the session's own work tree,
+            // plus the `.git` pointer file a worktree uses instead of a
+            // directory. Registered deliberately — the branch is a fact about
+            // the world and reading it is a new door, so it belongs on this
+            // list rather than being routed around the tripwire that named it.
+            // It reads git's files instead of launching `git` so that `list`
+            // stays a no-subprocess path and still works with no git installed;
+            // every failure is `None`, so a listing never fails on it.
+            "src/session.rs".to_owned(),
         ],
         "the set of places product code can reach the eleven named entry points changed"
     );
@@ -1914,22 +1923,22 @@ fn health_cell(alive: Option<bool>) -> String {
         ..AgentEntry::default()
     }];
     let world = World::new(NOW, vec![entry]);
-    let (text, _, _) = invoke_over("list", &["--all"], Some(&world));
-    let row = text
-        .lines()
-        .find(|line| line.starts_with(char::is_whitespace) && line.contains("cl:lead"))
-        .unwrap_or_else(|| panic!("the agent row must render for alive={alive:?}"));
-    // The cell after the agent reference AND its short session id. Which column
-    // and how wide is layout, and layout is not this gate's business — but WHICH
-    // cell is, so the two skipped fields are named rather than counted. The id
-    // sits between them because frozen rendered it on both agent grammars
-    // (ae@72c7293:4254 running, ae:4299 stopped) and our table had omitted it;
-    // an unnamed `nth(1)` silently returned that id for every health value and
-    // collapsed all three of this gate's cells into one.
-    let mut cells = row.split_whitespace();
-    let _reference = cells.next();
-    let _short_session_id = cells.next();
-    cells.next().unwrap_or_default().to_owned()
+    let (machine, _, _) = invoke_over("list", &["--all", "--json"], Some(&world));
+    // HEALTH IS A JSON MEMBER, NOT A TABLE COLUMN — and that is a deliberate
+    // change, not an omission. Nothing on the list path fills per-agent health,
+    // so the column rendered `unknown` for every agent of every session; an
+    // always-unknown column is not a three-way distinction, it is noise sitting
+    // where a reader looks for state. The three-way distinction this gate exists
+    // to protect is real and still enforced — here, on the member that carries
+    // it. Restore the column together with a pane query that populates it.
+    let member = machine
+        .split(r#""alive":"#)
+        .nth(1)
+        .unwrap_or_else(|| panic!("the alive member must render for alive={alive:?}"));
+    member
+        .chars()
+        .take_while(|c| c.is_alphanumeric())
+        .collect::<String>()
 }
 
 #[test]
@@ -2018,19 +2027,19 @@ fn sc_017q_the_entry_point_reports_unknown_agents_rather_than_dead_ones() {
     // Bound to the product's own choice, not to a word this test picked.
     let null_cell = health_cell(None);
     let dead_cell = health_cell(Some(false));
+    assert_ne!(null_cell, dead_cell, "unknown is not dead in the digest");
     let agent_row = human
         .lines()
         .find(|line| line.starts_with(char::is_whitespace) && line.contains("cl:lead"))
         .unwrap_or_else(|| panic!("the agent row must be rendered: {human}"));
+    // The TABLE's third field is the declared state. An unobservable agent must
+    // not have its liveness leak into that cell — the row still reports what the
+    // agent DECLARED, and says nothing it cannot support about whether the pane
+    // is there. That fact is what the digest's `alive` member is for.
     assert_eq!(
         agent_row.split_whitespace().nth(2),
-        Some(null_cell.as_str()),
-        "an unobservable agent renders as the product's UNKNOWN cell: {human}"
-    );
-    assert_ne!(
-        agent_row.split_whitespace().nth(2),
-        Some(dead_cell.as_str()),
-        "and never as its dead cell: {human}"
+        Some("-"),
+        "an undeclared agent renders the no-declaration cell: {human}"
     );
     assert!(
         machine.contains(r#""alive":null"#),

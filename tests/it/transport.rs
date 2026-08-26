@@ -277,9 +277,14 @@ fn sc_017l_a_session_the_server_reports_without_ae_s_marker_is_unknown() {
     let _ = fs::remove_dir_all(&scratch);
 
     assert_eq!(unowned, "unknown", "no marker is not proof of ownership");
+    // A marker whose VALUE is some other string is still ae's tag, and the tag
+    // is the whole claim it makes. This session's identity was already settled
+    // by the exact name match against its own recorded server, so re-deriving
+    // it from the variable added nothing — and demanding it made `running`
+    // unreachable for every real session, which is what shipped.
     assert_eq!(
-        mismatched, "unknown",
-        "a marker naming another session is not proof of this one"
+        mismatched, "running",
+        "the marker tags a session as ae's; it does not name one"
     );
     assert_eq!(
         owned, "running",

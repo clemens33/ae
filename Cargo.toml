@@ -3,13 +3,15 @@
 # agent "reinvention" failure mode. Split later only on measured need.
 [package]
 name = "ae"
-# 0.0.0 stands for now. The bash era versions ae with CalVer (`AE_VERSION` in the
-# `ae` script, bumped by `just bump`); Cargo wants semver. The two schemes are
-# NOT reconciled and `ae --version` currently prints the Cargo one.
-# TRIGGER (P5, entry flip): unify the version scheme when the installer points
-# the public `ae` path at this binary — that is the moment the two can no longer
-# disagree without a user seeing it.
-version = "0.0.0"
+# 0.2.1 tracks the shipping ae product version. The bash era versions ae with
+# CalVer (`AE_VERSION` in the `ae` script, bumped by `just bump`); this value is
+# deliberately held EQUAL to it rather than reconciled into a second scheme.
+# WHY IT MOVED OFF 0.0.0: delivery-first brought the entry flip's trigger
+# forward. The two versions may not disagree where a user can see both, and
+# `ae --version` prints this one — so while this binary is something a person
+# runs, 0.0.0 was not a placeholder, it was false product information.
+# Keep this in step with `AE_VERSION` until one scheme retires the other.
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.97.1"
 description = "Agent environment: tmux-backed multi-agent session multiplexer"

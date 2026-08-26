@@ -467,6 +467,21 @@ fn child_dirs(dir: &Path) -> io::Result<Vec<PathBuf>> {
         if entry.file_type().is_ok_and(|kind| !kind.is_dir()) {
             continue;
         }
+        // A dot-directory is ae's own infrastructure, never a session: `.locks`
+        // holds the lifecycle locks and sits right beside the session dirs. A
+        // session name can never begin with `.` — the name grammar starts at
+        // `[A-Za-z0-9]` — so this excludes internals without excluding any
+        // legal session, and it is a NAME test rather than a hardcoded list so
+        // a future internal directory needs no change here.
+        // An unreadable name is KEPT, exactly as an unreadable type is: the
+        // test is "provably internal", not "not provably a session".
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with('.'))
+        {
+            continue;
+        }
         found.push(entry.path());
     }
     Ok(found)
@@ -796,6 +811,32 @@ mod tests {
                 .find(|(known, _)| known == server)
                 .map_or(Ok(Vec::new()), |(_, answer)| answer.clone())
         }
+    }
+
+    /// `.locks` sits beside the session directories and is not a session.
+    ///
+    /// It shipped as the FIRST row of `ae list` — a lifecycle-lock directory
+    /// rendered as a session with an unknown status, above every real one.
+    #[test]
+    fn a_dot_directory_beside_the_sessions_is_not_a_candidate() {
+        let scratch = Scratch::new("dot-dirs");
+        scratch.session("real");
+        let sessions = scratch.0.join("sessions");
+        for internal in [".locks", ".cache"] {
+            fs::create_dir_all(sessions.join(internal)).expect("an internal dir");
+        }
+
+        let found = super::child_dirs(&sessions).expect("the scan succeeds");
+        let names: Vec<String> = found
+            .iter()
+            .filter_map(|path| path.file_name()?.to_str().map(ToOwned::to_owned))
+            .collect();
+
+        assert_eq!(names, ["real"], "only the session survives the scan");
+        assert!(
+            !names.iter().any(|name| name.starts_with('.')),
+            "no dot-entry is ever a candidate: {names:?}"
+        );
     }
 
     struct Scratch(PathBuf);

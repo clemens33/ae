@@ -3,10 +3,15 @@
 //! **SC-017k** — a durable candidate is `running` only when a SUCCESSFUL query of
 //! its own recorded server returns the EXACT session name with positive
 //! ae-ownership; it is `stopped` only when that same successful query proves the
-//! exact name absent. **SC-017l** — an unreachable, missing or ambiguous
-//! recorded server, a failed query, or an exact live name whose ownership
-//! evidence is missing or mismatched yields `unknown`, never `stopped` and never
-//! absence.
+//! exact name absent. An unreachable, missing or ambiguous recorded server, a
+//! failed query, or an exact live name carrying no ownership tag yields
+//! `unknown`, never `stopped` and never absence.
+//!
+//! **Ownership is marker PRESENCE, not a name match** — see
+//! [`positively_owned`], which carries the measurement that changed it. A tag
+//! whose value differs from the session name is still a tag; identity is settled
+//! by the exact name match against the session's own recorded server, which is a
+//! stronger check than re-reading it out of a variable that never carried it.
 //!
 //! # What is NOT a liveness fact
 //!
@@ -35,10 +40,11 @@
 //!
 //! Phase 1 admits a live session to the inventory on marker PRESENCE, and said
 //! why in [`crate::inventory::DiscoveredSession::marker`]: guessing stricter
-//! there could only REMOVE a session from the inventory. Proving `running` is
-//! the opposite direction — a wrong guess ASSERTS something — so SC-017l's
-//! "missing/mismatched" is answered here, where the cost of being wrong is a
-//! candidate that stays `unknown` rather than one that vanishes.
+//! there could only REMOVE a session from the inventory. Phase 2 now applies the
+//! SAME test rather than a stricter one — the two phases agreeing is the point.
+//! The stricter phase-2 rule was not a safer version of this one; it was a
+//! different question (identity) asked of evidence that does not answer it, and
+//! it made `running` unreachable for every session ae has ever created.
 //!
 //! # No rediscovery
 //!
@@ -92,14 +98,25 @@ impl Snapshot {
 /// Whether `marker` is positive ae-ownership evidence for a session called
 /// `name`.
 ///
-/// SC-017l names three states and only one of them is proof: the marker names
-/// THIS session. Missing evidence and evidence naming something else are
-/// different failures with the same consequence — neither can support `running`,
-/// and neither is grounds for `stopped`, because a session that is demonstrably
-/// there has not been proven absent.
+/// The marker answers ONE question — "is this tmux session ae's?" — and its
+/// presence is the answer. It is a tag, not a name: the real producer writes
+/// `AE_SESSION=1`, so a rule requiring the value to equal the session name can
+/// never be satisfied by any session ae has ever created, and every session
+/// classifies `unknown` for want of evidence that exists. Measured on a live
+/// machine 2026-08-26: five real sessions, all tagged, all `unknown`, the whole
+/// status column dead.
+///
+/// The identity question the old rule was reaching for is already answered
+/// upstream and better: the caller matched this session by EXACT name against
+/// its OWN recorded server's `list-sessions`. Re-deriving identity from a tag
+/// that does not carry it added no safety and cost the entire feature.
+///
+/// `name` is retained because ownership is asked ABOUT a session and a future
+/// marker grammar may carry identity; it is deliberately unused today.
 #[must_use]
 pub fn positively_owned(name: &str, marker: Option<&str>) -> bool {
-    marker == Some(name)
+    let _ = name;
+    marker.is_some_and(|marker| !marker.is_empty())
 }
 
 /// The snapshot fact a candidate already carries, if it is proof of life.
@@ -500,9 +517,13 @@ mod tests {
             (Some("mdk"), Status::Running, "positive ae-ownership"),
             (None, Status::Unknown, "ownership missing"),
             (
-                Some("someone-else"),
+                // A present-but-empty marker, which is what an unset variable
+                // can render as. A DIFFERENT value is no longer a non-proof:
+                // the tag says "ae's", and identity was settled by the exact
+                // name match upstream.
+                Some(""),
                 Status::Unknown,
-                "ownership mismatched",
+                "marker present but empty",
             ),
         ] {
             let backend = Backend::new().live(named("B"), &[("mdk", marker)]);
@@ -520,14 +541,41 @@ mod tests {
     }
 
     #[test]
-    fn the_ownership_predicate_is_the_marker_naming_this_session() {
-        assert!(positively_owned("mdk", Some("mdk")));
+    fn the_ownership_predicate_is_the_presence_of_the_marker() {
+        // THE MARKER IS A TAG, NOT A NAME. The real producer writes
+        // `AE_SESSION=1`, so requiring the value to equal the session name made
+        // the predicate unsatisfiable in the field and killed the whole status
+        // column — five live sessions, all tagged, all `unknown`. Identity is
+        // established upstream by an EXACT name match against this session's own
+        // recorded server; the tag only answers "is this ae's?".
+        assert!(positively_owned("mdk", Some("mdk")), "a name is a value");
+        assert!(
+            positively_owned("mdk", Some("1")),
+            "the value the real producer actually writes is positive evidence"
+        );
+        assert!(
+            positively_owned("mdk", Some("mdk-app")),
+            "a different value is still a tag: this predicate does not adjudicate identity"
+        );
         assert!(!positively_owned("mdk", None), "missing is not positive");
         assert!(
-            !positively_owned("mdk", Some("mdk-app")),
-            "mismatched is not positive — and a prefix is a mismatch like any other"
+            !positively_owned("mdk", Some("")),
+            "present-but-empty is not evidence — an unset variable can render this way"
         );
-        assert!(!positively_owned("mdk", Some("")), "empty names nothing");
+    }
+
+    /// The regression this slice exists for: the live marker shape classifies.
+    #[test]
+    fn a_session_tagged_the_way_the_real_producer_tags_it_is_running() {
+        let succeeded = Backend::new().live(named("B"), &[("mdk", Some("1"))]);
+        assert_eq!(
+            status_of(
+                &classify(inventory(vec![durable("mdk", positive("B"))]), &succeeded),
+                "mdk"
+            ),
+            Status::Running,
+            "AE_SESSION=1 is what ae writes; it must classify running, not unknown"
+        );
     }
 
     // ---- criterion 6: success and failure override identical payloads ------
@@ -586,18 +634,15 @@ mod tests {
             durable("unreachable", positive("down")),
             durable("query-failed", positive("also-down")),
             durable("marker-missing", positive("up")),
-            durable("marker-mismatched", positive("up")),
-            Candidate::tmux_only(sighting(ServerId::Ambient, "live-unowned", "someone-else")),
+            durable("marker-empty", positive("up")),
+            Candidate::tmux_only(sighting(ServerId::Ambient, "live-unowned", "")),
         ];
         let backend = Backend::new()
             .down(named("down"))
             .down(named("also-down"))
             .live(
                 named("up"),
-                &[
-                    ("marker-missing", None),
-                    ("marker-mismatched", Some("not-it")),
-                ],
+                &[("marker-missing", None), ("marker-empty", Some(""))],
             );
 
         let snapshot = classify(inventory(candidates), &backend);
@@ -748,11 +793,11 @@ mod tests {
     fn a_dual_candidate_whose_sighting_is_not_positively_owned_follows_the_query_rule() {
         // SC-017k's exception to the exception: only a POSITIVELY OWNED matched
         // sighting is the snapshot proof.
-        let mut mismatched = durable("api", positive("B"));
-        mismatched.live = Some(sighting(named("B"), "api", "someone-else"));
+        let mut unowned = durable("api", positive("B"));
+        unowned.live = Some(sighting(named("B"), "api", ""));
         let backend = Backend::new().live(named("B"), &[("api", Some("api"))]);
 
-        let snapshot = classify(inventory(vec![mismatched]), &backend);
+        let snapshot = classify(inventory(vec![unowned]), &backend);
 
         assert_eq!(
             status_of(&snapshot, "api"),

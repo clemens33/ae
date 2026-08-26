@@ -28,8 +28,14 @@
 //! **SC-017h names content, not form.** Its authority (commands.md:56-59) is a
 //! single sentence: a tabular view "with per-agent health, declared state, and
 //! a session-level `attn:<reason>` marker when a session needs attention". No
-//! columns, no field order and no widths. Ratified with the seats for this
-//! slice:
+//! columns, no field order and no widths.
+//!
+//! **PER-AGENT HEALTH IS NOT IN THIS VIEW, deliberately.** Nothing on the list
+//! path populates it, so the column rendered `unknown` for every agent of every
+//! session — an always-unknown cell is not a three-way distinction, it is noise
+//! occupying the place a reader looks for state. The fact still ships, on the
+//! digest's `alive` member, where it is genuinely three-way. The column returns
+//! with a pane query that fills it. Ratified with the seats for this slice:
 //!
 //! * what [`table`] SHOWS is pinned — the row's three nouns plus frozen's
 //!   per-session goal/git/version/activity subline;
@@ -326,7 +332,46 @@ const fn frozen_empty_listing(args: &ListArgs) -> &'static str {
 /// contractual is that an exact session maximum carries `attn:<reason>`.
 /// `--needs-attn` may still select a row on its partial-evidence `true`, but human
 /// output never fabricates an inexact class. Each agent line carries that
-/// agent's health and its declared state.
+/// agent's reference, its short session id and its DECLARED STATE. Health is
+/// not among them — see the module docs for why it moved to the digest.
+/// Column widths for the human table.
+///
+/// Fixed rather than computed from the widest row: a listing whose columns move
+/// when an unrelated session appears is harder to scan across runs, not easier.
+/// An over-long value pushes its row out rather than being truncated — losing a
+/// character of a session name to keep a column straight is the wrong trade.
+const NAME_WIDTH: usize = 26;
+const STATUS_WIDTH: usize = 10;
+const AGENT_WIDTH: usize = 24;
+const ID_WIDTH: usize = 10;
+
+/// Append `value`, padded to at least `width` with a single trailing space.
+///
+/// Width is counted in CHARS, not bytes: a multi-byte name would otherwise be
+/// padded by its UTF-8 length and under-indent its column.
+///
+/// # What alignment is claimed, and what is not
+///
+/// Columns align for **ASCII** values, which is every value that can occupy an
+/// aligned column here: session names, agent names, aliases and ids are ASCII
+/// by enforced grammar, so newly created sessions always line up. The origin is
+/// the one field that may hold arbitrary Unicode, and it is LAST on the row —
+/// nothing follows it that could be pushed out of true.
+///
+/// A char is not a terminal cell. A legacy or hand-edited name containing
+/// double-width, combining or zero-width characters will therefore pad to the
+/// wrong visible column. That is **best-effort, not a guarantee**: correcting
+/// it needs a Unicode width table — a dependency and a class of its own
+/// failures — bought for a cosmetic gain on metadata the current grammar can no
+/// longer produce. Revisit if such a name is ever observed in the wild.
+fn push_padded(out: &mut String, value: &str, width: usize) {
+    out.push_str(value);
+    for _ in value.chars().count()..width {
+        out.push(' ');
+    }
+    out.push(' ');
+}
+
 #[must_use]
 pub fn table(sessions: &[&SessionEntry]) -> String {
     // `render` is the product route and supplies its snapshot time to
@@ -345,48 +390,62 @@ pub fn table(sessions: &[&SessionEntry]) -> String {
 pub fn table_at(sessions: &[&SessionEntry], now: Timestamp) -> String {
     let mut out = String::new();
     for session in sessions {
-        out.push_str(&session.name);
-        out.push('\t');
-        out.push_str(session.status.as_str());
+        // Columns are PADDED, not tab-separated. A tab renders at whatever stop
+        // the terminal happens to have, so a name one character longer shifted
+        // every field after it and nothing lined up down the page. `--json` is
+        // the machine surface; this one is for a human scanning a column.
+        push_padded(&mut out, &session.name, NAME_WIDTH);
+        push_padded(&mut out, session.status.as_str(), STATUS_WIDTH);
         // The filter may have selected this row on readable partial evidence, but
         // a table marker names a class and therefore needs the same exactness as
         // JSON's attention/rank pair.
         if session.attention_is_exact()
             && let Some(reason) = session.attention
         {
-            out.push('\t');
             out.push_str("attn:");
             out.push_str(reason.as_str());
+            out.push(' ');
+        }
+        // ORIGIN — where this session came from. Kept because it is what makes
+        // a session identifiable at a glance when several projects each have
+        // one; the copy MODE is not, and is deliberately not rendered.
+        // ORIGIN IS APPENDED LAST AND VERBATIM. All padding is already in place
+        // by this point, so the origin's own bytes are never adjusted — a path
+        // may legally end in a space, and the earlier shape stripped it while
+        // tidying the row, silently rendering a DIFFERENT path than the one the
+        // session records. Trailing whitespace is trimmed only on the branch
+        // where no origin follows it.
+        match session
+            .origin
+            .as_deref()
+            .filter(|origin| !origin.is_empty())
+        {
+            Some(origin) => out.push_str(origin),
+            None => {
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+            }
         }
         out.push('\n');
         push_frozen_session_subline(&mut out, session, now);
         for agent in &session.agents {
             out.push_str("  ");
-            out.push_str(&agent.reference);
-            out.push('\t');
+            push_padded(&mut out, &agent.reference, AGENT_WIDTH);
             // Frozen rendered the short session id on BOTH grammars — running
             // (ae@72c7293:4254) and stopped (ae:4299) — and our table omitted it
             // entirely, which run 2 semantic-fails independently of every health
             // or state question. It sits between the reference and the semantic
             // fields, and it is the SAME helper the digest consumes so the two
             // surfaces cannot drift.
-            out.push_str(agent.display_session_id());
-            out.push('\t');
-            // Per-agent HEALTH. `dead` here is the boolean `alive: false` — a
-            // pane fact — and is not SC-980's `attn:dead` alert, which reaches
-            // the session marker above by way of SC-017g's rollup.
-            // **SC-017r** — three distinguishable, non-silent renderings. The
-            // words are an open choice; that `unknown` is recognizable AS
-            // unknown rather than as absence or blank is not. Frozen bash
-            // rendered a failed query exactly like a healthy agent (empty
-            // marker) while its JSON called the same agent dead: two surfaces
-            // collapsing one unknown in opposite directions.
-            out.push_str(match agent.alive {
-                Some(true) => "alive",
-                Some(false) => "dead",
-                None => "unknown",
-            });
-            out.push('\t');
+            push_padded(&mut out, agent.display_session_id(), ID_WIDTH);
+            // Per-agent HEALTH is deliberately NOT a column here. Nothing
+            // populates it on the list path — it rendered `unknown` for every
+            // agent of every session — and an always-unknown column is not a
+            // three-way distinction, it is noise occupying the place where a
+            // reader looks for state. The health that a human acts on already
+            // reaches this view as the session's `attn:` marker. Restore a
+            // per-agent column when a pane query actually fills it.
             // SC-017h's amended declared-state cell is three-way: an exact
             // declaration, an exact no-declaration, or unreadable event input.
             // The last spelling cannot reuse `-`, which means the reader did
@@ -433,9 +492,11 @@ fn push_frozen_session_subline(out: &mut String, session: &SessionEntry, now: Ti
         out.push_str(branch);
         out.push_str(" · ");
     } else if !session.degraded {
-        // SC-405g's temporary predecessor projection. Branch acquisition has
-        // not landed yet, so healthy `None` is a value placeholder rather than
-        // a missing atom; remove this arm with that acquisition slice.
+        // Branch acquisition HAS landed (see `session::branch_at`), so this arm
+        // no longer stands for "unimplemented". It now means the work tree
+        // answered nothing: not a repository, moved or unreadable, or a `HEAD`
+        // whose bytes were refused by the rendering guard. A healthy `None` is
+        // therefore still a value placeholder rather than a missing atom.
         out.push_str("git:? · ");
     }
     out.push_str("ae ");
@@ -485,6 +546,25 @@ fn frozen_relative_time(now: Timestamp, timestamp: Option<i64>) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The whitespace-collapsed fields of the row mentioning `needle`.
+    ///
+    /// Column WIDTHS are layout and change when a column is added or dropped;
+    /// the fields present and their ORDER are the contract. Asserting on
+    /// collapsed fields keeps these gates pinned to the second without making
+    /// every one of them a padding test that must be rewritten whenever the
+    /// table is re-laid out.
+    fn row_fields(rendered: &str, needle: &str) -> Vec<String> {
+        rendered
+            .lines()
+            .find(|line| line.contains(needle))
+            .map(|line| {
+                line.split_whitespace()
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default()
+    }
+
     use super::{Presentation, World, render, table};
     use crate::attention::Reason;
     use crate::digest::{AgentEntry, SessionEntry, Status};
@@ -1002,8 +1082,102 @@ mod tests {
                 listed.reference
             );
         }
-        assert!(rendered.contains("dead"), "{rendered}");
-        assert!(rendered.contains("alive"), "{rendered}");
+        // Health words are deliberately absent from this surface; roster
+        // COMPLETENESS is what this gate is about and the loop above is it.
+    }
+
+    /// An origin's own bytes survive the row exactly.
+    ///
+    /// The first shape of this renderer appended the origin and THEN tidied the
+    /// row's trailing whitespace, so a path legitimately ending in a space was
+    /// silently rendered as a different path. Padding now happens before the
+    /// origin, and nothing after it touches those bytes.
+    #[test]
+    fn an_origin_keeps_its_exact_bytes_including_a_trailing_space() {
+        for origin in [
+            "/src/trailing ",
+            "/src/two  ",
+            "/src/ordinary",
+            "/src/with space/inside",
+        ] {
+            let mut session = SessionEntry::new("s", Status::Running);
+            session.origin = Some(origin.to_owned());
+            let rendered = table(&[&session]);
+            let row = rendered
+                .lines()
+                .next()
+                .unwrap_or_else(|| panic!("a row renders: {rendered}"));
+            assert!(
+                row.ends_with(origin),
+                "the row must end in the origin's exact bytes: {row:?} vs {origin:?}"
+            );
+        }
+
+        // And a session with NO origin still carries no trailing whitespace.
+        let bare = SessionEntry::new("s", Status::Running);
+        let rendered = table(&[&bare]);
+        let row = rendered.lines().next().unwrap_or_default();
+        assert!(
+            !row.ends_with(' '),
+            "a row without an origin is trimmed: {row:?}"
+        );
+    }
+
+    /// The delivery slice's presentation contract, in one gate.
+    ///
+    /// Each assertion here corresponds to a defect found by running the binary
+    /// against real sessions: an origin that was never rendered, columns that
+    /// were tab-separated and so lined up at whatever stop the terminal had,
+    /// and a health column nothing populated. The agent row asserts THREE cells —
+    /// reference, short session id, declared state — which is what it renders.
+    #[test]
+    fn the_listing_carries_origin_aligns_its_columns_and_shows_no_unpopulated_health() {
+        let mut short = SessionEntry::new("s", Status::Running);
+        short.origin = Some("/src/short".to_owned());
+        let mut long = SessionEntry::new("a-considerably-longer-name", Status::Running);
+        long.origin = Some("/src/long".to_owned());
+        for session in [&mut short, &mut long] {
+            session.agents = vec![AgentEntry {
+                reference: "cl:lead".to_owned(),
+                alias: "cl".to_owned(),
+                name: "lead".to_owned(),
+                alive: None,
+                state: Some("working".to_owned()),
+                ..AgentEntry::default()
+            }];
+        }
+        let rendered = table(&[&short, &long]);
+
+        // ORIGIN — what identifies a session when several projects each have one.
+        assert!(
+            rendered.contains("/src/short"),
+            "origin renders: {rendered}"
+        );
+        assert!(rendered.contains("/src/long"), "origin renders: {rendered}");
+
+        // ALIGNMENT — the status column starts at the same offset on both rows,
+        // which is the property a tab cannot give and the reason it was dropped.
+        let offset = |needle: &str| {
+            rendered
+                .lines()
+                .find(|line| line.starts_with(needle))
+                .and_then(|line| line.find("running"))
+        };
+        assert_eq!(
+            offset("s "),
+            offset("a-considerably-longer-name"),
+            "a longer name must not shift the column: {rendered}"
+        );
+        assert!(!rendered.contains('\t'), "no tabs remain: {rendered}");
+
+        // NO UNPOPULATED HEALTH CELL. `alive: None` must not surface as a word
+        // in the agent row; the digest carries that fact instead.
+        let agent = row_fields(&rendered, "cl:lead");
+        assert_eq!(
+            agent,
+            ["cl:lead", "-", "working"],
+            "reference, short id, declared state — and nothing else: {rendered}"
+        );
     }
 
     #[test]
@@ -1111,19 +1285,13 @@ mod tests {
                 solo.agents = vec![listed.clone()];
                 let alone = table(&[&solo]);
 
-                // The negative half depends on the fixture's words, not on the
-                // layout: no name, status or state here spells the other health.
-                let (health, other) = match listed.alive {
-                    Some(true) => ("alive", "dead"),
-                    Some(false) => ("dead", "alive"),
-                    None => ("unknown", "dead"),
-                };
+                // PER-AGENT HEALTH IS NO LONGER A TABLE CELL — it is a digest
+                // member, gated in `phase3::sc_017r`. Nothing on the list path
+                // populates it, so the column said `unknown` for every agent of
+                // every session. What this surface still owes each agent is its
+                // reference and its DECLARED STATE, and that is what is gated
+                // here.
                 assert!(alone.contains(&listed.reference), "{alone}");
-                assert!(alone.contains(health), "{alone}");
-                assert!(
-                    !alone.contains(other),
-                    "the health word is this agent's own: {alone}"
-                );
                 if let Some(declared) = listed.state.as_deref() {
                     assert!(alone.contains(declared), "{alone}");
                 }
@@ -1336,7 +1504,13 @@ mod tests {
             panic!("one selected partial-evidence row");
         };
 
-        assert!(human.contains("partial-evidence-table\trunning"));
+        assert_eq!(
+            row_fields(&human, "partial-evidence-table")
+                .get(1)
+                .map(String::as_str),
+            Some("running"),
+            "the status field follows the name"
+        );
         assert!(!human.contains("attn:blocked"));
         // The dash in the id cell is the RULED outcome for an arm that NO standing
         // authority reaches. SC-509 governs this member's PRESENCE and disclaims
@@ -1352,10 +1526,13 @@ mod tests {
         // Authority: SC-509's dated in-row two-field `session_id` ruling
         // (fix-known-defect, 2026-08-25) + ae@72c7293:3150-3161.
         assert!(
-            human.contains("  claude:lead\t-\tunknown\tunknown\n"),
+            row_fields(&human, "claude:lead") == ["claude:lead", "-", "unknown"],
             "the malformed event hides stale blocked state behind the human unknown: {human}"
         );
-        assert!(!human.contains("\tblocked\n"));
+        assert!(
+            !human.contains("blocked"),
+            "an inexact class is not printed"
+        );
         assert_eq!(sessions.len(), 1);
         assert_eq!(
             sessions[0].get("needs_attention"),
@@ -1401,24 +1578,26 @@ mod tests {
             }];
             let rendered = table(&[&session]);
             assert!(
-                rendered.contains("  fake:lead\t11111111\tdead\tworking\n"),
+                row_fields(&rendered, "fake:lead") == ["fake:lead", "11111111", "working"],
                 "the captured specimen renders on {status:?}: {rendered}"
             );
 
             session.agents[0].session_id = None;
             let rendered = table(&[&session]);
             assert!(
-                rendered.contains("  fake:lead\t-\tdead\tworking\n"),
+                row_fields(&rendered, "fake:lead") == ["fake:lead", "-", "working"],
                 "an absent id is frozen's dash on {status:?}: {rendered}"
             );
         }
     }
 
-    /// The id was inserted INTO the row that already carried SC-017h's declared
-    /// state and SC-017r's health, so this asserts nothing was displaced: four
-    /// cells, in the ruled order, reference first and the id between it and the
-    /// semantic fields. An insertion that shifted a cell would still `contains`
-    /// its way to green against a looser assertion.
+    /// The id sits INSIDE the row rather than beside it, so this asserts that
+    /// nothing was displaced: THREE cells in the ruled order — reference first,
+    /// the id next, the declared state last. (It gated four while the row also
+    /// carried a health cell; that cell is now a digest member, and the count
+    /// here follows what the row renders rather than what it once did.) An
+    /// insertion that shifted a cell would still `contains` its way to green
+    /// against a looser assertion, which is why this compares the whole vector.
     #[test]
     fn the_short_session_id_displaces_no_h_r_noun() {
         let mut session = SessionEntry::new("order", Status::Running);
@@ -1436,11 +1615,11 @@ mod tests {
             .lines()
             .find(|line| line.contains("fake:lead"))
             .unwrap_or_else(|| panic!("the agent row renders: {rendered}"));
-        let cells: Vec<&str> = row.trim_start().split('\t').collect();
+        let cells: Vec<&str> = row.split_whitespace().collect();
         assert_eq!(
             cells,
-            ["fake:lead", "e795c9e9", "alive", "blocked"],
-            "reference, short id, health, declared state — in that order: {rendered}"
+            ["fake:lead", "e795c9e9", "blocked"],
+            "reference, short id, declared state — in that order: {rendered}"
         );
     }
 
@@ -1460,14 +1639,22 @@ mod tests {
         // fields, on every status, because frozen rendered it on both grammars
         // (ae@72c7293:4254 running, ae:4299 stopped) and our table omitted it.
         // This fixture records no id, so the cell is frozen's dash.
-        assert!(table(&[&session]).contains("  claude:lead\t-\talive\tblocked\n"));
+        assert_eq!(
+            row_fields(&table(&[&session]), "claude:lead"),
+            ["claude:lead", "-", "blocked"],
+            "reference, short id, declared state"
+        );
 
         session.agents[0].state = None;
         // TWO dashes, two different facts: the first is an absent session id,
         // the second is SC-017h's exact no-declaration. They are told apart by
         // POSITION, exactly as frozen told them apart — its stopped grammar put
         // the id where its running grammar put the state default.
-        assert!(table(&[&session]).contains("  claude:lead\t-\talive\t-\n"));
+        assert_eq!(
+            row_fields(&table(&[&session]), "claude:lead"),
+            ["claude:lead", "-", "-"],
+            "no declaration renders the dash cell"
+        );
     }
 
     #[test]

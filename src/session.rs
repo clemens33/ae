@@ -46,6 +46,7 @@
 //! rule that the wrong direction to fail in. The state is lost loudly until
 //! SC-977's stable identity lands at the P2 routing cutover.
 
+use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -652,6 +653,127 @@ impl RecordSnapshot {
 /// What does not: an absent or zero-byte event log, which SC-519 rules is a
 /// quiet stream and not damage.
 #[must_use]
+/// The branch checked out in the work tree at `dir`, read from git's own files.
+///
+/// Reading `HEAD` rather than shelling out to `git` keeps this on the list path
+/// without a process launch per session, and keeps `list` working where git is
+/// not installed. Every failure is `None` — a listing must not fail because a
+/// session's directory was deleted, is not a repository, or is unreadable.
+///
+/// Three shapes are handled, and the second is why this is not a one-liner:
+/// `.git` as a DIRECTORY (ordinary clone), `.git` as a FILE holding
+/// `gitdir: <path>` (a worktree — ae's own `--worktree` mode creates these, so
+/// this is the common case here, not an exotic one), and a detached `HEAD`
+/// holding a raw object id, which renders short rather than as a branch.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a door: the git branch read — `HEAD` and the worktree `.git` pointer, \
+              under a work tree ae already records. Registered in the criterion-3 \
+              read-site inventory rather than routed around it. Bounded: two reads of \
+              named files under a known directory, no enumeration, and every failure \
+              is `None` so a listing never fails on it."
+)]
+fn branch_at(dir: &Path) -> Option<String> {
+    let dot_git = dir.join(".git");
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        let pointer = fs::read_to_string(&dot_git).ok()?;
+        let target = pointer.trim().strip_prefix("gitdir:")?.trim();
+        let target = Path::new(target);
+        if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            dir.join(target)
+        }
+    };
+    let raw = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    // FRAMING IS VALIDATED ON THE RAW BYTES, BEFORE ANY NORMALISATION — and the
+    // order is the whole point. The previous shape trimmed first and then
+    // counted lines, so `\nref: refs/heads/main\n` and `ref: refs/heads/main\n\n`
+    // both normalised to one line and were ACCEPTED: the trim erased exactly the
+    // evidence the check existed to find. A guard that repairs its input before
+    // inspecting it cannot reject anything repair can hide.
+    //
+    // Well-formed `HEAD` is one line with an optional single terminal newline.
+    // Anything else — a leading blank line, an extra trailing one, an interior
+    // break, or carriage-return framing — is refused rather than repaired.
+    let head = raw.strip_suffix('\n').unwrap_or(&raw);
+    if head.chars().any(char::is_control) {
+        return None;
+    }
+    let head = head.trim_matches(' ');
+    if let Some(reference) = head.strip_prefix("ref:") {
+        // `refs/heads/feature/x` keeps its slashes; only the prefix goes.
+        let reference = reference.trim();
+        let branch = reference.strip_prefix("refs/heads/").unwrap_or(reference);
+        safe_branch(branch).map(ToOwned::to_owned)
+    } else if head.len() >= 7 && head.chars().all(|c| c.is_ascii_hexdigit()) {
+        // Detached. Short form, matching how a person refers to a commit.
+        Some(head.chars().take(7).collect())
+    } else {
+        None
+    }
+}
+
+/// `branch` if it is a safe ref name to render, otherwise `None`.
+///
+/// THIS IS A RENDERING GUARD, NOT A GIT VALIDATOR. The bytes come from a file
+/// under a directory ae did not create and go straight into a terminal, so the
+/// question is not "would git accept this?" but "can this rewrite the display?"
+/// An ANSI escape repaints the screen, a carriage return overwrites the line,
+/// and a newline forges a row. An ALLOWLIST answers all three at once, where a
+/// blocklist of known-bad sequences answers whichever ones it happens to name.
+///
+/// The permitted set is **printable ASCII minus git's own forbidden bytes**,
+/// which is a superset of what the first version of this guard allowed. That
+/// version was drawn too tight and rejected refs git itself accepts —
+/// `release@2026` and `feature=api` both rendered as no branch. Every printable
+/// ASCII byte is display-safe by definition, so narrowing further bought
+/// nothing and cost real names.
+///
+/// Non-ASCII is refused, and that IS a deliberate limit rather than an
+/// oversight: git permits UTF-8 ref names, but a bidirectional override
+/// (`U+202E` and its relatives) reorders everything after it on the line, which
+/// is a display attack that no printable-ASCII test would catch. A non-ASCII
+/// branch therefore renders as no branch — consistent with this surface's other
+/// ASCII limit, on column alignment.
+fn safe_branch(branch: &str) -> Option<&str> {
+    if branch.is_empty() || branch.len() > 255 {
+        return None;
+    }
+    // Printable ASCII, excluding space and the bytes git forbids in a ref name.
+    let permitted =
+        |c: char| c.is_ascii_graphic() && !matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\');
+    if !branch.chars().all(permitted) {
+        return None;
+    }
+    // git's structural rules, plus the ones that matter for a path-shaped value
+    // reaching a terminal: no empty segment, no `..` to climb, no leading `-`
+    // to be read as a flag, no `@{` reflog syntax, and `@` alone is not a name.
+    // Bare `@` is accepted: `git check-ref-format --branch @` says VALID
+    // (measured), and one printable character cannot rewrite a display. The
+    // reflog form `@{...}` is git-invalid and stays refused.
+    if branch.contains("@{")
+        // NOT a file extension, despite the shape: git's rule is that a ref
+        // may not END in the literal `.lock`, case-sensitively, because that is
+        // the lock file it would collide with. Compared as BYTES for two
+        // reasons — a case-insensitive test would refuse `a.LOCK`, which git
+        // accepts (measured), and `Path::extension` reports None for a bare
+        // `.lock`, which git REFUSES (measured). Both divergences are silent.
+        || branch.as_bytes().ends_with(b".lock")
+        || branch.ends_with('.')
+        || branch.starts_with('/')
+        || branch.ends_with('/')
+        || branch.contains("//")
+        || branch.contains("..")
+        || branch.starts_with('-')
+    {
+        return None;
+    }
+    Some(branch)
+}
+
 pub fn entry_from(
     snapshot: &RecordSnapshot,
     name: &str,
@@ -671,6 +793,12 @@ pub fn entry_from(
         entry.work_dir = meta.work_dir().map(ToOwned::to_owned);
         entry.goal = meta.goal().map(ToOwned::to_owned);
         entry.ae_version = meta.ae_version().map(ToOwned::to_owned);
+        // A runtime observation wins when one exists; otherwise read the branch
+        // off the work tree. Without this the field was never populated by any
+        // route and every session rendered `git:?`.
+        if entry.branch.is_none() {
+            entry.branch = meta.work_dir().and_then(|dir| branch_at(Path::new(dir)));
+        }
     }
 
     let read = snapshot.events.as_ref();
@@ -1865,9 +1993,226 @@ mod tests {
             "the human surface shares the exactness predicate"
         );
         assert!(
-            crate::listing::table(&[&entry]).contains("\tunknown\n"),
+            crate::listing::table(&[&entry]).contains("unknown"),
             "event loss keeps the SC-017h declared-state cell unknown"
         );
+    }
+
+    /// The rendering guard agrees with git on every name git has a verdict for.
+    ///
+    /// The verdicts below were MEASURED with `git check-ref-format --branch`,
+    /// not reasoned about: the first version of this guard was hand-drawn and
+    /// silently rejected `release@2026` and `feature=api`, which git accepts.
+    /// Pinning to an external oracle is what catches a grammar drawn too tight,
+    /// because a guard checked only against its author's intuition agrees with
+    /// that intuition by construction.
+    ///
+    /// The guard is deliberately STRICTER than git in exactly one direction:
+    /// non-ASCII is refused, because git permits UTF-8 ref names and a
+    /// bidirectional override reorders the rest of the line.
+    #[test]
+    fn the_branch_guard_matches_git_s_own_verdicts() {
+        // (name, git check-ref-format --branch says valid)
+        let measured = [
+            ("main", true),
+            ("release@2026", true),
+            ("feature=api", true),
+            ("fix.123", true),
+            ("feature/a-b_1.2+x", true),
+            ("@", true),
+            ("a~b", false),
+            ("a^b", false),
+            ("a:b", false),
+            ("a?b", false),
+            ("a*b", false),
+            ("a[b", false),
+            ("a\\b", false),
+            ("a b", false),
+            ("a..b", false),
+            ("-rf", false),
+            ("a/", false),
+            ("/a", false),
+            ("a//b", false),
+            ("a@{0}", false),
+            ("a.lock", false),
+            (".lock", false),
+            ("a.b.lock", false),
+            ("a.LOCK", true),
+            ("lock", true),
+            ("a.locket", true),
+            ("a.", false),
+        ];
+        for (name, git_accepts) in measured {
+            assert_eq!(
+                super::safe_branch(name).is_some(),
+                git_accepts,
+                "{name:?}: the guard must agree with git check-ref-format --branch"
+            );
+        }
+
+        // The one deliberate divergence, and the reason for it.
+        for hostile in ["caf\u{e9}", "a\u{202e}b", "\u{4f60}\u{597d}"] {
+            assert_eq!(
+                super::safe_branch(hostile),
+                None,
+                "non-ASCII is refused even where git would accept it: a bidi \
+                 override reorders every character after it on the line"
+            );
+        }
+    }
+
+    /// A hostile `HEAD` cannot reach the terminal.
+    ///
+    /// `HEAD` lives under a directory ae did not create, and its bytes are
+    /// rendered into a cell. Every case here is refused outright: rendering a
+    /// decorative field is never worth executing attacker-chosen control bytes.
+    #[test]
+    fn a_hostile_head_renders_no_branch_rather_than_its_bytes() {
+        let root = std::env::temp_dir().join(format!("ae-head-inject-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        fs::create_dir_all(repo.join(".git")).expect("a git dir");
+
+        let hostile = [
+            (
+                "ref: refs/heads/a\u{1b}[31mRED",
+                "an ANSI escape repaints the terminal",
+            ),
+            (
+                "ref: refs/heads/a\rOVERWRITE",
+                "a carriage return overwrites the line",
+            ),
+            (
+                "ref: refs/heads/a\nfake  running  /evil",
+                "a newline forges a whole row",
+            ),
+            ("ref: refs/heads/a\u{7}bell", "a control byte is not a name"),
+            ("ref: refs/heads/../../etc/passwd", "dot-dot is refused"),
+            (
+                "ref: refs/heads/-rf",
+                "a leading dash could be read as a flag",
+            ),
+            (
+                "ref: refs/heads/a b",
+                "a space would split a whitespace-parsed cell",
+            ),
+            ("ref: refs/heads/", "an empty name is not a name"),
+            ("ref: refs/heads//a", "an empty leading segment"),
+            ("ref: refs/heads/a//b", "an empty interior segment"),
+            ("not a ref and not a hex object id", "an unparseable head"),
+            // FRAMING, validated on raw bytes. The earlier guard trimmed first
+            // and then counted lines, so both of these normalised to one line
+            // and were accepted — the repair erased the evidence.
+            ("\nref: refs/heads/main\n", "a LEADING blank line"),
+            ("\n\nref: refs/heads/main\n", "two leading blank lines"),
+            ("ref: refs/heads/main\n\n", "an EXTRA trailing blank line"),
+            (
+                "ref: refs/heads/main\n\nref: refs/heads/other\n",
+                "a second ref line",
+            ),
+            ("ref: refs/heads/main\r\n", "carriage-return framing"),
+            ("\rref: refs/heads/main", "a leading carriage return"),
+        ];
+        for (content, why) in hostile {
+            fs::write(repo.join(".git/HEAD"), content).expect("HEAD");
+            assert_eq!(
+                super::branch_at(&repo),
+                None,
+                "{why}: {content:?} must not render"
+            );
+        }
+
+        // The guard must not have swallowed the ordinary cases with them.
+        for (content, expected) in [
+            ("ref: refs/heads/main", "main"),
+            ("ref: refs/heads/main\n", "main"),
+            ("ref: refs/heads/feature/a-b_1.2+x\n", "feature/a-b_1.2+x"),
+            // Both accepted by `git check-ref-format --branch`, and both
+            // rejected by the first version of this guard. Printable ASCII is
+            // display-safe; a tighter set only lost real names.
+            ("ref: refs/heads/release@2026\n", "release@2026"),
+            ("ref: refs/heads/feature=api\n", "feature=api"),
+            ("ref: refs/heads/fix.123\n", "fix.123"),
+        ] {
+            fs::write(repo.join(".git/HEAD"), content).expect("HEAD");
+            assert_eq!(
+                super::branch_at(&repo).as_deref(),
+                Some(expected),
+                "a legitimate ref still renders"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The branch read, in all three shapes it meets in the wild.
+    ///
+    /// Every session rendered `git:?` because nothing ever populated this: the
+    /// field existed, the renderer had a placeholder arm for `None`, and no
+    /// producer was ever written. The worktree shape is not exotic here — ae's
+    /// own `--worktree` mode creates exactly it.
+    #[test]
+    fn the_branch_is_read_from_an_ordinary_clone_a_worktree_and_a_detached_head() {
+        let root = std::env::temp_dir().join(format!("ae-branch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+
+        // 1. Ordinary clone: `.git` is a directory.
+        let clone = root.join("clone");
+        fs::create_dir_all(clone.join(".git")).expect("a git dir");
+        fs::write(clone.join(".git/HEAD"), "ref: refs/heads/rust-rewrite\n").expect("HEAD");
+        assert_eq!(
+            super::branch_at(&clone).as_deref(),
+            Some("rust-rewrite"),
+            "an ordinary clone reports its branch"
+        );
+
+        // A slashed branch keeps every slash after the refs/heads/ prefix.
+        fs::write(clone.join(".git/HEAD"), "ref: refs/heads/feature/nested\n").expect("HEAD");
+        assert_eq!(
+            super::branch_at(&clone).as_deref(),
+            Some("feature/nested"),
+            "only the refs/heads/ prefix is stripped"
+        );
+
+        // 2. Worktree: `.git` is a FILE pointing at the real git dir.
+        let real = root.join("real-git-dir");
+        fs::create_dir_all(&real).expect("the pointed-to dir");
+        fs::write(real.join("HEAD"), "ref: refs/heads/worktree-branch\n").expect("HEAD");
+        let worktree = root.join("worktree");
+        fs::create_dir_all(&worktree).expect("a worktree");
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", real.display()),
+        )
+        .expect("the pointer file");
+        assert_eq!(
+            super::branch_at(&worktree).as_deref(),
+            Some("worktree-branch"),
+            "a worktree follows its gitdir pointer"
+        );
+
+        // 3. Detached HEAD: a raw object id renders short, not as a branch.
+        fs::write(
+            clone.join(".git/HEAD"),
+            "b6a492748114f89533d8b4629fe3c20048879cc0\n",
+        )
+        .expect("HEAD");
+        assert_eq!(
+            super::branch_at(&clone).as_deref(),
+            Some("b6a4927"),
+            "a detached head renders the short object id"
+        );
+
+        // 4. Not a repository at all, and a directory that is not there: a
+        //    listing must never fail because a session's tree moved.
+        assert_eq!(super::branch_at(&root).as_deref(), None, "no .git is None");
+        assert_eq!(
+            super::branch_at(&root.join("absent")).as_deref(),
+            None,
+            "a vanished work tree is None, never an error"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
