@@ -33,6 +33,48 @@ fn ae() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_ae"))
 }
 
+// The FIFO fixture. Safe std can bind a socket and make a directory, but the
+// one special file that BLOCKS an ungated open — the case a `-f` gate exists
+// for — needs mkfifo(2), and the only route to it without libc is mkfifo(1).
+// A fixture door, registered with the black-box door in the parity self-test's
+// inventory; it never runs the product.
+#[allow(
+    clippy::disallowed_types,
+    reason = "the FIFO fixture: safe std cannot make a FIFO, mkfifo(1) can; see clippy.toml"
+)]
+fn mkfifo(path: &std::path::Path) {
+    let status = std::process::Command::new("mkfifo").arg(path).status();
+    assert!(
+        matches!(status, Ok(status) if status.success()),
+        "a FIFO at {}",
+        path.display()
+    );
+}
+
+/// Wait at most `limit` for a spawned `child`: `Some(output)` if it exited,
+/// `None` if it had to be killed. A test whose subject can hang must have a
+/// red that ARRIVES, not one that stalls the lane.
+fn bounded(
+    mut child: std::process::Child,
+    limit: std::time::Duration,
+) -> Option<std::process::Output> {
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if started.elapsed() <= limit => {}
+            // Timed out, or the wait itself failed: either way the child is
+            // still ours and possibly blocked, so it is killed and reaped
+            // before the `None` — never dropped alive (review NIT).
+            Ok(None) | Err(_) => break,
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    None
+}
+
 #[test]
 fn version_prints_the_version_line_and_exits_zero() {
     let out = ae()
@@ -522,10 +564,17 @@ fn goal_set_and_clear_rewrite_meta_and_announce_and_fail_loudly_without_a_meta()
         "the lock bash takes"
     );
 
-    // Usage: 2, and nothing touched.
-    for tail in [vec![], vec!["--clear", "extra"], vec!["\u{1b}"]] {
+    // Usage: 2, and nothing touched. `--help` is the same exit and text, as
+    // the frozen body answers it.
+    for tail in [
+        vec!["--clear", "extra"],
+        vec!["\u{1b}"],
+        vec!["--help"],
+        vec!["-h", "ignored"],
+    ] {
         let usage = run(&tail);
         assert_eq!(usage.0, Some(2), "{tail:?}: {usage:?}");
+        assert!(usage.1.is_empty(), "{tail:?}: {usage:?}");
         assert!(usage.2.starts_with("Usage: goal"), "{tail:?}: {usage:?}");
     }
     assert_eq!(
@@ -559,6 +608,67 @@ fn goal_set_and_clear_rewrite_meta_and_announce_and_fail_loudly_without_a_meta()
         "no event for a goal that was not written"
     );
     assert!(!bare.join("meta").exists(), "and no meta was conjured");
+}
+
+#[test]
+fn goal_reads_the_first_record_or_no_goal_and_reports_an_unreadable_meta() {
+    let root = scratch("goal-read");
+    let run = |dir: &std::path::Path, tail: &[&str]| {
+        let out = ae()
+            .env_remove("TMUX_PANE")
+            .arg(ae::cli::GOAL)
+            .arg(dir)
+            .args(tail)
+            .output()
+            .expect("the ae binary should run");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let none = (Some(0), "(no goal set)\n".to_owned(), String::new());
+    let dir = root.join("sessions").join("r1");
+    std::fs::create_dir_all(&dir).expect("a session dir");
+    std::fs::write(dir.join("meta"), "mode=local\nsession=r1\n").expect("a meta file");
+    assert_eq!(run(&dir, &[]), none, "no record is no goal");
+    std::fs::write(
+        dir.join("meta"),
+        "mode=local\ngoal=first=kept\r\ngoal=second\nsession=r1\n",
+    )
+    .expect("a meta file");
+    assert_eq!(
+        run(&dir, &[]),
+        (Some(0), "first=kept\r\n".to_owned(), String::new()),
+        "head -1, cut -d= -f2-, bytes verbatim"
+    );
+    assert_eq!(run(&dir, &["ship", "it"]).0, Some(0));
+    assert_eq!(
+        run(&dir, &[]),
+        (Some(0), "ship it\n".to_owned(), String::new()),
+        "the record the binary writes reads back"
+    );
+    assert_eq!(run(&dir, &["--clear"]).0, Some(0));
+    assert_eq!(run(&dir, &[]), none, "and so does the clear");
+
+    // No meta at all is no goal — the frozen grep's `|| true`.
+    let bare = root.join("sessions").join("r2");
+    std::fs::create_dir_all(&bare).expect("a session dir");
+    assert_eq!(run(&bare, &[]), none);
+
+    // But a meta that exists and cannot be read is reported, where the frozen
+    // body would have printed `(no goal set)` over the failure.
+    let unreadable = root.join("sessions").join("r3");
+    std::fs::create_dir_all(unreadable.join("meta")).expect("a directory where the meta goes");
+    let failed = run(&unreadable, &[]);
+    assert_eq!(failed.0, Some(1), "{failed:?}");
+    assert!(failed.1.is_empty(), "{failed:?}");
+    assert!(
+        failed
+            .2
+            .contains("goal not read: could not read session meta"),
+        "{failed:?}"
+    );
 }
 
 #[test]
@@ -611,8 +721,11 @@ fn memo_add_appends_the_tsv_record_and_announces_and_fails_loudly_when_it_cannot
     for tail in [
         vec!["add"],
         vec!["add", "--topic", "t"],
-        vec!["read"],
-        vec![],
+        vec!["read", "--topic"],
+        vec!["read", "x"],
+        vec!["tail", "x"],
+        vec!["tail", "1", "2"],
+        vec!["show"],
     ] {
         let usage = run(&dir, &tail);
         assert_eq!(usage.0, Some(2), "{tail:?}: {usage:?}");
@@ -650,6 +763,117 @@ fn memo_add_appends_the_tsv_record_and_announces_and_fails_loudly_when_it_cannot
 }
 
 #[test]
+fn memo_read_and_tail_render_the_frozen_shape_and_report_an_unreadable_file() {
+    let root = scratch("memo-read");
+    let run = |dir: &std::path::Path, tail: &[&str]| {
+        let out = ae()
+            .env_remove("TMUX_PANE")
+            .arg(ae::cli::MEMO)
+            .arg(dir)
+            .args(tail)
+            .output()
+            .expect("the ae binary should run");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let empty = (Some(0), String::new(), String::new());
+    // No memo file at all is empty output at 0, as in bash.
+    let dir = root.join("sessions").join("r1");
+    std::fs::create_dir_all(&dir).expect("a session dir");
+    assert_eq!(run(&dir, &["read"]), empty);
+    assert_eq!(run(&dir, &["tail", "3"]), empty);
+
+    // One record the binary wrote, one a bash writer wrote: the frozen
+    // renderer's exact shape over both; the bare call is `read`; a topic
+    // filter that matches nothing is empty; `tail 1` is the last record.
+    assert_eq!(run(&dir, &["add", "--topic", "p2", "one\tline"]), empty);
+    let tsv = std::fs::read_to_string(dir.join("memo.tsv")).unwrap();
+    let ts = tsv.split('\t').next().unwrap().to_owned();
+    std::fs::write(
+        dir.join("memo.tsv"),
+        format!("{tsv}2026-01-01T00:00:00Z\tcl:lead\tgeneral\tbash writer\n"),
+    )
+    .expect("a second record");
+    let first = format!("{ts} — human [p2]\none line\n\n");
+    let second = "2026-01-01T00:00:00Z — cl:lead\nbash writer\n\n";
+    let both = format!("{first}{second}");
+    for (tail, expected) in [
+        (vec![], both.as_str()),
+        (vec!["read"], both.as_str()),
+        (vec!["read", "--topic", "p2"], first.as_str()),
+        (vec!["read", "--topic", "other"], ""),
+        (vec!["tail"], both.as_str()),
+        (vec!["tail", "1"], second),
+        (vec!["tail", "0"], ""),
+    ] {
+        assert_eq!(
+            run(&dir, &tail),
+            (Some(0), expected.to_owned(), String::new()),
+            "{tail:?}"
+        );
+    }
+
+    // A directory in the file's place is what `[[ -f ]] || exit 0` rejects:
+    // empty at 0, as in bash, and never opened.
+    let blocked = root.join("sessions").join("r2");
+    std::fs::create_dir_all(blocked.join("memo.tsv")).expect("a directory where the file goes");
+    assert_eq!(run(&blocked, &["read"]), empty);
+    assert_eq!(run(&blocked, &["tail", "1"]), empty);
+}
+
+#[test]
+fn a_fifo_in_a_containers_place_is_the_frozen_empty_answer_and_not_a_hang() {
+    // The frozen bodies gate every container read on `[[ -f ]]`; the core's
+    // first cut opened first and asked later, and a FIFO — no writer, ever —
+    // left it blocked with no stdout, no stderr and no exit (found in review).
+    // Every read surface over a container is exercised, under a bound, so a
+    // regression is a red that arrives rather than a lane that stalls.
+    let root = scratch("fifo");
+    let dir = root.join("sessions").join("f1");
+    std::fs::create_dir_all(&dir).expect("a session dir");
+    std::fs::write(dir.join("meta"), "session=f1\n").expect("a meta file");
+    mkfifo(&dir.join("events.jsonl"));
+    mkfifo(&dir.join("memo.tsv"));
+    let limit = std::time::Duration::from_secs(10);
+    let run = |sub: &str, tail: &[&str]| {
+        let child = ae()
+            .env_remove("TMUX_PANE")
+            .arg(sub)
+            .arg(&dir)
+            .args(tail)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("the ae binary should spawn");
+        bounded(child, limit).map(|out| {
+            (
+                out.status.code(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            )
+        })
+    };
+    assert_eq!(
+        run(ae::cli::STATE, &[]),
+        Some((
+            Some(0),
+            "human state: (none declared)\n".to_owned(),
+            String::new()
+        )),
+        "state read: a FIFO is not a regular file, so there is no declaration"
+    );
+    let empty = Some((Some(0), String::new(), String::new()));
+    assert_eq!(run(ae::cli::MEMO, &["read"]), empty, "memo read");
+    assert_eq!(run(ae::cli::MEMO, &["tail", "1"]), empty, "memo tail");
+    let requests = run(ae::cli::REQUESTS, &["all"]).expect("requests all exited");
+    assert_eq!(requests.0, Some(0), "requests all: {requests:?}");
+    assert!(requests.2.is_empty(), "requests all: {requests:?}");
+}
+
+#[test]
 fn state_refuses_without_a_pane_identity_and_writes_nothing() {
     let root = scratch("state-noid");
     let dir = root.join("sessions").join("s1");
@@ -673,7 +897,7 @@ fn state_refuses_without_a_pane_identity_and_writes_nothing() {
         "a refused declaration opens nothing"
     );
     // Usage errors are 2, decided before any identity question.
-    for tail in [vec!["Working"], vec!["blocked"], vec![]] {
+    for tail in [vec!["Working"], vec!["blocked"]] {
         let mut command = ae();
         command
             .env_remove("TMUX_PANE")
@@ -688,6 +912,49 @@ fn state_refuses_without_a_pane_identity_and_writes_nothing() {
             "{tail:?}"
         );
     }
+
+    // The READ needs no identity: it asks about `human`, as the frozen body
+    // does from any shell — and a reason-less declaration keeps its
+    // timestamp, where the frozen body's `IFS=$'\t' read` slides it into the
+    // reason (measured: `working — 2026-…Z  (since )`).
+    let read = |dir: &std::path::Path| {
+        let out = ae()
+            .env_remove("TMUX_PANE")
+            .arg(ae::cli::STATE)
+            .arg(dir)
+            .output()
+            .expect("the ae binary should run");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(
+        read(&dir),
+        (
+            Some(0),
+            "human state: (none declared)\n".to_owned(),
+            String::new()
+        ),
+        "no container yet is no declaration"
+    );
+    let planted = plant_events(
+        &root,
+        "s2",
+        &[
+            r#"{"ts":"2026-08-27T08:00:00Z","actor":"human","action":"state","ref":"working"}"#,
+            r#"{"ts":"2026-08-27T08:00:01Z","actor":"cl:lead","action":"state","ref":"done","summary":"not the human's"}"#,
+        ],
+    );
+    assert_eq!(
+        read(&planted),
+        (
+            Some(0),
+            "human state: working  (since 2026-08-27T08:00:00Z)\n".to_owned(),
+            String::new()
+        )
+    );
 }
 
 #[test]
@@ -744,6 +1011,7 @@ fn state_declares_for_the_pane_and_a_held_lock_fails_it_at_the_bound() {
     drop(lock);
     let after_hold = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
     let released = run(&["working", "lands now"]);
+    let shown = run(&[]);
     let _ = tmux(&["kill-server"]);
     let _ = std::fs::remove_dir_all(&scratch_dir);
 
@@ -789,6 +1057,13 @@ fn state_declares_for_the_pane_and_a_held_lock_fails_it_at_the_bound() {
     assert_eq!(released.0, Some(0), "after release: {released:?}");
     let final_lines = std::fs::read_to_string(dir.join("events.jsonl")).unwrap_or_default();
     assert_eq!(final_lines.lines().count(), 3, "{final_lines}");
+
+    // The READ, from the same pane: the newest of ITS declarations, in the
+    // frozen printf, with the timestamp the write recorded (`{"ts":"` is the
+    // emitter's first member, so the stamp is bytes 7..27 of the last line).
+    let ts = &final_lines.lines().last().expect("a last line")[7..27];
+    let line = format!("cl:lead state: working — lands now  (since {ts})\n");
+    assert_eq!(shown, (Some(0), line, String::new()));
 }
 
 #[test]

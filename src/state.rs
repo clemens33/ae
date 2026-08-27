@@ -6,8 +6,16 @@
 //! — and, for `done`, a second legacy `{"action":"done","summary":<reason>}`
 //! line that a watchdog started before the state helper existed still
 //! understands. The dual emit stays until every running watchdog has
-//! restarted. The no-argument READ form is not here: it stays on the bash
-//! body, so `state` with nothing to declare keeps its current answer.
+//! restarted.
+//!
+//! The no-argument READ form (P2.4) is here too: what `ae_latest_state_for`
+//! finds — the newest `{`-prefixed line in the container whose `actor` is the
+//! caller and whose `action` is `state` or the legacy `done` — rendered as
+//! `<actor> state: <value>[ — <reason>]  (since <ts>)`, or `(none declared)`.
+//! Read through [`crate::event_text`]'s frozen primitives, so the reversal,
+//! the line filter and the member extraction are the ones `requests` already
+//! shares with the bash body. See [`read_line`] for the one deliberate
+//! rendering difference.
 //!
 //! # The safety rules this path exists to keep (P2.2 ruling)
 //!
@@ -41,7 +49,7 @@ use std::io::{self, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::event_text::CONTAINER;
+use crate::event_text::{self, CONTAINER};
 use crate::json::Value;
 use crate::requests::Viewer;
 use crate::time::Timestamp;
@@ -102,14 +110,25 @@ impl Usage {
     }
 }
 
-/// Parse the helper's argv after the meta directory: `<value> [reason…]`.
+/// What the helper's argv asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Command {
+    /// `state` with nothing after the meta directory — print the caller's
+    /// latest declaration.
+    Read,
+    /// `state <value> [reason…]`.
+    Declare(Declaration),
+}
+
+/// Parse the helper's argv after the meta directory: nothing, or
+/// `<value> [reason…]`.
 ///
 /// # Errors
 ///
 /// [`Usage`] for a value outside [`VALUES`] or a `blocked` with no reason.
-pub fn parse(tail: &[String]) -> Result<Declaration, Usage> {
+pub fn parse(tail: &[String]) -> Result<Command, Usage> {
     let Some((value, rest)) = tail.split_first() else {
-        return Err(Usage::UnknownValue(String::new()));
+        return Ok(Command::Read);
     };
     if !VALUES.contains(&value.as_str()) {
         return Err(Usage::UnknownValue(value.clone()));
@@ -118,10 +137,140 @@ pub fn parse(tail: &[String]) -> Result<Declaration, Usage> {
     if value == "blocked" && reason.is_empty() {
         return Err(Usage::BlockedNeedsReason);
     }
-    Ok(Declaration {
+    Ok(Command::Declare(Declaration {
         value: value.clone(),
         reason,
-    })
+    }))
+}
+
+/// The newest declaration an actor made, as `ae_latest_state_for` finds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Latest {
+    /// The `ref` of a `state` event, or `done` for a legacy `done` event.
+    pub value: Vec<u8>,
+    /// The `summary` — empty when the event carries none.
+    pub reason: Vec<u8>,
+    /// The `ts`.
+    pub ts: Vec<u8>,
+}
+
+/// Scan the container newest-first and stop at the first line that is
+/// `actor`'s `state` (value = `ref`, reason = `summary`) or legacy `done`
+/// (value = `done`) event.
+///
+/// Every step is the frozen body's: `_ae_tac` ([`event_text::reversed`] — a
+/// torn last record is glued onto the line before it, not repaired), the
+/// `while read` loop over complete lines, the `{`-prefix filter, and
+/// `_event_json_str` for each member ([`event_text::extract`] — the FIRST
+/// occurrence of the key, unescaped the emitter's way). Another action by the
+/// same actor is skipped, not a stop.
+///
+/// ```
+/// use ae::state::latest;
+///
+/// let container = concat!(
+///     r#"{"ts":"2026-08-27T08:00:00Z","actor":"cl:lead","action":"state","ref":"working","summary":"on it"}"#, "\n",
+///     r#"{"ts":"2026-08-27T08:00:01Z","actor":"cl:lead","action":"ask","ref":"ae-1"}"#, "\n",
+///     r#"{"ts":"2026-08-27T08:00:02Z","actor":"cl:other","action":"state","ref":"blocked","summary":"x"}"#, "\n",
+/// );
+/// let found = latest(container.as_bytes(), "cl:lead").unwrap();
+/// assert_eq!(found.value, b"working");
+/// assert_eq!(found.reason, b"on it");
+/// assert_eq!(found.ts, b"2026-08-27T08:00:00Z");
+/// assert!(latest(container.as_bytes(), "cl:nobody").is_none());
+/// ```
+#[must_use]
+pub fn latest(container: &[u8], actor: &str) -> Option<Latest> {
+    let stream = event_text::reversed(container);
+    for line in event_text::read_lines(&stream) {
+        let Some(line) = event_text::event_line(line) else {
+            continue;
+        };
+        if event_text::extract(line, "actor") != actor.as_bytes() {
+            continue;
+        }
+        match event_text::extract(line, "action").as_slice() {
+            b"state" => {
+                return Some(Latest {
+                    value: event_text::extract(line, "ref"),
+                    reason: event_text::extract(line, "summary"),
+                    ts: event_text::extract(line, "ts"),
+                });
+            }
+            b"done" => {
+                return Some(Latest {
+                    value: b"done".to_vec(),
+                    reason: event_text::extract(line, "summary"),
+                    ts: event_text::extract(line, "ts"),
+                });
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The stdout of `state` with nothing to declare: `<actor> state: (none
+/// declared)`, or `<actor> state: <value>[ — <reason>]  (since <ts>)` — the
+/// frozen printf, two spaces before the parenthesis included.
+///
+/// One deliberate difference. The frozen body hands its three fields to
+/// `IFS=$'\t' read -r st reason ts`, and tab is an IFS *whitespace*
+/// character: a run of tabs is one delimiter, so an EMPTY reason vanishes and
+/// the timestamp slides into its place — a reason-less `working` renders as
+/// `working — 2026-…Z  (since )` (measured on the frozen body). This renders
+/// the fields as read: `working  (since 2026-…Z)`.
+///
+/// ```
+/// use ae::state::{Latest, read_line};
+///
+/// assert_eq!(read_line("cl:lead", None), b"cl:lead state: (none declared)\n");
+/// let bare = Latest { value: b"working".to_vec(), reason: Vec::new(), ts: b"2026-08-27T08:00:00Z".to_vec() };
+/// assert_eq!(
+///     read_line("cl:lead", Some(&bare)),
+///     "cl:lead state: working  (since 2026-08-27T08:00:00Z)\n".as_bytes()
+/// );
+/// ```
+#[must_use]
+pub fn read_line(actor: &str, latest: Option<&Latest>) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(actor.as_bytes());
+    out.extend_from_slice(b" state: ");
+    match latest {
+        None => out.extend_from_slice(b"(none declared)"),
+        Some(found) => {
+            out.extend_from_slice(&found.value);
+            if !found.reason.is_empty() {
+                out.extend_from_slice(" — ".as_bytes());
+                out.extend_from_slice(&found.reason);
+            }
+            out.extend_from_slice(b"  (since ");
+            out.extend_from_slice(&found.ts);
+            out.push(b')');
+        }
+    }
+    out.push(b'\n');
+    out
+}
+
+/// `state` with nothing to declare, for `viewer`.
+///
+/// The actor asked about is the pane's display ref, or `human` for a caller
+/// with none — the frozen `[[ -n "$self" ]] || self="human"`, minus
+/// `ae_current_agent_ref`'s guess at the server's current pane. A missing,
+/// unreadable or non-regular container is no declaration, as
+/// `ae_latest_state_for`'s `[[ -f ]] || return 0` and `2>/dev/null` make it —
+/// and the `-f` gate sits inside [`event_text::read_container`], before the
+/// open, so a FIFO in the container's place answers empty instead of blocking.
+#[must_use]
+pub fn read(dir: &Path, viewer: &Viewer) -> Vec<u8> {
+    let actor = if viewer.is_known() {
+        viewer.display.as_str()
+    } else {
+        "human"
+    };
+    let container = event_text::read_container(&dir.join(CONTAINER));
+    read_line(actor, latest(&container, actor).as_ref())
 }
 
 /// The reason as the event carries it: newlines and tabs flattened to spaces,
@@ -390,8 +539,8 @@ fn commit(sink: &mut impl Sink, bytes: &[u8]) -> io::Result<()> {
 )]
 mod tests {
     use super::{
-        Declaration, Failure, LOCK_WAIT, SUMMARY_CAP, Sink, USAGE, Usage, acquire, commit, declare,
-        event_body, event_line, parse, summary_of,
+        Command, Declaration, Failure, LOCK_WAIT, Latest, SUMMARY_CAP, Sink, USAGE, Usage, acquire,
+        commit, declare, event_body, event_line, latest, parse, read, read_line, summary_of,
     };
     use crate::requests::Viewer;
     use crate::time::Timestamp;
@@ -421,17 +570,17 @@ mod tests {
     fn argv_parses_the_way_the_helper_reads_it() {
         assert_eq!(
             parse(&words(&["working", "two", "words"])),
-            Ok(Declaration {
+            Ok(Command::Declare(Declaration {
                 value: "working".to_owned(),
                 reason: "two words".to_owned()
-            })
+            }))
         );
         assert_eq!(
             parse(&words(&["done"])),
-            Ok(Declaration {
+            Ok(Command::Declare(Declaration {
                 value: "done".to_owned(),
                 reason: String::new()
-            })
+            }))
         );
         assert_eq!(parse(&words(&["blocked"])), Err(Usage::BlockedNeedsReason));
         assert!(parse(&words(&["blocked", "on x"])).is_ok());
@@ -440,7 +589,11 @@ mod tests {
             Err(Usage::UnknownValue("Working".to_owned())),
             "the tokens are exact"
         );
-        assert_eq!(parse(&[]), Err(Usage::UnknownValue(String::new())));
+        assert_eq!(
+            parse(&[]),
+            Ok(Command::Read),
+            "nothing to declare is a read"
+        );
         assert!(
             Usage::BlockedNeedsReason
                 .render()
@@ -691,5 +844,104 @@ mod tests {
         );
         // The real path uses the real bound: 5s, per flock -w 5.
         assert_eq!(LOCK_WAIT, Duration::from_secs(5));
+    }
+    fn container(lines: &[&str]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for line in lines {
+            out.extend_from_slice(line.as_bytes());
+            out.push(b'\n');
+        }
+        out
+    }
+
+    #[test]
+    fn the_newest_state_or_legacy_done_of_the_actor_wins_and_other_lines_are_skipped() {
+        let body = container(&[
+            r#"{"ts":"t1","actor":"cl:lead","action":"state","ref":"blocked","summary":"old"}"#,
+            r#"{"ts":"t2","actor":"cl:lead","action":"done","summary":"legacy"}"#,
+            r#"{"ts":"t3","actor":"cl:other","action":"state","ref":"working","summary":"not mine"}"#,
+            r#"{"ts":"t4","actor":"cl:lead","action":"ask","ref":"ae-1","summary":"skipped, not a stop"}"#,
+            r#"not an event line, though it names "actor":"cl:lead","action":"state","ref":"done""#,
+        ]);
+        assert_eq!(
+            latest(&body, "cl:lead"),
+            Some(Latest {
+                value: b"done".to_vec(),
+                reason: b"legacy".to_vec(),
+                ts: b"t2".to_vec()
+            }),
+            "the legacy done line is a done state, and it is the newest of the actor's"
+        );
+        assert_eq!(
+            latest(&body, "cl:other").map(|found| found.value),
+            Some(b"working".to_vec())
+        );
+        assert_eq!(latest(&body, "human"), None);
+        assert_eq!(latest(b"", "cl:lead"), None);
+    }
+
+    #[test]
+    fn a_torn_last_record_is_read_glued_the_way_tac_hands_it_over() {
+        // `_ae_tac` does not invent a newline: the unterminated remainder lands
+        // first and runs into the line before it. The bash body then reads the
+        // FIRST `"actor":"` on that glued line — the remainder's — so a torn
+        // record can answer. Modelling it as repaired would read differently.
+        let mut body = container(&[
+            r#"{"ts":"t1","actor":"cl:lead","action":"state","ref":"working","summary":"whole"}"#,
+        ]);
+        body.extend_from_slice(br#"{"ts":"t2","actor":"cl:lead","action":"state","ref":"done""#);
+        let found = latest(&body, "cl:lead").expect("the glued line still names the actor");
+        assert_eq!(found.value, b"done");
+        assert_eq!(found.ts, b"t2");
+        assert_eq!(
+            found.reason, b"whole",
+            "the summary is the glued-on previous line's"
+        );
+    }
+
+    #[test]
+    fn the_line_is_the_frozen_printf_with_the_fields_as_read() {
+        let full = Latest {
+            value: b"blocked".to_vec(),
+            reason: b"on the lock".to_vec(),
+            ts: b"2026-08-27T08:00:00Z".to_vec(),
+        };
+        assert_eq!(
+            read_line("cl:lead", Some(&full)),
+            "cl:lead state: blocked — on the lock  (since 2026-08-27T08:00:00Z)\n".as_bytes()
+        );
+        assert_eq!(
+            read_line("@other:cl:lead", None),
+            b"@other:cl:lead state: (none declared)\n"
+        );
+    }
+
+    #[test]
+    fn read_asks_for_the_pane_or_for_human_and_treats_no_container_as_none() {
+        let dir = PathBuf::from(format!("/tmp/ae-state-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            read(&dir, &Viewer::default()),
+            b"human state: (none declared)\n"
+        );
+        std::fs::write(
+            dir.join("events.jsonl"),
+            container(&[
+                r#"{"ts":"t1","actor":"human","action":"state","ref":"working"}"#,
+                r#"{"ts":"t2","actor":"cl:lead","action":"state","ref":"done","summary":"shipped"}"#,
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            read(&dir, &Viewer::default()),
+            b"human state: working  (since t1)\n",
+            "a reason-less declaration keeps its timestamp where it belongs"
+        );
+        assert_eq!(
+            read(&dir, &lead()),
+            "cl:lead state: done — shipped  (since t2)\n".as_bytes()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

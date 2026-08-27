@@ -1791,6 +1791,10 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             "src/events.rs".to_owned(),
             "src/inventory.rs".to_owned(),
             "src/lib.rs".to_owned(),
+            // The memo file read behind `memo read`/`memo tail`. Registered
+            // deliberately: the file is the helper's own, but reading it is a
+            // new door all the same.
+            "src/memo.rs".to_owned(),
             "src/meta.rs".to_owned(),
             // The git branch read: `HEAD` under the session's own work tree,
             // plus the `.git` pointer file a worktree uses instead of a

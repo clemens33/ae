@@ -25,14 +25,15 @@ pub const REQUESTS: &str = "_requests";
 /// underscore reasoning as [`REQUESTS`].
 pub const EVENTS_TAIL: &str = "_events-tail";
 
-/// The `state` helper's write surface — `_state <meta-dir> <value> [reason…]`.
+/// The `state` helper's surface — `_state <meta-dir> [<value> [reason…]]`.
 /// Underscored like [`REQUESTS`]: launched by the generated helper, not typed.
 pub const STATE: &str = "_state";
 
-/// The `goal` helper's write surface — `_goal <meta-dir> <text…>|--clear`.
+/// The `goal` helper's surface — `_goal <meta-dir> [<text…>|--clear|--help]`.
 pub const GOAL: &str = "_goal";
 
-/// The `memo` helper's write surface — `_memo <meta-dir> add [--topic <t>] <text…>`.
+/// The `memo` helper's surface —
+/// `_memo <meta-dir> [add [--topic <t>] <text…>|read [--topic <t>]|tail [n]]`.
 pub const MEMO: &str = "_memo";
 
 /// What an argv asks the binary to do.
@@ -52,23 +53,24 @@ pub enum Request {
         mode: Mode,
     },
     /// `_events-tail <meta-dir>` — the `events-tail` helper surface.
-    /// `_state <meta-dir> <value> [reason…]` — the `state` helper's write path.
-    /// The tail is validated by [`crate::state::parse`], not here: the usage
-    /// text is the helper's own and belongs beside the rule it states.
+    /// `_state <meta-dir> [<value> [reason…]]` — the `state` helper. The tail
+    /// is validated by [`crate::state::parse`], not here: the usage text is the
+    /// helper's own and belongs beside the rule it states.
     State {
         /// The session meta directory.
         dir: std::path::PathBuf,
         /// Everything after it, as typed.
         tail: Vec<String>,
     },
-    /// `_goal <meta-dir> <text…>|--clear` — validated by [`crate::goal::parse`].
+    /// `_goal <meta-dir> [<text…>|--clear|--help]` — validated by
+    /// [`crate::goal::parse`].
     Goal {
         /// The session meta directory.
         dir: std::path::PathBuf,
         /// Everything after it, as typed.
         tail: Vec<String>,
     },
-    /// `_memo <meta-dir> add [--topic <t>] <text…>` — validated by
+    /// `_memo <meta-dir> [add …|read [--topic <t>]|tail [n]]` — validated by
     /// [`crate::memo::parse`].
     Memo {
         /// The session meta directory.

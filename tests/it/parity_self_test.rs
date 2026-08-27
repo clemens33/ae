@@ -1041,22 +1041,24 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
         }
     }
 
-    // Four relaxations this counter can see, each for a different job: the
+    // Five relaxations this counter can see, each for a different job: the
     // PRODUCT's, in `src/transport.rs`, because a tmux multiplexer that cannot
     // run tmux answers `unknown` about everything; the parity harness's door,
     // which must never judge a lane; the black-box door, which drives the
     // PRODUCT binary and where asserting on what it printed is the whole point
     // (`cli::ae` is private to its module, so the harness cannot reach a child
-    // through it); and this file's own, which has to run clippy in order to ask
-    // clippy anything.
+    // through it); the black-box FIFO fixture beside it (`cli::mkfifo` — safe
+    // std cannot make the one special file that blocks an ungated open, and
+    // the tests that prove the `-f` gates need exactly that file); and this
+    // file's own, which has to run clippy in order to ask clippy anything.
     //
-    // A fifth entry is red. A relaxation this counter CANNOT see is not — that
+    // A sixth entry is red. A relaxation this counter CANNOT see is not — that
     // is what the semantic guard above is for.
     assert_eq!(
         inventory,
         vec![
             ("src/transport.rs".to_owned(), 1),
-            ("tests/it/cli.rs".to_owned(), 1),
+            ("tests/it/cli.rs".to_owned(), 2),
             ("tests/it/parity.rs".to_owned(), 1),
             ("tests/it/parity_self_test.rs".to_owned(), 1),
         ],

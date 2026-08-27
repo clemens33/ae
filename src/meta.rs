@@ -482,6 +482,50 @@ impl Meta {
 /// the file, `flock -w 5`.
 const LOCK: &str = "meta.lock";
 
+/// The meta file's raw bytes — the read behind the frozen `ae_meta_get`,
+/// which greps the file rather than parsing it.
+///
+/// Not [`Meta::read`]: that parser serves the digest, where a duplicated key is
+/// an anomaly the contract has not ruled on (SC-405e) and so contributes
+/// nothing. A helper asked for its own key answers with the FIRST record, as
+/// its bash body always has — [`first_value`] — and the bytes it prints are
+/// the file's, not a decoded string's.
+///
+/// # Errors
+///
+/// The underlying [`io::Error`]; an absent meta is `NotFound`.
+pub fn read_bytes(dir: &Path) -> io::Result<Vec<u8>> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the raw meta read behind a helper's own-key lookup — see clippy.toml"
+    )]
+    let bytes = fs::read(dir.join(FILE));
+    bytes
+}
+
+/// The value of the FIRST `<key>=` record — `grep "^<key>=" | head -1 |
+/// cut -d= -f2-`: records are `\n`-separated (an unterminated last one
+/// counts), the key must be followed by `=` exactly, and everything after
+/// that first `=` is the value, bytes verbatim — a trailing CR included, as it
+/// is to grep.
+///
+/// ```
+/// use ae::meta::first_value;
+///
+/// let text = b"goal=a=b\r\ngoals=no\ngoal=second\nmode=local";
+/// assert_eq!(first_value(text, "goal"), Some(b"a=b\r".as_slice()));
+/// assert_eq!(first_value(text, "mode"), Some(b"local".as_slice()));
+/// assert_eq!(first_value(text, "goa"), None);
+/// assert_eq!(first_value(b"goal=\n", "goal"), Some(b"".as_slice()));
+/// ```
+#[must_use]
+pub fn first_value<'a>(text: &'a [u8], key: &str) -> Option<&'a [u8]> {
+    text.split(|byte| *byte == b'\n').find_map(|line| {
+        line.strip_prefix(key.as_bytes())
+            .and_then(|rest| rest.strip_prefix(b"="))
+    })
+}
+
 /// `text` with `key` set to `value`, or removed when `value` is `None` — the
 /// frozen helpers' awk, byte for byte (measured against it):
 ///

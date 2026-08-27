@@ -57,9 +57,17 @@ pub const CONTAINER: &str = "events.jsonl";
 /// Quiet on every failure, which is the frozen behavior and not a tolerance
 /// choice. The request sensor guards with `[[ -f "$file" ]] || return 0` and
 /// then reads through `_ae_tac "$file" 2>/dev/null || true`; `events-tail` reads
-/// through `tail … 2>/dev/null`. An absent container, an unreadable one and a
-/// directory in its place are therefore indistinguishable at these two
-/// surfaces: no diagnostic, no rows, `rc=0`.
+/// through `tail … 2>/dev/null`; the state read guards the same way. An absent
+/// container, an unreadable one and anything that is not a regular file in
+/// its place are therefore indistinguishable at these surfaces: no diagnostic,
+/// no rows, `rc=0`.
+///
+/// **The `-f` gate is applied HERE, before anything is opened**, and it is not
+/// decoration: a FIFO in the container's place blocks whoever opens it for a
+/// reader that never comes, and an unconditional read left the core hanging
+/// with no stdout, no stderr and no exit where the frozen bodies answered
+/// empty at 0 (found in review, reproduced). The gate follows symlinks, as
+/// `-f` does.
 ///
 /// That is SC-519's quiet-empty direction and deliberately NOT SC-509b's
 /// degraded direction, which belongs to [`crate::events`]: a degradation has to
@@ -67,9 +75,12 @@ pub const CONTAINER: &str = "events.jsonl";
 /// publish it in.
 #[must_use]
 pub fn read_container(path: &std::path::Path) -> Vec<u8> {
+    if !container_exists(path) {
+        return Vec::new();
+    }
     #[allow(
         clippy::disallowed_methods,
-        reason = "a door: the opaque event-container read shared by the two helper \
+        reason = "a door: the opaque event-container read shared by the helper \
                   read surfaces — see clippy.toml"
     )]
     let body = std::fs::read(path);

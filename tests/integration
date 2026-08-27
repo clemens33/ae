@@ -730,9 +730,9 @@ case "\$1" in
         case "\$*" in *nonsense*) exit 64 ;; esac
         echo "CORE_TOKEN_9f3a mode=\${3:-none}"
         ;;
-    _state) echo "CORE_TOKEN_9f3a state=\${3:-none}" ;;
-    _goal) echo "CORE_TOKEN_9f3a goal=\${3:-none}" ;;
-    _memo) echo "CORE_TOKEN_9f3a memo=\${3:-none}" ;;
+    _state) echo "CORE_TOKEN_9f3a state=\${3:-read}" ;;
+    _goal) echo "CORE_TOKEN_9f3a goal=\${3:-read}" ;;
+    _memo) echo "CORE_TOKEN_9f3a memo=\${3:-read}" ;;
     *) exit 64 ;;
 esac
 EOF
@@ -773,36 +773,51 @@ for _cb_mode in mine inbox ""; do
 done
 unset _cb_mode _cb_args
 
-# STATE (P2.2): the WRITE form goes to the core — through `state` and through
-# the `mark-done` shim over it — and the no-argument READ does not. The stub
-# echoes the value it was handed, so a wrong value would mean the shim rewrote
-# the caller's argument; the read must still answer from the bash body.
+# STATE (P2.2 write, P2.4 read): BOTH forms go to the core — the write through
+# `state` and through the `mark-done` shim over it, and the no-argument READ.
+# The stub echoes the value it was handed (`read` for none), so a wrong value
+# would mean the shim rewrote the caller's argument.
 _cb_out="$("$_cb_meta/state" working "from the stub" 2>/dev/null || true)"
 assert_contains "core binding: state <value> reaches the core" "CORE_TOKEN_9f3a state=working" "$_cb_out"
 _cb_out="$("$_cb_meta/mark-done" 2>/dev/null || true)"
 assert_contains "core binding: mark-done is state done through the core" "CORE_TOKEN_9f3a state=done" "$_cb_out"
-"$_cb_meta/state" >"$_cb_root/out" 2>"$_cb_root/err" || true
-assert_eq "core binding: the state READ stays on the bash body" "0" \
-    "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/out" | tr -d '[:space:]')"
-assert_contains "core binding: and still answers" "state:" "$(cat "$_cb_root/out")"
+_cb_out="$("$_cb_meta/state" 2>/dev/null || true)"
+assert_contains "core binding: the state READ reaches the core" "CORE_TOKEN_9f3a state=read" "$_cb_out"
 
-# GOAL and MEMO (P2.3): the write forms go to the core, the reads do not.
+# GOAL and MEMO (P2.3 writes, P2.4 reads): every form goes to the core.
 _cb_out="$("$_cb_meta/goal" "ship it" 2>/dev/null || true)"
 assert_contains "core binding: goal <text> reaches the core" "CORE_TOKEN_9f3a goal=ship it" "$_cb_out"
 _cb_out="$("$_cb_meta/goal" --clear 2>/dev/null || true)"
 assert_contains "core binding: goal --clear reaches the core" "CORE_TOKEN_9f3a goal=--clear" "$_cb_out"
-"$_cb_meta/goal" >"$_cb_root/out" 2>"$_cb_root/err" || true
-assert_eq "core binding: the goal READ stays on the bash body" "0" \
-    "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/out" | tr -d '[:space:]')"
-assert_contains "core binding: and still answers" "goal" "$(cat "$_cb_root/out")"
+_cb_out="$("$_cb_meta/goal" 2>/dev/null || true)"
+assert_contains "core binding: the goal READ reaches the core" "CORE_TOKEN_9f3a goal=read" "$_cb_out"
+_cb_out="$("$_cb_meta/goal" --help 2>/dev/null || true)"
+assert_contains "core binding: goal --help reaches the core" "CORE_TOKEN_9f3a goal=--help" "$_cb_out"
 _cb_out="$("$_cb_meta/memo" add --topic t "a note" 2>/dev/null || true)"
 assert_contains "core binding: memo add reaches the core" "CORE_TOKEN_9f3a memo=add" "$_cb_out"
-for _cb_mode in read tail; do
-    "$_cb_meta/memo" "$_cb_mode" >"$_cb_root/out" 2>"$_cb_root/err" || true
-    assert_eq "core binding: memo $_cb_mode stays on the bash body" "0" \
-        "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/out" | tr -d '[:space:]')"
+for _cb_mode in read tail ""; do
+    _cb_args=()
+    [[ -n "$_cb_mode" ]] && _cb_args=("$_cb_mode")
+    _cb_out="$("$_cb_meta/memo" ${_cb_args[@]+"${_cb_args[@]}"} 2>/dev/null || true)"
+    assert_contains "core binding: memo ${_cb_mode:-<bare>} reaches the core" "CORE_TOKEN_9f3a memo=${_cb_mode:-read}" "$_cb_out"
 done
-unset _cb_mode
+unset _cb_mode _cb_args
+
+# THE READS KEEP THEIR FALLBACK. With the core forced off for one call, each
+# read answers from the bash body — the same body that answered before P2.4 —
+# so a session with no usable core loses nothing it had. The stub never wrote
+# anything, so the goal is unset and the memo record is planted here.
+_cb_out="$(AE_CORE="" "$_cb_meta/state" 2>/dev/null || true)"
+assert_contains "core binding: the state READ falls back to the bash body" "state:" "$_cb_out"
+assert_eq "core binding: and not to the core" "0" \
+    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
+_cb_out="$(AE_CORE="" "$_cb_meta/goal" 2>/dev/null || true)"
+assert_eq "core binding: the goal READ falls back to the bash body" "(no goal set)" "$_cb_out"
+printf '2026-01-01T00:00:00Z\tcl:lead\tp2\tthe fallback note\n' >>"$_cb_meta/memo.tsv"
+_cb_out="$(AE_CORE="" "$_cb_meta/memo" read --topic p2 2>/dev/null || true)"
+assert_contains "core binding: memo read falls back to the bash body" "the fallback note" "$_cb_out"
+_cb_out="$(AE_CORE="" "$_cb_meta/memo" tail 1 2>/dev/null || true)"
+assert_contains "core binding: memo tail falls back to the bash body" "the fallback note" "$_cb_out"
 
 # THE SHIM MUST NOT SWALLOW THE CORE'S EXIT STATUS. It execs, so the status is
 # the core's by construction — this pins that, because the obvious alternative

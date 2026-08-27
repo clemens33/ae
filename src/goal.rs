@@ -1,11 +1,13 @@
-//! The `goal` helper's WRITE path: `goal <text>` and `goal --clear`.
+//! The `goal` helper: `goal <text>`, `goal --clear`, `goal` and `goal --help`.
 //!
 //! What the frozen `helper_goal_main` does, kept exactly: the text is made one
 //! printable line (newlines and tabs to spaces, every other control byte
 //! dropped), written as `goal=<text>` into the session's `meta` under
 //! `meta.lock`, and announced with a `goal` event whose summary is the text;
 //! `--clear` removes the key and announces `goal cleared`. The no-argument
-//! READ and `--help` stay on the bash body.
+//! READ (P2.4) prints the FIRST `goal=` record's value or `(no goal set)` —
+//! `ae_meta_get`'s `grep | head -1 | cut` — and `--help`/`-h` print the usage
+//! and take the usage exit.
 //!
 //! Two storage transactions, deliberately NOT one: the meta rewrite (a locked
 //! replace of a whole small file) and the event append (a locked append to the
@@ -31,6 +33,19 @@ pub const KEY: &str = "goal";
 /// What the caller asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    /// `goal` — show the current goal.
+    Show,
+    /// `goal --help` / `goal -h` — the usage text and the usage exit, as the
+    /// frozen body answers them (anything after the flag is ignored, as it
+    /// only ever looked at `$1`).
+    Help,
+    /// `goal <text>` / `goal --clear`.
+    Write(Write),
+}
+
+/// A change to the goal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Write {
     /// `goal <text>` — the text already made one printable line.
     Set(String),
     /// `goal --clear`.
@@ -45,21 +60,64 @@ pub struct Usage;
 ///
 /// # Errors
 ///
-/// [`Usage`] for `--clear` with company, for no text, or for text that is
-/// empty once made printable.
+/// [`Usage`] for `--clear` with company, or for text that is empty once made
+/// printable.
 pub fn parse(tail: &[String]) -> Result<Command, Usage> {
     match tail {
-        [] => Err(Usage),
-        [flag] if flag == "--clear" => Ok(Command::Clear),
+        [] => Ok(Command::Show),
+        [flag, ..] if flag == "--help" || flag == "-h" => Ok(Command::Help),
+        [flag] if flag == "--clear" => Ok(Command::Write(Write::Clear)),
         [flag, ..] if flag == "--clear" => Err(Usage),
         words => {
             let text = printable(&words.join(" "));
             if text.is_empty() {
                 Err(Usage)
             } else {
-                Ok(Command::Set(text))
+                Ok(Command::Write(Write::Set(text)))
             }
         }
+    }
+}
+
+/// The stdout of `goal` with no arguments, for the meta at `dir`: the first
+/// `goal=` record's value, or `(no goal set)` when there is none, it is empty,
+/// or there is no meta file at all — `ae_meta_get`'s `2>/dev/null || true`
+/// makes an absent file an empty answer.
+///
+/// # Errors
+///
+/// A meta that exists but could not be read. The frozen body hides that
+/// behind the same `|| true` and prints `(no goal set)`; this says what
+/// happened instead, because "no goal" and "could not look" are different
+/// answers.
+pub fn show(dir: &Path) -> io::Result<Vec<u8>> {
+    let text = match meta::read_bytes(dir) {
+        Ok(text) => text,
+        Err(why) if why.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(why) => return Err(why),
+    };
+    Ok(shown(meta::first_value(&text, KEY)))
+}
+
+/// The line `show` prints for a value: the bytes plus a newline, or
+/// `(no goal set)` for none or empty — `[[ -n "$current" ]]`.
+///
+/// ```
+/// use ae::goal::shown;
+///
+/// assert_eq!(shown(Some(b"ship it")), b"ship it\n");
+/// assert_eq!(shown(Some(b"")), b"(no goal set)\n");
+/// assert_eq!(shown(None), b"(no goal set)\n");
+/// ```
+#[must_use]
+pub fn shown(value: Option<&[u8]>) -> Vec<u8> {
+    match value {
+        Some(value) if !value.is_empty() => {
+            let mut out = value.to_vec();
+            out.push(b'\n');
+            out
+        }
+        _ => b"(no goal set)\n".to_vec(),
     }
 }
 
@@ -75,9 +133,11 @@ pub fn printable(text: &str) -> String {
         .collect()
 }
 
-/// Why the goal was not (fully) recorded. All are [`EXIT_FAILED`].
+/// Why the goal was not (fully) recorded, or not read. All are [`EXIT_FAILED`].
 #[derive(Debug)]
 pub enum Failure {
+    /// `goal` could not read a meta that exists.
+    Read(io::Error),
     /// The meta rewrite failed with nothing visible changed — nothing
     /// announced.
     Meta(io::Error),
@@ -94,6 +154,7 @@ impl Failure {
     #[must_use]
     pub fn message(&self) -> String {
         match self {
+            Self::Read(why) => format!("ae: goal not read: could not read session meta: {why}"),
             Self::Meta(why) => {
                 format!("ae: goal not recorded: could not write session meta: {why}")
             }
@@ -107,7 +168,7 @@ impl Failure {
     }
 }
 
-/// Apply `command` to the session at `dir` for `viewer`, and return the
+/// Apply `write` to the session at `dir` for `viewer`, and return the
 /// success line for stdout — only once both writes are down.
 ///
 /// The event's actor is the pane's display ref, or `human` when the caller has
@@ -117,24 +178,19 @@ impl Failure {
 /// # Errors
 ///
 /// [`Failure`] — see its variants.
-pub fn run(
-    dir: &Path,
-    viewer: &Viewer,
-    command: &Command,
-    now: Timestamp,
-) -> Result<String, Failure> {
+pub fn run(dir: &Path, viewer: &Viewer, write: &Write, now: Timestamp) -> Result<String, Failure> {
     let actor = if viewer.is_known() {
         viewer.display.as_str()
     } else {
         "human"
     };
-    let (value, summary, line) = match command {
-        Command::Set(text) => (
+    let (value, summary, line) = match write {
+        Write::Set(text) => (
             Some(text.as_str()),
             text.as_str(),
             format!("Goal set: {text}\n"),
         ),
-        Command::Clear => (None, "goal cleared", "Goal cleared.\n".to_owned()),
+        Write::Clear => (None, "goal cleared", "Goal cleared.\n".to_owned()),
     };
     meta::rewrite(dir, KEY, value).map_err(|why| match why {
         meta::RewriteError::NotWritten(cause) => Failure::Meta(cause),
@@ -159,7 +215,7 @@ pub const fn failure_code() -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, Usage, parse, printable};
+    use super::{Command, Usage, Write, parse, printable, show};
 
     fn words(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
@@ -167,12 +223,21 @@ mod tests {
 
     #[test]
     fn argv_reads_as_the_helper_reads_it() {
-        assert_eq!(parse(&words(&["--clear"])), Ok(Command::Clear));
+        assert_eq!(
+            parse(&words(&["--clear"])),
+            Ok(Command::Write(Write::Clear))
+        );
         assert_eq!(parse(&words(&["--clear", "x"])), Err(Usage));
-        assert_eq!(parse(&[]), Err(Usage));
+        assert_eq!(parse(&[]), Ok(Command::Show), "nothing to set is a read");
+        assert_eq!(parse(&words(&["--help"])), Ok(Command::Help));
+        assert_eq!(
+            parse(&words(&["-h", "ignored"])),
+            Ok(Command::Help),
+            "the frozen case looks at $1 only"
+        );
         assert_eq!(
             parse(&words(&["ship", "it"])),
-            Ok(Command::Set("ship it".to_owned()))
+            Ok(Command::Write(Write::Set("ship it".to_owned())))
         );
         assert_eq!(
             parse(&words(&["\u{7}"])),
@@ -182,9 +247,45 @@ mod tests {
     }
 
     #[test]
+    fn show_prints_the_first_record_or_no_goal_and_reports_an_unreadable_meta() {
+        let dir = std::path::PathBuf::from(format!("/tmp/ae-goal-show-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            show(&dir).unwrap(),
+            b"(no goal set)\n",
+            "no meta at all is no goal, as the frozen grep's || true makes it"
+        );
+        std::fs::write(
+            dir.join("meta"),
+            b"mode=local\ngoal=first=kept\r\ngoal=second\n",
+        )
+        .unwrap();
+        assert_eq!(
+            show(&dir).unwrap(),
+            b"first=kept\r\n",
+            "head -1, cut -d= -f2-, bytes verbatim"
+        );
+        std::fs::write(dir.join("meta"), b"mode=local\ngoal=\n").unwrap();
+        assert_eq!(
+            show(&dir).unwrap(),
+            b"(no goal set)\n",
+            "an empty value is no goal"
+        );
+        std::fs::remove_file(dir.join("meta")).unwrap();
+        std::fs::create_dir_all(dir.join("meta")).unwrap();
+        assert!(
+            show(&dir).is_err(),
+            "a meta that exists but cannot be read is reported, not read as no goal"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn each_failure_names_what_is_known_about_the_meta() {
         use super::Failure;
         let why = || std::io::Error::other("disk");
+        assert!(Failure::Read(why()).message().contains("goal not read"));
         assert!(Failure::Meta(why()).message().contains("goal not recorded"));
         let unknown = Failure::MetaUnknown(why()).message();
         assert!(

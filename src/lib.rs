@@ -195,19 +195,73 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
     run_with(args, None, out, err)
 }
 
-/// The `_goal` arm: usage at 2, then set or clear, then the success line only
-/// once both writes are down.
+/// The `_state` arm. Nothing after the directory is the READ — the caller's
+/// latest declaration, always 0. A declaration: usage at 2, then the write,
+/// and nothing reaches stdout until the bytes are down; every refusal or
+/// failure is stderr plus a non-zero code.
+fn run_state(
+    dir: &std::path::Path,
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let declaration = match state::parse(tail) {
+        Err(usage) => {
+            write!(err, "{}", usage.render())?;
+            return Ok(state::EXIT_USAGE);
+        }
+        Ok(state::Command::Read) => {
+            out.write_all(&state::read(dir, &calling_viewer(dir)))?;
+            return Ok(0);
+        }
+        Ok(state::Command::Declare(declaration)) => declaration,
+    };
+    match state::declare(
+        dir,
+        &calling_viewer(dir),
+        &declaration,
+        time::Timestamp::now(),
+    ) {
+        Ok(line) => {
+            out.write_all(line.as_bytes())?;
+            Ok(0)
+        }
+        Err(failure) => {
+            writeln!(err, "{}", failure.message())?;
+            Ok(state::EXIT_FAILED)
+        }
+    }
+}
+
+/// The `_goal` arm: `--help` and a refused argv are usage at 2; the READ is
+/// the first `goal=` record or `(no goal set)`; a set or clear prints its
+/// success line only once both writes are down.
 fn run_goal(
     dir: &std::path::Path,
     tail: &[String],
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
-    let Ok(command) = goal::parse(tail) else {
-        write!(err, "{}", goal::USAGE)?;
-        return Ok(goal::usage_code());
+    let write = match goal::parse(tail) {
+        Err(goal::Usage) | Ok(goal::Command::Help) => {
+            write!(err, "{}", goal::USAGE)?;
+            return Ok(goal::usage_code());
+        }
+        Ok(goal::Command::Show) => {
+            return match goal::show(dir) {
+                Ok(bytes) => {
+                    out.write_all(&bytes)?;
+                    Ok(0)
+                }
+                Err(why) => {
+                    writeln!(err, "{}", goal::Failure::Read(why).message())?;
+                    Ok(goal::failure_code())
+                }
+            };
+        }
+        Ok(goal::Command::Write(write)) => write,
     };
-    match goal::run(dir, &calling_viewer(dir), &command, time::Timestamp::now()) {
+    match goal::run(dir, &calling_viewer(dir), &write, time::Timestamp::now()) {
         Ok(line) => {
             out.write_all(line.as_bytes())?;
             Ok(0)
@@ -219,17 +273,33 @@ fn run_goal(
     }
 }
 
-/// The `_memo` arm: usage at 2, then the TSV record and its event; nothing on
-/// stdout on success, as the frozen helper prints nothing.
+/// The `_memo` arm: usage at 2; `read`/`tail` render the file to stdout; `add`
+/// is the TSV record and its event, with nothing on stdout on success, as the
+/// frozen helper prints nothing.
 fn run_memo(
     dir: &std::path::Path,
     tail: &[String],
-    _out: &mut impl Write,
+    out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<u8> {
-    let Ok(add) = memo::parse(tail) else {
-        write!(err, "{}", memo::USAGE)?;
-        return Ok(state::EXIT_USAGE);
+    let add = match memo::parse(tail) {
+        Err(memo::Usage) => {
+            write!(err, "{}", memo::USAGE)?;
+            return Ok(state::EXIT_USAGE);
+        }
+        Ok(memo::Command::View(view)) => {
+            return match memo::read(dir, &view) {
+                Ok(bytes) => {
+                    out.write_all(&bytes)?;
+                    Ok(0)
+                }
+                Err(why) => {
+                    writeln!(err, "{}", memo::Failure::Read(why).message())?;
+                    Ok(state::EXIT_FAILED)
+                }
+            };
+        }
+        Ok(memo::Command::Add(add)) => add,
     };
     match memo::run(dir, &calling_viewer(dir), &add, time::Timestamp::now()) {
         Ok(()) => Ok(0),
@@ -435,31 +505,7 @@ pub fn run_with(
         // pane reads, and so does this: the refusal is a DIAGNOSTIC and never
         // reaches stdout, which is why a refused invocation's stdout is empty
         // rather than a bare header.
-        // The write path: nothing reaches stdout until the bytes are down, and
-        // every refusal or failure is stderr plus a non-zero code.
-        cli::Request::State { dir, tail } => match state::parse(tail) {
-            Err(usage) => {
-                write!(err, "{}", usage.render())?;
-                state::EXIT_USAGE
-            }
-            Ok(declaration) => {
-                match state::declare(
-                    dir,
-                    &calling_viewer(dir),
-                    &declaration,
-                    time::Timestamp::now(),
-                ) {
-                    Ok(line) => {
-                        out.write_all(line.as_bytes())?;
-                        0
-                    }
-                    Err(failure) => {
-                        writeln!(err, "{}", failure.message())?;
-                        state::EXIT_FAILED
-                    }
-                }
-            }
-        },
+        cli::Request::State { dir, tail } => run_state(dir, tail, out, err)?,
         cli::Request::Goal { dir, tail } => run_goal(dir, tail, out, err)?,
         cli::Request::Memo { dir, tail } => run_memo(dir, tail, out, err)?,
         cli::Request::Requests { dir, mode } => {

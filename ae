@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.4"
+AE_VERSION="0.2.5"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -12907,15 +12907,16 @@ USAGE
 }
 
 helper_state_main() {
-    # The WRITE form goes to the pinned Rust core (P2.2): it takes the same
+    # Both forms go to the pinned Rust core. The WRITE (P2.2) takes the same
     # events.jsonl.lock, appends under it, and prints `Marked …` only after the
     # bytes are down — where this body prints first and can lose the event on a
-    # lock timeout. The core refuses a caller with no pane identity instead of
-    # writing actor "human". The no-argument READ stays here, unchanged.
+    # lock timeout — and refuses a caller with no pane identity instead of
+    # writing actor "human". The no-argument READ (P2.4) scans the same
+    # container the same way and renders the fields it read, where this body's
+    # `IFS=$'\t' read` loses an empty reason. The body below is the fallback
+    # for a session with no usable core.
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
-    if [[ $# -ge 1 ]]; then
-        _ae_core_try _state "$@" || true
-    fi
+    _ae_core_try _state "$@" || true
     local self
     self="$(ae_current_agent_ref)"
     [[ -n "$self" ]] || self="human"
@@ -14656,11 +14657,11 @@ helper_memo_render() {
 helper_memo_main() {
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
     MEMO_FILE="${META_DIR}/memo.tsv"
-    # `add` goes to the pinned Rust core (P2.3): same memo.tsv.lock append,
-    # same memo event, loud on failure. read/tail stay here.
-    if [[ "${1:-}" == "add" ]]; then
-        _ae_core_try _memo "$@" || true
-    fi
+    # Every form goes to the pinned Rust core: `add` (P2.3) with the same
+    # memo.tsv.lock append and the same memo event, loud on failure; `read` and
+    # `tail` (P2.4) with the renderer below's exact bytes. The body below is
+    # the fallback for a session with no usable core.
+    _ae_core_try _memo "$@" || true
     cmd="${1:-read}"
     shift || true
     case "$cmd" in
@@ -14719,14 +14720,13 @@ helper_goal_usage() {
 }
 
 helper_goal_main() {
-    # The WRITE forms (set, --clear) go to the pinned Rust core (P2.3): same
-    # meta.lock rewrite, same goal event, and the success line only after both
-    # are down. The no-argument READ and --help stay here.
+    # Every form goes to the pinned Rust core: the WRITEs (P2.3) with the same
+    # meta.lock rewrite, the same goal event, and the success line only after
+    # both are down; the no-argument READ and --help (P2.4) with the same
+    # first-record answer. The body below is the fallback for a session with
+    # no usable core.
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
-    case "${1:-}" in
-        "" | --help | -h) ;;
-        *) _ae_core_try _goal "$@" || true ;;
-    esac
+    _ae_core_try _goal "$@" || true
     case "${1:-}" in
         "")
             current="$(ae_meta_get goal)"
