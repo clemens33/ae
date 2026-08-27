@@ -66,23 +66,29 @@
 //!   satisfy. A later re-`ask` opens a NEW lifecycle and an earlier terminal
 //!   cannot reach forward into it;
 //! - a `cancel` is a terminal and not a third thing, so **SC-518a's order rule
-//!   governs it exactly as it governs a reply**. Its AUTHORIZATION is a
-//!   different matter and **has no row at all**: SC-518 defines a REPLY MIRROR,
-//!   and a cancel has no target end to mirror. What this module does — accept a
-//!   cancel whose actor identity is the request's own sender — is therefore an
-//!   UNAUTHORIZED INTERIM, not an implementation of SC-518, and is marked as
-//!   such at [`Opening::withdrawn_by`]. No closure is claimed for cancel until a
-//!   ruling exists.
-//!
-//!   **AND NO GATING TEST ASSERTS IT.** The contract's rule is ENFORCEMENT and
-//!   not labelling: a gate that fails under the other policy has ratified this
-//!   one whatever its comment says. So the gated suite asserts only the
-//!   OUTCOME-NEUTRAL half — that a cancel placed before its opening leaves the
-//!   row identical to a container with no cancel at all, which is true under
-//!   every possible authorization — and the current policy is recorded in
-//!   `#[ignore]`d diagnostics that no lane runs. PROVEN, not asserted: replacing
-//!   the interim policy with accept-anyone, accept-nobody or accept-the-target
-//!   leaves `just rust-check` GREEN in all three cases;
+//!   governs it exactly as it governs a reply**. Its AUTHORIZATION has no
+//!   contract row — SC-518 defines a REPLY MIRROR, and a cancel has no target
+//!   end to mirror — and is RULED instead (operational lead, 2026-08-27, under
+//!   the delivery-first mandate): a cancel withdraws a request when its actor
+//!   identity is the request's own sender by the strict [`Identity::matches`]
+//!   the reply mirror uses, AND — the one arm that rule cannot express — a
+//!   SLOTLESS cancel (no routing member at all) withdraws a request whose
+//!   opening is ROUTED, or is a SLOTLESS-SENDER opening (actor session
+//!   present, actor slot ABSENT), when the cancel's non-empty actor bytes
+//!   equal the opening's actor bytes. Non-empty slot data stays under strict
+//!   slot + session matching; an empty or a different actor stays pending;
+//!   present-but-empty slot data still names nobody. The arm exists for one
+//!   real writer: `ae compact --digest-only` withdraws its handover request as
+//!   the reserved `ae:compact:<uuid>` actor from a COMMAND with no pane, while
+//!   the request it withdraws was asked under that same override from the
+//!   human's pane — and BOTH writers give such an ask the pane's session and
+//!   no slot ("external senders have none", `ae_tracked_send`), so its opening
+//!   is half a key. The frozen `requests` rendered that `cancelled`; the
+//!   strict mirror alone rendered it `pending` forever. Ruled
+//!   at [`Opening::withdrawn_by`] and GATED: the former `#[ignore]`d
+//!   diagnostics are gates now, with the ruling's own discriminators beside
+//!   them. Precedence between a cancel and a reply that BOTH follow one
+//!   opening remains unruled and stays out of the gate (below);
 //! - every candidate is retained and validated afterwards. Keeping only the
 //!   newest raw one lets an INVALID newer event discard a VALID older one —
 //!   measured in the frozen tree: ask, valid withdrawal, then a stranger's
@@ -774,23 +780,45 @@ impl Opening {
             && self.asker().matches(reply.target_identity())
     }
 
-    /// **UNAUTHORIZED INTERIM — no row rules this.** SC-518 defines a REPLY
-    /// MIRROR; a cancel has no target end to mirror, and cancel authorization
-    /// has no row at all. Corrected contract text is awaited.
+    /// **RULED (operational lead, 2026-08-27)** — see the module docs. A cancel
+    /// withdraws this request when its actor identity is this request's SENDER
+    /// by the same strict [`Identity::matches`] the reply mirror uses, or — the
+    /// one arm that rule cannot express — when the cancel is SLOTLESS (no
+    /// routing member at all, hence a display identity), this request's
+    /// opening is ROUTED or is a SLOTLESS-SENDER opening (actor session
+    /// present, actor slot ABSENT — the shape both writers give an ask made
+    /// under `AE_SENDER_OVERRIDE` from a pane), and the cancel's non-empty
+    /// actor bytes equal this request's actor bytes. Nothing looser: a cancel
+    /// carrying slot data, right or wrong, is judged by slot + session alone;
+    /// an empty actor names nobody; an opening whose slot member is PRESENT
+    /// but empty is a writer bug, not that shape, and stays pending. The arm
+    /// is for a request asked from a pane under an explicit override and
+    /// withdrawn from a pane-less command under the same override —
+    /// `ae compact --digest-only` — where the override's bytes are the only
+    /// identity the two events share.
     ///
-    /// What this does meanwhile: accept a cancel whose actor identity is the
-    /// request's own sender, by the same strict [`Identity::matches`] the reply
-    /// mirror uses. That is the narrowest thing that is not a guess — a state
-    /// which closes a request is as consequential whether it closes it with an
-    /// answer or without one — and it is the actor HALF of a rule whose other
-    /// half does not apply, rather than an application of that rule.
-    ///
-    /// SC-518a's ORDER rule does govern cancel, and that part IS ruled. So the
-    /// causality tests for cancel prove causality CONDITIONAL on whatever
-    /// authorization is eventually ratified; they do not prove the
-    /// authorization.
+    /// SC-518a's ORDER rule governs cancel unchanged: the arm withdraws only
+    /// the opening the cancel follows.
     fn withdrawn_by(&self, cancel: &Closing) -> bool {
-        self.asker().matches(cancel.actor_identity())
+        let asker = self.asker();
+        let slotless_sender =
+            matches!(self.from_slot, Key::Absent) && !matches!(self.from_session, Key::Absent);
+        // "No routing member at all" means all FOUR: a Display actor identity
+        // only says the actor pair is absent, and a cancel carrying a target
+        // slot or session is carrying routing data.
+        let slotless_cancel = matches!(cancel.actor_slot, Key::Absent)
+            && matches!(cancel.actor_session, Key::Absent)
+            && matches!(cancel.target_slot, Key::Absent)
+            && matches!(cancel.target_session, Key::Absent);
+        match cancel.actor_identity() {
+            Identity::Display(actor)
+                if slotless_cancel
+                    && (matches!(asker, Identity::Routed { .. }) || slotless_sender) =>
+            {
+                !actor.is_empty() && self.from == actor.as_bytes()
+            }
+            identity => asker.matches(identity),
+        }
     }
 }
 
@@ -857,6 +885,20 @@ mod tests {
     }
 
     const ASK: &str = r#"{"ts":"t1","actor":"a:lead","action":"ask","target":"a:worker","ref":"r1","summary":"the question"}"#;
+    /// A ROUTED opening whose actor is a reserved name — the shape the ruling
+    /// named literally.
+    const ROUTED_ASK: &str = r#"{"ts":"t1","actor":"ae:compact:u1","action":"ask","target":"a:lead","ref":"r1","actor_slot":"main","actor_session":"s","target_slot":"main","target_session":"s","summary":"handover"}"#;
+    /// `ae compact`'s handover ask as BOTH writers emit it from a pane (live
+    /// capture, 2026-08-27): the reserved override as the actor, the pane's
+    /// session, and NO actor slot — "external senders have none".
+    const HALFKEY_ASK: &str = r#"{"ts":"t1","actor":"ae:compact:u1","action":"ask","target":"a:lead","ref":"r1","actor_session":"s","target_slot":"main","target_session":"s","summary":"handover"}"#;
+    /// Not a shape any writer emits: an EMPTY actor (the emitter falls back to
+    /// `human`). A corrupt row, kept so the arm's non-empty guard is proven
+    /// rather than assumed.
+    const EMPTYACTOR_ASK: &str = r#"{"ts":"t1","actor":"","action":"ask","target":"a:lead","ref":"r1","actor_slot":"main","actor_session":"s","target_slot":"main","target_session":"s","summary":"corrupt"}"#;
+    /// Not the frozen shape: a PRESENT-but-empty actor slot is a writer bug,
+    /// and stays half a key.
+    const EMPTYSLOT_ASK: &str = r#"{"ts":"t1","actor":"ae:compact:u1","action":"ask","target":"a:lead","ref":"r1","actor_slot":"","actor_session":"s","target_slot":"main","target_session":"s","summary":"handover"}"#;
 
     struct Scratch(PathBuf);
 
@@ -1284,32 +1326,18 @@ mod tests {
         assert_eq!(states(&reply_then_cancel)[0].status, Status::Cancelled);
     }
 
-    /// **NON-GATING DIAGNOSTIC — `#[ignore]`d ON PURPOSE, and the attribute is
-    /// the whole point.**
-    ///
-    /// This records what this build currently DOES about cancel authorization,
-    /// which no row rules. `semantic-contract.md` permits a clearly non-gating
-    /// diagnostic to record the current IS, and forbids a GATING test from
-    /// asserting an unratified authorization outcome — because a gate that fails
-    /// under the other policy has ratified this one by enforcement, whatever its
-    /// comment says. `cargo nextest run` skips ignored tests and no lane passes
-    /// `--run-ignored`, so nothing here can fail the gate; run it deliberately
-    /// with `cargo nextest run --run-ignored all` to read the current behavior.
-    ///
-    /// When cancel authorization is ratified, this becomes a gating test by
-    /// deleting one attribute — and if the ruling differs from what is below,
-    /// this is the record of what had to change.
+    /// The ruling's strict half, gated: the request's own sender withdraws it —
+    /// a stranger and an unattributed cancel do not. Formerly the `#[ignore]`d
+    /// diagnostic of the interim policy; the ruling kept that half as it was,
+    /// so the record of what had to change here is: nothing.
     #[test]
-    #[ignore = "records unratified cancel-authorization behavior; not a gate"]
-    fn diagnostic_the_interim_withdrawal_policy_this_build_applies() {
+    fn the_request_s_own_sender_withdraws_it_and_nobody_else_does() {
         let after = |actor: &str, summary: &str| {
             let cancel = format!(
                 r#"{{"ts":"t2",{actor}"action":"cancel","ref":"r1","summary":"{summary}"}}"#
             );
             states(&container(&[ASK, &cancel]))[0].status
         };
-        // IS, not contract: the request's own sender withdraws it; a stranger
-        // and an unattributed cancel do not.
         assert_eq!(
             after(r#""actor":"a:lead","#, "withdrawn"),
             Status::Cancelled
@@ -1327,10 +1355,8 @@ mod tests {
         // exists to prevent: keeping only the newest RAW candidate and
         // validating it afterwards rendered this `pending`.
         //
-        // REPLIES ONLY. The identical shape with two cancels is the same
-        // mechanism, but asserting its outcome would assert who may cancel —
-        // unratified — so it lives in the non-gating diagnostic below instead.
-        // Reply authorization IS ratified (SC-518), so this half is a gate.
+        // The identical shape with two cancels is gated just below, now that
+        // cancel authorization is ruled.
         let replies = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:worker","action":"reply","target":"a:lead","ref":"r1","summary":"valid answer"}"#,
@@ -1341,13 +1367,11 @@ mod tests {
         assert_eq!(rows[0].summary, b"valid answer");
     }
 
-    /// **NON-GATING DIAGNOSTIC** — the cancel half of retain-then-validate.
-    /// Same mechanism as the reply half above; its outcome depends on who may
-    /// cancel, which no row rules. See the other diagnostic for why the
-    /// attribute rather than a comment is what keeps this out of the gate.
+    /// The cancel half of retain-then-validate, gated now that cancel
+    /// authorization is ruled: an invalid newer cancel cannot bury a valid
+    /// older one.
     #[test]
-    #[ignore = "records unratified cancel-authorization behavior; not a gate"]
-    fn diagnostic_retain_then_validate_over_two_cancels() {
+    fn an_invalid_newer_cancel_cannot_bury_a_valid_older_one() {
         let body = container(&[
             ASK,
             r#"{"ts":"t2","actor":"a:lead","action":"cancel","ref":"r1","summary":"valid withdrawal"}"#,
@@ -1356,6 +1380,161 @@ mod tests {
         let rows = states(&body);
         assert_eq!(rows[0].status, Status::Cancelled);
         assert_eq!(rows[0].summary, b"valid withdrawal");
+    }
+
+    /// The ruled arm, gated: a SLOTLESS cancel withdraws a ROUTED or a
+    /// SLOTLESS-SENDER request on exact, non-empty actor bytes — `ae compact
+    /// --digest-only`'s shape — and on nothing looser. An opening whose slot
+    /// member is present but empty is neither, and stays pending.
+    #[test]
+    fn a_slotless_cancel_withdraws_on_exact_actor_bytes_only() {
+        let after = |opening: &str, actor_member: &str| {
+            let cancel = format!(
+                r#"{{"ts":"t2",{actor_member}"action":"cancel","ref":"r1","summary":"withdrawn"}}"#
+            );
+            states(&container(&[opening, &cancel]))[0].status
+        };
+        for opening in [ROUTED_ASK, HALFKEY_ASK] {
+            assert_eq!(
+                after(opening, r#""actor":"ae:compact:u1","#),
+                Status::Cancelled,
+                "exact bytes, no slot data: {opening}"
+            );
+            assert_eq!(
+                after(opening, r#""actor":"ae:compact:u2","#),
+                Status::Pending,
+                "another actor"
+            );
+            assert_eq!(
+                after(opening, r#""actor":"AE:COMPACT:U1","#),
+                Status::Pending,
+                "bytes, not a case-fold"
+            );
+            assert_eq!(
+                after(opening, r#""actor":"ae:compact:u1 ","#),
+                Status::Pending,
+                "bytes, not a trim"
+            );
+            assert_eq!(
+                after(opening, r#""actor":"","#),
+                Status::Pending,
+                "an empty actor names nobody"
+            );
+            assert_eq!(after(opening, ""), Status::Pending, "no actor names nobody");
+        }
+        assert_eq!(
+            after(EMPTYSLOT_ASK, r#""actor":"ae:compact:u1","#),
+            Status::Pending,
+            "a present-but-empty opening slot is half a key, not the slotless-sender shape"
+        );
+        // Equal bytes alone would close this: the guard is what keeps two
+        // empty actors from naming the same nobody.
+        assert_eq!(
+            after(EMPTYACTOR_ASK, r#""actor":"","#),
+            Status::Pending,
+            "empty equals empty is not an identity"
+        );
+    }
+
+    /// Slot data on the cancel, right or wrong, is judged by slot + session
+    /// alone, exactly as a reply's is: equal actor bytes do not rescue a
+    /// mismatched key, a matching key does not need them, and half a key
+    /// names nobody even beside equal bytes.
+    #[test]
+    fn a_stamped_cancel_stays_under_strict_slot_and_session_matching() {
+        let after = |members: &str| {
+            let cancel = format!(
+                r#"{{"ts":"t2","action":"cancel","ref":"r1",{members}"summary":"withdrawn"}}"#
+            );
+            states(&container(&[ROUTED_ASK, &cancel]))[0].status
+        };
+        assert_eq!(
+            after(r#""actor":"ae:compact:u1","actor_slot":"worker.0","actor_session":"s","#),
+            Status::Pending,
+            "same bytes, another slot"
+        );
+        assert_eq!(
+            after(r#""actor":"ae:compact:u1","actor_slot":"main","actor_session":"other","#),
+            Status::Pending,
+            "same bytes, another session"
+        );
+        assert_eq!(
+            after(r#""actor":"renamed:lead","actor_slot":"main","actor_session":"s","#),
+            Status::Cancelled,
+            "the key matches; the display need not"
+        );
+        assert_eq!(
+            after(r#""actor":"ae:compact:u1","actor_slot":"","actor_session":"","#),
+            Status::Pending,
+            "present-and-empty is half a key"
+        );
+        assert_eq!(
+            after(r#""actor":"ae:compact:u1","actor_slot":"main","#),
+            Status::Pending,
+            "one member of two is half a key"
+        );
+    }
+
+    /// "No routing member at all" is all four: a cancel whose ACTOR side is
+    /// bare but which carries a target slot or session — a value or a
+    /// present-but-empty one — is carrying routing data, and stays under the
+    /// strict rule on both opening shapes.
+    #[test]
+    fn a_cancel_carrying_a_target_member_is_not_slotless() {
+        let after = |opening: &str, members: &str| {
+            let cancel = format!(
+                r#"{{"ts":"t2","actor":"ae:compact:u1","action":"cancel","ref":"r1",{members}"summary":"withdrawn"}}"#
+            );
+            states(&container(&[opening, &cancel]))[0].status
+        };
+        for opening in [ROUTED_ASK, HALFKEY_ASK] {
+            assert_eq!(
+                after(opening, ""),
+                Status::Cancelled,
+                "the bare shape: {opening}"
+            );
+            for members in [
+                r#""target_slot":"main","#,
+                r#""target_session":"s","#,
+                r#""target_slot":"main","target_session":"s","#,
+                r#""target_slot":"","#,
+                r#""target_session":"","#,
+                r#""target_slot":"","target_session":"","#,
+            ] {
+                assert_eq!(
+                    after(opening, members),
+                    Status::Pending,
+                    "a target member is routing data: {members} on {opening}"
+                );
+            }
+        }
+    }
+
+    /// SC-518a's order rule under the ruled arm, in the positive: it withdraws
+    /// only the opening it FOLLOWS, and a re-ask opens a lifecycle an earlier
+    /// withdrawal cannot reach.
+    #[test]
+    fn the_slotless_arm_obeys_causality_and_a_re_ask() {
+        let own = r#"{"ts":"t2","actor":"ae:compact:u1","action":"cancel","ref":"r1","summary":"withdrawn"}"#;
+        let re_ask = r#"{"ts":"t3","actor":"ae:compact:u1","action":"ask","target":"a:lead","ref":"r1","actor_session":"s","target_slot":"main","target_session":"s","summary":"asked again"}"#;
+        for opening in [ROUTED_ASK, HALFKEY_ASK] {
+            assert_eq!(
+                states(&container(&[opening, own]))[0].status,
+                Status::Cancelled
+            );
+            assert_eq!(
+                states(&container(&[own, opening])),
+                states(&container(&[opening])),
+                "before its opening: no effect"
+            );
+            let re_asked = states(&container(&[opening, own, re_ask]));
+            assert_eq!(
+                re_asked,
+                states(&container(&[re_ask])),
+                "an earlier lifecycle's withdrawal cannot reach the re-ask"
+            );
+            assert_eq!(re_asked[0].status, Status::Pending);
+        }
     }
 
     #[test]
