@@ -733,6 +733,8 @@ case "\$1" in
     _state) echo "CORE_TOKEN_9f3a state=\${3:-read}" ;;
     _goal) echo "CORE_TOKEN_9f3a goal=\${3:-read}" ;;
     _memo) echo "CORE_TOKEN_9f3a memo=\${3:-read}" ;;
+    _ask) echo "CORE_TOKEN_9f3a ask=\${3:-none} body=\${4:-none}" ;;
+    _review) echo "CORE_TOKEN_9f3a review=\${3:-none} body=\${4:-none}" ;;
     *) exit 64 ;;
 esac
 EOF
@@ -802,6 +804,19 @@ for _cb_mode in read tail ""; do
     assert_contains "core binding: memo ${_cb_mode:-<bare>} reaches the core" "CORE_TOKEN_9f3a memo=${_cb_mode:-read}" "$_cb_out"
 done
 unset _cb_mode _cb_args
+
+# ASK and REVIEW (P2.5a): the whole tracked request goes to the core — target
+# and body verbatim, so a wrong word would mean the shim rewrote the caller's
+# arguments. The stub prints and exits 0, so nothing is pasted here; the real
+# path is the black-box and smoke evidence.
+_cb_out="$("$_cb_meta/ask" dummy "the question" 2>/dev/null || true)"
+assert_contains "core binding: ask reaches the core with target and body" "CORE_TOKEN_9f3a ask=dummy body=the question" "$_cb_out"
+_cb_out="$("$_cb_meta/review" dummy "the request" 2>/dev/null || true)"
+assert_contains "core binding: review reaches the core with target and body" "CORE_TOKEN_9f3a review=dummy body=the request" "$_cb_out"
+_cb_out="$(AE_CORE="" "$_cb_meta/ask" 2>&1 >/dev/null || true)"
+assert_contains "core binding: ask falls back to the bash body" "Usage: ask" "$_cb_out"
+assert_eq "core binding: and not to the core" "0" \
+    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
 
 # THE READS KEEP THEIR FALLBACK. With the core forced off for one call, each
 # read answers from the bash body — the same body that answered before P2.4 —
@@ -3540,6 +3555,29 @@ assert_eq "recovery (#35): both bodies survive side by side" "1|1" \
     "$(printf '%s|%s' \
         "$(command grep -rlq 'FIRST-DELIVERY-BODY' "$lp_msgs" 2>/dev/null && echo 1 || echo 0)" \
         "$(command grep -rlq 'SECOND-DELIVERY-BODY' "$lp_msgs" 2>/dev/null && echo 1 || echo 0)")"
+# P2.5a: `_send-deliver` is the send body behind its INTERNAL delivery-only entry —
+# the Rust core pastes a tracked request through it and records the ask/review event
+# itself from the path it prints. The public `send` ALWAYS records: its finisher is
+# its entry point's `local`, so no ambient variable can make it deliver silently.
+lp_ev="$HOME/.ae/sessions/test-leadpair/events.jsonl"
+lp_dl_out="$("$HOME/.ae/sessions/test-leadpair/_send-deliver" colead "DELIVER-ONLY-BODY-7c1e" 2>/dev/null || echo "rc=$?")"
+sleep 1
+assert_eq "_send-deliver: prints the recovery file's path and nothing else" "1" \
+    "$([[ "$lp_dl_out" == */messages/* && -f "$lp_dl_out" ]] && echo 1 || echo 0)"
+assert_eq "_send-deliver: the recovery file holds the delivered body" "1" \
+    "$(command grep -q 'DELIVER-ONLY-BODY-7c1e' "${lp_dl_out:-/nonexistent}" 2>/dev/null && echo 1 || echo 0)"
+assert_eq "_send-deliver: the paste reached the pane" "1" \
+    "$([[ "$(tmux capture-pane -p -t "$lp_colead_pane" 2>/dev/null | tr -d '\n')" == *DELIVER-ONLY-BODY-7c1e* ]] && echo 1 || echo 0)"
+assert_eq "_send-deliver: emits NO event" "0" "$(command grep -c 'DELIVER-ONLY-BODY-7c1e' "$lp_ev" 2>/dev/null || true)"
+lp_amb_out="$(env _AE_DELIVER_ONLY=1 _ae_send_finish=helper_send_deliver_finish "$HOME/.ae/sessions/test-leadpair/send" colead "AMBIENT-SWITCH-BODY-7c1e" 2>/dev/null || true)"
+sleep 1
+assert_eq "send: an ambient deliver-only variable changes nothing — the send event is recorded" "1" \
+    "$(command grep -q '"action":"send".*AMBIENT-SWITCH-BODY-7c1e' "$lp_ev" 2>/dev/null && echo 1 || echo 0)"
+assert_eq "send: and no recovery path leaks onto stdout" "" "$lp_amb_out"
+"$HOME/.ae/sessions/test-leadpair/_send-deliver" telegram:x "SINK-BODY-7c1e" >/dev/null 2>&1 && lp_dl_ext_rc=0 || lp_dl_ext_rc=$?
+assert_eq "_send-deliver: an event-only sink is refused (the core records those itself)" "1" "$lp_dl_ext_rc"
+assert_eq "_send-deliver: and refused means nothing recorded" "0" "$(command grep -c 'SINK-BODY-7c1e' "$lp_ev" 2>/dev/null || true)"
+unset lp_ev lp_dl_out lp_amb_out lp_dl_ext_rc
 unset lp_msgs lp_before lp_after
 unset lp_empty_rc lp_ws_rc lp_big lp_big_rc lp_big_file
 # Rename regression (codex): under lead-pair the window-0 role name must SURVIVE a

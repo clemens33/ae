@@ -19,9 +19,23 @@
 //! crossings changes.
 //!
 //! The door is a capability, not a licence: everything a caller could want to do
-//! with a child process other than run tmux is still denied everywhere,
-//! including here, because [`run`] is private and takes an argument list nothing
+//! with a child process other than run tmux — and, since P2.5a, the session's
+//! own frozen `send` helper — is still denied everywhere, including here,
+//! because [`spawn`] is private and its callers take argument lists nothing
 //! outside this crate can supply.
+//!
+//! # The second program: the session's send helpers
+//!
+//! A tracked request (`ask`, `review`) is composed by the core and DELIVERED by
+//! the frozen `send` body — the TUI-modelled paste path with its dead-pane
+//! guard, provenance envelope, per-target lock, busy deferral and submit
+//! verification, none of which this crate re-implements. [`deliver`] runs a
+//! session helper — the internal `_send-deliver`, that body behind its
+//! delivery-only entry point, or the public `send` for the no-identity
+//! fallback — inherits its stderr so every loud line reaches the caller
+//! verbatim, and hands back its exit status and its stdout (for
+//! `_send-deliver`, the one line naming the stored body's path). The event is
+//! then the core's to write, under its own locked transaction.
 //!
 //! # The exit status decides; the payload never does
 //!
@@ -92,6 +106,57 @@ impl Discovery for Tmux {
     }
 }
 
+/// Whether the AMBIENT server has a session `name` — the frozen resolver's
+/// `tmux has-session -t` before a cross-session lookup (prefix-matched, as
+/// tmux does).
+#[must_use]
+pub fn session_exists(name: &str) -> bool {
+    run(PROGRAM, &tmux::has_session_args(&ServerId::Ambient, name)).0
+}
+
+/// The pane roster of `session` on the AMBIENT server, or `None` when the
+/// enumeration failed — see [`tmux::interpret_agents`].
+#[must_use]
+pub fn observe_agents(session: &str) -> Option<Vec<tmux::ObservedAgent>> {
+    let (succeeded, stdout) = run(PROGRAM, &tmux::agents_args(&ServerId::Ambient, session));
+    tmux::interpret_agents(succeeded, &stdout)
+}
+
+/// What running the frozen `send` helper produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delivery {
+    /// The helper's exit code; `None` when it could not be spawned at all, or
+    /// died to a signal.
+    pub code: Option<i32>,
+    /// Its stdout — from `_send-deliver`, the stored body's path plus `\n`.
+    pub stdout: String,
+}
+
+/// Run the session's send helper at `helper` with `target` and `message`,
+/// plus `envs` (the event fields the frozen body store names the recovery
+/// file after). stderr is INHERITED — the helper's refusals and
+/// unconfirmed-submit lines are the caller's diagnostics, verbatim; stdin is
+/// null.
+#[must_use]
+pub fn deliver(
+    helper: &std::path::Path,
+    target: &str,
+    message: &str,
+    envs: &[(&str, &str)],
+) -> Delivery {
+    let args = [target.to_owned(), message.to_owned()];
+    match spawn(&helper.display().to_string(), &args, envs, true) {
+        Some(output) => Delivery {
+            code: output.status.code(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        },
+        None => Delivery {
+            code: None,
+            stdout: String::new(),
+        },
+    }
+}
+
 /// The calling pane's identity readings, from the AMBIENT server.
 ///
 /// Ambient, deliberately: a generated helper is invoked inside the session it
@@ -154,18 +219,31 @@ fn addressable(server: &ServerId) -> bool {
 // defence in depth — they are not the same strength.
 #[allow(
     clippy::disallowed_types,
-    reason = "the product's door: ae cannot answer a liveness question without running tmux"
+    reason = "the product's door: ae cannot answer a liveness question without running tmux, nor deliver a tracked request without the session's send helper"
 )]
-fn run(program: &str, args: &[String]) -> (bool, String) {
+fn spawn(
+    program: &str,
+    args: &[String],
+    envs: &[(&str, &str)],
+    inherit_stderr: bool,
+) -> Option<std::process::Output> {
     let mut command = std::process::Command::new(program);
     command.args(args);
-    match command.output() {
-        Ok(output) => (
+    command.envs(envs.iter().copied());
+    if inherit_stderr {
+        command.stderr(std::process::Stdio::inherit());
+    }
+    command.output().ok()
+}
+
+fn run(program: &str, args: &[String]) -> (bool, String) {
+    match spawn(program, args, &[], false) {
+        Some(output) => (
             output.status.success(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
         ),
         // Nothing ran. Not an empty answer — see the module docs.
-        Err(_) => (false, String::new()),
+        None => (false, String::new()),
     }
 }
 

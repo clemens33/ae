@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.5"
+AE_VERSION="0.2.6"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -14246,7 +14246,10 @@ ae_meta_unset() {
 #   events-tail; each emitted into its generated helper, main fn last) —
 
 # send:
-helper_send_main() {
+# The send BODY, shared by two entry points (below): `send` (helper_send_main,
+# public) and `_send-deliver` (helper_send_deliver_main, internal). Everything up
+# to the finish is the frozen paste path; the finish is the entry point's.
+helper_send_body() {
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
     if [[ $# -lt 2 ]]; then
         echo "Usage: send <agent-name|pane-id|@session:agent> <message>" >&2
@@ -14368,11 +14371,59 @@ helper_send_main() {
     # delivered text is kept beside the session and the event points at it, so the
     # recipient can recover the body themselves.
     ae_store_message_body "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_ACTION:-send}" "$msg"
-    ae_emit_event "${_AE_EVENT_ACTION:-send}" "$logged_target" "${_AE_EVENT_REF:-${req_id:-}}" "${_AE_EVENT_SUMMARY:-$msg}"
+    # The FINISH belongs to the ENTRY POINT, not to the environment. `send`
+    # (helper_send_main) records the send event here; `_send-deliver`
+    # (helper_send_deliver_main, P2.5a) prints the recovery file's path instead,
+    # because the Rust core that ran it writes the ask/review event ITSELF under
+    # its own locked, synced transaction. The order is the frozen one — paste,
+    # store, then the event — only the last step is the entry point's. Each entry
+    # pins its finisher in a `local`, which shadows any variable of that name in
+    # the ambient environment: nothing a caller exports can make the public
+    # `send` deliver without recording (P2.5a review, BLOCKER).
+    "${_ae_send_finish:?ae: send finisher not selected - helper_send_body runs behind an entry point}" \
+        "$logged_target" "${_AE_EVENT_REF:-${req_id:-}}" "$msg"
+}
+
+# The two entry points of the send body, and their finishers. A finisher gets
+# <logged-target> <ref> <msg>; the stored recovery file is _AE_LAST_BODY_FILE.
+# send: the public helper. It records, always.
+helper_send_main() {
+    local _ae_send_finish=helper_send_finish_event
+    helper_send_body "$@"
+}
+helper_send_finish_event() {
+    ae_emit_event "${_AE_EVENT_ACTION:-send}" "$1" "$2" "${_AE_EVENT_SUMMARY:-$3}"
+}
+# _send-deliver: INTERNAL, not on the agent-facing surface. The Rust core runs it
+# to paste a tracked request it composed, and records the ask/review event from
+# the path it prints. Event-only sinks are the core's own — it never delivers to
+# one — and where the frozen send would RECORD such a target, this entry records
+# nothing, ever. The whitelist is helper_send_body's, verbatim.
+helper_send_deliver_main() {
+    case "${1:-}" in
+        telegram:* | discord:* | ae:compact:*)
+            echo "ae: _send-deliver: ${1} is an event-only sink, not a pane — nothing to deliver, nothing recorded" >&2
+            exit 1
+            ;;
+    esac
+    local _ae_send_finish=helper_send_deliver_finish
+    helper_send_body "$@"
+}
+helper_send_deliver_finish() {
+    printf '%s\n' "${_AE_LAST_BODY_FILE:-}"
 }
 
 # ask:
 helper_ask_main() {
+    # The whole request goes to the pinned Rust core (P2.5a): body refusal,
+    # identity, target resolution, the request id, the composed message and
+    # the ask event under the core's locked transaction — with the PASTE done
+    # by this session's internal `_send-deliver` entry (the frozen send body,
+    # printing the recovery path instead of recording; never an ambient switch
+    # on the public `send`), so the TUI modelling stays where it was measured.
+    # The body below is the fallback for a session with no usable core.
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    _ae_core_try _ask "$@" || true
     if [[ $# -lt 2 ]]; then
         echo "Usage: ask <agent-name|pane-id|@session:agent> <question>" >&2
         echo "  Like send, but embeds your identity and reply command in the message." >&2
@@ -14385,6 +14436,11 @@ helper_ask_main() {
 
 # review:
 helper_review_main() {
+    # As `ask`: the core composes, delivers through the internal `_send-deliver`
+    # entry, and writes the review event; this body is the fallback for a
+    # session with no usable core.
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    _ae_core_try _review "$@" || true
     if [[ $# -lt 2 ]]; then
         echo "Usage: review <agent-name|pane-id|@session:agent> <request>" >&2
         echo "  Ask another agent for a critical review and require a reply via send." >&2
@@ -14849,7 +14905,7 @@ helper_interrupt_main() {
     ae_lock_target "$target"
 
     # NO FOCUS CHANGE — send-keys -t (incl. -X cancel and Escape) targets the pane
-    # without selecting it; see helper_send_main. Only `focus` selects panes.
+    # without selecting it; see helper_send_body. Only `focus` selects panes.
     tmux send-keys -t "$target" -X cancel 2>/dev/null || true
     tmux send-keys -t "$target" Escape
 
@@ -16627,7 +16683,7 @@ helper_watchdog_main() {
             # here, so a nudge that was refused (dead pane) or abandoned (busy, or the
             # human mid-type) still bumped nudge_count, printed "nudged (n/2)" and fed
             # the max-nudges alert — the watchdog reporting asks that never landed.
-            # The event log was already honest: helper_send_main exits BEFORE
+            # The event log was already honest: helper_send_body exits BEFORE
             # ae_emit_event on those paths, so no nudge event is written. Only the
             # counter, the log line and the alert reason lied.
             #
@@ -17906,11 +17962,26 @@ LIBPROLOGUE
         cat <<'SENDPROLOGUE'
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 SENDPROLOGUE
-        declare -f helper_send_main
+        declare -f helper_send_body helper_send_finish_event helper_send_main
         printf 'helper_send_main "$@"\n'
     } >"${AE_META}/send.tmp.$$"
     chmod 0700 "${AE_META}/send.tmp.$$"
     mv "${AE_META}/send.tmp.$$" "${AE_META}/send"
+
+    # Helper: _send-deliver <target> <message> — INTERNAL (P2.5a): the send body
+    # behind its delivery-only entry, for the Rust core's tracked requests. Same
+    # paste, same body store; the recovery file's path on stdout and NO event —
+    # the core records the ask/review event itself. Not for agents or humans.
+    {
+        printf '%s\n' "$_ae_sb"
+        cat <<'SENDDELIVERPROLOGUE'
+source "$(cd "$(dirname "$0")" && pwd)/_lib"
+SENDDELIVERPROLOGUE
+        declare -f helper_send_body helper_send_deliver_finish helper_send_deliver_main
+        printf 'helper_send_deliver_main "$@"\n'
+    } >"${AE_META}/_send-deliver.tmp.$$"
+    chmod 0700 "${AE_META}/_send-deliver.tmp.$$"
+    mv "${AE_META}/_send-deliver.tmp.$$" "${AE_META}/_send-deliver"
 
     # Helper: ask <target> <question> — structured send with reply-to metadata
     {
@@ -17918,7 +17989,7 @@ SENDPROLOGUE
         cat <<'ASKPROLOGUE'
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 ASKPROLOGUE
-        declare -f helper_ask_main
+        declare -f _ae_core_complain _ae_core_try helper_ask_main
         printf 'helper_ask_main "$@"\n'
     } >"${AE_META}/ask.tmp.$$"
     chmod 0700 "${AE_META}/ask.tmp.$$"
@@ -17930,7 +18001,7 @@ ASKPROLOGUE
         cat <<'REVIEWPROLOGUE'
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 REVIEWPROLOGUE
-        declare -f helper_review_main
+        declare -f _ae_core_complain _ae_core_try helper_review_main
         printf 'helper_review_main "$@"\n'
     } >"${AE_META}/review.tmp.$$"
     chmod 0700 "${AE_META}/review.tmp.$$"

@@ -1254,3 +1254,484 @@ fn events_tail_prints_its_opening_then_follows_what_is_appended() {
         String::from_utf8_lossy(&leftover)
     );
 }
+
+// ---- tracked requests: ask / review -------------------------------------
+
+/// A real isolated server with two stamped panes in one session, a session
+/// directory whose `send` and `_send-deliver` are one STUB that records what
+/// it was handed (and under which name) and answers like the frozen entry it
+/// stands in for, and the binary run as a helper would run it. The stub is the point: the paste path is the frozen
+/// bash body, exercised live in the smoke; what these tests pin is everything
+/// the core does around it — composition, resolution, the env contract, the
+/// event — and that a refused paste leaves no event behind.
+struct Tracked {
+    scratch_dir: std::path::PathBuf,
+    sock: std::path::PathBuf,
+    dir: std::path::PathBuf,
+    main: String,
+    worker: String,
+}
+
+impl Tracked {
+    fn new(tag: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch_dir =
+            std::path::PathBuf::from(format!("/tmp/aetr.{}.{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch_dir);
+        assert!(
+            std::fs::create_dir_all(&scratch_dir).is_ok(),
+            "a scratch directory"
+        );
+        let sock = scratch_dir.join("sock");
+        let session = format!("tr{tag}");
+        let mut fixture = Self {
+            scratch_dir: scratch_dir.clone(),
+            sock,
+            dir: scratch_dir.join("sessions").join(&session),
+            main: String::new(),
+            worker: String::new(),
+        };
+        assert!(
+            fixture
+                .tmux(&["-f", "/dev/null", "new-session", "-d", "-s", &session])
+                .0
+        );
+        assert!(fixture.tmux(&["split-window", "-d", "-t", &session]).0);
+        let (_, panes) = fixture.tmux(&["list-panes", "-s", "-t", &session, "-F", "#{pane_id}"]);
+        let ids: Vec<&str> = panes.lines().collect();
+        assert_eq!(ids.len(), 2, "{panes}");
+        let (main, worker) = (ids[0].to_owned(), ids[1].to_owned());
+        for (pane, slot, agent) in [
+            (&main, "main", "cl:lead"),
+            (&worker, "worker.0", "cl:worker"),
+        ] {
+            assert!(
+                fixture
+                    .tmux(&["set-option", "-p", "-t", pane, "@ae_slot", slot])
+                    .0
+            );
+            assert!(
+                fixture
+                    .tmux(&["set-option", "-p", "-t", pane, "@ae_agent", agent])
+                    .0
+            );
+        }
+        assert!(
+            std::fs::create_dir_all(&fixture.dir).is_ok(),
+            "a session dir"
+        );
+        assert!(
+            std::fs::write(fixture.dir.join("meta"), format!("session={session}\n")).is_ok(),
+            "a meta file"
+        );
+        // One script, installed under both names: `send` (the public helper,
+        // which the frozen body makes record its own event) and
+        // `_send-deliver` (the internal delivery-only entry, which prints the
+        // recovery file's path). Which one ran is recorded, because that IS
+        // the contract under test.
+        let stub = r#"#!/bin/bash
+here="$(cd "$(dirname "$0")" && pwd)"
+me="$(basename "$0")"
+printf '%s\n' "$me" >"$here/send.helper"
+printf '%s\n' "$1" >"$here/send.target"
+printf '%s' "$2" >"$here/send.message"
+env | grep -E '^(_AE_DELIVER_ONLY|_AE_EVENT_ACTION|_AE_EVENT_REF|AE_SENDER_OVERRIDE)=' | sort >"$here/send.env"
+rc="${STUB_SEND_RC:-0}"
+if [[ "$rc" != 0 ]]; then echo "stub send: refused" >&2; exit "$rc"; fi
+mkdir -p "$here/messages"
+f="$here/messages/${_AE_EVENT_REF:-msg}.${_AE_EVENT_ACTION:-send}.stub.txt"
+printf '%s' "$2" >"$f"
+[[ "$me" == _send-deliver ]] && printf '%s\n' "$f"
+exit 0
+"#;
+        for name in ["send", "_send-deliver"] {
+            assert!(
+                std::fs::write(fixture.dir.join(name), stub).is_ok(),
+                "the stub {name}"
+            );
+            let executable = std::fs::set_permissions(
+                fixture.dir.join(name),
+                std::fs::Permissions::from_mode(0o755),
+            );
+            assert!(executable.is_ok(), "an executable stub {name}");
+        }
+        fixture.main = main;
+        fixture.worker = worker;
+        fixture
+    }
+
+    fn tmux(&self, tail: &[&str]) -> (bool, String) {
+        let server =
+            ae::inventory::ServerId::Selected(ae::meta::Selector::Socket(self.sock.clone()));
+        let mut args = ae::tmux::server_args(&server);
+        args.extend(tail.iter().map(|arg| (*arg).to_owned()));
+        run_tmux(&args, &self.scratch_dir)
+    }
+
+    /// Run `sub` as `pane` would (or with no pane at all), with `envs` added.
+    fn run(
+        &self,
+        sub: &str,
+        pane: Option<&str>,
+        tail: &[&str],
+        envs: &[(&str, &str)],
+    ) -> (Option<i32>, String, String) {
+        let mut command = ae();
+        command
+            .env("TMUX", format!("{},0,0", self.sock.display()))
+            .env_remove("AE_SENDER_OVERRIDE")
+            .env_remove("STUB_SEND_RC")
+            .arg(sub)
+            .arg(&self.dir)
+            .args(tail);
+        match pane {
+            Some(pane) => command.env("TMUX_PANE", pane),
+            None => command.env_remove("TMUX_PANE"),
+        };
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let out = command
+            .output()
+            .unwrap_or_else(|why| panic!("the ae binary should run: {why}"));
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    /// What the stub recorded: the target, the message, and the env lines.
+    fn stub(&self) -> (String, String, String) {
+        let read = |name: &str| std::fs::read_to_string(self.dir.join(name)).unwrap_or_default();
+        (read("send.target"), read("send.message"), read("send.env"))
+    }
+
+    /// The name the stub was run under: `send` or `_send-deliver`, plus `\n`.
+    fn stub_helper(&self) -> String {
+        std::fs::read_to_string(self.dir.join("send.helper")).unwrap_or_default()
+    }
+
+    fn forget_stub(&self) {
+        for name in ["send.target", "send.message", "send.env", "send.helper"] {
+            let _ = std::fs::remove_file(self.dir.join(name));
+        }
+    }
+
+    fn events(&self) -> Vec<String> {
+        std::fs::read_to_string(self.dir.join("events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+}
+
+impl Drop for Tracked {
+    fn drop(&mut self) {
+        let _ = self.tmux(&["kill-server"]);
+        let _ = std::fs::remove_dir_all(&self.scratch_dir);
+    }
+}
+
+/// The request id the stub was handed, out of its recorded env.
+fn stub_ref(env: &str) -> String {
+    env.lines()
+        .find_map(|line| line.strip_prefix("_AE_EVENT_REF="))
+        .unwrap_or_else(|| panic!("the stub saw a ref: {env:?}"))
+        .to_owned()
+}
+
+/// One refusal case: argv after the directory, extra env, the exit code, the
+/// exact stderr.
+type Refusal<'a> = (&'a [&'a str], &'a [(&'a str, &'a str)], Option<i32>, String);
+
+fn is_request_id(id: &str, prefix: &str) -> bool {
+    let parts: Vec<&str> = id.split('-').collect();
+    parts.len() == 3
+        && parts[0] == prefix
+        && parts[1].len() == 16
+        && parts[1].ends_with('Z')
+        && parts[2].len() == 8
+        && parts[2]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
+#[test]
+fn ask_composes_the_frozen_message_delivers_through_send_and_writes_the_slotted_event() {
+    let fx = Tracked::new("ask");
+    let asked = fx.run(
+        ae::cli::ASK,
+        Some(&fx.main),
+        &["worker", "the", "question"],
+        &[],
+    );
+    assert_eq!(asked, (Some(0), String::new(), String::new()));
+    let (target, message, env) = fx.stub();
+    assert_eq!(
+        target, "cl:worker\n",
+        "the bare name resolved to the display ref"
+    );
+    let id = stub_ref(&env);
+    assert!(is_request_id(&id, "ae"), "{id}");
+    assert_eq!(
+        fx.stub_helper(),
+        "_send-deliver\n",
+        "a tracked request goes through the internal delivery-only entry"
+    );
+    assert_eq!(
+        env,
+        format!("_AE_EVENT_ACTION=ask\n_AE_EVENT_REF={id}\n"),
+        "the names the frozen body store reads, and NO ambient switch"
+    );
+    let reply_cmd = format!(
+        "{}/reply --as \"cl:worker\" \"{id}\" \"<your reply>\"",
+        fx.dir.display()
+    );
+    assert_eq!(
+        message,
+        ae::tracked::compose(
+            ae::tracked::Kind::Ask,
+            &id,
+            "cl:lead",
+            "the question",
+            &reply_cmd
+        )
+    );
+    assert!(message.starts_with(&format!(
+        "REQUEST {id} from cl:lead: the question\n\nREQUIRED:"
+    )));
+    let events = fx.events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    let body_file = fx.dir.join("messages").join(format!("{id}.ask.stub.txt"));
+    assert!(
+        events[0].ends_with(&format!(
+            "\"actor\":\"cl:lead\",\"action\":\"ask\",\"target\":\"cl:worker\",\"ref\":\"{id}\",\"actor_slot\":\"main\",\"actor_session\":\"trask\",\"target_slot\":\"worker.0\",\"target_session\":\"trask\",\"summary\":\"the question\",\"body_file\":\"{}\"}}",
+            body_file.display()
+        )),
+        "{}",
+        events[0]
+    );
+    assert!(events[0].starts_with("{\"ts\":\""), "{}", events[0]);
+    assert_eq!(
+        std::fs::read_to_string(&body_file).unwrap(),
+        message,
+        "the event points at the stored delivered text"
+    );
+    // And the core's own requests surface reads it back as pending.
+    let listed = fx.run(ae::cli::REQUESTS, Some(&fx.main), &["all"], &[]);
+    assert_eq!(listed.0, Some(0), "{listed:?}");
+    assert!(
+        listed.1.contains("pending") && listed.1.contains(&id) && listed.1.contains("cl:worker"),
+        "{listed:?}"
+    );
+}
+
+#[test]
+fn review_carries_its_instructions_and_every_target_spelling_resolves_as_the_helper_does() {
+    let fx = Tracked::new("rev");
+    let reviewed = fx.run(
+        ae::cli::REVIEW,
+        Some(&fx.worker),
+        &["cl:lead", "look", "at", "x"],
+        &[],
+    );
+    assert_eq!(reviewed, (Some(0), String::new(), String::new()));
+    let (target, message, env) = fx.stub();
+    assert_eq!(target, "cl:lead\n");
+    assert_eq!(fx.stub_helper(), "_send-deliver\n");
+    let id = stub_ref(&env);
+    assert!(is_request_id(&id, "review"), "{id}");
+    assert!(message.starts_with(&format!(
+        "REVIEW REQUEST {id} from cl:worker: look at x\n\n{}\n\nREQUIRED",
+        ae::tracked::REVIEW_INSTRUCTIONS
+    )));
+    assert!(message.ends_with(&format!("\n{}/reply --as \"cl:lead\" \"{id}\" \"<your review>\"\nDo not reply any other way. Do NOT use peek/peak as a reply mechanism.", fx.dir.display())));
+    let events = fx.events();
+    assert!(
+        events[0].contains(&format!("\"actor\":\"cl:worker\",\"action\":\"review\",\"target\":\"cl:lead\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trrev\",\"target_slot\":\"main\",\"target_session\":\"trrev\",")),
+        "{}",
+        events[0]
+    );
+
+    // A pane id passes through and is read for its stamps; the explicit
+    // own-session spelling resolves without the cross-session prefix; a unique
+    // alias resolves too (each pane has a distinct one here).
+    for (spelling, expected) in [
+        (fx.main.as_str(), "cl:lead"),
+        ("@trrev:lead", "cl:lead"),
+        ("@trrev:cl:worker", "cl:worker"),
+    ] {
+        fx.forget_stub();
+        let sent = fx.run(ae::cli::ASK, Some(&fx.worker), &[spelling, "q"], &[]);
+        assert_eq!(sent.0, Some(0), "{spelling}: {sent:?}");
+        assert_eq!(fx.stub().0, format!("{expected}\n"), "{spelling}");
+    }
+}
+
+#[test]
+fn a_request_that_does_not_resolve_or_is_refused_leaves_no_event_and_no_paste() {
+    let fx = Tracked::new("ref");
+    let cases: [Refusal<'_>; 8] = [
+        (
+            &["cl", "q"],
+            &[],
+            Some(1),
+            "Error: ambiguous name 'cl' in session 'trref' — use alias:name format\n".to_owned(),
+        ),
+        (
+            &["nobody", "q"],
+            &[],
+            Some(1),
+            "Error: agent 'nobody' not found in session 'trref'\n".to_owned(),
+        ),
+        (
+            &["@nosuch:cl:lead", "q"],
+            &[],
+            Some(1),
+            "Error: session 'nosuch' not found\n".to_owned(),
+        ),
+        (
+            &["@nosuch", "q"],
+            &[],
+            Some(1),
+            "Error: cross-session target must be @session:agent, got '@nosuch'\n".to_owned(),
+        ),
+        (
+            &["worker", " ", "\t"],
+            &[],
+            Some(1),
+            ae::tracked::refusal("ask"),
+        ),
+        (&["worker"], &[], Some(2), ae::tracked::ASK_USAGE.to_owned()),
+        (&[], &[], Some(2), ae::tracked::ASK_USAGE.to_owned()),
+        (
+            &["worker", "q"],
+            &[("STUB_SEND_RC", "3")],
+            Some(3),
+            "stub send: refused\n".to_owned(),
+        ),
+    ];
+    for (tail, envs, code, stderr) in cases {
+        fx.forget_stub();
+        let out = fx.run(ae::cli::ASK, Some(&fx.main), tail, envs);
+        assert_eq!(out, (code, String::new(), stderr), "{tail:?}");
+        assert!(
+            fx.events().is_empty(),
+            "{tail:?}: an event was written: {:?}",
+            fx.events()
+        );
+        if envs.is_empty() {
+            assert!(fx.stub().0.is_empty(), "{tail:?}: the stub was called");
+        }
+    }
+    // The refused paste DID reach the stub, with the composed message — the
+    // event is what was withheld.
+    assert!(fx.stub().1.starts_with("REQUEST ae-"), "{:?}", fx.stub());
+    // A session with a public `send` but no `_send-deliver` (helpers older
+    // than this core) is said so, at 1, naming the entry that is missing —
+    // and the public `send` is NOT used in its place, because that would
+    // record a second event for the request.
+    let bare = fx.scratch_dir.join("sessions").join("bare");
+    std::fs::create_dir_all(&bare).expect("a session dir");
+    std::fs::write(bare.join("meta"), "session=bare\n").expect("a meta file");
+    std::fs::copy(fx.dir.join("send"), bare.join("send")).expect("the stub send");
+    let out = ae()
+        .env("TMUX", format!("{},0,0", fx.sock.display()))
+        .env("TMUX_PANE", &fx.main)
+        .arg(ae::cli::ASK)
+        .arg(&bare)
+        .args([&fx.main, "q"])
+        .output()
+        .expect("the ae binary should run");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("ask not delivered: could not run")
+            && stderr.contains("_send-deliver")
+            && stderr.contains("ae doctor --refresh"),
+        "{out:?}"
+    );
+    assert!(
+        !bare.join("send.helper").exists(),
+        "the public send must not stand in for the missing entry"
+    );
+}
+
+#[test]
+fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_event_only_or_slotless()
+ {
+    let fx = Tracked::new("idn");
+    // No pane: the frozen warning, then a plain send of the raw body — the
+    // helper writes its own event on that path, so the core writes none.
+    let plain = fx.run(ae::cli::ASK, None, &["worker", "raw", "body"], &[]);
+    assert_eq!(
+        plain,
+        (
+            Some(0),
+            String::new(),
+            ae::tracked::NO_IDENTITY_WARNING.to_owned()
+        )
+    );
+    let (target, message, env) = fx.stub();
+    assert_eq!(
+        (target.as_str(), message.as_str()),
+        ("worker\n", "raw body")
+    );
+    assert!(env.is_empty(), "no event names: {env:?}");
+    assert_eq!(
+        fx.stub_helper(),
+        "send\n",
+        "the fallback is the PUBLIC send, which records itself"
+    );
+    assert!(fx.events().is_empty());
+
+    // An external sink: no paste, no body file, the event with the literal
+    // target and the caller's slot.
+    fx.forget_stub();
+    let external = fx.run(ae::cli::ASK, Some(&fx.main), &["telegram:42", "hello"], &[]);
+    assert_eq!(external, (Some(0), String::new(), String::new()));
+    assert!(
+        fx.stub().0.is_empty(),
+        "the stub was called for an event-only sink"
+    );
+    let events = fx.events();
+    assert_eq!(events.len(), 1);
+    assert!(
+        events[0].contains(
+            "\"actor\":\"cl:lead\",\"action\":\"ask\",\"target\":\"telegram:42\",\"ref\":\"ae-"
+        ) && events[0].ends_with(
+            "\"actor_slot\":\"main\",\"actor_session\":\"tridn\",\"summary\":\"hello\"}"
+        ),
+        "{}",
+        events[0]
+    );
+
+    // AE_SENDER_OVERRIDE: the actor is the override, slotless, and the env
+    // reaches the helper for its provenance envelope.
+    let bridged = fx.run(
+        ae::cli::REVIEW,
+        Some(&fx.main),
+        &["worker", "from", "the", "bridge"],
+        &[("AE_SENDER_OVERRIDE", "bridge")],
+    );
+    assert_eq!(bridged, (Some(0), String::new(), String::new()));
+    let (_, message, env) = fx.stub();
+    assert!(
+        message.starts_with("REVIEW REQUEST review-")
+            && message.contains(" from bridge: from the bridge\n"),
+        "{message}"
+    );
+    assert!(env.contains("AE_SENDER_OVERRIDE=bridge\n"), "{env}");
+    let events = fx.events();
+    assert_eq!(events.len(), 2);
+    assert!(
+        events[1].contains(
+            "\"actor\":\"bridge\",\"action\":\"review\",\"target\":\"cl:worker\",\"ref\":\"review-"
+        ) && events[1].contains("\",\"actor_session\":\"tridn\",\"target_slot\":\"worker.0\",")
+            && !events[1].contains("actor_slot"),
+        "{}",
+        events[1]
+    );
+}

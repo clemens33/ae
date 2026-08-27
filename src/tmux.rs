@@ -456,8 +456,88 @@ pub fn interpret_viewer(succeeded: bool, stdout: &str) -> Option<ObservedViewer>
     })
 }
 
+/// The arguments for the frozen resolver's session check —
+/// `tmux has-session -t "$search_session"` before a cross-session lookup.
+///
+/// tmux PREFIX-MATCHES `-t` here, exactly as it does for the frozen helper;
+/// this is that check, not a stricter one.
+#[must_use]
+pub fn has_session_args(server: &ServerId, session: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["has-session", "-t", session].map(ToOwned::to_owned));
+    args
+}
+
+/// The roster the frozen `ae_resolve` reads:
+/// `list-panes -s -t <session> -F '#{pane_id}\t#{@ae_agent}'`.
+pub const AGENTS_FORMAT: &str = "#{pane_id}\t#{@ae_agent}";
+
+/// The full argument list for that roster.
+#[must_use]
+pub fn agents_args(server: &ServerId, session: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-panes", "-s", "-t", session, "-F", AGENTS_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// One pane of the roster: its id and its `@ae_agent` stamp (empty when the
+/// pane is unstamped — the frozen loop reads such a line with an empty second
+/// field and matches nothing on it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedAgent {
+    /// `#{pane_id}`, e.g. `%3`.
+    pub pane: String,
+    /// `@ae_agent`, the display `alias:name`, or empty.
+    pub agent: String,
+}
+
+/// What a completed roster run means: `None` when the run failed (the frozen
+/// loop reads nothing from a `2>/dev/null` failure and resolves nothing);
+/// otherwise every line, split at its FIRST tab, in the order tmux printed.
+///
+/// ```
+/// use ae::tmux::{ObservedAgent, interpret_agents};
+///
+/// let rows = interpret_agents(true, "%1\tcl:lead\n%2\t\n").unwrap();
+/// assert_eq!(rows[0], ObservedAgent { pane: "%1".into(), agent: "cl:lead".into() });
+/// assert_eq!(rows[1], ObservedAgent { pane: "%2".into(), agent: String::new() });
+/// assert!(interpret_agents(false, "%1\tcl:lead\n").is_none());
+/// ```
+#[must_use]
+pub fn interpret_agents(succeeded: bool, stdout: &str) -> Option<Vec<ObservedAgent>> {
+    if !succeeded {
+        return None;
+    }
+    Some(
+        stdout
+            .lines()
+            .map(|line| {
+                let (pane, agent) = line.split_once('\t').unwrap_or((line, ""));
+                ObservedAgent {
+                    pane: pane.to_owned(),
+                    agent: agent.to_owned(),
+                }
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_resolver_queries_are_the_frozen_ones() {
+        use super::{AGENTS_FORMAT, agents_args, has_session_args};
+        use crate::inventory::ServerId;
+        assert_eq!(
+            has_session_args(&ServerId::Ambient, "other"),
+            ["has-session", "-t", "other"]
+        );
+        assert_eq!(
+            agents_args(&ServerId::Ambient, "s"),
+            ["list-panes", "-s", "-t", "s", "-F", AGENTS_FORMAT]
+        );
+    }
+
     #[test]
     fn the_viewer_query_addresses_the_pane_and_asks_for_the_three_readings() {
         use super::{ObservedViewer, VIEWER_FORMAT, interpret_viewer, viewer_args};

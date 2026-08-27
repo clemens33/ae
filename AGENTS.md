@@ -140,7 +140,7 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 
 All helpers share a `_lib` library that provides name resolution, tmux server support, flock serialization, request tracking (`ae_tracked_send`, `ae_find_request`), and event-log helpers (`ae_emit_event`, `_event_json_str`). Name resolution supports exact `alias:name`, alias-only when unique (e.g. `codex`), bare name (e.g. `lead`), `%pane-id`, and cross-session `@session:agent` syntax. `agents --all` lists agents across all running ae sessions.
 
-Internal helpers prefixed with `_` (e.g. `_register-sid`) are launched by ae itself and not part of the agent-facing surface.
+Internal helpers prefixed with `_` (e.g. `_register-sid`; `_send-deliver`, the Rust core's delivery-only entry to the send body for a tracked request — it prints the recovery file's path and never emits an event, the core records that itself) are launched by ae or the core, never by agents, and are not part of the agent-facing surface.
 
 ### How helpers are generated (declare-f pattern)
 

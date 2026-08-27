@@ -83,6 +83,7 @@ pub mod session;
 pub mod state;
 pub mod time;
 pub mod tmux;
+pub mod tracked;
 pub mod transport;
 
 use std::io::Write;
@@ -273,6 +274,62 @@ fn run_goal(
     }
 }
 
+/// The `_ask`/`_review` arm: the frozen `ae_tracked_send`, with the paste
+/// delegated to the session's own `send` helper — see [`tracked`].
+fn run_tracked(
+    kind: tracked::Kind,
+    dir: &std::path::Path,
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let sender = if let Some(display) = sender_override() {
+        Some(tracked::Sender {
+            display,
+            slot: String::new(),
+        })
+    } else {
+        let viewer = calling_viewer(dir);
+        let known = viewer.is_known();
+        known.then_some(tracked::Sender {
+            display: viewer.display,
+            slot: viewer.slot,
+        })
+    };
+    let code = tracked::run(
+        kind,
+        dir,
+        tail,
+        sender.as_ref(),
+        &own_session(dir),
+        time::Timestamp::now(),
+        entropy(),
+        out,
+        err,
+    )?;
+    Ok(code)
+}
+
+/// `AE_SENDER_OVERRIDE`: how an external actor with no pane (a chat bridge, a
+/// webhook) names itself to the tracked-request helpers. Empty is unset.
+fn sender_override() -> Option<String> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the frozen AE_SENDER_OVERRIDE contract for pane-less callers — see clippy.toml"
+    )]
+    let raw = std::env::var_os("AE_SENDER_OVERRIDE");
+    raw.filter(|value| !value.is_empty())
+        .map(|value| value.to_string_lossy().into_owned())
+}
+
+/// Sixty-four bits nobody chose: `RandomState` is seeded from the OS per
+/// process, which is the same quality the frozen `uuidgen | cut` suffix has,
+/// and needs no door.
+fn entropy() -> u64 {
+    use std::hash::{BuildHasher, RandomState};
+    RandomState::new().hash_one(std::process::id())
+}
+
 /// The `_memo` arm: usage at 2; `read`/`tail` render the file to stdout; `add`
 /// is the TSV record and its event, with nothing on stdout on success, as the
 /// frozen helper prints nothing.
@@ -334,23 +391,27 @@ fn calling_viewer(dir: &std::path::Path) -> requests::Viewer {
         .unwrap_or_default()
 }
 
-/// The session a helper serves — `session=` in `<dir>/meta`, which is what the
-/// frozen `_lib` reads into `_AE_SESSION`; the directory's own name when the
-/// key is missing, because that is what the directory IS named.
-fn own_session(dir: &std::path::Path) -> String {
+/// `session=` in `<dir>/meta` — what the frozen `_lib` reads into
+/// `_AE_SESSION`, empty-or-missing folded to `None`.
+fn session_key(dir: &std::path::Path) -> Option<String> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the session name a helper serves, read the way _lib reads _AE_SESSION — see clippy.toml"
     )]
     let raw = std::fs::read(dir.join("meta"));
-    let from_meta = raw.ok().and_then(|meta| {
+    raw.ok().and_then(|meta| {
         String::from_utf8_lossy(&meta)
             .lines()
             .find_map(|line| line.strip_prefix("session="))
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned)
-    });
-    from_meta.unwrap_or_else(|| {
+    })
+}
+
+/// The session a helper serves — [`session_key`], or the directory's own name
+/// when the key is missing, because that is what the directory IS named.
+fn own_session(dir: &std::path::Path) -> String {
+    session_key(dir).unwrap_or_else(|| {
         dir.file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default()
@@ -508,6 +569,10 @@ pub fn run_with(
         cli::Request::State { dir, tail } => run_state(dir, tail, out, err)?,
         cli::Request::Goal { dir, tail } => run_goal(dir, tail, out, err)?,
         cli::Request::Memo { dir, tail } => run_memo(dir, tail, out, err)?,
+        cli::Request::Ask { dir, tail } => run_tracked(tracked::Kind::Ask, dir, tail, out, err)?,
+        cli::Request::Review { dir, tail } => {
+            run_tracked(tracked::Kind::Review, dir, tail, out, err)?
+        }
         cli::Request::Requests { dir, mode } => {
             let rendered = requests::render(dir, *mode, &calling_viewer(dir));
             out.write_all(&rendered.stdout)?;

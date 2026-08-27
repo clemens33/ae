@@ -67,7 +67,7 @@ When you start a session, ae creates `~/.ae/sessions/<name>/` and fills it with:
 - **`memo.tsv`** — shared session memory (durable findings, decisions, handoffs).
 - **`workspace.md`** — human/agent-readable manifest of the session (regenerated on every resume).
 - **`_lib`** — shared bash library sourced by every helper. Hosts: name resolution, flock serialization, request tracking (`ae_tracked_send`, `ae_find_request`), event log writers (`ae_emit_event`, `_event_json_str`).
-- **`send`, `ask`, `review`, `reply`, `requests`, `mark-done`, `memo`, `peek`/`peak`, `agents`, `focus`, `interrupt`, `spawn`, `retire`, `watchdog`, `events-tail`, `_register-sid`** — session helpers, all generated bash scripts.
+- **`send`, `ask`, `review`, `reply`, `requests`, `mark-done`, `memo`, `peek`/`peak`, `agents`, `focus`, `interrupt`, `spawn`, `retire`, `watchdog`, `events-tail`, `_register-sid`, `_send-deliver`** — session helpers, all generated bash scripts.
 - **`launch.*.sh`** — pre-built launch commands per agent slot (for resume).
 
 Nothing in the project working directory changes.

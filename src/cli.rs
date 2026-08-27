@@ -36,6 +36,12 @@ pub const GOAL: &str = "_goal";
 /// `_memo <meta-dir> [add [--topic <t>] <text…>|read [--topic <t>]|tail [n]]`.
 pub const MEMO: &str = "_memo";
 
+/// The `ask` helper's surface — `_ask <meta-dir> <target> <question…>`.
+pub const ASK: &str = "_ask";
+
+/// The `review` helper's surface — `_review <meta-dir> <target> <request…>`.
+pub const REVIEW: &str = "_review";
+
 /// What an argv asks the binary to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -73,6 +79,22 @@ pub enum Request {
     /// `_memo <meta-dir> [add …|read [--topic <t>]|tail [n]]` — validated by
     /// [`crate::memo::parse`].
     Memo {
+        /// The session meta directory.
+        dir: std::path::PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_ask <meta-dir> <target> <question…>` — validated by
+    /// [`crate::tracked::parse`].
+    Ask {
+        /// The session meta directory.
+        dir: std::path::PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_review <meta-dir> <target> <request…>` — validated by
+    /// [`crate::tracked::parse`].
+    Review {
         /// The session meta directory.
         dir: std::path::PathBuf,
         /// Everything after it, as typed.
@@ -198,6 +220,20 @@ impl Request {
                     tail: rest.to_vec(),
                 },
             },
+            Some(ASK) => match &args[1..] {
+                [] => Self::MissingOperand(ASK),
+                [dir, rest @ ..] => Self::Ask {
+                    dir: PathBuf::from(dir),
+                    tail: rest.to_vec(),
+                },
+            },
+            Some(REVIEW) => match &args[1..] {
+                [] => Self::MissingOperand(REVIEW),
+                [dir, rest @ ..] => Self::Review {
+                    dir: PathBuf::from(dir),
+                    tail: rest.to_vec(),
+                },
+            },
             Some(MEMO) => match &args[1..] {
                 [] => Self::MissingOperand(MEMO),
                 [dir, rest @ ..] => Self::Memo {
@@ -273,6 +309,8 @@ impl Request {
             | Self::State { .. }
             | Self::Goal { .. }
             | Self::Memo { .. }
+            | Self::Ask { .. }
+            | Self::Review { .. }
             | Self::EventsTail { .. } => None,
         }
     }
@@ -280,7 +318,7 @@ impl Request {
 
 #[cfg(test)]
 mod tests {
-    use super::{EVENTS_TAIL, GOAL, MEMO, REQUESTS, Request, STATE};
+    use super::{ASK, EVENTS_TAIL, GOAL, MEMO, REQUESTS, REVIEW, Request, STATE};
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
 
@@ -468,7 +506,7 @@ mod tests {
         // `_validate_session_name` forbids a leading underscore, so no legal
         // session name can reach these arms — a `requests`/`events-tail`
         // spelling would have taken two real names out of the launch grammar.
-        for spelling in [REQUESTS, EVENTS_TAIL, STATE, GOAL, MEMO] {
+        for spelling in [REQUESTS, EVENTS_TAIL, STATE, GOAL, MEMO, ASK, REVIEW] {
             assert!(spelling.starts_with('_'), "{spelling}");
             assert!(
                 !spelling.starts_with('-'),
@@ -515,7 +553,7 @@ mod tests {
 
     #[test]
     fn a_helper_surface_with_no_directory_is_a_missing_operand_at_two() {
-        for spelling in [REQUESTS, EVENTS_TAIL, STATE, GOAL, MEMO] {
+        for spelling in [REQUESTS, EVENTS_TAIL, STATE, GOAL, MEMO, ASK, REVIEW] {
             let request = Request::parse(&argv(&[spelling]));
             assert_eq!(request, Request::MissingOperand(spelling));
             assert_eq!(request.exit_code(), Some(2), "{spelling}");

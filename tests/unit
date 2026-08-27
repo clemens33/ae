@@ -3192,7 +3192,7 @@ assert_eq "closure: the refresh step reported success" "1" \
     "$(grep -q 'refreshed session helpers' "$_gen_root/refresh.log" && echo 1 || echo 0)"
 assert_eq "closure: refresh rc is recorded (0 or the known liveness-warning 1)" "1" \
     "$([[ "$_refresh_rc" == 0 || "$_refresh_rc" == 1 ]] && echo 1 || echo 0)"
-_manifest_want="_lib _register-sid agents ask events-tail focus goal interrupt loop mark-done memo peak peek reply requests retire review say send spawn state watchdog"
+_manifest_want="_lib _register-sid _send-deliver agents ask events-tail focus goal interrupt loop mark-done memo peak peek reply requests retire review say send spawn state watchdog"
 _manifest_got="$(
     cd "$_gen_dir" || exit 0
     for _mf in *; do
@@ -3486,7 +3486,7 @@ rm -rf "$_gen_root"
 assert_eq "closure: no lexer stage failed (an error is not an empty body)" \
     "" "$_CLOSURE_LEX_ERR"
 assert_eq "closure: every generated artifact analysed cleanly" "" "$_gen_bad"
-assert_eq "closure: every non-shim artifact was analysed" "19" "$_gen_seen"
+assert_eq "closure: every non-shim artifact was analysed" "20" "$_gen_seen"
 assert_eq "closure: every function a generated artifact can run is defined in it" \
     "" "$_closure_missing"
 
@@ -6423,7 +6423,7 @@ unset _stab_dir _stab_expect
 # ── #44: the counter counts DELIVERIES, not attempts ────────────────────────────
 # send's rc was discarded, so a refused (dead pane) or abandoned (busy / human typing)
 # nudge still bumped the counter, logged "nudged (n/2)" and fed the max-nudges alert.
-# The event log was already correct — helper_send_main exits before ae_emit_event on
+# The event log was already correct — helper_send_body exits before ae_emit_event on
 # those paths, so no nudge event is written — which is why only the ACCOUNTING lied.
 assert_eq "#44: rc 0 is the only outcome that counts as a nudge" "delivered" \
     "$(_nudge_delivery_verdict 0 0 3)"
@@ -7622,7 +7622,7 @@ assert_eq "external-actor: send helper's event-only path covers every prefix in 
 _t_external_branch_line="$(awk '/if \[\[ "\$target_ref" == telegram:\* \|\| "\$target_ref" == discord:\* \]\]; then/{print NR; exit}' "$(dirname "$0")/../ae")"
 _t_resolve_line="$(awk '/^    ae_resolve "\$target_ref"/{print NR; exit}' "$(dirname "$0")/../ae")"
 assert_eq "external-actor: send helper's external-target branch precedes ae_resolve in source order" "1" \
-    "$(_ea_src="$(awk '/^helper_send_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+    "$(_ea_src="$(awk '/^helper_send_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
        _ea_branch="$(grep -n 'target_ref" == telegram:\*' <<<"$_ea_src" | head -1 | cut -d: -f1)"
        _ea_resolve="$(grep -n 'ae_resolve "\$target_ref"' <<<"$_ea_src" | head -1 | cut -d: -f1)"
        [[ -n "$_ea_branch" && -n "$_ea_resolve" && "$_ea_branch" -lt "$_ea_resolve" ]] && echo 1 || echo 0)"
@@ -9843,7 +9843,7 @@ unset -f _sto _sto2
 # mark its message as coming from someone else, because the mark is added after its
 # prose. All four helpers exec through send, so the envelope lives at that one
 # chokepoint rather than being repeated (and drifting) four times.
-_hsm="$(awk '/^helper_send_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+_hsm="$(awk '/^helper_send_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 assert_eq "#39: the envelope is emitted by the helper, from VERIFIED provenance" "1" \
     "$([[ "$_hsm" == *'msg="⟦ae:msg from ${_prov}⟧"$'"'"'\n'"'"'"${msg}"'* ]] && echo 1 || echo 0)"
 # ...and ONLY agents are marked. A human running `send` from a shell has no @ae_agent
@@ -11085,7 +11085,7 @@ _asp_loud() {  # always-staged -> emits the LOUD warning to stderr
 assert_eq "submit-verify: unconfirmed writes a LOUD stderr warning" "1" \
     "$(_asp_loud 2>&1 1>/dev/null | grep -c 'submit UNCONFIRMED')"
 
-# helper_send_main reorder: inspect input (busy?) BEFORE the cancel keystroke,
+# helper_send_body reorder: inspect input (busy?) BEFORE the cancel keystroke,
 # and fail LOUD (exit 1) on an unconfirmed submit — no false send event.
 assert_eq "send-reorder: input-busy check precedes the cancel keystroke" "1" \
     "$([[ "$AE_SOURCE" == *'while _paste_input_busy "$target" "$tool"'*'send-keys -t "$target" -X cancel'* ]] && echo 1 || echo 0)"
@@ -11186,9 +11186,11 @@ assert_eq "agent-bin-for-pane: unstamped (invalid slot) -> empty" "" "$(_abfp ''
 # select-pane changed the window's ACTIVE pane mid-send — the human's in-flight
 # keystrokes routed into the TARGET (acute under lead-pair: lead+colead share window
 # 0). paste-buffer/send-keys take -t; focus is not part of any TUI submission contract.
-_sf_send="$(awk '/^helper_send_main\(\) \{/{f=1} f{print} f && /^\}$/{exit}' <<<"$AE_SOURCE")"
+# The BODY, not the public entry point: helper_send_main is a three-line wrapper
+# since P2.5a, and a zero-count over it would pass without looking at the paste.
+_sf_send="$(awk '/^helper_send_body\(\) \{/{f=1} f{print} f && /^\}$/{exit}' <<<"$AE_SOURCE")"
 _sf_int="$(awk '/^helper_interrupt_main\(\) \{/{f=1} f{print} f && /^\}$/{exit}' <<<"$AE_SOURCE")"
-assert_eq "send-focus: helper_send_main issues ZERO select-pane (code, not comments)" "0" \
+assert_eq "send-focus: helper_send_body issues ZERO select-pane (code, not comments)" "0" \
     "$(grep -vE '^\s*#' <<<"$_sf_send" | grep -c 'select-pane')"
 assert_eq "send-focus: helper_interrupt_main issues ZERO select-pane (code, not comments)" "0" \
     "$(grep -vE '^\s*#' <<<"$_sf_int" | grep -c 'select-pane')"
@@ -11225,7 +11227,72 @@ assert_eq "presence: no clients -> clear" "clear" "$(_prv_none)"
 assert_eq "presence: emitted into the send-path _lib" "1" \
     "$([[ "$AE_SOURCE" == *'_paste_input_busy _pane_recently_viewed'* ]] && echo 1 || echo 0)"
 
-# helper_send_main refuses a dead-shell target BEFORE the lock (fail fast, no defer).
+# P2.5a: the send FINISH is the ENTRY POINT's, and the ambient environment cannot
+# choose it. Behavioural, not structural — the body runs with its transport
+# stubbed inside a subshell (nothing leaks), and what it recorded is read back.
+# The public entry must record under an EXPORTED deliver finisher; the internal
+# `_send-deliver` entry must print the body file and record nothing; a sink must
+# be refused by that entry before resolution. A finisher chosen from the
+# environment would fail the first; a finisher default would hide the third.
+_sf_probe() {  # <entry> <target> -> "rc=? out=<stdout> emitted=<n> resolved=<n>"
+    local entry="$1" target="$2"
+    (
+        eval "$(awk '/^helper_send_body\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^helper_send_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^helper_send_deliver_main\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^helper_send_finish_event\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^helper_send_deliver_finish\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        evfile="$(mktemp)" # a FILE survives the inner subshell fork (a var would not)
+        # shellcheck disable=SC2317,SC2329
+        ae_require_body() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        ae_current_agent_ref() { echo "cl:probe"; }
+        # shellcheck disable=SC2317,SC2329
+        ae_extract_req_id() { :; }
+        # shellcheck disable=SC2317,SC2034,SC2329  # AE_RESOLVED_* read by helper_send_body
+        ae_resolve() {
+            echo resolve >>"$evfile"
+            AE_RESOLVED_PANE="%9"
+            AE_RESOLVED_AGENT="cl:target"
+            return 0
+        }
+        # shellcheck disable=SC2317,SC2329
+        _pane_agent_is_dead() { return 1; } # alive
+        # shellcheck disable=SC2317,SC2329
+        ae_lock_target() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        ae_unlock_target() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        ae_target_tool() { echo bash; }
+        # shellcheck disable=SC2317,SC2329
+        ae_provenance_sender() { echo "cl:probe"; }
+        # shellcheck disable=SC2317,SC2329
+        _paste_input_busy() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        _pane_recently_viewed() { return 1; }
+        # shellcheck disable=SC2317,SC2329
+        ae_submit_pasted_message() { return 0; }
+        # shellcheck disable=SC2317,SC2034,SC2329  # _AE_LAST_BODY_FILE read by the finisher
+        ae_store_message_body() { _AE_LAST_BODY_FILE="/probe/body.txt"; }
+        # shellcheck disable=SC2317,SC2329
+        ae_emit_event() { echo "emit $1" >>"$evfile"; }
+        # shellcheck disable=SC2317,SC2329
+        tmux() { return 0; }
+        # shellcheck disable=SC2317,SC2329
+        sleep() { :; }
+        out="$( ( export _ae_send_finish=helper_send_deliver_finish; "$entry" "$target" "probe body" ) 2>/dev/null )"
+        rc=$?
+        echo "rc=$rc out=$out emitted=$(grep -c '^emit' "$evfile") resolved=$(grep -c '^resolve' "$evfile")"
+        rm -f "$evfile"
+    )
+}
+assert_eq "send-finish: the public entry records under an EXPORTED deliver finisher, and prints nothing" \
+    "rc=0 out= emitted=1 resolved=1" "$(_sf_probe helper_send_main cl:target)"
+assert_eq "send-finish: the _send-deliver entry prints the body file and records nothing" \
+    "rc=0 out=/probe/body.txt emitted=0 resolved=1" "$(_sf_probe helper_send_deliver_main cl:target)"
+assert_eq "send-finish: the _send-deliver entry refuses a sink before resolving, recording nothing" \
+    "rc=1 out= emitted=0 resolved=0" "$(_sf_probe helper_send_deliver_main telegram:x)"
+# helper_send_body refuses a dead-shell target BEFORE the lock (fail fast, no defer).
 assert_eq "send-guard: dead-shell refusal precedes the lock" "1" \
     "$([[ "$AE_SOURCE" == *'if _pane_agent_is_dead "$target"; then'*'REFUSED'*'exit 1'*'ae_lock_target "$target"'* ]] && echo 1 || echo 0)"
 # helper_interrupt_main refuses a MESSAGE-carrying interrupt to a dead-shell pane
