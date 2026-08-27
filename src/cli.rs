@@ -29,6 +29,12 @@ pub const EVENTS_TAIL: &str = "_events-tail";
 /// Underscored like [`REQUESTS`]: launched by the generated helper, not typed.
 pub const STATE: &str = "_state";
 
+/// The `goal` helper's write surface — `_goal <meta-dir> <text…>|--clear`.
+pub const GOAL: &str = "_goal";
+
+/// The `memo` helper's write surface — `_memo <meta-dir> add [--topic <t>] <text…>`.
+pub const MEMO: &str = "_memo";
+
 /// What an argv asks the binary to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -50,6 +56,21 @@ pub enum Request {
     /// The tail is validated by [`crate::state::parse`], not here: the usage
     /// text is the helper's own and belongs beside the rule it states.
     State {
+        /// The session meta directory.
+        dir: std::path::PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_goal <meta-dir> <text…>|--clear` — validated by [`crate::goal::parse`].
+    Goal {
+        /// The session meta directory.
+        dir: std::path::PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_memo <meta-dir> add [--topic <t>] <text…>` — validated by
+    /// [`crate::memo::parse`].
+    Memo {
         /// The session meta directory.
         dir: std::path::PathBuf,
         /// Everything after it, as typed.
@@ -133,7 +154,7 @@ impl Request {
     /// );
     /// ```
     ///
-    /// # The internal helper surfaces: `_requests`, `_events-tail`, `_state`
+    /// # The internal helper surfaces: `_requests`, `_events-tail`, `_state`, `_goal`, `_memo`
     ///
     /// ```
     /// use ae::cli::Request;
@@ -164,6 +185,20 @@ impl Request {
             Some(STATE) => match &args[1..] {
                 [] => Self::MissingOperand(STATE),
                 [dir, rest @ ..] => Self::State {
+                    dir: dir.into(),
+                    tail: rest.to_vec(),
+                },
+            },
+            Some(GOAL) => match &args[1..] {
+                [] => Self::MissingOperand(GOAL),
+                [dir, rest @ ..] => Self::Goal {
+                    dir: dir.into(),
+                    tail: rest.to_vec(),
+                },
+            },
+            Some(MEMO) => match &args[1..] {
+                [] => Self::MissingOperand(MEMO),
+                [dir, rest @ ..] => Self::Memo {
                     dir: dir.into(),
                     tail: rest.to_vec(),
                 },
@@ -234,6 +269,8 @@ impl Request {
             | Self::LaunchCandidate(_)
             | Self::Requests { .. }
             | Self::State { .. }
+            | Self::Goal { .. }
+            | Self::Memo { .. }
             | Self::EventsTail { .. } => None,
         }
     }
@@ -241,7 +278,7 @@ impl Request {
 
 #[cfg(test)]
 mod tests {
-    use super::{EVENTS_TAIL, REQUESTS, Request, STATE};
+    use super::{EVENTS_TAIL, GOAL, MEMO, REQUESTS, Request, STATE};
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
 
@@ -429,7 +466,7 @@ mod tests {
         // `_validate_session_name` forbids a leading underscore, so no legal
         // session name can reach these arms — a `requests`/`events-tail`
         // spelling would have taken two real names out of the launch grammar.
-        for spelling in [REQUESTS, EVENTS_TAIL, STATE] {
+        for spelling in [REQUESTS, EVENTS_TAIL, STATE, GOAL, MEMO] {
             assert!(spelling.starts_with('_'), "{spelling}");
             assert!(
                 !spelling.starts_with('-'),
@@ -476,7 +513,7 @@ mod tests {
 
     #[test]
     fn a_helper_surface_with_no_directory_is_a_missing_operand_at_two() {
-        for spelling in [REQUESTS, EVENTS_TAIL, STATE] {
+        for spelling in [REQUESTS, EVENTS_TAIL, STATE, GOAL, MEMO] {
             let request = Request::parse(&argv(&[spelling]));
             assert_eq!(request, Request::MissingOperand(spelling));
             assert_eq!(request.exit_code(), Some(2), "{spelling}");

@@ -462,6 +462,194 @@ fn requests_mine_and_inbox_answer_for_the_pane_tmux_pane_names() {
 }
 
 #[test]
+fn goal_set_and_clear_rewrite_meta_and_announce_and_fail_loudly_without_a_meta() {
+    let root = scratch("goal");
+    let dir = root.join("sessions").join("g1");
+    std::fs::create_dir_all(&dir).expect("a session dir");
+    std::fs::write(dir.join("meta"), "mode=local\nsession=g1\n").expect("a meta file");
+    let run = |tail: &[&str]| {
+        let out = ae()
+            .env_remove("TMUX_PANE")
+            .arg(ae::cli::GOAL)
+            .arg(&dir)
+            .args(tail)
+            .output()
+            .expect("the ae binary should run");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let set = run(&["ship", "it\u{7}"]);
+    assert_eq!(
+        set,
+        (Some(0), "Goal set: ship it\n".to_owned(), String::new())
+    );
+    let meta = std::fs::read_to_string(dir.join("meta")).unwrap();
+    assert_eq!(
+        meta, "mode=local\nsession=g1\ngoal=ship it\n",
+        "appended, one line, control dropped"
+    );
+    let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    assert!(
+        events.contains("\"actor\":\"human\",\"action\":\"goal\",\"summary\":\"ship it\"}"),
+        "{events}"
+    );
+
+    let cleared = run(&["--clear"]);
+    assert_eq!(
+        cleared,
+        (Some(0), "Goal cleared.\n".to_owned(), String::new())
+    );
+    let meta = std::fs::read_to_string(dir.join("meta")).unwrap();
+    assert_eq!(
+        meta, "mode=local\nsession=g1\n",
+        "the key is gone, the rest untouched"
+    );
+    let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    assert_eq!(events.lines().count(), 2);
+    assert!(
+        events
+            .lines()
+            .nth(1)
+            .unwrap()
+            .contains("\"summary\":\"goal cleared\"}"),
+        "{events}"
+    );
+    assert!(
+        std::fs::metadata(dir.join("meta.lock")).is_ok(),
+        "the lock bash takes"
+    );
+
+    // Usage: 2, and nothing touched.
+    for tail in [vec![], vec!["--clear", "extra"], vec!["\u{1b}"]] {
+        let usage = run(&tail);
+        assert_eq!(usage.0, Some(2), "{tail:?}: {usage:?}");
+        assert!(usage.2.starts_with("Usage: goal"), "{tail:?}: {usage:?}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.join("events.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+
+    // FAILURE CONTROL: no meta file. The set fails at 1, says so, and emits
+    // no event — nothing was recorded, so nothing is announced.
+    let bare = root.join("sessions").join("g2");
+    std::fs::create_dir_all(&bare).expect("a session dir");
+    let out = ae()
+        .env_remove("TMUX_PANE")
+        .arg(ae::cli::GOAL)
+        .arg(&bare)
+        .arg("no meta here")
+        .output()
+        .expect("the ae binary should run");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(out.stdout.is_empty(), "no success line: {out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("goal not recorded: could not write session meta"),
+        "{out:?}"
+    );
+    assert!(
+        !bare.join("events.jsonl").exists(),
+        "no event for a goal that was not written"
+    );
+    assert!(!bare.join("meta").exists(), "and no meta was conjured");
+}
+
+#[test]
+fn memo_add_appends_the_tsv_record_and_announces_and_fails_loudly_when_it_cannot() {
+    let root = scratch("memo");
+    let dir = root.join("sessions").join("m1");
+    std::fs::create_dir_all(&dir).expect("a session dir");
+    let run = |dir: &std::path::Path, tail: &[&str]| {
+        let out = ae()
+            .env_remove("TMUX_PANE")
+            .arg(ae::cli::MEMO)
+            .arg(dir)
+            .args(tail)
+            .output()
+            .expect("the ae binary should run");
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let added = run(&dir, &["add", "--topic", "p2", "one\tline"]);
+    assert_eq!(
+        added,
+        (Some(0), String::new(), String::new()),
+        "silent on success, as bash is"
+    );
+    let tsv = std::fs::read_to_string(dir.join("memo.tsv")).unwrap();
+    let fields: Vec<&str> = tsv.trim_end_matches('\n').split('\t').collect();
+    assert_eq!(fields.len(), 4, "{tsv:?}");
+    assert!(
+        fields[0].ends_with('Z') && fields[0].len() == 20,
+        "ts {:?}",
+        fields[0]
+    );
+    assert_eq!(&fields[1..], ["human", "p2", "one line"]);
+    assert!(
+        std::fs::metadata(dir.join("memo.tsv.lock")).is_ok(),
+        "the lock bash takes"
+    );
+    let events = std::fs::read_to_string(dir.join("events.jsonl")).unwrap();
+    assert!(
+        events.contains(
+            "\"actor\":\"human\",\"action\":\"memo\",\"ref\":\"p2\",\"summary\":\"one line\"}"
+        ),
+        "{events}"
+    );
+
+    // Usage: 2, nothing touched.
+    for tail in [
+        vec!["add"],
+        vec!["add", "--topic", "t"],
+        vec!["read"],
+        vec![],
+    ] {
+        let usage = run(&dir, &tail);
+        assert_eq!(usage.0, Some(2), "{tail:?}: {usage:?}");
+        assert!(
+            usage.2.starts_with("Usage: memo add"),
+            "{tail:?}: {usage:?}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.join("memo.tsv"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+
+    // FAILURE CONTROL: memo.tsv is a directory, so the append cannot open it.
+    // 1, said on stderr, and NO event — the record did not land, so nothing
+    // is announced.
+    let blocked = root.join("sessions").join("m2");
+    std::fs::create_dir_all(blocked.join("memo.tsv")).expect("a directory where the file goes");
+    let failed = run(&blocked, &["add", "cannot land"]);
+    assert_eq!(failed.0, Some(1), "{failed:?}");
+    assert!(failed.1.is_empty());
+    assert!(
+        failed
+            .2
+            .contains("memo not recorded: could not append to memo.tsv"),
+        "{failed:?}"
+    );
+    assert!(
+        !blocked.join("events.jsonl").exists(),
+        "no event for a memo that was not recorded"
+    );
+}
+
+#[test]
 fn state_refuses_without_a_pane_identity_and_writes_nothing() {
     let root = scratch("state-noid");
     let dir = root.join("sessions").join("s1");

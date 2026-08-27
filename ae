@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.3"
+AE_VERSION="0.2.4"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -14656,6 +14656,11 @@ helper_memo_render() {
 helper_memo_main() {
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
     MEMO_FILE="${META_DIR}/memo.tsv"
+    # `add` goes to the pinned Rust core (P2.3): same memo.tsv.lock append,
+    # same memo event, loud on failure. read/tail stay here.
+    if [[ "${1:-}" == "add" ]]; then
+        _ae_core_try _memo "$@" || true
+    fi
     cmd="${1:-read}"
     shift || true
     case "$cmd" in
@@ -14714,6 +14719,14 @@ helper_goal_usage() {
 }
 
 helper_goal_main() {
+    # The WRITE forms (set, --clear) go to the pinned Rust core (P2.3): same
+    # meta.lock rewrite, same goal event, and the success line only after both
+    # are down. The no-argument READ and --help stay here.
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    case "${1:-}" in
+        "" | --help | -h) ;;
+        *) _ae_core_try _goal "$@" || true ;;
+    esac
     case "${1:-}" in
         "")
             current="$(ae_meta_get goal)"
@@ -18010,7 +18023,7 @@ SAYPROLOGUE
         cat <<'MEMOPROLOGUE'
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 MEMOPROLOGUE
-        declare -f helper_memo_usage helper_memo_render helper_memo_main
+        declare -f _ae_core_complain _ae_core_try helper_memo_usage helper_memo_render helper_memo_main
         printf 'helper_memo_main "$@"\n'
     } >"${AE_META}/memo.tmp.$$"
     chmod 0700 "${AE_META}/memo.tmp.$$"
@@ -18026,7 +18039,7 @@ MEMOPROLOGUE
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 
 GOALPROLOGUE
-        declare -f helper_goal_usage helper_goal_main
+        declare -f _ae_core_complain _ae_core_try helper_goal_usage helper_goal_main
         printf 'helper_goal_main "$@"\n'
     } >"${AE_META}/goal.tmp.$$"
     chmod 0700 "${AE_META}/goal.tmp.$$"

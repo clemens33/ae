@@ -2735,7 +2735,7 @@ unset _AE_META_DIR
 
 # Wiring: helper generated, event emitted, preserve-across-resume, list + nudge.
 assert_eq "goal: helper script generated + chmod" "1" \
-    "$([[ "$AE_SOURCE" == *'declare -f helper_goal_usage helper_goal_main'* && "$AE_SOURCE" == *'mv "${AE_META}/goal.tmp.$$" "${AE_META}/goal"'* ]] && echo 1 || echo 0)"
+    "$([[ "$AE_SOURCE" == *'declare -f _ae_core_complain _ae_core_try helper_goal_usage helper_goal_main'* && "$AE_SOURCE" == *'mv "${AE_META}/goal.tmp.$$" "${AE_META}/goal"'* ]] && echo 1 || echo 0)"
 assert_eq "goal: helper emits a goal event on set and clear" "1" \
     "$([[ "$AE_SOURCE" == *'ae_emit_event "goal" "" "" "$text"'* && "$AE_SOURCE" == *'ae_emit_event "goal" "" "" "goal cleared"'* ]] && echo 1 || echo 0)"
 assert_eq "goal: preserved across meta rewrite (resume)" "1" \

@@ -27,7 +27,7 @@
 
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 /// The file this module reads, inside a session directory.
@@ -478,6 +478,134 @@ impl Meta {
     }
 }
 
+/// The lock the frozen `ae_meta_set`/`ae_meta_unset` take: `meta.lock` beside
+/// the file, `flock -w 5`.
+const LOCK: &str = "meta.lock";
+
+/// `text` with `key` set to `value`, or removed when `value` is `None` — the
+/// frozen helpers' awk, byte for byte (measured against it):
+///
+/// * a record is what precedes each `\n`; a final unterminated remainder is
+///   a record too, and comes out terminated, as awk's `print` terminates it;
+/// * a record's key is everything before its first `=` (a record without one
+///   is its own key), compared exactly — so a CR before the `\n` is part of
+///   the last field, never of the key;
+/// * EVERY matching record is replaced by `key=value\n` on a set, and every
+///   one is dropped on an unset — a duplicated key stays duplicated, because
+///   a rewrite that healed a degraded meta would hide the degradation;
+/// * every other record is emitted VERBATIM, its CR included;
+/// * a set whose key matched nothing appends `key=value\n`.
+#[must_use]
+pub fn rewritten(text: &str, key: &str, value: Option<&str>) -> String {
+    let mut out = String::new();
+    let mut updated = false;
+    let mut records: Vec<&str> = text.split('\n').collect();
+    // A final empty segment is the terminator of the last record, not a record.
+    if records.last() == Some(&"") {
+        records.pop();
+    }
+    for record in records {
+        let record_key = record.split_once('=').map_or(record, |(k, _)| k);
+        if record_key == key {
+            if let Some(value) = value {
+                out.push_str(key);
+                out.push('=');
+                out.push_str(value);
+                out.push('\n');
+                updated = true;
+            }
+            continue;
+        }
+        out.push_str(record);
+        out.push('\n');
+    }
+    if let Some(value) = value
+        && !updated
+    {
+        out.push_str(key);
+        out.push('=');
+        out.push_str(value);
+        out.push('\n');
+    }
+    out
+}
+
+/// Why a [`rewrite`] did not complete — and, crucially, WHAT IS KNOWN about
+/// the meta afterwards.
+#[derive(Debug)]
+pub enum RewriteError {
+    /// Nothing visible changed: the lock, the read, the temp write, its sync,
+    /// or the rename failed. The previous meta is still the meta.
+    NotWritten(io::Error),
+    /// The rename returned — the new meta IS visible — but the directory
+    /// entry could not be synced, so whether it survives a crash is unknown.
+    /// Reported as exactly that, never as "nothing changed".
+    Unknown(io::Error),
+}
+
+impl RewriteError {
+    /// The underlying cause.
+    #[must_use]
+    pub const fn cause(&self) -> &io::Error {
+        match self {
+            Self::NotWritten(why) | Self::Unknown(why) => why,
+        }
+    }
+}
+
+/// Set (`Some`) or remove (`None`) `key` in the `meta` at `dir`, under
+/// `meta.lock`, by rewriting a temp file and renaming it over — the frozen
+/// `ae_meta_set`/`ae_meta_unset`, made durable: the temp is synced before the
+/// rename, and the directory is synced after it, because a synced inode
+/// behind an unsynced directory entry is a meta that can revert on a crash
+/// while the event announcing it survives.
+///
+/// `value` is written as given; the caller makes it one line.
+///
+/// # Errors
+///
+/// [`RewriteError::NotWritten`] when nothing visible changed — the lock not
+/// acquired within the bound, an absent meta on a SET (the frozen helper
+/// returns 1; an unset of an absent meta is `Ok`, as its helper returns 0),
+/// or any read, write, sync or rename failure. [`RewriteError::Unknown`] when
+/// the rename returned but the directory sync did not.
+pub fn rewrite(dir: &Path, key: &str, value: Option<&str>) -> Result<(), RewriteError> {
+    let path = dir.join(FILE);
+    let _held = crate::state::acquire(&dir.join(LOCK), crate::state::LOCK_WAIT)
+        .map_err(RewriteError::NotWritten)?;
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the meta read, for its locked rewrite — see clippy.toml"
+    )]
+    let current = fs::read_to_string(&path);
+    let current = match current {
+        Ok(text) => text,
+        Err(why) if why.kind() == io::ErrorKind::NotFound && value.is_none() => return Ok(()),
+        Err(why) => return Err(RewriteError::NotWritten(why)),
+    };
+    let next = rewritten(&current, key, value);
+    let temp = dir.join(format!("{FILE}.tmp.{}", std::process::id()));
+    let staged = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp)?;
+        file.write_all(next.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp, &path)
+    })();
+    staged.map_err(RewriteError::NotWritten)?;
+    // Visible now. Publish the directory entry, or say that it is not known
+    // to be published.
+    fs::OpenOptions::new()
+        .read(true)
+        .open(dir)
+        .and_then(|directory| directory.sync_all())
+        .map_err(RewriteError::Unknown)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -485,6 +613,67 @@ mod tests {
         reason = "fixtures build and inspect real directories; the boundary is about \
                   what PRODUCT code may reach"
     )]
+
+    #[test]
+    fn a_rewrite_replaces_appends_or_drops_byte_for_byte_as_the_awk_does() {
+        // Every expectation here was MEASURED against the frozen awk
+        // (`ae_meta_set` / `ae_meta_unset`) on the same input, not derived.
+        use super::rewritten;
+        let text = "mode=local\ngoal=old\nsession=s\n";
+        assert_eq!(
+            rewritten(text, "goal", Some("new")),
+            "mode=local\ngoal=new\nsession=s\n",
+            "replaced in place"
+        );
+        assert_eq!(
+            rewritten("mode=local\n", "goal", Some("g")),
+            "mode=local\ngoal=g\n",
+            "appended when absent"
+        );
+        assert_eq!(
+            rewritten("", "goal", Some("x")),
+            "goal=x\n",
+            "an empty meta gets the line"
+        );
+        assert_eq!(
+            rewritten(text, "goal", None),
+            "mode=local\nsession=s\n",
+            "dropped"
+        );
+        assert_eq!(
+            rewritten(text, "absent", None),
+            text,
+            "unset of an absent key is a no-op"
+        );
+        // A value containing `=` keeps nothing of the old value; a record
+        // without `=` is its own key; an unterminated last record comes out
+        // terminated, as awk's print terminates it.
+        assert_eq!(
+            rewritten("goal=a=b\nbare\nlast=1", "goal", Some("x")),
+            "goal=x\nbare\nlast=1\n"
+        );
+        assert_eq!(rewritten("bare\n", "bare", None), "");
+        // CRLF PARITY: a non-matching record keeps its CR verbatim; a matching
+        // record's CR was part of its last field and goes with it.
+        assert_eq!(
+            rewritten("a=1\r\ngoal=old\r\nb=2\r\n", "goal", Some("new")),
+            "a=1\r\ngoal=new\nb=2\r\n"
+        );
+        assert_eq!(
+            rewritten("a=1\r\ngoal=old\r\nb=2\r\n", "goal", None),
+            "a=1\r\nb=2\r\n"
+        );
+        assert_eq!(
+            rewritten("bare\r\nlast=1", "goal", Some("x")),
+            "bare\r\nlast=1\ngoal=x\n",
+            "a bare CR record is not the key `bare`"
+        );
+        // DUPLICATE PARITY: every matching record is replaced, so a duplicated
+        // key stays duplicated — a rewrite that healed a degraded meta would
+        // hide the degradation SC-405 reports.
+        assert_eq!(rewritten("k=1\nk=2\n", "k", Some("3")), "k=3\nk=3\n");
+        assert_eq!(rewritten("k=1\nk=2\n", "k", None), "");
+    }
 
     use super::{Anomaly, Meta, Selector, ServerSelector};
     use std::path::PathBuf;

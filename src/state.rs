@@ -217,12 +217,12 @@ pub fn declare(
         return Err(Failure::NoIdentity);
     }
     let body = event_body(now, &viewer.display, declaration);
-    let lock_path = dir.join(format!("{CONTAINER}.lock"));
-    let _held = acquire(&lock_path, LOCK_WAIT)
-        .map_err(|why| Failure::Lock(lock_path.display().to_string(), why))?;
     let container = dir.join(CONTAINER);
-    append(&container, body.as_bytes())
-        .map_err(|why| Failure::Append(container.display().to_string(), why))?;
+    match append_locked(&container, body.as_bytes()) {
+        Ok(()) => {}
+        Err(Locked::Lock(path, why)) => return Err(Failure::Lock(path, why)),
+        Err(Locked::Append(path, why)) => return Err(Failure::Append(path, why)),
+    }
     let reason = if declaration.reason.is_empty() {
         String::new()
     } else {
@@ -234,12 +234,65 @@ pub fn declare(
     ))
 }
 
+/// Why a locked append did not happen: which step, on which path.
+#[derive(Debug)]
+pub enum Locked {
+    /// The lock file could not be opened or the lock was not acquired within
+    /// [`LOCK_WAIT`].
+    Lock(String, io::Error),
+    /// The append itself failed (and was rolled back where it could be).
+    Append(String, io::Error),
+}
+
+impl From<Locked> for io::Error {
+    fn from(why: Locked) -> Self {
+        match why {
+            Locked::Lock(path, cause) => Self::new(
+                cause.kind(),
+                format!(
+                    "could not lock {path} within {}s: {cause}",
+                    LOCK_WAIT.as_secs()
+                ),
+            ),
+            Locked::Append(path, cause) => {
+                Self::new(cause.kind(), format!("could not append to {path}: {cause}"))
+            }
+        }
+    }
+}
+
+/// Append `bytes` to `path` under `<path>.lock` — `ae_log_append`, exactly:
+/// the lock is the file's own `.lock` sibling, taken with `flock -w 5`, held
+/// through the append. The append is the [`commit`] transaction. Shared by
+/// the event container and `memo.tsv`, which each keep their own lock.
+///
+/// # Errors
+///
+/// [`Locked`] — which step failed, on which path.
+pub fn append_locked(path: &Path, bytes: &[u8]) -> Result<(), Locked> {
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock_path = Path::new(&lock_path);
+    let _held = acquire(lock_path, LOCK_WAIT)
+        .map_err(|why| Locked::Lock(lock_path.display().to_string(), why))?;
+    append(path, bytes).map_err(|why| Locked::Append(path.display().to_string(), why))
+}
+
+/// Append one event line to `dir`'s container under its lock.
+///
+/// # Errors
+///
+/// The [`Locked`] failure, flattened to one [`io::Error`] naming the step.
+pub fn emit(dir: &Path, line: &str) -> io::Result<()> {
+    append_locked(&dir.join(CONTAINER), line.as_bytes()).map_err(io::Error::from)
+}
+
 /// Take the exclusive advisory lock on `path`, retrying for up to `wait`.
 ///
 /// The returned handle IS the lock: dropping it releases. `flock(2)` locks
 /// belong to the open file description, so a bash `flock` on the same path
 /// and this one exclude each other.
-fn acquire(path: &Path, wait: Duration) -> io::Result<File> {
+pub(crate) fn acquire(path: &Path, wait: Duration) -> io::Result<File> {
     let file = OpenOptions::new().append(true).create(true).open(path)?;
     let started = Instant::now();
     loop {

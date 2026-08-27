@@ -731,6 +731,8 @@ case "\$1" in
         echo "CORE_TOKEN_9f3a mode=\${3:-none}"
         ;;
     _state) echo "CORE_TOKEN_9f3a state=\${3:-none}" ;;
+    _goal) echo "CORE_TOKEN_9f3a goal=\${3:-none}" ;;
+    _memo) echo "CORE_TOKEN_9f3a memo=\${3:-none}" ;;
     *) exit 64 ;;
 esac
 EOF
@@ -783,6 +785,24 @@ assert_contains "core binding: mark-done is state done through the core" "CORE_T
 assert_eq "core binding: the state READ stays on the bash body" "0" \
     "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/out" | tr -d '[:space:]')"
 assert_contains "core binding: and still answers" "state:" "$(cat "$_cb_root/out")"
+
+# GOAL and MEMO (P2.3): the write forms go to the core, the reads do not.
+_cb_out="$("$_cb_meta/goal" "ship it" 2>/dev/null || true)"
+assert_contains "core binding: goal <text> reaches the core" "CORE_TOKEN_9f3a goal=ship it" "$_cb_out"
+_cb_out="$("$_cb_meta/goal" --clear 2>/dev/null || true)"
+assert_contains "core binding: goal --clear reaches the core" "CORE_TOKEN_9f3a goal=--clear" "$_cb_out"
+"$_cb_meta/goal" >"$_cb_root/out" 2>"$_cb_root/err" || true
+assert_eq "core binding: the goal READ stays on the bash body" "0" \
+    "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/out" | tr -d '[:space:]')"
+assert_contains "core binding: and still answers" "goal" "$(cat "$_cb_root/out")"
+_cb_out="$("$_cb_meta/memo" add --topic t "a note" 2>/dev/null || true)"
+assert_contains "core binding: memo add reaches the core" "CORE_TOKEN_9f3a memo=add" "$_cb_out"
+for _cb_mode in read tail; do
+    "$_cb_meta/memo" "$_cb_mode" >"$_cb_root/out" 2>"$_cb_root/err" || true
+    assert_eq "core binding: memo $_cb_mode stays on the bash body" "0" \
+        "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/out" | tr -d '[:space:]')"
+done
+unset _cb_mode
 
 # THE SHIM MUST NOT SWALLOW THE CORE'S EXIT STATUS. It execs, so the status is
 # the core's by construction — this pins that, because the obvious alternative

@@ -71,10 +71,12 @@ pub mod event_text;
 pub mod events;
 pub mod events_tail;
 pub mod filters;
+pub mod goal;
 pub mod inventory;
 pub mod json;
 pub mod listing;
 pub mod liveness;
+pub mod memo;
 pub mod meta;
 pub mod requests;
 pub mod session;
@@ -191,6 +193,51 @@ pub fn run(args: &[String], out: &mut impl Write, err: &mut impl Write) -> Resul
         return run_with(args, Some(&world), out, err);
     }
     run_with(args, None, out, err)
+}
+
+/// The `_goal` arm: usage at 2, then set or clear, then the success line only
+/// once both writes are down.
+fn run_goal(
+    dir: &std::path::Path,
+    tail: &[String],
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let Ok(command) = goal::parse(tail) else {
+        write!(err, "{}", goal::USAGE)?;
+        return Ok(goal::usage_code());
+    };
+    match goal::run(dir, &calling_viewer(dir), &command, time::Timestamp::now()) {
+        Ok(line) => {
+            out.write_all(line.as_bytes())?;
+            Ok(0)
+        }
+        Err(failure) => {
+            writeln!(err, "{}", failure.message())?;
+            Ok(goal::failure_code())
+        }
+    }
+}
+
+/// The `_memo` arm: usage at 2, then the TSV record and its event; nothing on
+/// stdout on success, as the frozen helper prints nothing.
+fn run_memo(
+    dir: &std::path::Path,
+    tail: &[String],
+    _out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<u8> {
+    let Ok(add) = memo::parse(tail) else {
+        write!(err, "{}", memo::USAGE)?;
+        return Ok(state::EXIT_USAGE);
+    };
+    match memo::run(dir, &calling_viewer(dir), &add, time::Timestamp::now()) {
+        Ok(()) => Ok(0),
+        Err(failure) => {
+            writeln!(err, "{}", failure.message())?;
+            Ok(state::EXIT_FAILED)
+        }
+    }
 }
 
 /// Who is invoking a helper: the pane `TMUX_PANE` names, read from the ambient
@@ -413,6 +460,8 @@ pub fn run_with(
                 }
             }
         },
+        cli::Request::Goal { dir, tail } => run_goal(dir, tail, out, err)?,
+        cli::Request::Memo { dir, tail } => run_memo(dir, tail, out, err)?,
         cli::Request::Requests { dir, mode } => {
             let rendered = requests::render(dir, *mode, &calling_viewer(dir));
             out.write_all(&rendered.stdout)?;
