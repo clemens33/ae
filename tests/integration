@@ -737,6 +737,7 @@ case "\$1" in
     _review) echo "CORE_TOKEN_9f3a review=\${3:-none} body=\${4:-none}" ;;
     _reply) echo "CORE_TOKEN_9f3a reply=\${3:-none} body=\${4:-none}" ;;
     _send) echo "CORE_TOKEN_9f3a send=\${3:-none} body=\${4:-none}" ;;
+    _events-tail) echo "CORE_TOKEN_9f3a events-tail dir=\${2:-none}" ;;
     *) exit 64 ;;
 esac
 EOF
@@ -827,6 +828,29 @@ _cb_out="$("$_cb_meta/send" dummy "the message" 2>/dev/null || true)"
 assert_contains "core binding: send reaches the core with target and body" "CORE_TOKEN_9f3a send=dummy body=the message" "$_cb_out"
 _cb_out="$(AE_CORE="" "$_cb_meta/send" 2>&1 >/dev/null || true)"
 assert_contains "core binding: send falls back to the bash body" "Usage: send" "$_cb_out"
+# EVENTS-TAIL (P2.7, closes P2): the monitor pane's helper takes no argument —
+# the core is handed the meta dir the shim always passes. The bash body stays
+# reachable under AE_CORE=; it never returns on its own (banner, then a wait
+# for the container or a follow), so it runs in the background, is read for
+# its banner, and is killed — together with the one tail -f it may have started.
+# Neither run may be captured with $( ): the bash body never returns, and a
+# control that removes the shim would then hang the suite instead of failing.
+_cb_tail_run() { # <out-file> <pattern> [env...] -> runs the helper in the background, bounded on the pattern
+    local out="$1" pattern="$2"
+    shift 2
+    env "$@" "$_cb_meta/events-tail" >"$out" 2>&1 &
+    local pid=$! i
+    for i in $(seq 1 40); do grep -q "$pattern" "$out" 2>/dev/null && break; sleep 0.25; done
+    kill "$pid" 2>/dev/null || true
+    pkill -f "tail -n 30 -f ${_cb_meta}/events.jsonl" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+}
+_cb_tail_run "$_cb_root/tail-core.out" 'CORE_TOKEN_9f3a'
+assert_contains "core binding: events-tail reaches the core with the meta dir" "CORE_TOKEN_9f3a events-tail dir=$_cb_meta" "$(cat "$_cb_root/tail-core.out")"
+_cb_tail_run "$_cb_root/tail.out" 'ae events' AE_CORE=
+assert_contains "core binding: events-tail falls back to the bash body" "ae events — session: test-core" "$(cat "$_cb_root/tail.out")"
+assert_eq "core binding: and its banner is not the core's" "0" \
+    "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/tail.out" | tr -d '[:space:]')"
 _cb_out="$(AE_CORE="" "$_cb_meta/ask" 2>&1 >/dev/null || true)"
 assert_contains "core binding: ask falls back to the bash body" "Usage: ask" "$_cb_out"
 assert_eq "core binding: and not to the core" "0" \

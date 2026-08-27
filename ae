@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.8"
+AE_VERSION="0.2.9"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -14589,7 +14589,17 @@ _ae_core_complain() {
 # binary at that path can be replaced under a long-lived session, and running a
 # core that is not the pinned one is exactly the silent-drift failure the pair
 # exists to prevent.
-_ae_core_try() {
+_ae_core_try() { # [--quiet] <subcommand> [args...]
+    # --quiet: fall back WITHOUT the once-per-session complaint. For a helper
+    # whose stderr nobody reads — the monitor pane's events-tail — because the
+    # complaint is spent ONCE per session (the .ae_core_unusable marker), and a
+    # hidden pane that spends it leaves the next helper the operator actually
+    # runs with nothing to say. The fallback itself is unchanged.
+    local quiet=0
+    if [[ "${1:-}" == "--quiet" ]]; then
+        quiet=1
+        shift
+    fi
     local sub="$1"
     shift
     # AE_CORE explicitly EMPTY forces the bash body for this one invocation.
@@ -14606,17 +14616,17 @@ _ae_core_try() {
     # input it could not use. Configured-but-unusable is worth one line; blank
     # config is not.
     if [[ -z "$ver" ]]; then
-        _ae_core_complain "the configured core could not be bound when this session was created or refreshed: ${bin}"
+        ((quiet)) || _ae_core_complain "the configured core could not be bound when this session was created or refreshed: ${bin}"
         return 1
     fi
     if [[ ! -x "$bin" ]]; then
-        _ae_core_complain "the configured core is missing or not executable: ${bin}"
+        ((quiet)) || _ae_core_complain "the configured core is missing or not executable: ${bin}"
         return 1
     fi
     actual="$("$bin" --version 2>/dev/null | head -1 || true)"
     actual="${actual##* }"
     if [[ "$actual" != "$ver" ]]; then
-        _ae_core_complain "core version mismatch: this session pins ${ver}, ${bin} reports ${actual:-nothing}"
+        ((quiet)) || _ae_core_complain "core version mismatch: this session pins ${ver}, ${bin} reports ${actual:-nothing}"
         return 1
     fi
     # TMUX_PANE and the rest of the environment pass through untouched: the core
@@ -15127,6 +15137,15 @@ helper_events_tail_format_event() {
 
 helper_events_tail_main() {
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    # The Rust core serves this surface when the session pins one (P2.7, the
+    # last helper of P2): `_events-tail <meta-dir>` — the shim hands the dir,
+    # the helper takes no argument of its own. The shim EXECs the core, so
+    # nothing below runs unless the core is unbound, unusable or refused with
+    # AE_CORE= — then this body is the whole helper, as it always was.
+    # --quiet: this pane's stderr is read by nobody, and the unusable-core
+    # complaint is spent ONCE per session — spending it here would leave the
+    # next helper the operator runs silent about a fault they must see.
+    _ae_core_try --quiet _events-tail || true
     EVENTS_FILE="${META_DIR}/events.jsonl"
 
     # Banner printed once at the top of the pane's scrollback.
@@ -18238,7 +18257,7 @@ REGISTER_SIDPROLOGUE
         cat <<'EVENTS_TAILPROLOGUE'
 set -uo pipefail
 EVENTS_TAILPROLOGUE
-        declare -f helper_events_tail_extract_json_str helper_events_tail_format_event helper_events_tail_main
+        declare -f _ae_core_complain _ae_core_try helper_events_tail_extract_json_str helper_events_tail_format_event helper_events_tail_main
         printf 'helper_events_tail_main "$@"\n'
     } >"${AE_META}/events-tail.tmp.$$"
     chmod 0700 "${AE_META}/events-tail.tmp.$$"

@@ -3897,6 +3897,35 @@ assert_eq "watchdog: default-on resolution (unset/empty means start)" "1" \
 assert_eq "watchdog: DEFAULT_CONFIG advertises watchdog = true to new installs" "1" \
     "$([[ "$AE_SOURCE" == *'watchdog = true'* ]] && echo 1 || echo 0)"
 
+assert_eq "events-tail: helper shims to the pinned core with the meta dir, and carries the shim (P2.7)" "1" \
+    "$([[ "$AE_SOURCE" == *'_ae_core_try --quiet _events-tail || true'* && "$AE_SOURCE" == *'declare -f _ae_core_complain _ae_core_try helper_events_tail_extract_json_str helper_events_tail_format_event helper_events_tail_main'* ]] && echo 1 || echo 0)"
+# ── P2.7: the shim's --quiet fallback spends no once-per-session complaint ──
+# Behavioural, not structural: the functions run against a meta dir whose core
+# is configured but unbound (a path and no version), the shape doctor --refresh
+# publishes for operator input it could not use.
+_cq_probe() { # [--quiet] <sub> -> "rc=<n> err=<stderr> marker=<0|1>"
+    (
+        eval "$(awk '/^_ae_core_complain\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        eval "$(awk '/^_ae_core_try\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+        META_DIR="$_cq_dir"
+        rc=0
+        err="$(_ae_core_try "$@" 2>&1 >/dev/null)" || rc=$?
+        printf 'rc=%s err=%s marker=%s' "$rc" "$err" "$([[ -e "$_cq_dir/.ae_core_unusable" ]] && echo 1 || echo 0)"
+    )
+}
+_cq_dir="$(mktemp -d)"
+printf 'ae_core=/nonexistent/core\n' >"$_cq_dir/meta"
+assert_eq "core shim: --quiet falls back silently on an unbound core and spends no marker" \
+    "rc=1 err= marker=0" "$(_cq_probe --quiet _events-tail)"
+assert_eq "core shim: the plain fallback complains once and spends the marker" \
+    "rc=1 err=ae: using the bash implementation - the configured core could not be bound when this session was created or refreshed: /nonexistent/core marker=1" \
+    "$(_cq_probe _requests)"
+assert_eq "core shim: ...and is silent after it" "rc=1 err= marker=1" "$(_cq_probe _requests)"
+assert_eq "core shim: --quiet under a set-but-empty AE_CORE is the same silent fallback" \
+    "rc=1 err= marker=1" "$(AE_CORE= _cq_probe --quiet _events-tail)"
+rm -rf "$_cq_dir"
+unset _cq_dir
+
 assert_eq "events-tail: banner labels timestamps as UTC" "1" \
     "$([[ "$AE_SOURCE" == *'date+time (UTC)'* ]] && echo 1 || echo 0)"
 
