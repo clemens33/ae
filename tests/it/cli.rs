@@ -1335,7 +1335,7 @@ me="$(basename "$0")"
 printf '%s\n' "$me" >"$here/send.helper"
 printf '%s\n' "$1" >"$here/send.target"
 printf '%s' "$2" >"$here/send.message"
-env | grep -E '^(_AE_DELIVER_ONLY|_AE_EVENT_ACTION|_AE_EVENT_REF|AE_SENDER_OVERRIDE)=' | sort >"$here/send.env"
+env | grep -E '^(_AE_DELIVER_ONLY|_AE_EVENT_ACTION|_AE_EVENT_REF|AE_SENDER_OVERRIDE)=' | LC_ALL=C sort >"$here/send.env"
 rc="${STUB_SEND_RC:-0}"
 if [[ "$rc" != 0 ]]; then echo "stub send: refused" >&2; exit "$rc"; fi
 mkdir -p "$here/messages"
@@ -1734,4 +1734,357 @@ fn no_identity_falls_back_to_a_plain_send_and_external_and_override_senders_are_
         "{}",
         events[1]
     );
+}
+
+// ---- tracked requests: reply ---------------------------------------------
+
+/// An `ask` from the main pane to the worker, through the stub: its id.
+fn ask_from_main(fx: &Tracked, body: &str) -> String {
+    let asked = fx.run(ae::cli::ASK, Some(&fx.main), &["worker", body], &[]);
+    assert_eq!(asked, (Some(0), String::new(), String::new()));
+    let id = stub_ref(&fx.stub().2);
+    assert!(is_request_id(&id, "ae"), "{id}");
+    fx.forget_stub();
+    id
+}
+
+/// Append one hand-written event line — a request the core did not create.
+fn append_event(fx: &Tracked, line: &str) {
+    use std::io::Write as _;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(fx.dir.join("events.jsonl"))
+        .unwrap_or_else(|why| panic!("the ledger should open: {why}"));
+    writeln!(file, "{line}").unwrap_or_else(|why| panic!("the ledger should append: {why}"));
+}
+
+/// The core's own `requests all`, as the main pane sees it.
+fn requests_all(fx: &Tracked) -> String {
+    let (code, view, stderr) = fx.run(ae::cli::REQUESTS, Some(&fx.main), &["all"], &[]);
+    assert_eq!(code, Some(0), "{stderr}");
+    view
+}
+
+#[test]
+fn reply_routes_to_the_asker_by_stored_slot_records_the_frozen_event_and_closes_the_request() {
+    let fx = Tracked::new("rp");
+    let session = "trrp";
+    let id = ask_from_main(&fx, "the question");
+    // The asker is renamed AFTER the ask: the reply must reach the pane
+    // holding the stored slot under its CURRENT name, never the stale one.
+    assert!(
+        fx.tmux(&[
+            "set-option",
+            "-p",
+            "-t",
+            &fx.main,
+            "@ae_agent",
+            "renamed:lead"
+        ])
+        .0
+    );
+    let replied = fx.run(
+        ae::cli::REPLY,
+        Some(&fx.worker),
+        &[&id, "the", "answer"],
+        &[],
+    );
+    assert_eq!(replied, (Some(0), String::new(), String::new()));
+    let (target, message, env) = fx.stub();
+    assert_eq!(fx.stub_helper(), "_send-deliver\n");
+    assert_eq!(
+        target, "renamed:lead\n",
+        "routed by slot to the current name"
+    );
+    assert_eq!(message, format!("[{id}] the answer"));
+    assert_eq!(
+        env,
+        format!("AE_SENDER_OVERRIDE=cl:worker\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id}\n"),
+        "the verified sender rides to the entry as the envelope's identity"
+    );
+    let events = fx.events();
+    assert_eq!(events.len(), 2, "{events:?}");
+    let body_file = fx.dir.join("messages").join(format!("{id}.reply.stub.txt"));
+    assert!(
+        events[1].ends_with(&format!(
+            "\"actor\":\"cl:worker\",\"action\":\"reply\",\"target\":\"renamed:lead\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"{session}\",\"target_slot\":\"main\",\"target_session\":\"{session}\",\"summary\":\"the answer\",\"body_file\":\"{}\"}}",
+            body_file.display()
+        )),
+        "{}",
+        events[1]
+    );
+    assert_eq!(
+        std::fs::read_to_string(&body_file).unwrap_or_default(),
+        message,
+        "the reply keeps its own recovery file"
+    );
+    let view = requests_all(&fx);
+    assert!(
+        view.contains("replied") && view.contains(&id) && view.contains("the answer"),
+        "the core's requests view closes it with the reply's text: {view}"
+    );
+    // --as is DISPLAY only: it names the actor, and a disagreement with the
+    // stored name is a warning after the slot has been verified.
+    let id2 = ask_from_main(&fx, "again");
+    let as_reply = fx.run(
+        ae::cli::REPLY,
+        Some(&fx.worker),
+        &["--as", "stale:old", &id2, "ok"],
+        &[],
+    );
+    assert_eq!(
+        as_reply,
+        (
+            Some(0),
+            String::new(),
+            "Warning: --as 'stale:old' != stored target name 'cl:worker' (name is advisory; slot verified)\n".to_owned()
+        )
+    );
+    let events = fx.events();
+    assert!(
+        events[3]
+            .contains("\"actor\":\"stale:old\",\"action\":\"reply\",\"target\":\"renamed:lead\""),
+        "{}",
+        events[3]
+    );
+    assert_eq!(
+        fx.stub().2,
+        format!("AE_SENDER_OVERRIDE=stale:old\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id2}\n"),
+        "the envelope names the --as identity, as the event does"
+    );
+}
+
+#[test]
+fn the_verified_sender_overwrites_an_override_inherited_from_the_caller() {
+    // The frozen helper `exec env AE_SENDER_OVERRIDE="$reply_sender"` AFTER the
+    // slot check; a caller's own override must not survive into the entry,
+    // where it would become the provenance envelope.
+    let fx = Tracked::new("rv");
+    let id = ask_from_main(&fx, "q");
+    let poisoned = fx.run(
+        ae::cli::REPLY,
+        Some(&fx.worker),
+        &[&id, "clean"],
+        &[("AE_SENDER_OVERRIDE", "spoof")],
+    );
+    assert_eq!(poisoned, (Some(0), String::new(), String::new()));
+    let (target, message, env) = fx.stub();
+    assert_eq!(target, "cl:lead\n");
+    assert_eq!(message, format!("[{id}] clean"));
+    assert_eq!(
+        env,
+        format!("AE_SENDER_OVERRIDE=cl:worker\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id}\n"),
+        "the pane's verified identity, not the inherited one"
+    );
+    let last = fx.events().pop().unwrap_or_default();
+    assert!(
+        last.contains("\"actor\":\"cl:worker\",\"action\":\"reply\"") && !last.contains("spoof"),
+        "{last}"
+    );
+    // A `--as` reply carries the --as identity, which is also what the event
+    // names — the two never disagree.
+    let id2 = ask_from_main(&fx, "again");
+    let as_reply = fx.run(
+        ae::cli::REPLY,
+        Some(&fx.worker),
+        &["--as", "cl:worker", &id2, "ok"],
+        &[("AE_SENDER_OVERRIDE", "spoof")],
+    );
+    assert_eq!(as_reply, (Some(0), String::new(), String::new()));
+    assert_eq!(
+        fx.stub().2,
+        format!("AE_SENDER_OVERRIDE=cl:worker\n_AE_EVENT_ACTION=reply\n_AE_EVENT_REF={id2}\n")
+    );
+}
+
+type ReplyCase<'a> = (Option<&'a str>, Vec<&'a str>, Option<i32>, String);
+
+#[test]
+fn a_reply_is_refused_exactly_and_pastes_nothing_when_the_pane_the_id_or_the_body_is_wrong() {
+    let fx = Tracked::new("rr");
+    let session = "trrr";
+    let id = ask_from_main(&fx, "q");
+    let slot_error = format!(
+        "Error: request '{id}' is assigned to slot 'worker.0'@'{session}', current pane is slot 'main'@'{session}'\n"
+    );
+    let cases: Vec<ReplyCase<'_>> = vec![
+        (Some(&fx.main), vec![&id, "x"], Some(1), slot_error.clone()),
+        (
+            Some(&fx.main),
+            vec!["--as", "cl:worker", &id, "x"],
+            Some(1),
+            slot_error,
+        ),
+        (
+            None,
+            vec![&id, "x"],
+            Some(1),
+            format!(
+                "Error: request '{id}' is assigned to slot 'worker.0'@'{session}', current pane is slot 'none'@''\n"
+            ),
+        ),
+        (
+            Some(&fx.worker),
+            vec!["nope", "x"],
+            Some(1),
+            format!(
+                "Error: request id 'nope' not found in {}\n",
+                fx.dir.join("events.jsonl").display()
+            ),
+        ),
+        (
+            Some(&fx.worker),
+            vec![&id, "  "],
+            Some(1),
+            ae::tracked::refusal("reply"),
+        ),
+        (
+            Some(&fx.worker),
+            vec![&id],
+            Some(2),
+            ae::reply::USAGE.to_owned(),
+        ),
+        (
+            Some(&fx.worker),
+            vec!["--as", "cl:worker", &id],
+            Some(2),
+            ae::reply::USAGE.to_owned(),
+        ),
+    ];
+    for (pane, tail, code, stderr) in cases {
+        fx.forget_stub();
+        let out = fx.run(ae::cli::REPLY, pane, &tail, &[]);
+        assert_eq!(out, (code, String::new(), stderr), "{tail:?}");
+        assert!(fx.stub().0.is_empty(), "{tail:?}: something was pasted");
+        assert_eq!(fx.events().len(), 1, "{tail:?}: an event was written");
+    }
+    // A paste the helper refused leaves the request OPEN: its status is the
+    // helper's, verbatim, and no reply is recorded.
+    fx.forget_stub();
+    let refused = fx.run(
+        ae::cli::REPLY,
+        Some(&fx.worker),
+        &[&id, "late"],
+        &[("STUB_SEND_RC", "3")],
+    );
+    assert_eq!(refused.0, Some(3), "{refused:?}");
+    assert_eq!(fx.events().len(), 1);
+    assert!(requests_all(&fx).contains("pending"));
+}
+
+#[test]
+fn a_pre_migration_row_name_matches_with_the_frozen_errors_and_is_answered_at_the_stored_name() {
+    // A pre-migration row (no routing members) name-matches, with the frozen
+    // errors, and is answered at the stored name because there is no slot to
+    // route by.
+    let fx = Tracked::new("ro");
+    append_event(
+        &fx,
+        r#"{"ts":"2026-01-01T00:00:00Z","actor":"cl:lead","action":"ask","target":"cl:worker","ref":"ae-old-1","summary":"old"}"#,
+    );
+    let old_cases: Vec<ReplyCase<'_>> = vec![
+        (
+            Some(&fx.worker),
+            vec!["--as", "x:y", "ae-old-1", "x"],
+            Some(1),
+            "Error: override agent 'x:y' does not match assigned target 'cl:worker'\n".to_owned(),
+        ),
+        (
+            Some(&fx.main),
+            vec!["ae-old-1", "x"],
+            Some(1),
+            "Error: request 'ae-old-1' is assigned to 'cl:worker', current pane is 'cl:lead'\n"
+                .to_owned(),
+        ),
+        (
+            None,
+            vec!["ae-old-1", "x"],
+            Some(1),
+            "Error: could not detect current agent identity; rerun with --as 'cl:worker' from the assigned agent context\n".to_owned(),
+        ),
+    ];
+    for (pane, tail, code, stderr) in old_cases {
+        fx.forget_stub();
+        let out = fx.run(ae::cli::REPLY, pane, &tail, &[]);
+        assert_eq!(out, (code, String::new(), stderr), "{tail:?}");
+        assert!(fx.stub().0.is_empty(), "{tail:?}: something was pasted");
+    }
+    fx.forget_stub();
+    let old = fx.run(ae::cli::REPLY, Some(&fx.worker), &["ae-old-1", "seen"], &[]);
+    assert_eq!(old, (Some(0), String::new(), String::new()));
+    assert_eq!(
+        fx.stub().0,
+        "cl:lead\n",
+        "the stored name, no slot to route by"
+    );
+    let last = fx.events().pop().unwrap_or_default();
+    assert!(
+        last.contains(
+            "\"actor\":\"cl:worker\",\"action\":\"reply\",\"target\":\"cl:lead\",\"ref\":\"ae-old-1\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trro\",\"summary\":\"seen\""
+        ) && !last.contains("target_slot"),
+        "{last}"
+    );
+}
+
+#[test]
+fn a_bash_shaped_request_is_consumed_a_pane_less_asker_is_answered_event_only_and_a_follow_up_is_noted()
+ {
+    let fx = Tracked::new("rb");
+    // The frozen ae_emit_event's member order, as bash `ask` writes it.
+    let id = "ae-20260827T100000Z-0badf00d";
+    append_event(
+        &fx,
+        &format!(
+            r#"{{"ts":"2026-08-27T10:00:00Z","actor":"cl:lead","action":"ask","target":"cl:worker","ref":"{id}","actor_slot":"main","actor_session":"trrb","target_slot":"worker.0","target_session":"trrb","summary":"bash asked","body_file":"/nonexistent"}}"#
+        ),
+    );
+    let replied = fx.run(ae::cli::REPLY, Some(&fx.worker), &[id, "done"], &[]);
+    assert_eq!(replied, (Some(0), String::new(), String::new()));
+    assert_eq!(fx.stub().0, "cl:lead\n", "routed by the bash-stored slot");
+    assert!(
+        fx.events()[1].contains(&format!(
+            "\"actor\":\"cl:worker\",\"action\":\"reply\",\"target\":\"cl:lead\",\"ref\":\"{id}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trrb\",\"target_slot\":\"main\",\"target_session\":\"trrb\",\"summary\":\"done\""
+        )),
+        "{}",
+        fx.events()[1]
+    );
+    assert!(requests_all(&fx).contains("replied"));
+    // A follow-up is delivered and recorded, and said so — never refused.
+    fx.forget_stub();
+    let again = fx.run(ae::cli::REPLY, Some(&fx.worker), &[id, "and", "more"], &[]);
+    assert_eq!(
+        again,
+        (
+            Some(0),
+            String::new(),
+            format!(
+                "Note: request '{id}' already has a reply on file; delivering this one as a follow-up\n"
+            )
+        )
+    );
+    assert_eq!(fx.stub().1, format!("[{id}] and more"));
+    assert_eq!(fx.events().len(), 3);
+    // An asker with no pane — a bridge naming itself through
+    // AE_SENDER_OVERRIDE — is answered as the frozen send answers a sink:
+    // the event, nothing pasted, no body file.
+    let bridged = "ae-20260827T100001Z-0badf00e";
+    append_event(
+        &fx,
+        &format!(
+            r#"{{"ts":"2026-08-27T10:00:01Z","actor":"telegram:42","action":"ask","target":"cl:worker","ref":"{bridged}","target_slot":"worker.0","target_session":"trrb","summary":"from the bridge"}}"#
+        ),
+    );
+    fx.forget_stub();
+    let to_bridge = fx.run(ae::cli::REPLY, Some(&fx.worker), &[bridged, "hello"], &[]);
+    assert_eq!(to_bridge, (Some(0), String::new(), String::new()));
+    assert!(fx.stub().0.is_empty(), "nothing is pasted to a sink");
+    let last = fx.events().pop().unwrap_or_default();
+    assert!(
+        last.ends_with(&format!(
+            "\"actor\":\"cl:worker\",\"action\":\"reply\",\"target\":\"telegram:42\",\"ref\":\"{bridged}\",\"actor_slot\":\"worker.0\",\"actor_session\":\"trrb\",\"summary\":\"hello\"}}"
+        )),
+        "{last}"
+    );
+    assert!(requests_all(&fx).contains("from the bridge") || requests_all(&fx).contains("hello"));
 }

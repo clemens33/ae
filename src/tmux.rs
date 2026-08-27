@@ -480,6 +480,66 @@ pub fn agents_args(server: &ServerId, session: &str) -> Vec<String> {
     args
 }
 
+/// The roster the frozen `ae_slot_resolver` reads:
+/// `list-panes -s -t <session> -F '#{pane_id}|#{@ae_slot}|#{@ae_agent}'` —
+/// `|`, not tab, because the middle field is empty on an unstamped pane and
+/// tab is an IFS whitespace character there. The port splits exactly and
+/// keeps the frozen spelling.
+pub const SLOTS_FORMAT: &str = "#{pane_id}|#{@ae_slot}|#{@ae_agent}";
+
+/// The full argument list for that roster.
+#[must_use]
+pub fn slots_args(server: &ServerId, session: &str) -> Vec<String> {
+    let mut args = server_args(server);
+    args.extend(["list-panes", "-s", "-t", session, "-F", SLOTS_FORMAT].map(ToOwned::to_owned));
+    args
+}
+
+/// One pane of the slot roster: its id, its `@ae_slot` stamp and its
+/// `@ae_agent` stamp, each empty when unset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedSlot {
+    /// `#{pane_id}`.
+    pub pane: String,
+    /// `@ae_slot`, or empty.
+    pub slot: String,
+    /// `@ae_agent`, or empty.
+    pub agent: String,
+}
+
+/// What a completed slot-roster run means: `None` when the run failed (the
+/// frozen loop reads nothing from a `2>/dev/null` failure); otherwise every
+/// line split at its first two `|`, in the order tmux printed.
+///
+/// ```
+/// use ae::tmux::{ObservedSlot, interpret_slots};
+///
+/// let rows = interpret_slots(true, "%1|main|cl:lead\n%2||\n").unwrap();
+/// assert_eq!(rows[0], ObservedSlot { pane: "%1".into(), slot: "main".into(), agent: "cl:lead".into() });
+/// assert_eq!(rows[1], ObservedSlot { pane: "%2".into(), slot: String::new(), agent: String::new() });
+/// assert!(interpret_slots(false, "").is_none());
+/// ```
+#[must_use]
+pub fn interpret_slots(succeeded: bool, stdout: &str) -> Option<Vec<ObservedSlot>> {
+    if !succeeded {
+        return None;
+    }
+    Some(
+        stdout
+            .lines()
+            .map(|line| {
+                let (pane, rest) = line.split_once('|').unwrap_or((line, ""));
+                let (slot, agent) = rest.split_once('|').unwrap_or((rest, ""));
+                ObservedSlot {
+                    pane: pane.to_owned(),
+                    slot: slot.to_owned(),
+                    agent: agent.to_owned(),
+                }
+            })
+            .collect(),
+    )
+}
+
 /// One pane of the roster: its id and its `@ae_agent` stamp (empty when the
 /// pane is unstamped — the frozen loop reads such a line with an empty second
 /// field and matches nothing on it).
@@ -526,7 +586,7 @@ pub fn interpret_agents(succeeded: bool, stdout: &str) -> Option<Vec<ObservedAge
 mod tests {
     #[test]
     fn the_resolver_queries_are_the_frozen_ones() {
-        use super::{AGENTS_FORMAT, agents_args, has_session_args};
+        use super::{AGENTS_FORMAT, SLOTS_FORMAT, agents_args, has_session_args, slots_args};
         use crate::inventory::ServerId;
         assert_eq!(
             has_session_args(&ServerId::Ambient, "other"),
@@ -536,6 +596,11 @@ mod tests {
             agents_args(&ServerId::Ambient, "s"),
             ["list-panes", "-s", "-t", "s", "-F", AGENTS_FORMAT]
         );
+        assert_eq!(
+            slots_args(&ServerId::Ambient, "s"),
+            ["list-panes", "-s", "-t", "s", "-F", SLOTS_FORMAT]
+        );
+        assert_eq!(SLOTS_FORMAT, "#{pane_id}|#{@ae_slot}|#{@ae_agent}");
     }
 
     #[test]

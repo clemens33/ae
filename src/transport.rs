@@ -122,6 +122,14 @@ pub fn observe_agents(session: &str) -> Option<Vec<tmux::ObservedAgent>> {
     tmux::interpret_agents(succeeded, &stdout)
 }
 
+/// The slot roster of `session` on the AMBIENT server — the frozen
+/// `ae_slot_resolver`'s query — or `None` when the enumeration failed.
+#[must_use]
+pub fn observe_slots(session: &str) -> Option<Vec<tmux::ObservedSlot>> {
+    let (succeeded, stdout) = run(PROGRAM, &tmux::slots_args(&ServerId::Ambient, session));
+    tmux::interpret_slots(succeeded, &stdout)
+}
+
 /// What running the frozen `send` helper produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {

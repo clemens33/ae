@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.6"
+AE_VERSION="0.2.7"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -14458,7 +14458,13 @@ helper_review_main() {
 
 # reply:
 helper_reply_main() {
+    # The whole reply goes to the pinned Rust core (P2.5b): the argv, the body
+    # refusal, the request lookup, the slot-and-session check, the routing by
+    # stored slot, the paste through this session's internal `_send-deliver`
+    # entry and the reply event under the core's locked transaction. The body
+    # below is the fallback for a session with no usable core.
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    _ae_core_try _reply "$@" || true
     if [[ $# -lt 2 ]]; then
         echo "Usage: reply [--as <agent>] <request-id> <message>" >&2
         echo "  Reply to a logged ask/review request using its request id." >&2
@@ -18013,7 +18019,7 @@ REVIEWPROLOGUE
         cat <<'REPLYPROLOGUE'
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 REPLYPROLOGUE
-        declare -f helper_reply_main
+        declare -f _ae_core_complain _ae_core_try helper_reply_main
         printf 'helper_reply_main "$@"\n'
     } >"${AE_META}/reply.tmp.$$"
     chmod 0700 "${AE_META}/reply.tmp.$$"

@@ -563,7 +563,7 @@ const SEND_HELPER: &str = "send";
 /// recovery file and prints its path; never emits. Generated beside `send` by
 /// the same ae that bound this core, so a session whose helpers predate it is
 /// repaired by `ae doctor --refresh`.
-const DELIVER_HELPER: &str = "_send-deliver";
+pub(crate) const DELIVER_HELPER: &str = "_send-deliver";
 
 /// Run a tracked request end to end. `own_session` is the session the helper
 /// serves — the one source for the event's `actor_session`, the resolver's
@@ -684,7 +684,7 @@ pub fn run(
 
 /// The exit code a `send` run hands back: its own, verbatim; a helper that
 /// could not run at all is said so, at [`EXIT_FAILED`].
-fn delivery_code(
+pub(crate) fn delivery_code(
     delivery: &transport::Delivery,
     helper: &Path,
     action: &str,

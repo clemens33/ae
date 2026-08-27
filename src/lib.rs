@@ -78,6 +78,7 @@ pub mod listing;
 pub mod liveness;
 pub mod memo;
 pub mod meta;
+pub mod reply;
 pub mod requests;
 pub mod session;
 pub mod state;
@@ -375,20 +376,22 @@ fn run_memo(
 /// refuses `mine`/`inbox`. See the `requests` module docs for why this does not
 /// copy the frozen helper's fallback to the server's current pane.
 fn calling_viewer(dir: &std::path::Path) -> requests::Viewer {
+    calling_pane()
+        .map(|observed| requests::Viewer::from_pane(&observed, &own_session(dir)))
+        .unwrap_or_default()
+}
+
+/// The pane a helper was invoked from, observed on the ambient server —
+/// `None` for no `TMUX_PANE`, an empty one, or one the server does not answer
+/// for.
+fn calling_pane() -> Option<tmux::ObservedViewer> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the pane a helper was invoked from is TMUX_PANE, which tmux sets in every pane's environment — see clippy.toml"
     )]
     let pane = std::env::var_os("TMUX_PANE");
-    let Some(pane) = pane.filter(|value| !value.is_empty()) else {
-        return requests::Viewer::default();
-    };
-    let Some(pane) = pane.to_str() else {
-        return requests::Viewer::default();
-    };
-    transport::observe_viewer(pane)
-        .map(|observed| requests::Viewer::from_pane(&observed, &own_session(dir)))
-        .unwrap_or_default()
+    let pane = pane.filter(|value| !value.is_empty())?;
+    transport::observe_viewer(pane.to_str()?)
 }
 
 /// `session=` in `<dir>/meta` — what the frozen `_lib` reads into
@@ -570,6 +573,14 @@ pub fn run_with(
         cli::Request::Goal { dir, tail } => run_goal(dir, tail, out, err)?,
         cli::Request::Memo { dir, tail } => run_memo(dir, tail, out, err)?,
         cli::Request::Ask { dir, tail } => run_tracked(tracked::Kind::Ask, dir, tail, out, err)?,
+        cli::Request::Reply { dir, tail } => reply::run(
+            dir,
+            tail,
+            calling_pane().as_ref(),
+            &own_session(dir),
+            time::Timestamp::now(),
+            err,
+        )?,
         cli::Request::Review { dir, tail } => {
             run_tracked(tracked::Kind::Review, dir, tail, out, err)?
         }
