@@ -496,6 +496,12 @@ pub struct EventFields<'a> {
 
 /// One event line, `\n` included.
 ///
+/// The summary is rendered HERE, for the event's action, by
+/// [`crate::state::summary_for`] — flattened and capped at 200 characters for
+/// every action but `chat`, which keeps its lines and tabs under the 3500 cap —
+/// as `ae_emit_event`'s two arms render it. Callers hand the text raw; a
+/// summary rendered twice would flatten a chat that the first pass had kept.
+///
 /// ```
 /// use ae::time::Timestamp;
 /// use ae::tracked::{EventFields, event_line};
@@ -518,7 +524,7 @@ pub fn event_line(fields: &EventFields<'_>) -> String {
         ("actor", fields.actor.to_owned()),
         ("action", fields.action.to_owned()),
     ];
-    let summary = state::summary_of(fields.summary);
+    let summary = state::summary_for(fields.action, fields.summary);
     for (key, value) in [
         ("target", fields.target),
         ("ref", fields.reference),

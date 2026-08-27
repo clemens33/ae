@@ -45,6 +45,9 @@ pub const REVIEW: &str = "_review";
 /// The `reply` helper's surface — `_reply <meta-dir> [--as <agent>] <request-id> <message…>`.
 pub const REPLY: &str = "_reply";
 
+/// The `send` helper's surface — `_send <meta-dir> <target> <message…>`.
+pub const SEND: &str = "_send";
+
 /// What an argv asks the binary to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
@@ -106,6 +109,14 @@ pub enum Request {
     /// `_reply <meta-dir> [--as <agent>] <request-id> <message…>` — validated
     /// by [`crate::reply::parse`].
     Reply {
+        /// The session meta directory.
+        dir: std::path::PathBuf,
+        /// Everything after it, as typed.
+        tail: Vec<String>,
+    },
+    /// `_send <meta-dir> <target> <message…>` — validated by
+    /// [`crate::send::parse`].
+    Send {
         /// The session meta directory.
         dir: std::path::PathBuf,
         /// Everything after it, as typed.
@@ -252,6 +263,13 @@ impl Request {
                     tail: rest.to_vec(),
                 },
             },
+            Some(SEND) => match &args[1..] {
+                [] => Self::MissingOperand(SEND),
+                [dir, rest @ ..] => Self::Send {
+                    dir: PathBuf::from(dir),
+                    tail: rest.to_vec(),
+                },
+            },
             Some(MEMO) => match &args[1..] {
                 [] => Self::MissingOperand(MEMO),
                 [dir, rest @ ..] => Self::Memo {
@@ -330,6 +348,7 @@ impl Request {
             | Self::Ask { .. }
             | Self::Review { .. }
             | Self::Reply { .. }
+            | Self::Send { .. }
             | Self::EventsTail { .. } => None,
         }
     }
@@ -337,7 +356,7 @@ impl Request {
 
 #[cfg(test)]
 mod tests {
-    use super::{ASK, EVENTS_TAIL, GOAL, MEMO, REPLY, REQUESTS, REVIEW, Request, STATE};
+    use super::{ASK, EVENTS_TAIL, GOAL, MEMO, REPLY, REQUESTS, REVIEW, Request, SEND, STATE};
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
 
@@ -525,7 +544,17 @@ mod tests {
         // `_validate_session_name` forbids a leading underscore, so no legal
         // session name can reach these arms — a `requests`/`events-tail`
         // spelling would have taken two real names out of the launch grammar.
-        for spelling in [REQUESTS, EVENTS_TAIL, STATE, GOAL, MEMO, ASK, REVIEW, REPLY] {
+        for spelling in [
+            REQUESTS,
+            EVENTS_TAIL,
+            STATE,
+            GOAL,
+            MEMO,
+            ASK,
+            REVIEW,
+            REPLY,
+            SEND,
+        ] {
             assert!(spelling.starts_with('_'), "{spelling}");
             assert!(
                 !spelling.starts_with('-'),
@@ -572,7 +601,17 @@ mod tests {
 
     #[test]
     fn a_helper_surface_with_no_directory_is_a_missing_operand_at_two() {
-        for spelling in [REQUESTS, EVENTS_TAIL, STATE, GOAL, MEMO, ASK, REVIEW, REPLY] {
+        for spelling in [
+            REQUESTS,
+            EVENTS_TAIL,
+            STATE,
+            GOAL,
+            MEMO,
+            ASK,
+            REVIEW,
+            REPLY,
+            SEND,
+        ] {
             let request = Request::parse(&argv(&[spelling]));
             assert_eq!(request, Request::MissingOperand(spelling));
             assert_eq!(request.exit_code(), Some(2), "{spelling}");

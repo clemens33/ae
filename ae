@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.7"
+AE_VERSION="0.2.8"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -14386,8 +14386,18 @@ helper_send_body() {
 
 # The two entry points of the send body, and their finishers. A finisher gets
 # <logged-target> <ref> <msg>; the stored recovery file is _AE_LAST_BODY_FILE.
-# send: the public helper. It records, always.
+# send: the public helper. It records, always. The whole send goes to the
+# pinned Rust core first (P2.6): the argv, the body refusal, the event fields
+# read off THIS environment (AE_SENDER_OVERRIDE and the _AE_EVENT_* members —
+# the frozen contract every caller of this helper writes), target resolution,
+# the paste through this session's internal `_send-deliver` entry and the one
+# event under the core's locked transaction. The shim execs the core, so a core
+# that delivered and then could not record exits with that gap and no bash
+# body remains to deliver again. The body below is the fallback for a session
+# with no usable core (or AE_CORE= set), and it finishes here.
 helper_send_main() {
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    _ae_core_try _send "$@" || true
     local _ae_send_finish=helper_send_finish_event
     helper_send_body "$@"
 }
@@ -17968,7 +17978,7 @@ LIBPROLOGUE
         cat <<'SENDPROLOGUE'
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 SENDPROLOGUE
-        declare -f helper_send_body helper_send_finish_event helper_send_main
+        declare -f _ae_core_complain _ae_core_try helper_send_body helper_send_finish_event helper_send_main
         printf 'helper_send_main "$@"\n'
     } >"${AE_META}/send.tmp.$$"
     chmod 0700 "${AE_META}/send.tmp.$$"

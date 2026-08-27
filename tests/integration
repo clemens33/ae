@@ -736,6 +736,7 @@ case "\$1" in
     _ask) echo "CORE_TOKEN_9f3a ask=\${3:-none} body=\${4:-none}" ;;
     _review) echo "CORE_TOKEN_9f3a review=\${3:-none} body=\${4:-none}" ;;
     _reply) echo "CORE_TOKEN_9f3a reply=\${3:-none} body=\${4:-none}" ;;
+    _send) echo "CORE_TOKEN_9f3a send=\${3:-none} body=\${4:-none}" ;;
     *) exit 64 ;;
 esac
 EOF
@@ -820,6 +821,12 @@ _cb_out="$("$_cb_meta/reply" ae-20260101T000000Z-deadbeef "the answer" 2>/dev/nu
 assert_contains "core binding: reply reaches the core with id and body" "CORE_TOKEN_9f3a reply=ae-20260101T000000Z-deadbeef body=the answer" "$_cb_out"
 _cb_out="$(AE_CORE="" "$_cb_meta/reply" 2>&1 >/dev/null || true)"
 assert_contains "core binding: reply falls back to the bash body" "Usage: reply" "$_cb_out"
+# SEND (P2.6): the public chokepoint itself — target and body verbatim; the
+# bash body stays reachable under AE_CORE= (the escape every caller inherits).
+_cb_out="$("$_cb_meta/send" dummy "the message" 2>/dev/null || true)"
+assert_contains "core binding: send reaches the core with target and body" "CORE_TOKEN_9f3a send=dummy body=the message" "$_cb_out"
+_cb_out="$(AE_CORE="" "$_cb_meta/send" 2>&1 >/dev/null || true)"
+assert_contains "core binding: send falls back to the bash body" "Usage: send" "$_cb_out"
 _cb_out="$(AE_CORE="" "$_cb_meta/ask" 2>&1 >/dev/null || true)"
 assert_contains "core binding: ask falls back to the bash body" "Usage: ask" "$_cb_out"
 assert_eq "core binding: and not to the core" "0" \

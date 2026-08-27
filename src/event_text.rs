@@ -81,7 +81,8 @@ pub fn read_container(path: &std::path::Path) -> Vec<u8> {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the opaque event-container read shared by the helper \
-                  read surfaces — see clippy.toml"
+                  read surfaces, and by `send` for a delivery's recovery \
+                  record — see clippy.toml"
     )]
     let body = std::fs::read(path);
     body.unwrap_or_default()

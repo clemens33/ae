@@ -64,6 +64,10 @@ const LOCK_POLL: Duration = Duration::from_millis(20);
 /// under a UTF-8 locale, and so does this.
 pub const SUMMARY_CAP: usize = 200;
 
+/// `ae_emit_event`'s chat arm: a `chat` event's summary keeps its newlines and
+/// tabs and is capped at this many characters, not [`SUMMARY_CAP`].
+pub const CHAT_SUMMARY_CAP: usize = 3500;
+
 /// The four states, exactly as the helper spells them.
 pub const VALUES: [&str; 4] = ["working", "waiting-user", "blocked", "done"];
 
@@ -282,6 +286,23 @@ pub fn summary_of(reason: &str) -> String {
         .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
         .take(SUMMARY_CAP)
         .collect()
+}
+
+/// The summary as the frozen emitter renders it FOR THIS ACTION — both of
+/// `ae_emit_event`'s arms. `chat` keeps its newlines and tabs and is capped at
+/// [`CHAT_SUMMARY_CAP`] characters (a `say` line is a paragraph, not a label);
+/// every other action is [`summary_of`], flattened and capped at
+/// [`SUMMARY_CAP`]. The action is whatever the caller's `_AE_EVENT_ACTION`
+/// made it, so a `send` run under `_AE_EVENT_ACTION=chat` takes the chat arm
+/// exactly as the bash finisher did. Both cuts land on a character boundary by
+/// construction.
+#[must_use]
+pub fn summary_for(action: &str, text: &str) -> String {
+    if action == "chat" {
+        text.chars().take(CHAT_SUMMARY_CAP).collect()
+    } else {
+        summary_of(text)
+    }
 }
 
 /// One event line, `\n` included, in the frozen emitter's shape and order:
@@ -539,8 +560,9 @@ fn commit(sink: &mut impl Sink, bytes: &[u8]) -> io::Result<()> {
 )]
 mod tests {
     use super::{
-        Command, Declaration, Failure, LOCK_WAIT, Latest, SUMMARY_CAP, Sink, USAGE, Usage, acquire,
-        commit, declare, event_body, event_line, latest, parse, read, read_line, summary_of,
+        CHAT_SUMMARY_CAP, Command, Declaration, Failure, LOCK_WAIT, Latest, SUMMARY_CAP, Sink,
+        USAGE, Usage, acquire, commit, declare, event_body, event_line, latest, parse, read,
+        read_line, summary_for, summary_of,
     };
     use crate::requests::Viewer;
     use crate::time::Timestamp;
@@ -610,6 +632,28 @@ mod tests {
         let capped = summary_of(&long);
         assert_eq!(capped.chars().count(), SUMMARY_CAP);
         assert_eq!(capped.len(), SUMMARY_CAP * 2, "cut on a character boundary");
+    }
+
+    #[test]
+    fn the_chat_arm_keeps_lines_and_tabs_and_caps_at_its_own_length() {
+        assert_eq!(summary_for("chat", "a\nb\tc"), "a\nb\tc");
+        assert_eq!(
+            summary_for("send", "a\nb\tc"),
+            "a b c",
+            "every other action is the flattened arm"
+        );
+        assert_eq!(
+            summary_for("say", &"x".repeat(250)).len(),
+            SUMMARY_CAP,
+            "the literal action chat, nothing that resembles it"
+        );
+        let long: String = "é\n".repeat(CHAT_SUMMARY_CAP);
+        let capped = summary_for("chat", &long);
+        assert_eq!(capped.chars().count(), CHAT_SUMMARY_CAP);
+        assert!(
+            capped.ends_with("é\n"),
+            "cut on a character boundary, lines kept"
+        );
     }
 
     #[test]

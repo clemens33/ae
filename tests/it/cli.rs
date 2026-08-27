@@ -1340,7 +1340,11 @@ rc="${STUB_SEND_RC:-0}"
 if [[ "$rc" != 0 ]]; then echo "stub send: refused" >&2; exit "$rc"; fi
 mkdir -p "$here/messages"
 f="$here/messages/${_AE_EVENT_REF:-msg}.${_AE_EVENT_ACTION:-send}.stub.txt"
-printf '%s' "$2" >"$f"
+case "${STUB_RECORD:-framed}" in
+    none) f="" ;;
+    dir) mkdir -p "$f" ;;
+    *) printf '%s\n%s' "⟦ae:msg from stub⟧" "$2" >"$f" ;;
+esac
 [[ "$me" == _send-deliver ]] && printf '%s\n' "$f"
 exit 0
 "#;
@@ -1381,6 +1385,7 @@ exit 0
             .env("TMUX", format!("{},0,0", self.sock.display()))
             .env_remove("AE_SENDER_OVERRIDE")
             .env_remove("STUB_SEND_RC")
+            .env_remove("STUB_RECORD")
             .arg(sub)
             .arg(&self.dir)
             .args(tail);
@@ -1516,8 +1521,8 @@ fn ask_composes_the_frozen_message_delivers_through_send_and_writes_the_slotted_
     assert!(events[0].starts_with("{\"ts\":\""), "{}", events[0]);
     assert_eq!(
         std::fs::read_to_string(&body_file).unwrap(),
-        message,
-        "the event points at the stored delivered text"
+        format!("⟦ae:msg from stub⟧\n{message}"),
+        "the event points at the stored delivered text (the stub frames as the entry does)"
     );
     // And the core's own requests surface reads it back as pending.
     let listed = fx.run(ae::cli::REQUESTS, Some(&fx.main), &["all"], &[]);
@@ -1816,7 +1821,7 @@ fn reply_routes_to_the_asker_by_stored_slot_records_the_frozen_event_and_closes_
     );
     assert_eq!(
         std::fs::read_to_string(&body_file).unwrap_or_default(),
-        message,
+        format!("⟦ae:msg from stub⟧\n{message}"),
         "the reply keeps its own recovery file"
     );
     let view = requests_all(&fx);
@@ -2087,4 +2092,348 @@ fn a_bash_shaped_request_is_consumed_a_pane_less_asker_is_answered_event_only_an
         "{last}"
     );
     assert!(requests_all(&fx).contains("from the bridge") || requests_all(&fx).contains("hello"));
+}
+
+// ---- the public send ------------------------------------------------------
+
+#[test]
+fn send_pastes_through_the_entry_and_records_the_one_frozen_event() {
+    let fx = Tracked::new("sp");
+    let sent = fx.run(
+        ae::cli::SEND,
+        Some(&fx.main),
+        &["worker", "hello", "there"],
+        &[],
+    );
+    assert_eq!(sent, (Some(0), String::new(), String::new()));
+    let (target, message, env) = fx.stub();
+    assert_eq!(fx.stub_helper(), "_send-deliver\n");
+    assert_eq!(
+        (target.as_str(), message.as_str()),
+        ("cl:worker\n", "hello there")
+    );
+    assert_eq!(
+        env, "_AE_EVENT_ACTION=send\n",
+        "no ref, no override: nothing invented"
+    );
+    let events = fx.events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    let body_file = fx.dir.join("messages").join("msg.send.stub.txt");
+    assert!(
+        events[0].ends_with(&format!(
+            "\"actor\":\"cl:lead\",\"action\":\"send\",\"target\":\"cl:worker\",\"summary\":\"⟦ae:msg from stub⟧ hello there\",\"body_file\":\"{}\"}}",
+            body_file.display()
+        )),
+        "a plain send carries no routing members, as the frozen emitter writes it: {}",
+        events[0]
+    );
+    // A request id in the text is the event's ref and names the recovery file.
+    fx.forget_stub();
+    let noted = fx.run(
+        ae::cli::SEND,
+        Some(&fx.main),
+        &["worker", "[ae-1]", "noted"],
+        &[],
+    );
+    assert_eq!(noted, (Some(0), String::new(), String::new()));
+    assert_eq!(fx.stub().2, "_AE_EVENT_ACTION=send\n_AE_EVENT_REF=ae-1\n");
+    let last = fx.events().pop().unwrap_or_default();
+    assert!(
+        last.contains("\"action\":\"send\",\"target\":\"cl:worker\",\"ref\":\"ae-1\",\"summary\":\"⟦ae:msg from stub⟧ [ae-1] noted\",\"body_file\":")
+            && last.contains("ae-1.send.stub.txt"),
+        "{last}"
+    );
+    // A pane id resolves to that pane's stamp, as the frozen ae_resolve reads
+    // it back: the event names the agent, and so does what the entry is handed.
+    fx.forget_stub();
+    let by_id = fx.run(
+        ae::cli::SEND,
+        Some(&fx.main),
+        &[&fx.worker, "by", "id"],
+        &[],
+    );
+    assert_eq!(by_id, (Some(0), String::new(), String::new()));
+    assert_eq!(fx.stub().0, "cl:worker\n");
+    let last = fx.events().pop().unwrap_or_default();
+    assert!(last.contains("\"target\":\"cl:worker\""), "{last}");
+    // The cross-session spelling of this session resolves, and the event
+    // names what the entry was handed.
+    fx.forget_stub();
+    let spelled = fx.run(
+        ae::cli::SEND,
+        Some(&fx.main),
+        &["@trsp:cl:worker", "hi"],
+        &[],
+    );
+    assert_eq!(spelled, (Some(0), String::new(), String::new()));
+    let handed = fx.stub().0;
+    assert!(!handed.is_empty(), "the entry was run");
+    let last = fx.events().pop().unwrap_or_default();
+    assert!(
+        last.contains(&format!("\"target\":\"{}\"", handed.trim_end())),
+        "{last} vs {handed}"
+    );
+}
+
+#[test]
+fn send_carries_the_frozen_event_fields_from_the_environment_and_the_override_to_the_envelope() {
+    let fx = Tracked::new("ss");
+    // The shape `ae cancel` execs the helper under.
+    let cancel = fx.run(
+        ae::cli::SEND,
+        Some(&fx.main),
+        &["worker", "withdrawn:", "--digest-only"],
+        &[
+            ("AE_SENDER_OVERRIDE", "cl:lead"),
+            ("_AE_EVENT_ACTION", "cancel"),
+            ("_AE_EVENT_REF", "ae-9"),
+            ("_AE_EVENT_SUMMARY", "withdrawn"),
+            ("_AE_EVENT_ACTOR_SLOT", "main"),
+            ("_AE_EVENT_ACTOR_SESSION", "trss"),
+            ("_AE_EVENT_TARGET_SLOT", "worker.0"),
+            ("_AE_EVENT_TARGET_SESSION", "trss"),
+        ],
+    );
+    assert_eq!(cancel, (Some(0), String::new(), String::new()));
+    let (target, message, env) = fx.stub();
+    assert_eq!(
+        (target.as_str(), message.as_str()),
+        ("cl:worker\n", "withdrawn: --digest-only")
+    );
+    assert_eq!(
+        env, "AE_SENDER_OVERRIDE=cl:lead\n_AE_EVENT_ACTION=cancel\n_AE_EVENT_REF=ae-9\n",
+        "the explicit override rides to the envelope; the action and ref name the file"
+    );
+    let events = fx.events();
+    let body_file = fx.dir.join("messages").join("ae-9.cancel.stub.txt");
+    assert!(
+        events[0].ends_with(&format!(
+            "\"actor\":\"cl:lead\",\"action\":\"cancel\",\"target\":\"cl:worker\",\"ref\":\"ae-9\",\"actor_slot\":\"main\",\"actor_session\":\"trss\",\"target_slot\":\"worker.0\",\"target_session\":\"trss\",\"summary\":\"withdrawn\",\"body_file\":\"{}\"}}",
+            body_file.display()
+        )),
+        "{}",
+        events[0]
+    );
+    // A pane-less caller naming itself, as the telegram bridge does.
+    fx.forget_stub();
+    let bridged = fx.run(
+        ae::cli::SEND,
+        None,
+        &["worker", "from", "the", "bridge"],
+        &[("AE_SENDER_OVERRIDE", "telegram:42")],
+    );
+    assert_eq!(bridged, (Some(0), String::new(), String::new()));
+    assert_eq!(
+        fx.stub().2,
+        "AE_SENDER_OVERRIDE=telegram:42\n_AE_EVENT_ACTION=send\n"
+    );
+    let last = fx.events().pop().unwrap_or_default();
+    assert!(
+        last.contains("\"actor\":\"telegram:42\",\"action\":\"send\",\"target\":\"cl:worker\",\"summary\":\"⟦ae:msg from stub⟧ from the bridge\""),
+        "{last}"
+    );
+    // A pane-less caller with no name is `human`, and hands the entry no name.
+    fx.forget_stub();
+    let nobody = fx.run(ae::cli::SEND, None, &["worker", "anon"], &[]);
+    assert_eq!(nobody, (Some(0), String::new(), String::new()));
+    assert_eq!(fx.stub().2, "_AE_EVENT_ACTION=send\n");
+    let last = fx.events().pop().unwrap_or_default();
+    assert!(
+        last.contains("\"actor\":\"human\",\"action\":\"send\""),
+        "{last}"
+    );
+}
+
+#[test]
+fn send_refuses_exactly_records_nothing_on_a_failed_delivery_and_names_the_gap_after_a_confirmed_one()
+ {
+    let fx = Tracked::new("sr");
+    let cases: Vec<ReplyCase<'_>> = vec![
+        (Some(&fx.main), vec![], Some(2), ae::send::USAGE.to_owned()),
+        (
+            Some(&fx.main),
+            vec!["worker"],
+            Some(2),
+            ae::send::USAGE.to_owned(),
+        ),
+        (
+            Some(&fx.main),
+            vec!["worker", "  "],
+            Some(1),
+            ae::tracked::refusal("send"),
+        ),
+        (
+            Some(&fx.main),
+            vec!["nobody", "x"],
+            Some(1),
+            "Error: agent 'nobody' not found in session 'trsr'\n".to_owned(),
+        ),
+    ];
+    for (pane, tail, code, stderr) in cases {
+        fx.forget_stub();
+        let out = fx.run(ae::cli::SEND, pane, &tail, &[]);
+        assert_eq!(out, (code, String::new(), stderr), "{tail:?}");
+        assert!(fx.stub().0.is_empty(), "{tail:?}: something was pasted");
+        assert!(fx.events().is_empty(), "{tail:?}: an event was written");
+    }
+    // A refused paste: the entry's status, verbatim, and nothing recorded.
+    fx.forget_stub();
+    let refused = fx.run(
+        ae::cli::SEND,
+        Some(&fx.main),
+        &["worker", "late"],
+        &[("STUB_SEND_RC", "3")],
+    );
+    assert_eq!(refused.0, Some(3), "{refused:?}");
+    assert!(fx.events().is_empty());
+    // An external sink: the event, nothing pasted, no body file.
+    fx.forget_stub();
+    let sink = fx.run(ae::cli::SEND, Some(&fx.main), &["telegram:42", "hi"], &[]);
+    assert_eq!(sink, (Some(0), String::new(), String::new()));
+    assert!(fx.stub().0.is_empty());
+    let last = fx.events().pop().unwrap_or_default();
+    assert!(
+        last.ends_with("\"actor\":\"cl:lead\",\"action\":\"send\",\"target\":\"telegram:42\",\"summary\":\"hi\"}"),
+        "{last}"
+    );
+    // The entry missing: said so, at 1, naming it.
+    let bare = fx.scratch_dir.join("sessions").join("bare");
+    std::fs::create_dir_all(&bare).expect("a session dir");
+    std::fs::write(bare.join("meta"), "session=bare\n").expect("a meta file");
+    let out = ae()
+        .env("TMUX", format!("{},0,0", fx.sock.display()))
+        .env("TMUX_PANE", &fx.main)
+        .arg(ae::cli::SEND)
+        .arg(&bare)
+        .args([&fx.main, "q"])
+        .output()
+        .expect("the ae binary should run");
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("send not delivered: could not run")
+            && String::from_utf8_lossy(&out.stderr).contains("_send-deliver"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_confirmed_delivery_whose_event_cannot_be_written_is_reported_as_that_gap() {
+    let fx = Tracked::new("sg");
+    // A ledger that cannot be appended to: a directory in its place.
+    std::fs::create_dir_all(fx.dir.join("events.jsonl"))
+        .expect("a directory in the ledger's place");
+    let gap = fx.run(ae::cli::SEND, Some(&fx.main), &["worker", "delivered"], &[]);
+    assert_eq!(gap.0, Some(1), "{gap:?}");
+    assert!(
+        gap.2
+            .starts_with("ae: send to cl:worker was delivered but its event was not emitted: "),
+        "{gap:?}"
+    );
+    assert_eq!(
+        fx.stub().1,
+        "delivered",
+        "the paste happened, once, before the gap"
+    );
+}
+
+/// Without a readable recovery record the summary is of the message as typed,
+/// stderr says so, and the delivered message is still recorded (`STUB_RECORD`
+/// makes the stub store nothing, or an unreadable directory, where the real
+/// entry stores the framed text).
+#[test]
+fn a_send_without_a_readable_record_summarises_the_message_as_typed_and_says_so() {
+    let fx = Tracked::new("snr");
+    let none = fx.run(
+        ae::cli::SEND,
+        Some(&fx.main),
+        &["worker", "as", "typed"],
+        &[("STUB_RECORD", "none")],
+    );
+    assert_eq!(
+        none,
+        (
+            Some(0),
+            String::new(),
+            "ae: send to cl:worker: no recovery record was written; the summary is of the message as typed\n".into()
+        )
+    );
+    let events = fx.events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(
+        events[0].ends_with(
+            "\"actor\":\"cl:lead\",\"action\":\"send\",\"target\":\"cl:worker\",\"summary\":\"as typed\"}"
+        ),
+        "no record, no body_file: {}",
+        events[0]
+    );
+    fx.forget_stub();
+    let unreadable = fx.run(
+        ae::cli::SEND,
+        Some(&fx.main),
+        &["worker", "as", "typed"],
+        &[("STUB_RECORD", "dir")],
+    );
+    let record = fx.dir.join("messages").join("msg.send.stub.txt");
+    assert_eq!(unreadable.0, Some(0));
+    assert!(unreadable.1.is_empty());
+    assert_eq!(
+        unreadable.2,
+        format!(
+            "ae: send to cl:worker: recovery record {} could not be read; the summary is of the message as typed\n",
+            record.display()
+        )
+    );
+    let last = fx.events().pop().unwrap_or_default();
+    assert!(
+        last.ends_with(&format!(
+            "\"summary\":\"as typed\",\"body_file\":\"{}\"}}",
+            record.display()
+        )),
+        "the unreadable record is still the pointer: {last}"
+    );
+}
+
+/// `_AE_EVENT_ACTION=chat` takes the frozen emitter's chat arm on both paths:
+/// the summary keeps its newlines and tabs and is capped at 3500 characters,
+/// neither flattened nor cut at 200 — on the pane path the record's envelope
+/// line stays a line of its own.
+#[test]
+fn a_chat_send_keeps_its_lines_and_its_own_cap_on_the_pane_and_at_the_sink() {
+    let fx = Tracked::new("chat");
+    let line = "x".repeat(120);
+    let payload = format!("first {line}\nsecond\tline {line}\nthird");
+    let pane = fx.run(
+        ae::cli::SEND,
+        Some(&fx.main),
+        &["worker", payload.as_str()],
+        &[("_AE_EVENT_ACTION", "chat")],
+    );
+    assert_eq!(pane, (Some(0), String::new(), String::new()));
+    let events = fx.events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    let expected = format!(
+        "\"action\":\"chat\",\"target\":\"cl:worker\",\"summary\":\"⟦ae:msg from stub⟧\\nfirst {line}\\nsecond\\tline {line}\\nthird\",\"body_file\":"
+    );
+    assert!(events[0].contains(&expected), "{}", events[0]);
+    fx.forget_stub();
+    let over = format!("{payload}\n{}", "y".repeat(3600));
+    let sink = fx.run(
+        ae::cli::SEND,
+        Some(&fx.main),
+        &["telegram:42", over.as_str()],
+        &[("_AE_EVENT_ACTION", "chat")],
+    );
+    assert_eq!(sink, (Some(0), String::new(), String::new()));
+    assert!(fx.stub().0.is_empty(), "a sink pastes nothing");
+    let last = fx.events().pop().unwrap_or_default();
+    let kept = 3500 - payload.chars().count() - 1;
+    let expected = format!(
+        "\"actor\":\"cl:lead\",\"action\":\"chat\",\"target\":\"telegram:42\",\"summary\":\"first {line}\\nsecond\\tline {line}\\nthird\\n{}\"}}",
+        "y".repeat(kept)
+    );
+    assert!(
+        last.ends_with(&expected),
+        "3500 characters, lines kept: {}…",
+        &last[..last.len().min(160)]
+    );
 }

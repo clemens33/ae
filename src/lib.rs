@@ -80,6 +80,7 @@ pub mod memo;
 pub mod meta;
 pub mod reply;
 pub mod requests;
+pub mod send;
 pub mod session;
 pub mod state;
 pub mod time;
@@ -321,6 +322,32 @@ fn sender_override() -> Option<String> {
     let raw = std::env::var_os("AE_SENDER_OVERRIDE");
     raw.filter(|value| !value.is_empty())
         .map(|value| value.to_string_lossy().into_owned())
+}
+
+/// The frozen event-field contract of the send body, read off this process's
+/// environment exactly where `ae_emit_event` and `helper_send_body` read it:
+/// `AE_SENDER_OVERRIDE` and the seven `_AE_EVENT_*` members, an unset or
+/// empty variable being none. One door, one reading.
+fn send_env() -> send::Env {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: the frozen _AE_EVENT_*/AE_SENDER_OVERRIDE contract every caller of the send helper writes — see clippy.toml"
+    )]
+    let read = |name: &str| {
+        std::env::var_os(name)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string_lossy().into_owned())
+    };
+    send::Env {
+        sender_override: read("AE_SENDER_OVERRIDE"),
+        action: read("_AE_EVENT_ACTION"),
+        reference: read("_AE_EVENT_REF"),
+        summary: read("_AE_EVENT_SUMMARY"),
+        actor_slot: read("_AE_EVENT_ACTOR_SLOT").unwrap_or_default(),
+        actor_session: read("_AE_EVENT_ACTOR_SESSION").unwrap_or_default(),
+        target_slot: read("_AE_EVENT_TARGET_SLOT").unwrap_or_default(),
+        target_session: read("_AE_EVENT_TARGET_SESSION").unwrap_or_default(),
+    }
 }
 
 /// Sixty-four bits nobody chose: `RandomState` is seeded from the OS per
@@ -573,6 +600,15 @@ pub fn run_with(
         cli::Request::Goal { dir, tail } => run_goal(dir, tail, out, err)?,
         cli::Request::Memo { dir, tail } => run_memo(dir, tail, out, err)?,
         cli::Request::Ask { dir, tail } => run_tracked(tracked::Kind::Ask, dir, tail, out, err)?,
+        cli::Request::Send { dir, tail } => send::run(
+            dir,
+            tail,
+            &send_env(),
+            &calling_viewer(dir).display,
+            &own_session(dir),
+            time::Timestamp::now(),
+            err,
+        )?,
         cli::Request::Reply { dir, tail } => reply::run(
             dir,
             tail,
