@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.11"
+AE_VERSION="0.2.12"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -8289,19 +8289,42 @@ _end_archive_step() { # <session> <push-outcome> <push-ref> <preserved> <workdir
             return 0
             ;;
     esac
-    local base="-" final="-" range="-" count="-"
-    if [[ "$g_out" != "not-managed" ]]; then
-        base="$(_ar_meta_get "${dir}/meta" git_base_commit)"
-        [[ -n "$base" ]] || base="-"
-        final="$(_ar_git_head "$wdir")"
-        IFS=$'\t' read -r range count < <(_ar_git_range "$wdir" "$base" "$final")
-    fi
-    local out path files bytes
-    out="$(_ar_publish "$dir" "$aid" "$base" "$final" "$range" "$count" "$g_out" "$g_ref" "$preserved")" || {
-        echo "Error: archiving session '${name}' failed — the session is STOPPED and NOTHING was deleted." >&2
-        echo "  Fix the cause reported above, then re-run: ae end ${name}" >&2
-        return 1
-    }
+    # P3.3: the Rust core publishes the archive — atomic claim, coherent locked
+    # snapshot, durable staged rename — and derives the commit facts itself
+    # (typed Git) from the operation facts Bash owns. Bash captures the core's
+    # `path\tfiles\tbytes` line and prints the same summary below. The archive
+    # instant is Bash's (std cannot format one without a time dependency) and the
+    # core validates its shape. `--capture` returns 125 when the core is UNBOUND,
+    # unusable, or forced off with AE_CORE=; then the reference bash body
+    # publishes, computing the git facts it needs here. A core that RAN and
+    # FAILED returns its own non-125 code — a real archive failure, never a
+    # reason to double-publish, so it stands and `ae end` stops with nothing
+    # deleted.
+    local out path files bytes at rc=0
+    at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    out="$(META_DIR="$dir" _ae_core_try --capture _archive-publish "$g_out" "$g_ref" "$preserved" "$wdir" "$at")" || rc=$?
+    case "$rc" in
+        0) : ;;
+        125)
+            local base="-" final="-" range="-" count="-"
+            if [[ "$g_out" != "not-managed" ]]; then
+                base="$(_ar_meta_get "${dir}/meta" git_base_commit)"
+                [[ -n "$base" ]] || base="-"
+                final="$(_ar_git_head "$wdir")"
+                IFS=$'\t' read -r range count < <(_ar_git_range "$wdir" "$base" "$final")
+            fi
+            out="$(_ar_publish "$dir" "$aid" "$base" "$final" "$range" "$count" "$g_out" "$g_ref" "$preserved")" || {
+                echo "Error: archiving session '${name}' failed — the session is STOPPED and NOTHING was deleted." >&2
+                echo "  Fix the cause reported above, then re-run: ae end ${name}" >&2
+                return 1
+            }
+            ;;
+        *)
+            echo "Error: archiving session '${name}' failed — the session is STOPPED and NOTHING was deleted." >&2
+            echo "  Fix the cause reported above, then re-run: ae end ${name}" >&2
+            return 1
+            ;;
+    esac
     IFS=$'\t' read -r path files bytes <<<"$out"
     echo "Archived ${aid}"
     echo "  ${path}"
@@ -14611,48 +14634,68 @@ _ae_core_complain() {
 # binary at that path can be replaced under a long-lived session, and running a
 # core that is not the pinned one is exactly the silent-drift failure the pair
 # exists to prevent.
-_ae_core_try() { # [--quiet] <subcommand> [args...]
+_ae_core_try() { # [--quiet] [--capture] <subcommand> [args...]
     # --quiet: fall back WITHOUT the once-per-session complaint. For a helper
     # whose stderr nobody reads — the monitor pane's events-tail — because the
     # complaint is spent ONCE per session (the .ae_core_unusable marker), and a
     # hidden pane that spends it leaves the next helper the operator actually
     # runs with nothing to say. The fallback itself is unchanged.
-    local quiet=0
-    if [[ "${1:-}" == "--quiet" ]]; then
-        quiet=1
-        shift
-    fi
+    # --capture: RUN the core as a subprocess and return its exit code, instead
+    # of exec-replacing this process. For a core call that is a STEP inside a
+    # larger bash flow (the archive publish inside `ae end`), which must read the
+    # core's stdout and carry on. A capture caller has to tell "core not
+    # attempted, fall back to bash" from "core ran and genuinely failed": the
+    # former returns 125 — a code the core itself never emits, it uses only
+    # 0/1/2 — and the latter returns the core's own code. In exec mode the
+    # not-attempted code is 1 and the tail exec never returns, both unchanged.
+    local quiet=0 capture=0
+    while [[ "${1:-}" == --* ]]; do
+        case "$1" in
+            --quiet) quiet=1; shift ;;
+            --capture) capture=1; shift ;;
+            *) break ;;
+        esac
+    done
     local sub="$1"
     shift
+    local notrun=1
+    ((capture)) && notrun=125
     # AE_CORE explicitly EMPTY forces the bash body for this one invocation.
     # Set-but-empty is the signal; unset means "no opinion", not "off".
     if [[ -n "${AE_CORE+set}" && -z "${AE_CORE:-}" ]]; then
-        return 1
+        return "$notrun"
     fi
     local bin ver actual
     bin="$(grep '^ae_core=' "${META_DIR}/meta" 2>/dev/null | cut -d= -f2- || true)"
     ver="$(grep '^ae_core_version=' "${META_DIR}/meta" 2>/dev/null | cut -d= -f2- || true)"
     # Absent or blank binding: the ordinary un-configured session. Silent.
-    [[ -n "$bin" ]] || return 1
+    [[ -n "$bin" ]] || return "$notrun"
     # A path with no version is the shape _ae_core_bind publishes for operator
     # input it could not use. Configured-but-unusable is worth one line; blank
     # config is not.
     if [[ -z "$ver" ]]; then
         ((quiet)) || _ae_core_complain "the configured core could not be bound when this session was created or refreshed: ${bin}"
-        return 1
+        return "$notrun"
     fi
     if [[ ! -x "$bin" ]]; then
         ((quiet)) || _ae_core_complain "the configured core is missing or not executable: ${bin}"
-        return 1
+        return "$notrun"
     fi
     actual="$("$bin" --version 2>/dev/null | head -1 || true)"
     actual="${actual##* }"
     if [[ "$actual" != "$ver" ]]; then
         ((quiet)) || _ae_core_complain "core version mismatch: this session pins ${ver}, ${bin} reports ${actual:-nothing}"
-        return 1
+        return "$notrun"
     fi
     # TMUX_PANE and the rest of the environment pass through untouched: the core
     # derives the acting agent from the pane it was invoked in.
+    if ((capture)); then
+        # Capture the core's own exit code explicitly — a bare call would let
+        # errexit abort this function on a non-zero core before `return` runs.
+        local crc=0
+        "$bin" "$sub" "$META_DIR" "$@" || crc=$?
+        return "$crc"
+    fi
     exec "$bin" "$sub" "$META_DIR" "$@"
 }
 

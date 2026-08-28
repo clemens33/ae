@@ -11925,7 +11925,7 @@ assert_eq "digest: a minted id is disclosed to the reader, not just to a parser"
          | grep -c 'minted when the session was archived' | tr -d '[:space:]')"
 
 # ── end: the archive step, on a session that has no id and on one ae cannot parse ──
-eval "$(awk '/^(_end_archive_step|set_session_meta_value|set_session_meta_values|gen_uuid)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^(_end_archive_step|_ae_core_try|_ae_core_complain|set_session_meta_value|set_session_meta_values|gen_uuid)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 _ar48_step() { # <session_id value or empty> -> rc|session-still-there|archives
     local home="$_ar48_root/step.$RANDOM"
     mkdir -p "$home/sessions/legacy"
@@ -12390,7 +12390,7 @@ assert_eq "from-preflight: an archive being published or purged right now is ref
        _rc=$?; rmdir "$_ar48_pub_home/archive/.publishing.ae3aa692-e177-4798-9ba0-d14e0d084061"; echo "$_rc")"
 
 # ── review round 2: the destructive path, five ways it was still wrong ───────────
-eval "$(awk '/^(_end_plan_line|_end_freeze_plan|_end_archive_step|set_session_meta_value|set_session_meta_values|gen_uuid)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^(_end_plan_line|_end_freeze_plan|_end_archive_step|_ae_core_try|_ae_core_complain|set_session_meta_value|set_session_meta_values|gen_uuid)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 
 # (B1) A CORRUPT ID IS A REFUSAL WHICHEVER WAY THE HISTORY FLAG POINTS. The purge branch
 # used to run first, so `--purge-history` on an unparseable id reported "this session

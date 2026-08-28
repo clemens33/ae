@@ -5258,6 +5258,83 @@ rm -rf "$HOME/.ae/archive/.publishing.11111111-2222-3333-4444-555555555555"
 "$AE" end -f --keep-history arch-dup >/dev/null 2>&1 || true
 fi
 
+# ── #48 P3.3: archive publish routes through the pinned core; AE_CORE= falls back ──
+if _itest_section '#48 P3.3: archive publish routes through the core, AE_CORE= falls back'; then
+# The Rust core owns publication when a session pins one. This proves the LIFECYCLE
+# routing: a real ended session reaches the core, bash consumes its path/files/bytes
+# line into the "Archived" summary, and the override forces the reference bash body.
+# It needs the built core; a tree without one skips loudly rather than passing hollow.
+P33_CORE="$(dirname "$AE")/target/debug/ae"
+if [[ -x "$P33_CORE" ]]; then
+    P33_VER="$("$P33_CORE" --version 2>/dev/null | awk '{print $NF}')"
+    P33_MARK="$TMPDIR/p33-core-invoked"
+    P33_WRAP="$TMPDIR/p33-core-wrapper"
+    # A logging wrapper: records an _archive-publish invocation, then execs the real
+    # core — so routing is observable even though a core and bash archive are identical.
+    printf '#!/bin/sh\ncase "$1" in _archive-publish) echo "$@" >> "%s";; esac\nexec "%s" "$@"\n' \
+        "$P33_MARK" "$P33_CORE" > "$P33_WRAP"
+    chmod +x "$P33_WRAP"
+    : > "$P33_MARK"
+
+    # (1) CORE-ROUTED end.
+    P33_REPO="$(setup_repo)"
+    (cd "$P33_REPO" && "$AE" --local p33-core &) 2>/dev/null
+    wait_for_session "p33-core" 20
+    sleep 1
+    P33_META="$HOME/.ae/sessions/p33-core"
+    P33_UUID="$(grep '^session_id=' "$P33_META/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+    # Bind by REPLACING the empty ae_core lines the launch wrote — a second
+    # ae_core= line would make the frozen grep read a two-line path and fall back.
+    { grep -v '^ae_core=' "$P33_META/meta" | grep -v '^ae_core_version=' ; \
+      printf 'ae_core=%s\nae_core_version=%s\n' "$P33_WRAP" "$P33_VER"; } > "$P33_META/meta.tmp"
+    mv "$P33_META/meta.tmp" "$P33_META/meta"
+    P33_OUT="$("$AE" end -f --keep-history p33-core 2>&1)"
+    P33_ARCH="$HOME/.ae/archive/$P33_UUID"
+    assert_eq "p3.3 route: the core WAS invoked for _archive-publish" "1" \
+        "$([[ -s "$P33_MARK" ]] && echo 1 || echo 0)"
+    assert_contains "p3.3 route: bash consumed the core's line into the Archived summary" \
+        "Archived $P33_UUID" "$P33_OUT"
+    assert_contains "p3.3 route: and the file/byte total" "file(s)," "$P33_OUT"
+    for p33_f in meta digest.md memo.tsv events.jsonl messages; do
+        assert_eq "p3.3 route: the core-published archive has ${p33_f}" "1" \
+            "$([[ -e "$P33_ARCH/$p33_f" ]] && echo 1 || echo 0)"
+    done
+    assert_contains "p3.3 route: meta is the composed archive meta" "archive_version=1" "$(cat "$P33_ARCH/meta")"
+    assert_contains "p3.3 route: local mode records git as not-managed" "git_push_outcome=not-managed" "$(cat "$P33_ARCH/meta")"
+    assert_eq "p3.3 route: dirs 0700, files 0600 in the core's archive" "" "$(
+        p33_bad=""
+        while IFS= read -r p33_p; do
+            p33_m="$(stat -f '%Lp' "$p33_p" 2>/dev/null || stat -c '%a' "$p33_p" 2>/dev/null)"
+            if [[ -d "$p33_p" ]]; then [[ "$p33_m" == 700 ]] || p33_bad+="$p33_p=$p33_m "
+            else [[ "$p33_m" == 600 ]] || p33_bad+="$p33_p=$p33_m "; fi
+        done < <(find "$P33_ARCH" -mindepth 1)
+        printf '%s' "$p33_bad"
+    )"
+    assert_eq "p3.3 route: no publisher claim is left behind" "0" \
+        "$(find "$HOME/.ae/archive" -maxdepth 1 -name '.publishing.*' | grep -c . | tr -d '[:space:]')"
+
+    # (2) AE_CORE= FALLBACK: the same binding, but the override forces the bash body.
+    : > "$P33_MARK"
+    P33_REPO2="$(setup_repo)"
+    (cd "$P33_REPO2" && "$AE" --local p33-fallback &) 2>/dev/null
+    wait_for_session "p33-fallback" 20
+    sleep 1
+    P33_META2="$HOME/.ae/sessions/p33-fallback"
+    P33_UUID2="$(grep '^session_id=' "$P33_META2/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+    { grep -v '^ae_core=' "$P33_META2/meta" | grep -v '^ae_core_version=' ; \
+      printf 'ae_core=%s\nae_core_version=%s\n' "$P33_WRAP" "$P33_VER"; } > "$P33_META2/meta.tmp"
+    mv "$P33_META2/meta.tmp" "$P33_META2/meta"
+    P33_OUT2="$(AE_CORE= "$AE" end -f --keep-history p33-fallback 2>&1)"
+    assert_eq "p3.3 fallback: AE_CORE= did NOT invoke the core" "0" \
+        "$([[ -s "$P33_MARK" ]] && echo 1 || echo 0)"
+    assert_contains "p3.3 fallback: the bash body still archived" "Archived $P33_UUID2" "$P33_OUT2"
+    assert_eq "p3.3 fallback: and produced a valid archive" "1" \
+        "$([[ -f "$HOME/.ae/archive/$P33_UUID2/meta" ]] && echo 1 || echo 0)"
+else
+    echo "  SKIP #48 P3.3 core routing: no built core at ${P33_CORE} (run: cargo build)"
+fi
+fi
+
 # ── purge: no archive written, and an existing one removed ───────────
 if _itest_section 'purge: no archive written, and an existing one removed'; then
 (cd "$A48_REPO" && "$AE" --local arch-purge &) 2>/dev/null

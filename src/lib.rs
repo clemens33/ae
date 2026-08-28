@@ -633,6 +633,25 @@ pub fn run_with(
         // failure, and the write failure is the one this arm can report.
         cli::Request::EventsTail { dir } => match events_tail::follow(dir, out)? {},
         cli::Request::ArchivePreview { dir } => archive::preview(dir, out, err)?,
+        cli::Request::ArchivePublish {
+            dir,
+            push_outcome,
+            push_ref,
+            preserved,
+            workdir,
+            archived_at,
+        } => archive::publish::run(
+            dir,
+            &archive::publish::Ops {
+                push_outcome,
+                push_ref,
+                preserved,
+                workdir,
+                archived_at,
+            },
+            out,
+            err,
+        )?,
         cli::Request::List(list_args) => {
             if let Some(world) = world {
                 // SC-017o: the warning goes to STDERR and the table still

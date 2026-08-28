@@ -32,6 +32,13 @@ pub const EVENTS_TAIL: &str = "_events-tail";
 /// space (`_validate_session_name` forbids a leading `_`).
 pub const ARCHIVE_PREVIEW: &str = "_archive-preview";
 
+/// `ae end`'s archive publisher: `_archive-publish <session-dir> <push-outcome>
+/// <push-ref> <preserved> <workdir> <archived-at>`. The frozen `_end_archive_step`
+/// shims here in place of `_ar_publish`; the five operands after the dir are the
+/// operation facts Bash owns (the core derives the commit facts itself). Like
+/// [`ARCHIVE_PREVIEW`] it is underscored — a core entry, never human-typed.
+pub const ARCHIVE_PUBLISH: &str = "_archive-publish";
+
 /// The `state` helper's surface — `_state <meta-dir> [<value> [reason…]]`.
 /// Underscored like [`REQUESTS`]: launched by the generated helper, not typed.
 pub const STATE: &str = "_state";
@@ -137,6 +144,22 @@ pub enum Request {
     ArchivePreview {
         /// The session directory `ae` resolved and path-checked before shimming.
         dir: PathBuf,
+    },
+    /// `_archive-publish <session-dir> <push-outcome> <push-ref> <preserved>
+    /// <workdir> <archived-at>` — publishes the archive under its atomic claim.
+    ArchivePublish {
+        /// The session directory `ae` resolved and path-checked before shimming.
+        dir: PathBuf,
+        /// The git push outcome Bash recorded (`not-managed` when unmanaged).
+        push_outcome: String,
+        /// The pushed ref, or `-`.
+        push_ref: String,
+        /// The preserved work dir, or `-`.
+        preserved: String,
+        /// The work dir whose HEAD/range the core derives, or `-`.
+        workdir: String,
+        /// The archive instant Bash captured (`date -u`), validated by the core.
+        archived_at: String,
     },
     /// A usage error about a MISSING operand rather than an offending token.
     ///
@@ -294,6 +317,20 @@ impl Request {
                 [dir] => Self::EventsTail { dir: dir.into() },
                 [_, extra, ..] => Self::UsageError(extra.clone()),
             },
+            Some(ARCHIVE_PUBLISH) => match &args[1..] {
+                [dir, push_outcome, push_ref, preserved, workdir, archived_at] => {
+                    Self::ArchivePublish {
+                        dir: dir.into(),
+                        push_outcome: push_outcome.clone(),
+                        push_ref: push_ref.clone(),
+                        preserved: preserved.clone(),
+                        workdir: workdir.clone(),
+                        archived_at: archived_at.clone(),
+                    }
+                }
+                [_, _, _, _, _, _, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(ARCHIVE_PUBLISH),
+            },
             Some(ARCHIVE_PREVIEW) => match &args[1..] {
                 [] => Self::MissingOperand(ARCHIVE_PREVIEW),
                 [dir] => Self::ArchivePreview { dir: dir.into() },
@@ -367,7 +404,8 @@ impl Request {
             | Self::Reply { .. }
             | Self::Send { .. }
             | Self::EventsTail { .. }
-            | Self::ArchivePreview { .. } => None,
+            | Self::ArchivePreview { .. }
+            | Self::ArchivePublish { .. } => None,
         }
     }
 }
