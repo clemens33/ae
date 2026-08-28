@@ -675,6 +675,37 @@ pub fn run_with(
         cli::Request::CompactFreeze { dir, keep_history } => {
             compact::freeze(dir, *keep_history, out, err)?
         }
+        cli::Request::CompactRevalidate {
+            dir,
+            tuple,
+            keep_history,
+        } => compact::revalidate_step(dir, tuple, *keep_history, err)?,
+        cli::Request::CompactArchive {
+            dir,
+            tuple,
+            archived_at,
+            push_outcome,
+            push_ref,
+            preserved,
+            workdir,
+            keep_history,
+        } => compact::archive_step(
+            dir,
+            tuple,
+            *keep_history,
+            archived_at,
+            push_outcome,
+            push_ref,
+            preserved,
+            workdir,
+            out,
+            err,
+        )?,
+        cli::Request::CompactTeardown {
+            dir,
+            tuple,
+            keep_history,
+        } => compact::teardown_step(dir, tuple, *keep_history, out, err)?,
         cli::Request::List(list_args) => {
             if let Some(world) = world {
                 // SC-017o: the warning goes to STDERR and the table still

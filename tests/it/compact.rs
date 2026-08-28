@@ -71,6 +71,172 @@ fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
+/// Run any core subcommand under `AE_HOME`, bounded.
+fn core(ae_home: &Path, args: &[&str]) -> std::process::Output {
+    let mut cmd = crate::cli::ae();
+    cmd.env("AE_HOME", ae_home);
+    for a in args {
+        cmd.arg(a);
+    }
+    crate::cli::bounded(
+        cmd.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn core"),
+        Duration::from_secs(10),
+    )
+    .expect("core returned")
+}
+
+/// The frozen tuple `_compact-freeze` emits for `dir` (trailing newline trimmed).
+fn tuple_of(ae_home: &Path, dir: &Path) -> String {
+    let out = freeze(ae_home, dir, false);
+    assert_eq!(out.status.code(), Some(0), "freeze: {}", stderr(&out));
+    stdout(&out).trim_end().to_owned()
+}
+
+#[test]
+fn archive_step_refuses_a_malformed_tuple() {
+    let s = Scratch::new("arch-malformed");
+    let dir = local_session(&s, "sess", "local", "[workspace]\nmain = cl\n");
+    let out = core(
+        s.0.as_path(),
+        &[
+            "_compact-archive",
+            dir.to_str().unwrap(),
+            "not\u{1f}enough\u{1f}fields",
+            "2026-08-01T00:00:00Z",
+            "-",
+            "-",
+            "-",
+            "-",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("did not parse"), "{}", stderr(&out));
+}
+
+#[test]
+fn archive_step_refuses_a_replacement_session() {
+    let s = Scratch::new("arch-replace");
+    let dir = local_session(&s, "sess", "local", "[workspace]\nmain = cl\n");
+    let tuple = tuple_of(s.0.as_path(), &dir);
+    // The session is replaced under the same name: a fresh session_id.
+    let meta = format!(
+        "session_id=99999999-9999-9999-9999-999999999999\nmode=local\norigin={}\nagent.main=cl:main:99999999-9999-9999-9999-999999999999\nconfig={}\n",
+        s.0.display(),
+        s.0.join("config").display()
+    );
+    std::fs::write(dir.join("meta"), meta).unwrap();
+    let out = core(
+        s.0.as_path(),
+        &[
+            "_compact-archive",
+            dir.to_str().unwrap(),
+            &tuple,
+            "2026-08-01T00:00:00Z",
+            "-",
+            "-",
+            "-",
+            "-",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("not the session that was authorized"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stdout(&out).is_empty(), "no recovery line on refusal");
+}
+
+#[test]
+fn archive_step_refuses_a_tuple_whose_name_was_altered() {
+    // The altered-name attack: the real live session is `sess`, but the authorization
+    // tuple's name field is rewritten to an absent `ghost`. Revalidation must refuse on the
+    // name-vs-operand mismatch before any stop query, so the stop check can never prove the
+    // WRONG name stopped while `sess` runs on. Read-only: nothing is archived.
+    let s = Scratch::new("arch-altered-name");
+    let dir = local_session(&s, "sess", "local", "[workspace]\nmain = cl\n");
+    let tuple = tuple_of(s.0.as_path(), &dir);
+    let mut fields: Vec<&str> = tuple.split('\u{1f}').collect();
+    fields[0] = "ghost";
+    let altered = fields.join("\u{1f}");
+    let out = core(
+        s.0.as_path(),
+        &[
+            "_compact-archive",
+            dir.to_str().unwrap(),
+            &altered,
+            "2026-08-01T00:00:00Z",
+            "-",
+            "-",
+            "-",
+            "-",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("does not point at this session"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(stdout(&out).is_empty(), "no recovery line on refusal");
+    assert!(!s.0.join("archive").join(UUID).exists(), "nothing archived");
+}
+
+#[test]
+fn archive_step_refuses_when_the_stop_is_unprovable() {
+    // A local_session records NO tmux_server → a Missing selector → verify_stopped is
+    // Unknown → archive refuses (fail closed), never touching tmux or the archive.
+    let s = Scratch::new("arch-unprovable");
+    let dir = local_session(&s, "sess", "local", "[workspace]\nmain = cl\n");
+    let tuple = tuple_of(s.0.as_path(), &dir);
+    let out = core(
+        s.0.as_path(),
+        &[
+            "_compact-archive",
+            dir.to_str().unwrap(),
+            &tuple,
+            "2026-08-01T00:00:00Z",
+            "-",
+            "-",
+            "-",
+            "-",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("could not PROVE") && stderr(&out).contains("stopped"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        stdout(&out).is_empty(),
+        "nothing archived, no recovery line"
+    );
+    // Read-only: the archive root was never created.
+    assert!(!s.0.join("archive").join(UUID).exists());
+}
+
+#[test]
+fn teardown_step_refuses_when_the_stop_is_unprovable() {
+    let s = Scratch::new("teardown-unprovable");
+    let dir = local_session(&s, "sess", "local", "[workspace]\nmain = cl\n");
+    let tuple = tuple_of(s.0.as_path(), &dir);
+    let out = core(
+        s.0.as_path(),
+        &["_compact-teardown", dir.to_str().unwrap(), &tuple],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("could not PROVE"), "{}", stderr(&out));
+    // The live session is untouched.
+    assert!(
+        dir.join("meta").exists(),
+        "teardown refused, session intact"
+    );
+}
+
 #[test]
 fn a_local_session_emits_the_frozen_tuple() {
     let s = Scratch::new("ok");

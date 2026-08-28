@@ -75,6 +75,23 @@ pub const END_NONLOCAL_TEARDOWN: &str = "_end-nonlocal-teardown";
 /// human-typed.
 pub const COMPACT_FREEZE: &str = "_compact-freeze";
 
+/// compact's pre-message gate: `_compact-revalidate <dir> <tuple> [--keep-history]`.
+/// Proves the live session is still the one the freeze authorized before the semantic
+/// handover is messaged. Pure read-only. Underscored — a core entry, never typed.
+pub const COMPACT_REVALIDATE: &str = "_compact-revalidate";
+
+/// compact's destructive stage 1: `_compact-archive <dir> <tuple> <archived-at>
+/// <push-outcome> <push-ref> <preserved> <workdir> [--keep-history]`. Revalidates the
+/// frozen authorization, proves the session stopped on its recorded server, makes the
+/// archive durable (publishing, or reusing an equivalent existing one), and prints the
+/// recovery command — before any teardown. Underscored — a core entry, never typed.
+pub const COMPACT_ARCHIVE: &str = "_compact-archive";
+
+/// compact's destructive stage 2: `_compact-teardown <dir> <tuple> [--keep-history]`.
+/// Re-proves the authorization and the stop, requires the durable archive, removes the
+/// live session, and prints the exec plan. Underscored — a core entry, never typed.
+pub const COMPACT_TEARDOWN: &str = "_compact-teardown";
+
 /// The `state` helper's surface — `_state <meta-dir> [<value> [reason…]]`.
 /// Underscored like [`REQUESTS`]: launched by the generated helper, not typed.
 pub const STATE: &str = "_state";
@@ -230,6 +247,47 @@ pub enum Request {
         /// The session directory the frozen helper derives from `$0`.
         dir: PathBuf,
         /// `--keep-history`: override a config that opts into purging agent history.
+        keep_history: bool,
+    },
+    /// `_compact-revalidate <dir> <tuple> [--keep-history]` — the pre-message gate.
+    CompactRevalidate {
+        /// The session directory.
+        dir: PathBuf,
+        /// The frozen tuple from `_compact-freeze`.
+        tuple: String,
+        /// `--keep-history`, carried from the original invocation.
+        keep_history: bool,
+    },
+    /// `_compact-archive <dir> <tuple> <archived-at> <push-outcome> <push-ref>
+    /// <preserved> <workdir> [--keep-history]` — the first destructive stage: durable
+    /// archive + recovery print, after proving the session stopped.
+    CompactArchive {
+        /// The session directory.
+        dir: PathBuf,
+        /// The frozen tuple (`0x1f`-separated) from `_compact-freeze` — the authorization.
+        tuple: String,
+        /// The ISO-8601 UTC instant bash supplies (std cannot format one).
+        archived_at: String,
+        /// Git push outcome, `-` for a local compact.
+        push_outcome: String,
+        /// Git push ref, `-` for a local compact.
+        push_ref: String,
+        /// Preserved marker, `-` for a local compact.
+        preserved: String,
+        /// The recorded workdir, for the archive's git facts.
+        workdir: String,
+        /// `--keep-history`: carried from the original invocation so revalidation's
+        /// purge-flip check agrees with what was authorized.
+        keep_history: bool,
+    },
+    /// `_compact-teardown <dir> <tuple> [--keep-history]` — the second destructive
+    /// stage: remove the live session and print the exec plan, once the archive is durable.
+    CompactTeardown {
+        /// The session directory.
+        dir: PathBuf,
+        /// The frozen tuple — re-validated before teardown.
+        tuple: String,
+        /// `--keep-history`, as [`Request::CompactArchive`].
         keep_history: bool,
     },
     /// `_end-nonlocal-teardown <session-dir> [--preserve]` — removes the managed
@@ -461,6 +519,84 @@ impl Request {
                 [_, extra, ..] => Self::UsageError(extra.clone()),
                 _ => Self::MissingOperand(COMPACT_FREEZE),
             },
+            Some(COMPACT_REVALIDATE) => match &args[1..] {
+                [dir, tuple] => Self::CompactRevalidate {
+                    dir: dir.into(),
+                    tuple: tuple.clone(),
+                    keep_history: false,
+                },
+                [dir, tuple, flag] if flag == "--keep-history" => Self::CompactRevalidate {
+                    dir: dir.into(),
+                    tuple: tuple.clone(),
+                    keep_history: true,
+                },
+                [_, _, flag, extra, ..] if flag == "--keep-history" => {
+                    Self::UsageError(extra.clone())
+                }
+                [_, _, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(COMPACT_REVALIDATE),
+            },
+            Some(COMPACT_ARCHIVE) => match &args[1..] {
+                [
+                    dir,
+                    tuple,
+                    archived_at,
+                    push_outcome,
+                    push_ref,
+                    preserved,
+                    workdir,
+                ] => Self::CompactArchive {
+                    dir: dir.into(),
+                    tuple: tuple.clone(),
+                    archived_at: archived_at.clone(),
+                    push_outcome: push_outcome.clone(),
+                    push_ref: push_ref.clone(),
+                    preserved: preserved.clone(),
+                    workdir: workdir.clone(),
+                    keep_history: false,
+                },
+                [
+                    dir,
+                    tuple,
+                    archived_at,
+                    push_outcome,
+                    push_ref,
+                    preserved,
+                    workdir,
+                    flag,
+                ] if flag == "--keep-history" => Self::CompactArchive {
+                    dir: dir.into(),
+                    tuple: tuple.clone(),
+                    archived_at: archived_at.clone(),
+                    push_outcome: push_outcome.clone(),
+                    push_ref: push_ref.clone(),
+                    preserved: preserved.clone(),
+                    workdir: workdir.clone(),
+                    keep_history: true,
+                },
+                [_, _, _, _, _, _, _, flag, extra, ..] if flag == "--keep-history" => {
+                    Self::UsageError(extra.clone())
+                }
+                [_, _, _, _, _, _, _, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(COMPACT_ARCHIVE),
+            },
+            Some(COMPACT_TEARDOWN) => match &args[1..] {
+                [dir, tuple] => Self::CompactTeardown {
+                    dir: dir.into(),
+                    tuple: tuple.clone(),
+                    keep_history: false,
+                },
+                [dir, tuple, flag] if flag == "--keep-history" => Self::CompactTeardown {
+                    dir: dir.into(),
+                    tuple: tuple.clone(),
+                    keep_history: true,
+                },
+                [_, _, flag, extra, ..] if flag == "--keep-history" => {
+                    Self::UsageError(extra.clone())
+                }
+                [_, _, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(COMPACT_TEARDOWN),
+            },
             Some(ARCHIVE_PREVIEW) => match &args[1..] {
                 [] => Self::MissingOperand(ARCHIVE_PREVIEW),
                 [dir] => Self::ArchivePreview { dir: dir.into() },
@@ -554,7 +690,10 @@ impl Request {
             | Self::ArchivePurge { .. }
             | Self::EndLocalTeardown { .. }
             | Self::EndNonlocalTeardown { .. }
-            | Self::CompactFreeze { .. } => None,
+            | Self::CompactFreeze { .. }
+            | Self::CompactRevalidate { .. }
+            | Self::CompactArchive { .. }
+            | Self::CompactTeardown { .. } => None,
         }
     }
 }
@@ -562,8 +701,9 @@ impl Request {
 #[cfg(test)]
 mod tests {
     use super::{
-        ARCHIVE_PREVIEW, ASK, COMPACT_FREEZE, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, MEMO,
-        REPLY, REQUESTS, REVIEW, Request, SEND, STATE,
+        ARCHIVE_PREVIEW, ASK, COMPACT_ARCHIVE, COMPACT_FREEZE, COMPACT_REVALIDATE,
+        COMPACT_TEARDOWN, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, MEMO, REPLY, REQUESTS, REVIEW,
+        Request, SEND, STATE,
     };
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
@@ -972,6 +1112,103 @@ mod tests {
         assert_eq!(
             Request::parse(&argv(&[END_NONLOCAL_TEARDOWN, "/s/tg1", "--frob"])),
             Request::UsageError("--frob".to_owned())
+        );
+    }
+
+    #[test]
+    fn compact_revalidate_parses_dir_tuple_and_optional_keep_history() {
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_REVALIDATE, "/s/d", "t\u{1f}u"])),
+            Request::CompactRevalidate {
+                dir: "/s/d".into(),
+                tuple: "t\u{1f}u".to_owned(),
+                keep_history: false,
+            }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_REVALIDATE, "/s/d", "t", "--keep-history"])),
+            Request::CompactRevalidate {
+                dir: "/s/d".into(),
+                tuple: "t".to_owned(),
+                keep_history: true,
+            }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_REVALIDATE, "/s/d", "t", "bogus"])),
+            Request::UsageError("bogus".to_owned())
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_REVALIDATE])),
+            Request::MissingOperand(COMPACT_REVALIDATE)
+        );
+    }
+
+    #[test]
+    fn compact_teardown_parses_dir_tuple_and_optional_keep_history() {
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_TEARDOWN, "/s/d", "t"])),
+            Request::CompactTeardown {
+                dir: "/s/d".into(),
+                tuple: "t".to_owned(),
+                keep_history: false,
+            }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_TEARDOWN, "/s/d", "t", "--keep-history"])),
+            Request::CompactTeardown {
+                dir: "/s/d".into(),
+                tuple: "t".to_owned(),
+                keep_history: true,
+            }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_TEARDOWN, "/s/d", "t", "bogus"])),
+            Request::UsageError("bogus".to_owned())
+        );
+    }
+
+    #[test]
+    fn compact_archive_parses_seven_positionals_and_optional_keep_history() {
+        let seven = [
+            COMPACT_ARCHIVE,
+            "/s/d",
+            "tup",
+            "2026-01-01T00:00:00Z",
+            "-",
+            "-",
+            "-",
+            "-",
+        ];
+        assert_eq!(
+            Request::parse(&argv(&seven)),
+            Request::CompactArchive {
+                dir: "/s/d".into(),
+                tuple: "tup".to_owned(),
+                archived_at: "2026-01-01T00:00:00Z".to_owned(),
+                push_outcome: "-".to_owned(),
+                push_ref: "-".to_owned(),
+                preserved: "-".to_owned(),
+                workdir: "-".to_owned(),
+                keep_history: false,
+            }
+        );
+        let with_flag = [seven.as_slice(), &["--keep-history"]].concat();
+        assert!(matches!(
+            Request::parse(&argv(&with_flag)),
+            Request::CompactArchive {
+                keep_history: true,
+                ..
+            }
+        ));
+        // Too few positionals → missing operand; a ninth token is the offender.
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_ARCHIVE, "/s/d", "tup"])),
+            Request::MissingOperand(COMPACT_ARCHIVE)
+        );
+        let extra = [seven.as_slice(), &["extra"]].concat();
+        assert_eq!(
+            Request::parse(&argv(&extra)),
+            Request::UsageError("extra".to_owned())
         );
     }
 

@@ -46,6 +46,7 @@
 //! archive root, and the only session-directory writes are the `.lock` files the
 //! locks stand on.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write};
@@ -593,6 +594,82 @@ fn read_sources(dir: &Path) -> Result<CoreBytes, Vec<String>> {
     }
 }
 
+/// Whether the archive already at `archive_path` (for `aid`) is a byte-equivalent snapshot
+/// of the CURRENT live session at `dir` — the gate compact's retry crosses before reusing
+/// an existing archive as its recovery point instead of publishing (publish REFUSES over
+/// an existing archive; it is immutable).
+///
+/// It holds the SAME source locks [`run`] holds, so the live read is coherent, and compares
+/// the conversation LEDGERS that accumulate — `memo.tsv` and `events.jsonl` byte-for-byte
+/// (both archived verbatim), and the `messages/` bodies by CONTENT (a fingerprint uses
+/// mtime, which a copy changes, so it cannot compare across locations). meta identity is
+/// proven separately, by compact's `revalidate`. The reason the comparison matters: a
+/// session that ran on after a failed teardown would have GROWN these ledgers, and tearing
+/// it down against the stale archive would lose that growth.
+///
+/// `Ok(true)` equivalent — safe to reuse the archive and tear the live session down;
+/// `Ok(false)` DRIFT — refuse teardown and retain both; `Err` the existing tree is not a
+/// valid archive for `aid`, or the coherent live read failed.
+pub(crate) fn live_matches_existing_archive(
+    dir: &Path,
+    archive_path: &Path,
+    aid: &str,
+) -> Result<bool, String> {
+    // Ownership/tree: an existing archive is trusted as a recovery point only once it is
+    // proven a valid ae archive for this id.
+    validate_tree(archive_path, aid)?;
+    // The coherent locked live read — the same three locks `run` holds.
+    let _held = hold_sources(dir)?;
+    let (_live_meta, live_memo, live_events) =
+        read_sources(dir).map_err(|diags| diags.join("; "))?;
+    let arch_memo = read_file(&archive_path.join("memo.tsv"))
+        .map_err(|why| format!("archive: cannot read archived memo.tsv: {why}"))?;
+    let arch_events = read_file(&archive_path.join("events.jsonl"))
+        .map_err(|why| format!("archive: cannot read archived events.jsonl: {why}"))?;
+    if live_memo != arch_memo || live_events != arch_events {
+        return Ok(false);
+    }
+    // messages/ by content — same eligible bodies, same bytes.
+    Ok(message_bodies(&dir.join("messages"))? == message_bodies(&archive_path.join("messages"))?)
+}
+
+/// `basename -> bytes` for the DIRECT, regular, non-symlink `*.txt` bodies under `dir` —
+/// exactly the inclusion rule `stage_messages` archives by, so the two sets are comparable.
+/// A `NotFound` directory is the empty map (the empty session); any other enumeration or
+/// read failure REFUSES rather than compare against a set it could not fully read.
+fn message_bodies(dir: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let entries = match read_dir(dir) {
+        Ok(paths) => paths,
+        Err(why) if why.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(why) => {
+            return Err(format!(
+                "archive: cannot enumerate {} ({why}) — refusing to compare against a partially-read message set.",
+                dir.display()
+            ));
+        }
+    };
+    let mut bodies = BTreeMap::new();
+    for path in entries {
+        if path.extension().is_none_or(|ext| ext != "txt") {
+            continue;
+        }
+        let Ok(meta) = symlink_meta(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            continue;
+        }
+        let base = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let bytes = read_file(&path)
+            .map_err(|why| format!("archive: cannot read {} ({why}).", path.display()))?;
+        bodies.insert(base, bytes);
+    }
+    Ok(bodies)
+}
+
 /// Copy the DIRECT, regular, non-symlink `messages/*.txt` into `dst` at `0600`.
 /// A symlink or other non-regular entry is skipped with a loud diagnostic and
 /// NEVER followed; an eligible regular file that cannot be read refuses the whole
@@ -646,4 +723,151 @@ fn stage_messages(src: &Path, dst: &Path, err: &mut impl Write) -> Result<(), St
             .map_err(|why| format!("archive: could not stage messages/{base}: {why}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod equivalence_tests {
+    use super::{Ops, live_matches_existing_archive, run};
+    use std::path::{Path, PathBuf};
+
+    const AID: &str = "33333333-3333-3333-3333-333333333333";
+    const AT: &str = "2026-08-01T00:00:00Z";
+
+    struct Home(PathBuf);
+    impl Home {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("ae-equiv-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("home");
+            Self(dir)
+        }
+    }
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A publishable session under `<home>/sessions/sess` with one memo, one event, one
+    /// message body.
+    fn session(home: &Path) -> PathBuf {
+        let dir = home.join("sessions").join("sess");
+        std::fs::create_dir_all(dir.join("messages")).unwrap();
+        std::fs::create_dir_all(home.join("archive")).unwrap();
+        std::fs::write(
+            dir.join("meta"),
+            format!("session=sess\nsession_id={AID}\nsession_id_origin=session\nmode=local\norigin=/o\nagent.main=cl:lead:sid\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("memo.tsv"), "ts1\tcl:lead\thandover\tpicking up\n").unwrap();
+        std::fs::write(
+            dir.join("events.jsonl"),
+            "{\"ts\":\"2026-08-01T00:00:00Z\",\"actor\":\"cl:lead\",\"action\":\"ask\"}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("messages").join("m1.txt"), "hello\n").unwrap();
+        dir
+    }
+
+    fn publish(dir: &Path) -> u8 {
+        let ops = Ops {
+            push_outcome: "-",
+            push_ref: "-",
+            preserved: "-",
+            workdir: "-",
+            archived_at: AT,
+        };
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let code = run(dir, &ops, &mut out, &mut err).expect("publish ran");
+        assert_eq!(code, 0, "publish: {}", String::from_utf8_lossy(&err));
+        code
+    }
+
+    #[test]
+    fn an_unchanged_session_matches_its_archive() {
+        let home = Home::new("match");
+        let dir = session(&home.0);
+        publish(&dir);
+        let archive = home.0.join("archive").join(AID);
+        assert_eq!(
+            live_matches_existing_archive(&dir, &archive, AID),
+            Ok(true),
+            "an unmodified session equals its own archive"
+        );
+    }
+
+    #[test]
+    fn an_appended_memo_is_drift() {
+        let home = Home::new("memo");
+        let dir = session(&home.0);
+        publish(&dir);
+        let archive = home.0.join("archive").join(AID);
+        // The live session ran on and wrote another memo row after the archive.
+        std::fs::write(
+            dir.join("memo.tsv"),
+            "ts1\tcl:lead\thandover\tpicking up\nts2\tcl:lead\thandover\tmore\n",
+        )
+        .unwrap();
+        assert_eq!(
+            live_matches_existing_archive(&dir, &archive, AID),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn an_appended_event_is_drift() {
+        let home = Home::new("events");
+        let dir = session(&home.0);
+        publish(&dir);
+        let archive = home.0.join("archive").join(AID);
+        std::fs::write(
+            dir.join("events.jsonl"),
+            "{\"ts\":\"2026-08-01T00:00:00Z\",\"actor\":\"cl:lead\",\"action\":\"ask\"}\n{\"ts\":\"2026-08-02T00:00:00Z\",\"actor\":\"cl:lead\",\"action\":\"reply\"}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            live_matches_existing_archive(&dir, &archive, AID),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn a_new_message_body_is_drift() {
+        let home = Home::new("msg");
+        let dir = session(&home.0);
+        publish(&dir);
+        let archive = home.0.join("archive").join(AID);
+        std::fs::write(dir.join("messages").join("m2.txt"), "second\n").unwrap();
+        assert_eq!(
+            live_matches_existing_archive(&dir, &archive, AID),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn a_changed_message_body_is_drift() {
+        let home = Home::new("msgedit");
+        let dir = session(&home.0);
+        publish(&dir);
+        let archive = home.0.join("archive").join(AID);
+        std::fs::write(dir.join("messages").join("m1.txt"), "HELLO\n").unwrap();
+        assert_eq!(
+            live_matches_existing_archive(&dir, &archive, AID),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn a_non_archive_tree_is_an_error_not_a_match() {
+        let home = Home::new("badtree");
+        let dir = session(&home.0);
+        // No publish — point at an empty dir that is not a valid archive.
+        let not_archive = home.0.join("archive").join(AID);
+        std::fs::create_dir_all(&not_archive).unwrap();
+        assert!(
+            live_matches_existing_archive(&dir, &not_archive, AID).is_err(),
+            "an invalid archive tree refuses, never silently matches"
+        );
+    }
 }
