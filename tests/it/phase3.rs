@@ -1818,6 +1818,12 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // stays a no-subprocess path and still works with no git installed;
             // every failure is `None`, so a listing never fails on it.
             "src/session.rs".to_owned(),
+            // The LOCAL-mode teardown's own reads (P3.5): the `lstat` that proves
+            // the session dir is a real direct child and never a link, and the
+            // sessions-root `fsync` that makes the rename-to-tombstone and its
+            // removal durable. The meta read it validates identity through is
+            // `meta.rs`'s inventoried door, not a new one here.
+            "src/teardown.rs".to_owned(),
         ],
         "the set of places product code can reach the eleven named entry points changed"
     );

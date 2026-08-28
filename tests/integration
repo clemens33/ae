@@ -5440,6 +5440,90 @@ else
 fi
 fi
 
+# ── #79 P3.5: local teardown routes through the core; AE_CORE= falls back; the ──
+# ──          launch guard refuses a standing tombstone                         ──
+if _itest_section '#79 P3.5: local teardown routes through the core, AE_CORE= falls back, tombstone guards launch'; then
+# P3.5 moves the canonical session-state removal of a grammar-valid LOCAL session into
+# the pinned core: a rename-to-tombstone commit boundary, durable removal, and a launch
+# guard that refuses a standing `.ending.<name>`. This proves (1) a real local `ae end`
+# routes teardown through the session's PINNED core and removes the session with no
+# tombstone left; (2) AE_CORE= forces the reference bash `rm` and still removes it, no
+# core call; (3) a standing tombstone refuses a fresh launch of the same name. Needs the
+# built core; a tree without one skips loudly.
+P35_CORE="$(dirname "$AE")/target/debug/ae"
+if [[ -x "$P35_CORE" ]]; then
+    P35_VER="$("$P35_CORE" --version 2>/dev/null | awk '{print $NF}')"
+    P35_MARK="$TMPDIR/p35-teardown-invoked"
+    P35_WRAP="$TMPDIR/p35-core-wrapper"
+    # A logging wrapper: records _end-local-teardown invocations, then execs the real
+    # core — routing is observable though the real teardown still runs to completion.
+    printf '#!/bin/sh\ncase "$1" in _end-local-teardown) echo "$@" >> "%s";; esac\nexec "%s" "$@"\n' \
+        "$P35_MARK" "$P35_CORE" > "$P35_WRAP"
+    chmod +x "$P35_WRAP"
+    P35_REPO="$(setup_repo)"
+
+    # (1) A real local end routes teardown through the session's PINNED core and removes
+    #     the session with NO tombstone left behind.
+    : > "$P35_MARK"
+    (cd "$P35_REPO" && "$AE" --local p35-end &) 2>/dev/null
+    wait_for_session "p35-end" 20
+    sleep 1
+    P35_META="$HOME/.ae/sessions/p35-end"
+    { grep -v '^ae_core=' "$P35_META/meta" | grep -v '^ae_core_version=' ; \
+      printf 'ae_core=%s\nae_core_version=%s\n' "$P35_WRAP" "$P35_VER"; } > "$P35_META/meta.tmp"
+    mv "$P35_META/meta.tmp" "$P35_META/meta"
+    P35_OUT="$("$AE" end -f --purge-history p35-end 2>&1)"
+    assert_eq "p3.5 route: the core WAS invoked for _end-local-teardown" "1" \
+        "$([[ -s "$P35_MARK" ]] && echo 1 || echo 0)"
+    assert_contains "p3.5 route: bash reports the end" "Ended" "$P35_OUT"
+    assert_not_exists "p3.5 route: the session state is gone" "$HOME/.ae/sessions/p35-end"
+    assert_not_exists "p3.5 route: and no teardown tombstone is left" "$HOME/.ae/sessions/.ending.p35-end"
+
+    # (2) AE_CORE= forces the reference bash rm; the session is still removed, no core call.
+    : > "$P35_MARK"
+    (cd "$P35_REPO" && "$AE" --local p35-end2 &) 2>/dev/null
+    wait_for_session "p35-end2" 20
+    sleep 1
+    P35_META2="$HOME/.ae/sessions/p35-end2"
+    { grep -v '^ae_core=' "$P35_META2/meta" | grep -v '^ae_core_version=' ; \
+      printf 'ae_core=%s\nae_core_version=%s\n' "$P35_WRAP" "$P35_VER"; } > "$P35_META2/meta.tmp"
+    mv "$P35_META2/meta.tmp" "$P35_META2/meta"
+    P35_OUT2="$(AE_CORE= "$AE" end -f --purge-history p35-end2 2>&1)"
+    assert_eq "p3.5 fallback: AE_CORE= did NOT invoke the core for teardown" "0" \
+        "$([[ -s "$P35_MARK" ]] && echo 1 || echo 0)"
+    assert_contains "p3.5 fallback: bash still reports the end" "Ended" "$P35_OUT2"
+    assert_not_exists "p3.5 fallback: and the session state is gone" "$HOME/.ae/sessions/p35-end2"
+
+    # (3) A standing tombstone refuses a fresh launch of the same name (the launch guard).
+    #     _timeout guards against a regression that lets the launch proceed and attach.
+    mkdir -p "$HOME/.ae/sessions/.ending.p35-guard/messages"
+    P35_GOUT="$(cd "$P35_REPO" && _timeout 15 "$AE" --local p35-guard 2>&1; echo "rc=$?")"
+    assert_contains "p3.5 guard: a standing tombstone refuses the launch" \
+        "a previous teardown of 'p35-guard' did not complete" "$P35_GOUT"
+    assert_contains "p3.5 guard: and the launch exits non-zero (not a hang)" "rc=1" "$P35_GOUT"
+    assert_eq "p3.5 guard: the launch did NOT create a session for the name" "0" \
+        "$([[ -e "$HOME/.ae/sessions/p35-guard" ]] && echo 1 || echo 0)"
+    assert_eq "p3.5 guard: and the standing tombstone is left for manual recovery" "1" \
+        "$([[ -e "$HOME/.ae/sessions/.ending.p35-guard" ]] && echo 1 || echo 0)"
+    rm -rf "$HOME/.ae/sessions/.ending.p35-guard"
+
+    # (3b) A DANGLING `.ending.<name>` symlink also refuses the launch. `-e` alone is
+    #      false for a broken link, but the core treats that node as a standing
+    #      tombstone (lstat), so the guard must too — else the name is silently reused.
+    ln -s "$HOME/.ae/sessions/nonexistent-target-xyz" "$HOME/.ae/sessions/.ending.p35-dangling"
+    P35_DOUT="$(cd "$P35_REPO" && _timeout 15 "$AE" --local p35-dangling 2>&1; echo "rc=$?")"
+    assert_contains "p3.5 guard: a DANGLING tombstone symlink still refuses the launch" \
+        "a previous teardown of 'p35-dangling' did not complete" "$P35_DOUT"
+    assert_eq "p3.5 guard: the dangling-guarded name did NOT create a session" "0" \
+        "$([[ -e "$HOME/.ae/sessions/p35-dangling" ]] && echo 1 || echo 0)"
+    rm -f "$HOME/.ae/sessions/.ending.p35-dangling"
+
+    unset P35_VER P35_MARK P35_WRAP P35_REPO P35_META P35_META2 P35_OUT P35_OUT2 P35_GOUT P35_DOUT P35_CORE
+else
+    echo "  SKIP #79 P3.5 core routing: no built core at ${P35_CORE} (run: cargo build)"
+fi
+fi
+
 # ── purge: no archive written, and an existing one removed ───────────
 if _itest_section 'purge: no archive written, and an existing one removed'; then
 (cd "$A48_REPO" && "$AE" --local arch-purge &) 2>/dev/null

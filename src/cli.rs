@@ -52,6 +52,13 @@ pub const ARCHIVE_FROM_PREFLIGHT: &str = "_archive-from-preflight";
 /// entry, never human-typed.
 pub const ARCHIVE_PURGE: &str = "_archive-purge";
 
+/// Local-mode canonical session-state removal: `_end-local-teardown
+/// <session-dir>`. Bash routes here from `cleanup_session` for a `mode=local`
+/// session whose name is grammar-valid; the core renames the dir to a sibling
+/// tombstone and durably removes it. The session dir is `_ae_core_try`'s injected
+/// meta directory. Underscored — a core entry, never human-typed.
+pub const END_LOCAL_TEARDOWN: &str = "_end-local-teardown";
+
 /// The `state` helper's surface — `_state <meta-dir> [<value> [reason…]]`.
 /// Underscored like [`REQUESTS`]: launched by the generated helper, not typed.
 pub const STATE: &str = "_state";
@@ -193,6 +200,13 @@ pub enum Request {
         source_session: String,
         /// The parent archive id this session launched from, or `-`.
         parent_id: String,
+    },
+    /// `_end-local-teardown <session-dir>` — removes the canonical session state
+    /// of a local-mode session via the rename-to-tombstone commit boundary.
+    EndLocalTeardown {
+        /// The session directory (`_ae_core_try`'s injected meta dir). The core
+        /// derives the name and sessions root from it and validates both.
+        dir: PathBuf,
     },
     /// A usage error about a MISSING operand rather than an offending token.
     ///
@@ -373,6 +387,11 @@ impl Request {
                 _ => Self::MissingOperand(ARCHIVE_FROM_PREFLIGHT),
             },
             Some(ARCHIVE_PURGE) => Self::parse_purge(&args[1..]),
+            Some(END_LOCAL_TEARDOWN) => match &args[1..] {
+                [dir] => Self::EndLocalTeardown { dir: dir.into() },
+                [_, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(END_LOCAL_TEARDOWN),
+            },
             Some(ARCHIVE_PREVIEW) => match &args[1..] {
                 [] => Self::MissingOperand(ARCHIVE_PREVIEW),
                 [dir] => Self::ArchivePreview { dir: dir.into() },
@@ -463,7 +482,8 @@ impl Request {
             | Self::ArchivePreview { .. }
             | Self::ArchivePublish { .. }
             | Self::ArchiveFromPreflight { .. }
-            | Self::ArchivePurge { .. } => None,
+            | Self::ArchivePurge { .. }
+            | Self::EndLocalTeardown { .. } => None,
         }
     }
 }

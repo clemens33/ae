@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.13"
+AE_VERSION="0.2.14"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -2879,8 +2879,33 @@ cleanup_session() {
     # Kill any legacy heartbeat before removing meta.
     kill_heartbeat "$session_name"
 
-    # Always clean session state from SESSIONS_DIR
-    rm -rf "${SESSIONS_DIR:?}/${session_name:?}"
+    # Remove the canonical session state from SESSIONS_DIR. P3.5: for a grammar-valid
+    # LOCAL session the pinned Rust core owns this removal — a rename-to-tombstone
+    # commit boundary that clears the canonical name atomically and reports success
+    # only after the removal is durable. Nonlocal modes stay entirely on the bash rm
+    # (below), and a LEGACY grammar-invalid-but-usable local name (an existing-session
+    # consumer accepts one) also stays on the rm so it is never made un-endable.
+    # `--capture` returns 125 when the core is UNBOUND/unusable/forced off with
+    # AE_CORE=; then the reference rm runs. A core that RAN and FAILED (non-125) has
+    # left the session recoverable under its tombstone and printed the state — do NOT
+    # delete more or print an end line; fail loudly instead.
+    if [[ "$mode" == "local" ]] && _validate_session_name "$session_name" 2>/dev/null; then
+        local _teardown_rc=0
+        META_DIR="${SESSIONS_DIR}/${session_name}" _ae_core_try --capture _end-local-teardown || _teardown_rc=$?
+        case "$_teardown_rc" in
+            0) : ;;
+            125) rm -rf "${SESSIONS_DIR:?}/${session_name:?}" ;;
+            *)
+                echo "Error: the session state for '${session_name}' was not fully removed — see the teardown diagnostic above; the session is NOT ended." >&2
+                if [[ "$_purge" == "true" ]]; then
+                    echo "  The agent conversation history WAS purged as requested; only the session-state removal did not complete." >&2
+                fi
+                return 1
+                ;;
+        esac
+    else
+        rm -rf "${SESSIONS_DIR:?}/${session_name:?}"
+    fi
     # Legacy cleanup: old worktree-nested and local-mode paths
     rm -rf "${WORKTREES_DIR}/${session_name}/.ae/${session_name}" 2>/dev/null || true
     if [[ -n "$origin" ]] && [[ -d "${origin}/.ae/${session_name}" ]]; then
@@ -3101,7 +3126,7 @@ _end_session_locked() {
         # records the git outcome honestly as not-managed rather than inventing a range
         # from the human's own checkout.
         _end_archive_step "$session_name" "not-managed" "-" "-" "" || return 1
-        cleanup_session "$session_name" "$mode" "$origin"
+        cleanup_session "$session_name" "$mode" "$origin" || return 1
         echo "Ended local session $session_name"
         return 0
     fi
@@ -17366,6 +17391,25 @@ _validate_session_name "$SESSION" || exit 1
 # Checked here, once, ahead of BOTH reuse paths (the running-session fast path
 # below and the on-disk resume after it).
 _require_session_path_safe "$SESSION" || exit 1
+
+# P3.5 TEARDOWN TOMBSTONE GUARD. A standing `.ending.<name>` means a previous
+# local-mode teardown of THIS name did not complete: its state is parked under that
+# dead name, not under <name>. Refuse to silently reuse the name — a fresh launch, a
+# resume, a --from, or a compact relaunch would build on or over incomplete teardown
+# state. One guard at the single chokepoint, ahead of EVERY reuse/fresh/lineage path
+# below, so compact's relaunch inherits it too. There is no end-resume path (that is a
+# later slice), so the only truthful recovery is a manual inspect-and-remove.
+# `-e` alone is FALSE for a DANGLING symlink, but the core's teardown checks the
+# tombstone with `symlink_metadata` (lstat), which sees a dangling link as standing.
+# Test BOTH so the guard and the core agree: a `.ending.<name>` that is any node at
+# all — including a broken symlink — blocks reuse of the name.
+if [[ -e "${SESSIONS_DIR}/.ending.${SESSION}" || -L "${SESSIONS_DIR}/.ending.${SESSION}" ]]; then
+    echo "Error: a previous teardown of '${SESSION}' did not complete." >&2
+    echo "       ${SESSIONS_DIR}/.ending.${SESSION} is standing — the session state is parked under it, not under '${SESSION}'." >&2
+    echo "       Inspect it, then remove it by hand and retry:" >&2
+    echo "           rm -rf ${SESSIONS_DIR}/.ending.${SESSION}" >&2
+    exit 1
+fi
 
 # --- Explicit lineage preflight (--from) ---
 # Runs BEFORE the first tmux call, the first mkdir and any config mutation, so an

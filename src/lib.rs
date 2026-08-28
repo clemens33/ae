@@ -85,6 +85,7 @@ pub mod requests;
 pub mod send;
 pub mod session;
 pub mod state;
+pub mod teardown;
 pub mod time;
 pub mod tmux;
 pub mod tracked;
@@ -567,6 +568,10 @@ pub fn set_after_classify_hook(hook: Option<fn(&std::path::Path)>) {
 /// assert!(String::from_utf8(out).unwrap().contains("live"));
 /// # Ok::<(), ae::Error>(())
 /// ```
+#[allow(
+    clippy::too_many_lines,
+    reason = "the top-level command dispatch: one match arm per subcommand, kept as one readable table rather than fragmented into sub-dispatchers"
+)]
 pub fn run_with(
     args: &[String],
     world: Option<&listing::World>,
@@ -661,6 +666,7 @@ pub fn run_with(
             source_session,
             parent_id,
         } => archive::purge::run(dir, aid, source_session, parent_id, out, err)?,
+        cli::Request::EndLocalTeardown { dir } => teardown::run(dir, out, err)?,
         cli::Request::List(list_args) => {
             if let Some(world) = world {
                 // SC-017o: the warning goes to STDERR and the table still
