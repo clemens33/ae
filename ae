@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.12"
+AE_VERSION="0.2.13"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -5569,6 +5569,20 @@ _ar_purge_archive() { # <aid> <source-session-name> <parent-archive-id>
 # session pointing at nothing. Prints the canonical id on success.
 _ar_from_preflight() { # <raw-uuid>
     local raw="$1" aid root path
+    # P3.4: the core owns the shared archive tree validator, root classifier and
+    # claim rules (src/archive/store.rs), used identically by publish, --from and
+    # purge — no clone. Route the read-only preflight through it when the operator
+    # configured a core. This runs BEFORE any session exists, so there is no
+    # per-session pin; _ae_core_preflight_try resolves the operator's core input
+    # directly and honours AE_CORE= for the reference bash body below. 125 = not
+    # attempted; the core's own facts (id\thandover\tpending on stdout) or its
+    # named refusal (stderr, rc 1) otherwise.
+    local _fp_out _fp_rc=0
+    _fp_out="$(_ae_core_preflight_try _archive-from-preflight "$(_ar_root)" "$raw")" || _fp_rc=$?
+    if ((_fp_rc != 125)); then
+        if [[ -n "$_fp_out" ]]; then printf '%s' "$_fp_out"; fi
+        return "$_fp_rc"
+    fi
     aid="$(_ar_canonical_uuid "$raw")"
     if [[ -z "$aid" ]]; then
         echo "Error: --from takes an archive UUID; '${raw}' is not one." >&2
@@ -8270,16 +8284,38 @@ _end_archive_step() { # <session> <push-outcome> <push-ref> <preserved> <workdir
             return 1
             ;;
         purge)
-            local parent removed
+            local parent removed prc=0
             if [[ -z "$aid" ]]; then
                 echo "No archive written (--purge-history); this session never had an id to key one."
                 return 0
             fi
             parent="$(_ar_meta_get "${dir}/meta" parent_archive_id)"
-            removed="$(_ar_purge_archive "$aid" "$name" "$parent")" || {
-                echo "Error: purging the archive for '${name}' failed — the session is STOPPED and nothing was deleted." >&2
-                return 1
-            }
+            # P3.4: the Rust core owns the destructive purge — it proves the archive
+            # is provably THIS session's, deletes it under the shared claim, and (a
+            # PRIVACY promise) reports success ONLY after the bytes are gone AND the
+            # removal is durable. `--capture` returns 125 when the core is UNBOUND,
+            # unusable, or forced off with AE_CORE=; then the reference bash body
+            # purges. A core that RAN and FAILED returns its own non-125 code — a
+            # real purge failure that STOPS the end, never a reason to re-purge.
+            removed="$(META_DIR="$dir" _ae_core_try --capture _archive-purge "$aid" "$name" "$parent")" || prc=$?
+            case "$prc" in
+                0) : ;;
+                125)
+                    removed="$(_ar_purge_archive "$aid" "$name" "$parent")" || {
+                        echo "Error: purging the archive for '${name}' failed — the session is STOPPED and nothing was deleted." >&2
+                        return 1
+                    }
+                    ;;
+                *)
+                    # The core RAN and FAILED. It has already emitted the precise
+                    # state to stderr — pre-commit: nothing deleted, its claim
+                    # cleared; post-commit: PURGE INCOMPLETE, its claim retained —
+                    # and preserved the live session. Do NOT re-assert "nothing was
+                    # deleted" here: that is false for an incomplete purge. Stop.
+                    echo "Error: purging the archive for '${name}' failed (see above) — the session is STOPPED." >&2
+                    return 1
+                    ;;
+            esac
             if [[ -n "$removed" ]]; then
                 echo "Purged archive ${aid}"
                 echo "  removed ${removed}"
@@ -14697,6 +14733,39 @@ _ae_core_try() { # [--quiet] [--capture] <subcommand> [args...]
         return "$crc"
     fi
     exec "$bin" "$sub" "$META_DIR" "$@"
+}
+
+# A core call made BEFORE any session exists — the `--from` preflight runs ahead
+# of the first mkdir, so there is no per-session pin (${META_DIR}/meta) for
+# _ae_core_try to route through. This resolves the OPERATOR's core input directly
+# (the same AE_CORE_BIN / workspace.core source _ae_core_bind pins at launch, so
+# the preflight uses exactly the binary the about-to-be-created session will bind)
+# and runs it as a subprocess, returning its stdout on the caller's captured pipe
+# and its exit code. There is no version PIN to check against here — the operator
+# config IS the authority for a session that does not exist yet — only that the
+# resolved path is an executable that reports a version, the same usability test
+# _ae_core_bind applies. Honours AE_CORE= (set-but-empty forces the bash body)
+# exactly like _ae_core_try. Returns 125 when no usable core is configured, so the
+# caller falls back to its reference bash body; the core's own 0/1/2 otherwise.
+_ae_core_preflight_try() { # <subcommand> [args...]
+    local sub="$1"
+    shift
+    # AE_CORE explicitly EMPTY forces the bash body for this one invocation; unset
+    # means "no opinion", not "off" — same contract as _ae_core_try.
+    if [[ -n "${AE_CORE+set}" && -z "${AE_CORE:-}" ]]; then
+        return 125
+    fi
+    local bin
+    bin="$(_ae_core_bin_input)" || return 125
+    # Absolute + executable + reports a version, or fall back. A relative path
+    # would resolve against wherever the caller happened to run.
+    [[ "$bin" == /* && -x "$bin" ]] || return 125
+    _ae_core_bin_version "$bin" >/dev/null 2>&1 || return 125
+    # Capture the core's own exit code explicitly — a bare call would let errexit
+    # abort this function on a non-zero core before `return` runs.
+    local crc=0
+    "$bin" "$sub" "$@" || crc=$?
+    return "$crc"
 }
 
 # requests:

@@ -39,6 +39,19 @@ pub const ARCHIVE_PREVIEW: &str = "_archive-preview";
 /// [`ARCHIVE_PREVIEW`] it is underscored — a core entry, never human-typed.
 pub const ARCHIVE_PUBLISH: &str = "_archive-publish";
 
+/// `--from`'s read-only preflight: `_archive-from-preflight <archive-root>
+/// <raw-uuid>`. Bash routes the frozen `_ar_from_preflight` here before any launch
+/// side effect; the core proves the archive and prints `aid\thandover\tpending`.
+/// Underscored — a core entry, never human-typed.
+pub const ARCHIVE_FROM_PREFLIGHT: &str = "_archive-from-preflight";
+
+/// `--purge-history`'s archive deletion: `_archive-purge <session-dir> <aid>
+/// <source-session> <parent-id>`. Bash routes the frozen `_ar_purge_archive`
+/// here; the core proves ownership, then deletes under the shared claim and
+/// makes the deletion durable before it reports success. Underscored — a core
+/// entry, never human-typed.
+pub const ARCHIVE_PURGE: &str = "_archive-purge";
+
 /// The `state` helper's surface — `_state <meta-dir> [<value> [reason…]]`.
 /// Underscored like [`REQUESTS`]: launched by the generated helper, not typed.
 pub const STATE: &str = "_state";
@@ -160,6 +173,26 @@ pub enum Request {
         workdir: String,
         /// The archive instant Bash captured (`date -u`), validated by the core.
         archived_at: String,
+    },
+    /// `_archive-from-preflight <archive-root> <raw-uuid>` — the read-only
+    /// `--from` preflight; prints `aid\thandover\tpending` or a named refusal.
+    ArchiveFromPreflight {
+        /// The archive root `ae` derived (`$AE_HOME/archive`).
+        root: PathBuf,
+        /// The `--from` argument, canonicalised and validated by the core.
+        raw_uuid: String,
+    },
+    /// `_archive-purge <session-dir> <aid> <source-session> <parent-id>` —
+    /// deletes this session's archive under the shared claim, durably.
+    ArchivePurge {
+        /// The session directory `ae` resolved and path-checked before shimming.
+        dir: PathBuf,
+        /// The canonical archive id to purge.
+        aid: String,
+        /// The exact session name that must own the archive (never a wildcard).
+        source_session: String,
+        /// The parent archive id this session launched from, or `-`.
+        parent_id: String,
     },
     /// A usage error about a MISSING operand rather than an offending token.
     ///
@@ -331,6 +364,15 @@ impl Request {
                 [_, _, _, _, _, _, extra, ..] => Self::UsageError(extra.clone()),
                 _ => Self::MissingOperand(ARCHIVE_PUBLISH),
             },
+            Some(ARCHIVE_FROM_PREFLIGHT) => match &args[1..] {
+                [root, raw_uuid] => Self::ArchiveFromPreflight {
+                    root: root.into(),
+                    raw_uuid: raw_uuid.clone(),
+                },
+                [_, _, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(ARCHIVE_FROM_PREFLIGHT),
+            },
+            Some(ARCHIVE_PURGE) => Self::parse_purge(&args[1..]),
             Some(ARCHIVE_PREVIEW) => match &args[1..] {
                 [] => Self::MissingOperand(ARCHIVE_PREVIEW),
                 [dir] => Self::ArchivePreview { dir: dir.into() },
@@ -340,6 +382,20 @@ impl Request {
             // because everything left over is a name and not an error.
             Some(other) if other.starts_with('-') => Self::UsageError(other.to_owned()),
             Some(other) => Self::LaunchCandidate(other.to_owned()),
+        }
+    }
+
+    /// `_archive-purge <session-dir> <aid> <source-session> <parent-id>`.
+    fn parse_purge(tail: &[String]) -> Self {
+        match tail {
+            [dir, aid, source_session, parent_id] => Self::ArchivePurge {
+                dir: dir.into(),
+                aid: aid.clone(),
+                source_session: source_session.clone(),
+                parent_id: parent_id.clone(),
+            },
+            [_, _, _, _, extra, ..] => Self::UsageError(extra.clone()),
+            _ => Self::MissingOperand(ARCHIVE_PURGE),
         }
     }
 
@@ -405,7 +461,9 @@ impl Request {
             | Self::Send { .. }
             | Self::EventsTail { .. }
             | Self::ArchivePreview { .. }
-            | Self::ArchivePublish { .. } => None,
+            | Self::ArchivePublish { .. }
+            | Self::ArchiveFromPreflight { .. }
+            | Self::ArchivePurge { .. } => None,
         }
     }
 }

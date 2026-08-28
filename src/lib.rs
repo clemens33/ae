@@ -652,6 +652,15 @@ pub fn run_with(
             out,
             err,
         )?,
+        cli::Request::ArchiveFromPreflight { root, raw_uuid } => {
+            archive::from::run(root, raw_uuid, out, err)?
+        }
+        cli::Request::ArchivePurge {
+            dir,
+            aid,
+            source_session,
+            parent_id,
+        } => archive::purge::run(dir, aid, source_session, parent_id, out, err)?,
         cli::Request::List(list_args) => {
             if let Some(world) = world {
                 // SC-017o: the warning goes to STDERR and the table still

@@ -5,7 +5,9 @@
 //! also a test target.
 
 mod archive;
+mod archive_from;
 mod archive_publish;
+mod archive_purge;
 mod cli;
 mod fixtures;
 mod git;

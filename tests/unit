@@ -11400,7 +11400,7 @@ assert_eq "interrupt-verify: unconfirmed submit exits 1, emits NO interrupt even
 # `ref`, not `target`; TAB-framed rows collapse when a field is empty) were both invisible
 # to a golden built from the emitter's intent, so these fixtures are written to look like
 # the bytes a real session leaves behind.
-eval "$(awk '/^(_ar_canonical_uuid|_ar_count_lines|_ar_require_real_root|_ar_meta_get|_ar_event_facts|_ar_memo_handover|_ar_memo_topics|_ar_request_states|_ar_roster_slots|_ar_latest_state|_ar_build_meta|_ar_text_block|_ar_render_digest|_ar_facts_row|_ar_compose_meta|_ar_fingerprint|_ar_preview_once|_ar_git_head|_ar_git_range|_ar_root|_ar_validate_tree|_ar_publish|_ar_stage_payload|_ar_purge_archive|_ar_from_preflight|_end_effective_purge|_end_archive_plan|_launch_parse_flags|_valid_slot|_event_json_str)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
+eval "$(awk '/^(_ar_canonical_uuid|_ar_count_lines|_ar_require_real_root|_ar_meta_get|_ar_event_facts|_ar_memo_handover|_ar_memo_topics|_ar_request_states|_ar_roster_slots|_ar_latest_state|_ar_build_meta|_ar_text_block|_ar_render_digest|_ar_facts_row|_ar_compose_meta|_ar_fingerprint|_ar_preview_once|_ar_git_head|_ar_git_range|_ar_root|_ar_validate_tree|_ar_publish|_ar_stage_payload|_ar_purge_archive|_ar_from_preflight|_ae_core_preflight_try|_ae_core_bin_input|_ae_core_bin_version|_end_effective_purge|_end_archive_plan|_launch_parse_flags|_valid_slot|_event_json_str)\(\) \{/,/^\}$/' <<<"$AE_SOURCE")"
 
 _ar48_root="$(mktemp -d /tmp/aear48.XXXXXX)"
 

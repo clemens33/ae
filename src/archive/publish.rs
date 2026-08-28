@@ -49,11 +49,15 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::request_states::request_states;
+use super::store::{
+    archive_root_of, claim_path, count_tree, exists, fsync_dir, make_claim, messages_fingerprint,
+    mkdir_0700, read_dir, read_file, require_real_root, symlink_meta, validate_tree,
+    write_file_0600,
+};
 use super::{
     GitFacts, Sources, Volatiles, canonical_uuid, event_facts, fingerprint, memo_rows, memo_topics,
     meta_get, or_dash, roster, roster_slots,
@@ -138,17 +142,11 @@ pub(crate) fn run(
     // with its evidence silently dropped. Fingerprint before/after as defence in
     // depth against a writer that somehow bypassed the locks (it cannot, held).
     let before = fingerprint(dir);
-    let (meta_bytes, memo_bytes, event_bytes) = match (
-        read_source(&dir.join("meta")),
-        read_source(&dir.join("memo.tsv")),
-        read_source(&dir.join("events.jsonl")),
-    ) {
-        (Ok(m), Ok(mo), Ok(e)) => (m, mo, e),
-        (m, mo, e) => {
-            for r in [m, mo, e] {
-                if let Err(diag) = r {
-                    writeln!(err, "{diag}")?;
-                }
+    let (meta_bytes, memo_bytes, event_bytes) = match read_sources(dir) {
+        Ok(triple) => triple,
+        Err(diags) => {
+            for diag in diags {
+                writeln!(err, "{diag}")?;
             }
             return Ok(EXIT_FAILED);
         }
@@ -196,13 +194,14 @@ pub(crate) fn run(
         preserved: ops.preserved.to_owned(),
     };
 
-    let root = match require_real_root(dir) {
-        Ok(root) => root,
-        Err(line) => {
-            writeln!(err, "{line}")?;
-            return Ok(EXIT_FAILED);
-        }
+    let Some(root) = archive_root_of(dir) else {
+        writeln!(err, "archive: '{}' has no archive root.", dir.display())?;
+        return Ok(EXIT_FAILED);
     };
+    if let Err(line) = require_real_root(&root, true) {
+        writeln!(err, "{line}")?;
+        return Ok(EXIT_FAILED);
+    }
     let target = root.join(&aid);
     if exists(&target) {
         writeln!(
@@ -242,8 +241,8 @@ fn publish_under_claim(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> io::Result<u8> {
-    let claim = root.join(format!(".publishing.{}", facts.aid));
-    if let Err(why) = fs::DirBuilder::new().mode(0o700).create(&claim) {
+    let claim = claim_path(root, facts.aid);
+    if let Err(why) = make_claim(&claim) {
         writeln!(
             err,
             "archive: another publisher holds {} (or a previous run crashed holding it): {why}",
@@ -576,50 +575,22 @@ fn read_source(path: &Path) -> Result<Vec<u8>, String> {
     }
 }
 
-/// The archive root for the session at `dir` — `<AE_HOME>/archive`, derived from
-/// the session path (`<AE_HOME>/sessions/<name>`) so no `env::var` door is
-/// needed. Refuses a root whose FINAL component is a symlink (the frozen
-/// `_ar_require_real_root`: `$AE_HOME` itself may sit under symlinked paths like
-/// `/tmp -> /private/tmp`, but its own `archive` may not be a link ae writes
-/// through), and creates it `0700` when absent.
-fn require_real_root(dir: &Path) -> Result<PathBuf, String> {
-    let root = dir
-        .parent()
-        .and_then(Path::parent)
-        .map(|home| home.join("archive"))
-        .ok_or_else(|| format!("archive: '{}' has no archive root.", dir.display()))?;
-    if let Ok(meta) = symlink_meta(&root)
-        && meta.file_type().is_symlink()
-    {
-        return Err(format!(
-            "archive: '{}' is a symlink, not ae's archive root — refusing to act through it.",
-            root.display()
-        ));
+/// The three core source blobs — meta, memo.tsv, events.jsonl — from the
+/// coherent snapshot.
+type CoreBytes = (Vec<u8>, Vec<u8>, Vec<u8>);
+
+/// Read the three core sources from the coherent snapshot. `Ok` with the triple,
+/// or `Err` with every read diagnostic — an existing-but-unreadable regular
+/// source refuses, an absent optional one is empty (see [`read_source`]).
+fn read_sources(dir: &Path) -> Result<CoreBytes, Vec<String>> {
+    match (
+        read_source(&dir.join("meta")),
+        read_source(&dir.join("memo.tsv")),
+        read_source(&dir.join("events.jsonl")),
+    ) {
+        (Ok(m), Ok(mo), Ok(e)) => Ok((m, mo, e)),
+        (m, mo, e) => Err([m, mo, e].into_iter().filter_map(Result::err).collect()),
     }
-    if !exists(&root) {
-        fs::create_dir_all(&root)
-            .map_err(|why| format!("archive: could not create '{}': {why}", root.display()))?;
-    }
-    let _ = fs::set_permissions(&root, fs::Permissions::from_mode(0o700));
-    // Persist the archive/ directory's OWN entry in its PARENT — UNCONDITIONALLY,
-    // on every publish, before any claim. Keying this on "did THIS invocation
-    // create the root" is not enough: a prior invocation could create the root and
-    // then fail (and refuse) before the parent entry was durable, and a retry
-    // would find the root present, skip the proof, and publish. Since `ae end`
-    // deletes the live session once publication reports success, and the later
-    // root fsync persists only entries INSIDE archive/ (not archive/'s own entry),
-    // the root's existence must be re-proven durable here every time — so an
-    // unconfirmed root fails the publish with the source intact rather than after
-    // it is gone. Directory fsync is cheap; publication is not a hot path.
-    if let Some(parent) = root.parent() {
-        fsync_dir(parent).map_err(|why| {
-            format!(
-                "archive: could not confirm '{}' is durable (fsync parent: {why}); refusing before publishing so nothing is deleted.",
-                root.display()
-            )
-        })?;
-    }
-    Ok(root)
 }
 
 /// Copy the DIRECT, regular, non-symlink `messages/*.txt` into `dst` at `0600`.
@@ -675,237 +646,4 @@ fn stage_messages(src: &Path, dst: &Path, err: &mut impl Write) -> Result<(), St
             .map_err(|why| format!("archive: could not stage messages/{base}: {why}"))?;
     }
     Ok(())
-}
-
-/// Validate the staged tree before it is published — the frozen
-/// `_ar_validate_tree`'s load-bearing checks: real directory `0700`; only the
-/// known entries, each a non-symlink of the right kind at `0600`/`0700` with no
-/// executable bit; the required files present; and the digest and meta agreeing
-/// on `archive_id`, the version, a named source session, and the three counts a
-/// human-edited pair would disagree on.
-fn validate_tree(payload: &Path, aid: &str) -> Result<(), String> {
-    let dir_mode =
-        symlink_meta(payload).map_err(|why| format!("archive: staged tree unreadable: {why}"))?;
-    if dir_mode.file_type().is_symlink() || !dir_mode.is_dir() {
-        return Err(format!(
-            "archive: '{}' is not a real directory.",
-            payload.display()
-        ));
-    }
-    check_mode(&dir_mode, 0o700)
-        .map_err(|m| format!("archive: payload has mode {m}, expected 700."))?;
-
-    for name in ["meta", "digest.md", "memo.tsv", "events.jsonl"] {
-        let meta = symlink_meta(&payload.join(name))
-            .map_err(|_| format!("archive: '{name}' is missing."))?;
-        if meta.file_type().is_symlink() || !meta.is_file() {
-            return Err(format!("archive: '{name}' is not a regular file."));
-        }
-        let mode = meta.permissions().mode() & 0o777;
-        if mode & 0o111 != 0 {
-            return Err(format!(
-                "archive: '{name}' has mode {mode:o} — an archived file must carry no executable bit."
-            ));
-        }
-        if mode != 0o600 {
-            return Err(format!(
-                "archive: '{name}' has mode {mode:o}, expected 600."
-            ));
-        }
-    }
-    let msgs = payload.join("messages");
-    let msgs_meta =
-        symlink_meta(&msgs).map_err(|_| "archive: 'messages/' is missing.".to_owned())?;
-    if msgs_meta.file_type().is_symlink() || !msgs_meta.is_dir() {
-        return Err("archive: 'messages/' must be a directory.".to_owned());
-    }
-    check_mode(&msgs_meta, 0o700)
-        .map_err(|m| format!("archive: 'messages/' has mode {m}, expected 700."))?;
-    for path in read_dir(&msgs).unwrap_or_default() {
-        let base = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let meta = symlink_meta(&path)
-            .map_err(|why| format!("archive: 'messages/{base}' unreadable: {why}"))?;
-        if base.rsplit('.').next() != Some("txt") {
-            return Err(format!("archive: unexpected entry 'messages/{base}'."));
-        }
-        if meta.file_type().is_symlink() || !meta.is_file() {
-            return Err(format!("archive: 'messages/{base}' is not a regular file."));
-        }
-        let mode = meta.permissions().mode() & 0o777;
-        if mode & 0o111 != 0 || mode != 0o600 {
-            return Err(format!(
-                "archive: 'messages/{base}' has mode {mode:o}, expected 600."
-            ));
-        }
-    }
-
-    // Meta/digest consistency: the same checks the frozen validator makes, which
-    // this construction cannot fail (both are built from the same facts) but which
-    // are cheap insurance against a future divergence in the two renderers.
-    let meta_bytes = read_file(&payload.join("meta"))
-        .map_err(|why| format!("archive: staged meta unreadable: {why}"))?;
-    let digest = read_file(&payload.join("digest.md"))
-        .map_err(|why| format!("archive: staged digest unreadable: {why}"))?;
-    let digest = String::from_utf8_lossy(&digest);
-    if meta_get(&meta_bytes, "archive_id") != aid {
-        return Err(format!("archive: meta archive_id does not match '{aid}'."));
-    }
-    if meta_get(&meta_bytes, "archive_version") != "1" {
-        return Err("archive: archive_version is not 1.".to_owned());
-    }
-    if meta_get(&meta_bytes, "source_session").is_empty() {
-        return Err("archive: meta names no source_session.".to_owned());
-    }
-    for (key, section) in [
-        ("handover_count", "## Handover ("),
-        ("memo_topic_count", "## Memo topics ("),
-        ("pending_request_count", "## Unresolved requests ("),
-    ] {
-        let want = meta_get(&meta_bytes, key);
-        let have = digest
-            .split_once(section)
-            .and_then(|(_, rest)| rest.split_once(')'))
-            .map(|(n, _)| n.to_owned())
-            .unwrap_or_default();
-        if want != have {
-            return Err(format!(
-                "archive: digest says {section}{have}) but meta says {want}."
-            ));
-        }
-    }
-    if !digest.contains(&format!("- Archive ID: {aid}")) {
-        return Err(format!("archive: digest does not name archive ID {aid}."));
-    }
-    Ok(())
-}
-
-/// `(files, bytes)` over the published target — the frozen banner arithmetic.
-fn count_tree(target: &Path) -> (u64, u64) {
-    let mut files = 0u64;
-    let mut bytes = 0u64;
-    let mut stack = vec![target.to_owned()];
-    while let Some(path) = stack.pop() {
-        let Ok(meta) = symlink_meta(&path) else {
-            continue;
-        };
-        if meta.is_dir() {
-            if let Ok(entries) = read_dir(&path) {
-                stack.extend(entries);
-            }
-        } else if meta.is_file() {
-            files += 1;
-            bytes += meta.len();
-        }
-    }
-    (files, bytes)
-}
-
-// ── capability doors ────────────────────────────────────────────────────────
-// Reads of the world go through these, each named at its site — archive.rs is an
-// inventoried reader (clippy.toml's disallowed-methods boundary). Writes,
-// renames and fsyncs are not reads and need no door.
-
-/// `fs::read`, the one place this module reads a file's bytes.
-fn read_file(path: &Path) -> io::Result<Vec<u8>> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: reads a source or staged file for publication — see clippy.toml"
-    )]
-    let bytes = std::fs::read(path);
-    bytes
-}
-
-/// The `.txt`-carrying entry paths directly under `dir` (no recursion here; the
-/// caller classifies each). Empty when `dir` is absent or unreadable.
-fn read_dir(dir: &Path) -> io::Result<Vec<PathBuf>> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: lists messages/ (and the published tree) for staging — see clippy.toml"
-    )]
-    let read = std::fs::read_dir(dir)?;
-    Ok(read.flatten().map(|e| e.path()).collect())
-}
-
-/// `symlink_metadata` (lstat) — classifies a node without following it.
-fn symlink_meta(path: &Path) -> io::Result<fs::Metadata> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: lstat to classify a node and read its mode — see clippy.toml"
-    )]
-    let meta = std::fs::symlink_metadata(path);
-    meta
-}
-
-/// Whether `path` exists (an lstat that answers, symlink included) — the door
-/// standing in for the disallowed `Path::exists`.
-fn exists(path: &Path) -> bool {
-    symlink_meta(path).is_ok()
-}
-
-/// `File::open` of a directory, to `fsync` it — how a rename or a new entry is
-/// made durable on Unix.
-fn fsync_dir(dir: &Path) -> io::Result<()> {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "a door: opens a directory to fsync it for durable publication — see clippy.toml"
-    )]
-    let handle = std::fs::File::open(dir)?;
-    handle.sync_all()
-}
-
-/// A directory created at exactly `0700`, whatever the umask.
-fn mkdir_0700(path: &Path) -> io::Result<()> {
-    fs::DirBuilder::new().mode(0o700).create(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-}
-
-/// A file written at exactly `0600` and `fsync`ed — whatever the umask, the mode
-/// the validator demands and the durability the assignment requires.
-fn write_file_0600(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)?;
-    file.write_all(bytes)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    file.sync_all()
-}
-
-/// A stable fingerprint of the messages directory — sorted `name:size:mtime` for
-/// every entry — so a change during the copy is caught rather than mixed.
-fn messages_fingerprint(dir: &Path) -> String {
-    let Ok(mut entries) = read_dir(dir) else {
-        return String::new();
-    };
-    entries.sort();
-    let mut out = String::new();
-    for path in entries {
-        let base = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if let Ok(meta) = symlink_meta(&path) {
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_nanos());
-            let _ = write!(out, "{base}:{}:{mtime};", meta.len());
-        }
-    }
-    out
-}
-
-/// `Ok(())` if `meta`'s mode is exactly `want`, else `Err(mode)` for the message.
-fn check_mode(meta: &fs::Metadata, want: u32) -> Result<(), String> {
-    let mode = meta.permissions().mode() & 0o777;
-    if mode == want {
-        Ok(())
-    } else {
-        Err(format!("{mode:o}"))
-    }
 }

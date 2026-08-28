@@ -1790,9 +1790,11 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // The archive PUBLISHER's reads (P3.3): the coherent snapshot of
             // meta/memo/events under their locks, the messages/*.txt staging
             // classification, the staged-tree validation stats, and the
-            // directory `fsync` that makes the rename durable. Registered
-            // deliberately, beside the preview tracer it shares the digest with.
-            "src/archive/publish.rs".to_owned(),
+            // directory `fsync` that makes the rename durable. The doors moved
+            // here in P3.4 into the ONE shared archive store that publish,
+            // inherit (`--from`) and purge all read the world through — so this
+            // single file, not three, is the inventoried reader for all of them.
+            "src/archive/store.rs".to_owned(),
             // The OPAQUE event-container read and existence test, shared by the
             // `requests` and `events-tail` surfaces. One file rather than two:
             // both surfaces read the same container the same quiet way, so the

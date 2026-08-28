@@ -5335,6 +5335,111 @@ else
 fi
 fi
 
+# ── #48 P3.4: --from preflight and purge route through the core; AE_CORE= falls back ──
+if _itest_section '#48 P3.4: --from and purge route through the core, AE_CORE= falls back'; then
+# P3.4 moves the read-only --from preflight and the destructive --purge-history deletion
+# into the typed core, both sharing the ONE archive validator/root/claim implementation
+# (src/archive/store.rs) with publish. This proves the LIFECYCLE routing for both, which
+# bind DIFFERENTLY: --from runs before any session exists, so it resolves the operator's
+# core input directly (AE_CORE_BIN), while purge routes through the ended session's pinned
+# core exactly as publish does. Needs the built core; a tree without one skips loudly.
+P34_CORE="$(dirname "$AE")/target/debug/ae"
+if [[ -x "$P34_CORE" ]]; then
+    P34_VER="$("$P34_CORE" --version 2>/dev/null | awk '{print $NF}')"
+    P34_FROM_MARK="$TMPDIR/p34-from-invoked"
+    P34_PURGE_MARK="$TMPDIR/p34-purge-invoked"
+    P34_WRAP="$TMPDIR/p34-core-wrapper"
+    # A logging wrapper: records _archive-from-preflight / _archive-purge invocations,
+    # then execs the real core — routing is observable though core and bash results agree.
+    printf '#!/bin/sh\ncase "$1" in _archive-from-preflight) echo "$@" >> "%s";; _archive-purge) echo "$@" >> "%s";; esac\nexec "%s" "$@"\n' \
+        "$P34_FROM_MARK" "$P34_PURGE_MARK" "$P34_CORE" > "$P34_WRAP"
+    chmod +x "$P34_WRAP"
+
+    # A real parent archive to inherit from.
+    P34_REPO="$(setup_repo)"
+    (cd "$P34_REPO" && "$AE" --local p34-parent &) 2>/dev/null
+    wait_for_session "p34-parent" 20
+    sleep 1
+    P34_UUID="$(grep '^session_id=' "$HOME/.ae/sessions/p34-parent/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+    "$AE" end -f --keep-history p34-parent >/dev/null 2>&1
+    assert_eq "p3.4 setup: a real parent archive exists" "1" \
+        "$([[ -f "$HOME/.ae/archive/$P34_UUID/digest.md" ]] && echo 1 || echo 0)"
+
+    # (1) --from routes through the core (preflight resolves AE_CORE_BIN directly).
+    : > "$P34_FROM_MARK"
+    (cd "$P34_REPO" && AE_CORE_BIN="$P34_WRAP" "$AE" --local p34-child --from "$P34_UUID" &) 2>/dev/null
+    wait_for_session "p34-child" 20
+    sleep 1
+    assert_eq "p3.4 route: the core WAS invoked for _archive-from-preflight" "1" \
+        "$([[ -s "$P34_FROM_MARK" ]] && echo 1 || echo 0)"
+    assert_contains "p3.4 route: and the child records the parent it inherited" \
+        "parent_archive_id=$P34_UUID" "$(cat "$HOME/.ae/sessions/p34-child/meta")"
+    "$AE" end -f --purge-history p34-child >/dev/null 2>&1 || true
+
+    # (2) AE_CORE= forces the reference bash preflight; the child still inherits.
+    : > "$P34_FROM_MARK"
+    (cd "$P34_REPO" && AE_CORE= AE_CORE_BIN="$P34_WRAP" "$AE" --local p34-child2 --from "$P34_UUID" &) 2>/dev/null
+    wait_for_session "p34-child2" 20
+    sleep 1
+    assert_eq "p3.4 fallback: AE_CORE= did NOT invoke the core for --from" "0" \
+        "$([[ -s "$P34_FROM_MARK" ]] && echo 1 || echo 0)"
+    assert_contains "p3.4 fallback: and the bash preflight still inherited the parent" \
+        "parent_archive_id=$P34_UUID" "$(cat "$HOME/.ae/sessions/p34-child2/meta")"
+    "$AE" end -f --purge-history p34-child2 >/dev/null 2>&1 || true
+
+    # (3) purge routes through the ended session's PINNED core. Publish a real archive,
+    # relaunch the same name pointed back at it with the core pinned in meta, then purge.
+    : > "$P34_PURGE_MARK"
+    (cd "$P34_REPO" && "$AE" --local p34-purge &) 2>/dev/null
+    wait_for_session "p34-purge" 20
+    sleep 1
+    P34_META="$HOME/.ae/sessions/p34-purge"
+    P34_PUUID="$(grep '^session_id=' "$P34_META/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+    "$AE" end -f --keep-history p34-purge >/dev/null 2>&1
+    assert_eq "p3.4 setup: the purge target archive exists" "1" \
+        "$([[ -f "$HOME/.ae/archive/$P34_PUUID/meta" ]] && echo 1 || echo 0)"
+    (cd "$P34_REPO" && "$AE" --local p34-purge &) 2>/dev/null
+    wait_for_session "p34-purge" 20
+    sleep 1
+    _sed_i -e "s|^session_id=.*|session_id=$P34_PUUID|" "$P34_META/meta"
+    { grep -v '^ae_core=' "$P34_META/meta" | grep -v '^ae_core_version=' ; \
+      printf 'ae_core=%s\nae_core_version=%s\n' "$P34_WRAP" "$P34_VER"; } > "$P34_META/meta.tmp"
+    mv "$P34_META/meta.tmp" "$P34_META/meta"
+    P34_POUT="$("$AE" end -f --purge-history p34-purge 2>&1)"
+    assert_eq "p3.4 route: the core WAS invoked for _archive-purge" "1" \
+        "$([[ -s "$P34_PURGE_MARK" ]] && echo 1 || echo 0)"
+    assert_contains "p3.4 route: bash reports the core's purge" "Purged archive $P34_PUUID" "$P34_POUT"
+    assert_not_exists "p3.4 route: the archive is gone" "$HOME/.ae/archive/$P34_PUUID"
+    assert_eq "p3.4 route: and no purge claim is left behind" "0" \
+        "$(find "$HOME/.ae/archive" -maxdepth 1 -name '.publishing.*' | grep -c . | tr -d '[:space:]')"
+
+    # (4) AE_CORE= forces the reference bash purge; the archive is still removed.
+    : > "$P34_PURGE_MARK"
+    (cd "$P34_REPO" && "$AE" --local p34-purge2 &) 2>/dev/null
+    wait_for_session "p34-purge2" 20
+    sleep 1
+    P34_META2="$HOME/.ae/sessions/p34-purge2"
+    P34_P2UUID="$(grep '^session_id=' "$P34_META2/meta" | cut -d= -f2- | tr '[:upper:]' '[:lower:]')"
+    "$AE" end -f --keep-history p34-purge2 >/dev/null 2>&1
+    (cd "$P34_REPO" && "$AE" --local p34-purge2 &) 2>/dev/null
+    wait_for_session "p34-purge2" 20
+    sleep 1
+    _sed_i -e "s|^session_id=.*|session_id=$P34_P2UUID|" "$P34_META2/meta"
+    { grep -v '^ae_core=' "$P34_META2/meta" | grep -v '^ae_core_version=' ; \
+      printf 'ae_core=%s\nae_core_version=%s\n' "$P34_WRAP" "$P34_VER"; } > "$P34_META2/meta.tmp"
+    mv "$P34_META2/meta.tmp" "$P34_META2/meta"
+    P34_POUT2="$(AE_CORE= "$AE" end -f --purge-history p34-purge2 2>&1)"
+    assert_eq "p3.4 fallback: AE_CORE= did NOT invoke the core for purge" "0" \
+        "$([[ -s "$P34_PURGE_MARK" ]] && echo 1 || echo 0)"
+    assert_contains "p3.4 fallback: the bash body still purged" "Purged archive $P34_P2UUID" "$P34_POUT2"
+    assert_not_exists "p3.4 fallback: and the archive is gone" "$HOME/.ae/archive/$P34_P2UUID"
+
+    unset P34_UUID P34_PUUID P34_P2UUID P34_POUT P34_POUT2 P34_META P34_META2 P34_VER P34_WRAP P34_FROM_MARK P34_PURGE_MARK P34_CORE P34_REPO
+else
+    echo "  SKIP #48 P3.4 core routing: no built core at ${P34_CORE} (run: cargo build)"
+fi
+fi
+
 # ── purge: no archive written, and an existing one removed ───────────
 if _itest_section 'purge: no archive written, and an existing one removed'; then
 (cd "$A48_REPO" && "$AE" --local arch-purge &) 2>/dev/null
