@@ -1,0 +1,206 @@
+//! The archive preview's git facts, derived by running `git` — the ONLY product
+//! caller of [`crate::transport::run_git`], the fixed-program git leg of the one
+//! process door.
+//!
+//! This is a faithful port of the frozen `_ar_git_head` and `_ar_git_range`,
+//! which a non-local (`worktree`/`copy`) preview runs in the session's work dir.
+//! Two properties are structural, not incidental:
+//!
+//! * **No shell, so nothing to inject.** Every invocation is built as OS-native
+//!   argv ([`argv`]): the work-tree path is one `OsString` element after `-C`,
+//!   and the base/tip shas are their own elements. A hostile `work_dir` or a sha
+//!   with metacharacters is data to `git`, never a command line. The path is
+//!   taken as RAW bytes from the meta value (not a lossy `String`), so a valid
+//!   non-UTF-8 work dir survives to `git` intact.
+//! * **The interpreters are strict, and git answers the filesystem.** A HEAD is
+//!   a value only if it is exactly 40 lowercase hex; a count only if it is all
+//!   ASCII digits — anything else (a bare repo's `HEAD`, an unborn branch's
+//!   error echo, a `fatal:` line) falls to `-`. Missing, non-directory and
+//!   non-repository paths are not pre-checked with a filesystem `stat`; `git`
+//!   itself fails on them and the failure becomes `-`, so this module reads
+//!   nothing of the world but a process's exit and stdout.
+
+use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStrExt as _;
+
+/// The four questions the preview asks git, each a fixed argv shape. A typed
+/// query rather than free-form strings so a caller cannot assemble an arbitrary
+/// git command line, and so [`argv`] is the one place the wire form is decided.
+enum Query<'a> {
+    /// `rev-parse --is-inside-work-tree` — the guard, judged by exit status.
+    IsWorkTree,
+    /// `rev-parse HEAD` — the final commit, judged by its printed value.
+    Head,
+    /// `merge-base --is-ancestor <base> <tip>` — the range guard (exit status).
+    IsAncestor { base: &'a str, tip: &'a str },
+    /// `rev-list --count <base>..<tip>` — the range size (printed value).
+    CountRange { base: &'a str, tip: &'a str },
+}
+
+/// A git argv minted ONLY by this module's [`argv`] builder. Its inner vector
+/// is private, so no other module can fabricate an arbitrary git command line
+/// and hand it to [`crate::transport::run_git`] — the transport door runs a
+/// `GitArgv`, but only `src/git.rs` can construct one from a typed [`Query`].
+/// This is the boundary a grep guard cannot give: an alias-import of `run_git`
+/// is useless without a `GitArgv`, and a `GitArgv` cannot be built from raw argv
+/// anywhere but here.
+pub(crate) struct GitArgv(Vec<OsString>);
+
+impl GitArgv {
+    /// The OS-native argv for the transport door to spawn. Reading is harmless;
+    /// construction is what is sealed.
+    pub(crate) fn as_os_args(&self) -> &[OsString] {
+        &self.0
+    }
+}
+
+/// Build the OS-native argv for one query, always `-C <wdir>` first so git runs
+/// in the work dir without the process ever changing directory.
+fn argv(wdir: &OsStr, query: &Query) -> GitArgv {
+    let mut args = vec![OsString::from("-C"), wdir.to_owned()];
+    match *query {
+        Query::IsWorkTree => {
+            args.push("rev-parse".into());
+            args.push("--is-inside-work-tree".into());
+        }
+        Query::Head => {
+            args.push("rev-parse".into());
+            args.push("HEAD".into());
+        }
+        Query::IsAncestor { base, tip } => {
+            args.push("merge-base".into());
+            args.push("--is-ancestor".into());
+            args.push(base.into());
+            args.push(tip.into());
+        }
+        Query::CountRange { base, tip } => {
+            args.push("rev-list".into());
+            args.push("--count".into());
+            args.push(format!("{base}..{tip}").into());
+        }
+    }
+    GitArgv(args)
+}
+
+/// A commit is a value only as exactly 40 lowercase-hex, the frozen
+/// `^[0-9a-f]{40}$`.
+fn is_hex40(s: &str) -> bool {
+    s.len() == 40
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A count is a value only as one-or-more ASCII digits, the frozen `^[0-9]+$`.
+fn is_count(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `_ar_git_head <wdir>`: the 40-hex HEAD of the work tree at `wdir`, or `-`.
+///
+/// An empty path is `-` without running git (the frozen `[[ -n "$wdir" ]]`). The
+/// work-tree guard is judged by exit status, so a bare repository (which answers
+/// `false` at exit zero) proceeds and is then rejected by the 40-hex interpreter
+/// on its literal `HEAD` output — the same two-step the frozen reader takes.
+pub(crate) fn head(wdir: &[u8]) -> String {
+    if wdir.is_empty() {
+        return "-".to_owned();
+    }
+    let wdir = OsStr::from_bytes(wdir);
+    if !crate::transport::run_git(&argv(wdir, &Query::IsWorkTree)).0 {
+        return "-".to_owned();
+    }
+    let out = crate::transport::run_git(&argv(wdir, &Query::Head)).1;
+    let head = out.trim();
+    if is_hex40(head) {
+        head.to_owned()
+    } else {
+        "-".to_owned()
+    }
+}
+
+/// `_ar_git_range <wdir> <base> <tip>`: `(range, count)` for `base..tip`, or
+/// `("-", "-")`.
+///
+/// Both endpoints must be 40-hex and `base` must be an ancestor of `tip`
+/// (`merge-base --is-ancestor`, judged by exit status — a rewritten or unrelated
+/// base fails it), then the count must parse. Any miss is `("-", "-")`.
+pub(crate) fn range(wdir: &[u8], base: &str, tip: &str) -> (String, String) {
+    let dash = || ("-".to_owned(), "-".to_owned());
+    if !is_hex40(base) || !is_hex40(tip) || wdir.is_empty() {
+        return dash();
+    }
+    let wdir = OsStr::from_bytes(wdir);
+    if !crate::transport::run_git(&argv(wdir, &Query::IsAncestor { base, tip })).0 {
+        return dash();
+    }
+    let out = crate::transport::run_git(&argv(wdir, &Query::CountRange { base, tip })).1;
+    let count = out.trim();
+    if is_count(count) {
+        (format!("{base}..{tip}"), count.to_owned())
+    } else {
+        dash()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GitArgv, Query, argv, is_count, is_hex40};
+    use std::ffi::OsString;
+
+    fn strs(args: &GitArgv) -> Vec<String> {
+        args.as_os_args()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn hex40_accepts_only_exactly_forty_lowercase_hex() {
+        assert!(is_hex40("0123456789abcdef0123456789abcdef01234567"));
+        assert!(!is_hex40("0123456789ABCDEF0123456789abcdef01234567")); // uppercase
+        assert!(!is_hex40("0123456789abcdef0123456789abcdef0123456")); // 39
+        assert!(!is_hex40("0123456789abcdef0123456789abcdef012345678")); // 41
+        assert!(!is_hex40("g123456789abcdef0123456789abcdef01234567")); // non-hex
+        assert!(!is_hex40("")); // empty
+        assert!(!is_hex40("HEAD")); // a bare repo's echo
+    }
+
+    #[test]
+    fn count_accepts_only_ascii_digits() {
+        assert!(is_count("0"));
+        assert!(is_count("42"));
+        assert!(!is_count("")); // empty
+        assert!(!is_count("-1")); // sign
+        assert!(!is_count("1 2")); // space
+        assert!(!is_count("fatal")); // an error word
+    }
+
+    #[test]
+    fn argv_is_c_first_then_the_fixed_subcommand() {
+        let w = OsString::from("/w d"); // a space proves argv, not a command line
+        assert_eq!(
+            strs(&argv(&w, &Query::IsWorkTree)),
+            ["-C", "/w d", "rev-parse", "--is-inside-work-tree"]
+        );
+        assert_eq!(
+            strs(&argv(&w, &Query::Head)),
+            ["-C", "/w d", "rev-parse", "HEAD"]
+        );
+        let base = "0123456789abcdef0123456789abcdef01234567";
+        let tip = "89abcdef0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            strs(&argv(&w, &Query::IsAncestor { base, tip })),
+            ["-C", "/w d", "merge-base", "--is-ancestor", base, tip]
+        );
+        assert_eq!(
+            strs(&argv(&w, &Query::CountRange { base, tip })),
+            [
+                "-C",
+                "/w d",
+                "rev-list",
+                "--count",
+                &format!("{base}..{tip}")
+            ]
+        );
+    }
+}

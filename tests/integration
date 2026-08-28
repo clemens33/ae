@@ -862,23 +862,39 @@ _cb_out="$(AE_CORE="" "$AE" archive preview test-core 2>/dev/null || true)"
 assert_contains "core binding: archive preview falls back to the bash body" "# ae session archive" "$_cb_out"
 assert_eq "core binding: and the bash preview is not the core's" "0" \
     "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
-# THE MODE GATE (P3.1). The core renders git facts as absent — it never shells
-# git, by the capability boundary — so it may only render the mode whose digest
-# has none: local. A worktree/copy digest carries REAL git facts (HEAD, range,
-# count), so those modes stay on the bash body until P3.2 gives the core a typed
-# Git capability and both cut over together. The pair below proves the gate lets
-# local through and holds non-local back, on the SAME pinned stub core: only the
-# mode differs, so only the gate can explain the difference.
+# THE MODE GATE (P3.2). local, worktree and copy all render a digest the core
+# reproduces byte-identically: local has no git story, and P3.2 gave the core a
+# typed Git capability (it runs `git` through the one process door with
+# OS-native argv, no shell), so worktree/copy now carry their REAL git facts
+# (HEAD, range, count) through the core too. All three route to the pinned stub
+# core; only an ABSENT or UNKNOWN mode — a shape the core has not been proven
+# against — stays on the bash body. The controls below run on the SAME pinned
+# stub core, so only the mode differs and only the gate can explain the
+# difference.
 assert_contains "core binding: mode gate — a LOCAL preview reaches the core (positive control)" \
     "CORE_TOKEN_9f3a archive-preview" "$("$AE" archive preview test-core 2>/dev/null || true)"
 _cb_wt="$HOME/.ae/sessions/test-core-wt"
 cp -R "$_cb_meta" "$_cb_wt"
 sed 's/^mode=.*/mode=worktree/' "$_cb_wt/meta" >"$_cb_wt/meta.new" && mv "$_cb_wt/meta.new" "$_cb_wt/meta"
 grep -q '^mode=worktree' "$_cb_wt/meta" || { echo "SETUP: test-core-wt is not worktree mode"; exit 1; }
-_cb_out="$("$AE" archive preview test-core-wt 2>/dev/null || true)"
-assert_eq "core binding: mode gate — a NON-LOCAL preview does NOT reach the core" "0" \
+assert_contains "core binding: mode gate — a WORKTREE preview reaches the core (P3.2 cutover)" \
+    "CORE_TOKEN_9f3a archive-preview" "$("$AE" archive preview test-core-wt 2>/dev/null || true)"
+_cb_cp="$HOME/.ae/sessions/test-core-cp"
+cp -R "$_cb_meta" "$_cb_cp"
+sed 's/^mode=.*/mode=copy/' "$_cb_cp/meta" >"$_cb_cp/meta.new" && mv "$_cb_cp/meta.new" "$_cb_cp/meta"
+grep -q '^mode=copy' "$_cb_cp/meta" || { echo "SETUP: test-core-cp is not copy mode"; exit 1; }
+assert_contains "core binding: mode gate — a COPY preview reaches the core (P3.2 cutover)" \
+    "CORE_TOKEN_9f3a archive-preview" "$("$AE" archive preview test-core-cp 2>/dev/null || true)"
+# The negative control moves to an UNKNOWN mode: a shape the gate does not
+# recognise stays on the bash body — no core token, the real digest.
+_cb_unk="$HOME/.ae/sessions/test-core-unk"
+cp -R "$_cb_meta" "$_cb_unk"
+sed 's/^mode=.*/mode=frobnicate/' "$_cb_unk/meta" >"$_cb_unk/meta.new" && mv "$_cb_unk/meta.new" "$_cb_unk/meta"
+grep -q '^mode=frobnicate' "$_cb_unk/meta" || { echo "SETUP: test-core-unk is not unknown mode"; exit 1; }
+_cb_out="$("$AE" archive preview test-core-unk 2>/dev/null || true)"
+assert_eq "core binding: mode gate — an UNKNOWN mode does NOT reach the core" "0" \
     "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
-assert_contains "core binding: mode gate — a NON-LOCAL preview stays on the bash body" \
+assert_contains "core binding: mode gate — an UNKNOWN mode stays on the bash body" \
     "# ae session archive" "$_cb_out"
 _cb_out="$(AE_CORE="" "$_cb_meta/ask" 2>&1 >/dev/null || true)"
 assert_contains "core binding: ask falls back to the bash body" "Usage: ask" "$_cb_out"

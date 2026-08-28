@@ -1,11 +1,11 @@
-//! `ae archive preview [session]` — the read-only lifecycle tracer (P3.1).
+//! `ae archive preview [session]` — the read-only lifecycle tracer (P3.1–P3.2).
 //!
 //! **This module WRITES NOTHING.** No archive, claim, lock, event, temp file,
 //! or live-state mutation. It reads a session's `meta`, `memo.tsv`,
 //! `events.jsonl` and `messages/*.txt`, and renders the exact digest `ae`
 //! would archive — the "preview" snapshot — to stdout, with the command's
 //! banner and any degradation notices to stderr. Archive publication and the
-//! publisher claim are P3.2; this slice is preview only.
+//! publisher claim are P3.3; this slice is preview only.
 //!
 //! # The frozen surface, and the successor spelling
 //!
@@ -30,18 +30,19 @@
 //! does: `archived_at` = `pending`, `git_push_outcome` = `preview-not-run`,
 //! `git_push_ref` = `-`.
 //!
-//! # Git facts are `-` — the core does not shell out
+//! # Git facts, derived by running git (P3.2)
 //!
-//! The frozen `_ar_git_head`/`_ar_git_range` run `git` in the work dir for a
-//! non-local session. This core does NOT run git anywhere (`listing.rs` reports
-//! `git:?` for the same reason: the capability boundary denies
-//! `std::process::Command` outside the one tmux door, and a read tracer is not
-//! the place to widen it). Local mode already has no git story; for a
-//! worktree/copy session with a real checkout the frozen command would show
-//! `base`/`final`/`range`/`count`, and this preview shows `-` — a documented
-//! divergence, flagged for P3.2 where the git OUTCOME is actually recorded. All
-//! three parity fixtures have `-` here (local mode, or a work dir that does not
-//! exist), so parity holds on the required shapes.
+//! For a non-local (`worktree`/`copy`) session the frozen `_ar_git_head` and
+//! `_ar_git_range` run `git` in the work dir; [`crate::git`] ports them exactly,
+//! reached through [`crate::transport::run_git`] — the fixed-program git leg of
+//! the one process door, widened deliberately (not a second door). [`GitFacts`]
+//! composes them as `_ar_preview_once` does: `base` is the meta's
+//! `git_base_commit` for every mode, and `final`/`range`/`count` are `-` for a
+//! LOCAL session and computed from git for a non-local one. The strict
+//! interpreters (40-hex HEAD, all-digit count) mean an unusable, non-repository
+//! or rewritten-base work dir falls to `-`, matching the frozen readers. The
+//! P3.1 parity fixtures are all local or have a non-existent work dir, so they
+//! still render `-`; the real-repo shapes are covered by `tests/it/git.rs`.
 //!
 //! # Non-regular sources are REFUSED (a Rust-native divergence)
 //!
@@ -193,6 +194,54 @@ struct EventFacts {
     first: String,
     last: String,
     skipped: u64,
+}
+
+/// The four git facts the `## Git outcome` section renders, computed exactly as
+/// the frozen `_ar_preview_once` composes them: `base` is the meta's
+/// `git_base_commit` for EVERY mode (or `-`); `final_commit`, `range` and
+/// `count` come from running git for a non-local session and are `-` for a
+/// local one. The push and preserved-work-dir fields are preview volatility and
+/// are not carried here.
+struct GitFacts {
+    base: String,
+    final_commit: String,
+    range: String,
+    count: String,
+}
+
+impl GitFacts {
+    /// `_ar_preview_once`: base from meta for any mode; final/range/count only
+    /// for a non-local session (`mode != "local"`), where git runs in the raw
+    /// (non-UTF-8-safe) `work_dir`. A local session leaves them `-`.
+    fn derive(meta_bytes: &[u8]) -> Self {
+        let base = meta_get(meta_bytes, "git_base_commit");
+        if meta_get(meta_bytes, "mode") == "local" {
+            return Self {
+                base: or_dash(&base).to_owned(),
+                final_commit: "-".to_owned(),
+                range: "-".to_owned(),
+                count: "-".to_owned(),
+            };
+        }
+        let wdir = meta::first_value(meta_bytes, "work_dir").unwrap_or(b"");
+        let final_commit = crate::git::head(wdir);
+        let (range, count) = crate::git::range(wdir, &base, &final_commit);
+        Self {
+            base: or_dash(&base).to_owned(),
+            final_commit,
+            range,
+            count,
+        }
+    }
+}
+
+/// The three already-read session sources a [`render`] reads from, grouped so
+/// the digest is built from one moment's meta, memo and events rather than a
+/// long argument list.
+struct Sources<'a> {
+    meta: &'a [u8],
+    memo: &'a [u8],
+    events: &'a [u8],
 }
 
 fn event_facts(bytes: &[u8]) -> EventFacts {
@@ -556,16 +605,15 @@ fn payload_present(messages: &Path, body_file: &str) -> bool {
 /// Render the whole preview digest for the already-read session sources.
 #[allow(clippy::too_many_lines)]
 fn render(
-    meta_bytes: &[u8],
-    memo_bytes: &[u8],
-    event_bytes: &[u8],
+    src: &Sources,
     messages: &Path,
     aid: &str,
     facts: &EventFacts,
     roster: &[(String, String)],
+    git: &GitFacts,
 ) -> String {
     let mut out = String::new();
-    let g = |key: &str| meta_get(meta_bytes, key);
+    let g = |key: &str| meta_get(src.meta, key);
 
     let id_origin = {
         let o = g("session_id_origin");
@@ -609,10 +657,10 @@ fn render(
     text_block(&mut out, &g("goal"), "    ");
 
     out.push_str("## Git outcome\n\n");
-    out.push_str("- Base commit: -\n");
-    out.push_str("- Final commit: -\n");
-    out.push_str("- Commit range: -\n");
-    out.push_str("- Commit count: -\n");
+    let _ = writeln!(out, "- Base commit: {}", git.base);
+    let _ = writeln!(out, "- Final commit: {}", git.final_commit);
+    let _ = writeln!(out, "- Commit range: {}", git.range);
+    let _ = writeln!(out, "- Commit count: {}", git.count);
     out.push_str("- Push outcome: preview-not-run\n");
     out.push_str("- Push ref: -\n");
     out.push_str("- Preserved work dir: -\n\n");
@@ -625,14 +673,14 @@ fn render(
     out.push_str("## Roster and final states\n\n");
     for (slot, agent_ref) in roster {
         let bin = g(&format!("agent_bin.{slot}"));
-        let (st, ts, reason) = latest_state(event_bytes, agent_ref);
+        let (st, ts, reason) = latest_state(src.events, agent_ref);
         let _ = writeln!(out, "- {slot} — {agent_ref} ({})", or_dash(&bin));
         let _ = writeln!(out, "  - State: {st} at {ts}");
         out.push_str("  - Reason:\n\n");
         text_block(&mut out, &reason, "        ");
     }
 
-    let rows = memo_rows(memo_bytes);
+    let rows = memo_rows(src.memo);
     let handovers: Vec<&MemoRow> = rows.iter().filter(|r| r.topic == "handover").collect();
     let _ = writeln!(out, "## Handover ({})\n", handovers.len());
     if handovers.is_empty() {
@@ -651,7 +699,7 @@ fn render(
     }
     out.push('\n');
 
-    let requests = request_states(event_bytes);
+    let requests = request_states(src.events);
     let pending: Vec<&RequestRow> = requests.iter().filter(|r| r.status == "pending").collect();
     let _ = writeln!(out, "## Unresolved requests ({})\n", pending.len());
     if pending.is_empty() {
@@ -796,14 +844,20 @@ pub fn preview(dir: &Path, out: &mut impl Write, err: &mut impl Write) -> io::Re
         let memo_bytes = read_memo();
         let event_bytes = read_events();
         let facts = event_facts(&event_bytes);
+        // Git facts are derived per attempt, as `_ar_preview_once` runs git each
+        // time it renders: a non-local session shells git in its work dir here.
+        let git = GitFacts::derive(&meta_bytes);
         let digest = render(
-            &meta_bytes,
-            &memo_bytes,
-            &event_bytes,
+            &Sources {
+                meta: &meta_bytes,
+                memo: &memo_bytes,
+                events: &event_bytes,
+            },
             &messages,
             &aid,
             &facts,
             &roster,
+            &git,
         );
         let after = fingerprint(dir);
         if before == after {

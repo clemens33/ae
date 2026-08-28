@@ -51,6 +51,40 @@ pub(crate) fn mkfifo(path: &std::path::Path) {
     );
 }
 
+/// Run `git` with `args` in `repo` for TEST FIXTURE SETUP — a repo the git it-
+/// tests build to exercise the preview's git facts. Config is fully isolated
+/// (`GIT_CONFIG_GLOBAL`/`SYSTEM=/dev/null`, identity via env) so the run does not
+/// touch, or depend on, the developer's git config. This reuses this file's
+/// existing `Command` door rather than opening a new one; asserting on the
+/// preview's OWN git facts is what the tests do, so a setup helper is not the
+/// subject. Returns stdout, trimmed.
+#[allow(
+    clippy::disallowed_types,
+    clippy::expect_used,
+    reason = "a door: builds real fixture repos for the preview's git-facts tests (cli.rs is inventoried); a fixture that cannot run git must panic loudly, like the #[test] callers it feeds"
+)]
+pub(crate) fn git_in(repo: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output()
+        .expect("git should run for fixture setup");
+    assert!(
+        out.status.success(),
+        "git {args:?} in {}: {}",
+        repo.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
 /// Wait at most `limit` for a spawned `child`: `Some(output)` if it exited,
 /// `None` if it had to be killed. A test whose subject can hang must have a
 /// red that ARRIVES, not one that stalls the lane.

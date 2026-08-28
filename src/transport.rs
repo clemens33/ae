@@ -227,11 +227,11 @@ fn addressable(server: &ServerId) -> bool {
 // defence in depth — they are not the same strength.
 #[allow(
     clippy::disallowed_types,
-    reason = "the product's door: ae cannot answer a liveness question without running tmux, nor deliver a tracked request without the session's send helper"
+    reason = "the product's door: ae cannot answer a liveness question without running tmux, nor deliver a tracked request without the session's send helper, nor derive an archive preview's git facts without running git"
 )]
-fn spawn(
+fn spawn<A: AsRef<std::ffi::OsStr>>(
     program: &str,
-    args: &[String],
+    args: &[A],
     envs: &[(&str, &str)],
     inherit_stderr: bool,
 ) -> Option<std::process::Output> {
@@ -251,6 +251,33 @@ fn run(program: &str, args: &[String]) -> (bool, String) {
             String::from_utf8_lossy(&output.stdout).into_owned(),
         ),
         // Nothing ran. Not an empty answer — see the module docs.
+        None => (false, String::new()),
+    }
+}
+
+/// The git leg of the one process door — the ONLY way product code runs `git`,
+/// and the program is FIXED here so a caller chooses the arguments, never the
+/// binary. The argv is not a raw slice but a [`crate::git::GitArgv`], whose
+/// inner vector is PRIVATE to `src/git.rs`: only that module's typed, validated
+/// builder can mint one, so this entry cannot be alias-imported and handed an
+/// arbitrary git command line (a `use … run_git as invoke_git;` still needs a
+/// `GitArgv` it cannot construct). The argv is OS-native: a work-tree path can
+/// be non-UTF-8, and it rides as one argument, so there is no shell and nothing
+/// to inject. Returns whether git exited zero and its stdout decoded lossily —
+/// every value the preview reads back (a 40-hex sha, a decimal count) is ASCII,
+/// so the lossy decode cannot change a valid answer, and an invalid one is
+/// rejected anyway.
+///
+/// `src/git.rs` is the only caller; the type seal above is the boundary, and a
+/// structural guard (`run_git_has_exactly_one_product_caller` in
+/// `tests/it/parity_self_test.rs`) is defence in depth, so this fixed-program
+/// leg cannot quietly become a general spawner.
+pub(crate) fn run_git(argv: &crate::git::GitArgv) -> (bool, String) {
+    match spawn("git", argv.as_os_args(), &[], false) {
+        Some(output) => (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        ),
         None => (false, String::new()),
     }
 }

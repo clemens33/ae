@@ -72,6 +72,7 @@ pub mod event_text;
 pub mod events;
 pub mod events_tail;
 pub mod filters;
+pub mod git;
 pub mod goal;
 pub mod inventory;
 pub mod json;

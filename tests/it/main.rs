@@ -7,6 +7,7 @@
 mod archive;
 mod cli;
 mod fixtures;
+mod git;
 mod helper_corpus;
 mod parity;
 mod parity_self_test;

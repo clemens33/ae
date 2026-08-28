@@ -915,6 +915,46 @@ fn the_capability_boundary_holds_against_any_lint_relaxation() {
     );
 }
 
+/// `transport::run_git` is the FIXED-PROGRAM git leg of the one process door: it
+/// chooses the binary (`git`) so a caller only chooses arguments. The PRIMARY
+/// boundary is a TYPE: `run_git` takes a `git::GitArgv` whose inner vector is
+/// private to `src/git.rs`, so an alias-import (`use … run_git as invoke_git;`)
+/// is inert — it cannot mint the argv it would need. This guard is defence in
+/// depth beside that seal: within `src/`, the INVOCATION form `run_git(` appears
+/// in exactly two files — `transport.rs`, which DEFINES it, and `git.rs`, its
+/// one product caller. A third file gaining a call is a line in a review, not a
+/// diff nobody read. The token is `run_git(` (with the open paren) on purpose: a
+/// doc-link that merely NAMES the function — good docs — carries no paren and is
+/// not a caller. (Test code is out of scope: a test may drive the door; product
+/// code may not widen who holds it.)
+#[test]
+fn run_git_has_exactly_one_product_caller() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut holders: Vec<String> = rust_sources()
+        .into_iter()
+        .filter(|p| p.starts_with(root.join("src")))
+        .filter(|p| fs::read_to_string(p).is_ok_and(|text| text.contains("run_git(")))
+        .map(|p| {
+            p.strip_prefix(root)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    holders.sort();
+
+    // Control FIRST: a scan that matched nothing would pass this vacuously.
+    assert!(
+        !holders.is_empty(),
+        "the scan found no `run_git` anywhere in src/; it did not run"
+    );
+    assert_eq!(
+        holders,
+        vec!["src/git.rs".to_owned(), "src/transport.rs".to_owned()],
+        "the git process leg gained (or lost) a product holder"
+    );
+}
+
 /// reviewer4's round-6 bypasses of this guard, from their tree, byte for byte.
 ///
 /// Both were rustfmt-clean, clippy-clean and left all three boundary tests
@@ -1041,7 +1081,7 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
         }
     }
 
-    // Five relaxations this counter can see, each for a different job: the
+    // Six relaxations this counter can see, each for a different job: the
     // PRODUCT's, in `src/transport.rs`, because a tmux multiplexer that cannot
     // run tmux answers `unknown` about everything; the parity harness's door,
     // which must never judge a lane; the black-box door, which drives the
@@ -1049,16 +1089,18 @@ fn the_lint_relaxations_this_counter_can_see_are_the_expected_ones() {
     // (`cli::ae` is private to its module, so the harness cannot reach a child
     // through it); the black-box FIFO fixture beside it (`cli::mkfifo` — safe
     // std cannot make the one special file that blocks an ungated open, and
-    // the tests that prove the `-f` gates need exactly that file); and this
+    // the tests that prove the `-f` gates need exactly that file); the git
+    // fixture builder beside those (`cli::git_in` — the preview's git-facts
+    // tests need REAL repos, and only `git` builds a real repo); and this
     // file's own, which has to run clippy in order to ask clippy anything.
     //
-    // A sixth entry is red. A relaxation this counter CANNOT see is not — that
+    // A seventh entry is red. A relaxation this counter CANNOT see is not — that
     // is what the semantic guard above is for.
     assert_eq!(
         inventory,
         vec![
             ("src/transport.rs".to_owned(), 1),
-            ("tests/it/cli.rs".to_owned(), 2),
+            ("tests/it/cli.rs".to_owned(), 3),
             ("tests/it/parity.rs".to_owned(), 1),
             ("tests/it/parity_self_test.rs".to_owned(), 1),
         ],
