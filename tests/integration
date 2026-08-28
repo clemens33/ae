@@ -738,6 +738,7 @@ case "\$1" in
     _reply) echo "CORE_TOKEN_9f3a reply=\${3:-none} body=\${4:-none}" ;;
     _send) echo "CORE_TOKEN_9f3a send=\${3:-none} body=\${4:-none}" ;;
     _events-tail) echo "CORE_TOKEN_9f3a events-tail dir=\${2:-none}" ;;
+    _archive-preview) echo "CORE_TOKEN_9f3a archive-preview dir=\${2:-none}" ;;
     *) exit 64 ;;
 esac
 EOF
@@ -851,6 +852,34 @@ _cb_tail_run "$_cb_root/tail.out" 'ae events' AE_CORE=
 assert_contains "core binding: events-tail falls back to the bash body" "ae events — session: test-core" "$(cat "$_cb_root/tail.out")"
 assert_eq "core binding: and its banner is not the core's" "0" \
     "$(grep -c 'CORE_TOKEN_9f3a' "$_cb_root/tail.out" | tr -d '[:space:]')"
+
+# ARCHIVE PREVIEW (P3.1): a TOP-LEVEL command, not a helper — `ae` resolves and
+# path-checks the session, then shims `_archive-preview <dir>` with META_DIR set
+# to it. The bash body stays reachable under AE_CORE=.
+_cb_out="$("$AE" archive preview test-core 2>/dev/null || true)"
+assert_contains "core binding: archive preview reaches the core with the session dir" "CORE_TOKEN_9f3a archive-preview dir=$_cb_meta" "$_cb_out"
+_cb_out="$(AE_CORE="" "$AE" archive preview test-core 2>/dev/null || true)"
+assert_contains "core binding: archive preview falls back to the bash body" "# ae session archive" "$_cb_out"
+assert_eq "core binding: and the bash preview is not the core's" "0" \
+    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
+# THE MODE GATE (P3.1). The core renders git facts as absent — it never shells
+# git, by the capability boundary — so it may only render the mode whose digest
+# has none: local. A worktree/copy digest carries REAL git facts (HEAD, range,
+# count), so those modes stay on the bash body until P3.2 gives the core a typed
+# Git capability and both cut over together. The pair below proves the gate lets
+# local through and holds non-local back, on the SAME pinned stub core: only the
+# mode differs, so only the gate can explain the difference.
+assert_contains "core binding: mode gate — a LOCAL preview reaches the core (positive control)" \
+    "CORE_TOKEN_9f3a archive-preview" "$("$AE" archive preview test-core 2>/dev/null || true)"
+_cb_wt="$HOME/.ae/sessions/test-core-wt"
+cp -R "$_cb_meta" "$_cb_wt"
+sed 's/^mode=.*/mode=worktree/' "$_cb_wt/meta" >"$_cb_wt/meta.new" && mv "$_cb_wt/meta.new" "$_cb_wt/meta"
+grep -q '^mode=worktree' "$_cb_wt/meta" || { echo "SETUP: test-core-wt is not worktree mode"; exit 1; }
+_cb_out="$("$AE" archive preview test-core-wt 2>/dev/null || true)"
+assert_eq "core binding: mode gate — a NON-LOCAL preview does NOT reach the core" "0" \
+    "$(grep -c 'CORE_TOKEN_9f3a' <<<"$_cb_out" | tr -d '[:space:]')"
+assert_contains "core binding: mode gate — a NON-LOCAL preview stays on the bash body" \
+    "# ae session archive" "$_cb_out"
 _cb_out="$(AE_CORE="" "$_cb_meta/ask" 2>&1 >/dev/null || true)"
 assert_contains "core binding: ask falls back to the bash body" "Usage: ask" "$_cb_out"
 assert_eq "core binding: and not to the core" "0" \

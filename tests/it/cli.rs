@@ -29,7 +29,7 @@ use crate::phase2::run_tmux;
     clippy::disallowed_types,
     reason = "black-box tests must run the product binary; see clippy.toml"
 )]
-fn ae() -> std::process::Command {
+pub(crate) fn ae() -> std::process::Command {
     std::process::Command::new(env!("CARGO_BIN_EXE_ae"))
 }
 
@@ -42,7 +42,7 @@ fn ae() -> std::process::Command {
     clippy::disallowed_types,
     reason = "the FIFO fixture: safe std cannot make a FIFO, mkfifo(1) can; see clippy.toml"
 )]
-fn mkfifo(path: &std::path::Path) {
+pub(crate) fn mkfifo(path: &std::path::Path) {
     let status = std::process::Command::new("mkfifo").arg(path).status();
     assert!(
         matches!(status, Ok(status) if status.success()),
@@ -54,7 +54,7 @@ fn mkfifo(path: &std::path::Path) {
 /// Wait at most `limit` for a spawned `child`: `Some(output)` if it exited,
 /// `None` if it had to be killed. A test whose subject can hang must have a
 /// red that ARRIVES, not one that stalls the lane.
-fn bounded(
+pub(crate) fn bounded(
     mut child: std::process::Child,
     limit: std::time::Duration,
 ) -> Option<std::process::Output> {

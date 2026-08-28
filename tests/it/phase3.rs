@@ -1782,6 +1782,11 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
     assert_eq!(
         product,
         vec![
+            // The read-only archive-preview tracer's own reads: the `-f`-gated
+            // meta/memo reads, the messages/*.txt selection glob, and the
+            // fingerprint/size stats. Registered deliberately — a new read
+            // surface is a line in a review, not a diff nobody read.
+            "src/archive.rs".to_owned(),
             // The OPAQUE event-container read and existence test, shared by the
             // `requests` and `events-tail` surfaces. One file rather than two:
             // both surfaces read the same container the same quiet way, so the

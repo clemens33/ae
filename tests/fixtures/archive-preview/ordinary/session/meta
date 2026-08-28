@@ -1,0 +1,14 @@
+session=demo
+session_id=AE3AA692-E177-4798-9BA0-D14E0D084061
+mode=local
+origin=/home/dev/proj
+layout=vertical
+ae_version=0.2.9
+goal=ship the archive slice — preview first
+work_dir=/home/dev/proj
+agent.main=cl:lead:AE3AA692-E177-4798-9BA0-D14E0D084061
+agent_bin.main=claude
+agent.worker.0=cx:worker
+agent_bin.worker.0=codex
+agent.spawned.0=gk:reviewer:pending
+agent_bin.spawned.0=grok

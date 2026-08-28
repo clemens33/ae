@@ -4,6 +4,7 @@
 //! binary per `tests/*.rs`, and shared helpers would have no home that is not
 //! also a test target.
 
+mod archive;
 mod cli;
 mod fixtures;
 mod helper_corpus;

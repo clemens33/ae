@@ -1,0 +1,9 @@
+{"ts":"2026-08-01T00:00:00Z","actor":"cl:lead","action":"state","ref":"working","summary":"starting"}
+{"ts":"2026-08-01T00:05:00Z","actor":"cl:lead","action":"ask","target":"cx:worker","ref":"ae-20260801T000500Z-aaaaaaaa","actor_slot":"main","actor_session":"demo","target_slot":"worker.0","target_session":"demo","summary":"please review the port","body_file":"/home/dev/.ae/sessions/demo/messages/ae-20260801T000500Z-aaaaaaaa.ask.Ab12Cd.txt"}
+{"ts":"2026-08-01T00:20:00Z","actor":"cx:worker","action":"reply","target":"cl:lead","ref":"ae-20260801T000500Z-aaaaaaaa","actor_slot":"worker.0","actor_session":"demo","target_slot":"main","target_session":"demo","summary":"done, no findings"}
+{"ts":"2026-08-01T00:30:00Z","actor":"cx:worker","action":"review","target":"cl:lead","ref":"review-20260801T003000Z-bbbbbbbb","actor_slot":"worker.0","actor_session":"demo","target_slot":"main","target_session":"demo","summary":"review the digest renderer","body_file":"/home/dev/.ae/sessions/demo/messages/review-20260801T003000Z-bbbbbbbb.review.Ef34Gh.txt"}
+{"ts":"2026-08-01T00:40:00Z","actor":"cl:lead","action":"ask","target":"gk:reviewer","ref":"ae-20260801T004000Z-cccccccc","actor_slot":"main","actor_session":"demo","target_slot":"spawned.0","target_session":"demo","summary":"a second, unanswered ask"}
+{"ts":"2026-08-01T00:45:00Z","actor":"cl:lead","action":"send","target":"cx:worker","summary":"⟦ae:msg from cl:lead⟧ a plain message","body_file":"/home/dev/.ae/sessions/demo/messages/msg-20260801T004500Z.send.Ij56Kl.txt"}
+{"ts":"2026-08-01T00:50:00Z","actor":"human","action":"chat","summary":"a chat line\nwith a second line\tand a tab"}
+{"ts":"2026-08-01T01:00:00Z","actor":"cx:worker","action":"state","ref":"done","summary":"port complete"}
+{"ts":"2026-08-01T03:02:00Z","actor":"cl:lead","action":"state","ref":"waiting-user","summary":"asked the human about the fourth fixture; waiting"}

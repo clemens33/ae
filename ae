@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.9"
+AE_VERSION="0.2.10"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -5092,6 +5092,26 @@ cmd_archive_preview() {
         return 1
     fi
     _require_session_path_safe "$target" || return 1
+    # P3.1: the Rust core is the read-only preview tracer, but ONLY for a
+    # local-mode session. In worktree/copy mode the digest carries real git facts
+    # (HEAD, range, count), which the core does not compute — it never shells git,
+    # by the capability boundary — so a non-local preview stays on the bash body
+    # until P3.2 gives the core a typed Git capability and the two modes cut over
+    # together. This is the established partial-cutover pattern: the core owns the
+    # modes it renders byte-identically, the bash body owns the rest. The gate is
+    # strict `== local`; an absent or unknown mode is NOT local, so it too stays
+    # on the reference body.
+    #
+    # `dir` is resolved, existing and path-safe; the core is handed it and renders
+    # the whole preview (digest to stdout, banner to stderr) writing nothing. The
+    # shim EXECs the core, so nothing below runs unless the core is unbound,
+    # unusable or refused with AE_CORE= — then this is the whole command, as it
+    # always was. META_DIR is a prefix assignment: visible to the shim (which
+    # reads ${META_DIR}/meta and execs the core with it), gone on a fallback
+    # return, and never mutating the global.
+    if [[ "$(_ar_meta_get "${dir}/meta" mode)" == "local" ]]; then
+        META_DIR="$dir" _ae_core_try _archive-preview || true
+    fi
     local raw_id aid
     raw_id="$(_ar_meta_get "${dir}/meta" session_id)"
     aid="$(_ar_canonical_uuid "$raw_id")"

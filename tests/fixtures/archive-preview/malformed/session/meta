@@ -1,0 +1,15 @@
+session=odd
+session_id=FEDCBA98-7654-4321-8FED-CBA987654321
+session_id_origin=minted-at-end
+mode=worktree
+origin=/home/dev/odd
+work_dir=/nonexistent/work/dir
+layout=horizontal
+goal=  leading spaces, ünïcödé, and a # hash
+goal=a second goal line that must be ignored
+parent_archive_id=11111111-2222-4333-8444-555555555555
+agent.worker.1=cx:second
+agent_bin.worker.1=codex
+agent.main=cl:lead
+agent.worker.0=cx:first
+agent_bin.worker.0=codex

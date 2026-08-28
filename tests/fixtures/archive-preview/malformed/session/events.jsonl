@@ -1,0 +1,10 @@
+this line is not json
+{"ts":"2026-08-02T00:00:00Z","actor":"cl:lead","action":"state","ref":"working","summary":"first"}
+{"truncated":"line"
+{"actor":"cl:lead","action":"state","ref":"blocked","summary":"no timestamp, still a state"}
+
+{"ts":"2026-08-02T00:05:00Z","actor":"cl:lead","action":"ask","target":"cx:first","ref":"ae-20260802T000500Z-dddddddd","summary":"unanswered, body file missing","body_file":"/gone/ae-20260802T000500Z-dddddddd.ask.Mn78Op.txt"}
+{"ts":"2026-08-02T00:06:00Z","actor":"cl:lead","action":"state","ref":"done","summary":"reason with\ttab and\nnewline escapes"}
+{"ts":"2026-08-02T00:07:00Z","action":"cancel","ref":"ae-20260802T000500Z-dddddddd","summary":"nobody withdraws"}
+{"ts":"2026-08-02T00:08:00Z","actor":"cx:first","action":"reply","target":"cl:lead","ref":"never-asked","summary":"reply to nothing"}
+{"ts":"2026-08-02T00:09:00Z","actor":"cx:first","action":"state","ref":"working","summary":"unterminated last line"}

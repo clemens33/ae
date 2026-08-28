@@ -63,6 +63,7 @@
 //! assert_eq!(request.exit_code(), Some(0));
 //! ```
 
+pub mod archive;
 pub mod attention;
 pub mod cli;
 pub mod digest;
@@ -630,6 +631,7 @@ pub fn run_with(
         // `events_tail::follow` — so the only way out is a signal or a write
         // failure, and the write failure is the one this arm can report.
         cli::Request::EventsTail { dir } => match events_tail::follow(dir, out)? {},
+        cli::Request::ArchivePreview { dir } => archive::preview(dir, out, err)?,
         cli::Request::List(list_args) => {
             if let Some(world) = world {
                 // SC-017o: the warning goes to STDERR and the table still

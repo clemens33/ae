@@ -25,6 +25,13 @@ pub const REQUESTS: &str = "_requests";
 /// underscore reasoning as [`REQUESTS`].
 pub const EVENTS_TAIL: &str = "_events-tail";
 
+/// `ae archive preview`'s successor: `_archive-preview <session-dir>`. Unlike
+/// the helper surfaces this is a TOP-LEVEL command's core entry — `ae` resolves
+/// and path-checks the session name, then shims here with the resolved dir. The
+/// underscore keeps it off the human-typed surface and out of session-name
+/// space (`_validate_session_name` forbids a leading `_`).
+pub const ARCHIVE_PREVIEW: &str = "_archive-preview";
+
 /// The `state` helper's surface — `_state <meta-dir> [<value> [reason…]]`.
 /// Underscored like [`REQUESTS`]: launched by the generated helper, not typed.
 pub const STATE: &str = "_state";
@@ -124,6 +131,11 @@ pub enum Request {
     },
     EventsTail {
         /// The session meta directory the frozen helper derives from `$0`.
+        dir: PathBuf,
+    },
+    /// `_archive-preview <session-dir>` — the read-only archive preview tracer.
+    ArchivePreview {
+        /// The session directory `ae` resolved and path-checked before shimming.
         dir: PathBuf,
     },
     /// A usage error about a MISSING operand rather than an offending token.
@@ -282,6 +294,11 @@ impl Request {
                 [dir] => Self::EventsTail { dir: dir.into() },
                 [_, extra, ..] => Self::UsageError(extra.clone()),
             },
+            Some(ARCHIVE_PREVIEW) => match &args[1..] {
+                [] => Self::MissingOperand(ARCHIVE_PREVIEW),
+                [dir] => Self::ArchivePreview { dir: dir.into() },
+                [_, extra, ..] => Self::UsageError(extra.clone()),
+            },
             // SC-022, in the order the row states it: option-shaped first,
             // because everything left over is a name and not an error.
             Some(other) if other.starts_with('-') => Self::UsageError(other.to_owned()),
@@ -349,14 +366,18 @@ impl Request {
             | Self::Review { .. }
             | Self::Reply { .. }
             | Self::Send { .. }
-            | Self::EventsTail { .. } => None,
+            | Self::EventsTail { .. }
+            | Self::ArchivePreview { .. } => None,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ASK, EVENTS_TAIL, GOAL, MEMO, REPLY, REQUESTS, REVIEW, Request, SEND, STATE};
+    use super::{
+        ARCHIVE_PREVIEW, ASK, EVENTS_TAIL, GOAL, MEMO, REPLY, REQUESTS, REVIEW, Request, SEND,
+        STATE,
+    };
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
 
@@ -547,6 +568,7 @@ mod tests {
         for spelling in [
             REQUESTS,
             EVENTS_TAIL,
+            ARCHIVE_PREVIEW,
             STATE,
             GOAL,
             MEMO,
@@ -600,10 +622,25 @@ mod tests {
     }
 
     #[test]
+    fn archive_preview_takes_a_directory_and_nothing_else() {
+        assert_eq!(
+            Request::parse(&argv(&[ARCHIVE_PREVIEW, "/s/tg1"])),
+            Request::ArchivePreview {
+                dir: "/s/tg1".into()
+            }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[ARCHIVE_PREVIEW, "/s/tg1", "extra"])),
+            Request::UsageError("extra".to_owned())
+        );
+    }
+
+    #[test]
     fn a_helper_surface_with_no_directory_is_a_missing_operand_at_two() {
         for spelling in [
             REQUESTS,
             EVENTS_TAIL,
+            ARCHIVE_PREVIEW,
             STATE,
             GOAL,
             MEMO,
@@ -678,7 +715,11 @@ mod tests {
 
     #[test]
     fn a_helper_surface_declines_to_decide_its_exit_code_from_argv() {
-        for words in [vec![REQUESTS, "/s/tg1", "all"], vec![EVENTS_TAIL, "/s/tg1"]] {
+        for words in [
+            vec![REQUESTS, "/s/tg1", "all"],
+            vec![EVENTS_TAIL, "/s/tg1"],
+            vec![ARCHIVE_PREVIEW, "/s/tg1"],
+        ] {
             assert_eq!(
                 Request::parse(&argv(&words)).exit_code(),
                 None,

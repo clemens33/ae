@@ -1,0 +1,6 @@
+no tabs at all
+2026-08-02T00:00:00Z	cl:lead		empty topic is skipped
+2026-08-02T00:01:00Z	cl:lead	handover	
+2026-08-02T00:02:00Z	cl:lead	notes	four	fields	with extra	tabs
+			
+2026-08-02T00:03:00Z	cx:first	notes	last notes entry

@@ -1,0 +1,8 @@
+session=fresh
+session_id=0f0e0d0c-0b0a-4908-8706-050403020100
+mode=local
+origin=/home/dev/fresh
+layout=vertical
+ae_version=0.2.9
+agent.main=cl:lead
+agent_bin.main=claude
