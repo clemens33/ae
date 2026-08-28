@@ -87,7 +87,7 @@ use crate::state::EXIT_FAILED;
 /// A UUID as `_ar_canonical_uuid` reads it: 8-4-4-4-12 hex, lowercased;
 /// anything else is empty (not a UUID).
 #[must_use]
-fn canonical_uuid(value: &str) -> String {
+pub(crate) fn canonical_uuid(value: &str) -> String {
     let groups = [8usize, 4, 4, 4, 12];
     let parts: Vec<&str> = value.split('-').collect();
     if parts.len() != groups.len() {
@@ -105,7 +105,7 @@ fn canonical_uuid(value: &str) -> String {
 /// following symlinks (a symlink to a regular file is `-f`, a symlink to a
 /// FIFO or a directory is not). Never opens the path.
 #[must_use]
-fn regular_file(path: &Path) -> bool {
+pub(crate) fn regular_file(path: &Path) -> bool {
     #[allow(
         clippy::disallowed_methods,
         reason = "a door: the frozen `[[ -f ]]` gate before reading meta/memo — see clippy.toml"
@@ -130,6 +130,46 @@ fn nonregular_existing(path: &Path) -> bool {
     )]
     let meta = std::fs::symlink_metadata(path);
     meta.is_ok_and(|m| !m.is_file())
+}
+
+/// How a candidate config path classifies, from `stat` + one `lstat`, neither of
+/// which OPENS the node — so a FIFO is classified, never blocked on. The point of
+/// the three-way split is that "does not exist" and "cannot be proven to exist"
+/// are different answers: only the former is a legitimate optional absence.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ConfigNode {
+    /// The node's own name does not exist — `lstat` reports `NotFound`. The ONLY
+    /// state a caller may treat as an optional absence.
+    Absent,
+    /// A regular file, following a final symlink to one (the frozen `-f`). Safe to
+    /// open and read.
+    Regular,
+    /// Present but not a usable regular file — a directory, FIFO, socket, device, or
+    /// a symlink to one of those or to nothing — OR a permission/I/O error that leaves
+    /// existence UNPROVEN. Never treat as absent: silently skipping here would drop an
+    /// operator's override.
+    Other,
+}
+
+/// Classify `path` as a [`ConfigNode`]. `regular_file` follows symlinks, so a symlink
+/// to a regular file is [`ConfigNode::Regular`]. Otherwise a single `lstat` decides by
+/// its error KIND: only `NotFound` is [`ConfigNode::Absent`]; a present node, or any
+/// other error (permission, I/O — e.g. an untraversable parent directory), is
+/// [`ConfigNode::Other`], which the caller must refuse rather than silently skip.
+#[must_use]
+pub(crate) fn classify_config_node(path: &Path) -> ConfigNode {
+    if regular_file(path) {
+        return ConfigNode::Regular;
+    }
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a door: lstat classifies the node's own existence without following a symlink or opening it — see clippy.toml"
+    )]
+    let lstat = std::fs::symlink_metadata(path);
+    match lstat {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => ConfigNode::Absent,
+        _ => ConfigNode::Other,
+    }
 }
 
 /// If `file` (a basename under `dir`) EXISTS but is not a regular file, write

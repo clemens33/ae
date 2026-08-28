@@ -67,6 +67,14 @@ pub const END_LOCAL_TEARDOWN: &str = "_end-local-teardown";
 /// only. Underscored — a core entry, never human-typed.
 pub const END_NONLOCAL_TEARDOWN: &str = "_end-nonlocal-teardown";
 
+/// compact's freeze/resolve step: `_compact-freeze <session-dir> [--keep-history]`.
+/// The pinned core resolves the session's frozen tuple (identity, mode, origin,
+/// config-derived roster and purge policy, archive path) BEFORE anything is messaged
+/// or archived, and emits it. `--keep-history` overrides a config that opts into
+/// purging agent history. Pure read-only. Underscored — a core entry, never
+/// human-typed.
+pub const COMPACT_FREEZE: &str = "_compact-freeze";
+
 /// The `state` helper's surface — `_state <meta-dir> [<value> [reason…]]`.
 /// Underscored like [`REQUESTS`]: launched by the generated helper, not typed.
 pub const STATE: &str = "_state";
@@ -215,6 +223,14 @@ pub enum Request {
         /// The session directory (`_ae_core_try`'s injected meta dir). The core
         /// derives the name and sessions root from it and validates both.
         dir: PathBuf,
+    },
+    /// `_compact-freeze <session-dir> [--keep-history]` — resolves and emits the
+    /// frozen compact tuple. Pure read-only.
+    CompactFreeze {
+        /// The session directory the frozen helper derives from `$0`.
+        dir: PathBuf,
+        /// `--keep-history`: override a config that opts into purging agent history.
+        keep_history: bool,
     },
     /// `_end-nonlocal-teardown <session-dir> [--preserve]` — removes the managed
     /// workdir (copy/worktree) and then the canonical state of a nonlocal session.
@@ -430,6 +446,21 @@ impl Request {
                 [_, extra, ..] => Self::UsageError(extra.clone()),
                 _ => Self::MissingOperand(END_NONLOCAL_TEARDOWN),
             },
+            Some(COMPACT_FREEZE) => match &args[1..] {
+                [dir] => Self::CompactFreeze {
+                    dir: dir.into(),
+                    keep_history: false,
+                },
+                [dir, flag] if flag == "--keep-history" => Self::CompactFreeze {
+                    dir: dir.into(),
+                    keep_history: true,
+                },
+                // `<dir> --keep-history <extra> ...`: --keep-history is valid here, so
+                // the first unexpected token is the one after it — name that.
+                [_, flag, extra, ..] if flag == "--keep-history" => Self::UsageError(extra.clone()),
+                [_, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(COMPACT_FREEZE),
+            },
             Some(ARCHIVE_PREVIEW) => match &args[1..] {
                 [] => Self::MissingOperand(ARCHIVE_PREVIEW),
                 [dir] => Self::ArchivePreview { dir: dir.into() },
@@ -522,7 +553,8 @@ impl Request {
             | Self::ArchiveFromPreflight { .. }
             | Self::ArchivePurge { .. }
             | Self::EndLocalTeardown { .. }
-            | Self::EndNonlocalTeardown { .. } => None,
+            | Self::EndNonlocalTeardown { .. }
+            | Self::CompactFreeze { .. } => None,
         }
     }
 }
@@ -530,8 +562,8 @@ impl Request {
 #[cfg(test)]
 mod tests {
     use super::{
-        ARCHIVE_PREVIEW, ASK, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, MEMO, REPLY, REQUESTS,
-        REVIEW, Request, SEND, STATE,
+        ARCHIVE_PREVIEW, ASK, COMPACT_FREEZE, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, MEMO,
+        REPLY, REQUESTS, REVIEW, Request, SEND, STATE,
     };
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
@@ -947,6 +979,56 @@ mod tests {
     fn nonlocal_teardown_bare_is_a_missing_operand() {
         assert_eq!(
             Request::parse(&argv(&[END_NONLOCAL_TEARDOWN])).exit_code(),
+            Some(2),
+            "no session dir is a usage error"
+        );
+    }
+
+    #[test]
+    fn compact_freeze_parses_dir_with_optional_keep_history() {
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_FREEZE, "/s/tg1"])),
+            Request::CompactFreeze {
+                dir: "/s/tg1".into(),
+                keep_history: false,
+            }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_FREEZE, "/s/tg1", "--keep-history"])),
+            Request::CompactFreeze {
+                dir: "/s/tg1".into(),
+                keep_history: true,
+            }
+        );
+    }
+
+    #[test]
+    fn compact_freeze_usage_error_names_the_first_unexpected_token() {
+        // --keep-history is valid, so for `<dir> --keep-history <extra>` the offending
+        // token is <extra>, not the valid flag.
+        assert_eq!(
+            Request::parse(&argv(&[
+                COMPACT_FREEZE,
+                "/s/tg1",
+                "--keep-history",
+                "extra"
+            ])),
+            Request::UsageError("extra".to_owned())
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_FREEZE, "/s/tg1", "bogus"])),
+            Request::UsageError("bogus".to_owned())
+        );
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_FREEZE, "/s/tg1", "--frob"])),
+            Request::UsageError("--frob".to_owned())
+        );
+    }
+
+    #[test]
+    fn compact_freeze_bare_is_a_missing_operand() {
+        assert_eq!(
+            Request::parse(&argv(&[COMPACT_FREEZE])).exit_code(),
             Some(2),
             "no session dir is a usage error"
         );

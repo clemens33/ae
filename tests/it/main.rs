@@ -9,6 +9,7 @@ mod archive_from;
 mod archive_publish;
 mod archive_purge;
 mod cli;
+mod compact;
 mod fixtures;
 mod git;
 mod helper_corpus;

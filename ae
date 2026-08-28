@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.15"
+AE_VERSION="0.2.16"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses

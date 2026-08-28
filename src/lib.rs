@@ -66,6 +66,8 @@
 pub mod archive;
 pub mod attention;
 pub mod cli;
+mod compact;
+mod config;
 pub mod digest;
 pub mod error;
 pub mod event_text;
@@ -669,6 +671,9 @@ pub fn run_with(
         cli::Request::EndLocalTeardown { dir } => teardown::run(dir, out, err)?,
         cli::Request::EndNonlocalTeardown { dir, preserve } => {
             teardown::run_nonlocal(dir, *preserve, out, err)?
+        }
+        cli::Request::CompactFreeze { dir, keep_history } => {
+            compact::freeze(dir, *keep_history, out, err)?
         }
         cli::Request::List(list_args) => {
             if let Some(world) = world {

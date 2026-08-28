@@ -1800,6 +1800,17 @@ fn criterion_3_the_places_this_crate_can_read_the_world_are_the_inventoried_ones
             // both surfaces read the same container the same quiet way, so the
             // read sits with the framing in `event_text` and neither surface
             // module opens anything itself.
+            //
+            // compact's freeze/resolve step (P3.7a): the `metadata` that proves
+            // the recorded origin exists and is a directory before it becomes the
+            // fresh session's cwd. Its meta read is `meta.rs`'s door and its config
+            // read is `config.rs`'s, not new ones here — this file's only own door
+            // is that origin gate. Registered deliberately.
+            "src/compact.rs".to_owned(),
+            // The minimal `[workspace]` config reader (P3.7a): the INI read behind
+            // compact's roster and purge-policy resolution. A new read surface —
+            // a line in a review, not a diff nobody read.
+            "src/config.rs".to_owned(),
             "src/event_text.rs".to_owned(),
             "src/events.rs".to_owned(),
             "src/inventory.rs".to_owned(),
