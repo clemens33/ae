@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
-AE_VERSION="0.2.14"
+AE_VERSION="0.2.15"
 
 # Fail fast with a clear message on bash < 4 (macOS ships 3.2 and defaults to
 # zsh). This must sit BEFORE any bash-4-only syntax is parsed — bash parses
@@ -2889,6 +2889,7 @@ cleanup_session() {
     # AE_CORE=; then the reference rm runs. A core that RAN and FAILED (non-125) has
     # left the session recoverable under its tombstone and printed the state — do NOT
     # delete more or print an end line; fail loudly instead.
+    local _nonlocal_core_done=false
     if [[ "$mode" == "local" ]] && _validate_session_name "$session_name" 2>/dev/null; then
         local _teardown_rc=0
         META_DIR="${SESSIONS_DIR}/${session_name}" _ae_core_try --capture _end-local-teardown || _teardown_rc=$?
@@ -2903,9 +2904,45 @@ cleanup_session() {
                 return 1
                 ;;
         esac
+    elif { [[ "$mode" == "full" ]] || [[ "$mode" == "git" ]]; } && _validate_session_name "$session_name" 2>/dev/null; then
+        # P3.6: for a grammar-valid full/git session the pinned core owns BOTH the
+        # managed workdir AND the canonical state (workdir first, canonical last).
+        # `--capture` returns 125 when the core is UNBOUND/unusable/forced off with
+        # AE_CORE=; then the reference bash path runs (canonical rm here, worktree
+        # removal below). A core that RAN and FAILED (non-125) left the session
+        # recoverable and printed the exact state — fail loud, delete nothing more.
+        local _nl_rc=0
+        if [[ "$preserve" == preserve ]]; then
+            META_DIR="${SESSIONS_DIR}/${session_name}" _ae_core_try --capture _end-nonlocal-teardown --preserve || _nl_rc=$?
+        else
+            META_DIR="${SESSIONS_DIR}/${session_name}" _ae_core_try --capture _end-nonlocal-teardown || _nl_rc=$?
+        fi
+        case "$_nl_rc" in
+            0) _nonlocal_core_done=true ;;
+            125) rm -rf "${SESSIONS_DIR:?}/${session_name:?}" ;;
+            *)
+                echo "Error: the teardown of '${session_name}' did not complete — see the diagnostic above; the session is NOT ended." >&2
+                if [[ "$_purge" == "true" ]]; then
+                    echo "  The agent conversation history WAS purged as requested; only the teardown did not complete." >&2
+                fi
+                return 1
+                ;;
+        esac
     else
         rm -rf "${SESSIONS_DIR:?}/${session_name:?}"
     fi
+
+    # The P3.6 core already removed the managed workdir together with the canonical
+    # state (or, for preserve, left the workdir byte-for-byte and cleared canonical);
+    # it owns BOTH resources. Return BEFORE the legacy cleanup below so those rm -rf
+    # paths can never delete a subtree of a preserved workdir or touch origin/.ae/<name>.
+    if [[ "$_nonlocal_core_done" == true ]]; then
+        if [[ "$preserve" != preserve ]]; then
+            echo "Removed worktree for $session_name"
+        fi
+        return 0
+    fi
+
     # Legacy cleanup: old worktree-nested and local-mode paths
     rm -rf "${WORKTREES_DIR}/${session_name}/.ae/${session_name}" 2>/dev/null || true
     if [[ -n "$origin" ]] && [[ -d "${origin}/.ae/${session_name}" ]]; then
@@ -3227,14 +3264,16 @@ _end_session_locked() {
     # keep — preserve the directory, remove only ae's session state.
     if [[ "$_es_preserve_workdir" == true ]]; then
         _end_archive_step "$session_name" "$_es_push_out" "$_es_push_ref" "$wdir" "$wdir" || return 1
-        cleanup_session "$session_name" "$mode" "$origin" preserve
+        # || return 1: cleanup_session returns non-zero when the P3.6 core teardown
+        # failed (session left recoverable). Propagate it so no false "Ended" prints.
+        cleanup_session "$session_name" "$mode" "$origin" preserve || return 1
         echo "Ended $session_name — work committed locally (no origin remote to push to)."
         echo "  Directory preserved: $wdir"
         return 0
     fi
     # The last thing before the session stops existing: capture it, or fail and keep it.
     _end_archive_step "$session_name" "$_es_push_out" "$_es_push_ref" "-" "$wdir" || return 1
-    cleanup_session "$session_name" "$mode" "$origin"
+    cleanup_session "$session_name" "$mode" "$origin" || return 1
     echo "Ended $session_name"
     return 0
 }
@@ -17408,6 +17447,18 @@ if [[ -e "${SESSIONS_DIR}/.ending.${SESSION}" || -L "${SESSIONS_DIR}/.ending.${S
     echo "       ${SESSIONS_DIR}/.ending.${SESSION} is standing — the session state is parked under it, not under '${SESSION}'." >&2
     echo "       Inspect it, then remove it by hand and retry:" >&2
     echo "           rm -rf ${SESSIONS_DIR}/.ending.${SESSION}" >&2
+    exit 1
+fi
+# P3.6: the nonlocal (copy) teardown tombstones the managed workdir under the
+# worktrees root the same way. A standing `.ending.<name>` there means a previous
+# workdir teardown did not complete; reusing the name would build a fresh worktree
+# beside parked debris. Same `-e || -L` so a dangling link the core treats as
+# standing also blocks reuse.
+if [[ -e "${WORKTREES_DIR}/.ending.${SESSION}" || -L "${WORKTREES_DIR}/.ending.${SESSION}" ]]; then
+    echo "Error: a previous teardown of '${SESSION}' did not complete." >&2
+    echo "       ${WORKTREES_DIR}/.ending.${SESSION} is standing — a working copy is parked under it." >&2
+    echo "       Inspect it, then remove it by hand and retry:" >&2
+    echo "           rm -rf ${WORKTREES_DIR}/.ending.${SESSION}" >&2
     exit 1
 fi
 

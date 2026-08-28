@@ -5524,6 +5524,142 @@ else
 fi
 fi
 
+# ── #79 P3.6: nonlocal (copy/worktree) teardown routes through the core; preserve; ──
+# ──          AE_CORE= falls back; the worktrees tombstone guards launch             ──
+if _itest_section '#79 P3.6: nonlocal teardown routes through the core, preserve, AE_CORE= falls back, worktrees tombstone guards launch'; then
+# P3.6 moves the nonlocal canonical + managed-workdir removal into the pinned core:
+# a full copy is tombstone-removed, a git worktree is removed by a sealed
+# `git worktree remove`, and preserve keeps the workdir. This proves (1) a real copy
+# end and (2) a real worktree end route through the session's PINNED core and remove
+# BOTH resources; (3) a no-origin worktree end preserves the workdir; (4) AE_CORE=
+# forces the reference bash path; (5) a standing worktrees/.ending.<name> refuses a
+# fresh launch. Needs the built core; a tree without one skips loudly.
+P36_CORE="$(dirname "$AE")/target/debug/ae"
+if [[ -x "$P36_CORE" ]]; then
+    P36_VER="$("$P36_CORE" --version 2>/dev/null | awk '{print $NF}')"
+    P36_MARK="$TMPDIR/p36-teardown-invoked"
+    P36_WRAP="$TMPDIR/p36-core-wrapper"
+    printf '#!/bin/sh\ncase "$1" in _end-nonlocal-teardown) echo "$@" >> "%s";; esac\nexec "%s" "$@"\n' \
+        "$P36_MARK" "$P36_CORE" > "$P36_WRAP"
+    chmod +x "$P36_WRAP"
+
+    _p36_pin_core() { # <session>
+        local m="$HOME/.ae/sessions/$1"
+        { grep -v '^ae_core=' "$m/meta" | grep -v '^ae_core_version=' ; \
+          printf 'ae_core=%s\nae_core_version=%s\n' "$P36_WRAP" "$P36_VER"; } > "$m/meta.tmp"
+        mv "$m/meta.tmp" "$m/meta"
+    }
+
+    # A source repo WITH a remote, HEAD pushed, so a nonlocal end takes the FULL
+    # removal (non-preserve) path rather than preserving a no-remote workdir.
+    P36_BARE="$TMPDIR/p36-bare.git"
+    git init --bare -q "$P36_BARE"
+    P36_REPO="$(setup_repo)"
+    git -C "$P36_REPO" remote add origin "$P36_BARE"
+    git -C "$P36_REPO" push -q origin HEAD:refs/heads/main 2>/dev/null || true
+
+    # (1) Real COPY end: both resources removed through the core.
+    : > "$P36_MARK"
+    (cd "$P36_REPO" && "$AE" --copy p36-copy &) 2>/dev/null
+    wait_for_session "p36-copy" 20
+    sleep 1
+    assert_eq "p3.6 setup: the copy session records mode=full" "1" \
+        "$(grep -qx 'mode=full' "$HOME/.ae/sessions/p36-copy/meta" && echo 1 || echo 0)"
+    _p36_pin_core p36-copy
+    P36_OUT="$("$AE" end -f --purge-history p36-copy 2>&1)"
+    assert_eq "p3.6 route: the core WAS invoked for _end-nonlocal-teardown (copy)" "1" \
+        "$([[ -s "$P36_MARK" ]] && echo 1 || echo 0)"
+    assert_contains "p3.6 route: bash reports the end (copy)" "Ended" "$P36_OUT"
+    assert_not_exists "p3.6 route: the copy session state is gone" "$HOME/.ae/sessions/p36-copy"
+    assert_not_exists "p3.6 route: the copy workdir is gone" "$HOME/.ae/worktrees/p36-copy"
+    assert_not_exists "p3.6 route: no session tombstone" "$HOME/.ae/sessions/.ending.p36-copy"
+    assert_not_exists "p3.6 route: no workdir tombstone" "$HOME/.ae/worktrees/.ending.p36-copy"
+
+    # (2) Real WORKTREE end: worktree removed through the core, origin repo untouched.
+    : > "$P36_MARK"
+    (cd "$P36_REPO" && "$AE" --worktree p36-wt &) 2>/dev/null
+    wait_for_session "p36-wt" 20
+    sleep 1
+    assert_eq "p3.6 setup: the worktree session records mode=git" "1" \
+        "$(grep -qx 'mode=git' "$HOME/.ae/sessions/p36-wt/meta" && echo 1 || echo 0)"
+    _p36_pin_core p36-wt
+    # BLOCKER regression (legacy cleanup after core success): plant a sentinel at the
+    # meta-recorded origin's legacy .ae/<name> path. A non-preserve core end owns both
+    # resources and must return BEFORE the legacy `rm -rf "${origin}/.ae/<name>"`, so
+    # this sentinel must survive — it goes red if that legacy delete still runs.
+    P36_WT_ORIGIN="$(grep '^origin=' "$HOME/.ae/sessions/p36-wt/meta" | cut -d= -f2-)"
+    mkdir -p "$P36_WT_ORIGIN/.ae/p36-wt"; : > "$P36_WT_ORIGIN/.ae/p36-wt/sentinel"
+    P36_OUT2="$("$AE" end -f --purge-history p36-wt 2>&1)"
+    assert_eq "p3.6 route: the core WAS invoked for _end-nonlocal-teardown (worktree)" "1" \
+        "$([[ -s "$P36_MARK" ]] && echo 1 || echo 0)"
+    assert_contains "p3.6 route: bash reports the end (worktree)" "Ended" "$P36_OUT2"
+    assert_not_exists "p3.6 route: the worktree session state is gone" "$HOME/.ae/sessions/p36-wt"
+    assert_not_exists "p3.6 route: the worktree workdir is gone" "$HOME/.ae/worktrees/p36-wt"
+    assert_eq "p3.6 route: the origin repo is untouched" "1" \
+        "$([[ -d "$P36_REPO/.git" ]] && echo 1 || echo 0)"
+    assert_eq "p3.6 route: a non-preserve core end leaves origin/.ae/<name> intact" "1" \
+        "$([[ -f "$P36_WT_ORIGIN/.ae/p36-wt/sentinel" ]] && echo 1 || echo 0)"
+    rm -rf "$P36_WT_ORIGIN/.ae/p36-wt"
+
+    # (3) Preserve: a NO-origin worktree keeps its workdir, removes canonical only.
+    : > "$P36_MARK"
+    P36_NOREMOTE="$(setup_repo)"
+    (cd "$P36_NOREMOTE" && "$AE" --worktree p36-pres &) 2>/dev/null
+    wait_for_session "p36-pres" 20
+    sleep 1
+    _p36_pin_core p36-pres
+    # BLOCKER regression (legacy cleanup after core success): a preserve end promises
+    # the workdir is left byte-for-byte, yet the legacy `rm -rf
+    # "${WORKTREES_DIR}/<name>/.ae/<name>"` would delete a SUBTREE of that preserved
+    # workdir, and `rm -rf "${origin}/.ae/<name>"` would touch origin. Plant a sentinel
+    # in each; both must survive a core-success preserve (the fix returns before the
+    # legacy deletes). These go red if the legacy cleanup still runs after core success.
+    mkdir -p "$HOME/.ae/worktrees/p36-pres/.ae/p36-pres"
+    : > "$HOME/.ae/worktrees/p36-pres/.ae/p36-pres/sentinel"
+    P36_PRES_ORIGIN="$(grep '^origin=' "$HOME/.ae/sessions/p36-pres/meta" | cut -d= -f2-)"
+    mkdir -p "$P36_PRES_ORIGIN/.ae/p36-pres"; : > "$P36_PRES_ORIGIN/.ae/p36-pres/sentinel"
+    P36_POUT="$("$AE" end -f --purge-history p36-pres 2>&1)"
+    assert_contains "p3.6 preserve: the core was invoked with --preserve" "--preserve" "$(cat "$P36_MARK")"
+    assert_contains "p3.6 preserve: bash reports the preserved directory" "Directory preserved" "$P36_POUT"
+    assert_not_exists "p3.6 preserve: canonical state is gone" "$HOME/.ae/sessions/p36-pres"
+    assert_eq "p3.6 preserve: the workdir is KEPT byte-for-byte" "1" \
+        "$([[ -d "$HOME/.ae/worktrees/p36-pres" ]] && echo 1 || echo 0)"
+    assert_eq "p3.6 preserve: the preserved workdir .ae/<name> subtree survives (no legacy rm)" "1" \
+        "$([[ -f "$HOME/.ae/worktrees/p36-pres/.ae/p36-pres/sentinel" ]] && echo 1 || echo 0)"
+    assert_eq "p3.6 preserve: origin/.ae/<name> is untouched by preserve (no legacy rm)" "1" \
+        "$([[ -f "$P36_PRES_ORIGIN/.ae/p36-pres/sentinel" ]] && echo 1 || echo 0)"
+    rm -rf "$HOME/.ae/worktrees/p36-pres" "$P36_PRES_ORIGIN/.ae/p36-pres"
+
+    # (4) AE_CORE= forces the reference bash path; the copy is still removed, no core call.
+    : > "$P36_MARK"
+    (cd "$P36_REPO" && "$AE" --copy p36-copy2 &) 2>/dev/null
+    wait_for_session "p36-copy2" 20
+    sleep 1
+    _p36_pin_core p36-copy2
+    P36_OUT4="$(AE_CORE= "$AE" end -f --purge-history p36-copy2 2>&1)"
+    assert_eq "p3.6 fallback: AE_CORE= did NOT invoke the core" "0" \
+        "$([[ -s "$P36_MARK" ]] && echo 1 || echo 0)"
+    assert_contains "p3.6 fallback: bash still reports the end" "Ended" "$P36_OUT4"
+    assert_not_exists "p3.6 fallback: the copy session state is gone" "$HOME/.ae/sessions/p36-copy2"
+    assert_not_exists "p3.6 fallback: the copy workdir is gone" "$HOME/.ae/worktrees/p36-copy2"
+
+    # (5) A standing worktrees/.ending.<name> refuses a fresh launch (the launch guard).
+    mkdir -p "$HOME/.ae/worktrees/.ending.p36-guard/messages"
+    P36_GOUT="$(cd "$P36_REPO" && _timeout 15 "$AE" --worktree p36-guard 2>&1; echo "rc=$?")"
+    assert_contains "p3.6 guard: a standing worktrees tombstone refuses the launch" \
+        "a previous teardown of 'p36-guard' did not complete" "$P36_GOUT"
+    assert_eq "p3.6 guard: the launch created no session for the name" "0" \
+        "$([[ -e "$HOME/.ae/sessions/p36-guard" ]] && echo 1 || echo 0)"
+    assert_eq "p3.6 guard: the standing tombstone is left for manual recovery" "1" \
+        "$([[ -e "$HOME/.ae/worktrees/.ending.p36-guard" ]] && echo 1 || echo 0)"
+    rm -rf "$HOME/.ae/worktrees/.ending.p36-guard"
+
+    unset P36_VER P36_MARK P36_WRAP P36_CORE P36_REPO P36_BARE P36_NOREMOTE P36_OUT P36_OUT2 P36_POUT P36_OUT4 P36_GOUT P36_WT_ORIGIN P36_PRES_ORIGIN
+else
+    echo "  SKIP #79 P3.6 core routing: no built core at ${P36_CORE} (run: cargo build)"
+fi
+fi
+
 # ── purge: no archive written, and an existing one removed ───────────
 if _itest_section 'purge: no archive written, and an existing one removed'; then
 (cd "$A48_REPO" && "$AE" --local arch-purge &) 2>/dev/null

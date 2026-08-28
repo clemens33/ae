@@ -464,7 +464,7 @@ fn own_session(dir: &std::path::Path) -> String {
 /// row is silent. A relative `AE_HOME` is used as given; nothing here rewrites
 /// it, because normalising a path the operator supplied is a decision no row
 /// makes.
-fn state_root() -> Option<std::path::PathBuf> {
+pub(crate) fn state_root() -> Option<std::path::PathBuf> {
     let named = |key: &str| {
         #[allow(
             clippy::disallowed_methods,
@@ -667,6 +667,9 @@ pub fn run_with(
             parent_id,
         } => archive::purge::run(dir, aid, source_session, parent_id, out, err)?,
         cli::Request::EndLocalTeardown { dir } => teardown::run(dir, out, err)?,
+        cli::Request::EndNonlocalTeardown { dir, preserve } => {
+            teardown::run_nonlocal(dir, *preserve, out, err)?
+        }
         cli::Request::List(list_args) => {
             if let Some(world) = world {
                 // SC-017o: the warning goes to STDERR and the table still

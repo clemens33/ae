@@ -59,6 +59,14 @@ pub const ARCHIVE_PURGE: &str = "_archive-purge";
 /// meta directory. Underscored — a core entry, never human-typed.
 pub const END_LOCAL_TEARDOWN: &str = "_end-local-teardown";
 
+/// Nonlocal canonical + workdir teardown: `_end-nonlocal-teardown <session-dir>
+/// [--preserve]`. Bash routes here from `cleanup_session` for a `mode=full`
+/// (copy) or `mode=git` (worktree) session; the core removes the managed workdir
+/// (copy tombstone, or a sealed `git worktree remove`) and then the canonical
+/// state. `--preserve` keeps the workdir byte-for-byte and removes canonical state
+/// only. Underscored — a core entry, never human-typed.
+pub const END_NONLOCAL_TEARDOWN: &str = "_end-nonlocal-teardown";
+
 /// The `state` helper's surface — `_state <meta-dir> [<value> [reason…]]`.
 /// Underscored like [`REQUESTS`]: launched by the generated helper, not typed.
 pub const STATE: &str = "_state";
@@ -208,6 +216,17 @@ pub enum Request {
         /// derives the name and sessions root from it and validates both.
         dir: PathBuf,
     },
+    /// `_end-nonlocal-teardown <session-dir> [--preserve]` — removes the managed
+    /// workdir (copy/worktree) and then the canonical state of a nonlocal session.
+    EndNonlocalTeardown {
+        /// The session directory (`_ae_core_try`'s injected meta dir). The core
+        /// derives the name and both roots from the configured state root and
+        /// validates the dir is that exact managed child.
+        dir: PathBuf,
+        /// `--preserve`: keep the workdir byte-for-byte (a no-origin session whose
+        /// committed work lives only there), removing canonical state only.
+        preserve: bool,
+    },
     /// A usage error about a MISSING operand rather than an offending token.
     ///
     /// The successor spelling's own error class: the frozen helpers read their
@@ -301,6 +320,10 @@ impl Request {
     /// );
     /// ```
     #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the argv parse table: one match arm per subcommand, kept as one readable dispatch rather than fragmented into sub-parsers"
+    )]
     pub fn parse(args: &[String]) -> Self {
         match args.first().map(String::as_str) {
             None | Some("-h" | "--help" | "help") => Self::Help,
@@ -391,6 +414,21 @@ impl Request {
                 [dir] => Self::EndLocalTeardown { dir: dir.into() },
                 [_, extra, ..] => Self::UsageError(extra.clone()),
                 _ => Self::MissingOperand(END_LOCAL_TEARDOWN),
+            },
+            Some(END_NONLOCAL_TEARDOWN) => match &args[1..] {
+                [dir] => Self::EndNonlocalTeardown {
+                    dir: dir.into(),
+                    preserve: false,
+                },
+                [dir, flag] if flag == "--preserve" => Self::EndNonlocalTeardown {
+                    dir: dir.into(),
+                    preserve: true,
+                },
+                // `<dir> --preserve <extra> ...`: --preserve is valid here, so the
+                // first UNEXPECTED token is the one after it — name that, not --preserve.
+                [_, flag, extra, ..] if flag == "--preserve" => Self::UsageError(extra.clone()),
+                [_, extra, ..] => Self::UsageError(extra.clone()),
+                _ => Self::MissingOperand(END_NONLOCAL_TEARDOWN),
             },
             Some(ARCHIVE_PREVIEW) => match &args[1..] {
                 [] => Self::MissingOperand(ARCHIVE_PREVIEW),
@@ -483,7 +521,8 @@ impl Request {
             | Self::ArchivePublish { .. }
             | Self::ArchiveFromPreflight { .. }
             | Self::ArchivePurge { .. }
-            | Self::EndLocalTeardown { .. } => None,
+            | Self::EndLocalTeardown { .. }
+            | Self::EndNonlocalTeardown { .. } => None,
         }
     }
 }
@@ -491,8 +530,8 @@ impl Request {
 #[cfg(test)]
 mod tests {
     use super::{
-        ARCHIVE_PREVIEW, ASK, EVENTS_TAIL, GOAL, MEMO, REPLY, REQUESTS, REVIEW, Request, SEND,
-        STATE,
+        ARCHIVE_PREVIEW, ASK, END_NONLOCAL_TEARDOWN, EVENTS_TAIL, GOAL, MEMO, REPLY, REQUESTS,
+        REVIEW, Request, SEND, STATE,
     };
     use crate::filters::{ListArgs, Scope};
     use crate::requests::Mode;
@@ -853,5 +892,63 @@ mod tests {
                 "{tail:?}"
             );
         }
+    }
+
+    #[test]
+    fn nonlocal_teardown_parses_dir_with_optional_preserve() {
+        assert_eq!(
+            Request::parse(&argv(&[END_NONLOCAL_TEARDOWN, "/s/tg1"])),
+            Request::EndNonlocalTeardown {
+                dir: "/s/tg1".into(),
+                preserve: false,
+            }
+        );
+        assert_eq!(
+            Request::parse(&argv(&[END_NONLOCAL_TEARDOWN, "/s/tg1", "--preserve"])),
+            Request::EndNonlocalTeardown {
+                dir: "/s/tg1".into(),
+                preserve: true,
+            }
+        );
+    }
+
+    #[test]
+    fn nonlocal_teardown_usage_error_names_the_first_unexpected_token() {
+        // --preserve is a VALID token here, so for `<dir> --preserve <extra>` the
+        // offending token the UsageError must carry is <extra>, never the valid
+        // --preserve. This is the parser's offending-token convention: name the
+        // first token past the grammar, verbatim.
+        assert_eq!(
+            Request::parse(&argv(&[
+                END_NONLOCAL_TEARDOWN,
+                "/s/tg1",
+                "--preserve",
+                "extra"
+            ])),
+            Request::UsageError("extra".to_owned())
+        );
+        // Without --preserve, the first token after the operand is itself the
+        // offender and is named verbatim (an unknown flag included).
+        assert_eq!(
+            Request::parse(&argv(&[END_NONLOCAL_TEARDOWN, "/s/tg1", "bogus"])),
+            Request::UsageError("bogus".to_owned())
+        );
+        assert_eq!(
+            Request::parse(&argv(&[END_NONLOCAL_TEARDOWN, "/s/tg1", "bogus", "extra"])),
+            Request::UsageError("bogus".to_owned())
+        );
+        assert_eq!(
+            Request::parse(&argv(&[END_NONLOCAL_TEARDOWN, "/s/tg1", "--frob"])),
+            Request::UsageError("--frob".to_owned())
+        );
+    }
+
+    #[test]
+    fn nonlocal_teardown_bare_is_a_missing_operand() {
+        assert_eq!(
+            Request::parse(&argv(&[END_NONLOCAL_TEARDOWN])).exit_code(),
+            Some(2),
+            "no session dir is a usage error"
+        );
     }
 }

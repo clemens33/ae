@@ -35,6 +35,13 @@ enum Query<'a> {
     IsAncestor { base: &'a str, tip: &'a str },
     /// `rev-list --count <base>..<tip>` — the range size (printed value).
     CountRange { base: &'a str, tip: &'a str },
+    /// `worktree remove --force <worktree>` — the git-mode teardown's workdir
+    /// commit, judged by exit status. Run with `-C <origin>`. A successful remove
+    /// deletes that worktree's working directory AND its admin record in origin;
+    /// `prune` is deliberately NOT part of this path (it is global housekeeping
+    /// over unrelated stale entries and must never make a removed workdir look
+    /// retained).
+    WorktreeRemove { worktree: &'a OsStr },
 }
 
 /// A git argv minted ONLY by this module's [`argv`] builder. Its inner vector
@@ -77,6 +84,12 @@ fn argv(wdir: &OsStr, query: &Query) -> GitArgv {
             args.push("rev-list".into());
             args.push("--count".into());
             args.push(format!("{base}..{tip}").into());
+        }
+        Query::WorktreeRemove { worktree } => {
+            args.push("worktree".into());
+            args.push("remove".into());
+            args.push("--force".into());
+            args.push(worktree.to_owned());
         }
     }
     GitArgv(args)
@@ -140,6 +153,22 @@ pub(crate) fn range(wdir: &[u8], base: &str, tip: &str) -> (String, String) {
     } else {
         dash()
     }
+}
+
+/// `git -C <origin> worktree remove --force <worktree>` — remove the exact managed
+/// git worktree of a `mode=git` teardown. Judged by exit status: `true` iff git
+/// exited zero, at which point that worktree's working directory AND its admin
+/// record in `origin` are gone. `origin` and `worktree` ride as RAW bytes → one
+/// `OsStr` argv element each, so a hostile path is data to git, never a command
+/// line, and a non-UTF-8 path survives intact. A git that refuses (a locked or
+/// dirty worktree, a path that is not a registered worktree) returns `false` with
+/// NO `rm -rf` fallback — the caller reclassifies the managed child and retains the
+/// session state. Git mutates only `origin`'s worktree ADMIN metadata; origin's
+/// checked-out content is never touched and origin is never a deletion target.
+pub(crate) fn worktree_remove(origin: &[u8], worktree: &[u8]) -> bool {
+    let origin = OsStr::from_bytes(origin);
+    let worktree = OsStr::from_bytes(worktree);
+    crate::transport::run_git(&argv(origin, &Query::WorktreeRemove { worktree })).0
 }
 
 #[cfg(test)]
